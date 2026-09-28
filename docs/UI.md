@@ -2,6 +2,8 @@
 
 "No compromise on UI" (D9). Design comes first: nothing is coded until the owner approves the mockups.
 
+**Phase 0 is complete.** The approved design system and mockups, and what the review changed, are in `DESIGN.md`. The rest of this file is the original brief plus the additions the review made (marked *added in review*).
+
 ## Phase 0 deliverables
 
 1. **Design system:**
@@ -30,8 +32,9 @@
 
 | Screen | Purpose |
 |---|---|
-| **Chat** | Talk to Wright (or any agent). Replies can carry a drafted playbook with its dry-run preview and Enable / Edit actions |
-| **Team** | Agent cards: avatar, name, role, current task, spend, status. Create or rename agents; chat with one directly |
+| **Chat** | Talk to Wright. Replies can carry a drafted playbook or a drafted crew charter with its dry-run preview and Enable / Create / Edit actions. *Added in review:* a thread is a timeline: system events (session started, playbook created, memory updated, approval decided) appear as one-line cards, and an agent's pending approval appears inline at the end of its thread |
+| **Crew** (sidebar group) | *Added in review (D25):* one thread per specialist with presence: avatar state, last line, time, unread. Wright is not listed here; Chat is his thread |
+| **Team** | Agent cards: avatar, name, role, current task, tokens today against the daily limit, status. Create (from a charter, D22), rename, or open an agent's thread. The inspector shows role, kernel-enforced permissions, model and limits, and the memory files as paths |
 | **Tasks** | A board grouped by state. Cards show linked PRs/tickets and state (e.g. "1/2 approvals · CI green · waiting on Mason"); click through to history and session logs |
 | **Playbooks** | Every behaviour Wright has written: plain-English intent, trigger, dedupe key, priority, model, last run, cost, on/off. Edit in English or directly |
 | **Schedules & triggers** | A timeline of upcoming wake-ups, polls and cron jobs, plus firing history |
@@ -48,4 +51,8 @@
 - the approval count
 - quick actions: Open, **Pause all**, **Kill switch**
 
-**GUI v1** (roadmap phase 5): menu bar, Chat, Team, Approvals, Sessions. **GUI v2** (phase 7): all the rest.
+**Avatars** (*added in review*, D23): every crew member is a sea creature stitched from its own thread; Wright is the crowned whale. The loose thread end carries the kernel state (sways, sews, rises to you, hangs slack, ties a bow, is cut), so state is legible with motion off. Specified in the design system's Avatar component.
+
+**Limits** (*added in review*, D24): tokens per day and sessions at once per agent; dollars only as estimates.
+
+**GUI v1** (roadmap phase 5): menu bar, Chat (with Crew threads), Team, Approvals, Sessions. **GUI v2** (phase 7): all the rest.

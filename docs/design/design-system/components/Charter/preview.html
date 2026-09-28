@@ -1,0 +1,34 @@
+<!-- @dsCard group="Chat" height=330 subtitle="A crew member Wright drafted from one sentence, before it exists" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
+  .draft{max-width:560px;border:1px solid var(--hairline);border-radius:var(--radius-md);overflow:hidden;background:var(--ground)}
+  .h{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--hairline);background:var(--surface)}
+  .h b{font-weight:600}.prop{color:var(--ink-tertiary);font-size:11px;margin-left:4px}
+  .badge{height:20px;padding:0 8px;border-radius:var(--radius-xs);font-size:11px;line-height:20px;font-weight:500;background:var(--surface-sunken);color:var(--ink-secondary)}
+  .badge.att{background:var(--attention-soft);color:var(--attention);font-weight:600;height:16px;line-height:16px;padding:0 6px}
+  .kv{display:grid;grid-template-columns:96px 1fr;gap:4px 12px;padding:10px 12px;margin:0}
+  dt{color:var(--ink-tertiary);font-size:11px;line-height:18px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}dd{margin:0}
+  .chip{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:var(--radius-sm);background:var(--surface);border:1px solid var(--hairline);font-size:12px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+  .dry{padding:8px 12px;border-top:1px solid var(--hairline);font-family:var(--font-mono);font-size:12px;line-height:18px;color:var(--ink-secondary);background:var(--surface-sunken)}.dry .l{color:var(--ink-tertiary)}
+  .acts{display:flex;gap:8px;align-items:center;padding:8px 12px;border-top:1px solid var(--hairline);background:var(--surface)}
+  .btn{height:28px;padding:0 10px;border-radius:var(--radius-sm);border:1px solid transparent;font:inherit;font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:6px;background:var(--surface);color:var(--ink)}
+  .pri{background:var(--accent);color:var(--on-accent)}.sec{border-color:var(--border)}
+  .kbd{font-family:var(--font-mono);font-size:11px;padding:1px 4px;border-radius:4px;background:#ffffff33}.sec .kbd{background:var(--surface-sunken);color:var(--ink-tertiary)}
+  .bot{display:inline-grid;width:28px;height:28px}.bot svg{width:100%;height:100%}.bot .body{fill:var(--attention)}.bot .eye{fill:var(--ground)}
+  .shapes{display:flex;gap:6px;margin-left:auto}.shapes i{width:22px;height:22px;border-radius:4px;border:1px solid var(--hairline);display:grid;place-items:center}.shapes i.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+  .shapes svg{width:16px;height:16px}.shapes .body{fill:var(--accent)}
+</style>
+<div class="draft" aria-label="Drafted crew member">
+  <div class="h"><span class="bot" aria-hidden="true"><svg viewBox="0 0 32 32"><ellipse class="body" cx="16" cy="18" rx="14.5" ry="11.5"/><rect class="eye" x="9" y="13" width="4.4" height="9.5" rx="2.2"/><rect class="eye" x="18.6" y="13" width="4.4" height="9.5" rx="2.2"/></svg></span><b>Pim</b><span class="prop">name proposed</span><span class="badge">draft</span><span class="badge">personal assistant</span></div>
+  <dl class="kv">
+    <dt>Persona</dt><dd>Brief and direct. Morning digest in bullets, most urgent first. Never chatty.</dd>
+    <dt>Duties</dt><dd>Daily digest at 08:00 of calendar, mail and Slack<br>Remind you of commitments you made in chat or mail<br>Prepare a short brief before each meeting</dd>
+    <dt>Tools</dt><dd style="display:flex;gap:6px;flex-wrap:wrap"><span class="chip">Calendar <span class="badge att">not connected</span></span><span class="chip">Mail <span class="badge att">not connected</span></span><span class="chip">Slack <span class="dot" title="connected"></span></span></dd>
+    <dt>Boundaries</dt><dd>Reads only: never sends mail or messages<br>Never moves or declines meetings</dd>
+    <dt>Model</dt><dd>Haiku 4.5<span class="prop">proposed</span></dd>
+    <dt>Limits</dt><dd>100k tokens / day · 1 session at once<span class="prop">proposed</span></dd>
+  </dl>
+  <div class="dry"><span class="l">first playbook ·</span> Daily digest · cron 08:00 Mon–Fri · would summarise 4 meetings, 32 mails, 6 Slack threads · est. $0.08/run</div>
+  <div class="acts"><button class="btn pri">Create Pim <span class="kbd">⏎</span></button><button class="btn sec">Edit in English <span class="kbd">E</span></button><span class="shapes" aria-label="Avatar shape"><i><svg viewBox="0 0 32 32"><rect class="body" x="3" y="4" width="26" height="27" rx="11"/></svg></i><i><svg viewBox="0 0 32 32"><circle class="body" cx="16" cy="17.5" r="13.5"/></svg></i><i><svg viewBox="0 0 32 32"><rect class="body" x="6" y="2" width="20" height="29" rx="10"/></svg></i><i class="on"><svg viewBox="0 0 32 32"><ellipse class="body" cx="16" cy="18" rx="14.5" ry="11.5"/></svg></i><i><svg viewBox="0 0 32 32"><path class="body" d="M16 3.5c7.5 0 13 8 13 16.5 0 7-5 11-13 11S3 27 3 20C3 11.5 8.5 3.5 16 3.5z"/></svg></i></span></div>
+</div>

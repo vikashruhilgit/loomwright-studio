@@ -1,0 +1,39 @@
+<!-- @dsCard group="Status" height=130 subtitle="Semantic badges, neutral chips, the count pill, kbd" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  .badge{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:var(--radius-xs);font-size:11px;line-height:14px;font-weight:600;letter-spacing:.01em}
+  .ok{background:var(--ok-soft);color:var(--ok)}
+  .att{background:var(--attention-soft);color:var(--attention)}
+  .dng{background:var(--danger-soft);color:var(--danger)}
+  .prk{background:var(--parked-soft);color:var(--parked)}
+  .acc{background:var(--accent-soft);color:var(--accent)}
+  .neu{background:var(--surface-sunken);color:var(--ink-secondary);font-weight:500}
+  .pill{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 6px;border-radius:var(--radius-full);background:var(--attention);color:#fff;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+  [data-theme="dark"] .pill{color:#1a1200}
+  .kbd{font-family:var(--font-mono);font-size:11px;font-weight:500;padding:1px 5px;border-radius:var(--radius-xs);background:var(--surface-sunken);border:1px solid var(--hairline);color:var(--ink-secondary)}
+  .chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px 0 6px;border-radius:var(--radius-sm);background:var(--surface);border:1px solid var(--hairline);font-size:12px;color:var(--ink)}
+  .chip .av{width:14px;height:14px;border-radius:var(--radius-full);background:var(--accent);color:var(--on-accent);font-size:9px;font-weight:700;display:grid;place-items:center}
+  .mono{font-family:var(--font-mono);font-size:11px;color:var(--ink-secondary);background:var(--surface-sunken);padding:1px 5px;border-radius:var(--radius-xs)}
+  svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+</style>
+<div class="row">
+  <span class="badge ok"><svg viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></svg>CI green</span>
+  <span class="badge ok">merged</span>
+  <span class="badge att">waiting on you</span>
+  <span class="badge att">1/2 approvals</span>
+  <span class="badge dng">denied</span>
+  <span class="badge dng">over budget</span>
+  <span class="badge prk"><svg viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg>paused at cap</span>
+  <span class="badge acc">working</span>
+  <span class="badge neu">draft</span>
+  <span class="badge neu">Sonnet 5</span>
+</div>
+<div class="row">
+  <span>Approvals <span class="pill" aria-label="3 pending">3</span></span>
+  <span class="chip"><span class="av" aria-hidden="true">M</span>Mason</span>
+  <span class="chip">vikashruhilgit/loomwright #412</span>
+  <span class="mono">{pr.head_sha}</span>
+  <span><span class="kbd">⌘</span> <span class="kbd">K</span></span>
+  <span class="kbd">⇧A</span>
+</div>

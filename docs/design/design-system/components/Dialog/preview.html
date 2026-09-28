@@ -1,0 +1,35 @@
+<!-- @dsCard group="Feedback" height=280 subtitle="The kill-switch confirm and an approval decision" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
+  .row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+  .dlg{width:360px;background:var(--surface-raised);border-radius:var(--radius-lg);box-shadow:var(--shadow-3);padding:20px;display:flex;flex-direction:column;gap:12px}
+  .dlg h2{margin:0;font-size:15px;line-height:20px;font-weight:600}
+  .dlg p{margin:0;color:var(--ink-secondary)}
+  .acts{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}
+  .btn{height:32px;padding:0 12px;border-radius:var(--radius-sm);border:1px solid transparent;font:inherit;font-weight:500;display:inline-flex;align-items:center;gap:6px}
+  .sec{background:var(--surface);color:var(--ink);border-color:var(--border)}
+  .dng{background:var(--danger);color:#fff}
+  .pri{background:var(--accent);color:var(--on-accent)}
+  .kbd{font-family:var(--font-mono);font-size:11px;padding:1px 4px;border-radius:4px;background:#ffffff33}
+  .sec .kbd{background:var(--surface-sunken);color:var(--ink-tertiary)}
+  .well{background:var(--surface-sunken);border-radius:var(--radius-sm);padding:8px 10px;font-family:var(--font-mono);font-size:12px;line-height:18px;color:var(--ink)}
+  .chk{display:flex;align-items:center;gap:8px;color:var(--ink-secondary)}
+  .chk i{width:14px;height:14px;border:1px solid var(--border);border-radius:3px;display:inline-block}
+  .icon{width:32px;height:32px;border-radius:50%;background:var(--danger-soft);color:var(--danger);display:grid;place-items:center}
+  svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+</style>
+<div class="row">
+  <div class="dlg" role="alertdialog" aria-labelledby="k-t" aria-describedby="k-d">
+    <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18.4 5.6 5.6 18.4M5.6 5.6l12.8 12.8"/></svg></div>
+    <h2 id="k-t">Kill everything?</h2>
+    <p id="k-d">Aborts 2 running sessions and disables all 4 triggers. Mason's review of #412 loses its current step; the task stays and can be resumed.</p>
+    <div class="acts"><button class="btn sec">Cancel <span class="kbd">Esc</span></button><button class="btn dng">Kill all <span class="kbd">⌘⏎</span></button></div>
+  </div>
+  <div class="dlg" role="dialog" aria-labelledby="a-t">
+    <h2 id="a-t">Always allow for this playbook?</h2>
+    <p>Mason will post reviews on PRs matched by <b>Review PRs where I'm requested</b> without asking. This never applies to other playbooks.</p>
+    <div class="well">action: github.pr.review.post<br>scope: playbook:pb_01J9K…</div>
+    <label class="chk"><i aria-hidden="true"></i>Still ask when the review is blocking</label>
+    <div class="acts"><button class="btn sec">Cancel</button><button class="btn pri">Always allow <span class="kbd">⇧A</span></button></div>
+  </div>
+</div>

@@ -1,0 +1,44 @@
+<!-- @dsCard group="Data" height=250 subtitle="Agent cards from the Team screen, plus a task card" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
+  .grid{display:grid;grid-template-columns:repeat(3,minmax(200px,1fr));gap:16px;max-width:760px}
+  .card{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius-md);padding:16px;display:flex;flex-direction:column;gap:12px;transition:box-shadow var(--duration-instant)}
+  .card:hover{box-shadow:var(--shadow-1)}
+  .card:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+  .head{display:flex;align-items:center;gap:10px}
+  .av{width:32px;height:32px;border-radius:var(--radius-full);display:grid;place-items:center;font-weight:700;font-size:13px;flex:none}
+  .av.w{background:var(--accent);color:var(--on-accent)}
+  .av.m{background:var(--ok-soft);color:var(--ok)}
+  .av.a{background:var(--parked-soft);color:var(--parked)}
+  .name{font-size:15px;line-height:20px;font-weight:600}
+  .role{font-size:11px;line-height:14px;color:var(--ink-tertiary)}
+  .st{display:flex;align-items:center;gap:6px;color:var(--ink-secondary)}
+  .dot{width:8px;height:8px;border-radius:50%;box-sizing:border-box;flex:none}
+  .task{color:var(--ink);font-weight:500}
+  .meta{display:flex;justify-content:space-between;font-size:11px;line-height:14px;color:var(--ink-tertiary);font-variant-numeric:tabular-nums;padding-top:12px;border-top:1px solid var(--hairline)}
+  .bar{height:3px;border-radius:2px;background:var(--surface-sunken);overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--accent);width:38%}
+  .tags{display:flex;gap:6px;flex-wrap:wrap}
+  .badge{height:20px;padding:0 8px;border-radius:var(--radius-xs);font-size:11px;line-height:20px;font-weight:600}
+  .ok{background:var(--ok-soft);color:var(--ok)}.att{background:var(--attention-soft);color:var(--attention)}.neu{background:var(--surface-sunken);color:var(--ink-secondary);font-weight:500}
+</style>
+<div class="grid">
+  <div class="card" tabindex="0">
+    <div class="head"><div class="av w" aria-hidden="true">W</div><div><div class="name">Wright</div><div class="role">Lead · plans, delegates, writes playbooks</div></div></div>
+    <div class="st"><span class="dot" style="background:var(--working)"></span><span class="task">Triaging comments on #398</span></div>
+    <div class="bar" aria-label="Budget used today: 38%"><i></i></div>
+    <div class="meta"><span>$1.14 today</span><span>Opus 5.5</span></div>
+  </div>
+  <div class="card" tabindex="0">
+    <div class="head"><div class="av m" aria-hidden="true">M</div><div><div class="name">Mason</div><div class="role">Reviewer · comments only, can't push</div></div></div>
+    <div class="st"><span class="dot" style="background:var(--attention)"></span><span class="task">Waiting on you · post review on #412</span></div>
+    <div class="bar" aria-label="Budget used today: 61%"><i style="width:61%"></i></div>
+    <div class="meta"><span>$0.82 today</span><span>Sonnet 5</span></div>
+  </div>
+  <div class="card" tabindex="0">
+    <div class="head"><div class="av a" aria-hidden="true">A</div><div><div class="name">Ada</div><div class="role">Builder · writes in worktrees only</div></div></div>
+    <div class="st"><span class="dot" style="border:2px solid var(--idle)"></span><span style="color:var(--ink-tertiary)">idle · last ran 09:41</span></div>
+    <div class="bar" aria-label="Budget used today: 4%"><i style="width:4%"></i></div>
+    <div class="meta"><span>$0.06 today</span><span>Sonnet 5</span></div>
+  </div>
+</div>

@@ -1,0 +1,48 @@
+<!-- @dsCard group="Chat" height=470 subtitle="User and Wright turns, a drafted playbook with its dry run, and a streaming turn" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:14px;line-height:21px}
+  .thread{max-width:640px;display:flex;flex-direction:column;gap:16px}
+  .turn{display:grid;grid-template-columns:24px 1fr;gap:10px}
+  .turn.user{grid-template-columns:1fr;justify-items:end}
+  .av{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700;background:var(--accent);color:var(--on-accent);margin-top:2px}
+  .who{font-size:11px;line-height:14px;color:var(--ink-tertiary);margin-bottom:4px;display:flex;gap:8px}
+  .msg{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius-md);padding:10px 14px;max-width:520px}
+  .user .msg{background:var(--accent-soft);border-color:transparent;color:var(--ink)}
+  .msg p{margin:0 0 8px}.msg p:last-child{margin:0}
+  .draft{margin-top:10px;border:1px solid var(--hairline);border-radius:var(--radius-md);overflow:hidden;background:var(--ground);font-size:13px;line-height:18px}
+  .draft .h{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--hairline);background:var(--surface)}
+  .draft .h b{font-weight:600}
+  .badge{height:20px;padding:0 8px;border-radius:var(--radius-xs);font-size:11px;line-height:20px;font-weight:500;background:var(--surface-sunken);color:var(--ink-secondary)}
+  .kv{display:grid;grid-template-columns:96px 1fr;gap:4px 12px;padding:10px 12px;color:var(--ink-secondary)}
+  .kv dt{color:var(--ink-tertiary);font-size:11px;line-height:18px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+  .kv dd{margin:0;color:var(--ink)}
+  .kv .mono{font-family:var(--font-mono);font-size:12px}
+  .kv .prop{color:var(--ink-tertiary);font-size:11px}
+  .dry{padding:8px 12px;border-top:1px solid var(--hairline);font-family:var(--font-mono);font-size:12px;line-height:18px;color:var(--ink-secondary);background:var(--surface-sunken)}
+  .dry .l{color:var(--ink-tertiary)}
+  .acts{display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--hairline);background:var(--surface)}
+  .btn{height:28px;padding:0 10px;border-radius:var(--radius-sm);border:1px solid transparent;font:inherit;font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:6px}
+  .pri{background:var(--accent);color:var(--on-accent)}.sec{background:var(--surface);color:var(--ink);border-color:var(--border)}
+  .kbd{font-family:var(--font-mono);font-size:11px;padding:1px 4px;border-radius:4px;background:#ffffff33}
+  .sec .kbd{background:var(--surface-sunken);color:var(--ink-tertiary)}
+  .cursor{display:inline-block;width:2px;height:16px;background:var(--accent);vertical-align:-3px;margin-left:1px}
+</style>
+<div class="thread">
+  <div class="turn user"><div><div class="who" style="justify-content:flex-end">You · 14:06</div><div class="msg"><p>Find PRs where I'm the requested reviewer, run a review agent, and post the review.</p></div></div></div>
+  <div class="turn"><div class="av" aria-hidden="true">W</div><div><div class="who"><span>Wright</span><span>14:06</span></div><div class="msg">
+    <p>I found three open PRs on your personal repos where you're the requested reviewer. Here's the duty I'd set up. I've proposed a dedupe key, a model and a priority; they're yours to change.</p>
+    <div class="draft" aria-label="Drafted playbook">
+      <div class="h"><b>Review PRs where I'm requested</b><span class="badge">draft</span><span class="badge">runs as Mason</span></div>
+      <dl class="kv">
+        <dt>Trigger</dt><dd>Poll GitHub every 5 min for PRs requesting my review</dd>
+        <dt>Action</dt><dd>Mason runs Loomwright <span class="mono">/review-pr</span> and posts one review</dd>
+        <dt>Dedupe key</dt><dd><span class="mono">{pr.head_sha}</span> <span class="prop">proposed</span></dd>
+        <dt>Model</dt><dd>Sonnet 5 <span class="prop">proposed</span></dd>
+        <dt>Approval</dt><dd>Ask before posting each review</dd>
+      </dl>
+      <div class="dry"><span class="l">dry run ·</span> would review vikashruhilgit/loomwright #412, #409, ntfs-tool #7 <span class="l">· skipped 0 · est. $0.60</span></div>
+      <div class="acts"><button class="btn pri">Enable <span class="kbd">⏎</span></button><button class="btn sec">Edit in English <span class="kbd">E</span></button><button class="btn sec">Edit fields</button></div>
+    </div>
+  </div></div></div>
+  <div class="turn"><div class="av" aria-hidden="true">W</div><div><div class="who"><span>Wright</span><span>streaming</span></div><div class="msg"><p>Enabled. Mason will pick up #412 first because it has a review requested 3 hours ago. I'll ask before anything is posted<span class="cursor" aria-hidden="true"></span></p></div></div></div>
+</div>

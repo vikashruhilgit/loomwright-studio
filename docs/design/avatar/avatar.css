@@ -1,0 +1,74 @@
+/* Loom avatars: a spool of thread per crew member (Wright is the shuttle). No face: the thread is the actor. Layers: drift (whole), rig (body from its base), wind (the winding), tail (the loose thread) */
+.bot{display:inline-grid;place-items:center;width:var(--s,32px);height:var(--s,32px);flex:none;position:relative}
+.bot svg{width:100%;height:100%;overflow:visible;display:block}
+.bot .drift{transform-origin:16px 16px}
+.bot .rig{transform-origin:16px 29px}
+.bot .fill{fill:var(--bot,var(--accent));opacity:.28}
+.bot .st{fill:none;stroke:var(--bot,var(--accent));stroke-width:1.6;stroke-dasharray:2.6 1.5;stroke-linecap:round;stroke-linejoin:round}
+.bot .ln{fill:none;stroke:var(--bot,var(--accent));stroke-width:1.2;stroke-dasharray:1.8 1.4;stroke-linecap:round;opacity:.85}
+.bot .knot{fill:var(--bot,var(--accent))}
+.bot.working .st,.bot.working .ln{animation:run 1.2s linear infinite}
+.bot .frame{fill:var(--ink-tertiary)}
+.bot .thread{fill:var(--bot,var(--accent))}
+.bot .stripe{stroke:var(--ground);stroke-width:1.1;fill:none;opacity:.55}
+.bot .t{stroke:var(--bot,var(--accent));stroke-width:1.9;stroke-linecap:round;fill:none;display:none}
+.bot .t-idle{display:block}
+.bot .ring{position:absolute;inset:-3px;border-radius:50%;border:2px solid var(--attention);opacity:0;pointer-events:none}
+/* the thread border: a running stitch in the agent's hue around every avatar; it runs while working */
+.bot .stitch{fill:none;stroke:var(--bot,var(--accent));stroke-width:1.2;stroke-dasharray:2.4 2.6;stroke-linecap:round;opacity:.45;transform-origin:16px 16px}
+.bot.working .stitch{animation:run 1.6s linear infinite}
+.bot.parked .stitch{stroke-dasharray:1 4;opacity:.5}
+.bot.danger .stitch{stroke-dasharray:6 10;opacity:.6}
+.bot.done .stitch{stroke-dasharray:none;opacity:.9}
+.bot .crown{fill:var(--attention);stroke:var(--ground);stroke-width:.8;stroke-linejoin:round}
+@keyframes run{to{stroke-dashoffset:-10}}
+/* hover: a nod, and the thread flicks */
+.bot:hover .rig{animation:nod .5s cubic-bezier(.3,0,.2,1) 1!important}
+/* idle: calm. floats in a slow swirl; the loose thread sways */
+.bot.idle .drift{animation:swirl 7s ease-in-out infinite;animation-delay:var(--seed,0s)}
+.bot.idle .tail{animation:sway 3s ease-in-out infinite alternate;animation-delay:var(--seed,0s)}
+/* working: the thread winds on, the spool leans into the work, the loose end flutters */
+.bot.working .wind{animation:winding .5s linear infinite}
+.bot.working .rig{animation:lean 1.2s ease-in-out infinite alternate}
+.bot.working .tail{animation:flutter .35s ease-in-out infinite alternate}
+/* waiting on you: the thread rises toward you in a loop; the spool hops; amber ring when it lands */
+.bot.waiting .t-idle{display:none}.bot.waiting .t-up{display:block}
+.bot.waiting .rig{animation:hop 2.6s cubic-bezier(.3,0,.2,1) infinite}
+.bot.waiting .tail{animation:beckon 2.6s ease-in-out infinite}
+.bot.waiting .ring{animation:ring 2.6s ease-out infinite}
+/* paused at cap: the thread hangs slack, the spool settles, dimmed */
+.bot.parked{opacity:.72}
+.bot.parked .t-idle{display:none}.bot.parked .t-slack{display:block}
+.bot.parked .rig{animation:sink 4.5s ease-in-out infinite}
+/* killed / failed: the thread is cut; the spool tips */
+.bot.danger .t-idle{display:none}.bot.danger .t-cut,.bot.danger .t-cut2{display:block}
+.bot.danger .rig{animation:tip .6s cubic-bezier(.36,.07,.19,.97) 1 forwards}
+/* done: the thread ties into a bow; one spin with overshoot */
+.bot.done .t-idle{display:none}.bot.done .t-bow{display:block}
+.bot.done .rig{animation:spin 1s cubic-bezier(.34,1.4,.64,1) 1}
+.bot.done .drift{animation:orbit 1s cubic-bezier(.3,0,.2,1) 1}
+@keyframes swirl{0%,100%{transform:translate(0,0) rotate(0)}25%{transform:translate(1.4px,-1px) rotate(3deg)}50%{transform:translate(0,-2px) rotate(0)}75%{transform:translate(-1.4px,-1px) rotate(-3deg)}}
+@keyframes sway{from{transform:rotate(-14deg)}to{transform:rotate(12deg)}}
+@keyframes winding{from{transform:translateY(0)}to{transform:translateY(3px)}}
+@keyframes lean{from{transform:rotate(-3deg) scale(1,1)}to{transform:rotate(3deg) scale(1.02,.98)}}
+@keyframes flutter{from{transform:rotate(-6deg)}to{transform:rotate(18deg)}}
+@keyframes hop{0%,58%,100%{transform:translateY(0) scale(1,1)}64%{transform:translateY(1.5px) scale(1.12,.86)}73%{transform:translateY(-7px) scale(.94,1.1)}80%{transform:translateY(-3px) scale(.97,1.04)}85%{transform:translateY(0) scale(1.08,.92)}92%{transform:scale(.99,1.01)}}
+@keyframes beckon{0%,55%,100%{transform:rotate(0)}70%{transform:rotate(-18deg)}85%{transform:rotate(8deg)}}
+@keyframes nod{0%{transform:rotate(0)}30%{transform:rotate(-8deg) translateY(-2px)}70%{transform:rotate(4deg)}100%{transform:rotate(0)}}
+@keyframes ring{0%,80%{opacity:0;transform:scale(.8)}83%{opacity:.75;transform:scale(.86)}100%{opacity:0;transform:scale(1.35)}}
+@keyframes sink{0%,100%{transform:translateY(1px) scale(1.04,.96)}50%{transform:translateY(1.4px) scale(1.05,.95)}}
+@keyframes tip{0%{transform:rotate(0)}20%{transform:rotate(-6deg) translateX(-2px)}40%{transform:rotate(6deg) translateX(2px)}100%{transform:rotate(22deg) translateY(1px)}}
+@keyframes orbit{0%{transform:translate(0,0)}25%{transform:translate(3px,-3px)}50%{transform:translate(0,-5px)}75%{transform:translate(-3px,-3px)}100%{transform:translate(0,0)}}
+@keyframes spin{0%{transform:rotate(0) scale(1)}45%{transform:rotate(380deg) scale(1.08)}100%{transform:rotate(360deg) scale(1)}}
+@media (prefers-reduced-motion:reduce){.bot .drift,.bot .rig,.bot .wind,.bot .tail,.bot .ring{animation:none!important}.bot.waiting .ring{opacity:.7}}
+.shapes{display:flex;gap:6px;flex-wrap:wrap}
+.shapes button{width:36px;height:36px;border-radius:var(--r-sm);border:1px solid var(--hairline);background:var(--surface);display:grid;place-items:center;padding:0}
+.shapes button.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.states{width:1240px;margin:0 auto;display:flex;flex-wrap:wrap;gap:8px 28px;align-items:flex-end;padding:12px 16px;border-radius:var(--r-lg);background:#ffffff14;color:var(--desk-ink);font-size:12px}
+.states .t{opacity:.7;width:100%}
+.states .st{display:flex;flex-direction:column;align-items:center;gap:8px}
+.states .st span{opacity:.8}
+.states .bot{background:var(--ground);border-radius:var(--r-md);padding:12px;width:auto;height:auto}
+.states .bot svg{width:56px;height:56px}
+.states button{background:none;border:1px solid #ffffff33;border-radius:var(--r-sm);color:inherit;height:26px;padding:0 10px}
+@media (max-width:1280px){.states{width:100%}}
