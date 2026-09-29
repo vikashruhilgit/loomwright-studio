@@ -20,6 +20,7 @@ Cool slate neutrals with an indigo accent, the colour of dyed warp thread. Light
 - Separate with `hairline`. Use `border` only where the edge carries meaning (inputs, outline buttons, unchecked controls): it holds 3:1.
 - `accent` is the only brand colour and it does one job at a time: the primary action, the selected item, the focus ring, the working dot. A screen never has two primary buttons.
 - Semantic colours are separate from the accent and each maps to one kernel state or one verified outcome: `ok` (verified good), `attention` (waiting on you), `danger` (failed, denied, killed, the kill switch), `parked` (paused at cap). `working` is an alias of `accent`; `idle` is an alias of `ink-tertiary`.
+- **Identity is not state.** Agents are told apart by the `crew-*` palette (teal, berry, sky, olive, slate), each 3:1+ on every ground in both themes and at least 21° of hue from every semantic colour. Wright alone wears `accent`. A semantic colour never identifies an agent, so a colour on an avatar never has to be read two ways.
 - Every status carries a word or a glyph as well as a colour. `ok` and `danger` differ in lightness, not only hue, and `attention` is amber so it never competes with `danger`.
 - Text on an `accent` fill is `on-accent`, which is dark in the dark theme. Never literal white.
 - The focus ring is `focus`, 2px solid with a 2px offset, on every focusable element, in both themes. It is never removed.
@@ -43,7 +44,7 @@ Radii are small: `radius-sm` on controls, `radius-md` on cards and bubbles, `rad
 
 ## Layout
 
-The window is three columns: a vibrancy **sidebar** (`sidebar-width`, `sidebar` tint over `backdrop-filter: blur(24px) saturate(1.4)`), the **main** column on `ground`, and an optional **inspector** (`inspector-width`) on `surface`. The **title bar** is `titlebar-height` with the traffic lights inset (Electron `titleBarStyle: 'hiddenInset'`, `trafficLightPosition: {x: 16, y: 18}`) and is fully draggable. Windows restore their last position and size.
+The window is three columns: a vibrancy **sidebar** (`sidebar-width`, `sidebar` tint over `backdrop-filter: blur(24px) saturate(1.4)`), the **main** column on `ground`, and an optional **inspector** (`inspector-width`) on `surface`, used on Team. Approvals and Sessions instead split the main column into a list pane (`list-pane-width`) and the detail or live log. The **title bar** is `titlebar-height` with the traffic lights inset (Electron `titleBarStyle: 'hiddenInset'`, `trafficLightPosition: {x: 16, y: 18}`) and is fully draggable. Windows restore their last position and size.
 
 The sidebar is two groups. First the screens: **Chat** (always your thread with Wright), **Team** (configure the crew), **Approvals** (count pill in `attention` when something is waiting), **Sessions**. Then **Crew**: one row per specialist, each its own thread, with presence (see below). Wright never appears under Crew, so there is exactly one place to talk to each agent. The selected item is `accent-soft` with `accent` text.
 
@@ -52,7 +53,7 @@ The sidebar is two groups. First the screens: **Chat** (always your thread with 
 An agent is a persistent teammate, so the interface answers three questions wherever an agent appears: who is this, what is it doing, and how much do I need to know.
 
 - **Who:** the Avatar carries identity (silhouette and hue) and never changes colour with state.
-- **What:** the Avatar's expression and motion carry the kernel state; hovering shows the current action; a Crew row's second line shows the last thing that happened in that thread, or "Waiting on you · …" when the agent needs you.
+- **What:** the Avatar's loose thread and its motion carry the kernel state; hovering shows the current action; a Crew row's second line shows the last thing that happened in that thread, or "Waiting on you · …" when the agent needs you.
 - **How much:** three levels, each one click deeper: the menu-bar icon (state and count), the Sessions screen (live log, Stop and Kill), the Approvals inbox (the exact payload).
 
 A thread is a timeline, not only a conversation. Everything the kernel did on the user's behalf appears in the relevant thread as an EventCard line (session started, playbook created, memory updated with the file path, approval decided, hook verified), and an agent's pending approval appears inline at the end of its thread so the user can decide without leaving it. Structured objects (a drafted playbook, a Charter, a diff) render as cards inside the reply that produced them, never as prose.
@@ -79,8 +80,8 @@ Native controls, not a web page. `duration-instant` for hover and focus, `durati
 - **Streaming never animates.** Log lines and chat tokens append with no transition and no layout shift; the container reserves height and pins to the bottom until the user scrolls up.
 - **New approvals never shift layout.** They arrive at the top of the inbox with a `duration-base` fade; the list below does not move until the user acts.
 - The `working` dot breathes on `duration-pulse`.
-- **Avatars are the one place the UI has character.** The body is the actor: it breathes and glances when idle, bobs and squints when working, squashes then hops when waiting on you, sinks when paused, spins once when done, shudders once when killed (see Avatar). Idle clocks are staggered per agent. Nothing else in the app bounces.
-- Under `prefers-reduced-motion`: every duration becomes 0 except opacity fades, which cap at `duration-instant`; the working dot is static; avatars hold their expressions with no motion; the palette uses `ease-enter`.
+- **Avatars are the one place the UI has character.** The loose thread is the actor: it sways when idle, the stitches run while working, it rises and beckons when waiting on you (with a hop), hangs slack when paused, ties a bow when done, and is cut when killed (see Avatar). Clocks are staggered per agent. Nothing else in the app bounces.
+- Under `prefers-reduced-motion`: every duration becomes 0 except opacity fades, which cap at `duration-instant`; the working dot is static; avatars stop moving and the thread's shape alone carries the state; the palette uses `ease-enter`.
 
 ## States
 

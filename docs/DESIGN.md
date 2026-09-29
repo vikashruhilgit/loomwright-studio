@@ -27,7 +27,7 @@ The artefact links are private to the owner; the repo copies are the reviewable 
 
 ## What the mockups commit phase 5 to
 
-- Window: 240px vibrancy sidebar, 52px title bar with inset traffic lights, 320px inspector; three columns as in `UI.md`.
+- Window: 240px vibrancy sidebar, 52px title bar with inset traffic lights, a 320px inspector on Team, and a 360px list pane on Approvals and Sessions; the column layout is specified in `design/brand-book.md` §Layout, and every width is a token in `design/tokens.json`.
 - Every action reachable by keyboard: `⌘K` palette, `⌘1–4`, `J/K`, `A ⇧A D` on approvals, `⌘.` stop, `⌘⇧K` kill switch (always confirms).
 - Every screen has designed empty, loading, error (kernel unreachable band) and waiting-on-you states; the mockup's review strip forces each.
 - Streaming never animates and never shifts layout; new approvals arrive without moving the list.

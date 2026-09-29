@@ -40,5 +40,14 @@ grep -o '`[^`]*`' CLAUDE.md | tr -d '`' | grep -E '^(docs/|LICENSE|README)' | se
 done
 [ -f "${TMPDIR:-/tmp}/check-docs.failed" ] && { fail=1; rm -f "${TMPDIR:-/tmp}/check-docs.failed"; }
 
+# 4. Identity is not state: a semantic colour (ok, attention, danger, parked) must never be an
+#    avatar identity hue. Found in review of PR #1: agents were tinted with state colours.
+if grep -nE "HUES=\{[^}]*(ok|attention|danger|parked):" docs/design/avatar/avatar.js docs/design/mockups/gui-v1.html docs/design/design-system/components/*/preview.html 2>/dev/null; then
+  err "an avatar HUES map uses a semantic token; identity hues must be crew-* (or accent for Wright)"
+fi
+if grep -nE "hue:'(ok|attention|danger|parked)'" docs/design/mockups/gui-v1.html docs/design/design-system/components/*/preview.html 2>/dev/null; then
+  err "an agent is assigned a semantic colour as its identity hue; use a crew-* hue"
+fi
+
 if [ "$fail" -eq 0 ]; then note "check-docs: OK"; fi
 exit "$fail"

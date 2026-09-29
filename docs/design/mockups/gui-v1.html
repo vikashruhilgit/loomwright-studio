@@ -6,6 +6,7 @@
   --hairline:#e3e3ea;--border:#8a8a9e;--ink:#1a1a22;--ink-secondary:#5d5d70;--ink-tertiary:#66667c;--ink-disabled:#a8a8b8;
   --accent:#4650c8;--accent-hover:#3a43b0;--accent-soft:#e8eafb;--on-accent:#ffffff;
   --ok:#1f7a4d;--ok-soft:#e3f3ea;--attention:#99570a;--attention-soft:#fdf1d9;--danger:#b8322a;--danger-soft:#fce9e7;--parked:#6d5aa8;--parked-soft:#ece7f8;
+  --crew-teal:#0b7580;--crew-sky:#1f6aa8;--crew-berry:#a2338f;--crew-olive:#5f6f12;--crew-slate:#526073;
   --overlay:#0f0f1a66;
   --shadow-1:0 1px 2px #0f0f1a14;--shadow-2:0 4px 16px #0f0f1a1f,0 0 0 1px #0f0f1a0f;--shadow-3:0 16px 48px #0f0f1a33,0 0 0 1px #0f0f1a14;
   --win-shadow:0 24px 80px #00000059,0 0 0 1px #00000026;
@@ -22,6 +23,7 @@
   --hairline:#2c2c36;--border:#6e6e84;--ink:#ececf2;--ink-secondary:#a3a3b5;--ink-tertiary:#8b8ba0;--ink-disabled:#5a5a6c;
   --accent:#8f97ff;--accent-hover:#a3aaff;--accent-soft:#272b4d;--on-accent:#12122a;
   --ok:#4fbf85;--ok-soft:#17342a;--attention:#f0b429;--attention-soft:#3b2e10;--danger:#ff7a70;--danger-soft:#3d1b18;--parked:#b39ff0;--parked-soft:#2a2442;
+  --crew-teal:#45c2cc;--crew-sky:#6db4f2;--crew-berry:#e67fd4;--crew-olive:#b4c257;--crew-slate:#a3b1c6;
   --overlay:#00000099;
   --shadow-1:0 1px 2px #00000066;--shadow-2:0 4px 16px #00000080,0 0 0 1px #ffffff14;--shadow-3:0 16px 48px #000000b3,0 0 0 1px #ffffff1a;
   --win-shadow:0 24px 80px #000000b3,0 0 0 1px #ffffff1f;
@@ -33,6 +35,7 @@
   --hairline:#2c2c36;--border:#6e6e84;--ink:#ececf2;--ink-secondary:#a3a3b5;--ink-tertiary:#8b8ba0;--ink-disabled:#5a5a6c;
   --accent:#8f97ff;--accent-hover:#a3aaff;--accent-soft:#272b4d;--on-accent:#12122a;
   --ok:#4fbf85;--ok-soft:#17342a;--attention:#f0b429;--attention-soft:#3b2e10;--danger:#ff7a70;--danger-soft:#3d1b18;--parked:#b39ff0;--parked-soft:#2a2442;
+  --crew-teal:#45c2cc;--crew-sky:#6db4f2;--crew-berry:#e67fd4;--crew-olive:#b4c257;--crew-slate:#a3b1c6;
   --overlay:#00000099;
   --shadow-1:0 1px 2px #00000066;--shadow-2:0 4px 16px #00000080,0 0 0 1px #ffffff14;--shadow-3:0 16px 48px #000000b3,0 0 0 1px #ffffff1a;
   --win-shadow:0 24px 80px #000000b3,0 0 0 1px #ffffff1f;
@@ -252,7 +255,7 @@ svg.i.xs{width:12px;height:12px;stroke-width:2}
 .why{font-size:12px;line-height:16px;color:var(--ink-secondary);background:var(--surface-sunken);border-radius:var(--r-sm);padding:8px 10px}
 
 /* Sessions */
-.sesswrap{display:grid;grid-template-columns:380px 1fr;min-height:0;flex:1}
+.sesswrap{display:grid;grid-template-columns:360px 1fr;min-height:0;flex:1}
 .srow{display:grid;grid-template-columns:8px 1fr auto;gap:10px;align-items:center;height:44px;padding:0 10px;border-radius:var(--r-sm);width:100%;border:0;background:none;text-align:left}
 .srow:hover{background:var(--surface)}.srow.sel{background:var(--accent-soft)}
 .srow .t{font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -476,7 +479,9 @@ const SHAPES={
   crab:{body:'<ellipse class="fill" cx="16" cy="18" rx="9" ry="6"/><circle class="fill" cx="5" cy="12" r="3"/><circle class="fill" cx="27" cy="12" r="3"/><ellipse class="st" cx="16" cy="18" rx="9" ry="6"/><circle class="st" cx="5" cy="12" r="3"/><circle class="st" cx="27" cy="12" r="3"/><path class="ln" d="M8 14l-2-1M24 14l2-1M8 20l-4 3M9 22l-3 4M24 20l4 3M23 22l3 4M12 12v-3M20 12v-3"/><circle class="knot" cx="12" cy="9" r="1.2"/><circle class="knot" cx="20" cy="9" r="1.2"/>',tail:[24,24]},
 };
 const SHAPE_ORDER=Object.keys(SHAPES).filter(s=>s!=='whale');
-const HUES={accent:'--accent',ok:'--ok',parked:'--parked',attention:'--attention',danger:'--danger'};
+const HUES={accent:'--accent',teal:'--crew-teal',sky:'--crew-sky',berry:'--crew-berry',olive:'--crew-olive',slate:'--crew-slate'};
+// Identity hues only. accent is Wright's alone; semantic tokens (ok, attention, danger, parked) mean kernel state and are never used here (scripts/check-docs.sh enforces it).
+const CREW_HUES=['teal','berry','sky','olive','slate'];
 const seedOf=s=>{let h=0;for(const c of String(s))h=(h*31+c.charCodeAt(0))>>>0;return (h%40)/10};
 function avatarHTML(a,state,size,title){
   state=state||agentState(a.id); size=size||32;
@@ -484,7 +489,7 @@ function avatarHTML(a,state,size,title){
   const label=`${a.name} · ${stateWord[state]||state}${title?' · '+title:''}`;
   const tails=`<g class="tail" style="transform-origin:${tx}px ${ty}px"><path class="t t-idle" d="M${tx} ${ty}c-3 1-5 3-4 7"/><path class="t t-up" d="M${tx} ${ty}c-5-1-7-6-3-9 3-2 5 2 2 3"/><path class="t t-slack" d="M${tx} ${ty}c-1 3-1 8 0 12"/><path class="t t-cut" d="M${tx} ${ty}c-2 0-3 1-3 2"/><path class="t t-cut2" d="M${tx-5} ${ty+5}c-1 1-2 3-1 5"/><path class="t t-bow" d="M${tx} ${ty}c-3-3-6-2-4 1s5 0 4-1c1-3 5-2 3 1s-5 0-3-1"/></g>`;
   const crown=a.id==='wright'?`<path class="crown" d="M${sh.crown[0]-6.5} ${sh.crown[1]+4.5}l1.5-5 3 3 2-4.5 2 4.5 3-3 1.5 5z"/>`:'';
-  return `<span class="bot ${state} ${a.id==='wright'?'lead':''}" style="--s:${size}px;--bot:var(${HUES[a.hue||'accent']});--seed:-${seedOf(a.id)}s" role="img" aria-label="${esc(label)}" title="${esc(label)}"><span class="ring" aria-hidden="true"></span><svg viewBox="-2 -2 36 36"><circle class="stitch" cx="16" cy="16" r="16.5"/><g class="drift"><g class="rig">${sh.body}${crown}${tails}</g></g></svg></span>`;
+  return `<span class="bot ${state} ${a.id==='wright'?'lead':''}" style="--s:${size}px;--bot:var(${HUES[a.hue]||(a.id==='wright'?HUES.accent:HUES.slate)});--seed:-${seedOf(a.id)}s" role="img" aria-label="${esc(label)}" title="${esc(label)}"><span class="ring" aria-hidden="true"></span><svg viewBox="-2 -2 36 36"><circle class="stitch" cx="16" cy="16" r="16.5"/><g class="drift"><g class="rig">${sh.body}${crown}${tails}</g></g></svg></span>`;
 }
 function celebrate(agentId){
   const nm=agent(agentId)?.name||'';
@@ -497,8 +502,8 @@ function seed(){ return {
   screen:'chat', theme:'', force:{empty:false,loading:false,offline:false}, paused:false,
   agents:[
     {id:'wright',name:'Wright',cls:'',init:'W',shape:'whale',hue:'accent',tools:['GitHub','Loomwright','Slack'],role:'Lead · plans, delegates, writes playbooks',model:'Opus 5.5',spend:1.14,tok:142000,limit:375000,budget:38,perm:[['Read repos and PRs',1],['Write playbooks and tasks',1],['Push code',0],['Post comments',0],['Merge PRs',0]],charter:'memory/wright/role.md'},
-    {id:'mason',name:'Mason',cls:'m',init:'M',shape:'shark',hue:'ok',tools:['GitHub','Loomwright'],role:'Reviewer · comments only, can\'t push',model:'Sonnet 5',spend:0.82,tok:98000,limit:160000,budget:61,perm:[['Read repos and PRs',1],['Post review comments',1],['Push code',0],['Merge PRs',0]],charter:'memory/mason/role.md'},
-    {id:'ada',name:'Ada',cls:'a',init:'A',shape:'turtle',hue:'parked',tools:['GitHub','Loomwright'],role:'Builder · writes in worktrees only',model:'Sonnet 5',spend:0.06,tok:9000,limit:225000,budget:4,perm:[['Read repos and PRs',1],['Write in git worktrees',1],['Push to feature branches',1],['Push to main',0],['Merge PRs',0]],charter:'memory/ada/role.md'},
+    {id:'mason',name:'Mason',cls:'m',init:'M',shape:'shark',hue:'teal',tools:['GitHub','Loomwright'],role:'Reviewer · comments only, can\'t push',model:'Sonnet 5',spend:0.82,tok:98000,limit:160000,budget:61,perm:[['Read repos and PRs',1],['Post review comments',1],['Push code',0],['Merge PRs',0]],charter:'memory/mason/role.md'},
+    {id:'ada',name:'Ada',cls:'a',init:'A',shape:'turtle',hue:'berry',tools:['GitHub','Loomwright'],role:'Builder · writes in worktrees only',model:'Sonnet 5',spend:0.06,tok:9000,limit:225000,budget:4,perm:[['Read repos and PRs',1],['Write in git worktrees',1],['Push to feature branches',1],['Push to main',0],['Merge PRs',0]],charter:'memory/ada/role.md'},
   ],
   approvals:[
     {id:'a1',agent:'mason',title:'Post review on loomwright #412',playbook:'Review PRs where I\'m requested',action:'github.pr.review.post',ago:'6 min',kind:'review',
@@ -555,7 +560,7 @@ const stateWord={idle:'idle',working:'working',waiting:'waiting on you',parked:'
 /* ---------- Avatar showcase (review strip) ---------- */
 let showShape='shark';
 function renderStates(){
-  const a={id:'demo',name:'Demo',shape:showShape,hue:'accent'};
+  const a={id:'demo',name:'Demo',shape:showShape,hue:'teal'};
   const rows=[['idle','idle'],['working','working'],['waiting','waiting on you'],['parked','paused at cap'],['done','done (one shot)'],['danger','killed']];
   $('#states').innerHTML=`<div class="t">Avatar motion system · every crew member is a sea creature stitched from its own thread; Wright is the crowned whale. The thread is the actor: it sways when idle, sews when working, rises to you when waiting, hangs slack when paused, ties a bow when done, is cut when killed.</div>${rows.map(r=>`<div class="st">${avatarHTML(a,r[0],48)}<span>${r[1]}</span></div>`).join('')}<div class="st"><span class="shapes">${SHAPE_ORDER.map(s=>`<button class="${s===showShape?'on':''}" data-show-shape="${s}" aria-label="${s}">${avatarHTML({id:'p'+s,name:s,shape:s,hue:'accent'},'idle',26)}</button>`).join('')}</span><span>creatures</span></div><div class="st"><button data-act="replay">Replay one-shots</button></div>`;
 }
@@ -669,9 +674,10 @@ function replyFor(t,who){
   if(/review|pr/.test(l)) return {text:'I found three open PRs on your personal repos where you\'re the requested reviewer. Here\'s the duty I\'d set up. I\'ve proposed a dedupe key, a model and a priority; they\'re yours to change.',draft:seed().threads.wright[1].draft};
   return {text:'Understood. Before I set anything up, one question: should this run as me, or as a specialist with narrower permissions? A specialist is safer if it will post or push; I\'d propose a reviewer named after the repo it watches.'};
 }
+function nextHue(){const used=new Set(S.agents.map(a=>a.hue));return CREW_HUES.find(h=>!used.has(h))||CREW_HUES[S.agents.length%CREW_HUES.length]}
 function charterFor(t){
   const l=t.toLowerCase(); const taken=new Set(S.agents.map(a=>a.shape)); const shape=SHAPE_ORDER.find(s=>!taken.has(s))||'capsule';
-  const hues=['attention','accent','ok','parked']; const hue=hues[S.agents.length%hues.length];
+  const hue=nextHue();
   if(/social|post|linkedin|twitter|\bx\b/.test(l)) return {text:'Here\'s a crew member for your social profiles. It drafts and schedules; every post is an approval until you say "always" for a playbook. X and LinkedIn aren\'t connected yet, so it can\'t run until you connect one.',charter:{kind:'social',name:'Sable',shape,hue,persona:'Short, dry, no hashtags unless asked. Writes in your voice from your past posts.',duties:['Draft posts from what you shipped this week','Summarise replies and mentions each evening','Queue approved posts at the times you set'],tools:['X','LinkedIn','GitHub'],boundaries:['Never posts, replies or follows without approval','Never reads DMs'],model:'Sonnet 5',limit:250000,sessions:1,first:'Weekly ship post · cron Fri 16:00 · would draft 1 post from 6 merged PRs · ≈$0.04/run'}};
   if(/work|jira|ticket|confluence/.test(l)&&!/code/.test(l)) return {text:'A work-tracking crew member needs Jira and Confluence, which aren\'t connected. One flag before you create it: your employment agreement\'s IP clause is still an open question in the project notes, so I\'d keep this one on personal accounts until that\'s answered.',charter:{kind:'work',name:'Reeve',shape,hue,persona:'Concise status updates. Asks before assuming priority.',duties:['Track tickets assigned to you and their state','Draft standup and weekly status notes','Flag blockers older than two days'],tools:['Jira','Confluence','Slack'],boundaries:['Never changes ticket state without approval','Never messages colleagues'],model:'Sonnet 5',limit:250000,sessions:1,first:'Morning ticket check · cron 08:30 Mon–Fri · would list 7 open tickets, 1 blocker · ≈$0.05/run'}};
   return {text:'Here\'s a personal assistant for your day. I\'ve drafted its charter; the persona, duties and boundaries are yours to change, and the name is only a suggestion. Calendar and Mail aren\'t connected yet, so the digest can\'t run until you connect them.',charter:{kind:'personal assistant',name:'Pim',shape,hue,persona:'Brief and direct. Morning digest in bullets, most urgent first. Never chatty.',duties:['Daily digest at 08:00 of calendar, mail and Slack','Remind you of commitments you made in chat or mail','Prepare a short brief before each meeting'],tools:['Calendar','Mail','Slack'],boundaries:['Reads only: never sends mail or messages','Never moves or declines meetings'],model:'Haiku 4.5',limit:100000,sessions:1,first:'Daily digest · cron 08:00 Mon–Fri · would summarise 4 meetings, 32 mails, 6 Slack threads · ≈$0.08/run'}};
@@ -904,7 +910,7 @@ function wire(root){
       'killswitch':()=>{toggleMenu(false);killSwitch()},
       'kill-all':()=>{closeOverlay();S.sessions.forEach(s=>{if(s.state==='running'||s.state==='paused'){s.state='killed';s.log.push(['err',now()+':00','  SIGKILL from kernel (kill switch). No handoff.'])}});S.paused=false;toast('danger','<b>Everything killed.</b> All triggers disabled until you re-enable them.');render()},
       'pause':()=>{toggleMenu(false);pauseAll()},'resume':()=>{toggleMenu(false);resumeAll()},
-      'new-agent':newAgent,'create-agent':()=>{const f=readNaForm();if(!f.name){$('#na-name').focus();toast('attention','<b>Give it a name.</b> Or ask Wright to draft the charter.');return}closeOverlay();createFromCharter({kind:f.desc?f.desc.split(/[.:]/)[0].slice(0,32).toLowerCase():'specialist',name:f.name,shape:f.shape,hue:['attention','ok','parked','accent'][S.agents.length%4],persona:f.persona||'Plain and brief.',duties:f.desc?[f.desc]:['To be defined in chat'],tools:f.tools,boundaries:['Always asks before outward actions'],model:f.model,limit:f.limit,sessions:f.sessions,first:'none yet · tell it a duty in its thread'});S.naForm=null;S.force.empty=false;render()},
+      'new-agent':newAgent,'create-agent':()=>{const f=readNaForm();if(!f.name){$('#na-name').focus();toast('attention','<b>Give it a name.</b> Or ask Wright to draft the charter.');return}closeOverlay();createFromCharter({kind:f.desc?f.desc.split(/[.:]/)[0].slice(0,32).toLowerCase():'specialist',name:f.name,shape:f.shape,hue:nextHue(),persona:f.persona||'Plain and brief.',duties:f.desc?[f.desc]:['To be defined in chat'],tools:f.tools,boundaries:['Always asks before outward actions'],model:f.model,limit:f.limit,sessions:f.sessions,first:'none yet · tell it a duty in its thread'});S.naForm=null;S.force.empty=false;render()},
       'choose-tools':()=>{readNaForm();toolsPicker()},'tools-back':()=>{newAgent()},'tools-done':()=>{S.naForm.tools=$$('input[name=tp]:checked').map(i=>i.value);newAgent()},'connect-tool':()=>{toast('idle',`<b>Integrations is GUI v2.</b> ${esc(el.dataset.tool)} stays selected; its playbooks park until it's connected.`)},
       'rename':()=>rename(el.dataset.agent),'rename-confirm':()=>{const a=agent(el.dataset.agent);const n=$('#rn-name').value.trim();closeOverlay();if(n&&n!==a.name){ev(a.id,'rename',`Renamed <b>${esc(a.name)}</b> to <b>${esc(n)}</b>`);a.name=n;a.init=n[0].toUpperCase();toast('ok',`<b>Renamed to ${esc(n)}.</b>`)}render()},
       'chat-with':()=>{S.screen='chat';S.chatWith=el.dataset.agent;render();$('#compose')?.focus()},

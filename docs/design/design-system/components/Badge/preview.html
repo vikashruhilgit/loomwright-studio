@@ -13,9 +13,73 @@
   [data-theme="dark"] .pill{color:#1a1200}
   .kbd{font-family:var(--font-mono);font-size:11px;font-weight:500;padding:1px 5px;border-radius:var(--radius-xs);background:var(--surface-sunken);border:1px solid var(--hairline);color:var(--ink-secondary)}
   .chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px 0 6px;border-radius:var(--radius-sm);background:var(--surface);border:1px solid var(--hairline);font-size:12px;color:var(--ink)}
-  .chip .av{width:14px;height:14px;border-radius:var(--radius-full);background:var(--accent);color:var(--on-accent);font-size:9px;font-weight:700;display:grid;place-items:center}
   .mono{font-family:var(--font-mono);font-size:11px;color:var(--ink-secondary);background:var(--surface-sunken);padding:1px 5px;border-radius:var(--radius-xs)}
   svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  /* Avatar: rendered from docs/design/avatar/avatar.css + avatar.js, never hand-drawn */
+  /* Loom avatars: a sea creature stitched from thread per crew member (Wright is the crowned whale). No face beyond a knot for the eye: the thread is the actor. Layers: drift (whole), rig (body from its base), wind (the winding), tail (the loose thread) */
+  .bot{display:inline-grid;place-items:center;width:var(--s,32px);height:var(--s,32px);flex:none;position:relative}
+  .bot svg{width:100%;height:100%;overflow:visible;display:block}
+  .bot .drift{transform-origin:16px 16px}
+  .bot .rig{transform-origin:16px 29px}
+  .bot .fill{fill:var(--bot,var(--accent));opacity:.28}
+  .bot .st{fill:none;stroke:var(--bot,var(--accent));stroke-width:1.6;stroke-dasharray:2.6 1.5;stroke-linecap:round;stroke-linejoin:round}
+  .bot .ln{fill:none;stroke:var(--bot,var(--accent));stroke-width:1.2;stroke-dasharray:1.8 1.4;stroke-linecap:round;opacity:.85}
+  .bot .knot{fill:var(--bot,var(--accent))}
+  .bot.working .st,.bot.working .ln{animation:run 1.2s linear infinite}
+  .bot .frame{fill:var(--ink-tertiary)}
+  .bot .thread{fill:var(--bot,var(--accent))}
+  .bot .stripe{stroke:var(--ground);stroke-width:1.1;fill:none;opacity:.55}
+  .bot .t{stroke:var(--bot,var(--accent));stroke-width:1.9;stroke-linecap:round;fill:none;display:none}
+  .bot .t-idle{display:block}
+  .bot .ring{position:absolute;inset:-3px;border-radius:50%;border:2px solid var(--attention);opacity:0;pointer-events:none}
+  /* the thread border: a running stitch in the agent's hue around every avatar; it runs while working */
+  .bot .stitch{fill:none;stroke:var(--bot,var(--accent));stroke-width:1.2;stroke-dasharray:2.4 2.6;stroke-linecap:round;opacity:.45;transform-origin:16px 16px}
+  .bot.working .stitch{animation:run 1.6s linear infinite}
+  .bot.parked .stitch{stroke-dasharray:1 4;opacity:.5}
+  .bot.danger .stitch{stroke-dasharray:6 10;opacity:.6}
+  .bot.done .stitch{stroke-dasharray:none;opacity:.9}
+  .bot .crown{fill:var(--attention);stroke:var(--ground);stroke-width:.8;stroke-linejoin:round}
+  @keyframes run{to{stroke-dashoffset:-10}}
+  /* hover: a nod, and the thread flicks */
+  .bot:hover .rig{animation:nod .5s cubic-bezier(.3,0,.2,1) 1!important}
+  /* idle: calm. floats in a slow swirl; the loose thread sways */
+  .bot.idle .drift{animation:swirl 7s ease-in-out infinite;animation-delay:var(--seed,0s)}
+  .bot.idle .tail{animation:sway 3s ease-in-out infinite alternate;animation-delay:var(--seed,0s)}
+  /* working: the thread winds on, the creature leans into the work, the loose end flutters */
+  .bot.working .wind{animation:winding .5s linear infinite}
+  .bot.working .rig{animation:lean 1.2s ease-in-out infinite alternate}
+  .bot.working .tail{animation:flutter .35s ease-in-out infinite alternate}
+  /* waiting on you: the thread rises toward you in a loop; the creature hops; amber ring when it lands */
+  .bot.waiting .t-idle{display:none}.bot.waiting .t-up{display:block}
+  .bot.waiting .rig{animation:hop 2.6s cubic-bezier(.3,0,.2,1) infinite}
+  .bot.waiting .tail{animation:beckon 2.6s ease-in-out infinite}
+  .bot.waiting .ring{animation:ring 2.6s ease-out infinite}
+  /* paused at cap: the thread hangs slack, the creature settles, dimmed */
+  .bot.parked{opacity:.72}
+  .bot.parked .t-idle{display:none}.bot.parked .t-slack{display:block}
+  .bot.parked .rig{animation:sink 4.5s ease-in-out infinite}
+  /* killed / failed: the thread is cut; the creature tips */
+  .bot.danger .t-idle{display:none}.bot.danger .t-cut,.bot.danger .t-cut2{display:block}
+  .bot.danger .rig{animation:tip .6s cubic-bezier(.36,.07,.19,.97) 1 forwards}
+  /* done: the thread ties into a bow; one spin with overshoot */
+  .bot.done .t-idle{display:none}.bot.done .t-bow{display:block}
+  .bot.done .rig{animation:spin 1s cubic-bezier(.34,1.4,.64,1) 1}
+  .bot.done .drift{animation:orbit 1s cubic-bezier(.3,0,.2,1) 1}
+  @keyframes swirl{0%,100%{transform:translate(0,0) rotate(0)}25%{transform:translate(1.4px,-1px) rotate(3deg)}50%{transform:translate(0,-2px) rotate(0)}75%{transform:translate(-1.4px,-1px) rotate(-3deg)}}
+  @keyframes sway{from{transform:rotate(-14deg)}to{transform:rotate(12deg)}}
+  @keyframes winding{from{transform:translateY(0)}to{transform:translateY(3px)}}
+  @keyframes lean{from{transform:rotate(-3deg) scale(1,1)}to{transform:rotate(3deg) scale(1.02,.98)}}
+  @keyframes flutter{from{transform:rotate(-6deg)}to{transform:rotate(18deg)}}
+  @keyframes hop{0%,58%,100%{transform:translateY(0) scale(1,1)}64%{transform:translateY(1.5px) scale(1.12,.86)}73%{transform:translateY(-7px) scale(.94,1.1)}80%{transform:translateY(-3px) scale(.97,1.04)}85%{transform:translateY(0) scale(1.08,.92)}92%{transform:scale(.99,1.01)}}
+  @keyframes beckon{0%,55%,100%{transform:rotate(0)}70%{transform:rotate(-18deg)}85%{transform:rotate(8deg)}}
+  @keyframes nod{0%{transform:rotate(0)}30%{transform:rotate(-8deg) translateY(-2px)}70%{transform:rotate(4deg)}100%{transform:rotate(0)}}
+  @keyframes ring{0%,80%{opacity:0;transform:scale(.8)}83%{opacity:.75;transform:scale(.86)}100%{opacity:0;transform:scale(1.35)}}
+  @keyframes sink{0%,100%{transform:translateY(1px) scale(1.04,.96)}50%{transform:translateY(1.4px) scale(1.05,.95)}}
+  @keyframes tip{0%{transform:rotate(0)}20%{transform:rotate(-6deg) translateX(-2px)}40%{transform:rotate(6deg) translateX(2px)}100%{transform:rotate(22deg) translateY(1px)}}
+  @keyframes orbit{0%{transform:translate(0,0)}25%{transform:translate(3px,-3px)}50%{transform:translate(0,-5px)}75%{transform:translate(-3px,-3px)}100%{transform:translate(0,0)}}
+  @keyframes spin{0%{transform:rotate(0) scale(1)}45%{transform:rotate(380deg) scale(1.08)}100%{transform:rotate(360deg) scale(1)}}
+  @media (prefers-reduced-motion:reduce){.bot .drift,.bot .rig,.bot .wind,.bot .tail,.bot .ring{animation:none!important}.bot.waiting .ring{opacity:.7}}
+  
 </style>
 <div class="row">
   <span class="badge ok"><svg viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></svg>CI green</span>
@@ -31,7 +95,7 @@
 </div>
 <div class="row">
   <span>Approvals <span class="pill" aria-label="3 pending">3</span></span>
-  <span class="chip"><span class="av" aria-hidden="true">M</span>Mason</span>
+  <span class="chip"><span class="bot idle " style="--s:16px;--bot:var(--crew-teal);--seed:-2.2s" role="img" aria-label="Mason · idle" title="Mason · idle"><span class="ring" aria-hidden="true"></span><svg viewBox="-2 -2 36 36"><circle class="stitch" cx="16" cy="16" r="16.5"/><g class="drift"><g class="rig"><path class="fill" d="M5 17c4-4 9-6 15-6 4 0 8 2 10 6-2 4-6 6-10 6-6 0-11-2-15-6z"/><path class="fill" d="M13 12c1-4 3-6 5-7 0 3 0 5-1 7z"/><path class="st" d="M5 17c4-4 9-6 15-6 4 0 8 2 10 6-2 4-6 6-10 6-6 0-11-2-15-6z"/><path class="st" d="M13 12c1-4 3-6 5-7 0 3 0 5-1 7zM5 17c-2-3-3-5-3-8 2 2 4 4 6 5M5 17c-2 3-3 5-3 8 2-2 4-4 6-5"/><path class="ln" d="M22 15v4M24 15v4M18 22c1 2 2 3 3 3"/><circle class="knot" cx="26" cy="16" r="1.2"/><g class="tail" style="transform-origin:2px 25px"><path class="t t-idle" d="M2 25c-3 1-5 3-4 7"/><path class="t t-up" d="M2 25c-5-1-7-6-3-9 3-2 5 2 2 3"/><path class="t t-slack" d="M2 25c-1 3-1 8 0 12"/><path class="t t-cut" d="M2 25c-2 0-3 1-3 2"/><path class="t t-cut2" d="M-3 30c-1 1-2 3-1 5"/><path class="t t-bow" d="M2 25c-3-3-6-2-4 1s5 0 4-1c1-3 5-2 3 1s-5 0-3-1"/></g></g></g></svg></span>Mason</span>
   <span class="chip">vikashruhilgit/loomwright #412</span>
   <span class="mono">{pr.head_sha}</span>
   <span><span class="kbd">⌘</span> <span class="kbd">K</span></span>
