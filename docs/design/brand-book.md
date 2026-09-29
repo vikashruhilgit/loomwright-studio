@@ -65,7 +65,7 @@ The personal build runs on a Claude subscription (D15), so the kernel cannot met
 
 Every action is reachable without the mouse.
 
-- `⌘K` opens the palette from anywhere. `⌘1`…`⌘5` switch screens. `⌘,` Settings.
+- `⌘K` opens the palette from anywhere. `⌘1`…`⌘4` switch screens (Chat, Team, Approvals, Sessions). `⌘,` Settings.
 - `↑ ↓` or `J K` move in lists; `Enter` opens; `Esc` closes or clears.
 - In Approvals: `A` allow once, `⇧A` always for this playbook, `D` deny, with the shortcut shown on the button.
 - In Sessions: `⌘.` stops the focused session. Kill is never a single key: it opens a confirm dialog.
