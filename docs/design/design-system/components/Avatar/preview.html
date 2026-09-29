@@ -3,7 +3,7 @@
   body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
   .row{display:flex;gap:22px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px}
   .row>div{display:flex;flex-direction:column;align-items:center;gap:6px;color:var(--ink-secondary);font-size:11px}
-/* Loom avatars: a spool of thread per crew member (Wright is the shuttle). No face: the thread is the actor. Layers: drift (whole), rig (body from its base), wind (the winding), tail (the loose thread) */
+/* Loom avatars: a sea creature stitched from thread per crew member (Wright is the crowned whale). No face beyond a knot for the eye: the thread is the actor. Layers: drift (whole), rig (body from its base), wind (the winding), tail (the loose thread) */
 .bot{display:inline-grid;place-items:center;width:var(--s,32px);height:var(--s,32px);flex:none;position:relative}
 .bot svg{width:100%;height:100%;overflow:visible;display:block}
 .bot .drift{transform-origin:16px 16px}
@@ -32,20 +32,20 @@
 /* idle: calm. floats in a slow swirl; the loose thread sways */
 .bot.idle .drift{animation:swirl 7s ease-in-out infinite;animation-delay:var(--seed,0s)}
 .bot.idle .tail{animation:sway 3s ease-in-out infinite alternate;animation-delay:var(--seed,0s)}
-/* working: the thread winds on, the spool leans into the work, the loose end flutters */
+/* working: the thread winds on, the creature leans into the work, the loose end flutters */
 .bot.working .wind{animation:winding .5s linear infinite}
 .bot.working .rig{animation:lean 1.2s ease-in-out infinite alternate}
 .bot.working .tail{animation:flutter .35s ease-in-out infinite alternate}
-/* waiting on you: the thread rises toward you in a loop; the spool hops; amber ring when it lands */
+/* waiting on you: the thread rises toward you in a loop; the creature hops; amber ring when it lands */
 .bot.waiting .t-idle{display:none}.bot.waiting .t-up{display:block}
 .bot.waiting .rig{animation:hop 2.6s cubic-bezier(.3,0,.2,1) infinite}
 .bot.waiting .tail{animation:beckon 2.6s ease-in-out infinite}
 .bot.waiting .ring{animation:ring 2.6s ease-out infinite}
-/* paused at cap: the thread hangs slack, the spool settles, dimmed */
+/* paused at cap: the thread hangs slack, the creature settles, dimmed */
 .bot.parked{opacity:.72}
 .bot.parked .t-idle{display:none}.bot.parked .t-slack{display:block}
 .bot.parked .rig{animation:sink 4.5s ease-in-out infinite}
-/* killed / failed: the thread is cut; the spool tips */
+/* killed / failed: the thread is cut; the creature tips */
 .bot.danger .t-idle{display:none}.bot.danger .t-cut,.bot.danger .t-cut2{display:block}
 .bot.danger .rig{animation:tip .6s cubic-bezier(.36,.07,.19,.97) 1 forwards}
 /* done: the thread ties into a bow; one spin with overshoot */

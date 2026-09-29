@@ -93,7 +93,7 @@ Every screen designs four states; none is left as a default.
 
 ## Iconography
 
-Lucide, 16px at 1.5px stroke in rows and buttons, 14px inside badges, 20px in empty states, always `currentColor`. Agents are never icons or initials: they are Avatars (a solid body in their hue with two eyes), so a status dot is never placed next to one. The menu-bar icon is a macOS template image (monochrome, 18pt): a hollow ring for idle, a filled circle for working, a filled circle with a count for waiting on you, a paused circle for paused at cap. There is no logo yet; the name is set in plain type. Nothing in the icon set or the menu bar may resemble Claude Code's marks.
+Lucide, 16px at 1.5px stroke in rows and buttons, 14px inside badges, 20px in empty states, always `currentColor`. Agents are never icons or initials: they are Avatars (a sea creature stitched from thread in their own hue, D23), so a status dot is never placed next to one. The menu-bar icon is a macOS template image (monochrome, 18pt): a hollow ring for idle, a filled circle for working, a filled circle with a count for waiting on you, a paused circle for paused at cap. There is no logo yet; the name is set in plain type. Nothing in the icon set or the menu bar may resemble Claude Code's marks.
 
 ## Accessibility
 
