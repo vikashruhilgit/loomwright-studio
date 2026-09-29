@@ -23,7 +23,7 @@ The artefact links are private to the owner; the repo copies are the reviewable 
 4. **Limits are tokens, not dollars** (D24). On the subscription the kernel cannot meter money; the charter, Team cards, inspector, sessions and menu bar show tokens per day and sessions at once, with dollars only as "≈ at API rates".
 5. **Presence and a heterogeneous transcript.** Crew rows show the last line and time; threads carry EventCard lines for everything the kernel did (session started, playbook created, memory updated with its path, approval decided); an agent's pending approval appears inline at the end of its thread with Allow / Always / Deny.
 6. **Tools have their own picker** with a one-line purpose, connection state and Connect; not-connected tools may be chosen, and the agent's playbooks park until the connector exists.
-7. **Card layout rules** learned from a real bug: `auto-fill` grid with equal rows; roles wrap to two lines, never truncate; the budget meter is the only divider.
+7. **Card layout rules** learned from a real bug: `auto-fill` grid with equal rows; roles wrap to two lines instead of truncating at one, and anything longer ends in an ellipsis with the full role in the tooltip and the inspector; the budget meter is the only divider.
 
 ## What the mockups commit phase 5 to
 

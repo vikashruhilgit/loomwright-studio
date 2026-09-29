@@ -295,7 +295,7 @@ svg.i.xs{width:12px;height:12px;stroke-width:2}
 .bot.parked .stitch{stroke-dasharray:1 4;opacity:.5}
 .bot.danger .stitch{stroke-dasharray:6 10;opacity:.6}
 .bot.done .stitch{stroke-dasharray:none;opacity:.9}
-.bot .crown{fill:var(--attention);stroke:var(--ground);stroke-width:.8;stroke-linejoin:round}
+.bot .crown{fill:var(--bot,var(--accent));stroke:var(--ground);stroke-width:.8;stroke-linejoin:round}
 @keyframes run{to{stroke-dashoffset:-10}}
 /* hover: a nod, and the thread flicks */
 .bot:hover .rig{animation:nod .5s cubic-bezier(.3,0,.2,1) 1!important}
@@ -440,7 +440,7 @@ svg.i.xs{width:12px;height:12px;stroke-width:2}
       <button class="tog" id="tg-offline">Kernel unreachable</button>
     </div>
     <div class="g"><button class="tog" id="tg-reset">Reset data</button></div>
-    <div class="kbdl" style="margin-left:0">Keys: <b>⌘K</b> or <b>/</b> palette · <b>⌃1–4</b> screens (⌘ is the browser's here) · <b>J</b>/<b>K</b> rows · <b>A</b> <b>⇧A</b> <b>D</b> on approvals · <b>⌘.</b> stop · <b>Esc</b></div>
+    <div class="kbdl" style="margin-left:0">Keys: <b>⌘K</b> or <b>/</b> palette · <b>⌘1–4</b> screens (in a browser tab ⌘ switches tabs first; use <b>⌃1–4</b>) · <b>J</b>/<b>K</b> rows · <b>A</b> <b>⇧A</b> <b>D</b> on approvals · <b>⌘.</b> stop · <b>Esc</b></div>
   </div>
   <div class="states" id="states" aria-label="Avatar motion system"></div>
 </div>
@@ -947,7 +947,7 @@ document.addEventListener('keydown',e=>{
   if((e.metaKey||e.ctrlKey)&&e.shiftKey&&e.key.toLowerCase()==='k'){e.preventDefault();killSwitch();return}
   if((e.metaKey||e.ctrlKey)&&e.key==='.'){const s=S.sessions.find(x=>x.id===S.selSession);if(S.screen==='sessions'&&s&&s.state==='running'){e.preventDefault();$('#main').onclick({target:$('[data-act="stop"]')})}return}
   if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&$('[data-act="kill-all"]')){e.preventDefault();$('#overlay').onclick({target:$('[data-act="kill-all"]')});return}
-  if(e.ctrlKey&&/^[1-4]$/.test(e.key)){e.preventDefault();S.screen=['chat','team','approvals','sessions'][+e.key-1];if(e.key==='1')S.chatWith='wright';render();return}
+  if((e.metaKey||e.ctrlKey)&&/^[1-4]$/.test(e.key)){e.preventDefault();S.screen=['chat','team','approvals','sessions'][+e.key-1];if(e.key==='1')S.chatWith='wright';render();return}
   if($('#overlay').innerHTML) return;
   if(S.screen==='approvals'&&S.approvals.length){
     const cur=S.approvals.find(a=>a.id===S.selApproval); if(!cur) return;
