@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# The job is named `ci` on purpose: it is the required status check on `main`
+# (see the branch protection rule). Renaming it silently disables the gate.
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Docs are the product until phase 1 lands. This gate is deterministic and
+      # dependency-free: links resolve, decision numbers are unique, CLAUDE.md's
+      # table points at real files.
+      - name: Check docs
+        run: bash scripts/check-docs.sh
+
+      # The TypeScript steps below activate themselves the moment a package.json
+      # exists at the repo root (phase 1). Until then they are skipped, so the
+      # required `ci` check passes on docs-only PRs without a placeholder.
+      - name: Set up Node
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        if: hashFiles('package.json') != ''
+        run: npm ci
+
+      - name: Lint and typecheck
+        if: hashFiles('package.json') != ''
+        run: |
+          npm run --if-present lint
+          npm run --if-present typecheck
+
+      - name: Test
+        if: hashFiles('package.json') != ''
+        run: npm test

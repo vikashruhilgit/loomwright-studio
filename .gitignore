@@ -5,3 +5,6 @@ out/
 *.log
 .env
 .env.*
+
+# Local Claude Code settings are per machine
+.claude/settings.local.json
