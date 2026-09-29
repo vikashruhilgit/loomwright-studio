@@ -1,0 +1,36 @@
+<!-- @dsCard group="Actions" height=160 subtitle="Primary, secondary, ghost, danger; sizes; loading and disabled" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink)}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .btn{display:inline-flex;align-items:center;gap:6px;height:var(--control-height);padding:0 12px;border-radius:var(--radius-sm);border:1px solid transparent;font:inherit;font-size:13px;font-weight:500;line-height:18px;cursor:pointer;transition:background var(--duration-instant) var(--ease-standard),border-color var(--duration-instant)}
+  .btn:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+  .btn.sm{height:var(--row-height);padding:0 10px;font-size:12px}
+  .primary{background:var(--accent);color:var(--on-accent)}
+  .primary:hover{background:var(--accent-hover)}
+  .secondary{background:var(--surface);color:var(--ink);border-color:var(--border)}
+  .secondary:hover{background:var(--surface-sunken)}
+  .ghost{background:transparent;color:var(--ink-secondary)}
+  .ghost:hover{background:var(--surface-sunken);color:var(--ink)}
+  .danger{background:var(--surface);color:var(--danger);border-color:var(--danger)}
+  .danger:hover{background:var(--danger-soft)}
+  .btn[disabled]{color:var(--ink-disabled);background:var(--surface-sunken);border-color:transparent;cursor:default}
+  .kbd{font-family:var(--font-mono);font-size:11px;font-weight:500;padding:1px 4px;border-radius:var(--radius-xs);background:#0000000f;color:inherit;opacity:.85}
+  .primary .kbd{background:#ffffff33}
+  .spin{width:12px;height:12px;border:2px solid #ffffff55;border-top-color:var(--on-accent);border-radius:50%;animation:s .8s linear infinite}
+  @keyframes s{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){.spin{animation:none}}
+  svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+</style>
+<div class="row">
+  <button class="btn primary">Enable playbook <span class="kbd">⏎</span></button>
+  <button class="btn secondary">Edit in English</button>
+  <button class="btn ghost"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New agent</button>
+  <button class="btn danger">Kill <span class="kbd">⌘⇧K</span></button>
+</div>
+<div class="row">
+  <button class="btn primary sm">Allow once <span class="kbd">A</span></button>
+  <button class="btn secondary sm">Always for this playbook <span class="kbd">⇧A</span></button>
+  <button class="btn ghost sm">Deny <span class="kbd">D</span></button>
+  <button class="btn primary sm" aria-busy="true"><span class="spin" aria-hidden="true"></span>Dry-running…</button>
+  <button class="btn secondary sm" disabled>Stop</button>
+</div>

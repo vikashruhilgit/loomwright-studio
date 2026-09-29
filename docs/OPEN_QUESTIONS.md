@@ -17,7 +17,7 @@ Each of these needs a probe of the real SDK or CLI, with the finding recorded.
 - [ ] **Does the TS SDK bundle the Claude Code binary**, so a fresh install needs no separate Claude Code install? Loomwright's spike says yes; re-confirm on the current version (0.3.283 was the latest on 2026-09-26).
 - [ ] **Subscription auth from the SDK.** Confirm the SDK picks up the machine's existing Claude Code login for the personal build, without any Studio login UI.
 - [ ] **Cap-hit signal.** The exact error or message the SDK surfaces when the subscription weekly limit is hit, so the kernel can park until the reset.
-- [ ] **Usage reporting.** Does the SDK result's `usage` accumulate per query or report the last turn only? Is `total_cost_usd` per query? (Carried over from the spike's live checklist.)
+- [ ] **Usage reporting.** Does the SDK result's `usage` accumulate per query or report the last turn only? Is `total_cost_usd` per query? (Carried over from the spike's live checklist.) This now also gates D24: per-agent token limits need a reliable per-session token count from the SDK, and the kernel must sum it itself since nothing exposes the subscription's remaining quota.
 - [ ] **Background sessions.** Whether the kernel should drive `claude --bg` sessions or SDK `query()` sessions, or both. Decide in phase 1 from a probe.
 
 ## Deferred decisions

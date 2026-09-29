@@ -1,0 +1,33 @@
+<!-- @dsCard group="Code" height=250 subtitle="Unified diff as shown in an approval for a hook change" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
+  .diff{max-width:720px;border:1px solid var(--hairline);border-radius:var(--radius-md);overflow:hidden;background:var(--surface);font-family:var(--font-mono);font-size:12px;line-height:18px}
+  .file{display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--surface-sunken);border-bottom:1px solid var(--hairline);font-family:var(--font-sans);font-size:12px}
+  .file .p{font-family:var(--font-mono);color:var(--ink)}
+  .file .s{margin-left:auto;font-variant-numeric:tabular-nums}
+  .file .a{color:var(--ok)}.file .d{color:var(--danger)}
+  .hunk{color:var(--ink-tertiary);background:var(--ground);padding:0 12px}
+  .ln{display:grid;grid-template-columns:40px 40px 16px 1fr;white-space:pre}
+  .ln span:nth-child(-n+2){text-align:right;padding-right:8px;color:var(--ink-tertiary);user-select:none;font-variant-numeric:tabular-nums}
+  .ln span:nth-child(3){text-align:center;user-select:none}
+  .ln span:last-child{padding-right:12px}
+  .add{background:var(--diff-add-soft)}.add span:nth-child(-n+3){color:var(--diff-add)}
+  .del{background:var(--diff-del-soft)}.del span:nth-child(-n+3){color:var(--diff-del)}
+  .ctx{color:var(--ink-secondary)}
+  .badge{font-family:var(--font-sans);height:20px;padding:0 8px;border-radius:var(--radius-xs);font-size:11px;line-height:20px;font-weight:600;background:var(--attention-soft);color:var(--attention)}
+</style>
+<div class="diff" role="region" aria-label="Diff of .claude/settings.json">
+  <div class="file"><span class="p">.claude/settings.json</span><span class="badge">project scope</span><span class="s"><span class="a">+9</span> <span class="d">−1</span></span></div>
+  <div class="hunk">@@ -12,7 +12,15 @@ "hooks": {</div>
+  <div class="ln ctx"><span>12</span><span>12</span><span></span><span>    "SubagentStop": [</span></div>
+  <div class="ln ctx"><span>13</span><span>13</span><span></span><span>      {</span></div>
+  <div class="ln del"><span>14</span><span></span><span>−</span><span>        "matcher": "loomwright:worker",</span></div>
+  <div class="ln add"><span></span><span>14</span><span>+</span><span>        "matcher": "loomwright:worker|loomwright:code-reviewer",</span></div>
+  <div class="ln ctx"><span>15</span><span>15</span><span></span><span>        "hooks": [</span></div>
+  <div class="ln add"><span></span><span>16</span><span>+</span><span>          {</span></div>
+  <div class="ln add"><span></span><span>17</span><span>+</span><span>            "type": "command",</span></div>
+  <div class="ln add"><span></span><span>18</span><span>+</span><span>            "command": "$CLAUDE_PLUGIN_ROOT/scripts/validate-worker-result.py",</span></div>
+  <div class="ln add"><span></span><span>19</span><span>+</span><span>            "timeout": 30</span></div>
+  <div class="ln add"><span></span><span>20</span><span>+</span><span>          },</span></div>
+  <div class="ln ctx"><span>16</span><span>21</span><span></span><span>          {</span></div>
+</div>

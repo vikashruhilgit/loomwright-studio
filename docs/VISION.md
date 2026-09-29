@@ -2,7 +2,7 @@
 
 ## The one-line version
 
-Grok Bot for developers, built on Claude and Loomwright: a named AI partner that owns your work queue, remembers, runs on schedules and events, and directs a crew of specialist agents. Unlike Grok Bot, its memory is inspectable, every agent is its own security boundary, and it runs locally next to your code.
+Grok Bot built on Claude and Loomwright, for developers first: a named AI partner that owns your work queue, remembers, runs on schedules and events, and directs a crew of specialists you define yourself, from a code reviewer to a personal assistant (D22). Unlike Grok Bot, its memory is inspectable, every agent is its own security boundary, and it runs locally next to your code.
 
 ## What the owner asked for (2026-09-26 → 28)
 

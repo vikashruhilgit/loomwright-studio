@@ -1,0 +1,32 @@
+<!-- @dsCard height=288 -->
+<style>
+  html,body{margin:0;height:100%}
+  body{background:var(--ground);font-family:var(--font-sans);color:var(--ink);position:relative;width:960px;height:288px;overflow:hidden}
+  svg{position:absolute;inset:0;width:960px;height:288px;display:block}
+  .accent{fill:var(--accent)}
+  .ink{fill:var(--ink)}
+  .tint{fill:var(--accent-soft)}
+  .att{fill:var(--attention)}
+  .tile{rx:var(--radius-md)}
+  .weft{stroke:var(--ground);stroke-width:1;fill:none}
+  .name{position:absolute;left:48px;bottom:48px;width:440px;font-size:72px;line-height:.95;font-weight:600;letter-spacing:-0.02em;margin:0}
+  .tag{position:absolute;left:48px;bottom:24px;width:440px;font-size:13px;line-height:14px;color:var(--ink-secondary);margin:0}
+</style>
+<!--
+  blocks: accent 264×192 (bleeds top), ink 168×240 (bleeds right+bottom), accent-soft 264×72 (bleeds bottom), attention 24×72 — all sides multiples of space-6 (24px), corners radius-md
+  arrangement: a staggered stack of bolts, the indigo warp beam first, the deep ink beam behind and lower, the tint selvedge underneath
+  pattern: geometric/modular → tiles cut by hairline rules: a warp-and-weft grid at the space-6 pitch drawn in ground over the accent block, because the system is a loom and its UI is a dense grid of rows; a generic system would not weave its accent
+  scales: pitch space-6 = 24px, rule = hairline strength 1px, corners radius-md = 8px, insets space-12 = 48px
+-->
+<svg viewBox="0 0 960 288" aria-hidden="true">
+  <rect class="tint tile" x="504" y="216" width="264" height="96"/>
+  <rect class="ink tile" x="792" y="48" width="192" height="264"/>
+  <rect class="accent tile" x="504" y="-24" width="264" height="216"/>
+  <g class="weft">
+    <path d="M504 24H768M504 48H768M504 72H768M504 96H768M504 120H768M504 144H768M504 168H768"/>
+    <path d="M528 -24V192M552 -24V192M576 -24V192M600 -24V192M624 -24V192M648 -24V192M672 -24V192M696 -24V192M720 -24V192M744 -24V192"/>
+  </g>
+  <rect class="att tile" x="744" y="216" width="24" height="96"/>
+</svg>
+<h1 class="name">Loomwright<br>Studio</h1>
+<p class="tag">The workshop where Wright directs the crew.</p>

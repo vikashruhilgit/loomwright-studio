@@ -1,0 +1,29 @@
+<!-- @dsCard group="Data" height=230 subtitle="Dense data table: playbooks with sortable header, badges and a toggle" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
+  table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius-md);overflow:hidden;font-variant-numeric:tabular-nums}
+  th{text-align:left;font-size:11px;line-height:14px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-tertiary);padding:8px 12px;border-bottom:1px solid var(--hairline);background:var(--surface);white-space:nowrap}
+  th.sorted{color:var(--ink)}
+  td{padding:0 12px;height:36px;border-bottom:1px solid var(--hairline);white-space:nowrap;vertical-align:middle}
+  tr:last-child td{border-bottom:0}
+  tbody tr:hover td{background:var(--ground)}
+  .num{text-align:right}
+  .sub{color:var(--ink-secondary)}
+  .mono{font-family:var(--font-mono);font-size:11px;color:var(--ink-secondary)}
+  .badge{display:inline-block;height:20px;padding:0 8px;border-radius:var(--radius-xs);font-size:11px;line-height:20px;font-weight:600}
+  .ok{background:var(--ok-soft);color:var(--ok)}.att{background:var(--attention-soft);color:var(--attention)}.dng{background:var(--danger-soft);color:var(--danger)}.neu{background:var(--surface-sunken);color:var(--ink-secondary);font-weight:500}
+  .sw{width:26px;height:16px;border-radius:9999px;background:var(--border);position:relative;display:inline-block;vertical-align:middle;transition:background var(--duration-fast)}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform var(--duration-fast) var(--ease-standard)}
+  .sw.on{background:var(--accent)}.sw.on::after{transform:translateX(10px)}
+  [data-theme="dark"] .sw.on::after{background:var(--on-accent)}
+  svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2;vertical-align:-1px}
+</style>
+<table aria-label="Playbooks">
+  <thead><tr><th>Playbook</th><th>Trigger</th><th>Dedupe key</th><th class="sorted">Last run <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></th><th class="num">Cost / 7d</th><th>Model</th><th>On</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Review PRs where I'm requested</strong></td><td class="sub">poll GitHub · 5 min</td><td class="mono">{pr.head_sha}</td><td class="sub">2 min ago · <span class="badge ok">ok</span></td><td class="num">≈$4.12</td><td class="sub">Sonnet 5</td><td><span class="sw on" role="switch" aria-checked="true" aria-label="Enabled"></span></td></tr>
+    <tr><td><strong>Triage review comments</strong></td><td class="sub">webhook · pull_request_review</td><td class="mono">{review.id}</td><td class="sub">14:02 · <span class="badge att">waiting on you</span></td><td class="num">≈$1.90</td><td class="sub">Opus 5.5</td><td><span class="sw on" role="switch" aria-checked="true" aria-label="Enabled"></span></td></tr>
+    <tr><td><strong>Re-request reviewers after fix</strong></td><td class="sub">after: Triage review comments</td><td class="mono">{pr.number}:{fix.sha}</td><td class="sub">Yesterday · <span class="badge dng">denied</span></td><td class="num">≈$0.00</td><td class="sub">Haiku 4.5</td><td><span class="sw" role="switch" aria-checked="false" aria-label="Disabled"></span></td></tr>
+    <tr><td><strong>Remind me at 17:00 to check X</strong></td><td class="sub">cron · 0 17 * * 1-5</td><td class="mono">—</td><td class="sub">Never · <span class="badge neu">draft</span></td><td class="num">≈$0.00</td><td class="sub">Haiku 4.5</td><td><span class="sw" role="switch" aria-checked="false" aria-label="Disabled"></span></td></tr>
+  </tbody>
+</table>

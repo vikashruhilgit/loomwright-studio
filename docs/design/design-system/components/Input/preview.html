@@ -1,0 +1,27 @@
+<!-- @dsCard group="Forms" height=210 subtitle="Text field, chat composer, search, select, error" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;max-width:720px}
+  label{display:block;font-size:11px;line-height:14px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-tertiary);margin-bottom:4px}
+  .field{display:flex;align-items:center;gap:8px;height:var(--control-height);padding:0 10px;border-radius:var(--radius-sm);background:var(--surface-sunken);border:1px solid transparent;color:var(--ink)}
+  .field:focus-within{background:var(--surface);border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+  .field input,.field select{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:inherit;outline:0}
+  .field input::placeholder{color:var(--ink-tertiary)}
+  .field.err{border-color:var(--danger);background:var(--surface)}
+  .hint{margin-top:4px;font-size:11px;line-height:14px;color:var(--ink-tertiary)}
+  .hint.err{color:var(--danger)}
+  .kbd{font-family:var(--font-mono);font-size:11px;padding:1px 4px;border-radius:var(--radius-xs);background:var(--surface);border:1px solid var(--hairline);color:var(--ink-tertiary)}
+  .composer{grid-column:1/-1;display:flex;align-items:flex-end;gap:8px;padding:8px 8px 8px 12px;border-radius:var(--radius-md);background:var(--surface);border:1px solid var(--hairline);box-shadow:var(--shadow-1)}
+  .composer textarea{flex:1;border:0;background:transparent;font:inherit;font-size:14px;line-height:21px;color:var(--ink);resize:none;outline:0;min-height:42px}
+  .composer textarea::placeholder{color:var(--ink-tertiary)}
+  .send{height:28px;padding:0 10px;border-radius:var(--radius-sm);border:0;background:var(--accent);color:var(--on-accent);font:inherit;font-weight:500;display:inline-flex;align-items:center;gap:6px}
+  .send .kbd{background:#ffffff33;border:0;color:inherit}
+  svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;flex:none;color:var(--ink-tertiary)}
+</style>
+<div class="grid">
+  <div><label for="n">Agent name</label><div class="field"><input id="n" value="Mason"></div><div class="hint">Shown in chat and in the menu bar.</div></div>
+  <div><label for="s">Search sessions</label><div class="field"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="s" placeholder="Agent, task or PR…"><span class="kbd">/</span></div></div>
+  <div><label for="m">Model</label><div class="field"><select id="m"><option>Sonnet 5 (proposed by Wright)</option><option>Opus 5.5</option><option>Haiku 4.5</option></select><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div><div class="hint">Policy is yours; Wright only proposes.</div></div>
+  <div><label for="d">Dedupe key</label><div class="field err"><input id="d" value="pr.head_sha" aria-invalid="true" aria-describedby="d-err"></div><div class="hint err" id="d-err">Unknown field. Try pr.number or pr.head_sha in braces: {pr.head_sha}</div></div>
+  <div class="composer"><textarea aria-label="Message Wright" placeholder="Ask Wright anything, or tell it a duty…"></textarea><button class="send">Send <span class="kbd">⏎</span></button></div>
+</div>

@@ -1,0 +1,27 @@
+<!-- @dsCard group="Status" height=120 subtitle="The four kernel states, plus verified outcomes" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
+  .row{display:flex;gap:24px;flex-wrap:wrap;align-items:center}
+  .st{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:8px;height:8px;border-radius:var(--radius-full);flex:none;box-sizing:border-box}
+  .idle{border:2px solid var(--idle)}
+  .working{background:var(--working);animation:pulse var(--duration-pulse) ease-in-out infinite}
+  .waiting{background:var(--attention)}
+  .parked{background:var(--parked);position:relative}
+  .parked::after{content:"";position:absolute;top:2px;bottom:2px;left:3px;width:2px;background:var(--ground)}
+  .ok{background:var(--ok)}
+  .danger{background:var(--danger)}
+  .meta{color:var(--ink-tertiary);font-size:11px;line-height:14px}
+  @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(.85)}}
+  @media (prefers-reduced-motion:reduce){.working{animation:none}}
+  .sep{width:1px;height:20px;background:var(--hairline)}
+</style>
+<div class="row">
+  <span class="st"><span class="dot idle" aria-hidden="true"></span>idle</span>
+  <span class="st"><span class="dot working" aria-hidden="true"></span>working <span class="meta">· 2 sessions</span></span>
+  <span class="st"><span class="dot waiting" aria-hidden="true"></span>waiting on you <span class="meta">· 3</span></span>
+  <span class="st"><span class="dot parked" aria-hidden="true"></span>paused at cap <span class="meta">· resets Thu 06:00</span></span>
+  <span class="sep" aria-hidden="true"></span>
+  <span class="st"><span class="dot ok" aria-hidden="true"></span>CI green <span class="meta">· verified 14:02</span></span>
+  <span class="st"><span class="dot danger" aria-hidden="true"></span>killed</span>
+</div>

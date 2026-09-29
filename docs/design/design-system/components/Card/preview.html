@@ -1,0 +1,105 @@
+<!-- @dsCard group="Data" height=250 subtitle="Agent cards from the Team screen, plus a task card" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
+  .grid{display:grid;grid-template-columns:repeat(3,minmax(200px,1fr));gap:16px;max-width:760px}
+  .card{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius-md);padding:16px;display:flex;flex-direction:column;gap:12px;transition:box-shadow var(--duration-instant)}
+  .card:hover{box-shadow:var(--shadow-1)}
+  .card:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+  .head{display:flex;align-items:center;gap:10px}
+  .name{font-size:15px;line-height:20px;font-weight:600}
+  .role{font-size:11px;line-height:14px;color:var(--ink-tertiary)}
+  .st{display:flex;align-items:center;gap:6px;color:var(--ink-secondary)}
+  .dot{width:8px;height:8px;border-radius:50%;box-sizing:border-box;flex:none}
+  .task{color:var(--ink);font-weight:500}
+  .meta{display:flex;justify-content:space-between;font-size:11px;line-height:14px;color:var(--ink-tertiary);font-variant-numeric:tabular-nums;padding-top:12px;border-top:1px solid var(--hairline)}
+  .bar{height:3px;border-radius:2px;background:var(--surface-sunken);overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--accent);width:38%}
+  .tags{display:flex;gap:6px;flex-wrap:wrap}
+  .badge{height:20px;padding:0 8px;border-radius:var(--radius-xs);font-size:11px;line-height:20px;font-weight:600}
+  .ok{background:var(--ok-soft);color:var(--ok)}.att{background:var(--attention-soft);color:var(--attention)}.neu{background:var(--surface-sunken);color:var(--ink-secondary);font-weight:500}
+  /* Avatar: rendered from docs/design/avatar/avatar.css + avatar.js, never hand-drawn */
+  /* Loom avatars: a sea creature stitched from thread per crew member (Wright is the crowned whale). No face beyond a knot for the eye: the thread is the actor. Layers: drift (whole), rig (body from its base), wind (the winding), tail (the loose thread) */
+  .bot{display:inline-grid;place-items:center;width:var(--s,32px);height:var(--s,32px);flex:none;position:relative}
+  .bot svg{width:100%;height:100%;overflow:visible;display:block}
+  .bot .drift{transform-origin:16px 16px}
+  .bot .rig{transform-origin:16px 29px}
+  .bot .fill{fill:var(--bot,var(--accent));opacity:.28}
+  .bot .st{fill:none;stroke:var(--bot,var(--accent));stroke-width:1.6;stroke-dasharray:2.6 1.5;stroke-linecap:round;stroke-linejoin:round}
+  .bot .ln{fill:none;stroke:var(--bot,var(--accent));stroke-width:1.2;stroke-dasharray:1.8 1.4;stroke-linecap:round;opacity:.85}
+  .bot .knot{fill:var(--bot,var(--accent))}
+  .bot.working .st,.bot.working .ln{animation:run 1.2s linear infinite}
+  .bot .frame{fill:var(--ink-tertiary)}
+  .bot .thread{fill:var(--bot,var(--accent))}
+  .bot .stripe{stroke:var(--ground);stroke-width:1.1;fill:none;opacity:.55}
+  .bot .t{stroke:var(--bot,var(--accent));stroke-width:1.9;stroke-linecap:round;fill:none;display:none}
+  .bot .t-idle{display:block}
+  .bot .ring{position:absolute;inset:-3px;border-radius:50%;border:2px solid var(--attention);opacity:0;pointer-events:none}
+  /* the thread border: a running stitch in the agent's hue around every avatar; it runs while working */
+  .bot .stitch{fill:none;stroke:var(--bot,var(--accent));stroke-width:1.2;stroke-dasharray:2.4 2.6;stroke-linecap:round;opacity:.45;transform-origin:16px 16px}
+  .bot.working .stitch{animation:run 1.6s linear infinite}
+  .bot.parked .stitch{stroke-dasharray:1 4;opacity:.5}
+  .bot.danger .stitch{stroke-dasharray:6 10;opacity:.6}
+  .bot.done .stitch{stroke-dasharray:none;opacity:.9}
+  .bot .crown{fill:var(--bot,var(--accent));stroke:var(--ground);stroke-width:.8;stroke-linejoin:round}
+  @keyframes run{to{stroke-dashoffset:-10}}
+  /* hover: a nod, and the thread flicks */
+  .bot:hover .rig{animation:nod .5s cubic-bezier(.3,0,.2,1) 1!important}
+  /* idle: calm. floats in a slow swirl; the loose thread sways */
+  .bot.idle .drift{animation:swirl 7s ease-in-out infinite;animation-delay:var(--seed,0s)}
+  .bot.idle .tail{animation:sway 3s ease-in-out infinite alternate;animation-delay:var(--seed,0s)}
+  /* working: the thread winds on, the creature leans into the work, the loose end flutters */
+  .bot.working .wind{animation:winding .5s linear infinite}
+  .bot.working .rig{animation:lean 1.2s ease-in-out infinite alternate}
+  .bot.working .tail{animation:flutter .35s ease-in-out infinite alternate}
+  /* waiting on you: the thread rises toward you in a loop; the creature hops; amber ring when it lands */
+  .bot.waiting .t-idle{display:none}.bot.waiting .t-up{display:block}
+  .bot.waiting .rig{animation:hop 2.6s cubic-bezier(.3,0,.2,1) infinite}
+  .bot.waiting .tail{animation:beckon 2.6s ease-in-out infinite}
+  .bot.waiting .ring{animation:ring 2.6s ease-out infinite}
+  /* paused at cap: the thread hangs slack, the creature settles, dimmed */
+  .bot.parked{opacity:.72}
+  .bot.parked .t-idle{display:none}.bot.parked .t-slack{display:block}
+  .bot.parked .rig{animation:sink 4.5s ease-in-out infinite}
+  /* killed / failed: the thread is cut; the creature tips */
+  .bot.danger .t-idle{display:none}.bot.danger .t-cut,.bot.danger .t-cut2{display:block}
+  .bot.danger .rig{animation:tip .6s cubic-bezier(.36,.07,.19,.97) 1 forwards}
+  /* done: the thread ties into a bow; one spin with overshoot */
+  .bot.done .t-idle{display:none}.bot.done .t-bow{display:block}
+  .bot.done .rig{animation:spin 1s cubic-bezier(.34,1.4,.64,1) 1}
+  .bot.done .drift{animation:orbit 1s cubic-bezier(.3,0,.2,1) 1}
+  @keyframes swirl{0%,100%{transform:translate(0,0) rotate(0)}25%{transform:translate(1.4px,-1px) rotate(3deg)}50%{transform:translate(0,-2px) rotate(0)}75%{transform:translate(-1.4px,-1px) rotate(-3deg)}}
+  @keyframes sway{from{transform:rotate(-14deg)}to{transform:rotate(12deg)}}
+  @keyframes winding{from{transform:translateY(0)}to{transform:translateY(3px)}}
+  @keyframes lean{from{transform:rotate(-3deg) scale(1,1)}to{transform:rotate(3deg) scale(1.02,.98)}}
+  @keyframes flutter{from{transform:rotate(-6deg)}to{transform:rotate(18deg)}}
+  @keyframes hop{0%,58%,100%{transform:translateY(0) scale(1,1)}64%{transform:translateY(1.5px) scale(1.12,.86)}73%{transform:translateY(-7px) scale(.94,1.1)}80%{transform:translateY(-3px) scale(.97,1.04)}85%{transform:translateY(0) scale(1.08,.92)}92%{transform:scale(.99,1.01)}}
+  @keyframes beckon{0%,55%,100%{transform:rotate(0)}70%{transform:rotate(-18deg)}85%{transform:rotate(8deg)}}
+  @keyframes nod{0%{transform:rotate(0)}30%{transform:rotate(-8deg) translateY(-2px)}70%{transform:rotate(4deg)}100%{transform:rotate(0)}}
+  @keyframes ring{0%,80%{opacity:0;transform:scale(.8)}83%{opacity:.75;transform:scale(.86)}100%{opacity:0;transform:scale(1.35)}}
+  @keyframes sink{0%,100%{transform:translateY(1px) scale(1.04,.96)}50%{transform:translateY(1.4px) scale(1.05,.95)}}
+  @keyframes tip{0%{transform:rotate(0)}20%{transform:rotate(-6deg) translateX(-2px)}40%{transform:rotate(6deg) translateX(2px)}100%{transform:rotate(22deg) translateY(1px)}}
+  @keyframes orbit{0%{transform:translate(0,0)}25%{transform:translate(3px,-3px)}50%{transform:translate(0,-5px)}75%{transform:translate(-3px,-3px)}100%{transform:translate(0,0)}}
+  @keyframes spin{0%{transform:rotate(0) scale(1)}45%{transform:rotate(380deg) scale(1.08)}100%{transform:rotate(360deg) scale(1)}}
+  @media (prefers-reduced-motion:reduce){.bot .drift,.bot .rig,.bot .wind,.bot .tail,.bot .ring{animation:none!important}.bot.waiting .ring{opacity:.7}}
+  
+</style>
+<div class="grid">
+  <div class="card" tabindex="0">
+    <div class="head"><span class="bot working lead" style="--s:36px;--bot:var(--accent);--seed:-2.1s" role="img" aria-label="Wright · working" title="Wright · working"><span class="ring" aria-hidden="true"></span><svg viewBox="-2 -2 36 36"><circle class="stitch" cx="16" cy="16" r="16.5"/><g class="drift"><g class="rig"><ellipse class="fill" cx="18" cy="17" rx="10" ry="7"/><path class="fill" d="M9 17c-3-1-5-3-6-6 0 4 0 8 0 12 1-3 3-5 6-6z"/><ellipse class="st" cx="18" cy="17" rx="10" ry="7"/><path class="st" d="M9 17c-3-1-5-3-6-6 0 4 0 8 0 12 1-3 3-5 6-6z"/><path class="ln" d="M17 24c-1 3 0 5 2 6M12 20c3 1 7 1 10 0M23 9c0-2 1-3 2-4M22 9c0-2-1-3-2-4"/><circle class="knot" cx="24" cy="15" r="1.3"/><path class="crown" d="M9.5 8.5l1.5-5 3 3 2-4.5 2 4.5 3-3 1.5 5z"/><g class="tail" style="transform-origin:3px 23px"><path class="t t-idle" d="M3 23c-3 1-5 3-4 7"/><path class="t t-up" d="M3 23c-5-1-7-6-3-9 3-2 5 2 2 3"/><path class="t t-slack" d="M3 23c-1 3-1 8 0 12"/><path class="t t-cut" d="M3 23c-2 0-3 1-3 2"/><path class="t t-cut2" d="M-2 28c-1 1-2 3-1 5"/><path class="t t-bow" d="M3 23c-3-3-6-2-4 1s5 0 4-1c1-3 5-2 3 1s-5 0-3-1"/></g></g></g></svg></span><div><div class="name">Wright</div><div class="role">Lead · plans, delegates, writes playbooks</div></div></div>
+    <div class="st"><span class="dot" style="background:var(--working)"></span><span class="task">Triaging comments on #398</span></div>
+    <div class="bar" aria-label="Budget used today: 38%"><i></i></div>
+    <div class="meta"><span>142k of 375k today</span><span>Opus 5.5</span></div>
+  </div>
+  <div class="card" tabindex="0">
+    <div class="head"><span class="bot waiting " style="--s:36px;--bot:var(--crew-teal);--seed:-2.2s" role="img" aria-label="Mason · waiting on you" title="Mason · waiting on you"><span class="ring" aria-hidden="true"></span><svg viewBox="-2 -2 36 36"><circle class="stitch" cx="16" cy="16" r="16.5"/><g class="drift"><g class="rig"><path class="fill" d="M5 17c4-4 9-6 15-6 4 0 8 2 10 6-2 4-6 6-10 6-6 0-11-2-15-6z"/><path class="fill" d="M13 12c1-4 3-6 5-7 0 3 0 5-1 7z"/><path class="st" d="M5 17c4-4 9-6 15-6 4 0 8 2 10 6-2 4-6 6-10 6-6 0-11-2-15-6z"/><path class="st" d="M13 12c1-4 3-6 5-7 0 3 0 5-1 7zM5 17c-2-3-3-5-3-8 2 2 4 4 6 5M5 17c-2 3-3 5-3 8 2-2 4-4 6-5"/><path class="ln" d="M22 15v4M24 15v4M18 22c1 2 2 3 3 3"/><circle class="knot" cx="26" cy="16" r="1.2"/><g class="tail" style="transform-origin:2px 25px"><path class="t t-idle" d="M2 25c-3 1-5 3-4 7"/><path class="t t-up" d="M2 25c-5-1-7-6-3-9 3-2 5 2 2 3"/><path class="t t-slack" d="M2 25c-1 3-1 8 0 12"/><path class="t t-cut" d="M2 25c-2 0-3 1-3 2"/><path class="t t-cut2" d="M-3 30c-1 1-2 3-1 5"/><path class="t t-bow" d="M2 25c-3-3-6-2-4 1s5 0 4-1c1-3 5-2 3 1s-5 0-3-1"/></g></g></g></svg></span><div><div class="name">Mason</div><div class="role">Reviewer · comments only, can't push</div></div></div>
+    <div class="st"><span class="dot" style="background:var(--attention)"></span><span class="task">Waiting on you · post review on #412</span></div>
+    <div class="bar" aria-label="Budget used today: 61%"><i style="width:61%"></i></div>
+    <div class="meta"><span>98k of 160k today</span><span>Sonnet 5</span></div>
+  </div>
+  <div class="card" tabindex="0">
+    <div class="head"><span class="bot idle " style="--s:36px;--bot:var(--crew-berry);--seed:-1.4s" role="img" aria-label="Ada · idle" title="Ada · idle"><span class="ring" aria-hidden="true"></span><svg viewBox="-2 -2 36 36"><circle class="stitch" cx="16" cy="16" r="16.5"/><g class="drift"><g class="rig"><ellipse class="fill" cx="15" cy="17" rx="10" ry="7"/><circle class="fill" cx="27" cy="15" r="3"/><ellipse class="st" cx="15" cy="17" rx="10" ry="7"/><circle class="st" cx="27" cy="15" r="3"/><path class="ln" d="M8 17h14M11 12l2 5M19 12l-2 5M11 22l2-5M19 22l-2-5M8 12l-4-3M8 22l-4 3M22 22l3 3"/><circle class="knot" cx="28" cy="14" r="1"/><g class="tail" style="transform-origin:4px 17px"><path class="t t-idle" d="M4 17c-3 1-5 3-4 7"/><path class="t t-up" d="M4 17c-5-1-7-6-3-9 3-2 5 2 2 3"/><path class="t t-slack" d="M4 17c-1 3-1 8 0 12"/><path class="t t-cut" d="M4 17c-2 0-3 1-3 2"/><path class="t t-cut2" d="M-1 22c-1 1-2 3-1 5"/><path class="t t-bow" d="M4 17c-3-3-6-2-4 1s5 0 4-1c1-3 5-2 3 1s-5 0-3-1"/></g></g></g></svg></span><div><div class="name">Ada</div><div class="role">Builder · writes in worktrees only</div></div></div>
+    <div class="st"><span class="dot" style="border:2px solid var(--idle)"></span><span style="color:var(--ink-tertiary)">idle · last ran 09:41</span></div>
+    <div class="bar" aria-label="Budget used today: 4%"><i style="width:4%"></i></div>
+    <div class="meta"><span>9k of 225k today</span><span>Sonnet 5</span></div>
+  </div>
+</div>

@@ -1,0 +1,42 @@
+<!-- @dsCard group="Data" height=300 subtitle="Sidebar navigation and a session list, with selection, hover and a loading row" -->
+<style>
+  body{margin:0;padding:0;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
+  .wrap{display:grid;grid-template-columns:200px 1fr;height:300px}
+  .side{background:var(--sidebar);border-right:1px solid var(--hairline);padding:12px 8px;backdrop-filter:blur(24px) saturate(1.4)}
+  .label{font-size:11px;line-height:14px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-tertiary);padding:0 8px;margin:8px 0 4px}
+  .nav{display:flex;align-items:center;gap:8px;height:var(--row-height);padding:0 8px;border-radius:var(--radius-sm);color:var(--ink-secondary);cursor:default}
+  .nav:hover{background:#0000000a;color:var(--ink)}
+  .nav.sel{background:var(--accent-soft);color:var(--accent);font-weight:500}
+  .nav .k{margin-left:auto;font-family:var(--font-mono);font-size:11px;color:var(--ink-tertiary)}
+  .nav .pill{margin-left:auto;min-width:18px;height:18px;padding:0 6px;border-radius:9999px;background:var(--attention);color:#fff;font-size:11px;font-weight:600;display:grid;place-items:center}
+  [data-theme="dark"] .nav .pill{color:#1a1200}
+  .dot{width:8px;height:8px;border-radius:50%;box-sizing:border-box;flex:none}
+  .main{padding:8px 12px;overflow:hidden}
+  .item{display:grid;grid-template-columns:8px 1fr auto;gap:10px;align-items:center;height:44px;padding:0 10px;border-radius:var(--radius-sm)}
+  .item:hover{background:var(--surface)}
+  .item.sel{background:var(--accent-soft)}
+  .item .t{font-weight:600;color:var(--ink)}
+  .item .m{font-size:11px;line-height:14px;color:var(--ink-tertiary);font-variant-numeric:tabular-nums}
+  .item .r{text-align:right}
+  .skel{height:44px;display:grid;grid-template-columns:8px 1fr auto;gap:10px;align-items:center;padding:0 10px}
+  .skel i{display:block;height:10px;border-radius:4px;background:var(--surface-sunken)}
+  svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none}
+</style>
+<div class="wrap">
+  <nav class="side" aria-label="Screens">
+    <div class="nav"><svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.5-4.5A8 8 0 1 1 21 12Z"/></svg>Chat<span class="k">⌘1</span></div>
+    <div class="nav"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M15 19a4.5 4.5 0 0 1 7 0"/></svg>Team<span class="k">⌘2</span></div>
+    <div class="nav"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/></svg>Approvals<span class="pill" aria-label="3 pending">3</span></div>
+    <div class="nav sel" aria-current="page"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 20h10M8 9l3 3-3 3M13 15h3"/></svg>Sessions<span class="k">⌘4</span></div>
+    <div class="label">Crew</div>
+    <div class="nav"><span class="dot" style="background:var(--working)"></span>Mason</div>
+    <div class="nav"><span class="dot" style="border:2px solid var(--idle)"></span>Ada</div>
+  </nav>
+  <div class="main" role="list" aria-label="Sessions">
+    <div class="item sel" role="listitem"><span class="dot" style="background:var(--working)"></span><div><div class="t">Mason · review PR #412</div><div class="m">running 4m 12s · 14.2k tokens</div></div><div class="r m">Sonnet 5</div></div>
+    <div class="item" role="listitem"><span class="dot" style="background:var(--working)"></span><div><div class="t">Wright · triage comments on #398</div><div class="m">running 0m 41s · 3.1k tokens</div></div><div class="r m">Opus 5.5</div></div>
+    <div class="item" role="listitem"><span class="dot" style="background:var(--attention)"></span><div><div class="t">Ada · post review on #405</div><div class="m">waiting on you · approval pending</div></div><div class="r m">Sonnet 5</div></div>
+    <div class="item" role="listitem"><span class="dot" style="background:var(--ok)"></span><div><div class="t">Mason · review PR #401</div><div class="m">done 14:02 · 22.8k tokens · ≈$0.19</div></div><div class="r m">Sonnet 5</div></div>
+    <div class="skel" aria-hidden="true"><i style="width:8px;height:8px;border-radius:50%"></i><div><i style="width:60%;margin-bottom:6px"></i><i style="width:35%;height:8px"></i></div><i style="width:48px"></i></div>
+  </div>
+</div>

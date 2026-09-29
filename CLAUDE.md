@@ -2,7 +2,7 @@
 
 Guidance for Claude Code sessions in this repository.
 
-**Loomwright Studio** is a desktop app for an always-available AI partner (lead agent: **Wright**) built on the Claude Agent SDK and the [Loomwright](https://github.com/vikashruhilgit/loomwright) plugin. The repo is **pre-code**: the design lives in `docs/`, and the next step is phase 0 (design system and mockups). Read `docs/DECISIONS.md` before proposing anything. The owner has already settled the decisions recorded there, so don't reopen them unless new evidence contradicts one, and say so explicitly if it does.
+**Loomwright Studio** is a desktop app for an always-available AI partner (lead agent: **Wright**) built on the Claude Agent SDK and the [Loomwright](https://github.com/vikashruhilgit/loomwright) plugin. The repo is **pre-code**: the design lives in `docs/`. Phase 0 (design system and mockups) is approved; see `docs/DESIGN.md`. The next step is phase 1 (the kernel). Read `docs/DECISIONS.md` before proposing anything. The owner has already settled the decisions recorded there, so don't reopen them unless new evidence contradicts one, and say so explicitly if it does.
 
 ## Where things are
 
@@ -12,6 +12,7 @@ Guidance for Claude Code sessions in this repository.
 | Settled decisions and their reasoning | `docs/DECISIONS.md` |
 | How it's built | `docs/ARCHITECTURE.md` |
 | UI principles and phase 0 scope | `docs/UI.md` |
+| Approved design: artefact links, tokens, brand book, mockup source | `docs/DESIGN.md`, `docs/design/` |
 | Phase order and exit criteria | `docs/ROADMAP.md` |
 | Open owner to-dos and unverified claims | `docs/OPEN_QUESTIONS.md` |
 | Prior art: Loomwright's SDK runner spike | `docs/reference/SDK_RUNNER_SPIKE.md` |
@@ -26,6 +27,7 @@ Guidance for Claude Code sessions in this repository.
 6. **Auth is pluggable and API-key-first in code.** The owner's personal build runs on his Claude subscription. Studio must **never** offer a "sign in with claude.ai" flow (Agent SDK terms forbid third-party products offering claude.ai login). The API-key path is built and tested with stubs.
 7. **Branding:** "Wright, powered by Claude" is allowed. Nothing may say or look like "Claude Code".
 8. **Memory is inspectable files** (markdown under the Studio data dir), never an opaque store.
+9. **No role presets.** A crew member exists only through a charter the user sees (D22). Limits are tokens and sessions, never dollars, on the subscription build (D24).
 
 ## Working conventions
 

@@ -1,0 +1,21 @@
+<!-- @dsCard group="Chat" height=200 subtitle="System events inside a thread, and an approval you can act on without leaving it" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
+  .col{max-width:600px;display:flex;flex-direction:column;gap:10px}
+  .ev{display:flex;align-items:center;gap:8px;justify-content:center;color:var(--ink-tertiary);font-size:12px;line-height:16px}
+  .ev b{color:var(--ink-secondary);font-weight:500}.ev .mono{font-family:var(--font-mono);font-size:11px}.ev time{font-variant-numeric:tabular-nums}
+  svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;flex:none}
+  .ap{border:1px solid var(--attention);border-radius:var(--radius-md);background:var(--surface);overflow:hidden;max-width:560px}
+  .ap .h{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--attention-soft);color:var(--attention);font-weight:600}
+  .ap .b{padding:10px 12px;color:var(--ink-secondary)}.ap .b .sum{color:var(--ink);margin-bottom:6px}
+  .ap .acts{display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--hairline)}
+  .btn{height:28px;padding:0 10px;border-radius:var(--radius-sm);border:1px solid transparent;font:inherit;font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:6px;background:var(--surface);color:var(--ink)}
+  .pri{background:var(--accent);color:var(--on-accent)}.sec{border-color:var(--border)}.dng{color:var(--danger);border-color:var(--danger)}.ghost{color:var(--ink-secondary);margin-left:auto}
+  .kbd{font-family:var(--font-mono);font-size:11px;padding:1px 4px;border-radius:4px;background:#ffffff33}.sec .kbd,.dng .kbd{background:var(--surface-sunken);color:var(--ink-tertiary)}
+</style>
+<div class="col">
+  <div class="ev" role="status"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 9l3 3-3 3"/></svg><span>Session started · review PR #401 · playbook <b>Review PRs where I'm requested</b></span><time>13:40</time></div>
+  <div class="ev" role="status"><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg><span>Updated <span class="mono">memory/mason/lessons.md</span>: "command hooks block via decision, not ok"</span><time>14:02</time></div>
+  <div class="ev" role="status"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>Created playbook <b>Review PRs where I'm requested</b> · runs as Mason</span><time>14:07</time></div>
+  <div class="ap" role="group" aria-label="Approval: Post review on loomwright #412"><div class="h"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/></svg>Waiting on you · Post review on loomwright #412</div><div class="b"><div class="sum">A review that requests changes: 1 blocking, 2 nits.</div>Playbook approval level: ask before posting each review.</div><div class="acts"><button class="btn pri">Allow once <span class="kbd">A</span></button><button class="btn sec">Always <span class="kbd">⇧A</span></button><button class="btn dng">Deny <span class="kbd">D</span></button><button class="btn ghost">Full payload</button></div></div>
+</div>

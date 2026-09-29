@@ -1,0 +1,22 @@
+<!-- @dsCard group="Feedback" height=210 subtitle="Toasts, and the persistent bands for kernel-unreachable and paused-at-cap" -->
+<style>
+  body{margin:0;padding:16px;background:var(--ground);font-family:var(--font-sans);color:var(--ink);font-size:13px;line-height:18px}
+  .col{display:flex;flex-direction:column;gap:10px;max-width:520px}
+  .toast{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius-md);background:var(--surface-raised);box-shadow:var(--shadow-2);width:360px}
+  .toast .t{flex:1}.toast b{font-weight:600}
+  .toast .a{color:var(--accent);font-weight:500;background:none;border:0;font:inherit;padding:0}
+  .toast .x{color:var(--ink-tertiary);background:none;border:0;font-size:16px;line-height:1;padding:0}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .band{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:var(--radius-sm);font-size:13px}
+  .band.dng{background:var(--danger-soft);color:var(--danger)}
+  .band.prk{background:var(--parked-soft);color:var(--parked)}
+  .band.att{background:var(--attention-soft);color:var(--attention)}
+  .band .a{margin-left:auto;font-weight:600;background:none;border:0;font:inherit;color:inherit;text-decoration:underline;text-underline-offset:2px;padding:0}
+  svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+</style>
+<div class="col">
+  <div class="toast" role="status"><span class="dot" style="background:var(--ok)"></span><span class="t"><b>Playbook enabled.</b> Mason picks up #412 in the next poll.</span><button class="a">View</button><button class="x" aria-label="Dismiss">×</button></div>
+  <div class="toast" role="status"><span class="dot" style="background:var(--attention)"></span><span class="t"><b>Ada is waiting on you.</b> Post review on #405?</span><button class="a">Review</button><button class="x" aria-label="Dismiss">×</button></div>
+  <div class="band dng" role="alert"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 16h.01M4.9 19h14.2a2 2 0 0 0 1.7-3L13.7 4a2 2 0 0 0-3.4 0L3.2 16a2 2 0 0 0 1.7 3Z"/></svg>Couldn't reach the kernel. It may be restarting; this window reconnects on its own.<button class="a">Kernel log</button></div>
+  <div class="band prk" role="status"><svg viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg>Paused at cap. 4 tasks parked until the weekly limit resets Thu 06:00.<button class="a">Show parked</button></div>
+</div>

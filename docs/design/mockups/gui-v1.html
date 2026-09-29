@@ -1,0 +1,964 @@
+<title>Loomwright Studio Mockups</title>
+<style>
+/* ---- Tokens: from the approved design system (light first, dark redefined) ---- */
+:root{
+  --ground:#f5f5f8;--surface:#ffffff;--surface-raised:#ffffff;--surface-sunken:#eeeef3;--sidebar:#f5f5f8b8;
+  --hairline:#e3e3ea;--border:#8a8a9e;--ink:#1a1a22;--ink-secondary:#5d5d70;--ink-tertiary:#66667c;--ink-disabled:#a8a8b8;
+  --accent:#4650c8;--accent-hover:#3a43b0;--accent-soft:#e8eafb;--on-accent:#ffffff;
+  --ok:#1f7a4d;--ok-soft:#e3f3ea;--attention:#99570a;--attention-soft:#fdf1d9;--danger:#b8322a;--danger-soft:#fce9e7;--parked:#6d5aa8;--parked-soft:#ece7f8;
+  --crew-teal:#0b7580;--crew-sky:#1f6aa8;--crew-berry:#a2338f;--crew-olive:#5f6f12;--crew-slate:#526073;
+  --overlay:#0f0f1a66;
+  --shadow-1:0 1px 2px #0f0f1a14;--shadow-2:0 4px 16px #0f0f1a1f,0 0 0 1px #0f0f1a0f;--shadow-3:0 16px 48px #0f0f1a33,0 0 0 1px #0f0f1a14;
+  --win-shadow:0 24px 80px #00000059,0 0 0 1px #00000026;
+  --desk:#3a3d52;--desk-ink:#eef0ff;--menubar:#26283bcc;--pill-ink:#ffffff;
+  --font-sans:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue',Helvetica,Arial,sans-serif;
+  --font-mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  --d-instant:80ms;--d-fast:120ms;--d-base:180ms;--d-slow:240ms;--d-pulse:1600ms;
+  --ease:cubic-bezier(.2,0,0,1);--ease-enter:cubic-bezier(0,0,.2,1);--ease-exit:cubic-bezier(.4,0,1,1);--ease-palette:cubic-bezier(.34,1.2,.64,1);
+  --r-xs:4px;--r-sm:6px;--r-md:8px;--r-lg:12px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  color-scheme:dark;
+  --ground:#16161c;--surface:#1e1e25;--surface-raised:#26262e;--surface-sunken:#111116;--sidebar:#16161cb8;
+  --hairline:#2c2c36;--border:#6e6e84;--ink:#ececf2;--ink-secondary:#a3a3b5;--ink-tertiary:#8b8ba0;--ink-disabled:#5a5a6c;
+  --accent:#8f97ff;--accent-hover:#a3aaff;--accent-soft:#272b4d;--on-accent:#12122a;
+  --ok:#4fbf85;--ok-soft:#17342a;--attention:#f0b429;--attention-soft:#3b2e10;--danger:#ff7a70;--danger-soft:#3d1b18;--parked:#b39ff0;--parked-soft:#2a2442;
+  --crew-teal:#45c2cc;--crew-sky:#6db4f2;--crew-berry:#e67fd4;--crew-olive:#b4c257;--crew-slate:#a3b1c6;
+  --overlay:#00000099;
+  --shadow-1:0 1px 2px #00000066;--shadow-2:0 4px 16px #00000080,0 0 0 1px #ffffff14;--shadow-3:0 16px 48px #000000b3,0 0 0 1px #ffffff1a;
+  --win-shadow:0 24px 80px #000000b3,0 0 0 1px #ffffff1f;
+  --desk:#101118;--desk-ink:#d9dbef;--menubar:#15161fcc;--pill-ink:#1a1200;
+}}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#16161c;--surface:#1e1e25;--surface-raised:#26262e;--surface-sunken:#111116;--sidebar:#16161cb8;
+  --hairline:#2c2c36;--border:#6e6e84;--ink:#ececf2;--ink-secondary:#a3a3b5;--ink-tertiary:#8b8ba0;--ink-disabled:#5a5a6c;
+  --accent:#8f97ff;--accent-hover:#a3aaff;--accent-soft:#272b4d;--on-accent:#12122a;
+  --ok:#4fbf85;--ok-soft:#17342a;--attention:#f0b429;--attention-soft:#3b2e10;--danger:#ff7a70;--danger-soft:#3d1b18;--parked:#b39ff0;--parked-soft:#2a2442;
+  --crew-teal:#45c2cc;--crew-sky:#6db4f2;--crew-berry:#e67fd4;--crew-olive:#b4c257;--crew-slate:#a3b1c6;
+  --overlay:#00000099;
+  --shadow-1:0 1px 2px #00000066;--shadow-2:0 4px 16px #00000080,0 0 0 1px #ffffff14;--shadow-3:0 16px 48px #000000b3,0 0 0 1px #ffffff1a;
+  --win-shadow:0 24px 80px #000000b3,0 0 0 1px #ffffff1f;
+  --desk:#101118;--desk-ink:#d9dbef;--menubar:#15161fcc;--pill-ink:#1a1200;
+}
+@media (prefers-reduced-motion:reduce){:root{--d-instant:0ms;--d-fast:0ms;--d-base:0ms;--d-slow:0ms;--d-pulse:0ms;--ease-palette:var(--ease-enter)}}
+
+/* ---- Page ---- */
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--desk);color:var(--desk-ink);font-family:var(--font-sans);font-size:13px;line-height:18px;-webkit-font-smoothing:antialiased}
+.page{padding-inline:16px;padding-block:0 24px;display:flex;flex-direction:column;gap:16px;min-height:100%}
+.stage{overflow-x:auto;margin-inline:-16px;padding-inline:16px}
+.desk{width:1240px;margin:0 auto;position:relative}
+button{font:inherit;color:inherit;cursor:pointer}
+b,strong{font-weight:600}
+h1,h2,h3{margin:0;font-weight:600;text-wrap:balance}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.tn{font-variant-numeric:tabular-nums}
+svg.i{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none}
+svg.i.s{width:14px;height:14px;stroke-width:1.75}
+svg.i.xs{width:12px;height:12px;stroke-width:2}
+
+/* ---- macOS menu bar ---- */
+.mbar{height:28px;display:flex;align-items:center;gap:18px;padding:0 14px;background:var(--menubar);backdrop-filter:blur(30px) saturate(1.6);color:#fff;font-size:13px;font-weight:500;border-radius:0 0 0 0;position:relative;z-index:5}
+.mbar .apple{font-size:15px}
+.mbar .app{font-weight:700}
+.mbar .sp{flex:1}
+.mbar .r{display:flex;align-items:center;gap:16px;font-weight:400}
+.mbar .r .clock{font-variant-numeric:tabular-nums}
+.mbi{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 6px;border-radius:4px;background:none;border:0;color:#fff}
+.mbi:hover,.mbi.open{background:#ffffff26}
+.mbi .ring{width:10px;height:10px;border-radius:50%;border:2px solid #fff;box-sizing:border-box}
+.mbi .ring.working{border:0;background:var(--accent);animation:pulse var(--d-pulse) ease-in-out infinite}
+.mbi .ring.waiting{border:0;background:#f0b429}
+.mbi .ring.parked{border:0;background:#b39ff0;position:relative}
+.mbi .ring.parked::after{content:"";position:absolute;top:2px;bottom:2px;left:4px;width:2px;background:#26283b}
+.mbi .cnt{font-size:11px;font-weight:600;min-width:16px;height:16px;padding:0 5px;border-radius:9999px;background:#f0b429;color:#1a1200;display:grid;place-items:center}
+.mbmenu{position:absolute;right:14px;top:32px;width:300px;background:var(--surface-raised);color:var(--ink);border-radius:var(--r-lg);box-shadow:var(--shadow-3);padding:6px;z-index:40;transform-origin:top right;animation:pop var(--d-base) var(--ease-enter)}
+.mbmenu .st{display:flex;align-items:center;gap:8px;padding:8px 10px}
+.mbmenu .st .meta{color:var(--ink-tertiary);font-size:11px;line-height:14px}
+.mbmenu hr{border:0;border-top:1px solid var(--hairline);margin:4px 0}
+.mbmenu .it{display:flex;align-items:center;gap:8px;width:100%;height:28px;padding:0 10px;border:0;background:none;border-radius:var(--r-sm);text-align:left}
+.mbmenu .it:hover{background:var(--accent);color:var(--on-accent)}
+.mbmenu .it .k{margin-left:auto;font-family:var(--font-mono);font-size:11px;opacity:.7}
+.mbmenu .it.dng{color:var(--danger)}
+.mbmenu .it.dng:hover{background:var(--danger);color:#fff}
+.mbmenu .sess{padding:4px 10px 6px;font-size:11px;line-height:16px;color:var(--ink-secondary)}
+.mbmenu .sess div{display:flex;gap:6px;align-items:center}
+
+/* ---- Window ---- */
+.win{margin:36px auto 0;width:1180px;height:760px;background:var(--ground);color:var(--ink);border-radius:var(--r-lg);box-shadow:var(--win-shadow);display:grid;grid-template-columns:240px 1fr;overflow:hidden;position:relative}
+.side{background:var(--sidebar);backdrop-filter:blur(24px) saturate(1.4);border-right:1px solid var(--hairline);display:flex;flex-direction:column;padding:0 8px 8px}
+.lights{height:52px;display:flex;align-items:center;gap:8px;padding:0 8px;-webkit-app-region:drag}
+.lights i{width:12px;height:12px;border-radius:50%;display:block}
+.lights i:nth-child(1){background:#ff5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
+.nav{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:var(--r-sm);color:var(--ink-secondary);border:0;background:none;width:100%;text-align:left}
+.nav:hover{background:#80809a1a;color:var(--ink)}
+.nav.sel{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.nav .k{margin-left:auto;font-family:var(--font-mono);font-size:11px;color:var(--ink-tertiary)}
+.nav .pill{margin-left:auto}
+.nav.crew{height:44px;align-items:center}
+.nav.crew .txt{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
+.nav.crew .nm{display:flex;align-items:center;gap:6px;color:var(--ink)}
+.nav.crew .nm time{margin-left:auto;font-size:11px;color:var(--ink-tertiary);font-variant-numeric:tabular-nums;font-weight:400}
+.nav.crew .last{font-size:11px;line-height:14px;color:var(--ink-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav.crew.sel .last,.nav.crew.sel .nm time{color:var(--accent);opacity:.8}
+.nav.crew .un{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
+.ev{display:flex;align-items:center;gap:8px;justify-content:center;color:var(--ink-tertiary);font-size:12px;line-height:16px;padding:2px 0;animation:fade var(--d-base)}
+.ev b{color:var(--ink-secondary);font-weight:500}
+.ev .mono{font-size:11px}
+.ev time{font-variant-numeric:tabular-nums}
+.ev a{color:var(--accent);text-decoration:none}
+.inline-ap{margin-top:4px;max-width:560px;border:1px solid var(--attention);border-radius:var(--r-md);background:var(--surface);overflow:hidden;font-size:13px;line-height:18px;animation:rise var(--d-base) var(--ease-enter)}
+.inline-ap .h{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--attention-soft);color:var(--attention);font-weight:600}
+.inline-ap .b{padding:10px 12px;color:var(--ink-secondary)}
+.inline-ap .b .sum{color:var(--ink);margin-bottom:6px}
+.inline-ap .acts{padding:8px 12px;border-top:1px solid var(--hairline)}
+.pill{min-width:18px;height:18px;padding:0 6px;border-radius:9999px;background:var(--attention);color:var(--pill-ink);font-size:11px;font-weight:600;display:inline-grid;place-items:center;font-variant-numeric:tabular-nums}
+.label{font-size:11px;line-height:14px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-tertiary);padding:0 8px;margin:14px 0 4px}
+.side .foot{margin-top:auto;padding:8px;font-size:11px;line-height:14px;color:var(--ink-tertiary);display:flex;align-items:center;gap:6px}
+.side .foot .sp{flex:1}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;box-sizing:border-box;position:relative}
+.dot.idle{border:2px solid var(--ink-tertiary)}
+.dot.working{background:var(--accent);animation:pulse var(--d-pulse) ease-in-out infinite}
+.dot.waiting{background:var(--attention)}
+.dot.parked{background:var(--parked)}
+.dot.parked::after{content:"";position:absolute;top:2px;bottom:2px;left:3px;width:2px;background:var(--surface)}
+.dot.ok{background:var(--ok)}.dot.danger{background:var(--danger)}
+@keyframes pulse{50%{opacity:.55;transform:scale(.85)}}
+@keyframes pop{from{opacity:0;transform:scale(.98)}}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}}
+@keyframes fade{from{opacity:0}}
+
+.main{display:grid;grid-template-rows:52px 1fr;min-width:0;position:relative}
+.tbar{display:flex;align-items:center;gap:8px;padding:0 20px;border-bottom:1px solid var(--hairline);-webkit-app-region:drag}
+.tbar h1{font-size:20px;line-height:26px;letter-spacing:-.01em}
+.tbar .sub{color:var(--ink-tertiary);font-size:12px;margin-left:4px}
+.tbar .sp{flex:1}
+.content{min-height:0;position:relative;display:grid;grid-template-columns:1fr}
+.content.with-insp{grid-template-columns:1fr 320px}
+.col{min-width:0;min-height:0;overflow:auto;display:flex;flex-direction:column}
+.insp{border-left:1px solid var(--hairline);background:var(--surface);overflow:auto;padding:20px;display:flex;flex-direction:column;gap:16px;animation:fade var(--d-slow) var(--ease-enter)}
+.insp h2{font-size:15px;line-height:20px}
+.insp .kv{display:grid;grid-template-columns:88px 1fr;gap:6px 12px;font-size:12px;line-height:16px}
+.insp .kv dt{color:var(--ink-tertiary)}.insp .kv dd{margin:0;color:var(--ink)}
+.insp .sec{display:flex;flex-direction:column;gap:8px}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:var(--r-sm);border:1px solid transparent;font-size:13px;font-weight:500;line-height:18px;background:var(--surface);color:var(--ink);transition:background var(--d-instant),border-color var(--d-instant);white-space:nowrap}
+.btn.sm{height:28px;padding:0 10px;font-size:12px}
+.btn.pri{background:var(--accent);color:var(--on-accent)}.btn.pri:hover{background:var(--accent-hover)}
+.btn.sec{border-color:var(--border)}.btn.sec:hover{background:var(--surface-sunken)}
+.btn.ghost{background:none;color:var(--ink-secondary)}.btn.ghost:hover{background:var(--surface-sunken);color:var(--ink)}
+.btn.dng{color:var(--danger);border-color:var(--danger)}.btn.dng:hover{background:var(--danger-soft)}
+.btn.dngfill{background:var(--danger);color:#fff}
+.btn[disabled]{color:var(--ink-disabled);background:var(--surface-sunken);border-color:transparent;cursor:default}
+.kbd{font-family:var(--font-mono);font-size:11px;font-weight:500;padding:1px 5px;border-radius:var(--r-xs);background:var(--surface-sunken);border:1px solid var(--hairline);color:var(--ink-tertiary);line-height:14px}
+.btn.pri .kbd,.btn.dngfill .kbd{background:#ffffff33;border:0;color:inherit}
+.badge{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:var(--r-xs);font-size:11px;line-height:14px;font-weight:600;white-space:nowrap}
+.badge.ok{background:var(--ok-soft);color:var(--ok)}.badge.att{background:var(--attention-soft);color:var(--attention)}.badge.dng{background:var(--danger-soft);color:var(--danger)}.badge.prk{background:var(--parked-soft);color:var(--parked)}.badge.acc{background:var(--accent-soft);color:var(--accent)}.badge.neu{background:var(--surface-sunken);color:var(--ink-secondary);font-weight:500}
+.mono{font-family:var(--font-mono);font-size:12px}
+.chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:var(--r-sm);background:var(--surface);border:1px solid var(--hairline);font-size:12px;color:var(--ink)}
+
+/* bands, empty, skeleton */
+.band{display:flex;align-items:center;gap:10px;margin:12px 20px 0;padding:8px 12px;border-radius:var(--r-sm);font-size:13px;animation:fade var(--d-base)}
+.band.dng{background:var(--danger-soft);color:var(--danger)}.band.prk{background:var(--parked-soft);color:var(--parked)}.band.att{background:var(--attention-soft);color:var(--attention)}
+.band .a{margin-left:auto;font-weight:600;background:none;border:0;color:inherit;text-decoration:underline;text-underline-offset:2px;padding:0}
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:48px 24px;text-align:center}
+.empty h2{font-size:26px;line-height:32px;letter-spacing:-.02em}
+.empty p{margin:0 0 8px;color:var(--ink-secondary);max-width:420px}
+.skel{display:grid;grid-template-columns:8px 1fr auto;gap:10px;align-items:center;height:44px;padding:0 10px}
+.skel i{display:block;height:10px;border-radius:4px;background:var(--surface-sunken)}
+
+/* Chat */
+.thread{flex:1;overflow:auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px;scroll-behavior:auto}
+.turn{display:grid;grid-template-columns:24px 1fr;gap:10px;max-width:720px;animation:rise var(--d-base) var(--ease-enter)}
+.turn.user{grid-template-columns:1fr;justify-items:end;align-self:flex-end;width:100%}
+.av{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700;background:var(--accent);color:var(--on-accent);margin-top:2px}
+.av.m{background:var(--ok-soft);color:var(--ok)}.av.a{background:var(--parked-soft);color:var(--parked)}
+.who{font-size:11px;line-height:14px;color:var(--ink-tertiary);margin-bottom:4px;display:flex;gap:8px}
+.msg{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--r-md);padding:10px 14px;max-width:560px;font-size:14px;line-height:21px}
+.user .msg{background:var(--accent-soft);border-color:transparent}
+.msg p{margin:0 0 8px}.msg p:last-child{margin:0}
+.caret{display:inline-block;width:2px;height:16px;background:var(--accent);vertical-align:-3px;margin-left:1px}
+.draft{margin-top:10px;border:1px solid var(--hairline);border-radius:var(--r-md);overflow:hidden;background:var(--ground);font-size:13px;line-height:18px}
+.draft .h{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--hairline);background:var(--surface)}
+.draft .kv{display:grid;grid-template-columns:96px 1fr;gap:4px 12px;padding:10px 12px;margin:0}
+.draft dt{color:var(--ink-tertiary);font-size:11px;line-height:18px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.draft dd{margin:0}
+.draft .prop{color:var(--ink-tertiary);font-size:11px;margin-left:4px}
+.draft .dry{padding:8px 12px;border-top:1px solid var(--hairline);font-family:var(--font-mono);font-size:12px;line-height:18px;color:var(--ink-secondary);background:var(--surface-sunken)}
+.draft .dry .l{color:var(--ink-tertiary)}
+.draft .acts{display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--hairline);background:var(--surface)}
+.composer{margin:0 24px 20px;display:flex;align-items:flex-end;gap:8px;padding:8px 8px 8px 12px;border-radius:var(--r-md);background:var(--surface);border:1px solid var(--hairline);box-shadow:var(--shadow-1)}
+.composer:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.composer textarea{flex:1;border:0;background:transparent;font:inherit;font-size:14px;line-height:21px;color:var(--ink);resize:none;outline:0;min-height:42px;max-height:126px}
+.composer textarea::placeholder{color:var(--ink-tertiary)}
+.chips{display:flex;gap:8px;padding:0 24px 12px;flex-wrap:wrap}
+.chips button{height:28px;padding:0 10px;border-radius:9999px;border:1px solid var(--hairline);background:var(--surface);color:var(--ink-secondary);font-size:12px}
+.chips button:hover{border-color:var(--border);color:var(--ink)}
+
+/* Team */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));grid-auto-rows:1fr;gap:16px;padding:20px 24px}
+.card{background:var(--surface);border:1px solid var(--hairline);border-radius:var(--r-md);padding:16px;display:flex;flex-direction:column;gap:12px;text-align:left;transition:box-shadow var(--d-instant);cursor:pointer}
+.card:hover{box-shadow:var(--shadow-1)}
+.card.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.card .head{display:flex;align-items:center;gap:10px}
+.card .av{width:32px;height:32px;font-size:13px;margin:0}
+.card .head > div{min-width:0}
+.card .name{font-size:15px;line-height:20px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .role{font-size:11px;line-height:14px;color:var(--ink-tertiary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:28px}
+.card .st{display:flex;align-items:flex-start;gap:6px;color:var(--ink);font-weight:500;min-height:36px}
+.card .st .dot{margin-top:5px}
+.card .st span:last-child{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card .st.muted{color:var(--ink-tertiary);font-weight:400}
+.card .meta span{white-space:nowrap}
+.bar{height:3px;border-radius:2px;background:var(--surface-sunken);overflow:hidden}.bar i{display:block;height:100%;background:var(--accent)}
+.card .budget{display:flex;flex-direction:column;gap:6px;margin-top:auto}
+.card .meta{display:flex;justify-content:space-between;font-size:11px;line-height:14px;color:var(--ink-tertiary)}
+.card.new{border-style:dashed;align-items:center;justify-content:center;color:var(--ink-secondary);gap:6px}
+.card.new:hover{color:var(--accent);border-color:var(--accent)}
+.perm{display:flex;flex-direction:column;gap:6px;font-size:12px;line-height:16px}
+.perm div{display:flex;gap:8px;align-items:center}
+.perm .y{color:var(--ok)}.perm .n{color:var(--danger)}
+.files a{display:flex;align-items:center;gap:6px;color:var(--accent);text-decoration:none;font-family:var(--font-mono);font-size:12px;line-height:20px}
+
+/* Approvals */
+.inbox{display:grid;grid-template-columns:360px 1fr;min-height:0;flex:1}
+.list{border-right:1px solid var(--hairline);overflow:auto;padding:8px}
+.row{display:grid;grid-template-columns:8px 1fr;gap:10px;align-items:start;padding:10px 10px;border-radius:var(--r-sm);width:100%;border:0;background:none;text-align:left;animation:fade var(--d-base)}
+.row:hover{background:var(--surface)}
+.row.sel{background:var(--accent-soft)}
+.row .dot{margin-top:5px}
+.row .t{font-weight:600;color:var(--ink)}
+.row .m{font-size:11px;line-height:14px;color:var(--ink-tertiary);margin-top:2px}
+.row.sel .m{color:var(--ink-secondary)}
+.detail{overflow:auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px;min-width:0}
+.detail h2{font-size:15px;line-height:20px}
+.detail .meta{display:flex;gap:8px;flex-wrap:wrap;align-items:center;color:var(--ink-secondary);font-size:12px}
+.payload{border:1px solid var(--hairline);border-radius:var(--r-md);background:var(--surface);overflow:hidden}
+.payload .ph{display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--surface-sunken);border-bottom:1px solid var(--hairline);font-size:12px}
+.payload .ph .sp{flex:1}
+.payload .body{padding:12px 14px;font-size:14px;line-height:21px}
+.payload .body p{margin:0 0 8px}.payload .body ul{margin:0 0 8px;padding-left:20px}
+.payload pre{margin:0;padding:12px 14px;font-family:var(--font-mono);font-size:12px;line-height:18px;color:var(--ink);white-space:pre-wrap}
+.diff{font-family:var(--font-mono);font-size:12px;line-height:18px}
+.diff .hunk{color:var(--ink-tertiary);background:var(--ground);padding:0 12px}
+.diff .ln{display:grid;grid-template-columns:36px 36px 16px 1fr;white-space:pre}
+.diff .ln span:nth-child(-n+2){text-align:right;padding-right:8px;color:var(--ink-tertiary);user-select:none}
+.diff .ln span:nth-child(3){text-align:center;user-select:none}
+.diff .add{background:var(--ok-soft)}.diff .add span:nth-child(-n+3){color:var(--ok)}
+.diff .del{background:var(--danger-soft)}.diff .del span:nth-child(-n+3){color:var(--danger)}
+.diff .ctx{color:var(--ink-secondary)}
+.acts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.acts .sp{flex:1}
+.why{font-size:12px;line-height:16px;color:var(--ink-secondary);background:var(--surface-sunken);border-radius:var(--r-sm);padding:8px 10px}
+
+/* Sessions */
+.sesswrap{display:grid;grid-template-columns:360px 1fr;min-height:0;flex:1}
+.srow{display:grid;grid-template-columns:8px 1fr auto;gap:10px;align-items:center;height:44px;padding:0 10px;border-radius:var(--r-sm);width:100%;border:0;background:none;text-align:left}
+.srow:hover{background:var(--surface)}.srow.sel{background:var(--accent-soft)}
+.srow .t{font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.srow .m{font-size:11px;line-height:14px;color:var(--ink-tertiary)}
+.srow .r{font-size:11px;color:var(--ink-tertiary);text-align:right}
+.log{display:flex;flex-direction:column;min-height:0;background:var(--surface-sunken)}
+.log .bar2{display:flex;align-items:center;gap:10px;padding:8px 16px;background:var(--surface);border-bottom:1px solid var(--hairline);font-size:12px;min-height:44px}
+.log .bar2 .m{color:var(--ink-tertiary)}.log .bar2 .sp{flex:1}
+.log .body{flex:1;overflow:auto;padding:8px 0 32px;font-family:var(--font-mono);font-size:12px;line-height:18px;color:var(--ink-secondary);position:relative}
+.log .l{display:grid;grid-template-columns:68px 1fr;padding:0 16px;white-space:pre-wrap;word-break:break-word}
+.log .l time{color:var(--ink-tertiary)}
+.log .tool{color:var(--accent)}.log .out{color:var(--ink)}.log .err{color:var(--danger)}.log .okl{color:var(--ok)}
+.log .bcaret{display:inline-block;width:7px;height:14px;background:var(--accent);vertical-align:-2px}
+.log .pin{position:sticky;bottom:6px;display:flex;justify-content:center;pointer-events:none}
+.log .pin span{font-family:var(--font-sans);font-size:11px;padding:2px 8px;border-radius:9999px;background:var(--surface-raised);box-shadow:var(--shadow-2);color:var(--ink-secondary)}
+.log .handoff{margin:8px 16px;padding:10px 12px;border-radius:var(--r-sm);background:var(--surface);border:1px solid var(--hairline);font-family:var(--font-sans);font-size:12px;line-height:16px;color:var(--ink-secondary)}
+
+/* Loom avatars: a sea creature stitched from thread per crew member (Wright is the crowned whale). No face beyond a knot for the eye: the thread is the actor. Layers: drift (whole), rig (body from its base), wind (the winding), tail (the loose thread) */
+.bot{display:inline-grid;place-items:center;width:var(--s,32px);height:var(--s,32px);flex:none;position:relative}
+.bot svg{width:100%;height:100%;overflow:visible;display:block}
+.bot .drift{transform-origin:16px 16px}
+.bot .rig{transform-origin:16px 29px}
+.bot .fill{fill:var(--bot,var(--accent));opacity:.28}
+.bot .st{fill:none;stroke:var(--bot,var(--accent));stroke-width:1.6;stroke-dasharray:2.6 1.5;stroke-linecap:round;stroke-linejoin:round}
+.bot .ln{fill:none;stroke:var(--bot,var(--accent));stroke-width:1.2;stroke-dasharray:1.8 1.4;stroke-linecap:round;opacity:.85}
+.bot .knot{fill:var(--bot,var(--accent))}
+.bot.working .st,.bot.working .ln{animation:run 1.2s linear infinite}
+.bot .frame{fill:var(--ink-tertiary)}
+.bot .thread{fill:var(--bot,var(--accent))}
+.bot .stripe{stroke:var(--ground);stroke-width:1.1;fill:none;opacity:.55}
+.bot .t{stroke:var(--bot,var(--accent));stroke-width:1.9;stroke-linecap:round;fill:none;display:none}
+.bot .t-idle{display:block}
+.bot .ring{position:absolute;inset:-3px;border-radius:50%;border:2px solid var(--attention);opacity:0;pointer-events:none}
+/* the thread border: a running stitch in the agent's hue around every avatar; it runs while working */
+.bot .stitch{fill:none;stroke:var(--bot,var(--accent));stroke-width:1.2;stroke-dasharray:2.4 2.6;stroke-linecap:round;opacity:.45;transform-origin:16px 16px}
+.bot.working .stitch{animation:run 1.6s linear infinite}
+.bot.parked .stitch{stroke-dasharray:1 4;opacity:.5}
+.bot.danger .stitch{stroke-dasharray:6 10;opacity:.6}
+.bot.done .stitch{stroke-dasharray:none;opacity:.9}
+.bot .crown{fill:var(--bot,var(--accent));stroke:var(--ground);stroke-width:.8;stroke-linejoin:round}
+@keyframes run{to{stroke-dashoffset:-10}}
+/* hover: a nod, and the thread flicks */
+.bot:hover .rig{animation:nod .5s cubic-bezier(.3,0,.2,1) 1!important}
+/* idle: calm. floats in a slow swirl; the loose thread sways */
+.bot.idle .drift{animation:swirl 7s ease-in-out infinite;animation-delay:var(--seed,0s)}
+.bot.idle .tail{animation:sway 3s ease-in-out infinite alternate;animation-delay:var(--seed,0s)}
+/* working: the thread winds on, the creature leans into the work, the loose end flutters */
+.bot.working .wind{animation:winding .5s linear infinite}
+.bot.working .rig{animation:lean 1.2s ease-in-out infinite alternate}
+.bot.working .tail{animation:flutter .35s ease-in-out infinite alternate}
+/* waiting on you: the thread rises toward you in a loop; the creature hops; amber ring when it lands */
+.bot.waiting .t-idle{display:none}.bot.waiting .t-up{display:block}
+.bot.waiting .rig{animation:hop 2.6s cubic-bezier(.3,0,.2,1) infinite}
+.bot.waiting .tail{animation:beckon 2.6s ease-in-out infinite}
+.bot.waiting .ring{animation:ring 2.6s ease-out infinite}
+/* paused at cap: the thread hangs slack, the creature settles, dimmed */
+.bot.parked{opacity:.72}
+.bot.parked .t-idle{display:none}.bot.parked .t-slack{display:block}
+.bot.parked .rig{animation:sink 4.5s ease-in-out infinite}
+/* killed / failed: the thread is cut; the creature tips */
+.bot.danger .t-idle{display:none}.bot.danger .t-cut,.bot.danger .t-cut2{display:block}
+.bot.danger .rig{animation:tip .6s cubic-bezier(.36,.07,.19,.97) 1 forwards}
+/* done: the thread ties into a bow; one spin with overshoot */
+.bot.done .t-idle{display:none}.bot.done .t-bow{display:block}
+.bot.done .rig{animation:spin 1s cubic-bezier(.34,1.4,.64,1) 1}
+.bot.done .drift{animation:orbit 1s cubic-bezier(.3,0,.2,1) 1}
+@keyframes swirl{0%,100%{transform:translate(0,0) rotate(0)}25%{transform:translate(1.4px,-1px) rotate(3deg)}50%{transform:translate(0,-2px) rotate(0)}75%{transform:translate(-1.4px,-1px) rotate(-3deg)}}
+@keyframes sway{from{transform:rotate(-14deg)}to{transform:rotate(12deg)}}
+@keyframes winding{from{transform:translateY(0)}to{transform:translateY(3px)}}
+@keyframes lean{from{transform:rotate(-3deg) scale(1,1)}to{transform:rotate(3deg) scale(1.02,.98)}}
+@keyframes flutter{from{transform:rotate(-6deg)}to{transform:rotate(18deg)}}
+@keyframes hop{0%,58%,100%{transform:translateY(0) scale(1,1)}64%{transform:translateY(1.5px) scale(1.12,.86)}73%{transform:translateY(-7px) scale(.94,1.1)}80%{transform:translateY(-3px) scale(.97,1.04)}85%{transform:translateY(0) scale(1.08,.92)}92%{transform:scale(.99,1.01)}}
+@keyframes beckon{0%,55%,100%{transform:rotate(0)}70%{transform:rotate(-18deg)}85%{transform:rotate(8deg)}}
+@keyframes nod{0%{transform:rotate(0)}30%{transform:rotate(-8deg) translateY(-2px)}70%{transform:rotate(4deg)}100%{transform:rotate(0)}}
+@keyframes ring{0%,80%{opacity:0;transform:scale(.8)}83%{opacity:.75;transform:scale(.86)}100%{opacity:0;transform:scale(1.35)}}
+@keyframes sink{0%,100%{transform:translateY(1px) scale(1.04,.96)}50%{transform:translateY(1.4px) scale(1.05,.95)}}
+@keyframes tip{0%{transform:rotate(0)}20%{transform:rotate(-6deg) translateX(-2px)}40%{transform:rotate(6deg) translateX(2px)}100%{transform:rotate(22deg) translateY(1px)}}
+@keyframes orbit{0%{transform:translate(0,0)}25%{transform:translate(3px,-3px)}50%{transform:translate(0,-5px)}75%{transform:translate(-3px,-3px)}100%{transform:translate(0,0)}}
+@keyframes spin{0%{transform:rotate(0) scale(1)}45%{transform:rotate(380deg) scale(1.08)}100%{transform:rotate(360deg) scale(1)}}
+@media (prefers-reduced-motion:reduce){.bot .drift,.bot .rig,.bot .wind,.bot .tail,.bot .ring{animation:none!important}.bot.waiting .ring{opacity:.7}}
+.shapes{display:flex;gap:6px;flex-wrap:wrap}
+.shapes button{width:36px;height:36px;border-radius:var(--r-sm);border:1px solid var(--hairline);background:var(--surface);display:grid;place-items:center;padding:0}
+.shapes button.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.states{width:1240px;margin:0 auto;display:flex;flex-wrap:wrap;gap:8px 28px;align-items:flex-end;padding:12px 16px;border-radius:var(--r-lg);background:#ffffff14;color:var(--desk-ink);font-size:12px}
+.states .t{opacity:.7;width:100%}
+.states .st{display:flex;flex-direction:column;align-items:center;gap:8px}
+.states .st span{opacity:.8}
+.states .bot{background:var(--ground);border-radius:var(--r-md);padding:12px;width:auto;height:auto}
+.states .bot svg{width:56px;height:56px}
+.states button{background:none;border:1px solid #ffffff33;border-radius:var(--r-sm);color:inherit;height:26px;padding:0 10px}
+@media (max-width:1280px){.states{width:100%}}
+
+/* Toasts */
+.toasts{position:absolute;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:30}
+.toast{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--r-md);background:var(--surface-raised);box-shadow:var(--shadow-2);width:360px;animation:rise var(--d-base) var(--ease-enter);font-size:13px}
+.toast .t{flex:1}.toast .x{color:var(--ink-tertiary);background:none;border:0;font-size:16px;line-height:1;padding:0}
+.toast.out{animation:fade var(--d-fast) var(--ease-exit) reverse forwards}
+
+/* Overlay, palette, dialogs */
+.ov{position:absolute;inset:0;background:var(--overlay);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding-top:120px;animation:fade var(--d-fast)}
+.ov.center{align-items:center;padding-top:0}
+.pal{width:560px;background:var(--surface-raised);border-radius:var(--r-lg);box-shadow:var(--shadow-3);overflow:hidden;animation:pop var(--d-slow) var(--ease-palette)}
+.pal .in{display:flex;align-items:center;gap:10px;height:44px;padding:0 14px;border-bottom:1px solid var(--hairline)}
+.pal input{flex:1;border:0;background:transparent;font:inherit;font-size:15px;color:var(--ink);outline:0}
+.pal input::placeholder{color:var(--ink-tertiary)}
+.pal .lst{padding:6px;max-height:360px;overflow:auto}
+.pal .grp{font-size:11px;line-height:14px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-tertiary);padding:8px 10px 4px}
+.pal .it{display:flex;align-items:center;gap:10px;height:32px;padding:0 10px;border-radius:var(--r-sm);color:var(--ink);width:100%;border:0;background:none;text-align:left}
+.pal .it.sel{background:var(--accent-soft);color:var(--accent)}
+.pal .it .r{margin-left:auto;display:flex;gap:6px;align-items:center;font-size:12px;color:var(--ink-tertiary)}
+.pal .it.sel .r{color:var(--accent)}
+.pal .foot{display:flex;gap:16px;padding:8px 14px;border-top:1px solid var(--hairline);font-size:11px;color:var(--ink-tertiary);background:var(--surface)}
+.pal .none{padding:24px;text-align:center;color:var(--ink-tertiary)}
+.dlg{width:380px;background:var(--surface-raised);border-radius:var(--r-lg);box-shadow:var(--shadow-3);padding:20px;display:flex;flex-direction:column;gap:12px;animation:pop var(--d-slow) var(--ease-enter)}
+.dlg.wide{width:480px}
+.dlg h2{font-size:15px;line-height:20px}
+.dlg p{margin:0;color:var(--ink-secondary)}
+.dlg .well{background:var(--surface-sunken);border-radius:var(--r-sm);padding:8px 10px;font-family:var(--font-mono);font-size:12px;line-height:18px;color:var(--ink)}
+.dlg .acts{justify-content:flex-end;margin-top:4px}
+.dlg .icon{width:32px;height:32px;border-radius:50%;background:var(--danger-soft);color:var(--danger);display:grid;place-items:center}
+.dlg label{display:block;font-size:11px;line-height:14px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-tertiary);margin-bottom:4px}
+.dlg .field{display:flex;align-items:center;height:32px;padding:0 10px;border-radius:var(--r-sm);background:var(--surface-sunken);border:1px solid transparent}
+.dlg .field:focus-within{background:var(--surface);border-color:var(--accent)}
+.dlg .field input,.dlg .field select{flex:1;border:0;background:transparent;font:inherit;color:var(--ink);outline:0;min-width:0}
+.dlg .chk{display:flex;align-items:center;gap:8px;color:var(--ink-secondary);font-size:13px;text-transform:none;letter-spacing:0;font-weight:400}
+
+/* Review strip */
+.review{width:1240px;margin:0 auto;display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:12px 16px;border-radius:var(--r-lg);background:#ffffff14;color:var(--desk-ink);font-size:12px}
+.review .g{display:flex;align-items:center;gap:6px}
+.review .g span.t{opacity:.7}
+.review .seg{display:inline-flex;border:1px solid #ffffff33;border-radius:var(--r-sm);overflow:hidden}
+.review .seg button{background:none;border:0;color:inherit;height:26px;padding:0 10px;font-size:12px}
+.review .seg button.on{background:#ffffff26}
+.review .tog{background:none;border:1px solid #ffffff33;border-radius:var(--r-sm);color:inherit;height:26px;padding:0 10px;display:inline-flex;align-items:center;gap:6px}
+.review .tog.on{background:#ffffff26;border-color:#ffffff66}
+.review .kbdl{margin-left:auto;opacity:.7;font-variant-numeric:tabular-nums}
+.review .kbdl b{font-family:var(--font-mono);font-weight:500;background:#ffffff1f;padding:1px 5px;border-radius:4px}
+.intro{width:1240px;margin:0 auto;padding-top:20px;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+.intro h1{font-size:15px;line-height:20px}
+.intro p{margin:0;opacity:.75;font-size:12px}
+@media (max-width:1280px){.intro,.review{width:100%}}
+</style>
+
+<div class="page">
+  <div class="intro"><h1>Loomwright Studio · GUI v1 mockups</h1><p>Menu bar, Chat, Team, Approvals, Sessions. Click through, or use the keyboard. Nothing here talks to a real kernel.</p></div>
+
+  <div class="stage"><div class="desk">
+    <!-- macOS menu bar -->
+    <div class="mbar" role="menubar">
+      <span class="apple" aria-label="Apple menu"></span><span class="app">Loomwright Studio</span><span>File</span><span>Edit</span><span>View</span><span>Agents</span><span>Window</span><span>Help</span>
+      <span class="sp"></span>
+      <div class="r">
+        <button class="mbi" id="mbi" aria-haspopup="menu" aria-expanded="false" aria-label="Loomwright Studio status"><span class="ring" id="mbring"></span><span class="cnt" id="mbcnt" hidden>0</span></button>
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 9a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16a5 5 0 0 1 6 0M12 19.5h.01"/></svg><svg aria-hidden="true" width="24" height="16" viewBox="0 0 30 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="24" height="12" rx="3"/><rect x="3" y="4" width="17" height="8" rx="1.5" fill="currentColor" stroke="none"/><path d="M27 6v4" stroke-linecap="round"/></svg><span class="clock" id="clock">Mon 14:06</span>
+      </div>
+    </div>
+    <div class="mbmenu" id="mbmenu" role="menu" hidden></div>
+
+    <!-- The app window -->
+    <div class="win" id="win">
+      <aside class="side">
+        <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+        <button class="nav" data-go="chat"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.5-4.5A8 8 0 1 1 21 12Z"/></svg>Chat<span class="k">⌘1</span></button>
+        <button class="nav" data-go="team"><svg class="i" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M15 19a4.5 4.5 0 0 1 7 0"/></svg>Team<span class="k">⌘2</span></button>
+        <button class="nav" data-go="approvals"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/></svg>Approvals<span class="pill" id="navcnt" hidden>0</span><span class="k" id="navk">⌘3</span></button>
+        <button class="nav" data-go="sessions"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 20h10M8 9l3 3-3 3M13 15h3"/></svg>Sessions<span class="k">⌘4</span></button>
+        <div class="label" title="Direct threads with each specialist">Crew</div>
+        <div id="crewnav"></div>
+        <div class="foot"><span class="dot" id="footdot"></span><span id="foottext">idle</span><span class="sp"></span><button class="btn ghost sm" id="palbtn" title="Command palette" style="height:22px;padding:0 6px"><span class="kbd">⌘K</span></button></div>
+      </aside>
+      <div class="main" id="main"></div>
+      <div class="toasts" id="toasts"></div>
+      <div id="overlay"></div>
+    </div>
+  </div></div>
+
+  <div class="review" aria-label="Review controls">
+    <div class="g"><span class="t">Theme</span><span class="seg" id="themeseg"><button data-t="">System</button><button data-t="light">Light</button><button data-t="dark">Dark</button></span></div>
+    <div class="g"><span class="t">Force state</span>
+      <button class="tog" id="tg-empty">Empty</button>
+      <button class="tog" id="tg-loading">Loading</button>
+      <button class="tog" id="tg-offline">Kernel unreachable</button>
+    </div>
+    <div class="g"><button class="tog" id="tg-reset">Reset data</button></div>
+    <div class="kbdl" style="margin-left:0">Keys: <b>⌘K</b> or <b>/</b> palette · <b>⌘1–4</b> screens (in a browser tab ⌘ switches tabs first; use <b>⌃1–4</b>) · <b>J</b>/<b>K</b> rows · <b>A</b> <b>⇧A</b> <b>D</b> on approvals · <b>⌘.</b> stop · <b>Esc</b></div>
+  </div>
+  <div class="states" id="states" aria-label="Avatar motion system"></div>
+</div>
+
+<script>
+(function(){
+'use strict';
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const I={
+  send:'<svg class="i s" viewBox="0 0 24 24"><path d="m3 11 18-8-8 18-2-8-8-2Z"/></svg>',
+  plus:'<svg class="i s" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  search:'<svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+  warn:'<svg class="i s" viewBox="0 0 24 24"><path d="M12 8v5M12 16h.01M4.9 19h14.2a2 2 0 0 0 1.7-3L13.7 4a2 2 0 0 0-3.4 0L3.2 16a2 2 0 0 0 1.7 3Z"/></svg>',
+  pause:'<svg class="i s" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg>',
+  x:'<svg class="i" viewBox="0 0 24 24"><path d="M18.4 5.6 5.6 18.4M5.6 5.6l12.8 12.8"/></svg>',
+  check:'<svg class="i xs" viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></svg>',
+  file:'<svg class="i s" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>',
+  ext:'<svg class="i xs" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>',
+  list:'<svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/></svg>',
+  chat:'<svg class="i" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.5-4.5A8 8 0 1 1 21 12Z"/></svg>',
+  team:'<svg class="i" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M15 19a4.5 4.5 0 0 1 7 0"/></svg>',
+  term:'<svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 20h10M8 9l3 3-3 3M13 15h3"/></svg>'
+};
+
+/* ---------- Avatars ---------- */
+/* Loom avatars: every crew member is a sea creature stitched from thread; Wright is the crowned whale. The thread is the expressive part. */
+const SHAPES={
+  whale:{body:'<ellipse class="fill" cx="18" cy="17" rx="10" ry="7"/><path class="fill" d="M9 17c-3-1-5-3-6-6 0 4 0 8 0 12 1-3 3-5 6-6z"/><ellipse class="st" cx="18" cy="17" rx="10" ry="7"/><path class="st" d="M9 17c-3-1-5-3-6-6 0 4 0 8 0 12 1-3 3-5 6-6z"/><path class="ln" d="M17 24c-1 3 0 5 2 6M12 20c3 1 7 1 10 0M23 9c0-2 1-3 2-4M22 9c0-2-1-3-2-4"/><circle class="knot" cx="24" cy="15" r="1.3"/>',tail:[3,23],crown:[16,4]},
+  shark:{body:'<path class="fill" d="M5 17c4-4 9-6 15-6 4 0 8 2 10 6-2 4-6 6-10 6-6 0-11-2-15-6z"/><path class="fill" d="M13 12c1-4 3-6 5-7 0 3 0 5-1 7z"/><path class="st" d="M5 17c4-4 9-6 15-6 4 0 8 2 10 6-2 4-6 6-10 6-6 0-11-2-15-6z"/><path class="st" d="M13 12c1-4 3-6 5-7 0 3 0 5-1 7zM5 17c-2-3-3-5-3-8 2 2 4 4 6 5M5 17c-2 3-3 5-3 8 2-2 4-4 6-5"/><path class="ln" d="M22 15v4M24 15v4M18 22c1 2 2 3 3 3"/><circle class="knot" cx="26" cy="16" r="1.2"/>',tail:[2,25]},
+  seahorse:{body:'<path class="fill" d="M18 4c4 0 6 3 6 7 0 5-4 8-6 12-1 3 0 5 2 6-4 0-7-3-6-7 1-4 5-7 5-11 0-2-1-3-2-3-2 0-3 1-4 2l-4-1c1-3 5-5 9-5z"/><path class="st" d="M18 4c4 0 6 3 6 7 0 5-4 8-6 12-1 3 0 5 2 6-4 0-7-3-6-7 1-4 5-7 5-11 0-2-1-3-2-3-2 0-3 1-4 2l-4-1c1-3 5-5 9-5z"/><path class="ln" d="M9 9h-4M22 8l2-2M23 12l3-1M20 16l3 1M16 22h3"/><circle class="knot" cx="18" cy="8" r="1.2"/>',tail:[20,29]},
+  octopus:{body:'<circle class="fill" cx="16" cy="12" r="8"/><circle class="st" cx="16" cy="12" r="8"/><path class="ln" d="M9 18c-2 4-4 7-2 11M13 19c-1 4-1 8 1 11M19 19c1 4 1 8-1 11M23 18c2 4 4 7 2 11"/><circle class="knot" cx="13" cy="12" r="1.2"/><circle class="knot" cx="19" cy="12" r="1.2"/>',tail:[27,22]},
+  turtle:{body:'<ellipse class="fill" cx="15" cy="17" rx="10" ry="7"/><circle class="fill" cx="27" cy="15" r="3"/><ellipse class="st" cx="15" cy="17" rx="10" ry="7"/><circle class="st" cx="27" cy="15" r="3"/><path class="ln" d="M8 17h14M11 12l2 5M19 12l-2 5M11 22l2-5M19 22l-2-5M8 12l-4-3M8 22l-4 3M22 22l3 3"/><circle class="knot" cx="28" cy="14" r="1"/>',tail:[4,17]},
+  jellyfish:{body:'<path class="fill" d="M6 15a10 8 0 0 1 20 0c-3 2-7 3-10 3s-7-1-10-3z"/><path class="st" d="M6 15a10 8 0 0 1 20 0c-3 2-7 3-10 3s-7-1-10-3z"/><path class="ln" d="M10 18c-1 4 1 7 0 11M14 19c-1 4 1 7 0 10M18 19c1 4-1 7 0 10M22 18c1 4-1 7 0 11M10 12c2-2 10-2 12 0"/><circle class="knot" cx="13" cy="14" r="1"/><circle class="knot" cx="19" cy="14" r="1"/>',tail:[26,16]},
+  fish:{body:'<ellipse class="fill" cx="15" cy="16" rx="9" ry="6"/><path class="fill" d="M6 16l-4-5v10z"/><ellipse class="st" cx="15" cy="16" rx="9" ry="6"/><path class="st" d="M6 16l-4-5v10zM14 10c1-3 3-4 5-4-1 2-1 4-2 5z"/><path class="ln" d="M12 11v10M16 11v10M15 22c1 2 3 3 4 3"/><circle class="knot" cx="20" cy="15" r="1.2"/>',tail:[24,17]},
+  crab:{body:'<ellipse class="fill" cx="16" cy="18" rx="9" ry="6"/><circle class="fill" cx="5" cy="12" r="3"/><circle class="fill" cx="27" cy="12" r="3"/><ellipse class="st" cx="16" cy="18" rx="9" ry="6"/><circle class="st" cx="5" cy="12" r="3"/><circle class="st" cx="27" cy="12" r="3"/><path class="ln" d="M8 14l-2-1M24 14l2-1M8 20l-4 3M9 22l-3 4M24 20l4 3M23 22l3 4M12 12v-3M20 12v-3"/><circle class="knot" cx="12" cy="9" r="1.2"/><circle class="knot" cx="20" cy="9" r="1.2"/>',tail:[24,24]},
+};
+const SHAPE_ORDER=Object.keys(SHAPES).filter(s=>s!=='whale');
+const HUES={accent:'--accent',teal:'--crew-teal',sky:'--crew-sky',berry:'--crew-berry',olive:'--crew-olive',slate:'--crew-slate'};
+// Identity hues only. accent is Wright's alone; semantic tokens (ok, attention, danger, parked) mean kernel state and are never used here (scripts/check-docs.sh enforces it).
+const CREW_HUES=['teal','berry','sky','olive','slate'];
+const seedOf=s=>{let h=0;for(const c of String(s))h=(h*31+c.charCodeAt(0))>>>0;return (h%40)/10};
+function avatarHTML(a,state,size,title){
+  state=state||agentState(a.id); size=size||32;
+  const key=a.id==='wright'?'whale':(a.shape in SHAPES?a.shape:'fish'); const sh=SHAPES[key]; const [tx,ty]=sh.tail;
+  const label=`${a.name} · ${stateWord[state]||state}${title?' · '+title:''}`;
+  const tails=`<g class="tail" style="transform-origin:${tx}px ${ty}px"><path class="t t-idle" d="M${tx} ${ty}c-3 1-5 3-4 7"/><path class="t t-up" d="M${tx} ${ty}c-5-1-7-6-3-9 3-2 5 2 2 3"/><path class="t t-slack" d="M${tx} ${ty}c-1 3-1 8 0 12"/><path class="t t-cut" d="M${tx} ${ty}c-2 0-3 1-3 2"/><path class="t t-cut2" d="M${tx-5} ${ty+5}c-1 1-2 3-1 5"/><path class="t t-bow" d="M${tx} ${ty}c-3-3-6-2-4 1s5 0 4-1c1-3 5-2 3 1s-5 0-3-1"/></g>`;
+  const crown=a.id==='wright'?`<path class="crown" d="M${sh.crown[0]-6.5} ${sh.crown[1]+4.5}l1.5-5 3 3 2-4.5 2 4.5 3-3 1.5 5z"/>`:'';
+  return `<span class="bot ${state} ${a.id==='wright'?'lead':''}" style="--s:${size}px;--bot:var(${HUES[a.hue]||(a.id==='wright'?HUES.accent:HUES.slate)});--seed:-${seedOf(a.id)}s" role="img" aria-label="${esc(label)}" title="${esc(label)}"><span class="ring" aria-hidden="true"></span><svg viewBox="-2 -2 36 36"><circle class="stitch" cx="16" cy="16" r="16.5"/><g class="drift"><g class="rig">${sh.body}${crown}${tails}</g></g></svg></span>`;
+}
+function celebrate(agentId){
+  const nm=agent(agentId)?.name||'';
+  $$(`.bot[aria-label^="${CSS.escape(nm)} ·"]`).forEach(el=>{el.classList.remove('idle','working','waiting','parked');el.classList.add('done')});
+  setTimeout(render,1200);
+}
+
+/* ---------- Data ---------- */
+function seed(){ return {
+  screen:'chat', theme:'', force:{empty:false,loading:false,offline:false}, paused:false,
+  agents:[
+    {id:'wright',name:'Wright',cls:'',init:'W',shape:'whale',hue:'accent',tools:['GitHub','Loomwright','Slack'],role:'Lead · plans, delegates, writes playbooks',model:'Opus 5.5',spend:1.14,tok:142000,limit:375000,budget:38,perm:[['Read repos and PRs',1],['Write playbooks and tasks',1],['Push code',0],['Post comments',0],['Merge PRs',0]],charter:'memory/wright/role.md'},
+    {id:'mason',name:'Mason',cls:'m',init:'M',shape:'shark',hue:'teal',tools:['GitHub','Loomwright'],role:'Reviewer · comments only, can\'t push',model:'Sonnet 5',spend:0.82,tok:98000,limit:160000,budget:61,perm:[['Read repos and PRs',1],['Post review comments',1],['Push code',0],['Merge PRs',0]],charter:'memory/mason/role.md'},
+    {id:'ada',name:'Ada',cls:'a',init:'A',shape:'turtle',hue:'berry',tools:['GitHub','Loomwright'],role:'Builder · writes in worktrees only',model:'Sonnet 5',spend:0.06,tok:9000,limit:225000,budget:4,perm:[['Read repos and PRs',1],['Write in git worktrees',1],['Push to feature branches',1],['Push to main',0],['Merge PRs',0]],charter:'memory/ada/role.md'},
+  ],
+  approvals:[
+    {id:'a1',agent:'mason',title:'Post review on loomwright #412',playbook:'Review PRs where I\'m requested',action:'github.pr.review.post',ago:'6 min',kind:'review',
+     why:'Playbook approval level: ask before posting each review. The review is blocking because the hook validator is a silent no-op.',
+     body:'<p><b>Blocking:</b> <code>scripts/validate-worker-result.py</code> prints <code>{"ok": false}</code> on failure. That is the prompt-hook response shape; a command hook blocks only via <code>{"decision": "block"}</code> or <code>exit 2</code>, so this validator never blocks anything. The fixture at <code>scripts/fixtures/subagentstop-decision-shape-probe.json</code> reproduces it.</p><ul><li>Nit: <code>timeout: 30</code> is set on two of the three hooks; the third inherits the default.</li><li>Nit: the test asserts <code>.ok</code>, which is the shape the code chose, so it cannot catch this.</li></ul><p>Requesting changes.</p>'},
+    {id:'a2',agent:'wright',title:'Install a SubagentStop hook in this project',playbook:'Verify worker results',action:'hook_apply · scope: project',ago:'22 min',kind:'diff',
+     why:'Hook changes always ask (D6). After apply, the kernel fires the hook once with a fixture and records whether it blocked.',
+     file:'.claude/settings.json',
+     lines:[['ctx',12,12,'','    "SubagentStop": ['],['ctx',13,13,'','      {'],['del',14,'','−','        "matcher": "loomwright:worker",'],['add','',14,'+','        "matcher": "loomwright:worker|loomwright:code-reviewer",'],['ctx',15,15,'','        "hooks": ['],['add','',16,'+','          {'],['add','',17,'+','            "type": "command",'],['add','',18,'+','            "command": "$CLAUDE_PLUGIN_ROOT/scripts/validate-worker-result.py",'],['add','',19,'+','            "timeout": 30'],['add','',20,'+','          },'],['ctx',16,21,'','          {']]},
+    {id:'a3',agent:'ada',title:'Re-request review from karch4162 on sports-management #88',playbook:'Re-request reviewers after fix',action:'github.pr.reviewers.request',ago:'41 min',kind:'message',
+     why:'Outward action. Ada fixed the two comments from the last round in 9c1f2e0 and CI is green (verified 13:25).',
+     text:'gh pr edit 88 --add-reviewer karch4162\n\nComment: "Addressed both comments in 9c1f2e0: the null check and the missing index. Re-requesting review."'},
+  ],
+  sessions:[
+    {id:'s1',agent:'mason',task:'review PR #412',state:'running',secs:252,tokens:14208,cost:0.11,model:'Sonnet 5',log:[
+      ['tool','14:02:11','▸ Bash  gh pr view 412 --json files,reviews,statusCheckRollup'],['out','14:02:12','  12 files · 0 reviews · checks: ci ✓ claude-review ✓'],['tool','14:02:12','▸ Read  scripts/validate-worker-result.py'],['tool','14:02:14','▸ Grep  "decision" scripts/*.py'],['out','14:02:14','  6 matches'],['prose','14:02:31','The hook prints {"ok": false} on failure. That is the prompt-hook response shape; a command hook blocks via {"decision": "block"}, so this validator is a silent no-op.'],['tool','14:02:40','▸ Bash  bash scripts/fixtures/run-hook.sh subagentstop-decision-shape-probe.json'],['err','14:02:41','  exit 0 · hook_success · no decision recorded'],['okl','14:02:55','  Finding confirmed against the fixture. Drafting review (1 blocking, 2 nits)'],['out','14:03:02','Review drafted. Waiting for approval before posting.']]},
+    {id:'s2',agent:'wright',task:'triage comments on #398',state:'running',secs:41,tokens:3100,cost:0.04,model:'Opus 5.5',log:[
+      ['tool','14:05:20','▸ Bash  gh api repos/vikashruhilgit/loomwright/pulls/398/comments'],['out','14:05:21','  3 comments · 2 from claude-review[bot] · 1 from vikashruhilgit'],['prose','14:05:39','Comment 1 asks for a null check: valid, hand to Ada. Comment 2 is a style preference already covered by .agent/rules/: reply with the rule link. Comment 3 is a question: answer it.'],['tool','14:05:52','▸ task_create  "Fix null check in worker.ts (#398 c1)" → Ada']]},
+    {id:'s3',agent:'ada',task:'post review on #405',state:'waiting',secs:0,tokens:9020,cost:0.07,model:'Sonnet 5',log:[['out','13:58:10','Waiting on you · approval pending']]},
+    {id:'s4',agent:'mason',task:'review PR #401',state:'done',secs:0,tokens:22800,cost:0.19,model:'Sonnet 5',log:[['okl','14:02:00','  Review posted · 0 blocking · 3 nits'],['out','14:02:00','Handoff written. Session ended by request_stop.']]},
+  ],
+  chatWith:'wright',
+  unread:{mason:true},
+  connectors:{GitHub:true,Loomwright:true,Slack:true,Calendar:false,Mail:false,Jira:false,X:false,LinkedIn:false},
+  threads:{
+    wright:[
+      {who:'user',t:'14:06',html:'Find PRs where I\'m the requested reviewer, run a review agent, and post the review.'},
+      {who:'wright',t:'14:06',html:'I found three open PRs on your personal repos where you\'re the requested reviewer. Here\'s the duty I\'d set up. I\'ve proposed a dedupe key, a model and a priority; they\'re yours to change.',draft:{name:'Review PRs where I\'m requested',as:'Mason',rows:[['Trigger','Poll GitHub every 5 min for PRs requesting my review',''],['Action','Mason runs Loomwright <span class="mono">/review-pr</span> and posts one review',''],['Dedupe key','<span class="mono">{pr.head_sha}</span>','proposed'],['Model','Sonnet 5','proposed'],['Priority','normal','proposed'],['Approval','Ask before posting each review','']],dry:'would review vikashruhilgit/loomwright #412, #409, ntfs-tool #7 · skipped 0 · ≈$0.60',enabled:false}},
+    ],
+    mason:[
+      {ev:'session',t:'13:40',text:'Session started · review PR #401 · playbook <b>Review PRs where I\'m requested</b>'},
+      {who:'user',t:'13:52',html:'Skip #409 for now, it\'s still a draft.'},
+      {who:'mason',t:'13:52',html:'Skipped. I\'ll leave #409 alone until it leaves draft; the dedupe key still tracks its head sha, so the first non-draft push gets a review.'},
+      {ev:'memory',t:'14:02',text:'Updated <span class="mono">memory/mason/lessons.md</span>: "command hooks block via decision, not ok"'},
+      {who:'mason',t:'14:03',html:'#412 is ready for you to approve. One blocking finding: the SubagentStop validator prints the wrong shape and never blocks. I reproduced it against the fixture before writing it up.'},
+    ],
+    ada:[],
+  },
+  selApproval:'a1', selSession:'s1', selAgent:null, follow:true,
+};}
+let S=seed();
+const agent=id=>S.agents.find(a=>a.id===id);
+
+/* ---------- Derived state ---------- */
+function kernelState(){
+  if(S.force.offline) return 'offline';
+  if(S.paused) return 'parked';
+  if(S.approvals.length) return 'waiting';
+  if(S.sessions.some(s=>s.state==='running')) return 'working';
+  return 'idle';
+}
+const stateWord={idle:'idle',working:'working',waiting:'waiting on you',parked:'paused at cap',offline:'kernel unreachable'};
+
+/* ---------- Avatar showcase (review strip) ---------- */
+let showShape='shark';
+function renderStates(){
+  const a={id:'demo',name:'Demo',shape:showShape,hue:'teal'};
+  const rows=[['idle','idle'],['working','working'],['waiting','waiting on you'],['parked','paused at cap'],['done','done (one shot)'],['danger','killed']];
+  $('#states').innerHTML=`<div class="t">Avatar motion system · every crew member is a sea creature stitched from its own thread; Wright is the crowned whale. The thread is the actor: it sways when idle, sews when working, rises to you when waiting, hangs slack when paused, ties a bow when done, is cut when killed.</div>${rows.map(r=>`<div class="st">${avatarHTML(a,r[0],48)}<span>${r[1]}</span></div>`).join('')}<div class="st"><span class="shapes">${SHAPE_ORDER.map(s=>`<button class="${s===showShape?'on':''}" data-show-shape="${s}" aria-label="${s}">${avatarHTML({id:'p'+s,name:s,shape:s,hue:'accent'},'idle',26)}</button>`).join('')}</span><span>creatures</span></div><div class="st"><button data-act="replay">Replay one-shots</button></div>`;
+}
+function lastLine(a){
+  const st=agentState(a.id);
+  if(st==='waiting') return {t:'now',text:'Waiting on you · '+currentAction(a)};
+  const T=S.threads[a.id]||[]; const last=[...T].reverse().find(t=>!t.streaming);
+  if(last) return {t:last.t,text:last.ev?last.text.replace(/<[^>]+>/g,''):(last.who==='user'?'You: ':'')+last.html.replace(/<[^>]+>/g,'')};
+  if(st==='working') return {t:'now',text:currentAction(a)};
+  return {t:'',text:'No messages yet'};
+}
+function ev(threadId,kind,text){ (S.threads[threadId]||(S.threads[threadId]=[])).push({ev:kind,t:now(),text}); }
+function currentAction(a){
+  const st=agentState(a.id);
+  if(st==='waiting'){const ap=S.approvals.find(x=>x.agent===a.id);return ap?ap.title:''}
+  if(st==='working'){const s=S.sessions.find(x=>x.agent===a.id&&x.state==='running');return s?s.task:''}
+  return '';
+}
+
+/* ---------- Render root ---------- */
+function render(){
+  document.documentElement.dataset.theme=S.theme; if(!S.theme) delete document.documentElement.dataset.theme;
+  $$('#themeseg button').forEach(b=>b.classList.toggle('on',b.dataset.t===S.theme));
+  $$('.nav[data-go]').forEach(b=>b.classList.toggle('sel',b.dataset.go===S.screen&&(S.screen!=='chat'||S.chatWith==='wright')));
+  const n=S.approvals.length; $('#navcnt').hidden=!n; $('#navcnt').textContent=n; $('#navk').hidden=!!n;
+  const ks=kernelState();
+  $('#footdot').className='dot '+(ks==='offline'?'danger':ks);
+  $('#foottext').textContent=stateWord[ks];
+  $('#mbring').className='ring '+(ks==='offline'?'':ks);
+  $('#mbcnt').hidden=!n; $('#mbcnt').textContent=n;
+  const crew=S.agents.filter(a=>a.id!=='wright');
+  $('#crewnav').innerHTML=crew.length?crew.map(a=>{const st=agentState(a.id);const sel=S.screen==='chat'&&S.chatWith===a.id;const un=S.unread[a.id]&&!sel;const L=lastLine(a);return `<button class="nav crew ${sel?'sel':''}" data-agent="${a.id}" aria-label="Chat with ${esc(a.name)}${un?', unread':''}">${avatarHTML(a,st,24,currentAction(a))}<span class="txt"><span class="nm" style="${un?'font-weight:600':''}">${esc(a.name)}${un?'<span class="un" aria-hidden="true"></span>':''}<time>${L.t}</time></span><span class="last">${esc(L.text)}</span></span></button>`}).join(''):`<div style="padding:4px 8px;font-size:11px;line-height:14px;color:var(--ink-tertiary)">No specialists yet. Wright proposes one when a duty needs it.</div>`;
+  ['empty','loading','offline'].forEach(k=>$('#tg-'+k).classList.toggle('on',S.force[k]));
+  renderMain();
+  if(!$('#states').innerHTML) renderStates();
+}
+function agentState(id){
+  if(S.paused) return 'parked';
+  if(S.approvals.some(a=>a.agent===id)) return 'waiting';
+  if(S.sessions.some(s=>s.agent===id&&s.state==='running')) return 'working';
+  return 'idle';
+}
+function bands(screen){
+  let h='';
+  if(S.force.offline) h+=`<div class="band dng" role="alert">${I.warn}Couldn't reach the kernel. It may be restarting; this window reconnects on its own.<button class="a">Kernel log</button></div>`;
+  if(S.paused) h+=`<div class="band prk" role="status">${I.pause}Paused. ${S.sessions.filter(s=>s.state==='paused').length} sessions and all triggers are parked until you resume.<button class="a" data-act="resume">Resume all</button></div>`;
+  if(S.approvals.length&&screen!=='approvals') h+=`<div class="band att" role="status">${I.list}${S.approvals.length} approval${S.approvals.length>1?'s':''} waiting on you.<button class="a" data-act="go-approvals">Review <span class="kbd" style="margin-left:4px">⌘3</span></button></div>`;
+  return h;
+}
+function renderMain(){
+  const m=$('#main');
+  const r={chat:renderChat,team:renderTeam,approvals:renderApprovals,sessions:renderSessions}[S.screen];
+  m.innerHTML=r();
+  wire(m);
+}
+
+/* ---------- Chat ---------- */
+function thread(){ if(!S.threads[S.chatWith]) S.threads[S.chatWith]=[]; return S.threads[S.chatWith]; }
+function inlineApprovals(a){
+  const pend=S.approvals.filter(x=>x.agent===a.id); if(!pend.length) return '';
+  return pend.map(ap=>`<div class="turn">${avatarHTML(a,'waiting',24)}<div><div class="who"><span>${esc(a.name)}</span><span>${ap.ago} ago</span></div><div class="inline-ap" role="group" aria-label="Approval: ${esc(ap.title)}"><div class="h">${I.list}Waiting on you · ${esc(ap.title)}</div><div class="b"><div class="sum">${ap.kind==='review'?'A review that requests changes: 1 blocking, 2 nits.':ap.kind==='diff'?`A change to <span class="mono">${esc(ap.file)}</span> (+9 −1), project scope, with backup and a fire check.`:`<span class="mono">${esc(ap.text.split('\n')[0])}</span>`}</div>${esc(ap.why)}</div><div class="acts"><button class="btn pri sm" data-act="allow" data-id="${ap.id}">Allow once <span class="kbd">A</span></button><button class="btn sec sm" data-act="always" data-id="${ap.id}">Always <span class="kbd">⇧A</span></button><button class="btn dng sm" data-act="deny" data-id="${ap.id}">Deny <span class="kbd">D</span></button><span class="sp"></span><button class="btn ghost sm" data-act="open-approval" data-id="${ap.id}">Full payload</button></div></div></div></div>`).join('');
+}
+function renderChat(){
+  const a=agent(S.chatWith)||agent('wright'); S.chatWith=a.id; S.unread[a.id]=false;
+  const isW=a.id==='wright'; const t=thread();
+  const empty=S.force.empty||!t.length;
+  let body;
+  if(S.force.loading) body=`<div class="thread">${[60,80,45].map(w=>`<div class="skel"><i style="width:8px;height:8px;border-radius:50%"></i><div><i style="width:${w}%;margin-bottom:6px"></i><i style="width:${w/2}%;height:8px"></i></div><i style="width:40px"></i></div>`).join('')}</div>`;
+  else if(empty&&isW) body=`<div class="empty"><h2>Ask Wright anything, or give it a duty.</h2><p>Wright writes the playbook, shows you a dry run, and asks before anything leaves this machine. Nothing is predefined.</p><div class="chips" style="padding:0;justify-content:center"><button data-suggest="Find PRs where I'm the requested reviewer, run a review agent, and post the review.">Review PRs where I'm requested</button><button data-suggest="Remind me at 17:00 on weekdays to check the deploy.">Remind me at 17:00</button><button data-suggest="Create a PA for my day-to-day: track my calendar, mail and Slack and give me a daily digest.">Create a PA for my day</button><button data-suggest="What changed in Loomwright since yesterday?">What's new in Loomwright?</button></div></div>`;
+  else if(empty) body=`<div class="empty"><h2>Nothing yet with ${esc(a.name)}.</h2><p>Wright delegates to ${esc(a.name)} for you. Message ${esc(a.name)} directly when you want to steer one task: skip a PR, change an approach, ask what it found. ${esc(a.name)} can only do what its role allows: ${esc(a.role.split('·')[1]||'').trim()}.</p><div class="chips" style="padding:0;justify-content:center"><button data-suggest="What are you working on right now?">What are you working on?</button><button data-suggest="Show me your last handoff note.">Last handoff</button></div></div>`;
+  else body=`<div class="thread" id="thread">${t.map(turnHTML).join('')}${inlineApprovals(a)}</div>`;
+  return `<div class="tbar"><h1>Chat</h1><span class="sub">with ${esc(a.name)}${isW?'':' · '+esc(a.role.split('·')[0].trim().toLowerCase())}</span><span class="sp"></span><span class="chip"><span class="dot ${agentState(a.id)}"></span>${esc(a.name)} · ${stateWord[agentState(a.id)]}</span>${isW?'':`<button class="btn ghost sm" data-act="open-agent" data-agent="${a.id}">Open in Team</button>`}</div>
+  <div class="content"><div class="col">${bands('chat')}${body}
+    <div class="composer"><textarea id="compose" rows="2" aria-label="Message ${esc(a.name)}" placeholder="${isW?'Ask Wright anything, or tell it a duty…':'Message '+esc(a.name)+'…'}"></textarea><button class="btn pri sm" id="sendbtn" ${S.force.offline?'disabled':''}>Send <span class="kbd">⏎</span></button></div>
+  </div></div>`;
+}
+const EV_ICON={playbook:I.plus,agent:I.team,approval:I.list,session:I.term,memory:I.file,rename:I.check};
+function turnHTML(t,i){
+  if(t.ev) return `<div class="ev" role="status">${EV_ICON[t.ev]||I.check}<span>${t.text}</span><time>${t.t}</time></div>`;
+  if(t.who==='user') return `<div class="turn user"><div><div class="who" style="justify-content:flex-end">You · ${t.t}</div><div class="msg"><p>${t.html}</p></div></div></div>`;
+  const a=agent(t.who);
+  let d='';
+  if(t.draft){const D=t.draft;d=`<div class="draft" aria-label="Drafted playbook"><div class="h"><b>${esc(D.name)}</b><span class="badge ${D.enabled?'ok':'neu'}">${D.enabled?'enabled':'draft'}</span><span class="badge neu">runs as ${esc(D.as)}</span></div><dl class="kv">${D.rows.map(r=>`<dt>${r[0]}</dt><dd>${r[1]}${r[2]?`<span class="prop">${r[2]}</span>`:''}</dd>`).join('')}</dl><div class="dry"><span class="l">dry run ·</span> ${esc(D.dry)}</div><div class="acts">${D.enabled?`<span class="badge ok">${I.check} Enabled 14:07</span><span class="sp"></span><button class="btn sec sm" data-act="disable-draft" data-i="${i}">Disable</button>`:`<button class="btn pri sm" data-act="enable-draft" data-i="${i}">Enable <span class="kbd">⏎</span></button><button class="btn sec sm" data-act="edit-english" data-i="${i}">Edit in English <span class="kbd">E</span></button><button class="btn sec sm" data-act="edit-fields" data-i="${i}">Edit fields</button>`}</div></div>`}
+  if(t.charter){const C=t.charter;const conn=n=>S.connectors[n];d=`<div class="draft" aria-label="Drafted crew member"><div class="h">${avatarHTML({id:'new',name:C.name,shape:C.shape,hue:C.hue},'idle',28)}<b>${esc(C.name)}</b><span class="prop">name proposed</span><span class="badge ${C.created?'ok':'neu'}">${C.created?'created':'draft'}</span><span class="badge neu">${esc(C.kind)}</span></div><dl class="kv"><dt>Persona</dt><dd>${esc(C.persona)}</dd><dt>Duties</dt><dd>${C.duties.map(esc).join('<br>')}</dd><dt>Tools</dt><dd style="display:flex;gap:6px;flex-wrap:wrap">${C.tools.map(n=>`<span class="chip" style="height:22px">${esc(n)}${conn(n)?`<span class="dot ok" title="connected"></span>`:`<span class="badge att" style="height:16px;padding:0 6px">not connected</span>`}</span>`).join('')}</dd><dt>Boundaries</dt><dd>${C.boundaries.map(esc).join('<br>')}</dd><dt>Model</dt><dd>${esc(C.model)}<span class="prop">proposed</span></dd><dt>Limits</dt><dd>${fmtTok(C.limit||250000)} tokens / day · ${C.sessions||1} session at once<span class="prop">proposed</span></dd></dl><div class="dry"><span class="l">first playbook ·</span> ${esc(C.first)}</div><div class="acts">${C.created?`<span class="badge ok">${I.check} Created</span><span class="sp"></span><button class="btn sec sm" data-act="chat-with" data-agent="${C.id}">Open ${esc(C.name)}'s thread</button>`:`<button class="btn pri sm" data-act="create-charter" data-i="${i}">Create ${esc(C.name)} <span class="kbd">⏎</span></button><button class="btn sec sm" data-act="edit-english" data-i="${i}">Edit in English <span class="kbd">E</span></button><span class="shapes" role="radiogroup" aria-label="Avatar shape">${SHAPE_ORDER.map(s=>`<button class="${s===C.shape?'on':''}" data-act="charter-shape" data-i="${i}" data-shape="${s}" role="radio" aria-checked="${s===C.shape}" aria-label="${s}">${avatarHTML({id:'p',name:s,shape:s,hue:C.hue},'working',22)}</button>`).join('')}</span></div>`}</div>`}
+  return `<div class="turn">${avatarHTML(a,undefined,24)}<div><div class="who"><span>${esc(a.name)}</span><span>${t.streaming?'streaming':t.t}</span></div><div class="msg"><p>${t.html}${t.streaming?'<span class="caret" aria-hidden="true"></span>':''}</p>${d}</div></div></div>`;
+}
+function sendChat(text){
+  text=text.trim(); if(!text) return;
+  S.force.empty=false;
+  const T=thread(), who=S.chatWith;
+  T.push({who:'user',t:now(),html:esc(text)});
+  const reply={who,t:now(),html:'',streaming:true};
+  T.push(reply); render(); scrollThread();
+  const full=replyFor(text,who);
+  let i=0; const step=()=>{ if(!reply.streaming) return; i+=Math.max(2,Math.round(Math.random()*6)); reply.html=esc(full.text.slice(0,i)); if(i>=full.text.length){reply.html=esc(full.text);reply.streaming=false;if(full.draft)reply.draft=full.draft;if(full.charter)reply.charter=full.charter;render();scrollThread();return;} const el=$('#thread'); if(el&&S.chatWith===who){el.lastElementChild.outerHTML=turnHTML(reply,T.length-1);scrollThread();} setTimeout(step,30); };
+  setTimeout(step,400);
+  $('#sendbtn')&&($('#sendbtn').innerHTML='Stop <span class="kbd">⌘.</span>');
+}
+function replyFor(t,who){
+  const l=t.toLowerCase();
+  if(who&&who!=='wright'){
+    const a=agent(who); const s=S.sessions.find(x=>x.agent===who&&x.state!=='done'&&x.state!=='killed');
+    if(/handoff/.test(l)) return {text:`Last handoff (memory/${who}/handoffs/s4.md): review posted on #401, 0 blocking, 3 nits, nothing pending. Next check when the PR head changes.`};
+    if(/skip|ignore|stop/.test(l)) return {text:`Done. I'll leave that alone and note it in my handoff so Wright doesn't reassign it. The playbook's dedupe key is unchanged.`};
+    return {text:s?`Right now: ${s.task}${s.state==='waiting'?', waiting for your approval before it goes out':''}. I can only ${a.role.split('·')[1].trim().replace(/^can't push$/,'comment')} on this; if it needs more, ask Wright to hand it to a builder.`:`Nothing at the moment. My last session finished at 14:02. Wright hands me work when a playbook fires; you can also give me one task here and I'll ask for approval before anything is posted.`};
+  }
+  if(/\b(pa|assistant|agent|crew|specialist|bot|someone|manager)\b/.test(l)&&/create|want|need|set ?up|add|make|hire|new/.test(l)) return charterFor(t);
+  if(/social/.test(l)&&/(post|profile|media|handle)/.test(l)) return charterFor(t);
+  if(/remind/.test(l)) return {text:'Done. I\'ve set a cron trigger for 17:00 on weekdays that wakes me to check the deploy and message you here. It\'s a plain schedule, so no approval is needed; you can see it under Schedules once GUI v2 lands.',draft:{name:'Remind me at 17:00 to check the deploy',as:'Wright',rows:[['Trigger','cron · 0 17 * * 1-5',''],['Action','Wright checks the deploy status and messages you',''],['Model','Haiku 4.5','proposed'],['Approval','None: nothing leaves this machine','']],dry:'next fire Mon 17:00 · ≈$0.01 per run',enabled:true}};
+  if(/loomwright/.test(l)) return {text:'Loomwright moved from 15.8.0 to 15.9.0 overnight. Two things are new: /verify now accepts --from-ticket, and the review-heal loop records a REVIEW_HEAL_RESULT block with per-round root causes. I can add a playbook that runs /pr-postmortem after each merge if you want the trend line.'};
+  if(/review|pr/.test(l)) return {text:'I found three open PRs on your personal repos where you\'re the requested reviewer. Here\'s the duty I\'d set up. I\'ve proposed a dedupe key, a model and a priority; they\'re yours to change.',draft:seed().threads.wright[1].draft};
+  return {text:'Understood. Before I set anything up, one question: should this run as me, or as a specialist with narrower permissions? A specialist is safer if it will post or push; I\'d propose a reviewer named after the repo it watches.'};
+}
+function nextHue(){const used=new Set(S.agents.map(a=>a.hue));return CREW_HUES.find(h=>!used.has(h))||CREW_HUES[S.agents.length%CREW_HUES.length]}
+function charterFor(t){
+  const l=t.toLowerCase(); const taken=new Set(S.agents.map(a=>a.shape)); const shape=SHAPE_ORDER.find(s=>!taken.has(s))||'capsule';
+  const hue=nextHue();
+  if(/social|post|linkedin|twitter|\bx\b/.test(l)) return {text:'Here\'s a crew member for your social profiles. It drafts and schedules; every post is an approval until you say "always" for a playbook. X and LinkedIn aren\'t connected yet, so it can\'t run until you connect one.',charter:{kind:'social',name:'Sable',shape,hue,persona:'Short, dry, no hashtags unless asked. Writes in your voice from your past posts.',duties:['Draft posts from what you shipped this week','Summarise replies and mentions each evening','Queue approved posts at the times you set'],tools:['X','LinkedIn','GitHub'],boundaries:['Never posts, replies or follows without approval','Never reads DMs'],model:'Sonnet 5',limit:250000,sessions:1,first:'Weekly ship post · cron Fri 16:00 · would draft 1 post from 6 merged PRs · ≈$0.04/run'}};
+  if(/work|jira|ticket|confluence/.test(l)&&!/code/.test(l)) return {text:'A work-tracking crew member needs Jira and Confluence, which aren\'t connected. One flag before you create it: your employment agreement\'s IP clause is still an open question in the project notes, so I\'d keep this one on personal accounts until that\'s answered.',charter:{kind:'work',name:'Reeve',shape,hue,persona:'Concise status updates. Asks before assuming priority.',duties:['Track tickets assigned to you and their state','Draft standup and weekly status notes','Flag blockers older than two days'],tools:['Jira','Confluence','Slack'],boundaries:['Never changes ticket state without approval','Never messages colleagues'],model:'Sonnet 5',limit:250000,sessions:1,first:'Morning ticket check · cron 08:30 Mon–Fri · would list 7 open tickets, 1 blocker · ≈$0.05/run'}};
+  return {text:'Here\'s a personal assistant for your day. I\'ve drafted its charter; the persona, duties and boundaries are yours to change, and the name is only a suggestion. Calendar and Mail aren\'t connected yet, so the digest can\'t run until you connect them.',charter:{kind:'personal assistant',name:'Pim',shape,hue,persona:'Brief and direct. Morning digest in bullets, most urgent first. Never chatty.',duties:['Daily digest at 08:00 of calendar, mail and Slack','Remind you of commitments you made in chat or mail','Prepare a short brief before each meeting'],tools:['Calendar','Mail','Slack'],boundaries:['Reads only: never sends mail or messages','Never moves or declines meetings'],model:'Haiku 4.5',limit:100000,sessions:1,first:'Daily digest · cron 08:00 Mon–Fri · would summarise 4 meetings, 32 mails, 6 Slack threads · ≈$0.08/run'}};
+}
+function createFromCharter(C){
+  const id=C.name.toLowerCase().replace(/[^a-z0-9]/g,'')||('agent'+S.agents.length);
+  const missing=C.tools.filter(n=>!S.connectors[n]);
+  const roleTag={ 'personal assistant':'PA · reads Calendar, Mail, Slack; never sends', social:'Social · drafts and schedules; every post approved', work:'Work · tracks tickets; never changes state alone'}[C.kind]||`${C.kind} · ${C.boundaries[0]}`;
+  S.agents.push({id,name:C.name,cls:'a',init:C.name[0].toUpperCase(),shape:C.shape,hue:C.hue,tools:C.tools,role:roleTag,model:C.model,spend:0,tok:0,limit:C.limit||250000,sessions:C.sessions||1,budget:0,perm:[...C.tools.map(n=>['Read '+n,1]),...C.boundaries.map(b=>[b,0])],charter:`memory/${id}/role.md`});
+  ev('wright','agent',`Created <b>${esc(C.name)}</b> · charter <span class="mono">memory/${id}/role.md</span>`);
+  S.threads[id]=[{ev:'agent',t:now(),text:`<b>${esc(C.name)}</b> created from a charter · <span class="mono">memory/${id}/role.md</span>`},{who:'wright',t:now(),html:`${C.name} is set up. Its charter is at memory/${id}/role.md; edit it any time and I\'ll pick up the change.${missing.length?` It can\'t run its first playbook until ${missing.join(' and ')} ${missing.length>1?'are':'is'} connected.`:''}`}];
+  C.created=true; C.id=id;
+  toast(missing.length?'attention':'ok',`<b>${esc(C.name)} created.</b> ${missing.length?`Connect ${missing.join(' and ')} in Integrations to enable its playbooks.`:'First playbook is a draft awaiting your approval.'}`,{label:'Open in Team',go:'team'});
+  S.selAgent=id;
+}
+function scrollThread(){const el=$('#thread'); if(el) el.scrollTop=el.scrollHeight;}
+function now(){const d=new Date();return d.toTimeString().slice(0,5)}
+
+/* ---------- Team ---------- */
+function renderTeam(){
+  const list=S.force.empty?[S.agents[0]]:S.agents;
+  let grid;
+  if(S.force.loading) grid=`<div class="cards">${[1,2,3].map(()=>`<div class="card" style="min-height:170px"><div class="skel" style="padding:0;height:32px;grid-template-columns:32px 1fr"><i style="width:32px;height:32px;border-radius:50%"></i><div><i style="width:50%;margin-bottom:6px"></i><i style="width:80%;height:8px"></i></div></div></div>`).join('')}</div>`;
+  else grid=`<div class="cards">${list.map(a=>{const st=agentState(a.id);const s=S.sessions.find(x=>x.agent===a.id&&x.state==='running');const ap=S.approvals.find(x=>x.agent===a.id);const line=st==='waiting'?`Waiting on you · ${esc(ap.title)}`:st==='working'?esc(s.task.charAt(0).toUpperCase()+s.task.slice(1)):st==='parked'?'Paused at cap':S.sessions.some(x=>x.agent===a.id)?'idle · last ran 09:41':'idle · not run yet';
+    return `<button class="card ${S.selAgent===a.id?'sel':''}" data-agent-card="${a.id}"><div class="head">${avatarHTML(a,st,36,currentAction(a))}<div><div class="name">${esc(a.name)}</div><div class="role" title="${esc(a.role)}">${esc(a.role)}</div></div></div><div class="st ${st==='idle'?'muted':''}" title="${line.replace(/<[^>]+>/g,'')}"><span class="dot ${st}"></span><span>${line}</span></div><div class="budget"><div class="bar" role="meter" aria-valuenow="${a.budget}" aria-valuemin="0" aria-valuemax="100" aria-label="Budget used today"><i style="width:${a.budget}%${a.budget>=80?';background:var(--attention)':''}"></i></div><div class="meta tn"><span>${fmtTok(a.tok||0)} of ${fmtTok(a.limit||250000)} today</span><span>${a.model}</span></div></div></button>`}).join('')}
+    <button class="card new" data-act="new-agent">${I.plus}New agent${S.force.empty?'<span style="font-size:11px;color:var(--ink-tertiary)">Wright can propose one from a duty, too.</span>':''}</button></div>`;
+  const a=S.selAgent&&agent(S.selAgent);
+  const insp=a?`<aside class="insp" aria-label="${esc(a.name)}"><div style="display:flex;align-items:center;gap:10px">${avatarHTML(a,undefined,36)}<div><h2 id="agname">${esc(a.name)}</h2><div style="font-size:11px;color:var(--ink-tertiary)">${a.id==='wright'?'Lead agent':'Specialist'}</div></div><span style="flex:1"></span><button class="btn ghost sm" data-act="rename" data-agent="${a.id}">Rename</button></div>
+    <div class="sec"><div class="label" style="padding:0;margin:0">Role</div><p style="margin:0;color:var(--ink-secondary)">${esc(a.role)}</p></div>
+    <div class="sec"><div class="label" style="padding:0;margin:0">Permissions <span style="font-weight:400;letter-spacing:0;text-transform:none">· fixed by the safety kernel</span></div><div class="perm">${a.perm.map(p=>`<div><span class="${p[1]?'y':'n'}">${p[1]?I.check:'<svg class="i xs" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>'}</span>${esc(p[0])}</div>`).join('')}</div></div>
+    <div class="sec"><div class="label" style="padding:0;margin:0">Model &amp; budget</div><dl class="kv"><dt>Model</dt><dd>${a.model}</dd><dt>Effort</dt><dd>${a.id==='wright'?'high':'medium'}</dd><dt>Today</dt><dd class="tn">${fmtTok(a.tok||0)} of ${fmtTok(a.limit||250000)} tokens <span style="color:var(--ink-tertiary)">· ≈$${(a.spend||0).toFixed(2)} at API rates</span></dd><dt>Sessions</dt><dd>max ${a.sessions||2} at once</dd></dl></div>
+    <div class="sec"><div class="label" style="padding:0;margin:0">Memory <span style="font-weight:400;letter-spacing:0;text-transform:none">· plain files</span></div><div class="files"><a href="#" data-act="noop">${I.file}${a.charter}</a><a href="#" data-act="noop">${I.file}memory/${a.id}/preferences.md</a><a href="#" data-act="noop">${I.file}memory/${a.id}/lessons.md</a><a href="#" data-act="noop">${I.file}memory/shared/people.md</a></div></div>
+    <div class="acts"><button class="btn sec sm" data-act="chat-with" data-agent="${a.id}">Chat with ${esc(a.name)}</button>${a.id!=='wright'?`<button class="btn ghost sm" data-act="noop">Retire</button>`:''}</div></aside>`:'';
+  return `<div class="tbar"><h1>Team</h1><span class="sub">${list.length} agent${list.length>1?'s':''}</span><span class="sp"></span><button class="btn sec sm" data-act="new-agent">${I.plus}New agent</button></div>
+  <div class="content ${a?'with-insp':''}"><div class="col">${bands('team')}${grid}</div>${insp}</div>`;
+}
+
+/* ---------- Approvals ---------- */
+function renderApprovals(){
+  const list=S.force.empty?[]:S.approvals;
+  const cur=list.find(a=>a.id===S.selApproval)||list[0];
+  if(cur) S.selApproval=cur.id;
+  let body;
+  if(S.force.loading) body=`<div class="inbox"><div class="list">${[70,55,80].map(w=>`<div class="skel"><i style="width:8px;height:8px;border-radius:50%"></i><div><i style="width:${w}%;margin-bottom:6px"></i><i style="width:30%;height:8px"></i></div></div>`).join('')}</div><div class="detail"></div></div>`;
+  else if(!list.length) body=`<div class="empty"><h2>Nothing waiting on you.</h2><p>Approvals appear here the moment an agent wants to do something outward or persistent: post, push, message, or change a hook. Each one shows exactly what will happen.</p><button class="btn sec" data-act="go-sessions">See what's running</button></div>`;
+  else body=`<div class="inbox"><div class="list" role="listbox" aria-label="Pending approvals">${list.map(a=>{const ag=agent(a.agent);return `<button class="row ${a.id===cur.id?'sel':''}" role="option" aria-selected="${a.id===cur.id}" data-sel-approval="${a.id}"><span class="dot waiting"></span><div><div class="t">${esc(a.title)}</div><div class="m">${esc(ag.name)} · ${esc(a.playbook)} · ${a.ago} ago</div></div></button>`}).join('')}</div>${detailHTML(cur)}</div>`;
+  return `<div class="tbar"><h1>Approvals</h1><span class="sub">${list.length?list.length+' pending':'inbox'}</span><span class="sp"></span></div><div class="content"><div class="col">${bands('approvals')}${body}</div></div>`;
+}
+function detailHTML(a){
+  const ag=agent(a.agent);
+  let payload;
+  if(a.kind==='review') payload=`<div class="payload"><div class="ph">${I.file}<span class="mono">vikashruhilgit/loomwright #412</span><span class="badge dng">requests changes</span><span class="sp"></span><span style="color:var(--ink-tertiary)">1 blocking · 2 nits</span></div><div class="body">${a.body}</div></div>`;
+  else if(a.kind==='diff') payload=`<div class="payload"><div class="ph"><span class="mono">${a.file}</span><span class="badge att">project scope</span><span class="sp"></span><span class="tn"><span style="color:var(--ok)">+9</span> <span style="color:var(--danger)">−1</span></span></div><div class="diff"><div class="hunk">@@ -12,7 +12,15 @@ "hooks": {</div>${a.lines.map(l=>`<div class="ln ${l[0]}"><span>${l[1]}</span><span>${l[2]}</span><span>${l[3]}</span><span>${esc(l[4])}</span></div>`).join('')}</div></div><div class="why">After apply: a backup is kept at <span class="mono">.claude/settings.json.bak-14-06</span>, then the kernel fires the hook once against a fixture and records whether it blocked. It is not marked verified until that check passes.</div>`;
+  else payload=`<div class="payload"><div class="ph">${I.send}<span>Outward action</span><span class="sp"></span><span class="mono">${esc(a.action)}</span></div><pre>${esc(a.text)}</pre></div>`;
+  return `<div class="detail" aria-live="polite"><div><h2>${esc(a.title)}</h2><div class="meta" style="margin-top:6px"><span class="chip">${avatarHTML(ag,undefined,16)}${esc(ag.name)}</span><span>wants to</span><span class="mono">${esc(a.action)}</span><span>·</span><span>playbook <b>${esc(a.playbook)}</b></span><span>·</span><span>${a.ago} ago</span></div></div>
+    <div class="why">${esc(a.why)}</div>${payload}
+    <div class="acts"><button class="btn pri" data-act="allow" data-id="${a.id}">Allow once <span class="kbd">A</span></button><button class="btn sec" data-act="always" data-id="${a.id}">Always for this playbook <span class="kbd">⇧A</span></button><button class="btn dng" data-act="deny" data-id="${a.id}">Deny <span class="kbd">D</span></button><span class="sp"></span><button class="btn ghost sm" data-act="open-session" data-agent="${a.agent}">Open session</button></div></div>`;
+}
+function decide(id,how){
+  const a=S.approvals.find(x=>x.id===id); if(!a) return;
+  if(how==='always'){ openAlways(a); return; }
+  const i=S.approvals.indexOf(a); S.approvals.splice(i,1);
+  S.selApproval=(S.approvals[i]||S.approvals[i-1]||{}).id;
+  const ag=agent(a.agent);
+  const sess=S.sessions.find(s=>s.agent===a.agent&&s.state==='waiting');
+  ev(a.agent,'approval',`You <b>${how==='deny'?'denied':'allowed once'}</b>: ${esc(a.title)}`);
+  if(how==='deny'){ toast('danger',`<b>Denied.</b> ${esc(ag.name)} was told why and will not retry.`); if(sess){sess.state='done';sess.log.push(['err',now()+':00','  Denied by you. Handoff written; task stays open.'])} }
+  else { toast('ok',`<b>Allowed once.</b> ${esc(ag.name)} is ${a.kind==='diff'?'applying the hook and verifying it fires':'posting now'}.`, a.kind==='diff'?null:{label:'View session',go:'sessions',sess:sess&&sess.id}); if(sess){sess.state='running';sess.secs=0;sess.log.push(['tool',now()+':01',`▸ ${a.action}`],['okl',now()+':03','  Posted. Verified via API read-back.'])} }
+  render(); if(how==='allow') celebrate(a.agent);
+}
+function openAlways(a){
+  overlay(`<div class="dlg" role="dialog" aria-labelledby="al-t"><h2 id="al-t">Always allow for this playbook?</h2><p>${esc(agent(a.agent).name)} will <span class="mono">${esc(a.action)}</span> for anything matched by <b>${esc(a.playbook)}</b> without asking. This never applies to other playbooks, and you can revoke it from the playbook.</p><div class="well">action: ${esc(a.action)}<br>scope: playbook:${esc(a.playbook)}</div><label class="chk"><input type="checkbox" id="al-narrow" checked> Still ask when the review is blocking</label><div class="acts"><button class="btn sec" data-act="close">Cancel</button><button class="btn pri" data-act="always-confirm" data-id="${a.id}">Always allow <span class="kbd">⇧A</span></button></div></div>`,true);
+}
+
+/* ---------- Sessions ---------- */
+function fmt(s){const m=Math.floor(s/60),x=s%60;return `${m}m ${String(x).padStart(2,'0')}s`}
+function renderSessions(){
+  const list=S.force.empty?[]:S.sessions;
+  const cur=list.find(s=>s.id===S.selSession)||list[0]; if(cur) S.selSession=cur.id;
+  let body;
+  if(S.force.loading) body=`<div class="sesswrap"><div class="list">${[65,50,70].map(w=>`<div class="skel"><i style="width:8px;height:8px;border-radius:50%"></i><div><i style="width:${w}%;margin-bottom:6px"></i><i style="width:35%;height:8px"></i></div><i style="width:48px"></i></div>`).join('')}</div><div class="log"></div></div>`;
+  else if(!list.length) body=`<div class="empty"><h2>Nothing running.</h2><p>Sessions are short-lived by design. When a trigger fires or you ask for something, the kernel starts one here and you can watch it, stop it, or kill it.</p><button class="btn sec" data-act="go-chat">Ask Wright for something</button></div>`;
+  else {
+    const running=list.filter(s=>s.state==='running').length;
+    body=`<div class="sesswrap"><div class="list" role="listbox" aria-label="Sessions">
+      <div class="label" style="margin-top:4px">Running · ${running}</div>${list.filter(s=>s.state==='running'||s.state==='paused').map(srow).join('')||`<div style="padding:6px 10px;color:var(--ink-tertiary);font-size:12px">None</div>`}
+      <div class="label">Waiting on you</div>${list.filter(s=>s.state==='waiting').map(srow).join('')||`<div style="padding:6px 10px;color:var(--ink-tertiary);font-size:12px">None</div>`}
+      <div class="label">Finished today</div>${list.filter(s=>s.state==='done'||s.state==='killed').map(srow).join('')}
+    </div>${logHTML(cur)}</div>`;
+  }
+  return `<div class="tbar"><h1>Sessions</h1><span class="sub">${list.filter(s=>s.state==='running').length} running</span><span class="sp"></span><button class="btn dng sm" data-act="killswitch">Kill switch <span class="kbd">⌘⇧K</span></button></div><div class="content"><div class="col">${bands('sessions')}${body}</div></div>`;
+}
+function srow(s){
+  const ag=agent(s.agent); const st={running:'working',waiting:'waiting',done:'ok',killed:'danger',paused:'parked'}[s.state];
+  const meta=s.state==='running'?`running ${fmt(s.secs)} · ${s.tokens.toLocaleString()} tokens`:s.state==='waiting'?'waiting on you · approval pending':s.state==='paused'?'paused at cap':s.state==='killed'?`killed · ${s.tokens.toLocaleString()} tokens · ≈$${s.cost.toFixed(2)}`:`done 14:02 · ${s.tokens.toLocaleString()} tokens · ≈$${s.cost.toFixed(2)}`;
+  return `<button class="srow ${s.id===S.selSession?'sel':''}" role="option" aria-selected="${s.id===S.selSession}" data-sel-session="${s.id}"><span class="dot ${st}"></span><div><div class="t">${esc(ag.name)} · ${esc(s.task)}</div><div class="m tn" data-meta="${s.id}">${meta}</div></div><div class="r">${s.model}</div></button>`;
+}
+function logHTML(s){
+  const ag=agent(s.agent); const st={running:'working',waiting:'waiting',done:'ok',killed:'danger',paused:'parked'}[s.state];
+  const ctl=s.state==='running'?`<button class="btn sec sm" data-act="stop" data-id="${s.id}">Stop <span class="kbd">⌘.</span></button><button class="btn dng sm" data-act="kill" data-id="${s.id}">Kill</button>`:s.state==='waiting'?`<button class="btn pri sm" data-act="go-approvals">Review approval <span class="kbd">⌘3</span></button>`:s.state==='paused'?`<button class="btn sec sm" data-act="resume">Resume all</button>`:`<button class="btn sec sm" data-act="noop">Open handoff</button><button class="btn ghost sm" data-act="noop">Resume task</button>`;
+  return `<div class="log"><div class="bar2"><span class="dot ${st}"></span><b>${esc(ag.name)}</b><span class="m tn" data-bar="${s.id}">${esc(s.task)} · ${s.state==='running'?fmt(s.secs)+' · ':''}${s.tokens.toLocaleString()} tokens · ≈$${s.cost.toFixed(2)}</span><span class="badge neu">${s.model}</span><span class="sp"></span>${ctl}</div>
+  <div class="body" role="log" aria-live="off" aria-label="Session output" id="logbody">${s.log.map(l=>`<div class="l"><time>${l[1]}</time><span class="${l[0]==='prose'?'':l[0]}">${esc(l[2])}</span></div>`).join('')}${s.state==='running'?`<div class="l"><time></time><span class="out"><span class="bcaret" aria-hidden="true"></span></span></div>`:''}${s.state==='done'||s.state==='killed'?`<div class="handoff"><b>Handoff</b> · memory/${s.agent}/handoffs/${s.id}.md<br>${s.state==='killed'?'Killed by you at '+now()+'. Current step lost; the task is still open and can be resumed.':'Review posted on #401. Nothing pending. Next check when the PR head changes.'}</div>`:''}${s.state==='running'?`<div class="pin"><span>${S.follow?'Following · scroll up to pause':'Paused · jump to latest'}</span></div>`:''}</div></div>`;
+}
+const pool=[['tool','▸ Bash  gh pr diff 412 --name-only'],['out','  scripts/validate-worker-result.py\n  scripts/fixtures/subagentstop-decision-shape-probe.json'],['tool','▸ Read  docs/RESULT_SCHEMAS.md'],['prose','Cross-checking the documented decision shape against the fixture.'],['tool','▸ Grep  "hookSpecificOutput" scripts/'],['out','  2 matches'],['okl','  Consistent with the finding.']];
+let tick=0;
+setInterval(()=>{
+  tick++;
+  $('#clock').textContent='Mon '+now();
+  S.sessions.filter(s=>s.state==='running').forEach(s=>{s.secs++; if(tick%3===0){s.tokens+=Math.round(60+Math.random()*180);s.cost=s.tokens/130000}
+    const m=$(`[data-meta="${s.id}"]`); if(m) m.textContent=`running ${fmt(s.secs)} · ${s.tokens.toLocaleString()} tokens`;
+    const b=$(`[data-bar="${s.id}"]`); if(b) b.textContent=`${s.task} · ${fmt(s.secs)} · ${s.tokens.toLocaleString()} tokens · ≈$${s.cost.toFixed(2)}`;
+    if(tick%4===0&&s.id==='s1'){const p=pool[(tick/4)%pool.length];s.log.push([p[0],now()+':'+String(s.secs%60).padStart(2,'0'),p[1]]); if(S.screen==='sessions'&&S.selSession===s.id){const lb=$('#logbody'); if(lb){const caret=lb.querySelector('.bcaret')?.closest('.l'); const el=document.createElement('div'); el.className='l'; el.innerHTML=`<time>${s.log.at(-1)[1]}</time><span class="${p[0]==='prose'?'':p[0]}">${esc(p[1])}</span>`; lb.insertBefore(el,caret); if(S.follow) lb.scrollTop=lb.scrollHeight;}}}
+  });
+},1000);
+
+/* ---------- Overlay: palette + dialogs ---------- */
+function overlay(html,center){ $('#overlay').innerHTML=`<div class="ov ${center?'center':''}" data-act="close-bg">${html}</div>`; wire($('#overlay')); const f=$('#overlay').querySelector('input:not([type=checkbox]),button.pri,button.sec'); f&&f.focus(); }
+function closeOverlay(){ $('#overlay').innerHTML=''; }
+function palette(){
+  overlay(`<div class="pal" role="combobox" aria-expanded="true" aria-haspopup="listbox"><div class="in">${I.search}<input id="palin" aria-label="Command" placeholder="Screens, actions, agents, sessions…" autocomplete="off"><span class="kbd">Esc</span></div><div class="lst" id="pallst" role="listbox"></div><div class="foot"><span><span class="kbd">↑↓</span> move</span><span><span class="kbd">⏎</span> open</span><span style="margin-left:auto">Wright, powered by Claude</span></div></div>`);
+  const items=()=>{const x=[];
+    S.approvals.forEach(a=>x.push({g:'Actions',ic:I.list,t:`Review approval: ${agent(a.agent).name} · ${a.title}`,r:'waiting on you',run:()=>{S.screen='approvals';S.selApproval=a.id;render()}}));
+    x.push({g:'Actions',ic:I.plus,t:'New duty…',r:'⌘N',run:()=>{S.screen='chat';S.chatWith='wright';render();$('#compose')?.focus()}});
+    x.push({g:'Actions',ic:I.pause,t:S.paused?'Resume all':'Pause all',r:'',run:()=>{S.paused?resumeAll():pauseAll()}});
+    x.push({g:'Actions',ic:I.x,t:'Kill switch',r:'⌘⇧K',run:()=>killSwitch()});
+    [['chat','Chat',I.chat,'⌘1'],['team','Team',I.team,'⌘2'],['approvals','Approvals',I.list,'⌘3'],['sessions','Sessions',I.term,'⌘4']].forEach(s=>x.push({g:'Screens',ic:s[2],t:s[1],r:s[3],run:()=>{S.screen=s[0];if(s[0]==='chat')S.chatWith='wright';render()}}));
+    S.agents.forEach(a=>{x.push({g:'Agents',dot:agentState(a.id),t:`Message ${a.name}`,r:stateWord[agentState(a.id)],run:()=>{S.screen='chat';S.chatWith=a.id;render();$('#compose')?.focus()}});x.push({g:'Agents',ic:I.team,t:`${a.name} in Team`,r:a.model,run:()=>{S.screen='team';S.selAgent=a.id;render()}})});
+    S.sessions.forEach(s=>x.push({g:'Sessions',dot:{running:'working',waiting:'waiting',done:'ok',killed:'danger',paused:'parked'}[s.state],t:`${agent(s.agent).name} · ${s.task}`,r:s.state==='running'?fmt(s.secs):s.state,run:()=>{S.screen='sessions';S.selSession=s.id;render()}}));
+    return x;};
+  let sel=0, cur=[];
+  const draw=()=>{const q=$('#palin').value.trim().toLowerCase(); cur=items().filter(i=>!q||i.t.toLowerCase().includes(q)||i.g.toLowerCase().includes(q)); sel=Math.min(sel,Math.max(0,cur.length-1)); let g='',h=''; cur.forEach((i,k)=>{if(i.g!==g){g=i.g;h+=`<div class="grp">${g}</div>`} h+=`<button class="it ${k===sel?'sel':''}" role="option" aria-selected="${k===sel}" data-pal="${k}">${i.dot?`<span class="dot ${i.dot}"></span>`:i.ic}${esc(i.t)}<span class="r">${esc(i.r)}</span></button>`}); $('#pallst').innerHTML=h||`<div class="none">No matches for “${esc(q)}”</div>`; const s=$('#pallst .sel'); s&&s.scrollIntoView({block:'nearest'});};
+  draw();
+  const inp=$('#palin');
+  inp.addEventListener('input',()=>{sel=0;draw()});
+  inp.addEventListener('keydown',e=>{ if(e.key==='ArrowDown'){e.preventDefault();sel=Math.min(sel+1,cur.length-1);draw()} else if(e.key==='ArrowUp'){e.preventDefault();sel=Math.max(sel-1,0);draw()} else if(e.key==='Enter'){e.preventDefault();cur[sel]&&(closeOverlay(),cur[sel].run())} });
+  $('#pallst').addEventListener('click',e=>{const b=e.target.closest('[data-pal]'); if(b){const i=cur[+b.dataset.pal];closeOverlay();i.run()}});
+}
+function killSwitch(){
+  const r=S.sessions.filter(s=>s.state==='running').length;
+  overlay(`<div class="dlg" role="alertdialog" aria-labelledby="k-t"><div class="icon" aria-hidden="true">${I.x}</div><h2 id="k-t">Kill everything?</h2><p>Aborts ${r} running session${r===1?'':'s'} and disables all 4 triggers. Each session loses its current step; tasks stay and can be resumed. Nothing is posted or pushed.</p><div class="acts"><button class="btn sec" data-act="close">Cancel <span class="kbd">Esc</span></button><button class="btn dngfill" data-act="kill-all">Kill all <span class="kbd">⌘⏎</span></button></div></div>`,true);
+}
+function killOne(id){
+  const s=S.sessions.find(x=>x.id===id);
+  overlay(`<div class="dlg" role="alertdialog" aria-labelledby="k1-t"><div class="icon" aria-hidden="true">${I.x}</div><h2 id="k1-t">Kill ${esc(agent(s.agent).name)}'s session?</h2><p>Aborts “${esc(s.task)}” immediately. The current step is lost; the task stays open. Stop is gentler: it lets the session write a handoff first.</p><div class="acts"><button class="btn sec" data-act="close">Cancel</button><button class="btn sec" data-act="stop" data-id="${id}">Stop instead</button><button class="btn dngfill" data-act="kill-confirm" data-id="${id}">Kill</button></div></div>`,true);
+}
+const TOOLS={
+  GitHub:'Repos, PRs, reviews, checks',Loomwright:'Review, heal and merge gates for code work',Slack:'Read channels and DMs; post with approval',
+  Calendar:'Read events; propose changes',Mail:'Read mail; draft replies',Jira:'Tickets and boards',X:'Post and read mentions',LinkedIn:'Post and read replies',
+};
+const fmtTok=n=>n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?Math.round(n/1e3)+'k':String(n);
+const LIMITS=[100000,250000,500000,1000000];
+function newAgent(){
+  const f=S.naForm||(S.naForm={desc:'',name:'',shape:'seahorse',persona:'',tools:[],model:'Sonnet 5',limit:250000,sessions:2});
+  const chips=f.tools.length?f.tools.map(n=>`<span class="chip">${esc(n)}${S.connectors[n]?'<span class="dot ok" title="connected"></span>':'<span class="badge att" style="height:16px;padding:0 6px">not connected</span>'}</span>`).join(''):`<span style="color:var(--ink-tertiary)">None yet</span>`;
+  overlay(`<div class="dlg wide" role="dialog" aria-labelledby="na-t"><h2 id="na-t">New crew member</h2><p>Describe it in your own words and Wright drafts the charter: identity, persona, duties, tools and boundaries. Or fill the charter yourself. Nothing is predefined.</p>
+    <div><label for="na-desc">What should it do?</label><div class="field" style="height:auto;padding:8px 10px"><textarea id="na-desc" rows="3" style="flex:1;border:0;background:transparent;font:inherit;color:var(--ink);resize:none;outline:0" placeholder="e.g. Handle my social profiles: draft posts from what I shipped, summarise replies, never post without asking.">${esc(f.desc)}</textarea></div></div>
+    <div class="acts" style="justify-content:flex-start"><button class="btn pri" data-act="ask-wright">Ask Wright to draft it</button><span style="color:var(--ink-tertiary);font-size:12px">or fill it in below</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label for="na-name">Name</label><div class="field"><input id="na-name" placeholder="Pick a name" value="${esc(f.name)}"></div></div><div><label>Shape</label><span class="shapes" id="na-shapes">${SHAPE_ORDER.map(s=>`<button class="${s===f.shape?'on':''}" data-shape="${s}" aria-label="${s}">${avatarHTML({id:'p'+s,name:s,shape:s,hue:'accent'},'idle',22)}</button>`).join('')}</span></div></div>
+    <div><label for="na-persona">Persona</label><div class="field"><input id="na-persona" placeholder="How it talks and decides, in one line" value="${esc(f.persona)}"></div></div>
+    <div><label>Tools it may use</label><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${chips}<button class="btn sec sm" data-act="choose-tools">Choose tools…</button></div></div>
+    <div><label>Boundaries <span style="font-weight:400;letter-spacing:0;text-transform:none">· fixed by the safety kernel, plus yours</span></label><div class="well" style="font-family:var(--font-sans)">Outward and persistent actions always ask until you choose "always" per playbook. Never merges a PR outside Loomwright's gate. Never edits kernel files.</div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px"><div><label for="na-model">Model</label><div class="field"><select id="na-model">${['Sonnet 5','Opus 5.5','Haiku 4.5'].map(m=>`<option ${m===f.model?'selected':''}>${m}</option>`).join('')}</select></div></div><div><label for="na-limit">Tokens per day</label><div class="field"><select id="na-limit">${LIMITS.map(l=>`<option value="${l}" ${l===f.limit?'selected':''}>${fmtTok(l)}</option>`).join('')}</select></div></div><div><label for="na-sess">Sessions at once</label><div class="field"><select id="na-sess">${[1,2,3].map(n=>`<option ${n===f.sessions?'selected':''}>${n}</option>`).join('')}</select></div></div></div>
+    <div class="hint" style="font-size:11px;line-height:14px;color:var(--ink-tertiary)">You're on a Claude subscription, so limits are tokens, not dollars. The kernel parks this agent at its daily limit and parks everything at the weekly cap. Dollar figures elsewhere are estimates at API rates.</div>
+    <div class="acts"><button class="btn sec" data-act="close">Cancel</button><button class="btn pri" data-act="create-agent">Create</button></div></div>`,true);
+  $('#na-shapes').onclick=e=>{const b=e.target.closest('[data-shape]');if(b){$$('#na-shapes button').forEach(x=>x.classList.toggle('on',x===b));S.naForm.shape=b.dataset.shape}};
+}
+function readNaForm(){const f=S.naForm;f.desc=$('#na-desc')?.value.trim()??f.desc;f.name=$('#na-name')?.value.trim()??f.name;f.persona=$('#na-persona')?.value.trim()??f.persona;f.model=$('#na-model')?.value??f.model;f.limit=+($('#na-limit')?.value??f.limit);f.sessions=+($('#na-sess')?.value??f.sessions);return f}
+function toolsPicker(){
+  const f=S.naForm;
+  overlay(`<div class="dlg wide" role="dialog" aria-labelledby="tp-t"><h2 id="tp-t">Tools ${esc(f.name||'this agent')} may use</h2><p>Each tool is a connector this agent is allowed to call. Not-connected tools can be chosen now; the agent's playbooks stay parked until you connect them in Integrations.</p>
+    <div style="display:flex;flex-direction:column;border:1px solid var(--hairline);border-radius:var(--r-md);overflow:hidden">${Object.keys(TOOLS).map(n=>`<label style="display:grid;grid-template-columns:20px 1fr auto;gap:12px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--hairline);cursor:pointer;background:var(--surface);text-transform:none;letter-spacing:0;font-weight:400;font-size:13px;line-height:18px;color:var(--ink);margin:0"><input type="checkbox" name="tp" value="${n}" ${f.tools.includes(n)?'checked':''} style="margin:0;accent-color:var(--accent)"><span><b>${n}</b><span style="display:block;font-size:12px;color:var(--ink-tertiary)">${TOOLS[n]}</span></span>${S.connectors[n]?`<span class="badge ok">${I.check} connected</span>`:`<button class="btn sec sm" data-act="connect-tool" data-tool="${n}">Connect</button>`}</label>`).join('')}</div>
+    <div class="acts"><button class="btn sec" data-act="tools-back">Back</button><button class="btn pri" data-act="tools-done">Use selected</button></div></div>`,true);
+}
+function rename(id){
+  const a=agent(id);
+  overlay(`<div class="dlg" role="dialog" aria-labelledby="rn-t"><h2 id="rn-t">Rename ${esc(a.name)}</h2><p>The new name is used in chat, the menu bar and the handoff notes. Memory files keep their folder.</p><div><label for="rn-name">Name</label><div class="field"><input id="rn-name" value="${esc(a.name)}"></div></div><div class="acts"><button class="btn sec" data-act="close">Cancel</button><button class="btn pri" data-act="rename-confirm" data-agent="${id}">Rename</button></div></div>`,true);
+}
+function pauseAll(){ S.paused=true; S.sessions.forEach(s=>{if(s.state==='running')s.state='paused'}); toast('parked','<b>Paused.</b> Sessions and triggers are parked until you resume.'); render(); }
+function resumeAll(){ S.paused=false; S.sessions.forEach(s=>{if(s.state==='paused')s.state='running'}); toast('ok','<b>Resumed.</b> Parked sessions picked up where they stopped.'); render(); }
+
+/* ---------- Menu-bar dropdown ---------- */
+function toggleMenu(force){
+  const m=$('#mbmenu'), b=$('#mbi'); const open=force!==undefined?force:m.hidden;
+  if(!open){m.hidden=true;b.classList.remove('open');b.setAttribute('aria-expanded','false');return}
+  const ks=kernelState(); const run=S.sessions.filter(s=>s.state==='running');
+  m.innerHTML=`<div class="st"><span class="dot ${ks==='offline'?'danger':ks}"></span><div><div><b>Wright</b> · ${stateWord[ks]}</div><div class="meta">${run.length} running · ${S.approvals.length} waiting on you · 249k tokens today · ≈$2.02</div></div></div>
+  ${run.length?`<div class="sess">${run.map(s=>`<div><span class="dot working"></span>${esc(agent(s.agent).name)} · ${esc(s.task)} · ${fmt(s.secs)}</div>`).join('')}</div>`:''}<hr>
+  <button class="it" data-act="menu-open">Open Loomwright Studio<span class="k">⌘⇧L</span></button>
+  <button class="it" data-act="menu-approvals">Approvals${S.approvals.length?` <span class="pill">${S.approvals.length}</span>`:''}<span class="k">⌘⇧A</span></button>
+  <button class="it" data-act="menu-ask">Ask Wright…<span class="k">⌘⇧Space</span></button><hr>
+  <button class="it" data-act="${S.paused?'resume':'pause'}">${S.paused?'Resume all':'Pause all'}</button>
+  <button class="it dng" data-act="killswitch">Kill switch<span class="k">⌘⇧K</span></button><hr>
+  <button class="it" data-act="noop">Settings…<span class="k">⌘,</span></button>
+  <button class="it" data-act="noop">Quit Studio <span style="font-size:11px;opacity:.7">(the kernel keeps running)</span></button>`;
+  m.hidden=false; b.classList.add('open'); b.setAttribute('aria-expanded','true'); wire(m);
+}
+
+/* ---------- Toasts ---------- */
+function toast(kind,html,act){
+  const t=document.createElement('div'); t.className='toast'; t.setAttribute('role','status');
+  t.innerHTML=`<span class="dot ${kind}"></span><span class="t">${html}</span>${act?`<button class="btn ghost sm" style="color:var(--accent)">${esc(act.label)}</button>`:''}<button class="x" aria-label="Dismiss">×</button>`;
+  if(act) t.querySelector('.btn').onclick=()=>{S.screen=act.go; if(act.sess) S.selSession=act.sess; render(); t.remove()};
+  t.querySelector('.x').onclick=()=>t.remove();
+  $('#toasts').prepend(t); [...$('#toasts').children].slice(3).forEach(x=>x.remove());
+  setTimeout(()=>{t.classList.add('out');setTimeout(()=>t.remove(),150)},6000);
+}
+
+/* ---------- Actions ---------- */
+function wire(root){
+  root.onclick=e=>{
+    const el=e.target.closest('[data-act],[data-go],[data-agent],[data-agent-card],[data-sel-approval],[data-sel-session],[data-suggest]'); if(!el) return;
+    if(el.dataset.go){S.screen=el.dataset.go;render();return}
+    if(el.dataset.agentCard!==undefined){S.selAgent=S.selAgent===el.dataset.agentCard?null:el.dataset.agentCard;render();return}
+    if(el.dataset.selApproval){S.selApproval=el.dataset.selApproval;render();return}
+    if(el.dataset.selSession){S.selSession=el.dataset.selSession;S.follow=true;render();return}
+    if(el.dataset.suggest){sendChat(el.dataset.suggest);return}
+    if(el.dataset.agent&&!el.dataset.act){S.screen='team';S.selAgent=el.dataset.agent;render();return}
+    const a=el.dataset.act, id=el.dataset.id;
+    if(a==='close-bg'&&e.target!==el) return;
+    ({
+      'close':closeOverlay,'close-bg':closeOverlay,'noop':()=>toast('idle','<b>Not in v1.</b> This opens in GUI v2.'),
+      'go-approvals':()=>{S.screen='approvals';render()},'go-sessions':()=>{S.screen='sessions';render()},'go-chat':()=>{S.screen='chat';render()},
+      'allow':()=>decide(id,'allow'),'deny':()=>decide(id,'deny'),'always':()=>decide(id,'always'),
+      'always-confirm':()=>{const ap=S.approvals.find(x=>x.id===id);closeOverlay();const narrow=$('#al-narrow')?.checked;S.approvals.splice(S.approvals.indexOf(ap),1);S.selApproval=S.approvals[0]?.id;const sess=S.sessions.find(s=>s.agent===ap.agent&&s.state==='waiting');if(sess){sess.state='running';sess.secs=0}toast('ok',`<b>Always allowed</b> for <b>${esc(ap.playbook)}</b>${narrow?', except blocking reviews':''}. Revoke it from the playbook.`);render()},
+      'open-approval':()=>{S.screen='approvals';S.selApproval=id;render()},
+      'open-session':()=>{const s=S.sessions.find(x=>x.agent===el.dataset.agent);S.screen='sessions';if(s)S.selSession=s.id;render()},
+      'stop':()=>{const s=S.sessions.find(x=>x.id===id);if(!s)return;closeOverlay();s.state='done';ev(s.agent,'session',`Session stopped by you · handoff <span class="mono">memory/${s.agent}/handoffs/${s.id}.md</span>`);s.log.push(['out',now()+':00','Stop requested. Writing handoff…'],['okl',now()+':02','  Handoff written. Session ended by request_stop.']);toast('ok',`<b>Stopped.</b> ${esc(agent(s.agent).name)} wrote a handoff; the task stays open.`);render();celebrate(s.agent)},
+      'kill':()=>killOne(id),
+      'kill-confirm':()=>{const s=S.sessions.find(x=>x.id===id);closeOverlay();s.state='killed';ev(s.agent,'session',`Session <b>killed</b> by you · no handoff · task still open`);s.log.push(['err',now()+':00','  SIGKILL from kernel. No handoff.']);toast('danger',`<b>Killed.</b> ${esc(agent(s.agent).name)}'s current step is lost; the task is still open.`);render()},
+      'killswitch':()=>{toggleMenu(false);killSwitch()},
+      'kill-all':()=>{closeOverlay();S.sessions.forEach(s=>{if(s.state==='running'||s.state==='paused'){s.state='killed';s.log.push(['err',now()+':00','  SIGKILL from kernel (kill switch). No handoff.'])}});S.paused=false;toast('danger','<b>Everything killed.</b> All triggers disabled until you re-enable them.');render()},
+      'pause':()=>{toggleMenu(false);pauseAll()},'resume':()=>{toggleMenu(false);resumeAll()},
+      'new-agent':newAgent,'create-agent':()=>{const f=readNaForm();if(!f.name){$('#na-name').focus();toast('attention','<b>Give it a name.</b> Or ask Wright to draft the charter.');return}closeOverlay();createFromCharter({kind:f.desc?f.desc.split(/[.:]/)[0].slice(0,32).toLowerCase():'specialist',name:f.name,shape:f.shape,hue:nextHue(),persona:f.persona||'Plain and brief.',duties:f.desc?[f.desc]:['To be defined in chat'],tools:f.tools,boundaries:['Always asks before outward actions'],model:f.model,limit:f.limit,sessions:f.sessions,first:'none yet · tell it a duty in its thread'});S.naForm=null;S.force.empty=false;render()},
+      'choose-tools':()=>{readNaForm();toolsPicker()},'tools-back':()=>{newAgent()},'tools-done':()=>{S.naForm.tools=$$('input[name=tp]:checked').map(i=>i.value);newAgent()},'connect-tool':()=>{toast('idle',`<b>Integrations is GUI v2.</b> ${esc(el.dataset.tool)} stays selected; its playbooks park until it's connected.`)},
+      'rename':()=>rename(el.dataset.agent),'rename-confirm':()=>{const a=agent(el.dataset.agent);const n=$('#rn-name').value.trim();closeOverlay();if(n&&n!==a.name){ev(a.id,'rename',`Renamed <b>${esc(a.name)}</b> to <b>${esc(n)}</b>`);a.name=n;a.init=n[0].toUpperCase();toast('ok',`<b>Renamed to ${esc(n)}.</b>`)}render()},
+      'chat-with':()=>{S.screen='chat';S.chatWith=el.dataset.agent;render();$('#compose')?.focus()},
+      'create-charter':()=>{const t=thread()[+el.dataset.i];createFromCharter(t.charter);render();scrollThread()},
+      'charter-shape':()=>{thread()[+el.dataset.i].charter.shape=el.dataset.shape;render()},
+      'ask-wright':()=>{const d=$('#na-desc').value.trim();S.naForm=null;closeOverlay();S.screen='chat';S.chatWith='wright';render();sendChat(d||'Create a PA for my day-to-day: track my calendar, mail and Slack and give me a daily digest.')},
+      'open-agent':()=>{S.screen='team';S.selAgent=el.dataset.agent;render()},
+      'enable-draft':()=>{const t=thread()[+el.dataset.i];t.draft.enabled=true;ev(S.chatWith,'playbook',`Created playbook <b>${esc(t.draft.name)}</b> · runs as ${esc(t.draft.as)} · <span class="mono">playbooks/${t.draft.name.toLowerCase().replace(/[^a-z0-9]+/g,'-')}.md</span>`);thread().push({who:'wright',t:now(),html:'Enabled. Mason will pick up #412 first because its review was requested 3 hours ago. I\'ll ask before anything is posted.'});toast('ok','<b>Playbook enabled.</b> First poll in 5 min.');render();scrollThread()},
+      'disable-draft':()=>{thread()[+el.dataset.i].draft.enabled=false;toast('idle','<b>Playbook disabled.</b> Nothing else changed.');render()},
+      'edit-english':()=>{const c=$('#compose');if(c){c.value='Change the dedupe key to the PR number and use Opus for blocking reviews.';c.focus()}},
+      'edit-fields':()=>toast('idle','<b>Not in v1.</b> Field editing is the Playbooks screen in GUI v2; use Edit in English for now.'),
+      'menu-open':()=>toggleMenu(false),'menu-approvals':()=>{toggleMenu(false);S.screen='approvals';render()},'menu-ask':()=>{toggleMenu(false);S.screen='chat';S.chatWith='wright';render();$('#compose')?.focus()},
+    }[a]||(()=>{}))();
+  };
+}
+wire($('#main')); wire($('#overlay'));
+$('#mbi').onclick=e=>{e.stopPropagation();toggleMenu()};
+document.addEventListener('click',e=>{if(!e.target.closest('#mbmenu,#mbi'))toggleMenu(false)});
+$('#palbtn').onclick=palette;
+$('#crewnav').onclick=e=>{const b=e.target.closest('[data-agent]');if(b){S.screen='chat';S.chatWith=b.dataset.agent;render();$('#compose')?.focus()}};
+$$('.nav[data-go]').forEach(b=>b.onclick=()=>{S.screen=b.dataset.go;if(S.screen==='chat')S.chatWith='wright';render()});
+$('#themeseg').onclick=e=>{const b=e.target.closest('button');if(b){S.theme=b.dataset.t;render()}};
+['empty','loading','offline'].forEach(k=>$('#tg-'+k).onclick=()=>{S.force[k]=!S.force[k];render()});
+$('#tg-reset').onclick=()=>{const th=S.theme;S=seed();S.theme=th;render();toast('idle','<b>Data reset.</b>')};
+$('#states').onclick=e=>{const sb=e.target.closest('[data-show-shape]');if(sb){showShape=sb.dataset.showShape;renderStates();return}if(e.target.closest('[data-act="replay"]'))renderStates()};
+
+/* composer */
+document.addEventListener('keydown',e=>{
+  const t=e.target;
+  if(t.id==='compose'){ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat(t.value);t.value='';} return; }
+  if(t.matches('input,textarea,select')) { if(e.key==='Escape') closeOverlay(); return; }
+  if(e.key==='Escape'){ if($('#overlay').innerHTML) closeOverlay(); else toggleMenu(false); return; }
+  if(((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k')||(e.key==='/'&&!$('#overlay').innerHTML)){e.preventDefault();palette();return}
+  if((e.metaKey||e.ctrlKey)&&e.shiftKey&&e.key.toLowerCase()==='k'){e.preventDefault();killSwitch();return}
+  if((e.metaKey||e.ctrlKey)&&e.key==='.'){const s=S.sessions.find(x=>x.id===S.selSession);if(S.screen==='sessions'&&s&&s.state==='running'){e.preventDefault();$('#main').onclick({target:$('[data-act="stop"]')})}return}
+  if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&$('[data-act="kill-all"]')){e.preventDefault();$('#overlay').onclick({target:$('[data-act="kill-all"]')});return}
+  if((e.metaKey||e.ctrlKey)&&/^[1-4]$/.test(e.key)){e.preventDefault();S.screen=['chat','team','approvals','sessions'][+e.key-1];if(e.key==='1')S.chatWith='wright';render();return}
+  if($('#overlay').innerHTML) return;
+  if(S.screen==='approvals'&&S.approvals.length){
+    const cur=S.approvals.find(a=>a.id===S.selApproval); if(!cur) return;
+    if(e.key==='a'){decide(cur.id,'allow');return} if(e.key==='A'){decide(cur.id,'always');return} if(e.key==='d'||e.key==='D'){decide(cur.id,'deny');return}
+    if(e.key==='j'||e.key==='ArrowDown'||e.key==='k'||e.key==='ArrowUp'){e.preventDefault();const i=S.approvals.indexOf(cur);const n=(e.key==='j'||e.key==='ArrowDown')?Math.min(i+1,S.approvals.length-1):Math.max(i-1,0);S.selApproval=S.approvals[n].id;render()}
+  }
+  if(S.screen==='sessions'&&(e.key==='j'||e.key==='ArrowDown'||e.key==='k'||e.key==='ArrowUp')){e.preventDefault();const i=S.sessions.findIndex(s=>s.id===S.selSession);const n=(e.key==='j'||e.key==='ArrowDown')?Math.min(i+1,S.sessions.length-1):Math.max(i-1,0);S.selSession=S.sessions[n].id;render()}
+  if(S.screen==='chat'&&e.key==='e'){const b=$('[data-act="edit-english"]');if(b){b.click()}}
+});
+document.addEventListener('scroll',e=>{const lb=e.target; if(lb&&lb.id==='logbody'){const atBottom=lb.scrollHeight-lb.scrollTop-lb.clientHeight<24; if(S.follow!==atBottom){S.follow=atBottom;const p=lb.querySelector('.pin span');if(p)p.textContent=S.follow?'Following · scroll up to pause':'Paused · jump to latest'}}},true);
+
+render();
+})();
+</script>
