@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Loomwright (the plugin Studio is built on)
+    url: https://github.com/vikashruhilgit/loomwright
+    about: Issues with Loomwright's own agents, commands or gates belong there

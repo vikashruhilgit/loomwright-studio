@@ -1,0 +1,42 @@
+name: Bug report
+description: Something in Loomwright Studio did not behave as documented
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: What you saw, and what the docs or the UI said should happen.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start the kernel with `studio ...`
+        2. Ask Wright to ...
+        3. See ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Kernel, Brain / Loomwright adapter, Safety kernel (permissions, approvals, budget), GUI, Docs / design, Other]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versions
+      description: Studio version, Loomwright plugin version, `claude --version`, macOS version.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Logs and context
+      description: Kernel audit log lines, session ids, screenshots. Redact anything from private repos.
+    validations:
+      required: false

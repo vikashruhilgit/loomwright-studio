@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a capability or a change to the design
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Remember the first invariant: the kernel ships mechanisms, the user sets policy. Say which side of that line this lands on.
+    validations:
+      required: true
+  - type: textarea
+    id: decisions
+    attributes:
+      label: Decisions affected
+      description: Which entries in docs/DECISIONS.md this touches, if any. A change to a settled decision needs a new numbered decision.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
