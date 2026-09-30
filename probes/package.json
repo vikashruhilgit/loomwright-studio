@@ -1,0 +1,9 @@
+{
+  "name": "loomwright-studio-sdk-probes",
+  "private": true,
+  "type": "module",
+  "description": "One-off probes of the Claude Agent SDK. Each answers one NEEDS VERIFICATION item in docs/OPEN_QUESTIONS.md. Not part of the kernel.",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.284"
+  }
+}
