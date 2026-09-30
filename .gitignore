@@ -9,3 +9,4 @@ out/
 # Local Claude Code settings are per machine
 .claude/settings.local.json
 probes/node_modules/
+.supervisor/
