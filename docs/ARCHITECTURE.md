@@ -1,6 +1,6 @@
 # Architecture
 
-Status: design, pre-code. Decisions referenced as D# are in `DECISIONS.md`.
+Status: design, pre-code. Decisions referenced as D# are in `DECISIONS.md`. Q# refers to the probe-numbered technical items in `OPEN_QUESTIONS.md` (probe pN): Q1 bundled binary, Q2 subscription auth, Q3 usage reporting, Q4 plugin loading and auth isolation, Q5 session lifecycle, Q6 cap signal.
 
 ## Three layers
 
@@ -33,57 +33,78 @@ One SQLite database in the Studio data dir (e.g. `~/.loomwright-studio/studio.db
 | `tasks` | id, title, kind (free text), state, assignee agent, owner session, parent task, links (PR, ticket), dedupe key, next check time |
 | `playbooks` | id, name, owning agent, natural-language intent, trigger spec, action spec, dedupe key spec, priority, approval level, model/effort, enabled, version |
 | `triggers` | id, playbook, type (poll / cron / hook / webhook / git-hook), spec, last run, last result |
-| `sessions` | id, agent, task, SDK session id, status, started, tokens/cost |
+| `sessions` | id, agent, task, SDK session id, status, started, process group id (written before the session starts; Q5), auth account whose cap it counts against (D27, D28), tokens/cost as the last `result.modelUsage` totals, so a resume adds only the delta (Q3) |
 | `approvals` | id, action, exact payload, requested, decided by, decision (once / always-for-this-playbook / deny) |
 | `hooks_installed` | id, scope (session / project / global), file, diff, backup path, verified-fires flag |
 | `connectors` | id, kind, status, scopes (all optional; D12) |
 | `events` | append-only audit log of everything the kernel did |
-| `budget` | usage per day, per playbook, per agent, per session |
+| `budget` | usage per day, per playbook, per agent, per session. A token limit counts input + output + cache-write tokens; cache reads are recorded and shown but don't count. Read from `result.modelUsage` per model at each query's end, never per-message usage; the "≈$" estimate uses the full `costUSD` (D24, D26) |
+| `work_steps` | idempotency key (unique), status (started / done / failed), result. Makes each kernel tool's effect happen at most once across a crash (D2; see requirement item 07) |
 
 **Memory is markdown, not the database** (invariant 8): `memory/<agent>/role.md`, `preferences.md`, `people.md`, `lessons.md`, one handoff note per task, plus `memory/shared/` for things every agent should know about the user. Users can read, edit and version it.
 
 ## Kernel tools (the brain's only levers)
 
-All of these are generic mechanisms; policy is set per playbook (D3, D4).
+All of these are generic mechanisms; policy is set per playbook (D3, D4). They run in-process as an SDK MCP server, which needs streaming input (Q5). Every name carries the `kernel_` prefix because in Q5 an unprefixed `task_create` lost to the built-in `TaskCreate`, while `kernel_record_task` was called correctly.
 
-- `task_create / task_update / task_list / task_get`
-- `playbook_create / playbook_update / playbook_disable / playbook_dry_run`
-- `trigger_register(type, spec) / trigger_remove`
-- `agent_create / agent_update`: propose a new specialist or change one; requires approval
-- `session_spawn(agent, task, prompt) / session_stop / session_status`
-- `schedule_wakeup(at, reason) / request_stop(handoff)`
-- `approval_request(action, payload)`: blocks until the user decides in the app (or a connector)
-- `hook_propose / hook_apply / hook_verify` (D6)
-- `notify(message)`
-- `loomwright_capabilities()`: the adapter's manifest (D13)
+- `kernel_task_create / kernel_task_update / kernel_task_list / kernel_task_get`
+- `kernel_playbook_create / kernel_playbook_update / kernel_playbook_disable / kernel_playbook_dry_run`
+- `kernel_trigger_register(type, spec) / kernel_trigger_remove`
+- `kernel_agent_create / kernel_agent_update`: propose a new specialist or change one; requires approval
+- `kernel_session_spawn(agent, task, prompt) / kernel_session_stop / kernel_session_status`
+- `kernel_schedule_wakeup(at, reason) / kernel_request_stop(handoff)`
+- `kernel_approval_request(action, payload)`: blocks until the user decides in the app (or a connector)
+- `kernel_hook_propose / kernel_hook_apply / kernel_hook_verify` (D6)
+- `kernel_notify(message)`
+- `kernel_loomwright_capabilities()`: the adapter's manifest (D13)
 
 Everything else comes from ordinary Claude Code tools (`gh`, MCP connectors, bash, Loomwright commands), limited by the agent's permission policy.
 
 ## Main loop
 
 1. An **event** arrives: a trigger fires, the user sends a message, or a wake-up comes due.
-2. The kernel logs it and checks budget and cap state. If over a limit, it parks the event and notifies; no retries (D17).
+2. The kernel logs it and checks budget and cap state. If over a limit, it parks the event and notifies; no retries (D17). The cap is detected from the SDK's `rate_limit_event` with `status: 'rejected'`, not from error text: the kernel parks that account's sessions until `resetsAt` and notifies. A playbook may opt in to continue on the user's own API key under a hard spending ceiling the user sets; without the opt-in, work waits (D28). The real `rejected` event has not been observed yet (Q6).
 3. It checks the playbook's dedupe key against past work (if the user defined one) and drops duplicates.
 4. It **starts or resumes** the right agent's session: resume if a task is in flight, otherwise fresh, with role, memory, the Loomwright manifest and the event.
 5. The agent decides what to do: answer, create tasks, draft or edit a playbook, start specialists.
 6. Outward or persistent actions go through the **approval gate**. "Always allow" is stored per playbook, never globally.
-7. The session ends with `request_stop`: the kernel writes the handoff note, updates tasks, and schedules the next wake-up.
+7. The session ends with `kernel_request_stop`: the kernel writes the handoff note, updates tasks, and schedules the next wake-up.
+
+## Session manager (Q5)
+
+Every agent session is an SDK `query()`, never a `claude --bg` session: those belong to the CLI's own background manager and can't host kernel tools or the approval callback (Q5).
+
+- **The kernel spawns the CLI itself** through the SDK's `spawnClaudeCodeProcess` option, each session in its own process group. The group id is recorded in SQLite before the session starts, and a boot-time reaper kills any recorded group still alive. Q5 showed a `kill -9` of the kernel orphans the CLI child rather than stopping it, so without the reaper invariant 2 doesn't hold.
+- While the kernel is alive, stopping is stdin EOF, then a force-kill after a ~2 s grace (Q5).
+- **Every session sets `model` explicitly**, since the default is Opus (Q1); which model is playbook policy (D4).
+- **Every session sets `permissionMode` explicitly** (Q5), never `bypassPermissions` (D5).
+- **Every tool call passes a kernel `PreToolUse` hook callback.** `canUseTool` alone is skipped for read-only commands and for tools listed bare in `allowedTools` (Q5).
+- **Streaming input.** The prompt is an async iterable; with a plain string prompt the in-process kernel tools are unavailable (Q5).
+- Sessions run isolated with `settingSources: []` and Loomwright loaded by path (D27; see Auth).
+- Resume is by SDK session id from the on-disk transcript. Treat it as retryable and record the error text (Q5).
+- The CLI binary is bundled in the SDK's per-platform package; the packaged app keeps it outside the asar archive or passes `pathToClaudeCodeExecutable` (Q1).
 
 ## Safety kernel (fixed; D5)
 
 - **Per-agent permission policy.** Wright is read-mostly. Builders write only in git worktrees. Reviewers comment only. No agent ever gets `bypassPermissions`.
-- **Kernel-side SDK hook callbacks the brain can't edit:**
+- **Kernel-side SDK hook callbacks the brain can't edit**, passed as a `PreToolUse` callback on every tool call (Q5):
   - block `gh pr merge` outside Loomwright's sanctioned gate
   - block pushes to protected branches
   - block writes to kernel files and to global settings without approval
 - **Untrusted input is data.** PR bodies, comments and ticket text reach the model as quoted data. There's an injection test in the roadmap.
+- **A worked-on repo's `AGENTS.md` is untrusted input too.** The CLI's builtin `agents-md` plugin loads even with no plugins configured and puts that file into the model as project instructions where the repo has no `CLAUDE.md` (invariant 3, Q4).
 - **Budget ceilings.** Per day, per playbook and per agent, plus a limit on concurrent sessions. Fails closed: park and notify.
 - **Kill switch.** `studio stop --all` / the menu-bar button aborts every session and disables every trigger.
 
-## Auth (D15, D16)
+## Auth (D15, D16, D27, D29)
 
-- A pluggable provider interface: `subscription` (uses the Claude Code login already on the machine, personal build only, never a login UI of our own), `api-key` (Keychain), `bedrock`, `vertex`.
-- The API-key path is stub-tested until a commercial launch.
+- A pluggable provider interface: `subscription`, `api-key` (Keychain), `bedrock`, `vertex` (D16).
+- **`subscription`** (D15, D27): a long-lived token the user creates with `claude setup-token` in their own terminal, read from the macOS Keychain item `loomwright-studio-oauth` and passed to each session as `CLAUDE_CODE_OAUTH_TOKEN`. Sessions run fully isolated: `settingSources: []`, Loomwright loaded by path, nothing else of the user's (D27, proven in Q4). Studio never runs a login flow of its own (invariant 6).
+- The `subscription` provider strips `ANTHROPIC_API_KEY` from the child environment, because a key wins over the token and would silently move billing to the API (D27, Q2).
+- The token lasts one year; the kernel checks for expiry and notifies before it lapses (D27). Token entry checks the prefix and length before saving, since a cut-off token fails with a 401 (Q4).
+- **Personal build only.** The `subscription` provider is compiled out of any distributed build, which supports only API keys and 3P providers (D29).
+- `api-key` sets `ANTHROPIC_API_KEY` from the Keychain (Q2); it's also the per-playbook opt-in fallback at the cap (D28). The API-key path is stub-tested until a commercial launch (D16).
+- Not verified yet: that credentials are reachable when the kernel runs as a launchd agent rather than from a terminal; check once in phase 1 (Q2).
 
 ## Loomwright adapter (D13)
 
