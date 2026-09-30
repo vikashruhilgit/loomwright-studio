@@ -10,12 +10,11 @@ As the owner, I want every session's token use metered and the subscription cap 
 
 ## Acceptance criteria
 
-1. **Given** a session's `result` message, **when** it arrives, **then** the meter records `result.modelUsage` per model into `budget`:
-   - input, output, cache-creation and cache-read tokens;
-   - thinking tokens;
-   - `costUSD` as the "≈" estimate.
-
-   It sums per session, agent and day, and reads the **latest** result, never summing across results (the field is cumulative). Per-message usage is never used (Q3).
+1. **Given** a session's `result` message, **when** it arrives, **then** the meter records `result.modelUsage` per model: input, output, cache-creation and cache-read tokens, thinking tokens, and `costUSD` as the "≈" estimate.
+   - **The value is cumulative for the SDK session, across resumes** (Q3 plus `probes/p7-resume-usage.mjs`: this held both after a clean resume and after an abort mid tool call). So the meter stores the last total it saw per session and adds only the **delta** to `budget`, attributed to the day the result arrived. That keeps a session that runs past midnight split correctly.
+   - If a new total is **lower** than the stored one, the transcript saved no totals (the SDK's "when it has one" case). Treat the new total as a fresh baseline and add it in full, and log the event.
+   - Per-message usage is never used: it under-reports output (Q3) and double-counts when one call streams as several messages (p7).
+   - Known limit, documented in code: a `kill -9` in the middle of a model call's stream can lose that one call's tokens.
 2. **Given** the counted total (input + output + cache writes; cache reads shown but **not** counted, per D26), **when** an agent's tokens for the day reach its limit (config, per agent), **then** the kernel refuses new sessions for that agent, parks the triggering event, and emits a notify event. A running session is allowed to finish its current turn.
 3. **Given** a `rate_limit_event`, **when** it arrives, **then** `cap_state` is updated for the session's auth account with `status`, `rateLimitType`, `resetsAt` (epoch **seconds**) and utilization. `unifiedWindows` is recorded if present, noting its 0–1 scale.
 4. **Given** `status: 'rejected'`, **when** it's recorded, **then** the kernel:

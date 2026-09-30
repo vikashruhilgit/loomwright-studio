@@ -6,7 +6,7 @@
 
 ## Story
 
-As the kernel, I want one durable SQLite database that I alone write to, with an append-only audit log, so that all state survives a `kill -9` and every action I take can be inspected afterwards (invariants 2 and 8, D2).
+As the kernel, I want one durable SQLite database that I alone write to, with an append-only audit log, so that all state survives a `kill -9` and every action I take can be inspected afterwards (invariant 2, D2; the audit log backs invariant 3's safety kernel).
 
 ## Acceptance criteria
 

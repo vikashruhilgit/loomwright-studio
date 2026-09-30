@@ -15,7 +15,7 @@ As the developer, I want a minimal, typed, tested TypeScript package for the ker
    - TypeScript with `strict: true`;
    - vitest for tests;
    - `@anthropic-ai/claude-agent-sdk` pinned to the exact version the probes used (0.3.284; no caret);
-   - `better-sqlite3` (owner decision, 2026-09-30) and `zod`.
+   - `better-sqlite3` (D30) and `zod`.
 3. **Given** `npm run build`, **when** it completes, **then** it emits `kernel/dist/` with an entry point `kernel/dist/daemon.js` that starts, logs one line, and exits 0 when run with `--version`.
 4. **Given** a PR, **when** CI runs, **then** the existing `ci` workflow also runs typecheck and unit tests for `kernel/`, and fails the check if either fails. CI never needs a token and never calls a model.
 5. **Given** `CLAUDE.md`, **when** it's read, **then** "The repo is **pre-code**" is replaced by a one-line description of `kernel/` and how to run its tests.
