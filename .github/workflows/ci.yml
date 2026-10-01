@@ -46,9 +46,9 @@ jobs:
         if: hashFiles('package.json') != ''
         run: npm test
 
-      # Kernel (kernel/): install, typecheck and unit tests. Any failure fails
-      # the `ci` job. Unit tests never call the Agent SDK or a model, so CI needs
-      # no token.
+      # Kernel (kernel/): install, typecheck, unit tests, build and a --version
+      # smoke run. Any failure fails the `ci` job. Unit tests never call the
+      # Agent SDK or a model, so CI needs no token.
       - name: Set up Node (kernel)
         if: hashFiles('kernel/package.json') != ''
         uses: actions/setup-node@v4
@@ -71,3 +71,22 @@ jobs:
         if: hashFiles('kernel/package.json') != ''
         working-directory: kernel
         run: npm test
+
+      # tsconfig.build.json (rootDir src, include src) is stricter than the
+      # typecheck tsconfig, so typecheck + test can pass while the build fails
+      # (e.g. src importing from test/). Build for real, then run the entry point.
+      - name: Build (kernel)
+        if: hashFiles('kernel/package.json') != ''
+        working-directory: kernel
+        run: npm run build
+
+      - name: Smoke --version (kernel)
+        if: hashFiles('kernel/package.json') != ''
+        working-directory: kernel
+        run: |
+          expected="$(node -p "require('./package.json').version")"
+          actual="$(node dist/daemon.js --version)"
+          if [ "$actual" != "$expected" ]; then
+            echo "daemon --version printed '$actual', expected '$expected'" >&2
+            exit 1
+          fi
