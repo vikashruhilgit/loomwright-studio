@@ -21,9 +21,10 @@ jobs:
       - name: Check docs
         run: bash scripts/check-docs.sh
 
-      # The TypeScript steps below activate themselves the moment a package.json
-      # exists at the repo root (phase 1). Until then they are skipped, so the
-      # required `ci` check passes on docs-only PRs without a placeholder.
+      # Root TypeScript steps: dormant. They activate only if a package.json is
+      # ever added at the repo root; there is none (the kernel lives in kernel/),
+      # so they are skipped. The kernel steps further down key on
+      # kernel/package.json instead.
       - name: Set up Node
         if: hashFiles('package.json') != ''
         uses: actions/setup-node@v4
@@ -43,4 +44,30 @@ jobs:
 
       - name: Test
         if: hashFiles('package.json') != ''
+        run: npm test
+
+      # Kernel (kernel/): install, typecheck and unit tests. Any failure fails
+      # the `ci` job. Unit tests never call the Agent SDK or a model, so CI needs
+      # no token.
+      - name: Set up Node (kernel)
+        if: hashFiles('kernel/package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: kernel/package-lock.json
+
+      - name: Install (kernel)
+        if: hashFiles('kernel/package.json') != ''
+        working-directory: kernel
+        run: npm ci
+
+      - name: Typecheck (kernel)
+        if: hashFiles('kernel/package.json') != ''
+        working-directory: kernel
+        run: npm run typecheck
+
+      - name: Test (kernel)
+        if: hashFiles('kernel/package.json') != ''
+        working-directory: kernel
         run: npm test
