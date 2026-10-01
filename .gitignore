@@ -9,4 +9,56 @@ out/
 # Local Claude Code settings are per machine
 .claude/settings.local.json
 probes/node_modules/
-.supervisor/
+# .supervisor/   # [loomwright/setup-memory] disabled: a bare directory exclude defeats the negation below
+# >>> loomwright /setup memory BEGIN — committable Twin stores (managed block) >>>
+# Negate CONTENTS, not the directory. Git cannot re-include a file whose parent directory is
+# excluded, so the naive form
+#     .claude/
+#     !.claude/agent-memory/
+# looks correct and silently does NOTHING. The `/*` form below excludes the directory's contents
+# and leaves the directory itself traversable, so the `!` lines can re-include.
+#
+# Committed on purpose: the Twin's accumulated judgment (agent memory + distilled lessons),
+# including their dot-prefixed provenance sidecars; the judgement TRAIL — what was asked
+# (`.supervisor/requirements/`), what shipped or did not (`.supervisor/jobs/done/`, `jobs/failed/`)
+# and how each automation run went (`.supervisor/automate/*.md`); and — when the repo-allowlist
+# gate passes — the findings ledger `.supervisor/postmortem/results.jsonl`. Everything else under
+# these directories stays ignored: worktree checkouts, machine-local settings, session logs,
+# in-flight briefs (`jobs/pending/`, `jobs/in-progress/`), automate sidecars (`*.config-backup.json`),
+# the `.supervisor/` trees hook emitters leave INSIDE a requirements folder when a command ran with
+# its cwd there, and every other file under `.supervisor/postmortem/`.
+#
+# Managed by `/setup memory`. Edit via that command (`/setup memory remove` reverts it);
+# hand-edits inside these sentinels are overwritten on the next apply.
+.claude/*
+!.claude/agent-memory/
+.supervisor/*
+!.supervisor/memory/
+# The judgement trail. Same re-include-the-directory / re-exclude-its-contents / re-include-the-
+# wanted-children shape as the ledger below; each `!<dir>/` line is dead without the `.supervisor/*`
+# line above it, and pinned as such in test-setup-memory.sh group (t).
+!.supervisor/requirements/
+.supervisor/requirements/**/.supervisor/
+!.supervisor/jobs/
+.supervisor/jobs/*
+!.supervisor/jobs/done/
+!.supervisor/jobs/failed/
+!.supervisor/automate/
+.supervisor/automate/*
+!.supervisor/automate/*.md
+# The findings ledger, un-ignored only because every record's `.repo` is inside this repo's
+# allowlist (`setup-memory.sh allowlist`). THREE lines, in THIS ORDER, and AFTER `.supervisor/*`:
+# the first re-includes the DIRECTORY so git will descend into it, the second re-excludes its
+# CONTENTS so nothing else there leaks, the third re-includes the one file. A single naive
+# `!.supervisor/postmortem/results.jsonl` does NOTHING (its parent directory is excluded), and the
+# same three lines placed BEFORE `.supervisor/*` do nothing either — both are pinned as negative
+# controls in test-setup-memory.sh.
+!.supervisor/postmortem/
+.supervisor/postmortem/*
+!.supervisor/postmortem/results.jsonl
+# <<< loomwright /setup memory END <<<
+
+# Stray state dirs hook emitters leave when a command runs with its cwd in a
+# subfolder (e.g. probes/.supervisor/). The managed block above only covers the
+# root .supervisor/; this matches any NESTED one without touching the root.
+*/**/.supervisor/

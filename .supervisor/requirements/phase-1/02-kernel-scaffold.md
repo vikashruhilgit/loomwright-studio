@@ -33,3 +33,9 @@ Electron, packaging, and anything that runs a session.
 ## Risks
 
 `better-sqlite3` compiles natively on install. If CI lacks a toolchain, use a prebuilt binary; don't switch libraries without the owner.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-01T03:27:18Z
+- **Brief:** .supervisor/jobs/done/2026-10-01-02-kernel-scaffold.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/6
