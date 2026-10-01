@@ -317,6 +317,32 @@ describe("events (append-only audit log)", () => {
     expect(store.prepare("SELECT id, kind, payload_json FROM events").get()).toEqual(row);
   });
 
+  it("rejects an upsert over an existing row", () => {
+    const store = open();
+    const row = seed(store);
+    expect(() =>
+      store
+        .prepare("INSERT INTO events (id, kind) VALUES (?, 'tampered') ON CONFLICT(id) DO UPDATE SET kind = 'tampered'")
+        .run(row.id),
+    ).toThrow(/append-only/);
+    expect(store.prepare("SELECT id, kind, payload_json FROM events").get()).toEqual(row);
+  });
+
+  // In a BEFORE INSERT trigger SQLite reports an auto-assigned id as NEW.id = -1,
+  // so a stored -1 (or 0) row would make every later auto-id append look like a replace.
+  it.each([-1, 0])("rejects an explicit id of %i and still accepts auto-id appends after it", (id) => {
+    const store = open();
+    expect(() => store.prepare("INSERT INTO events (id, kind) VALUES (?, 'x')").run(id)).toThrow(/CHECK/);
+    expect(() =>
+      store.prepare("INSERT OR REPLACE INTO events (id, kind) VALUES (?, 'x')").run(id),
+    ).toThrow(/CHECK/);
+    expect(store.prepare("SELECT count(*) FROM events").pluck().get()).toBe(0);
+    seed(store);
+    store.prepare("INSERT INTO events (id, kind) VALUES (NULL, 'explicit-null')").run();
+    const ids = store.prepare<[], number>("SELECT id FROM events ORDER BY id").pluck().all();
+    expect(ids).toEqual([1, 2]);
+  });
+
   it("allows appends", () => {
     const store = open();
     seed(store);

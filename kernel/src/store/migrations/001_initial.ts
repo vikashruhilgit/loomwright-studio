@@ -49,8 +49,10 @@ CREATE TABLE sessions (
 
 -- The append-only audit log. No foreign keys on purpose: the log must outlive
 -- whatever it mentions, and a cascading key would fire the triggers below.
+-- id > 0: in a BEFORE INSERT trigger SQLite reports an auto-assigned rowid as
+-- NEW.id = -1, so a stored id <= 0 would be indistinguishable from "auto" there.
 CREATE TABLE events (
-  id           INTEGER PRIMARY KEY,
+  id           INTEGER PRIMARY KEY CHECK (id > 0),
   at           TEXT NOT NULL DEFAULT ${NOW},
   kind         TEXT NOT NULL,
   actor        TEXT,
@@ -71,8 +73,10 @@ END;
 
 -- INSERT OR REPLACE deletes the old row without firing a DELETE trigger unless
 -- recursive_triggers is on; refuse any insert that would hit an existing id.
+-- NEW.id is -1 (never NULL) here when the id is auto-assigned; the CHECK above
+-- keeps real ids positive, so NEW.id > 0 means "an explicit id was given".
 CREATE TRIGGER events_no_replace BEFORE INSERT ON events
-WHEN NEW.id IS NOT NULL AND EXISTS (SELECT 1 FROM events WHERE id = NEW.id)
+WHEN NEW.id > 0 AND EXISTS (SELECT 1 FROM events WHERE id = NEW.id)
 BEGIN
   SELECT RAISE(ABORT, 'events is append-only');
 END;
