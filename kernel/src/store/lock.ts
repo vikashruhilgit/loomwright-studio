@@ -76,7 +76,15 @@ export function acquireStoreLock(dataDir: string): StoreLock {
     throw err;
   }
 
-  writeFileSync(join(dataDir, LOCK_PID_FILENAME), `${process.pid}\n`, { mode: 0o600 });
+  // The PID file is informational only (error messages), never read to decide
+  // anything, so failing to write it (ENOSPC, EACCES, EISDIR, ...) must not fail
+  // the open. Rethrowing here would also strand the lock: `db` would stay open
+  // with no StoreLock returned to release it. Keep the lock and return it.
+  try {
+    writeFileSync(join(dataDir, LOCK_PID_FILENAME), `${process.pid}\n`, { mode: 0o600 });
+  } catch {
+    // Ignored on purpose; see above.
+  }
 
   const held = db;
   return {

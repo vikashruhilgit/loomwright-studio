@@ -234,6 +234,20 @@ describe("migrations", () => {
     expect(() => new Store({ dataDir: tmp, migrations: [m(2), m(1)] })).toThrow(/strictly increasing/);
   });
 
+  it("refuses a gapped list or one not starting at 1, before touching the database", () => {
+    const m = (version: number): Migration => ({
+      version,
+      name: `m${version}`,
+      up: `CREATE TABLE t${version} (x)`,
+    });
+    expect(() => new Store({ dataDir: tmp, migrations: [m(1), m(3)] })).toThrow(/contiguous from 1/);
+    inspect(tmp, (db) => expect(tableNames(db)).toEqual([]));
+    expect(() => new Store({ dataDir: tmp, migrations: [m(2), m(3)] })).toThrow(/contiguous from 1/);
+    inspect(tmp, (db) => expect(tableNames(db)).toEqual([]));
+    // Each refused open released its lock.
+    open({ migrations: [m(1)] }).close();
+  });
+
   it("a migration that throws leaves no table and no schema_migrations row", () => {
     const failing: Migration[] = [
       { version: 1, name: "ok", up: "CREATE TABLE first_ok (x)" },
@@ -466,6 +480,23 @@ describe("single-writer lock", () => {
     expect(await childTry(tmp)).toBe("BUSY");
     a.close();
     expect(await childTry(tmp)).toBe("ACQUIRED");
+  });
+
+  it("opens and keeps the lock when the PID file cannot be written", () => {
+    // A directory in place of studio.lock.pid makes the informational write throw (EISDIR).
+    mkdirSync(join(tmp, LOCK_PID_FILENAME));
+    const a = open();
+    expect(a.isOpen).toBe(true);
+
+    // The lock is held, not leaked or dropped: a second Store here is refused.
+    const err = catchError(() => new Store({ dataDir: tmp }));
+    expect(err).toBeInstanceOf(StoreLockedError);
+    expect((err as StoreLockedError).holderPid).toBeUndefined();
+
+    // Closing releases it: a fresh Store opens.
+    a.close();
+    const b = open();
+    expect(b.isOpen).toBe(true);
   });
 
   it("reports an unknown holder when the recorded PID is unreadable", () => {

@@ -134,15 +134,15 @@ const CREATE_SCHEMA_MIGRATIONS = `CREATE TABLE IF NOT EXISTS schema_migrations (
  * `schema_migrations` table itself).
  */
 function applyMigrations(db: Database.Database, list: readonly Migration[]): void {
-  let previous = 0;
-  for (const m of list) {
-    if (!Number.isInteger(m.version) || m.version <= previous) {
+  // Validate the whole list before touching the database: versions must be
+  // contiguous from 1 (1, 2, 3, ...), as documented on `Migration.version`.
+  list.forEach((m, i) => {
+    if (m.version !== i + 1) {
       throw new Error(
-        `migrations must have strictly increasing positive integer versions (got ${m.version} after ${previous})`,
+        `migrations must be strictly increasing and contiguous from 1 (expected version ${i + 1} at position ${i}, got ${m.version})`,
       );
     }
-    previous = m.version;
-  }
+  });
 
   const hasTable = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'")
