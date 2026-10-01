@@ -14,8 +14,8 @@ Safe mode (no `--auto-merge`): every PR stops at review-ready, and the owner app
 
 **Rules for every item:** read `CLAUDE.md` (invariants) and `docs/DECISIONS.md` first. The probe findings in `docs/OPEN_QUESTIONS.md` are requirements, not suggestions. Unit tests never call the real SDK or a model; live tests are opt-in (`STUDIO_LIVE=1`), use Haiku, and never run in CI.
 
-- [ ] .supervisor/requirements/phase-1/01-architecture-sync.md
-- [ ] .supervisor/requirements/phase-1/02-kernel-scaffold.md
+- [x] .supervisor/requirements/phase-1/01-architecture-sync.md
+- [x] .supervisor/requirements/phase-1/02-kernel-scaffold.md
 - [ ] .supervisor/requirements/phase-1/03-sqlite-store.md
 - [ ] .supervisor/requirements/phase-1/04-auth-providers.md
 - [ ] .supervisor/requirements/phase-1/05-session-manager.md
