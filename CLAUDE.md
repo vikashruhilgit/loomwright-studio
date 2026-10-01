@@ -2,7 +2,7 @@
 
 Guidance for Claude Code sessions in this repository.
 
-**Loomwright Studio** is a desktop app for an always-available AI partner (lead agent: **Wright**) built on the Claude Agent SDK and the [Loomwright](https://github.com/vikashruhilgit/loomwright) plugin. The repo is **pre-code**: the design lives in `docs/`. Phase 0 (design system and mockups) is approved; see `docs/DESIGN.md`. The next step is phase 1 (the kernel). Read `docs/DECISIONS.md` before proposing anything. The owner has already settled the decisions recorded there, so don't reopen them unless new evidence contradicts one, and say so explicitly if it does.
+**Loomwright Studio** is a desktop app for an always-available AI partner (lead agent: **Wright**) built on the Claude Agent SDK and the [Loomwright](https://github.com/vikashruhilgit/loomwright) plugin. The kernel daemon lives in `kernel/` (strict TypeScript, vitest); run its tests with `cd kernel && npm ci && npm test`, and the design lives in `docs/`. Phase 0 (design system and mockups) is approved; see `docs/DESIGN.md`. The next step is phase 1 (the kernel). Read `docs/DECISIONS.md` before proposing anything. The owner has already settled the decisions recorded there, so don't reopen them unless new evidence contradicts one, and say so explicitly if it does.
 
 ## Where things are
 
