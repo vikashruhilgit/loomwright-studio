@@ -38,3 +38,9 @@ Approval UI (phase 2; phase 1 denies anything not allowlisted). Agent roster and
 
 - This is the largest item. If it grows past one reviewable PR, split AC 5–6 (reaper and resume) into a follow-up and say so in the PR.
 - Process-group handling differs on Linux; target macOS and note the gap.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-02T06:08:32Z
+- **Brief:** .supervisor/jobs/done/2026-10-02-05-session-manager.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/13
