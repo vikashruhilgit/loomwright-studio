@@ -33,7 +33,7 @@ One SQLite database in the Studio data dir (e.g. `~/.loomwright-studio/studio.db
 | `tasks` | id, title, kind (free text), state, assignee agent, owner session, parent task, links (PR, ticket), dedupe key, next check time |
 | `playbooks` | id, name, owning agent, natural-language intent, trigger spec, action spec, dedupe key spec, priority, approval level, model/effort, enabled, version |
 | `triggers` | id, playbook, type (poll / cron / hook / webhook / git-hook), spec, last run, last result |
-| `sessions` | id, agent, task, SDK session id, status, started, process group id (written before the session starts; Q5), auth account whose cap it counts against (D27, D28), tokens/cost as the last `result.modelUsage` totals, so a resume adds only the delta (Q3) |
+| `sessions` | id, agent, task, SDK session id, status, started, process group id (written before the session starts; Q5), auth account whose cap it counts against (D27, D28), Loomwright path it ran with, tokens/cost as the last `result.modelUsage` totals, so a resume adds only the delta (Q3) |
 | `approvals` | id, action, exact payload, requested, decided by, decision (once / always-for-this-playbook / deny) |
 | `hooks_installed` | id, scope (session / project / global), file, diff, backup path, verified-fires flag |
 | `connectors` | id, kind, status, scopes (all optional; D12) |
@@ -78,7 +78,9 @@ Everything else comes from ordinary Claude Code tools (`gh`, MCP connectors, bas
 Every agent session is an SDK `query()`, never a `claude --bg` session: those belong to the CLI's own background manager and can't host kernel tools or the approval callback (Q5).
 
 - **The kernel spawns the CLI itself** through the SDK's `spawnClaudeCodeProcess` option, each session in its own process group. The group id is recorded in SQLite before the session starts, and a boot-time reaper kills any recorded group still alive. Q5 showed a `kill -9` of the kernel orphans the CLI child rather than stopping it, so without the reaper invariant 2 doesn't hold.
-- While the kernel is alive, stopping is stdin EOF, then a force-kill after a ~2 s grace (Q5).
+- While the kernel is alive, stopping is stdin EOF, then a force-kill of the whole process group after a ~2 s grace (Q5).
+- **The SDK session id is pre-assigned** (`sessionId`), so it is recorded in SQLite before the CLI starts and a kernel killed before the first message still leaves a resumable id.
+- **An auth failure surfaces within ~1 s** as an `api_retry` message with a 401, long before the CLI's own retries give up (Q4). The kernel fails the session on the first one: `failed:auth`, one notify event, no retry and no resume.
 - **Every session sets `model` explicitly**, since the default is Opus (Q1); which model is playbook policy (D4).
 - **Every session sets `permissionMode` explicitly** (Q5), never `bypassPermissions` (D5).
 - **Every tool call passes a kernel `PreToolUse` hook callback.** `canUseTool` alone is skipped for read-only commands and for tools listed bare in `allowedTools` (Q5).
