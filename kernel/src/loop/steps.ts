@@ -15,6 +15,11 @@
 //   re-runnable (the effect is idempotent, like rewriting the same file);
 //   otherwise the step becomes `failed:interrupted` and the user is notified.
 //   Nothing makes a non-idempotent external effect exactly once.
+// - A rejection that the caller's `opts.noEffect` predicate accepts is the
+//   caller's statement that `fn` did nothing (for example an admission refusal
+//   thrown before any side effect). The claim is then released instead of
+//   recorded as `failed:error`, so a later call for the key runs `fn` again.
+//   This module never decides which errors mean "no effect"; the caller does.
 import type { Store } from "../store/store.js";
 import { appendEvent, NO_REF } from "./internal.js";
 import type { StepOptions } from "./types.js";
@@ -142,7 +147,11 @@ function flightsOf(store: Store): Map<string, Promise<unknown>> {
   return flights;
 }
 
-type Claim = { readonly kind: "done"; readonly value: unknown } | { readonly kind: "run" } | { readonly kind: "interrupted" };
+/** `fresh`: this claim inserted the `started` row (false: it re-runs a crash leftover). */
+type Claim =
+  | { readonly kind: "done"; readonly value: unknown }
+  | { readonly kind: "run"; readonly fresh: boolean }
+  | { readonly kind: "interrupted" };
 
 /**
  * Read `key` and decide (inside the caller's transaction): `done` ⇒ the
@@ -154,7 +163,7 @@ function claim(store: Store, key: string, rerunnable: boolean, at: string): Clai
   const row = readRow(store, key);
   if (row === undefined) {
     insertStarted(store, key, rerunnable, at);
-    return { kind: "run" };
+    return { kind: "run", fresh: true };
   }
   if (row.status === "done") return { kind: "done", value: parseResult(row.result_json) };
   if (row.status === "failed") throw new WorkStepFailedError(key, row.failure_reason);
@@ -163,7 +172,27 @@ function claim(store: Store, key: string, rerunnable: boolean, at: string): Clai
     return { kind: "interrupted" };
   }
   store.prepare("UPDATE work_steps SET rerunnable = 1, updated_at = ? WHERE key = ?").run(at, key);
-  return { kind: "run" };
+  return { kind: "run", fresh: false };
+}
+
+/**
+ * `fn` rejected with an error the caller declared effect-free: undo this
+ * call's claim. A row this call inserted is deleted (the key is unclaimed
+ * again); a crash leftover it re-ran stays `started`, because an earlier
+ * attempt may have had an effect and the next call must still see that.
+ */
+function releaseClaim(store: Store, key: string, fresh: boolean): void {
+  if (fresh) store.prepare("DELETE FROM work_steps WHERE key = ? AND status = 'started'").run(key);
+}
+
+function isNoEffect(opts: StepOptions, err: unknown): boolean {
+  if (opts.noEffect === undefined) return false;
+  try {
+    return opts.noEffect(err) === true;
+  } catch {
+    // A predicate that throws proves nothing: keep the safe default (failed:error).
+    return false;
+  }
 }
 
 /**
@@ -178,7 +207,8 @@ function claim(store: Store, key: string, rerunnable: boolean, at: string): Clai
  *   `opts.rerunnable`; otherwise marks it `failed:interrupted`, appends one
  *   `notify` and throws `WorkStepInterruptedError`.
  * - `fn` throws: the transaction rolls back (no row remains) and the error
- *   propagates; nothing was committed, so a later call runs `fn` again.
+ *   propagates; nothing was committed, so a later call runs `fn` again
+ *   (`opts.noEffect` is not needed here: the rollback already releases).
  *
  * `fn` must be synchronous: a returned promise is refused (use
  * `runStepAsync`). Called inside an outer transaction, this nests as a
@@ -214,7 +244,12 @@ export function runStep<T>(store: Store, key: string, fn: () => T, opts: StepOpt
  *   leftover): runs `fn` again when `opts.rerunnable`; otherwise marks it
  *   `failed:interrupted`, appends one `notify` and rejects with
  *   `WorkStepInterruptedError`.
- * - `fn` rejects: the row becomes `failed:error` and the error propagates.
+ * - `fn` rejects with an error `opts.noEffect` accepts (the caller's word
+ *   that `fn` did nothing): the claim is released (see `releaseClaim`) and
+ *   the error propagates, so a later call runs `fn` again. If the release
+ *   cannot be written, or the process dies before it, the row stays
+ *   `started` and a later call treats it as a crash leftover.
+ * - `fn` rejects otherwise: the row becomes `failed:error` and the error propagates.
  * - A concurrent call for a `key` already in flight here returns the same
  *   promise; `fn` runs once.
  */
@@ -235,7 +270,8 @@ export function runStepAsync<T>(store: Store, key: string, fn: () => Promise<T>,
       value = await fn();
     } catch (err) {
       try {
-        store.transaction(() => markFailed(store, key, "error", now().toISOString()));
+        if (isNoEffect(opts, err)) store.transaction(() => releaseClaim(store, key, c.fresh));
+        else store.transaction(() => markFailed(store, key, "error", now().toISOString()));
       } catch {
         // The row stays `started`; a later call treats it as interrupted.
       }

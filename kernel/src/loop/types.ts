@@ -40,6 +40,15 @@ export interface StepOptions {
    * run again. Without it such a row becomes `failed:interrupted`.
    */
   readonly rerunnable?: boolean;
+  /**
+   * `runStepAsync` only: returns true for an error that proves `fn` had no
+   * effect at all (nothing written, spawned or sent). Such a rejection
+   * releases the step's claim instead of recording `failed:error`, so a later
+   * call for the key runs `fn` again. The caller owns this judgement; claim it
+   * only for an error raised before `fn`'s first effect. Absent: every
+   * rejection is `failed:error` (terminal for the key).
+   */
+  readonly noEffect?: (err: unknown) => boolean;
   /** Defaults to `() => new Date()`. */
   readonly now?: () => Date;
 }
@@ -50,7 +59,13 @@ export interface EventContext {
   readonly store: Store;
   /** `runStep(store, "event:<id>:<name>", fn, opts)`. */
   runStep<T>(name: string, fn: () => T, opts?: StepOptions): T;
-  /** `runStepAsync(store, "event:<id>:<name>", fn, opts)`. */
+  /**
+   * `runStepAsync(store, "event:<id>:<name>", fn, opts)`, where an
+   * `AdmissionRefusedError` also counts as `noEffect` (admission refuses
+   * before any side effect), so a step refused by admission runs again when
+   * the parked event is delivered again. Start the session first in such a
+   * step: an effect made before the refusal would be repeated.
+   */
   runStepAsync<T>(name: string, fn: () => Promise<T>, opts?: StepOptions): Promise<T>;
 }
 
@@ -66,8 +81,9 @@ export interface EventContext {
  * instead of doing the work twice.
  *
  * Outcomes: resolve ⇒ `done`; throw `AdmissionRefusedError` ⇒ parked
- * (`pending` until its `retryAt`); throw anything else ⇒ `failed`, one
- * `notify`, and the loop moves on to the next event.
+ * (`pending` until its `retryAt`), and a `ctx.runStepAsync` step it came out
+ * of is released, not failed, so the redelivery runs it again; throw anything
+ * else ⇒ `failed`, one `notify`, and the loop moves on to the next event.
  */
 export type EventHandler = (ctx: EventContext) => void | Promise<void>;
 

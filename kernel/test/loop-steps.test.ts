@@ -139,6 +139,42 @@ describe("runStepAsync (external effects)", () => {
     expect(getWorkStep(env.store, "k")?.status).toBe("done");
   });
 
+  it("a rejection noEffect accepts releases the claim: no row remains and a later call runs fn again", async () => {
+    class NothingHappened extends Error {}
+    let calls = 0;
+    const fn = vi.fn(async () => {
+      calls++;
+      if (calls === 1) throw new NothingHappened("refused before any effect");
+      return "ran";
+    });
+    const opts = { noEffect: (err: unknown) => err instanceof NothingHappened };
+    await expect(runStepAsync(env.store, "k", fn, opts)).rejects.toBeInstanceOf(NothingHappened);
+    expect(getWorkStep(env.store, "k")).toBeUndefined();
+    await expect(runStepAsync(env.store, "k", fn, opts)).resolves.toBe("ran");
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(getWorkStep(env.store, "k")).toMatchObject({ status: "done", result: "ran" });
+  });
+
+  it("noEffect on a re-run crash leftover keeps it started (an earlier attempt may have had an effect)", async () => {
+    insertStarted(env.store, "k");
+    const store = env.restart();
+    const opts = { rerunnable: true, noEffect: () => true };
+    await expect(runStepAsync(store, "k", async () => Promise.reject(new Error("nothing")), opts)).rejects.toThrow("nothing");
+    expect(getWorkStep(store, "k")?.status).toBe("started");
+    // Not re-runnable now: the leftover is still seen, so it is interrupted rather than silently run.
+    await expect(runStepAsync(store, "k", async () => 1)).rejects.toBeInstanceOf(WorkStepInterruptedError);
+  });
+
+  it("an error noEffect rejects, or a noEffect that throws, still ends failed:error", async () => {
+    await expect(runStepAsync(env.store, "a", async () => Promise.reject(new Error("x")), { noEffect: () => false })).rejects.toThrow("x");
+    expect(getWorkStep(env.store, "a")?.label).toBe("failed:error");
+    const throwing = () => {
+      throw new Error("predicate broke");
+    };
+    await expect(runStepAsync(env.store, "b", async () => Promise.reject(new Error("y")), { noEffect: throwing })).rejects.toThrow("y");
+    expect(getWorkStep(env.store, "b")?.label).toBe("failed:error");
+  });
+
   it("refuses an empty key", () => {
     expect(() => runStepAsync(env.store, "", async () => 1)).toThrow(TypeError);
     expect(() => runStep(env.store, "", () => 1)).toThrow(TypeError);

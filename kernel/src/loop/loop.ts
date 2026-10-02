@@ -33,7 +33,8 @@ type Outcome = "done" | "unhandled" | "parked" | "failed";
  * - it throws `AdmissionRefusedError` ⇒ the row stays `pending` with
  *   `not_before` = the refusal's `retryAt` (or now + `DEFAULT_PARK_MS` when
  *   unknown) + `event_parked`; admission already notified, so no second
- *   notify (D17: park, no retry loop);
+ *   notify (D17: park, no retry loop). A `ctx.runStepAsync` step the refusal
+ *   came out of is released, not failed, so the redelivery runs it again;
  * - it throws anything else ⇒ `failed` (`attempts + 1`, `last_error`) +
  *   `event_failed` + one `notify`, and the loop goes on with the next row: a
  *   failing event never blocks the queue.
@@ -145,7 +146,14 @@ export class EventLoop {
       event,
       store,
       runStep: (name, fn, opts) => runStep(store, prefix + name, fn, { now, ...opts }),
-      runStepAsync: (name, fn, opts) => runStepAsync(store, prefix + name, fn, { now, ...opts }),
+      runStepAsync: (name, fn, opts) =>
+        runStepAsync(store, prefix + name, fn, {
+          now,
+          ...opts,
+          // An admission refusal is thrown before any side effect: release the
+          // step so the parked event's redelivery runs it again (D17).
+          noEffect: (err) => err instanceof AdmissionRefusedError || (opts?.noEffect?.(err) ?? false),
+        }),
     };
   }
 

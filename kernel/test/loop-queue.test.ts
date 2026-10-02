@@ -1,7 +1,7 @@
 // The durable event queue and the loop that processes it (AC1, AC6). Handlers
 // are fakes; "restart" = close the Store and open a new one on the data dir.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PARK_MS, EventLoop, enqueueEvent, enqueueMessage, getQueueRow } from "../src/loop/index.js";
+import { DEFAULT_PARK_MS, EventLoop, enqueueEvent, enqueueMessage, getQueueRow, getWorkStep } from "../src/loop/index.js";
 import type { EventHandler, EventKind, QueuedEvent } from "../src/loop/index.js";
 import { AdmissionRefusedError } from "../src/sessions/index.js";
 import type { CancelTimer } from "../src/sessions/index.js";
@@ -112,6 +112,42 @@ describe("EventLoop.tick", () => {
     env.advance(60_000);
     expect(await l.tick()).toMatchObject({ done: 1 });
     expect(getQueueRow(env.store, id)).toMatchObject({ status: "done", attempts: 2 });
+  });
+
+  it("a refusal out of ctx.runStepAsync parks the event and releases the step, so the redelivery runs it and completes", async () => {
+    const id = enqueueMessage(env.store, { text: "start a session" }).id;
+    const retryAt = new Date(env.now().getTime() + 30 * 60_000).toISOString();
+    let refuse = true;
+    const start = vi.fn(async () => {
+      if (refuse) throw new AdmissionRefusedError("cap_parked", retryAt, "parked");
+      return { session: 7 };
+    });
+    const message: EventHandler = async (ctx) => {
+      await ctx.runStepAsync("start", start);
+    };
+    const l = loop({ message });
+    expect(await l.tick()).toMatchObject({ parked: 1, failed: 0 });
+    expect(getQueueRow(env.store, id)).toMatchObject({ status: "pending", not_before: retryAt });
+    expect(getWorkStep(env.store, `event:${id}:start`)).toBeUndefined();
+
+    refuse = false;
+    env.advance(30 * 60_000);
+    expect(await l.tick()).toMatchObject({ done: 1, parked: 0, failed: 0 });
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(getQueueRow(env.store, id)).toMatchObject({ status: "done", attempts: 2, last_error: expect.stringContaining("parked") });
+    expect(getWorkStep(env.store, `event:${id}:start`)).toMatchObject({ status: "done", result: { session: 7 } });
+    expect(events(env.store, "notify")).toHaveLength(0);
+  });
+
+  it("a ctx.runStepAsync failure other than a refusal still fails its step terminally", async () => {
+    const id = enqueueMessage(env.store, { text: "x" }).id;
+    await loop({
+      message: async (ctx) => {
+        await ctx.runStepAsync("effect", async () => Promise.reject(new Error("effect broke")));
+      },
+    }).tick();
+    expect(getQueueRow(env.store, id)?.status).toBe("failed");
+    expect(getWorkStep(env.store, `event:${id}:effect`)?.label).toBe("failed:error");
   });
 
   it("an unknown reset (retryAt null) parks for DEFAULT_PARK_MS", async () => {
