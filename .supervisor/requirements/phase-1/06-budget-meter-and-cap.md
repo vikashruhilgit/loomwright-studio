@@ -41,3 +41,9 @@ The experimental `usage_EXPERIMENTAL…` quota readout (display-only, a later ph
 ## Risks
 
 The `rejected` shape has never been observed live (Q6). Code defensively around it, and log the full event on first sight so it can be recorded.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-02T09:26:59Z
+- **Brief:** .supervisor/jobs/done/2026-10-02-06-budget-meter-and-cap.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/15
