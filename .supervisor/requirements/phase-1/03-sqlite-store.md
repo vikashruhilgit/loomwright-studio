@@ -37,3 +37,9 @@ Tables for phases 2+. Any encryption at rest.
 ## Risks
 
 A single-writer lock that goes stale after `kill -9` must not block restart: the lock is taken over when its PID is dead. Test that case.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-01T18:55:11Z
+- **Brief:** .supervisor/jobs/done/2026-10-01-03-sqlite-store.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/9
