@@ -135,6 +135,13 @@ export interface SessionRow {
    * is left alone and the row `orphaned`.
    */
   readonly leader_started_at: string | null;
+  /**
+   * When a live kernel's kill of the recorded group last gave up or errored
+   * (ISO-8601), or `null`. While set on a terminal row, every `reapOrphans`
+   * retries the kill (migration 5); cleared once the group is confirmed gone
+   * or proven foreign, and whenever a new group is recorded.
+   */
+  readonly kill_incomplete_at: string | null;
   readonly started_at: string | null;
   readonly ended_at: string | null;
   readonly updated_at: string;

@@ -582,6 +582,74 @@ describe("startSession: query options (AC1)", () => {
     expect(events(store, "session_status").at(-1)?.payload).toMatchObject({ reason: "result_error" });
   });
 
+  it("marks a session failed (ended_without_result) when its stream ends with no result", async () => {
+    const { manager, store } = harness({
+      script: ({ stream }) => {
+        stream.push(msg.init(UUID));
+        stream.end();
+      },
+    });
+    const handle = await manager.startSession(startParams());
+    expect(await handle.done).toBe("failed");
+    expect(row(store, handle.id).status).toBe("failed");
+    expect(events(store, "session_status").at(-1)?.payload).toEqual({ from: "running", to: "failed", reason: "ended_without_result" });
+  });
+
+  it("marks a session failed (spawn_failed), kills its group and rethrows when query() throws after the spawn", async () => {
+    const boom = new Error("query() failed after the spawn");
+    const { manager, store, killed, children } = harness({
+      script: () => {
+        throw boom;
+      },
+    });
+    await expect(manager.startSession(startParams())).rejects.toBe(boom);
+    const [child] = [...children.values()];
+    expect(killed).toEqual([[child?.pid, "SIGKILL"]]);
+    const id = store.prepare<[], number>("SELECT id FROM sessions").pluck().get() as number;
+    expect(row(store, id).status).toBe("failed");
+    expect(events(store, "session_status").at(-1)?.payload).toEqual({
+      from: "starting",
+      to: "failed",
+      reason: "spawn_failed",
+      error: "query() failed after the spawn",
+    });
+    // Settled: the manager no longer runs it, so a stop reads the terminal row.
+    expect(await manager.stopSession(id)).toBe("failed");
+  });
+
+  it("a background-loop crash (kernel_error) kills the group, keeps the computed verdict as outcome and settles done", async () => {
+    let thrown = false;
+    const { manager, store, killed } = harness({
+      deps: {
+        schedule: (fn, ms) => {
+          // #conclude's first bounded wait throws: the background loop rejects.
+          if (ms === 1_000 && !thrown) {
+            thrown = true;
+            throw new Error("scheduler broke");
+          }
+          const t = setTimeout(fn, ms);
+          return () => clearTimeout(t);
+        },
+      },
+      script: ({ stream }) => {
+        stream.push(msg.init(UUID));
+        stream.push(msg.success());
+      },
+    });
+    const handle = await manager.startSession(startParams());
+    expect(await handle.done).toBe("failed");
+    expect(thrown).toBe(true);
+    expect(killed).toEqual([[handle.pgid, "SIGKILL"]]);
+    expect(row(store, handle.id).status).toBe("failed");
+    expect(events(store, "session_status").at(-1)?.payload).toEqual({
+      from: "running",
+      to: "failed",
+      reason: "kernel_error",
+      error: "scheduler broke",
+      outcome: { to: "completed", reason: "result_success" },
+    });
+  });
+
   it("kills what is left of the group once the session has ended", async () => {
     const { manager, killed } = harness({ script: ({ stream }) => stream.push(msg.success()) });
     const handle = await manager.startSession(startParams());
@@ -759,6 +827,91 @@ describe("stopSession (AC4, fakes)", () => {
     // Idempotent.
     expect(await manager.stopSession(handle.id)).toBe("stopped");
     expect(events(store, "session_status").filter((e) => e.payload.to === "stopped")).toHaveLength(1);
+  });
+
+  // Finding A: a stop that lands while a finished session's group is still being
+  // cleaned up must not replace the outcome the stream already produced.
+  const verdictCases: [string, SDKMessage, string, Record<string, unknown>][] = [
+    ["result_success", msg.success(), "completed", { reason: "result_success" }],
+    ["result_error", msg.errorResult(["max turns"]), "failed", { reason: "result_error", error: "result error_during_execution (is_error): max turns" }],
+  ];
+  for (const [name, result, terminal, payload] of verdictCases) {
+    it(`a stop during the post-stream cleanup keeps the computed verdict (${name}) instead of stopped`, async () => {
+      let cleanupStarted = false;
+      const { manager, calls, killed, store } = harness({
+        deps: {
+          schedule: (fn, ms) => {
+            // The first 1 s wait is #conclude's bounded wait for the leader's exit.
+            if (ms === 1_000) cleanupStarted = true;
+            const t = setTimeout(fn, ms);
+            return () => clearTimeout(t);
+          },
+        },
+        script: ({ stream }) => {
+          // A leader that ignores stdin EOF: the stream ends, the process does not exit until killed.
+          stream.onEnd = () => {};
+          stream.push(msg.init(UUID));
+          stream.push(result);
+        },
+      });
+      const handle = await manager.startSession(startParams());
+      await vi.waitFor(() => expect(cleanupStarted).toBe(true));
+      expect((calls[0] as QueryCall).child.exited).toBe(false);
+      expect(row(store, handle.id).status).toBe("running");
+
+      expect(await manager.stopSession(handle.id)).toBe(terminal);
+      expect(await handle.done).toBe(terminal);
+      // The stop still killed the group (AC4's cleanup), it just did not overwrite the outcome.
+      expect(killed).toContainEqual([handle.pgid, "SIGKILL"]);
+      expect((calls[0] as QueryCall).child.exited).toBe(true);
+      expect(row(store, handle.id).status).toBe(terminal);
+      expect(events(store, "session_status").map((e) => [e.payload.from, e.payload.to])).toEqual([
+        [null, "starting"],
+        ["starting", "running"],
+        ["running", terminal],
+      ]);
+      expect(events(store, "session_status").at(-1)?.payload).toEqual({
+        from: "running",
+        to: terminal,
+        ...payload,
+        stop_requested_after_end: true,
+      });
+      expect(await manager.stopSession(handle.id)).toBe(terminal);
+    });
+  }
+
+  it("refuses not_live for a non-terminal row this manager is not running, changing nothing", async () => {
+    const { manager, store } = harness();
+    const id = Number(store.prepare("INSERT INTO sessions (agent, status, pgid) VALUES ('wright', 'running', 4242)").run().lastInsertRowid);
+    const err = await manager.stopSession(id).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SessionError);
+    expect((err as SessionError).code).toBe("not_live");
+    expect(row(store, id).status).toBe("running");
+    expect(events(store)).toEqual([]);
+  });
+
+  it("records session_kill_error when the kill errors, and stop ends failed (kill_incomplete), flagged for re-reap", async () => {
+    const { manager, store } = harness({
+      deps: {
+        killGroup: () => {
+          throw Object.assign(new Error("kill EINVAL"), { code: "EINVAL" });
+        },
+      },
+      script: ({ stream }) => stream.push(msg.init(UUID)),
+    });
+    const handle = await manager.startSession(startParams());
+    await vi.waitFor(() => expect(row(store, handle.id).status).toBe("running"));
+    expect(await manager.stopSession(handle.id)).toBe("failed");
+    expect(await handle.done).toBe("failed");
+    expect(events(store, "session_kill_error")[0]?.payload).toEqual({ pgid: handle.pgid, error: "kill EINVAL", code: "EINVAL" });
+    expect(events(store, "session_status").at(-1)?.payload).toEqual({
+      from: "running",
+      to: "failed",
+      reason: "kill_incomplete",
+      cause: { to: "stopped", reason: "stop_requested" },
+      pgid: handle.pgid,
+    });
+    expect(row(store, handle.id).kill_incomplete_at).not.toBeNull();
   });
 
   it("is a no-op returning the terminal status of a finished session, and refuses unknown ids", async () => {
@@ -977,6 +1130,199 @@ describe("reapOrphans (AC5)", () => {
     expect(await manager.reapOrphans()).toEqual([]);
     expect(row(store, handle.id).status).toBe("starting");
     await manager.stopSession(handle.id);
+  });
+});
+
+describe("reapOrphans: terminal rows whose kill did not complete (finding B)", () => {
+  const STARTED = "2026-10-02T05:30:54.000Z";
+  const STARTED_MS = Date.parse(STARTED);
+  const FLAGGED_AT = "2026-10-02T06:00:00.000Z";
+  const immediate = (fn: () => void): CancelTimer => {
+    const t = setImmediate(fn);
+    return () => clearImmediate(t);
+  };
+
+  function insertFlagged(store: Store, status: string, pgid: number | null, leaderStartedAt: string | null = STARTED): number {
+    return Number(
+      store
+        .prepare(
+          "INSERT INTO sessions (agent, status, pgid, sdk_session_id, leader_started_at, kill_incomplete_at) VALUES ('wright', ?, ?, 'sid', ?, ?)",
+        )
+        .run(status, pgid, leaderStartedAt, FLAGGED_AT).lastInsertRowid,
+    );
+  }
+
+  it("a live stop whose kill gave up ends failed and flagged; the next kernel's reap kills the group without touching the status", async () => {
+    const store = openStore();
+    // Kernel A: the group never empties within the deadline.
+    const killsA: number[] = [];
+    const a: ReturnType<typeof harness> = harness({
+      store,
+      deps: {
+        schedule: immediate,
+        isGroupAlive: () => true,
+        killGroup: (pgid) => {
+          killsA.push(pgid);
+          a.children.get(pgid)?.exit(null, "SIGKILL");
+          return true;
+        },
+        readGroupLeader: () => ({ status: "present", command: "claude", startedAtMs: STARTED_MS }),
+      },
+      script: ({ stream }) => stream.push(msg.init(UUID)),
+    });
+    const handle = await a.manager.startSession(startParams());
+    await vi.waitFor(() => expect(row(store, handle.id).status).toBe("running"));
+    expect(await a.manager.stopSession(handle.id)).toBe("failed");
+    expect(await handle.done).toBe("failed");
+    const flagged = row(store, handle.id);
+    expect(flagged.kill_incomplete_at).not.toBeNull();
+    expect(flagged.leader_started_at).toBe(STARTED);
+    const statusEventsBefore = events(store, "session_status").length;
+
+    // Kernel B boots: the orphan pass ignores the terminal row, the retry pass kills its group.
+    let alive = true;
+    const killsB: number[] = [];
+    const b = harness({
+      store,
+      deps: {
+        schedule: immediate,
+        isGroupAlive: () => alive,
+        readGroupLeader: () => ({ status: "present", command: "claude", startedAtMs: STARTED_MS }),
+        killGroup: (pgid) => {
+          killsB.push(pgid);
+          alive = false;
+          return true;
+        },
+      },
+    });
+    expect(await b.manager.reapOrphans()).toEqual([]);
+    expect(killsB).toEqual([handle.pgid]);
+    expect(row(store, handle.id).status).toBe("failed");
+    expect(row(store, handle.id).kill_incomplete_at).toBeNull();
+    expect(events(store, "session_status")).toHaveLength(statusEventsBefore);
+    expect(events(store, "session_kill_retried").map((e) => [e.session_id, e.payload])).toEqual([
+      [handle.id, { status: "failed", reason: "group_killed", pgid: handle.pgid }],
+    ]);
+    // Confirmed gone: never selected again.
+    expect(await b.manager.reapOrphans()).toEqual([]);
+    expect(events(store, "session_kill_retried")).toHaveLength(1);
+    expect(killsB).toHaveLength(1);
+  });
+
+  it("re-checks identity, never kills an unproven group, clears only confirmed rows and keeps reaps bounded", async () => {
+    const store = openStore();
+    const alive = new Set([300, 400, 1000, 1100, 1200]);
+    const present = (command: string, startedAtMs = STARTED_MS): GroupLeader => ({ status: "present", command, startedAtMs });
+    const leaders: Record<number, GroupLeader | "ps_failed"> = {
+      300: present("/usr/bin/vim"), // pgid reused: foreign
+      400: present("claude"), // still ours
+      1000: present("claude"), // no recorded start time
+      1100: "ps_failed",
+      1200: present("claude"), // never empties
+    };
+    const killed: number[] = [];
+    const { manager } = harness({
+      store,
+      deps: {
+        schedule: immediate,
+        isGroupAlive: (pgid) => alive.has(pgid),
+        readGroupLeader: (pgid) => {
+          const leader = leaders[pgid];
+          if (leader === "ps_failed") throw new LeaderProbeError("ps failed for pid 1100");
+          return leader ?? { status: "absent" };
+        },
+        killGroup: (pgid) => {
+          killed.push(pgid);
+          if (pgid !== 1200) alive.delete(pgid);
+          return true;
+        },
+      },
+    });
+    const ids = {
+      gone: insertFlagged(store, "failed", 200),
+      reused: insertFlagged(store, "stopped", 300),
+      ours: insertFlagged(store, "failed:auth", 400),
+      noPgid: insertFlagged(store, "completed", null),
+      noStart: insertFlagged(store, "failed", 1000, null),
+      psFailed: insertFlagged(store, "failed", 1100),
+      survives: insertFlagged(store, "failed", 1200),
+    };
+    // Not flagged, or not terminal: never part of the retry pass.
+    const unflagged = Number(
+      store.prepare("INSERT INTO sessions (agent, status, pgid, leader_started_at) VALUES ('wright', 'failed', 400, ?)").run(STARTED)
+        .lastInsertRowid,
+    );
+
+    expect(await manager.reapOrphans()).toEqual([]);
+    const retried = events(store, "session_kill_retried");
+    expect(retried.map((e) => [e.session_id, e.payload.status, e.payload.reason])).toEqual([
+      [ids.gone, "failed", "group_gone"],
+      [ids.reused, "stopped", "pgid_reused"],
+      [ids.ours, "failed:auth", "group_killed"],
+      [ids.noPgid, "completed", "no_pgid"],
+      [ids.noStart, "failed", "leader_unverified"],
+      [ids.psFailed, "failed", "reap_error"],
+      [ids.survives, "failed", "kill_incomplete"],
+    ]);
+    expect(retried.find((e) => e.session_id === ids.psFailed)?.payload.error).toBe("ps failed for pid 1100");
+    // Only groups proven to be the session's are signalled.
+    expect([...new Set(killed)].sort((x, y) => x - y)).toEqual([400, 1200]);
+    // Terminal statuses never change, and no status event is written.
+    expect(events(store, "session_status")).toEqual([]);
+    for (const [id, status] of [
+      [ids.gone, "failed"],
+      [ids.reused, "stopped"],
+      [ids.ours, "failed:auth"],
+      [ids.noPgid, "completed"],
+      [ids.noStart, "failed"],
+      [ids.psFailed, "failed"],
+      [ids.survives, "failed"],
+      [unflagged, "failed"],
+    ] as const) {
+      expect(row(store, id).status).toBe(status);
+    }
+    // Confirmed gone or foreign ⇒ cleared; may still be ours ⇒ kept.
+    for (const id of [ids.gone, ids.reused, ids.ours, ids.noPgid]) expect(row(store, id).kill_incomplete_at).toBeNull();
+    for (const id of [ids.noStart, ids.psFailed, ids.survives]) expect(row(store, id).kill_incomplete_at).toBe(FLAGGED_AT);
+    expect(events(store, "session_kill_incomplete").map((e) => e.session_id)).toEqual([ids.survives]);
+
+    // The next reap re-examines only the kept rows; one whose group is now gone is cleared.
+    alive.delete(1000);
+    await manager.reapOrphans();
+    expect(events(store, "session_kill_retried").slice(retried.length).map((e) => [e.session_id, e.payload.reason])).toEqual([
+      [ids.noStart, "group_gone"],
+      [ids.psFailed, "reap_error"],
+      [ids.survives, "kill_incomplete"],
+    ]);
+    expect(row(store, ids.noStart).kill_incomplete_at).toBeNull();
+  });
+
+  it("an orphaned row's flag is cleared when the reap marks it interrupted, and a resume spawn records no stale flag", async () => {
+    const store = openStore();
+    const { manager, calls } = harness({
+      store,
+      script: ({ stream }) => {
+        stream.push(msg.init("sid"));
+        stream.push(msg.assistant());
+        stream.push(msg.success());
+      },
+    });
+    const id = Number(
+      store
+        .prepare(
+          "INSERT INTO sessions (agent, status, pgid, sdk_session_id, model, loomwright_path, kill_incomplete_at) VALUES ('wright', 'orphaned', 4242, 'sid', 'claude-haiku-4-5', ?, ?)",
+        )
+        .run(pluginDir, FLAGGED_AT).lastInsertRowid,
+    );
+    expect(await manager.reapOrphans()).toEqual([{ sessionId: id, pgid: 4242, status: "interrupted", reason: "group_gone" }]);
+    expect(row(store, id).kill_incomplete_at).toBeNull();
+
+    // A flag left on an interrupted row (written outside the kernel) is cleared when a new group is recorded.
+    store.prepare("UPDATE sessions SET kill_incomplete_at = ? WHERE id = ?").run(FLAGGED_AT, id);
+    const handle = await manager.resumeSession(id, { permissionMode: "default", cwd: "/tmp", policy: { allowedTools: [], allowedBashPrefixes: [] } });
+    expect(row(store, id).pgid).toBe(calls[0]?.child.pid);
+    expect(row(store, id).kill_incomplete_at).toBeNull();
+    expect(await handle.done).toBe("completed");
   });
 });
 
@@ -1374,6 +1720,57 @@ describe("resumeSession (AC6)", () => {
     expect(events(store, "session_status").at(-1)?.payload).toMatchObject({ to: "failed", reason: "kill_incomplete" });
   });
 
+  it("a stop during the resume backoff ends stopped and launches no further attempt", async () => {
+    const store = openStore();
+    let release: (() => void) | undefined;
+    const { manager, calls } = harness({
+      store,
+      deps: {
+        sleep: () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      },
+      script: ({ stream }) => stream.fail(new Error("resume broke")),
+    });
+    const id = interrupted(store);
+    const handle = await manager.resumeSession(id, resumeParams);
+    await vi.waitFor(() => expect(release).not.toBe(undefined));
+    expect(await manager.stopSession(id)).toBe("stopped");
+    release?.();
+    expect(await handle.done).toBe("stopped");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(calls).toHaveLength(1);
+    expect(events(store, "session_resume_failed").map((e) => e.payload.attempt)).toEqual([1]);
+    expect(row(store, id).status).toBe("stopped");
+    expect(events(store, "session_status").at(-1)?.payload).toEqual({ from: "starting", to: "stopped", reason: "stop_requested" });
+  });
+
+  it("retries after a first attempt whose launch threw synchronously once its group is confirmed gone", async () => {
+    const store = openStore();
+    const { manager, calls, delays, killed } = harness({
+      store,
+      script: ({ stream }, n) => {
+        if (n === 1) throw new Error("query() threw after the spawn");
+        stream.push(msg.init(SID));
+        stream.push(msg.assistant());
+        stream.push(msg.success());
+      },
+    });
+    const id = interrupted(store);
+    const handle = await manager.resumeSession(id, resumeParams);
+    expect(handle.pgid).toBeUndefined();
+    expect(await handle.done).toBe("completed");
+    expect(calls).toHaveLength(2);
+    expect(delays).toEqual([1_000]);
+    expect(killed.map(([p]) => p)).toContain(calls[0]?.child.pid);
+    expect(events(store, "session_resume_failed").map((e) => e.payload)).toEqual([
+      { attempt: 1, error: "query() threw after the spawn", stack: expect.stringContaining("query() threw after the spawn"), stderr: null },
+    ]);
+    expect(row(store, id).status).toBe("completed");
+    expect(events(store, "session_status").at(-1)?.payload).toEqual({ from: "running", to: "completed", reason: "result_success" });
+  });
+
   it("a reap that awaited a kill never overwrites a row a resume took meanwhile", async () => {
     const store = openStore();
     let alive = true;
@@ -1484,6 +1881,56 @@ describe("auth failure (AC7)", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("concurrent kills share one run, and a run that gave up (kill_incomplete) is retried by the next caller", async () => {
+    const authTimers: (() => void)[] = [];
+    let stubborn = true;
+    let kills = 0;
+    const { manager, calls, store } = harness({
+      endOnInputEnd: false,
+      deps: {
+        schedule: (fn, ms) => {
+          if (ms === 30_000) {
+            authTimers.push(fn);
+            return () => {};
+          }
+          const t = setImmediate(fn);
+          return () => clearImmediate(t);
+        },
+        isGroupAlive: () => stubborn,
+        killGroup: () => {
+          kills++;
+          return true;
+        },
+      },
+      script: ({ stream }) => {
+        // The query's close() does not end the stream here: the session stays live after the first kill.
+        stream.close = () => {
+          stream.closeCalls++;
+        };
+        stream.push(msg.init(UUID));
+        stream.push(msg.apiRetry401());
+      },
+    });
+    const handle = await manager.startSession(startParams());
+    await vi.waitFor(() => expect(authTimers).toHaveLength(1));
+    // Two callers at once: one shared kill-until-gone run (81 SIGKILLs to the deadline), not two.
+    authTimers[0]?.();
+    authTimers[0]?.();
+    expect(await handle.done).toBe("failed:auth");
+    expect(kills).toBe(81);
+    expect(events(store, "session_kill_incomplete").map((e) => e.payload)).toEqual([{ pgid: handle.pgid, deadline_ms: 2_000 }]);
+    expect(row(store, handle.id).kill_incomplete_at).not.toBeNull();
+
+    // The next caller (the post-stream cleanup) starts a new run, which now confirms the group gone.
+    stubborn = false;
+    (calls[0] as QueryCall).stream.end();
+    await vi.waitFor(() => expect(row(store, handle.id).kill_incomplete_at).toBeNull());
+    expect(kills).toBe(82);
+    expect(events(store, "session_kill_incomplete")).toHaveLength(1);
+    expect(row(store, handle.id).status).toBe("failed:auth");
+    expect(events(store, "session_status").filter((e) => e.payload.to === "failed:auth")).toHaveLength(1);
+  });
+
   it("treats an assistant authentication_failed error the same way", async () => {
     const { manager, store } = harness({
       script: ({ stream }) => {
@@ -1515,6 +1962,7 @@ describe("auth failure (AC7)", () => {
     ["AuthProviderError missing", () => new AuthProviderError("missing", "stub-provider", "not found"), "missing"],
     ["AuthProviderError invalid_shape", () => new AuthProviderError("invalid_shape", "stub-provider", "cut off"), "invalid_shape"],
     ["KeychainError", () => new KeychainError("loomwright-studio-oauth", 51, null), "keychain_error"],
+    ["any other error", () => new Error("env build broke"), "auth_env_error"],
   ];
   for (const [name, makeError, code] of buildEnvFailures) {
     it(`spawns nothing on ${name}: failed:auth row, one notify, rethrown`, async () => {
