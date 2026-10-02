@@ -11,6 +11,25 @@ Nothing is predefined. You describe a duty in plain English, for example "review
 
 Pre-code. The design is written down in [`docs/`](docs/). Work starts with **phase 0: design system and high-fidelity mockups**, approved before any app code is written. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
+## Run the kernel as a launchd agent
+
+macOS only. The kernel can run in the background as a per-user launchd agent that starts at login and is restarted if it crashes. From `kernel/`:
+
+```sh
+npm ci && npm run build
+node dist/cli/index.js service install     # writes and loads the agent
+node dist/cli/index.js status              # talks to the running kernel
+node dist/cli/index.js service uninstall   # unloads it and removes the plist
+```
+
+(`studio` is the package's `bin` name for `dist/cli/index.js`.)
+
+- The agent's label is `com.loomwright.studio.kernel` and its plist is `~/Library/LaunchAgents/com.loomwright.studio.kernel.plist`. Install and uninstall touch no other file there.
+- Check it with `launchctl print gui/$(id -u)/com.loomwright.studio.kernel`.
+- Logs are in `<dataDir>/logs/` (`kernel.out.log`, `kernel.err.log`). The data dir is `~/.loomwright-studio`, or `STUDIO_DATA_DIR` if it was set when you ran `service install`.
+- The kernel reads its credentials from the macOS Keychain through `/usr/bin/security`. If macOS shows a Keychain prompt for `security` when the agent starts, choose **Always Allow** once. Never put a token in a file or in the plist to get around the prompt.
+- The plist points at this checkout's `dist/daemon.js` and the `node` you ran `service install` with. After moving the checkout or changing Node, run `service install` again.
+
 ## Docs
 
 | Doc | What it covers |
