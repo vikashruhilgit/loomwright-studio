@@ -6,13 +6,14 @@ import { createServer } from "node:net";
 import type { Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API_TOKEN_KEYCHAIN_SERVICE, engageKillSwitch } from "../src/api/index.js";
 import { KeychainError } from "../src/auth/index.js";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
 import { startKernel } from "../src/kernel.js";
 import type { Kernel, KernelDeps, KernelOptions } from "../src/kernel.js";
-import { EventLoop } from "../src/loop/index.js";
+import { EventLoop, enqueueMessage, getQueueRow } from "../src/loop/index.js";
 import type { SessionRow } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import { fakeSessions, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
@@ -174,6 +175,31 @@ describe("startKernel", () => {
     store.close();
     const kernel = await start();
     expect(kernel.sessions.getSession(id)?.status).toBe("interrupted");
+  });
+
+  it("without handlers (the daemon's call) an enqueued message ends event_unhandled; daemon.ts never passes handlers", async () => {
+    const store = new Store({ dataDir });
+    const { id } = enqueueMessage(store, { text: "hello" });
+    store.close();
+    const kernel = await start();
+    await vi.waitFor(() => expect(getQueueRow(kernel.store, id)?.status).toBe("done"));
+    const kinds = kernel.store.prepare<[], string>("SELECT kind FROM events WHERE kind IN ('event_unhandled', 'event_done')").pluck().all();
+    expect(kinds).toEqual(["event_unhandled"]);
+    // Invariant 1: the shipped entry point installs no handler.
+    const daemonSource = readFileSync(fileURLToPath(new URL("../src/daemon.ts", import.meta.url)), "utf8");
+    expect(daemonSource).not.toMatch(/handlers/);
+  });
+
+  it("with handlers (another composition) the message handler runs and the event ends event_done", async () => {
+    const store = new Store({ dataDir });
+    const { id } = enqueueMessage(store, { text: "hello" });
+    store.close();
+    const seen: unknown[] = [];
+    const kernel = await start(options({ handlers: { message: (ctx) => void seen.push(ctx.event.payload) } }));
+    await vi.waitFor(() => expect(getQueueRow(kernel.store, id)?.status).toBe("done"));
+    expect(seen).toEqual([{ text: "hello", agent: null }]);
+    const kinds = kernel.store.prepare<[], string>("SELECT kind FROM events WHERE kind IN ('event_unhandled', 'event_done')").pluck().all();
+    expect(kinds).toEqual(["event_done"]);
   });
 
   it("selects the provider from --auth-provider, then STUDIO_AUTH_PROVIDER, then the build default", async () => {
