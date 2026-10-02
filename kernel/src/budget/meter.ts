@@ -93,8 +93,12 @@ interface SessionUsageRow {
  *   component is a fresh baseline (for example a mid-session `/clear`): the
  *   new total is added in full and a `budget_baseline_reset` event recorded.
  * - A result whose `modelUsage` is empty or all zero is ignored with a
- *   `budget_usage_ignored` event: the SDK documents zeroed crash/startup-error
- *   results, and taking 0 as the baseline would count the next real total twice.
+ *   `budget_usage_ignored` event. `@anthropic-ai/claude-agent-sdk` 0.3.284
+ *   `sdk.d.ts` (the `modelUsage` and `total_cost_usd` docs on `SDKResultSuccess`
+ *   / `SDKResultError`) says crash/startup-error results may carry zeroed
+ *   values; that is not probed live yet, and ignoring a zeroed result is the
+ *   safe choice either way: taking 0 as the baseline would count the next real
+ *   total twice.
  * - A model missing from a new result keeps its stored total.
  *
  * Limit of the design (`kill -9`): tokens spent after the last `result` the

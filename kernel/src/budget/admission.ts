@@ -32,6 +32,9 @@ export function apiKeyFallbackActive(config: BudgetConfig): boolean {
  *   configured limit is refused new sessions (`start` only: a resume
  *   continues existing work); `retryAt` is the start of the next budget day.
  *   A `null` agent, or one with no configured limit, skips this check.
+ *   Policy carve-out: a resume of an interrupted session is never refused by
+ *   the agent limit (the cap above still refuses it), so the limit does not
+ *   bound the tokens a resumed session spends the same day.
  *
  * Every refusal appends one `admission_refused` event (agent, account, task,
  * reason, retryAt): the durable "parked" record the event loop (item 07)
@@ -75,6 +78,7 @@ export class BudgetAdmission {
         return this.#refuse(request, "cap_parked", retryAt, { rate_limit_types: parks.map((p) => p.rate_limit_type) }, at);
       }
 
+      // Agent limit gates starts only; a resume is admitted past it (see the class doc).
       if (request.kind === "start" && request.agent !== null) {
         const limit = agentDailyTokenLimit(this.#config, request.agent);
         if (limit !== undefined) {
