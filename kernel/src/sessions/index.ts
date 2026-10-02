@@ -4,15 +4,21 @@ export type { ReapResult } from "./manager.js";
 export { decideToolUse, freezePolicy } from "./policy.js";
 export type { ToolDecision, ToolDecisionReason } from "./policy.js";
 export {
+  KILL_GROUP_DEADLINE_MS,
+  KILL_GROUP_INTERVAL_MS,
+  LeaderProbeError,
   STDERR_TAIL_BYTES,
   StderrTail,
   isProcessGroupAlive,
   isValidPgid,
+  killGroupUntilGone,
   killProcessGroup,
   leaderBasename,
-  readGroupLeaderCommand,
+  parseLeaderLine,
+  readGroupLeader,
   spawnInNewProcessGroup,
 } from "./spawner.js";
+export type { KillGroupUntilGoneOptions } from "./spawner.js";
 export { defaultPluginCacheRoot, resolveLoomwrightPath } from "./loomwright-path.js";
 export type { ResolveLoomwrightPathOptions } from "./loomwright-path.js";
 export {
@@ -25,6 +31,7 @@ export {
 export type {
   AllowedPermissionMode,
   CancelTimer,
+  GroupLeader,
   QueryFn,
   QueryHandle,
   ResumeSessionParams,

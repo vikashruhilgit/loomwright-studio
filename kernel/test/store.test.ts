@@ -172,7 +172,7 @@ describe("migrations", () => {
     expect(store.appliedMigrations().map((m) => [m.version, m.name])).toEqual([[1, "initial"]]);
   });
 
-  it("the default list adds auth_providers (migration 2), sessions.loomwright_path (migration 3) and no phase-2 table", () => {
+  it("the default list adds auth_providers (migration 2), sessions.loomwright_path (migration 3), sessions.leader_started_at (migration 4) and no phase-2 table", () => {
     const store = open();
     expect(tableNames(store)).toEqual([...PHASE1_TABLES, "auth_providers"].sort());
     for (const later of ["agents", "playbooks", "triggers", "approvals", "hooks_installed", "connectors"]) {
@@ -182,9 +182,10 @@ describe("migrations", () => {
       [1, "initial"],
       [2, "auth_providers"],
       [3, "session_loomwright_path"],
+      [4, "session_leader_started_at"],
     ]);
     expect(columns(store, "auth_providers")).toEqual(["id", "account", "token_created_at", "updated_at"]);
-    expect(columns(store, "sessions").at(-1)).toBe("loomwright_path");
+    expect(columns(store, "sessions").slice(-2)).toEqual(["loomwright_path", "leader_started_at"]);
   });
 
   it("gives sessions, work_steps and cap_state their required columns", () => {

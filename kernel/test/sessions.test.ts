@@ -12,9 +12,10 @@ import type { HookCallback, HookInput, Options, SDKMessage, SDKUserMessage, Spaw
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProviderError, KeychainError } from "../src/auth/index.js";
 import type { AuthProvider } from "../src/auth/index.js";
-import { DEFAULT_RESUME_PROMPT, SessionError, SessionManager, resolveLoomwrightPath } from "../src/sessions/index.js";
+import { DEFAULT_RESUME_PROMPT, LeaderProbeError, SessionError, SessionManager, resolveLoomwrightPath } from "../src/sessions/index.js";
 import type {
   CancelTimer,
+  GroupLeader,
   QueryFn,
   QueryHandle,
   SessionManagerDeps,
@@ -279,7 +280,7 @@ function harness(h: HarnessOptions = {}) {
       spawn,
       killGroup,
       isGroupAlive: () => false,
-      readGroupLeaderCommand: () => undefined,
+      readGroupLeader: () => ({ status: "absent" }),
       sleep: async (ms) => {
         delays.push(ms);
       },
@@ -741,35 +742,56 @@ describe("stopSession (AC4, fakes)", () => {
 // ---- AC5: reaper --------------------------------------------------------------
 
 describe("reapOrphans (AC5)", () => {
-  function insert(store: Store, status: string, pgid: number | null): number {
+  const STARTED = "2026-10-02T05:30:54.000Z";
+  const STARTED_MS = Date.parse(STARTED);
+
+  function insert(store: Store, status: string, pgid: number | null, leaderStartedAt: string | null = STARTED): number {
     return Number(
       store
-        .prepare("INSERT INTO sessions (agent, status, pgid, sdk_session_id) VALUES ('wright', ?, ?, 'sid')")
-        .run(status, pgid).lastInsertRowid,
+        .prepare("INSERT INTO sessions (agent, status, pgid, sdk_session_id, leader_started_at) VALUES ('wright', ?, ?, 'sid', ?)")
+        .run(status, pgid, leaderStartedAt).lastInsertRowid,
     );
   }
 
-  it("marks every starting/running row interrupted, killing only groups that are still ours", () => {
+  /** A scheduler that runs every callback on the next turn, so kill-until-gone rounds cost no real time. */
+  const immediate = (fn: () => void): CancelTimer => {
+    const t = setImmediate(fn);
+    return () => clearImmediate(t);
+  };
+
+  it("marks every starting/running row interrupted, killing only groups proven to be the session's CLI", async () => {
     const store = openStore();
-    const alive = new Set([300, 400, 500, 600, 700]);
-    const leaders: Record<number, string | undefined> = {
-      300: "/usr/bin/vim", // pgid reused by an unrelated process
-      400: "/opt/sdk/claude", // our CLI
-      500: undefined, // leader gone, group lives on
-      600: "claude",
-      700: "claude",
+    const alive = new Set([300, 400, 500, 600, 700, 900, 1000, 1100, 1200]);
+    const present = (command: string, startedAtMs = STARTED_MS): GroupLeader => ({ status: "present", command, startedAtMs });
+    const leaders: Record<number, GroupLeader | "ps_failed"> = {
+      300: present("/usr/bin/vim"), // pgid reused by an unrelated process
+      400: present("/opt/sdk/claude", STARTED_MS + 400), // our CLI (same second, within tolerance)
+      500: { status: "absent" }, // leader gone, group lives on
+      600: present("claude"),
+      700: present("claude"),
+      900: present("/usr/local/bin/claude", STARTED_MS + 3_600_000), // the owner's interactive claude reusing the pgid
+      1000: present("claude"), // its row has no recorded start time
+      1100: "ps_failed",
+      1200: present("claude"), // a group that never empties
     };
     const killed: number[] = [];
     const { manager } = harness({
       store,
       deps: {
+        schedule: immediate,
         isGroupAlive: (pgid) => alive.has(pgid),
-        readGroupLeaderCommand: (pgid) => leaders[pgid],
+        readGroupLeader: (pgid) => {
+          const leader = leaders[pgid];
+          if (leader === "ps_failed") throw new LeaderProbeError("ps failed for pid 1100: ps: not found");
+          return leader ?? { status: "absent" };
+        },
         killGroup: (pgid) => {
           if (pgid === 600) throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
           if (pgid === 700) throw Object.assign(new Error("kill EINVAL"), { code: "EINVAL" });
           killed.push(pgid);
-          return true;
+          const was = alive.has(pgid);
+          if (pgid !== 1200) alive.delete(pgid);
+          return was;
         },
       },
     });
@@ -783,10 +805,14 @@ describe("reapOrphans (AC5)", () => {
       notOurs: insert(store, "running", 600),
       odd: insert(store, "running", 700),
       done: insert(store, "completed", 800),
+      startDiffers: insert(store, "running", 900),
+      noStart: insert(store, "running", 1000, null),
+      psFailed: insert(store, "running", 1100),
+      survives: insert(store, "running", 1200),
       later: insert(store, "running", null),
     };
 
-    const results = manager.reapOrphans();
+    const results = await manager.reapOrphans();
     expect(results.map((r) => [r.sessionId, r.reason])).toEqual([
       [ids.noPgid, "no_pgid"],
       [ids.init, "no_pgid"],
@@ -796,14 +822,21 @@ describe("reapOrphans (AC5)", () => {
       [ids.leaderless, "group_killed"],
       [ids.notOurs, "group_not_ours"],
       [ids.odd, "reap_error"],
+      [ids.startDiffers, "pgid_reused"],
+      [ids.noStart, "leader_unverified"],
+      [ids.psFailed, "reap_error"],
+      [ids.survives, "kill_incomplete"],
       [ids.later, "no_pgid"],
     ]);
-    expect(killed).toEqual([400, 500]);
+    // Never signalled: a reused pgid, a foreign start time, an unrecorded start time, a failed ps.
+    expect([...new Set(killed)].sort((a, b) => a - b)).toEqual([400, 500, 1200]);
+    // A group that keeps answering is re-killed until the deadline, not signalled once.
+    expect(killed.filter((p) => p === 1200).length).toBeGreaterThan(2);
     for (const [name, id] of Object.entries(ids)) {
       expect(row(store, id).status).toBe(name === "done" ? "completed" : "interrupted");
     }
     const statusEvents = events(store, "session_status");
-    expect(statusEvents).toHaveLength(9);
+    expect(statusEvents).toHaveLength(13);
     expect(statusEvents.find((e) => e.session_id === ids.ours)?.payload).toEqual({
       from: "running",
       to: "interrupted",
@@ -811,14 +844,161 @@ describe("reapOrphans (AC5)", () => {
       pgid: 400,
     });
     expect(statusEvents.find((e) => e.session_id === ids.odd)?.payload).toMatchObject({ reason: "reap_error", error: "kill EINVAL" });
+    expect(statusEvents.find((e) => e.session_id === ids.psFailed)?.payload).toMatchObject({
+      reason: "reap_error",
+      error: "ps failed for pid 1100: ps: not found",
+    });
+    expect(events(store, "session_kill_incomplete").map((e) => [e.session_id, e.payload])).toEqual([
+      [ids.survives, { pgid: 1200, deadline_ms: 2_000 }],
+    ]);
+  });
+
+  it("never kills when ps failed, even for a group whose leader may have exited", async () => {
+    const store = openStore();
+    const killed: number[] = [];
+    const { manager } = harness({
+      store,
+      deps: {
+        isGroupAlive: () => true,
+        readGroupLeader: () => {
+          throw new LeaderProbeError("ps failed for pid 4242: spawn /bin/ps ENOENT");
+        },
+        killGroup: (pgid) => {
+          killed.push(pgid);
+          return true;
+        },
+      },
+    });
+    const id = insert(store, "running", 4242);
+    expect(await manager.reapOrphans()).toEqual([{ sessionId: id, pgid: 4242, reason: "reap_error" }]);
+    expect(killed).toEqual([]);
+    expect(row(store, id).status).toBe("interrupted");
+  });
+
+  it("never kills a claude leader whose start time differs from the recorded one", async () => {
+    const store = openStore();
+    const killed: number[] = [];
+    const { manager } = harness({
+      store,
+      deps: {
+        isGroupAlive: () => true,
+        readGroupLeader: () => ({ status: "present", command: "claude", startedAtMs: STARTED_MS + 1_001 }),
+        killGroup: (pgid) => {
+          killed.push(pgid);
+          return true;
+        },
+      },
+    });
+    const id = insert(store, "running", 4243);
+    expect(await manager.reapOrphans()).toEqual([{ sessionId: id, pgid: 4243, reason: "pgid_reused" }]);
+    expect(killed).toEqual([]);
+  });
+
+  it("returns the running reap to a concurrent caller instead of reaping twice", async () => {
+    const store = openStore();
+    let reads = 0;
+    const { manager } = harness({
+      store,
+      deps: {
+        isGroupAlive: () => true,
+        readGroupLeader: () => {
+          reads++;
+          return { status: "present", command: "/usr/bin/vim", startedAtMs: STARTED_MS };
+        },
+      },
+    });
+    insert(store, "running", 4244);
+    const first = manager.reapOrphans();
+    expect(manager.reapOrphans()).toBe(first);
+    expect(await first).toHaveLength(1);
+    expect(reads).toBe(1);
+    expect(events(store, "session_status")).toHaveLength(1);
+    expect(await manager.reapOrphans()).toEqual([]);
   });
 
   it("leaves sessions this manager is running alone", async () => {
     const { manager, store } = harness();
     const handle = await manager.startSession(startParams());
-    expect(manager.reapOrphans()).toEqual([]);
+    expect(await manager.reapOrphans()).toEqual([]);
     expect(row(store, handle.id).status).toBe("starting");
     await manager.stopSession(handle.id);
+  });
+});
+
+describe("process-group kill until gone (fakes)", () => {
+  const immediate = (fn: () => void): CancelTimer => {
+    const t = setImmediate(fn);
+    return () => clearImmediate(t);
+  };
+
+  it("records the leader's start time with the pgid", async () => {
+    const startedAtMs = Date.parse("2026-10-02T05:30:54.000Z");
+    const ok = harness({ deps: { readGroupLeader: () => ({ status: "present", command: "claude", startedAtMs }) } });
+    const h1 = await ok.manager.startSession(startParams());
+    expect(row(ok.store, h1.id).leader_started_at).toBe("2026-10-02T05:30:54.000Z");
+    expect(ok.manager.getSession(h1.id)?.leader_started_at).toBe("2026-10-02T05:30:54.000Z");
+    await ok.manager.stopSession(h1.id);
+  });
+
+  it("records a null leader start time when ps cannot read it, still writing the pgid", async () => {
+    const failing = harness({
+      deps: {
+        readGroupLeader: () => {
+          throw new LeaderProbeError("ps failed");
+        },
+      },
+    });
+    const h2 = await failing.manager.startSession(startParams());
+    expect(row(failing.store, h2.id).pgid).toBe(h2.pgid);
+    expect(row(failing.store, h2.id).leader_started_at).toBeNull();
+    await failing.manager.stopSession(h2.id);
+  });
+
+  /**
+   * A harness whose `killGroup` always reports "signalled" (the group still has
+   * members) and kills the fake CLI, so only `isGroupAlive` says when the group is gone.
+   */
+  function stubbornHarness(isGroupAlive: (pgid: number) => boolean) {
+    const kills: number[] = [];
+    const h: ReturnType<typeof harness> = harness({
+      deps: {
+        schedule: immediate,
+        isGroupAlive,
+        killGroup: (pgid) => {
+          kills.push(pgid);
+          h.children.get(pgid)?.exit(null, "SIGKILL");
+          return true;
+        },
+      },
+      script: ({ stream }) => stream.push(msg.init(UUID)),
+    });
+    return { ...h, kills };
+  }
+
+  it("stop re-kills a group that still answers after the first SIGKILL (a child forked during it)", async () => {
+    let probes = 0;
+    const { manager, kills, store } = stubbornHarness(() => ++probes <= 2);
+    const handle = await manager.startSession(startParams());
+    await vi.waitFor(() => expect(row(store, handle.id).status).toBe("running"));
+    expect(await manager.stopSession(handle.id)).toBe("stopped");
+    expect(await handle.done).toBe("stopped");
+    // SIGKILL, probe (alive), SIGKILL, probe (alive), SIGKILL, probe (gone); never signalled after that.
+    expect(kills).toEqual([handle.pgid, handle.pgid, handle.pgid]);
+    expect(events(store, "session_kill_incomplete")).toEqual([]);
+  });
+
+  it("gives up at the deadline with session_kill_incomplete, and stop still finishes", async () => {
+    const { manager, kills: killed, store } = stubbornHarness(() => true);
+    const handle = await manager.startSession(startParams());
+    await vi.waitFor(() => expect(row(store, handle.id).status).toBe("running"));
+    expect(await manager.stopSession(handle.id)).toBe("stopped");
+    expect(await handle.done).toBe("stopped");
+    const incomplete = events(store, "session_kill_incomplete");
+    expect(incomplete.length).toBeGreaterThanOrEqual(1);
+    expect(incomplete[0]?.payload).toEqual({ pgid: handle.pgid, deadline_ms: 2_000 });
+    // Bounded: 2 000 ms / 25 ms = 80 re-kills after the first, per kill call.
+    expect(killed.length).toBeLessThanOrEqual(81 * incomplete.length);
+    expect(row(store, handle.id).status).toBe("stopped");
   });
 });
 

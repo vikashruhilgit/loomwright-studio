@@ -116,10 +116,24 @@ export interface SessionRow {
   readonly pgid: number | null;
   readonly auth_account: string | null;
   readonly loomwright_path: string | null;
+  /**
+   * The group leader's start time (ISO-8601, 1 s resolution) read with `ps`
+   * when `pgid` was written; `null` when it could not be read. The reaper kills
+   * a live group only when its leader still has this start time (migration 4).
+   */
+  readonly leader_started_at: string | null;
   readonly started_at: string | null;
   readonly ended_at: string | null;
   readonly updated_at: string;
 }
+
+/**
+ * Process `pgid` as `ps` reports it. `absent` only when `ps` positively said
+ * there is no such process; a failed `ps` throws instead (see `readGroupLeader`).
+ */
+export type GroupLeader =
+  | { readonly status: "absent" }
+  | { readonly status: "present"; readonly command: string; readonly startedAtMs: number };
 
 /** What `spawnClaudeCodeProcess` receives from the kernel besides the SDK's own options. */
 export interface SpawnHooks {
@@ -159,11 +173,11 @@ export interface SessionManagerDeps {
   readonly killGroup?: (pgid: number, signal: NodeJS.Signals) => boolean;
   /** Defaults to `isProcessGroupAlive`. */
   readonly isGroupAlive?: (pgid: number) => boolean;
-  /** Defaults to `readGroupLeaderCommand`. */
-  readonly readGroupLeaderCommand?: (pgid: number) => string | undefined;
+  /** Defaults to `readGroupLeader`: throws when `ps` failed, never reports that as `absent`. */
+  readonly readGroupLeader?: (pgid: number) => GroupLeader;
   /** Resume backoff. Defaults to a real timer. */
   readonly sleep?: (ms: number) => Promise<void>;
-  /** Bounded waits and the auth kill timer. Defaults to `setTimeout`/`clearTimeout`. */
+  /** Bounded waits, the kill-until-gone rounds and the auth kill timer. Defaults to `setTimeout`/`clearTimeout`. */
   readonly schedule?: (fn: () => void, ms: number) => CancelTimer;
   /** Defaults to `() => new Date()`. */
   readonly now?: () => Date;
