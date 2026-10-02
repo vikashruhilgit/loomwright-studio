@@ -16,6 +16,7 @@ import {
   resolveDataDir,
 } from "../src/store/index.js";
 import type { Migration } from "../src/store/index.js";
+import { initial } from "../src/store/migrations/001_initial.js";
 
 const KERNEL_DIR = fileURLToPath(new URL("..", import.meta.url));
 // Absolute path, so the child works whatever the cwd the suite is run from.
@@ -163,12 +164,25 @@ describe("migrations", () => {
   });
 
   it("migration 1 creates exactly the phase-1 tables", () => {
-    const store = open();
+    const store = open({ migrations: [initial] });
     expect(tableNames(store)).toEqual(PHASE1_TABLES);
     for (const later of ["agents", "playbooks", "triggers", "approvals", "hooks_installed", "connectors"]) {
       expect(tableNames(store)).not.toContain(later);
     }
     expect(store.appliedMigrations().map((m) => [m.version, m.name])).toEqual([[1, "initial"]]);
+  });
+
+  it("the default list adds auth_providers (migration 2) and no phase-2 table", () => {
+    const store = open();
+    expect(tableNames(store)).toEqual([...PHASE1_TABLES, "auth_providers"].sort());
+    for (const later of ["agents", "playbooks", "triggers", "approvals", "hooks_installed", "connectors"]) {
+      expect(tableNames(store)).not.toContain(later);
+    }
+    expect(store.appliedMigrations().map((m) => [m.version, m.name])).toEqual([
+      [1, "initial"],
+      [2, "auth_providers"],
+    ]);
+    expect(columns(store, "auth_providers")).toEqual(["id", "account", "token_created_at", "updated_at"]);
   });
 
   it("gives sessions, work_steps and cap_state their required columns", () => {
