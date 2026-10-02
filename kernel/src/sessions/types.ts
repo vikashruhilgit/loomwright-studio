@@ -93,6 +93,8 @@ export interface SessionHandle {
   /**
    * Settles with the terminal status. Never rejects. `failed` with reason
    * `kill_incomplete` when the kernel could not confirm the group gone.
+   * A resume whose retry attempt was refused admission (item 06) settles with
+   * `interrupted`: nothing was launched and the session stays resumable.
    */
   readonly done: Promise<SessionStatus>;
 }
@@ -103,7 +105,8 @@ export type SessionErrorCode =
   | "loomwright_not_found"
   | "not_resumable"
   | "not_found"
-  | "not_live";
+  | "not_live"
+  | "admission_refused";
 
 /** A session request the kernel refused. `code` is stable; the message is for humans. */
 export class SessionError extends Error {
@@ -113,6 +116,50 @@ export class SessionError extends Error {
     super(message);
     this.name = "SessionError";
     this.code = code;
+  }
+}
+
+/** What a session is about to do when admission is asked: begin new work, or continue existing work. */
+export type AdmissionKind = "start" | "resume";
+
+/**
+ * What the manager asks its `admission` check before a start or resume. Built
+ * from the start params (or, for a resume, the stored row) and the auth
+ * provider's account: there is one provider, so a refusal never makes the
+ * kernel try another (no rotation, D28).
+ */
+export interface AdmissionRequest {
+  readonly kind: AdmissionKind;
+  /** Nullable because `sessions.agent` is: a resume of a row with no agent. */
+  readonly agent: string | null;
+  readonly account: string;
+  readonly task: number | null;
+}
+
+/** Why admission refused: the account is parked at its cap, or the agent reached its daily token limit. */
+export type AdmissionRefusalReason = "cap_parked" | "agent_daily_limit";
+
+/**
+ * The admission verdict. A refusal carries when to try again (ISO-8601), or
+ * `null` when the reset time is unknown.
+ */
+export type AdmissionDecision =
+  | { readonly admitted: true }
+  | { readonly admitted: false; readonly reason: AdmissionRefusalReason; readonly retryAt: string | null };
+
+/**
+ * Admission refused a start or resume (budget or cap, item 06). Thrown before
+ * any row, status change or spawn; the caller parks the work until `retryAt`.
+ */
+export class AdmissionRefusedError extends SessionError {
+  readonly reason: AdmissionRefusalReason;
+  readonly retryAt: string | null;
+
+  constructor(reason: AdmissionRefusalReason, retryAt: string | null, message: string) {
+    super("admission_refused", message);
+    this.name = "AdmissionRefusedError";
+    this.reason = reason;
+    this.retryAt = retryAt;
   }
 }
 
@@ -229,4 +276,13 @@ export interface SessionManagerOptions {
    * recorded as an `observer_error` event and never breaks the session.
    */
   readonly onMessage?: (sessionId: number, message: SDKMessage) => void;
+  /**
+   * Asked before every start and resume, after the request is validated and
+   * before anything else happens (no auth env, row, status change or spawn).
+   * A refusal throws `AdmissionRefusedError`; a check that throws fails the
+   * request closed with its own error. Asked again (as a `resume`) before each
+   * retry attempt of a resume, where a refusal or a throw returns the session
+   * to `interrupted` instead of launching. Absent: every request is admitted.
+   */
+  readonly admission?: (request: AdmissionRequest) => AdmissionDecision;
 }
