@@ -42,6 +42,7 @@ One SQLite database in the Studio data dir (e.g. `~/.loomwright-studio/studio.db
 | `work_steps` | idempotency key (unique), status (started / done / failed), result. Makes each kernel tool's effect happen at most once across a crash (D2; see requirement item 07) |
 | `wakeups` | id, due time, reason, task, status (starts pending), fired time. Scheduled wake-ups, each fired once by id (see requirement item 07) |
 | `cap_state` | account, rate-limit type, status, resets-at time. Subscription cap state from the SDK's `rate_limit_event`; that account's sessions stay parked until `resetsAt` (D28) |
+| `auth_providers` | id (the provider id, e.g. `subscription-token`), account label, token creation date. Non-secret metadata only; the secret stays in the Keychain. Expiry warning 30 days before the token's one-year life ends; a `notify` event at most once per provider per UTC day (D27) |
 
 **Memory is markdown, not the database** (invariant 8): `memory/<agent>/role.md`, `preferences.md`, `people.md`, `lessons.md`, one handoff note per task, plus `memory/shared/` for things every agent should know about the user. Users can read, edit and version it.
 
@@ -100,11 +101,11 @@ Every agent session is an SDK `query()`, never a `claude --bg` session: those be
 
 ## Auth (D15, D16, D27, D29)
 
-- A pluggable provider interface: `subscription`, `api-key` (Keychain), `bedrock`, `vertex` (D16).
-- **`subscription`** (D15, D27): a long-lived token the user creates with `claude setup-token` in their own terminal, read from the macOS Keychain item `loomwright-studio-oauth` and passed to each session as `CLAUDE_CODE_OAUTH_TOKEN`. Sessions run fully isolated: `settingSources: []`, Loomwright loaded by path, nothing else of the user's (D27, proven in Q4). Studio never runs a login flow of its own (invariant 6).
-- The `subscription` provider strips `ANTHROPIC_API_KEY` from the child environment, because a key wins over the token and would silently move billing to the API (D27, Q2).
+- A pluggable provider interface: `subscription-token`, `api-key` (Keychain); `bedrock`, `vertex` later (D16).
+- **`subscription-token`** (D15, D27): a long-lived token the user creates with `claude setup-token` in their own terminal, read from the macOS Keychain item `loomwright-studio-oauth` and passed to each session as `CLAUDE_CODE_OAUTH_TOKEN`. Sessions run fully isolated: `settingSources: []`, Loomwright loaded by path, nothing else of the user's (D27, proven in Q4). Studio never runs a login flow of its own (invariant 6).
+- The `subscription-token` provider strips `ANTHROPIC_API_KEY` from the child environment, because a key wins over the token and would silently move billing to the API (D27, Q2).
 - The token lasts one year; the kernel checks for expiry and notifies before it lapses (D27). Token entry checks the prefix and length before saving, since a cut-off token fails with a 401 (Q4).
-- **Personal build only.** The `subscription` provider is compiled out of any distributed build, which supports only API keys and 3P providers (D29).
+- **Personal build only.** The `subscription-token` provider is compiled out of any distributed build, which supports only API keys and 3P providers (D29).
 - `api-key` sets `ANTHROPIC_API_KEY` from the Keychain (Q2); it's also the per-playbook opt-in fallback at the cap (D28). The API-key path is stub-tested until a commercial launch (D16).
 - Not verified yet: that credentials are reachable when the kernel runs as a launchd agent rather than from a terminal; check once in phase 1 (Q2).
 
