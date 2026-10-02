@@ -193,6 +193,55 @@ describe("SessionManager.stopAll", () => {
     expect(row(store, h.id).status).toBe("failed:auth");
   });
 
+  for (const mode of ["stop", "shutdown"] as const) {
+    it(`${mode} mode: a failed:auth session whose group never dies is stop_failed (kill_incomplete), never ended, and re-reaped`, async () => {
+      const AUTH_TIMEOUT_MS = 3_600_000;
+      let groupAlive = true;
+      const { store, manager } = setup({
+        options: { authTimeoutMs: AUTH_TIMEOUT_MS },
+        deps: {
+          // Kill rounds pass at once; the auth kill timer never fires (it would die with a stopping kernel).
+          schedule: (fn, ms) => (ms >= AUTH_TIMEOUT_MS ? () => {} : immediate(fn, ms)),
+          // A group that survives every SIGKILL until `groupAlive` is cleared.
+          killGroup: () => groupAlive,
+          isGroupAlive: () => groupAlive,
+        },
+        fakes: {
+          script: ({ stream, options }) => {
+            stream.push(fakeMsg.init(options.sessionId ?? ""));
+            stream.push(fakeMsg.apiRetry401());
+          },
+        },
+      });
+      const h = await manager.startSession(startParams(tmp));
+      await vi.waitFor(() => expect(row(store, h.id).status).toBe("failed:auth"));
+
+      expect(await manager.stopAll({ mode })).toEqual([{ id: h.id, status: "stop_failed", error: "kill_incomplete" }]);
+      // The row keeps failed:auth, flagged so a later reap retries the kill.
+      expect(row(store, h.id).status).toBe("failed:auth");
+      expect(row(store, h.id).kill_incomplete_at).not.toBeNull();
+      // Settled: `done` resolves, a repeat stopAll no longer sees it, and the reaper owns the retry.
+      expect(await h.done).toBe("failed:auth");
+      expect(await manager.stopAll({ mode })).toEqual([]);
+      const retried = (): Record<string, unknown>[] =>
+        store
+          .prepare<[number], string>("SELECT payload_json FROM events WHERE kind = 'session_kill_retried' AND session_id = ? ORDER BY id")
+          .pluck()
+          .all(h.id)
+          .map((p) => JSON.parse(p) as Record<string, unknown>);
+
+      expect(await manager.reapOrphans()).toEqual([]);
+      expect(retried()).toEqual([{ status: "failed:auth", reason: "kill_incomplete", pgid: h.pgid }]);
+      expect(row(store, h.id).kill_incomplete_at).not.toBeNull();
+
+      groupAlive = false;
+      await manager.reapOrphans();
+      expect(retried().at(-1)).toEqual({ status: "failed:auth", reason: "group_gone", pgid: h.pgid });
+      expect(row(store, h.id).kill_incomplete_at).toBeNull();
+      expect(row(store, h.id).status).toBe("failed:auth");
+    });
+  }
+
   it("stopSession alone still ends a running session stopped (unchanged)", async () => {
     const { store, manager, isGroupAlive } = setup();
     const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];

@@ -13,7 +13,8 @@ import type { KeychainReader } from "../src/auth/index.js";
 import { runCli } from "../src/cli/index.js";
 import type { CliDeps } from "../src/cli/index.js";
 import { Store } from "../src/store/index.js";
-import { stubProvider } from "./session-fakes.js";
+import { SessionManager } from "../src/sessions/index.js";
+import { fakeMsg, fakeSessions, immediate, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
 
 const TOKEN = "0123456789abcdef".repeat(4);
 const NOW = new Date("2026-10-02T10:00:00.000Z");
@@ -157,6 +158,48 @@ describe("studio CLI", () => {
         "the event loop is halted until studio resume\n",
     );
     expect(c.stderr.text()).toBe("");
+  });
+
+  it("stop --all through a real SessionManager: a failed:auth session whose group never dies is not confirmed, exit 1", async () => {
+    const AUTH_TIMEOUT_MS = 3_600_000;
+    const fakes = fakeSessions({
+      script: ({ stream, options }) => {
+        stream.push(fakeMsg.init(options.sessionId ?? ""));
+        stream.push(fakeMsg.apiRetry401());
+      },
+    });
+    const manager = new SessionManager(
+      { store, authProvider: stubProvider(), loomwrightPath: makePluginDir(tmp), stopGraceMs: 10, authTimeoutMs: AUTH_TIMEOUT_MS, baseEnv: { PATH: "/usr/bin" } },
+      {
+        ...fakes.deps,
+        // Kill rounds pass at once; the auth kill timer never fires. A group that survives every SIGKILL.
+        schedule: (fn, ms) => (ms >= AUTH_TIMEOUT_MS ? () => {} : immediate(fn, ms)),
+        killGroup: () => true,
+        isGroupAlive: () => true,
+      },
+    );
+    const h = await manager.startSession(startParams(tmp));
+    await vi.waitFor(() =>
+      expect(store.prepare<[number], string>("SELECT status FROM sessions WHERE id = ?").pluck().get(h.id)).toBe("failed:auth"),
+    );
+    await server.close();
+    server = await startApiServer(
+      { store, sessions: manager, loop, authProviders: [stubProvider()], token: TOKEN, port: 0 },
+      { now: () => NOW, pid: 4242 },
+    );
+    writeApiInfo(server.port, 4242);
+
+    const c = cli();
+    expect(await c.run("stop", "--all")).toBe(1);
+    expect(c.stdout.text()).toBe(
+      `kill switch engaged: 0 sessions stopped; 1 not confirmed stopped (#${h.id} stop_failed), see studio status; ` +
+        "the event loop is halted until studio resume\n",
+    );
+    const payload = store.prepare<[], string>("SELECT payload_json FROM events WHERE kind = 'stop_all_completed'").pluck().get();
+    expect(JSON.parse(payload ?? "{}")).toEqual({ sessions: [{ id: h.id, status: "stop_failed", error: "kill_incomplete" }] });
+    expect(
+      store.prepare<[number], string | null>("SELECT kill_incomplete_at FROM sessions WHERE id = ?").pluck().get(h.id),
+    ).not.toBeNull();
   });
 
   it("stop --all with no live sessions reports 0 stopped and exits 0", async () => {

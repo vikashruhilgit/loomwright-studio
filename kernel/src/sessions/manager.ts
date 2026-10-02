@@ -514,8 +514,12 @@ export class SessionManager {
    * In both modes a kill that cannot confirm the group gone ends `failed`
    * (`kill_incomplete`), a stream that had already ended keeps its outcome, and
    * a stop already in flight is shared. A session that already ended
-   * `failed:auth` but whose group is still waiting for its auth kill timer has
-   * that group killed now (the timer would die with a stopping kernel).
+   * `failed:auth` but whose group is still waiting for its auth kill timer gets
+   * that kill now (the timer would die with a stopping kernel), then is
+   * settled as the timer would settle it. Its outcome is `failed:auth` only
+   * once the group is confirmed gone; otherwise it is `stop_failed`
+   * (`kill_incomplete`): the row keeps `failed:auth` with `kill_incomplete_at`
+   * set, so every later `reapOrphans` retries the kill.
    */
   async stopAll(options: { readonly mode?: "stop" | "shutdown" } = {}): Promise<StopAllOutcome[]> {
     const mode = options.mode ?? "stop";
@@ -536,6 +540,12 @@ export class SessionManager {
       if (attempt !== undefined) {
         await this.#killAttemptGroup(live, attempt);
         this.#closeQuery(attempt);
+        // As the auth kill timer does: settle after the kill whatever it found,
+        // so this live entry no longer hides the flagged row from `reapOrphans`.
+        this.#settle(live);
+        // A kill that gave up (or errored) already flagged the row
+        // (`kill_incomplete_at`); never report the session as ended.
+        if (groupMayBeAlive(attempt)) throw new Error("kill_incomplete");
       }
       return live.status;
     }

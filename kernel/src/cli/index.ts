@@ -119,8 +119,11 @@ function plural(n: number, word: string): string {
 /**
  * Statuses a session can end a kill-switch stop with in which it is known not
  * to be running and its group is not left alive: it had already ended on its
- * own (`completed`, `interrupted`) or ended `failed:auth` and had its group
- * killed by the stop. Reported by status, never counted as `stopped`.
+ * own (`completed`, `interrupted`), or ended `failed:auth` and the stop
+ * confirmed its group gone. The session manager reports a `failed:auth`
+ * session whose group it could not confirm gone as `stop_failed`
+ * (`kill_incomplete`), never `failed:auth`, so that one is not confirmed
+ * stopped. Reported by status, never counted as `stopped`.
  */
 const ALREADY_ENDED: ReadonlySet<string> = new Set(["completed", "interrupted", "failed:auth"]);
 
