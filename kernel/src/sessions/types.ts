@@ -1,4 +1,12 @@
-import type { PermissionMode, SDKMessage, SDKUserMessage, Options, SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  McpServerConfig,
+  PermissionMode,
+  SDKMessage,
+  SDKUserMessage,
+  Options,
+  SpawnOptions,
+  SpawnedProcess,
+} from "@anthropic-ai/claude-agent-sdk";
 import type { AuthProvider, BaseEnv } from "../auth/types.js";
 import type { Store } from "../store/store.js";
 
@@ -34,7 +42,7 @@ export function isTerminalStatus(status: string): boolean {
  * The per-session tool policy the kernel's `PreToolUse` gate enforces. Deny by
  * default: a tool runs only when this policy allows it.
  *
- * - `allowedTools`: exact tool names (for example `Read`, `mcp__studio__kernel_record_task`).
+ * - `allowedTools`: exact tool names (for example `Read`, `mcp__kernel__kernel_task_create`).
  *   Listing `Bash` here does NOT allow any shell command: Bash is gated by
  *   `allowedBashPrefixes` only.
  * - `allowedBashPrefixes`: command prefixes matched on a word boundary (`echo`
@@ -285,4 +293,22 @@ export interface SessionManagerOptions {
    * to `interrupted` instead of launching. Absent: every request is admitted.
    */
   readonly admission?: (request: AdmissionRequest) => AdmissionDecision;
+  /**
+   * The in-process MCP servers a session gets (item 07: the `kernel` server).
+   * Called once per launch attempt, never once per start or resume: a resume
+   * retries launches, and an SDK server instance holds a live connection that
+   * cannot be reused, so every `query()` gets fresh servers. The result is
+   * passed as `options.mcpServers`. Absent: no `mcpServers` option at all.
+   * Tool gating is unchanged: the `PreToolUse` gate and the session's
+   * `ToolPolicy` (which lists e.g. `mcp__kernel__kernel_task_create`).
+   */
+  readonly mcpServers?: (ctx: McpServersContext) => Record<string, McpServerConfig>;
+}
+
+/** What the `mcpServers` factory is told about the launch it builds servers for. */
+export interface McpServersContext {
+  /** The `sessions` row id (kept by a resume). */
+  readonly sessionId: number;
+  readonly agent: string | null;
+  readonly task: number | null;
 }

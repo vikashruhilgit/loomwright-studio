@@ -172,9 +172,9 @@ describe("migrations", () => {
     expect(store.appliedMigrations().map((m) => [m.version, m.name])).toEqual([[1, "initial"]]);
   });
 
-  it("the default list adds auth_providers (migration 2), sessions.loomwright_path (migration 3), sessions.leader_started_at (migration 4), sessions.kill_incomplete_at (migration 5), the budget/cap_state details (migration 6) and no phase-2 table", () => {
+  it("the default list adds auth_providers (migration 2), sessions.loomwright_path (migration 3), sessions.leader_started_at (migration 4), sessions.kill_incomplete_at (migration 5), the budget/cap_state details (migration 6), event_queue and the work_steps details (migration 7) and no phase-2 table", () => {
     const store = open();
-    expect(tableNames(store)).toEqual([...PHASE1_TABLES, "auth_providers"].sort());
+    expect(tableNames(store)).toEqual([...PHASE1_TABLES, "auth_providers", "event_queue"].sort());
     for (const later of ["agents", "playbooks", "triggers", "approvals", "hooks_installed", "connectors"]) {
       expect(tableNames(store)).not.toContain(later);
     }
@@ -185,6 +185,7 @@ describe("migrations", () => {
       [4, "session_leader_started_at"],
       [5, "session_kill_incomplete_at"],
       [6, "budget_cap_details"],
+      [7, "event_loop"],
     ]);
     expect(columns(store, "auth_providers")).toEqual(["id", "account", "token_created_at", "updated_at"]);
     expect(columns(store, "sessions").slice(-3)).toEqual(["loomwright_path", "leader_started_at", "kill_incomplete_at"]);
@@ -196,6 +197,21 @@ describe("migrations", () => {
       "notified_resets_at",
       "warned_resets_at",
     ]);
+    expect(columns(store, "event_queue")).toEqual([
+      "id",
+      "kind",
+      "payload_json",
+      "source_ref",
+      "status",
+      "not_before",
+      "attempts",
+      "last_error",
+      "task_id",
+      "session_id",
+      "enqueued_at",
+      "done_at",
+    ]);
+    expect(columns(store, "work_steps").slice(-2)).toEqual(["failure_reason", "rerunnable"]);
   });
 
   it("gives sessions, work_steps and cap_state their required columns", () => {
