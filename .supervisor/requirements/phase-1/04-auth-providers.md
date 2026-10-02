@@ -34,3 +34,9 @@ Bedrock and Vertex providers. A GUI token-entry screen (phase 5; it must reuse t
 ## Risks
 
 Keychain access prompts under launchd are unverified (item 09). Keep all Keychain calls in one module so item 09 can adjust them.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-02T02:11:18Z
+- **Brief:** .supervisor/jobs/done/2026-10-02-04-auth-providers.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/11
