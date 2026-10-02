@@ -40,6 +40,8 @@ One SQLite database in the Studio data dir (e.g. `~/.loomwright-studio/studio.db
 | `events` | append-only audit log of everything the kernel did |
 | `budget` | usage per day, per playbook, per agent, per session. A token limit counts input + output + cache-write tokens; cache reads are recorded and shown but don't count. Read from `result.modelUsage` per model at each query's end, never per-message usage; the "≈$" estimate uses the full `costUSD` (D24, D26) |
 | `work_steps` | idempotency key (unique), status (started / done / failed), result. Makes each kernel tool's effect happen at most once across a crash (D2; see requirement item 07) |
+| `wakeups` | id, due time, reason, task, status (starts pending), fired time. Scheduled wake-ups, each fired once by id (see requirement item 07) |
+| `cap_state` | account, rate-limit type, status, resets-at time. Subscription cap state from the SDK's `rate_limit_event`; that account's sessions stay parked until `resetsAt` (D28) |
 
 **Memory is markdown, not the database** (invariant 8): `memory/<agent>/role.md`, `preferences.md`, `people.md`, `lessons.md`, one handoff note per task, plus `memory/shared/` for things every agent should know about the user. Users can read, edit and version it.
 
