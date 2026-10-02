@@ -22,6 +22,7 @@ export type { KillGroupUntilGoneOptions } from "./spawner.js";
 export { defaultPluginCacheRoot, resolveLoomwrightPath } from "./loomwright-path.js";
 export type { ResolveLoomwrightPathOptions } from "./loomwright-path.js";
 export {
+  AdmissionRefusedError,
   DEFAULT_RESUME_PROMPT,
   MAX_RESUME_ATTEMPTS,
   SessionError,
@@ -29,6 +30,10 @@ export {
   isTerminalStatus,
 } from "./types.js";
 export type {
+  AdmissionDecision,
+  AdmissionKind,
+  AdmissionRefusalReason,
+  AdmissionRequest,
   AllowedPermissionMode,
   CancelTimer,
   GroupLeader,

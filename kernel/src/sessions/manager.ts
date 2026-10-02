@@ -28,6 +28,7 @@ import {
   spawnInNewProcessGroup,
 } from "./spawner.js";
 import {
+  AdmissionRefusedError,
   DEFAULT_RESUME_PROMPT,
   MAX_RESUME_ATTEMPTS,
   SessionError,
@@ -35,6 +36,8 @@ import {
   isTerminalStatus,
 } from "./types.js";
 import type {
+  AdmissionDecision,
+  AdmissionRequest,
   AllowedPermissionMode,
   CancelTimer,
   GroupLeader,
@@ -334,6 +337,7 @@ export class SessionManager {
   readonly #authTimeoutMs: number;
   readonly #resumeBackoffMs: readonly number[];
   readonly #onMessage: ((sessionId: number, message: SDKMessage) => void) | undefined;
+  readonly #admission: ((request: AdmissionRequest) => AdmissionDecision) | undefined;
 
   readonly #query: QueryFn;
   readonly #spawn: SpawnFn;
@@ -358,6 +362,7 @@ export class SessionManager {
     this.#authTimeoutMs = options.authTimeoutMs ?? 30_000;
     this.#resumeBackoffMs = options.resumeBackoffMs ?? [1_000, 2_000, 4_000];
     this.#onMessage = options.onMessage;
+    this.#admission = options.admission;
 
     this.#query = deps.query ?? sdkQuery;
     this.#spawn = deps.spawn ?? spawnInNewProcessGroup;
@@ -384,9 +389,10 @@ export class SessionManager {
   /**
    * Start a session (AC1, AC2, AC8). Throws `SessionError` before any row or
    * spawn for invalid params, `bypassPermissions` or a missing Loomwright
-   * install. An auth failure while building the env spawns nothing: the row
-   * is inserted as `failed:auth` with one `notify` event, and the error is
-   * rethrown.
+   * install, and `AdmissionRefusedError` when the `admission` check refuses
+   * (budget or cap, item 06). An auth failure while building the env spawns
+   * nothing: the row is inserted as `failed:auth` with one `notify` event, and
+   * the error is rethrown.
    */
   async startSession(params: StartSessionParams): Promise<SessionHandle> {
     const permissionMode = checkPermissionMode(params.permissionMode);
@@ -401,6 +407,8 @@ export class SessionManager {
       configured: this.#configuredLoomwrightPath,
       cacheRoot: this.#pluginCacheRoot,
     });
+
+    this.#admit({ kind: "start", agent: params.agent, account: this.#auth.account, task: params.task ?? null });
 
     let env: ChildEnv;
     try {
@@ -482,6 +490,10 @@ export class SessionManager {
    * the caller passes the policy, `permissionMode` and `cwd` again (the policy
    * is not persisted in phase 1).
    *
+   * The `admission` check (item 06) runs after the row checks and before the
+   * group check: a refusal throws `AdmissionRefusedError` and leaves the row's
+   * status and its events unchanged.
+   *
    * Never while the session's previous group may still be alive: before
    * launching anything the recorded group is re-checked exactly as the reaper
    * checks it. Gone, never recorded, or proven foreign (`pgid_reused`) ⇒ the
@@ -518,6 +530,8 @@ export class SessionManager {
     if (!isNonEmptyString(row.model) || !isNonEmptyString(row.loomwright_path)) {
       throw new SessionError("not_resumable", `session ${id} has no recorded model or Loomwright path`);
     }
+    // Before the group check: a refused resume leaves the row and its events untouched.
+    this.#admit({ kind: "resume", agent: row.agent, account: this.#auth.account, task: row.task_id });
 
     // Synchronous from here to the launch: no reap or other resume interleaves.
     let check: GroupCheck;
@@ -1003,6 +1017,19 @@ export class SessionManager {
       }
     }
     return undefined;
+  }
+
+  /** Ask the `admission` check; a refusal throws before any side effect. */
+  #admit(request: AdmissionRequest): void {
+    if (this.#admission === undefined) return;
+    const decision = this.#admission(request);
+    if (decision.admitted) return;
+    throw new AdmissionRefusedError(
+      decision.reason,
+      decision.retryAt,
+      `${request.kind} refused for agent ${String(request.agent)} on account ${request.account}: ${decision.reason}` +
+        (decision.retryAt === null ? " (retry time unknown)" : ` until ${decision.retryAt}`),
+    );
   }
 
   #observe(live: LiveSession, message: SDKMessage): void {
