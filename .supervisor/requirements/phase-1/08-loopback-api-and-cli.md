@@ -33,3 +33,9 @@ WebSocket streaming (phase 5 GUI). `studio ask` (phase 2).
 ## Risks
 
 Low.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-02T13:41:58Z
+- **Brief:** .supervisor/jobs/done/2026-10-02-08-loopback-api-and-cli.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/19
