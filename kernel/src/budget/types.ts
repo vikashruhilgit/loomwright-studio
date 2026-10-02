@@ -26,15 +26,23 @@ export interface BudgetConfig {
   /**
    * Counted tokens (input + output + cache writes, D26) an agent may use per
    * local calendar day, by agent name. An agent with no entry has no token
-   * limit; the subscription cap still applies to it.
+   * limit; the subscription cap still applies to it. Read only through
+   * own keys (`agentDailyTokenLimit`): an agent named like an
+   * `Object.prototype` member (`constructor`, `toString`) has no limit unless
+   * one is configured for it.
    */
   readonly agentDailyTokenLimits: Readonly<Record<string, number>>;
   readonly apiKeyFallback: ApiKeyFallbackPolicy;
 }
 
+/** A null-prototype record: a key lookup never reaches an `Object.prototype` member. */
+function emptyRecord<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
 /** No agent limits; the API-key fallback off with no ceiling. */
 export const DEFAULT_BUDGET_CONFIG: BudgetConfig = Object.freeze({
-  agentDailyTokenLimits: Object.freeze({}),
+  agentDailyTokenLimits: Object.freeze(emptyRecord<number>()),
   apiKeyFallback: Object.freeze({ enabled: false, dollarCeilingUsd: null }),
 });
 
@@ -57,7 +65,8 @@ export function validateBudgetConfig(config: BudgetConfig): BudgetConfig {
   if (typeof limits !== "object" || limits === null || Array.isArray(limits)) {
     throw new BudgetConfigError("agentDailyTokenLimits must be an object of agent name to token limit");
   }
-  const copy: Record<string, number> = {};
+  // Null prototype: an agent named `__proto__` is stored as its own key, never as the prototype.
+  const copy = emptyRecord<number>();
   for (const [agent, limit] of Object.entries(limits)) {
     if (agent.trim() === "") throw new BudgetConfigError("agentDailyTokenLimits has an empty agent name");
     if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit <= 0) {
@@ -79,6 +88,16 @@ export function validateBudgetConfig(config: BudgetConfig): BudgetConfig {
     agentDailyTokenLimits: Object.freeze(copy),
     apiKeyFallback: Object.freeze({ enabled, dollarCeilingUsd: dollarCeilingUsd ?? null }),
   });
+}
+
+/**
+ * The configured daily token limit of `agent`, or `undefined` when it has
+ * none. Own keys only: the kernel never reads an inherited member (for
+ * example `constructor`) as a limit the user did not set (invariant 1).
+ */
+export function agentDailyTokenLimit(config: BudgetConfig, agent: string): number | undefined {
+  const limits = config.agentDailyTokenLimits;
+  return Object.hasOwn(limits, agent) ? limits[agent] : undefined;
 }
 
 /** The auth provider's non-secret identity, as the budget module records it. */

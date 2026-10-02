@@ -2,7 +2,7 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Store } from "../store/store.js";
 import { agentCountedTokens, appendEvent, clockOf, finiteNonNegative, noteAgentLimitReached } from "./internal.js";
 import type { Clock, EventRef } from "./internal.js";
-import { DEFAULT_BUDGET_CONFIG, validateBudgetConfig } from "./types.js";
+import { DEFAULT_BUDGET_CONFIG, agentDailyTokenLimit, validateBudgetConfig } from "./types.js";
 import type { BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions, UsageTotals } from "./types.js";
 
 /** The token components compared to tell a running total from a fresh baseline. */
@@ -33,8 +33,17 @@ function readTotals(value: unknown): UsageTotals {
   };
 }
 
+/**
+ * A null-prototype totals map: model names come from the stream, so a model
+ * named `constructor` or `__proto__` is an ordinary own key, never an
+ * inherited member read back as a stored total (or a prototype written).
+ */
+function emptyTotals(): Totals {
+  return Object.create(null) as Totals;
+}
+
 function readTotalsMap(value: unknown): Totals {
-  const out: Totals = {};
+  const out = emptyTotals();
   if (typeof value !== "object" || value === null || Array.isArray(value)) return out;
   for (const [model, usage] of Object.entries(value)) out[model] = readTotals(usage);
   return out;
@@ -145,7 +154,7 @@ export class BudgetMeter {
       }
 
       const stored = this.#readStored(row.model_usage_json, ref, at);
-      const merged: Totals = { ...stored };
+      const merged: Totals = Object.assign(emptyTotals(), stored);
       const insert = this.#store.prepare(
         `INSERT INTO budget (day, session_id, agent, model, input_tokens, output_tokens, cache_write_tokens,
                              cache_read_tokens, thinking_tokens, cost_usd, recorded_at)
@@ -189,17 +198,17 @@ export class BudgetMeter {
 
   /** The stored totals; an unreadable value is a fresh baseline, recorded as such. */
   #readStored(json: string | null, ref: EventRef, at: string): Totals {
-    if (json === null) return {};
+    if (json === null) return emptyTotals();
     try {
       return readTotalsMap(JSON.parse(json));
     } catch {
       appendEvent(this.#store, "budget_baseline_reset", ref, { reason: "stored_totals_unreadable" }, at);
-      return {};
+      return emptyTotals();
     }
   }
 
   #checkLimit(agent: string, day: string, now: Date, ref: EventRef, at: string): void {
-    const limit = this.#config.agentDailyTokenLimits[agent];
+    const limit = agentDailyTokenLimit(this.#config, agent);
     if (limit === undefined) return;
     const counted = agentCountedTokens(this.#store, agent, day);
     if (counted < limit) return;

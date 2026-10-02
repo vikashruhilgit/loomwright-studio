@@ -21,7 +21,17 @@ import {
 import type { BudgetConfig } from "../src/budget/index.js";
 import { AdmissionRefusedError, SessionError, SessionManager } from "../src/sessions/index.js";
 import type { AdmissionDecision, AdmissionRequest, QueryFn, SpawnFn, StartSessionParams } from "../src/sessions/index.js";
-import { AUTH, errorResult, events, fixture, insertSession, result, testEnv } from "./budget-helpers.js";
+import {
+  AUTH,
+  assistantError,
+  errorResult,
+  events,
+  fixture,
+  insertSession,
+  isErrorSuccessResult,
+  result,
+  testEnv,
+} from "./budget-helpers.js";
 import type { TestEnv } from "./budget-helpers.js";
 
 // Before the p6 event's five_hour reset (2026-09-29T16:20:00Z).
@@ -97,6 +107,21 @@ describe("BudgetAdmission: agent daily limit (AC2)", () => {
     expect(gate.check(request({ agent: null }))).toEqual({ admitted: true });
     env.clock.at = new Date("2026-09-30T00:00:00.000Z");
     expect(gate.check(request())).toEqual({ admitted: true });
+  });
+
+  it("an agent named like an Object.prototype member has no limit unless one is configured for it", () => {
+    const gate = admission(LIMITED);
+    for (const agent of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"]) {
+      spend(agent, 10_000_000);
+      expect(gate.check(request({ agent }))).toEqual({ admitted: true });
+    }
+    expect(gate.check(request({ agent: "constructor" }))).toEqual({ admitted: true });
+    expect(admission(DEFAULT_BUDGET_CONFIG).check(request({ agent: "constructor" }))).toEqual({ admitted: true });
+    expect(events(env.store, "admission_refused")).toEqual([]);
+    expect(events(env.store, "notify")).toEqual([]);
+
+    const own = admission({ ...DEFAULT_BUDGET_CONFIG, agentDailyTokenLimits: JSON.parse('{"constructor": 5}') });
+    expect(own.check(request({ agent: "constructor" }))).toMatchObject({ admitted: false, reason: "agent_daily_limit" });
   });
 });
 
@@ -428,5 +453,92 @@ describe("SessionManager admission hook", () => {
     const notify = events(env.store, "notify");
     expect(notify.map((n) => n.payload.reason)).toEqual(["cap_reached", "agent_daily_limit"]);
     expect(notify.every((n) => n.payload.provider === AUTH.id && n.payload.account === AUTH.account)).toBe(true);
+  });
+
+  // A resume attempt starts unconfirmed, so a cap hit on attempt 1 fails it; the retry must not launch on the parked account.
+  const CAP_HIT_SCRIPT: readonly SDKMessage[] = [
+    { type: "system", subtype: "init", session_id: "sid" } as never,
+    assistantError("rate_limit", CAP_TEXT),
+    isErrorSuccessResult(CAP_TEXT),
+  ];
+
+  function interruptedRow(pluginDir: string): number {
+    return Number(
+      env.store
+        .prepare(
+          "INSERT INTO sessions (agent, task_id, status, sdk_session_id, model, loomwright_path, auth_account) VALUES ('wright', NULL, 'interrupted', 'sid', 'claude-haiku-4-5', ?, ?)",
+        )
+        .run(pluginDir, AUTH.account).lastInsertRowid,
+    );
+  }
+
+  function statusEvents(id: number): Record<string, unknown>[] {
+    return events(env.store, "session_status")
+      .filter((e) => e.session_id === id)
+      .map((e) => e.payload);
+  }
+
+  it("a resume whose attempt 1 hits the cap launches no retry: the retry is refused and the session returns to interrupted", async () => {
+    const budget = new Budget({ store: env.store, authProvider: AUTH }, env.deps);
+    const { manager, counts, requests, pluginDir } = managerHarness({ admission: budget.check, onMessage: budget.observe, script: CAP_HIT_SCRIPT });
+    const id = interruptedRow(pluginDir);
+
+    const handle = await manager.resumeSession(id, RESUME);
+    expect(await handle.done).toBe("interrupted");
+    expect(counts.query).toBe(1);
+    expect(counts.spawn).toBe(1);
+    expect(requests).toEqual([
+      { kind: "resume", agent: "wright", account: AUTH.account, task: null },
+      { kind: "resume", agent: "wright", account: AUTH.account, task: null },
+    ]);
+    const recheck = new Date(env.clock.at.getTime() + CAP_RECHECK_MS).toISOString();
+    expect(manager.getSession(id)?.status).toBe("interrupted");
+    expect(statusEvents(id).at(-1)).toEqual({
+      from: "running",
+      to: "interrupted",
+      reason: "admission_refused",
+      refusal: "cap_parked",
+      retry_at: recheck,
+      attempt: 2,
+    });
+    expect(events(env.store, "session_resume_failed").filter((e) => e.session_id === id)).toHaveLength(1);
+    expect(events(env.store, "admission_refused").map((e) => e.payload.reason)).toEqual(["cap_parked"]);
+    // One hit, one notify (the cap tracker's); the parked retry adds none.
+    expect(events(env.store, "notify").map((n) => n.payload.reason)).toEqual(["cap_reached"]);
+
+    // Still resumable: once the park ends a resume is admitted and launches again.
+    env.clock.at = new Date(env.clock.at.getTime() + CAP_RECHECK_MS);
+    const again = await manager.resumeSession(id, RESUME);
+    expect(await again.done).toBe("interrupted");
+    expect(counts.query).toBe(2);
+  });
+
+  it("a retry whose admission check throws fails closed: nothing launched, the session returns to interrupted", async () => {
+    let calls = 0;
+    const { manager, counts, pluginDir } = managerHarness({
+      admission: () => {
+        calls++;
+        if (calls > 1) throw new Error("store gone");
+        return { admitted: true };
+      },
+      script: [{ type: "system", subtype: "init", session_id: "sid" } as never, errorResult(["boom"])],
+    });
+    const id = interruptedRow(pluginDir);
+    const handle = await manager.resumeSession(id, RESUME);
+    expect(await handle.done).toBe("interrupted");
+    expect(counts.query).toBe(1);
+    expect(statusEvents(id).at(-1)).toMatchObject({ to: "interrupted", reason: "admission_error", error: "store gone", attempt: 2 });
+  });
+
+  it("an admitted retry launches as before: every attempt runs and each asks admission", async () => {
+    const { manager, counts, requests, pluginDir } = managerHarness({
+      admission: () => ({ admitted: true }),
+      script: [{ type: "system", subtype: "init", session_id: "sid" } as never, errorResult(["boom"])],
+    });
+    const id = interruptedRow(pluginDir);
+    const handle = await manager.resumeSession(id, RESUME);
+    expect(await handle.done).toBe("failed");
+    expect(counts.query).toBe(3);
+    expect(requests).toHaveLength(3);
   });
 });

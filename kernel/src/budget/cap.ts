@@ -85,11 +85,29 @@ function jsonCopy(value: unknown): unknown {
   return json === null ? null : (JSON.parse(json) as unknown);
 }
 
-/** Epoch seconds to ISO-8601, or `null` when the value is not a usable time. */
-function epochSecondsToIso(value: unknown): string | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
-  const date = new Date(value * 1_000);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+/** 9999-12-31T23:59:59Z in epoch seconds: the last instant whose ISO-8601 form has a 4-digit year. */
+const MAX_ISO_EPOCH_SECONDS = 253_402_300_799;
+
+/**
+ * A reset further ahead than this is read as unknown. The longest window the
+ * SDK names is seven days; a value this far out is a mis-scaled one (for
+ * example milliseconds sent as seconds), not a real reset.
+ */
+export const MAX_RESET_AHEAD_MS = 35 * 24 * 60 * 60 * 1_000;
+
+/**
+ * Epoch seconds to ISO-8601, or `null` when the value is not a usable reset
+ * time at `now`. `resets_at` is compared as text (admission, the park
+ * checks), which orders correctly only for 4-digit-year ISO strings, so an
+ * out-of-range value is never stored: past year 9999 the ISO form is
+ * `+0YYYYY-…` and would sort below every real time, reading a park as expired.
+ */
+function epochSecondsToIso(value: unknown, now: Date): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > MAX_ISO_EPOCH_SECONDS) return null;
+  const ms = value * 1_000;
+  if (ms - now.getTime() > MAX_RESET_AHEAD_MS) return null;
+  const iso = new Date(ms).toISOString();
+  return /^\d{4}-/.test(iso) ? iso : null;
 }
 
 interface CapRow {
@@ -208,7 +226,11 @@ export class CapTracker {
     const utilization = typeof i.utilization === "number" && Number.isFinite(i.utilization) ? i.utilization : null;
     // Untyped (observed live, absent from sdk.d.ts): stored verbatim, never read.
     const unifiedWindowsJson = i.unifiedWindows === undefined ? null : safeJson(i.unifiedWindows);
-    let resetsAt = epochSecondsToIso(i.resetsAt);
+    let resetsAt = epochSecondsToIso(i.resetsAt, now);
+    // A `rejected` whose reset is not ahead of now is self-contradictory (stale
+    // or mis-scaled): taken as given it would store a park that is already
+    // expired, and admission would admit on a capped account. Unknown reset.
+    if (status === "rejected" && resetsAt !== null && resetsAt <= at) resetsAt = null;
     let resetSource: string | null = resetsAt === null ? null : "event";
     const existing = this.#row(account, type);
 

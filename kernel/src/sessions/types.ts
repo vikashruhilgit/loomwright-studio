@@ -93,6 +93,8 @@ export interface SessionHandle {
   /**
    * Settles with the terminal status. Never rejects. `failed` with reason
    * `kill_incomplete` when the kernel could not confirm the group gone.
+   * A resume whose retry attempt was refused admission (item 06) settles with
+   * `interrupted`: nothing was launched and the session stays resumable.
    */
   readonly done: Promise<SessionStatus>;
 }
@@ -278,7 +280,9 @@ export interface SessionManagerOptions {
    * Asked before every start and resume, after the request is validated and
    * before anything else happens (no auth env, row, status change or spawn).
    * A refusal throws `AdmissionRefusedError`; a check that throws fails the
-   * request closed with its own error. Absent: every request is admitted.
+   * request closed with its own error. Asked again (as a `resume`) before each
+   * retry attempt of a resume, where a refusal or a throw returns the session
+   * to `interrupted` instead of launching. Absent: every request is admitted.
    */
   readonly admission?: (request: AdmissionRequest) => AdmissionDecision;
 }

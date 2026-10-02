@@ -3,7 +3,14 @@
 // SDK or a model.
 import { USAGE_LIMIT_ERROR_PREFIXES } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CAP_RECHECK_MS, CapTracker, findUsageLimitText, transientBackoffMs } from "../src/budget/index.js";
+import {
+  BudgetAdmission,
+  CAP_RECHECK_MS,
+  CapTracker,
+  MAX_RESET_AHEAD_MS,
+  findUsageLimitText,
+  transientBackoffMs,
+} from "../src/budget/index.js";
 import {
   AUTH,
   assistantError,
@@ -137,6 +144,37 @@ describe("rejected (AC4)", () => {
     tracker.observe(id, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour", resetsAt: 1790716800 }));
     expect(events(env.store, "notify")).toHaveLength(2);
     expect(wakeups()).toHaveLength(2);
+  });
+
+  it("a millisecond-scale resetsAt (past year 9999) is an unknown reset: parked with an hourly re-check, admission refuses", () => {
+    const id = insertSession(env.store);
+    tracker.observe(id, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour", resetsAt: 1790698800000 }));
+    const recheck = inAnHour();
+    expect(capRows()[0]).toMatchObject({ status: "rejected", resets_at: recheck, reset_source: "recheck" });
+    expect(events(env.store, "notify")[0]?.payload).toMatchObject({ resets_at: null, recheck_at: recheck });
+    expect(wakeups()).toEqual([{ due_at: recheck, reason: `cap_recheck:${AUTH.account}`, status: "pending" }]);
+    const gate = new BudgetAdmission({ store: env.store, authProvider: AUTH }, env.deps);
+    expect(gate.check({ kind: "resume", agent: "wright", account: AUTH.account, task: null })).toEqual({
+      admitted: false,
+      reason: "cap_parked",
+      retryAt: recheck,
+    });
+  });
+
+  it("an implausibly distant or already-passed resetsAt on a rejected event is an unknown reset; an allowed one stores none", () => {
+    const id = insertSession(env.store);
+    const now = env.clock.at.getTime() / 1_000;
+    tracker.observe(id, rateLimitEvent({ status: "rejected", rateLimitType: "seven_day", resetsAt: now + MAX_RESET_AHEAD_MS / 1_000 + 60 }));
+    tracker.observe(id, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour", resetsAt: now - 60 }));
+    tracker.observe(id, rateLimitEvent({ status: "allowed", rateLimitType: "overage", resetsAt: 253_402_300_800 }));
+    const recheck = inAnHour();
+    expect(capRows()).toEqual([
+      expect.objectContaining({ rate_limit_type: "five_hour", resets_at: recheck, reset_source: "recheck" }),
+      expect.objectContaining({ rate_limit_type: "overage", resets_at: null, reset_source: null }),
+      expect.objectContaining({ rate_limit_type: "seven_day", resets_at: recheck, reset_source: "recheck" }),
+    ]);
+    // Every stored reset is a 4-digit-year ISO string, so text order is time order.
+    expect(capRows().every((r) => r.resets_at === null || /^\d{4}-/.test(r.resets_at))).toBe(true);
   });
 
   it("a rejected event with no usable resetsAt parks with an hourly re-check, not moved by a repeat", () => {

@@ -2,7 +2,7 @@ import type { AdmissionDecision, AdmissionRequest } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { activeParks, agentCountedTokens, appendEvent, clockOf, noteAgentLimitReached } from "./internal.js";
 import type { Clock } from "./internal.js";
-import { DEFAULT_BUDGET_CONFIG, validateBudgetConfig } from "./types.js";
+import { DEFAULT_BUDGET_CONFIG, agentDailyTokenLimit, validateBudgetConfig } from "./types.js";
 import type { BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions } from "./types.js";
 
 /**
@@ -65,7 +65,7 @@ export class BudgetAdmission {
       }
 
       if (request.kind === "start" && request.agent !== null) {
-        const limit = this.#config.agentDailyTokenLimits[request.agent];
+        const limit = agentDailyTokenLimit(this.#config, request.agent);
         if (limit !== undefined) {
           const day = this.#clock.dayOf(now);
           const counted = agentCountedTokens(this.#store, request.agent, day);

@@ -1,7 +1,8 @@
 // Unit tests for the budget meter (item 06, AC1, AC2, AC9). Recorded and
 // synthetic `result` messages only; never the real SDK or a model.
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BudgetMeter, DEFAULT_BUDGET_CONFIG } from "../src/budget/index.js";
+import { BudgetMeter, DEFAULT_BUDGET_CONFIG, validateBudgetConfig } from "../src/budget/index.js";
 import type { BudgetConfig } from "../src/budget/index.js";
 import { AUTH, events, fixture, insertSession, result, testEnv } from "./budget-helpers.js";
 import type { TestEnv } from "./budget-helpers.js";
@@ -229,5 +230,44 @@ describe("BudgetMeter: agent daily limit (AC2)", () => {
     meter(limited).observe(id, result({ haiku: { input: 10_000_000 } }));
     expect(events(env.store, "budget_limit_reached")).toEqual([]);
     expect(events(env.store, "notify")).toEqual([]);
+  });
+
+  it("an agent named like an Object.prototype member has no limit unless one is configured for it", () => {
+    for (const agent of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"]) {
+      const id = insertSession(env.store, { agent });
+      meter(limited).observe(id, result({ haiku: { input: 10_000_000 } }));
+    }
+    expect(events(env.store, "budget_limit_reached")).toEqual([]);
+    expect(events(env.store, "notify")).toEqual([]);
+
+    // Configured as its own key, it is limited like any other agent.
+    const own = validateBudgetConfig({ ...DEFAULT_BUDGET_CONFIG, agentDailyTokenLimits: JSON.parse('{"constructor": 5, "__proto__": 5}') });
+    const id = insertSession(env.store, { agent: "__proto__" });
+    meter(own).observe(id, result({ haiku: { input: 10 } }));
+    expect(events(env.store, "budget_limit_reached").map((e) => e.payload.agent)).toEqual(["__proto__"]);
+  });
+
+  it("a model named like an Object.prototype member is metered as an ordinary model", () => {
+    const id = insertSession(env.store, { agent: null });
+    const m = meter();
+    // JSON.parse, as the stream is parsed: `__proto__` is an own key, not the prototype.
+    const usage = (a: number, b: number): SDKMessage =>
+      ({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "ok",
+        modelUsage: JSON.parse(`{"constructor": {"inputTokens": ${a}}, "__proto__": {"inputTokens": ${b}}}`),
+      }) as unknown as SDKMessage;
+    m.observe(id, usage(10, 20));
+    m.observe(id, usage(15, 25));
+    expect(events(env.store, "budget_baseline_reset")).toEqual([]);
+    expect(budgetRows().map((r) => [r.model, r.input_tokens])).toEqual([
+      ["constructor", 10],
+      ["__proto__", 20],
+      ["constructor", 5],
+      ["__proto__", 5],
+    ]);
+    expect(Object.keys(storedTotals(id))).toEqual(["constructor", "__proto__"]);
   });
 });

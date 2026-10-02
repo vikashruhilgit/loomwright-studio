@@ -12,6 +12,7 @@ export { BudgetAdmission, apiKeyFallbackActive } from "./admission.js";
 export {
   CAP_RECHECK_MS,
   CapTracker,
+  MAX_RESET_AHEAD_MS,
   TEXT_FALLBACK_TYPE,
   UNKNOWN_LIMIT_TYPE,
   findUsageLimitText,
@@ -20,7 +21,7 @@ export {
 export type { CapTextSource } from "./cap.js";
 export { localDay, startOfNextLocalDay } from "./internal.js";
 export { BudgetMeter } from "./meter.js";
-export { BudgetConfigError, DEFAULT_BUDGET_CONFIG, validateBudgetConfig } from "./types.js";
+export { BudgetConfigError, DEFAULT_BUDGET_CONFIG, agentDailyTokenLimit, validateBudgetConfig } from "./types.js";
 export type {
   ApiKeyFallbackPolicy,
   BudgetAuth,
