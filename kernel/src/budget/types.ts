@@ -106,9 +106,11 @@ export type BudgetAuth = Pick<AuthProvider, "id" | "account">;
 export interface BudgetOptions {
   readonly store: Store;
   /**
-   * The kernel's one auth provider. Its `account` keys admission, and the cap
-   * tracker falls back to it for a session row whose `auth_account` is null,
-   * so both sides resolve to the same account.
+   * The kernel's one auth provider, the same one the session manager launches
+   * with. Its live `account` is the only account identity the budget uses:
+   * the cap tracker parks under it and admission checks it (a request naming
+   * another account fails closed). The session row's `auth_account` is never
+   * read.
    */
   readonly authProvider: BudgetAuth;
   /** Defaults to `DEFAULT_BUDGET_CONFIG`. Validated at construction. */

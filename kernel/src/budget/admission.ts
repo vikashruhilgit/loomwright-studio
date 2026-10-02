@@ -23,7 +23,11 @@ export function apiKeyFallbackActive(config: BudgetConfig): boolean {
  *
  * - Cap (AC4, AC6): any unexpired park of the account (`cap_state` `rejected`
  *   with `resets_at` null or ahead) refuses starts and resumes alike;
- *   `retryAt` is the latest `resets_at`, or `null` when one is unknown.
+ *   `retryAt` is the latest `resets_at`, or `null` when one is unknown. The
+ *   account is the auth provider's live `account`, the one source the cap
+ *   tracker parks under too. A request naming another account means the
+ *   manager and the budget hold different providers (a wiring error): the
+ *   check throws, so the request fails closed.
  * - Agent limit (AC2): an agent whose counted tokens for today reached its
  *   configured limit is refused new sessions (`start` only: a resume
  *   continues existing work); `retryAt` is the start of the next budget day.
@@ -55,7 +59,14 @@ export class BudgetAdmission {
     return this.#store.transaction((): AdmissionDecision => {
       const ref = { sessionId: null, taskId: request.task };
 
-      const parks = activeParks(this.#store, request.account, at);
+      // One source of account identity: the provider's, as the cap tracker keys parks.
+      const account = this.#auth.account;
+      if (request.account !== account) {
+        throw new Error(
+          `admission asked for account ${request.account} but the budget's auth provider is on ${account}: refusing (fail closed)`,
+        );
+      }
+      const parks = activeParks(this.#store, account, at);
       if (parks.length > 0) {
         const retryAt = parks.some((p) => p.resets_at === null)
           ? null

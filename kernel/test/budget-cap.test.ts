@@ -113,10 +113,21 @@ describe("rate_limit_event (AC3)", () => {
     expect(events(env.store, "cap_event_ignored").map((e) => e.payload.reason)).toEqual(["no_rate_limit_info", "unknown_status"]);
   });
 
-  it("an allowed event after a rejected one updates the status", () => {
-    const id = insertSession(env.store);
-    tracker.observe(id, fixture("p6-rate-limit-rejected.json"));
-    tracker.observe(id, fixture("p6-rate-limit-event.json"));
+  it("an allowed event never clears an unexpired park (fail closed); after resetsAt it updates the status", () => {
+    const a = insertSession(env.store);
+    const b = insertSession(env.store);
+    tracker.observe(a, fixture("p6-rate-limit-rejected.json"));
+    // Another session's allowed for the same type while the park is in force.
+    tracker.observe(b, fixture("p6-rate-limit-event.json"));
+    tracker.observe(b, rateLimitEvent({ status: "allowed_warning", rateLimitType: "five_hour", resetsAt: 1790698800, utilization: 0.9 }));
+    expect(capRows()[0]).toMatchObject({ status: "rejected", resets_at: FIVE_HOUR_RESET, reset_source: "event", notified_resets_at: FIVE_HOUR_RESET, utilization: 0.9 });
+    expect(events(env.store, "cap_allowed_while_parked").map((e) => e.payload.status)).toEqual(["allowed", "allowed_warning"]);
+    expect(events(env.store, "cap_warning")).toEqual([]);
+    const gate = new BudgetAdmission({ store: env.store, authProvider: AUTH }, env.deps);
+    expect(gate.check({ kind: "start", agent: "wright", account: AUTH.account, task: null })).toMatchObject({ admitted: false, retryAt: FIVE_HOUR_RESET });
+
+    env.clock.at = new Date(FIVE_HOUR_RESET);
+    tracker.observe(b, rateLimitEvent({ status: "allowed", rateLimitType: "five_hour", resetsAt: 1790716800, utilization: 0.01 }));
     expect(capRows()[0]).toMatchObject({ status: "allowed", notified_resets_at: FIVE_HOUR_RESET });
   });
 });
@@ -188,6 +199,44 @@ describe("rejected (AC4)", () => {
     expect(events(env.store, "notify")[0]?.payload).toMatchObject({ resets_at: null, recheck_at: recheck });
     expect(wakeups()).toEqual([{ due_at: recheck, reason: `cap_recheck:${AUTH.account}`, status: "pending" }]);
   });
+
+  it("a known park is never moved earlier or re-notified by a later rejected with no usable, a ms-scale or an earlier resetsAt", () => {
+    const a = insertSession(env.store);
+    const b = insertSession(env.store);
+    const now = env.clock.at.getTime() / 1_000;
+    const fourHours = new Date(env.clock.at.getTime() + 4 * 3_600_000).toISOString();
+    tracker.observe(a, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour", resetsAt: now + 4 * 3_600 }));
+    tracker.observe(b, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour" }));
+    tracker.observe(b, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour", resetsAt: (now + 3_600) * 1_000 }));
+    tracker.observe(b, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour", resetsAt: now + MAX_RESET_AHEAD_MS / 1_000 + 60 }));
+    tracker.observe(b, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour", resetsAt: now + 2 * 3_600 }));
+    expect(capRows()).toEqual([
+      expect.objectContaining({ rate_limit_type: "five_hour", status: "rejected", resets_at: fourHours, reset_source: "event", notified_resets_at: fourHours }),
+    ]);
+    expect(events(env.store, "notify")).toHaveLength(1);
+    expect(events(env.store, "cap_rejected")).toHaveLength(1);
+    expect(wakeups()).toEqual([{ due_at: fourHours, reason: `cap_reset:${AUTH.account}`, status: "pending" }]);
+    // Past the hour a re-check would have ended, admission still refuses until the known reset.
+    env.clock.at = new Date(env.clock.at.getTime() + CAP_RECHECK_MS + 1_000);
+    const gate = new BudgetAdmission({ store: env.store, authProvider: AUTH }, env.deps);
+    expect(gate.check({ kind: "start", agent: "wright", account: AUTH.account, task: null })).toEqual({
+      admitted: false,
+      reason: "cap_parked",
+      retryAt: fourHours,
+    });
+  });
+
+  it("a known reset later than a re-check park extends it and notifies the known window once", () => {
+    const id = insertSession(env.store);
+    const now = env.clock.at.getTime() / 1_000;
+    const fourHours = new Date(env.clock.at.getTime() + 4 * 3_600_000).toISOString();
+    tracker.observe(id, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour" }));
+    tracker.observe(id, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour", resetsAt: now + 4 * 3_600 }));
+    tracker.observe(id, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour", resetsAt: now + 4 * 3_600 }));
+    expect(capRows()[0]).toMatchObject({ resets_at: fourHours, reset_source: "event", notified_resets_at: fourHours });
+    expect(events(env.store, "notify").map((n) => n.payload.resets_at)).toEqual([null, fourHours]);
+    expect(events(env.store, "cap_rejected")[1]?.payload).toMatchObject({ extended_from: inAnHour() });
+  });
 });
 
 describe("allowed_warning (AC5)", () => {
@@ -202,9 +251,8 @@ describe("allowed_warning (AC5)", () => {
     expect(events(env.store, "notify")).toEqual([]);
     expect(wakeups()).toEqual([]);
 
-    // Another account warns separately; a new window warns again.
-    const other = insertSession(env.store, { account: "second@example.test" });
-    tracker.observe(other, warning);
+    // Another account (another kernel's provider) warns separately; a new window warns again.
+    new CapTracker({ store: env.store, authProvider: { id: AUTH.id, account: "second@example.test" } }, env.deps).observe(id, warning);
     tracker.observe(id, rateLimitEvent({ status: "allowed_warning", rateLimitType: "seven_day", resetsAt: 1791820800 }));
     expect(events(env.store, "cap_warning")).toHaveLength(3);
   });
@@ -321,11 +369,14 @@ describe("text fallback (AC6)", () => {
     expect(wakeups().map((w) => w.due_at)).toHaveLength(2);
   });
 
-  it("a session row with a null auth_account falls back to the auth provider's account", () => {
-    const id = insertSession(env.store, { account: null });
-    tracker.observe(id, errorResult([CAP_TEXT]));
-    tracker.observe(id, fixture("p6-rate-limit-warning.json"));
+  it("keys on the auth provider's account whatever the session row's auth_account label (null or stale)", () => {
+    for (const label of [null, "stub-provider"]) {
+      const id = insertSession(env.store, { account: label });
+      tracker.observe(id, errorResult([CAP_TEXT]));
+      tracker.observe(id, fixture("p6-rate-limit-warning.json"));
+    }
     expect(capRows().map((r) => r.account)).toEqual([AUTH.account, AUTH.account]);
-    expect(wakeups()[0]?.reason).toBe(`cap_recheck:${AUTH.account}`);
+    expect(wakeups().map((w) => w.reason)).toEqual([`cap_recheck:${AUTH.account}`]);
+    expect(events(env.store, "notify")).toHaveLength(1);
   });
 });

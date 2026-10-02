@@ -123,8 +123,16 @@ const RATE_LIMIT_STATUSES: ReadonlySet<string> = new Set(["allowed", "allowed_wa
 /**
  * Tracks the subscription cap per auth account from what each session's
  * stream says (D17, D28, OPEN_QUESTIONS Q6), into `cap_state`, `events` and
- * `wakeups`. Keyed on the session row's `auth_account`, or the auth
- * provider's account when that is null (admission is keyed on the same).
+ * `wakeups`. Keyed on the auth provider's live `account`, the one source
+ * admission is keyed on too: there is one provider per kernel (AC8), and every
+ * attempt (a resume's included) launches on its credential, so a cap hit
+ * belongs to it. The session row's `auth_account` is a label frozen at insert
+ * and is never read here.
+ *
+ * A park only ever extends while it is unexpired (AC4, fail closed): no event
+ * moves an unexpired `rejected` row's `resets_at` earlier or clears it, and
+ * its notify fires once per window (again only when a later known reset
+ * extends it).
  *
  * Per message, in this order (one real hit makes one park):
  *
@@ -140,7 +148,13 @@ const RATE_LIMIT_STATUSES: ReadonlySet<string> = new Set(["allowed", "allowed_wa
  *    `rateLimitType`, `resetsAt` (epoch seconds, stored as ISO), utilization
  *    and the untyped `unifiedWindows` verbatim. `rejected` notifies and
  *    schedules a `cap_reset:<account>` wake-up once per window;
- *    `allowed_warning` appends one `cap_warning` per window.
+ *    `allowed_warning` appends one `cap_warning` per window. Against an
+ *    unexpired park of the same type: a `rejected` with an unknown reset, or
+ *    a known one not later than the park's end, keeps the park as it is; a
+ *    later known reset extends it (and notifies the new window); `allowed` and
+ *    `allowed_warning` update utilization only and leave the park in force
+ *    until its `resets_at` (one session's `allowed` never clears a park another
+ *    session's `rejected` set), recorded as `cap_allowed_while_parked`.
  * 3. An assistant `error: "rate_limit"` with no cap text while the account
  *    is not parked is transient (AC4): one `cap_transient` event with a
  *    backoff hint, no park.
@@ -168,11 +182,10 @@ export class CapTracker {
     const at = now.toISOString();
     this.#store.transaction(() => {
       const row = this.#store
-        .prepare<[number], { auth_account: string | null; task_id: number | null }>(
-          "SELECT auth_account, task_id FROM sessions WHERE id = ?",
-        )
+        .prepare<[number], { task_id: number | null }>("SELECT task_id FROM sessions WHERE id = ?")
         .get(sessionId);
-      const account = row?.auth_account ?? this.#auth.account;
+      // The provider's account, never the row's frozen `auth_account` label: admission reads the same.
+      const account = this.#auth.account;
       const ref: EventRef = { sessionId, taskId: row?.task_id ?? null };
       if (capText !== undefined) this.#textFallback(account, capText, ref, now, at);
       else if (isRateLimitEvent) this.#rateLimitEvent(account, message.rate_limit_info as unknown, ref, now, at);
@@ -233,22 +246,48 @@ export class CapTracker {
     if (status === "rejected" && resetsAt !== null && resetsAt <= at) resetsAt = null;
     let resetSource: string | null = resetsAt === null ? null : "event";
     const existing = this.#row(account, type);
+    // The row is an unexpired park now (`resets_at` null counts as unexpired, as in `activeParks`).
+    const parked =
+      existing !== undefined &&
+      existing.status === "rejected" &&
+      (existing.resets_at === null || existing.resets_at > at);
 
-    if (status === "rejected" && resetsAt === null) {
-      // A `rejected` with no usable reset is an unknown reset: re-check hourly,
-      // keeping an unexpired re-check time rather than moving it.
-      const unexpired =
-        existing !== undefined &&
-        existing.status === "rejected" &&
-        existing.reset_source === "recheck" &&
-        existing.resets_at !== null &&
-        existing.resets_at > at;
-      resetsAt = unexpired ? existing.resets_at : new Date(now.getTime() + CAP_RECHECK_MS).toISOString();
-      resetSource = "recheck";
+    if (parked && status !== "rejected") {
+      // Fail closed (AC4): an `allowed`/`allowed_warning` never clears or
+      // shortens an unexpired park. Utilization is refreshed; the park stands.
+      this.#updateReadings(account, type, utilization, unifiedWindowsJson, at);
+      appendEvent(
+        this.#store,
+        "cap_allowed_while_parked",
+        ref,
+        { account, rate_limit_type: type, status, resets_at: existing.resets_at, event_resets_at: resetsAt, utilization },
+        at,
+      );
+      return;
+    }
+
+    let extended = false;
+    if (status === "rejected") {
+      if (parked) {
+        // Never earlier: keep the park unless a known reset ends it later.
+        // An unknown reset (re-check) never moves an unexpired park.
+        const end = existing.resets_at;
+        if (resetsAt !== null && end !== null && resetsAt > end) {
+          extended = true;
+        } else {
+          resetsAt = end;
+          resetSource = existing.reset_source;
+        }
+      } else if (resetsAt === null) {
+        // A `rejected` with no usable reset is an unknown reset: re-check hourly.
+        resetsAt = new Date(now.getTime() + CAP_RECHECK_MS).toISOString();
+        resetSource = "recheck";
+      }
     }
     this.#upsert(account, type, { status, resetsAt, resetSource, utilization, unifiedWindowsJson }, at);
 
-    if (status === "rejected" && resetsAt !== null && existing?.notified_resets_at !== resetsAt) {
+    // Once per window: a new park, or one a later known reset extended.
+    if (status === "rejected" && resetsAt !== null && (!parked || extended) && existing?.notified_resets_at !== resetsAt) {
       this.#setColumn(account, type, "notified_resets_at", resetsAt);
       // Q6: the live `rejected` shape has never been seen, so its full payload is logged on first sight.
       const known = resetSource === "event";
@@ -256,7 +295,14 @@ export class CapTracker {
         this.#store,
         "cap_rejected",
         ref,
-        { account, rate_limit_type: type, resets_at: resetsAt, reset_source: resetSource, rate_limit_info: jsonCopy(info) },
+        {
+          account,
+          rate_limit_type: type,
+          resets_at: resetsAt,
+          reset_source: resetSource,
+          ...(extended ? { extended_from: existing?.resets_at ?? null } : {}),
+          rate_limit_info: jsonCopy(info),
+        },
         at,
       );
       appendNotify(
@@ -315,6 +361,15 @@ export class CapTracker {
            updated_at = excluded.updated_at`,
       )
       .run(account, type, v.status, v.resetsAt, v.utilization, v.unifiedWindowsJson, v.resetSource, at);
+  }
+
+  /** Refresh a row's utilization and `unifiedWindows` only: status and reset untouched. */
+  #updateReadings(account: string, type: string, utilization: number | null, unifiedWindowsJson: string | null, at: string): void {
+    this.#store
+      .prepare(
+        "UPDATE cap_state SET utilization = ?, unified_windows_json = ?, updated_at = ? WHERE account = ? AND rate_limit_type = ?",
+      )
+      .run(utilization, unifiedWindowsJson, at, account, type);
   }
 
   #setColumn(account: string, type: string, column: "notified_resets_at" | "warned_resets_at", value: string): void {
