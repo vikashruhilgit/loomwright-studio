@@ -37,6 +37,7 @@ export type {
   AllowedPermissionMode,
   CancelTimer,
   GroupLeader,
+  McpServersContext,
   QueryFn,
   QueryHandle,
   ResumeSessionParams,

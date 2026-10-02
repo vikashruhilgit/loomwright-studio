@@ -229,6 +229,9 @@ interface LaunchConfig {
   /** `{sessionId}` for a start, `{resume}` for a resume. */
   readonly sessionOptions: Pick<Options, "sessionId" | "resume">;
   readonly resumeMode: boolean;
+  /** The row's agent and task, for the `mcpServers` factory. */
+  readonly agent: string | null;
+  readonly task: number | null;
 }
 
 interface ResumeContext {
@@ -341,6 +344,7 @@ export class SessionManager {
   readonly #resumeBackoffMs: readonly number[];
   readonly #onMessage: ((sessionId: number, message: SDKMessage) => void) | undefined;
   readonly #admission: ((request: AdmissionRequest) => AdmissionDecision) | undefined;
+  readonly #mcpServers: SessionManagerOptions["mcpServers"];
 
   readonly #query: QueryFn;
   readonly #spawn: SpawnFn;
@@ -366,6 +370,7 @@ export class SessionManager {
     this.#resumeBackoffMs = options.resumeBackoffMs ?? [1_000, 2_000, 4_000];
     this.#onMessage = options.onMessage;
     this.#admission = options.admission;
+    this.#mcpServers = options.mcpServers;
 
     this.#query = deps.query ?? sdkQuery;
     this.#spawn = deps.spawn ?? spawnInNewProcessGroup;
@@ -448,6 +453,8 @@ export class SessionManager {
         closeInputOnResult: params.closeInputOnResult ?? true,
         sessionOptions: { sessionId: sdkSessionId },
         resumeMode: false,
+        agent: params.agent,
+        task: params.task ?? null,
       });
     } catch (err) {
       if (live.attempt !== undefined) await this.#killAttemptGroup(live, live.attempt);
@@ -804,6 +811,8 @@ export class SessionManager {
 
   /** Build the attempt, call `query()` (which spawns synchronously) and push the prompt. */
   #launch(live: LiveSession, config: LaunchConfig): Attempt {
+    // Fresh servers for every launch attempt (a server instance cannot reconnect).
+    const mcpServers = this.#mcpServers?.({ sessionId: live.id, agent: config.agent, task: config.task });
     let markExited!: () => void;
     const exited = new Promise<void>((resolve) => {
       markExited = resolve;
@@ -839,6 +848,7 @@ export class SessionManager {
       env: config.env,
       includeHookEvents: true,
       hooks: { PreToolUse: [{ hooks: [this.#gate(live)] }] },
+      ...(mcpServers === undefined ? {} : { mcpServers }),
       abortController: attempt.abortController,
       spawnClaudeCodeProcess: (o: SpawnOptions) => this.#spawnFor(live, attempt, o),
       ...config.sessionOptions,
@@ -901,6 +911,8 @@ export class SessionManager {
       closeInputOnResult: ctx.closeInputOnResult,
       sessionOptions: { resume: ctx.sdkSessionId },
       resumeMode: true,
+      agent: ctx.agent,
+      task: ctx.taskId,
     });
   }
 

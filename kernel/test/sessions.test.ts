@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
-import type { HookCallback, HookInput, Options, SDKMessage, SDKUserMessage, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
+import type { HookCallback, HookInput, McpServerConfig, Options, SDKMessage, SDKUserMessage, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProviderError, KeychainError } from "../src/auth/index.js";
 import type { AuthProvider } from "../src/auth/index.js";
@@ -2062,5 +2062,71 @@ describe("resolveLoomwrightPath (AC8)", () => {
     expect((err as SessionError).code).toBe("loomwright_not_found");
     expect(calls).toHaveLength(0);
     expect(sessionCount(store)).toBe(0);
+  });
+});
+
+// ---- item 07: the mcpServers factory ---------------------------------------
+
+describe("mcpServers factory (item 07)", () => {
+  const SID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  type Ctx = { sessionId: number; agent: string | null; task: number | null };
+
+  function factory() {
+    const seen: Ctx[] = [];
+    const made: Record<string, unknown>[] = [];
+    const fn = (ctx: Ctx) => {
+      seen.push(ctx);
+      const servers = { kernel: { type: "sdk", name: "kernel", instance: { n: made.length } } };
+      made.push(servers);
+      return servers as unknown as Record<string, McpServerConfig>;
+    };
+    return { fn, seen, made };
+  }
+
+  it("without the option, options has no mcpServers key", async () => {
+    const { manager, calls } = harness({ script: ({ stream }) => stream.push(msg.success()) });
+    const handle = await manager.startSession(startParams());
+    await handle.done;
+    expect(calls[0]?.options).not.toHaveProperty("mcpServers");
+  });
+
+  it("startSession passes the factory's result as options.mcpServers; the factory gets the row id, agent and task", async () => {
+    const store = openStore();
+    const task = Number(store.prepare("INSERT INTO tasks (title, state) VALUES ('t', 'open')").run().lastInsertRowid);
+    const f = factory();
+    const { manager, calls } = harness({ store, options: { mcpServers: f.fn }, script: ({ stream }) => stream.push(msg.success()) });
+    const handle = await manager.startSession(startParams({ task }));
+    await handle.done;
+    expect(f.seen).toEqual([{ sessionId: handle.id, agent: "wright", task }]);
+    expect(calls[0]?.options.mcpServers).toBe(f.made[0]);
+    // Nothing else changes: the gate stays the only tool control.
+    for (const forbidden of ["allowedTools", "canUseTool", "disallowedTools"]) expect(calls[0]?.options).not.toHaveProperty(forbidden);
+  });
+
+  it("a resume that retries gets a fresh factory call (a distinct mcpServers object) on each attempt", async () => {
+    const store = openStore();
+    const f = factory();
+    const { manager, calls } = harness({
+      store,
+      options: { mcpServers: f.fn },
+      script: ({ stream }, n) => {
+        if (n < 3) stream.fail(new Error(`attempt ${n} broke`));
+        else {
+          stream.push(msg.init(SID));
+          stream.push(msg.success());
+        }
+      },
+    });
+    const id = Number(
+      store
+        .prepare("INSERT INTO sessions (agent, status, sdk_session_id, model, loomwright_path, pgid) VALUES ('wright', 'interrupted', ?, 'claude-haiku-4-5', ?, 4242)")
+        .run(SID, pluginDir).lastInsertRowid,
+    );
+    const handle = await manager.resumeSession(id, { permissionMode: "default", cwd: "/tmp", policy: { allowedTools: [], allowedBashPrefixes: [] } });
+    expect(await handle.done).toBe("completed");
+    expect(calls).toHaveLength(3);
+    expect(f.seen).toEqual([1, 2, 3].map(() => ({ sessionId: id, agent: "wright", task: null })));
+    expect(calls.map((c) => c.options.mcpServers)).toEqual(f.made);
+    expect(new Set(calls.map((c) => c.options.mcpServers)).size).toBe(3);
   });
 });
