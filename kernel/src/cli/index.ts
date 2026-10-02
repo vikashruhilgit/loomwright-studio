@@ -4,10 +4,13 @@
 //   studio status [--json]   a short summary of GET /status (or its raw JSON)
 //   studio stop --all        POST /stop-all: the kill switch
 //   studio resume            POST /resume: release the kill switch
+//   studio service install   write and load the launchd agent (item 09, macOS)
+//   studio service uninstall unload and remove it
 //
-// It only ever connects to 127.0.0.1 on the port in <dataDir>/api.json, and
-// reads or sends the Keychain token only after checking that api.json's pid
-// is alive. It never prints the token.
+// `service` runs locally and needs no daemon, api.json or Keychain. The others
+// only ever connect to 127.0.0.1 on the port in <dataDir>/api.json, and read
+// or send the Keychain token only after checking that api.json's pid is
+// alive. The CLI never prints the token.
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,6 +18,8 @@ import type { StatusBody } from "../api/server.js";
 import { API_TOKEN_KEYCHAIN_SERVICE } from "../api/token.js";
 import { securityCliKeychain } from "../auth/keychain.js";
 import type { KeychainReader } from "../auth/keychain.js";
+import { ServiceError, installService, uninstallService } from "../service/launchd.js";
+import type { ServiceDeps, ServiceOptions } from "../service/launchd.js";
 // The leaf modules, not the sessions index: that one loads the Agent SDK.
 import { KILL_GROUP_DEADLINE_MS, LEADER_EXIT_WAIT_MS } from "../sessions/spawner.js";
 import { DEFAULT_STOP_GRACE_MS } from "../sessions/types.js";
@@ -39,7 +44,7 @@ export const STOP_ALL_MARGIN_MS = 25_000;
  */
 export const STOP_ALL_TIMEOUT_MS = DEFAULT_STOP_GRACE_MS + KILL_GROUP_DEADLINE_MS + LEADER_EXIT_WAIT_MS + STOP_ALL_MARGIN_MS;
 
-export const USAGE = "usage: studio status [--json] | studio stop --all | studio resume";
+export const USAGE = "usage: studio status [--json] | studio stop --all | studio resume | studio service install|uninstall";
 
 /** Where the CLI writes; `process.stdout` / `process.stderr` satisfy it. */
 export interface CliOutput {
@@ -60,12 +65,15 @@ export interface CliDeps {
   readonly timeoutMs?: number;
   /** `stop --all`. Default `STOP_ALL_TIMEOUT_MS`. */
   readonly stopAllTimeoutMs?: number;
+  /** `service install|uninstall`: the launchd module's options and deps (exec, uid, homeDir, platform). */
+  readonly service?: { readonly options?: ServiceOptions; readonly deps?: ServiceDeps };
 }
 
 type Command =
   | { readonly kind: "status"; readonly json: boolean }
   | { readonly kind: "stop-all" }
-  | { readonly kind: "resume" };
+  | { readonly kind: "resume" }
+  | { readonly kind: "service"; readonly action: "install" | "uninstall" };
 
 /** A failure that ends the CLI with one stderr line and exit code 1. */
 class CliFailure extends Error {}
@@ -76,6 +84,7 @@ function parse(argv: readonly string[]): Command | undefined {
   if (cmd === "status" && rest.length === 1 && rest[0] === "--json") return { kind: "status", json: true };
   if (cmd === "stop" && rest.length === 1 && rest[0] === "--all") return { kind: "stop-all" };
   if (cmd === "resume" && rest.length === 0) return { kind: "resume" };
+  if (cmd === "service" && rest.length === 1 && (rest[0] === "install" || rest[0] === "uninstall")) return { kind: "service", action: rest[0] };
   return undefined;
 }
 
@@ -215,6 +224,9 @@ export function formatStatus(status: StatusBody): string {
  * times out says the kill switch may already be engaged (one stderr line, 1).
  * `stop --all` with any session not confirmed stopped (see
  * `summarizeStopAll`) ⇒ its summary on stdout, 1.
+ * `service install|uninstall` runs locally, before `api.json` or the Keychain
+ * is read: one stdout line naming the label and plist, 0; a failure (not
+ * macOS, no built daemon, launchctl failed) ⇒ one stderr line, 1.
  * Never throws, never sets `process.exitCode`, never prints the token.
  */
 export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promise<number> {
@@ -226,6 +238,19 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
     return 2;
   }
   try {
+    if (command.kind === "service") {
+      // Needs no daemon: dispatched before api.json or the Keychain is read.
+      const service = deps.service ?? {};
+      if (command.action === "install") {
+        const options = deps.dataDir === undefined ? (service.options ?? {}) : { dataDir: deps.dataDir, ...service.options };
+        const r = installService(options, service.deps);
+        stdout.write(`studio: service ${r.label} installed and loaded (${r.plistPath})\n`);
+      } else {
+        const r = uninstallService(service.deps);
+        stdout.write(`studio: service ${r.label} unloaded and removed (${r.plistPath})\n`);
+      }
+      return 0;
+    }
     const dataDir = deps.dataDir ?? resolveDataDir(process.env);
     const { port, pid } = readApiInfo(dataDir);
     // Before the token is read or sent: a stale api.json (left by a `kill -9`)
@@ -286,7 +311,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
     }
     return 0;
   } catch (err) {
-    stderr.write(`${err instanceof CliFailure ? err.message : `studio: ${err instanceof Error ? err.message.split("\n", 1)[0] : String(err)}`}\n`);
+    stderr.write(`${err instanceof CliFailure || err instanceof ServiceError ? err.message : `studio: ${err instanceof Error ? err.message.split("\n", 1)[0] : String(err)}`}\n`);
     return 1;
   }
 }
