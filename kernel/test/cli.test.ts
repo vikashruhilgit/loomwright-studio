@@ -125,6 +125,52 @@ describe("studio CLI", () => {
     expect(c.stdout.text()).not.toContain(TOKEN);
   });
 
+  it("stop --all with mixed outcomes counts only stopped as stopped and exits 1", async () => {
+    await server.close();
+    server = await startApiServer(
+      {
+        store,
+        sessions: {
+          stopAll: async () => [
+            { id: 1, status: "stopped" as const },
+            { id: 2, status: "failed" as const },
+            { id: 3, status: "stop_failed" as const, error: "boom" },
+            { id: 4, status: "completed" as const },
+            { id: 5, status: "failed:auth" as const },
+          ],
+        },
+        loop,
+        authProviders: [stubProvider()],
+        token: TOKEN,
+        port: 0,
+      },
+      { now: () => NOW, pid: 4242 },
+    );
+    writeApiInfo(server.port, 4242);
+    const c = cli();
+    expect(await c.run("stop", "--all")).toBe(1);
+    const text = c.stdout.text();
+    oneLine(text);
+    expect(text).toBe(
+      "kill switch engaged: 1 session stopped; 2 already ended (#4 completed, #5 failed:auth); " +
+        "2 not confirmed stopped (#2 failed, #3 stop_failed), see studio status; " +
+        "the event loop is halted until studio resume\n",
+    );
+    expect(c.stderr.text()).toBe("");
+  });
+
+  it("stop --all with no live sessions reports 0 stopped and exits 0", async () => {
+    await server.close();
+    server = await startApiServer(
+      { store, sessions: { stopAll: async () => [] }, loop, authProviders: [stubProvider()], token: TOKEN, port: 0 },
+      { now: () => NOW, pid: 4242 },
+    );
+    writeApiInfo(server.port, 4242);
+    const c = cli();
+    expect(await c.run("stop", "--all")).toBe(0);
+    expect(c.stdout.text()).toBe("kill switch engaged: 0 sessions stopped; the event loop is halted until studio resume\n");
+  });
+
   it("prints usage and exits 2 for stop without --all and for unknown commands", async () => {
     for (const argv of [["stop"], ["frobnicate"], [], ["status", "--yaml"]]) {
       const c = cli();

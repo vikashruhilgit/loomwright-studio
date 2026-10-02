@@ -116,6 +116,36 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
+/**
+ * Statuses a session can end a kill-switch stop with in which it is known not
+ * to be running and its group is not left alive: it had already ended on its
+ * own (`completed`, `interrupted`) or ended `failed:auth` and had its group
+ * killed by the stop. Reported by status, never counted as `stopped`.
+ */
+const ALREADY_ENDED: ReadonlySet<string> = new Set(["completed", "interrupted", "failed:auth"]);
+
+/**
+ * Summarize `/stop-all`'s per-session outcomes for the kill switch's
+ * confirmation line. Only `stopped` counts as stopped; an outcome that ended on
+ * its own is listed by status; anything else (`failed`, e.g. `kill_incomplete`
+ * with the group not confirmed gone, `stop_failed`, `orphaned`, or a status
+ * this CLI does not know) is "not confirmed stopped" and makes `confirmed`
+ * false, so the command exits non-zero.
+ */
+export function summarizeStopAll(sessions: unknown): { readonly text: string; readonly confirmed: boolean } {
+  const outcomes = (Array.isArray(sessions) ? sessions : []) as readonly { id?: unknown; status?: unknown }[];
+  const label = (o: { id?: unknown; status?: unknown }): string => `#${String(o.id ?? "?")} ${String(o.status ?? "unknown")}`;
+  const stopped = outcomes.filter((o) => o.status === "stopped");
+  const ended = outcomes.filter((o) => typeof o.status === "string" && ALREADY_ENDED.has(o.status));
+  const unconfirmed = outcomes.filter((o) => o.status !== "stopped" && !(typeof o.status === "string" && ALREADY_ENDED.has(o.status)));
+  const parts = [`${plural(stopped.length, "session")} stopped`];
+  if (ended.length > 0) parts.push(`${ended.length} already ended (${ended.map(label).join(", ")})`);
+  if (unconfirmed.length > 0) {
+    parts.push(`${unconfirmed.length} not confirmed stopped (${unconfirmed.map(label).join(", ")}), see studio status`);
+  }
+  return { text: parts.join("; "), confirmed: unconfirmed.length === 0 };
+}
+
 /** A short human summary of `/status`. */
 export function formatStatus(status: StatusBody): string {
   const lines: string[] = [];
@@ -149,8 +179,9 @@ export function formatStatus(status: StatusBody): string {
  * Run one CLI command; resolves to the exit code. Bad usage ⇒ usage on
  * stderr, 2. "Daemon not running" (no or unreadable `api.json`, its pid not
  * alive, no API token in the Keychain, a connection error or timeout) or a
- * non-2xx answer ⇒ exactly one stderr line, 1. Never throws, never sets
- * `process.exitCode`, never prints the token.
+ * non-2xx answer ⇒ exactly one stderr line, 1. `stop --all` with any session
+ * not confirmed stopped (see `summarizeStopAll`) ⇒ its summary on stdout, 1.
+ * Never throws, never sets `process.exitCode`, never prints the token.
  */
 export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promise<number> {
   const stdout = deps.stdout ?? process.stdout;
@@ -205,12 +236,9 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
     if (command.kind === "status") {
       stdout.write(command.json ? `${JSON.stringify(body, null, 2)}\n` : formatStatus(body as StatusBody));
     } else if (command.kind === "stop-all") {
-      const outcomes = ((body as { sessions?: unknown }).sessions ?? []) as readonly { status?: unknown }[];
-      const failed = outcomes.filter((o) => o.status === "stop_failed").length;
-      stdout.write(
-        `kill switch engaged: ${plural(outcomes.length - failed, "session")} stopped` +
-          `${failed === 0 ? "" : `, ${failed} failed to stop`}; the event loop is halted until studio resume\n`,
-      );
+      const summary = summarizeStopAll((body as { sessions?: unknown }).sessions);
+      stdout.write(`kill switch engaged: ${summary.text}; the event loop is halted until studio resume\n`);
+      return summary.confirmed ? 0 : 1;
     } else {
       stdout.write("kill switch off: the event loop is running\n");
     }
