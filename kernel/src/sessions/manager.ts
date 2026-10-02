@@ -65,7 +65,26 @@ const CLI_BASENAME = "claude";
  */
 const LEADER_START_TOLERANCE_MS = 1_000;
 
-const ALLOWED_PERMISSION_MODES: readonly string[] = ["default", "acceptEdits", "plan", "dontAsk", "auto"];
+/**
+ * Every permission mode the kernel accepts. The keys come from the SDK's
+ * `PermissionMode` union (`@anthropic-ai/claude-agent-sdk` sdk.d.ts, verified on
+ * 0.3.284) minus `bypassPermissions` (D5). `satisfies Record<AllowedPermissionMode, true>`
+ * makes a mismatch a compile error in both directions: a mode the SDK adds is a
+ * missing key, and one it drops (or a typo) is an excess key.
+ */
+const PERMISSION_MODE_SET = {
+  default: true,
+  acceptEdits: true,
+  plan: true,
+  dontAsk: true,
+  auto: true,
+} as const satisfies Record<AllowedPermissionMode, true>;
+
+const ALLOWED_PERMISSION_MODES = Object.keys(PERMISSION_MODE_SET) as readonly AllowedPermissionMode[];
+
+function isAllowedPermissionMode(mode: unknown): mode is AllowedPermissionMode {
+  return typeof mode === "string" && Object.hasOwn(PERMISSION_MODE_SET, mode);
+}
 
 /** What the identity check found for a recorded group (shared by the reaper and resume). */
 type GroupCheck = "no_pgid" | "group_gone" | "pgid_reused" | "leader_unverified" | "ours";
@@ -234,10 +253,10 @@ function checkPermissionMode(mode: unknown): AllowedPermissionMode {
   if (mode === "bypassPermissions") {
     throw new SessionError("forbidden_permission_mode", "permissionMode bypassPermissions is never allowed (D5)");
   }
-  if (typeof mode !== "string" || !ALLOWED_PERMISSION_MODES.includes(mode)) {
+  if (!isAllowedPermissionMode(mode)) {
     throw new SessionError("invalid_params", `permissionMode is required and must be one of ${ALLOWED_PERMISSION_MODES.join(", ")}`);
   }
-  return mode as AllowedPermissionMode;
+  return mode;
 }
 
 function checkPolicy(policy: unknown): ToolPolicy {

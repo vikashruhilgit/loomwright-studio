@@ -469,6 +469,38 @@ describe("startSession: query options (AC1)", () => {
     expect(sessionCount(store)).toBe(0);
   });
 
+  it("accepts every allowed permissionMode and refuses an unknown one with invalid_params", async () => {
+    const store = openStore();
+    const modes = ["default", "acceptEdits", "plan", "dontAsk", "auto"] as const;
+    for (const mode of modes) {
+      const { manager, calls } = harness({
+        store,
+        script: ({ stream }) => {
+          stream.push(msg.init(UUID));
+          stream.push(msg.success());
+        },
+      });
+      const handle = await manager.startSession(startParams({ permissionMode: mode }));
+      expect((calls[0] as QueryCall).options.permissionMode).toBe(mode);
+      expect(await handle.done).toBe("completed");
+    }
+
+    expect(sessionCount(store)).toBe(modes.length);
+
+    const { manager, calls, spawnCalls } = harness({ store });
+    for (const bad of ["Default", "bogus", "toString", "__proto__", ""]) {
+      const err = await manager
+        .startSession(startParams({ permissionMode: bad } as unknown as Partial<StartSessionParams>))
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(SessionError);
+      expect((err as SessionError).code).toBe("invalid_params");
+      expect((err as SessionError).message).toContain("default, acceptEdits, plan, dontAsk, auto");
+    }
+    expect(calls).toHaveLength(0);
+    expect(spawnCalls).toHaveLength(0);
+    expect(sessionCount(store)).toBe(modes.length);
+  });
+
   it("refuses bypassPermissions before any row or spawn (AC3)", async () => {
     const { manager, calls, spawnCalls, store } = harness();
     const err = await manager
