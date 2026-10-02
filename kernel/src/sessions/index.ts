@@ -1,6 +1,6 @@
 // Public surface of the session layer (item 05).
 export { SessionManager } from "./manager.js";
-export type { ReapResult } from "./manager.js";
+export type { ReapResult, StopAllOutcome } from "./manager.js";
 export { decideToolUse, freezePolicy } from "./policy.js";
 export type { ToolDecision, ToolDecisionReason } from "./policy.js";
 export {

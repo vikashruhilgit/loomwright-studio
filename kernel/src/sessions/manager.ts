@@ -112,6 +112,23 @@ export interface ReapResult {
     | "reap_error";
 }
 
+/**
+ * What `stopAll` did for one session: the status the stop returned, or
+ * `stop_failed` when the stop call itself rejected. `stop_failed` labels the
+ * call, never a session status: the row keeps whatever the manager recorded.
+ */
+export type StopAllOutcome =
+  | { readonly id: number; readonly status: SessionStatus }
+  | { readonly id: number; readonly status: "stop_failed"; readonly error: string };
+
+/**
+ * Why a session is being stopped. `stop` (a `stopSession`, the kill switch)
+ * ends it `stopped`. `shutdown` (a graceful kernel stop) runs the same kill
+ * but ends it `interrupted` (`kernel_shutdown`), so it is resumable after the
+ * restart, exactly as a `kill -9` of the kernel would leave it once reaped.
+ */
+type StopIntent = "stop" | "shutdown";
+
 /** Reap reasons that leave a group that may still be the session's alive. */
 const LEFT_ALIVE: ReadonlySet<ReapResult["reason"]> = new Set(["leader_unverified", "kill_incomplete", "reap_error"]);
 
@@ -478,7 +495,55 @@ export class SessionManager {
    * outcome its stream produced (`stop_requested_after_end: true` in the
    * event), never `stopped`: it was no longer running.
    */
-  async stopSession(id: number): Promise<SessionStatus> {
+  stopSession(id: number): Promise<SessionStatus> {
+    return this.#stopLive(id, "stop");
+  }
+
+  /**
+   * Stop every session this manager is running, concurrently, and report each
+   * outcome; one stop that rejects never skips another (`stop_failed`).
+   *
+   * - `mode: "stop"` (default, the kill switch): `stopSession` for each, so a
+   *   running session ends `stopped`.
+   * - `mode: "shutdown"` (graceful kernel stop): the same kill sequence, but a
+   *   session whose stream had not ended finishes `interrupted` with reason
+   *   `kernel_shutdown`, resumable after the restart (its group is confirmed
+   *   gone). Through the same entry guards as `stopSession`, so the session's
+   *   own background path never overwrites it afterwards.
+   *
+   * In both modes a kill that cannot confirm the group gone ends `failed`
+   * (`kill_incomplete`), a stream that had already ended keeps its outcome, and
+   * a stop already in flight is shared. A session that already ended
+   * `failed:auth` but whose group is still waiting for its auth kill timer has
+   * that group killed now (the timer would die with a stopping kernel).
+   */
+  async stopAll(options: { readonly mode?: "stop" | "shutdown" } = {}): Promise<StopAllOutcome[]> {
+    const mode = options.mode ?? "stop";
+    const ids = [...this.#live.keys()];
+    const results = await Promise.allSettled(ids.map((id) => this.#stopForAll(id, mode)));
+    return results.map((result, i): StopAllOutcome => {
+      const id = ids[i] as number;
+      if (result.status === "fulfilled") return { id, status: result.value };
+      return { id, status: "stop_failed", error: errorMessage(result.reason) };
+    });
+  }
+
+  async #stopForAll(id: number, mode: StopIntent): Promise<SessionStatus> {
+    const live = this.#live.get(id);
+    if (live !== undefined && isTerminalStatus(live.status) && live.stopPromise === undefined) {
+      // Ended (e.g. `failed:auth`) but not settled: its group may still be alive.
+      const attempt = live.attempt;
+      if (attempt !== undefined) {
+        await this.#killAttemptGroup(live, attempt);
+        this.#closeQuery(attempt);
+      }
+      return live.status;
+    }
+    return mode === "stop" ? this.stopSession(id) : this.#stopLive(id, "shutdown");
+  }
+
+  /** `stopSession`'s entry guards, for either intent. */
+  async #stopLive(id: number, intent: StopIntent): Promise<SessionStatus> {
     const live = this.#live.get(id);
     if (live === undefined) {
       const row = this.getSession(id);
@@ -489,7 +554,7 @@ export class SessionManager {
     if (isTerminalStatus(live.status)) return live.status;
     if (live.stopPromise !== undefined) return live.stopPromise;
     live.stopping = true;
-    live.stopPromise = this.#stop(live);
+    live.stopPromise = this.#stop(live, intent);
     return live.stopPromise;
   }
 
@@ -1190,7 +1255,7 @@ export class SessionManager {
     this.#settle(live);
   }
 
-  async #stop(live: LiveSession): Promise<SessionStatus> {
+  async #stop(live: LiveSession, intent: StopIntent): Promise<SessionStatus> {
     const attempt = live.attempt;
     if (attempt !== undefined) {
       attempt.input.close();
@@ -1203,9 +1268,13 @@ export class SessionManager {
     }
     // A group that outlived the kill is not "stopped": `failed` (`kill_incomplete`).
     // A stream that had already ended keeps its computed outcome: the stop only
-    // raced the cleanup of a session that was no longer running.
+    // raced the cleanup of a session that was no longer running. A shutdown
+    // ends a running session `interrupted` (non-terminal, resumable): `stopping`
+    // is set, so the session's own background path writes nothing after this.
     const verdict = live.verdict;
-    if (verdict === undefined) this.#finishAfterKill(live, attempt, "stopped", { reason: "stop_requested" });
+    if (verdict === undefined && intent === "shutdown") {
+      this.#finishAfterKill(live, attempt, "interrupted", { reason: "kernel_shutdown" });
+    } else if (verdict === undefined) this.#finishAfterKill(live, attempt, "stopped", { reason: "stop_requested" });
     else this.#finishAfterKill(live, attempt, verdict.to, { ...verdict.payload, stop_requested_after_end: true });
     this.#settle(live);
     return live.status;

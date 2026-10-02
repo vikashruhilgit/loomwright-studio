@@ -11,8 +11,8 @@ export type {
   BaseEnv,
   ChildEnv,
 } from "./types.js";
-export { KeychainError, SECURITY_BIN, securityCliKeychain } from "./keychain.js";
-export type { ExecFileSyncLike, KeychainReader } from "./keychain.js";
+export { KeychainError, SECURITY_BIN, securityCliKeychain, securityCliKeychainWriter } from "./keychain.js";
+export type { ExecFileSyncLike, ExecOptions, KeychainReader, KeychainWriter } from "./keychain.js";
 export { CREDENTIAL_ENV_PREFIX, CREDENTIAL_ENV_VARS, isCredentialEnvVar, stripCredentialEnv } from "./credential-env.js";
 export { isPlausibleApiKey, isWholeToken } from "./token-shape.js";
 export { readProviderMetadata, recordTokenCreated } from "./metadata.js";
