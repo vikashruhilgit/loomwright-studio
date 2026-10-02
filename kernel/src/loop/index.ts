@@ -3,7 +3,7 @@
 export { DEFAULT_PARK_MS, DEFAULT_TICK_MS, EventLoop } from "./loop.js";
 export { enqueueEvent, enqueueMessage, getQueueRow } from "./queue.js";
 export type { EnqueueParams, EnqueueResult, MessageParams, QueueRow } from "./queue.js";
-export { WorkStepFailedError, WorkStepInterruptedError, getWorkStep, runStep, runStepAsync } from "./steps.js";
+export { WorkStepFailedError, WorkStepInterruptedError, getWorkStep, runStep, runStepAsync, workStepOrigin } from "./steps.js";
 export type { WorkStep, WorkStepFailureReason } from "./steps.js";
 export { EVENT_KINDS, isEventKind } from "./types.js";
 export type {

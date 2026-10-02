@@ -218,7 +218,9 @@ describe("kernel_request_stop", () => {
     expect(text).toContain(`- Written: ${env.now().toISOString()}`);
     expect(text.endsWith("Done: reviewed PR 7.\nNext: wait for CI.\n")).toBe(true);
     expect(readdirSync(join(env.dataDir, "memory", "wright", "handoffs"))).toEqual([`${task}.md`]);
-    expect(events(env.store, "stop_requested").map((e) => [e.session_id, e.task_id, e.payload])).toEqual([[sid, task, { path }]]);
+    expect(events(env.store, "stop_requested").map((e) => [e.session_id, e.task_id, e.payload])).toEqual([
+      [sid, task, { path, step: `kernel_request_stop:session-${sid}:stop-1` }],
+    ]);
 
     // Scheduled, never awaited inside the handler.
     expect(sessions.stopSession).not.toHaveBeenCalled();
@@ -250,6 +252,22 @@ describe("kernel_request_stop", () => {
     expect(events(store, "stop_requested")).toHaveLength(1);
     expect(events(store, "notify")).toHaveLength(0);
     expect(getWorkStep(store, `kernel_request_stop:session-${sid}:s`)?.status).toBe("done");
+  });
+
+  it("two calls with different keys in one session record one stop_requested each, matching the stops scheduled", async () => {
+    const sid = insertSession(env.store, "wright");
+    const { handlers, sessions, scheduled } = tools(env.store, sid);
+    const r1 = value(await handlers.kernel_request_stop({ handoff: "one", idempotency_key: "s1" }));
+    const r2 = value(await handlers.kernel_request_stop({ handoff: "two", idempotency_key: "s2" }));
+    expect(r2.path).toBe(r1.path);
+    expect(events(env.store, "stop_requested").map((e) => e.payload.step)).toEqual([
+      `kernel_request_stop:session-${sid}:s1`,
+      `kernel_request_stop:session-${sid}:s2`,
+    ]);
+    expect(scheduled).toHaveLength(2);
+    for (const fn of scheduled) fn();
+    await flush();
+    expect(sessions.stopSession).toHaveBeenCalledTimes(2);
   });
 
   it("two sessions of the same agent with the same key each write their own note and stop", async () => {

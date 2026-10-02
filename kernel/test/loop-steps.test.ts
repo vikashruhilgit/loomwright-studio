@@ -2,7 +2,7 @@
 // injected clock; a "crash" is a throw after `started` was committed, or a
 // hand-inserted `started` row followed by a restart.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WorkStepFailedError, WorkStepInterruptedError, getWorkStep, runStep, runStepAsync } from "../src/loop/index.js";
+import { WorkStepFailedError, WorkStepInterruptedError, getWorkStep, runStep, runStepAsync, workStepOrigin } from "../src/loop/index.js";
 import type { Store } from "../src/store/index.js";
 import { count, events, loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
@@ -173,6 +173,67 @@ describe("runStepAsync (external effects)", () => {
     };
     await expect(runStepAsync(env.store, "b", async () => Promise.reject(new Error("y")), { noEffect: throwing })).rejects.toThrow("y");
     expect(getWorkStep(env.store, "b")?.label).toBe("failed:error");
+  });
+
+  it("nested steps: only the innermost step whose own fn raised the noEffect error is released; the outer one is failed:error", async () => {
+    class NothingHappened extends Error {}
+    const opts = { noEffect: (err: unknown) => err instanceof NothingHappened };
+    let effects = 0;
+    let refuse = true;
+    const inner = vi.fn(async () => {
+      if (refuse) throw new NothingHappened("refused before any effect");
+      return "inner";
+    });
+    const outer = async () =>
+      runStepAsync(
+        env.store,
+        "outer",
+        async () => {
+          effects++; // an effect made before the inner step
+          return runStepAsync(env.store, "inner", inner, opts);
+        },
+        opts,
+      );
+    const err = await outer().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NothingHappened);
+    expect(workStepOrigin(err)).toBe("inner");
+    expect(getWorkStep(env.store, "inner")).toBeUndefined();
+    expect(getWorkStep(env.store, "outer")?.label).toBe("failed:error");
+
+    // A retry never repeats the outer effect, also after a restart.
+    refuse = false;
+    env.restart();
+    await expect(outer()).rejects.toBeInstanceOf(WorkStepFailedError);
+    expect(effects).toBe(1);
+    expect(inner).toHaveBeenCalledTimes(1);
+  });
+
+  it("an error out of a nested runStep is not the outer step's own: the outer step is failed:error", async () => {
+    class NothingHappened extends Error {}
+    const opts = { noEffect: (err: unknown) => err instanceof NothingHappened };
+    let effects = 0;
+    const run = runStepAsync(
+      env.store,
+      "outer",
+      async () => {
+        effects++;
+        return runStep(env.store, "inner", () => {
+          throw new NothingHappened("refused");
+        });
+      },
+      opts,
+    );
+    const err = await run.catch((e: unknown) => e);
+    expect(workStepOrigin(err)).toBe("inner");
+    expect(getWorkStep(env.store, "inner")).toBeUndefined();
+    expect(getWorkStep(env.store, "outer")?.label).toBe("failed:error");
+    expect(effects).toBe(1);
+  });
+
+  it("a rejection that is not an object cannot be attributed, so noEffect is never applied to it", async () => {
+    await expect(runStepAsync(env.store, "k", async () => Promise.reject("nothing"), { noEffect: () => true })).rejects.toBe("nothing");
+    expect(getWorkStep(env.store, "k")?.label).toBe("failed:error");
+    expect(workStepOrigin("nothing")).toBeUndefined();
   });
 
   it("refuses an empty key", () => {

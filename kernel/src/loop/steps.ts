@@ -20,6 +20,14 @@
 //   thrown before any side effect). The claim is then released instead of
 //   recorded as `failed:error`, so a later call for the key runs `fn` again.
 //   This module never decides which errors mean "no effect"; the caller does.
+// - That statement is about the step whose own `fn` raised the error, so it
+//   counts only there: the innermost step. Every error that leaves a work step
+//   is tagged with that step's key (`workStepOrigin`), and an outer step whose
+//   `fn` passes on an error already tagged by an inner step never consults
+//   `noEffect`: its `fn` may have made an effect before calling the inner
+//   step, so it records `failed:error` instead of being released and run
+//   again. An error that is not an object cannot be tagged, so it is never
+//   treated as effect-free.
 import type { Store } from "../store/store.js";
 import { appendEvent, NO_REF } from "./internal.js";
 import type { StepOptions } from "./types.js";
@@ -185,8 +193,34 @@ function releaseClaim(store: Store, key: string, fresh: boolean): void {
   if (fresh) store.prepare("DELETE FROM work_steps WHERE key = ? AND status = 'started'").run(key);
 }
 
+/** The key of the innermost work step each error came out of (see the header). */
+const origins = new WeakMap<object, string>();
+
+function isTaggable(err: unknown): err is object {
+  return (typeof err === "object" && err !== null) || typeof err === "function";
+}
+
+/** Tag `err` as having come out of step `key`, unless an inner step already did. */
+function tagOrigin(err: unknown, key: string): void {
+  if (isTaggable(err) && !origins.has(err)) origins.set(err, key);
+}
+
+/**
+ * The key of the innermost work step `err` came out of (whose `fn` threw it,
+ * or which refused to run), or `undefined` when no step has seen it.
+ */
+export function workStepOrigin(err: unknown): string | undefined {
+  return isTaggable(err) ? origins.get(err) : undefined;
+}
+
+/**
+ * Whether this step may release its claim for `err`: only when its own `fn`
+ * raised it (no inner step tagged it first) and `opts.noEffect` accepts it.
+ */
 function isNoEffect(opts: StepOptions, err: unknown): boolean {
   if (opts.noEffect === undefined) return false;
+  // Passed on from an inner step (or untaggable): this fn may have had an effect first.
+  if (!isTaggable(err) || origins.has(err)) return false;
   try {
     return opts.noEffect(err) === true;
   } catch {
@@ -216,21 +250,27 @@ function isNoEffect(opts: StepOptions, err: unknown): boolean {
  */
 export function runStep<T>(store: Store, key: string, fn: () => T, opts: StepOptions = {}): T {
   checkKey(key);
-  if (flightsOf(store).has(key)) throw new Error(`work step ${key} is already running in this process`);
-  const now = opts.now ?? (() => new Date());
-  const at = now().toISOString();
-  const outcome = store.transaction((): { readonly interrupted: true } | { readonly interrupted: false; readonly value: unknown } => {
-    const c = claim(store, key, opts.rerunnable === true, at);
-    if (c.kind === "interrupted") return { interrupted: true };
-    if (c.kind === "done") return { interrupted: false, value: c.value };
-    const value = fn();
-    if (isThenable(value)) throw new TypeError(`work step ${key}: runStep needs a synchronous fn; use runStepAsync`);
-    markDone(store, key, value, now().toISOString());
-    return { interrupted: false, value };
-  });
-  // Thrown after the commit, so the interrupted mark and its notify persist.
-  if (outcome.interrupted) throw new WorkStepInterruptedError(key);
-  return outcome.value as T;
+  try {
+    if (flightsOf(store).has(key)) throw new Error(`work step ${key} is already running in this process`);
+    const now = opts.now ?? (() => new Date());
+    const at = now().toISOString();
+    const outcome = store.transaction((): { readonly interrupted: true } | { readonly interrupted: false; readonly value: unknown } => {
+      const c = claim(store, key, opts.rerunnable === true, at);
+      if (c.kind === "interrupted") return { interrupted: true };
+      if (c.kind === "done") return { interrupted: false, value: c.value };
+      const value = fn();
+      if (isThenable(value)) throw new TypeError(`work step ${key}: runStep needs a synchronous fn; use runStepAsync`);
+      markDone(store, key, value, now().toISOString());
+      return { interrupted: false, value };
+    });
+    // Thrown after the commit, so the interrupted mark and its notify persist.
+    if (outcome.interrupted) throw new WorkStepInterruptedError(key);
+    return outcome.value as T;
+  } catch (err) {
+    // An enclosing runStepAsync must not take this error as its own fn's.
+    tagOrigin(err, key);
+    throw err;
+  }
 }
 
 /**
@@ -245,8 +285,11 @@ export function runStep<T>(store: Store, key: string, fn: () => T, opts: StepOpt
  *   `failed:interrupted`, appends one `notify` and rejects with
  *   `WorkStepInterruptedError`.
  * - `fn` rejects with an error `opts.noEffect` accepts (the caller's word
- *   that `fn` did nothing): the claim is released (see `releaseClaim`) and
- *   the error propagates, so a later call runs `fn` again. If the release
+ *   that `fn` did nothing) and that `fn` raised itself, not passed on from an
+ *   inner step (`workStepOrigin` is unset): the claim is released (see
+ *   `releaseClaim`) and the error propagates, so a later call runs `fn`
+ *   again. An error passed on from an inner step is `failed:error` here
+ *   whatever `noEffect` says: `fn` may have had an effect before. If the release
  *   cannot be written, or the process dies before it, the row stays
  *   `started` and a later call treats it as a crash leftover.
  * - `fn` rejects otherwise: the row becomes `failed:error` and the error propagates.
@@ -281,7 +324,12 @@ export function runStepAsync<T>(store: Store, key: string, fn: () => Promise<T>,
     return value;
   };
 
-  const promise = run();
+  // Every rejection leaves tagged with this key (an inner step's tag wins), so
+  // an enclosing step never releases itself for it.
+  const promise = run().catch((err: unknown) => {
+    tagOrigin(err, key);
+    throw err;
+  });
   flights.set(key, promise);
   const release = (): void => {
     if (flights.get(key) === promise) flights.delete(key);

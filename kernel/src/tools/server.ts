@@ -354,14 +354,16 @@ export function kernelToolHandlers(ctx: KernelToolContext): Record<KernelToolNam
           key,
           async () => {
             writeFileAtomic(path, renderHandoff(ref, iso(), a.handoff));
+            // Deduped on this step's key, so only a crash re-run of the same
+            // step is suppressed; every other request_stop call is recorded.
             store.transaction(() => {
               const recorded = store
                 .prepare<[number, string], number>(
-                  "SELECT 1 FROM events WHERE kind = 'stop_requested' AND session_id = ? AND json_extract(payload_json, '$.path') = ?",
+                  "SELECT 1 FROM events WHERE kind = 'stop_requested' AND session_id = ? AND json_extract(payload_json, '$.step') = ?",
                 )
                 .pluck()
-                .get(sessionId, path);
-              if (recorded === undefined) appendEvent(store, "stop_requested", eventRef, { path }, iso());
+                .get(sessionId, key);
+              if (recorded === undefined) appendEvent(store, "stop_requested", eventRef, { path, step: key }, iso());
             });
             return { path, stopping: true };
           },

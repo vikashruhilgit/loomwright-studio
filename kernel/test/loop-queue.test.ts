@@ -139,6 +139,34 @@ describe("EventLoop.tick", () => {
     expect(events(env.store, "notify")).toHaveLength(0);
   });
 
+  it("a refusal out of a nested ctx.runStepAsync releases only the inner step: the outer effect runs once and the event fails visibly", async () => {
+    const id = enqueueMessage(env.store, { text: "nested" }).id;
+    const retryAt = new Date(env.now().getTime() + 30 * 60_000).toISOString();
+    const outerEffect = vi.fn();
+    const start = vi.fn(async () => {
+      throw new AdmissionRefusedError("cap_parked", retryAt, "parked");
+    });
+    const message: EventHandler = async (ctx) => {
+      await ctx.runStepAsync("outer", async () => {
+        outerEffect(); // an effect made before the refusable inner step
+        return ctx.runStepAsync("start", start);
+      });
+    };
+    const l = loop({ message });
+    expect(await l.tick()).toMatchObject({ parked: 0, failed: 1 });
+    expect(getQueueRow(env.store, id)).toMatchObject({ status: "failed", attempts: 1, last_error: expect.stringContaining(`event:${id}:outer`) });
+    expect(getWorkStep(env.store, `event:${id}:start`)).toBeUndefined();
+    expect(getWorkStep(env.store, `event:${id}:outer`)?.label).toBe("failed:error");
+    expect(events(env.store, "event_parked")).toHaveLength(0);
+    expect(events(env.store, "notify").map((e) => e.payload.reason)).toEqual(["event_failed"]);
+
+    // Nothing is redelivered: the outer effect is never repeated.
+    env.advance(31 * 60_000);
+    expect(await l.tick()).toMatchObject({ done: 0, parked: 0, failed: 0 });
+    expect(outerEffect).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
   it("a ctx.runStepAsync failure other than a refusal still fails its step terminally", async () => {
     const id = enqueueMessage(env.store, { text: "x" }).id;
     await loop({
@@ -247,5 +275,83 @@ describe("EventLoop.tick", () => {
     await l.stop();
     expect(scheduled[1]?.cancelled).toBe(true);
     expect(() => new EventLoop({ store: env.store, handlers: {} }, { tickMs: 0 })).toThrow(RangeError);
+  });
+
+  it("stop() during a running tick waits for the current event and starts no other", async () => {
+    const first = enqueueMessage(env.store, { text: "first" }).id;
+    const second = enqueueMessage(env.store, { text: "second" }).id;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    let entered = false;
+    const message = vi.fn<EventHandler>(async () => {
+      entered = true;
+      await gate;
+    });
+    const l = loop({ message });
+    const ticking = l.tick();
+    await vi.waitFor(() => expect(entered).toBe(true));
+    let stopped = false;
+    const stopping = l.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false); // still waiting for the running event
+    open();
+    await stopping;
+    expect(await ticking).toMatchObject({ done: 1 });
+    expect(message).toHaveBeenCalledTimes(1);
+    expect(getQueueRow(env.store, first)?.status).toBe("done");
+    expect(getQueueRow(env.store, second)).toMatchObject({ status: "pending", attempts: 0 });
+
+    // A later tick picks the rest up.
+    expect(await l.tick()).toMatchObject({ done: 1 });
+    expect(getQueueRow(env.store, second)?.status).toBe("done");
+  });
+
+  it("a tick that throws (store failure) is recorded as loop_error and the loop keeps scheduling", async () => {
+    const scheduled: { fn: () => void; ms: number }[] = [];
+    const schedule = (fn: () => void, ms: number): CancelTimer => {
+      scheduled.push({ fn, ms });
+      return () => undefined;
+    };
+    const message = vi.fn<EventHandler>();
+    const l = new EventLoop({ store: env.store, handlers: { message } }, { now: env.now, schedule, tickMs: 500 });
+    enqueueMessage(env.store, { text: "x" });
+    const prepare = env.store.prepare.bind(env.store);
+    const spy = vi.spyOn(env.store, "prepare").mockImplementation(((sql: string) => {
+      if (sql.includes("FROM event_queue") && sql.includes("status = 'pending'")) throw new Error("disk I/O error");
+      return prepare(sql);
+    }) as typeof env.store.prepare);
+    l.start();
+    scheduled[0]?.fn();
+    await vi.waitFor(() => expect(scheduled.map((s) => s.ms)).toEqual([0, 500]));
+    expect(events(env.store, "loop_error").map((e) => e.payload)).toEqual([{ error: "disk I/O error" }]);
+    expect(message).not.toHaveBeenCalled();
+
+    // The next tick, with the store healthy again, processes the row.
+    spy.mockRestore();
+    scheduled[1]?.fn();
+    await vi.waitFor(() => expect(message).toHaveBeenCalledTimes(1));
+    await l.stop();
+  });
+
+  it("a store that fails entirely (loop_error cannot be written either) does not crash the loop", async () => {
+    const scheduled: { fn: () => void; ms: number }[] = [];
+    const schedule = (fn: () => void, ms: number): CancelTimer => {
+      scheduled.push({ fn, ms });
+      return () => undefined;
+    };
+    const l = new EventLoop({ store: env.store, handlers: {} }, { now: env.now, schedule, tickMs: 500 });
+    const spy = vi.spyOn(env.store, "prepare").mockImplementation(() => {
+      throw new Error("database is locked");
+    });
+    l.start();
+    scheduled[0]?.fn();
+    await vi.waitFor(() => expect(scheduled.map((s) => s.ms)).toEqual([0, 500]));
+    spy.mockRestore();
+    expect(events(env.store, "loop_error")).toHaveLength(0);
+    await l.stop();
   });
 });

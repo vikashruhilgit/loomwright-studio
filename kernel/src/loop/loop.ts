@@ -5,7 +5,7 @@ import { appendEvent, clip, errorMessage, NO_REF, normalizeInstant } from "./int
 import type { EventRef } from "./internal.js";
 import { nextPendingRow, toQueuedEvent } from "./queue.js";
 import type { QueueRow } from "./queue.js";
-import { runStep, runStepAsync } from "./steps.js";
+import { getWorkStep, runStep, runStepAsync } from "./steps.js";
 import { isEventKind } from "./types.js";
 import type { EventContext, EventHandlers, EventLoopDeps, EventLoopOptions, QueuedEvent, TickResult } from "./types.js";
 import { fireDueWakeups } from "./wakeups.js";
@@ -33,8 +33,11 @@ type Outcome = "done" | "unhandled" | "parked" | "failed";
  * - it throws `AdmissionRefusedError` ⇒ the row stays `pending` with
  *   `not_before` = the refusal's `retryAt` (or now + `DEFAULT_PARK_MS` when
  *   unknown) + `event_parked`; admission already notified, so no second
- *   notify (D17: park, no retry loop). A `ctx.runStepAsync` step the refusal
- *   came out of is released, not failed, so the redelivery runs it again;
+ *   notify (D17: park, no retry loop). The `ctx.runStepAsync` step whose own
+ *   work threw the refusal is released, not failed, so the redelivery runs it
+ *   again. An outer step the refusal only passed through is `failed:error`
+ *   (it may have had an effect before the inner step; see `steps.ts`), so the
+ *   event can never complete: it is `failed` + `notify` now, not parked;
  * - it throws anything else ⇒ `failed` (`attempts + 1`, `last_error`) +
  *   `event_failed` + one `notify`, and the loop goes on with the next row: a
  *   failing event never blocks the queue.
@@ -128,17 +131,26 @@ export class EventLoop {
       return "unhandled";
     }
 
+    // Keys of this delivery's ctx.runStepAsync steps that a refusal left `failed`.
+    const failedByRefusal: string[] = [];
     try {
       const event = toQueuedEvent(row, kind as QueuedEvent["kind"]);
-      await handler(this.#contextFor(event));
+      await handler(this.#contextFor(event, failedByRefusal));
     } catch (err) {
-      return err instanceof AdmissionRefusedError ? this.#park(row, ref, err) : this.#fail(row, ref, err);
+      if (!(err instanceof AdmissionRefusedError)) return this.#fail(row, ref, err);
+      if (failedByRefusal.length === 0) return this.#park(row, ref, err);
+      // A redelivery would only hit WorkStepFailedError: fail visibly now instead.
+      return this.#fail(
+        row,
+        ref,
+        new Error(`${err.message}; not parked: work step ${failedByRefusal.join(", ")} passed the refusal on from an inner step and is failed:error`),
+      );
     }
     this.#finish(row, ref, "event_done", { queue_id: row.id, kind, attempt: row.attempts + 1 });
     return "done";
   }
 
-  #contextFor(event: QueuedEvent): EventContext {
+  #contextFor(event: QueuedEvent, failedByRefusal: string[]): EventContext {
     const store = this.#store;
     const now = this.#now;
     const prefix = `event:${event.id}:`;
@@ -146,14 +158,28 @@ export class EventLoop {
       event,
       store,
       runStep: (name, fn, opts) => runStep(store, prefix + name, fn, { now, ...opts }),
-      runStepAsync: (name, fn, opts) =>
-        runStepAsync(store, prefix + name, fn, {
+      runStepAsync: (name, fn, opts) => {
+        const key = prefix + name;
+        return runStepAsync(store, key, fn, {
           now,
           ...opts,
           // An admission refusal is thrown before any side effect: release the
-          // step so the parked event's redelivery runs it again (D17).
+          // step whose own work threw it, so the parked event's redelivery runs
+          // it again (D17). runStepAsync applies this to that innermost step only.
           noEffect: (err) => err instanceof AdmissionRefusedError || (opts?.noEffect?.(err) ?? false),
-        }),
+        }).catch((err: unknown) => {
+          if (err instanceof AdmissionRefusedError) {
+            let failed: boolean;
+            try {
+              failed = getWorkStep(store, key)?.status === "failed";
+            } catch {
+              failed = true; // Unknown state: never park on it.
+            }
+            if (failed && !failedByRefusal.includes(key)) failedByRefusal.push(key);
+          }
+          throw err;
+        });
+      },
     };
   }
 

@@ -45,8 +45,11 @@ export interface StepOptions {
    * effect at all (nothing written, spawned or sent). Such a rejection
    * releases the step's claim instead of recording `failed:error`, so a later
    * call for the key runs `fn` again. The caller owns this judgement; claim it
-   * only for an error raised before `fn`'s first effect. Absent: every
-   * rejection is `failed:error` (terminal for the key).
+   * only for an error raised before `fn`'s first effect. It is consulted only
+   * for an error `fn` raised itself: one passed on from an inner work step
+   * (or a non-object) is `failed:error` regardless, since `fn` may have had an
+   * effect before the inner step. Absent: every rejection is `failed:error`
+   * (terminal for the key).
    */
   readonly noEffect?: (err: unknown) => boolean;
   /** Defaults to `() => new Date()`. */
@@ -65,6 +68,11 @@ export interface EventContext {
    * before any side effect), so a step refused by admission runs again when
    * the parked event is delivered again. Start the session first in such a
    * step: an effect made before the refusal would be repeated.
+   *
+   * Only the innermost step the refusal came out of is released. A step that
+   * nests it (calls it from its own `fn`) may already have had an effect, so
+   * it records `failed:error`, and the loop then fails the event (one
+   * `notify`) instead of parking it: its redelivery could not complete.
    */
   runStepAsync<T>(name: string, fn: () => Promise<T>, opts?: StepOptions): Promise<T>;
 }
@@ -81,8 +89,10 @@ export interface EventContext {
  * instead of doing the work twice.
  *
  * Outcomes: resolve ⇒ `done`; throw `AdmissionRefusedError` ⇒ parked
- * (`pending` until its `retryAt`), and a `ctx.runStepAsync` step it came out
- * of is released, not failed, so the redelivery runs it again; throw anything
+ * (`pending` until its `retryAt`), and the `ctx.runStepAsync` step whose own
+ * work threw it is released, not failed, so the redelivery runs it again
+ * (when an outer `ctx.runStepAsync` step it passed through is left
+ * `failed:error` instead, the event is `failed`, not parked); throw anything
  * else ⇒ `failed`, one `notify`, and the loop moves on to the next event.
  */
 export type EventHandler = (ctx: EventContext) => void | Promise<void>;
