@@ -10,10 +10,10 @@ import type { Mock } from "vitest";
 import { API_TOKEN_KEYCHAIN_SERVICE, startApiServer } from "../src/api/index.js";
 import type { ApiServer } from "../src/api/index.js";
 import type { KeychainReader } from "../src/auth/index.js";
-import { runCli } from "../src/cli/index.js";
+import { CLI_TIMEOUT_MS, STOP_ALL_TIMEOUT_MS, runCli } from "../src/cli/index.js";
 import type { CliDeps } from "../src/cli/index.js";
 import { Store } from "../src/store/index.js";
-import { SessionManager } from "../src/sessions/index.js";
+import { DEFAULT_STOP_GRACE_MS, KILL_GROUP_DEADLINE_MS, LEADER_EXIT_WAIT_MS, SessionManager } from "../src/sessions/index.js";
 import { fakeMsg, fakeSessions, immediate, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
 
 const TOKEN = "0123456789abcdef".repeat(4);
@@ -200,6 +200,72 @@ describe("studio CLI", () => {
     expect(
       store.prepare<[number], string | null>("SELECT kill_incomplete_at FROM sessions WHERE id = ?").pluck().get(h.id),
     ).not.toBeNull();
+
+    // "see studio status" leads somewhere: the session is not running, yet status lists it.
+    const s = cli();
+    expect(await s.run("status")).toBe(0);
+    expect(s.stdout.text()).toContain("sessions: 0 running");
+    expect(s.stdout.text()).toContain("kill unconfirmed: 1 session whose group may still be alive (the reaper retries the kill)");
+    expect(s.stdout.text()).toMatch(new RegExp(`\\n  #${h.id} \\S+ failed:auth, pgid \\d+, kill gave up at \\S+\\n`));
+    // A repeat stop --all finds nothing live (the entry is settled): exit 0, but status still shows the row.
+    const again = cli();
+    expect(await again.run("stop", "--all")).toBe(0);
+    const s2 = cli();
+    expect(await s2.run("status")).toBe(0);
+    expect(s2.stdout.text()).toContain("kill unconfirmed: 1 session");
+  });
+
+  it("status prints no kill-unconfirmed line when no kill gave up", async () => {
+    const c = cli();
+    expect(await c.run("status")).toBe(0);
+    expect(c.stdout.text()).not.toContain("kill unconfirmed");
+  });
+
+  it("stop --all waits longer than status: its bound covers one session's worst-case stop", () => {
+    expect(STOP_ALL_TIMEOUT_MS).toBeGreaterThan(DEFAULT_STOP_GRACE_MS + KILL_GROUP_DEADLINE_MS + LEADER_EXIT_WAIT_MS);
+    expect(STOP_ALL_TIMEOUT_MS).toBeGreaterThan(CLI_TIMEOUT_MS);
+  });
+
+  it("stop --all that times out: exit 1, one line saying the kill switch may be engaged; status keeps its own timeout", async () => {
+    await server.close();
+    let stopping: (() => void) | undefined;
+    server = await startApiServer(
+      {
+        store,
+        // A stop that outlasts the CLI's wait.
+        sessions: { stopAll: () => new Promise((resolve) => (stopping = () => resolve([]))) },
+        loop,
+        authProviders: [stubProvider()],
+        token: TOKEN,
+        port: 0,
+      },
+      { now: () => NOW, pid: 4242 },
+    );
+    writeApiInfo(server.port, 4242);
+    const c = cli({ stopAllTimeoutMs: 100, timeoutMs: 60_000 });
+    expect(await c.run("stop", "--all")).toBe(1);
+    oneLine(c.stderr.text());
+    expect(c.stderr.text()).toBe(
+      `studio: kernel daemon did not answer POST /stop-all within 0.1 s (127.0.0.1:${server.port}); ` +
+        "the kill switch may already be engaged, run studio status\n",
+    );
+    expect(c.stdout.text()).toBe("");
+    // It was: the daemon engaged it before stopping anything.
+    const st = cli({ stopAllTimeoutMs: 1 });
+    expect(await st.run("status")).toBe(0);
+    expect(st.stdout.text()).toContain("kill switch: ENGAGED since");
+    stopping?.();
+  });
+
+  it("status that times out keeps the short daemon-not-answering line", async () => {
+    const c = cli({
+      timeoutMs: 1,
+      fetch: (async (_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)))) as typeof fetch,
+    });
+    expect(await c.run("status")).toBe(1);
+    oneLine(c.stderr.text());
+    expect(c.stderr.text()).toBe(`studio: kernel daemon did not answer within 0.001 s (127.0.0.1:${server.port})\n`);
   });
 
   it("stop --all with no live sessions reports 0 stopped and exits 0", async () => {

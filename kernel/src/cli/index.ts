@@ -15,11 +15,29 @@ import type { StatusBody } from "../api/server.js";
 import { API_TOKEN_KEYCHAIN_SERVICE } from "../api/token.js";
 import { securityCliKeychain } from "../auth/keychain.js";
 import type { KeychainReader } from "../auth/keychain.js";
+// The leaf modules, not the sessions index: that one loads the Agent SDK.
+import { KILL_GROUP_DEADLINE_MS, LEADER_EXIT_WAIT_MS } from "../sessions/spawner.js";
+import { DEFAULT_STOP_GRACE_MS } from "../sessions/types.js";
 import { resolveDataDir } from "../store/store.js";
 
 const HOST = "127.0.0.1";
 const API_INFO_FILENAME = "api.json";
+/** How long `status` and `resume` wait for the daemon's answer. */
 export const CLI_TIMEOUT_MS = 5_000;
+/**
+ * Slack on top of one session's worst-case stop for `stop --all`: the loop's
+ * in-flight event finishing (`loop.stop()`), the `ps` identity probes and the
+ * `stop_all_completed` write.
+ */
+export const STOP_ALL_MARGIN_MS = 25_000;
+/**
+ * How long `stop --all` waits. Sessions stop concurrently, and one session's
+ * worst case is its stop grace, then the group kill's deadline, then the wait
+ * for the killed leader's exit; derived from those constants so it cannot
+ * drift below them. A daemon started with a longer `stopGraceMs` than the
+ * default needs `CliDeps.stopAllTimeoutMs`.
+ */
+export const STOP_ALL_TIMEOUT_MS = DEFAULT_STOP_GRACE_MS + KILL_GROUP_DEADLINE_MS + LEADER_EXIT_WAIT_MS + STOP_ALL_MARGIN_MS;
 
 export const USAGE = "usage: studio status [--json] | studio stop --all | studio resume";
 
@@ -38,8 +56,10 @@ export interface CliDeps {
   readonly isPidAlive?: (pid: number) => boolean;
   readonly stdout?: CliOutput;
   readonly stderr?: CliOutput;
-  /** Default `CLI_TIMEOUT_MS`. */
+  /** `status` and `resume`. Default `CLI_TIMEOUT_MS`. */
   readonly timeoutMs?: number;
+  /** `stop --all`. Default `STOP_ALL_TIMEOUT_MS`. */
+  readonly stopAllTimeoutMs?: number;
 }
 
 type Command =
@@ -167,6 +187,14 @@ export function formatStatus(status: StatusBody): string {
   for (const s of status.sessions) {
     lines.push(`  #${s.id} ${s.agent ?? "-"} ${s.model ?? "-"} ${s.status}, pgid ${s.pgid ?? "-"}, started ${s.started_at ?? "-"}`);
   }
+  // `?? []`: a daemon older than this CLI does not send the field.
+  const unconfirmed = status.kill_unconfirmed ?? [];
+  if (unconfirmed.length > 0) {
+    lines.push(`kill unconfirmed: ${plural(unconfirmed.length, "session")} whose group may still be alive (the reaper retries the kill)`);
+    for (const s of unconfirmed) {
+      lines.push(`  #${s.id} ${s.agent ?? "-"} ${s.status}, pgid ${s.pgid ?? "-"}, kill gave up at ${s.kill_incomplete_at}`);
+    }
+  }
   lines.push(`queue: ${plural(status.queue.pending, "pending event")}, ${plural(status.wakeups.pending, "pending wake-up")}`);
   const tokens = status.tokens_today.agents.map((a) => `${a.agent ?? "(none)"} ${a.counted_tokens}`);
   lines.push(`tokens today (${status.tokens_today.day}): ${tokens.length === 0 ? "none" : tokens.join(", ")}`);
@@ -182,8 +210,11 @@ export function formatStatus(status: StatusBody): string {
  * Run one CLI command; resolves to the exit code. Bad usage ⇒ usage on
  * stderr, 2. "Daemon not running" (no or unreadable `api.json`, its pid not
  * alive, no API token in the Keychain, a connection error or timeout) or a
- * non-2xx answer ⇒ exactly one stderr line, 1. `stop --all` with any session
- * not confirmed stopped (see `summarizeStopAll`) ⇒ its summary on stdout, 1.
+ * non-2xx answer ⇒ exactly one stderr line, 1. `stop --all` waits
+ * `STOP_ALL_TIMEOUT_MS`, the others `CLI_TIMEOUT_MS`; a `stop --all` that
+ * times out says the kill switch may already be engaged (one stderr line, 1).
+ * `stop --all` with any session not confirmed stopped (see
+ * `summarizeStopAll`) ⇒ its summary on stdout, 1.
  * Never throws, never sets `process.exitCode`, never prints the token.
  */
 export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promise<number> {
@@ -215,16 +246,24 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
 
     const method = command.kind === "status" ? "GET" : "POST";
     const path = command.kind === "status" ? "/status" : command.kind === "stop-all" ? "/stop-all" : "/resume";
+    const timeoutMs = command.kind === "stop-all" ? (deps.stopAllTimeoutMs ?? STOP_ALL_TIMEOUT_MS) : (deps.timeoutMs ?? CLI_TIMEOUT_MS);
     let res: Response;
     try {
       res = await (deps.fetch ?? fetch)(`http://${HOST}:${port}${path}`, {
         method,
         headers: { Authorization: `Bearer ${token}` },
         redirect: "error",
-        signal: AbortSignal.timeout(deps.timeoutMs ?? CLI_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
-      if (isTimeout(err)) throw new CliFailure(`studio: kernel daemon did not answer within ${(deps.timeoutMs ?? CLI_TIMEOUT_MS) / 1_000} s (${HOST}:${port})`);
+      if (isTimeout(err) && command.kind === "stop-all") {
+        // The daemon engages the kill switch before it stops anything, so a
+        // slow answer is not "daemon down": the switch may already be on.
+        throw new CliFailure(
+          `studio: kernel daemon did not answer ${method} ${path} within ${timeoutMs / 1_000} s (${HOST}:${port}); the kill switch may already be engaged, run studio status`,
+        );
+      }
+      if (isTimeout(err)) throw new CliFailure(`studio: kernel daemon did not answer within ${timeoutMs / 1_000} s (${HOST}:${port})`);
       const code = errorCode(err);
       throw new CliFailure(`studio: kernel daemon is not running (cannot connect to ${HOST}:${port}${code === undefined ? "" : `: ${code}`})`);
     }

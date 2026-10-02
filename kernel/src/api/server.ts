@@ -64,6 +64,20 @@ export interface StatusBody {
     readonly started_at: string | null;
     readonly status: string;
   }[];
+  /**
+   * Every session whose group a kill could not confirm gone
+   * (`kill_incomplete_at` set by a kill that gave up or errored), whatever its
+   * status: a `failed` (`kill_incomplete`) or `failed:auth` row, an `orphaned`
+   * one, or a live row. Its group may still be alive; the reaper retries the
+   * kill and clears the flag once the group is gone or proven foreign.
+   */
+  readonly kill_unconfirmed: readonly {
+    readonly id: number;
+    readonly agent: string | null;
+    readonly status: string;
+    readonly pgid: number | null;
+    readonly kill_incomplete_at: string;
+  }[];
   readonly queue: {
     readonly pending: number;
     readonly events: readonly {
@@ -173,6 +187,11 @@ export function readStatus(
     sessions: store
       .prepare<[], StatusBody["sessions"][number]>(
         "SELECT id, agent, model, pgid, started_at, status FROM sessions WHERE status IN ('starting', 'running') ORDER BY id",
+      )
+      .all(),
+    kill_unconfirmed: store
+      .prepare<[], StatusBody["kill_unconfirmed"][number]>(
+        "SELECT id, agent, status, pgid, kill_incomplete_at FROM sessions WHERE kill_incomplete_at IS NOT NULL ORDER BY id",
       )
       .all(),
     queue: {

@@ -176,6 +176,10 @@ describe("GET /status (AC2)", () => {
     ins("INSERT INTO sessions (id, agent, status, model, pgid, started_at) VALUES (2, 'scout', 'starting', 'claude-sonnet-5', 2000000002, '2026-10-02T09:30:00.000Z')");
     ins("INSERT INTO sessions (id, agent, status, model, pgid, started_at) VALUES (3, 'wright', 'completed', 'claude-haiku-4-5', 2000000003, '2026-10-02T08:00:00.000Z')");
     ins("INSERT INTO sessions (id, agent, status, model, pgid, started_at) VALUES (4, 'wright', 'interrupted', 'claude-haiku-4-5', 2000000004, '2026-10-02T08:00:00.000Z')");
+    // Kills that gave up: their groups may still be alive, whatever the status.
+    const killIncomplete = "INSERT INTO sessions (id, agent, status, model, pgid, started_at, kill_incomplete_at) VALUES (?, ?, ?, 'claude-haiku-4-5', ?, '2026-10-02T07:00:00.000Z', ?)";
+    ins(killIncomplete, 5, "wright", "failed", 2000000005, "2026-10-02T07:10:00.000Z");
+    ins(killIncomplete, 6, null, "failed:auth", 2000000006, "2026-10-02T07:20:00.000Z");
 
     ins("INSERT INTO event_queue (id, kind, payload_json, status, enqueued_at) VALUES (1, 'message', '{}', 'done', '2026-10-02T09:00:00.000Z')");
     ins("INSERT INTO event_queue (id, kind, payload_json, status, enqueued_at, not_before, attempts) VALUES (2, 'message', '{}', 'pending', '2026-10-02T09:01:00.000Z', '2026-10-02T11:00:00.000Z', 1)");
@@ -225,6 +229,10 @@ describe("GET /status (AC2)", () => {
         { id: 1, agent: "wright", model: "claude-haiku-4-5", pgid: 2000000001, started_at: "2026-10-02T09:00:00.000Z", status: "running" },
         { id: 2, agent: "scout", model: "claude-sonnet-5", pgid: 2000000002, started_at: "2026-10-02T09:30:00.000Z", status: "starting" },
       ],
+      kill_unconfirmed: [
+        { id: 5, agent: "wright", status: "failed", pgid: 2000000005, kill_incomplete_at: "2026-10-02T07:10:00.000Z" },
+        { id: 6, agent: null, status: "failed:auth", pgid: 2000000006, kill_incomplete_at: "2026-10-02T07:20:00.000Z" },
+      ],
       queue: {
         pending: 2,
         events: [
@@ -257,6 +265,29 @@ describe("GET /status (AC2)", () => {
         },
       ],
     } satisfies StatusBody);
+  });
+
+  it("lists every row with kill_incomplete_at set under kill_unconfirmed, apart from sessions, and drops it once cleared", async () => {
+    const ins = (sql: string, ...args: unknown[]): void => {
+      store.prepare(sql).run(...args);
+    };
+    const s = "INSERT INTO sessions (id, agent, status, pgid, kill_incomplete_at) VALUES (?, 'wright', ?, ?, ?)";
+    ins(s, 1, "running", 2000000001, "2026-10-02T09:00:00.000Z");
+    ins(s, 2, "orphaned", 2000000002, "2026-10-02T09:01:00.000Z");
+    ins(s, 3, "stopped", 2000000003, null);
+    ins(s, 4, "failed", 2000000004, "2026-10-02T09:02:00.000Z");
+    const server = await serve();
+    const body = (await call(server, "/status")).json() as StatusBody;
+    expect(body.sessions.map((r) => r.id)).toEqual([1]);
+    expect(body.kill_unconfirmed.map((r) => [r.id, r.status])).toEqual([
+      [1, "running"],
+      [2, "orphaned"],
+      [4, "failed"],
+    ]);
+    // The reaper confirmed the group gone: the row leaves the list.
+    store.prepare("UPDATE sessions SET kill_incomplete_at = NULL WHERE id = 4").run();
+    const after = (await call(server, "/status")).json() as StatusBody;
+    expect(after.kill_unconfirmed.map((r) => r.id)).toEqual([1, 2]);
   });
 
   it("caps the listed queue rows and wake-ups at 50 while the counts stay complete", async () => {

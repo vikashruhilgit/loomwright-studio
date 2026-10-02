@@ -6,6 +6,7 @@ export type { ToolDecision, ToolDecisionReason } from "./policy.js";
 export {
   KILL_GROUP_DEADLINE_MS,
   KILL_GROUP_INTERVAL_MS,
+  LEADER_EXIT_WAIT_MS,
   LeaderProbeError,
   STDERR_TAIL_BYTES,
   StderrTail,
@@ -24,6 +25,7 @@ export type { ResolveLoomwrightPathOptions } from "./loomwright-path.js";
 export {
   AdmissionRefusedError,
   DEFAULT_RESUME_PROMPT,
+  DEFAULT_STOP_GRACE_MS,
   MAX_RESUME_ATTEMPTS,
   SessionError,
   TERMINAL_STATUSES,

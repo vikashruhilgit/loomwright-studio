@@ -18,6 +18,7 @@ import { resolveLoomwrightPath } from "./loomwright-path.js";
 import { bashCommandOf, decideToolUse, freezePolicy } from "./policy.js";
 import {
   KILL_GROUP_DEADLINE_MS,
+  LEADER_EXIT_WAIT_MS,
   StderrTail,
   isProcessGroupAlive,
   isValidPgid,
@@ -30,6 +31,7 @@ import {
 import {
   AdmissionRefusedError,
   DEFAULT_RESUME_PROMPT,
+  DEFAULT_STOP_GRACE_MS,
   MAX_RESUME_ATTEMPTS,
   SessionError,
   TERMINAL_STATUSES,
@@ -54,8 +56,6 @@ import type {
   ToolPolicy,
 } from "./types.js";
 
-/** After a SIGKILL (or a stream end), how long to wait for the leader's `exit`. */
-const LEADER_EXIT_WAIT_MS = 1_000;
 /** Cap for a recorded stack or stderr tail. The error message itself is never truncated. */
 const MAX_RECORDED_TEXT = 64 * 1024;
 /** A Bash command in a `tool_decision` event is truncated to this many characters. */
@@ -382,7 +382,7 @@ export class SessionManager {
     this.#configuredLoomwrightPath = options.loomwrightPath;
     this.#pluginCacheRoot = options.pluginCacheRoot;
     this.#baseEnv = options.baseEnv ?? process.env;
-    this.#stopGraceMs = options.stopGraceMs ?? 2_000;
+    this.#stopGraceMs = options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
     this.#authTimeoutMs = options.authTimeoutMs ?? 30_000;
     this.#resumeBackoffMs = options.resumeBackoffMs ?? [1_000, 2_000, 4_000];
     this.#onMessage = options.onMessage;

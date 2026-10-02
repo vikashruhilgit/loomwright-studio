@@ -90,6 +90,9 @@ export interface ResumeSessionParams {
 /** Resume is retryable, up to this many attempts in total (AC6). */
 export const MAX_RESUME_ATTEMPTS = 3;
 
+/** `SessionManagerOptions.stopGraceMs` when unset. */
+export const DEFAULT_STOP_GRACE_MS = 2_000;
+
 export const DEFAULT_RESUME_PROMPT = "The kernel restarted. Continue the task from where you left off.";
 
 export interface SessionHandle {
@@ -269,7 +272,7 @@ export interface SessionManagerOptions {
   readonly pluginCacheRoot?: string;
   /** The environment the auth provider builds the child's from. Defaults to `process.env`. */
   readonly baseEnv?: BaseEnv;
-  /** How long `stopSession` waits after closing the input before killing the group. Default 2 000 ms. */
+  /** How long `stopSession` waits after closing the input before killing the group. Default `DEFAULT_STOP_GRACE_MS` (2 000 ms). */
   readonly stopGraceMs?: number;
   /** After the first auth-failure signal, the group is killed within this long. Default 30 000 ms. */
   readonly authTimeoutMs?: number;

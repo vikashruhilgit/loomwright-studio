@@ -30,6 +30,8 @@ export const STDERR_TAIL_BYTES = 64 * 1024;
 export const KILL_GROUP_DEADLINE_MS = 2_000;
 /** `killGroupUntilGone`: the delay between two kill-and-probe rounds. */
 export const KILL_GROUP_INTERVAL_MS = 25;
+/** After a SIGKILL (or a stream end), how long to wait for the group leader's `exit`. */
+export const LEADER_EXIT_WAIT_MS = 1_000;
 
 /**
  * A pgid the kernel may signal: an integer greater than 1. `0` would signal the
