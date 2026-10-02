@@ -1,12 +1,17 @@
 // The ONLY module under src/auth/ that touches the macOS Keychain or
 // node:child_process. Keep every Keychain call here, so access under launchd
-// (docs/OPEN_QUESTIONS.md, roadmap item 09) can be adjusted in one place.
+// (the launchd note in docs/OPEN_QUESTIONS.md "Subscription auth from the
+// SDK"; phase-1 backlog item .supervisor/requirements/phase-1/
+// 09-launchd-and-crash-resume.md) can be adjusted in one place.
 import { execFileSync } from "node:child_process";
 
 /** Absolute path: no PATH lookup can substitute another binary. */
 export const SECURITY_BIN = "/usr/bin/security";
 
-/** `security` exits with this status when the item does not exist (probed 2026-10-02). */
+/**
+ * `security` exits with this status when the item does not exist (probed
+ * 2026-10-02; recorded in docs/OPEN_QUESTIONS.md "Subscription auth from the SDK").
+ */
 export const SECURITY_ITEM_NOT_FOUND_STATUS = 44;
 
 const READ_TIMEOUT_MS = 10_000;
