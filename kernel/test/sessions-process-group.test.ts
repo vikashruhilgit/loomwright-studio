@@ -357,7 +357,7 @@ describe("reapOrphans on a real process group (AC5)", () => {
     const pgid = startGroup("sleep 60 & sleep 60");
     const id = insertRunning(store, pgid, realStartIso(pgid));
     const manager = new SessionManager({ store, authProvider: provider, loomwrightPath: pluginDir }, { readGroupLeader: asClaude });
-    expect(await manager.reapOrphans()).toEqual([{ sessionId: id, pgid, reason: "group_killed" }]);
+    expect(await manager.reapOrphans()).toEqual([{ sessionId: id, pgid, status: "interrupted", reason: "group_killed" }]);
     expect(await waitGone(pgid)).toBe(true);
     expect(manager.getSession(id)?.status).toBe("interrupted");
   }, 10_000);
@@ -369,7 +369,7 @@ describe("reapOrphans on a real process group (AC5)", () => {
     const earlier = new Date(Date.parse(realStartIso(pgid)) - 30 * 24 * 3_600_000).toISOString();
     const id = insertRunning(store, pgid, earlier);
     const manager = new SessionManager({ store, authProvider: provider, loomwrightPath: pluginDir }, { readGroupLeader: asClaude });
-    expect(await manager.reapOrphans()).toEqual([{ sessionId: id, pgid, reason: "pgid_reused" }]);
+    expect(await manager.reapOrphans()).toEqual([{ sessionId: id, pgid, status: "interrupted", reason: "pgid_reused" }]);
     expect(isProcessGroupAlive(pgid)).toBe(true);
     expect(manager.getSession(id)?.status).toBe("interrupted");
   });
@@ -383,7 +383,7 @@ describe("reapOrphans on a real process group (AC5)", () => {
     expect(leaderBasename(leader.command)).not.toBe("claude");
     const id = insertRunning(store, pgid, realStartIso(pgid));
     const manager = new SessionManager({ store, authProvider: provider, loomwrightPath: pluginDir });
-    expect(await manager.reapOrphans()).toEqual([{ sessionId: id, pgid, reason: "pgid_reused" }]);
+    expect(await manager.reapOrphans()).toEqual([{ sessionId: id, pgid, status: "interrupted", reason: "pgid_reused" }]);
     expect(isProcessGroupAlive(pgid)).toBe(true);
     expect(manager.getSession(id)?.status).toBe("interrupted");
   });

@@ -67,10 +67,18 @@ const LEADER_START_TOLERANCE_MS = 1_000;
 
 const ALLOWED_PERMISSION_MODES: readonly string[] = ["default", "acceptEdits", "plan", "dontAsk", "auto"];
 
-/** One reaper decision: the row was marked `interrupted` for `reason`. */
+/** What the identity check found for a recorded group (shared by the reaper and resume). */
+type GroupCheck = "no_pgid" | "group_gone" | "pgid_reused" | "leader_unverified" | "ours";
+
+/**
+ * One reaper decision: the row is now `status` for `reason`. The group is gone
+ * or proven foreign ⇒ `interrupted`; it may still be the session's and alive
+ * (`leader_unverified`, `kill_incomplete`, `reap_error`) ⇒ `orphaned`.
+ */
 export interface ReapResult {
   readonly sessionId: number;
   readonly pgid: number | null;
+  readonly status: "interrupted" | "orphaned";
   readonly reason:
     | "no_pgid"
     | "group_gone"
@@ -78,9 +86,11 @@ export interface ReapResult {
     | "leader_unverified"
     | "group_killed"
     | "kill_incomplete"
-    | "group_not_ours"
     | "reap_error";
 }
+
+/** Reap reasons that leave a group that may still be the session's alive. */
+const LEFT_ALIVE: ReadonlySet<ReapResult["reason"]> = new Set(["leader_unverified", "kill_incomplete", "reap_error"]);
 
 /**
  * The prompt channel: a push-based async iterable the SDK reads as streaming
@@ -242,6 +252,11 @@ function userMessage(prompt: string): SDKUserMessage {
   return { type: "user", message: { role: "user", content: prompt }, parent_tool_use_id: null };
 }
 
+/** The attempt spawned a group and no kill has seen it gone: it may still be alive. */
+function groupMayBeAlive(attempt: Attempt | undefined): attempt is Attempt {
+  return attempt !== undefined && attempt.pgid !== undefined && !attempt.groupGone;
+}
+
 function isSuccessResult(result: SDKResultMessage): boolean {
   return result.subtype === "success" && result.is_error !== true;
 }
@@ -390,9 +405,8 @@ export class SessionManager {
         resumeMode: false,
       });
     } catch (err) {
-      const killed = live.attempt !== undefined ? this.#killAttemptGroup(live, live.attempt) : Promise.resolve();
-      this.#finish(live, "failed", { reason: "spawn_failed", error: errorMessage(err) });
-      await killed;
+      if (live.attempt !== undefined) await this.#killAttemptGroup(live, live.attempt);
+      this.#finishAfterKill(live, live.attempt, "failed", { reason: "spawn_failed", error: errorMessage(err) });
       this.#settle(live);
       throw err;
     }
@@ -425,11 +439,19 @@ export class SessionManager {
   }
 
   /**
-   * Resume an `interrupted` session by its SDK session id (AC6), with the same
-   * isolation options as a start: the env is rebuilt from the auth provider,
-   * the row's `model` and `loomwright_path` are reused, and the caller passes
-   * the policy, `permissionMode` and `cwd` again (the policy is not persisted
-   * in phase 1).
+   * Resume an `interrupted` (or `orphaned`) session by its SDK session id
+   * (AC6), with the same isolation options as a start: the env is rebuilt from
+   * the auth provider, the row's `model` and `loomwright_path` are reused, and
+   * the caller passes the policy, `permissionMode` and `cwd` again (the policy
+   * is not persisted in phase 1).
+   *
+   * Never while the session's previous group may still be alive: before
+   * launching anything the recorded group is re-checked exactly as the reaper
+   * checks it. Gone, never recorded, or proven foreign (`pgid_reused`) ⇒ the
+   * resume goes ahead (an `orphaned` row first becomes `interrupted`). Alive
+   * and not proven foreign, or a failed `ps` ⇒ `not_resumable`, and an
+   * `interrupted` row becomes `orphaned` (with the reason in its event) so the
+   * next `reapOrphans` re-examines it.
    *
    * Retryable: up to `MAX_RESUME_ATTEMPTS` attempts with `resumeBackoffMs`
    * between them. An attempt fails when its stream ends or rejects before it
@@ -437,7 +459,9 @@ export class SessionManager {
    * before `system/init`, and a first result that is an error). Each failure
    * appends `session_resume_failed` with the full error message, the stack
    * and the stderr tail. All attempts failing ⇒ `failed` (`resume_failed`).
-   * An auth failure is never retried (AC7).
+   * A failed attempt whose group cannot be confirmed gone ends the resume:
+   * `failed` (`kill_incomplete`), no further attempt. An auth failure is
+   * never retried (AC7).
    */
   async resumeSession(id: number, params: ResumeSessionParams): Promise<SessionHandle> {
     const permissionMode = checkPermissionMode(params.permissionMode);
@@ -448,11 +472,34 @@ export class SessionManager {
     if (this.#live.has(id)) throw new SessionError("not_resumable", `session ${id} is already running`);
     const row = this.getSession(id);
     if (row === undefined) throw new SessionError("not_found", `no session ${id}`);
-    if (row.status !== "interrupted" || !isNonEmptyString(row.sdk_session_id)) {
-      throw new SessionError("not_resumable", `session ${id} is ${row.status} and resumable only when interrupted with an SDK session id`);
+    if ((row.status !== "interrupted" && row.status !== "orphaned") || !isNonEmptyString(row.sdk_session_id)) {
+      throw new SessionError(
+        "not_resumable",
+        `session ${id} is ${row.status} and resumable only when interrupted or orphaned with an SDK session id`,
+      );
     }
     if (!isNonEmptyString(row.model) || !isNonEmptyString(row.loomwright_path)) {
       throw new SessionError("not_resumable", `session ${id} has no recorded model or Loomwright path`);
+    }
+
+    // Synchronous from here to the launch: no reap or other resume interleaves.
+    let check: GroupCheck;
+    let probeError: string | undefined;
+    try {
+      check = this.#checkGroup(row.pgid, row.leader_started_at);
+    } catch (err) {
+      check = "leader_unverified";
+      probeError = errorMessage(err);
+    }
+    if (check === "ours" || check === "leader_unverified") {
+      const reason = probeError !== undefined ? "reap_error" : check === "ours" ? "group_alive" : "leader_unverified";
+      const details = { reason, pgid: row.pgid, ...(probeError === undefined ? {} : { error: probeError }) };
+      if (row.status === "interrupted") this.#markRow(id, "interrupted", "orphaned", { ...details, by: "resume" });
+      else this.#recordSafely("session_resume_refused", id, details);
+      throw new SessionError("not_resumable", `session ${id}'s process group ${String(row.pgid)} may still be alive (${reason})`);
+    }
+    if (row.status === "orphaned" && !this.#markRow(id, "orphaned", "interrupted", { reason: check, pgid: row.pgid, by: "resume" })) {
+      throw new SessionError("not_resumable", `session ${id} changed status while being resumed`);
     }
 
     const ctx: ResumeContext = {
@@ -471,9 +518,11 @@ export class SessionManager {
       first = this.#launchResumeAttempt(live, ctx, 1);
     } catch (err) {
       if (!isTerminalStatus(live.status)) {
-        // Not an auth failure: count it as the first failed attempt and retry.
+        // Not an auth failure: count it as the first failed attempt and retry,
+        // unless its group may still be alive.
         if (live.attempt !== undefined) await this.#killAttemptGroup(live, live.attempt);
         this.#recordResumeFailure(live, 1, err, undefined);
+        if (this.#endIfGroupMayBeAlive(live)) return { id, sdkSessionId: ctx.sdkSessionId, pgid: live.attempt?.pgid, done: live.done };
         void this.#resumeLoop(live, ctx, undefined).catch((e: unknown) => this.#crash(live, e));
         return { id, sdkSessionId: ctx.sdkSessionId, pgid: undefined, done: live.done };
       }
@@ -486,7 +535,7 @@ export class SessionManager {
 
   /**
    * Reap process groups left by a previous kernel (AC5). For every row in
-   * `starting`/`running` that this manager is not running:
+   * `starting`/`running`/`orphaned` that this manager is not running:
    *
    * - no pgid ⇒ `interrupted` (`no_pgid`); group gone ⇒ `interrupted` (`group_gone`);
    * - group alive and its leader alive: the group is killed ONLY when the leader
@@ -494,23 +543,28 @@ export class SessionManager {
    *   recorded with the pgid (`leader_started_at`) matches `ps`. A leader with
    *   another name or another start time means the pgid was reused (the owner's
    *   own interactive `claude` processes are `claude` group leaders too): NOT
-   *   killed, `pgid_reused`. No recorded start time ⇒ NOT killed,
-   *   `leader_unverified`;
+   *   killed, `interrupted` (`pgid_reused`). No recorded start time ⇒ NOT
+   *   killed, `orphaned` (`leader_unverified`);
    * - group alive and `ps` positively reports no such leader (a pid is never
    *   reused while its group exists, so the group is still the session's) ⇒
    *   killed;
-   * - `ps` failed ⇒ NOT killed, `reap_error` (a failed probe is never read as
-   *   "the leader exited");
-   * - a kill sends SIGKILL until the group is gone (`killGroupUntilGone`):
-   *   `group_killed`, or `kill_incomplete` plus a `session_kill_incomplete`
-   *   event when it outlives the deadline. `EPERM` on the first SIGKILL ⇒ NOT
-   *   killed, `group_not_ours`; any other error ⇒ `reap_error`.
+   * - `ps` failed ⇒ NOT killed, `orphaned` (`reap_error`): a failed probe is
+   *   never read as "the leader exited";
+   * - a kill sends SIGKILL until the group is gone (`killGroupUntilGone`,
+   *   where `EPERM` means "not gone yet"): `interrupted` (`group_killed`), or
+   *   `orphaned` (`kill_incomplete`) plus a `session_kill_incomplete` event when
+   *   it outlives the deadline; any other error ⇒ `orphaned` (`reap_error`).
    *
-   * Every row ends `interrupted`; the loop always continues. Each marking is
-   * one transaction with its `session_status` event, which carries the pgid. A
-   * call made while a reap is running returns that reap. The manager never
-   * calls this itself: the daemon calls it once at start-up, before accepting
-   * work (item 09).
+   * A row is `interrupted` (resumable) only when its group is gone or proven
+   * foreign. `orphaned` means the group may still be the session's and alive:
+   * it is never resumed while that holds, and every reap re-examines it (a
+   * re-examination that changes nothing appends `session_reap_deferred`
+   * instead of a second status event). The loop always continues. Each
+   * marking is one transaction with its `session_status` event, which carries
+   * the pgid, and is written only if the row still has the status the reap
+   * read. A call made while a reap is running returns that reap. The manager
+   * never calls this itself: the daemon calls it once at start-up, before
+   * accepting work (item 09).
    */
   reapOrphans(): Promise<ReapResult[]> {
     if (this.#reaping !== undefined) return this.#reaping;
@@ -524,7 +578,7 @@ export class SessionManager {
   async #reapAll(): Promise<ReapResult[]> {
     const rows = this.#store
       .prepare<[], { id: number; pgid: number | null; status: string; leader_started_at: string | null }>(
-        "SELECT id, pgid, status, leader_started_at FROM sessions WHERE status IN ('starting', 'running') ORDER BY id",
+        "SELECT id, pgid, status, leader_started_at FROM sessions WHERE status IN ('starting', 'running', 'orphaned') ORDER BY id",
       )
       .all();
     const results: ReapResult[] = [];
@@ -535,26 +589,46 @@ export class SessionManager {
       try {
         reason = await this.#reapOne(row.id, row.pgid, row.leader_started_at);
       } catch (err) {
-        if (errnoCode(err) === "EPERM") reason = "group_not_ours";
-        else {
-          reason = "reap_error";
-          error = errorMessage(err);
-        }
+        // A failed `ps`, or a kill error other than ESRCH/EPERM: nothing proves the group gone.
+        reason = "reap_error";
+        error = errorMessage(err);
       }
-      const at = this.#nowIso();
-      this.#store.transaction(() => {
-        this.#updateStatus(row.id, "interrupted", at);
-        this.#appendStatusEvent(row.id, row.status, "interrupted", { reason, pgid: row.pgid, ...(error === undefined ? {} : { error }) }, at);
-      });
-      results.push({ sessionId: row.id, pgid: row.pgid, reason });
+      const status: ReapResult["status"] = LEFT_ALIVE.has(reason) ? "orphaned" : "interrupted";
+      const payload = { reason, pgid: row.pgid, ...(error === undefined ? {} : { error }) };
+      // A resume may have taken the row while the kill was awaited: write only over what was read.
+      if (this.#live.has(row.id)) continue;
+      if (status === row.status) {
+        if (this.getSession(row.id)?.status !== row.status) continue;
+        this.#appendEvent("session_reap_deferred", row.id, payload, this.#nowIso());
+      } else if (!this.#markRow(row.id, row.status, status, payload)) {
+        continue;
+      }
+      results.push({ sessionId: row.id, pgid: row.pgid, status, reason });
     }
     return results;
   }
 
   async #reapOne(sessionId: number, pgid: number | null, recordedStart: string | null): Promise<ReapResult["reason"]> {
+    // Throws when `ps` failed: the caller records `reap_error` and kills nothing.
+    const check = this.#checkGroup(pgid, recordedStart);
+    if (check !== "ours") return check;
+    // The leader is the session's CLI, or it exited while its group lives on.
+    // `killGroupUntilGone` reads EPERM as "not gone yet", never as "foreign":
+    // a group proven foreign was returned above and is never signalled.
+    if (await this.#killUntilGone(pgid as number)) return "group_killed";
+    this.#recordKillIncomplete(sessionId, pgid as number);
+    return "kill_incomplete";
+  }
+
+  /**
+   * Whether a recorded group may still be the session's and alive. Throws when
+   * `ps` failed (never read as "the leader exited"). `ours` means alive and
+   * either led by the session's CLI (basename `claude` with the recorded start
+   * time) or leaderless (a pid is never reused while its group exists).
+   */
+  #checkGroup(pgid: number | null, recordedStart: string | null): GroupCheck {
     if (pgid === null || !isValidPgid(pgid)) return "no_pgid";
     if (!this.#isGroupAlive(pgid)) return "group_gone";
-    // Throws when `ps` failed: the caller records `reap_error` and kills nothing.
     const leader = this.#readLeader(pgid);
     if (leader.status === "present") {
       if (leaderBasename(leader.command) !== CLI_BASENAME) return "pgid_reused";
@@ -562,12 +636,26 @@ export class SessionManager {
       if (!Number.isFinite(recordedMs)) return "leader_unverified";
       if (Math.abs(leader.startedAtMs - recordedMs) > LEADER_START_TOLERANCE_MS) return "pgid_reused";
     }
-    // The leader is the session's CLI, or it exited while its group lives on.
-    // The first SIGKILL rethrows EPERM (the caller records `group_not_ours`).
-    if (!this.#killGroup(pgid, "SIGKILL")) return "group_gone";
-    if (await this.#killUntilGone(pgid)) return "group_killed";
-    this.#recordKillIncomplete(sessionId, pgid);
-    return "kill_incomplete";
+    return "ours";
+  }
+
+  /**
+   * Move a row this manager is not running from `from` to `to`, with its
+   * `session_status` event, in one transaction, only if it is still `from`.
+   * Returns whether it moved.
+   */
+  #markRow(id: number, from: string, to: SessionStatus, payload: Record<string, unknown>): boolean {
+    const at = this.#nowIso();
+    return this.#store.transaction(() => {
+      const changed = this.#store
+        .prepare(
+          "UPDATE sessions SET status = ?, updated_at = ?, ended_at = CASE WHEN ? THEN ? ELSE ended_at END WHERE id = ? AND status = ?",
+        )
+        .run(to, at, isTerminalStatus(to) ? 1 : 0, at, id, from).changes;
+      if (changed !== 1) return false;
+      this.#appendStatusEvent(id, from, to, payload, at);
+      return true;
+    });
   }
 
   // ---- launching -----------------------------------------------------------
@@ -644,14 +732,23 @@ export class SessionManager {
       stderrTail: attempt.stderrTail,
       onSpawn: (pgid) => {
         attempt.pgid = pgid;
+        // Synchronous, inside query(): on disk before any message is awaited
+        // (AC2), and before the `ps` below, so a kernel that dies during that
+        // probe still leaves a findable group. The stale start time of an
+        // earlier attempt is cleared with it: a row never pairs a pgid with
+        // another process's start time.
+        this.#store
+          .prepare("UPDATE sessions SET pgid = ?, leader_started_at = NULL, updated_at = ? WHERE id = ?")
+          .run(pgid, this.#nowIso(), live.id);
         // The leader's start time lets a later reaper tell this CLI from an
         // unrelated process that reuses the pgid. Unreadable ⇒ null, and the
-        // reaper then never kills the group.
+        // reaper then never kills the group (the row ends `orphaned`).
         const leaderStartedAt = this.#leaderStartIso(pgid);
-        // Synchronous, inside query(): on disk before any message is awaited (AC2).
-        this.#store
-          .prepare("UPDATE sessions SET pgid = ?, leader_started_at = ?, updated_at = ? WHERE id = ?")
-          .run(pgid, leaderStartedAt, this.#nowIso(), live.id);
+        if (leaderStartedAt !== null) {
+          this.#store
+            .prepare("UPDATE sessions SET leader_started_at = ?, updated_at = ? WHERE id = ?")
+            .run(leaderStartedAt, this.#nowIso(), live.id);
+        }
       },
     });
     attempt.child = child;
@@ -707,6 +804,9 @@ export class SessionManager {
           }
           if (live.attempt !== undefined) await this.#killAttemptGroup(live, live.attempt);
           this.#recordResumeFailure(live, n, err, undefined);
+          if (live.stopping) return this.#afterStop(live);
+          // Never launch the next attempt while this one's group may be alive.
+          if (this.#endIfGroupMayBeAlive(live)) return;
           continue;
         }
       }
@@ -721,6 +821,8 @@ export class SessionManager {
       this.#closeQuery(attempt);
       await this.#reapAttemptGroup(live, attempt);
       if (live.stopping) return this.#afterStop(live);
+      // Never launch the next attempt while this one's group may be alive.
+      if (this.#endIfGroupMayBeAlive(live)) return;
     }
     this.#finish(live, "failed", { reason: "resume_failed", attempts: MAX_RESUME_ATTEMPTS });
     this.#settle(live);
@@ -844,30 +946,43 @@ export class SessionManager {
     this.#finish(live, "failed:auth", { ...details, attempt: attempt.number }, details);
   }
 
-  /** After the stream ended: write the terminal status, clean up the group, settle `done`. */
+  /**
+   * After the stream ended: clean up the group, then write the terminal
+   * status (`failed`/`kill_incomplete` when the group cannot be confirmed
+   * gone), settle `done`.
+   */
   async #conclude(live: LiveSession, attempt: Attempt, outcome: ConsumeOutcome): Promise<void> {
-    if (live.stopping) {
-      if (live.stopPromise !== undefined) await live.stopPromise;
-    } else if (!live.authFailed) {
+    if (live.stopping && live.stopPromise !== undefined) await live.stopPromise;
+    let verdict: { to: SessionStatus; payload: Record<string, unknown> } | undefined;
+    if (!live.stopping && !live.authFailed) {
       if (outcome.kind === "ended") {
         const result = attempt.closeInputOnResult ? attempt.firstResult : attempt.lastResult;
-        if (result === undefined) this.#finish(live, "failed", { reason: "ended_without_result" });
-        else if (isSuccessResult(result)) this.#finish(live, "completed", { reason: "result_success" });
-        else this.#finish(live, "failed", { reason: "result_error", error: resultErrorText(result).slice(0, MAX_RECORDED_TEXT) });
+        if (result === undefined) verdict = { to: "failed", payload: { reason: "ended_without_result" } };
+        else if (isSuccessResult(result)) verdict = { to: "completed", payload: { reason: "result_success" } };
+        else verdict = { to: "failed", payload: { reason: "result_error", error: resultErrorText(result).slice(0, MAX_RECORDED_TEXT) } };
       } else {
         const error = outcome.error;
-        this.#finish(live, "failed", {
-          reason: "stream_error",
-          error: errorMessage(error),
-          stack: errorStack(error),
-          stderr: tail(attempt.stderrTail.text()),
-        });
+        verdict = {
+          to: "failed",
+          payload: {
+            reason: "stream_error",
+            error: errorMessage(error),
+            stack: errorStack(error),
+            stderr: tail(attempt.stderrTail.text()),
+          },
+        };
       }
     }
     // The CLI has exited or is exiting; kill whatever is left in its group
-    // (background shells outlive the leader, Q5).
+    // (background shells outlive the leader, Q5) before saying it ended.
     await this.#reapAttemptGroup(live, attempt);
     attempt.authTimer?.();
+    if (live.stopping) {
+      // A stop that arrived during the cleanup writes the status itself.
+      if (live.stopPromise !== undefined) await live.stopPromise;
+    } else if (verdict !== undefined) {
+      this.#finishAfterKill(live, attempt, verdict.to, verdict.payload);
+    }
     this.#settle(live);
   }
 
@@ -885,13 +1000,13 @@ export class SessionManager {
       this.#closeQuery(attempt);
       attempt.authTimer?.();
     }
+    await killed;
     try {
-      this.#finish(live, "failed", { reason: "kernel_error", error: errorMessage(err) });
+      this.#finishAfterKill(live, attempt, "failed", { reason: "kernel_error", error: errorMessage(err) });
     } catch {
       // The store is unusable; the in-memory status still reaches `done`.
       if (!isTerminalStatus(live.status)) live.status = "failed";
     }
-    await killed;
     this.#settle(live);
   }
 
@@ -906,7 +1021,8 @@ export class SessionManager {
       this.#closeQuery(attempt);
       attempt.authTimer?.();
     }
-    this.#finish(live, "stopped", { reason: "stop_requested" });
+    // A group that outlived the kill is not "stopped": `failed` (`kill_incomplete`).
+    this.#finishAfterKill(live, attempt, "stopped", { reason: "stop_requested" });
     this.#settle(live);
     return live.status;
   }
@@ -1074,6 +1190,40 @@ export class SessionManager {
   #finish(live: LiveSession, to: SessionStatus, payload: Record<string, unknown>, notify?: Record<string, unknown>): boolean {
     if (isTerminalStatus(live.status)) return false;
     this.#transition(live, to, payload, notify);
+    return true;
+  }
+
+  /**
+   * `#finish` for a status written after the attempt's group was killed: when
+   * that kill did not confirm the group gone (it gave up at the deadline or
+   * errored, already recorded as `session_kill_incomplete`/`session_kill_error`),
+   * the session is `failed` with reason `kill_incomplete` and `cause` the
+   * intended outcome, never a status that claims the session ended cleanly.
+   */
+  #finishAfterKill(
+    live: LiveSession,
+    attempt: Attempt | undefined,
+    to: SessionStatus,
+    payload: Record<string, unknown>,
+  ): boolean {
+    if (!groupMayBeAlive(attempt)) return this.#finish(live, to, payload);
+    return this.#finish(live, "failed", {
+      ...payload,
+      reason: "kill_incomplete",
+      cause: { to, reason: payload["reason"] ?? null },
+      pgid: attempt.pgid,
+    });
+  }
+
+  /**
+   * After a failed resume attempt's group was killed: when it may still be
+   * alive, end the session `failed` (`kill_incomplete`) and settle instead of
+   * launching another CLI for the same SDK session. Returns whether it ended.
+   */
+  #endIfGroupMayBeAlive(live: LiveSession): boolean {
+    if (!groupMayBeAlive(live.attempt)) return false;
+    this.#finishAfterKill(live, live.attempt, "failed", { reason: "resume_attempt_failed" });
+    this.#settle(live);
     return true;
   }
 

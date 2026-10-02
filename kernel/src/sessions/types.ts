@@ -5,6 +5,13 @@ import type { Store } from "../store/store.js";
 /**
  * A session row's `status`. `failed:auth` is its own status so an auth failure
  * parks the session instead of being retried like an ordinary failure (AC7).
+ *
+ * - `interrupted`: the kernel that ran it is gone and its process group is
+ *   gone or proven foreign; resumable.
+ * - `orphaned`: the kernel that ran it is gone and its process group may still
+ *   be alive (the reaper could not prove it gone or foreign, nor kill it).
+ *   Never resumed while that holds: every `reapOrphans` re-examines it, and a
+ *   resume re-checks the group first. Non-terminal.
  */
 export type SessionStatus =
   | "starting"
@@ -13,9 +20,10 @@ export type SessionStatus =
   | "failed"
   | "failed:auth"
   | "stopped"
-  | "interrupted";
+  | "interrupted"
+  | "orphaned";
 
-/** The statuses a session never leaves (`interrupted` is left only by an explicit resume). */
+/** The statuses a session never leaves (`interrupted` and `orphaned` are left only by a reap or an explicit resume). */
 export const TERMINAL_STATUSES: readonly SessionStatus[] = ["completed", "failed", "failed:auth", "stopped"];
 
 export function isTerminalStatus(status: string): boolean {
@@ -82,7 +90,10 @@ export interface SessionHandle {
   readonly sdkSessionId: string;
   /** The process group id, when the spawn ran synchronously inside `query()` (it does with the real SDK). */
   readonly pgid: number | undefined;
-  /** Settles with the terminal status. Never rejects. */
+  /**
+   * Settles with the terminal status. Never rejects. `failed` with reason
+   * `kill_incomplete` when the kernel could not confirm the group gone.
+   */
   readonly done: Promise<SessionStatus>;
 }
 
@@ -118,8 +129,10 @@ export interface SessionRow {
   readonly loomwright_path: string | null;
   /**
    * The group leader's start time (ISO-8601, 1 s resolution) read with `ps`
-   * when `pgid` was written; `null` when it could not be read. The reaper kills
-   * a live group only when its leader still has this start time (migration 4).
+   * just after `pgid` was written; `null` when it could not be read (or the
+   * kernel died before it was). The reaper kills a live group only when its
+   * leader still has this start time (migration 4); with `null` a live group
+   * is left alone and the row `orphaned`.
    */
   readonly leader_started_at: string | null;
   readonly started_at: string | null;
