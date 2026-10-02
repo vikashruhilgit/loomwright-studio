@@ -40,3 +40,9 @@ Triggers such as poll, cron, hook and webhook (phase 2+). Playbooks (phase 3). T
 ## Risks
 
 "Exactly once" is only true for effects inside SQLite. External effects (a `gh` comment, say) are at most once only through the idempotency key plus the check. Document that limit in the code where `runStep` is defined.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-02T11:42:26Z
+- **Brief:** .supervisor/jobs/done/2026-10-02-07-event-loop-and-kernel-tools.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/17
