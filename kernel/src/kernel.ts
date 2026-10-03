@@ -9,6 +9,7 @@ import { isKillSwitchEngaged } from "./api/kill-switch.js";
 import { API_HOST, startApiServer } from "./api/server.js";
 import type { ApiServer, ApiServerDeps, ApiServerOptions } from "./api/server.js";
 import { API_KEY_PROVIDER_ID } from "./auth/api-key.js";
+import { AUTH_PROVIDER_ENV, authProviderFromEnv } from "./auth/provider-env.js";
 import { securityCliKeychain, securityCliKeychainWriter } from "./auth/keychain.js";
 import type { KeychainReader, KeychainWriter } from "./auth/keychain.js";
 import { SUBSCRIPTION_TOKEN_ID, availableProviderIds, selectAuthProvider } from "./auth/registry.js";
@@ -23,7 +24,7 @@ import { KERNEL_MCP_SERVER_NAME, createKernelMcpServer } from "./tools/server.js
 import { writeFileAtomic } from "./tools/handoff.js";
 
 /** Selects the auth provider when `--auth-provider` is not given. */
-export const AUTH_PROVIDER_ENV = "STUDIO_AUTH_PROVIDER";
+export { AUTH_PROVIDER_ENV };
 
 /** `<dataDir>/api.json`: where the API listens. Never holds the token. */
 export const API_INFO_FILENAME = "api.json";
@@ -163,7 +164,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     const keychain = deps.keychain ?? securityCliKeychain();
     const providerId =
       nonEmpty(options.authProviderId) ??
-      nonEmpty(env[AUTH_PROVIDER_ENV]) ??
+      authProviderFromEnv(env) ??
       (await defaultAuthProviderId(deps.availableProviderIds ?? availableProviderIds));
     const authProvider = await (deps.selectAuthProvider ?? selectAuthProvider)(providerId, { keychain, store, now });
 

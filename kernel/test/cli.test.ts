@@ -1,7 +1,7 @@
 // The `studio` CLI (item 08, AC4): runCli against a real startApiServer on
 // 127.0.0.1 and an OS-assigned port, with an in-memory Keychain. Never the
 // real Keychain, the real daemon or a model.
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -402,6 +402,15 @@ describe("studio service (item 09, AC1)", () => {
       expect(x.stderr.text()).toBe("");
     }
     expect(c.launchctl.map((a) => a[0])).toEqual(["print", "bootstrap"]);
+  });
+
+  it("install with CliDeps.dataDir and an empty env: the plist's logs and STUDIO_DATA_DIR are that dir", async () => {
+    const c = serviceCli();
+    expect(await c.run("service", "install")).toBe(0);
+    const xml = readFileSync(plistPath(c.homeDir), "utf8");
+    const dataDir = join(tmp, "service-data");
+    expect(xml).toContain(`<key>StandardOutPath</key>\n  <string>${join(dataDir, "logs", "kernel.out.log")}</string>`);
+    expect(xml).toContain(`<key>STUDIO_DATA_DIR</key>\n    <string>${dataDir}</string>`);
   });
 
   it("a failure exits 1 with one stderr line", async () => {

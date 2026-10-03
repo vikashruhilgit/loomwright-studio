@@ -7,11 +7,16 @@
 // absolute paths (launchd's PATH is minimal) and at most two non-secret
 // environment variables, never a token: the kernel reads its credentials from
 // the Keychain at start.
+//
+// One data dir: `STUDIO_DATA_DIR` in the plist is always the same absolute
+// dir its logs go under, so the daemon resolves exactly the dir the installing
+// CLI chose, whatever the installer's own environment held.
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { AUTH_PROVIDER_ENV, authProviderFromEnv } from "../auth/provider-env.js";
 import { DATA_DIR_ENV, resolveDataDir } from "../store/store.js";
 
 /** The agent's launchd label. */
@@ -23,13 +28,6 @@ export const LAUNCHCTL_PATH = "/bin/launchctl";
 /** Under `<dataDir>/logs/`. */
 export const STDOUT_LOG_FILENAME = "kernel.out.log";
 export const STDERR_LOG_FILENAME = "kernel.err.log";
-
-/**
- * The only environment variables the plist may carry: neither is a secret.
- * Kept in sync with `AUTH_PROVIDER_ENV` in `kernel.ts` (not imported: that
- * module loads the Agent SDK, and the CLI must not).
- */
-const AUTH_PROVIDER_ENV = "STUDIO_AUTH_PROVIDER";
 
 /** `<homeDir>/Library/LaunchAgents/com.loomwright.studio.kernel.plist`. */
 export function plistPath(homeDir: string): string {
@@ -49,9 +47,9 @@ export interface PlistParams {
   readonly nodePath: string;
   /** Absolute path of the built `daemon.js`. */
   readonly daemonPath: string;
-  /** Absolute data dir; the logs go to `<dataDir>/logs/`. */
+  /** Absolute data dir: the logs go to `<dataDir>/logs/`, and it is always the plist's `STUDIO_DATA_DIR`. */
   readonly dataDir: string;
-  /** Read for `STUDIO_DATA_DIR` and `STUDIO_AUTH_PROVIDER` only; any other key is ignored. */
+  /** Read for `STUDIO_AUTH_PROVIDER` only; any other key (`STUDIO_DATA_DIR` included) is ignored. */
   readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
@@ -68,25 +66,23 @@ function absolute(name: string, value: string): string {
   return value;
 }
 
-function nonEmpty(value: string | undefined): string | undefined {
-  return value === undefined || value.trim() === "" ? undefined : value;
-}
-
 /**
  * The agent's plist (pure): `Label`; `ProgramArguments` = `[nodePath,
  * daemonPath]`; `RunAtLoad`; `KeepAlive` = `{SuccessfulExit: false}` (launchd
  * restarts the kernel after a crash or `kill -9`, never after a graceful
  * SIGTERM exit 0); stdout/stderr to `<dataDir>/logs/kernel.{out,err}.log`; and
- * `EnvironmentVariables` with only `STUDIO_DATA_DIR` (the absolute `dataDir`,
- * when `env` sets it) and `STUDIO_AUTH_PROVIDER` (when `env` sets it).
+ * `EnvironmentVariables` with only `STUDIO_DATA_DIR` (always: the normalized
+ * absolute `dataDir`, the same dir the logs go under, so the daemon's
+ * `resolveDataDir` lands there) and `STUDIO_AUTH_PROVIDER` (when
+ * `authProviderFromEnv(env)`, the kernel's own check, selects one).
  * Every string is XML-escaped; a newline or NUL in any of them is refused.
  */
 export function renderPlist(params: PlistParams): string {
   const env = params.env ?? {};
-  const dataDir = absolute("dataDir", params.dataDir);
-  const vars: [string, string][] = [];
-  if (nonEmpty(env[DATA_DIR_ENV]) !== undefined) vars.push([DATA_DIR_ENV, dataDir]);
-  const provider = nonEmpty(env[AUTH_PROVIDER_ENV]);
+  // Normalized once: the logs and STUDIO_DATA_DIR derive from this one value.
+  const dataDir = resolve(absolute("dataDir", params.dataDir));
+  const vars: [string, string][] = [[DATA_DIR_ENV, dataDir]];
+  const provider = authProviderFromEnv(env);
   if (provider !== undefined) vars.push([AUTH_PROVIDER_ENV, provider]);
 
   const lines = [
@@ -113,11 +109,9 @@ export function renderPlist(params: PlistParams): string {
     "  <key>StandardErrorPath</key>",
     `  ${xmlString("dataDir", join(dataDir, "logs", STDERR_LOG_FILENAME))}`,
   ];
-  if (vars.length > 0) {
-    lines.push("  <key>EnvironmentVariables</key>", "  <dict>");
-    for (const [key, value] of vars) lines.push(`    <key>${key}</key>`, `    ${xmlString(key, value)}`);
-    lines.push("  </dict>");
-  }
+  lines.push("  <key>EnvironmentVariables</key>", "  <dict>");
+  for (const [key, value] of vars) lines.push(`    <key>${key}</key>`, `    ${xmlString(key, value)}`);
+  lines.push("  </dict>");
   lines.push("</dict>", "</plist>", "");
   return lines.join("\n");
 }
@@ -147,7 +141,7 @@ export interface ServiceDeps {
 }
 
 export interface ServiceOptions {
-  /** Defaults to `resolveDataDir(env, homeDir)`. */
+  /** Defaults to `resolveDataDir(env, homeDir)`. Either way it is the plist's logs dir parent and its `STUDIO_DATA_DIR`. */
   readonly dataDir?: string;
   /** Defaults to `process.execPath`. */
   readonly nodePath?: string;
