@@ -44,3 +44,9 @@ All of 01–08.
 
 - Running launchd in CI isn't possible, so AC 1–4 are owner-machine tests.
 - A Keychain prompt under launchd may need a one-time manual grant. Document it; never work around it by storing the token in a file.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-03T03:01:16Z
+- **Brief:** .supervisor/jobs/done/2026-10-02-09-launchd-and-crash-resume.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/21
