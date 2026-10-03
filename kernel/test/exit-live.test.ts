@@ -8,21 +8,29 @@
 //
 // The harness starts the kernel with one queued message; its handler starts a
 // session that calls `kernel_task_create` (key `exit-test-key`) and then runs
-// `sleep 20`. Once the kernel's gate records the `allow` for that `sleep`, the
-// kernel is `kill -9`ed and started again. Same assertions as the
+// `sleep 20`. Once the kernel's gate records the `allow` for that `sleep` and
+// `ps` shows `sleep` running in the session's process group, the kernel is
+// `kill -9`ed and started again. Same assertions as the
 // deterministic test, except that a resumed model may run `sleep` again: the
 // work completing is what is asserted. A run summary (timings, row counts,
 // event kinds; never env or tokens, and any `sk-ant-…` string redacted) is
 // written to the path printed at the end; the owner commits it as evidence.
+// Whatever happens, `afterEach` stops the harnesses, kills every session group
+// it recorded (ownership-checked; before and after the restart) and removes the
+// temp dir: no CLI outlives it.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type Database from "better-sqlite3";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   EXIT_TEST_KEY,
   buildKernel,
   groupAlive,
+  groupHasCommand,
+  groupLeader,
   groupProbeCode,
+  killOwnGroup,
   startHarness,
   stopHarnesses,
   tryDb,
@@ -39,7 +47,25 @@ function redact(text: string): string {
 
 describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDIO_LIVE=1)", () => {
   let build: { root: string; outDir: string };
-  let tmp: string;
+  let tmp: string | undefined;
+  /** Session pgid ⇒ its leader's executable path, recorded while the leader is the live CLI. */
+  const groups = new Map<number, string>();
+
+  /** Record `pgid`'s leader the first time it can be read, for `afterEach`'s ownership-checked kill. */
+  function track(pgid: number | null | undefined): void {
+    if (pgid === null || pgid === undefined || groups.has(pgid)) return;
+    const leader = groupLeader(pgid);
+    if (leader !== undefined) groups.set(pgid, leader);
+  }
+
+  /**
+   * `track` every session pgid the store holds now: a resumed session's CLI
+   * writes its new pgid to the same row, so every poll that waits on the
+   * kernel, before and after the restart, records it while it is alive.
+   */
+  function trackSessionGroups(db: Database.Database): void {
+    for (const g of db.prepare<[], number>("SELECT pgid FROM sessions WHERE pgid IS NOT NULL").pluck().all()) track(g);
+  }
 
   beforeAll(() => {
     build = buildKernel();
@@ -51,12 +77,17 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
 
   afterEach(async () => {
     await stopHarnesses(30_000);
+    for (const [pgid, leader] of groups) killOwnGroup(pgid, leader);
+    groups.clear();
+    if (tmp !== undefined) rmSync(tmp, { recursive: true, force: true });
+    tmp = undefined;
   });
 
   it("reaps the orphaned CLI group, resumes the session, one task for the key, the event done once", async () => {
-    tmp = mkdtempSync(join(tmpdir(), "studio-exit-live-"));
-    const dataDir = join(tmp, "data");
-    const cwd = join(tmp, "work");
+    const dir = mkdtempSync(join(tmpdir(), "studio-exit-live-"));
+    tmp = dir;
+    const dataDir = join(dir, "data");
+    const cwd = join(dir, "work");
     mkdirSync(cwd);
     const t0 = Date.now();
     const timings: Record<string, number> = {};
@@ -66,24 +97,30 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
     const first = await startHarness([...args, "--enqueue"], 60_000);
     timings["first_ready_ms"] = Date.now() - t0;
 
-    // Kill when the gate has allowed the `sleep` Bash call (the command is running).
+    // The gate writes the allow row BEFORE the CLI spawns `sleep`: wait for that
+    // row, tracking each session group as soon as it is recorded.
     const session = await waitFor(
       "the tool_decision allow for sleep",
       () =>
-        tryDb(dataDir, (db) =>
-          db
+        tryDb(dataDir, (db) => {
+          trackSessionGroups(db);
+          return db
             .prepare<[], { id: number; pgid: number | null }>(
               `SELECT s.id, s.pgid FROM events e JOIN sessions s ON s.id = e.session_id
                 WHERE e.kind = 'tool_decision' AND json_extract(e.payload_json, '$.decision') = 'allow'
                   AND json_extract(e.payload_json, '$.command') LIKE 'sleep%' LIMIT 1`,
             )
-            .get(),
-        ),
+            .get();
+        }),
       180_000,
       200,
     );
     const pgid = session.pgid as number;
+    track(pgid);
     timings["sleep_allowed_ms"] = Date.now() - t0;
+    // Kill only once `sleep` runs in the session's group (the command is running).
+    await waitFor("sleep running in the session's process group", () => (groupHasCommand(pgid, "sleep") ? true : undefined), 30_000, 100);
+    timings["sleep_running_ms"] = Date.now() - t0;
     first.child.kill("SIGKILL");
     await first.exited;
     expect(groupAlive(pgid)).toBe(true);
@@ -94,6 +131,8 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
     await waitFor(
       "the redelivered event to finish",
       () => {
+        // The resumed CLI's group too, for afterEach's ownership-checked kill.
+        tryDb(dataDir, trackSessionGroups);
         const s = scalar("SELECT status FROM event_queue WHERE id = ?", queueId);
         return s === "pending" ? undefined : s;
       },
@@ -141,6 +180,5 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
     expect(scalar("SELECT status FROM work_steps WHERE key = ?", `kernel_task_create:session-${session.id}:${EXIT_TEST_KEY}`)).toBe("done");
     expect(summary.rows.event_done_for_queue_row).toBe(1);
     expect(summary.rows.sessions).toBe(1);
-    rmSync(tmp, { recursive: true, force: true });
   }, 600_000);
 });

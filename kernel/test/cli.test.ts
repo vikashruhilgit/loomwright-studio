@@ -363,21 +363,32 @@ describe("studio CLI", () => {
 });
 
 describe("studio service (item 09, AC1)", () => {
-  function serviceCli(o: { fail?: string; platform?: NodeJS.Platform } = {}) {
+  /** Injected launchctl, homeDir and sleep/clock: never the real launchctl, home or a real wait. */
+  function serviceDeps(o: { fail?: string; stderr?: string; platform?: NodeJS.Platform } = {}) {
     const homeDir = join(tmp, "home");
-    const daemonPath = join(tmp, "daemon.js");
-    writeFileSync(daemonPath, "// built daemon\n");
     const launchctl: string[][] = [];
+    let clock = 0;
     const deps: ServiceDeps = {
       exec: (_file, args) => {
         launchctl.push([...args]);
-        if (args[0] === "print") return 113;
-        return args[0] === o.fail ? 5 : 0;
+        if (args[0] === "print") return { status: 113, stderr: "" };
+        return args[0] === o.fail ? { status: 5, stderr: o.stderr ?? "" } : { status: 0, stderr: "" };
       },
       uid: 501,
       homeDir,
       platform: o.platform ?? "darwin",
+      sleep: (ms) => {
+        clock += ms;
+      },
+      now: () => clock,
     };
+    return { homeDir, launchctl, deps };
+  }
+
+  function serviceCli(o: { fail?: string; stderr?: string; platform?: NodeJS.Platform } = {}) {
+    const daemonPath = join(tmp, "daemon.js");
+    writeFileSync(daemonPath, "// built daemon\n");
+    const { homeDir, launchctl, deps } = serviceDeps(o);
     // A data dir with no api.json: the service commands must not need one.
     const c = cli({ dataDir: join(tmp, "service-data"), service: { options: { daemonPath, env: {} }, deps } });
     return { ...c, homeDir, launchctl };
@@ -424,6 +435,34 @@ describe("studio service (item 09, AC1)", () => {
     expect(await l.run("service", "uninstall")).toBe(1);
     expect(l.stderr.text()).toBe("studio service is macOS only\n");
     expect(l.launchctl).toEqual([]);
+  });
+
+  it("a launchctl failure with stderr: still one stderr line, with launchctl's first line", async () => {
+    const c = serviceCli({ fail: "bootstrap", stderr: "Bootstrap failed: 5: Input/output error\nmore\n" });
+    expect(await c.run("service", "install")).toBe(1);
+    oneLine(c.stderr.text());
+    expect(c.stderr.text()).toBe("studio service: launchctl bootstrap gui/501 failed (exit status 5): Bootstrap failed: 5: Input/output error\n");
+    expect(c.launchctl.map((a) => a[0])).toEqual(["print", "bootstrap", "bootstrap"]);
+  });
+
+  it("install with no CliDeps.dataDir (production): the data dir is STUDIO_DATA_DIR, else ~/.loomwright-studio under homeDir", async () => {
+    const daemonPath = join(tmp, "daemon.js");
+    writeFileSync(daemonPath, "// built daemon\n");
+    const envDir = join(tmp, "env-data");
+    for (const [env, expected] of [
+      [{ STUDIO_DATA_DIR: envDir }, envDir],
+      [{}, join(tmp, "home", ".loomwright-studio")],
+    ] as const) {
+      const { homeDir, deps } = serviceDeps();
+      const stdout = out();
+      const stderr = out();
+      expect(await runCli(["service", "install"], { stdout, stderr, service: { options: { daemonPath, env }, deps } })).toBe(0);
+      expect(stderr.text()).toBe("");
+      const xml = readFileSync(plistPath(homeDir), "utf8");
+      expect(xml).toContain(`<key>StandardOutPath</key>\n  <string>${join(expected, "logs", "kernel.out.log")}</string>`);
+      expect(xml).toContain(`<key>STUDIO_DATA_DIR</key>\n    <string>${expected}</string>`);
+      expect(existsSync(join(expected, "logs"))).toBe(true);
+    }
   });
 
   it("studio service with no or another action prints usage and exits 2", async () => {

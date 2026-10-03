@@ -29,6 +29,8 @@ node dist/cli/index.js service uninstall   # unloads it and removes the plist
 - Logs are in `<dataDir>/logs/` (`kernel.out.log`, `kernel.err.log`). The data dir is `~/.loomwright-studio`, or `STUDIO_DATA_DIR` if it was set when you ran `service install`.
 - The kernel reads its credentials from the macOS Keychain through `/usr/bin/security`. If macOS shows a Keychain prompt for `security` when the agent starts, choose **Always Allow** once. Never put a token in a file or in the plist to get around the prompt.
 - The plist points at this checkout's `dist/daemon.js` and the `node` you ran `service install` with. After moving the checkout or changing Node, run `service install` again.
+- **If the kernel fails to start:** a failure a retry can't fix (another kernel holds the data dir's lock, a bad argument, an auth provider not in this build) is not restarted; `launchctl print` then shows the agent not running with last exit code 0, and `kernel.err.log` says why. Any other start failure (a Keychain read, for example) is retried at most once a minute, with one line in `kernel.err.log` each time. To stop a retrying kernel, run `service uninstall`.
+- `service install` over a loaded agent waits up to 5 s for the old one to unload; if it is still loaded it stops with one line saying to run `service install` again. A plist installed before this behaviour keeps the old restart loop (every 10 s) until you run `service install` again.
 
 ## Docs
 
