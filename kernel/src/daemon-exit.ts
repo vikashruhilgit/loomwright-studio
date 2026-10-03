@@ -1,5 +1,8 @@
 // The daemon's arguments and exit decisions (H01), kept out of daemon.ts so
 // they can be tested: daemon.ts starts the kernel as soon as it is imported.
+// H01 is phase 1 hardening item H01,
+// `.supervisor/requirements/phase-1-hardening/01-launchd-start-failure-and-reinstall.md`;
+// the other `(H01)` notes in the kernel point here.
 //
 // Under launchd (the plist passes `--launchd`) the exit status is the restart
 // policy: `KeepAlive {SuccessfulExit: false}` restarts on any non-zero exit,
