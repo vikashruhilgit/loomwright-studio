@@ -9,7 +9,7 @@ Nothing is predefined. You describe a duty in plain English, for example "review
 
 ## Status
 
-Pre-code. The design is written down in [`docs/`](docs/). Work starts with **phase 0: design system and high-fidelity mockups**, approved before any app code is written. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Phase 0** (design system and high-fidelity mockups) is done; see [`docs/DESIGN.md`](docs/DESIGN.md). **Phase 1**, the kernel, is under construction in [`kernel/`](kernel/). Its exit criterion (`kill -9` mid-session, then restart and resume with no duplicated work) is covered by a deterministic test, but the live run on the owner's machine is still open: see "Phase 1 exit: live run" in [`docs/OPEN_QUESTIONS.md`](docs/OPEN_QUESTIONS.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Run the kernel as a launchd agent
 
