@@ -39,6 +39,8 @@ export const THROTTLE_INTERVAL_SECONDS = 60;
 export const BOOTOUT_WAIT_MS = 5_000;
 /** How often it asks `launchctl print` meanwhile. */
 export const BOOTOUT_POLL_MS = 200;
+/** `launchctl bootout`'s EINPROGRESS (unverified, `docs/OPEN_QUESTIONS.md` 5(a)): taken as "still unloading", so the poll decides. */
+export const BOOTOUT_IN_PROGRESS_STATUS = 36;
 /** `launchctl bootstrap`'s exit status for an I/O error, e.g. the old job not fully gone: retried once. */
 export const BOOTSTRAP_RETRY_STATUS = 5;
 /** The wait before that one retry. */
@@ -245,9 +247,16 @@ function isLoaded(r: Resolved): boolean {
   return launchctl(r, ["print", serviceTarget(r.uid)]).status === 0;
 }
 
+/**
+ * `launchctl bootout`. Exit status 0 or `BOOTOUT_IN_PROGRESS_STATUS` (the
+ * unload has started and may finish asynchronously) returns; any other
+ * non-zero status throws. Neither return proves the agent is gone: `install`
+ * then polls (`waitUntilBootedOut`), `uninstall` does not wait.
+ */
 function bootout(r: Resolved): void {
   const result = launchctl(r, ["bootout", serviceTarget(r.uid)]);
-  if (result.status !== 0) throw launchctlFailed(`bootout ${serviceTarget(r.uid)}`, result);
+  if (result.status === 0 || result.status === BOOTOUT_IN_PROGRESS_STATUS) return;
+  throw launchctlFailed(`bootout ${serviceTarget(r.uid)}`, result);
 }
 
 /**
@@ -298,10 +307,11 @@ function writePlistAtomic(path: string, content: string): void {
 /**
  * Write the plist (atomically, mode 0644) to exactly `plistPath(homeDir)`,
  * create `<dataDir>/logs` (mode 0700), boot out the agent when `launchctl
- * print` says it is already loaded and wait (at most `BOOTOUT_WAIT_MS`) until
- * it is gone, then `launchctl bootstrap gui/<uid> <plist>`, retried once on
- * exit status 5. A failing launchctl throws one line naming its exit status
- * and its first stderr line.
+ * print` says it is already loaded (a bootout exiting 36, in progress, is
+ * not a failure) and wait (at most `BOOTOUT_WAIT_MS`) until it is gone, then
+ * `launchctl bootstrap gui/<uid> <plist>`, retried once on exit status 5. A
+ * failing launchctl throws one line naming its exit status and its first
+ * stderr line.
  */
 export function installService(options: ServiceOptions = {}, deps: ServiceDeps = {}): ServiceResult {
   const r = resolveDeps(deps);
@@ -329,9 +339,9 @@ export function installService(options: ServiceOptions = {}, deps: ServiceDeps =
 }
 
 /**
- * Boot the agent out when `launchctl print` says it is loaded, then remove
- * `plistPath(homeDir)` if it exists. Idempotent: nothing loaded and no plist
- * is a success.
+ * Boot the agent out when `launchctl print` says it is loaded (exit status 0
+ * or 36, in progress), then remove `plistPath(homeDir)` if it exists.
+ * Idempotent: nothing loaded and no plist is a success.
  */
 export function uninstallService(deps: ServiceDeps = {}): ServiceResult {
   const r = resolveDeps(deps);

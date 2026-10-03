@@ -16,10 +16,12 @@
 // event kinds; never env or tokens, and any `sk-ant-…` string redacted) is
 // written to the path printed at the end; the owner commits it as evidence.
 // Whatever happens, `afterEach` stops the harnesses, kills every session group
-// it recorded (ownership-checked) and removes the temp dir: no CLI outlives it.
+// it recorded (ownership-checked; before and after the restart) and removes the
+// temp dir: no CLI outlives it.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type Database from "better-sqlite3";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   EXIT_TEST_KEY,
@@ -54,6 +56,15 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
     if (pgid === null || pgid === undefined || groups.has(pgid)) return;
     const leader = groupLeader(pgid);
     if (leader !== undefined) groups.set(pgid, leader);
+  }
+
+  /**
+   * `track` every session pgid the store holds now: a resumed session's CLI
+   * writes its new pgid to the same row, so every poll that waits on the
+   * kernel, before and after the restart, records it while it is alive.
+   */
+  function trackSessionGroups(db: Database.Database): void {
+    for (const g of db.prepare<[], number>("SELECT pgid FROM sessions WHERE pgid IS NOT NULL").pluck().all()) track(g);
   }
 
   beforeAll(() => {
@@ -92,7 +103,7 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
       "the tool_decision allow for sleep",
       () =>
         tryDb(dataDir, (db) => {
-          for (const g of db.prepare<[], number>("SELECT pgid FROM sessions WHERE pgid IS NOT NULL").pluck().all()) track(g);
+          trackSessionGroups(db);
           return db
             .prepare<[], { id: number; pgid: number | null }>(
               `SELECT s.id, s.pgid FROM events e JOIN sessions s ON s.id = e.session_id
@@ -120,6 +131,8 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
     await waitFor(
       "the redelivered event to finish",
       () => {
+        // The resumed CLI's group too, for afterEach's ownership-checked kill.
+        tryDb(dataDir, trackSessionGroups);
         const s = scalar("SELECT status FROM event_queue WHERE id = ?", queueId);
         return s === "pending" ? undefined : s;
       },

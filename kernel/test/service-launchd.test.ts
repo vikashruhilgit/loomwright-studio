@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authProviderFromEnv } from "../src/auth/provider-env.js";
 import {
+  BOOTOUT_IN_PROGRESS_STATUS,
   BOOTOUT_POLL_MS,
   BOOTOUT_WAIT_MS,
   BOOTSTRAP_RETRY_DELAY_MS,
@@ -75,11 +76,12 @@ const OK: ServiceExecResult = { status: 0, stderr: "" };
 /**
  * A scripted launchctl that records every call. `print` answers 0 while the
  * agent is loaded, else 113; a `bootout` unloads it, after `stillLoaded` more
- * `print`s that still answer 0. `fail` makes that verb exit 5; `bootstrap`
+ * `print`s that still answer 0. `fail` makes that verb exit 5; `bootout` is
+ * the bootout's exit status (36, in progress, still unloads it); `bootstrap`
  * scripts the statuses of successive bootstraps (then 0). A failure writes
  * `stderr`. `sleep` advances a fake clock and is recorded: nothing waits.
  */
-function launchctl(o: { loaded?: boolean; stillLoaded?: number; fail?: string; bootstrap?: number[]; stderr?: string } = {}) {
+function launchctl(o: { loaded?: boolean; stillLoaded?: number; fail?: string; bootout?: number; bootstrap?: number[]; stderr?: string } = {}) {
   const calls: { file: string; args: readonly string[] }[] = [];
   const slept: number[] = [];
   let clock = 0;
@@ -96,8 +98,9 @@ function launchctl(o: { loaded?: boolean; stillLoaded?: number; fail?: string; b
         return loaded ? OK : { status: 113, stderr: `Could not find service "${SERVICE_LABEL}" in domain for user gui: ${UID}\n` };
       case "bootout":
         if (o.fail === "bootout") return failed(5);
+        if (o.bootout !== undefined && o.bootout !== BOOTOUT_IN_PROGRESS_STATUS) return failed(o.bootout);
         bootedOut = true;
-        return OK;
+        return failed(o.bootout ?? 0);
       case "bootstrap":
         return failed(bootstraps.shift() ?? (o.fail === "bootstrap" ? 5 : 0));
       default:
@@ -256,6 +259,40 @@ describe("installService", () => {
     expect(l.verbs().filter((v) => v === "print")).toHaveLength(2 + BOOTOUT_WAIT_MS / BOOTOUT_POLL_MS);
   });
 
+  const IN_PROGRESS = "Boot-out failed: 36: Operation now in progress\n";
+
+  it("a bootout exiting 36 (in progress) is not a failure: it polls until the agent is gone, then bootstraps", () => {
+    expect(BOOTOUT_IN_PROGRESS_STATUS).toBe(36);
+    const l = launchctl({ loaded: true, bootout: 36, stderr: IN_PROGRESS });
+    expect(installService({ dataDir, daemonPath, env: {} }, l.deps).plistPath).toBe(plistPath(homeDir));
+    expect(l.verbs()).toEqual(["print", "bootout", "print", "bootstrap"]);
+
+    const slow = launchctl({ loaded: true, stillLoaded: 2, bootout: 36, stderr: IN_PROGRESS });
+    installService({ dataDir, daemonPath, env: {} }, slow.deps);
+    expect(slow.verbs()).toEqual(["print", "bootout", "print", "print", "print", "bootstrap"]);
+    expect(slow.slept).toEqual([BOOTOUT_POLL_MS, BOOTOUT_POLL_MS]);
+  });
+
+  it("a bootout exiting 36 with the agent still loaded after the bound: throws the same line, and never bootstraps", () => {
+    const l = launchctl({ loaded: true, stillLoaded: Number.POSITIVE_INFINITY, bootout: 36, stderr: IN_PROGRESS });
+    expect(thrown(() => installService({ dataDir, daemonPath, env: {} }, l.deps))).toBe(
+      `studio service: ${SERVICE_LABEL} still loaded 5 s after bootout; the previous kernel may still be stopping, run service install again`,
+    );
+    expect(l.verbs()).not.toContain("bootstrap");
+    expect(l.slept.reduce((a, b) => a + b, 0)).toBe(BOOTOUT_WAIT_MS);
+  });
+
+  it("any other failing bootout throws one line with its status and stderr line: no poll, no bootstrap", () => {
+    for (const status of [5, 1, 35, 37, -1]) {
+      const l = launchctl({ loaded: true, bootout: status, stderr: `Boot-out failed: ${status}: boom\n` });
+      expect(thrown(() => installService({ dataDir, daemonPath, env: {} }, l.deps))).toBe(
+        `studio service: launchctl bootout gui/${UID}/${SERVICE_LABEL} failed (exit status ${status}): Boot-out failed: ${status}: boom`,
+      );
+      expect(l.verbs()).toEqual(["print", "bootout"]);
+      expect(l.slept).toEqual([]);
+    }
+  });
+
   it("a bootstrap exiting 5 is retried once after a short wait", () => {
     const l = launchctl({ bootstrap: [5, 0] });
     expect(installService({ dataDir, daemonPath, env: {} }, l.deps).plistPath).toBe(plistPath(homeDir));
@@ -394,6 +431,15 @@ describe("uninstallService", () => {
       `studio service: launchctl bootout gui/${UID}/${SERVICE_LABEL} failed (exit status 5): Boot-out failed: 5: Input/output error`,
     );
     expect(existsSync(plistPath(homeDir))).toBe(true);
+  });
+
+  it("a bootout exiting 36 (in progress) is not a failure: the plist is removed, nothing waits", () => {
+    installService({ dataDir, daemonPath, env: {} }, launchctl().deps);
+    const l = launchctl({ loaded: true, bootout: 36, stderr: "Boot-out failed: 36: Operation now in progress\n" });
+    expect(uninstallService(l.deps)).toEqual({ label: SERVICE_LABEL, plistPath: plistPath(homeDir) });
+    expect(l.verbs()).toEqual(["print", "bootout"]);
+    expect(l.slept).toEqual([]);
+    expect(readdirSync(agents)).toEqual([SIBLING]);
   });
 });
 
