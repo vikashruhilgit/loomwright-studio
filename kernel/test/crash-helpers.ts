@@ -5,7 +5,7 @@ import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 
@@ -151,20 +151,53 @@ export function groupProbeCode(pgid: number): string | undefined {
   }
 }
 
+/** `ps -o args=` of `pid` (argv, on macOS and Linux procps alike), or `undefined` when it is gone or ps failed. */
+function processArgs(pid: number): string | undefined {
+  try {
+    const args = execFileSync("/bin/ps", ["-o", "args=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return args === "" ? undefined : args;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The first argv token of group `pgid`'s leader (its executable path), read
+ * now: the `leader` to pass `killOwnGroup` later for a group this test did
+ * not spawn itself (the live CLI). `undefined` when the leader is gone.
+ */
+export function groupLeader(pgid: number): string | undefined {
+  return processArgs(pgid)?.split(" ", 1)[0];
+}
+
+/**
+ * Whether a process in group `pgid` runs `command`: a scan of `ps -A -o
+ * pgid=,comm=` (both macOS and Linux procps), matching the basename of
+ * `comm`, since macOS reports the exec path (e.g. `/bin/sleep`).
+ */
+export function groupHasCommand(pgid: number, command: string): boolean {
+  let table: string;
+  try {
+    table = execFileSync("/bin/ps", ["-A", "-o", "pgid=,comm="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return false;
+  }
+  return table.split("\n").some((line) => {
+    const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(line);
+    return m !== null && Number(m[1]) === pgid && basename(m[2] ?? "") === command;
+  });
+}
+
 /**
  * SIGKILL group `pgid` ONLY while its leader is still the one this test
- * started: `ps -o args=` (argv, on macOS and Linux procps alike) begins with
- * our own temp `leader` path. A group that is gone, or whose pgid now belongs
- * to anything else, is never signalled.
+ * started or recorded: `ps -o args=` is exactly the `leader` path or begins
+ * with it and a space. A group that is gone, or whose pgid now belongs to
+ * anything else, is never signalled.
  */
 export function killOwnGroup(pgid: number, leader: string): void {
-  let args: string;
-  try {
-    args = execFileSync("/bin/ps", ["-o", "args=", "-p", String(pgid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  } catch {
-    return; // No such process (or ps failed): nothing provably ours to kill.
-  }
-  if (!args.startsWith(`${leader} `)) return;
+  const args = processArgs(pgid);
+  // No such process (or ps failed): nothing provably ours to kill.
+  if (args === undefined || (args !== leader && !args.startsWith(`${leader} `))) return;
   try {
     process.kill(-pgid, "SIGKILL");
   } catch {

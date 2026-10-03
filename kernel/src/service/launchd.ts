@@ -11,6 +11,10 @@
 // One data dir: `STUDIO_DATA_DIR` in the plist is always the same absolute
 // dir its logs go under, so the daemon resolves exactly the dir the installing
 // CLI chose, whatever the installer's own environment held.
+//
+// launchctl's stdout is never read; a failing launchctl's error carries its
+// exit status and the first line of its stderr (H01), which holds no secret
+// (the plist holds none).
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -25,6 +29,23 @@ export const SERVICE_LABEL = "com.loomwright.studio.kernel";
 /** launchctl by absolute path: never resolved through PATH. */
 export const LAUNCHCTL_PATH = "/bin/launchctl";
 
+/** The daemon argument that selects its launchd exit statuses (`daemon-exit.ts`). */
+export const LAUNCHD_ARGUMENT = "--launchd";
+
+/** The plist's `ThrottleInterval`: launchd restarts a failing kernel at most once a minute. */
+export const THROTTLE_INTERVAL_SECONDS = 60;
+
+/** How long `installService` waits for a booted-out agent to be gone before it gives up. */
+export const BOOTOUT_WAIT_MS = 5_000;
+/** How often it asks `launchctl print` meanwhile. */
+export const BOOTOUT_POLL_MS = 200;
+/** `launchctl bootstrap`'s exit status for an I/O error, e.g. the old job not fully gone: retried once. */
+export const BOOTSTRAP_RETRY_STATUS = 5;
+/** The wait before that one retry. */
+export const BOOTSTRAP_RETRY_DELAY_MS = 1_000;
+/** launchctl's stderr line in an error is cut to this many characters. */
+export const STDERR_LINE_MAX = 500;
+
 /** Under `<dataDir>/logs/`. */
 export const STDOUT_LOG_FILENAME = "kernel.out.log";
 export const STDERR_LOG_FILENAME = "kernel.err.log";
@@ -34,7 +55,7 @@ export function plistPath(homeDir: string): string {
   return join(homeDir, "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
 }
 
-/** A `studio service` failure: one line, never launchctl's own output. */
+/** A `studio service` failure: one line; at most launchctl's first stderr line, never its stdout. */
 export class ServiceError extends Error {
   constructor(message: string) {
     super(message);
@@ -68,9 +89,12 @@ function absolute(name: string, value: string): string {
 
 /**
  * The agent's plist (pure): `Label`; `ProgramArguments` = `[nodePath,
- * daemonPath]`; `RunAtLoad`; `KeepAlive` = `{SuccessfulExit: false}` (launchd
- * restarts the kernel after a crash or `kill -9`, never after a graceful
- * SIGTERM exit 0); stdout/stderr to `<dataDir>/logs/kernel.{out,err}.log`; and
+ * daemonPath, "--launchd"]`; `RunAtLoad`; `KeepAlive` = `{SuccessfulExit:
+ * false}` (launchd restarts the kernel after any non-zero exit: a crash, a
+ * `kill -9` or a start failure that may clear; never after exit 0: a graceful
+ * stop or a start failure a retry can't fix); `ThrottleInterval` 60 (those
+ * restarts at most once a minute); stdout/stderr to
+ * `<dataDir>/logs/kernel.{out,err}.log`; and
  * `EnvironmentVariables` with only `STUDIO_DATA_DIR` (always: the normalized
  * absolute `dataDir`, the same dir the logs go under, so the daemon's
  * `resolveDataDir` lands there) and `STUDIO_AUTH_PROVIDER` (when
@@ -96,6 +120,7 @@ export function renderPlist(params: PlistParams): string {
     "  <array>",
     `    ${xmlString("nodePath", absolute("nodePath", params.nodePath))}`,
     `    ${xmlString("daemonPath", absolute("daemonPath", params.daemonPath))}`,
+    `    ${xmlString("argument", LAUNCHD_ARGUMENT)}`,
     "  </array>",
     "  <key>RunAtLoad</key>",
     "  <true/>",
@@ -104,6 +129,8 @@ export function renderPlist(params: PlistParams): string {
     "    <key>SuccessfulExit</key>",
     "    <false/>",
     "  </dict>",
+    "  <key>ThrottleInterval</key>",
+    `  <integer>${THROTTLE_INTERVAL_SECONDS}</integer>`,
     "  <key>StandardOutPath</key>",
     `  ${xmlString("dataDir", join(dataDir, "logs", STDOUT_LOG_FILENAME))}`,
     "  <key>StandardErrorPath</key>",
@@ -116,21 +143,33 @@ export function renderPlist(params: PlistParams): string {
   return lines.join("\n");
 }
 
-/** Runs `file` with `args` and returns its exit status; launchctl's output is never shown or returned. */
-export type ServiceExec = (file: string, args: readonly string[]) => number;
+/** A launchctl run: its exit status and its stderr (stdout is never read). */
+export interface ServiceExecResult {
+  readonly status: number;
+  readonly stderr: string;
+}
 
-const defaultExec: ServiceExec = (file, args) => {
-  const result = spawnSync(file, args, { stdio: "ignore" });
+/** Runs `file` with `args`; returns its exit status and stderr. */
+export type ServiceExec = (file: string, args: readonly string[]) => ServiceExecResult;
+
+/** Runs the file with stdout ignored and stderr captured. Throws when it can't be run. */
+export const defaultExec: ServiceExec = (file, args) => {
+  const result = spawnSync(file, args, { stdio: ["ignore", "ignore", "pipe"], encoding: "utf8" });
   if (result.error !== undefined) {
     const code = (result.error as { code?: unknown }).code;
     throw new ServiceError(`studio service: cannot run ${file}${typeof code === "string" ? ` (${code})` : ""}`);
   }
   // Killed by a signal: no status. Never 0.
-  return result.status ?? -1;
+  return { status: result.status ?? -1, stderr: result.stderr ?? "" };
 };
 
+/** Blocks the thread for `ms` without a busy loop: `installService` stays synchronous. */
+function defaultSleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 export interface ServiceDeps {
-  /** Defaults to running the file with its output ignored. */
+  /** Defaults to `defaultExec`. */
   readonly exec?: ServiceExec;
   /** Defaults to `process.getuid()`. */
   readonly uid?: number;
@@ -138,6 +177,10 @@ export interface ServiceDeps {
   readonly homeDir?: string;
   /** Defaults to `process.platform`. */
   readonly platform?: NodeJS.Platform;
+  /** `installService`'s waits (the bootout poll, the bootstrap retry). Defaults to blocking the thread. */
+  readonly sleep?: (ms: number) => void;
+  /** Milliseconds, for the bootout poll's bound. Defaults to `Date.now`. */
+  readonly now?: () => number;
 }
 
 export interface ServiceOptions {
@@ -160,6 +203,8 @@ interface Resolved {
   readonly exec: ServiceExec;
   readonly uid: number;
   readonly homeDir: string;
+  readonly sleep: (ms: number) => void;
+  readonly now: () => number;
 }
 
 /** Platform first: on anything but macOS, nothing is run, read or written. */
@@ -167,24 +212,72 @@ function resolveDeps(deps: ServiceDeps): Resolved {
   if ((deps.platform ?? process.platform) !== "darwin") throw new ServiceError("studio service is macOS only");
   const uid = deps.uid ?? process.getuid?.();
   if (uid === undefined || !Number.isInteger(uid) || uid < 0) throw new ServiceError("studio service: cannot determine the user id");
-  return { exec: deps.exec ?? defaultExec, uid, homeDir: deps.homeDir ?? homedir() };
+  return {
+    exec: deps.exec ?? defaultExec,
+    uid,
+    homeDir: deps.homeDir ?? homedir(),
+    sleep: deps.sleep ?? defaultSleep,
+    now: deps.now ?? Date.now,
+  };
 }
 
 function serviceTarget(uid: number): string {
   return `gui/${uid}/${SERVICE_LABEL}`;
 }
 
-function launchctl(r: Resolved, args: readonly string[]): number {
+function launchctl(r: Resolved, args: readonly string[]): ServiceExecResult {
   return r.exec(LAUNCHCTL_PATH, args);
 }
 
+/** The first non-empty line of launchctl's stderr, cut to `STDERR_LINE_MAX` characters. */
+function stderrLine(stderr: string): string {
+  const line = stderr.split(/\r?\n/).map((l) => l.trim()).find((l) => l !== "") ?? "";
+  return line.length > STDERR_LINE_MAX ? `${line.slice(0, STDERR_LINE_MAX)}...` : line;
+}
+
+/** `… failed (exit status <n>)`, then `: <stderr line>` when launchctl wrote one. */
+function launchctlFailed(command: string, result: ServiceExecResult): ServiceError {
+  const line = stderrLine(result.stderr);
+  return new ServiceError(`studio service: launchctl ${command} failed (exit status ${result.status})${line === "" ? "" : `: ${line}`}`);
+}
+
 function isLoaded(r: Resolved): boolean {
-  return launchctl(r, ["print", serviceTarget(r.uid)]) === 0;
+  return launchctl(r, ["print", serviceTarget(r.uid)]).status === 0;
 }
 
 function bootout(r: Resolved): void {
-  const status = launchctl(r, ["bootout", serviceTarget(r.uid)]);
-  if (status !== 0) throw new ServiceError(`studio service: launchctl bootout ${serviceTarget(r.uid)} failed (exit status ${status})`);
+  const result = launchctl(r, ["bootout", serviceTarget(r.uid)]);
+  if (result.status !== 0) throw launchctlFailed(`bootout ${serviceTarget(r.uid)}`, result);
+}
+
+/**
+ * After `bootout`: ask `launchctl print` every `BOOTOUT_POLL_MS` until the
+ * agent is gone. Still loaded after `BOOTOUT_WAIT_MS` ⇒ throws: bootstrapping
+ * now would start a kernel that finds the old one still holding the store
+ * lock, and that start failure is never restarted.
+ */
+function waitUntilBootedOut(r: Resolved): void {
+  const deadline = r.now() + BOOTOUT_WAIT_MS;
+  while (isLoaded(r)) {
+    const left = deadline - r.now();
+    if (left <= 0) {
+      throw new ServiceError(
+        `studio service: ${SERVICE_LABEL} still loaded ${BOOTOUT_WAIT_MS / 1000} s after bootout; the previous kernel may still be stopping, run service install again`,
+      );
+    }
+    r.sleep(Math.min(BOOTOUT_POLL_MS, left));
+  }
+}
+
+/** `launchctl bootstrap gui/<uid> <plist>`, retried once after `BOOTSTRAP_RETRY_DELAY_MS` on exit status 5 only. */
+function bootstrap(r: Resolved, path: string): void {
+  const args = ["bootstrap", `gui/${r.uid}`, path];
+  let result = launchctl(r, args);
+  if (result.status === BOOTSTRAP_RETRY_STATUS) {
+    r.sleep(BOOTSTRAP_RETRY_DELAY_MS);
+    result = launchctl(r, args);
+  }
+  if (result.status !== 0) throw launchctlFailed(`bootstrap gui/${r.uid}`, result);
 }
 
 /** Temp file in the same dir, then rename: a reader never sees a half-written plist. */
@@ -205,8 +298,10 @@ function writePlistAtomic(path: string, content: string): void {
 /**
  * Write the plist (atomically, mode 0644) to exactly `plistPath(homeDir)`,
  * create `<dataDir>/logs` (mode 0700), boot out the agent when `launchctl
- * print` says it is already loaded, then `launchctl bootstrap gui/<uid>
- * <plist>`. A failing launchctl throws one line naming its exit status.
+ * print` says it is already loaded and wait (at most `BOOTOUT_WAIT_MS`) until
+ * it is gone, then `launchctl bootstrap gui/<uid> <plist>`, retried once on
+ * exit status 5. A failing launchctl throws one line naming its exit status
+ * and its first stderr line.
  */
 export function installService(options: ServiceOptions = {}, deps: ServiceDeps = {}): ServiceResult {
   const r = resolveDeps(deps);
@@ -225,9 +320,11 @@ export function installService(options: ServiceOptions = {}, deps: ServiceDeps =
   const path = plistPath(r.homeDir);
   writePlistAtomic(path, content);
 
-  if (isLoaded(r)) bootout(r);
-  const status = launchctl(r, ["bootstrap", `gui/${r.uid}`, path]);
-  if (status !== 0) throw new ServiceError(`studio service: launchctl bootstrap gui/${r.uid} failed (exit status ${status})`);
+  if (isLoaded(r)) {
+    bootout(r);
+    waitUntilBootedOut(r);
+  }
+  bootstrap(r, path);
   return { label: SERVICE_LABEL, plistPath: path };
 }
 

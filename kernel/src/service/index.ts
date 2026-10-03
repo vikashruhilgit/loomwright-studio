@@ -1,12 +1,20 @@
 export {
+  BOOTOUT_POLL_MS,
+  BOOTOUT_WAIT_MS,
+  BOOTSTRAP_RETRY_DELAY_MS,
+  BOOTSTRAP_RETRY_STATUS,
   LAUNCHCTL_PATH,
+  LAUNCHD_ARGUMENT,
   SERVICE_LABEL,
+  STDERR_LINE_MAX,
   STDERR_LOG_FILENAME,
   STDOUT_LOG_FILENAME,
   ServiceError,
+  THROTTLE_INTERVAL_SECONDS,
+  defaultExec,
   installService,
   plistPath,
   renderPlist,
   uninstallService,
 } from "./launchd.js";
-export type { PlistParams, ServiceDeps, ServiceExec, ServiceOptions, ServiceResult } from "./launchd.js";
+export type { PlistParams, ServiceDeps, ServiceExec, ServiceExecResult, ServiceOptions, ServiceResult } from "./launchd.js";
