@@ -1,6 +1,7 @@
 // Composes the kernel daemon (item 08): store, auth, budget, sessions, event
 // loop and the loopback API, started in a fixed order and stopped in reverse.
-// Mechanism only (invariant 1): the loop has no handler, nothing is preinstalled.
+// Mechanism only (invariant 1): the daemon passes no handler, nothing is
+// preinstalled; `KernelOptions.handlers` is for other compositions (tests).
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ensureApiToken } from "./api/token.js";
@@ -8,13 +9,14 @@ import { isKillSwitchEngaged } from "./api/kill-switch.js";
 import { API_HOST, startApiServer } from "./api/server.js";
 import type { ApiServer, ApiServerDeps, ApiServerOptions } from "./api/server.js";
 import { API_KEY_PROVIDER_ID } from "./auth/api-key.js";
+import { AUTH_PROVIDER_ENV, authProviderFromEnv } from "./auth/provider-env.js";
 import { securityCliKeychain, securityCliKeychainWriter } from "./auth/keychain.js";
 import type { KeychainReader, KeychainWriter } from "./auth/keychain.js";
 import { SUBSCRIPTION_TOKEN_ID, availableProviderIds, selectAuthProvider } from "./auth/registry.js";
 import type { AuthProvider, AuthProviderDeps, BaseEnv } from "./auth/types.js";
 import { Budget } from "./budget/index.js";
 import { EventLoop } from "./loop/loop.js";
-import type { EventLoopDeps } from "./loop/types.js";
+import type { EventHandlers, EventLoopDeps } from "./loop/types.js";
 import { SessionManager } from "./sessions/manager.js";
 import type { SessionManagerDeps, SessionManagerOptions } from "./sessions/types.js";
 import { Store, resolveDataDir } from "./store/store.js";
@@ -22,7 +24,7 @@ import { KERNEL_MCP_SERVER_NAME, createKernelMcpServer } from "./tools/server.js
 import { writeFileAtomic } from "./tools/handoff.js";
 
 /** Selects the auth provider when `--auth-provider` is not given. */
-export const AUTH_PROVIDER_ENV = "STUDIO_AUTH_PROVIDER";
+export { AUTH_PROVIDER_ENV };
 
 /** `<dataDir>/api.json`: where the API listens. Never holds the token. */
 export const API_INFO_FILENAME = "api.json";
@@ -48,6 +50,13 @@ export interface KernelOptions {
   readonly sessions?: Partial<
     Pick<SessionManagerOptions, "loomwrightPath" | "pluginCacheRoot" | "stopGraceMs" | "authTimeoutMs" | "resumeBackoffMs">
   >;
+  /**
+   * The event loop's handlers. Default none: every queued event ends
+   * `event_unhandled`. `daemon.ts` never sets it (invariant 1: nothing is
+   * preinstalled); a composition that is not the shipped daemon (the crash
+   * test's harness, standing in for a playbook) passes its own.
+   */
+  readonly handlers?: EventHandlers;
 }
 
 /** Every side effect of the composition, injectable for tests. */
@@ -112,7 +121,7 @@ function removeApiInfoIfOurs(path: string, pid: number): void {
  * the auth provider (`--auth-provider`, else `STUDIO_AUTH_PROVIDER`, else the
  * build default); the `Budget`; the `SessionManager` (wired to the budget and
  * given the kernel MCP server per launch); reap orphans left by an earlier
- * kernel; the `EventLoop` with no handlers, started only while the kill switch
+ * kernel; the `EventLoop` with `options.handlers` (none by default), started only while the kill switch
  * is NOT engaged; the API token (generated on first start); the API server;
  * then `<dataDir>/api.json` (mode 0600, no token).
  *
@@ -155,7 +164,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     const keychain = deps.keychain ?? securityCliKeychain();
     const providerId =
       nonEmpty(options.authProviderId) ??
-      nonEmpty(env[AUTH_PROVIDER_ENV]) ??
+      authProviderFromEnv(env) ??
       (await defaultAuthProviderId(deps.availableProviderIds ?? availableProviderIds));
     const authProvider = await (deps.selectAuthProvider ?? selectAuthProvider)(providerId, { keychain, store, now });
 
@@ -177,8 +186,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     sessions = manager;
     await manager.reapOrphans();
 
-    // Phase 1 ships no handler (invariant 1): every queued event is `event_unhandled`.
-    const eventLoop = new EventLoop({ store, handlers: {} }, { now, ...deps.loopDeps });
+    // The daemon passes no handler (invariant 1): every queued event is `event_unhandled`.
+    const eventLoop = new EventLoop({ store, handlers: options.handlers ?? {} }, { now, ...deps.loopDeps });
     loop = eventLoop;
     if (!isKillSwitchEngaged(store)) eventLoop.start();
 

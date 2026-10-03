@@ -1,7 +1,7 @@
 // The `studio` CLI (item 08, AC4): runCli against a real startApiServer on
 // 127.0.0.1 and an OS-assigned port, with an in-memory Keychain. Never the
 // real Keychain, the real daemon or a model.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,8 +10,10 @@ import type { Mock } from "vitest";
 import { API_TOKEN_KEYCHAIN_SERVICE, startApiServer } from "../src/api/index.js";
 import type { ApiServer } from "../src/api/index.js";
 import type { KeychainReader } from "../src/auth/index.js";
-import { CLI_TIMEOUT_MS, STOP_ALL_TIMEOUT_MS, runCli } from "../src/cli/index.js";
+import { CLI_TIMEOUT_MS, STOP_ALL_TIMEOUT_MS, USAGE, runCli } from "../src/cli/index.js";
 import type { CliDeps } from "../src/cli/index.js";
+import { SERVICE_LABEL, plistPath } from "../src/service/index.js";
+import type { ServiceDeps } from "../src/service/index.js";
 import { Store } from "../src/store/index.js";
 import { DEFAULT_STOP_GRACE_MS, KILL_GROUP_DEADLINE_MS, LEADER_EXIT_WAIT_MS, SessionManager } from "../src/sessions/index.js";
 import { fakeMsg, fakeSessions, immediate, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
@@ -357,5 +359,80 @@ describe("studio CLI", () => {
     oneLine(c.stderr.text());
     expect(c.stderr.text()).toContain("answered 401");
     expect(c.stderr.text()).not.toContain(wrong);
+  });
+});
+
+describe("studio service (item 09, AC1)", () => {
+  function serviceCli(o: { fail?: string; platform?: NodeJS.Platform } = {}) {
+    const homeDir = join(tmp, "home");
+    const daemonPath = join(tmp, "daemon.js");
+    writeFileSync(daemonPath, "// built daemon\n");
+    const launchctl: string[][] = [];
+    const deps: ServiceDeps = {
+      exec: (_file, args) => {
+        launchctl.push([...args]);
+        if (args[0] === "print") return 113;
+        return args[0] === o.fail ? 5 : 0;
+      },
+      uid: 501,
+      homeDir,
+      platform: o.platform ?? "darwin",
+    };
+    // A data dir with no api.json: the service commands must not need one.
+    const c = cli({ dataDir: join(tmp, "service-data"), service: { options: { daemonPath, env: {} }, deps } });
+    return { ...c, homeDir, launchctl };
+  }
+
+  it("install and uninstall print one line naming the label and plist, exit 0, and never read api.json, the Keychain or the API", async () => {
+    const c = serviceCli();
+    expect(await c.run("service", "install")).toBe(0);
+    oneLine(c.stdout.text());
+    expect(c.stdout.text()).toBe(`studio: service ${SERVICE_LABEL} installed and loaded (${plistPath(c.homeDir)})\n`);
+    expect(existsSync(plistPath(c.homeDir))).toBe(true);
+    expect(existsSync(join(tmp, "service-data", "logs"))).toBe(true);
+
+    const u = serviceCli();
+    expect(await u.run("service", "uninstall")).toBe(0);
+    expect(u.stdout.text()).toBe(`studio: service ${SERVICE_LABEL} unloaded and removed (${plistPath(u.homeDir)})\n`);
+    expect(existsSync(plistPath(u.homeDir))).toBe(false);
+
+    for (const x of [c, u]) {
+      expect(x.reads).toEqual([]);
+      expect(x.fetchSpy).not.toHaveBeenCalled();
+      expect(x.stderr.text()).toBe("");
+    }
+    expect(c.launchctl.map((a) => a[0])).toEqual(["print", "bootstrap"]);
+  });
+
+  it("install with CliDeps.dataDir and an empty env: the plist's logs and STUDIO_DATA_DIR are that dir", async () => {
+    const c = serviceCli();
+    expect(await c.run("service", "install")).toBe(0);
+    const xml = readFileSync(plistPath(c.homeDir), "utf8");
+    const dataDir = join(tmp, "service-data");
+    expect(xml).toContain(`<key>StandardOutPath</key>\n  <string>${join(dataDir, "logs", "kernel.out.log")}</string>`);
+    expect(xml).toContain(`<key>STUDIO_DATA_DIR</key>\n    <string>${dataDir}</string>`);
+  });
+
+  it("a failure exits 1 with one stderr line", async () => {
+    const c = serviceCli({ fail: "bootstrap" });
+    expect(await c.run("service", "install")).toBe(1);
+    oneLine(c.stderr.text());
+    expect(c.stderr.text()).toBe("studio service: launchctl bootstrap gui/501 failed (exit status 5)\n");
+    expect(c.stdout.text()).toBe("");
+
+    const l = serviceCli({ platform: "linux" });
+    expect(await l.run("service", "uninstall")).toBe(1);
+    expect(l.stderr.text()).toBe("studio service is macOS only\n");
+    expect(l.launchctl).toEqual([]);
+  });
+
+  it("studio service with no or another action prints usage and exits 2", async () => {
+    for (const argv of [["service"], ["service", "start"], ["service", "install", "--force"]]) {
+      const c = serviceCli();
+      expect(await c.run(...argv)).toBe(2);
+      expect(c.stderr.text()).toBe(`${USAGE}\n`);
+      expect(c.launchctl).toEqual([]);
+    }
+    expect(USAGE).toContain("studio service install|uninstall");
   });
 });
