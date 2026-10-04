@@ -1,26 +1,38 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DB_FILENAME,
   LOCK_PID_FILENAME,
   Store,
+  StoreIntegrityError,
   StoreLockedError,
+  StoreSchemaTooNewError,
   migrations,
   resolveDataDir,
 } from "../src/store/index.js";
 import type { Migration } from "../src/store/index.js";
+import { APPEND_ONLY_OBJECTS } from "../src/store/integrity.js";
+import { LOCK_RETRIES, LOCK_RETRY_MAX_MS, LOCK_RETRY_MIN_MS, acquireStoreLock } from "../src/store/lock.js";
 import { initial } from "../src/store/migrations/001_initial.js";
 
 const KERNEL_DIR = fileURLToPath(new URL("..", import.meta.url));
-// Absolute path, so the child works whatever the cwd the suite is run from.
-const BETTER_SQLITE3 = createRequire(import.meta.url).resolve("better-sqlite3");
+// The real lock module, imported by the lock child under --experimental-strip-types.
+const LOCK_MODULE_URL = pathToFileURL(join(KERNEL_DIR, "src", "store", "lock.ts")).href;
 
 const PHASE1_TABLES = [
   "budget",
@@ -172,7 +184,7 @@ describe("migrations", () => {
     expect(store.appliedMigrations().map((m) => [m.version, m.name])).toEqual([[1, "initial"]]);
   });
 
-  it("the default list adds auth_providers (migration 2), sessions.loomwright_path (migration 3), sessions.leader_started_at (migration 4), sessions.kill_incomplete_at (migration 5), the budget/cap_state details (migration 6), event_queue and the work_steps details (migration 7) and no phase-2 table", () => {
+  it("the default list adds auth_providers (migration 2), sessions.loomwright_path (migration 3), sessions.leader_started_at (migration 4), sessions.kill_incomplete_at (migration 5), the budget/cap_state details (migration 6), event_queue and the work_steps details (migration 7), the events explicit-id guard (migration 8) and no phase-2 table", () => {
     const store = open();
     expect(tableNames(store)).toEqual([...PHASE1_TABLES, "auth_providers", "event_queue"].sort());
     for (const later of ["agents", "playbooks", "triggers", "approvals", "hooks_installed", "connectors"]) {
@@ -186,6 +198,7 @@ describe("migrations", () => {
       [5, "session_kill_incomplete_at"],
       [6, "budget_cap_details"],
       [7, "event_loop"],
+      [8, "events_explicit_id_guard"],
     ]);
     expect(columns(store, "auth_providers")).toEqual(["id", "account", "token_created_at", "updated_at"]);
     expect(columns(store, "sessions").slice(-3)).toEqual(["loomwright_path", "leader_started_at", "kill_incomplete_at"]);
@@ -406,49 +419,305 @@ describe("events (append-only audit log)", () => {
     seed(store);
     expect(store.prepare("SELECT count(*) FROM events").pluck().get()).toBe(2);
   });
+
+  it("refuses any explicit positive id, up to max-int, so ids follow append order", () => {
+    const store = open();
+    seed(store);
+    const insert = store.prepare("INSERT INTO events (id, kind) VALUES (?, 'explicit')");
+    // BigInt: a JS Number rounds 2^63 - 1 up to 2^63, out of int64 range, and
+    // would fail with a datatype error for the wrong reason. 2 is a free id
+    // just above the last one, so only the explicit-id guard can refuse it.
+    for (const id of [9223372036854775807n, 1000n, 2n]) {
+      expect(() => insert.run(id)).toThrow(/append-only/);
+    }
+    expect(() =>
+      store.prepare("INSERT INTO events (id, kind) VALUES (9223372036854775807, 'literal')").run(),
+    ).toThrow(/append-only/);
+
+    for (const kind of ["a", "b", "c"]) store.prepare("INSERT INTO events (kind) VALUES (?)").run(kind);
+    store.prepare("INSERT INTO events (id, kind) VALUES (NULL, 'd')").run();
+    expect(store.prepare("SELECT kind FROM events ORDER BY id").pluck().all()).toEqual([
+      "task.created",
+      "a",
+      "b",
+      "c",
+      "d",
+    ]);
+    expect(store.prepare("SELECT id FROM events ORDER BY id").pluck().all()).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("migration 8 leaves every existing events row byte-for-byte unchanged", () => {
+    const v7 = open({ migrations: migrations.slice(0, 7) });
+    v7.prepare("INSERT INTO events (kind) VALUES ('first')").run();
+    v7.prepare(
+      "INSERT INTO events (at, kind, actor, task_id, session_id, payload_json) VALUES ('2026-01-01T00:00:00.000Z', 'second', 'wright', 7, 9, '{\"x\":\"\u00e9\"}')",
+    ).run();
+    v7.prepare("INSERT INTO events (kind, payload_json) VALUES ('third', NULL)").run();
+    // quote() renders each value with its storage class, so equal output means equal bytes.
+    const ROWS =
+      "SELECT quote(id), quote(at), quote(kind), quote(actor), quote(task_id), quote(session_id), quote(payload_json) FROM events ORDER BY id";
+    const before = v7.prepare(ROWS).raw().all();
+    expect(before).toHaveLength(3);
+    v7.close();
+
+    const store = open();
+    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(store.prepare(ROWS).raw().all()).toEqual(before);
+  });
+});
+
+describe("Store: integrity check at open", () => {
+  const V7 = migrations.slice(0, 7);
+
+  /** Change a closed store's database outside the Store, as a stray tool or an attacker could. */
+  function tamper(sql: string): void {
+    const db = new Database(join(tmp, DB_FILENAME));
+    try {
+      db.exec(sql);
+    } finally {
+      db.close();
+    }
+  }
+
+  /** Everything an open could write: the schema and the migration records. */
+  function snapshot(): unknown {
+    return inspect(tmp, (db) => ({
+      schema: db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").all(),
+      migrations: tableNames(db).includes("schema_migrations")
+        ? db.prepare("SELECT version, name, applied_at FROM schema_migrations ORDER BY version").all()
+        : null,
+    }));
+  }
+
+  /** Open must refuse with `type`, write nothing, and release the lock. */
+  function refusal<E>(type: new (...args: never[]) => E, list?: readonly Migration[]): E {
+    const before = snapshot();
+    const err = catchError(() => new Store({ dataDir: tmp, ...(list ? { migrations: list } : {}) }));
+    expect(err).toBeInstanceOf(type);
+    expect(snapshot()).toEqual(before);
+    acquireStoreLock(tmp).release();
+    return err as E;
+  }
+
+  it("pins every expected object's text to what SQLite stores", () => {
+    const store = open();
+    const lookup = store.prepare<[string], { type: string; sql: string }>(
+      "SELECT type, sql FROM sqlite_master WHERE name = ?",
+    );
+    const names: string[] = [];
+    for (const { objects } of APPEND_ONLY_OBJECTS) {
+      for (const o of objects) {
+        names.push(o.name);
+        expect(lookup.get(o.name)).toEqual({ type: o.type, sql: o.sql });
+      }
+    }
+    // Every trigger in the database is one of them.
+    const triggers = store
+      .prepare<[], string>("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+      .pluck()
+      .all();
+    expect([...triggers].sort()).toEqual(names.filter((n) => n !== "events").sort());
+  });
+
+  it.each(["events_no_update", "events_no_delete", "events_no_replace"])(
+    "refuses a database whose %s trigger was dropped, before running a pending migration",
+    (trigger) => {
+      open({ migrations: V7 }).close();
+      tamper(`DROP TRIGGER ${trigger}`);
+      const err = refusal(StoreIntegrityError);
+      expect(err.code).toBe("STORE_INTEGRITY");
+      expect(err.problems).toEqual([`trigger ${trigger} is missing`]);
+      expect(err.message).toContain(trigger);
+      // Migration 8 was pending and did not run.
+      inspect(tmp, (db) => {
+        expect(db.prepare("SELECT max(version) FROM schema_migrations").pluck().get()).toBe(7);
+        expect(db.prepare("SELECT count(*) FROM sqlite_master WHERE name = 'events_no_explicit_id'").pluck().get()).toBe(0);
+      });
+    },
+  );
+
+  it("refuses a database whose explicit-id guard was dropped", () => {
+    open().close();
+    tamper("DROP TRIGGER events_no_explicit_id");
+    expect(refusal(StoreIntegrityError).problems).toEqual(["trigger events_no_explicit_id is missing"]);
+  });
+
+  it("refuses a database whose events table was dropped, naming the table and its triggers", () => {
+    open({ migrations: V7 }).close();
+    tamper("DROP TABLE events");
+    expect(refusal(StoreIntegrityError).problems).toEqual([
+      "table events is missing",
+      "trigger events_no_update is missing",
+      "trigger events_no_delete is missing",
+      "trigger events_no_replace is missing",
+    ]);
+  });
+
+  it.each([
+    [
+      "a trigger with a different body",
+      "DROP TRIGGER events_no_delete; CREATE TRIGGER events_no_delete BEFORE DELETE ON events BEGIN SELECT 1; END;",
+      "trigger events_no_delete is altered",
+    ],
+    ["a column added to events", "ALTER TABLE events ADD COLUMN extra TEXT", "table events is altered"],
+  ])("refuses %s", (_, sql, problem) => {
+    open().close();
+    tamper(sql);
+    expect(refusal(StoreIntegrityError).problems).toEqual([problem]);
+  });
+
+  it("refuses a trigger on events that the kernel did not create (it could swallow appends)", () => {
+    open().close();
+    tamper("CREATE TRIGGER events_swallow BEFORE INSERT ON events BEGIN SELECT RAISE(IGNORE); END;");
+    expect(refusal(StoreIntegrityError).problems).toEqual([
+      "trigger events_swallow on events was not created by the kernel",
+    ]);
+  });
+
+  it.each([
+    [
+      "a trigger on another table that inserts into events",
+      "CREATE TABLE x (a); CREATE TRIGGER fwd AFTER INSERT ON x BEGIN INSERT INTO events (kind) VALUES ('kill_switch_engaged'); END;",
+      "trigger fwd on x was not created by the kernel",
+    ],
+    [
+      "an INSTEAD OF trigger on a view that inserts into events",
+      "CREATE VIEW v AS SELECT 1 AS a; CREATE TRIGGER fwd_view INSTEAD OF INSERT ON v BEGIN INSERT INTO events (kind) VALUES ('kill_switch_engaged'); END;",
+      "trigger fwd_view on v was not created by the kernel",
+    ],
+  ])("refuses %s (it could forge appends)", (_, sql, problem) => {
+    open().close();
+    tamper(sql);
+    expect(refusal(StoreIntegrityError).problems).toEqual([problem]);
+  });
+
+  it("refuses a foreign trigger that borrows the events table's name", () => {
+    open().close();
+    tamper("CREATE TRIGGER events AFTER INSERT ON events BEGIN SELECT 1; END;");
+    expect(refusal(StoreIntegrityError).problems).toContain(
+      "trigger events on events was not created by the kernel",
+    );
+  });
+
+  describe("does not trust schema_migrations alone", () => {
+    it("refuses a deleted first row with its trigger dropped, instead of re-running migration 1", () => {
+      open().close();
+      tamper("DELETE FROM schema_migrations WHERE version = 1; DROP TRIGGER events_no_update;");
+      expect(refusal(StoreIntegrityError).problems).toEqual([
+        "schema_migrations records versions 2, 3, 4, 5, 6, 7, 8, not a contiguous run from 1",
+        "trigger events_no_update is missing",
+      ]);
+    });
+
+    it("refuses a deleted middle row", () => {
+      open().close();
+      tamper("DELETE FROM schema_migrations WHERE version = 3");
+      expect(refusal(StoreIntegrityError).problems).toEqual([
+        "schema_migrations records versions 1, 2, 4, 5, 6, 7, 8, not a contiguous run from 1",
+      ]);
+    });
+
+    it("refuses a deleted top row whose append-only object is still there", () => {
+      open().close();
+      tamper("DELETE FROM schema_migrations WHERE version = 8");
+      expect(refusal(StoreIntegrityError).problems).toEqual([
+        "events_no_explicit_id exists but migration 8 is not recorded",
+      ]);
+    });
+
+    it.each([
+      ["emptied", "DELETE FROM schema_migrations"],
+      ["dropped", "DROP TABLE schema_migrations"],
+    ])("refuses a schema_migrations table %s while the tables exist", (_, sql) => {
+      open().close();
+      tamper(sql);
+      const [problem] = refusal(StoreIntegrityError).problems;
+      expect(problem).toMatch(/^schema_migrations records no migration, but the database already has .*events/);
+    });
+
+    // Honest limit: indistinguishable from a v7 database awaiting migration 8.
+    // The pending migration restores the guard: fail-safe, nothing lost.
+    it("opens after a deleted top row together with its object, and restores the guard", () => {
+      open().close();
+      tamper("DELETE FROM schema_migrations WHERE version = 8; DROP TRIGGER events_no_explicit_id;");
+      const store = open();
+      expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(() => store.prepare("INSERT INTO events (id, kind) VALUES (5, 'x')").run()).toThrow(/append-only/);
+    });
+  });
+
+  it("refuses a schema version newer than the kernel knows, migrating and writing nothing", () => {
+    open({ migrations: V7 }).close();
+    tamper("INSERT INTO schema_migrations (version, name, applied_at) VALUES (99, 'from_the_future', '2027-01-01T00:00:00.000Z')");
+    const err = refusal(StoreSchemaTooNewError);
+    expect(err.code).toBe("STORE_SCHEMA_TOO_NEW");
+    expect(err.unknownVersions).toEqual([99]);
+    expect(err.knownVersion).toBe(8);
+    expect(err.message).toContain("99");
+    inspect(tmp, (db) =>
+      expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").pluck().all()).toEqual([
+        1, 2, 3, 4, 5, 6, 7, 99,
+      ]),
+    );
+  });
+
+  it("refuses a newer schema whatever the migration list", () => {
+    const m = (version: number): Migration => ({ version, name: `m${version}`, up: `CREATE TABLE t${version} (x)` });
+    open({ migrations: [m(1), m(2)] }).close();
+    const err = refusal(StoreSchemaTooNewError, [m(1)]);
+    expect(err.unknownVersions).toEqual([2]);
+  });
+
+  it("re-checks after migrating: a migration that breaks the audit log is refused and the lock released", () => {
+    const breaking: Migration = { version: 9, name: "breaks_events", up: "DROP TRIGGER events_no_update" };
+    const err = catchError(() => new Store({ dataDir: tmp, migrations: [...migrations, breaking] }));
+    expect(err).toBeInstanceOf(StoreIntegrityError);
+    expect((err as StoreIntegrityError).problems).toEqual(["after migrating, trigger events_no_update is missing"]);
+    acquireStoreLock(tmp).release();
+  });
 });
 
 // ---------------------------------------------------------------------------
 // Single-writer lock. Never skipped on any platform.
 // ---------------------------------------------------------------------------
 
-// Takes the lock exactly as src/store/lock.ts does.
+// Takes the lock through the real src/store/lock.ts (under --experimental-strip-types),
+// so the child cannot drift from the kernel's acquisition steps.
 const CHILD_SCRIPT = `
-const Database = require(process.env.BSQ_PATH);
-const { writeFileSync } = require("node:fs");
-const { join } = require("node:path");
-const dir = process.env.LOCK_DIR;
-let db;
+const { acquireStoreLock, StoreLockedError } = await import(process.env.LOCK_MODULE);
+let lock;
 try {
-  db = new Database(join(dir, "studio.lock"), { timeout: 0 });
-  db.pragma("locking_mode = EXCLUSIVE");
-  db.exec("CREATE TABLE IF NOT EXISTS owner(pid INTEGER, started_at TEXT); DELETE FROM owner;");
-  db.prepare("INSERT INTO owner(pid, started_at) VALUES (?, ?)").run(process.pid, new Date().toISOString());
+  lock = acquireStoreLock(process.env.LOCK_DIR);
 } catch (err) {
-  if (db) db.close();
-  if (err && typeof err.code === "string" && err.code.startsWith("SQLITE_BUSY")) {
+  if (err instanceof StoreLockedError) {
     console.log("BUSY");
     process.exit(0);
   }
   console.log("ERROR " + (err && err.message));
   process.exit(1);
 }
-writeFileSync(join(dir, "studio.lock.pid"), process.pid + "\\n");
 if (process.env.MODE === "hold") {
   console.log("READY");
-  setInterval(() => {}, 1000);
+  // The callback keeps \`lock\` reachable: once the eval'd module's scope is
+  // collected, GC closes the connection and silently drops the lock.
+  setInterval(() => lock, 1000);
 } else {
-  db.close();
+  lock.release();
   console.log("ACQUIRED");
 }
 `;
 
 function spawnLockChild(dir: string, mode: "hold" | "try"): { child: ChildProcess; line: Promise<string> } {
-  const child = spawn(process.execPath, ["-e", CHILD_SCRIPT], {
-    cwd: KERNEL_DIR,
-    env: { ...process.env, BSQ_PATH: BETTER_SQLITE3, LOCK_DIR: dir, MODE: mode },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  // Node's ExperimentalWarning for strip-types goes to stderr; only stdout is read.
+  const child = spawn(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "-e", CHILD_SCRIPT],
+    {
+      cwd: KERNEL_DIR,
+      env: { ...process.env, LOCK_MODULE: LOCK_MODULE_URL, LOCK_DIR: dir, MODE: mode },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   children.push(child);
   const line = new Promise<string>((resolveLine, reject) => {
     let out = "";
@@ -494,7 +763,7 @@ describe("single-writer lock", () => {
     const err = catchError(() => new Store({ dataDir: tmp }));
     expect(err).toBeInstanceOf(StoreLockedError);
     expect((err as StoreLockedError).holderPid).toBe(child.pid);
-    expect((err as StoreLockedError).message).toContain(`held by pid ${child.pid} (as last recorded)`);
+    expect((err as StoreLockedError).message).toContain(`held by pid ${child.pid} (as last recorded; may be stale)`);
     // The lock is taken before studio.db is opened: the loser created nothing.
     expect(existsSync(join(tmp, DB_FILENAME))).toBe(false);
 
@@ -548,5 +817,176 @@ describe("single-writer lock", () => {
     const err = catchError(() => new Store({ dataDir: tmp }));
     expect(err).toBeInstanceOf(StoreLockedError);
     expect((err as StoreLockedError).holderPid).toBeUndefined();
+  });
+
+  it("reports an unknown holder when the PID file is missing while the holder is alive", async () => {
+    const { line } = spawnLockChild(tmp, "hold");
+    expect(await line).toBe("READY");
+    unlinkSync(join(tmp, LOCK_PID_FILENAME));
+
+    const err = catchError(() => new Store({ dataDir: tmp }));
+    expect(err).toBeInstanceOf(StoreLockedError);
+    expect((err as StoreLockedError).holderPid).toBeUndefined();
+    expect((err as StoreLockedError).message).toContain("held by another writer (pid unknown)");
+    expect(existsSync(join(tmp, DB_FILENAME))).toBe(false);
+  });
+
+  it("never has two holders when several processes race for the lock", async () => {
+    const racers = [0, 1, 2, 3].map(() => spawnLockChild(tmp, "hold").line);
+    const lines = await Promise.all(racers);
+    for (const l of lines) expect(["READY", "BUSY"]).toContain(l);
+    expect(lines.filter((l) => l === "READY").length).toBeLessThanOrEqual(1);
+  });
+
+  it("Store.close() twice is harmless and never drops a later holder's lock", async () => {
+    const a = open();
+    a.close();
+    expect(a.isOpen).toBe(false);
+    const b = open();
+    expect(() => a.close()).not.toThrow();
+    expect(b.isOpen).toBe(true);
+    expect(await childTry(tmp)).toBe("BUSY");
+  });
+
+  it("StoreLock.release() twice is harmless and never drops a later holder's lock", async () => {
+    const first = acquireStoreLock(tmp);
+    first.release();
+    const second = acquireStoreLock(tmp);
+    expect(() => first.release()).not.toThrow();
+    expect(await childTry(tmp)).toBe("BUSY");
+    second.release();
+    expect(await childTry(tmp)).toBe("ACQUIRED");
+  });
+
+  it("refuses a studio.db that did not enter WAL mode, closing it and releasing the lock", () => {
+    const opened: Database.Database[] = [];
+    const err = catchError(
+      () =>
+        new Store(
+          { dataDir: tmp },
+          {
+            // Stand-in for a filesystem where WAL is unsupported: SQLite then
+            // keeps the old mode and reports it instead of throwing.
+            openDatabase: (path) => {
+              const db = new Database(path);
+              opened.push(db);
+              const real = db.pragma.bind(db);
+              db.pragma = ((source: string, options?: Database.PragmaOptions) =>
+                source.startsWith("journal_mode") ? "delete" : real(source, options)) as typeof db.pragma;
+              return db;
+            },
+          },
+        ),
+    );
+    expect((err as Error).message).toBe("studio.db did not enter WAL mode (journal_mode=delete)");
+    expect(opened.map((db) => db.open)).toEqual([false]);
+    inspect(tmp, (db) => expect(tableNames(db)).toEqual([]));
+    open().close();
+  });
+});
+
+describe("acquireStoreLock: bounded retry", () => {
+  const coded = (code: string): Error => Object.assign(new Error(code), { code });
+  const realOpen = (path: string): Database.Database => new Database(path, { timeout: 0 });
+
+  it("retries a few times with 10-100 ms of backoff", () => {
+    expect(LOCK_RETRIES).toBeGreaterThanOrEqual(3);
+    expect(LOCK_RETRIES).toBeLessThanOrEqual(5);
+    expect([LOCK_RETRY_MIN_MS, LOCK_RETRY_MAX_MS]).toEqual([10, 100]);
+  });
+
+  it("acquires after a BUSY attempt once the holder lets go, with the same steps", () => {
+    const holder = acquireStoreLock(tmp);
+    const sleeps: number[] = [];
+    let opens = 0;
+    const lock = acquireStoreLock(tmp, {
+      open: (path) => {
+        opens++;
+        return realOpen(path);
+      },
+      // The first attempt hit a real BUSY; the holder lets go during the backoff.
+      sleep: (ms) => {
+        sleeps.push(ms);
+        holder.release();
+      },
+      random: () => 0.5,
+    });
+    expect(opens).toBe(2);
+    expect(sleeps).toEqual([55]);
+    // The retry holds the real lock.
+    expect(catchError(() => acquireStoreLock(tmp, { sleep: () => {} }))).toBeInstanceOf(StoreLockedError);
+    lock.release();
+  });
+
+  it("treats an injected SQLITE_BUSY_* result as BUSY and acquires on the next attempt", () => {
+    const sleeps: number[] = [];
+    let opens = 0;
+    const lock = acquireStoreLock(tmp, {
+      open: (path) => {
+        opens++;
+        if (opens === 1) throw coded("SQLITE_BUSY_TIMEOUT");
+        return realOpen(path);
+      },
+      sleep: (ms) => sleeps.push(ms),
+      random: () => 0,
+    });
+    expect(opens).toBe(2);
+    expect(sleeps).toEqual([10]);
+    lock.release();
+  });
+
+  it("refuses after the bounded retries when every attempt is BUSY, sleeping 10-100 ms before each", () => {
+    const holder = acquireStoreLock(tmp);
+    const sleeps: number[] = [];
+    const draws = [0, 0.999999, 0.5, Number.NaN, 0.25];
+    let opens = 0;
+    const err = catchError(() =>
+      acquireStoreLock(tmp, {
+        open: (path) => {
+          opens++;
+          return realOpen(path);
+        },
+        sleep: (ms) => sleeps.push(ms),
+        random: () => draws.shift() ?? 0,
+      }),
+    );
+    expect(err).toBeInstanceOf(StoreLockedError);
+    expect((err as StoreLockedError).holderPid).toBe(process.pid);
+    expect((err as StoreLockedError).message).toContain("may be stale");
+    expect(opens).toBe(LOCK_RETRIES + 1);
+    expect(sleeps).toHaveLength(LOCK_RETRIES);
+    for (const ms of sleeps) {
+      expect(ms).toBeGreaterThanOrEqual(LOCK_RETRY_MIN_MS);
+      expect(ms).toBeLessThanOrEqual(LOCK_RETRY_MAX_MS);
+    }
+    expect(sleeps.slice(0, 2)).toEqual([10, 100]);
+    holder.release();
+  });
+
+  it("rethrows a non-BUSY error at once, without retrying", () => {
+    const ioerr = coded("SQLITE_IOERR");
+    const sleeps: number[] = [];
+    let opens = 0;
+    const err = catchError(() =>
+      acquireStoreLock(tmp, {
+        open: () => {
+          opens++;
+          throw ioerr;
+        },
+        sleep: (ms) => sleeps.push(ms),
+      }),
+    );
+    expect(err).toBe(ioerr);
+    expect(opens).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it("rethrows a real non-BUSY error (studio.lock is a directory) and creates no studio.db", () => {
+    mkdirSync(join(tmp, "studio.lock"));
+    const err = catchError(() => new Store({ dataDir: tmp }));
+    expect(err).not.toBeInstanceOf(StoreLockedError);
+    expect((err as { code?: unknown }).code).toMatch(/^SQLITE_/);
+    expect((err as { code?: unknown }).code).not.toMatch(/^SQLITE_BUSY/);
+    expect(existsSync(join(tmp, DB_FILENAME))).toBe(false);
   });
 });

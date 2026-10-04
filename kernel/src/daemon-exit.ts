@@ -11,6 +11,7 @@
 // stderr line naming the cause and, under launchd, whether it restarts.
 import { AuthProviderError } from "./auth/types.js";
 import { LAUNCHD_ARGUMENT, THROTTLE_INTERVAL_SECONDS } from "./service/launchd.js";
+import { StoreIntegrityError, StoreSchemaTooNewError } from "./store/integrity.js";
 import { StoreLockedError } from "./store/lock.js";
 
 export const DAEMON_NAME = "loomwright-studio-kernel";
@@ -56,12 +57,18 @@ export type StartFailureKind = "permanent" | "transient";
 /** Why a retry can't fix `err` (an explicit allowlist), or `undefined` when it might. */
 function permanentReason(err: unknown): string | undefined {
   if (err instanceof StoreLockedError) return "another kernel holds the store lock";
+  if (err instanceof StoreIntegrityError) return "the store failed its integrity check";
+  if (err instanceof StoreSchemaTooNewError) return "the store's schema is newer than this kernel";
   if (err instanceof DaemonArgumentError) return "bad argument";
   if (err instanceof AuthProviderError && err.code === "unavailable") return "auth provider not in this build";
   return undefined;
 }
 
-/** Permanent only for the allowlist above; anything else (Keychain, API token, store errors) is transient. */
+/**
+ * Permanent only for the allowlist above (a refused store open is: the same
+ * database fails the same check on every retry); anything else (Keychain, API
+ * token, any other store error) is transient.
+ */
 export function startFailureKind(err: unknown): StartFailureKind {
   return permanentReason(err) === undefined ? "transient" : "permanent";
 }

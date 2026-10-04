@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
+import { checkAfterMigrating, checkBeforeMigrating } from "./integrity.js";
 import { acquireStoreLock } from "./lock.js";
 import type { StoreLock } from "./lock.js";
 import { migrations as defaultMigrations } from "./migrations/index.js";
@@ -31,6 +32,15 @@ export interface StoreOptions {
   readonly migrations?: readonly Migration[];
 }
 
+/**
+ * Test seam only: the kernel never passes it (`kernel.ts` builds a `Store`
+ * from `StoreOptions` alone) and it is not exported from `store/index.ts`.
+ */
+export interface StoreTestSeam {
+  /** Opens `studio.db`; defaults to `new Database(path)`. */
+  readonly openDatabase?: (path: string) => Database.Database;
+}
+
 export interface AppliedMigration {
   readonly version: number;
   readonly name: string;
@@ -43,8 +53,16 @@ export interface AppliedMigration {
  * any other process, is refused with `StoreLockedError`.
  *
  * Open order: create/chmod the data dir, take the lock, then open `studio.db`,
- * set pragmas and apply pending migrations. A refused opener never creates
- * `studio.db`.
+ * set pragmas, check the database (a schema newer than this kernel, or a
+ * missing or altered `events` table or trigger, is refused with a typed error
+ * before anything is written), apply pending migrations and check again. A
+ * refused opener never creates `studio.db`; any refusal after the lock closes
+ * the database and releases the lock.
+ *
+ * The `events` triggers block DML, not DDL. There is no raw multi-statement
+ * `exec`, but `prepare` still runs any single statement, DDL included, so a
+ * caller could drop a trigger; the next open then refuses the database
+ * (`integrity.ts`). Schema changes belong in a migration, never in `prepare`.
  */
 export class Store {
   readonly dataDir: string;
@@ -52,7 +70,7 @@ export class Store {
   readonly #db: Database.Database;
   readonly #lock: StoreLock;
 
-  constructor(options: StoreOptions = {}) {
+  constructor(options: StoreOptions = {}, seam: StoreTestSeam = {}) {
     this.dataDir = options.dataDir ?? resolveDataDir(process.env);
     this.dbPath = join(this.dataDir, DB_FILENAME);
 
@@ -61,14 +79,19 @@ export class Store {
 
     let db: Database.Database | undefined;
     try {
-      db = new Database(this.dbPath);
+      db = (seam.openDatabase ?? ((path: string) => new Database(path)))(this.dbPath);
       const mode = db.pragma("journal_mode = WAL", { simple: true });
       if (mode !== "wal") {
         throw new Error(`studio.db did not enter WAL mode (journal_mode=${String(mode)})`);
       }
       // Per connection, so set on every open.
       db.pragma("foreign_keys = ON");
-      applyMigrations(db, options.migrations ?? defaultMigrations);
+      const list = options.migrations ?? defaultMigrations;
+      validateMigrationList(list);
+      const applied = appliedVersions(db);
+      checkBeforeMigrating(db, this.dbPath, list, applied);
+      applyMigrations(db, list, applied);
+      checkAfterMigrating(db, this.dbPath, list);
     } catch (err) {
       db?.close();
       this.#lock.release();
@@ -85,10 +108,6 @@ export class Store {
     sql: string,
   ): Database.Statement<BindParameters, Result> {
     return this.#db.prepare<BindParameters, Result>(sql);
-  }
-
-  exec(sql: string): void {
-    this.#db.exec(sql);
   }
 
   pragma(source: string, options?: Database.PragmaOptions): unknown {
@@ -128,14 +147,10 @@ const CREATE_SCHEMA_MIGRATIONS = `CREATE TABLE IF NOT EXISTS schema_migrations (
 )`;
 
 /**
- * Apply every migration whose version is not yet recorded, ascending, each in
- * its own transaction together with its `schema_migrations` row. A migration
- * that throws rolls back entirely (including, on a fresh database, the
- * `schema_migrations` table itself).
+ * Validate the whole list before touching the database: versions must be
+ * contiguous from 1 (1, 2, 3, ...), as documented on `Migration.version`.
  */
-function applyMigrations(db: Database.Database, list: readonly Migration[]): void {
-  // Validate the whole list before touching the database: versions must be
-  // contiguous from 1 (1, 2, 3, ...), as documented on `Migration.version`.
+function validateMigrationList(list: readonly Migration[]): void {
   list.forEach((m, i) => {
     if (m.version !== i + 1) {
       throw new Error(
@@ -143,18 +158,32 @@ function applyMigrations(db: Database.Database, list: readonly Migration[]): voi
       );
     }
   });
+}
 
+/** Every version recorded in `schema_migrations`; none when the table does not exist yet. */
+function appliedVersions(db: Database.Database): number[] {
   const hasTable = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'")
     .get();
-  const applied = new Set<number>(
-    hasTable === undefined
-      ? []
-      : db.prepare<[], number>("SELECT version FROM schema_migrations").pluck().all(),
-  );
+  return hasTable === undefined
+    ? []
+    : db.prepare<[], number>("SELECT version FROM schema_migrations").pluck().all();
+}
 
+/**
+ * Apply every migration of `list` whose version is not in `applied`,
+ * ascending, each in its own transaction together with its `schema_migrations`
+ * row. A migration that throws rolls back entirely (including, on a fresh
+ * database, the `schema_migrations` table itself).
+ */
+function applyMigrations(
+  db: Database.Database,
+  list: readonly Migration[],
+  applied: readonly number[],
+): void {
+  const done = new Set(applied);
   for (const m of list) {
-    if (applied.has(m.version)) continue;
+    if (done.has(m.version)) continue;
     db.transaction(() => {
       db.exec(CREATE_SCHEMA_MIGRATIONS);
       if (typeof m.up === "string") db.exec(m.up);
