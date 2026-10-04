@@ -70,6 +70,10 @@ export const CREDENTIAL_ENV_VARS: readonly string[] = Object.freeze([
   "CLAUDE_BRIDGE_SESSION_INGRESS_URL",
   "CLAUDE_REMOTE_TOOLS_BRIDGE_URL",
   "CLAUDE_CODE_GB_BASE_URL",
+  // API endpoint switch: re-points the CLI's API requests (and the credential
+  // they carry) at another host. The bundled CLI reads it, and its own
+  // settings-env deny-list names it next to CLAUDE_CODE_CUSTOM_OAUTH_URL.
+  "CLAUDE_CODE_API_BASE_URL",
 ]);
 
 const CREDENTIAL_SET: ReadonlySet<string> = new Set(CREDENTIAL_ENV_VARS);

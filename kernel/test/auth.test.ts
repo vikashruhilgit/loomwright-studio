@@ -20,6 +20,7 @@ import {
   isCredentialEnvVar,
   isPlausibleApiKey,
   isWholeToken,
+  parseTokenCreatedAt,
   readProviderMetadata,
   recordTokenCreated,
   securityCliKeychain,
@@ -94,6 +95,15 @@ const OAUTH_ENDPOINT_SWITCHES = [
   "CLAUDE_CODE_GB_BASE_URL",
 ] as const;
 
+/**
+ * The CLI's API endpoint switch, pinned by a LITERAL list for the same reason:
+ * it can send the credential to a host other than Anthropic's.
+ */
+const API_ENDPOINT_SWITCHES = ["CLAUDE_CODE_API_BASE_URL"] as const;
+
+/** Every endpoint switch a child env must never carry. */
+const ENDPOINT_SWITCHES = [...OAUTH_ENDPOINT_SWITCHES, ...API_ENDPOINT_SWITCHES] as const;
+
 const PARENT_ENV = {
   PATH: "/usr/bin:/bin",
   HOME: "/Users/someone",
@@ -117,6 +127,7 @@ const PARENT_ENV = {
   CLAUDE_BRIDGE_SESSION_INGRESS_URL: "https://stray-ingress.invalid",
   CLAUDE_REMOTE_TOOLS_BRIDGE_URL: "https://stray-tools.invalid",
   CLAUDE_CODE_GB_BASE_URL: "https://stray-gb.invalid",
+  CLAUDE_CODE_API_BASE_URL: "https://stray-api-base.invalid",
   UNSET_VALUE: undefined,
 } as const;
 
@@ -208,6 +219,55 @@ describe("AuthProvider (AC1)", () => {
     const store = openStore();
     expect(() => recordTokenCreated(store, "subscription-token", "a", "not a date")).toThrow(RangeError);
     expect(readProviderMetadata(store, "subscription-token")).toBeUndefined();
+  });
+
+  describe("strict creation dates (one parser for writer and reader)", () => {
+    const AT = new Date("2030-01-15T23:30:00.000Z");
+
+    it.each([
+      ["9999", "a bare year"],
+      ["12345", "a bare number"],
+      ["2030-02-30T00:00:00Z", "a day that does not exist"],
+      ["2030-01-01T24:00:00Z", "hour 24"],
+      ["2030-01-15", "a date without a time"],
+      ["2030-01-15T10:00:00", "a time without Z"],
+      ["2030-01-15T10:00:00+00:00", "an offset instead of Z"],
+      ["+012345-01-01T00:00:00.000Z", "an extended year (what the old writer stored for 12345)"],
+      ["2030-01-15T23:30:00.001Z", "one millisecond after now"],
+      ["2031-01-01T00:00:00Z", "a future date"],
+    ])("recordTokenCreated refuses %j (%s) and writes nothing", (raw) => {
+      const store = openStore();
+      expect(parseTokenCreatedAt(raw, AT)).toBeNull();
+      expect(() => recordTokenCreated(store, "subscription-token", "a", raw, AT)).toThrow(RangeError);
+      expect(readProviderMetadata(store, "subscription-token")).toBeUndefined();
+    });
+
+    it.each([
+      ["2029-02-28T10:00:00Z", "2029-02-28T10:00:00.000Z"],
+      ["2028-02-29T10:00:00.250Z", "2028-02-29T10:00:00.250Z"],
+      ["2030-01-15T23:30:00.000Z", "2030-01-15T23:30:00.000Z"],
+    ])("recordTokenCreated accepts %j (with or without millis, up to now) and stores %j", (raw, stored) => {
+      const store = openStore();
+      recordTokenCreated(store, "subscription-token", "a", raw, AT);
+      expect(readProviderMetadata(store, "subscription-token")?.token_created_at).toBe(stored);
+      expect(parseTokenCreatedAt(stored, AT)).toBe(Date.parse(raw));
+    });
+
+    it("an invalid writer clock refuses every date", () => {
+      const store = openStore();
+      expect(() => recordTokenCreated(store, "subscription-token", "a", "2029-02-28T10:00:00Z", new Date(Number.NaN))).toThrow(
+        RangeError,
+      );
+      expect(readProviderMetadata(store, "subscription-token")).toBeUndefined();
+    });
+
+    it("defaults the writer clock to the current time", () => {
+      const store = openStore();
+      const future = new Date(Date.now() + 10 * DAY_MS).toISOString();
+      expect(() => recordTokenCreated(store, "subscription-token", "a", future)).toThrow(RangeError);
+      recordTokenCreated(store, "subscription-token", "a", "2026-09-30T10:00:00Z");
+      expect(readProviderMetadata(store, "subscription-token")?.token_created_at).toBe("2026-09-30T10:00:00.000Z");
+    });
   });
 });
 
@@ -303,6 +363,11 @@ describe("stripCredentialEnv", () => {
     expect(stripCredentialEnv({ [name]: "v", PATH: "/bin" })).toEqual({ PATH: "/bin" });
   });
 
+  it.each(API_ENDPOINT_SWITCHES.map((name) => [name]))("removes the API endpoint switch %s", (name) => {
+    expect(isCredentialEnvVar(name)).toBe(true);
+    expect(stripCredentialEnv({ [name]: "v", PATH: "/bin" })).toEqual({ PATH: "/bin" });
+  });
+
   it.each([
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -362,7 +427,7 @@ describe("subscription-token provider (AC2)", () => {
     ]) {
       expect(env).not.toHaveProperty(stray);
     }
-    for (const name of OAUTH_ENDPOINT_SWITCHES) {
+    for (const name of ENDPOINT_SWITCHES) {
       expect(parent).toHaveProperty(name);
       expect(env).not.toHaveProperty(name);
     }
@@ -411,7 +476,7 @@ describe("api-key provider (AC5, stubbed Keychain only)", () => {
     expect(env).not.toHaveProperty("ANTHROPIC_AUTH_TOKEN");
     expect(env).not.toHaveProperty("AWS_BEARER_TOKEN_BEDROCK");
     expect(env).not.toHaveProperty("CLAUDE_CODE_USE_BEDROCK");
-    for (const name of OAUTH_ENDPOINT_SWITCHES) {
+    for (const name of ENDPOINT_SWITCHES) {
       expect(PARENT_ENV).toHaveProperty(name);
       expect(env).not.toHaveProperty(name);
     }
@@ -502,7 +567,7 @@ describe("expiry (AC4)", () => {
   const createdDaysAgo = (days: number): string => new Date(NOW.getTime() - days * DAY_MS).toISOString();
 
   function subscription(store: Store, createdAt: string | undefined, now: Date = NOW): AuthProvider {
-    if (createdAt !== undefined) recordTokenCreated(store, "subscription-token", "owner", createdAt);
+    if (createdAt !== undefined) recordTokenCreated(store, "subscription-token", "owner", createdAt, now);
     return createSubscriptionTokenProvider({
       keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
       store,
@@ -540,7 +605,7 @@ describe("expiry (AC4)", () => {
 
   it("missing and invalid_shape take precedence over expiring", () => {
     const store = openStore();
-    recordTokenCreated(store, "subscription-token", "owner", createdDaysAgo(360));
+    recordTokenCreated(store, "subscription-token", "owner", createdDaysAgo(360), NOW);
     const make = (items: Record<string, string>): AuthProvider =>
       createSubscriptionTokenProvider({ keychain: stubKeychain(items), store, now: () => NOW });
     expect(make({}).health()).toEqual({ status: "missing" });
@@ -617,6 +682,37 @@ describe("health() is total (H02)", () => {
       expect(withRawCreatedAt(raw).health()).toEqual({ status: "error", reason: "token_created_at_unreadable" });
     },
   );
+
+  it.each([
+    "9999",
+    "12345",
+    "2030-02-30T00:00:00Z",
+    // What the old, looser writer stored for "9999" and "12345".
+    "9999-01-01T00:00:00.000Z",
+    "+012345-01-01T00:00:00.000Z",
+    // After the instant the check runs at (NOW is 2030-01-15T23:30:00.000Z).
+    "2030-01-16T00:00:00Z",
+  ])("an implausible token_created_at (%j) is error(token_created_at_unreadable), never ok and never a throw", (raw) => {
+    let health: AuthHealth | undefined;
+    expect(() => {
+      health = withRawCreatedAt(raw).health();
+    }).not.toThrow();
+    expect(health).toEqual({ status: "error", reason: "token_created_at_unreadable" });
+  });
+
+  it("a creation date after the provider clock but not after `at` is judged at `at`", () => {
+    const provider = withRawCreatedAt("2030-01-16T00:00:00Z");
+    expect(provider.health()).toEqual({ status: "error", reason: "token_created_at_unreadable" });
+    expect(provider.health(new Date("2030-01-16T00:00:00Z"))).toEqual({ status: "ok" });
+  });
+
+  it.each([
+    ["2029-02-10T23:30:00Z", { status: "expiring", days: 26 }],
+    ["2029-02-10T23:30:00.000Z", { status: "expiring", days: 26 }],
+    ["2030-01-15T23:30:00.000Z", { status: "ok" }],
+  ])("a valid stored token_created_at (%j) still reads as %o", (raw, expected) => {
+    expect(withRawCreatedAt(raw).health()).toEqual(expected);
+  });
 
   it("a metadata read that throws is error(token_created_at_unreadable)", () => {
     const store = openStore();
@@ -703,7 +799,7 @@ describe("checkAuthHealth (AC4 notify event)", () => {
 
   it("appends one notify event with the documented payload when expiring", () => {
     const store = openStore();
-    recordTokenCreated(store, "subscription-token", "owner-personal", created);
+    recordTokenCreated(store, "subscription-token", "owner-personal", created, NOW);
     const provider = createSubscriptionTokenProvider({
       keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
       store,
@@ -723,7 +819,7 @@ describe("checkAuthHealth (AC4 notify event)", () => {
 
   it("writes once per provider per UTC day of the injected clock", () => {
     const store = openStore();
-    recordTokenCreated(store, "subscription-token", "owner", created);
+    recordTokenCreated(store, "subscription-token", "owner", created, NOW);
     let now = NOW;
     const provider = createSubscriptionTokenProvider({
       keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
@@ -776,7 +872,7 @@ describe("checkAuthHealth (AC4 notify event)", () => {
 
   it("one clock: the day count comes from the injected instant even when the provider's deps.now disagrees", () => {
     const store = openStore();
-    recordTokenCreated(store, "subscription-token", "owner", created);
+    recordTokenCreated(store, "subscription-token", "owner", created, NOW);
     const provider = createSubscriptionTokenProvider({
       keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
       store,
@@ -854,7 +950,7 @@ describe("secret hygiene (AC3)", () => {
 
     const store = openStore();
     const now = new Date("2030-01-15T12:00:00.000Z");
-    recordTokenCreated(store, "subscription-token", "owner", new Date(now.getTime() - 350 * DAY_MS).toISOString());
+    recordTokenCreated(store, "subscription-token", "owner", new Date(now.getTime() - 350 * DAY_MS).toISOString(), now);
 
     const whole = createSubscriptionTokenProvider({
       keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),

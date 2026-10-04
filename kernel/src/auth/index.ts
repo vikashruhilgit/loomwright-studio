@@ -16,7 +16,7 @@ export { KeychainError, SECURITY_BIN, securityCliKeychain, securityCliKeychainWr
 export type { ExecFileSyncLike, ExecOptions, KeychainReader, KeychainWriter } from "./keychain.js";
 export { CREDENTIAL_ENV_PREFIX, CREDENTIAL_ENV_VARS, isCredentialEnvVar, stripCredentialEnv } from "./credential-env.js";
 export { isPlausibleApiKey, isWholeToken } from "./token-shape.js";
-export { readProviderMetadata, recordTokenCreated } from "./metadata.js";
+export { parseTokenCreatedAt, readProviderMetadata, recordTokenCreated } from "./metadata.js";
 export type { ProviderMetadata } from "./metadata.js";
 export { API_KEY_ENV_VAR, API_KEY_KEYCHAIN_SERVICE, API_KEY_PROVIDER_ID, createApiKeyProvider } from "./api-key.js";
 export { SUBSCRIPTION_TOKEN_ID, availableProviderIds, selectAuthProvider } from "./registry.js";

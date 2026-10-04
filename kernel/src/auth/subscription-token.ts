@@ -3,7 +3,7 @@
 // build (tsconfig.distribution.json) can leave it out of dist/ entirely.
 import { stripCredentialEnv } from "./credential-env.js";
 import { securityCliKeychain } from "./keychain.js";
-import { readProviderMetadata } from "./metadata.js";
+import { parseTokenCreatedAt, readProviderMetadata } from "./metadata.js";
 import { isWholeToken } from "./token-shape.js";
 import { AuthProviderError } from "./types.js";
 import type { AuthHealth, AuthProvider, AuthProviderDeps, BaseEnv, ChildEnv } from "./types.js";
@@ -40,7 +40,8 @@ export function tokenDaysLeft(createdAtIso: string, now: Date): number {
  * In `buildEnv`, a Keychain failure other than "not found" propagates as
  * `KeychainError`. `health()` is total: the same failure is
  * `error` (`keychain_unreadable`), an invalid clock is `error`
- * (`clock_unreadable`) and an unreadable creation date is `error`
+ * (`clock_unreadable`) and an unreadable creation date (one
+ * `parseTokenCreatedAt` refuses at the check's instant) is `error`
  * (`token_created_at_unreadable`), never `ok` and never a throw.
  */
 export function createSubscriptionTokenProvider(deps: AuthProviderDeps = {}): AuthProvider {
@@ -106,8 +107,10 @@ export function createSubscriptionTokenProvider(deps: AuthProviderDeps = {}): Au
         return { status: "error", reason: "token_created_at_unreadable" };
       }
       if (createdAt === undefined || createdAt === null) return { status: "ok" };
-      // The column has no CHECK: a row written by hand can hold anything.
-      if (typeof createdAt !== "string" || !Number.isFinite(Date.parse(createdAt))) {
+      // The column has no CHECK: a row written by hand (or by an older, looser
+      // writer) can hold anything. The same parser as the writer, at the same
+      // instant this check runs at: a date it refuses is never `ok`.
+      if (parseTokenCreatedAt(createdAt, instant) === null) {
         return { status: "error", reason: "token_created_at_unreadable" };
       }
       const days = tokenDaysLeft(createdAt, instant);

@@ -12,8 +12,9 @@ import type { KeychainReader } from "./keychain.js";
  *   (`getTime()` is not finite) or the provider's clock threw, so no day count
  *   can be computed.
  * - `token_created_at_unreadable`: the recorded creation date cannot be read
- *   (not a parseable date, the metadata read failed, or the day count it gives
- *   is not finite).
+ *   (not a strict ISO-8601 UTC timestamp of a real calendar date, after the
+ *   instant the check runs at, the metadata read failed, or the day count it
+ *   gives is not finite). `parseTokenCreatedAt` decides the date part.
  * - `health_threw`: used ONLY by `/status`'s defensive wrapper, for a provider
  *   whose `health()` still throws (a test stub, a future provider). The
  *   providers in this package never return it.

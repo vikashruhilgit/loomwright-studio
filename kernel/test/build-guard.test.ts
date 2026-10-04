@@ -9,6 +9,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -239,6 +240,74 @@ describe("build out-dir guard", () => {
     expect(lstatSync(join(kernel, "dist")).isSymbolicLink()).toBe(true);
     expect(existsSync(nowhere)).toBe(false);
     expect(existsSync(join(kernel, "src", "sentinel.txt"))).toBe(true);
+  });
+
+  it("refuses the default build through a live kernel/dist symlink to an EMPTY directory outside kernel/, leaving both alone", () => {
+    const root = newRoot();
+    const kernel = fakeKernel(root);
+    rmSync(join(kernel, "dist"), { recursive: true });
+    const outside = join(root, "outside-empty");
+    mkdirSync(outside);
+    symlinkSync(outside, join(kernel, "dist"));
+    expectRefused(kernel, [], "kernel/dist exists but is not a directory", [], { distSentinel: false });
+    // Every spelling that resolves to or through the link is refused too.
+    for (const args of [["--out-dir", "dist"], ["--out-dir", join(kernel, "dist")], ["--out-dir", join("dist", "sub")]]) {
+      expectRefused(kernel, args, "kernel/dist exists but is not a directory", [], { distSentinel: false });
+    }
+    expect(lstatSync(join(kernel, "dist")).isSymbolicLink()).toBe(true);
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it("refuses the default build through a live kernel/dist symlink to a MARKED directory outside kernel/, deleting nothing", () => {
+    const root = newRoot();
+    const kernel = fakeKernel(root);
+    rmSync(join(kernel, "dist"), { recursive: true });
+    const outside = join(root, "outside-marked");
+    mkdirSync(outside);
+    writeFileSync(join(outside, MARKER), "planted\n");
+    writeFileSync(join(outside, "precious.txt"), "keep\n");
+    symlinkSync(outside, join(kernel, "dist"));
+    // A second link to the link: still resolves through the kernel/dist entry.
+    const viaLink = join(root, "via-link");
+    symlinkSync(join(kernel, "dist"), viaLink);
+    expectRefused(kernel, [], "kernel/dist exists but is not a directory", [join(outside, "precious.txt")], {
+      distSentinel: false,
+    });
+    expectRefused(kernel, ["--out-dir", viaLink], "kernel/dist exists but is not a directory", [join(outside, "precious.txt")], {
+      distSentinel: false,
+    });
+    expect(lstatSync(join(kernel, "dist")).isSymbolicLink()).toBe(true);
+    expect(readdirSync(outside).sort()).toEqual([MARKER, "precious.txt"]);
+  });
+
+  it("control: with kernel/dist a symlink to an outside marked dir, that dir named DIRECTLY is still built into", () => {
+    // Layer 3b refuses only a path through the kernel/dist entry; the same
+    // target reached another way is judged by layers 1-5 like any path.
+    const root = newRoot();
+    const kernel = fakeKernel(root);
+    rmSync(join(kernel, "dist"), { recursive: true });
+    const outside = join(root, "outside-direct");
+    mkdirSync(outside);
+    writeFileSync(join(outside, MARKER), "");
+    symlinkSync(outside, join(kernel, "dist"));
+    const r = runBuild(kernel, ["--out-dir", outside]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(readdirSync(outside).sort()).toEqual([MARKER, "stub-output.js"]);
+    expect(lstatSync(join(kernel, "dist")).isSymbolicLink()).toBe(true);
+  });
+
+  it("refuses the default build when kernel/dist is a regular file, leaving the file alone", () => {
+    const root = newRoot();
+    const kernel = fakeKernel(root);
+    rmSync(join(kernel, "dist"), { recursive: true });
+    const distFile = join(kernel, "dist");
+    writeFileSync(distFile, "keep\n");
+    expectRefused(kernel, [], "kernel/dist exists but is not a directory", [distFile], { distSentinel: false });
+    expectRefused(kernel, ["--out-dir", distFile], "kernel/dist exists but is not a directory", [distFile], {
+      distSentinel: false,
+    });
+    expect(lstatSync(distFile).isFile()).toBe(true);
+    expect(readFileSync(distFile, "utf8")).toBe("keep\n");
   });
 
   it.skipIf(!PROBES.caseInsensitive)(
