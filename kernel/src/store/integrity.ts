@@ -55,9 +55,17 @@ export interface AppendOnlyObject {
  * Per kernel migration, the append-only objects it creates and their exact
  * stored text. A test pins every string against a fresh store.
  *
- * A future migration that ALTERs one of these objects (`ALTER TABLE events ADD
- * COLUMN ...` rewrites the table's stored text) must update that object's
- * expected text here for its version, or every open after it is refused.
+ * Each object has exactly one expected text: the one its creating migration
+ * wrote, checked at every version from that migration on. A future migration
+ * that ALTERs or recreates one of these objects (`ALTER TABLE events ADD COLUMN
+ * ...` rewrites the table's stored text) therefore cannot be handled by editing
+ * a string here: the old text is still what a database awaiting that migration
+ * holds, and the new text is what it holds afterwards, so either single text
+ * refuses one side of the upgrade. Such a migration must first extend the
+ * check itself to expect per-version text (the text as of the version the
+ * database has reached), and the v7 -> v8 upgrade test pattern in
+ * `test/store.test.ts` must cover it (a database at the previous version opens
+ * and migrates, and one at the new version reopens).
  */
 export const APPEND_ONLY_OBJECTS: ReadonlyArray<{
   readonly migration: Migration;
@@ -135,8 +143,10 @@ END`,
  *   on a `schema_migrations` row, which DML can forge): refuses when nothing is
  *   recorded but the database has objects; when an append-only object of a
  *   recorded version is missing or altered; when one of a version not yet
- *   recorded already exists (its row was deleted); or when `events` has a
- *   trigger the kernel did not create (one could swallow appends).
+ *   recorded already exists (its row was deleted); or when the database has
+ *   any trigger the kernel did not create, on any table or view (one on
+ *   `events` could swallow appends; one elsewhere could forge them, such as a
+ *   kill-switch event).
  *
  * Objects of versions not yet recorded are not required, so an older database
  * whose later migrations are simply pending opens normally.
@@ -232,10 +242,10 @@ function objectProblems(
     "SELECT type, sql FROM sqlite_master WHERE name = ?",
   );
   const problems: string[] = [];
-  const known = new Set<string>();
+  const known = new Set<string>(); // kernel trigger names, lowercase
   for (const [version, objects] of expected) {
     for (const object of objects) {
-      known.add(object.name.toLowerCase());
+      if (object.type === "trigger") known.add(object.name.toLowerCase());
       const found = lookup.get(object.name);
       if (version <= reached) {
         if (found === undefined) problems.push(`${object.type} ${object.name} is missing`);
@@ -248,14 +258,20 @@ function objectProblems(
     }
   }
 
+  // Every trigger, whatever table or view it is on: the kernel creates
+  // triggers only on events, but a trigger elsewhere can still write into
+  // events. Trigger names are case-insensitive in SQLite, hence lowercase. A
+  // future migration that creates any trigger must list it above (the pinning
+  // test in test/store.test.ts fails on a fresh store otherwise).
   const triggers = db
-    .prepare<[], string>(
-      "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'events' COLLATE NOCASE ORDER BY name",
+    .prepare<[], { name: string; tbl_name: string }>(
+      "SELECT name, tbl_name FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
     )
-    .pluck()
     .all();
-  for (const name of triggers) {
-    if (!known.has(name.toLowerCase())) problems.push(`trigger ${name} on events was not created by the kernel`);
+  for (const { name, tbl_name } of triggers) {
+    if (!known.has(name.toLowerCase())) {
+      problems.push(`trigger ${name} on ${tbl_name} was not created by the kernel`);
+    }
   }
   return problems;
 }

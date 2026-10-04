@@ -511,9 +511,9 @@ describe("Store: integrity check at open", () => {
         expect(lookup.get(o.name)).toEqual({ type: o.type, sql: o.sql });
       }
     }
-    // Every trigger on events is one of them.
+    // Every trigger in the database is one of them.
     const triggers = store
-      .prepare<[], string>("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'events'")
+      .prepare<[], string>("SELECT name FROM sqlite_master WHERE type = 'trigger'")
       .pluck()
       .all();
     expect([...triggers].sort()).toEqual(names.filter((n) => n !== "events").sort());
@@ -572,6 +572,31 @@ describe("Store: integrity check at open", () => {
     expect(refusal(StoreIntegrityError).problems).toEqual([
       "trigger events_swallow on events was not created by the kernel",
     ]);
+  });
+
+  it.each([
+    [
+      "a trigger on another table that inserts into events",
+      "CREATE TABLE x (a); CREATE TRIGGER fwd AFTER INSERT ON x BEGIN INSERT INTO events (kind) VALUES ('kill_switch_engaged'); END;",
+      "trigger fwd on x was not created by the kernel",
+    ],
+    [
+      "an INSTEAD OF trigger on a view that inserts into events",
+      "CREATE VIEW v AS SELECT 1 AS a; CREATE TRIGGER fwd_view INSTEAD OF INSERT ON v BEGIN INSERT INTO events (kind) VALUES ('kill_switch_engaged'); END;",
+      "trigger fwd_view on v was not created by the kernel",
+    ],
+  ])("refuses %s (it could forge appends)", (_, sql, problem) => {
+    open().close();
+    tamper(sql);
+    expect(refusal(StoreIntegrityError).problems).toEqual([problem]);
+  });
+
+  it("refuses a foreign trigger that borrows the events table's name", () => {
+    open().close();
+    tamper("CREATE TRIGGER events AFTER INSERT ON events BEGIN SELECT 1; END;");
+    expect(refusal(StoreIntegrityError).problems).toContain(
+      "trigger events on events was not created by the kernel",
+    );
   });
 
   describe("does not trust schema_migrations alone", () => {
