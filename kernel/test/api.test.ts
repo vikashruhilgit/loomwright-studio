@@ -8,11 +8,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startApiServer } from "../src/api/index.js";
 import type { ApiServer, ApiServerOptions, StatusBody } from "../src/api/index.js";
 import type { AuthProvider } from "../src/auth/index.js";
-import { SessionManager } from "../src/sessions/index.js";
+import { CLIENT_HEADER } from "../src/api/server.js";
+import { SessionError, SessionManager } from "../src/sessions/index.js";
 import type { SessionHandle, SessionRow } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import { kernelVersion } from "../src/version.js";
-import { fakeSessions, flush, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
+import { fakeSessions, flush, makePluginDir, startParams, stubProvider, unexpectedAbandon } from "./session-fakes.js";
 
 const TOKEN = "0123456789abcdef".repeat(4);
 const WRONG = "fedcba9876543210".repeat(4);
@@ -53,7 +54,7 @@ async function serve(overrides: Partial<ApiServerOptions> = {}): Promise<ApiServ
   const server = await startApiServer(
     {
       store,
-      sessions: { stopAll: async () => [] },
+      sessions: { stopAll: async () => [], abandonSession: unexpectedAbandon },
       loop: fakeLoop(),
       authProviders: [stubProvider()],
       token: TOKEN,
@@ -73,8 +74,12 @@ interface Answer {
   json(): unknown;
 }
 
-async function call(server: ApiServer, path: string, init: { method?: string; auth?: string | null } = {}): Promise<Answer> {
-  const headers: Record<string, string> = {};
+async function call(
+  server: ApiServer,
+  path: string,
+  init: { method?: string; auth?: string | null; headers?: Record<string, string> } = {},
+): Promise<Answer> {
+  const headers: Record<string, string> = { ...init.headers };
   const auth = init.auth === undefined ? `Bearer ${TOKEN}` : init.auth;
   if (auth !== null) headers["Authorization"] = auth;
   const res = await fetch(`http://127.0.0.1:${server.port}${path}`, { method: init.method ?? "GET", headers });
@@ -135,12 +140,15 @@ describe("authentication (AC1, AC5)", () => {
     ["an unknown path, unauthenticated", null, "GET", "/nope"],
     ["a wrong method, unauthenticated", `Bearer ${WRONG}`, "DELETE", "/status"],
     ["POST /stop-all with a wrong token", `Bearer ${WRONG}`, "POST", "/stop-all"],
+    ["POST /sessions/<id>/abandon, unauthenticated", null, "POST", "/sessions/1/abandon"],
+    ["POST /sessions/<id>/abandon with a wrong token", `Bearer ${WRONG}`, "POST", "/sessions/1/abandon"],
+    ["a malformed abandon path, unauthenticated", null, "POST", "/sessions/0/abandon"],
   ];
   for (const [name, auth, method, path] of cases) {
     it(`answers 401 for ${name}, never echoing a token`, async () => {
       const loop = fakeLoop();
       const stopAll = vi.fn(async () => []);
-      const server = await serve({ loop, sessions: { stopAll } });
+      const server = await serve({ loop, sessions: { stopAll, abandonSession: unexpectedAbandon } });
       const res = await call(server, path, { method, auth });
       expect(res.status).toBe(401);
       expect(res.text).toBe('{"error":"unauthorized"}');
@@ -233,6 +241,7 @@ describe("GET /status (AC2)", () => {
         { id: 5, agent: "wright", status: "failed", pgid: 2000000005, kill_incomplete_at: "2026-10-02T07:10:00.000Z" },
         { id: 6, agent: null, status: "failed:auth", pgid: 2000000006, kill_incomplete_at: "2026-10-02T07:20:00.000Z" },
       ],
+      orphaned: [],
       queue: {
         pending: 2,
         events: [
@@ -359,6 +368,7 @@ describe("POST /stop-all and /resume (AC3, AC5)", () => {
         order.push("sessions.stopAll");
         return manager.stopAll();
       },
+      abandonSession: unexpectedAbandon,
     };
     const server = await serve({ loop, sessions });
 
@@ -433,6 +443,7 @@ describe("POST /stop-all and /resume (AC3, AC5)", () => {
         stopAll: async () => {
           throw new Error("internal detail");
         },
+        abandonSession: unexpectedAbandon,
       },
     });
     const res = await call(server, "/stop-all", { method: "POST" });
@@ -448,5 +459,105 @@ describe("POST /stop-all and /resume (AC3, AC5)", () => {
     await server.close();
     const err = await fetch(`http://127.0.0.1:${port}/status`).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
+  });
+});
+
+describe("POST /sessions/<id>/abandon and /status orphaned (H04, AC4)", () => {
+  function realManager() {
+    const fakes = fakeSessions();
+    const manager = new SessionManager(
+      { store, authProvider: stubProvider(), loomwrightPath: makePluginDir(tmp), stopGraceMs: 10, baseEnv: { PATH: "/usr/bin" } },
+      fakes.deps,
+    );
+    return { manager, ...fakes };
+  }
+
+  /** An `orphaned` row whose kernel event records `reason`. */
+  function orphan(id: number, reason: string): void {
+    store.prepare("INSERT INTO sessions (id, agent, status, pgid, updated_at) VALUES (?, 'wright', 'orphaned', ?, '2026-10-02T08:00:00.000Z')").run(id, 2000000000 + id);
+    store
+      .prepare("INSERT INTO events (at, kind, actor, session_id, payload_json) VALUES ('2026-10-02T08:00:00.000Z', 'session_status', 'kernel', ?, ?)")
+      .run(id, JSON.stringify({ from: "running", to: "orphaned", reason, pgid: 2000000000 + id }));
+  }
+
+  function lastStatusPayload(id: number): Record<string, unknown> {
+    const raw = store
+      .prepare<[number], string>("SELECT payload_json FROM events WHERE kind = 'session_status' AND session_id = ? ORDER BY id DESC LIMIT 1")
+      .pluck()
+      .get(id);
+    return JSON.parse(raw ?? "{}") as Record<string, unknown>;
+  }
+
+  it("abandons a leader_unverified orphan (200), via cli only when the client header says so, and lists orphans in /status", async () => {
+    orphan(7, "leader_unverified");
+    orphan(8, "leader_unverified");
+    orphan(9, "reap_error");
+    const server = await serve({ sessions: realManager().manager });
+
+    const before = (await call(server, "/status")).json() as StatusBody;
+    expect(before.orphaned).toEqual([
+      { id: 7, agent: "wright", pgid: 2000000007, reason: "leader_unverified", updated_at: "2026-10-02T08:00:00.000Z" },
+      { id: 8, agent: "wright", pgid: 2000000008, reason: "leader_unverified", updated_at: "2026-10-02T08:00:00.000Z" },
+      { id: 9, agent: "wright", pgid: 2000000009, reason: "reap_error", updated_at: "2026-10-02T08:00:00.000Z" },
+    ]);
+
+    const viaCli = await call(server, "/sessions/7/abandon", { method: "POST", headers: { [CLIENT_HEADER]: "cli" } });
+    expect(viaCli.status).toBe(200);
+    expect(viaCli.json()).toEqual({ id: 7, status: "abandoned" });
+    expect(lastStatusPayload(7)).toMatchObject({ from: "orphaned", to: "abandoned", by: "owner", via: "cli" });
+    const viaApi = await call(server, "/sessions/8/abandon", { method: "POST" });
+    expect(viaApi.json()).toEqual({ id: 8, status: "abandoned" });
+    expect(lastStatusPayload(8)).toMatchObject({ to: "abandoned", by: "owner", via: "api" });
+
+    // Abandoned rows are neither running sessions nor orphans.
+    const after = (await call(server, "/status")).json() as StatusBody;
+    expect(after.orphaned.map((o) => o.id)).toEqual([9]);
+    expect(after.sessions).toEqual([]);
+  });
+
+  it("answers 409 with the stable code for a refusal, 404 for no such row, 400 for an id that is not a safe positive integer", async () => {
+    orphan(9, "reap_error");
+    store.prepare("INSERT INTO sessions (id, agent, status) VALUES (10, 'wright', 'interrupted')").run();
+    const server = await serve({ sessions: realManager().manager });
+    for (const id of [9, 10]) {
+      const res = await call(server, `/sessions/${id}/abandon`, { method: "POST" });
+      expect(res.status).toBe(409);
+      expect(res.json()).toEqual({ error: "not_abandonable" });
+    }
+    const missing = await call(server, "/sessions/77/abandon", { method: "POST" });
+    expect(missing.status).toBe(404);
+    expect(missing.json()).toEqual({ error: "not_found" });
+    for (const id of ["0", "9007199254740993", "00"]) {
+      const res = await call(server, `/sessions/${id}/abandon`, { method: "POST" });
+      expect(res.status, id).toBe(400);
+      expect(res.json()).toEqual({ error: "invalid_id" });
+    }
+    expect(store.prepare("SELECT status FROM sessions WHERE id = 9").pluck().get()).toBe("orphaned");
+  });
+
+  it("treats any other shape as an unknown path (404), and a GET as 405", async () => {
+    const abandonSession = vi.fn(() => "abandoned" as const);
+    const server = await serve({ sessions: { stopAll: async () => [], abandonSession } });
+    for (const path of ["/sessions/abc/abandon", "/sessions/-1/abandon", "/sessions/7/abandon/x", "/sessions/7", "/sessions//abandon"]) {
+      expect((await call(server, path, { method: "POST" })).status, path).toBe(404);
+    }
+    const get = await call(server, "/sessions/7/abandon");
+    expect(get.status).toBe(405);
+    expect(get.headers.get("allow")).toBe("POST");
+    expect(abandonSession).not.toHaveBeenCalled();
+  });
+
+  it("never echoes a refusal's message, only its code", async () => {
+    const server = await serve({
+      sessions: {
+        stopAll: async () => [],
+        abandonSession: () => {
+          throw new SessionError("not_abandonable", "secret-ish detail /Users/someone");
+        },
+      },
+    });
+    const res = await call(server, "/sessions/3/abandon", { method: "POST" });
+    expect(res.status).toBe(409);
+    expect(res.text).toBe('{"error":"not_abandonable"}');
   });
 });

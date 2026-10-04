@@ -25,6 +25,12 @@ import { join } from "node:path";
 const EXIT_TEST_KEY = "exit-test-key";
 const EXIT_TEST_MODEL = "claude-haiku-4-5";
 const EXIT_TEST_POLICY = { allowedTools: ["mcp__kernel__kernel_task_create", "Bash"], allowedBashPrefixes: ["sleep"] };
+/**
+ * How long a first launch waits for the kernel to record its leader's start
+ * time (the async `ps` probe, bounded by its own 2 s timeout) before the
+ * harness gives up with a named precondition error.
+ */
+const LEADER_RECORDED_TIMEOUT_MS = 5_000;
 const EXIT_TEST_PROMPT =
   'Call the tool mcp__kernel__kernel_task_create with title "exit test", state "open" and idempotency_key "exit-test-key". ' +
   "Then run the Bash command `sleep 20`. Then reply DONE.";
@@ -56,6 +62,17 @@ function parseArgs(argv) {
   return out;
 }
 
+/**
+ * The exit test's reaper kills the orphaned group only when the session row
+ * recorded the leader's start time before the kill -9; with the probe async,
+ * a kill could otherwise race it. Never a silent skip: exit 1 with a named
+ * error, which the test prints, instead of an obscure reap assertion later.
+ */
+function failPrecondition(message) {
+  process.stderr.write(`crash-harness: precondition failed: ${message}\n`);
+  process.exit(1);
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise((r) => {
@@ -67,7 +84,9 @@ function deferred() {
 /**
  * AC4's fault, installed ONLY here: the store's `INSERT INTO tasks` statement
  * runs, then the process SIGKILLs itself before `runStep`'s transaction (which
- * holds the INSERT, the `task_created` event and the work step) commits.
+ * holds the INSERT, the `task_created` event and the work step) commits. The
+ * stand-in calls the tool only once the leader's start time is recorded; the
+ * check here is a backstop for that ordering.
  */
 function withTaskCreateFault(store) {
   const prepare = store.prepare.bind(store);
@@ -82,6 +101,8 @@ function withTaskCreateFault(store) {
         }
         return (...args) => {
           target.run(...args);
+          const unrecorded = prepare("SELECT count(*) FROM sessions WHERE pgid IS NOT NULL AND leader_started_at IS NULL").pluck().get();
+          if (unrecorded !== 0) failPrecondition("a session's leader_started_at is still null at the task-create fault");
           // kill(2) on oneself delivers an unblocked SIGKILL before it returns;
           // the loop is only a guard that nothing after it can ever run.
           process.kill(process.pid, "SIGKILL");
@@ -119,13 +140,15 @@ function resultMessage(sessionId) {
  * `options.spawnClaudeCodeProcess`, so the manager records the pgid and the
  * leader's start time before any message. Then: `system/init`; on a first
  * launch, wait until the handler's `start-session` step committed (so a kill
- * from here on never leaves that step `started`); call `kernel_task_create`
+ * from here on never leaves that step `started`) and until the row records
+ * the leader's start time (the manager reads it asynchronously; a kill before
+ * that would leave the group unverifiable); call `kernel_task_create`
  * with the fixed key through the per-launch server the manager passed; wait
  * for the leader to exit; a success `result`. A resume does the same with a
  * leader that exits at once, and calls the tool again with the SAME key: the
  * session-scoped work step must return the first task.
  */
-function standInQuery({ leader, sleepMs, startStepCommitted }) {
+function standInQuery({ leader, sleepMs, startStepCommitted, leaderStartedAt }) {
   return ({ prompt, options }) => {
     const resumed = options.resume !== undefined;
     const sessionId = options.resume ?? options.sessionId ?? "unknown";
@@ -147,7 +170,14 @@ function standInQuery({ leader, sleepMs, startStepCommitted }) {
 
     async function* messages() {
       yield { type: "system", subtype: "init", session_id: sessionId };
-      if (!resumed) await Promise.race([startStepCommitted, closed.promise]);
+      if (!resumed) {
+        await Promise.race([startStepCommitted, closed.promise]);
+        const until = Date.now() + LEADER_RECORDED_TIMEOUT_MS;
+        while (leaderStartedAt(sessionId) == null) {
+          if (Date.now() >= until) failPrecondition(`leader_started_at of session ${sessionId} still null after ${LEADER_RECORDED_TIMEOUT_MS} ms`);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
       const server = options.mcpServers?.kernel;
       const tool = server?.instance?._registeredTools?.kernel_task_create;
       if (tool === undefined) throw new Error("stand-in: no kernel_task_create on the per-launch kernel server");
@@ -224,6 +254,7 @@ async function main() {
   };
 
   let keychain;
+  let store;
   const deps = {};
   if (args.live) {
     const { securityCliKeychain } = await import(dist("auth/keychain.js"));
@@ -237,12 +268,20 @@ async function main() {
       buildEnv: () => ({ PATH: "/usr/bin:/bin" }),
       health: () => ({ status: "ok" }),
     });
-    deps.sessionDeps = { query: standInQuery({ leader: args.leader, sleepMs: args.sleepMs, startStepCommitted: startStepCommitted.promise }) };
+    deps.sessionDeps = {
+      query: standInQuery({
+        leader: args.leader,
+        sleepMs: args.sleepMs,
+        startStepCommitted: startStepCommitted.promise,
+        leaderStartedAt: (sdkSessionId) =>
+          store?.prepare("SELECT leader_started_at FROM sessions WHERE sdk_session_id = ?").pluck().get(sdkSessionId),
+      }),
+    };
   }
   deps.keychain = keychain.reader;
   deps.keychainWriter = keychain.writer;
   deps.openStore = (dir) => {
-    const store = new Store({ dataDir: dir });
+    store = new Store({ dataDir: dir });
     // Before startKernel starts the loop.
     if (args.enqueue) enqueueMessage(store, { text: "exit test" });
     return args.fault === "task-create" ? withTaskCreateFault(store) : store;

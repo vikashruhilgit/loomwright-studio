@@ -5,9 +5,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionManager } from "../src/sessions/index.js";
+import { LEADER_EXIT_WAIT_MS, SessionManager } from "../src/sessions/index.js";
 import type { SessionHandle, SessionManagerDeps, SessionManagerOptions, SessionRow } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { CancelTimer } from "../src/sessions/index.js";
 import { fakeMsg, fakeSessions, flush, immediate, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
 
 let tmp: string;
@@ -172,9 +174,22 @@ describe("SessionManager.stopAll", () => {
     expect(await manager.stopAll()).toEqual([{ id: a.id, status: "stopped" }]);
   });
 
-  it("kills the group of a failed:auth session still waiting for its auth kill timer", async () => {
+  it("kills the group of a failed:auth session still waiting for its auth kill timer, and cancels that timer", async () => {
+    const AUTH_TIMEOUT_MS = 3_600_000;
+    // The auth timer is held here (never fired by time): `cancelled` records its cancel.
+    const authTimers: { fn: () => void; cancelled: boolean }[] = [];
     const { store, manager, killed, isGroupAlive } = setup({
-      options: { authTimeoutMs: 3_600_000 },
+      options: { authTimeoutMs: AUTH_TIMEOUT_MS },
+      deps: {
+        schedule: (fn, ms): CancelTimer => {
+          if (ms !== AUTH_TIMEOUT_MS) return immediate(fn, ms);
+          const timer = { fn, cancelled: false };
+          authTimers.push(timer);
+          return () => {
+            timer.cancelled = true;
+          };
+        },
+      },
       fakes: {
         script: ({ stream, options }) => {
           stream.push(fakeMsg.init(options.sessionId ?? ""));
@@ -186,11 +201,79 @@ describe("SessionManager.stopAll", () => {
     await vi.waitFor(() => expect(row(store, h.id).status).toBe("failed:auth"));
     expect(isGroupAlive(h.pgid as number)).toBe(true);
 
-    expect(await manager.stopAll({ mode: "shutdown" })).toEqual([{ id: h.id, status: "failed:auth" }]);
+    expect(authTimers).toHaveLength(1);
+    // It had ended on its own (failed:auth) and its group is confirmed gone.
+    expect(await manager.stopAll({ mode: "shutdown" })).toEqual([{ id: h.id, status: "failed:auth", ended_on_its_own: true }]);
     expect(killed).toContainEqual([h.pgid, "SIGKILL"]);
     expect(isGroupAlive(h.pgid as number)).toBe(false);
     expect(await h.done).toBe("failed:auth");
     expect(row(store, h.id).status).toBe("failed:auth");
+
+    // AC6: the pending auth timer is cancelled; a timer that honoured the cancel never fires, so no second kill.
+    expect(authTimers[0]?.cancelled).toBe(true);
+    const kills = killed.length;
+    for (const t of authTimers) if (!t.cancelled) t.fn();
+    await flush();
+    expect(killed).toHaveLength(kills);
+  });
+
+  for (const mode of ["stop", "shutdown"] as const) {
+    it(`${mode} mode: a session whose result was an error, stopped while its group is cleaned up, is failed with ended_on_its_own`, async () => {
+      const errorResult = { type: "result", subtype: "error_during_execution", is_error: true, errors: ["boom"] } as unknown as SDKMessage;
+      const { store, manager, isGroupAlive } = setup({
+        fakes: {
+          script: ({ stream, options }) => {
+            // The stream ends with an error result while the CLI's group lives on (cleanup pending).
+            stream.onEnd = () => {};
+            stream.push(fakeMsg.init(options.sessionId ?? ""));
+            stream.push(errorResult);
+            stream.end();
+          },
+        },
+      });
+      const h = await manager.startSession(startParams(tmp));
+      // The verdict is computed; #conclude now waits (1 s, real) for the leader's exit.
+      await flush();
+      expect(isGroupAlive(h.pgid as number)).toBe(true);
+
+      expect(await manager.stopAll({ mode })).toEqual([{ id: h.id, status: "failed", ended_on_its_own: true }]);
+      expect(isGroupAlive(h.pgid as number)).toBe(false);
+      expect(await h.done).toBe("failed");
+      expect(statusEvents(store, h.id).at(-1)).toMatchObject({ to: "failed", reason: "result_error", stop_requested_after_end: true });
+    });
+  }
+
+  it("never marks ended_on_its_own when the group of an already-ended session is not confirmed gone", async () => {
+    const errorResult = { type: "result", subtype: "error_during_execution", is_error: true, errors: ["boom"] } as unknown as SDKMessage;
+    // The cleanup's wait for the leader's exit is held until the stop arrives.
+    let hold = true;
+    const { store, manager } = setup({
+      deps: {
+        schedule: (fn, ms) => (hold && ms >= LEADER_EXIT_WAIT_MS ? () => {} : immediate(fn, ms)),
+        killGroup: () => true,
+        isGroupAlive: () => true,
+      },
+      fakes: {
+        script: ({ stream, options }) => {
+          stream.onEnd = () => {};
+          stream.push(fakeMsg.init(options.sessionId ?? ""));
+          stream.push(errorResult);
+          stream.end();
+        },
+      },
+    });
+    const h = await manager.startSession(startParams(tmp));
+    // The stream has ended (verdict set); its cleanup is still waiting for the leader.
+    await flush();
+    hold = false;
+    const outcomes = await manager.stopAll();
+    expect(outcomes).toEqual([{ id: h.id, status: "failed" }]);
+    // The stream's own outcome was kept as the cause: it had ended, but its group is not confirmed gone.
+    expect(statusEvents(store, h.id).at(-1)).toMatchObject({
+      to: "failed",
+      reason: "kill_incomplete",
+      cause: { to: "failed", reason: "result_error" },
+    });
   });
 
   for (const mode of ["stop", "shutdown"] as const) {

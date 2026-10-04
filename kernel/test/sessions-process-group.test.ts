@@ -8,11 +8,12 @@
 // so EPERM here means "not gone yet", never "gone". One SIGKILL can miss a
 // child forked during it, so cleanup re-sends SIGKILL until ESRCH.
 import { execFileSync } from "node:child_process";
+import { getEventListeners } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SDKMessage, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthProvider } from "../src/auth/index.js";
 import {
   LeaderProbeError,
@@ -24,6 +25,7 @@ import {
   leaderBasename,
   parseLeaderLine,
   readGroupLeader,
+  readGroupLeaderAsync,
   spawnInNewProcessGroup,
 } from "../src/sessions/index.js";
 import type { GroupLeader, QueryFn } from "../src/sessions/index.js";
@@ -155,6 +157,31 @@ describe("spawnInNewProcessGroup", () => {
     controller.abort();
     expect(await waitGone(pgid)).toBe(true);
   });
+
+  it("removes its abort listener once the leader exits: a later abort signals nothing", async () => {
+    const controller = new AbortController();
+    let pgid: number | undefined;
+    const child = spawnInNewProcessGroup(spawnOptions("exit 0", controller.signal), {
+      onSpawn: (p) => {
+        pgid = p;
+      },
+    });
+    if (pgid === undefined) throw new Error("onSpawn was not called");
+    groups.push(pgid);
+    // Registered until the leader has exited (never before).
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(1);
+    await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+
+    const kill = vi.spyOn(process, "kill");
+    try {
+      controller.abort();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(kill.mock.calls.filter(([target]) => target === -(pgid as number))).toEqual([]);
+    } finally {
+      kill.mockRestore();
+    }
+  });
 });
 
 describe("killGroupUntilGone", () => {
@@ -238,6 +265,7 @@ describe("process-group primitives", () => {
       expect(() => killProcessGroup(bad, "SIGKILL")).toThrow(RangeError);
       expect(() => isProcessGroupAlive(bad)).toThrow(RangeError);
       expect(() => readGroupLeader(bad)).toThrow(RangeError);
+      await expect(readGroupLeaderAsync(bad)).rejects.toThrow(RangeError);
       await expect(killGroupUntilGone(bad)).rejects.toThrow(RangeError);
     }
   });
@@ -250,6 +278,7 @@ describe("process-group primitives", () => {
     expect(killProcessGroup(pgid, "SIGKILL")).toBe(false);
     // ps positively reports no such process (exit 1, no output): `absent`, not an error.
     expect(readGroupLeader(pgid)).toEqual({ status: "absent" });
+    expect(await readGroupLeaderAsync(pgid)).toEqual({ status: "absent" });
   });
 
   it("reads a live leader's command and start time", () => {
@@ -261,6 +290,21 @@ describe("process-group primitives", () => {
     // `lstart` has 1 s resolution.
     expect(leader.startedAtMs).toBeGreaterThanOrEqual(Math.floor(before / 1_000) * 1_000 - 1_000);
     expect(leader.startedAtMs).toBeLessThanOrEqual(Date.now() + 1_000);
+  });
+
+  it("reads the same leader without blocking the event loop (readGroupLeaderAsync)", async () => {
+    // `sleep 60; :` keeps /bin/sh as the leader: a lone `sleep 60` is exec'd by
+    // sh, so two probes could read the image before and after that exec.
+    const pgid = startGroup("sleep 60; :");
+    let ticked = false;
+    setImmediate(() => {
+      ticked = true;
+    });
+    const probe = readGroupLeaderAsync(pgid);
+    const leader = await probe;
+    // The event loop ran while ps did.
+    expect(ticked).toBe(true);
+    expect(leader).toEqual(readGroupLeader(pgid));
   });
 
   it("parses macOS and procps ps lines, and refuses anything else", () => {

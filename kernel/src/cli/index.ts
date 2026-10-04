@@ -4,6 +4,9 @@
 //   studio status [--json]   a short summary of GET /status (or its raw JSON)
 //   studio stop --all        POST /stop-all: the kill switch
 //   studio resume            POST /resume: release the kill switch
+//   studio session abandon <id> [--yes]
+//                            POST /sessions/<id>/abandon: release an orphaned
+//                            leader_unverified row (asks first unless --yes)
 //   studio service install   write and load the launchd agent (item 09, macOS)
 //   studio service uninstall unload and remove it
 //
@@ -13,6 +16,7 @@
 // alive. The CLI never prints the token.
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import type { StatusBody } from "../api/server.js";
 import { API_TOKEN_KEYCHAIN_SERVICE } from "../api/token.js";
@@ -44,7 +48,11 @@ export const STOP_ALL_MARGIN_MS = 25_000;
  */
 export const STOP_ALL_TIMEOUT_MS = DEFAULT_STOP_GRACE_MS + KILL_GROUP_DEADLINE_MS + LEADER_EXIT_WAIT_MS + STOP_ALL_MARGIN_MS;
 
-export const USAGE = "usage: studio status [--json] | studio stop --all | studio resume | studio service install|uninstall";
+export const USAGE =
+  "usage: studio status [--json] | studio stop --all | studio resume | studio session abandon <id> [--yes] | studio service install|uninstall";
+
+/** Sent with an abandon so the kernel records `via: "cli"` (the API's `CLIENT_HEADER`). */
+const CLIENT_HEADER = "x-studio-client";
 
 /** Where the CLI writes; `process.stdout` / `process.stderr` satisfy it. */
 export interface CliOutput {
@@ -67,12 +75,17 @@ export interface CliDeps {
   readonly stopAllTimeoutMs?: number;
   /** `service install|uninstall`: the launchd module's options and deps (exec, uid, homeDir, platform). */
   readonly service?: { readonly options?: ServiceOptions; readonly deps?: ServiceDeps };
+  /** `session abandon` without `--yes`: whether a person can answer. Defaults to `process.stdin.isTTY === true`. */
+  readonly isInteractive?: () => boolean;
+  /** `session abandon` without `--yes`: ask, `true` to proceed. Defaults to a `node:readline` prompt (`y`/`yes`). */
+  readonly confirm?: (question: string) => Promise<boolean>;
 }
 
 type Command =
   | { readonly kind: "status"; readonly json: boolean }
   | { readonly kind: "stop-all" }
   | { readonly kind: "resume" }
+  | { readonly kind: "abandon"; readonly id: number; readonly yes: boolean }
   | { readonly kind: "service"; readonly action: "install" | "uninstall" };
 
 /** A failure that ends the CLI with one stderr line and exit code 1. */
@@ -85,7 +98,42 @@ function parse(argv: readonly string[]): Command | undefined {
   if (cmd === "stop" && rest.length === 1 && rest[0] === "--all") return { kind: "stop-all" };
   if (cmd === "resume" && rest.length === 0) return { kind: "resume" };
   if (cmd === "service" && rest.length === 1 && (rest[0] === "install" || rest[0] === "uninstall")) return { kind: "service", action: rest[0] };
+  if (cmd === "session" && rest[0] === "abandon" && (rest.length === 2 || (rest.length === 3 && rest[2] === "--yes"))) {
+    const raw = rest[1] as string;
+    const id = Number(raw);
+    if (/^[1-9]\d*$/.test(raw) && Number.isSafeInteger(id)) return { kind: "abandon", id, yes: rest.length === 3 };
+  }
   return undefined;
+}
+
+function defaultIsInteractive(): boolean {
+  return process.stdin.isTTY === true;
+}
+
+/** Ask on the terminal (the question on stderr, so stdout stays the command's output). */
+function defaultConfirm(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(isYes(answer));
+    });
+  });
+}
+
+function isYes(answer: string): boolean {
+  const a = answer.trim().toLowerCase();
+  return a === "y" || a === "yes";
+}
+
+/** The API's stable error code from an error body, or `unknown`; never any other text from it. */
+async function apiErrorCode(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as { error?: unknown };
+    return typeof body.error === "string" && /^[a-z_]{1,64}$/.test(body.error) ? body.error : "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 function defaultIsPidAlive(pid: number): boolean {
@@ -152,24 +200,36 @@ function plural(n: number, word: string): string {
  * confirmed its group gone. The session manager reports a `failed:auth`
  * session whose group it could not confirm gone as `stop_failed`
  * (`kill_incomplete`), never `failed:auth`, so that one is not confirmed
- * stopped. Reported by status, never counted as `stopped`.
+ * stopped. Reported by status, never counted as `stopped`. Kept for a daemon
+ * older than `ended_on_its_own` (see `summarizeStopAll`).
  */
 const ALREADY_ENDED: ReadonlySet<string> = new Set(["completed", "interrupted", "failed:auth"]);
 
 /**
  * Summarize `/stop-all`'s per-session outcomes for the kill switch's
- * confirmation line. Only `stopped` counts as stopped; an outcome that ended on
- * its own is listed by status; anything else (`failed`, e.g. `kill_incomplete`
- * with the group not confirmed gone, `stop_failed`, `orphaned`, or a status
- * this CLI does not know) is "not confirmed stopped" and makes `confirmed`
- * false, so the command exits non-zero.
+ * confirmation line. Only `stopped` counts as stopped. An outcome is "already
+ * ended" (listed by status, not counted as stopped) when it carries
+ * `ended_on_its_own: true` (the manager's own record that the session had
+ * ended before the stop and its group is confirmed gone, e.g. a `failed`
+ * result error) OR its status is in `ALREADY_ENDED`. The CLI cannot tell an
+ * older daemon (no field) from a newer one, so the rule is that union; it is
+ * safe because a newer daemon's really-ended `completed`/`failed:auth`
+ * outcomes carry the field anyway, and a `failed:auth` whose group is not
+ * confirmed gone is `stop_failed`, never `failed:auth`. Anything else
+ * (`failed` without the field, e.g. `kill_incomplete`, `stop_failed`,
+ * `orphaned`, or a status this CLI does not know) is "not confirmed stopped"
+ * and makes `confirmed` false, so the command exits non-zero.
  */
 export function summarizeStopAll(sessions: unknown): { readonly text: string; readonly confirmed: boolean } {
-  const outcomes = (Array.isArray(sessions) ? sessions : []) as readonly { id?: unknown; status?: unknown }[];
-  const label = (o: { id?: unknown; status?: unknown }): string => `#${String(o.id ?? "?")} ${String(o.status ?? "unknown")}`;
-  const stopped = outcomes.filter((o) => o.status === "stopped");
-  const ended = outcomes.filter((o) => typeof o.status === "string" && ALREADY_ENDED.has(o.status));
-  const unconfirmed = outcomes.filter((o) => o.status !== "stopped" && !(typeof o.status === "string" && ALREADY_ENDED.has(o.status)));
+  type Outcome = { id?: unknown; status?: unknown; ended_on_its_own?: unknown };
+  const outcomes = (Array.isArray(sessions) ? sessions : []) as readonly Outcome[];
+  const label = (o: Outcome): string => `#${String(o.id ?? "?")} ${String(o.status ?? "unknown")}`;
+  const isStopped = (o: Outcome): boolean => o.status === "stopped";
+  const hadEnded = (o: Outcome): boolean =>
+    !isStopped(o) && (o.ended_on_its_own === true || (typeof o.status === "string" && ALREADY_ENDED.has(o.status)));
+  const stopped = outcomes.filter(isStopped);
+  const ended = outcomes.filter(hadEnded);
+  const unconfirmed = outcomes.filter((o) => !isStopped(o) && !hadEnded(o));
   const parts = [`${plural(stopped.length, "session")} stopped`];
   if (ended.length > 0) parts.push(`${ended.length} already ended (${ended.map(label).join(", ")})`);
   if (unconfirmed.length > 0) {
@@ -210,6 +270,13 @@ export function formatStatus(status: StatusBody): string {
       lines.push(`  #${s.id} ${s.agent ?? "-"} ${s.status}, pgid ${s.pgid ?? "-"}, kill gave up at ${s.kill_incomplete_at}`);
     }
   }
+  // `?? []`: a daemon older than this CLI does not send the field.
+  const orphaned = status.orphaned ?? [];
+  if (orphaned.length > 0) {
+    lines.push(`orphaned: ${plural(orphaned.length, "session")} whose group may still be alive (never resumed while it may be)`);
+    for (const s of orphaned) lines.push(`  #${s.id} ${s.agent ?? "-"}, pgid ${s.pgid ?? "-"}, reason ${s.reason ?? "unknown"}`);
+    lines.push("  studio session abandon <id> releases a leader_unverified row (the kernel never signals its group)");
+  }
   lines.push(`queue: ${plural(status.queue.pending, "pending event")}, ${plural(status.wakeups.pending, "pending wake-up")}`);
   const tokens = status.tokens_today.agents.map((a) => `${a.agent ?? "(none)"} ${a.counted_tokens}`);
   lines.push(`tokens today (${status.tokens_today.day}): ${tokens.length === 0 ? "none" : tokens.join(", ")}`);
@@ -233,6 +300,12 @@ export function formatStatus(status: StatusBody): string {
  * `service install|uninstall` runs locally, before `api.json` or the Keychain
  * is read: one stdout line naming the label and plist, 0; a failure (not
  * macOS, no built daemon, launchctl failed) ⇒ one stderr line, 1.
+ * `session abandon <id>` asks for confirmation after the `api.json` pid check
+ * and before the Keychain is read or anything is sent (`y`/`yes` proceeds;
+ * anything else ⇒ one stderr line, 1, nothing sent); `--yes` skips the
+ * question; with no TTY on stdin and no `--yes` it refuses at once (usage, 2)
+ * instead of waiting for an answer. A 400/404/409 answer ⇒ one stderr line
+ * with the API's stable error code, 1.
  * Never throws, never sets `process.exitCode`, never prints the token.
  */
 export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promise<number> {
@@ -241,6 +314,11 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
   const command = parse(argv);
   if (command === undefined) {
     stderr.write(`${USAGE}\n`);
+    return 2;
+  }
+  if (command.kind === "abandon" && !command.yes && !(deps.isInteractive ?? defaultIsInteractive)()) {
+    // Nobody can answer the question: refuse rather than wait for stdin.
+    stderr.write(`studio: session abandon needs a terminal to confirm, or --yes\n${USAGE}\n`);
     return 2;
   }
   try {
@@ -264,6 +342,14 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
     if (!(deps.isPidAlive ?? defaultIsPidAlive)(pid)) {
       throw new CliFailure(`studio: kernel daemon is not running (pid ${pid} in ${join(dataDir, API_INFO_FILENAME)} is gone)`);
     }
+    if (command.kind === "abandon" && !command.yes) {
+      const question =
+        `Abandon session ${command.id}? It becomes abandoned for good and the kernel never signals its process group, ` +
+        "which may still be running: check its pgid (studio status) first. [y/N] ";
+      if (!(await (deps.confirm ?? defaultConfirm)(question))) {
+        throw new CliFailure(`studio: session ${command.id} not abandoned (not confirmed)`);
+      }
+    }
     let token: string | undefined;
     try {
       token = (deps.keychain ?? securityCliKeychain()).read(API_TOKEN_KEYCHAIN_SERVICE);
@@ -276,13 +362,20 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
     }
 
     const method = command.kind === "status" ? "GET" : "POST";
-    const path = command.kind === "status" ? "/status" : command.kind === "stop-all" ? "/stop-all" : "/resume";
+    const path =
+      command.kind === "status"
+        ? "/status"
+        : command.kind === "stop-all"
+          ? "/stop-all"
+          : command.kind === "abandon"
+            ? `/sessions/${command.id}/abandon`
+            : "/resume";
     const timeoutMs = command.kind === "stop-all" ? (deps.stopAllTimeoutMs ?? STOP_ALL_TIMEOUT_MS) : (deps.timeoutMs ?? CLI_TIMEOUT_MS);
     let res: Response;
     try {
       res = await (deps.fetch ?? fetch)(`http://${HOST}:${port}${path}`, {
         method,
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, ...(command.kind === "abandon" ? { [CLIENT_HEADER]: "cli" } : {}) },
         redirect: "error",
         signal: AbortSignal.timeout(timeoutMs),
       });
@@ -298,6 +391,9 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
       const code = errorCode(err);
       throw new CliFailure(`studio: kernel daemon is not running (cannot connect to ${HOST}:${port}${code === undefined ? "" : `: ${code}`})`);
     }
+    if (command.kind === "abandon" && (res.status === 400 || res.status === 404 || res.status === 409)) {
+      throw new CliFailure(`studio: session ${command.id} not abandoned: ${await apiErrorCode(res)}`);
+    }
     if (!res.ok) throw new CliFailure(`studio: kernel API answered ${res.status} to ${method} ${path}`);
     let body: unknown;
     try {
@@ -312,6 +408,8 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
       const summary = summarizeStopAll((body as { sessions?: unknown }).sessions);
       stdout.write(`kill switch engaged: ${summary.text}; the event loop is halted until studio resume\n`);
       return summary.confirmed ? 0 : 1;
+    } else if (command.kind === "abandon") {
+      stdout.write(`studio: session ${command.id} abandoned; the kernel will never signal its process group\n`);
     } else {
       stdout.write("kill switch off: the event loop is running\n");
     }

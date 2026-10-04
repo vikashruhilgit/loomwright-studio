@@ -10,13 +10,14 @@ import type { Mock } from "vitest";
 import { API_TOKEN_KEYCHAIN_SERVICE, startApiServer } from "../src/api/index.js";
 import type { ApiServer, StatusBody } from "../src/api/index.js";
 import type { KeychainReader } from "../src/auth/index.js";
-import { CLI_TIMEOUT_MS, STOP_ALL_TIMEOUT_MS, USAGE, formatStatus, runCli } from "../src/cli/index.js";
+import { CLI_TIMEOUT_MS, STOP_ALL_TIMEOUT_MS, USAGE, formatStatus, runCli, summarizeStopAll } from "../src/cli/index.js";
 import type { CliDeps } from "../src/cli/index.js";
 import { SERVICE_LABEL, plistPath } from "../src/service/index.js";
 import type { ServiceDeps } from "../src/service/index.js";
 import { Store } from "../src/store/index.js";
-import { DEFAULT_STOP_GRACE_MS, KILL_GROUP_DEADLINE_MS, LEADER_EXIT_WAIT_MS, SessionManager } from "../src/sessions/index.js";
-import { fakeMsg, fakeSessions, immediate, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
+import { DEFAULT_STOP_GRACE_MS, KILL_GROUP_DEADLINE_MS, LEADER_EXIT_WAIT_MS, SessionError, SessionManager } from "../src/sessions/index.js";
+import type { AbandonVia } from "../src/sessions/index.js";
+import { fakeMsg, fakeSessions, immediate, makePluginDir, startParams, stubProvider, unexpectedAbandon } from "./session-fakes.js";
 
 const TOKEN = "0123456789abcdef".repeat(4);
 const NOW = new Date("2026-10-02T10:00:00.000Z");
@@ -36,7 +37,10 @@ beforeEach(async () => {
   server = await startApiServer(
     {
       store,
-      sessions: { stopAll: async () => [{ id: 1, status: "stopped" as const }, { id: 2, status: "stopped" as const }] },
+      sessions: {
+        stopAll: async () => [{ id: 1, status: "stopped" as const }, { id: 2, status: "stopped" as const }],
+        abandonSession: unexpectedAbandon,
+      },
       loop,
       authProviders: [stubProvider()],
       token: TOKEN,
@@ -141,6 +145,7 @@ describe("studio CLI", () => {
             { id: 4, status: "completed" as const },
             { id: 5, status: "failed:auth" as const },
           ],
+          abandonSession: unexpectedAbandon,
         },
         loop,
         authProviders: [stubProvider()],
@@ -248,7 +253,7 @@ describe("studio CLI", () => {
       {
         store,
         // A stop that outlasts the CLI's wait.
-        sessions: { stopAll: () => new Promise((resolve) => (stopping = () => resolve([]))) },
+        sessions: { stopAll: () => new Promise((resolve) => (stopping = () => resolve([]))), abandonSession: unexpectedAbandon },
         loop,
         authProviders: [stubProvider()],
         token: TOKEN,
@@ -286,7 +291,7 @@ describe("studio CLI", () => {
   it("stop --all with no live sessions reports 0 stopped and exits 0", async () => {
     await server.close();
     server = await startApiServer(
-      { store, sessions: { stopAll: async () => [] }, loop, authProviders: [stubProvider()], token: TOKEN, port: 0 },
+      { store, sessions: { stopAll: async () => [], abandonSession: unexpectedAbandon }, loop, authProviders: [stubProvider()], token: TOKEN, port: 0 },
       { now: () => NOW, pid: 4242 },
     );
     writeApiInfo(server.port, 4242);
@@ -486,5 +491,176 @@ describe("studio service (item 09, AC1)", () => {
       expect(c.launchctl).toEqual([]);
     }
     expect(USAGE).toContain("studio service install|uninstall");
+  });
+});
+
+describe("studio stop --all: sessions that ended on their own (H04, AC5)", () => {
+  it("counts a failed outcome carrying ended_on_its_own as already ended (exit 0), and one without it as unconfirmed (exit 1)", async () => {
+    const ended = summarizeStopAll([
+      { id: 1, status: "stopped" },
+      { id: 2, status: "failed", ended_on_its_own: true },
+    ]);
+    expect(ended).toEqual({ text: "1 session stopped; 1 already ended (#2 failed)", confirmed: true });
+    const unconfirmed = summarizeStopAll([{ id: 2, status: "failed" }]);
+    expect(unconfirmed.confirmed).toBe(false);
+    expect(unconfirmed.text).toContain("1 not confirmed stopped (#2 failed)");
+    // The legacy statuses still count for an older daemon that sends no field; a non-true field is no field.
+    expect(summarizeStopAll([{ id: 3, status: "completed" }, { id: 4, status: "failed", ended_on_its_own: "yes" }]).text).toBe(
+      "0 sessions stopped; 1 already ended (#3 completed); 1 not confirmed stopped (#4 failed), see studio status",
+    );
+
+    await server.close();
+    server = await startApiServer(
+      {
+        store,
+        sessions: { stopAll: async () => [{ id: 2, status: "failed" as const, ended_on_its_own: true as const }], abandonSession: unexpectedAbandon },
+        loop,
+        authProviders: [stubProvider()],
+        token: TOKEN,
+        port: 0,
+      },
+      { now: () => NOW, pid: 4242 },
+    );
+    writeApiInfo(server.port, 4242);
+    const c = cli();
+    expect(await c.run("stop", "--all")).toBe(0);
+    expect(c.stdout.text()).toBe("kill switch engaged: 0 sessions stopped; 1 already ended (#2 failed); the event loop is halted until studio resume\n");
+  });
+});
+
+describe("studio session abandon (H04, AC4)", () => {
+  let abandoned: [number, AbandonVia][];
+
+  beforeEach(async () => {
+    abandoned = [];
+    await server.close();
+    server = await startApiServer(
+      {
+        store,
+        sessions: {
+          stopAll: async () => [],
+          abandonSession: (id, { via }) => {
+            if (id === 8) throw new SessionError("not_abandonable", "session 8 is orphaned for reap_error");
+            if (id !== 7) throw new SessionError("not_found", `no session ${id}`);
+            abandoned.push([id, via]);
+            return "abandoned";
+          },
+        },
+        loop,
+        authProviders: [stubProvider()],
+        token: TOKEN,
+        port: 0,
+      },
+      { now: () => NOW, pid: 4242 },
+    );
+    writeApiInfo(server.port, 4242);
+  });
+
+  it("--yes sends POST /sessions/<id>/abandon as the cli without asking, exit 0", async () => {
+    const confirm = vi.fn(async () => false);
+    const c = cli({ confirm, isInteractive: () => false });
+    expect(await c.run("session", "abandon", "7", "--yes")).toBe(0);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(c.fetchSpy.mock.calls[0]?.[0]).toBe(`http://127.0.0.1:${server.port}/sessions/7/abandon`);
+    expect(c.fetchSpy.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(abandoned).toEqual([[7, "cli"]]);
+    oneLine(c.stdout.text());
+    expect(c.stdout.text()).toContain("session 7 abandoned");
+    expect(c.stdout.text()).not.toContain(TOKEN);
+    expect(c.stderr.text()).toBe("");
+  });
+
+  it("asks on a terminal: yes sends the request; any other answer sends nothing and exits 1", async () => {
+    const questions: string[] = [];
+    const yes = cli({ isInteractive: () => true, confirm: async (q) => (questions.push(q), true) });
+    expect(await yes.run("session", "abandon", "7")).toBe(0);
+    expect(abandoned).toEqual([[7, "cli"]]);
+    expect(questions[0]).toContain("session 7");
+    expect(questions[0]).toContain("never signals its process group");
+
+    const no = cli({ isInteractive: () => true, confirm: async () => false });
+    expect(await no.run("session", "abandon", "7")).toBe(1);
+    expect(no.fetchSpy).not.toHaveBeenCalled();
+    expect(no.reads).toEqual([]);
+    oneLine(no.stderr.text());
+    expect(no.stderr.text()).toContain("session 7 not abandoned (not confirmed)");
+    expect(abandoned).toHaveLength(1);
+  });
+
+  it("with no terminal and no --yes: refuses with usage, exit 2, without asking or sending", async () => {
+    const confirm = vi.fn(async () => true);
+    const c = cli({ isInteractive: () => false, confirm });
+    expect(await c.run("session", "abandon", "7")).toBe(2);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(c.fetchSpy).not.toHaveBeenCalled();
+    expect(c.stderr.text()).toContain("--yes");
+    expect(c.stderr.text()).toContain(USAGE);
+  });
+
+  it("a 409 or 404 prints one stderr line with the API's stable code, exit 1, never the token", async () => {
+    for (const [id, code] of [["8", "not_abandonable"], ["9", "not_found"]] as const) {
+      const c = cli();
+      expect(await c.run("session", "abandon", id, "--yes")).toBe(1);
+      oneLine(c.stderr.text());
+      expect(c.stderr.text()).toBe(`studio: session ${id} not abandoned: ${code}\n`);
+      expect(c.stderr.text()).not.toContain(TOKEN);
+      expect(c.stdout.text()).toBe("");
+    }
+  });
+
+  it("a 400 from the API prints its code too", async () => {
+    const c = cli({
+      fetch: vi.fn(async () => new Response(JSON.stringify({ error: "invalid_id" }), { status: 400 })) as unknown as typeof fetch,
+    });
+    expect(await c.run("session", "abandon", "7", "--yes")).toBe(1);
+    expect(c.stderr.text()).toBe("studio: session 7 not abandoned: invalid_id\n");
+    // A body that is not a stable code is never echoed.
+    const odd = cli({
+      fetch: vi.fn(async () => new Response(JSON.stringify({ error: "Bearer abc <script>" }), { status: 409 })) as unknown as typeof fetch,
+    });
+    expect(await odd.run("session", "abandon", "7", "--yes")).toBe(1);
+    expect(odd.stderr.text()).toBe("studio: session 7 not abandoned: unknown\n");
+  });
+
+  it("refuses a malformed id or extra arguments with usage, exit 2, nothing sent", async () => {
+    for (const argv of [["session", "abandon"], ["session", "abandon", "0"], ["session", "abandon", "-3"], ["session", "abandon", "07"],
+      ["session", "abandon", "7x"], ["session", "abandon", "99999999999999999999"], ["session", "abandon", "7", "--force"], ["session", "kill", "7"]]) {
+      const c = cli({ isInteractive: () => true, confirm: async () => true });
+      expect(await c.run(...argv), argv.join(" ")).toBe(2);
+      expect(c.stderr.text()).toMatch(/^usage: studio/);
+      expect(c.fetchSpy).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe("formatStatus: orphaned (H04, AC4)", () => {
+  it("prints an orphaned block with the abandon hint when the list is non-empty, and nothing when empty or missing", async () => {
+    const body = (await (await fetch(`http://127.0.0.1:${server.port}/status`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json()) as StatusBody;
+    expect(body.orphaned).toEqual([]);
+    expect(formatStatus(body)).not.toContain("orphaned");
+    const { orphaned: _dropped, ...older } = body;
+    expect(formatStatus(older as StatusBody)).not.toContain("orphaned");
+
+    const text = formatStatus({
+      ...body,
+      orphaned: [
+        { id: 7, agent: "wright", pgid: 4242, reason: "leader_unverified", updated_at: "2026-10-02T08:00:00.000Z" },
+        { id: 9, agent: null, pgid: null, reason: null, updated_at: "2026-10-02T08:00:00.000Z" },
+      ],
+    });
+    expect(text).toContain("orphaned: 2 sessions whose group may still be alive");
+    expect(text).toContain("  #7 wright, pgid 4242, reason leader_unverified\n");
+    expect(text).toContain("  #9 -, pgid -, reason unknown\n");
+    expect(text).toContain("studio session abandon <id> releases a leader_unverified row");
+  });
+
+  it("studio status shows an orphaned row from the store", async () => {
+    store.prepare("INSERT INTO sessions (id, agent, status, pgid) VALUES (5, 'wright', 'orphaned', 4343)").run();
+    store
+      .prepare("INSERT INTO events (at, kind, actor, session_id, payload_json) VALUES ('x', 'session_reap_deferred', 'kernel', 5, ?)")
+      .run(JSON.stringify({ reason: "leader_unverified", pgid: 4343 }));
+    const c = cli();
+    expect(await c.run("status")).toBe(0);
+    expect(c.stdout.text()).toContain("  #5 wright, pgid 4343, reason leader_unverified\n");
   });
 });

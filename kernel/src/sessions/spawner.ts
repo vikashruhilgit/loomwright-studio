@@ -16,7 +16,7 @@
 // can answer EPERM during that race even after the leader exited (probed
 // 2026-10-02, docs/OPEN_QUESTIONS.md). Every kill the kernel means as "this
 // group is gone" therefore goes through `killGroupUntilGone`.
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
 import { basename } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -94,7 +94,11 @@ export class StderrTail implements StderrSink {
  * - `options.signal` is NOT passed to `spawn()` (Node would kill only the
  *   leader). It is the SDK's forwarded signal, fired after its own stdin-EOF
  *   and ~2 s grace; on abort the whole group is killed until gone
- *   (`killGroupUntilGone`).
+ *   (`killGroupUntilGone`). The listener is removed once the leader exits
+ *   (Node emits `exit` after reaping it), never before: an abort after that
+ *   could signal a pgid already reused by an unrelated process. Background
+ *   shells that outlive the leader are still killed by the manager's own
+ *   post-session kill; this listener was never the only cleanup.
  * - stderr is always drained (a full pipe would block the CLI) into
  *   `stderrTail` when given.
  * - The child is not `unref()`ed.
@@ -120,7 +124,10 @@ export function spawnInNewProcessGroup(
       killGroupUntilGone(pgid).catch(() => undefined);
     };
     if (options.signal.aborted) killGroup();
-    else options.signal.addEventListener("abort", killGroup, { once: true });
+    else {
+      options.signal.addEventListener("abort", killGroup, { once: true });
+      child.once("exit", () => options.signal.removeEventListener("abort", killGroup));
+    }
     hooks.onSpawn?.(pgid);
   }
   return child;
@@ -217,8 +224,31 @@ export class LeaderProbeError extends Error {
   }
 }
 
-/** `readGroupLeader` gives up on `ps` after this long (and throws). */
+/** `readGroupLeader` and `readGroupLeaderAsync` give up on `ps` after this long (and throw). */
 const PS_TIMEOUT_MS = 2_000;
+const PS_ENV = { PATH: "/usr/bin:/bin", TZ: "UTC", LC_ALL: "C" };
+
+function psArgs(pgid: number): string[] {
+  return ["-o", "lstart=", "-o", "comm=", "-p", String(pgid)];
+}
+
+/**
+ * What one `ps` run means: `absent` ONLY for exit status 1 with nothing on
+ * stdout or stderr; anything else that failed throws `LeaderProbeError`.
+ */
+function leaderFromPs(
+  pgid: number,
+  failure: { readonly status: unknown; readonly message: string } | undefined,
+  stdout: string,
+  stderr: string,
+): GroupLeader {
+  if (failure !== undefined) {
+    if (failure.status === 1 && stdout.trim() === "" && stderr.trim() === "") return { status: "absent" };
+    throw new LeaderProbeError(`ps failed for pid ${pgid}: ${stderr.trim() !== "" ? stderr.trim() : failure.message}`);
+  }
+  if (stdout.trim() === "") throw new LeaderProbeError(`ps printed nothing for pid ${pgid}`);
+  return { status: "present", ...parseLeaderLine(stdout) };
+}
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 // `lstart` is `ctime(3)`-shaped on macOS and procps alike: "Fri Oct  2 05:30:54 2026".
@@ -253,22 +283,42 @@ export function readGroupLeader(pgid: number): GroupLeader {
   assertValidPgid(pgid);
   let out: string;
   try {
-    out = execFileSync("/bin/ps", ["-o", "lstart=", "-o", "comm=", "-p", String(pgid)], {
+    out = execFileSync("/bin/ps", psArgs(pgid), {
       encoding: "utf8",
-      env: { PATH: "/usr/bin:/bin", TZ: "UTC", LC_ALL: "C" },
+      env: PS_ENV,
       stdio: ["ignore", "pipe", "pipe"],
-      // Runs synchronously (inside query() and in the reaper): never block the kernel on a hung ps.
+      // Runs synchronously (in the reaper and resume's group check): never block the kernel on a hung ps.
       timeout: PS_TIMEOUT_MS,
     });
   } catch (err) {
     const e = err as { status?: number | null; stdout?: unknown; stderr?: unknown; message?: string };
-    const stdout = typeof e.stdout === "string" ? e.stdout.trim() : "";
-    const stderr = typeof e.stderr === "string" ? e.stderr.trim() : "";
-    if (e.status === 1 && stdout === "" && stderr === "") return { status: "absent" };
-    throw new LeaderProbeError(`ps failed for pid ${pgid}: ${stderr !== "" ? stderr : (e.message ?? String(err))}`);
+    const stdout = typeof e.stdout === "string" ? e.stdout : "";
+    const stderr = typeof e.stderr === "string" ? e.stderr : "";
+    return leaderFromPs(pgid, { status: e.status, message: e.message ?? String(err) }, stdout, stderr);
   }
-  if (out.trim() === "") throw new LeaderProbeError(`ps printed nothing for pid ${pgid}`);
-  return { status: "present", ...parseLeaderLine(out) };
+  return leaderFromPs(pgid, undefined, out, "");
+}
+
+/**
+ * `readGroupLeader` without blocking the event loop: the same `ps` command,
+ * env, `PS_TIMEOUT_MS` timeout and parsing, and the same rules (`absent` ONLY
+ * for exit status 1 with nothing on stdout or stderr; anything else rejects
+ * with `LeaderProbeError`). Rejects with `RangeError` for an invalid pgid.
+ * Used for the leader's start time at spawn, which nothing waits for.
+ */
+export async function readGroupLeaderAsync(pgid: number): Promise<GroupLeader> {
+  assertValidPgid(pgid);
+  return new Promise<GroupLeader>((resolve, reject) => {
+    execFile("/bin/ps", psArgs(pgid), { encoding: "utf8", env: PS_ENV, timeout: PS_TIMEOUT_MS }, (err, stdout, stderr) => {
+      try {
+        // execFile's `code` is the exit status when ps ran and exited non-zero.
+        const failure = err === null ? undefined : { status: (err as { code?: unknown }).code, message: err.message };
+        resolve(leaderFromPs(pgid, failure, stdout, stderr));
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
 }
 
 /** The basename of a `readGroupLeader` command. */

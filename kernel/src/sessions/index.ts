@@ -1,6 +1,8 @@
 // Public surface of the session layer (item 05).
 export { SessionManager } from "./manager.js";
-export type { ReapResult, StopAllOutcome } from "./manager.js";
+export type { AbandonVia, ReapResult, StopAllOutcome } from "./manager.js";
+export { latestOrphanReason, orphanedSessions } from "./orphans.js";
+export type { OrphanedSession } from "./orphans.js";
 export { decideToolUse, freezePolicy } from "./policy.js";
 export type { ToolDecision, ToolDecisionReason } from "./policy.js";
 export {
@@ -17,6 +19,7 @@ export {
   leaderBasename,
   parseLeaderLine,
   readGroupLeader,
+  readGroupLeaderAsync,
   spawnInNewProcessGroup,
 } from "./spawner.js";
 export type { KillGroupUntilGoneOptions } from "./spawner.js";

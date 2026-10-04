@@ -207,3 +207,8 @@ export function startParams(cwd: string, overrides: Partial<StartSessionParams> 
 export async function flush(rounds = 5): Promise<void> {
   for (let i = 0; i < rounds; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
+
+/** `abandonSession` for API fakes whose test never abandons anything: a call is a test failure. */
+export function unexpectedAbandon(): never {
+  throw new Error("unexpected abandonSession call");
+}

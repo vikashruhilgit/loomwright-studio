@@ -78,12 +78,14 @@ interface SessionRowView {
   agent: string;
   status: string;
   pgid: number | null;
+  /** Recorded asynchronously after the pgid; the reaper kills the group only once it is set. */
+  leader_started_at: string | null;
 }
 
 /** The exit test's one session row (with a recorded pgid), once it exists. */
 function sessionRow(): SessionRowView | undefined {
   return tryDb(dataDir, (db) =>
-    db.prepare<[], SessionRowView>("SELECT id, agent, status, pgid FROM sessions WHERE agent LIKE 'exit-test:event-%' ORDER BY id LIMIT 1").get(),
+    db.prepare<[], SessionRowView>("SELECT id, agent, status, pgid, leader_started_at FROM sessions WHERE agent LIKE 'exit-test:event-%' ORDER BY id LIMIT 1").get(),
   );
 }
 
@@ -151,13 +153,15 @@ describe("kill -9 mid-session, then restart (phase 1 exit, deterministic)", () =
   it("AC3: reaps the orphaned group, resumes the session, one task, the event done once", async () => {
     const first = await startHarness(harnessArgs(["--enqueue"]));
 
-    // Mid-command: the task was created and the stand-in's `claude` group runs.
-    const session = await waitFor("task_created and a live stand-in group", () => {
+    // Mid-command: the task was created, the stand-in's `claude` group runs,
+    // and the leader's start time (read asynchronously) is on disk, so the
+    // restarted kernel's reaper can prove the group is the session's.
+    const session = await waitFor("task_created, a live stand-in group and its recorded leader start time", () => {
       const row = sessionRow();
       if (row?.pgid == null) return undefined;
       pgids.add(row.pgid);
       const created = tryDb(dataDir, (db) => db.prepare("SELECT count(*) FROM events WHERE kind = 'task_created'").pluck().get() as number);
-      return created === 1 && groupAlive(row.pgid) ? row : undefined;
+      return created === 1 && row.leader_started_at !== null && groupAlive(row.pgid) ? row : undefined;
     });
     const pgid = session.pgid as number;
     const queueId = count("SELECT id FROM event_queue ORDER BY id LIMIT 1");
@@ -182,6 +186,8 @@ describe("kill -9 mid-session, then restart (phase 1 exit, deterministic)", () =
     const session = await waitFor("the session row", sessionRow, 5_000);
     const pgid = session.pgid as number;
     expect(pgid).toBeGreaterThan(1);
+    // The harness faults only once this is recorded (else it exits 1 with a named precondition error).
+    expect(session.leader_started_at).not.toBeNull();
     pgids.add(pgid);
     expect(groupAlive(pgid)).toBe(true);
     // Nothing of the interrupted transaction committed.
