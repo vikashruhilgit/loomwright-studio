@@ -386,6 +386,8 @@ export class SessionManager {
 
   readonly #live = new Map<number, LiveSession>();
   #reaping: Promise<ReapResult[]> | undefined;
+  /** The orphan row `#reapAll` is examining or killing right now (reaps are sequential), for `abandonSession`. */
+  #reapingRow: number | undefined;
 
   constructor(options: SessionManagerOptions, deps: SessionManagerDeps = {}) {
     this.#store = options.store;
@@ -720,12 +722,16 @@ export class SessionManager {
    * Refuses with `SessionError`, writing nothing: `invalid_params` (a bad id
    * or `via`), `not_found`, and `not_abandonable` for a row this manager is
    * running, a row that is not `orphaned`, or an `orphaned` row whose latest
-   * orphaning reason is anything else (`reap_error`, `kill_incomplete`, ...).
+   * orphaning reason is anything else (`reap_error`, `kill_incomplete`, ...),
+   * and for a row a reap is examining at that moment (its kill may be in
+   * flight and would keep signalling the group after the abandon): retry once
+   * the reap is done.
    */
   abandonSession(id: number, options: { readonly via: AbandonVia }): "abandoned" {
     if (!Number.isSafeInteger(id) || id < 1) throw new SessionError("invalid_params", "id must be a positive integer");
     if (options.via !== "cli" && options.via !== "api") throw new SessionError("invalid_params", "via must be cli or api");
     if (this.#live.has(id)) throw new SessionError("not_abandonable", `session ${id} is running in this kernel`);
+    if (this.#reapingRow === id) throw new SessionError("not_abandonable", `session ${id} is being reaped; retry once the reap is done`);
     const row = this.getSession(id);
     if (row === undefined) throw new SessionError("not_found", `no session ${id}`);
     if (row.status !== "orphaned") {
@@ -777,8 +783,11 @@ export class SessionManager {
    * it is never resumed while that holds, and every reap re-examines it (a
    * re-examination that changes nothing appends `session_reap_deferred`
    * instead of a second status event) until its group is gone or the owner
-   * abandons it (`abandonSession`, `abandoned` is never re-examined). The
-   * loop always continues. Each
+   * abandons it (`abandonSession`, `abandoned` is never re-examined). Each
+   * row is re-read just before it is examined and skipped, unprobed and
+   * unsignalled, when it no longer has the status and pgid the reap read
+   * (an abandon or resume landed while an earlier row's kill was awaited).
+   * The loop always continues. Each
    * marking is one transaction with its `session_status` event, which carries
    * the pgid, and is written only if the row still has the status the reap
    * read. A call made while a reap is running returns that reap. The manager
@@ -809,14 +818,23 @@ export class SessionManager {
     const results: ReapResult[] = [];
     for (const row of rows) {
       if (this.#live.has(row.id)) continue;
+      // The rows were read once, before any await: an abandon (or a resume
+      // that has since ended) may have moved this row while an earlier row's
+      // kill was awaited. Never probe or signal a row that is no longer what
+      // was read.
+      const current = this.getSession(row.id);
+      if (current === undefined || current.status !== row.status || current.pgid !== row.pgid) continue;
       let reason: ReapResult["reason"];
       let error: string | undefined;
+      this.#reapingRow = row.id;
       try {
         reason = await this.#reapOne(row.id, row.pgid, row.leader_started_at);
       } catch (err) {
         // A failed `ps`, or a kill error other than ESRCH/EPERM: nothing proves the group gone.
         reason = "reap_error";
         error = errorMessage(err);
+      } finally {
+        this.#reapingRow = undefined;
       }
       const status: ReapResult["status"] = LEFT_ALIVE.has(reason) ? "orphaned" : "interrupted";
       const payload = { reason, pgid: row.pgid, ...(error === undefined ? {} : { error }) };
@@ -840,7 +858,9 @@ export class SessionManager {
    * orphan, WITHOUT changing the terminal status, and append one
    * `session_kill_retried` event each. The flag is cleared once the group is
    * confirmed gone or proven foreign, so each row is retried only while its
-   * group may still be the session's.
+   * group may still be the session's. Each row is re-read just before its
+   * retry and skipped (no probe, no signal, no event) unless it still has the
+   * status, pgid and flag that were read.
    */
   async #retryTerminalKills(): Promise<void> {
     const placeholders = TERMINAL_STATUSES.map(() => "?").join(", ");
@@ -853,6 +873,19 @@ export class SessionManager {
     for (const row of rows) {
       // A session this manager still runs (e.g. `failed:auth` awaiting its kill) owns its own kill.
       if (this.#live.has(row.id)) continue;
+      // Read once, before any await: a live kill that has since confirmed the
+      // group gone (flag cleared) or a new attempt (new pgid) may have changed
+      // the row while an earlier row's kill was awaited. Retry only what is
+      // still flagged for the group that was read.
+      const current = this.getSession(row.id);
+      if (
+        current === undefined ||
+        current.status !== row.status ||
+        current.pgid !== row.pgid ||
+        current.kill_incomplete_at === null
+      ) {
+        continue;
+      }
       let reason: ReapResult["reason"];
       let error: string | undefined;
       try {

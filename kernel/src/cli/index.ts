@@ -17,6 +17,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import type { Readable, Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import type { StatusBody } from "../api/server.js";
 import { API_TOKEN_KEYCHAIN_SERVICE } from "../api/token.js";
@@ -77,7 +78,7 @@ export interface CliDeps {
   readonly service?: { readonly options?: ServiceOptions; readonly deps?: ServiceDeps };
   /** `session abandon` without `--yes`: whether a person can answer. Defaults to `process.stdin.isTTY === true`. */
   readonly isInteractive?: () => boolean;
-  /** `session abandon` without `--yes`: ask, `true` to proceed. Defaults to a `node:readline` prompt (`y`/`yes`). */
+  /** `session abandon` without `--yes`: ask, `true` to proceed. Defaults to `readlineConfirm()` (`y`/`yes`; EOF or an input error is a no). */
   readonly confirm?: (question: string) => Promise<boolean>;
 }
 
@@ -110,15 +111,32 @@ function defaultIsInteractive(): boolean {
   return process.stdin.isTTY === true;
 }
 
-/** Ask on the terminal (the question on stderr, so stdout stays the command's output). */
-function defaultConfirm(question: string): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(isYes(answer));
+/**
+ * The default `confirm`: ask on `input`/`output` (`process.stdin`, and
+ * `process.stderr` so stdout stays the command's output). Always settles:
+ * `true` only for a `y`/`yes` line; an input that ends (Ctrl-D, EOF) or
+ * errors before a line is answered, or had already ended, is a `false`.
+ */
+export function readlineConfirm(
+  input: Readable = process.stdin,
+  output: Writable = process.stderr,
+): (question: string) => Promise<boolean> {
+  return (question) => {
+    if (input.readableEnded || input.destroyed) return Promise.resolve(false);
+    const rl = createInterface({ input, output });
+    return new Promise((resolve) => {
+      // The first resolve wins: an answered question closes `rl` after resolving.
+      rl.once("close", () => resolve(false));
+      rl.once("error", () => {
+        resolve(false);
+        rl.close();
+      });
+      rl.question(question, (answer) => {
+        resolve(isYes(answer));
+        rl.close();
+      });
     });
-  });
+  };
 }
 
 function isYes(answer: string): boolean {
@@ -302,7 +320,8 @@ export function formatStatus(status: StatusBody): string {
  * macOS, no built daemon, launchctl failed) ⇒ one stderr line, 1.
  * `session abandon <id>` asks for confirmation after the `api.json` pid check
  * and before the Keychain is read or anything is sent (`y`/`yes` proceeds;
- * anything else ⇒ one stderr line, 1, nothing sent); `--yes` skips the
+ * anything else, including stdin ending or failing before an answer ⇒ one
+ * stderr line, 1, nothing sent); `--yes` skips the
  * question; with no TTY on stdin and no `--yes` it refuses at once (usage, 2)
  * instead of waiting for an answer. A 400/404/409 answer ⇒ one stderr line
  * with the API's stable error code, 1.
@@ -346,7 +365,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
       const question =
         `Abandon session ${command.id}? It becomes abandoned for good and the kernel never signals its process group, ` +
         "which may still be running: check its pgid (studio status) first. [y/N] ";
-      if (!(await (deps.confirm ?? defaultConfirm)(question))) {
+      if (!(await (deps.confirm ?? readlineConfirm())(question))) {
         throw new CliFailure(`studio: session ${command.id} not abandoned (not confirmed)`);
       }
     }

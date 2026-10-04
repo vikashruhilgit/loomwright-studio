@@ -210,3 +210,127 @@ describe("abandonSession (H04, AC4)", () => {
     vi.restoreAllMocks();
   });
 });
+
+describe("a reap never signals a row that changed status while an earlier row's kill was awaited (H04 review)", () => {
+  const SLOW = 5101; // the first row's group: its kill is held at the first sleep
+  const OTHER = 5102; // the second row's group: alive, leaderless, so a reap would kill it
+  const GONE = 5103; // an unchanged third row whose group is gone
+
+  /** Every group probe recorded; the kill's sleep is held in `pending` until `release`. */
+  function racing() {
+    const calls: string[] = [];
+    const alive = new Set([SLOW, OTHER]);
+    const pending: (() => void)[] = [];
+    const manager = new SessionManager(
+      { store, authProvider: stubProvider(), loomwrightPath: pluginDir, stopGraceMs: 10, baseEnv: { PATH: "/usr/bin" } },
+      {
+        ...fakeSessions().deps,
+        killGroup: (pgid, signal) => {
+          calls.push(`kill ${pgid} ${signal}`);
+          return alive.has(pgid);
+        },
+        isGroupAlive: (pgid) => {
+          calls.push(`alive ${pgid}`);
+          return alive.has(pgid);
+        },
+        readGroupLeader: (pgid): GroupLeader => {
+          calls.push(`ps ${pgid}`);
+          return { status: "absent" }; // leaderless: the reaper's "ours", so it would kill
+        },
+        schedule: (fn) => {
+          pending.push(fn);
+          return () => {};
+        },
+      },
+    );
+    /** Run every held sleep, one event-loop turn at a time, until `p` settles (no wall clock). */
+    const settle = async <T>(p: Promise<T>): Promise<T> => {
+      let done = false;
+      const tracked = p.finally(() => {
+        done = true;
+      });
+      while (!done) {
+        for (const fn of pending.splice(0)) fn();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      return tracked;
+    };
+    return { manager, calls, alive, pending, settle };
+  }
+
+  function rowAt(status: string, pgid: number, killIncompleteAt: string | null = null): number {
+    return Number(
+      store
+        .prepare(
+          "INSERT INTO sessions (agent, status, pgid, sdk_session_id, model, loomwright_path, kill_incomplete_at) VALUES ('wright', ?, ?, 'sid', 'claude-haiku-4-5', ?, ?)",
+        )
+        .run(status, pgid, pluginDir, killIncompleteAt).lastInsertRowid,
+    );
+  }
+
+  function unverifiedOrphanAt(pgid: number): number {
+    const id = rowAt("orphaned", pgid);
+    store
+      .prepare("INSERT INTO events (at, kind, actor, session_id, payload_json) VALUES ('2026-10-02T06:00:00.000Z', 'session_status', 'kernel', ?, ?)")
+      .run(id, JSON.stringify({ from: "running", to: "orphaned", reason: "leader_unverified", pgid }));
+    return id;
+  }
+
+  function events(id: number, kind: string): number {
+    return store.prepare<[number, string], number>("SELECT count(*) FROM events WHERE session_id = ? AND kind = ?").pluck().get(id, kind) ?? 0;
+  }
+
+  it("an abandon landing during an earlier row's kill: the abandoned row is never probed or signalled; unchanged rows are still reaped", async () => {
+    const { manager, calls, alive, pending, settle } = racing();
+    const slow = unverifiedOrphanAt(SLOW);
+    const abandonedRow = unverifiedOrphanAt(OTHER);
+    const unchanged = unverifiedOrphanAt(GONE);
+
+    const reap = manager.reapOrphans();
+    // The first row's kill is now held at its first sleep (reached synchronously).
+    expect(pending).toHaveLength(1);
+    expect(calls).toContain(`kill ${SLOW} SIGKILL`);
+
+    expect(manager.abandonSession(abandonedRow, { via: "cli" })).toBe("abandoned");
+    // The row whose kill is in flight cannot be abandoned under it.
+    expect(refusal(() => manager.abandonSession(slow, { via: "cli" })).code).toBe("not_abandonable");
+    expect(row(slow).status).toBe("orphaned");
+
+    alive.delete(SLOW);
+    expect(await settle(reap)).toEqual([
+      { sessionId: slow, pgid: SLOW, status: "interrupted", reason: "group_killed" },
+      { sessionId: unchanged, pgid: GONE, status: "interrupted", reason: "group_gone" },
+    ]);
+    expect(calls.filter((c) => c.includes(String(OTHER)))).toEqual([]);
+    expect(row(abandonedRow).status).toBe("abandoned");
+    expect(events(abandonedRow, "session_kill_incomplete")).toBe(0);
+    expect(events(abandonedRow, "session_reap_deferred")).toBe(0);
+
+    // The in-flight marker is cleared once the reap is done.
+    const later = unverifiedOrphanAt(GONE + 1);
+    expect(manager.abandonSession(later, { via: "api" })).toBe("abandoned");
+  });
+
+  it("a kill retry skips a terminal row whose flag was cleared while an earlier row's kill was awaited", async () => {
+    const { manager, calls, alive, pending, settle } = racing();
+    const flag = "2026-10-02T06:30:00.000Z";
+    const slow = rowAt("failed", SLOW, flag);
+    const cleared = rowAt("failed", OTHER, flag);
+    const stillFlagged = rowAt("stopped", GONE, flag);
+
+    const reap = manager.reapOrphans();
+    expect(pending).toHaveLength(1);
+    // As a live kill that confirmed the group gone would: the flag is cleared mid-retry.
+    store.prepare("UPDATE sessions SET kill_incomplete_at = NULL WHERE id = ?").run(cleared);
+
+    alive.delete(SLOW);
+    expect(await settle(reap)).toEqual([]);
+    expect(calls.filter((c) => c.includes(String(OTHER)))).toEqual([]);
+    expect(events(cleared, "session_kill_retried")).toBe(0);
+    expect(events(slow, "session_kill_retried")).toBe(1);
+    expect(row(slow).kill_incomplete_at).toBeNull();
+    // An unchanged flagged row is still retried and, its group gone, unflagged.
+    expect(events(stillFlagged, "session_kill_retried")).toBe(1);
+    expect(row(stillFlagged).kill_incomplete_at).toBeNull();
+  });
+});

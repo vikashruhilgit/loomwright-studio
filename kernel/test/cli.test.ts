@@ -5,12 +5,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 import { API_TOKEN_KEYCHAIN_SERVICE, startApiServer } from "../src/api/index.js";
 import type { ApiServer, StatusBody } from "../src/api/index.js";
 import type { KeychainReader } from "../src/auth/index.js";
-import { CLI_TIMEOUT_MS, STOP_ALL_TIMEOUT_MS, USAGE, formatStatus, runCli, summarizeStopAll } from "../src/cli/index.js";
+import { CLI_TIMEOUT_MS, STOP_ALL_TIMEOUT_MS, USAGE, formatStatus, readlineConfirm, runCli, summarizeStopAll } from "../src/cli/index.js";
 import type { CliDeps } from "../src/cli/index.js";
 import { SERVICE_LABEL, plistPath } from "../src/service/index.js";
 import type { ServiceDeps } from "../src/service/index.js";
@@ -585,6 +586,43 @@ describe("studio session abandon (H04, AC4)", () => {
     oneLine(no.stderr.text());
     expect(no.stderr.text()).toContain("session 7 not abandoned (not confirmed)");
     expect(abandoned).toHaveLength(1);
+  });
+
+  it("the default readline confirm settles a no when stdin ends (Ctrl-D) or fails before an answer: exit 1, nothing sent", async () => {
+    // Each case acts on stdin only once the question is on the prompt stream: ordered by events, no timers.
+    const cases: [string, (input: PassThrough) => void, boolean][] = [
+      ["EOF before the question", (input) => input.end(), false],
+      ["EOF at the prompt", () => undefined, false],
+      ["stdin error at the prompt", () => undefined, false],
+      ["already destroyed", (input) => input.destroy(), false],
+    ];
+    for (const [name, before] of cases) {
+      const input = new PassThrough();
+      const prompt = new PassThrough();
+      const shown: string[] = [];
+      prompt.on("data", (chunk: Buffer) => {
+        shown.push(chunk.toString());
+        if (name === "EOF at the prompt") input.end();
+        if (name === "stdin error at the prompt") input.destroy(new Error("EIO"));
+      });
+      before(input);
+      const c = cli({ isInteractive: () => true, confirm: readlineConfirm(input, prompt) });
+      expect(await c.run("session", "abandon", "7"), name).toBe(1);
+      expect(c.fetchSpy, name).not.toHaveBeenCalled();
+      expect(c.reads, name).toEqual([]);
+      oneLine(c.stderr.text());
+      expect(c.stderr.text(), name).toContain("session 7 not abandoned (not confirmed)");
+      if (name.endsWith("at the prompt")) expect(shown.join(""), name).toContain("Abandon session 7?");
+    }
+    expect(abandoned).toEqual([]);
+
+    // A `yes` line through the same readline path still proceeds.
+    const input = new PassThrough();
+    const prompt = new PassThrough();
+    prompt.once("data", () => input.write("yes\n"));
+    const yes = cli({ isInteractive: () => true, confirm: readlineConfirm(input, prompt) });
+    expect(await yes.run("session", "abandon", "7")).toBe(0);
+    expect(abandoned).toEqual([[7, "cli"]]);
   });
 
   it("with no terminal and no --yes: refuses with usage, exit 2, without asking or sending", async () => {
