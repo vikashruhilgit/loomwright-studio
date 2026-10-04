@@ -37,7 +37,11 @@ export function tokenDaysLeft(createdAtIso: string, now: Date): number {
  *
  * Expiry is tracked from the creation date recorded in `auth_providers`. With
  * no recorded date the expiry is unknown and a whole token reports `ok`.
- * A Keychain failure other than "not found" propagates as `KeychainError`.
+ * In `buildEnv`, a Keychain failure other than "not found" propagates as
+ * `KeychainError`. `health()` is total: the same failure is
+ * `error` (`keychain_unreadable`), an invalid clock is `error`
+ * (`clock_unreadable`) and an unreadable creation date is `error`
+ * (`token_created_at_unreadable`), never `ok` and never a throw.
  */
 export function createSubscriptionTokenProvider(deps: AuthProviderDeps = {}): AuthProvider {
   const keychain = deps.keychain ?? securityCliKeychain();
@@ -76,13 +80,39 @@ export function createSubscriptionTokenProvider(deps: AuthProviderDeps = {}): Au
       env[SUBSCRIPTION_ENV_VAR] = token;
       return env;
     },
-    health(): AuthHealth {
-      const value = keychain.read(SUBSCRIPTION_KEYCHAIN_SERVICE);
+    health(at?: Date): AuthHealth {
+      let value: string | undefined;
+      try {
+        value = keychain.read(SUBSCRIPTION_KEYCHAIN_SERVICE);
+      } catch {
+        // The error is dropped: it may carry Keychain output.
+        return { status: "error", reason: "keychain_unreadable" };
+      }
       if (value === undefined) return { status: "missing" };
       if (!isWholeToken(value)) return { status: "invalid_shape" };
-      const createdAt = store ? readProviderMetadata(store, id)?.token_created_at : undefined;
+
+      let instant: Date;
+      try {
+        instant = at ?? now();
+      } catch {
+        return { status: "error", reason: "clock_unreadable" };
+      }
+      if (!Number.isFinite(instant.getTime())) return { status: "error", reason: "clock_unreadable" };
+
+      let createdAt: string | null | undefined;
+      try {
+        createdAt = store ? readProviderMetadata(store, id)?.token_created_at : undefined;
+      } catch {
+        return { status: "error", reason: "token_created_at_unreadable" };
+      }
       if (createdAt === undefined || createdAt === null) return { status: "ok" };
-      const days = tokenDaysLeft(createdAt, now());
+      // The column has no CHECK: a row written by hand can hold anything.
+      if (typeof createdAt !== "string" || !Number.isFinite(Date.parse(createdAt))) {
+        return { status: "error", reason: "token_created_at_unreadable" };
+      }
+      const days = tokenDaysLeft(createdAt, instant);
+      // Belt and braces: a finite date and a finite clock give a finite count.
+      if (!Number.isFinite(days)) return { status: "error", reason: "token_created_at_unreadable" };
       return days < EXPIRY_WARNING_DAYS ? { status: "expiring", days } : { status: "ok" };
     },
   };

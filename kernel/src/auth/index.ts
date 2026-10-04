@@ -5,6 +5,7 @@
 export { AuthProviderError } from "./types.js";
 export type {
   AuthHealth,
+  AuthHealthErrorReason,
   AuthProvider,
   AuthProviderDeps,
   AuthProviderErrorCode,

@@ -56,6 +56,20 @@ export const CREDENTIAL_ENV_VARS: readonly string[] = Object.freeze([
   "CLAUDE_CODE_USE_ANTHROPIC_AWS",
   "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
   "AWS_BEARER_TOKEN_BEDROCK",
+  // OAuth and bridge endpoint switches: each can send the token to a host other
+  // than Anthropic's (F04-1). Whether the public build honours them is
+  // unverified (docs/OPEN_QUESTIONS.md); they are stripped anyway. Exact names,
+  // not a `CLAUDE_` prefix rule, which would strip legitimate flags.
+  "USE_LOCAL_OAUTH",
+  "USE_STAGING_OAUTH",
+  "CLAUDE_LOCAL_OAUTH_API_BASE",
+  "CLAUDE_LOCAL_OAUTH_APPS_BASE",
+  "CLAUDE_LOCAL_OAUTH_CONSOLE_BASE",
+  "CLAUDE_BRIDGE_BASE_URL",
+  "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+  "CLAUDE_BRIDGE_SESSION_INGRESS_URL",
+  "CLAUDE_REMOTE_TOOLS_BRIDGE_URL",
+  "CLAUDE_CODE_GB_BASE_URL",
 ]);
 
 const CREDENTIAL_SET: ReadonlySet<string> = new Set(CREDENTIAL_ENV_VARS);

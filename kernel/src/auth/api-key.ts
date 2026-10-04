@@ -18,7 +18,10 @@ export const API_KEY_ENV_VAR = "ANTHROPIC_API_KEY";
  * (never caches it) and passes it as `ANTHROPIC_API_KEY`, with every other
  * credential variable (including `CLAUDE_CODE_OAUTH_TOKEN`) removed. Stub-tested
  * only until a commercial launch (invariant 6). API keys have no tracked
- * expiry, so `health()` never reports `expiring`.
+ * expiry, so `health()` never reports `expiring` and ignores the clock.
+ * In `buildEnv`, a Keychain failure other than "not found" propagates as
+ * `KeychainError`; `health()` is total and reports the same failure as
+ * `error` (`keychain_unreadable`), never a throw.
  */
 export function createApiKeyProvider(deps: AuthProviderDeps = {}): AuthProvider {
   const keychain = deps.keychain ?? securityCliKeychain();
@@ -51,8 +54,15 @@ export function createApiKeyProvider(deps: AuthProviderDeps = {}): AuthProvider 
       env[API_KEY_ENV_VAR] = key;
       return env;
     },
-    health(): AuthHealth {
-      const key = keychain.read(API_KEY_KEYCHAIN_SERVICE);
+    // No expiry, so the clock (`_at`) is accepted for the interface and ignored.
+    health(_at?: Date): AuthHealth {
+      let key: string | undefined;
+      try {
+        key = keychain.read(API_KEY_KEYCHAIN_SERVICE);
+      } catch {
+        // The error is dropped: it may carry Keychain output.
+        return { status: "error", reason: "keychain_unreadable" };
+      }
       if (key === undefined) return { status: "missing" };
       if (!isPlausibleApiKey(key)) return { status: "invalid_shape" };
       return { status: "ok" };

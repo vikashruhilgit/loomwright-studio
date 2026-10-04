@@ -55,7 +55,7 @@ export interface ApiServer {
 export interface StatusBody {
   readonly kernel: { readonly version: string; readonly uptime_s: number; readonly pid: number };
   readonly kill_switch: { readonly engaged: boolean; readonly since: string | null };
-  readonly auth: readonly { readonly id: string; readonly account: string | null; readonly health: AuthHealth | { readonly status: "error" } }[];
+  readonly auth: readonly { readonly id: string; readonly account: string | null; readonly health: AuthHealth }[];
   readonly sessions: readonly {
     readonly id: number;
     readonly agent: string | null;
@@ -135,12 +135,17 @@ function isAuthorized(req: IncomingMessage, expected: Buffer): boolean {
   return timingSafeEqual(presented, expected);
 }
 
-function safeHealth(provider: AuthProvider): AuthHealth | { readonly status: "error" } {
+/**
+ * `provider.health(at)` with `readStatus`'s one instant. Providers are total,
+ * but a provider that still throws (a test stub, a future provider) reports
+ * `error` (`health_threw`), never a 500.
+ */
+function healthOf(provider: AuthProvider, at: Date): AuthHealth {
   try {
-    return provider.health();
+    return provider.health(at);
   } catch {
     // The message is dropped: it could carry Keychain output.
-    return { status: "error" };
+    return { status: "error", reason: "health_threw" };
   }
 }
 
@@ -183,7 +188,7 @@ export function readStatus(
       pid: info.pid,
     },
     kill_switch: killSwitchState(store),
-    auth: authProviders.map((p) => ({ id: p.id, account: safeAccount(p), health: safeHealth(p) })),
+    auth: authProviders.map((p) => ({ id: p.id, account: safeAccount(p), health: healthOf(p, at) })),
     sessions: store
       .prepare<[], StatusBody["sessions"][number]>(
         "SELECT id, agent, model, pgid, started_at, status FROM sessions WHERE status IN ('starting', 'running') ORDER BY id",
@@ -231,8 +236,10 @@ export function readStatus(
  *   `WWW-Authenticate: Bearer`, so an unauthenticated caller learns nothing
  *   about the routes. Then: unknown path ⇒ 404, wrong method ⇒ 405.
  *   Request bodies are ignored.
- * - `GET /status` ⇒ `StatusBody`. An auth provider whose `health()` throws
- *   reports `{status: "error"}`, never a 500.
+ * - `GET /status` ⇒ `StatusBody`. Each provider's `health(at)` reads the
+ *   request's one instant; its failures are typed `{status: "error", reason}`
+ *   values, and a provider whose `health()` still throws reports
+ *   `{status: "error", reason: "health_threw"}`, never a 500.
  * - `POST /stop-all` ⇒ engage the kill switch (`kill_switch_engaged`), stop
  *   the loop (its current event finishes, no other starts, so a session an
  *   in-flight handler starts is live before the next step), stop every

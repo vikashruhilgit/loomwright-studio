@@ -87,14 +87,45 @@ function runBuild(kernel: string, args: string[]): { status: number | null; stde
   return { status: r.status, stderr: r.stderr };
 }
 
-function expectRefused(kernel: string, args: string[], message: string, extraSentinels: string[] = []): void {
+// `distSentinel: false` is for a tree with no real kernel/dist (a fresh
+// checkout, a dangling kernel/dist symlink); every other caller keeps the check.
+function expectRefused(
+  kernel: string,
+  args: string[],
+  message: string,
+  extraSentinels: string[] = [],
+  { distSentinel = true }: { distSentinel?: boolean } = {},
+): void {
   const r = runBuild(kernel, args);
   expect(r.status).not.toBe(0);
   expect(r.stderr).toContain(message);
-  for (const f of [join(kernel, "src", "sentinel.txt"), join(kernel, "dist", "sentinel.txt"), ...extraSentinels]) {
+  const sentinels = [join(kernel, "src", "sentinel.txt"), ...(distSentinel ? [join(kernel, "dist", "sentinel.txt")] : [])];
+  for (const f of [...sentinels, ...extraSentinels]) {
     expect(existsSync(f), f).toBe(true);
   }
   expect(existsSync(join(kernel, "dist", "stub-output.js"))).toBe(false);
+}
+
+// Calls resolveBuildOutDir in a child process and returns what it printed: the
+// refusal message, or "allowed". For targets the real build must NEVER run
+// against ("/", a mount point): a guard regression there would wipe it.
+function guardDirect(kernel: string, outDir: string): { status: number | null; stdout: string } {
+  const child = `
+const { resolveBuildOutDir } = await import(process.env.GUARD_URL);
+try { resolveBuildOutDir(process.env.KERNEL_DIR, process.env.OUT_DIR); console.log("allowed"); }
+catch (err) { console.log(err.message); }
+`;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", child], {
+    env: {
+      PATH: process.env["PATH"] ?? "/usr/bin:/bin",
+      GUARD_URL: pathToFileURL(join(kernel, "scripts", "out-dir-guard.mjs")).href,
+      KERNEL_DIR: kernel,
+      OUT_DIR: outDir,
+    },
+    encoding: "utf8",
+    timeout: 20_000,
+  });
+  return { status: r.status, stdout: r.stdout };
 }
 
 describe("build out-dir guard", () => {
@@ -158,22 +189,56 @@ describe("build out-dir guard", () => {
     // Never run the real build against "/": a guard regression would wipe it.
     const root = newRoot();
     const kernel = fakeKernel(root);
-    const child = `
-const { resolveBuildOutDir } = await import(process.env.GUARD_URL);
-try { resolveBuildOutDir(process.env.KERNEL_DIR, "/"); console.log("allowed"); }
-catch (err) { console.log(err.message); }
-`;
-    const r = spawnSync(process.execPath, ["--input-type=module", "-e", child], {
-      env: {
-        PATH: process.env["PATH"] ?? "/usr/bin:/bin",
-        GUARD_URL: pathToFileURL(join(kernel, "scripts", "out-dir-guard.mjs")).href,
-        KERNEL_DIR: kernel,
-      },
-      encoding: "utf8",
-      timeout: 20_000,
-    });
+    const r = guardDirect(kernel, "/");
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("refusing to use / as the build output directory: it is a filesystem root");
+  });
+
+  it.skipIf(!existsSync("/System/Volumes/Data") || process.platform !== "darwin")(
+    "refuses the /System/Volumes/Data and /System/Volumes mount/firmlink ancestors, by the layer-5 marker check only (guard called directly) [skipped unless macOS: the path exists only there]",
+    () => {
+      // Never run the real build against a mount point: a guard regression
+      // would wipe the data volume. kernel/'s real chain (/Users/... -> /)
+      // does not pass through these, so layers 1 and 2 cannot catch them.
+      const root = newRoot();
+      const kernel = fakeKernel(root);
+      for (const mount of ["/System/Volumes/Data", "/System/Volumes"]) {
+        const r = guardDirect(kernel, mount);
+        expect(r.status).toBe(0);
+        expect(r.stdout).toContain(`refusing to use ${mount} as the build output directory`);
+        expect(r.stdout).toContain(`without the ${MARKER} marker`);
+      }
+    },
+  );
+
+  it("refuses a name other than dist inside kernel/ on a fresh checkout (no kernel/dist), creating nothing", () => {
+    const root = newRoot();
+    const kernel = fakeKernel(root);
+    rmSync(join(kernel, "dist"), { recursive: true });
+    for (const name of ["build", "dist2"]) {
+      expectRefused(kernel, ["--out-dir", name], "inside the kernel directory", [], { distSentinel: false });
+      expect(existsSync(join(kernel, name)), name).toBe(false);
+    }
+    expect(existsSync(join(kernel, "dist"))).toBe(false);
+  });
+
+  it("refuses a missing path inside kernel/ while kernel/dist exists, creating nothing", () => {
+    const root = newRoot();
+    const kernel = fakeKernel(root);
+    expectRefused(kernel, ["--out-dir", join("new", "dir")], "inside the kernel directory");
+    expect(existsSync(join(kernel, "new"))).toBe(false);
+  });
+
+  it("refuses the default build through a dangling kernel/dist symlink (fail closed), leaving the link and its target alone", () => {
+    const root = newRoot();
+    const kernel = fakeKernel(root);
+    rmSync(join(kernel, "dist"), { recursive: true });
+    const nowhere = join(root, "nowhere");
+    symlinkSync(nowhere, join(kernel, "dist"));
+    expectRefused(kernel, [], "kernel/dist exists but is not a directory", [], { distSentinel: false });
+    expect(lstatSync(join(kernel, "dist")).isSymbolicLink()).toBe(true);
+    expect(existsSync(nowhere)).toBe(false);
+    expect(existsSync(join(kernel, "src", "sentinel.txt"))).toBe(true);
   });
 
   it.skipIf(!PROBES.caseInsensitive)(

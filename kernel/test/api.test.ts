@@ -223,7 +223,7 @@ describe("GET /status (AC2)", () => {
       kill_switch: { engaged: false, since: null },
       auth: [
         { id: "subscription-token", account: "owner@example.test", health: { status: "expiring", days: 12 } },
-        { id: "api-key", account: "api-key", health: { status: "error" } },
+        { id: "api-key", account: "api-key", health: { status: "error", reason: "health_threw" } },
       ],
       sessions: [
         { id: 1, agent: "wright", model: "claude-haiku-4-5", pgid: 2000000001, started_at: "2026-10-02T09:00:00.000Z", status: "running" },
@@ -265,6 +265,32 @@ describe("GET /status (AC2)", () => {
         },
       ],
     } satisfies StatusBody);
+  });
+
+  it("passes a returned error health through unchanged and hands every provider readStatus's one instant", async () => {
+    const seen: (Date | undefined)[] = [];
+    const recording = (id: string, health: ReturnType<AuthProvider["health"]>): AuthProvider =>
+      stubProvider({
+        id,
+        account: id,
+        health: (at?: Date) => {
+          seen.push(at);
+          return health;
+        },
+      });
+    const server = await serve({
+      authProviders: [
+        recording("broken-keychain", { status: "error", reason: "keychain_unreadable" }),
+        recording("fine", { status: "ok" }),
+      ],
+    });
+    const res = await call(server, "/status");
+    expect(res.status).toBe(200);
+    expect((res.json() as StatusBody).auth).toEqual([
+      { id: "broken-keychain", account: "broken-keychain", health: { status: "error", reason: "keychain_unreadable" } },
+      { id: "fine", account: "fine", health: { status: "ok" } },
+    ]);
+    expect(seen).toEqual([NOW, NOW]);
   });
 
   it("lists every row with kill_incomplete_at set under kill_unconfirmed, apart from sessions, and drops it once cleared", async () => {
