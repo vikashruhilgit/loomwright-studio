@@ -3,8 +3,9 @@
 // once a minute); by hand every failure exits 1, as before. Every exit writes
 // one stderr line naming the cause. daemon.ts starts the kernel when imported,
 // so the unit tests import daemon-exit.ts only, and the end-to-end checks run
-// the BUILT daemon against a held store lock or a bad argument: neither gets
-// as far as a Keychain read.
+// the BUILT daemon against a held store lock, a refused store open or a bad
+// argument: none gets as far as a Keychain read.
+import Database from "better-sqlite3";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,10 +16,12 @@ import { KeychainError } from "../src/auth/keychain.js";
 import { AuthProviderError } from "../src/auth/types.js";
 import { DAEMON_NAME, DaemonArgumentError, parseArgs, startFailureExit, startFailureKind, stopFailureExit, underLaunchd } from "../src/daemon-exit.js";
 import { LAUNCHD_ARGUMENT, THROTTLE_INTERVAL_SECONDS } from "../src/service/index.js";
-import { Store, StoreLockedError } from "../src/store/index.js";
+import { DB_FILENAME, Store, StoreIntegrityError, StoreLockedError, StoreSchemaTooNewError } from "../src/store/index.js";
 import { buildKernel } from "./crash-helpers.js";
 
 const locked = new StoreLockedError("/data", 4242);
+const integrity = new StoreIntegrityError("/data/studio.db", ["trigger events_no_update is missing"]);
+const tooNew = new StoreSchemaTooNewError("/data/studio.db", [99], 8);
 const keychain = new KeychainError("loomwright-studio-api", 36, null);
 const unavailable = new AuthProviderError("unavailable", "subscription-token", 'auth provider "subscription-token" is not available in this build');
 const missing = new AuthProviderError("missing", "api-key", "no API key in the Keychain");
@@ -62,8 +65,10 @@ describe("parseArgs", () => {
 });
 
 describe("startFailureKind", () => {
-  it("permanent only for the allowlist: the store lock, a bad argument, an auth provider not in this build", () => {
+  it("permanent only for the allowlist: the store lock, a refused store open, a bad argument, an auth provider not in this build", () => {
     expect(startFailureKind(locked)).toBe("permanent");
+    expect(startFailureKind(integrity)).toBe("permanent");
+    expect(startFailureKind(tooNew)).toBe("permanent");
     expect(startFailureKind(argumentError(["--bogus"]))).toBe("permanent");
     expect(startFailureKind(unavailable)).toBe("permanent");
   });
@@ -77,7 +82,7 @@ describe("startFailureKind", () => {
 
 describe("startFailureExit", () => {
   it("by hand: every start failure exits 1 with today's line", () => {
-    for (const err of [locked, keychain, unavailable, argumentError(["--bogus"])]) {
+    for (const err of [locked, integrity, tooNew, keychain, unavailable, argumentError(["--bogus"])]) {
       expect(startFailureExit(err, false)).toEqual({ status: 1, line: `${DAEMON_NAME}: failed to start: ${(err as Error).message}` });
     }
   });
@@ -86,6 +91,14 @@ describe("startFailureExit", () => {
     expect(startFailureExit(locked, true)).toEqual({
       status: 0,
       line: `${DAEMON_NAME}: failed to start (not restarting: another kernel holds the store lock): Studio data dir /data is locked: held by pid 4242 (as last recorded; may be stale)`,
+    });
+    expect(startFailureExit(integrity, true)).toEqual({
+      status: 0,
+      line: `${DAEMON_NAME}: failed to start (not restarting: the store failed its integrity check): Studio database /data/studio.db failed its integrity check: trigger events_no_update is missing`,
+    });
+    expect(startFailureExit(tooNew, true)).toEqual({
+      status: 0,
+      line: `${DAEMON_NAME}: failed to start (not restarting: the store's schema is newer than this kernel): Studio database /data/studio.db records schema version 99, newer than this kernel knows (up to 8); refusing to open it`,
     });
     expect(startFailureExit(argumentError(["--bogus"]), true)).toEqual({
       status: 0,
@@ -171,6 +184,39 @@ describe("the built daemon (end to end, no Keychain)", () => {
     } finally {
       holder.close();
     }
+  });
+
+  /** Runs `sql` against the data dir's database, as another writer would. */
+  function tamper(sql: string): void {
+    const db = new Database(join(dataDir, DB_FILENAME));
+    try {
+      db.exec(sql);
+    } finally {
+      db.close();
+    }
+  }
+
+  it.each([
+    ["the store failed its integrity check", "DROP TRIGGER events_no_update", /failed its integrity check: trigger events_no_update is missing/],
+    [
+      "the store's schema is newer than this kernel",
+      "INSERT INTO schema_migrations (version, name, applied_at) VALUES (99, 'from_the_future', '2027-01-01T00:00:00.000Z')",
+      /records schema version 99, newer than this kernel knows/,
+    ],
+  ] as const)("a refused store open (%s): exit 0 under launchd, 1 by hand, one stderr line each", (reason, sql, cause) => {
+    // The store opens before any Keychain read, so this never reaches the Keychain.
+    new Store({ dataDir }).close();
+    tamper(sql);
+    const launchd = daemon([LAUNCHD_ARGUMENT]);
+    expect(launchd.status).toBe(0);
+    expect(launchd.stderr.startsWith(`${DAEMON_NAME}: failed to start (not restarting: ${reason}): `)).toBe(true);
+    expect(launchd.stderr).toMatch(cause);
+    expect(launchd.stderr.split("\n")).toHaveLength(2);
+    const byHand = daemon([]);
+    expect(byHand.status).toBe(1);
+    expect(byHand.stderr.startsWith(`${DAEMON_NAME}: failed to start: `)).toBe(true);
+    expect(byHand.stderr).toMatch(cause);
+    expect(byHand.stderr.split("\n")).toHaveLength(2);
   });
 
   it("a bad argument with --launchd: exit 0 and one stderr line", () => {
