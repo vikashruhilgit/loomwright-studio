@@ -10,19 +10,26 @@ export const AUTH_EXPIRING_REASON = "auth_token_expiring";
  * event to the audit log — at most once per provider per UTC day. A mechanism
  * only: whatever schedules this call decides how often it runs.
  *
- * The row's `at` comes from the injected clock, and the same-day dedupe reads
- * that same clock, so an injected date never disagrees with SQLite's wall
- * clock. The payload never contains the credential.
+ * ONE clock: `now()` is read once, that instant is passed to
+ * `provider.health(instant)` for the day count, and the same instant is the
+ * row's `at` and the same-day dedupe key, so an injected date never disagrees
+ * with SQLite's wall clock or with the provider's own `deps.now`. An instant
+ * that is not a valid date is `error` (`clock_unreadable`) and writes no row,
+ * checked here BEFORE the provider is asked, so a provider that ignores `at`
+ * cannot turn it into a row (or a `RangeError` from `toISOString()`). The
+ * payload never contains the credential.
  */
 export function checkAuthHealth(
   store: Store,
   provider: AuthProvider,
   now: () => Date = () => new Date(),
 ): AuthHealth {
-  const health = provider.health();
+  const instant = now();
+  if (!Number.isFinite(instant.getTime())) return { status: "error", reason: "clock_unreadable" };
+  const health = provider.health(instant);
   if (health.status !== "expiring") return health;
 
-  const at = now().toISOString();
+  const at = instant.toISOString();
   const day = at.slice(0, 10);
   store.transaction(() => {
     const already = store

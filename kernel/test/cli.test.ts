@@ -8,9 +8,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 import { API_TOKEN_KEYCHAIN_SERVICE, startApiServer } from "../src/api/index.js";
-import type { ApiServer } from "../src/api/index.js";
+import type { ApiServer, StatusBody } from "../src/api/index.js";
 import type { KeychainReader } from "../src/auth/index.js";
-import { CLI_TIMEOUT_MS, STOP_ALL_TIMEOUT_MS, USAGE, runCli } from "../src/cli/index.js";
+import { CLI_TIMEOUT_MS, STOP_ALL_TIMEOUT_MS, USAGE, formatStatus, runCli } from "../src/cli/index.js";
 import type { CliDeps } from "../src/cli/index.js";
 import { SERVICE_LABEL, plistPath } from "../src/service/index.js";
 import type { ServiceDeps } from "../src/service/index.js";
@@ -215,6 +215,19 @@ describe("studio CLI", () => {
     const s2 = cli();
     expect(await s2.run("status")).toBe(0);
     expect(s2.stdout.text()).toContain("kill unconfirmed: 1 session");
+  });
+
+  it("status prints an error health with its reason, and `unknown` for a pre-H02 daemon that sends none", async () => {
+    const body = (await (await fetch(`http://127.0.0.1:${server.port}/status`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json()) as StatusBody;
+    const withHealth = (health: unknown): StatusBody =>
+      ({ ...body, auth: [{ id: "subscription-token", account: "owner", health }] }) as StatusBody;
+    expect(formatStatus(withHealth({ status: "error", reason: "keychain_unreadable" }))).toContain(
+      "auth: subscription-token (owner): error (keychain_unreadable)\n",
+    );
+    expect(formatStatus(withHealth({ status: "error" }))).toContain("auth: subscription-token (owner): error (unknown)\n");
+    expect(formatStatus(withHealth({ status: "expiring", days: 7 }))).toContain(
+      "auth: subscription-token (owner): expiring (7 days left)\n",
+    );
   });
 
   it("status prints no kill-unconfirmed line when no kill gave up", async () => {

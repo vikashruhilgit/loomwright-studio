@@ -189,7 +189,13 @@ export function formatStatus(status: StatusBody): string {
   );
   for (const p of status.auth) {
     const h = p.health;
-    const health = h.status === "expiring" ? `expiring (${h.days} days left)` : h.status;
+    const health =
+      h.status === "expiring"
+        ? `expiring (${h.days} days left)`
+        : h.status === "error"
+          ? // `?? "unknown"`: a daemon older than this CLI sends `{status: "error"}` with no reason.
+            `error (${h.reason ?? "unknown"})`
+          : h.status;
     lines.push(`auth: ${p.id} (${p.account ?? "unknown account"}): ${health}`);
   }
   lines.push(`sessions: ${status.sessions.length} running`);

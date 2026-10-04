@@ -20,6 +20,7 @@ import {
   isCredentialEnvVar,
   isPlausibleApiKey,
   isWholeToken,
+  parseTokenCreatedAt,
   readProviderMetadata,
   recordTokenCreated,
   securityCliKeychain,
@@ -77,6 +78,32 @@ function catchError(fn: () => unknown): unknown {
   throw new Error("expected a throw");
 }
 
+/**
+ * The CLI's OAuth and bridge endpoint switches (F04-1), pinned by a LITERAL list
+ * so deleting a name from `CREDENTIAL_ENV_VARS` fails a test.
+ */
+const OAUTH_ENDPOINT_SWITCHES = [
+  "USE_LOCAL_OAUTH",
+  "USE_STAGING_OAUTH",
+  "CLAUDE_LOCAL_OAUTH_API_BASE",
+  "CLAUDE_LOCAL_OAUTH_APPS_BASE",
+  "CLAUDE_LOCAL_OAUTH_CONSOLE_BASE",
+  "CLAUDE_BRIDGE_BASE_URL",
+  "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+  "CLAUDE_BRIDGE_SESSION_INGRESS_URL",
+  "CLAUDE_REMOTE_TOOLS_BRIDGE_URL",
+  "CLAUDE_CODE_GB_BASE_URL",
+] as const;
+
+/**
+ * The CLI's API endpoint switch, pinned by a LITERAL list for the same reason:
+ * it can send the credential to a host other than Anthropic's.
+ */
+const API_ENDPOINT_SWITCHES = ["CLAUDE_CODE_API_BASE_URL"] as const;
+
+/** Every endpoint switch a child env must never carry. */
+const ENDPOINT_SWITCHES = [...OAUTH_ENDPOINT_SWITCHES, ...API_ENDPOINT_SWITCHES] as const;
+
 const PARENT_ENV = {
   PATH: "/usr/bin:/bin",
   HOME: "/Users/someone",
@@ -90,6 +117,17 @@ const PARENT_ENV = {
   CLAUDE_CONFIG_DIR: "/Users/someone/.claude",
   CLAUDE_CODE_USE_NATIVE_FILE_SEARCH: "1",
   AWS_ACCESS_KEY_ID: "akid",
+  USE_LOCAL_OAUTH: "1",
+  USE_STAGING_OAUTH: "1",
+  CLAUDE_LOCAL_OAUTH_API_BASE: "https://stray-api.invalid",
+  CLAUDE_LOCAL_OAUTH_APPS_BASE: "https://stray-apps.invalid",
+  CLAUDE_LOCAL_OAUTH_CONSOLE_BASE: "https://stray-console.invalid",
+  CLAUDE_BRIDGE_BASE_URL: "https://stray-bridge.invalid",
+  CLAUDE_SECURESTORAGE_CONFIG_DIR: "/tmp/stray-secure-storage",
+  CLAUDE_BRIDGE_SESSION_INGRESS_URL: "https://stray-ingress.invalid",
+  CLAUDE_REMOTE_TOOLS_BRIDGE_URL: "https://stray-tools.invalid",
+  CLAUDE_CODE_GB_BASE_URL: "https://stray-gb.invalid",
+  CLAUDE_CODE_API_BASE_URL: "https://stray-api-base.invalid",
   UNSET_VALUE: undefined,
 } as const;
 
@@ -137,7 +175,7 @@ describe("AuthProvider (AC1)", () => {
     expect(typeof provider.health).toBe("function");
   });
 
-  it("health() variants are exactly ok, missing, invalid_shape and expiring(days)", () => {
+  it("health() variants are exactly ok, missing, invalid_shape, expiring(days) and error(reason)", () => {
     // A compile-time exhaustiveness check over the union, plus a runtime sample.
     const label = (h: AuthHealth): string => {
       switch (h.status) {
@@ -147,6 +185,8 @@ describe("AuthProvider (AC1)", () => {
           return h.status;
         case "expiring":
           return `expiring(${h.days})`;
+        case "error":
+          return `error(${h.reason})`;
         default: {
           const never: never = h;
           return never;
@@ -154,6 +194,7 @@ describe("AuthProvider (AC1)", () => {
       }
     };
     expect(label({ status: "expiring", days: 3 })).toBe("expiring(3)");
+    expect(label({ status: "error", reason: "keychain_unreadable" })).toBe("error(keychain_unreadable)");
     expect(createSubscriptionTokenProvider({ keychain: stubKeychain({}) }).health()).toEqual({
       status: "missing",
     });
@@ -178,6 +219,55 @@ describe("AuthProvider (AC1)", () => {
     const store = openStore();
     expect(() => recordTokenCreated(store, "subscription-token", "a", "not a date")).toThrow(RangeError);
     expect(readProviderMetadata(store, "subscription-token")).toBeUndefined();
+  });
+
+  describe("strict creation dates (one parser for writer and reader)", () => {
+    const AT = new Date("2030-01-15T23:30:00.000Z");
+
+    it.each([
+      ["9999", "a bare year"],
+      ["12345", "a bare number"],
+      ["2030-02-30T00:00:00Z", "a day that does not exist"],
+      ["2030-01-01T24:00:00Z", "hour 24"],
+      ["2030-01-15", "a date without a time"],
+      ["2030-01-15T10:00:00", "a time without Z"],
+      ["2030-01-15T10:00:00+00:00", "an offset instead of Z"],
+      ["+012345-01-01T00:00:00.000Z", "an extended year (what the old writer stored for 12345)"],
+      ["2030-01-15T23:30:00.001Z", "one millisecond after now"],
+      ["2031-01-01T00:00:00Z", "a future date"],
+    ])("recordTokenCreated refuses %j (%s) and writes nothing", (raw) => {
+      const store = openStore();
+      expect(parseTokenCreatedAt(raw, AT)).toBeNull();
+      expect(() => recordTokenCreated(store, "subscription-token", "a", raw, AT)).toThrow(RangeError);
+      expect(readProviderMetadata(store, "subscription-token")).toBeUndefined();
+    });
+
+    it.each([
+      ["2029-02-28T10:00:00Z", "2029-02-28T10:00:00.000Z"],
+      ["2028-02-29T10:00:00.250Z", "2028-02-29T10:00:00.250Z"],
+      ["2030-01-15T23:30:00.000Z", "2030-01-15T23:30:00.000Z"],
+    ])("recordTokenCreated accepts %j (with or without millis, up to now) and stores %j", (raw, stored) => {
+      const store = openStore();
+      recordTokenCreated(store, "subscription-token", "a", raw, AT);
+      expect(readProviderMetadata(store, "subscription-token")?.token_created_at).toBe(stored);
+      expect(parseTokenCreatedAt(stored, AT)).toBe(Date.parse(raw));
+    });
+
+    it("an invalid writer clock refuses every date", () => {
+      const store = openStore();
+      expect(() => recordTokenCreated(store, "subscription-token", "a", "2029-02-28T10:00:00Z", new Date(Number.NaN))).toThrow(
+        RangeError,
+      );
+      expect(readProviderMetadata(store, "subscription-token")).toBeUndefined();
+    });
+
+    it("defaults the writer clock to the current time", () => {
+      const store = openStore();
+      const future = new Date(Date.now() + 10 * DAY_MS).toISOString();
+      expect(() => recordTokenCreated(store, "subscription-token", "a", future)).toThrow(RangeError);
+      recordTokenCreated(store, "subscription-token", "a", "2026-09-30T10:00:00Z");
+      expect(readProviderMetadata(store, "subscription-token")?.token_created_at).toBe("2026-09-30T10:00:00.000Z");
+    });
   });
 });
 
@@ -268,6 +358,16 @@ describe("stripCredentialEnv", () => {
     expect(out).toEqual({ PATH: "/bin" });
   });
 
+  it.each(OAUTH_ENDPOINT_SWITCHES.map((name) => [name]))("removes the OAuth/bridge endpoint switch %s", (name) => {
+    expect(isCredentialEnvVar(name)).toBe(true);
+    expect(stripCredentialEnv({ [name]: "v", PATH: "/bin" })).toEqual({ PATH: "/bin" });
+  });
+
+  it.each(API_ENDPOINT_SWITCHES.map((name) => [name]))("removes the API endpoint switch %s", (name) => {
+    expect(isCredentialEnvVar(name)).toBe(true);
+    expect(stripCredentialEnv({ [name]: "v", PATH: "/bin" })).toEqual({ PATH: "/bin" });
+  });
+
   it.each([
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -327,6 +427,10 @@ describe("subscription-token provider (AC2)", () => {
     ]) {
       expect(env).not.toHaveProperty(stray);
     }
+    for (const name of ENDPOINT_SWITCHES) {
+      expect(parent).toHaveProperty(name);
+      expect(env).not.toHaveProperty(name);
+    }
     expect(Object.values(env)).not.toContain("stray-api-key");
     expect(Object.values(env)).not.toContain("stray-oauth-token");
     expect(env["PATH"]).toBe("/usr/bin:/bin");
@@ -372,6 +476,10 @@ describe("api-key provider (AC5, stubbed Keychain only)", () => {
     expect(env).not.toHaveProperty("ANTHROPIC_AUTH_TOKEN");
     expect(env).not.toHaveProperty("AWS_BEARER_TOKEN_BEDROCK");
     expect(env).not.toHaveProperty("CLAUDE_CODE_USE_BEDROCK");
+    for (const name of ENDPOINT_SWITCHES) {
+      expect(PARENT_ENV).toHaveProperty(name);
+      expect(env).not.toHaveProperty(name);
+    }
     expect(env["PATH"]).toBe("/usr/bin:/bin");
     expect(keychain.reads).toEqual(["loomwright-studio-api-key"]);
   });
@@ -459,7 +567,7 @@ describe("expiry (AC4)", () => {
   const createdDaysAgo = (days: number): string => new Date(NOW.getTime() - days * DAY_MS).toISOString();
 
   function subscription(store: Store, createdAt: string | undefined, now: Date = NOW): AuthProvider {
-    if (createdAt !== undefined) recordTokenCreated(store, "subscription-token", "owner", createdAt);
+    if (createdAt !== undefined) recordTokenCreated(store, "subscription-token", "owner", createdAt, now);
     return createSubscriptionTokenProvider({
       keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
       store,
@@ -497,13 +605,183 @@ describe("expiry (AC4)", () => {
 
   it("missing and invalid_shape take precedence over expiring", () => {
     const store = openStore();
-    recordTokenCreated(store, "subscription-token", "owner", createdDaysAgo(360));
+    recordTokenCreated(store, "subscription-token", "owner", createdDaysAgo(360), NOW);
     const make = (items: Record<string, string>): AuthProvider =>
       createSubscriptionTokenProvider({ keychain: stubKeychain(items), store, now: () => NOW });
     expect(make({}).health()).toEqual({ status: "missing" });
     expect(make({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: CUT_OFF_TOKEN }).health()).toEqual({
       status: "invalid_shape",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H02: health() is total and reads one clock
+// ---------------------------------------------------------------------------
+
+describe("health() is total (H02)", () => {
+  const NOW = new Date("2030-01-15T23:30:00.000Z");
+  const STUB_MESSAGE = "stub keychain failure detail";
+
+  /** A Keychain stub whose read throws `err`. Never the real Keychain. */
+  function failingKeychain(err: Error): KeychainReader {
+    return {
+      read(): string | undefined {
+        throw err;
+      },
+    };
+  }
+
+  const keychainFailures: [string, () => Error][] = [
+    ["KeychainError", () => new KeychainError(SUBSCRIPTION_KEYCHAIN_SERVICE, 1, null)],
+    ["plain Error", () => new Error(STUB_MESSAGE)],
+  ];
+
+  it.each(keychainFailures)("subscription-token: a Keychain %s is error(keychain_unreadable), never a throw", (_, make) => {
+    const err = make();
+    const provider = createSubscriptionTokenProvider({ keychain: failingKeychain(err), now: () => NOW });
+    let health: AuthHealth | undefined;
+    expect(() => {
+      health = provider.health();
+    }).not.toThrow();
+    expect(health).toEqual({ status: "error", reason: "keychain_unreadable" });
+    // The variant carries a reason only, never the error's message.
+    expect(JSON.stringify(health)).not.toContain(err.message);
+  });
+
+  it.each(keychainFailures)("api-key: a Keychain %s is error(keychain_unreadable), never a throw", (_, make) => {
+    const err = make();
+    const provider = createApiKeyProvider({ keychain: failingKeychain(err) });
+    let health: AuthHealth | undefined;
+    expect(() => {
+      health = provider.health();
+    }).not.toThrow();
+    expect(health).toEqual({ status: "error", reason: "keychain_unreadable" });
+    // The variant carries a reason only, never the error's message.
+    expect(JSON.stringify(health)).not.toContain(err.message);
+  });
+
+  /** A subscription provider over a store whose row holds `createdAt` verbatim. */
+  function withRawCreatedAt(createdAt: string, now: () => Date = () => NOW): AuthProvider {
+    const store = openStore();
+    // Written by hand: `recordTokenCreated` refuses an unparseable date, but the
+    // column has no CHECK, so the reader must not trust it.
+    store
+      .prepare("INSERT INTO auth_providers (id, account, token_created_at) VALUES ('subscription-token', 'owner', ?)")
+      .run(createdAt);
+    return createSubscriptionTokenProvider({
+      keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
+      store,
+      now,
+    });
+  }
+
+  it.each(["not-a-date", "", "2030-13-45T99:99:99Z"])(
+    "an unparseable token_created_at (%j) is error(token_created_at_unreadable), never ok",
+    (raw) => {
+      expect(withRawCreatedAt(raw).health()).toEqual({ status: "error", reason: "token_created_at_unreadable" });
+    },
+  );
+
+  it.each([
+    "9999",
+    "12345",
+    "2030-02-30T00:00:00Z",
+    // What the old, looser writer stored for "9999" and "12345".
+    "9999-01-01T00:00:00.000Z",
+    "+012345-01-01T00:00:00.000Z",
+    // After the instant the check runs at (NOW is 2030-01-15T23:30:00.000Z).
+    "2030-01-16T00:00:00Z",
+  ])("an implausible token_created_at (%j) is error(token_created_at_unreadable), never ok and never a throw", (raw) => {
+    let health: AuthHealth | undefined;
+    expect(() => {
+      health = withRawCreatedAt(raw).health();
+    }).not.toThrow();
+    expect(health).toEqual({ status: "error", reason: "token_created_at_unreadable" });
+  });
+
+  it("a creation date after the provider clock but not after `at` is judged at `at`", () => {
+    const provider = withRawCreatedAt("2030-01-16T00:00:00Z");
+    expect(provider.health()).toEqual({ status: "error", reason: "token_created_at_unreadable" });
+    expect(provider.health(new Date("2030-01-16T00:00:00Z"))).toEqual({ status: "ok" });
+  });
+
+  it.each([
+    ["2029-02-10T23:30:00Z", { status: "expiring", days: 26 }],
+    ["2029-02-10T23:30:00.000Z", { status: "expiring", days: 26 }],
+    ["2030-01-15T23:30:00.000Z", { status: "ok" }],
+  ])("a valid stored token_created_at (%j) still reads as %o", (raw, expected) => {
+    expect(withRawCreatedAt(raw).health()).toEqual(expected);
+  });
+
+  it("a metadata read that throws is error(token_created_at_unreadable)", () => {
+    const store = openStore();
+    const provider = createSubscriptionTokenProvider({
+      keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
+      store,
+      now: () => NOW,
+    });
+    store.close();
+    expect(provider.health()).toEqual({ status: "error", reason: "token_created_at_unreadable" });
+  });
+
+  it("an invalid provider clock is error(clock_unreadable)", () => {
+    const created = new Date(NOW.getTime() - 100 * DAY_MS).toISOString();
+    expect(withRawCreatedAt(created, () => new Date(Number.NaN)).health()).toEqual({
+      status: "error",
+      reason: "clock_unreadable",
+    });
+  });
+
+  it("an invalid `at` is error(clock_unreadable)", () => {
+    const created = new Date(NOW.getTime() - 100 * DAY_MS).toISOString();
+    expect(withRawCreatedAt(created).health(new Date(Number.NaN))).toEqual({
+      status: "error",
+      reason: "clock_unreadable",
+    });
+  });
+
+  it("a provider clock that throws is error(clock_unreadable), never a throw", () => {
+    const provider = createSubscriptionTokenProvider({
+      keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
+      now: () => {
+        throw new Error("clock broke");
+      },
+    });
+    expect(provider.health()).toEqual({ status: "error", reason: "clock_unreadable" });
+  });
+
+  it("the clock is checked before the date: an invalid clock with no recorded date is still clock_unreadable", () => {
+    const provider = createSubscriptionTokenProvider({
+      keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
+      now: () => new Date(Number.NaN),
+    });
+    expect(provider.health()).toEqual({ status: "error", reason: "clock_unreadable" });
+    expect(withRawCreatedAt("not-a-date", () => new Date(Number.NaN)).health()).toEqual({
+      status: "error",
+      reason: "clock_unreadable",
+    });
+  });
+
+  it("Keychain checks come before the clock", () => {
+    const provider = createSubscriptionTokenProvider({ keychain: stubKeychain({}), now: () => new Date(Number.NaN) });
+    expect(provider.health()).toEqual({ status: "missing" });
+  });
+
+  it("the api-key provider ignores the clock", () => {
+    const provider = createApiKeyProvider({
+      keychain: stubKeychain({ [API_KEY_KEYCHAIN_SERVICE]: FAKE_API_KEY }),
+      now: () => new Date(Number.NaN),
+    });
+    expect(provider.health(new Date(Number.NaN))).toEqual({ status: "ok" });
+  });
+
+  it("one clock: health(at) uses `at`, not deps.now", () => {
+    const created = new Date(NOW.getTime() - 340 * DAY_MS).toISOString();
+    // The provider's own clock is far away (just after creation: ok).
+    const provider = withRawCreatedAt(created, () => new Date(Date.parse(created) + DAY_MS));
+    expect(provider.health()).toEqual({ status: "ok" });
+    expect(provider.health(NOW)).toEqual({ status: "expiring", days: 25 });
   });
 });
 
@@ -521,7 +799,7 @@ describe("checkAuthHealth (AC4 notify event)", () => {
 
   it("appends one notify event with the documented payload when expiring", () => {
     const store = openStore();
-    recordTokenCreated(store, "subscription-token", "owner-personal", created);
+    recordTokenCreated(store, "subscription-token", "owner-personal", created, NOW);
     const provider = createSubscriptionTokenProvider({
       keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
       store,
@@ -541,7 +819,7 @@ describe("checkAuthHealth (AC4 notify event)", () => {
 
   it("writes once per provider per UTC day of the injected clock", () => {
     const store = openStore();
-    recordTokenCreated(store, "subscription-token", "owner", created);
+    recordTokenCreated(store, "subscription-token", "owner", created, NOW);
     let now = NOW;
     const provider = createSubscriptionTokenProvider({
       keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
@@ -583,6 +861,63 @@ describe("checkAuthHealth (AC4 notify event)", () => {
     }
     expect(store.prepare("SELECT count(*) FROM events").pluck().get()).toBe(0);
   });
+
+  it("writes nothing for an error health and returns it unchanged", () => {
+    const store = openStore();
+    const health = { status: "error", reason: "keychain_unreadable" } as const;
+    const provider: AuthProvider = { id: "p", account: "p", buildEnv: () => ({}), health: () => health };
+    expect(checkAuthHealth(store, provider, () => NOW)).toEqual(health);
+    expect(store.prepare("SELECT count(*) FROM events").pluck().get()).toBe(0);
+  });
+
+  it("one clock: the day count comes from the injected instant even when the provider's deps.now disagrees", () => {
+    const store = openStore();
+    recordTokenCreated(store, "subscription-token", "owner", created, NOW);
+    const provider = createSubscriptionTokenProvider({
+      keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
+      store,
+      // Just after creation: on its own clock the provider would say ok.
+      now: () => new Date(Date.parse(created) + DAY_MS),
+    });
+    expect(checkAuthHealth(store, provider, () => NOW)).toEqual({ status: "expiring", days: 25 });
+    expect(notifyRows(store).map((r) => r.at)).toEqual(["2030-01-15T23:30:00.000Z"]);
+  });
+
+  it("passes its instant to provider.health", () => {
+    const store = openStore();
+    const seen: (Date | undefined)[] = [];
+    const provider: AuthProvider = {
+      id: "p",
+      account: "p",
+      buildEnv: () => ({}),
+      health: (at?: Date) => {
+        seen.push(at);
+        return { status: "ok" };
+      },
+    };
+    checkAuthHealth(store, provider, () => NOW);
+    expect(seen).toEqual([NOW]);
+  });
+
+  it("an invalid instant is error(clock_unreadable) with no row, even from a provider that ignores `at`", () => {
+    const store = openStore();
+    let asked = 0;
+    const provider: AuthProvider = {
+      id: "p",
+      account: "p",
+      buildEnv: () => ({}),
+      health: () => {
+        asked += 1;
+        return { status: "expiring", days: 5 };
+      },
+    };
+    expect(checkAuthHealth(store, provider, () => new Date(Number.NaN))).toEqual({
+      status: "error",
+      reason: "clock_unreadable",
+    });
+    expect(asked).toBe(0);
+    expect(notifyRows(store)).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -615,7 +950,7 @@ describe("secret hygiene (AC3)", () => {
 
     const store = openStore();
     const now = new Date("2030-01-15T12:00:00.000Z");
-    recordTokenCreated(store, "subscription-token", "owner", new Date(now.getTime() - 350 * DAY_MS).toISOString());
+    recordTokenCreated(store, "subscription-token", "owner", new Date(now.getTime() - 350 * DAY_MS).toISOString(), now);
 
     const whole = createSubscriptionTokenProvider({
       keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
@@ -640,13 +975,19 @@ describe("secret hygiene (AC3)", () => {
     attempt(() => cutOff.buildEnv(PARENT_ENV));
     attempt(() => broken.health());
     attempt(() => broken.buildEnv(PARENT_ENV));
+    attempt(() => brokenApi.health());
     attempt(() => brokenApi.buildEnv(PARENT_ENV));
     attempt(() => apiWithToken.buildEnv(PARENT_ENV));
     attempt(() => apiWithToken.health());
 
     vi.restoreAllMocks();
 
-    expect(errors.length).toBeGreaterThanOrEqual(5);
+    // health() is total (H02): a broken Keychain is a typed value, not a throw.
+    // Its returned value still reaches the haystack through `attempt`.
+    expect(broken.health()).toEqual({ status: "error", reason: "keychain_unreadable" });
+    expect(brokenApi.health()).toEqual({ status: "error", reason: "keychain_unreadable" });
+    // cutOff, broken, brokenApi and apiWithToken buildEnv still throw.
+    expect(errors.length).toBeGreaterThanOrEqual(4);
     expect(errors.some((e) => e instanceof KeychainError)).toBe(true);
     expect(errors.some((e) => e instanceof AuthProviderError && e.code === "invalid_shape")).toBe(true);
 
