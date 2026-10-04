@@ -85,7 +85,7 @@ describe("startFailureExit", () => {
   it("under launchd: a permanent failure exits 0 (not restarted) with one line naming the cause", () => {
     expect(startFailureExit(locked, true)).toEqual({
       status: 0,
-      line: `${DAEMON_NAME}: failed to start (not restarting: another kernel holds the store lock): Studio data dir /data is locked: held by pid 4242 (as last recorded)`,
+      line: `${DAEMON_NAME}: failed to start (not restarting: another kernel holds the store lock): Studio data dir /data is locked: held by pid 4242 (as last recorded; may be stale)`,
     });
     expect(startFailureExit(argumentError(["--bogus"]), true)).toEqual({
       status: 0,

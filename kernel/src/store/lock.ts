@@ -1,3 +1,8 @@
+// Imported directly by a test child under `node --experimental-strip-types`
+// (test/store.test.ts), so the child takes the lock with these exact steps.
+// Keep this module free of relative imports (strip-types does not map `./x.js`
+// to `./x.ts`) and use erasable TypeScript only: no enums, namespaces or
+// parameter properties.
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -21,12 +26,28 @@ export class StoreLockedError extends Error {
     const holder =
       holderPid === undefined
         ? "another writer (pid unknown)"
-        : `pid ${holderPid} (as last recorded)`;
+        : `pid ${holderPid} (as last recorded; may be stale)`;
     super(`Studio data dir ${dataDir} is locked: held by ${holder}`);
     this.name = "StoreLockedError";
     this.dataDir = dataDir;
     this.holderPid = holderPid;
   }
+}
+
+/** Retries after a first BUSY attempt, before refusing. */
+export const LOCK_RETRIES = 4;
+/** Each retry is preceded by a sleep drawn uniformly from this range, in ms. */
+export const LOCK_RETRY_MIN_MS = 10;
+export const LOCK_RETRY_MAX_MS = 100;
+
+/** Injection points for deterministic tests. The kernel passes none. */
+export interface StoreLockDeps {
+  /** Opens the lock database; defaults to `new Database(path, { timeout: 0 })`. */
+  readonly open?: (path: string) => Database.Database;
+  /** Blocks for `ms` milliseconds; defaults to a synchronous `Atomics.wait`. */
+  readonly sleep?: (ms: number) => void;
+  /** Returns a number in [0, 1); defaults to `Math.random`. */
+  readonly random?: () => number;
 }
 
 /** A held single-writer lock. `release()` is idempotent. */
@@ -44,36 +65,37 @@ export interface StoreLock {
  * configuration: default `journal_mode` (DELETE), `{ timeout: 0 }`, then
  * `PRAGMA locking_mode = EXCLUSIVE`, then one write.
  *
+ * A BUSY attempt is retried up to `LOCK_RETRIES` times, each after a jittered
+ * 10-100 ms sleep, with the same steps on a fresh connection (the failed one is
+ * closed first). Any other error is rethrown at once. The constructor that
+ * calls this is synchronous, so the sleep blocks.
+ *
  * Never open `studio.lock` (or its `-journal`) with `node:fs` in this process:
  * it is a POSIX fcntl lock, and closing any descriptor on the file drops it
  * silently.
  *
- * Honest limit: with `timeout: 0`, several starters racing at the same instant
- * can all be refused (fail-closed). Two holders at once cannot happen.
+ * Honest limit: with `timeout: 0`, starters racing at the same instant can
+ * still all be refused if every retry collides too (fail-closed). Two holders
+ * at once cannot happen.
  *
- * @throws StoreLockedError when another live writer holds the lock.
+ * @throws StoreLockedError when another live writer still holds the lock after
+ *   the retries.
  */
-export function acquireStoreLock(dataDir: string): StoreLock {
+export function acquireStoreLock(dataDir: string, deps: StoreLockDeps = {}): StoreLock {
   const path = join(dataDir, LOCK_DB_FILENAME);
+  const open = deps.open ?? ((p: string) => new Database(p, { timeout: 0 }));
+  const sleep = deps.sleep ?? sleepSync;
+  const random = deps.random ?? Math.random;
+
   let db: Database.Database | undefined;
-  try {
-    db = new Database(path, { timeout: 0 });
-    db.pragma("locking_mode = EXCLUSIVE");
-    db.exec(
-      "CREATE TABLE IF NOT EXISTS owner(pid INTEGER, started_at TEXT); DELETE FROM owner;",
-    );
-    db.prepare("INSERT INTO owner(pid, started_at) VALUES (?, ?)").run(
-      process.pid,
-      new Date().toISOString(),
-    );
-  } catch (err) {
-    // Closing through SQLite is safe: its unix VFS defers closing the file
-    // descriptor while another connection in this process holds a lock on it.
-    db?.close();
-    if (isBusy(err)) {
-      throw new StoreLockedError(dataDir, readRecordedPid(dataDir));
+  for (let attempt = 0; db === undefined; attempt++) {
+    try {
+      db = tryAcquire(path, open);
+    } catch (err) {
+      if (!isBusy(err)) throw err;
+      if (attempt >= LOCK_RETRIES) throw new StoreLockedError(dataDir, readRecordedPid(dataDir));
+      sleep(jitteredDelay(random));
     }
-    throw err;
   }
 
   // The PID file is informational only (error messages), never read to decide
@@ -93,6 +115,40 @@ export function acquireStoreLock(dataDir: string): StoreLock {
       if (held.open) held.close();
     },
   };
+}
+
+/** One attempt: the pinned steps on a fresh connection, closed again if any step throws. */
+function tryAcquire(path: string, open: (path: string) => Database.Database): Database.Database {
+  let db: Database.Database | undefined;
+  try {
+    db = open(path);
+    db.pragma("locking_mode = EXCLUSIVE");
+    db.exec(
+      "CREATE TABLE IF NOT EXISTS owner(pid INTEGER, started_at TEXT); DELETE FROM owner;",
+    );
+    db.prepare("INSERT INTO owner(pid, started_at) VALUES (?, ?)").run(
+      process.pid,
+      new Date().toISOString(),
+    );
+    return db;
+  } catch (err) {
+    // Closing through SQLite is safe: its unix VFS defers closing the file
+    // descriptor while another connection in this process holds a lock on it.
+    db?.close();
+    throw err;
+  }
+}
+
+/** A whole number of ms in [LOCK_RETRY_MIN_MS, LOCK_RETRY_MAX_MS], whatever `random` returns. */
+function jitteredDelay(random: () => number): number {
+  const span = LOCK_RETRY_MAX_MS - LOCK_RETRY_MIN_MS;
+  const r = random();
+  const unit = r >= 0 && r < 1 ? r : 0; // also catches NaN
+  return LOCK_RETRY_MIN_MS + Math.floor(unit * (span + 1));
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function isBusy(err: unknown): boolean {
