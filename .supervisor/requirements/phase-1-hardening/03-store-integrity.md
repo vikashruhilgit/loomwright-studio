@@ -53,3 +53,9 @@ Phase 1 items 01–09 (merged). Independent of H01 and H02.
 ## Source
 
 Dismissed review findings from run `automate-2026-09-30-211858`, re-verified 2026-10-03: `proposed/…--03-sqlite-store-7d6c23--dismissed-a18c2c77.md`, `…-dismissed-af74603c.md`, and `…-dismissed-summary.md` entries 1–4.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-04T15:16:02Z
+- **Brief:** .supervisor/jobs/done/2026-10-04-h03-store-integrity.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/27
