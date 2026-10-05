@@ -8,10 +8,15 @@ import type { BudgetAuth, BudgetDeps, BudgetOptions } from "./types.js";
 /** An unknown reset (text fallback, or `rejected` without `resetsAt`) is re-checked after this long (AC6). */
 export const CAP_RECHECK_MS = 60 * 60 * 1_000;
 
-/** The `cap_state.rate_limit_type` of a park found from cap text alone. */
+/**
+ * The `cap_state.rate_limit_type` of a park found from cap text alone. The
+ * name is reserved for the tracker: an event's `rateLimitType` equal to it is
+ * stored as `UNKNOWN_LIMIT_TYPE`. Whether a park is a re-check guess is read
+ * from its `reset_source` (`recheck`), never from this name.
+ */
 export const TEXT_FALLBACK_TYPE = "text_fallback";
 
-/** The `cap_state.rate_limit_type` of an event that named no `rateLimitType`. */
+/** The `cap_state.rate_limit_type` of an event that named no `rateLimitType` (or the reserved `TEXT_FALLBACK_TYPE`). */
 export const UNKNOWN_LIMIT_TYPE = "unknown";
 
 const TRANSIENT_BACKOFF_BASE_MS = 1_000;
@@ -147,7 +152,9 @@ interface CapOwner {
  * its notify fires once per window (again only when a later known reset
  * extends it). The one exception: a text-fallback park's re-check time is a
  * guess, never a window, so a `rejected` event's known reset replaces it even
- * when earlier (step 2 below).
+ * when earlier (step 2 below). A guess is a park whose `reset_source` is
+ * `recheck` (the tracker's own record), never one inferred from a type name:
+ * `text_fallback` is reserved, so an event naming it is stored as `unknown`.
  *
  * Per message, in this order (one real hit makes one park):
  *
@@ -171,9 +178,10 @@ interface CapOwner {
  *    until its `resets_at` (one session's `allowed` never clears a park another
  *    session's `rejected` set), recorded as `cap_allowed_while_parked`.
  *    A `rejected` with no unexpired park of its own type while a
- *    `text_fallback` park is unexpired is the same hit seen twice: with a
- *    known reset, the typed row replaces the text-fallback row in the same
- *    transaction (its reset wins even when earlier than the re-check guess;
+ *    `text_fallback` re-check park (`reset_source` `recheck`) is unexpired
+ *    is the same hit seen twice: with a known reset, the typed row replaces
+ *    the text-fallback row in the same transaction (its reset wins even when
+ *    earlier than the re-check guess;
  *    one `cap_park_superseded` event records both; a `notify` only when the
  *    known reset is later); with an unknown reset, the text-fallback park
  *    stands and one `cap_park_merged` event records the hit.
@@ -270,7 +278,11 @@ export class CapTracker {
       );
       return;
     }
-    const type = typeof i.rateLimitType === "string" && i.rateLimitType !== "" ? i.rateLimitType : UNKNOWN_LIMIT_TYPE;
+    // `TEXT_FALLBACK_TYPE` is the tracker's own name: an event never writes (or extends) that row.
+    const type =
+      typeof i.rateLimitType === "string" && i.rateLimitType !== "" && i.rateLimitType !== TEXT_FALLBACK_TYPE
+        ? i.rateLimitType
+        : UNKNOWN_LIMIT_TYPE;
     const utilization = typeof i.utilization === "number" && Number.isFinite(i.utilization) ? i.utilization : null;
     // Untyped (observed live, absent from sdk.d.ts): stored verbatim, never read.
     const unifiedWindowsJson = i.unifiedWindows === undefined ? null : safeJson(i.unifiedWindows);
@@ -284,10 +296,14 @@ export class CapTracker {
     // The row is an unexpired park now (`resets_at` null counts as unexpired, as in `activeParks`).
     const parked = isUnexpiredPark(existing, at);
 
-    if (status === "rejected" && !parked && type !== TEXT_FALLBACK_TYPE) {
+    if (status === "rejected" && !parked) {
       // The same hit a text fallback already parked (AC2): one park, not two.
+      // Only a re-check guess (`reset_source` `recheck`, the tracker's own
+      // record) is ever replaced; a `text_fallback` row holding a known
+      // window (one an older kernel stored from an event) is a park like any
+      // other and is never shortened.
       const fallback = this.#row(key, TEXT_FALLBACK_TYPE);
-      if (fallback !== undefined && isUnexpiredPark(fallback, at)) {
+      if (isUnexpiredPark(fallback, at) && fallback.reset_source === "recheck") {
         this.#mergeIntoTextFallback(owner, type, fallback, { info, resetsAt, utilization, unifiedWindowsJson }, ref, at);
         return;
       }

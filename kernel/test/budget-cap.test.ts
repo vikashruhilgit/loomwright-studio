@@ -534,6 +534,42 @@ describe("a text hit then a rejected event for the same hit (AC2)", () => {
     ]);
     expect(wakeups()).toEqual([{ due_at: recheck, reason: `cap_recheck:${AUTH.id}:text_fallback`, status: "pending" }]);
   });
+
+  const FIFTEEN = "2026-09-29T15:00:00.000Z";
+  const ask: AdmissionRequest = { kind: "start", agent: "wright", account: AUTH.account, provider: AUTH.id, task: null };
+
+  it("an event naming the reserved text_fallback type is a real window stored as unknown: a later, earlier typed reset never replaces it", () => {
+    const id = insertSession(env.store);
+    tracker.observe(id, rateLimitEvent({ status: "rejected", rateLimitType: "text_fallback", resetsAt: Date.parse(FIFTEEN) / 1_000 }));
+    tracker.observe(id, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour", resetsAt: Date.parse(TWELVE_THIRTY) / 1_000 }));
+    expect(capRows().map((r) => [r.rate_limit_type, r.resets_at, r.reset_source])).toEqual([
+      ["five_hour", TWELVE_THIRTY, "event"],
+      ["unknown", FIFTEEN, "event"],
+    ]);
+    expect(events(env.store, "cap_park_superseded")).toEqual([]);
+    const gate = new BudgetAdmission({ store: env.store, authProvider: AUTH }, env.deps);
+    env.clock.at = new Date("2026-09-29T12:45:00.000Z");
+    expect(gate.check(ask)).toEqual({ admitted: false, reason: "cap_parked", retryAt: FIFTEEN });
+  });
+
+  it("a text_fallback row holding a known window (an older kernel's) is never replaced by an earlier typed reset", () => {
+    const id = insertSession(env.store);
+    env.store
+      .prepare(
+        `INSERT INTO cap_state (account, rate_limit_type, status, resets_at, reset_source, notified_resets_at, updated_at)
+         VALUES (?, 'text_fallback', 'rejected', ?, 'event', ?, ?)`,
+      )
+      .run(AUTH.id, FIFTEEN, FIFTEEN, START);
+    tracker.observe(id, rateLimitEvent({ status: "rejected", rateLimitType: "five_hour", resetsAt: Date.parse(TWELVE_THIRTY) / 1_000 }));
+    expect(capRows().map((r) => [r.rate_limit_type, r.resets_at, r.reset_source])).toEqual([
+      ["five_hour", TWELVE_THIRTY, "event"],
+      ["text_fallback", FIFTEEN, "event"],
+    ]);
+    expect(events(env.store, "cap_park_superseded")).toEqual([]);
+    const gate = new BudgetAdmission({ store: env.store, authProvider: AUTH }, env.deps);
+    env.clock.at = new Date("2026-09-29T12:45:00.000Z");
+    expect(gate.check(ask)).toEqual({ admitted: false, reason: "cap_parked", retryAt: FIFTEEN });
+  });
 });
 
 describe("superseded cap wake-ups (AC3)", () => {
