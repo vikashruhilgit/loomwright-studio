@@ -20,7 +20,7 @@ import { z } from "zod";
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import type { EventRef } from "../loop/internal.js";
 import { runStep, runStepAsync } from "../loop/steps.js";
-import { MAX_WAKEUP_REASON, scheduleWakeup } from "../loop/wakeups.js";
+import { MAX_WAKEUP_REASON, RESERVED_WAKEUP_REASON_PREFIXES, isReservedWakeupReason, scheduleWakeup } from "../loop/wakeups.js";
 import type { SessionManager } from "../sessions/manager.js";
 import type { Store } from "../store/store.js";
 import { kernelVersion } from "../version.js";
@@ -119,7 +119,13 @@ const shapes = {
   kernel_task_get: { id },
   kernel_schedule_wakeup: {
     at: instant,
-    reason: z.string().min(1).max(MAX_WAKEUP_REASON),
+    reason: z
+      .string()
+      .min(1)
+      .max(MAX_WAKEUP_REASON)
+      .refine((r) => !isReservedWakeupReason(r), {
+        message: `may not start with ${RESERVED_WAKEUP_REASON_PREFIXES.join(" or ")} (reserved for the kernel's cap wake-ups)`,
+      }),
     task_id: id.optional(),
     idempotency_key: idempotencyKey,
   },
@@ -136,7 +142,7 @@ const descriptions: Record<KernelToolName, string> = {
   kernel_task_update: `Update the given fields of a task (null clears an optional field). With an idempotency_key: ${REPEAT}`,
   kernel_task_list: `List tasks in id order, filtered by state, assignee_agent or parent_task_id (limit 1-${MAX_LIST}, default ${DEFAULT_LIST}).`,
   kernel_task_get: "Get one task by id.",
-  kernel_schedule_wakeup: `Schedule a wake-up at an ISO-8601 instant with a time zone (a past time fires on the next tick). ${REPEAT}`,
+  kernel_schedule_wakeup: `Schedule a wake-up at an ISO-8601 instant with a time zone (a past time fires on the next tick). The reason is free text, except that ${RESERVED_WAKEUP_REASON_PREFIXES.join(" and ")} are reserved for the kernel. ${REPEAT}`,
   kernel_request_stop: `End this session: the kernel writes your handoff note (markdown) to memory and then stops the session. ${REPEAT}`,
 };
 

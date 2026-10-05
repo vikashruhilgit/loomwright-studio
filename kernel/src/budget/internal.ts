@@ -146,7 +146,10 @@ export function capWakeupReason(kind: CapWakeupKind, key: string, type: string):
  * earlier pending cap wake-up of the same provider and limit type (AC3): both
  * kinds of `<key>:<type>`, the same for each of `alsoSupersede`'s types, and
  * the provider's legacy untyped `cap_reset:<key>` / `cap_recheck:<key>` rows
- * (the form migration 9 leaves). Superseded rows get `status = 'superseded'`
+ * (the form migration 9 leaves). Only rows the budget module wrote are
+ * superseded: `scheduleWakeup` refuses the `cap_reset:` / `cap_recheck:`
+ * prefixes, and a row it wrote before that (it has a `wakeup_scheduled`
+ * audit event) is left pending. Superseded rows get `status = 'superseded'`
  * and never fire (`fireDueWakeups` reads `pending` only); this is the only
  * writer of that status. A pending row with the same reason and due time is
  * kept, not duplicated (`scheduleWakeupOnce`'s rule). Call inside a
@@ -170,8 +173,13 @@ export function scheduleCapWakeup(
   for (const t of [type, ...(wakeup.alsoSupersede ?? [])]) {
     stale.push(capWakeupReason("cap_reset", key, t), capWakeupReason("cap_recheck", key, t));
   }
+  // Only rows the budget wrote: a row with a `wakeup_scheduled` audit event came from a
+  // session through `scheduleWakeup` (before the `cap_*` prefixes were reserved) and is never dropped.
   const supersede = store.prepare<[string, string, string, string]>(
-    "UPDATE wakeups SET status = 'superseded', updated_at = ? WHERE status = 'pending' AND reason = ? AND NOT (reason = ? AND due_at = ?)",
+    `UPDATE wakeups SET status = 'superseded', updated_at = ?
+      WHERE status = 'pending' AND reason = ? AND NOT (reason = ? AND due_at = ?)
+        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.kind = 'wakeup_scheduled'
+                          AND json_extract(e.payload_json, '$.wakeup_id') = wakeups.id)`,
   );
   for (const r of stale) supersede.run(at, r, reason, dueAt);
   return scheduleWakeupOnce(store, reason, dueAt, at);

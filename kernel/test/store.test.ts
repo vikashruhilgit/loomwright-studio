@@ -29,7 +29,9 @@ import type { Migration } from "../src/store/index.js";
 import { APPEND_ONLY_OBJECTS } from "../src/store/integrity.js";
 import { LOCK_RETRIES, LOCK_RETRY_MAX_MS, LOCK_RETRY_MIN_MS, acquireStoreLock } from "../src/store/lock.js";
 import { initial } from "../src/store/migrations/001_initial.js";
+import { KNOWN_PROVIDER_IDS, capKeysProviderId } from "../src/store/migrations/009_cap_keys_provider_id.js";
 import { BudgetAdmission } from "../src/budget/index.js";
+import { availableProviderIds } from "../src/auth/index.js";
 
 const KERNEL_DIR = fileURLToPath(new URL("..", import.meta.url));
 // The real lock module, imported by the lock child under --experimental-strip-types.
@@ -537,18 +539,113 @@ describe("migration 9: cap keys on the provider id", () => {
     });
   });
 
-  it("skips a label equal to any provider's id: that provider's park stays in force", () => {
+  /** Admission's answer for `provider` at 12:00 on the reset day. */
+  function admit(store: Store, provider: string): unknown {
+    const gate = new BudgetAdmission({ store, authProvider: { id: provider, account: "any" } }, { now: () => new Date("2026-10-02T12:00:00.000Z") });
+    return gate.check({ kind: "start", agent: "wright", account: "any", provider, task: null });
+  }
+
+  /** Run migration 9's `up` again on the closed store's database, as the integrity check's re-run does. */
+  function rerun9(): void {
+    const db = new Database(join(tmp, DB_FILENAME));
+    try {
+      db.transaction(() => (capKeysProviderId.up as (d: Database.Database) => void)(db))();
+    } finally {
+      db.close();
+    }
+  }
+
+  const PARKED = { admitted: false, reason: "cap_parked", retryAt: "2026-10-02T16:00:00.000Z" };
+
+  it("copies a label equal to another provider's id (it has a row) to the label's providers and keeps it: both stay parked", () => {
     v8((store) => {
       provider(store, "api-key", "api-key");
       provider(store, "subscription-token", "api-key");
-      cap(store, "api-key", "five_hour", "rejected", "2026-10-02T16:20:00.000Z");
-      store.prepare("INSERT INTO wakeups (due_at, reason, status) VALUES ('2026-10-02T16:20:00.000Z', 'cap_reset:api-key', 'pending')").run();
+      cap(store, "api-key", "five_hour", "rejected", "2026-10-02T16:00:00.000Z");
+      store.prepare("INSERT INTO wakeups (due_at, reason, status) VALUES ('2026-10-02T16:00:00.000Z', 'cap_reset:api-key', 'pending')").run();
     });
     const store = open();
-    expect(store.prepare("SELECT account, rate_limit_type, status FROM cap_state").all()).toEqual([
-      { account: "api-key", rate_limit_type: "five_hour", status: "rejected" },
+    expect(store.prepare("SELECT account, rate_limit_type, status, resets_at FROM cap_state ORDER BY account").all()).toEqual([
+      { account: "api-key", rate_limit_type: "five_hour", status: "rejected", resets_at: "2026-10-02T16:00:00.000Z" },
+      { account: "subscription-token", rate_limit_type: "five_hour", status: "rejected", resets_at: "2026-10-02T16:00:00.000Z" },
     ]);
-    expect(store.prepare("SELECT reason FROM wakeups").pluck().all()).toEqual(["cap_reset:api-key"]);
+    expect(store.prepare("SELECT reason FROM wakeups WHERE status = 'pending' ORDER BY id").pluck().all()).toEqual([
+      "cap_reset:api-key",
+      "cap_reset:subscription-token",
+    ]);
+    // The reviewer's reproduction: subscription-token parked under the label before the upgrade.
+    expect(admit(store, "subscription-token")).toEqual(PARKED);
+    expect(admit(store, "api-key")).toEqual(PARKED);
+  });
+
+  it("copies and keeps a label equal to a known provider id that has no auth_providers row: that provider keeps its park", () => {
+    expect(KNOWN_PROVIDER_IDS).toEqual(["api-key", "subscription-token"]);
+    v8((store) => {
+      // No api-key row: its label falls back to its id, so 'api-key' rows may be its own.
+      provider(store, "subscription-token", "api-key");
+      cap(store, "api-key", "five_hour", "rejected", "2026-10-02T16:00:00.000Z");
+      store.prepare("INSERT INTO wakeups (due_at, reason, status) VALUES ('2026-10-02T16:00:00.000Z', 'cap_recheck:api-key', 'pending')").run();
+    });
+    const store = open();
+    expect(store.prepare("SELECT account, status FROM cap_state ORDER BY account").all()).toEqual([
+      { account: "api-key", status: "rejected" },
+      { account: "subscription-token", status: "rejected" },
+    ]);
+    expect(store.prepare("SELECT reason FROM wakeups WHERE status = 'pending' ORDER BY id").pluck().all()).toEqual([
+      "cap_recheck:api-key",
+      "cap_recheck:subscription-token",
+    ]);
+    expect(admit(store, "api-key")).toEqual(PARKED);
+    expect(admit(store, "subscription-token")).toEqual(PARKED);
+  });
+
+  it("KNOWN_PROVIDER_IDS covers every provider id this build registers", async () => {
+    expect(KNOWN_PROVIDER_IDS).toEqual(expect.arrayContaining(await availableProviderIds()));
+  });
+
+  it("a re-run is safe: a moved label finds nothing, a kept label is copied again without duplicates or lifting a later park", () => {
+    v8((store) => {
+      provider(store, "subscription-token", "api-key");
+      cap(store, "api-key", "five_hour", "rejected", "2026-10-02T16:00:00.000Z");
+      store.prepare("INSERT INTO wakeups (due_at, reason, status) VALUES ('2026-10-02T16:00:00.000Z', 'cap_reset:api-key', 'pending')").run();
+      provider(store, "p", "owner@example.test");
+      cap(store, "owner@example.test", "seven_day", "rejected", "2026-10-03T00:00:00.000Z");
+      store.prepare("INSERT INTO wakeups (due_at, reason, status) VALUES ('2026-10-03T00:00:00.000Z', 'cap_recheck:owner@example.test', 'pending')").run();
+    });
+    open().close();
+    const ROWS = "SELECT account, rate_limit_type, status, resets_at FROM cap_state ORDER BY account, rate_limit_type";
+    const PENDING = "SELECT id, reason, due_at FROM wakeups WHERE status = 'pending' ORDER BY id";
+    const after = inspect(tmp, (db) => ({ cap: db.prepare(ROWS).all(), wakeups: db.prepare(PENDING).all() }));
+    expect(after.wakeups).toEqual([
+      { id: 1, reason: "cap_reset:api-key", due_at: "2026-10-02T16:00:00.000Z" },
+      { id: 2, reason: "cap_recheck:p", due_at: "2026-10-03T00:00:00.000Z" },
+      { id: 3, reason: "cap_reset:subscription-token", due_at: "2026-10-02T16:00:00.000Z" },
+    ]);
+    rerun9();
+    expect(inspect(tmp, (db) => ({ cap: db.prepare(ROWS).all(), wakeups: db.prepare(PENDING).all() }))).toEqual(after);
+
+    // The kernel extends subscription-token's park; a re-run never shortens it.
+    const later = new Database(join(tmp, DB_FILENAME));
+    later.prepare("UPDATE cap_state SET resets_at = '2026-10-02T18:00:00.000Z' WHERE account = 'subscription-token'").run();
+    later.close();
+    rerun9();
+    const store = open();
+    expect(store.prepare("SELECT resets_at FROM cap_state WHERE account = 'subscription-token'").pluck().get()).toBe("2026-10-02T18:00:00.000Z");
+    expect(store.prepare(PENDING).all()).toEqual(after.wakeups);
+  });
+
+  it("leaves a session-scheduled wake-up (it has a wakeup_scheduled audit event) with a cap_* label reason as it is", () => {
+    v8((store) => {
+      provider(store, "subscription-token", "owner@example.test");
+      store.prepare("INSERT INTO wakeups (due_at, reason, status) VALUES ('2026-10-02T16:00:00.000Z', 'cap_reset:owner@example.test', 'pending')").run();
+      store.prepare("INSERT INTO events (kind, payload_json) VALUES ('wakeup_scheduled', json_object('wakeup_id', 1))").run();
+      store.prepare("INSERT INTO wakeups (due_at, reason, status) VALUES ('2026-10-02T16:00:00.000Z', 'cap_reset:owner@example.test', 'pending')").run();
+    });
+    const store = open();
+    expect(store.prepare("SELECT id, reason FROM wakeups ORDER BY id").all()).toEqual([
+      { id: 1, reason: "cap_reset:owner@example.test" },
+      { id: 2, reason: "cap_reset:subscription-token" },
+    ]);
   });
 
   it("merges into an existing id row conservatively, and copies a label shared by several providers to each", () => {

@@ -3,7 +3,7 @@
 // open a new one on the same data dir.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { scheduleCapWakeup } from "../src/budget/internal.js";
-import { EventLoop, fireDueWakeups, scheduleWakeup } from "../src/loop/index.js";
+import { EventLoop, fireDueWakeups, isReservedWakeupReason, scheduleWakeup } from "../src/loop/index.js";
 import type { QueuedEvent } from "../src/loop/index.js";
 import type { Store } from "../src/store/index.js";
 import { count, events, loopEnv } from "./loop-helpers.js";
@@ -49,6 +49,20 @@ describe("scheduleWakeup", () => {
     expect(() => scheduleWakeup(env.store, { at: "2026-10-02T10:00:00Z", reason: " " })).toThrow(TypeError);
     expect(() => scheduleWakeup(env.store, { at: "2026-10-02T10:00:00Z", reason: "r", taskId: 99 })).toThrow(/no task 99/);
     expect(count(env.store, "SELECT count(*) FROM wakeups")).toBe(0);
+  });
+  it("refuses a reason in the kernel-reserved cap_* namespace (typed and legacy forms), writing nothing", () => {
+    for (const reason of ["cap_reset:stub-provider:five_hour", "cap_recheck:stub-provider:text_fallback", "cap_reset:stub-provider", "cap_recheck:stub-provider"]) {
+      expect(() => scheduleWakeup(env.store, { at: "2026-10-02T10:00:00Z", reason })).toThrow(TypeError);
+      expect(() => scheduleWakeup(env.store, { at: "2026-10-02T10:00:00Z", reason })).toThrow(/reserved/);
+    }
+    expect(count(env.store, "SELECT count(*) FROM wakeups")).toBe(0);
+    expect(events(env.store, "wakeup_scheduled")).toEqual([]);
+    expect(isReservedWakeupReason("cap_reset:x")).toBe(true);
+    // Outside the namespace: accepted as free text.
+    for (const reason of ["cap_reset", "re-check cap_reset:stub-provider", "Cap_reset:stub-provider", "check PR"]) {
+      expect(scheduleWakeup(env.store, { at: "2026-10-02T10:00:00Z", reason }).dueAt).toBe("2026-10-02T10:00:00.000Z");
+    }
+    expect(count(env.store, "SELECT count(*) FROM wakeups WHERE status = 'pending'")).toBe(4);
   });
 });
 
@@ -127,6 +141,28 @@ describe("fireDueWakeups", () => {
     expect(fired).toHaveLength(1);
     expect(queued(env.store).map((q) => q.payload)).toEqual([{ wakeupId: 2, reason: "cap_reset:stub-provider:five_hour", dueAt: at }]);
     expect(env.store.prepare("SELECT status FROM wakeups WHERE id = 1").pluck().get()).toBe("superseded");
+  });
+
+  it("a cap supersede never drops a session-scheduled wake-up (it has a wakeup_scheduled audit event), only the budget's own", () => {
+    const at = env.now().toISOString();
+    const earlier = new Date(env.now().getTime() - 60_000).toISOString();
+    // A row a session scheduled before the cap_* prefixes were reserved: wake-up plus its audit event.
+    env.store.prepare("INSERT INTO wakeups (due_at, reason, status) VALUES (?, 'cap_reset:stub-provider:five_hour', 'pending')").run(earlier);
+    env.store.prepare("INSERT INTO events (kind, payload_json) VALUES ('wakeup_scheduled', json_object('wakeup_id', 1))").run();
+    env.store.prepare("INSERT INTO wakeups (due_at, reason, status) VALUES (?, 'cap_reset:stub-provider', 'pending')").run(earlier);
+    env.store.prepare("INSERT INTO events (kind, payload_json) VALUES ('wakeup_scheduled', json_object('wakeup_id', 2))").run();
+    // The budget's own legacy row: no audit event.
+    env.store.prepare("INSERT INTO wakeups (due_at, reason, status) VALUES (?, 'cap_reset:stub-provider', 'pending')").run(earlier);
+    env.store.transaction(() =>
+      scheduleCapWakeup(env.store, { kind: "cap_reset", key: "stub-provider", type: "five_hour", dueAt: at }, at),
+    );
+    expect(env.store.prepare("SELECT id, reason, status FROM wakeups ORDER BY id").all()).toEqual([
+      { id: 1, reason: "cap_reset:stub-provider:five_hour", status: "pending" },
+      { id: 2, reason: "cap_reset:stub-provider", status: "pending" },
+      { id: 3, reason: "cap_reset:stub-provider", status: "superseded" },
+      { id: 4, reason: "cap_reset:stub-provider:five_hour", status: "pending" },
+    ]);
+    expect(fireDueWakeups(env.store, env.now()).map((f) => f.wakeupId)).toEqual([1, 2, 4]);
   });
 
   it("fires due wake-ups oldest first", () => {
