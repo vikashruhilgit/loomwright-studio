@@ -1,7 +1,18 @@
 // The durable event queue and the loop that processes it (AC1, AC6). Handlers
 // are fakes; "restart" = close the Store and open a new one on the data dir.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PARK_MS, EventLoop, enqueueEvent, enqueueMessage, getQueueRow, getWorkStep } from "../src/loop/index.js";
+import {
+  DEFAULT_PARK_MS,
+  EventLoop,
+  WorkStepFailedError,
+  WorkStepInterruptedError,
+  enqueueEvent,
+  enqueueMessage,
+  getQueueRow,
+  getWorkStep,
+  runStep,
+  runStepAsync,
+} from "../src/loop/index.js";
 import type { EventHandler, EventKind, QueuedEvent } from "../src/loop/index.js";
 import { AdmissionRefusedError } from "../src/sessions/index.js";
 import type { CancelTimer } from "../src/sessions/index.js";
@@ -20,6 +31,48 @@ afterEach(() => {
 
 function loop(handlers: Partial<Record<EventKind, EventHandler>>): EventLoop {
   return new EventLoop({ store: env.store, handlers }, { now: env.now });
+}
+
+interface Scheduled {
+  readonly fn: () => void;
+  readonly ms: number;
+  cancelled: boolean;
+  fired: boolean;
+}
+
+interface FakeScheduler {
+  readonly scheduled: Scheduled[];
+  readonly schedule: (fn: () => void, ms: number) => CancelTimer;
+  /** Run an entry's tick, as its timer firing would. */
+  readonly fire: (entry: Scheduled | undefined) => void;
+  /** Entries scheduled, not cancelled and not yet fired: each is a live timer chain. */
+  readonly live: () => Scheduled[];
+}
+
+/** An injected scheduler that records every entry, so a test can count the live timer chains. */
+function fakeScheduler(): FakeScheduler {
+  const scheduled: Scheduled[] = [];
+  return {
+    scheduled,
+    schedule: (fn, ms) => {
+      const entry: Scheduled = { fn, ms, cancelled: false, fired: false };
+      scheduled.push(entry);
+      return () => {
+        entry.cancelled = true;
+      };
+    },
+    fire: (e) => {
+      if (e === undefined) throw new Error("no such scheduled entry");
+      e.fired = true;
+      e.fn();
+    },
+    live: () => scheduled.filter((e) => !e.cancelled && !e.fired),
+  };
+}
+
+/** A `started` row as a crash leaves it, under the event's step key. */
+function leaveStarted(key: string): void {
+  env.store.prepare("INSERT INTO work_steps (key, status, rerunnable) VALUES (?, 'started', 0)").run(key);
 }
 
 describe("enqueue", () => {
@@ -188,6 +241,158 @@ describe("EventLoop.tick", () => {
     expect(getQueueRow(env.store, id)?.not_before).toBe(new Date(env.now().getTime() + DEFAULT_PARK_MS).toISOString());
   });
 
+  it.each([
+    ["in the past", -60_000],
+    ["equal to now", 0],
+  ])("a retryAt %s is treated as unknown: parked for DEFAULT_PARK_MS, and repeated ticks add no event_parked", async (_label, offset) => {
+    const id = enqueueMessage(env.store, { text: "x" }).id;
+    const retryAt = new Date(env.now().getTime() + offset).toISOString();
+    const message = vi.fn<EventHandler>(() => {
+      throw new AdmissionRefusedError("cap_parked", retryAt, "parked");
+    });
+    const l = loop({ message });
+    expect(await l.tick()).toMatchObject({ parked: 1 });
+    const notBefore = new Date(env.now().getTime() + DEFAULT_PARK_MS).toISOString();
+    expect(getQueueRow(env.store, id)).toMatchObject({ status: "pending", not_before: notBefore, attempts: 1 });
+    // The raw refusal value stays in the audit; not_before is the effective one.
+    expect(events(env.store, "event_parked").map((e) => e.payload)).toEqual([
+      { queue_id: id, kind: "message", reason: "cap_parked", retry_at: retryAt, not_before: notBefore },
+    ]);
+
+    env.advance(DEFAULT_PARK_MS - 1);
+    for (let i = 0; i < 3; i++) expect(await l.tick()).toMatchObject({ parked: 0 });
+    expect(message).toHaveBeenCalledTimes(1);
+    expect(events(env.store, "event_parked")).toHaveLength(1);
+  });
+
+  it("an interrupted ctx.runStep / ctx.runStepAsync step fails the event with exactly one notify, linked by the step key", async () => {
+    const a = enqueueMessage(env.store, { text: "sync" }).id;
+    const b = enqueueMessage(env.store, { text: "async" }).id;
+    leaveStarted(`event:${a}:effect`);
+    leaveStarted(`event:${b}:effect`);
+    const fn = vi.fn(() => 1);
+    const message: EventHandler = async (ctx) => {
+      if (ctx.event.payload.text === "sync") ctx.runStep("effect", fn);
+      else await ctx.runStepAsync("effect", async () => fn());
+    };
+    expect(await loop({ message }).tick()).toMatchObject({ failed: 2 });
+    expect(fn).not.toHaveBeenCalled();
+    // One notify per interrupted step: the step's own, keyed on the step.
+    expect(events(env.store, "notify").map((e) => e.payload)).toEqual([
+      { reason: "work_step_interrupted", key: `event:${a}:effect` },
+      { reason: "work_step_interrupted", key: `event:${b}:effect` },
+    ]);
+    // Both facts are recorded: the step is failed:interrupted, and event_failed links the event to it.
+    for (const id of [a, b]) {
+      expect(getWorkStep(env.store, `event:${id}:effect`)?.label).toBe("failed:interrupted");
+      expect(getQueueRow(env.store, id)?.status).toBe("failed");
+    }
+    expect(events(env.store, "event_failed").map((e) => [e.payload.queue_id, e.payload.step])).toEqual([
+      [a, `event:${a}:effect`],
+      [b, `event:${b}:effect`],
+    ]);
+  });
+
+  it.each([
+    ["the handler's own store.transaction", (ctx: Parameters<EventHandler>[0], fn: () => number) => ctx.store.transaction(() => ctx.runStep("effect", fn))],
+    ["another ctx.runStep", (ctx: Parameters<EventHandler>[0], fn: () => number) => ctx.runStep("outer", () => ctx.runStep("effect", fn))],
+  ])("an interrupted step nested in %s: the rollback undoes its mark and notify, so the loop sends the one notify", async (_label, run) => {
+    const id = enqueueMessage(env.store, { text: "nested" }).id;
+    const key = `event:${id}:effect`;
+    leaveStarted(key);
+    const fn = vi.fn(() => 1);
+    let thrown: unknown;
+    const message: EventHandler = (ctx) => {
+      try {
+        run(ctx, fn);
+      } catch (err) {
+        thrown = err;
+        throw err;
+      }
+    };
+    expect(await loop({ message }).tick()).toMatchObject({ failed: 1 });
+    expect(thrown).toBeInstanceOf(WorkStepInterruptedError);
+    expect(fn).not.toHaveBeenCalled();
+    // The mark was rolled back: the row is still started, and the step's notify is gone.
+    expect(getWorkStep(env.store, key)?.status).toBe("started");
+    const error = (thrown as Error).message;
+    expect(events(env.store, "notify").map((e) => e.payload)).toEqual([{ reason: "event_failed", queue_id: id, kind: "message", error }]);
+    // event_failed (step key + interrupted error) is the only record of the interrupted step.
+    expect(events(env.store, "event_failed").map((e) => e.payload)).toEqual([{ queue_id: id, kind: "message", error, step: key }]);
+  });
+
+  it("a handler that wraps the interrupted step's error in its own gets the loop's notify too (a different fact)", async () => {
+    const id = enqueueMessage(env.store, { text: "wrap" }).id;
+    leaveStarted(`event:${id}:effect`);
+    const message: EventHandler = (ctx) => {
+      try {
+        ctx.runStep("effect", () => 1);
+      } catch (err) {
+        throw new Error(`handler gave up: ${(err as Error).message}`);
+      }
+    };
+    await loop({ message }).tick();
+    expect(events(env.store, "notify").map((e) => e.payload.reason)).toEqual(["work_step_interrupted", "event_failed"]);
+    expect(events(env.store, "event_failed")[0]?.payload).not.toHaveProperty("step");
+  });
+
+  it.each(["runStep", "runStepAsync"] as const)(
+    "a crash after the step's interrupted mark and before event_failed: the redelivery's ctx.%s fails the event with still one notify, linked by the step key",
+    async (via) => {
+      const id = enqueueMessage(env.store, { text: "crash" }).id;
+      const key = `event:${id}:effect`;
+      leaveStarted(key);
+      // The first delivery's step commits failed:interrupted and its notify; the
+      // process dies before the loop's #fail commits, so the row stays pending.
+      await expect(runStepAsync(env.store, key, async () => 1)).rejects.toBeInstanceOf(WorkStepInterruptedError);
+      expect(getQueueRow(env.store, id)?.status).toBe("pending");
+      env.restart();
+
+      const fn = vi.fn(() => 1);
+      let thrown: unknown;
+      const message: EventHandler = async (ctx) => {
+        try {
+          if (via === "runStep") ctx.runStep("effect", fn);
+          else await ctx.runStepAsync("effect", async () => fn());
+        } catch (err) {
+          thrown = err;
+          throw err;
+        }
+      };
+      expect(await loop({ message }).tick()).toMatchObject({ failed: 1 });
+      expect(thrown).toBeInstanceOf(WorkStepFailedError);
+      expect((thrown as WorkStepFailedError).reason).toBe("interrupted");
+      expect(fn).not.toHaveBeenCalled();
+      // Exactly one notify in all: the step's own, from the first delivery.
+      expect(events(env.store, "notify").map((e) => e.payload)).toEqual([{ reason: "work_step_interrupted", key }]);
+      expect(getQueueRow(env.store, id)?.status).toBe("failed");
+      expect(events(env.store, "event_failed").map((e) => e.payload)).toEqual([
+        { queue_id: id, kind: "message", error: (thrown as Error).message, step: key },
+      ]);
+    },
+  );
+
+  it("a WorkStepFailedError that is not this event's interrupted step gets the loop's notify as any failure", async () => {
+    const own = enqueueMessage(env.store, { text: "own failed:error" }).id;
+    const foreign = enqueueMessage(env.store, { text: "shared interrupted" }).id;
+    // A failed:error step of the event itself (no notify of its own) ...
+    env.store.prepare("INSERT INTO work_steps (key, status, failure_reason) VALUES (?, 'failed', 'error')").run(`event:${own}:effect`);
+    // ... and a step shared across events, interrupted (and notified) for another failure.
+    leaveStarted("shared:effect");
+    await expect(runStepAsync(env.store, "shared:effect", async () => 1)).rejects.toBeInstanceOf(WorkStepInterruptedError);
+    const message: EventHandler = (ctx) => {
+      if (ctx.event.id === own) ctx.runStep("effect", () => 1);
+      else runStep(ctx.store, "shared:effect", () => 1);
+    };
+    expect(await loop({ message }).tick()).toMatchObject({ failed: 2 });
+    expect(events(env.store, "notify").map((e) => [e.payload.reason, e.payload.queue_id])).toEqual([
+      ["work_step_interrupted", undefined],
+      ["event_failed", own],
+      ["event_failed", foreign],
+    ]);
+    for (const e of events(env.store, "event_failed")) expect(e.payload).not.toHaveProperty("step");
+  });
+
   it("a kind with no handler ⇒ done + event_unhandled; nothing else is invented", async () => {
     const id = enqueueMessage(env.store, { text: "nobody listens" }).id;
     expect(await loop({}).tick()).toMatchObject({ unhandled: 1, done: 0 });
@@ -275,6 +480,44 @@ describe("EventLoop.tick", () => {
     await l.stop();
     expect(scheduled[1]?.cancelled).toBe(true);
     expect(() => new EventLoop({ store: env.store, handlers: {} }, { tickMs: 0 })).toThrow(RangeError);
+  });
+
+  it("stop() then start() without awaiting the stop, during a running tick, leaves exactly one timer chain", async () => {
+    const { scheduled, schedule, fire, live } = fakeScheduler();
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    let entered = false;
+    const message = vi.fn<EventHandler>(async () => {
+      entered = true;
+      await gate;
+    });
+    const l = new EventLoop({ store: env.store, handlers: { message } }, { now: env.now, schedule, tickMs: 500 });
+    enqueueMessage(env.store, { text: "slow" });
+    l.start();
+    fire(scheduled[0]);
+    await vi.waitFor(() => expect(entered).toBe(true));
+
+    // The old chain's tick is still running across the stop → start.
+    const stopping = l.stop();
+    l.start();
+    expect(scheduled.map((s) => s.ms)).toEqual([0, 0]);
+    fire(scheduled[1]); // the new chain's first tick joins the running one (single-flight)
+    open();
+    await stopping;
+    await vi.waitFor(() => expect(scheduled.length).toBeGreaterThanOrEqual(3));
+    // Let every pending .finally run: the old chain must not reschedule.
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(live().map((s) => s.ms)).toEqual([500]);
+    expect(scheduled).toHaveLength(3);
+
+    // The chain keeps going as one, and a later stop() cancels it.
+    fire(live()[0]);
+    await vi.waitFor(() => expect(live()).toHaveLength(1));
+    await l.stop();
+    expect(live()).toHaveLength(0);
+    expect(message).toHaveBeenCalledTimes(1);
   });
 
   it("stop() during a running tick waits for the current event and starts no other", async () => {

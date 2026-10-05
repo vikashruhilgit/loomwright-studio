@@ -5,7 +5,7 @@ import { appendEvent, clip, errorMessage, NO_REF, normalizeInstant } from "./int
 import type { EventRef } from "./internal.js";
 import { nextPendingRow, toQueuedEvent } from "./queue.js";
 import type { QueueRow } from "./queue.js";
-import { getWorkStep, runStep, runStepAsync } from "./steps.js";
+import { WorkStepFailedError, WorkStepInterruptedError, getWorkStep, runStep, runStepAsync } from "./steps.js";
 import { isEventKind } from "./types.js";
 import type { EventContext, EventHandlers, EventLoopDeps, EventLoopOptions, QueuedEvent, TickResult } from "./types.js";
 import { fireDueWakeups } from "./wakeups.js";
@@ -13,6 +13,9 @@ import { fireDueWakeups } from "./wakeups.js";
 export const DEFAULT_TICK_MS = 1_000;
 /** How long a parked event waits when admission gave no `retryAt` (an unknown reset). */
 export const DEFAULT_PARK_MS = 60 * 60 * 1_000;
+
+/** The key prefix of every `ctx.runStep` / `ctx.runStepAsync` step of queue row `id`. */
+const stepPrefix = (id: number): string => `event:${id}:`;
 
 const defaultSchedule = (fn: () => void, ms: number): CancelTimer => {
   const timer = setTimeout(fn, ms);
@@ -32,7 +35,8 @@ type Outcome = "done" | "unhandled" | "parked" | "failed";
  *   behaviour is invented);
  * - it throws `AdmissionRefusedError` ⇒ the row stays `pending` with
  *   `not_before` = the refusal's `retryAt` (or now + `DEFAULT_PARK_MS` when
- *   unknown) + `event_parked`; admission already notified, so no second
+ *   unknown, or when it is not later than now: a park never ends in the past,
+ *   see `#park`) + `event_parked`; admission already notified, so no second
  *   notify (D17: park, no retry loop). The `ctx.runStepAsync` step whose own
  *   work threw the refusal is released, not failed, so the redelivery runs it
  *   again. An outer step the refusal only passed through is `failed:error`
@@ -40,7 +44,18 @@ type Outcome = "done" | "unhandled" | "parked" | "failed";
  *   event can never complete: it is `failed` + `notify` now, not parked;
  * - it throws anything else ⇒ `failed` (`attempts + 1`, `last_error`) +
  *   `event_failed` + one `notify`, and the loop goes on with the next row: a
- *   failing event never blocks the queue.
+ *   failing event never blocks the queue. A `WorkStepInterruptedError` whose
+ *   step committed its `failed:interrupted` mark already sent that one
+ *   `notify` (see `#fail`), so the loop records `event_failed` with the step's
+ *   key and adds none. So does a `WorkStepFailedError` for one of this
+ *   event's own steps that is `failed:interrupted`: a crash after the mark
+ *   and before `#fail` committed redelivers the event, and the step then
+ *   reports the mark (and its notify) already made.
+ *
+ * `start()` / `stop()` run one timer chain at a time: each call starts a new
+ * generation, and a tick only reschedules while its chain's generation is
+ * still current. So a tick still running across `stop()` → `start()` (the
+ * stop not awaited) does not leave a second chain beside the new one.
  *
  * There is no ordering other than the row id, and no dedupe policy beyond a
  * derived row's `source_ref`. A row left `pending` by a crash is processed
@@ -55,6 +70,8 @@ export class EventLoop {
   #running: Promise<TickResult> | undefined;
   #cancel: CancelTimer | undefined;
   #started = false;
+  /** Bumped by `start()` and `stop()`: a chain reschedules only while its generation is current. */
+  #generation = 0;
   #abortTick = false;
 
   constructor(options: EventLoopOptions, deps: EventLoopDeps = {}) {
@@ -83,27 +100,35 @@ export class EventLoop {
   start(): void {
     if (this.#started) return;
     this.#started = true;
-    this.#cancel = this.#schedule(this.#loop, 0);
+    const generation = ++this.#generation;
+    this.#cancel = this.#schedule(() => this.#loop(generation), 0);
   }
 
   /** Cancel the next tick and wait for a running one to finish its current event. Idempotent. */
   async stop(): Promise<void> {
     this.#started = false;
+    // Ends the current chain: a tick still running does not reschedule it.
+    this.#generation++;
     this.#abortTick = true;
     this.#cancel?.();
     this.#cancel = undefined;
     await this.#running?.catch(() => undefined);
   }
 
-  readonly #loop = (): void => {
+  /**
+   * One step of the timer chain started under `generation`. A chain that
+   * `stop()` (or a later `start()`) superseded neither ticks nor reschedules,
+   * and never touches `#cancel`, which belongs to the current chain.
+   */
+  #loop(generation: number): void {
+    if (generation !== this.#generation) return;
     this.#cancel = undefined;
-    if (!this.#started) return;
     void this.tick()
       .catch((err: unknown) => this.#recordSafely("loop_error", NO_REF, { error: clip(errorMessage(err)) }))
       .finally(() => {
-        if (this.#started) this.#cancel = this.#schedule(this.#loop, this.#tickMs);
+        if (generation === this.#generation) this.#cancel = this.#schedule(() => this.#loop(generation), this.#tickMs);
       });
-  };
+  }
 
   async #runTick(): Promise<TickResult> {
     const wakeupsFired = fireDueWakeups(this.#store, this.#now()).length;
@@ -153,7 +178,7 @@ export class EventLoop {
   #contextFor(event: QueuedEvent, failedByRefusal: string[]): EventContext {
     const store = this.#store;
     const now = this.#now;
-    const prefix = `event:${event.id}:`;
+    const prefix = stepPrefix(event.id);
     return {
       event,
       store,
@@ -194,9 +219,19 @@ export class EventLoop {
     });
   }
 
+  /**
+   * Park the row until `not_before`. A `retryAt` that is not strictly later
+   * than now (or not an instant at all) is treated as an unknown reset: now +
+   * `DEFAULT_PARK_MS`. Taken as given, it would leave the row due at once, so
+   * every tick would redeliver it and append another `event_parked`. The
+   * `event_parked` row keeps the refusal's raw `retry_at` for the audit next
+   * to the effective `not_before`.
+   */
   #park(row: QueueRow, ref: EventRef, err: AdmissionRefusedError): Outcome {
     const now = this.#now();
-    const notBefore = normalizeInstant(err.retryAt) ?? new Date(now.getTime() + DEFAULT_PARK_MS).toISOString();
+    const retryAt = normalizeInstant(err.retryAt);
+    const notBefore =
+      retryAt !== undefined && Date.parse(retryAt) > now.getTime() ? retryAt : new Date(now.getTime() + DEFAULT_PARK_MS).toISOString();
     const at = now.toISOString();
     this.#store.transaction(() => {
       this.#store
@@ -207,17 +242,65 @@ export class EventLoop {
     return "parked";
   }
 
+  /**
+   * Fail the row: `event_failed` plus exactly one `notify` for the failure.
+   *
+   * A `WorkStepInterruptedError` names a step whose `failed:interrupted` mark
+   * came with its own `notify` (`work_step_interrupted`, keyed on the step).
+   * When that mark is committed (read back here), the owner was already told,
+   * so `event_failed` carries the step's key to link the two and the loop adds
+   * no notify of its own. When it is not (the handler ran the step inside its
+   * own transaction or another `ctx.runStep`, whose rollback undid the mark
+   * and its notify, leaving the row `started`), or the read fails, the loop
+   * notifies as for any failure: never zero notifications.
+   *
+   * The same holds for the `WorkStepFailedError` a step of this event throws
+   * on a redelivery when it is already `failed:interrupted` (see
+   * `#interruptedStep`): a crash after that mark committed and before this
+   * method did left the row `pending`, and the mark's notify is the event's
+   * one notify. Every other `WorkStepFailedError` (`failed:error`, whose
+   * failure sent no notify of its own) gets the loop's notify.
+   */
   #fail(row: QueueRow, ref: EventRef, err: unknown): Outcome {
     const at = this.#now().toISOString();
     const error = clip(errorMessage(err));
+    const step = this.#interruptedStep(row, err);
+    const notified = step !== undefined && this.#interruptedMarkCommitted(step);
     this.#store.transaction(() => {
       this.#store
         .prepare("UPDATE event_queue SET status = 'failed', attempts = attempts + 1, last_error = ? WHERE id = ? AND status = 'pending'")
         .run(error, row.id);
-      appendEvent(this.#store, "event_failed", ref, { queue_id: row.id, kind: row.kind, error }, at);
-      appendEvent(this.#store, "notify", ref, { reason: "event_failed", queue_id: row.id, kind: row.kind, error }, at);
+      appendEvent(this.#store, "event_failed", ref, { queue_id: row.id, kind: row.kind, error, ...(step === undefined ? {} : { step }) }, at);
+      if (!notified) appendEvent(this.#store, "notify", ref, { reason: "event_failed", queue_id: row.id, kind: row.kind, error }, at);
     });
     return "failed";
+  }
+
+  /**
+   * The key of the interrupted step `err` reports, or `undefined`. A
+   * `WorkStepInterruptedError` is the mark this delivery just made. A
+   * `WorkStepFailedError` with reason `interrupted` counts only for this
+   * event's own steps (`event:<id>:`): `markInterrupted` is the only writer of
+   * that reason and commits its notify with it, so such a step was marked by
+   * a delivery of this still-pending event (an earlier one whose `#fail`
+   * never committed, or this one), and that notify belongs to this event.
+   * Another key (a step shared with other events) was marked, and notified,
+   * for a different failure, so this event's failure is a new fact and gets
+   * the loop's notify.
+   */
+  #interruptedStep(row: QueueRow, err: unknown): string | undefined {
+    if (err instanceof WorkStepInterruptedError) return err.key;
+    if (err instanceof WorkStepFailedError && err.reason === "interrupted" && err.key.startsWith(stepPrefix(row.id))) return err.key;
+    return undefined;
+  }
+
+  /** Whether step `key` is committed as `failed:interrupted` (its notify with it). A read failure ⇒ false: notify rather than risk none. */
+  #interruptedMarkCommitted(key: string): boolean {
+    try {
+      return getWorkStep(this.#store, key)?.label === "failed:interrupted";
+    } catch {
+      return false;
+    }
   }
 
   #recordSafely(kind: string, ref: EventRef, payload: Record<string, unknown>): void {

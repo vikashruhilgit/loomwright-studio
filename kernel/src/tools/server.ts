@@ -7,8 +7,11 @@
 // a validation or domain error comes back as an `isError` result, never as a
 // throw through the SDK.
 //
-// Idempotency: a tool that creates something takes a caller-chosen
-// `idempotency_key` and runs through a work step keyed
+// Idempotency: `kernel_task_create`, `kernel_schedule_wakeup` and
+// `kernel_request_stop` REQUIRE a caller-chosen `idempotency_key`;
+// `kernel_task_update` takes one OPTIONALLY (without it the update runs
+// directly, not as a work step); `kernel_task_list` and `kernel_task_get`
+// take none (they only read). A call with a key runs through a work step keyed
 // `<tool>:session-<sessionId>:<idempotency_key>`. The scope is the session
 // row, which a resume keeps, so a repeat in the same session (also after a
 // resume or a kernel restart) returns the first result, even when its other

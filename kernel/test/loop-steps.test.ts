@@ -17,8 +17,9 @@ afterEach(() => {
   env.cleanup();
 });
 
-function insertStarted(store: Store, key: string): void {
-  store.prepare("INSERT INTO work_steps (key, status) VALUES (?, 'started')").run(key);
+/** A `started` row as a crash leaves it; `rerunnable` is what the first call stored. */
+function insertStarted(store: Store, key: string, rerunnable = false): void {
+  store.prepare("INSERT INTO work_steps (key, status, rerunnable) VALUES (?, 'started', ?)").run(key, rerunnable ? 1 : 0);
 }
 
 function taskCount(store: Store): number {
@@ -79,11 +80,79 @@ describe("runStep (synchronous, local)", () => {
   });
 
   it("a started row left by a crash: re-runnable ⇒ fn runs again and the step is done", () => {
-    insertStarted(env.store, "k");
+    insertStarted(env.store, "k", true);
     const store = env.restart();
     expect(runStep(store, "k", () => "again", { rerunnable: true })).toBe("again");
     expect(getWorkStep(store, "k")).toMatchObject({ status: "done", rerunnable: true, result: "again" });
     expect(events(store, "notify")).toHaveLength(0);
+  });
+
+  it("the stored rerunnable decides replay: stored true + caller false ⇒ fn runs again", () => {
+    insertStarted(env.store, "k", true);
+    const store = env.restart();
+    expect(runStep(store, "k", () => "again", { rerunnable: false })).toBe("again");
+    expect(getWorkStep(store, "k")).toMatchObject({ status: "done", rerunnable: true, result: "again" });
+    expect(events(store, "notify")).toHaveLength(0);
+  });
+
+  it("the stored rerunnable decides replay: stored false + caller true ⇒ failed:interrupted, fn not called, column unchanged", () => {
+    insertStarted(env.store, "k", false);
+    const store = env.restart();
+    const fn = vi.fn(() => 1);
+    expect(() => runStep(store, "k", fn, { rerunnable: true })).toThrow(WorkStepInterruptedError);
+    expect(fn).not.toHaveBeenCalled();
+    expect(getWorkStep(store, "k")).toMatchObject({ label: "failed:interrupted", rerunnable: false });
+    expect(events(store, "notify")).toHaveLength(1);
+  });
+
+  it("a first call stores its rerunnable; a later caller's option never rewrites it", () => {
+    runStep(env.store, "a", () => 1, { rerunnable: true });
+    runStep(env.store, "a", () => 2);
+    runStep(env.store, "b", () => 1);
+    runStep(env.store, "b", () => 2, { rerunnable: true });
+    expect(getWorkStep(env.store, "a")?.rerunnable).toBe(true);
+    expect(getWorkStep(env.store, "b")?.rerunnable).toBe(false);
+  });
+
+  it("returns the same JSON value on the first call and on a repeat (Date, undefined property, class instance)", () => {
+    class Point {
+      constructor(
+        readonly x: number,
+        readonly y: number,
+      ) {}
+    }
+    const fn = () => ({ at: new Date("2026-10-05T12:00:00.000Z"), gone: undefined, point: new Point(1, 2) });
+    const first = runStep(env.store, "k", fn);
+    const repeat = runStep(env.store, "k", fn);
+    expect(first).toEqual(repeat);
+    expect(first).toEqual({ at: "2026-10-05T12:00:00.000Z", point: { x: 1, y: 2 } });
+    expect("gone" in first).toBe(false);
+    expect(first.point).not.toBeInstanceOf(Point);
+    expect(repeat.point).not.toBeInstanceOf(Point);
+
+    const date = () => new Date("2026-10-05T12:00:00.000Z");
+    const d1: unknown = runStep(env.store, "d", date);
+    const d2: unknown = runStep(env.store, "d", date);
+    expect([typeof d1, typeof d2]).toEqual(["string", "string"]);
+    expect(d1).toBe(d2);
+  });
+
+  it("a fn returning undefined yields undefined on the first call and on a repeat", () => {
+    expect(runStep(env.store, "k", () => undefined)).toBeUndefined();
+    expect(runStep(env.store, "k", () => undefined)).toBeUndefined();
+    expect(getWorkStep(env.store, "k")?.status).toBe("done");
+  });
+
+  it("a result JSON cannot serialize (a BigInt) rolls back fn's writes and stores nothing, so a later call runs fn again", () => {
+    const fn = vi.fn(() => {
+      env.store.prepare("INSERT INTO tasks (title, state) VALUES ('t', 's')").run();
+      return 1n;
+    });
+    expect(() => runStep(env.store, "k", fn)).toThrow(TypeError);
+    expect(getWorkStep(env.store, "k")).toBeUndefined();
+    expect(taskCount(env.store)).toBe(0);
+    expect(() => runStep(env.store, "k", fn)).toThrow(TypeError);
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -101,6 +170,24 @@ describe("runStepAsync (external effects)", () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])(
+    "a result JSON cannot serialize (a BigInt, rerunnable %s): rejects, the step is failed:error, a later call never runs fn again",
+    async (rerunnable) => {
+      let effects = 0;
+      const fn = vi.fn(async () => {
+        effects++;
+        return { id: 1n };
+      });
+      await expect(runStepAsync(env.store, "k", fn, { rerunnable })).rejects.toThrow(TypeError);
+      // The effect happened: the row is failed:error, not left started for a blind re-run.
+      expect(getWorkStep(env.store, "k")).toMatchObject({ status: "failed", label: "failed:error" });
+      const store = env.restart();
+      await expect(runStepAsync(store, "k", fn, { rerunnable })).rejects.toBeInstanceOf(WorkStepFailedError);
+      expect(effects).toBe(1);
+      expect(events(store, "notify")).toHaveLength(0);
+    },
+  );
+
   it("a crash that leaves started (simulated by a hand-inserted row + restart): not re-runnable ⇒ interrupted, fn not called", async () => {
     insertStarted(env.store, "k");
     const store = env.restart();
@@ -112,10 +199,53 @@ describe("runStepAsync (external effects)", () => {
   });
 
   it("re-runnable ⇒ fn runs again after the crash and the step ends done", async () => {
-    insertStarted(env.store, "k");
+    insertStarted(env.store, "k", true);
     const store = env.restart();
     await expect(runStepAsync(store, "k", async () => ({ path: "/x" }), { rerunnable: true })).resolves.toEqual({ path: "/x" });
     expect(getWorkStep(store, "k")).toMatchObject({ status: "done", result: { path: "/x" } });
+  });
+
+  it("the stored rerunnable decides replay: stored true + caller false ⇒ fn runs again", async () => {
+    insertStarted(env.store, "k", true);
+    const store = env.restart();
+    await expect(runStepAsync(store, "k", async () => "again", { rerunnable: false })).resolves.toBe("again");
+    expect(getWorkStep(store, "k")).toMatchObject({ status: "done", rerunnable: true, result: "again" });
+    expect(events(store, "notify")).toHaveLength(0);
+  });
+
+  it("the stored rerunnable decides replay: stored false + caller true ⇒ failed:interrupted, fn not called, column unchanged", async () => {
+    insertStarted(env.store, "k", false);
+    const store = env.restart();
+    const fn = vi.fn(async () => 1);
+    await expect(runStepAsync(store, "k", fn, { rerunnable: true })).rejects.toBeInstanceOf(WorkStepInterruptedError);
+    expect(fn).not.toHaveBeenCalled();
+    expect(getWorkStep(store, "k")).toMatchObject({ label: "failed:interrupted", rerunnable: false });
+    expect(events(store, "notify")).toHaveLength(1);
+  });
+
+  it("returns the same JSON value on the first call and on a repeat (Date, undefined property, class instance)", async () => {
+    class Point {
+      constructor(
+        readonly x: number,
+        readonly y: number,
+      ) {}
+    }
+    const fn = async () => ({ at: new Date("2026-10-05T12:00:00.000Z"), gone: undefined, point: new Point(1, 2) });
+    const first = await runStepAsync(env.store, "k", fn);
+    const repeat = await runStepAsync(env.store, "k", fn);
+    expect(first).toEqual(repeat);
+    expect(first).toEqual({ at: "2026-10-05T12:00:00.000Z", point: { x: 1, y: 2 } });
+    expect("gone" in first).toBe(false);
+    expect(first.point).not.toBeInstanceOf(Point);
+
+    const date = async () => new Date("2026-10-05T12:00:00.000Z");
+    const d1: unknown = await runStepAsync(env.store, "d", date);
+    const d2: unknown = await runStepAsync(env.store, "d", date);
+    expect([typeof d1, typeof d2]).toEqual(["string", "string"]);
+    expect(d1).toBe(d2);
+
+    await expect(runStepAsync(env.store, "u", async () => undefined)).resolves.toBeUndefined();
+    await expect(runStepAsync(env.store, "u", async () => undefined)).resolves.toBeUndefined();
   });
 
   it("records done after fn resolves and returns the stored result after a restart", async () => {
@@ -156,13 +286,15 @@ describe("runStepAsync (external effects)", () => {
   });
 
   it("noEffect on a re-run crash leftover keeps it started (an earlier attempt may have had an effect)", async () => {
-    insertStarted(env.store, "k");
+    insertStarted(env.store, "k", true);
     const store = env.restart();
     const opts = { rerunnable: true, noEffect: () => true };
     await expect(runStepAsync(store, "k", async () => Promise.reject(new Error("nothing")), opts)).rejects.toThrow("nothing");
     expect(getWorkStep(store, "k")?.status).toBe("started");
-    // Not re-runnable now: the leftover is still seen, so it is interrupted rather than silently run.
-    await expect(runStepAsync(store, "k", async () => 1)).rejects.toBeInstanceOf(WorkStepInterruptedError);
+    // The leftover is still there (not deleted) and was declared re-runnable
+    // when first started, so a later call re-runs it, whatever it passes.
+    await expect(runStepAsync(store, "k", async () => 1, { rerunnable: false })).resolves.toBe(1);
+    expect(getWorkStep(store, "k")).toMatchObject({ status: "done", rerunnable: true, result: 1 });
   });
 
   it("an error noEffect rejects, or a noEffect that throws, still ends failed:error", async () => {
