@@ -47,3 +47,9 @@ Phase 1 items 01–09 (merged). H03 if it adds a migration first; take the next 
 ## Source
 
 Dismissed review findings from run `automate-2026-09-30-211858`, re-verified 2026-10-03: `proposed/…--06-budget-meter-and-cap-3cd83f--dismissed-ee519faa.md` and `proposed/…--06-budget-meter-and-cap-3cd83f--dismissed-summary.md` entries 1–2.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-05T01:41:05Z
+- **Brief:** .supervisor/jobs/done/2026-10-05-h05-budget-cap-park-keys.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/31
