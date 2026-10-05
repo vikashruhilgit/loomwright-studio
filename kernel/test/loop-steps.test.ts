@@ -142,6 +142,18 @@ describe("runStep (synchronous, local)", () => {
     expect(runStep(env.store, "k", () => undefined)).toBeUndefined();
     expect(getWorkStep(env.store, "k")?.status).toBe("done");
   });
+
+  it("a result JSON cannot serialize (a BigInt) rolls back fn's writes and stores nothing, so a later call runs fn again", () => {
+    const fn = vi.fn(() => {
+      env.store.prepare("INSERT INTO tasks (title, state) VALUES ('t', 's')").run();
+      return 1n;
+    });
+    expect(() => runStep(env.store, "k", fn)).toThrow(TypeError);
+    expect(getWorkStep(env.store, "k")).toBeUndefined();
+    expect(taskCount(env.store)).toBe(0);
+    expect(() => runStep(env.store, "k", fn)).toThrow(TypeError);
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("runStepAsync (external effects)", () => {
@@ -157,6 +169,24 @@ describe("runStepAsync (external effects)", () => {
     await expect(runStepAsync(env.store, "k", fn)).rejects.toBeInstanceOf(WorkStepFailedError);
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  it.each([false, true])(
+    "a result JSON cannot serialize (a BigInt, rerunnable %s): rejects, the step is failed:error, a later call never runs fn again",
+    async (rerunnable) => {
+      let effects = 0;
+      const fn = vi.fn(async () => {
+        effects++;
+        return { id: 1n };
+      });
+      await expect(runStepAsync(env.store, "k", fn, { rerunnable })).rejects.toThrow(TypeError);
+      // The effect happened: the row is failed:error, not left started for a blind re-run.
+      expect(getWorkStep(env.store, "k")).toMatchObject({ status: "failed", label: "failed:error" });
+      const store = env.restart();
+      await expect(runStepAsync(store, "k", fn, { rerunnable })).rejects.toBeInstanceOf(WorkStepFailedError);
+      expect(effects).toBe(1);
+      expect(events(store, "notify")).toHaveLength(0);
+    },
+  );
 
   it("a crash that leaves started (simulated by a hand-inserted row + restart): not re-runnable ⇒ interrupted, fn not called", async () => {
     insertStarted(env.store, "k");

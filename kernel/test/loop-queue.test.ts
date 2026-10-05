@@ -1,7 +1,18 @@
 // The durable event queue and the loop that processes it (AC1, AC6). Handlers
 // are fakes; "restart" = close the Store and open a new one on the data dir.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PARK_MS, EventLoop, WorkStepInterruptedError, enqueueEvent, enqueueMessage, getQueueRow, getWorkStep } from "../src/loop/index.js";
+import {
+  DEFAULT_PARK_MS,
+  EventLoop,
+  WorkStepFailedError,
+  WorkStepInterruptedError,
+  enqueueEvent,
+  enqueueMessage,
+  getQueueRow,
+  getWorkStep,
+  runStep,
+  runStepAsync,
+} from "../src/loop/index.js";
 import type { EventHandler, EventKind, QueuedEvent } from "../src/loop/index.js";
 import { AdmissionRefusedError } from "../src/sessions/index.js";
 import type { CancelTimer } from "../src/sessions/index.js";
@@ -323,6 +334,63 @@ describe("EventLoop.tick", () => {
     await loop({ message }).tick();
     expect(events(env.store, "notify").map((e) => e.payload.reason)).toEqual(["work_step_interrupted", "event_failed"]);
     expect(events(env.store, "event_failed")[0]?.payload).not.toHaveProperty("step");
+  });
+
+  it.each(["runStep", "runStepAsync"] as const)(
+    "a crash after the step's interrupted mark and before event_failed: the redelivery's ctx.%s fails the event with still one notify, linked by the step key",
+    async (via) => {
+      const id = enqueueMessage(env.store, { text: "crash" }).id;
+      const key = `event:${id}:effect`;
+      leaveStarted(key);
+      // The first delivery's step commits failed:interrupted and its notify; the
+      // process dies before the loop's #fail commits, so the row stays pending.
+      await expect(runStepAsync(env.store, key, async () => 1)).rejects.toBeInstanceOf(WorkStepInterruptedError);
+      expect(getQueueRow(env.store, id)?.status).toBe("pending");
+      env.restart();
+
+      const fn = vi.fn(() => 1);
+      let thrown: unknown;
+      const message: EventHandler = async (ctx) => {
+        try {
+          if (via === "runStep") ctx.runStep("effect", fn);
+          else await ctx.runStepAsync("effect", async () => fn());
+        } catch (err) {
+          thrown = err;
+          throw err;
+        }
+      };
+      expect(await loop({ message }).tick()).toMatchObject({ failed: 1 });
+      expect(thrown).toBeInstanceOf(WorkStepFailedError);
+      expect((thrown as WorkStepFailedError).reason).toBe("interrupted");
+      expect(fn).not.toHaveBeenCalled();
+      // Exactly one notify in all: the step's own, from the first delivery.
+      expect(events(env.store, "notify").map((e) => e.payload)).toEqual([{ reason: "work_step_interrupted", key }]);
+      expect(getQueueRow(env.store, id)?.status).toBe("failed");
+      expect(events(env.store, "event_failed").map((e) => e.payload)).toEqual([
+        { queue_id: id, kind: "message", error: (thrown as Error).message, step: key },
+      ]);
+    },
+  );
+
+  it("a WorkStepFailedError that is not this event's interrupted step gets the loop's notify as any failure", async () => {
+    const own = enqueueMessage(env.store, { text: "own failed:error" }).id;
+    const foreign = enqueueMessage(env.store, { text: "shared interrupted" }).id;
+    // A failed:error step of the event itself (no notify of its own) ...
+    env.store.prepare("INSERT INTO work_steps (key, status, failure_reason) VALUES (?, 'failed', 'error')").run(`event:${own}:effect`);
+    // ... and a step shared across events, interrupted (and notified) for another failure.
+    leaveStarted("shared:effect");
+    await expect(runStepAsync(env.store, "shared:effect", async () => 1)).rejects.toBeInstanceOf(WorkStepInterruptedError);
+    const message: EventHandler = (ctx) => {
+      if (ctx.event.id === own) ctx.runStep("effect", () => 1);
+      else runStep(ctx.store, "shared:effect", () => 1);
+    };
+    expect(await loop({ message }).tick()).toMatchObject({ failed: 2 });
+    expect(events(env.store, "notify").map((e) => [e.payload.reason, e.payload.queue_id])).toEqual([
+      ["work_step_interrupted", undefined],
+      ["event_failed", own],
+      ["event_failed", foreign],
+    ]);
+    for (const e of events(env.store, "event_failed")) expect(e.payload).not.toHaveProperty("step");
   });
 
   it("a kind with no handler ⇒ done + event_unhandled; nothing else is invented", async () => {

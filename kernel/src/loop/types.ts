@@ -66,14 +66,21 @@ export interface StepOptions {
  * (`JSON.parse(JSON.stringify(value))`: a `Date` is its ISO string both times,
  * an `undefined` property is dropped, a class instance is a plain object), so
  * a redelivery sees exactly what the first delivery saw. `T` is not narrowed
- * to JSON-safe types: return JSON-shaped values.
+ * to JSON-safe types: return JSON-shaped values. A result JSON cannot
+ * serialize (a `BigInt`) throws: `runStep` rolls back and stores nothing,
+ * while `runStepAsync`, whose effect already happened, records the step
+ * `failed:error` so it is never run again.
  *
  * A step left `started` by a crash and not stored re-runnable throws
  * `WorkStepInterruptedError` after committing `failed:interrupted` with one
  * `notify` (`work_step_interrupted`, the step's key). A handler that rethrows
  * it fails the event with exactly that one `notify`: the loop's
  * `event_failed` row carries the step's key (`step`) and the queue id, and
- * the loop adds no notify of its own. A step run inside the handler's own
+ * the loop adds no notify of its own. A crash after that mark and before the
+ * loop's `event_failed` redelivers the event; the step then throws
+ * `WorkStepFailedError` (reason `interrupted`), and a handler that rethrows it
+ * gets the same outcome: `event_failed` with the step's key, still one
+ * `notify` in all. A step run inside the handler's own
  * `store.transaction` (or inside another `ctx.runStep`) nests as a savepoint:
  * the outer rollback undoes its interrupted mark and its notify, so the row
  * stays `started` and the loop sends the one `notify` instead; the
@@ -119,10 +126,13 @@ export interface EventContext {
  * else ⇒ `failed`, one `notify`, and the loop moves on to the next event.
  *
  * One notify per failure holds for an interrupted step only when the handler
- * rethrows the step's own `WorkStepInterruptedError` (see `EventContext`): the
- * step already notified, and the loop links `event_failed` to it by the step
- * key. A handler that wraps it in a different error reports its own failure,
- * which gets the loop's notify too (two notifies, two facts).
+ * rethrows the step's own error (see `EventContext`): its
+ * `WorkStepInterruptedError`, or on a redelivery the `WorkStepFailedError`
+ * with reason `interrupted` of one of this event's steps. The step already
+ * notified, and the loop links `event_failed` to it by the step key. Any
+ * other `WorkStepFailedError` gets the loop's notify. A handler that wraps
+ * the step's error in a different error reports its own failure, which gets
+ * the loop's notify too (two notifies, two facts).
  *
  * A `wakeup` event whose reason is `cap_reset:…` / `cap_recheck:…` (scheduled
  * by the budget module) means "ask admission again", never "the park ended":

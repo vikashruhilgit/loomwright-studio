@@ -5,7 +5,7 @@ import { appendEvent, clip, errorMessage, NO_REF, normalizeInstant } from "./int
 import type { EventRef } from "./internal.js";
 import { nextPendingRow, toQueuedEvent } from "./queue.js";
 import type { QueueRow } from "./queue.js";
-import { WorkStepInterruptedError, getWorkStep, runStep, runStepAsync } from "./steps.js";
+import { WorkStepFailedError, WorkStepInterruptedError, getWorkStep, runStep, runStepAsync } from "./steps.js";
 import { isEventKind } from "./types.js";
 import type { EventContext, EventHandlers, EventLoopDeps, EventLoopOptions, QueuedEvent, TickResult } from "./types.js";
 import { fireDueWakeups } from "./wakeups.js";
@@ -13,6 +13,9 @@ import { fireDueWakeups } from "./wakeups.js";
 export const DEFAULT_TICK_MS = 1_000;
 /** How long a parked event waits when admission gave no `retryAt` (an unknown reset). */
 export const DEFAULT_PARK_MS = 60 * 60 * 1_000;
+
+/** The key prefix of every `ctx.runStep` / `ctx.runStepAsync` step of queue row `id`. */
+const stepPrefix = (id: number): string => `event:${id}:`;
 
 const defaultSchedule = (fn: () => void, ms: number): CancelTimer => {
   const timer = setTimeout(fn, ms);
@@ -44,7 +47,10 @@ type Outcome = "done" | "unhandled" | "parked" | "failed";
  *   failing event never blocks the queue. A `WorkStepInterruptedError` whose
  *   step committed its `failed:interrupted` mark already sent that one
  *   `notify` (see `#fail`), so the loop records `event_failed` with the step's
- *   key and adds none.
+ *   key and adds none. So does a `WorkStepFailedError` for one of this
+ *   event's own steps that is `failed:interrupted`: a crash after the mark
+ *   and before `#fail` committed redelivers the event, and the step then
+ *   reports the mark (and its notify) already made.
  *
  * `start()` / `stop()` run one timer chain at a time: each call starts a new
  * generation, and a tick only reschedules while its chain's generation is
@@ -172,7 +178,7 @@ export class EventLoop {
   #contextFor(event: QueuedEvent, failedByRefusal: string[]): EventContext {
     const store = this.#store;
     const now = this.#now;
-    const prefix = `event:${event.id}:`;
+    const prefix = stepPrefix(event.id);
     return {
       event,
       store,
@@ -247,11 +253,18 @@ export class EventLoop {
    * own transaction or another `ctx.runStep`, whose rollback undid the mark
    * and its notify, leaving the row `started`), or the read fails, the loop
    * notifies as for any failure: never zero notifications.
+   *
+   * The same holds for the `WorkStepFailedError` a step of this event throws
+   * on a redelivery when it is already `failed:interrupted` (see
+   * `#interruptedStep`): a crash after that mark committed and before this
+   * method did left the row `pending`, and the mark's notify is the event's
+   * one notify. Every other `WorkStepFailedError` (`failed:error`, whose
+   * failure sent no notify of its own) gets the loop's notify.
    */
   #fail(row: QueueRow, ref: EventRef, err: unknown): Outcome {
     const at = this.#now().toISOString();
     const error = clip(errorMessage(err));
-    const step = err instanceof WorkStepInterruptedError ? err.key : undefined;
+    const step = this.#interruptedStep(row, err);
     const notified = step !== undefined && this.#interruptedMarkCommitted(step);
     this.#store.transaction(() => {
       this.#store
@@ -261,6 +274,24 @@ export class EventLoop {
       if (!notified) appendEvent(this.#store, "notify", ref, { reason: "event_failed", queue_id: row.id, kind: row.kind, error }, at);
     });
     return "failed";
+  }
+
+  /**
+   * The key of the interrupted step `err` reports, or `undefined`. A
+   * `WorkStepInterruptedError` is the mark this delivery just made. A
+   * `WorkStepFailedError` with reason `interrupted` counts only for this
+   * event's own steps (`event:<id>:`): `markInterrupted` is the only writer of
+   * that reason and commits its notify with it, so such a step was marked by
+   * a delivery of this still-pending event (an earlier one whose `#fail`
+   * never committed, or this one), and that notify belongs to this event.
+   * Another key (a step shared with other events) was marked, and notified,
+   * for a different failure, so this event's failure is a new fact and gets
+   * the loop's notify.
+   */
+  #interruptedStep(row: QueueRow, err: unknown): string | undefined {
+    if (err instanceof WorkStepInterruptedError) return err.key;
+    if (err instanceof WorkStepFailedError && err.reason === "interrupted" && err.key.startsWith(stepPrefix(row.id))) return err.key;
+    return undefined;
   }
 
   /** Whether step `key` is committed as `failed:interrupted` (its notify with it). A read failure ⇒ false: notify rather than risk none. */
