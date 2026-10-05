@@ -450,7 +450,7 @@ export class SessionManager {
       cacheRoot: this.#pluginCacheRoot,
     });
 
-    this.#admit({ kind: "start", agent: params.agent, account: this.#auth.account, task: params.task ?? null });
+    this.#admit({ kind: "start", agent: params.agent, account: this.#auth.account, provider: this.#auth.id, task: params.task ?? null });
 
     let env: ChildEnv;
     try {
@@ -653,7 +653,7 @@ export class SessionManager {
       throw new SessionError("not_resumable", `session ${id} has no recorded model or Loomwright path`);
     }
     // Before the group check: a refused resume leaves the row and its events untouched.
-    this.#admit({ kind: "resume", agent: row.agent, account: this.#auth.account, task: row.task_id });
+    this.#admit({ kind: "resume", agent: row.agent, account: this.#auth.account, provider: this.#auth.id, task: row.task_id });
 
     // Synchronous from here to the launch: no reap or other resume interleaves.
     let check: GroupCheck;
@@ -1236,7 +1236,13 @@ export class SessionManager {
     if (this.#admission === undefined) return false;
     let payload: Record<string, unknown>;
     try {
-      const decision = this.#admission({ kind: "resume", agent: ctx.agent, account: this.#auth.account, task: ctx.taskId });
+      const decision = this.#admission({
+        kind: "resume",
+        agent: ctx.agent,
+        account: this.#auth.account,
+        provider: this.#auth.id,
+        task: ctx.taskId,
+      });
       if (decision.admitted) return false;
       payload = { reason: "admission_refused", refusal: decision.reason, retry_at: decision.retryAt, attempt: n };
     } catch (err) {

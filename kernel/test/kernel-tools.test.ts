@@ -201,6 +201,18 @@ describe("kernel_schedule_wakeup", () => {
     expect(errorText(await handlers.kernel_schedule_wakeup({ at: "next tuesday", reason: "r", idempotency_key: "w" }))).toMatch(/ISO-8601/);
     expect(count(env.store, "SELECT count(*) FROM wakeups")).toBe(0);
   });
+  it("returns isError for a reason in the kernel-reserved cap_* namespace (typed or legacy) and writes nothing; other reasons are accepted", async () => {
+    const { handlers } = tools(env.store, insertSession(env.store, "wright"));
+    for (const [i, reason] of ["cap_reset:stub-provider:five_hour", "cap_recheck:stub-provider"].entries()) {
+      expect(errorText(await handlers.kernel_schedule_wakeup({ at: "2026-10-02T11:00:00Z", reason, idempotency_key: `r${i}` }))).toMatch(/reserved/);
+    }
+    expect(count(env.store, "SELECT count(*) FROM wakeups")).toBe(0);
+    expect(count(env.store, "SELECT count(*) FROM work_steps")).toBe(0);
+    expect(value(await handlers.kernel_schedule_wakeup({ at: "2026-10-02T11:00:00Z", reason: "re-check the cap_reset:stub-provider PR", idempotency_key: "ok" }))).toEqual({
+      wakeupId: expect.any(Number),
+      dueAt: "2026-10-02T11:00:00.000Z",
+    });
+  });
 });
 
 describe("kernel_request_stop", () => {

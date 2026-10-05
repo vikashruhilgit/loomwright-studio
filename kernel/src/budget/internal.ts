@@ -106,15 +106,18 @@ export interface ActivePark {
   readonly reset_source: string | null;
 }
 
-/** Every unexpired park of `account` at `nowIso` (`resets_at` null counts as unexpired). */
-export function activeParks(store: Store, account: string, nowIso: string): ActivePark[] {
+/**
+ * Every unexpired park of the provider `key` (its stable id, never its label)
+ * at `nowIso` (`resets_at` null counts as unexpired).
+ */
+export function activeParks(store: Store, key: string, nowIso: string): ActivePark[] {
   return store
     .prepare<[string, string], ActivePark>(
       `SELECT rate_limit_type, resets_at, reset_source FROM cap_state
         WHERE account = ? AND status = 'rejected' AND (resets_at IS NULL OR resets_at > ?)
         ORDER BY rate_limit_type`,
     )
-    .all(account, nowIso);
+    .all(key, nowIso);
 }
 
 /** Schedule a `wakeups` row unless a pending one with the same reason and due time exists. */
@@ -128,6 +131,58 @@ export function scheduleWakeupOnce(store: Store, reason: string, dueAt: string, 
     .prepare("INSERT INTO wakeups (due_at, reason, status, created_at, updated_at) VALUES (?, ?, 'pending', ?, ?)")
     .run(dueAt, reason, at, at);
   return true;
+}
+
+/** The two kinds of cap wake-up: a known reset, or the re-check of an unknown one. */
+export type CapWakeupKind = "cap_reset" | "cap_recheck";
+
+/** The reason of a cap wake-up: `<kind>:<providerId>:<rate_limit_type>`. */
+export function capWakeupReason(kind: CapWakeupKind, key: string, type: string): string {
+  return `${kind}:${key}:${type}`;
+}
+
+/**
+ * Schedule the cap wake-up `<kind>:<key>:<type>` at `dueAt`, superseding every
+ * earlier pending cap wake-up of the same provider and limit type (AC3): both
+ * kinds of `<key>:<type>`, the same for each of `alsoSupersede`'s types, and
+ * the provider's legacy untyped `cap_reset:<key>` / `cap_recheck:<key>` rows
+ * (the form migration 9 leaves). Only rows the budget module wrote are
+ * superseded: `scheduleWakeup` refuses the `cap_reset:` / `cap_recheck:`
+ * prefixes, and a row it wrote before that (it has a `wakeup_scheduled`
+ * audit event) is left pending. Superseded rows get `status = 'superseded'`
+ * and never fire (`fireDueWakeups` reads `pending` only); this is the only
+ * writer of that status. A pending row with the same reason and due time is
+ * kept, not duplicated (`scheduleWakeupOnce`'s rule). Call inside a
+ * transaction, so the supersede and the insert commit together. A cap
+ * wake-up means "ask admission again", never "the park ended".
+ */
+export function scheduleCapWakeup(
+  store: Store,
+  wakeup: {
+    readonly kind: CapWakeupKind;
+    readonly key: string;
+    readonly type: string;
+    readonly dueAt: string;
+    readonly alsoSupersede?: readonly string[];
+  },
+  at: string,
+): boolean {
+  const { kind, key, type, dueAt } = wakeup;
+  const reason = capWakeupReason(kind, key, type);
+  const stale = [`cap_reset:${key}`, `cap_recheck:${key}`];
+  for (const t of [type, ...(wakeup.alsoSupersede ?? [])]) {
+    stale.push(capWakeupReason("cap_reset", key, t), capWakeupReason("cap_recheck", key, t));
+  }
+  // Only rows the budget wrote: a row with a `wakeup_scheduled` audit event came from a
+  // session through `scheduleWakeup` (before the `cap_*` prefixes were reserved) and is never dropped.
+  const supersede = store.prepare<[string, string, string, string]>(
+    `UPDATE wakeups SET status = 'superseded', updated_at = ?
+      WHERE status = 'pending' AND reason = ? AND NOT (reason = ? AND due_at = ?)
+        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.kind = 'wakeup_scheduled'
+                          AND json_extract(e.payload_json, '$.wakeup_id') = wakeups.id)`,
+  );
+  for (const r of stale) supersede.run(at, r, reason, dueAt);
+  return scheduleWakeupOnce(store, reason, dueAt, at);
 }
 
 export function finiteNonNegative(value: unknown): number {

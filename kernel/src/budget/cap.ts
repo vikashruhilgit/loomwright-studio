@@ -1,17 +1,22 @@
 import { USAGE_LIMIT_ERROR_PREFIXES } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Store } from "../store/store.js";
-import { MAX_EVENT_TEXT, activeParks, appendEvent, appendNotify, clockOf, scheduleWakeupOnce } from "./internal.js";
+import { MAX_EVENT_TEXT, activeParks, appendEvent, appendNotify, clockOf, scheduleCapWakeup } from "./internal.js";
 import type { Clock, EventRef } from "./internal.js";
 import type { BudgetAuth, BudgetDeps, BudgetOptions } from "./types.js";
 
 /** An unknown reset (text fallback, or `rejected` without `resetsAt`) is re-checked after this long (AC6). */
 export const CAP_RECHECK_MS = 60 * 60 * 1_000;
 
-/** The `cap_state.rate_limit_type` of a park found from cap text alone. */
+/**
+ * The `cap_state.rate_limit_type` of a park found from cap text alone. The
+ * name is reserved for the tracker: an event's `rateLimitType` equal to it is
+ * stored as `UNKNOWN_LIMIT_TYPE`. Whether a park is a re-check guess is read
+ * from its `reset_source` (`recheck`), never from this name.
+ */
 export const TEXT_FALLBACK_TYPE = "text_fallback";
 
-/** The `cap_state.rate_limit_type` of an event that named no `rateLimitType`. */
+/** The `cap_state.rate_limit_type` of an event that named no `rateLimitType` (or the reserved `TEXT_FALLBACK_TYPE`). */
 export const UNKNOWN_LIMIT_TYPE = "unknown";
 
 const TRANSIENT_BACKOFF_BASE_MS = 1_000;
@@ -121,33 +126,50 @@ interface CapRow {
 const RATE_LIMIT_STATUSES: ReadonlySet<string> = new Set(["allowed", "allowed_warning", "rejected"]);
 
 /**
- * Tracks the subscription cap per auth account from what each session's
+ * Who a cap observation belongs to: `key`, the auth provider's stable `id`,
+ * keys every `cap_state` row and `cap_*` wake-up; `label`, its live account
+ * label, is display text for event and notify payloads only.
+ */
+interface CapOwner {
+  readonly key: string;
+  readonly label: string;
+}
+
+/**
+ * Tracks the subscription cap per auth provider from what each session's
  * stream says (D17, D28, OPEN_QUESTIONS Q6), into `cap_state`, `events` and
- * `wakeups`. Keyed on the auth provider's live `account`, the one source
- * admission is keyed on too: there is one provider per kernel (AC8), and every
- * attempt (a resume's included) launches on its credential, so a cap hit
- * belongs to it. The session row's `auth_account` is a label frozen at insert
- * and is never read here.
+ * `wakeups`. Keyed on the auth provider's stable `id`, the one key admission
+ * reads too: there is one provider per kernel (AC8), and every attempt (a
+ * resume's included) launches on its credential, so a cap hit belongs to it.
+ * The provider's live `account` label is display text only (every payload's
+ * `account`, beside a `provider` field holding the id): relabelling the
+ * account (`recordTokenCreated`, a setup or rotation flow) can neither lift a
+ * park nor start a second one. The session row's `auth_account` is a label
+ * frozen at insert and is never read here.
  *
  * A park only ever extends while it is unexpired (AC4, fail closed): no event
  * moves an unexpired `rejected` row's `resets_at` earlier or clears it, and
  * its notify fires once per window (again only when a later known reset
- * extends it).
+ * extends it). The one exception: a text-fallback park's re-check time is a
+ * guess, never a window, so a `rejected` event's known reset replaces it even
+ * when earlier (step 2 below). A guess is a park whose `reset_source` is
+ * `recheck` (the tracker's own record), never one inferred from a type name:
+ * `text_fallback` is reserved, so an event naming it is stored as `unknown`.
  *
  * Per message, in this order (one real hit makes one park):
  *
  * 1. Text fallback (AC6): an error result's `errors[]`, the `result` text of a
  *    success-typed `is_error` result, or the text of an assistant message
  *    with `error` set, starting with one of the SDK's
- *    `USAGE_LIMIT_ERROR_PREFIXES`. Unless the account already has an
- *    unexpired park (from a `rejected` event or an earlier text hit), the
- *    account is parked with an unknown reset: `text_fallback` row, re-checked
- *    after `CAP_RECHECK_MS`, one `notify`, one `cap_recheck:<account>`
+ *    `USAGE_LIMIT_ERROR_PREFIXES`. Unless the provider already has an
+ *    unexpired park (from a `rejected` event or an earlier text hit), it is
+ *    parked with an unknown reset: `text_fallback` row, re-checked after
+ *    `CAP_RECHECK_MS`, one `notify`, one `cap_recheck:<id>:text_fallback`
  *    wake-up. A match is never also classified as transient.
  * 2. `rate_limit_event` (AC3-AC5): `cap_state` upserted with status,
  *    `rateLimitType`, `resetsAt` (epoch seconds, stored as ISO), utilization
  *    and the untyped `unifiedWindows` verbatim. `rejected` notifies and
- *    schedules a `cap_reset:<account>` wake-up once per window;
+ *    schedules a `cap_reset:<id>:<type>` wake-up once per window;
  *    `allowed_warning` appends one `cap_warning` per window. Against an
  *    unexpired park of the same type: a `rejected` with an unknown reset, or
  *    a known one not later than the park's end, keeps the park as it is; a
@@ -155,11 +177,23 @@ const RATE_LIMIT_STATUSES: ReadonlySet<string> = new Set(["allowed", "allowed_wa
  *    `allowed_warning` update utilization only and leave the park in force
  *    until its `resets_at` (one session's `allowed` never clears a park another
  *    session's `rejected` set), recorded as `cap_allowed_while_parked`.
- * 3. An assistant `error: "rate_limit"` with no cap text while the account
+ *    A `rejected` with no unexpired park of its own type while a
+ *    `text_fallback` re-check park (`reset_source` `recheck`) is unexpired
+ *    is the same hit seen twice: with a known reset, the typed row replaces
+ *    the text-fallback row in the same transaction (its reset wins even when
+ *    earlier than the re-check guess;
+ *    one `cap_park_superseded` event records both; a `notify` only when the
+ *    known reset is later); with an unknown reset, the text-fallback park
+ *    stands and one `cap_park_merged` event records the hit.
+ * 3. An assistant `error: "rate_limit"` with no cap text while the provider
  *    is not parked is transient (AC4): one `cap_transient` event with a
  *    backoff hint, no park.
  *
- * Admission (`BudgetAdmission`) reads the parks; this class only records.
+ * Scheduling a `cap_*` wake-up supersedes the provider's earlier pending one
+ * for the same limit type (`scheduleCapWakeup`), so at most one is pending per
+ * provider and type. A `cap_*` wake-up means "ask admission again", never "the
+ * park ended". Admission (`BudgetAdmission`) reads the parks; this class only
+ * records.
  */
 export class CapTracker {
   readonly #store: Store;
@@ -184,58 +218,71 @@ export class CapTracker {
       const row = this.#store
         .prepare<[number], { task_id: number | null }>("SELECT task_id FROM sessions WHERE id = ?")
         .get(sessionId);
-      // The provider's account, never the row's frozen `auth_account` label: admission reads the same.
-      const account = this.#auth.account;
+      // The provider's id is the key (admission reads the same); its label, read once, is display only.
+      // Never the row's frozen `auth_account` label.
+      const owner: CapOwner = { key: this.#auth.id, label: this.#auth.account };
       const ref: EventRef = { sessionId, taskId: row?.task_id ?? null };
-      if (capText !== undefined) this.#textFallback(account, capText, ref, now, at);
-      else if (isRateLimitEvent) this.#rateLimitEvent(account, message.rate_limit_info as unknown, ref, now, at);
-      else this.#transient(account, ref, at);
+      if (capText !== undefined) this.#textFallback(owner, capText, ref, now, at);
+      else if (isRateLimitEvent) this.#rateLimitEvent(owner, message.rate_limit_info as unknown, ref, now, at);
+      else this.#transient(owner, ref, at);
     });
   }
 
-  #textFallback(account: string, hit: { source: CapTextSource; text: string }, ref: EventRef, now: Date, at: string): void {
-    // One hit, one park: any unexpired park of the account (a `rejected`
+  #textFallback(owner: CapOwner, hit: { source: CapTextSource; text: string }, ref: EventRef, now: Date, at: string): void {
+    const { key, label } = owner;
+    // One hit, one park: any unexpired park of the provider (a `rejected`
     // event's, or an earlier text hit's) already covers this one.
-    if (activeParks(this.#store, account, at).length > 0) return;
+    if (activeParks(this.#store, key, at).length > 0) return;
     const resetsAt = new Date(now.getTime() + CAP_RECHECK_MS).toISOString();
     this.#upsert(
-      account,
+      key,
       TEXT_FALLBACK_TYPE,
       { status: "rejected", resetsAt, resetSource: "recheck", utilization: null, unifiedWindowsJson: null },
       at,
     );
-    this.#setColumn(account, TEXT_FALLBACK_TYPE, "notified_resets_at", resetsAt);
+    this.#setColumn(key, TEXT_FALLBACK_TYPE, "notified_resets_at", resetsAt);
     const text = hit.text.slice(0, MAX_EVENT_TEXT);
     appendEvent(
       this.#store,
       "cap_text_fallback",
       ref,
-      { account, source: hit.source, text, resets_at: resetsAt, reset_source: "recheck" },
+      { account: label, provider: key, source: hit.source, text, resets_at: resetsAt, reset_source: "recheck" },
       at,
     );
     appendNotify(
       this.#store,
       this.#auth,
-      account,
+      label,
       ref,
       { reason: "cap_reached", rate_limit_type: TEXT_FALLBACK_TYPE, resets_at: null, recheck_at: resetsAt, text },
       at,
     );
-    scheduleWakeupOnce(this.#store, `cap_recheck:${account}`, resetsAt, at);
+    scheduleCapWakeup(this.#store, { kind: "cap_recheck", key, type: TEXT_FALLBACK_TYPE, dueAt: resetsAt }, at);
   }
 
-  #rateLimitEvent(account: string, info: unknown, ref: EventRef, now: Date, at: string): void {
+  #rateLimitEvent(owner: CapOwner, info: unknown, ref: EventRef, now: Date, at: string): void {
+    const { key, label } = owner;
     if (typeof info !== "object" || info === null) {
-      appendEvent(this.#store, "cap_event_ignored", ref, { account, reason: "no_rate_limit_info" }, at);
+      appendEvent(this.#store, "cap_event_ignored", ref, { account: label, provider: key, reason: "no_rate_limit_info" }, at);
       return;
     }
     const i = info as Record<string, unknown>;
     const status = i.status;
     if (typeof status !== "string" || !RATE_LIMIT_STATUSES.has(status)) {
-      appendEvent(this.#store, "cap_event_ignored", ref, { account, reason: "unknown_status", status: safeJson(status) }, at);
+      appendEvent(
+        this.#store,
+        "cap_event_ignored",
+        ref,
+        { account: label, provider: key, reason: "unknown_status", status: safeJson(status) },
+        at,
+      );
       return;
     }
-    const type = typeof i.rateLimitType === "string" && i.rateLimitType !== "" ? i.rateLimitType : UNKNOWN_LIMIT_TYPE;
+    // `TEXT_FALLBACK_TYPE` is the tracker's own name: an event never writes (or extends) that row.
+    const type =
+      typeof i.rateLimitType === "string" && i.rateLimitType !== "" && i.rateLimitType !== TEXT_FALLBACK_TYPE
+        ? i.rateLimitType
+        : UNKNOWN_LIMIT_TYPE;
     const utilization = typeof i.utilization === "number" && Number.isFinite(i.utilization) ? i.utilization : null;
     // Untyped (observed live, absent from sdk.d.ts): stored verbatim, never read.
     const unifiedWindowsJson = i.unifiedWindows === undefined ? null : safeJson(i.unifiedWindows);
@@ -245,22 +292,40 @@ export class CapTracker {
     // expired, and admission would admit on a capped account. Unknown reset.
     if (status === "rejected" && resetsAt !== null && resetsAt <= at) resetsAt = null;
     let resetSource: string | null = resetsAt === null ? null : "event";
-    const existing = this.#row(account, type);
+    const existing = this.#row(key, type);
     // The row is an unexpired park now (`resets_at` null counts as unexpired, as in `activeParks`).
-    const parked =
-      existing !== undefined &&
-      existing.status === "rejected" &&
-      (existing.resets_at === null || existing.resets_at > at);
+    const parked = isUnexpiredPark(existing, at);
+
+    if (status === "rejected" && !parked) {
+      // The same hit a text fallback already parked (AC2): one park, not two.
+      // Only a re-check guess (`reset_source` `recheck`, the tracker's own
+      // record) is ever replaced; a `text_fallback` row holding a known
+      // window (one an older kernel stored from an event) is a park like any
+      // other and is never shortened.
+      const fallback = this.#row(key, TEXT_FALLBACK_TYPE);
+      if (isUnexpiredPark(fallback, at) && fallback.reset_source === "recheck") {
+        this.#mergeIntoTextFallback(owner, type, fallback, { info, resetsAt, utilization, unifiedWindowsJson }, ref, at);
+        return;
+      }
+    }
 
     if (parked && status !== "rejected") {
       // Fail closed (AC4): an `allowed`/`allowed_warning` never clears or
       // shortens an unexpired park. Utilization is refreshed; the park stands.
-      this.#updateReadings(account, type, utilization, unifiedWindowsJson, at);
+      this.#updateReadings(key, type, utilization, unifiedWindowsJson, at);
       appendEvent(
         this.#store,
         "cap_allowed_while_parked",
         ref,
-        { account, rate_limit_type: type, status, resets_at: existing.resets_at, event_resets_at: resetsAt, utilization },
+        {
+          account: label,
+          provider: key,
+          rate_limit_type: type,
+          status,
+          resets_at: existing.resets_at,
+          event_resets_at: resetsAt,
+          utilization,
+        },
         at,
       );
       return;
@@ -284,11 +349,11 @@ export class CapTracker {
         resetSource = "recheck";
       }
     }
-    this.#upsert(account, type, { status, resetsAt, resetSource, utilization, unifiedWindowsJson }, at);
+    this.#upsert(key, type, { status, resetsAt, resetSource, utilization, unifiedWindowsJson }, at);
 
     // Once per window: a new park, or one a later known reset extended.
     if (status === "rejected" && resetsAt !== null && (!parked || extended) && existing?.notified_resets_at !== resetsAt) {
-      this.#setColumn(account, type, "notified_resets_at", resetsAt);
+      this.#setColumn(key, type, "notified_resets_at", resetsAt);
       // Q6: the live `rejected` shape has never been seen, so its full payload is logged on first sight.
       const known = resetSource === "event";
       appendEvent(
@@ -296,7 +361,8 @@ export class CapTracker {
         "cap_rejected",
         ref,
         {
-          account,
+          account: label,
+          provider: key,
           rate_limit_type: type,
           resets_at: resetsAt,
           reset_source: resetSource,
@@ -308,24 +374,100 @@ export class CapTracker {
       appendNotify(
         this.#store,
         this.#auth,
-        account,
+        label,
         ref,
         { reason: "cap_reached", rate_limit_type: type, resets_at: known ? resetsAt : null, ...(known ? {} : { recheck_at: resetsAt }) },
         at,
       );
-      scheduleWakeupOnce(this.#store, `${known ? "cap_reset" : "cap_recheck"}:${account}`, resetsAt, at);
+      // Supersedes the earlier pending wake-up of this type (an extended park's).
+      scheduleCapWakeup(this.#store, { kind: known ? "cap_reset" : "cap_recheck", key, type, dueAt: resetsAt }, at);
     } else if (status === "allowed_warning") {
       const window = resetsAt ?? "unknown";
       if (existing?.warned_resets_at !== window) {
-        this.#setColumn(account, type, "warned_resets_at", window);
-        appendEvent(this.#store, "cap_warning", ref, { account, rate_limit_type: type, resets_at: resetsAt, utilization }, at);
+        this.#setColumn(key, type, "warned_resets_at", window);
+        appendEvent(
+          this.#store,
+          "cap_warning",
+          ref,
+          { account: label, provider: key, rate_limit_type: type, resets_at: resetsAt, utilization },
+          at,
+        );
       }
     }
   }
 
-  #transient(account: string, ref: EventRef, at: string): void {
+  /**
+   * A `rejected` event of `type` while an unexpired `text_fallback` park
+   * stands (AC2). Known reset: the typed row replaces the text-fallback row,
+   * even when its reset is earlier than the re-check time (owner decision
+   * 2026-10-05: the re-check time is a guess, never a window; the one
+   * exception to "an unexpired park only ever extends", and only ever for a
+   * `text_fallback` re-check); one notify only when the known reset is later;
+   * the re-check wake-up is superseded by one `cap_reset` wake-up. Unknown
+   * reset: the text-fallback park stands as it is (no row, notify or
+   * wake-up). One event either way.
+   */
+  #mergeIntoTextFallback(
+    owner: CapOwner,
+    type: string,
+    fallback: CapRow,
+    event: { info: unknown; resetsAt: string | null; utilization: number | null; unifiedWindowsJson: string | null },
+    ref: EventRef,
+    at: string,
+  ): void {
+    const { key, label } = owner;
+    const replaced = { rate_limit_type: TEXT_FALLBACK_TYPE, resets_at: fallback.resets_at, reset_source: fallback.reset_source };
+    const resetsAt = event.resetsAt;
+    if (resetsAt === null) {
+      appendEvent(
+        this.#store,
+        "cap_park_merged",
+        ref,
+        { account: label, provider: key, rate_limit_type: type, kept: replaced, rate_limit_info: jsonCopy(event.info) },
+        at,
+      );
+      return;
+    }
+    this.#upsert(
+      key,
+      type,
+      { status: "rejected", resetsAt, resetSource: "event", utilization: event.utilization, unifiedWindowsJson: event.unifiedWindowsJson },
+      at,
+    );
+    this.#setColumn(key, type, "notified_resets_at", resetsAt);
+    this.#store.prepare("DELETE FROM cap_state WHERE account = ? AND rate_limit_type = ?").run(key, TEXT_FALLBACK_TYPE);
+    // `resets_at` null on the fallback reads as latest: a known reset is never later than it.
+    const later = fallback.resets_at !== null && resetsAt > fallback.resets_at;
+    appendEvent(
+      this.#store,
+      "cap_park_superseded",
+      ref,
+      {
+        account: label,
+        provider: key,
+        rate_limit_type: type,
+        resets_at: resetsAt,
+        reset_source: "event",
+        replaced,
+        notified: later,
+        rate_limit_info: jsonCopy(event.info),
+      },
+      at,
+    );
+    if (later) {
+      appendNotify(this.#store, this.#auth, label, ref, { reason: "cap_reached", rate_limit_type: type, resets_at: resetsAt }, at);
+    }
+    scheduleCapWakeup(
+      this.#store,
+      { kind: "cap_reset", key, type, dueAt: resetsAt, alsoSupersede: [TEXT_FALLBACK_TYPE] },
+      at,
+    );
+  }
+
+  #transient(owner: CapOwner, ref: EventRef, at: string): void {
+    const { key, label } = owner;
     // Part of a hit already parked (the `rejected` event came first): not transient.
-    if (activeParks(this.#store, account, at).length > 0) return;
+    if (activeParks(this.#store, key, at).length > 0) return;
     const previous =
       ref.sessionId === null
         ? 0
@@ -334,19 +476,25 @@ export class CapTracker {
             .pluck()
             .get(ref.sessionId) ?? 0);
     const attempt = previous + 1;
-    appendEvent(this.#store, "cap_transient", ref, { account, error: "rate_limit", attempt, backoffMs: transientBackoffMs(attempt) }, at);
+    appendEvent(
+      this.#store,
+      "cap_transient",
+      ref,
+      { account: label, provider: key, error: "rate_limit", attempt, backoffMs: transientBackoffMs(attempt) },
+      at,
+    );
   }
 
-  #row(account: string, type: string): CapRow | undefined {
+  #row(key: string, type: string): CapRow | undefined {
     return this.#store
       .prepare<[string, string], CapRow>(
         "SELECT status, resets_at, reset_source, notified_resets_at, warned_resets_at FROM cap_state WHERE account = ? AND rate_limit_type = ?",
       )
-      .get(account, type);
+      .get(key, type);
   }
 
   #upsert(
-    account: string,
+    key: string,
     type: string,
     v: { status: string; resetsAt: string | null; resetSource: string | null; utilization: number | null; unifiedWindowsJson: string | null },
     at: string,
@@ -360,21 +508,26 @@ export class CapTracker {
            unified_windows_json = excluded.unified_windows_json, reset_source = excluded.reset_source,
            updated_at = excluded.updated_at`,
       )
-      .run(account, type, v.status, v.resetsAt, v.utilization, v.unifiedWindowsJson, v.resetSource, at);
+      .run(key, type, v.status, v.resetsAt, v.utilization, v.unifiedWindowsJson, v.resetSource, at);
   }
 
   /** Refresh a row's utilization and `unifiedWindows` only: status and reset untouched. */
-  #updateReadings(account: string, type: string, utilization: number | null, unifiedWindowsJson: string | null, at: string): void {
+  #updateReadings(key: string, type: string, utilization: number | null, unifiedWindowsJson: string | null, at: string): void {
     this.#store
       .prepare(
         "UPDATE cap_state SET utilization = ?, unified_windows_json = ?, updated_at = ? WHERE account = ? AND rate_limit_type = ?",
       )
-      .run(utilization, unifiedWindowsJson, at, account, type);
+      .run(utilization, unifiedWindowsJson, at, key, type);
   }
 
-  #setColumn(account: string, type: string, column: "notified_resets_at" | "warned_resets_at", value: string): void {
+  #setColumn(key: string, type: string, column: "notified_resets_at" | "warned_resets_at", value: string): void {
     this.#store
       .prepare(`UPDATE cap_state SET ${column} = ? WHERE account = ? AND rate_limit_type = ?`)
-      .run(value, account, type);
+      .run(value, key, type);
   }
+}
+
+/** Whether `row` is an unexpired park at `at` (`resets_at` null counts as unexpired, as in `activeParks`). */
+function isUnexpiredPark(row: CapRow | undefined, at: string): row is CapRow {
+  return row !== undefined && row.status === "rejected" && (row.resets_at === null || row.resets_at > at);
 }

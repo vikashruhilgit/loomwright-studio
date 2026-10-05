@@ -18,5 +18,5 @@ export type {
   StepOptions,
   TickResult,
 } from "./types.js";
-export { MAX_WAKEUP_REASON, fireDueWakeups, scheduleWakeup } from "./wakeups.js";
+export { MAX_WAKEUP_REASON, RESERVED_WAKEUP_REASON_PREFIXES, fireDueWakeups, isReservedWakeupReason, scheduleWakeup } from "./wakeups.js";
 export type { FiredWakeup, ScheduleWakeupParams, ScheduledWakeup } from "./wakeups.js";

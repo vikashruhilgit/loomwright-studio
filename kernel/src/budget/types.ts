@@ -107,10 +107,11 @@ export interface BudgetOptions {
   readonly store: Store;
   /**
    * The kernel's one auth provider, the same one the session manager launches
-   * with. Its live `account` is the only account identity the budget uses:
-   * the cap tracker parks under it and admission checks it (a request naming
-   * another account fails closed). The session row's `auth_account` is never
-   * read.
+   * with. Its stable `id` is the only identity the budget keys on: the cap
+   * tracker parks under it and admission checks it (a request naming another
+   * provider fails closed). Its live `account` label is display text only
+   * (event and notify payloads), so a relabel never moves a park. The session
+   * row's `auth_account` is never read.
    */
   readonly authProvider: BudgetAuth;
   /** Defaults to `DEFAULT_BUDGET_CONFIG`. Validated at construction. */

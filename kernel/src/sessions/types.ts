@@ -149,14 +149,17 @@ export type AdmissionKind = "start" | "resume";
 /**
  * What the manager asks its `admission` check before a start or resume. Built
  * from the start params (or, for a resume, the stored row) and the auth
- * provider's account: there is one provider, so a refusal never makes the
- * kernel try another (no rotation, D28).
+ * provider: there is one provider, so a refusal never makes the kernel try
+ * another (no rotation, D28).
  */
 export interface AdmissionRequest {
   readonly kind: AdmissionKind;
   /** Nullable because `sessions.agent` is: a resume of a row with no agent. */
   readonly agent: string | null;
+  /** The auth provider's live account label: display text only, never a key. */
   readonly account: string;
+  /** The auth provider's stable `id`: the key admission checks parks on. */
+  readonly provider: string;
   readonly task: number | null;
 }
 

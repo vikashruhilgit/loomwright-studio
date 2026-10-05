@@ -116,7 +116,13 @@ export interface StatusBody {
   };
   readonly tokens_today: { readonly day: string; readonly agents: readonly { readonly agent: string | null; readonly counted_tokens: number }[] };
   readonly cap_state: readonly {
+    /**
+     * Display text: the live account label of the provider whose `id` is the
+     * stored key, else the stored key itself (a row no provider claims).
+     */
     readonly account: string;
+    /** The stored key: the auth provider id the park belongs to (additive; an older CLI ignores it). */
+    readonly provider: string;
     readonly limits: readonly {
       readonly rate_limit_type: string;
       readonly status: string;
@@ -197,12 +203,17 @@ export function readStatus(
       { account: string; rate_limit_type: string; status: string; resets_at: string | null; utilization: number | null; reset_source: string | null }
     >("SELECT account, rate_limit_type, status, resets_at, utilization, reset_source FROM cap_state ORDER BY account, rate_limit_type")
     .all();
-  const capByAccount = new Map<string, StatusBody["cap_state"][number]["limits"][number][]>();
-  for (const { account, ...limit } of capRows) {
-    const list = capByAccount.get(account) ?? [];
+  // `cap_state.account` holds the provider id (migration 9); the label is looked up for display.
+  const capByKey = new Map<string, StatusBody["cap_state"][number]["limits"][number][]>();
+  for (const { account: key, ...limit } of capRows) {
+    const list = capByKey.get(key) ?? [];
     list.push(limit);
-    capByAccount.set(account, list);
+    capByKey.set(key, list);
   }
+  const labelOf = (key: string): string => {
+    const provider = authProviders.find((p) => p.id === key);
+    return (provider === undefined ? null : safeAccount(provider)) ?? key;
+  };
   return {
     kernel: {
       version: kernelVersion(),
@@ -247,7 +258,7 @@ export function readStatus(
         )
         .all(day),
     },
-    cap_state: [...capByAccount].map(([account, limits]) => ({ account, limits })),
+    cap_state: [...capByKey].map(([key, limits]) => ({ account: labelOf(key), provider: key, limits })),
   };
 }
 

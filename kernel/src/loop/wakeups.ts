@@ -9,6 +9,21 @@ import { enqueueEvent } from "./queue.js";
 /** Cap for a wake-up's free-text reason. */
 export const MAX_WAKEUP_REASON = 500;
 
+/**
+ * Reason prefixes only the kernel writes: the budget module's cap wake-ups
+ * (`cap_reset:<provider id>:<type>`, `cap_recheck:…`, and the legacy untyped
+ * `cap_reset:<id>` / `cap_recheck:<id>`). The budget supersedes pending rows
+ * by reason, and a handler reads a `cap_*` reason as "ask admission again",
+ * so a session-chosen reason in this namespace could be dropped as
+ * `superseded` or pass for a budget wake-up. `scheduleWakeup` refuses them.
+ */
+export const RESERVED_WAKEUP_REASON_PREFIXES: readonly string[] = ["cap_reset:", "cap_recheck:"];
+
+/** Whether `reason` lies in the kernel-reserved namespace (`RESERVED_WAKEUP_REASON_PREFIXES`). */
+export function isReservedWakeupReason(reason: string): boolean {
+  return RESERVED_WAKEUP_REASON_PREFIXES.some((prefix) => reason.startsWith(prefix));
+}
+
 export interface ScheduleWakeupParams {
   /** An ISO-8601 instant with `Z` or an offset. A past time is allowed and fires on the next tick. */
   readonly at: string;
@@ -27,13 +42,21 @@ export interface ScheduledWakeup {
 /**
  * Insert a `pending` wake-up and a `wakeup_scheduled` audit row (one
  * transaction). Throws a `TypeError` for an unparseable `at`, an empty or
- * over-long reason, or a task that does not exist, before any write.
+ * over-long reason, a reason in the kernel-reserved namespace (`cap_reset:…`,
+ * `cap_recheck:…`: `RESERVED_WAKEUP_REASON_PREFIXES`), or a task that does
+ * not exist, before any write. This is the path for session-chosen reasons;
+ * the budget module writes its cap wake-ups through its own insert.
  */
 export function scheduleWakeup(store: Store, params: ScheduleWakeupParams, now: Date = new Date()): ScheduledWakeup {
   const dueAt = normalizeInstant(params.at);
   if (dueAt === undefined) throw new TypeError(`wake-up time ${JSON.stringify(params.at)} is not an ISO-8601 instant with a time zone`);
   if (typeof params.reason !== "string" || params.reason.trim() === "" || params.reason.length > MAX_WAKEUP_REASON) {
     throw new TypeError(`a wake-up reason must be 1-${MAX_WAKEUP_REASON} characters`);
+  }
+  if (isReservedWakeupReason(params.reason)) {
+    throw new TypeError(
+      `a wake-up reason may not start with ${RESERVED_WAKEUP_REASON_PREFIXES.map((p) => JSON.stringify(p)).join(" or ")}: reserved for the kernel's cap wake-ups`,
+    );
   }
   const taskId = params.taskId ?? null;
   const at = now.toISOString();
@@ -70,8 +93,16 @@ interface DueRow {
  * only when that changed the row, queues a `wakeup` event (payload
  * `{ wakeupId, reason, dueAt }`, `sourceRef: 'wakeup:<id>'`). The status guard
  * plus the unique `source_ref` make each fire exactly once, even across a
- * crash or two racing ticks. Rows the budget module writes (`cap_reset:*`,
- * `cap_recheck:*`) fire the same way; what a wake-up means is the handler's.
+ * crash or two racing ticks. Only `pending` rows fire: a `superseded` row
+ * (the budget module replaced it with a later cap wake-up) never does.
+ *
+ * Rows the budget module writes (reason `cap_reset:…` / `cap_recheck:…`, a
+ * namespace `scheduleWakeup` refuses, so only the kernel writes it) fire the
+ * same way. A `cap_*` wake-up means "ask admission again", never "the
+ * park ended": a handler must not release parked work on it, because the park
+ * ends only when admission admits (a park can be extended, or another limit
+ * type can still be in force, after the wake-up was scheduled). Beyond that,
+ * what a wake-up means is the handler's.
  */
 export function fireDueWakeups(store: Store, now: Date = new Date()): FiredWakeup[] {
   const at = now.toISOString();
