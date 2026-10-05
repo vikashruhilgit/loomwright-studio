@@ -2,7 +2,7 @@
 // that came due while the kernel was down. "Restart" = close the Store and
 // open a new one on the same data dir.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { scheduleWakeupOnce } from "../src/budget/internal.js";
+import { scheduleCapWakeup } from "../src/budget/internal.js";
 import { EventLoop, fireDueWakeups, scheduleWakeup } from "../src/loop/index.js";
 import type { QueuedEvent } from "../src/loop/index.js";
 import type { Store } from "../src/store/index.js";
@@ -104,10 +104,29 @@ describe("fireDueWakeups", () => {
 
   it("a cap_reset row written by the budget module fires the same way", () => {
     const at = env.now().toISOString();
-    env.store.transaction(() => scheduleWakeupOnce(env.store, "cap_reset:owner@example.test", at, at));
+    env.store.transaction(() => scheduleCapWakeup(env.store, { kind: "cap_reset", key: "stub-provider", type: "five_hour", dueAt: at }, at));
     const fired = fireDueWakeups(env.store, env.now());
     expect(fired).toHaveLength(1);
-    expect(queued(env.store)[0]).toMatchObject({ kind: "wakeup", payload: { reason: "cap_reset:owner@example.test", dueAt: at } });
+    expect(queued(env.store)[0]).toMatchObject({ kind: "wakeup", payload: { reason: "cap_reset:stub-provider:five_hour", dueAt: at } });
+  });
+
+  it("a superseded cap wake-up never fires; a repeat of the same reason and due time is not duplicated", () => {
+    const at = env.now().toISOString();
+    const earlier = new Date(env.now().getTime() - 60_000).toISOString();
+    const wakeup = { kind: "cap_reset", key: "stub-provider", type: "five_hour" } as const;
+    env.store.transaction(() => {
+      expect(scheduleCapWakeup(env.store, { ...wakeup, dueAt: earlier }, at)).toBe(true);
+      expect(scheduleCapWakeup(env.store, { ...wakeup, dueAt: at }, at)).toBe(true);
+      expect(scheduleCapWakeup(env.store, { ...wakeup, dueAt: at }, at)).toBe(false);
+    });
+    expect(env.store.prepare("SELECT due_at, status FROM wakeups ORDER BY id").all()).toEqual([
+      { due_at: earlier, status: "superseded" },
+      { due_at: at, status: "pending" },
+    ]);
+    const fired = fireDueWakeups(env.store, env.now());
+    expect(fired).toHaveLength(1);
+    expect(queued(env.store).map((q) => q.payload)).toEqual([{ wakeupId: 2, reason: "cap_reset:stub-provider:five_hour", dueAt: at }]);
+    expect(env.store.prepare("SELECT status FROM wakeups WHERE id = 1").pluck().get()).toBe("superseded");
   });
 
   it("fires due wake-ups oldest first", () => {

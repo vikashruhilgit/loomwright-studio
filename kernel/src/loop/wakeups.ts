@@ -70,8 +70,15 @@ interface DueRow {
  * only when that changed the row, queues a `wakeup` event (payload
  * `{ wakeupId, reason, dueAt }`, `sourceRef: 'wakeup:<id>'`). The status guard
  * plus the unique `source_ref` make each fire exactly once, even across a
- * crash or two racing ticks. Rows the budget module writes (`cap_reset:*`,
- * `cap_recheck:*`) fire the same way; what a wake-up means is the handler's.
+ * crash or two racing ticks. Only `pending` rows fire: a `superseded` row
+ * (the budget module replaced it with a later cap wake-up) never does.
+ *
+ * Rows the budget module writes (reason `cap_reset:…` / `cap_recheck:…`) fire
+ * the same way. A `cap_*` wake-up means "ask admission again", never "the
+ * park ended": a handler must not release parked work on it, because the park
+ * ends only when admission admits (a park can be extended, or another limit
+ * type can still be in force, after the wake-up was scheduled). Beyond that,
+ * what a wake-up means is the handler's.
  */
 export function fireDueWakeups(store: Store, now: Date = new Date()): FiredWakeup[] {
   const at = now.toISOString();

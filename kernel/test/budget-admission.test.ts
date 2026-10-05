@@ -57,7 +57,7 @@ function tracker(): CapTracker {
 }
 
 function request(overrides: Partial<AdmissionRequest> = {}): AdmissionRequest {
-  return { kind: "start", agent: "wright", account: AUTH.account, task: null, ...overrides };
+  return { kind: "start", agent: "wright", account: AUTH.account, provider: AUTH.id, task: null, ...overrides };
 }
 
 function spend(agent: string, counted: number, day = "2026-09-29"): void {
@@ -77,7 +77,15 @@ describe("BudgetAdmission: agent daily limit (AC2)", () => {
     expect(refused).toHaveLength(1);
     expect(refused[0]).toMatchObject({
       task_id: 7,
-      payload: { kind: "start", agent: "wright", account: AUTH.account, task: 7, reason: "agent_daily_limit", retry_at: "2026-09-30T00:00:00.000Z" },
+      payload: {
+        kind: "start",
+        agent: "wright",
+        account: AUTH.account,
+        provider: AUTH.id,
+        task: 7,
+        reason: "agent_daily_limit",
+        retry_at: "2026-09-30T00:00:00.000Z",
+      },
     });
   });
 
@@ -134,11 +142,19 @@ describe("BudgetAdmission: cap park (AC4, AC6, AC8)", () => {
       expect(gate.check(request({ kind }))).toEqual({ admitted: false, reason: "cap_parked", retryAt: FIVE_HOUR_RESET });
       expect(gate.check(request({ kind, agent: null }))).toMatchObject({ admitted: false, reason: "cap_parked" });
     }
-    // Another account (another provider's budget) is not parked.
-    const other = { id: AUTH.id, account: "second@example.test" };
-    expect(new BudgetAdmission({ store: env.store, authProvider: other }, env.deps).check(request({ account: other.account }))).toEqual({ admitted: true });
-    // A request naming an account other than the budget's provider's fails closed: one source of account identity.
-    expect(() => gate.check(request({ account: "second@example.test" }))).toThrow(/fail closed/);
+    // The same provider under another label is still parked: parks key on the id, never the label (F06-1).
+    const relabelled = { id: AUTH.id, account: "second@example.test" };
+    expect(new BudgetAdmission({ store: env.store, authProvider: relabelled }, env.deps).check(request({ account: relabelled.account }))).toEqual({
+      admitted: false,
+      reason: "cap_parked",
+      retryAt: FIVE_HOUR_RESET,
+    });
+    // Another provider (another id, even under the same label) is not parked.
+    const other = { id: "other-provider", account: AUTH.account };
+    expect(new BudgetAdmission({ store: env.store, authProvider: other }, env.deps).check(request({ provider: other.id }))).toEqual({ admitted: true });
+    // A request naming a provider other than the budget's fails closed; the label is never compared.
+    expect(() => gate.check(request({ provider: "other-provider" }))).toThrow(/fail closed/);
+    expect(gate.check(request({ account: "anything@example.test" }))).toMatchObject({ admitted: false, reason: "cap_parked" });
     // The refusal adds no notify: the cap's went out once, when it parked.
     expect(events(env.store, "notify")).toHaveLength(1);
     expect(events(env.store, "admission_refused")[0]?.payload).toMatchObject({ reason: "cap_parked", rate_limit_types: ["five_hour"] });
@@ -166,10 +182,11 @@ describe("BudgetAdmission: cap park (AC4, AC6, AC8)", () => {
 
   it("a park with an unknown reset (null resets_at) refuses with retryAt null; the latest reset wins otherwise", () => {
     const insert = env.store.prepare("INSERT INTO cap_state (account, rate_limit_type, status, resets_at) VALUES (?, ?, 'rejected', ?)");
-    insert.run(AUTH.account, "five_hour", "2026-09-29T13:00:00.000Z");
-    insert.run(AUTH.account, "seven_day", "2026-10-01T00:00:00.000Z");
+    // Parks are keyed on the provider id (migration 9).
+    insert.run(AUTH.id, "five_hour", "2026-09-29T13:00:00.000Z");
+    insert.run(AUTH.id, "seven_day", "2026-10-01T00:00:00.000Z");
     expect(admission().check(request())).toEqual({ admitted: false, reason: "cap_parked", retryAt: "2026-10-01T00:00:00.000Z" });
-    insert.run(AUTH.account, "overage", null);
+    insert.run(AUTH.id, "overage", null);
     expect(admission().check(request())).toEqual({ admitted: false, reason: "cap_parked", retryAt: null });
   });
 
@@ -368,7 +385,7 @@ describe("SessionManager admission hook", () => {
     expect(err).toMatchObject({ code: "admission_refused", reason: "cap_parked", retryAt: FIVE_HOUR_RESET });
     expect(counts).toEqual({ query: 0, spawn: 0, buildEnv: 0, groupProbe: 0 });
     expect(env.store.prepare("SELECT count(*) FROM sessions").pluck().get()).toBe(0);
-    expect(requests).toEqual([{ kind: "start", agent: "wright", account: AUTH.account, task: null }]);
+    expect(requests).toEqual([{ kind: "start", agent: "wright", account: AUTH.account, provider: AUTH.id, task: null }]);
   });
 
   it("validates params before asking admission", async () => {
@@ -397,7 +414,7 @@ describe("SessionManager admission hook", () => {
       expect(manager.getSession(id)).toEqual(before.row);
       expect(sessionEvents(id)).toEqual(before.events);
       expect(counts).toEqual({ query: 0, spawn: 0, buildEnv: 0, groupProbe: 0 });
-      expect(requests).toEqual([{ kind: "resume", agent: "wright", account: AUTH.account, task: null }]);
+      expect(requests).toEqual([{ kind: "resume", agent: "wright", account: AUTH.account, provider: AUTH.id, task: null }]);
     });
   }
 
@@ -491,8 +508,8 @@ describe("SessionManager admission hook", () => {
     expect(counts.query).toBe(1);
     expect(counts.spawn).toBe(1);
     expect(requests).toEqual([
-      { kind: "resume", agent: "wright", account: AUTH.account, task: null },
-      { kind: "resume", agent: "wright", account: AUTH.account, task: null },
+      { kind: "resume", agent: "wright", account: AUTH.account, provider: AUTH.id, task: null },
+      { kind: "resume", agent: "wright", account: AUTH.account, provider: AUTH.id, task: null },
     ]);
     const recheck = new Date(env.clock.at.getTime() + CAP_RECHECK_MS).toISOString();
     expect(manager.getSession(id)?.status).toBe("interrupted");
@@ -516,7 +533,7 @@ describe("SessionManager admission hook", () => {
     expect(counts.query).toBe(2);
   });
 
-  it("a row whose auth_account label differs from the provider's account: the cap hit parks the provider's account, the retry and a new start are refused", async () => {
+  it("a row whose auth_account label differs from the provider's account: the cap hit parks the provider's id, the retry and a new start are refused", async () => {
     const budget = new Budget({ store: env.store, authProvider: AUTH }, env.deps);
     const { manager, counts, pluginDir } = managerHarness({ admission: budget.check, onMessage: budget.observe, script: CAP_HIT_SCRIPT });
     const id = interruptedRow(pluginDir, "stub-provider");
@@ -524,7 +541,7 @@ describe("SessionManager admission hook", () => {
     const handle = await manager.resumeSession(id, RESUME);
     expect(await handle.done).toBe("interrupted");
     expect(counts.query).toBe(1);
-    expect(env.store.prepare("SELECT DISTINCT account FROM cap_state").pluck().all()).toEqual([AUTH.account]);
+    expect(env.store.prepare("SELECT DISTINCT account FROM cap_state").pluck().all()).toEqual([AUTH.id]);
     expect(statusEvents(id).at(-1)).toMatchObject({ to: "interrupted", reason: "admission_refused", refusal: "cap_parked", attempt: 2 });
 
     const err = await manager.startSession(startParams()).catch((e: unknown) => e);

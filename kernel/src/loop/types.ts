@@ -94,6 +94,12 @@ export interface EventContext {
  * (when an outer `ctx.runStepAsync` step it passed through is left
  * `failed:error` instead, the event is `failed`, not parked); throw anything
  * else ⇒ `failed`, one `notify`, and the loop moves on to the next event.
+ *
+ * A `wakeup` event whose reason is `cap_reset:…` / `cap_recheck:…` (scheduled
+ * by the budget module) means "ask admission again", never "the park ended":
+ * a handler must not release parked work on it. The park ends only when
+ * admission admits; a handler that wants to retry parked work asks admission
+ * (directly or by starting the session) and treats a refusal as still parked.
  */
 export type EventHandler = (ctx: EventContext) => void | Promise<void>;
 

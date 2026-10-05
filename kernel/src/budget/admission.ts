@@ -21,13 +21,16 @@ export function apiKeyFallbackActive(config: BudgetConfig): boolean {
  * resume (its `admission` option). Fails closed: a store error propagates and
  * the manager refuses the request with it.
  *
- * - Cap (AC4, AC6): any unexpired park of the account (`cap_state` `rejected`
- *   with `resets_at` null or ahead) refuses starts and resumes alike;
- *   `retryAt` is the latest `resets_at`, or `null` when one is unknown. The
- *   account is the auth provider's live `account`, the one source the cap
- *   tracker parks under too. A request naming another account means the
- *   manager and the budget hold different providers (a wiring error): the
- *   check throws, so the request fails closed.
+ * - Cap (AC4, AC6): any unexpired park of the provider (`cap_state`
+ *   `rejected` with `resets_at` null or ahead) refuses starts and resumes
+ *   alike; `retryAt` is the latest `resets_at`, or `null` when one is unknown.
+ *   Parks are keyed on the auth provider's stable `id`, the key the cap
+ *   tracker parks under too; its account label is display text and is never
+ *   compared, so a relabel neither lifts a park nor refuses a request. A
+ *   request naming another provider means the manager and the budget hold
+ *   different providers (a wiring error): the check throws, so the request
+ *   fails closed. The park ends only when this check admits; a `cap_*`
+ *   wake-up firing is never a release.
  * - Agent limit (AC2): an agent whose counted tokens for today reached its
  *   configured limit is refused new sessions (`start` only: a resume
  *   continues existing work); `retryAt` is the start of the next budget day.
@@ -36,8 +39,8 @@ export function apiKeyFallbackActive(config: BudgetConfig): boolean {
  *   the agent limit (the cap above still refuses it), so the limit does not
  *   bound the tokens a resumed session spends the same day.
  *
- * Every refusal appends one `admission_refused` event (agent, account, task,
- * reason, retryAt): the durable "parked" record the event loop (item 07)
+ * Every refusal appends one `admission_refused` event (agent, account label,
+ * provider id, task, reason, retryAt): the durable "parked" record the event loop (item 07)
  * re-dispatches from. Its `notify` is shared with the meter's and the cap
  * tracker's: once per agent-day, once per cap window. There is one auth
  * provider, so a refusal never selects another (no rotation, AC8) and never
@@ -62,14 +65,14 @@ export class BudgetAdmission {
     return this.#store.transaction((): AdmissionDecision => {
       const ref = { sessionId: null, taskId: request.task };
 
-      // One source of account identity: the provider's, as the cap tracker keys parks.
-      const account = this.#auth.account;
-      if (request.account !== account) {
+      // One key: the provider's stable id, as the cap tracker keys parks. The label is never compared.
+      const provider = this.#auth.id;
+      if (request.provider !== provider) {
         throw new Error(
-          `admission asked for account ${request.account} but the budget's auth provider is on ${account}: refusing (fail closed)`,
+          `admission asked for provider ${request.provider} but the budget's auth provider is ${provider}: refusing (fail closed)`,
         );
       }
-      const parks = activeParks(this.#store, account, at);
+      const parks = activeParks(this.#store, provider, at);
       if (parks.length > 0) {
         const retryAt = parks.some((p) => p.resets_at === null)
           ? null
@@ -115,6 +118,7 @@ export class BudgetAdmission {
         kind: request.kind,
         agent: request.agent,
         account: request.account,
+        provider: request.provider,
         task: request.task,
         reason,
         retry_at: retryAt,

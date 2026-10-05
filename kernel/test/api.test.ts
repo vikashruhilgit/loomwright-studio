@@ -199,6 +199,8 @@ describe("GET /status (AC2)", () => {
     ins("INSERT INTO wakeups (id, due_at, reason, status) VALUES (1, '2026-10-02T12:00:00.000Z', 'later', 'pending')");
     ins("INSERT INTO wakeups (id, due_at, reason, status) VALUES (2, '2026-10-02T11:00:00.000Z', 'sooner', 'pending')");
     ins("INSERT INTO wakeups (id, due_at, reason, status) VALUES (3, '2026-10-02T09:00:00.000Z', 'fired', 'fired')");
+    // A cap wake-up a later one replaced: never counted or listed as pending.
+    ins("INSERT INTO wakeups (id, due_at, reason, status) VALUES (4, '2026-10-02T10:00:00.000Z', 'cap_reset:subscription-token:five_hour', 'superseded')");
 
     const budget = "INSERT INTO budget (day, agent, model, input_tokens, output_tokens, cache_write_tokens, cache_read_tokens) VALUES (?, ?, 'm', ?, ?, ?, ?)";
     ins(budget, "2026-10-02", "wright", 100, 50, 10, 100_000); // 160 counted; cache reads never count (D26)
@@ -207,8 +209,9 @@ describe("GET /status (AC2)", () => {
     ins(budget, "2026-10-01", "wright", 9_000, 999, 0, 0); // yesterday: excluded
 
     const cap = "INSERT INTO cap_state (account, rate_limit_type, status, resets_at, utilization, reset_source) VALUES (?, ?, ?, ?, ?, ?)";
-    ins(cap, "owner@example.test", "seven_day", "allowed", "2026-10-05T00:00:00.000Z", 0.4, "event");
-    ins(cap, "owner@example.test", "five_hour", "rejected", "2026-10-02T12:00:00.000Z", 1, "event");
+    // Keyed on the provider id (migration 9); a key no provider claims is shown raw.
+    ins(cap, "subscription-token", "seven_day", "allowed", "2026-10-05T00:00:00.000Z", 0.4, "event");
+    ins(cap, "subscription-token", "five_hour", "rejected", "2026-10-02T12:00:00.000Z", 1, "event");
     ins(cap, "other@example.test", "five_hour", "allowed", null, null, "recheck");
   }
 
@@ -266,9 +269,16 @@ describe("GET /status (AC2)", () => {
         ],
       },
       cap_state: [
-        { account: "other@example.test", limits: [{ rate_limit_type: "five_hour", status: "allowed", resets_at: null, utilization: null, reset_source: "recheck" }] },
+        // No provider has this id: the stored key is the display text.
         {
+          account: "other@example.test",
+          provider: "other@example.test",
+          limits: [{ rate_limit_type: "five_hour", status: "allowed", resets_at: null, utilization: null, reset_source: "recheck" }],
+        },
+        {
+          // The live label of the provider whose id is the key.
           account: "owner@example.test",
+          provider: "subscription-token",
           limits: [
             { rate_limit_type: "five_hour", status: "rejected", resets_at: "2026-10-02T12:00:00.000Z", utilization: 1, reset_source: "event" },
             { rate_limit_type: "seven_day", status: "allowed", resets_at: "2026-10-05T00:00:00.000Z", utilization: 0.4, reset_source: "event" },
