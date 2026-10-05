@@ -41,3 +41,9 @@ Phase 1 items 01–09 (merged). Independent of H01–H05.
 ## Source
 
 Dismissed review findings from run `automate-2026-09-30-211858`, re-verified 2026-10-03: `proposed/…--07-event-loop-and-kernel-tools-24803c--dismissed-summary.md` entries 1–6.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-05T04:31:30Z
+- **Brief:** .supervisor/jobs/done/2026-10-05-h06-event-loop-correctness.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/33
