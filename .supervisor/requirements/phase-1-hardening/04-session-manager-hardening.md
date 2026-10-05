@@ -56,3 +56,9 @@ Phase 1 items 01–09 (merged). Independent of H01–H03.
 ## Source
 
 Dismissed review findings from run `automate-2026-09-30-211858`, re-verified 2026-10-03: `proposed/…--05-session-manager-5d41c0--dismissed-summary.md` entries 1, 2, 3, 5, 7, 8 and `proposed/…--08-loopback-api-and-cli-8e3771--dismissed-summary.md` entries 1–2.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-04T17:13:27Z
+- **Brief:** .supervisor/jobs/done/2026-10-04-h04-session-manager-hardening.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/29
