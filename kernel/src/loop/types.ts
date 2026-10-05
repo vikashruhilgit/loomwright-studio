@@ -37,7 +37,10 @@ export interface QueuedEvent {
 export interface StepOptions {
   /**
    * The step's effect is idempotent, so a `started` row left by a crash may be
-   * run again. Without it such a row becomes `failed:interrupted`.
+   * run again. Without it such a row becomes `failed:interrupted`. Stored on
+   * the row by the call that first starts the step (the first claim) and only
+   * then: the stored value decides every later replay, whatever a later call
+   * passes here.
    */
   readonly rerunnable?: boolean;
   /**
@@ -56,7 +59,27 @@ export interface StepOptions {
   readonly now?: () => Date;
 }
 
-/** What a handler receives: the event, and work steps keyed under `event:<id>:`. */
+/**
+ * What a handler receives: the event, and work steps keyed under `event:<id>:`.
+ *
+ * A step returns its result in JSON form, on the first call as on a repeat
+ * (`JSON.parse(JSON.stringify(value))`: a `Date` is its ISO string both times,
+ * an `undefined` property is dropped, a class instance is a plain object), so
+ * a redelivery sees exactly what the first delivery saw. `T` is not narrowed
+ * to JSON-safe types: return JSON-shaped values.
+ *
+ * A step left `started` by a crash and not stored re-runnable throws
+ * `WorkStepInterruptedError` after committing `failed:interrupted` with one
+ * `notify` (`work_step_interrupted`, the step's key). A handler that rethrows
+ * it fails the event with exactly that one `notify`: the loop's
+ * `event_failed` row carries the step's key (`step`) and the queue id, and
+ * the loop adds no notify of its own. A step run inside the handler's own
+ * `store.transaction` (or inside another `ctx.runStep`) nests as a savepoint:
+ * the outer rollback undoes its interrupted mark and its notify, so the row
+ * stays `started` and the loop sends the one `notify` instead; the
+ * `event_failed` row (step key and the interrupted error) is then the only
+ * record of the interrupted step.
+ */
 export interface EventContext {
   readonly event: QueuedEvent;
   readonly store: Store;
@@ -94,6 +117,12 @@ export interface EventContext {
  * (when an outer `ctx.runStepAsync` step it passed through is left
  * `failed:error` instead, the event is `failed`, not parked); throw anything
  * else ⇒ `failed`, one `notify`, and the loop moves on to the next event.
+ *
+ * One notify per failure holds for an interrupted step only when the handler
+ * rethrows the step's own `WorkStepInterruptedError` (see `EventContext`): the
+ * step already notified, and the loop links `event_failed` to it by the step
+ * key. A handler that wraps it in a different error reports its own failure,
+ * which gets the loop's notify too (two notifies, two facts).
  *
  * A `wakeup` event whose reason is `cap_reset:…` / `cap_recheck:…` (scheduled
  * by the budget module) means "ask admission again", never "the park ended":

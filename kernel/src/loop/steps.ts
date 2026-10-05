@@ -11,10 +11,20 @@
 //   most once only through the key plus this check: `runStepAsync` commits
 //   `started` before the effect and `done` after it, so a crash between the
 //   two leaves `started`, and the next call cannot know whether the effect
-//   happened. It runs the work again only when the caller declared the step
-//   re-runnable (the effect is idempotent, like rewriting the same file);
-//   otherwise the step becomes `failed:interrupted` and the user is notified.
+//   happened. It runs the work again only when the step was declared
+//   re-runnable (the effect is idempotent, like rewriting the same file) by
+//   the call that first started it: that value is stored on the row and
+//   decides every replay, whatever a later caller passes; otherwise the step
+//   becomes `failed:interrupted` and the user is notified (one `notify`).
 //   Nothing makes a non-idempotent external effect exactly once.
+// - A step's result is its JSON form, on the first call as on every repeat:
+//   both return `JSON.parse(JSON.stringify(value))` of what `fn` returned, so
+//   a `Date` comes back as its ISO string, an `undefined` property is dropped
+//   and a class instance becomes a plain object, every time. `T` is not
+//   narrowed to JSON-safe types; return JSON-shaped values. A `fn` returning
+//   `undefined` (or anything JSON cannot represent at the top level) stores
+//   NULL and returns `undefined` both times. A result `JSON.stringify` cannot
+//   serialize (a `BigInt`) throws, and the step is not recorded `done`.
 // - A rejection that the caller's `opts.noEffect` predicate accepts is the
 //   caller's statement that `fn` did nothing (for example an admission refusal
 //   thrown before any side effect). The claim is then released instead of
@@ -125,12 +135,14 @@ function insertStarted(store: Store, key: string, rerunnable: boolean, at: strin
     .run(key, rerunnable ? 1 : 0, at, at);
 }
 
-function markDone(store: Store, key: string, result: unknown, at: string): void {
+/** Record `done` with `result`'s JSON; returns the stored result as a repeat will read it (see the header). */
+function markDone(store: Store, key: string, result: unknown, at: string): unknown {
   // JSON.stringify(undefined) is undefined: a step with no result stores NULL.
-  const json = JSON.stringify(result) as string | undefined;
+  const json = (JSON.stringify(result) as string | undefined) ?? null;
   store
     .prepare("UPDATE work_steps SET status = 'done', result_json = ?, failure_reason = NULL, updated_at = ? WHERE key = ?")
-    .run(json ?? null, at, key);
+    .run(json, at, key);
+  return parseResult(json);
 }
 
 function markFailed(store: Store, key: string, reason: WorkStepFailureReason, at: string): void {
@@ -164,8 +176,11 @@ type Claim =
 /**
  * Read `key` and decide (inside the caller's transaction): `done` ⇒ the
  * stored result; `failed` ⇒ throw `WorkStepFailedError`; `started` (a crash
- * leftover: no call for it is in flight here) ⇒ run again when re-runnable,
- * else mark it interrupted; absent ⇒ insert `started` and run.
+ * leftover: no call for it is in flight here) ⇒ run again when the row was
+ * stored re-runnable, else mark it interrupted; absent ⇒ insert `started`
+ * with `rerunnable` and run. `rerunnable` is used only for that insert: the
+ * value stored when the step was first started decides a replay, never this
+ * caller's option, and is never rewritten.
  */
 function claim(store: Store, key: string, rerunnable: boolean, at: string): Claim {
   const row = readRow(store, key);
@@ -175,11 +190,10 @@ function claim(store: Store, key: string, rerunnable: boolean, at: string): Clai
   }
   if (row.status === "done") return { kind: "done", value: parseResult(row.result_json) };
   if (row.status === "failed") throw new WorkStepFailedError(key, row.failure_reason);
-  if (!rerunnable) {
+  if (row.rerunnable !== 1) {
     markInterrupted(store, key, at);
     return { kind: "interrupted" };
   }
-  store.prepare("UPDATE work_steps SET rerunnable = 1, updated_at = ? WHERE key = ?").run(at, key);
   return { kind: "run", fresh: false };
 }
 
@@ -235,11 +249,15 @@ function isNoEffect(opts: StepOptions, err: unknown): boolean {
  * makes) and the `done` write with `fn`'s JSON result, so its SQLite effects
  * happen exactly once (see the header).
  *
+ * - absent: runs `fn` and returns its result as stored (its JSON form, see
+ *   the header); `opts.rerunnable` is stored on the row.
  * - `done`: returns the stored result without calling `fn`.
  * - `failed`: throws `WorkStepFailedError` without calling `fn`.
- * - `started` (left by a crashed `runStepAsync`): runs `fn` again when
- *   `opts.rerunnable`; otherwise marks it `failed:interrupted`, appends one
- *   `notify` and throws `WorkStepInterruptedError`.
+ * - `started` (left by a crashed `runStepAsync`): runs `fn` again when the
+ *   row was stored re-runnable (by the call that first started it;
+ *   `opts.rerunnable` here does not change it); otherwise marks it
+ *   `failed:interrupted`, appends one `notify` and throws
+ *   `WorkStepInterruptedError`.
  * - `fn` throws: the transaction rolls back (no row remains) and the error
  *   propagates; nothing was committed, so a later call runs `fn` again
  *   (`opts.noEffect` is not needed here: the rollback already releases).
@@ -260,8 +278,7 @@ export function runStep<T>(store: Store, key: string, fn: () => T, opts: StepOpt
       if (c.kind === "done") return { interrupted: false, value: c.value };
       const value = fn();
       if (isThenable(value)) throw new TypeError(`work step ${key}: runStep needs a synchronous fn; use runStepAsync`);
-      markDone(store, key, value, now().toISOString());
-      return { interrupted: false, value };
+      return { interrupted: false, value: markDone(store, key, value, now().toISOString()) };
     });
     // Thrown after the commit, so the interrupted mark and its notify persist.
     if (outcome.interrupted) throw new WorkStepInterruptedError(key);
@@ -276,14 +293,16 @@ export function runStep<T>(store: Store, key: string, fn: () => T, opts: StepOpt
 /**
  * Run work with external effects (a file, a session stop) at most once per
  * `key`: commit `started` (with `opts.rerunnable`), `await fn()`, then commit
- * `done` with its JSON result. See the header for the limits of this.
+ * `done` with its JSON result and resolve to that stored result (its JSON
+ * form, as a repeat returns it). See the header for the limits of this.
  *
  * - `done`: resolves to the stored result without calling `fn`.
  * - `failed`: rejects with `WorkStepFailedError` without calling `fn`.
  * - `started` with no call for `key` in flight in this process (a crash
- *   leftover): runs `fn` again when `opts.rerunnable`; otherwise marks it
- *   `failed:interrupted`, appends one `notify` and rejects with
- *   `WorkStepInterruptedError`.
+ *   leftover): runs `fn` again when the row was stored re-runnable (by the
+ *   call that first started it; `opts.rerunnable` here does not change it);
+ *   otherwise marks it `failed:interrupted`, appends one `notify` and rejects
+ *   with `WorkStepInterruptedError`.
  * - `fn` rejects with an error `opts.noEffect` accepts (the caller's word
  *   that `fn` did nothing) and that `fn` raised itself, not passed on from an
  *   inner step (`workStepOrigin` is unset): the claim is released (see
@@ -320,8 +339,7 @@ export function runStepAsync<T>(store: Store, key: string, fn: () => Promise<T>,
       }
       throw err;
     }
-    store.transaction(() => markDone(store, key, value, now().toISOString()));
-    return value;
+    return store.transaction(() => markDone(store, key, value, now().toISOString())) as T;
   };
 
   // Every rejection leaves tagged with this key (an inner step's tag wins), so
