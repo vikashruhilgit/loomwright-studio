@@ -20,6 +20,10 @@ import type { Store } from "../store/store.js";
  *   be alive (the reaper could not prove it gone or foreign, nor kill it).
  *   Never resumed while that holds: every `reapOrphans` re-examines it, and a
  *   resume re-checks the group first. Non-terminal.
+ * - `abandoned`: an `orphaned` row whose latest orphaning reason was
+ *   `leader_unverified`, released by the owner (`abandonSession`). Terminal:
+ *   the kernel never resumes it, re-examines it or signals its group (it
+ *   cannot tell that group from a foreign one).
  */
 export type SessionStatus =
   | "starting"
@@ -29,10 +33,11 @@ export type SessionStatus =
   | "failed:auth"
   | "stopped"
   | "interrupted"
-  | "orphaned";
+  | "orphaned"
+  | "abandoned";
 
-/** The statuses a session never leaves (`interrupted` and `orphaned` are left only by a reap or an explicit resume). */
-export const TERMINAL_STATUSES: readonly SessionStatus[] = ["completed", "failed", "failed:auth", "stopped"];
+/** The statuses a session never leaves (`interrupted` and `orphaned` are left only by a reap, an explicit resume or, for `orphaned`, an abandon). */
+export const TERMINAL_STATUSES: readonly SessionStatus[] = ["completed", "failed", "failed:auth", "stopped", "abandoned"];
 
 export function isTerminalStatus(status: string): boolean {
   return (TERMINAL_STATUSES as readonly string[]).includes(status);
@@ -47,7 +52,14 @@ export function isTerminalStatus(status: string): boolean {
  *   `allowedBashPrefixes` only.
  * - `allowedBashPrefixes`: command prefixes matched on a word boundary (`echo`
  *   allows `echo hi`, never `echoX`), and only for commands that contain no
- *   shell control or substitution character (see `policy.ts`).
+ *   shell control or substitution character (see `policy.ts`). That stops
+ *   chaining (`echo hi; rm x`), NOT a program that runs other programs:
+ *   allowing one grants arbitrary execution through its own arguments, for
+ *   example `find` (`-exec`), `xargs`, `env`, `git` (aliases, `-c`, hooks),
+ *   `npx`, `npm` (scripts), `sed` (`e`/`w`), `awk` (`system()`), `sh` and
+ *   `bash`. The kernel adds no blocklist: which programs a session may run
+ *   is the user's policy (invariant 1), and allowing one of these is a
+ *   decision to allow anything it can run.
  *
  * Held in kernel memory, frozen at session start; the brain has no path to it
  * (invariant 3). Not persisted in phase 1: a resume passes it again.
@@ -117,6 +129,7 @@ export type SessionErrorCode =
   | "not_resumable"
   | "not_found"
   | "not_live"
+  | "not_abandonable"
   | "admission_refused";
 
 /** A session request the kernel refused. `code` is stable; the message is for humans. */
@@ -187,8 +200,8 @@ export interface SessionRow {
   readonly loomwright_path: string | null;
   /**
    * The group leader's start time (ISO-8601, 1 s resolution) read with `ps`
-   * just after `pgid` was written; `null` when it could not be read (or the
-   * kernel died before it was). The reaper kills a live group only when its
+   * after `pgid` was written (asynchronously: it lands a moment later); `null`
+   * when it could not be read (or the kernel died before it was). The reaper kills a live group only when its
    * leader still has this start time (migration 4); with `null` a live group
    * is left alone and the row `orphaned`.
    */
@@ -253,6 +266,13 @@ export interface SessionManagerDeps {
   readonly isGroupAlive?: (pgid: number) => boolean;
   /** Defaults to `readGroupLeader`: throws when `ps` failed, never reports that as `absent`. */
   readonly readGroupLeader?: (pgid: number) => GroupLeader;
+  /**
+   * The leader probe at spawn, which must not block the event loop. Defaults
+   * to `readGroupLeaderAsync`, or, when only `readGroupLeader` is injected, to
+   * that function wrapped in a promise (so a fake never reaches the real `ps`).
+   * Rejects when `ps` failed, never resolves that as `absent`.
+   */
+  readonly readGroupLeaderAsync?: (pgid: number) => Promise<GroupLeader>;
   /** Resume backoff. Defaults to a real timer. */
   readonly sleep?: (ms: number) => Promise<void>;
   /** Bounded waits, the kill-until-gone rounds and the auth kill timer. Defaults to `setTimeout`/`clearTimeout`. */

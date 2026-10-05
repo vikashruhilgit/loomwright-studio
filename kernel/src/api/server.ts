@@ -1,6 +1,7 @@
 // The kernel's loopback HTTP API (AC1-AC3): 127.0.0.1 only, every request
 // authenticated with the Keychain bearer token before any routing. Mechanism
-// only (invariant 1): it reports state and pulls the kill switch, nothing more.
+// only (invariant 1): it reports state, pulls the kill switch and carries the
+// owner's abandon of an unverifiable orphan, nothing more.
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -8,7 +9,10 @@ import type { AddressInfo } from "node:net";
 import type { AuthHealth, AuthProvider } from "../auth/types.js";
 import { localDay } from "../budget/index.js";
 import type { EventLoop } from "../loop/loop.js";
-import type { SessionManager, StopAllOutcome } from "../sessions/manager.js";
+import type { AbandonVia, SessionManager, StopAllOutcome } from "../sessions/manager.js";
+import { orphanedSessions } from "../sessions/orphans.js";
+import type { OrphanedSession } from "../sessions/orphans.js";
+import { SessionError } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { kernelVersion } from "../version.js";
 import { engageKillSwitch, killSwitchState, releaseKillSwitch } from "./kill-switch.js";
@@ -19,9 +23,19 @@ export const API_HOST = "127.0.0.1";
 /** `/status` lists at most this many pending queue rows and wake-ups (the counts are complete). */
 export const STATUS_LIST_LIMIT = 50;
 
+/** `POST /sessions/<id>/abandon`; the id is checked separately (a safe positive integer). */
+const ABANDON_PATH = /^\/sessions\/(\d+)\/abandon$/;
+
+/**
+ * The header the `studio` CLI sends with `POST /sessions/<id>/abandon`
+ * (value `cli`), recorded as the abandon's `via`; anything else is `api`.
+ * The request is authenticated either way: this only labels the caller.
+ */
+export const CLIENT_HEADER = "x-studio-client";
+
 export interface ApiServerOptions {
   readonly store: Store;
-  readonly sessions: Pick<SessionManager, "stopAll">;
+  readonly sessions: Pick<SessionManager, "stopAll" | "abandonSession">;
   readonly loop: Pick<EventLoop, "start" | "stop">;
   /** Reported in `/status` (id, account, health); never their secrets. */
   readonly authProviders: readonly AuthProvider[];
@@ -78,6 +92,14 @@ export interface StatusBody {
     readonly pgid: number | null;
     readonly kill_incomplete_at: string;
   }[];
+  /**
+   * Every `orphaned` row (its group may still be the session's and alive),
+   * with its latest orphaning reason from the kernel's own events. A
+   * `leader_unverified` one stays orphaned until the owner abandons it
+   * (`POST /sessions/<id>/abandon`, `studio session abandon <id>`). Additive:
+   * an older CLI ignores it.
+   */
+  readonly orphaned: readonly OrphanedSession[];
   readonly queue: {
     readonly pending: number;
     readonly events: readonly {
@@ -199,6 +221,7 @@ export function readStatus(
         "SELECT id, agent, status, pgid, kill_incomplete_at FROM sessions WHERE kill_incomplete_at IS NOT NULL ORDER BY id",
       )
       .all(),
+    orphaned: orphanedSessions(store),
     queue: {
       pending: count(store, "SELECT count(*) FROM event_queue WHERE status = 'pending'"),
       events: store
@@ -247,8 +270,16 @@ export function readStatus(
  *   `{engaged: true, sessions: [...]}`. Repeating it re-runs every step.
  * - `POST /resume` ⇒ when engaged, `kill_switch_released` and `loop.start()`;
  *   otherwise nothing is appended. Answers `{engaged: false}`.
+ * - `POST /sessions/<id>/abandon` ⇒ `sessions.abandonSession(id, {via})`, with
+ *   `via` `cli` when the `CLIENT_HEADER` says so, else `api`. A path that is
+ *   not exactly that shape is an unknown path (404); an id that is not a safe
+ *   positive integer ⇒ `400 {"error":"invalid_id"}`; no such row ⇒
+ *   `404 {"error":"not_found"}`; a refusal ⇒ `409 {"error":"<code>"}` (the
+ *   stable `SessionError` code); success ⇒ `{id, status: "abandoned"}`. An
+ *   abandon whose client has disconnected by the time its turn comes is
+ *   skipped: nothing is written, no event is appended, nothing is answered.
  *
- * The two POSTs run one at a time, in arrival order.
+ * The POSTs run one at a time, in arrival order.
  */
 export async function startApiServer(options: ApiServerOptions, deps: ApiServerDeps = {}): Promise<ApiServer> {
   if (options.token === "") throw new RangeError("the API token must not be empty");
@@ -286,6 +317,27 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
       return { engaged: false };
     });
 
+  // `clientGone` is read right before the abandon, with no await in between:
+  // an abandon queued behind a slow POST whose client gave up (the CLI's
+  // timeout) never runs, so the owner's "did not answer" is never followed by
+  // a permanent abandon he was not told about. `undefined` ⇒ skipped.
+  const abandon = (
+    id: number,
+    via: AbandonVia,
+    clientGone: () => boolean,
+  ): Promise<{ readonly status: number; readonly body: unknown } | undefined> =>
+    serialized(async () => {
+      if (clientGone()) return undefined;
+      try {
+        return { status: 200, body: { id, status: sessions.abandonSession(id, { via }) } };
+      } catch (err) {
+        // Only the stable code: the message is for the kernel's own records.
+        if (!(err instanceof SessionError)) throw err;
+        if (err.code === "not_found") return { status: 404, body: { error: "not_found" } };
+        return { status: 409, body: { error: err.code } };
+      }
+    });
+
   const routes: Record<string, { readonly method: string; readonly run: () => Promise<unknown> }> = {
     "/status": {
       method: "GET",
@@ -302,6 +354,25 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
       return;
     }
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
+    const abandonMatch = ABANDON_PATH.exec(path);
+    if (abandonMatch !== null) {
+      if (req.method !== "POST") {
+        send(res, 405, { error: "method_not_allowed" }, { Allow: "POST" });
+        return;
+      }
+      const id = Number(abandonMatch[1]);
+      if (!Number.isSafeInteger(id) || id < 1) {
+        send(res, 400, { error: "invalid_id" });
+        return;
+      }
+      const via: AbandonVia = req.headers[CLIENT_HEADER] === "cli" ? "cli" : "api";
+      // Not `req.destroyed` or the request's 'close': both fire once the
+      // (ignored) body is read, with the client still waiting. The socket and
+      // the response only close when the connection does.
+      const answer = await abandon(id, via, () => req.socket.destroyed || res.closed);
+      if (answer !== undefined) send(res, answer.status, answer.body);
+      return;
+    }
     const route = Object.hasOwn(routes, path) ? routes[path] : undefined;
     if (route === undefined) {
       send(res, 404, { error: "not_found" });

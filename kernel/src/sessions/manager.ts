@@ -15,6 +15,7 @@ import { AuthProviderError } from "../auth/types.js";
 import type { AuthProvider, BaseEnv, ChildEnv } from "../auth/types.js";
 import type { Store } from "../store/store.js";
 import { resolveLoomwrightPath } from "./loomwright-path.js";
+import { latestOrphanReason } from "./orphans.js";
 import { bashCommandOf, decideToolUse, freezePolicy } from "./policy.js";
 import {
   KILL_GROUP_DEADLINE_MS,
@@ -26,6 +27,7 @@ import {
   killProcessGroup,
   leaderBasename,
   readGroupLeader,
+  readGroupLeaderAsync,
   spawnInNewProcessGroup,
 } from "./spawner.js";
 import {
@@ -116,10 +118,18 @@ export interface ReapResult {
  * What `stopAll` did for one session: the status the stop returned, or
  * `stop_failed` when the stop call itself rejected. `stop_failed` labels the
  * call, never a session status: the row keeps whatever the manager recorded.
+ *
+ * `ended_on_its_own: true` (present only when true) marks a session that had
+ * already ended before the stop (its stream had ended, or it was already
+ * `failed:auth`) AND whose group the stop confirmed gone: the stop stopped
+ * nothing that was running. Never on a `failed` with reason `kill_incomplete`.
  */
 export type StopAllOutcome =
-  | { readonly id: number; readonly status: SessionStatus }
+  | { readonly id: number; readonly status: SessionStatus; readonly ended_on_its_own?: true }
   | { readonly id: number; readonly status: "stop_failed"; readonly error: string };
+
+/** Who released an `orphaned` row with `abandonSession`: the CLI (through the API) or another API caller. */
+export type AbandonVia = "cli" | "api";
 
 /**
  * Why a session is being stopped. `stop` (a `stopSession`, the kill switch)
@@ -368,6 +378,7 @@ export class SessionManager {
   readonly #killGroup: (pgid: number, signal: NodeJS.Signals) => boolean;
   readonly #isGroupAlive: (pgid: number) => boolean;
   readonly #readLeader: (pgid: number) => GroupLeader;
+  readonly #readLeaderAsync: (pgid: number) => Promise<GroupLeader>;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #schedule: (fn: () => void, ms: number) => CancelTimer;
   readonly #now: () => Date;
@@ -375,6 +386,8 @@ export class SessionManager {
 
   readonly #live = new Map<number, LiveSession>();
   #reaping: Promise<ReapResult[]> | undefined;
+  /** The orphan row `#reapAll` is examining or killing right now (reaps are sequential), for `abandonSession`. */
+  #reapingRow: number | undefined;
 
   constructor(options: SessionManagerOptions, deps: SessionManagerDeps = {}) {
     this.#store = options.store;
@@ -394,6 +407,10 @@ export class SessionManager {
     this.#killGroup = deps.killGroup ?? killProcessGroup;
     this.#isGroupAlive = deps.isGroupAlive ?? isProcessGroupAlive;
     this.#readLeader = deps.readGroupLeader ?? readGroupLeader;
+    const injectedLeader = deps.readGroupLeader;
+    // A test that injects only the sync probe never reaches the real `ps`.
+    this.#readLeaderAsync =
+      deps.readGroupLeaderAsync ?? (injectedLeader === undefined ? readGroupLeaderAsync : async (pgid) => injectedLeader(pgid));
     this.#sleep = deps.sleep ?? defaultSleep;
     this.#schedule = deps.schedule ?? defaultSchedule;
     this.#now = deps.now ?? (() => new Date());
@@ -515,11 +532,16 @@ export class SessionManager {
    * (`kill_incomplete`), a stream that had already ended keeps its outcome, and
    * a stop already in flight is shared. A session that already ended
    * `failed:auth` but whose group is still waiting for its auth kill timer gets
-   * that kill now (the timer would die with a stopping kernel), then is
-   * settled as the timer would settle it. Its outcome is `failed:auth` only
-   * once the group is confirmed gone; otherwise it is `stop_failed`
+   * that kill now and its pending auth timer is cancelled (the kernel keeps
+   * running in kill-switch mode, so the timer would otherwise fire later),
+   * then is settled as the timer would settle it. Its outcome is `failed:auth`
+   * only once the group is confirmed gone; otherwise it is `stop_failed`
    * (`kill_incomplete`): the row keeps `failed:auth` with `kill_incomplete_at`
    * set, so every later `reapOrphans` retries the kill.
+   *
+   * An outcome carries `ended_on_its_own: true` when the session had already
+   * ended before the stop (its stream had ended, or it was already
+   * `failed:auth`) and the stop confirmed its group gone.
    */
   async stopAll(options: { readonly mode?: "stop" | "shutdown" } = {}): Promise<StopAllOutcome[]> {
     const mode = options.mode ?? "stop";
@@ -527,12 +549,13 @@ export class SessionManager {
     const results = await Promise.allSettled(ids.map((id) => this.#stopForAll(id, mode)));
     return results.map((result, i): StopAllOutcome => {
       const id = ids[i] as number;
-      if (result.status === "fulfilled") return { id, status: result.value };
-      return { id, status: "stop_failed", error: errorMessage(result.reason) };
+      if (result.status === "rejected") return { id, status: "stop_failed", error: errorMessage(result.reason) };
+      const { status, endedOnItsOwn } = result.value;
+      return endedOnItsOwn ? { id, status, ended_on_its_own: true } : { id, status };
     });
   }
 
-  async #stopForAll(id: number, mode: StopIntent): Promise<SessionStatus> {
+  async #stopForAll(id: number, mode: StopIntent): Promise<{ readonly status: SessionStatus; readonly endedOnItsOwn: boolean }> {
     const live = this.#live.get(id);
     if (live !== undefined && isTerminalStatus(live.status) && live.stopPromise === undefined) {
       // Ended (e.g. `failed:auth`) but not settled: its group may still be alive.
@@ -540,6 +563,9 @@ export class SessionManager {
       if (attempt !== undefined) {
         await this.#killAttemptGroup(live, attempt);
         this.#closeQuery(attempt);
+        // The kernel keeps running after a kill switch: the timer's own kill is
+        // no longer needed, and it must not run after this stop returned.
+        attempt.authTimer?.();
         // As the auth kill timer does: settle after the kill whatever it found,
         // so this live entry no longer hides the flagged row from `reapOrphans`.
         this.#settle(live);
@@ -547,9 +573,13 @@ export class SessionManager {
         // (`kill_incomplete_at`); never report the session as ended.
         if (groupMayBeAlive(attempt)) throw new Error("kill_incomplete");
       }
-      return live.status;
+      return { status: live.status, endedOnItsOwn: true };
     }
-    return mode === "stop" ? this.stopSession(id) : this.#stopLive(id, "shutdown");
+    const status = await (mode === "stop" ? this.stopSession(id) : this.#stopLive(id, "shutdown"));
+    // A verdict is set only when the stream ended before any stop began
+    // (`#conclude`); a group the stop could not confirm gone never counts.
+    const endedOnItsOwn = live !== undefined && live.verdict !== undefined && !groupMayBeAlive(live.attempt);
+    return { status, endedOnItsOwn };
   }
 
   /** `stopSession`'s entry guards, for either intent. */
@@ -679,6 +709,54 @@ export class SessionManager {
   }
 
   /**
+   * The owner's explicit release of an `orphaned` row the kernel cannot
+   * verify (AC4 of H04): its latest orphaning reason (the newest
+   * `session_status` to `orphaned`, `session_reap_deferred` or
+   * `session_resume_refused` event) is `leader_unverified`, so the reaper will
+   * neither kill its group nor let it go. The row becomes `abandoned`
+   * (terminal) with a `session_status` event recording `by: "owner"` and
+   * `via`, and `kill_incomplete_at` cleared in the same transaction, so no
+   * later reap or kill retry ever signals that group. The kernel never
+   * signals or probes the group here: it may not be the session's.
+   *
+   * Refuses with `SessionError`, writing nothing: `invalid_params` (a bad id
+   * or `via`), `not_found`, and `not_abandonable` for a row this manager is
+   * running, a row that is not `orphaned`, or an `orphaned` row whose latest
+   * orphaning reason is anything else (`reap_error`, `kill_incomplete`, ...),
+   * and for a row a reap is examining at that moment (its kill may be in
+   * flight and would keep signalling the group after the abandon): retry once
+   * the reap is done.
+   */
+  abandonSession(id: number, options: { readonly via: AbandonVia }): "abandoned" {
+    if (!Number.isSafeInteger(id) || id < 1) throw new SessionError("invalid_params", "id must be a positive integer");
+    if (options.via !== "cli" && options.via !== "api") throw new SessionError("invalid_params", "via must be cli or api");
+    if (this.#live.has(id)) throw new SessionError("not_abandonable", `session ${id} is running in this kernel`);
+    if (this.#reapingRow === id) throw new SessionError("not_abandonable", `session ${id} is being reaped; retry once the reap is done`);
+    const row = this.getSession(id);
+    if (row === undefined) throw new SessionError("not_found", `no session ${id}`);
+    if (row.status !== "orphaned") {
+      throw new SessionError("not_abandonable", `session ${id} is ${row.status}; only an orphaned row can be abandoned`);
+    }
+    const reason = latestOrphanReason(this.#store, id);
+    if (reason !== "leader_unverified") {
+      throw new SessionError(
+        "not_abandonable",
+        `session ${id} is orphaned for ${String(reason)}; only a leader_unverified row can be abandoned`,
+      );
+    }
+    const moved = this.#markRow(id, "orphaned", "abandoned", {
+      reason: "abandoned_by_owner",
+      by: "owner",
+      via: options.via,
+      pgid: row.pgid,
+      orphaned_reason: reason,
+    });
+    // A reap or resume moved it between the read and the write.
+    if (!moved) throw new SessionError("not_abandonable", `session ${id} changed status while being abandoned`);
+    return "abandoned";
+  }
+
+  /**
    * Reap process groups left by a previous kernel (AC5). For every row in
    * `starting`/`running`/`orphaned` that this manager is not running:
    *
@@ -704,7 +782,12 @@ export class SessionManager {
    * foreign. `orphaned` means the group may still be the session's and alive:
    * it is never resumed while that holds, and every reap re-examines it (a
    * re-examination that changes nothing appends `session_reap_deferred`
-   * instead of a second status event). The loop always continues. Each
+   * instead of a second status event) until its group is gone or the owner
+   * abandons it (`abandonSession`, `abandoned` is never re-examined). Each
+   * row is re-read just before it is examined and skipped, unprobed and
+   * unsignalled, when it no longer has the status and pgid the reap read
+   * (an abandon or resume landed while an earlier row's kill was awaited).
+   * The loop always continues. Each
    * marking is one transaction with its `session_status` event, which carries
    * the pgid, and is written only if the row still has the status the reap
    * read. A call made while a reap is running returns that reap. The manager
@@ -735,14 +818,23 @@ export class SessionManager {
     const results: ReapResult[] = [];
     for (const row of rows) {
       if (this.#live.has(row.id)) continue;
+      // The rows were read once, before any await: an abandon (or a resume
+      // that has since ended) may have moved this row while an earlier row's
+      // kill was awaited. Never probe or signal a row that is no longer what
+      // was read.
+      const current = this.getSession(row.id);
+      if (current === undefined || current.status !== row.status || current.pgid !== row.pgid) continue;
       let reason: ReapResult["reason"];
       let error: string | undefined;
+      this.#reapingRow = row.id;
       try {
         reason = await this.#reapOne(row.id, row.pgid, row.leader_started_at);
       } catch (err) {
         // A failed `ps`, or a kill error other than ESRCH/EPERM: nothing proves the group gone.
         reason = "reap_error";
         error = errorMessage(err);
+      } finally {
+        this.#reapingRow = undefined;
       }
       const status: ReapResult["status"] = LEFT_ALIVE.has(reason) ? "orphaned" : "interrupted";
       const payload = { reason, pgid: row.pgid, ...(error === undefined ? {} : { error }) };
@@ -766,7 +858,9 @@ export class SessionManager {
    * orphan, WITHOUT changing the terminal status, and append one
    * `session_kill_retried` event each. The flag is cleared once the group is
    * confirmed gone or proven foreign, so each row is retried only while its
-   * group may still be the session's.
+   * group may still be the session's. Each row is re-read just before its
+   * retry and skipped (no probe, no signal, no event) unless it still has the
+   * status, pgid and flag that were read.
    */
   async #retryTerminalKills(): Promise<void> {
     const placeholders = TERMINAL_STATUSES.map(() => "?").join(", ");
@@ -779,6 +873,19 @@ export class SessionManager {
     for (const row of rows) {
       // A session this manager still runs (e.g. `failed:auth` awaiting its kill) owns its own kill.
       if (this.#live.has(row.id)) continue;
+      // Read once, before any await: a live kill that has since confirmed the
+      // group gone (flag cleared) or a new attempt (new pgid) may have changed
+      // the row while an earlier row's kill was awaited. Retry only what is
+      // still flagged for the group that was read.
+      const current = this.getSession(row.id);
+      if (
+        current === undefined ||
+        current.status !== row.status ||
+        current.pgid !== row.pgid ||
+        current.kill_incomplete_at === null
+      ) {
+        continue;
+      }
       let reason: ReapResult["reason"];
       let error: string | undefined;
       try {
@@ -851,8 +958,9 @@ export class SessionManager {
                   kill_incomplete_at = CASE WHEN ? THEN NULL ELSE kill_incomplete_at END
             WHERE id = ? AND status = ?`,
         )
-        // `interrupted` means the group is gone or proven foreign: no kill is pending.
-        .run(to, at, isTerminalStatus(to) ? 1 : 0, at, to === "interrupted" ? 1 : 0, id, from).changes;
+        // `interrupted` means the group is gone or proven foreign: no kill is
+        // pending. `abandoned`: the kernel never signals that group again.
+        .run(to, at, isTerminalStatus(to) ? 1 : 0, at, to === "interrupted" || to === "abandoned" ? 1 : 0, id, from).changes;
       if (changed !== 1) return false;
       this.#appendStatusEvent(id, from, to, payload, at);
       return true;
@@ -948,14 +1056,11 @@ export class SessionManager {
           .prepare("UPDATE sessions SET pgid = ?, leader_started_at = NULL, kill_incomplete_at = NULL, updated_at = ? WHERE id = ?")
           .run(pgid, this.#nowIso(), live.id);
         // The leader's start time lets a later reaper tell this CLI from an
-        // unrelated process that reuses the pgid. Unreadable ⇒ null, and the
-        // reaper then never kills the group (the row ends `orphaned`).
-        const leaderStartedAt = this.#leaderStartIso(pgid);
-        if (leaderStartedAt !== null) {
-          this.#store
-            .prepare("UPDATE sessions SET leader_started_at = ?, updated_at = ? WHERE id = ?")
-            .run(leaderStartedAt, this.#nowIso(), live.id);
-        }
+        // unrelated process that reuses the pgid. Read without blocking the
+        // event loop and not awaited: it lands a moment later. Unreadable (or
+        // a kernel killed first) ⇒ null, and the reaper then never kills the
+        // group (the row ends `orphaned`, `leader_unverified`).
+        void this.#recordLeaderStart(live.id, pgid);
       },
     });
     attempt.child = child;
@@ -1375,13 +1480,22 @@ export class SessionManager {
     }
   }
 
-  /** The leader's start time as ISO-8601, or `null` when `ps` cannot say. Never throws. */
-  #leaderStartIso(pgid: number): string | null {
+  /**
+   * Write the leader's start time once the async probe resolves, only while
+   * the row still records `pgid` (a later attempt's group is never paired
+   * with this leader). A failed, timed-out or `absent` probe leaves it null.
+   * Never rejects: a store closed meanwhile is swallowed.
+   */
+  async #recordLeaderStart(sessionId: number, pgid: number): Promise<void> {
     try {
-      const leader = this.#readLeader(pgid);
-      return leader.status === "present" ? new Date(leader.startedAtMs).toISOString() : null;
+      const leader = await this.#readLeaderAsync(pgid);
+      if (leader.status !== "present") return;
+      const startedAt = new Date(leader.startedAtMs).toISOString();
+      this.#store
+        .prepare("UPDATE sessions SET leader_started_at = ?, updated_at = ? WHERE id = ? AND pgid = ?")
+        .run(startedAt, this.#nowIso(), sessionId, pgid);
     } catch {
-      return null;
+      // `ps` failed, or the store is gone: the start time stays null.
     }
   }
 

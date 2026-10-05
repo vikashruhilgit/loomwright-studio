@@ -1336,23 +1336,85 @@ describe("process-group kill until gone (fakes)", () => {
     const startedAtMs = Date.parse("2026-10-02T05:30:54.000Z");
     const ok = harness({ deps: { readGroupLeader: () => ({ status: "present", command: "claude", startedAtMs }) } });
     const h1 = await ok.manager.startSession(startParams());
-    expect(row(ok.store, h1.id).leader_started_at).toBe("2026-10-02T05:30:54.000Z");
+    // The probe is asynchronous: it lands a moment after the start.
+    await vi.waitFor(() => expect(row(ok.store, h1.id).leader_started_at).toBe("2026-10-02T05:30:54.000Z"));
     expect(ok.manager.getSession(h1.id)?.leader_started_at).toBe("2026-10-02T05:30:54.000Z");
     await ok.manager.stopSession(h1.id);
   });
 
   it("records a null leader start time when ps cannot read it, still writing the pgid", async () => {
+    let probed!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      probed = resolve;
+    });
     const failing = harness({
       deps: {
-        readGroupLeader: () => {
+        readGroupLeaderAsync: async () => {
+          probed();
           throw new LeaderProbeError("ps failed");
         },
       },
     });
     const h2 = await failing.manager.startSession(startParams());
     expect(row(failing.store, h2.id).pgid).toBe(h2.pgid);
+    // Only once the failed probe has settled does a null prove anything.
+    await settled;
+    await new Promise((r) => setImmediate(r));
     expect(row(failing.store, h2.id).leader_started_at).toBeNull();
     await failing.manager.stopSession(h2.id);
+  });
+
+  it("never blocks the start on the leader probe: other work runs first, and the start time lands when it resolves", async () => {
+    const started: string[] = [];
+    let release!: (leader: GroupLeader) => void;
+    const { store, manager } = harness({
+      deps: {
+        readGroupLeaderAsync: (pgid) => {
+          started.push(String(pgid));
+          return new Promise<GroupLeader>((resolve) => {
+            release = resolve;
+          });
+        },
+      },
+    });
+    const handle = await manager.startSession(startParams());
+    // The pgid is on disk synchronously; the probe was started, not awaited.
+    expect(row(store, handle.id).pgid).toBe(handle.pgid);
+    expect(started).toEqual([String(handle.pgid)]);
+    let ticked = false;
+    await new Promise<void>((resolve) =>
+      setImmediate(() => {
+        ticked = true;
+        resolve();
+      }),
+    );
+    expect(ticked).toBe(true);
+    expect(row(store, handle.id).leader_started_at).toBeNull();
+
+    release({ status: "present", command: "claude", startedAtMs: Date.parse("2026-10-02T05:30:54.000Z") });
+    await vi.waitFor(() => expect(row(store, handle.id).leader_started_at).toBe("2026-10-02T05:30:54.000Z"));
+    await manager.stopSession(handle.id);
+  });
+
+  it("swallows a probe that resolves after the store was closed", async () => {
+    const store = new Store({ dataDir: join(tmp, "data-closed") });
+    let release!: (leader: GroupLeader) => void;
+    const { manager } = harness({
+      store,
+      deps: {
+        readGroupLeaderAsync: () =>
+          new Promise<GroupLeader>((resolve) => {
+            release = resolve;
+          }),
+      },
+    });
+    const handle = await manager.startSession(startParams());
+    await manager.stopSession(handle.id);
+    store.close();
+    // An unhandled rejection here would fail the run.
+    release({ status: "present", command: "claude", startedAtMs: Date.parse("2026-10-02T05:30:54.000Z") });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 0));
   });
 
   /**
@@ -1634,6 +1696,43 @@ describe("resumeSession (AC6)", () => {
     ]);
   });
 
+  it("a late leader probe of an earlier attempt never overwrites a later attempt's start time", async () => {
+    const store = openStore();
+    const pending = new Map<number, (leader: GroupLeader) => void>();
+    const { manager, calls } = harness({
+      store,
+      deps: {
+        readGroupLeaderAsync: (pgid) =>
+          new Promise<GroupLeader>((resolve) => {
+            pending.set(pgid, resolve);
+          }),
+      },
+      script: ({ stream }, n) => {
+        if (n === 1) stream.fail(new Error("resume attempt 1 failed"));
+        else {
+          stream.push(msg.init(SID));
+          stream.push(msg.assistant());
+          stream.push(msg.success());
+        }
+      },
+    });
+    const id = interrupted(store);
+    const handle = await manager.resumeSession(id, resumeParams);
+    expect(await handle.done).toBe("completed");
+    expect(calls).toHaveLength(2);
+    const first = calls[0]?.child.pid as number;
+    const second = calls[1]?.child.pid as number;
+    expect(row(store, id).pgid).toBe(second);
+
+    const at = (iso: string): GroupLeader => ({ status: "present", command: "claude", startedAtMs: Date.parse(iso) });
+    pending.get(second)?.(at("2026-10-02T06:00:00.000Z"));
+    await vi.waitFor(() => expect(row(store, id).leader_started_at).toBe("2026-10-02T06:00:00.000Z"));
+    // The first attempt's probe resolves last: the row no longer records its pgid.
+    pending.get(first)?.(at("2026-10-02T05:00:00.000Z"));
+    await new Promise((r) => setImmediate(r));
+    expect(row(store, id).leader_started_at).toBe("2026-10-02T06:00:00.000Z");
+  });
+
   it("reviewer repro: a spawn-time ps failure, a kernel restart and a reap never let a resume start a second group", async () => {
     const store = openStore();
     // Kernel A: the leader's start time cannot be read at spawn.
@@ -1648,6 +1747,8 @@ describe("resumeSession (AC6)", () => {
     });
     const handle = await a.manager.startSession(startParams());
     await vi.waitFor(() => expect(row(store, handle.id).status).toBe("running"));
+    // The async probe (the wrapped sync one) has settled by now: a microtask, long before the stream's ticks.
+    await new Promise((r) => setImmediate(r));
     expect(row(store, handle.id).leader_started_at).toBeNull();
     // Kernel A dies (its in-memory state is gone; the group lives on). Kernel B boots.
     const pgid = handle.pgid as number;

@@ -16,9 +16,10 @@ export interface ToolDecision {
 /**
  * Shell control and substitution characters: `;` `&` `|` `<` `>` `(` `)` `$`
  * backtick, newline and carriage return. A Bash command containing any of them
- * is denied before prefix matching, which is what makes a prefix allowlist
- * safe enough for phase 1 (`echo hi; rm x` would otherwise match `echo`).
- * A parser-grade Bash gate is out of scope.
+ * is denied before prefix matching, so a prefix cannot be chained into
+ * another command (`echo hi; rm x` would otherwise match `echo`). It does not
+ * limit what an allowed program itself runs (see `decideToolUse`). A
+ * parser-grade Bash gate is out of scope.
  */
 const SHELL_METACHARACTERS = /[;&|<>()$`\n\r]/;
 
@@ -30,6 +31,12 @@ const SHELL_METACHARACTERS = /[;&|<>()$`\n\r]/;
  *   string, contains no shell metacharacter, and equals an allowlisted prefix
  *   or starts with it followed by a space. Empty or whitespace-only prefixes
  *   are ignored (they would match anything starting with a space).
+ * - Allowing a program that runs other programs grants arbitrary execution
+ *   through its arguments, with no metacharacter needed: `find` (`-exec`),
+ *   `xargs`, `env`, `git` (aliases, `-c`, hooks), `npx`, `npm` (scripts),
+ *   `sed` (`e`/`w`), `awk` (`system()`), `sh`, `bash`. The kernel adds no
+ *   blocklist for them: the policy is the user's (invariant 1), and listing
+ *   such a prefix is a decision to allow whatever it can run.
  * - Any other tool is allowed only when its exact name is in `allowedTools`.
  *
  * `toolInput` is untrusted data from the model: it is only inspected here,
