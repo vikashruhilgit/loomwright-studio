@@ -324,7 +324,10 @@ export function formatStatus(status: StatusBody): string {
  * stderr line, 1, nothing sent); `--yes` skips the
  * question; with no TTY on stdin and no `--yes` it refuses at once (usage, 2)
  * instead of waiting for an answer. A 400/404/409 answer ⇒ one stderr line
- * with the API's stable error code, 1.
+ * with the API's stable error code, 1. An abandon that times out or loses its
+ * connection after connecting ⇒ one stderr line saying the session may or may
+ * not be abandoned and to run `studio status`, 1 (only a refused connection
+ * is "not running": nothing was sent).
  * Never throws, never sets `process.exitCode`, never prints the token.
  */
 export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promise<number> {
@@ -406,8 +409,17 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           `studio: kernel daemon did not answer ${method} ${path} within ${timeoutMs / 1_000} s (${HOST}:${port}); the kill switch may already be engaged, run studio status`,
         );
       }
-      if (isTimeout(err)) throw new CliFailure(`studio: kernel daemon did not answer within ${timeoutMs / 1_000} s (${HOST}:${port})`);
       const code = errorCode(err);
+      if (command.kind === "abandon" && (isTimeout(err) || code !== "ECONNREFUSED")) {
+        // Sent, but no answer: the daemon skips an abandon whose client has
+        // gone before its turn, yet one already applied (or applied just as the
+        // wait ran out) stays applied. Only a refused connection sent nothing.
+        const what = isTimeout(err)
+          ? `kernel daemon did not answer ${method} ${path} within ${timeoutMs / 1_000} s (${HOST}:${port})`
+          : `connection to the kernel daemon failed during ${method} ${path} (${HOST}:${port}${code === undefined ? "" : `: ${code}`})`;
+        throw new CliFailure(`studio: ${what}; session ${command.id} may or may not be abandoned, run studio status`);
+      }
+      if (isTimeout(err)) throw new CliFailure(`studio: kernel daemon did not answer within ${timeoutMs / 1_000} s (${HOST}:${port})`);
       throw new CliFailure(`studio: kernel daemon is not running (cannot connect to ${HOST}:${port}${code === undefined ? "" : `: ${code}`})`);
     }
     if (command.kind === "abandon" && (res.status === 400 || res.status === 404 || res.status === 409)) {

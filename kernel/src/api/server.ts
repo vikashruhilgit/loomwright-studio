@@ -275,7 +275,9 @@ export function readStatus(
  *   not exactly that shape is an unknown path (404); an id that is not a safe
  *   positive integer ⇒ `400 {"error":"invalid_id"}`; no such row ⇒
  *   `404 {"error":"not_found"}`; a refusal ⇒ `409 {"error":"<code>"}` (the
- *   stable `SessionError` code); success ⇒ `{id, status: "abandoned"}`.
+ *   stable `SessionError` code); success ⇒ `{id, status: "abandoned"}`. An
+ *   abandon whose client has disconnected by the time its turn comes is
+ *   skipped: nothing is written, no event is appended, nothing is answered.
  *
  * The POSTs run one at a time, in arrival order.
  */
@@ -315,8 +317,17 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
       return { engaged: false };
     });
 
-  const abandon = (id: number, via: AbandonVia): Promise<{ readonly status: number; readonly body: unknown }> =>
+  // `clientGone` is read right before the abandon, with no await in between:
+  // an abandon queued behind a slow POST whose client gave up (the CLI's
+  // timeout) never runs, so the owner's "did not answer" is never followed by
+  // a permanent abandon he was not told about. `undefined` ⇒ skipped.
+  const abandon = (
+    id: number,
+    via: AbandonVia,
+    clientGone: () => boolean,
+  ): Promise<{ readonly status: number; readonly body: unknown } | undefined> =>
     serialized(async () => {
+      if (clientGone()) return undefined;
       try {
         return { status: 200, body: { id, status: sessions.abandonSession(id, { via }) } };
       } catch (err) {
@@ -355,8 +366,11 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
         return;
       }
       const via: AbandonVia = req.headers[CLIENT_HEADER] === "cli" ? "cli" : "api";
-      const answer = await abandon(id, via);
-      send(res, answer.status, answer.body);
+      // Not `req.destroyed` or the request's 'close': both fire once the
+      // (ignored) body is read, with the client still waiting. The socket and
+      // the response only close when the connection does.
+      const answer = await abandon(id, via, () => req.socket.destroyed || res.closed);
+      if (answer !== undefined) send(res, answer.status, answer.body);
       return;
     }
     const route = Object.hasOwn(routes, path) ? routes[path] : undefined;

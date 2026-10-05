@@ -1,7 +1,9 @@
 // The `studio` CLI (item 08, AC4): runCli against a real startApiServer on
 // 127.0.0.1 and an OS-assigned port, with an in-memory Keychain. Never the
 // real Keychain, the real daemon or a model.
+import { subscribe, unsubscribe } from "node:diagnostics_channel";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import type { ServerResponse } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -658,6 +660,87 @@ describe("studio session abandon (H04, AC4)", () => {
     });
     expect(await odd.run("session", "abandon", "7", "--yes")).toBe(1);
     expect(odd.stderr.text()).toBe("studio: session 7 not abandoned: unknown\n");
+  });
+
+  it("a timeout says the session may or may not be abandoned; the daemon then skips the abandon the CLI gave up on", async () => {
+    await server.close();
+    let entered!: () => void;
+    const stopAllEntered = new Promise<void>((resolve) => (entered = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const abandonSession = vi.fn((): "abandoned" => "abandoned");
+    server = await startApiServer(
+      {
+        store,
+        sessions: {
+          stopAll: async () => {
+            entered();
+            await gate;
+            return [];
+          },
+          abandonSession,
+        },
+        loop,
+        authProviders: [stubProvider()],
+        token: TOKEN,
+        port: 0,
+      },
+      { now: () => NOW, pid: 4242 },
+    );
+    writeApiInfo(server.port, 4242);
+    const stopping = cli().run("stop", "--all");
+    await stopAllEntered;
+    try {
+      // The server side of the abandon request (Node's public `http.server.request.start` channel).
+      const arrived = new Promise<ServerResponse>((resolve) => {
+        const onStart = (message: unknown): void => {
+          const m = message as { readonly request: { readonly url?: string }; readonly response: ServerResponse };
+          if (m.request.url !== "/sessions/7/abandon") return;
+          unsubscribe("http.server.request.start", onStart);
+          resolve(m.response);
+        };
+        subscribe("http.server.request.start", onStart);
+      });
+      // Queued behind the stop-all, so it cannot answer within any timeout.
+      const c = cli({ timeoutMs: 50 });
+      expect(await c.run("session", "abandon", "7", "--yes")).toBe(1);
+      oneLine(c.stderr.text());
+      expect(c.stderr.text()).toBe(
+        `studio: kernel daemon did not answer POST /sessions/7/abandon within 0.05 s (127.0.0.1:${server.port}); ` +
+          "session 7 may or may not be abandoned, run studio status\n",
+      );
+      expect(c.stdout.text()).toBe("");
+      const response = await arrived;
+      if (!response.closed) await new Promise<void>((resolve) => response.once("close", () => resolve()));
+
+      release();
+      expect(await stopping).toBe(0);
+      // /resume queues behind the abandon's turn: once it answers, that turn has run.
+      expect(await cli().run("resume")).toBe(0);
+      expect(abandonSession).not.toHaveBeenCalled();
+    } finally {
+      release(); // a failed assertion must not leave close() waiting on the stop-all
+    }
+  });
+
+  it("a connection lost after connecting says the session may or may not be abandoned; a refused one says not running", async () => {
+    const failing = (code: string) =>
+      vi.fn(async () => {
+        throw new TypeError("fetch failed", { cause: Object.assign(new Error(code), { code }) });
+      }) as unknown as typeof fetch;
+    for (const code of ["ECONNRESET", "UND_ERR_SOCKET"]) {
+      const c = cli({ fetch: failing(code) });
+      expect(await c.run("session", "abandon", "7", "--yes"), code).toBe(1);
+      oneLine(c.stderr.text());
+      expect(c.stderr.text(), code).toBe(
+        `studio: connection to the kernel daemon failed during POST /sessions/7/abandon (127.0.0.1:${server.port}: ${code}); ` +
+          "session 7 may or may not be abandoned, run studio status\n",
+      );
+    }
+    const refused = cli({ fetch: failing("ECONNREFUSED") });
+    expect(await refused.run("session", "abandon", "7", "--yes")).toBe(1);
+    expect(refused.stderr.text()).toBe(`studio: kernel daemon is not running (cannot connect to 127.0.0.1:${server.port}: ECONNREFUSED)\n`);
+    expect(abandoned).toEqual([]);
   });
 
   it("refuses a malformed id or extra arguments with usage, exit 2, nothing sent", async () => {
