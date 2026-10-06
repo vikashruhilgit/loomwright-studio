@@ -31,6 +31,12 @@ const EXIT_TEST_POLICY = { allowedTools: ["mcp__kernel__kernel_task_create", "Ba
  * harness gives up with a named precondition error.
  */
 const LEADER_RECORDED_TIMEOUT_MS = 5_000;
+/**
+ * How long a first launch waits for the kernel's tool-group poll (one `ps -A`
+ * walk a second) to record the stand-in's tool group before the harness gives
+ * up with a named precondition error.
+ */
+const TOOL_GROUP_RECORDED_TIMEOUT_MS = 10_000;
 const EXIT_TEST_PROMPT =
   'Call the tool mcp__kernel__kernel_task_create with title "exit test", state "open" and idempotency_key "exit-test-key". ' +
   "Then run the Bash command `sleep 20`. Then reply DONE.";
@@ -138,23 +144,32 @@ function resultMessage(sessionId) {
  * The stand-in for the SDK's `query` (deterministic mode). Like the SDK, it
  * spawns the CLI synchronously inside `query()` through
  * `options.spawnClaudeCodeProcess`, so the manager records the pgid and the
- * leader's start time before any message. Then: `system/init`; on a first
+ * leader's start time before any message. On a first launch the leader
+ * forks a child into a NEW session and group (`detached: true`), as the CLI's
+ * Bash tool does (H08): the stand-in's "tool command", outside the CLI's
+ * group, run through the same `claude` path so the test's ownership-checked
+ * cleanup (`killOwnGroup`) can kill it. Then: `system/init`; on a first
  * launch, wait until the handler's `start-session` step committed (so a kill
- * from here on never leaves that step `started`) and until the row records
+ * from here on never leaves that step `started`), until the row records
  * the leader's start time (the manager reads it asynchronously; a kill before
- * that would leave the group unverifiable); call `kernel_task_create`
+ * that would leave the group unverifiable) and until the kernel's poll has
+ * recorded the tool group (`session_groups`); call `kernel_task_create`
  * with the fixed key through the per-launch server the manager passed; wait
  * for the leader to exit; a success `result`. A resume does the same with a
  * leader that exits at once, and calls the tool again with the SAME key: the
  * session-scoped work step must return the first task.
  */
-function standInQuery({ leader, sleepMs, startStepCommitted, leaderStartedAt }) {
+function standInQuery({ leader, sleepMs, startStepCommitted, leaderStartedAt, toolGroupsRecorded }) {
   return ({ prompt, options }) => {
     const resumed = options.resume !== undefined;
     const sessionId = options.resume ?? options.sessionId ?? "unknown";
+    // The tool command: a detached grandchild (new session and group) that outlives nothing on its own.
+    const tool =
+      `require("node:child_process").spawn(${JSON.stringify(leader)}, ["-e", "setTimeout(() => {}, ${sleepMs})"], ` +
+      `{ detached: true, stdio: "ignore" }).unref();`;
     const child = options.spawnClaudeCodeProcess({
       command: leader,
-      args: ["-e", `setTimeout(() => {}, ${resumed ? 0 : sleepMs})`],
+      args: ["-e", `${resumed ? "" : tool} setTimeout(() => {}, ${resumed ? 0 : sleepMs})`],
       cwd: options.cwd,
       env: options.env ?? {},
       signal: options.abortController?.signal ?? new AbortController().signal,
@@ -176,6 +191,11 @@ function standInQuery({ leader, sleepMs, startStepCommitted, leaderStartedAt }) 
         while (leaderStartedAt(sessionId) == null) {
           if (Date.now() >= until) failPrecondition(`leader_started_at of session ${sessionId} still null after ${LEADER_RECORDED_TIMEOUT_MS} ms`);
           await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        const groupsBy = Date.now() + TOOL_GROUP_RECORDED_TIMEOUT_MS;
+        while (!(toolGroupsRecorded(sessionId) > 0)) {
+          if (Date.now() >= groupsBy) failPrecondition(`no tool group of session ${sessionId} recorded after ${TOOL_GROUP_RECORDED_TIMEOUT_MS} ms`);
+          await new Promise((resolve) => setTimeout(resolve, 50));
         }
       }
       const server = options.mcpServers?.kernel;
@@ -275,6 +295,11 @@ async function main() {
         startStepCommitted: startStepCommitted.promise,
         leaderStartedAt: (sdkSessionId) =>
           store?.prepare("SELECT leader_started_at FROM sessions WHERE sdk_session_id = ?").pluck().get(sdkSessionId),
+        toolGroupsRecorded: (sdkSessionId) =>
+          store
+            ?.prepare("SELECT count(*) FROM session_groups g JOIN sessions s ON s.id = g.session_id WHERE s.sdk_session_id = ?")
+            .pluck()
+            .get(sdkSessionId) ?? 0,
       }),
     };
   }

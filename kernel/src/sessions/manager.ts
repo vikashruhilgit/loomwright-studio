@@ -23,6 +23,7 @@ import {
   KILL_GROUP_DEADLINE_MS,
   LEADER_EXIT_WAIT_MS,
   StderrTail,
+  descendantGroups,
   isProcessGroupAlive,
   isValidPgid,
   killGroupUntilGone,
@@ -30,6 +31,7 @@ import {
   leaderBasename,
   readGroupLeader,
   readGroupLeaderAsync,
+  snapshotProcessTable,
   spawnInNewProcessGroup,
 } from "./spawner.js";
 import {
@@ -47,6 +49,8 @@ import type {
   AllowedPermissionMode,
   CancelTimer,
   GroupLeader,
+  ProcessEntry,
+  ProcessTable,
   QueryFn,
   QueryHandle,
   ResumeSessionParams,
@@ -72,6 +76,12 @@ const CLI_BASENAME = "claude";
  * same process always reads the same value; the slack only absorbs rounding.
  */
 const LEADER_START_TOLERANCE_MS = 1_000;
+/**
+ * How often the kernel walks every running CLI's descendants for the process
+ * groups its tools started (H08, `session_groups`). One `ps -A` per tick for
+ * all sessions, never more than one in flight.
+ */
+const TOOL_GROUP_POLL_MS = 1_000;
 
 /**
  * Every permission mode the kernel accepts. The keys come from the SDK's
@@ -141,6 +151,23 @@ export type AbandonVia = "cli" | "api";
  */
 type StopIntent = "stop" | "shutdown";
 
+/**
+ * Why a recorded tool group was not signalled. `ps_failed`: its ownership
+ * could not be checked (the group stays flagged and is checked again by the
+ * next reap). Every other reason settles the group for good: `group_gone`
+ * (nothing left to kill), `leader_gone` (its leader exited, so nothing can
+ * prove the pgid still names this group), `command_differs` and
+ * `start_differs` (the pgid now names another process: never signalled).
+ */
+type GroupSkipReason = "group_gone" | "leader_gone" | "command_differs" | "start_differs" | "no_pgid" | "ps_failed";
+
+/** One unsettled `session_groups` row. */
+interface RecordedGroup {
+  readonly pgid: number;
+  readonly leader_command: string;
+  readonly leader_started_at: string;
+}
+
 /** Reap reasons that leave a group that may still be the session's alive. */
 const LEFT_ALIVE: ReadonlySet<ReapResult["reason"]> = new Set(["leader_unverified", "kill_incomplete", "reap_error"]);
 
@@ -206,6 +233,10 @@ interface Attempt {
   killing: Promise<void> | undefined;
   /** A kill of this group gave up or errored and flagged the row (`kill_incomplete_at`). */
   killFlagged: boolean;
+  /** Node reaped the CLI (it emitted `exit`): its pid may be reused, so the tool-group poll stops walking it. */
+  leaderExited: boolean;
+  /** Every recorded tool group of the session is confirmed gone or proven not the session's (`session_groups`). */
+  toolGroupsDone: boolean;
   readonly exited: Promise<void>;
   markExited: () => void;
   sawInit: boolean;
@@ -386,8 +417,14 @@ export class SessionManager {
   readonly #now: () => Date;
   readonly #randomUUID: () => string;
   readonly #homeDir: string;
+  /** `undefined`: no tool-group poll and no reaper walk (a test fake without a snapshot). */
+  readonly #snapshot: (() => Promise<ProcessTable>) | undefined;
 
   readonly #live = new Map<number, LiveSession>();
+  /** The pending tool-group poll tick, if any. */
+  #pollTimer: CancelTimer | undefined;
+  /** The `ps -A` snapshot walk in flight (never more than one). Never rejects. */
+  #pollInFlight: Promise<void> | undefined;
   #reaping: Promise<ReapResult[]> | undefined;
   /** The orphan row `#reapAll` is examining or killing right now (reaps are sequential), for `abandonSession`. */
   #reapingRow: number | undefined;
@@ -414,6 +451,8 @@ export class SessionManager {
     // A test that injects only the sync probe never reaches the real `ps`.
     this.#readLeaderAsync =
       deps.readGroupLeaderAsync ?? (injectedLeader === undefined ? readGroupLeaderAsync : async (pgid) => injectedLeader(pgid));
+    // Like the async leader probe: a test that injects only the sync probe never reaches the real `ps`.
+    this.#snapshot = deps.snapshotProcesses ?? (injectedLeader === undefined ? snapshotProcessTable : undefined);
     this.#sleep = deps.sleep ?? defaultSleep;
     this.#schedule = deps.schedule ?? defaultSchedule;
     this.#now = deps.now ?? (() => new Date());
@@ -824,6 +863,8 @@ export class SessionManager {
       )
       .all();
     const results: ReapResult[] = [];
+    /** Sessions whose recorded tool groups this reap already tried: retried once per reap. */
+    const handled = new Set<number>();
     for (const row of rows) {
       if (this.#live.has(row.id)) continue;
       // The rows were read once, before any await: an abandon (or a resume
@@ -835,6 +876,7 @@ export class SessionManager {
       let reason: ReapResult["reason"];
       let error: string | undefined;
       this.#reapingRow = row.id;
+      handled.add(row.id);
       try {
         reason = await this.#reapOne(row.id, row.pgid, row.leader_started_at);
       } catch (err) {
@@ -856,7 +898,7 @@ export class SessionManager {
       }
       results.push({ sessionId: row.id, pgid: row.pgid, status, reason });
     }
-    await this.#retryTerminalKills();
+    await this.#retryTerminalKills(handled);
     return results;
   }
 
@@ -869,8 +911,15 @@ export class SessionManager {
    * group may still be the session's. Each row is re-read just before its
    * retry and skipped (no probe, no signal, no event) unless it still has the
    * status, pgid and flag that were read.
+   *
+   * Then every session (any status but `abandoned`, not run by this manager)
+   * with a recorded tool group still flagged (`session_groups.kill_incomplete_at`)
+   * gets its unsettled groups killed again, with the ownership check. The
+   * session's own flag is keyed on the CLI's pgid; a tool group keeps its own,
+   * so a session stays retried until the CLI's group AND every recorded group
+   * are confirmed gone or skipped.
    */
-  async #retryTerminalKills(): Promise<void> {
+  async #retryTerminalKills(handled: Set<number>): Promise<void> {
     const placeholders = TERMINAL_STATUSES.map(() => "?").join(", ");
     const rows = this.#store
       .prepare<string[], { id: number; pgid: number | null; status: string; leader_started_at: string | null }>(
@@ -896,6 +945,7 @@ export class SessionManager {
       }
       let reason: ReapResult["reason"];
       let error: string | undefined;
+      handled.add(row.id);
       try {
         reason = await this.#reapOne(row.id, row.pgid, row.leader_started_at);
       } catch (err) {
@@ -919,16 +969,62 @@ export class SessionManager {
         }
       });
     }
+    const flagged = this.#store
+      .prepare<[], number>(
+        `SELECT DISTINCT g.session_id FROM session_groups g JOIN sessions s ON s.id = g.session_id
+          WHERE g.kill_incomplete_at IS NOT NULL AND g.resolved_at IS NULL AND s.status <> 'abandoned'
+          ORDER BY g.session_id`,
+      )
+      .pluck()
+      .all();
+    for (const id of flagged) {
+      if (handled.has(id) || this.#live.has(id)) continue;
+      await this.#killRecordedGroups(id);
+    }
   }
 
+  /**
+   * One orphan (or flagged terminal row): the CLI's group, then the process
+   * groups its tools started (`session_groups`, H08), each killed only after
+   * its own ownership check, whatever the CLI's outcome (`group_gone`,
+   * `no_pgid`, `pgid_reused`, `leader_unverified`, a failed `ps`). The result
+   * is the CLI group's; a tool group that survives its kill stays flagged for
+   * the next reap.
+   *
+   * When the CLI is still alive and proven the session's, its descendants are
+   * walked once more first (one snapshot), so a group started since the dead
+   * kernel's last poll is recorded and killed too.
+   *
+   * Honest limit (B5): a tool group started after the kernel died whose CLI
+   * then exited before this restart cannot be found: once the CLI is gone
+   * nothing links that group to the session (its parent chain is broken and
+   * it was never recorded). launchd restarts the kernel within seconds, so
+   * the window is small, not zero. A group living less than one poll interval
+   * (`TOOL_GROUP_POLL_MS`) may also never be recorded (it is gone anyway
+   * unless something in it outlives that), and a group whose leader exited
+   * before it was first seen is never recorded (`descendantGroups`).
+   */
   async #reapOne(sessionId: number, pgid: number | null, recordedStart: string | null): Promise<ReapResult["reason"]> {
-    // Throws when `ps` failed: the caller records `reap_error` and kills nothing.
-    const check = this.#checkGroup(pgid, recordedStart);
-    if (check !== "ours") return check;
+    let check: GroupCheck;
+    try {
+      // Throws when `ps` failed: the caller records `reap_error` and kills nothing of the CLI's.
+      check = this.#checkGroup(pgid, recordedStart);
+    } catch (err) {
+      await this.#killRecordedGroups(sessionId);
+      throw err;
+    }
+    if (check !== "ours") {
+      await this.#killRecordedGroups(sessionId);
+      return check;
+    }
+    // Not awaited at all without a snapshot: the first SIGKILL then stays synchronous.
+    if (this.#snapshot !== undefined) await this.#walkOrphan(sessionId, pgid as number, recordedStart);
     // The leader is the session's CLI, or it exited while its group lives on.
     // `killGroupUntilGone` reads EPERM as "not gone yet", never as "foreign":
     // a group proven foreign was returned above and is never signalled.
-    if (await this.#killUntilGone(pgid as number)) return "group_killed";
+    const killed = await this.#killUntilGone(pgid as number);
+    await this.#killRecordedGroups(sessionId);
+    if (killed) return "group_killed";
     this.#recordKillIncomplete(sessionId, pgid as number);
     return "kill_incomplete";
   }
@@ -1021,6 +1117,8 @@ export class SessionManager {
       groupGone: false,
       killing: undefined,
       killFlagged: false,
+      leaderExited: false,
+      toolGroupsDone: false,
       exited,
       markExited,
       sawInit: false,
@@ -1069,10 +1167,15 @@ export class SessionManager {
         // a kernel killed first) ⇒ null, and the reaper then never kills the
         // group (the row ends `orphaned`, `leader_unverified`).
         void this.#recordLeaderStart(live.id, pgid);
+        // From now on the tool-group poll walks this CLI's descendants (H08).
+        this.#ensurePoll();
       },
     });
     attempt.child = child;
-    child.once("exit", () => attempt.markExited());
+    child.once("exit", () => {
+      attempt.leaderExited = true;
+      attempt.markExited();
+    });
     return child;
   }
 
@@ -1389,6 +1492,9 @@ export class SessionManager {
     if (attempt !== undefined) {
       attempt.input.close();
       await this.#waitFor(attempt.exited, this.#stopGraceMs);
+      // One last walk of the CLI's descendants: a tool group started since the
+      // last poll tick is recorded, and so killed below with the rest.
+      if (this.#snapshot !== undefined) await this.#walkNow([{ live, attempt }]);
       await this.#killAttemptGroup(live, attempt);
       // Until Node reaps the killed leader it is a zombie holding the pgid.
       await this.#waitFor(attempt.exited, LEADER_EXIT_WAIT_MS);
@@ -1421,36 +1527,47 @@ export class SessionManager {
 
   /**
    * Kill the attempt's group until it is gone (`killGroupUntilGone`; one
-   * SIGKILL can miss a child forked during it). The first SIGKILL is sent
-   * synchronously. Concurrent callers share one run; once the group is gone it
-   * is never signalled again, and a run that gave up at the deadline
-   * (`session_kill_incomplete`) is retried by the next caller. A failure is
-   * recorded (`session_kill_error`), never thrown: the promise never rejects.
+   * SIGKILL can miss a child forked during it), then every process group the
+   * session's tools started (`session_groups`, H08), each after its ownership
+   * check (`#killRecordedGroups`). The first SIGKILL is sent synchronously.
+   * Concurrent callers share one run; once the CLI's group is gone it is never
+   * signalled again, and a run that gave up at the deadline
+   * (`session_kill_incomplete`) is retried by the next caller, as is a tool
+   * group not yet settled. A failure is recorded (`session_kill_error`), never
+   * thrown: the promise never rejects.
    */
   #killAttemptGroup(live: LiveSession, attempt: Attempt): Promise<void> {
     const pgid = attempt.pgid;
-    if (pgid === undefined || attempt.groupGone) return Promise.resolve();
+    if (pgid === undefined || (attempt.groupGone && attempt.toolGroupsDone)) return Promise.resolve();
     if (attempt.killing !== undefined) return attempt.killing;
     const run = async (): Promise<void> => {
-      try {
-        if (await this.#killUntilGone(pgid)) {
-          attempt.groupGone = true;
-          // A retry confirmed the group gone: the reaper need not retry it.
-          if (attempt.killFlagged) this.#flagKillIncomplete(live.id, pgid, false);
-          return;
-        }
-        this.#recordKillIncomplete(live.id, pgid);
-      } catch (err) {
-        this.#recordSafely("session_kill_error", live.id, { pgid, error: errorMessage(err), code: errnoCode(err) ?? null });
-      }
-      attempt.killFlagged = true;
-      this.#flagKillIncomplete(live.id, pgid, true);
+      if (!attempt.groupGone) await this.#killCliGroup(live, attempt, pgid);
+      // A snapshot taken before the kill may still record a group: let it land first.
+      if (this.#pollInFlight !== undefined) await this.#pollInFlight;
+      attempt.toolGroupsDone = await this.#killRecordedGroups(live.id);
     };
     const killing = run().finally(() => {
       if (attempt.killing === killing) attempt.killing = undefined;
     });
     attempt.killing = killing;
     return killing;
+  }
+
+  /** The CLI's own group: kill until gone, or record and flag (`kill_incomplete_at`) why not. Never rejects. */
+  async #killCliGroup(live: LiveSession, attempt: Attempt, pgid: number): Promise<void> {
+    try {
+      if (await this.#killUntilGone(pgid)) {
+        attempt.groupGone = true;
+        // A retry confirmed the group gone: the reaper need not retry it.
+        if (attempt.killFlagged) this.#flagKillIncomplete(live.id, pgid, false);
+        return;
+      }
+      this.#recordKillIncomplete(live.id, pgid);
+    } catch (err) {
+      this.#recordSafely("session_kill_error", live.id, { pgid, error: errorMessage(err), code: errnoCode(err) ?? null });
+    }
+    attempt.killFlagged = true;
+    this.#flagKillIncomplete(live.id, pgid, true);
   }
 
   /** `killGroupUntilGone` over the injected primitives, sleeping through the injected scheduler. */
@@ -1480,6 +1597,260 @@ export class SessionManager {
       this.#store
         .prepare("UPDATE sessions SET kill_incomplete_at = ?, updated_at = ? WHERE id = ? AND pgid = ?")
         .run(flagged ? at : null, at, sessionId, pgid);
+    } catch {
+      // The store is gone; nothing more can be done.
+    }
+  }
+
+  // ---- tool process groups (H08) -------------------------------------------
+  //
+  // The CLI's tools (the Bash tool above all) run their commands in a new
+  // session and process group, outside the CLI's own group, so `kill(-pgid)`
+  // of the CLI's group leaves them running. While a CLI runs, one manager-wide
+  // poll walks every running CLI's descendants in a `ps -A` snapshot and
+  // records each new group in `session_groups` with its leader's identity;
+  // every kill of a session's CLI group then kills those groups too, each only
+  // while its leader still has the recorded executable and start time.
+
+  /** Schedule the next poll tick unless one is pending or in flight, or no CLI runs. */
+  #ensurePoll(): void {
+    if (this.#snapshot === undefined || this.#pollTimer !== undefined || this.#pollInFlight !== undefined) return;
+    if (this.#pollTargets().length === 0) return;
+    this.#pollTimer = this.#schedule(() => {
+      this.#pollTimer = undefined;
+      void this.#pollTick();
+    }, TOOL_GROUP_POLL_MS);
+  }
+
+  async #pollTick(): Promise<void> {
+    const targets = this.#pollTargets();
+    // No CLI runs: the poll stops until the next spawn starts it again.
+    if (targets.length === 0) return;
+    await this.#walkNow(targets);
+    this.#ensurePoll();
+  }
+
+  /** Every live session's current attempt whose CLI has not exited and whose groups no kill has started on. */
+  #pollTargets(): { readonly live: LiveSession; readonly attempt: Attempt }[] {
+    const targets: { live: LiveSession; attempt: Attempt }[] = [];
+    for (const live of this.#live.values()) {
+      const attempt = live.attempt;
+      if (attempt === undefined || attempt.pgid === undefined || attempt.leaderExited) continue;
+      if (attempt.killing !== undefined || attempt.groupGone) continue;
+      targets.push({ live, attempt });
+    }
+    return targets;
+  }
+
+  /** Walk `targets` in one fresh snapshot, after any walk in flight (one at a time). Never rejects. */
+  async #walkNow(targets: readonly { readonly live: LiveSession; readonly attempt: Attempt }[]): Promise<void> {
+    while (this.#pollInFlight !== undefined) await this.#pollInFlight;
+    const run = this.#walkLive(targets);
+    this.#pollInFlight = run;
+    try {
+      await run;
+    } finally {
+      if (this.#pollInFlight === run) this.#pollInFlight = undefined;
+    }
+  }
+
+  /**
+   * Record the new descendant groups of each running CLI in one snapshot. A
+   * CLI is walked only when Node had not reaped it when the snapshot began
+   * (its pid could not have been reused yet), and only while the snapshot's
+   * process at that pid has the start time the row recorded (when it is
+   * recorded yet). A failed snapshot records nothing. Never rejects.
+   */
+  async #walkLive(targets: readonly { readonly live: LiveSession; readonly attempt: Attempt }[]): Promise<void> {
+    const snapshot = this.#snapshot;
+    const ready = targets.filter((t) => !t.attempt.leaderExited && t.attempt.pgid !== undefined);
+    if (snapshot === undefined || ready.length === 0) return;
+    let table: ProcessTable;
+    try {
+      table = await snapshot();
+    } catch {
+      // `ps` failed: nothing is recorded this tick; the next tick tries again.
+      return;
+    }
+    for (const { live, attempt } of ready) {
+      const pgid = attempt.pgid as number;
+      const leader = table.find((p) => p.pid === pgid);
+      if (leader === undefined || !this.#matchesRecordedStart(live.id, pgid, leader)) continue;
+      this.#recordGroups(live.id, descendantGroups(table, pgid));
+    }
+  }
+
+  /** The snapshot's `leader` has the start time the row recorded for `pgid`, or none is recorded yet. Fails closed on a store error. */
+  #matchesRecordedStart(sessionId: number, pgid: number, leader: ProcessEntry): boolean {
+    try {
+      const row = this.#store
+        .prepare<[number, number], { leader_started_at: string | null }>("SELECT leader_started_at FROM sessions WHERE id = ? AND pgid = ?")
+        .get(sessionId, pgid);
+      if (row === undefined) return false;
+      if (row.leader_started_at === null) return true;
+      const recordedMs = Date.parse(row.leader_started_at);
+      return Number.isFinite(recordedMs) && Math.abs(leader.startedAtMs - recordedMs) <= LEADER_START_TOLERANCE_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * B3: before the reaper kills an orphan's CLI (already proven the session's
+   * by `#checkGroup`), walk its descendants in one snapshot and record any new
+   * group. Only when the snapshot's process at `pgid` is still that CLI (basename
+   * `claude`, the recorded start time); a leaderless CLI group has nothing to
+   * walk from. A failed snapshot records nothing. Never rejects.
+   */
+  async #walkOrphan(sessionId: number, pgid: number, recordedStart: string | null): Promise<void> {
+    const snapshot = this.#snapshot;
+    if (snapshot === undefined) return;
+    let table: ProcessTable;
+    try {
+      table = await snapshot();
+    } catch {
+      return;
+    }
+    const leader = table.find((p) => p.pid === pgid);
+    const recordedMs = recordedStart === null ? Number.NaN : Date.parse(recordedStart);
+    if (leader === undefined || leaderBasename(leader.command) !== CLI_BASENAME || !Number.isFinite(recordedMs)) return;
+    if (Math.abs(leader.startedAtMs - recordedMs) > LEADER_START_TOLERANCE_MS) return;
+    this.#recordGroups(sessionId, descendantGroups(table, pgid));
+  }
+
+  /**
+   * Record each group not seen before (`session_group_recorded`), in one
+   * transaction, committed before the next poll. A group seen again whose
+   * leader has since exec'd another program (same pid and start time) gets its
+   * new executable: the walk just proved it the session's, and the kill's
+   * ownership check compares the executable as last seen. Never throws.
+   */
+  #recordGroups(sessionId: number, groups: readonly ProcessEntry[]): void {
+    if (groups.length === 0) return;
+    try {
+      const at = this.#nowIso();
+      const find = this.#store.prepare<[number, number, string], { leader_command: string; resolved_at: string | null }>(
+        "SELECT leader_command, resolved_at FROM session_groups WHERE session_id = ? AND pgid = ? AND leader_started_at = ?",
+      );
+      this.#store.transaction(() => {
+        for (const g of groups) {
+          const startedAt = new Date(g.startedAtMs).toISOString();
+          const existing = find.get(sessionId, g.pgid, startedAt);
+          const payload = { pgid: g.pgid, command: g.command, leader_started_at: startedAt };
+          if (existing === undefined) {
+            this.#store
+              .prepare(
+                `INSERT INTO session_groups (session_id, pgid, leader_command, leader_started_at, first_seen)
+                 VALUES (?, ?, ?, ?, ?)`,
+              )
+              .run(sessionId, g.pgid, g.command, startedAt, at);
+            this.#appendEvent("session_group_recorded", sessionId, payload, at);
+          } else if (existing.resolved_at === null && existing.leader_command !== g.command) {
+            this.#store
+              .prepare("UPDATE session_groups SET leader_command = ? WHERE session_id = ? AND pgid = ? AND leader_started_at = ?")
+              .run(g.command, sessionId, g.pgid, startedAt);
+            this.#appendEvent("session_group_command_changed", sessionId, { ...payload, previous: existing.leader_command }, at);
+          }
+        }
+      });
+    } catch {
+      // The store is gone; the next tick (or the reaper's walk) records it.
+    }
+  }
+
+  /**
+   * Kill every unsettled recorded group of `sessionId` (B2), each only after
+   * its ownership check (`#killRecordedGroup`). An `abandoned` session's groups
+   * are never signalled. Resolves whether every recorded group is now settled
+   * (confirmed gone or proven not the session's). Never rejects.
+   */
+  async #killRecordedGroups(sessionId: number): Promise<boolean> {
+    let groups: RecordedGroup[];
+    try {
+      const status = this.#store.prepare<[number], string>("SELECT status FROM sessions WHERE id = ?").pluck().get(sessionId);
+      if (status === "abandoned") return true;
+      groups = this.#store
+        .prepare<[number], RecordedGroup>(
+          `SELECT pgid, leader_command, leader_started_at FROM session_groups
+            WHERE session_id = ? AND resolved_at IS NULL ORDER BY first_seen, pgid`,
+        )
+        .all(sessionId);
+    } catch {
+      return false;
+    }
+    let settled = true;
+    for (const g of groups) {
+      if (!(await this.#killRecordedGroup(sessionId, g))) settled = false;
+    }
+    return settled;
+  }
+
+  /**
+   * One recorded group: signalled ONLY while `readGroupLeader(pgid)` shows its
+   * leader with the recorded executable (exact `comm`; both sides are read on
+   * the same host) and start time (within `LEADER_START_TOLERANCE_MS`).
+   * Otherwise it is skipped (`session_group_skipped` with `reason`) and never
+   * signalled: another executable or start time is a reused pgid; an absent
+   * leader (`leader_gone`) leaves nothing that proves the pgid is still this
+   * group, even when members of it live on; a failed `ps` (`ps_failed`) proves
+   * nothing either way and keeps the group flagged. A kill that confirms the
+   * group gone settles it (`session_group_killed`); one that gives up
+   * (`session_group_kill_incomplete`) or errors (`session_group_kill_error`)
+   * flags it for the next reap. Resolves whether the group is settled.
+   */
+  async #killRecordedGroup(sessionId: number, g: RecordedGroup): Promise<boolean> {
+    const base = { pgid: g.pgid, command: g.leader_command, leader_started_at: g.leader_started_at };
+    if (!isValidPgid(g.pgid)) return this.#skipGroup(sessionId, g, base, "no_pgid");
+    let leader: GroupLeader;
+    try {
+      if (!this.#isGroupAlive(g.pgid)) return this.#skipGroup(sessionId, g, base, "group_gone");
+      leader = this.#readLeader(g.pgid);
+    } catch (err) {
+      return this.#skipGroup(sessionId, g, { ...base, error: errorMessage(err) }, "ps_failed");
+    }
+    const mismatch = recordedGroupMismatch(g, leader);
+    if (mismatch !== undefined) return this.#skipGroup(sessionId, g, base, mismatch);
+    try {
+      if (await this.#killUntilGone(g.pgid)) {
+        this.#settleGroup(sessionId, g, "session_group_killed", base, "killed");
+        return true;
+      }
+      this.#settleGroup(sessionId, g, "session_group_kill_incomplete", { ...base, deadline_ms: KILL_GROUP_DEADLINE_MS }, undefined);
+    } catch (err) {
+      this.#settleGroup(sessionId, g, "session_group_kill_error", { ...base, error: errorMessage(err), code: errnoCode(err) ?? null }, undefined);
+    }
+    return false;
+  }
+
+  #skipGroup(sessionId: number, g: RecordedGroup, payload: Record<string, unknown>, reason: GroupSkipReason): boolean {
+    const resolution = reason === "ps_failed" ? undefined : reason;
+    this.#settleGroup(sessionId, g, "session_group_skipped", { ...payload, reason }, resolution);
+    return resolution !== undefined;
+  }
+
+  /**
+   * Append `kind` and, in the same transaction, settle the group
+   * (`resolution`: never examined again, its flag cleared) or flag it
+   * (`undefined`: `kill_incomplete_at`, retried by the next reap). Never throws.
+   */
+  #settleGroup(sessionId: number, g: RecordedGroup, kind: string, payload: Record<string, unknown>, resolution: string | undefined): void {
+    try {
+      const at = this.#nowIso();
+      this.#store.transaction(() => {
+        this.#appendEvent(kind, sessionId, payload, at);
+        if (resolution === undefined) {
+          this.#store
+            .prepare("UPDATE session_groups SET kill_incomplete_at = ? WHERE session_id = ? AND pgid = ? AND leader_started_at = ?")
+            .run(at, sessionId, g.pgid, g.leader_started_at);
+        } else {
+          this.#store
+            .prepare(
+              `UPDATE session_groups SET resolved_at = ?, resolution = ?, kill_incomplete_at = NULL
+                WHERE session_id = ? AND pgid = ? AND leader_started_at = ?`,
+            )
+            .run(at, resolution, sessionId, g.pgid, g.leader_started_at);
+        }
+      });
     } catch {
       // The store is gone; nothing more can be done.
     }
@@ -1744,6 +2115,19 @@ export class SessionManager {
   #nowIso(): string {
     return this.#now().toISOString();
   }
+}
+
+/**
+ * Why `leader` (read now) is not the recorded group's leader, or `undefined`
+ * when it is: the same executable (`comm`, exact) and a start time within
+ * `LEADER_START_TOLERANCE_MS` of the recorded one.
+ */
+function recordedGroupMismatch(g: RecordedGroup, leader: GroupLeader): GroupSkipReason | undefined {
+  if (leader.status === "absent") return "leader_gone";
+  if (leader.command !== g.leader_command) return "command_differs";
+  const recordedMs = Date.parse(g.leader_started_at);
+  if (!Number.isFinite(recordedMs) || Math.abs(leader.startedAtMs - recordedMs) > LEADER_START_TOLERANCE_MS) return "start_differs";
+  return undefined;
 }
 
 /** A stable, secret-free code for an env-build failure. */

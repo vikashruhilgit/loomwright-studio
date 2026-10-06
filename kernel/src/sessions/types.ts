@@ -231,6 +231,20 @@ export type GroupLeader =
   | { readonly status: "absent" }
   | { readonly status: "present"; readonly command: string; readonly startedAtMs: number };
 
+/** One process in a `snapshotProcessTable` snapshot (`ps -A`). */
+export interface ProcessEntry {
+  readonly pid: number;
+  readonly ppid: number;
+  readonly pgid: number;
+  /** From `lstart` (1 s resolution, read with `TZ=UTC`). */
+  readonly startedAtMs: number;
+  /** `comm`: the full executable path on macOS, a name of at most 15 characters on Linux procps. */
+  readonly command: string;
+}
+
+/** Every process on the host at one instant. */
+export type ProcessTable = readonly ProcessEntry[];
+
 /** What `spawnClaudeCodeProcess` receives from the kernel besides the SDK's own options. */
 export interface SpawnHooks {
   /** Called synchronously with the new group's id (the leader's pid), right after the spawn. */
@@ -278,6 +292,15 @@ export interface SessionManagerDeps {
    * Rejects when `ps` failed, never resolves that as `absent`.
    */
   readonly readGroupLeaderAsync?: (pgid: number) => Promise<GroupLeader>;
+  /**
+   * One `ps -A` snapshot of every process, without blocking the event loop:
+   * the tool-group poll and the reaper walk the CLI's descendants in it
+   * (H08). Rejects when `ps` failed. Defaults to `snapshotProcessTable`, or,
+   * when `readGroupLeader` is injected without it, to nothing at all: no poll
+   * runs and no descendant is ever recorded (a fake never reaches the real
+   * `ps`, and a test that does not ask for the poll gets no timer).
+   */
+  readonly snapshotProcesses?: () => Promise<ProcessTable>;
   /** Resume backoff. Defaults to a real timer. */
   readonly sleep?: (ms: number) => Promise<void>;
   /** Bounded waits, the kill-until-gone rounds and the auth kill timer. Defaults to `setTimeout`/`clearTimeout`. */
