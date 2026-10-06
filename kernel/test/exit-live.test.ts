@@ -150,6 +150,14 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
 
     await startHarness(args, 60_000);
     timings["restarted_ms"] = Date.now() - t0;
+    // startKernel awaits reapOrphans() before the harness prints ready, so the
+    // reap is finished here. Probe NOW: the `sleep 20` began moments before the
+    // kill and cannot have ended by itself yet, so ESRCH proves the reaper
+    // killed it. A probe at the end of the run (below) cannot: by then the
+    // sleep would have exited on its own whether or not anything killed it.
+    const cliProbeAfterReap = groupProbeCode(pgid) ?? "alive";
+    const sleepProbeAfterReap = groupProbeCode(sleepPgid) ?? "alive";
+    const sleepLeftAtReapMs = 20_000 - (timings["restarted_ms"] - timings["sleep_running_ms"]);
     const queueId = Number(scalar("SELECT id FROM event_queue ORDER BY id LIMIT 1"));
     await waitFor(
       "the redelivered event to finish",
@@ -174,6 +182,20 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
         .all(session.id)
         .map((p) => JSON.parse(p) as { from: string | null; to: string; reason?: string }),
     );
+    // Each recorded group the kernel killed or skipped, by role, so the summary
+    // shows which group the reaper settled and why (no paths, no env).
+    const groupEvents = withDb(dataDir, (db) =>
+      db
+        .prepare<[], { kind: string; payload_json: string }>(
+          "SELECT kind, payload_json FROM events WHERE kind LIKE 'session_group_%' AND kind <> 'session_group_recorded' ORDER BY id",
+        )
+        .all()
+        .map((e) => {
+          const p = JSON.parse(e.payload_json) as { pgid?: number; reason?: string };
+          const role = p.pgid === pgid ? "cli" : p.pgid === sleepPgid ? "sleep" : "other";
+          return { kind: e.kind, role, reason: p.reason ?? null };
+        }),
+    );
     const summary = {
       test: "exit-live",
       at: new Date().toISOString(),
@@ -192,6 +214,10 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
       group_probe_after: groupProbeCode(pgid) ?? "alive",
       sleep_group_in_cli_group: sleepPgid === pgid,
       sleep_group_probe_after: groupProbeCode(sleepPgid) ?? "alive",
+      cli_group_probe_after_reap: cliProbeAfterReap,
+      sleep_group_probe_after_reap: sleepProbeAfterReap,
+      sleep_left_at_reap_ms: sleepLeftAtReapMs,
+      group_events: groupEvents,
     };
     const summaryPath = join(tmpdir(), `studio-exit-live-summary-${Date.now()}.json`);
     writeFileSync(summaryPath, `${redact(JSON.stringify(summary, null, 2))}\n`, { mode: 0o600 });
@@ -202,6 +228,11 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
     expect(groupProbeCode(pgid)).toBe("ESRCH");
     // The `sleep` the first CLI's Bash tool started is gone too, wherever its group was.
     expect(groupProbeCode(sleepPgid)).toBe("ESRCH");
+    // ...and it was the reaper that ended both, not time: checked right after the
+    // restart, while the sleep still had seconds to run.
+    expect(sleepLeftAtReapMs).toBeGreaterThan(2_000);
+    expect(cliProbeAfterReap).toBe("ESRCH");
+    expect(sleepProbeAfterReap).toBe("ESRCH");
     expect(summary.session_final_status).toBe("completed");
     expect(summary.rows.tasks).toBe(1);
     expect(scalar("SELECT status FROM work_steps WHERE key = ?", `kernel_task_create:session-${session.id}:${EXIT_TEST_KEY}`)).toBe("done");

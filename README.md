@@ -9,7 +9,7 @@ Nothing is predefined. You describe a duty in plain English, for example "review
 
 ## Status
 
-**Phase 0** (design system and high-fidelity mockups) is done; see [`docs/DESIGN.md`](docs/DESIGN.md). **Phase 1**, the kernel, is under construction in [`kernel/`](kernel/). Its exit criterion (`kill -9` mid-session, then restart and resume with no duplicated work) is covered by a deterministic test, but the live run on the owner's machine is still open: see "Phase 1 exit: live run" in [`docs/OPEN_QUESTIONS.md`](docs/OPEN_QUESTIONS.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Phase 0** (design system and high-fidelity mockups) is done; see [`docs/DESIGN.md`](docs/DESIGN.md). **Phase 1**, the kernel in [`kernel/`](kernel/), is done (2026-10-06): its exit criterion (`kill -9` mid-session, then restart and resume with no duplicated work) passed live on the owner's machine, under launchd, on the subscription token; see [`docs/evidence/`](docs/evidence/) and [`docs/ROADMAP.md`](docs/ROADMAP.md). Next is phase 2, the brain and the Loomwright adapter.
 
 ## Run the kernel as a launchd agent
 
