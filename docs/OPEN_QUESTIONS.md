@@ -90,6 +90,6 @@ Each of these needs a probe of the real SDK or CLI, with the finding recorded.
 
 ## Deferred decisions
 
-- Whether Loomwright should publish a machine-readable `capabilities.json` per release (proposed in D13). That would be a change in the Loomwright repo.
+- ~~Whether Loomwright should publish a machine-readable `capabilities.json` per release (proposed in D13).~~ **Decided in D32 (2026-10-06):** yes. Building it is a Loomwright change, tracked in the Loomwright repo.
 - Tauri instead of Electron, revisited only if mobile or wide distribution becomes a goal (D10).
 - The pricing model at commercial launch (bring your own key vs metered), deferred until after dogfooding.
