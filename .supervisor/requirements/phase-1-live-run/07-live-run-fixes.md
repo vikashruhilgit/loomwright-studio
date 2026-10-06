@@ -108,3 +108,9 @@ H01–H06 merged, and the store migrations from H03 and H05. Part B's new migrat
 - Polling can miss a group that lives less than one poll interval. That's acceptable, since such a group is gone anyway. Say so in code.
 - `ps` output parsing must be locale-safe (`LC_ALL=C`) and must handle `lstart`'s fixed format.
 - The ownership check is what keeps the kernel from killing an unrelated process that reused a pgid. Its test is the most important one here.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-06T04:05:32Z
+- **Brief:** .supervisor/jobs/done/2026-10-06-h07-h08-live-run-fixes.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/37
