@@ -65,6 +65,14 @@ export interface ApiServer {
   close(): Promise<void>;
 }
 
+/** A recorded tool group (H08) a kill could not settle: `session_groups.kill_incomplete_at` set, not resolved. */
+export interface UnconfirmedToolGroup {
+  readonly pgid: number;
+  /** The group leader's executable as last recorded (`ps -o comm=`). */
+  readonly command: string;
+  readonly kill_incomplete_at: string;
+}
+
 /** The `/status` body (AC2). */
 export interface StatusBody {
   readonly kernel: { readonly version: string; readonly uptime_s: number; readonly pid: number };
@@ -79,11 +87,19 @@ export interface StatusBody {
     readonly status: string;
   }[];
   /**
-   * Every session whose group a kill could not confirm gone
-   * (`kill_incomplete_at` set by a kill that gave up or errored), whatever its
-   * status: a `failed` (`kill_incomplete`) or `failed:auth` row, an `orphaned`
-   * one, or a live row. Its group may still be alive; the reaper retries the
-   * kill and clears the flag once the group is gone or proven foreign.
+   * Every session whose group a kill could not confirm gone, whatever its
+   * status (a `failed` (`kill_incomplete`) or `failed:auth` row, an
+   * `orphaned`, `interrupted` or live one): its CLI's group
+   * (`sessions.kill_incomplete_at` set by a kill that gave up or errored), or
+   * a process group its tools started (H08: an unsettled `session_groups` row
+   * flagged by a kill that gave up or errored, or by a failed `ps`), listed
+   * in `tool_groups`. Such a group may still be alive; the reaper retries the
+   * kill and clears the flag once the group is gone or proven foreign, and
+   * the session leaves the list once no flag is left. An `abandoned` row's
+   * tool groups are never signalled again, so they are not listed (abandoning
+   * clears the CLI's flag the same way). `kill_incomplete_at` is the CLI's
+   * flag, else the earliest tool-group flag. `tool_groups` is present only
+   * when non-empty (additive: an older CLI ignores it).
    */
   readonly kill_unconfirmed: readonly {
     readonly id: number;
@@ -91,6 +107,7 @@ export interface StatusBody {
     readonly status: string;
     readonly pgid: number | null;
     readonly kill_incomplete_at: string;
+    readonly tool_groups?: readonly UnconfirmedToolGroup[];
   }[];
   /**
    * Every `orphaned` row (its group may still be the session's and alive),
@@ -189,6 +206,36 @@ function count(store: Store, sql: string): number {
   return store.prepare<[], number>(sql).pluck().get() ?? 0;
 }
 
+/** An unsettled, flagged tool group of session `s` (the reaper's own retry condition). */
+const FLAGGED_TOOL_GROUP = "g.session_id = s.id AND g.kill_incomplete_at IS NOT NULL AND g.resolved_at IS NULL";
+
+/**
+ * `StatusBody.kill_unconfirmed`: a flagged CLI group or a flagged, unsettled
+ * tool group (H08) of a session not `abandoned` (the reaper's retry set), so
+ * the kill switch never reads "stopped" here while a recorded group may live.
+ */
+function killUnconfirmed(store: Store): StatusBody["kill_unconfirmed"] {
+  const rows = store
+    .prepare<[], Omit<StatusBody["kill_unconfirmed"][number], "tool_groups">>(
+      `SELECT s.id, s.agent, s.status, s.pgid,
+              COALESCE(s.kill_incomplete_at,
+                       (SELECT MIN(g.kill_incomplete_at) FROM session_groups g WHERE ${FLAGGED_TOOL_GROUP})) AS kill_incomplete_at
+         FROM sessions s
+        WHERE s.kill_incomplete_at IS NOT NULL
+           OR (s.status <> 'abandoned' AND EXISTS (SELECT 1 FROM session_groups g WHERE ${FLAGGED_TOOL_GROUP}))
+        ORDER BY s.id`,
+    )
+    .all();
+  const groups = store.prepare<[number], UnconfirmedToolGroup>(
+    `SELECT g.pgid, g.leader_command AS command, g.kill_incomplete_at FROM session_groups g JOIN sessions s ON s.id = g.session_id
+      WHERE s.id = ? AND s.status <> 'abandoned' AND ${FLAGGED_TOOL_GROUP} ORDER BY g.first_seen, g.pgid`,
+  );
+  return rows.map((row) => {
+    const toolGroups = groups.all(row.id);
+    return toolGroups.length === 0 ? row : { ...row, tool_groups: toolGroups };
+  });
+}
+
 /** Read the `/status` body from the store (AC2). Exported for the CLI's tests and later surfaces. */
 export function readStatus(
   store: Store,
@@ -227,11 +274,7 @@ export function readStatus(
         "SELECT id, agent, model, pgid, started_at, status FROM sessions WHERE status IN ('starting', 'running') ORDER BY id",
       )
       .all(),
-    kill_unconfirmed: store
-      .prepare<[], StatusBody["kill_unconfirmed"][number]>(
-        "SELECT id, agent, status, pgid, kill_incomplete_at FROM sessions WHERE kill_incomplete_at IS NOT NULL ORDER BY id",
-      )
-      .all(),
+    kill_unconfirmed: killUnconfirmed(store),
     orphaned: orphanedSessions(store),
     queue: {
       pending: count(store, "SELECT count(*) FROM event_queue WHERE status = 'pending'"),

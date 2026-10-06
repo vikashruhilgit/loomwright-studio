@@ -7,6 +7,7 @@ import { budgetCapDetails } from "./006_budget_cap_details.js";
 import { eventLoop } from "./007_event_loop.js";
 import { eventsExplicitIdGuard } from "./008_events_explicit_id_guard.js";
 import { capKeysProviderId } from "./009_cap_keys_provider_id.js";
+import { sessionGroups } from "./010_session_groups.js";
 import type { Migration } from "./types.js";
 
 export type { Migration } from "./types.js";
@@ -22,4 +23,5 @@ export const migrations: readonly Migration[] = [
   eventLoop,
   eventsExplicitIdGuard,
   capKeysProviderId,
+  sessionGroups,
 ];

@@ -3,10 +3,14 @@
 // dir), it is `kill -9`ed mid-session and started again, and the data dir is
 // read read-only from here. The session is the harness's stand-in (a real
 // process group led by a `claude`-named node, no model, no Keychain), so this
-// runs in `npm test` on macOS and on Linux CI.
+// runs in `npm test` on macOS and on Linux CI. The stand-in's leader forks a
+// "tool command" into a new session and group, as the CLI's Bash tool does
+// (H08): the kernel must record that group and the restarted kernel's reaper
+// must kill it, not only the CLI's group.
 //
-// Every harness and stand-in group this file starts is killed in afterEach
-// (by its own recorded pid / pgid only), so a failing test leaks no process.
+// Every harness, stand-in and tool group this file starts is killed in
+// afterEach (by its own recorded pid / pgid, ownership-checked), so a failing
+// test leaks no process.
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,6 +86,15 @@ interface SessionRowView {
   leader_started_at: string | null;
 }
 
+/** The stand-in's tool group as the kernel recorded it (`session_groups`), once it is. */
+function toolGroup(sessionId: number): { pgid: number; resolution: string | null } | undefined {
+  return tryDb(dataDir, (db) =>
+    db
+      .prepare<[number], { pgid: number; resolution: string | null }>("SELECT pgid, resolution FROM session_groups WHERE session_id = ? ORDER BY pgid LIMIT 1")
+      .get(sessionId),
+  );
+}
+
 /** The exit test's one session row (with a recorded pgid), once it exists. */
 function sessionRow(): SessionRowView | undefined {
   return tryDb(dataDir, (db) =>
@@ -123,12 +136,15 @@ async function restartAndFinish(queueId: number): Promise<void> {
 }
 
 /** The assertions both scenarios share, after the restart finished the event. */
-function assertExitCriterion(queueId: number, session: SessionRowView, pgid: number): void {
+function assertExitCriterion(queueId: number, session: SessionRowView, pgid: number, toolPgid: number): void {
   // The orphaned group was reaped by the restarted kernel, and is gone.
   const events = statusEvents(session.id);
   const killed = events.find((e) => e.reason === "group_killed");
   expect(killed, JSON.stringify(events)).toMatchObject({ to: "interrupted", reason: "group_killed" });
   expect(groupProbeCode(pgid)).toBe("ESRCH");
+  // And so is the tool's group, outside the CLI's (H08): killed by the reaper after its ownership check.
+  expect(groupProbeCode(toolPgid)).toBe("ESRCH");
+  expect(toolGroup(session.id)).toEqual({ pgid: toolPgid, resolution: "killed" });
 
   // It went through `interrupted`, was resumed, and completed.
   const after = events.slice(events.indexOf(killed as (typeof events)[number]) + 1);
@@ -165,15 +181,20 @@ describe("kill -9 mid-session, then restart (phase 1 exit, deterministic)", () =
     });
     const pgid = session.pgid as number;
     const queueId = count("SELECT id FROM event_queue ORDER BY id LIMIT 1");
+    // The stand-in calls the tool only once its tool group is recorded, so it is by now.
+    const toolPgid = (await waitFor("the recorded tool group", () => toolGroup(session.id), 5_000)).pgid;
+    pgids.add(toolPgid);
+    expect(toolPgid).not.toBe(pgid);
 
     first.child.kill("SIGKILL");
     expect((await first.exited).signal).toBe("SIGKILL");
-    // The orphan exists: the kernel died, its session's group did not.
+    // The orphan exists: the kernel died, its session's group and the tool's group did not.
     expect(groupAlive(pgid)).toBe(true);
+    expect(groupAlive(toolPgid)).toBe(true);
     expect(count("SELECT count(*) FROM event_queue WHERE status = 'pending'")).toBe(1);
 
     await restartAndFinish(queueId);
-    assertExitCriterion(queueId, session, pgid);
+    assertExitCriterion(queueId, session, pgid, toolPgid);
     expect(count("SELECT count(*) FROM work_steps WHERE key = ?", `event:${queueId}:start-session`)).toBe(1);
   }, 90_000);
 
@@ -190,6 +211,10 @@ describe("kill -9 mid-session, then restart (phase 1 exit, deterministic)", () =
     expect(session.leader_started_at).not.toBeNull();
     pgids.add(pgid);
     expect(groupAlive(pgid)).toBe(true);
+    // Recorded before the fault (the stand-in waits for it), and alive.
+    const toolPgid = (await waitFor("the recorded tool group", () => toolGroup(session.id), 5_000)).pgid;
+    pgids.add(toolPgid);
+    expect(groupAlive(toolPgid)).toBe(true);
     // Nothing of the interrupted transaction committed.
     expect(count("SELECT count(*) FROM tasks")).toBe(0);
     expect(count("SELECT count(*) FROM events WHERE kind = 'task_created'")).toBe(0);
@@ -198,6 +223,6 @@ describe("kill -9 mid-session, then restart (phase 1 exit, deterministic)", () =
 
     // The restart runs without the fault: the resumed stand-in calls the tool again.
     await restartAndFinish(queueId);
-    assertExitCriterion(queueId, session, pgid);
+    assertExitCriterion(queueId, session, pgid, toolPgid);
   }, 90_000);
 });

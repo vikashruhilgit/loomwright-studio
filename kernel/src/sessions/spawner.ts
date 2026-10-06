@@ -21,7 +21,7 @@ import type { ChildProcessByStdio } from "node:child_process";
 import { basename } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
-import type { GroupLeader, SpawnHooks, StderrSink } from "./types.js";
+import type { GroupLeader, ProcessEntry, ProcessTable, SpawnHooks, StderrSink } from "./types.js";
 
 /** The stderr tail kept for failure records (the last 64 KiB). */
 export const STDERR_TAIL_BYTES = 64 * 1024;
@@ -324,4 +324,103 @@ export async function readGroupLeaderAsync(pgid: number): Promise<GroupLeader> {
 /** The basename of a `readGroupLeader` command. */
 export function leaderBasename(command: string): string {
   return basename(command.trim());
+}
+
+// `pid ppid pgid` then the `lstart` + `comm` tail `parseLeaderLine` reads.
+const SNAPSHOT_LINE = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S.*)$/;
+
+/**
+ * Parse `ps -A -o pid= -o ppid= -o pgid= -o lstart= -o comm=` printed with
+ * `LC_ALL=C TZ=UTC` (so `lstart` is the English `ctime(3)` shape and UTC).
+ * `comm` is last because it may contain spaces; everything after `lstart` is
+ * the command. Blank lines are ignored. Throws `LeaderProbeError` on any other
+ * line it cannot read: a caller never acts on a table it only half understood.
+ */
+export function parseProcessTable(text: string): ProcessTable {
+  const table: ProcessEntry[] = [];
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    const m = SNAPSHOT_LINE.exec(line);
+    if (m === null) throw new LeaderProbeError(`unparseable ps -A output: ${JSON.stringify(line.slice(0, 200))}`);
+    const { command, startedAtMs } = parseLeaderLine(m[4] as string);
+    table.push({ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), startedAtMs, command });
+  }
+  return table;
+}
+
+/** `snapshotProcessTable`'s output can be large on a busy machine. */
+const PS_SNAPSHOT_MAX_BUFFER = 16 * 1024 * 1024;
+
+/**
+ * Every process on the host, read once without blocking the event loop:
+ * `LC_ALL=C TZ=UTC ps -A -o pid= -o ppid= -o pgid= -o lstart= -o comm=`
+ * (macOS and Linux procps both support it; `ps -o sess` prints 0 on macOS, so
+ * sessions are never read). Rejects with `LeaderProbeError` when `ps` fails,
+ * is slower than `PS_TIMEOUT_MS`, or prints anything `parseProcessTable`
+ * cannot read: a failed snapshot is never read as "no processes".
+ */
+export async function snapshotProcessTable(): Promise<ProcessTable> {
+  const args = ["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "lstart=", "-o", "comm="];
+  return new Promise<ProcessTable>((resolve, reject) => {
+    execFile(
+      "/bin/ps",
+      args,
+      { encoding: "utf8", env: PS_ENV, timeout: PS_TIMEOUT_MS, maxBuffer: PS_SNAPSHOT_MAX_BUFFER },
+      (err, stdout, stderr) => {
+        if (err !== null) {
+          reject(new LeaderProbeError(`ps -A failed: ${stderr.trim() !== "" ? stderr.trim() : err.message}`));
+          return;
+        }
+        try {
+          const table = parseProcessTable(stdout);
+          if (table.length === 0) throw new LeaderProbeError("ps -A printed no process");
+          resolve(table);
+        } catch (e) {
+          reject(e);
+        }
+      },
+    );
+  });
+}
+
+/**
+ * The process groups `leaderPid`'s descendants run in, other than the leader's
+ * own group (`leaderPid` is the CLI, the leader of its group). A descendant is
+ * found by walking parent pids down from `leaderPid`, across any session or
+ * group a child created (the Bash tool's commands run in a new session and
+ * group, outside the CLI's). One entry per group: the group's leader (the
+ * process whose pid is the pgid), which is what identifies the group later.
+ *
+ * A group whose leader is not in `table` (it exited, leaving the rest of its
+ * group running) is NOT returned: without the leader's executable and start
+ * time nothing could later prove that pgid still names this group rather than
+ * an unrelated one that reused it, so it could never be killed safely.
+ * A process re-parented away from the tree (its parent exited, so its ppid is
+ * now 1) is not reachable by this walk; the caller polls often enough to see
+ * it while its parent still lives (see `docs/ARCHITECTURE.md`).
+ */
+export function descendantGroups(table: ProcessTable, leaderPid: number): ProcessEntry[] {
+  const children = new Map<number, ProcessEntry[]>();
+  const byPid = new Map<number, ProcessEntry>();
+  for (const p of table) {
+    byPid.set(p.pid, p);
+    const list = children.get(p.ppid) ?? [];
+    list.push(p);
+    children.set(p.ppid, list);
+  }
+  const groups = new Map<number, ProcessEntry>();
+  const seen = new Set<number>([leaderPid]);
+  const queue = [leaderPid];
+  while (queue.length > 0) {
+    const pid = queue.shift() as number;
+    for (const child of children.get(pid) ?? []) {
+      if (seen.has(child.pid)) continue;
+      seen.add(child.pid);
+      queue.push(child.pid);
+      if (child.pgid === leaderPid || !isValidPgid(child.pgid) || groups.has(child.pgid)) continue;
+      const groupLeader = byPid.get(child.pgid);
+      if (groupLeader !== undefined) groups.set(child.pgid, groupLeader);
+    }
+  }
+  return [...groups.values()];
 }

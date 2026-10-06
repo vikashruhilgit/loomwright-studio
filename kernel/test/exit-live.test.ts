@@ -9,8 +9,11 @@
 // The harness starts the kernel with one queued message; its handler starts a
 // session that calls `kernel_task_create` (key `exit-test-key`) and then runs
 // `sleep 20`. Once the kernel's gate records the `allow` for that `sleep` and
-// `ps` shows `sleep` running in the session's process group, the kernel is
-// `kill -9`ed and started again. Same assertions as the
+// `ps` shows `sleep` running in one of the session's groups (the CLI's own, or
+// a group its tools started that the kernel recorded in `session_groups`: the
+// Bash tool runs its command in a new session and group, H08), the kernel is
+// `kill -9`ed and started again; after the restart and reap that `sleep`
+// group must be gone. Same assertions as the
 // deterministic test, except that a resumed model may run `sleep` again: the
 // work completing is what is asserted. A run summary (timings, row counts,
 // event kinds; never env or tokens, and any `sk-ant-…` string redacted) is
@@ -56,6 +59,20 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
     if (pgid === null || pgid === undefined || groups.has(pgid)) return;
     const leader = groupLeader(pgid);
     if (leader !== undefined) groups.set(pgid, leader);
+  }
+
+  /**
+   * The first of the session's groups (the CLI's, then each recorded tool
+   * group) that runs `sleep`, tracked for `afterEach`; `undefined` if none yet.
+   */
+  function sleepGroup(db: Database.Database, sessionId: number, cliPgid: number): number | undefined {
+    const recorded = db.prepare<[number], number>("SELECT pgid FROM session_groups WHERE session_id = ? ORDER BY first_seen").pluck().all(sessionId);
+    for (const g of [cliPgid, ...recorded]) {
+      if (!groupHasCommand(g, "sleep")) continue;
+      track(g);
+      return g;
+    }
+    return undefined;
   }
 
   /**
@@ -118,12 +135,18 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
     const pgid = session.pgid as number;
     track(pgid);
     timings["sleep_allowed_ms"] = Date.now() - t0;
-    // Kill only once `sleep` runs in the session's group (the command is running).
-    await waitFor("sleep running in the session's process group", () => (groupHasCommand(pgid, "sleep") ? true : undefined), 30_000, 100);
+    // Kill only once `sleep` runs in one of the session's groups (the command is running).
+    const sleepPgid = await waitFor(
+      "sleep running in the session's process group or a recorded tool group",
+      () => tryDb(dataDir, (db) => sleepGroup(db, session.id, pgid)),
+      30_000,
+      100,
+    );
     timings["sleep_running_ms"] = Date.now() - t0;
     first.child.kill("SIGKILL");
     await first.exited;
     expect(groupAlive(pgid)).toBe(true);
+    expect(groupAlive(sleepPgid)).toBe(true);
 
     await startHarness(args, 60_000);
     timings["restarted_ms"] = Date.now() - t0;
@@ -167,6 +190,8 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
       },
       event_kinds: Object.fromEntries(kinds.map((k) => [k.kind, k.n])),
       group_probe_after: groupProbeCode(pgid) ?? "alive",
+      sleep_group_in_cli_group: sleepPgid === pgid,
+      sleep_group_probe_after: groupProbeCode(sleepPgid) ?? "alive",
     };
     const summaryPath = join(tmpdir(), `studio-exit-live-summary-${Date.now()}.json`);
     writeFileSync(summaryPath, `${redact(JSON.stringify(summary, null, 2))}\n`, { mode: 0o600 });
@@ -175,6 +200,8 @@ describe.skipIf(!LIVE)("live exit test: kill -9 mid-session, then restart (STUDI
     expect(summary.queue_status).toBe("done");
     expect(statuses.find((s) => s.reason === "group_killed")).toMatchObject({ to: "interrupted" });
     expect(groupProbeCode(pgid)).toBe("ESRCH");
+    // The `sleep` the first CLI's Bash tool started is gone too, wherever its group was.
+    expect(groupProbeCode(sleepPgid)).toBe("ESRCH");
     expect(summary.session_final_status).toBe("completed");
     expect(summary.rows.tasks).toBe(1);
     expect(scalar("SELECT status FROM work_steps WHERE key = ?", `kernel_task_create:session-${session.id}:${EXIT_TEST_KEY}`)).toBe("done");
