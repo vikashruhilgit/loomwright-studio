@@ -3,7 +3,7 @@
 // injected (fake pids are above any real pid_max, so even a stray real signal
 // could only hit ESRCH).
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { PassThrough } from "node:stream";
@@ -14,6 +14,7 @@ import { AuthProviderError, KeychainError } from "../src/auth/index.js";
 import type { AuthProvider } from "../src/auth/index.js";
 import { DEFAULT_RESUME_PROMPT, LeaderProbeError, SessionError, SessionManager, resolveLoomwrightPath } from "../src/sessions/index.js";
 import type {
+  AdmissionDecision,
   CancelTimer,
   GroupLeader,
   QueryFn,
@@ -2229,5 +2230,85 @@ describe("mcpServers factory (item 07)", () => {
     expect(f.seen).toEqual([1, 2, 3].map(() => ({ sessionId: id, agent: "wright", task: null })));
     expect(calls.map((c) => c.options.mcpServers)).toEqual(f.made);
     expect(new Set(calls.map((c) => c.options.mcpServers)).size).toBe(3);
+  });
+});
+
+describe("a cwd in a macOS-protected folder (D31, protected_cwd)", () => {
+  /** A manager on the shared fakes with a temp home dir: its Documents/Desktop/… are the protected folders. */
+  function setup() {
+    const home = join(tmp, "home");
+    const admission = vi.fn((): AdmissionDecision => ({ admitted: true }));
+    const buildEnv = vi.fn(() => ({ PATH: "/usr/bin" }));
+    const h = harness({ options: { authProvider: stubProvider({ buildEnv }), admission }, deps: { homeDir: home } });
+    const { store, manager } = h;
+    const refusals = () =>
+      store
+        .prepare<[], { session_id: number | null; payload_json: string }>("SELECT session_id, payload_json FROM events WHERE kind = 'session_refused' ORDER BY id")
+        .all()
+        .map((e) => ({ session_id: e.session_id, payload: JSON.parse(e.payload_json) as unknown }));
+    return { store, home, calls: h.calls, children: h.children, admission, buildEnv, manager, refusals };
+  }
+
+  async function refusal(p: Promise<unknown>): Promise<SessionError> {
+    const err = await p.then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(SessionError);
+    return err as SessionError;
+  }
+
+  it("startSession refuses before admission, auth or any spawn, with one session_refused event and no row", async () => {
+    const s = setup();
+    for (const rel of ["Documents/repo", "Desktop", "downloads/x", "Library/Mobile Documents/com~apple~CloudDocs/repo"]) {
+      const cwd = join(s.home, rel);
+      const err = await refusal(s.manager.startSession(startParams({ cwd })));
+      expect(err.code).toBe("protected_cwd");
+      expect(err.message).toContain("(D31)");
+      expect(err.message).toContain(cwd);
+    }
+    expect(s.refusals()).toEqual(
+      ["Documents/repo", "Desktop", "downloads/x", "Library/Mobile Documents/com~apple~CloudDocs/repo"].map((rel) => ({
+        session_id: null,
+        payload: { reason: "protected_cwd", cwd: join(s.home, rel) },
+      })),
+    );
+    expect(s.calls).toEqual([]);
+    expect(s.children.size).toBe(0);
+    expect(s.admission).not.toHaveBeenCalled();
+    expect(s.buildEnv).not.toHaveBeenCalled();
+    expect(s.store.prepare("SELECT count(*) AS n FROM sessions").get()).toEqual({ n: 0 });
+  });
+
+  it("a symlink into a protected folder is refused; a cwd outside them starts", async () => {
+    const s = setup();
+    mkdirSync(join(s.home, "Documents", "repo"), { recursive: true });
+    symlinkSync(join(s.home, "Documents", "repo"), join(tmp, "repo-link"));
+    expect((await refusal(s.manager.startSession(startParams({ cwd: join(tmp, "repo-link") })))).code).toBe("protected_cwd");
+    expect(s.calls).toEqual([]);
+
+    const work = join(tmp, "work");
+    mkdirSync(work);
+    const handle = await s.manager.startSession(startParams({ cwd: work }));
+    expect(s.calls).toHaveLength(1);
+    s.calls[0]?.stream.end();
+    await handle.done;
+  });
+
+  it("resumeSession refuses before admission or the group check, logs the session's id, and leaves the row as it was", async () => {
+    const s = setup();
+    const id = Number(
+      s.store
+        .prepare("INSERT INTO sessions (agent, status, sdk_session_id, model, loomwright_path) VALUES ('wright', 'interrupted', 'sid', 'claude-haiku-4-5', ?)")
+        .run(pluginDir).lastInsertRowid,
+    );
+    const cwd = join(s.home, "Documents", "repo");
+    const err = await refusal(s.manager.resumeSession(id, { permissionMode: "default", cwd, policy: { allowedTools: [], allowedBashPrefixes: [] } }));
+    expect(err.code).toBe("protected_cwd");
+    expect(s.refusals()).toEqual([{ session_id: id, payload: { reason: "protected_cwd", cwd } }]);
+    expect(s.manager.getSession(id)?.status).toBe("interrupted");
+    expect(s.calls).toEqual([]);
+    expect(s.admission).not.toHaveBeenCalled();
+    expect(s.buildEnv).not.toHaveBeenCalled();
   });
 });

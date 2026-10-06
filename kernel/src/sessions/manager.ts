@@ -1,4 +1,5 @@
 import { randomUUID as nodeRandomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
   HookCallback,
@@ -13,6 +14,7 @@ import type {
 import { KeychainError } from "../auth/keychain.js";
 import { AuthProviderError } from "../auth/types.js";
 import type { AuthProvider, BaseEnv, ChildEnv } from "../auth/types.js";
+import { isProtectedPath, protectedLocationsText } from "../protected-paths.js";
 import type { Store } from "../store/store.js";
 import { resolveLoomwrightPath } from "./loomwright-path.js";
 import { latestOrphanReason } from "./orphans.js";
@@ -383,6 +385,7 @@ export class SessionManager {
   readonly #schedule: (fn: () => void, ms: number) => CancelTimer;
   readonly #now: () => Date;
   readonly #randomUUID: () => string;
+  readonly #homeDir: string;
 
   readonly #live = new Map<number, LiveSession>();
   #reaping: Promise<ReapResult[]> | undefined;
@@ -415,6 +418,7 @@ export class SessionManager {
     this.#schedule = deps.schedule ?? defaultSchedule;
     this.#now = deps.now ?? (() => new Date());
     this.#randomUUID = deps.randomUUID ?? nodeRandomUUID;
+    this.#homeDir = deps.homeDir ?? homedir();
   }
 
   /** The stored row, or `undefined`. */
@@ -430,8 +434,9 @@ export class SessionManager {
 
   /**
    * Start a session (AC1, AC2, AC8). Throws `SessionError` before any row or
-   * spawn for invalid params, `bypassPermissions` or a missing Loomwright
-   * install, and `AdmissionRefusedError` when the `admission` check refuses
+   * spawn for invalid params, `bypassPermissions`, a `cwd` in a protected
+   * folder (`protected_cwd`, D31: one `session_refused` event, no row) or a
+   * missing Loomwright install, and `AdmissionRefusedError` when the `admission` check refuses
    * (budget or cap, item 06). An auth failure while building the env spawns
    * nothing: the row is inserted as `failed:auth` with one `notify` event, and
    * the error is rethrown.
@@ -441,6 +446,7 @@ export class SessionManager {
     if (!isNonEmptyString(params.model)) throw new SessionError("invalid_params", "model is required (no default: the CLI default is Opus, Q1)");
     if (!isNonEmptyString(params.agent)) throw new SessionError("invalid_params", "agent is required");
     if (!isNonEmptyString(params.cwd)) throw new SessionError("invalid_params", "cwd is required");
+    this.#refuseProtectedCwd(params.cwd, null);
     if (!isNonEmptyString(params.prompt)) throw new SessionError("invalid_params", "prompt is required");
     if (params.task !== undefined && !Number.isInteger(params.task)) throw new SessionError("invalid_params", "task must be an integer id");
     const policy = checkPolicy(params.policy);
@@ -637,6 +643,8 @@ export class SessionManager {
   async resumeSession(id: number, params: ResumeSessionParams): Promise<SessionHandle> {
     const permissionMode = checkPermissionMode(params.permissionMode);
     if (!isNonEmptyString(params.cwd)) throw new SessionError("invalid_params", "cwd is required");
+    // Before admission and the group check: the row is not touched, only the refusal is logged.
+    this.#refuseProtectedCwd(params.cwd, this.getSession(id) === undefined ? null : id);
     if (params.prompt !== undefined && !isNonEmptyString(params.prompt)) throw new SessionError("invalid_params", "prompt must be non-empty");
     const policy = checkPolicy(params.policy);
 
@@ -1477,8 +1485,24 @@ export class SessionManager {
     }
   }
 
+  /**
+   * D31: a `cwd` inside a protected folder (`isProtectedPath`, after symlink
+   * resolution) is refused before admission, auth or any spawn. Appends one
+   * `session_refused` event (`session_id` null for a start, the session's id
+   * for a resume) and throws `SessionError("protected_cwd")`. A fixed safety
+   * check, never a playbook setting.
+   */
+  #refuseProtectedCwd(cwd: string, sessionId: number | null): void {
+    if (!isProtectedPath(cwd, this.#homeDir)) return;
+    this.#recordSafely("session_refused", sessionId, { reason: "protected_cwd", cwd });
+    throw new SessionError(
+      "protected_cwd",
+      `cwd ${cwd} is inside a macOS-protected folder (${protectedLocationsText()}); agents work only on repos outside them (D31)`,
+    );
+  }
+
   /** Append an event; a store failure is swallowed (nothing more can be done). */
-  #recordSafely(kind: string, sessionId: number, payload: Record<string, unknown>): void {
+  #recordSafely(kind: string, sessionId: number | null, payload: Record<string, unknown>): void {
     try {
       this.#appendEvent(kind, sessionId, payload, this.#nowIso());
     } catch {
@@ -1710,7 +1734,8 @@ export class SessionManager {
     this.#appendEvent("notify", id, { provider: this.#auth.id, account: this.#auth.account, ...payload }, at);
   }
 
-  #appendEvent(kind: string, sessionId: number, payload: Record<string, unknown>, at: string): void {
+  /** `sessionId` null: an event about no session row (a refused start). */
+  #appendEvent(kind: string, sessionId: number | null, payload: Record<string, unknown>, at: string): void {
     this.#store
       .prepare("INSERT INTO events (at, kind, actor, session_id, payload_json) VALUES (?, ?, 'kernel', ?, ?)")
       .run(at, kind, sessionId, JSON.stringify(payload));

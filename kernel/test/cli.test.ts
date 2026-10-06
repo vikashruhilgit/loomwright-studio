@@ -1,8 +1,8 @@
-// The `studio` CLI (item 08, AC4): runCli against a real startApiServer on
+// The `studio` CLI (item 08, AC4; H07): runCli against a real startApiServer on
 // 127.0.0.1 and an OS-assigned port, with an in-memory Keychain. Never the
 // real Keychain, the real daemon or a model.
 import { subscribe, unsubscribe } from "node:diagnostics_channel";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -18,6 +18,7 @@ import type { CliDeps } from "../src/cli/index.js";
 import { SERVICE_LABEL, plistPath } from "../src/service/index.js";
 import type { ServiceDeps } from "../src/service/index.js";
 import { Store } from "../src/store/index.js";
+import { kernelVersion } from "../src/version.js";
 import { DEFAULT_STOP_GRACE_MS, KILL_GROUP_DEADLINE_MS, LEADER_EXIT_WAIT_MS, SessionError, SessionManager } from "../src/sessions/index.js";
 import type { AbandonVia } from "../src/sessions/index.js";
 import { fakeMsg, fakeSessions, immediate, makePluginDir, startParams, stubProvider, unexpectedAbandon } from "./session-fakes.js";
@@ -383,17 +384,33 @@ describe("studio CLI", () => {
   });
 });
 
-describe("studio service (item 09, AC1)", () => {
-  /** Injected launchctl, homeDir and sleep/clock: never the real launchctl, home or a real wait. */
-  function serviceDeps(o: { fail?: string; stderr?: string; platform?: NodeJS.Platform } = {}) {
+describe("studio service (item 09, AC1; H07)", () => {
+  const SERVICE_PID = 4242;
+  const VERSION = "1.2.3";
+
+  /**
+   * Injected launchctl, homeDir and sleep/delay/clock: never the real
+   * launchctl, home or a real wait. `print` answers 113 until a bootstrap
+   * loads the agent, then 0 with `pid = <pid>` (default the API server's
+   * 4242) when stdout is captured.
+   */
+  function serviceDeps(o: { fail?: string; stderr?: string; platform?: NodeJS.Platform; pid?: number } = {}) {
     const homeDir = join(tmp, "home");
     const launchctl: string[][] = [];
     let clock = 0;
+    let loaded = false;
     const deps: ServiceDeps = {
-      exec: (_file, args) => {
+      exec: (_file, args, options) => {
         launchctl.push([...args]);
-        if (args[0] === "print") return { status: 113, stderr: "" };
-        return args[0] === o.fail ? { status: 5, stderr: o.stderr ?? "" } : { status: 0, stderr: "" };
+        if (args[0] === "print") {
+          if (!loaded) return { status: 113, stderr: "" };
+          const out = `\tpid = ${o.pid ?? SERVICE_PID}\n\tlast exit code = 1\n`;
+          return options?.captureStdout === true ? { status: 0, stderr: "", stdout: out } : { status: 0, stderr: "" };
+        }
+        if (args[0] === o.fail) return { status: 5, stderr: o.stderr ?? "" };
+        if (args[0] === "bootstrap") loaded = true;
+        if (args[0] === "bootout") loaded = false;
+        return { status: 0, stderr: "" };
       },
       uid: 501,
       homeDir,
@@ -401,39 +418,126 @@ describe("studio service (item 09, AC1)", () => {
       sleep: (ms) => {
         clock += ms;
       },
+      delay: async (ms) => {
+        clock += ms;
+      },
       now: () => clock,
     };
     return { homeDir, launchctl, deps };
   }
 
-  function serviceCli(o: { fail?: string; stderr?: string; platform?: NodeJS.Platform } = {}) {
-    const daemonPath = join(tmp, "daemon.js");
-    writeFileSync(daemonPath, "// built daemon\n");
-    const { homeDir, launchctl, deps } = serviceDeps(o);
-    // A data dir with no api.json: the service commands must not need one.
-    const c = cli({ dataDir: join(tmp, "service-data"), service: { options: { daemonPath, env: {} }, deps } });
-    return { ...c, homeDir, launchctl };
+  /** A built kernel to copy: dist/daemon.js, package.json and an empty lockfile. */
+  function sourceKernel(version = VERSION): string {
+    const root = join(tmp, "kernel");
+    mkdirSync(join(root, "dist"), { recursive: true });
+    writeFileSync(join(root, "dist", "daemon.js"), "// built daemon\n");
+    writeFileSync(join(root, "package.json"), JSON.stringify({ version, type: "module" }));
+    writeFileSync(join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: { "": {} } }));
+    return root;
   }
 
-  it("install and uninstall print one line naming the label and plist, exit 0, and never read api.json, the Keychain or the API", async () => {
+  /** The new kernel's api.json in `dir`: the test API server's port and pid. */
+  function newKernelApiInfo(dir: string): void {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "api.json"), JSON.stringify({ port: server.port, host: "127.0.0.1", pid: SERVICE_PID, started_at: NOW.toISOString() }));
+  }
+
+  function serviceCli(o: { fail?: string; stderr?: string; platform?: NodeJS.Platform; pid?: number; nodePath?: string; version?: string } = {}) {
+    const sourceRoot = sourceKernel(o.version);
+    const { homeDir, launchctl, deps } = serviceDeps(o);
+    const serviceData = join(tmp, "service-data");
+    newKernelApiInfo(serviceData);
+    const options = { sourceRoot, env: {}, ...(o.nodePath === undefined ? {} : { nodePath: o.nodePath }) };
+    const c = cli({ dataDir: serviceData, service: { options, deps } });
+    return { ...c, homeDir, launchctl, serviceData };
+  }
+
+  it("install copies and loads the kernel, waits for it to answer GET /status, then prints one line naming its version, copy and plist", async () => {
     const c = serviceCli();
     expect(await c.run("service", "install")).toBe(0);
     oneLine(c.stdout.text());
-    expect(c.stdout.text()).toBe(`studio: service ${SERVICE_LABEL} installed and loaded (${plistPath(c.homeDir)})\n`);
+    const appDir = join(c.serviceData, "app", VERSION);
+    expect(c.stdout.text()).toBe(
+      `studio: service ${SERVICE_LABEL} installed and loaded: kernel ${kernelVersion()} (pid ${SERVICE_PID}) running from ${appDir} (${plistPath(c.homeDir)})\n`,
+    );
     expect(existsSync(plistPath(c.homeDir))).toBe(true);
-    expect(existsSync(join(tmp, "service-data", "logs"))).toBe(true);
+    expect(existsSync(join(appDir, "dist", "daemon.js"))).toBe(true);
+    expect(existsSync(join(c.serviceData, "logs"))).toBe(true);
+    // The start check: the token read once, one GET /status, never printed.
+    expect(c.reads).toEqual([API_TOKEN_KEYCHAIN_SERVICE]);
+    expect(c.fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(c.fetchSpy.mock.calls[0]?.[0])).toBe(`http://127.0.0.1:${server.port}/status`);
+    expect(c.stdout.text()).not.toContain(TOKEN);
+    expect(c.stderr.text()).toBe("");
+    expect(c.launchctl.map((a) => a[0])).toEqual(["print", "bootstrap", "print"]);
+  });
 
+  it("uninstall prints one line, removes the plist and <dataDir>/app/, and never reads api.json, the Keychain or the API", async () => {
+    const c = serviceCli();
+    expect(await c.run("service", "install")).toBe(0);
+    rmSync(join(c.serviceData, "api.json"));
     const u = serviceCli();
+    rmSync(join(u.serviceData, "api.json"));
     expect(await u.run("service", "uninstall")).toBe(0);
-    expect(u.stdout.text()).toBe(`studio: service ${SERVICE_LABEL} unloaded and removed (${plistPath(u.homeDir)})\n`);
+    expect(u.stdout.text()).toBe(`studio: service ${SERVICE_LABEL} unloaded and removed (${plistPath(u.homeDir)}, ${join(u.serviceData, "app")})\n`);
     expect(existsSync(plistPath(u.homeDir))).toBe(false);
+    expect(existsSync(join(u.serviceData, "app"))).toBe(false);
+    expect(existsSync(join(u.serviceData, "logs"))).toBe(true);
+    expect(u.reads).toEqual([]);
+    expect(u.fetchSpy).not.toHaveBeenCalled();
+    expect(u.stderr.text()).toBe("");
+  });
 
-    for (const x of [c, u]) {
-      expect(x.reads).toEqual([]);
-      expect(x.fetchSpy).not.toHaveBeenCalled();
-      expect(x.stderr.text()).toBe("");
-    }
-    expect(c.launchctl.map((a) => a[0])).toEqual(["print", "bootstrap"]);
+  it("a start check that fails: the failure output on stderr, the agent booted out, the plist removed, the previous copy kept, exit 1", async () => {
+    // A stale api.json: it names 4242, the job runs as 5555.
+    const first = serviceCli();
+    expect(await first.run("service", "install")).toBe(0);
+    const c = serviceCli({ pid: 5555, version: "1.2.4" });
+    expect(await c.run("service", "install")).toBe(1);
+    expect(c.stdout.text()).toBe("");
+    const lines = c.stderr.text().trimEnd().split("\n");
+    expect(lines[0]).toBe(
+      `studio service: the kernel did not answer GET /status within 15 s (last: api.json names pid ${SERVICE_PID}, not the agent's pid 5555)`,
+    );
+    expect(lines).toContain("studio service: launchctl print: last exit code = 1");
+    expect(lines.at(-1)).toBe(
+      `studio service: ${SERVICE_LABEL} booted out and ${plistPath(c.homeDir)} removed; the install copy and ${c.serviceData} are kept`,
+    );
+    expect(c.launchctl.at(-1)).toEqual(["bootout", `gui/501/${SERVICE_LABEL}`]);
+    expect(existsSync(plistPath(c.homeDir))).toBe(false);
+    expect(readdirSync(join(c.serviceData, "app")).sort()).toEqual([VERSION, "1.2.4"]);
+    expect(c.reads).toEqual([]);
+    expect(c.fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("a verified start removes the older install copies", async () => {
+    const first = serviceCli();
+    expect(await first.run("service", "install")).toBe(0);
+    const c = serviceCli({ version: "1.2.4" });
+    expect(await c.run("service", "install")).toBe(0);
+    expect(readdirSync(join(c.serviceData, "app"))).toEqual(["1.2.4"]);
+  });
+
+  it("a version-manager node: one warning line on stderr, and the install goes on", async () => {
+    const nodePath = join(tmp, "home", ".nvm", "versions", "node", "v22.14.0", "bin", "node");
+    const c = serviceCli({ nodePath });
+    expect(await c.run("service", "install")).toBe(0);
+    expect(c.stderr.text()).toBe(
+      `studio service: warning: node ${nodePath} is under ~/.nvm; the agent stops working if that Node version is removed (then run service install again with another node)\n`,
+    );
+    oneLine(c.stdout.text());
+  });
+
+  it("a data dir in a protected folder: one stderr line naming D31, exit 1, nothing copied or loaded", async () => {
+    const sourceRoot = sourceKernel();
+    const { homeDir, launchctl, deps } = serviceDeps();
+    const protectedDir = join(homeDir, "Documents", "studio");
+    const c = cli({ dataDir: protectedDir, service: { options: { sourceRoot, env: {} }, deps } });
+    expect(await c.run("service", "install")).toBe(1);
+    oneLine(c.stderr.text());
+    expect(c.stderr.text()).toContain("(D31)");
+    expect(launchctl).toEqual([]);
+    expect(existsSync(protectedDir)).toBe(false);
   });
 
   it("install with CliDeps.dataDir and an empty env: the plist's logs and STUDIO_DATA_DIR are that dir", async () => {
@@ -467,8 +571,7 @@ describe("studio service (item 09, AC1)", () => {
   });
 
   it("install with no CliDeps.dataDir (production): the data dir is STUDIO_DATA_DIR, else ~/.loomwright-studio under homeDir", async () => {
-    const daemonPath = join(tmp, "daemon.js");
-    writeFileSync(daemonPath, "// built daemon\n");
+    const sourceRoot = sourceKernel();
     const envDir = join(tmp, "env-data");
     for (const [env, expected] of [
       [{ STUDIO_DATA_DIR: envDir }, envDir],
@@ -477,7 +580,9 @@ describe("studio service (item 09, AC1)", () => {
       const { homeDir, deps } = serviceDeps();
       const stdout = out();
       const stderr = out();
-      expect(await runCli(["service", "install"], { stdout, stderr, service: { options: { daemonPath, env }, deps } })).toBe(0);
+      newKernelApiInfo(expected);
+      const probe = { keychain: cli().deps.keychain, fetch, isPidAlive: () => true };
+      expect(await runCli(["service", "install"], { stdout, stderr, ...probe, service: { options: { sourceRoot, env }, deps } })).toBe(0);
       expect(stderr.text()).toBe("");
       const xml = readFileSync(plistPath(homeDir), "utf8");
       expect(xml).toContain(`<key>StandardOutPath</key>\n  <string>${join(expected, "logs", "kernel.out.log")}</string>`);

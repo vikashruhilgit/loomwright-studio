@@ -130,7 +130,9 @@ export type SessionErrorCode =
   | "not_found"
   | "not_live"
   | "not_abandonable"
-  | "admission_refused";
+  | "admission_refused"
+  /** `cwd` is inside a macOS-protected folder (D31, `PROTECTED_LOCATIONS`): refused before anything starts. */
+  | "protected_cwd";
 
 /** A session request the kernel refused. `code` is stable; the message is for humans. */
 export class SessionError extends Error {
@@ -284,6 +286,8 @@ export interface SessionManagerDeps {
   readonly now?: () => Date;
   /** Defaults to `node:crypto` `randomUUID`. */
   readonly randomUUID?: () => string;
+  /** The home dir `PROTECTED_LOCATIONS` are under (D31, the `protected_cwd` refusal). Defaults to `os.homedir()`. */
+  readonly homeDir?: string;
 }
 
 export interface SessionManagerOptions {

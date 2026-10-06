@@ -7,13 +7,16 @@
 //   studio session abandon <id> [--yes]
 //                            POST /sessions/<id>/abandon: release an orphaned
 //                            leader_unverified row (asks first unless --yes)
-//   studio service install   write and load the launchd agent (item 09, macOS)
-//   studio service uninstall unload and remove it
+//   studio service install   copy the kernel to <dataDir>/app/<version>, write
+//                            and load the launchd agent, and check it starts
+//                            (item 09, H07, macOS)
+//   studio service uninstall unload and remove it and <dataDir>/app/
 //
-// `service` runs locally and needs no daemon, api.json or Keychain. The others
-// only ever connect to 127.0.0.1 on the port in <dataDir>/api.json, and read
-// or send the Keychain token only after checking that api.json's pid is
-// alive. The CLI never prints the token.
+// `service` needs no running daemon to begin with; install's start check then
+// reads the new kernel's api.json and the Keychain token, with the same rules
+// as the other commands. Those only ever connect to 127.0.0.1 on the port in
+// <dataDir>/api.json, and read or send the Keychain token only after checking
+// that api.json's pid is alive. The CLI never prints the token.
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -23,7 +26,7 @@ import type { StatusBody } from "../api/server.js";
 import { API_TOKEN_KEYCHAIN_SERVICE } from "../api/token.js";
 import { securityCliKeychain } from "../auth/keychain.js";
 import type { KeychainReader } from "../auth/keychain.js";
-import { ServiceError, installService, uninstallService } from "../service/launchd.js";
+import { ServiceError, installService, removeOldKernelApps, uninstallService, verifyServiceStart } from "../service/launchd.js";
 import type { ServiceDeps, ServiceOptions } from "../service/launchd.js";
 // The leaf modules, not the sessions index: that one loads the Agent SDK.
 import { KILL_GROUP_DEADLINE_MS, LEADER_EXIT_WAIT_MS } from "../sessions/spawner.js";
@@ -74,7 +77,11 @@ export interface CliDeps {
   readonly timeoutMs?: number;
   /** `stop --all`. Default `STOP_ALL_TIMEOUT_MS`. */
   readonly stopAllTimeoutMs?: number;
-  /** `service install|uninstall`: the launchd module's options and deps (exec, uid, homeDir, platform). */
+  /**
+   * `service install|uninstall`: the launchd module's options and deps (exec,
+   * uid, homeDir, platform, clock). Install's start check also uses this
+   * CLI's `keychain`, `fetch` and `isPidAlive`.
+   */
   readonly service?: { readonly options?: ServiceOptions; readonly deps?: ServiceDeps };
   /** `session abandon` without `--yes`: whether a person can answer. Defaults to `process.stdin.isTTY === true`. */
   readonly isInteractive?: () => boolean;
@@ -315,9 +322,14 @@ export function formatStatus(status: StatusBody): string {
  * times out says the kill switch may already be engaged (one stderr line, 1).
  * `stop --all` with any session not confirmed stopped (see
  * `summarizeStopAll`) ⇒ its summary on stdout, 1.
- * `service install|uninstall` runs locally, before `api.json` or the Keychain
- * is read: one stdout line naming the label and plist, 0; a failure (not
- * macOS, no built daemon, launchctl failed) ⇒ one stderr line, 1.
+ * `service install` copies the kernel and loads the agent (a version-manager
+ * `node` ⇒ one warning line on stderr), then runs the start check
+ * (`verifyServiceStart`, 15 s): passing ⇒ older install copies removed and
+ * one stdout line naming the kernel version, the install copy and the plist,
+ * 0; failing ⇒ the check's failure output on stderr (the agent booted out and
+ * its plist removed), 1. `service uninstall` ⇒ one stdout line, 0. Any other
+ * failure (not macOS, no built daemon, a protected install target,
+ * launchctl failed) ⇒ one stderr line, 1.
  * `session abandon <id>` asks for confirmation after the `api.json` pid check
  * and before the Keychain is read or anything is sent (`y`/`yes` proceeds;
  * anything else, including stdin ending or failing before an answer ⇒ one
@@ -345,15 +357,29 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
   }
   try {
     if (command.kind === "service") {
-      // Needs no daemon: dispatched before api.json or the Keychain is read.
+      // Needs no running daemon: dispatched before api.json or the Keychain is read.
       const service = deps.service ?? {};
+      const options = deps.dataDir === undefined ? (service.options ?? {}) : { dataDir: deps.dataDir, ...service.options };
       if (command.action === "install") {
-        const options = deps.dataDir === undefined ? (service.options ?? {}) : { dataDir: deps.dataDir, ...service.options };
-        const r = installService(options, service.deps);
-        stdout.write(`studio: service ${r.label} installed and loaded (${r.plistPath})\n`);
+        const serviceDeps = { warn: (line: string) => void stderr.write(`${line}\n`), ...service.deps };
+        const r = installService(options, serviceDeps);
+        const check = await verifyServiceStart(
+          { dataDir: r.dataDir },
+          { keychain: deps.keychain ?? securityCliKeychain(), fetch: deps.fetch ?? fetch, isPidAlive: deps.isPidAlive ?? defaultIsPidAlive },
+          serviceDeps,
+        );
+        if (!check.ok) {
+          for (const line of check.lines) stderr.write(`${line}\n`);
+          return 1;
+        }
+        // Only now: a failed start keeps the previous version's copy.
+        for (const left of removeOldKernelApps(r.dataDir, r.version)) stderr.write(`studio service: warning: could not remove ${left}\n`);
+        stdout.write(
+          `studio: service ${r.label} installed and loaded: kernel ${check.version} (pid ${check.pid}) running from ${r.appDir} (${r.plistPath})\n`,
+        );
       } else {
-        const r = uninstallService(service.deps);
-        stdout.write(`studio: service ${r.label} unloaded and removed (${r.plistPath})\n`);
+        const r = uninstallService(options, service.deps);
+        stdout.write(`studio: service ${r.label} unloaded and removed (${r.plistPath}, ${r.appRoot})\n`);
       }
       return 0;
     }
