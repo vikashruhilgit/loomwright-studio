@@ -5,7 +5,7 @@ Every phase ends with a check **in the running system**, not just a test pass. P
 | # | Phase | Done when |
 |---|---|---|
 | 0 | **Design:** design system + hi-fi mockups of GUI v1 (`UI.md`). **Done 2026-09-28**; see `DESIGN.md` | The owner approves the mockups ✓ |
-| 1 | **Kernel:** repo scaffold, SQLite schema, event loop, session manager (Agent SDK), lifecycle tools, budget meter, audit log, loopback API, `studio status` CLI | Killing the daemon mid-session with `kill -9` and restarting it resumes from disk with no duplicated work |
+| 1 | **Kernel:** repo scaffold, SQLite schema, event loop, session manager (Agent SDK), lifecycle tools, budget meter, audit log, loopback API, `studio status` CLI. **Done 2026-10-06**; live exit run evidence in `docs/evidence/phase-1-exit-live-2026-10-06.json` | Killing the daemon mid-session with `kill -9` and restarting it resumes from disk with no duplicated work ✓ |
 | 2 | **Brain + Loomwright adapter:** role and memory files, kernel tools, approval gate (CLI), capability manifest, changelog comparison | `studio ask "remind me at 5pm to check X"`: Wright creates the trigger itself and it fires at 5pm. A Loomwright version change produces a "new features" note |
 | 3 | **Self-authored playbooks + dry run** | A plain-English request becomes a stored playbook whose dry-run output is shown before it's enabled; dedupe key, priority and model come from the user, with Wright only proposing defaults |
 | 4 | **Agent roster:** identities, per-agent memory, permission policy, budget | A specialist created from chat can do only what its policy allows. Tested: a comment-only reviewer can't push |

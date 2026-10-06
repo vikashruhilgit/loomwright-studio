@@ -1,0 +1,78 @@
+{
+  "test": "exit-live",
+  "at": "2026-10-06T11:36:16.535Z",
+  "timings": {
+    "first_ready_ms": 120,
+    "sleep_allowed_ms": 7211,
+    "sleep_running_ms": 8489,
+    "restarted_ms": 8670,
+    "finished_ms": 92658
+  },
+  "queue_status": "done",
+  "session_final_status": "completed",
+  "session_transitions": [
+    {
+      "from": null,
+      "to": "starting",
+      "reason": null
+    },
+    {
+      "from": "starting",
+      "to": "running",
+      "reason": null
+    },
+    {
+      "from": "running",
+      "to": "interrupted",
+      "reason": "group_killed"
+    },
+    {
+      "from": "interrupted",
+      "to": "starting",
+      "reason": "resume_attempt"
+    },
+    {
+      "from": "starting",
+      "to": "running",
+      "reason": null
+    },
+    {
+      "from": "running",
+      "to": "completed",
+      "reason": "result_success"
+    }
+  ],
+  "rows": {
+    "tasks": 1,
+    "sessions": 1,
+    "event_done_for_queue_row": 1
+  },
+  "event_kinds": {
+    "event_done": 1,
+    "event_enqueued": 1,
+    "session_group_killed": 1,
+    "session_group_recorded": 2,
+    "session_group_skipped": 1,
+    "session_status": 6,
+    "task_created": 1,
+    "tool_decision": 4
+  },
+  "group_probe_after": "ESRCH",
+  "sleep_group_in_cli_group": false,
+  "sleep_group_probe_after": "ESRCH",
+  "cli_group_probe_after_reap": "ESRCH",
+  "sleep_group_probe_after_reap": "ESRCH",
+  "sleep_left_at_reap_ms": 19819,
+  "group_events": [
+    {
+      "kind": "session_group_killed",
+      "role": "sleep",
+      "reason": null
+    },
+    {
+      "kind": "session_group_skipped",
+      "role": "other",
+      "reason": "group_gone"
+    }
+  ]
+}
