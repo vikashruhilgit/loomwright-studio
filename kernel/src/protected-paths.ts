@@ -43,6 +43,30 @@ function resolveExisting(path: string): string {
   }
 }
 
+/**
+ * The macOS firmlink root of the Data volume: `/System/Volumes/Data/Users/…`
+ * names the same folder as `/Users/…` (and TCC protects it the same way), yet
+ * `realpathSync.native` returns it unchanged, so a symlink resolution alone
+ * never maps one form onto the other.
+ */
+const FIRMLINK_DATA_ROOT = `${sep}system${sep}volumes${sep}data`;
+
+/**
+ * `path` (absolute, normalised) with a leading `/System/Volumes/Data` removed,
+ * case-insensitively and only on a path-segment boundary
+ * (`/System/Volumes/DataX` is left alone). Anything else is returned as is.
+ */
+function withoutFirmlink(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower === FIRMLINK_DATA_ROOT) return sep;
+  return lower.startsWith(`${FIRMLINK_DATA_ROOT}${sep}`) ? path.slice(FIRMLINK_DATA_ROOT.length) : path;
+}
+
+/** Each path, and each path without its firmlink prefix (`withoutFirmlink`). */
+function withAliases(paths: readonly string[]): Set<string> {
+  return new Set(paths.flatMap((p) => [p, withoutFirmlink(p)]));
+}
+
 /** Case-insensitive (APFS is by default), on a path-segment boundary: `~/Documents2` is not inside `~/Documents`. */
 function isInside(path: string, root: string): boolean {
   const p = path.toLowerCase();
@@ -54,13 +78,15 @@ function isInside(path: string, root: string): boolean {
  * Whether `path` (absolute, or resolved against the cwd) is one of
  * `PROTECTED_LOCATIONS` under `homeDir` or inside one, after symlink
  * resolution where it exists. Each location is compared both as written and
- * resolved, so a symlinked home or folder can't hide it.
+ * resolved, so a symlinked home or folder can't hide it, and both the path and
+ * the location also without a `/System/Volumes/Data` firmlink prefix, so that
+ * alias of the same folder can't hide it either.
  */
 export function isProtectedPath(path: string, homeDir: string): boolean {
-  const candidates = new Set([resolve(path), resolveExisting(path)]);
+  const candidates = withAliases([resolve(path), resolveExisting(path)]);
   for (const location of PROTECTED_LOCATIONS) {
     const lexical = join(resolve(homeDir), location);
-    for (const root of new Set([lexical, resolveExisting(lexical)])) {
+    for (const root of withAliases([lexical, resolveExisting(lexical)])) {
       for (const candidate of candidates) if (isInside(candidate, root)) return true;
     }
   }

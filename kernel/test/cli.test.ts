@@ -239,6 +239,22 @@ describe("studio CLI", () => {
     );
   });
 
+  it("status lists a session's unsettled tool groups (H08) under its kill-unconfirmed line", async () => {
+    const body = (await (await fetch(`http://127.0.0.1:${server.port}/status`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json()) as StatusBody;
+    const at = "2026-10-06T08:00:05.000Z";
+    const text = formatStatus({
+      ...body,
+      kill_unconfirmed: [
+        { id: 7, agent: "wright", status: "failed", pgid: 2000000007, kill_incomplete_at: at, tool_groups: [{ pgid: 3000000001, command: "/bin/zsh", kill_incomplete_at: at }] },
+      ],
+    });
+    expect(text).toContain(
+      `kill unconfirmed: 1 session whose group may still be alive (the reaper retries the kill)\n` +
+        `  #7 wright failed, pgid 2000000007, kill gave up at ${at}\n` +
+        `    tool group pgid 3000000001 (/bin/zsh), not confirmed gone since ${at}\n`,
+    );
+  });
+
   it("status prints no kill-unconfirmed line when no kill gave up", async () => {
     const c = cli();
     expect(await c.run("status")).toBe(0);

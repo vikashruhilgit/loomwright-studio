@@ -133,8 +133,9 @@ export interface ReapResult {
  *
  * `ended_on_its_own: true` (present only when true) marks a session that had
  * already ended before the stop (its stream had ended, or it was already
- * `failed:auth`) AND whose group the stop confirmed gone: the stop stopped
- * nothing that was running. Never on a `failed` with reason `kill_incomplete`.
+ * `failed:auth`) AND whose groups (the CLI's and every recorded tool group)
+ * the stop settled: the stop stopped nothing that was running. Never on a
+ * `failed` with reason `kill_incomplete`.
  */
 export type StopAllOutcome =
   | { readonly id: number; readonly status: SessionStatus; readonly ended_on_its_own?: true }
@@ -355,9 +356,15 @@ function userMessage(prompt: string): SDKUserMessage {
   return { type: "user", message: { role: "user", content: prompt }, parent_tool_use_id: null };
 }
 
-/** The attempt spawned a group and no kill has seen it gone: it may still be alive. */
+/**
+ * The attempt spawned a group and no kill has settled all of the session's
+ * groups: the CLI's own group was not seen gone, or a recorded tool group
+ * (H08) was neither confirmed gone nor proven not the session's (its kill gave
+ * up or errored, or `ps` failed: flagged in `session_groups`). Either may
+ * still be alive, so the session never reads as cleanly ended or stopped.
+ */
 function groupMayBeAlive(attempt: Attempt | undefined): attempt is Attempt {
-  return attempt !== undefined && attempt.pgid !== undefined && !attempt.groupGone;
+  return attempt !== undefined && attempt.pgid !== undefined && (!attempt.groupGone || !attempt.toolGroupsDone);
 }
 
 function isSuccessResult(result: SDKResultMessage): boolean {
@@ -573,20 +580,23 @@ export class SessionManager {
    *   gone). Through the same entry guards as `stopSession`, so the session's
    *   own background path never overwrites it afterwards.
    *
-   * In both modes a kill that cannot confirm the group gone ends `failed`
+   * In both modes a kill that cannot confirm the CLI's group gone, or that
+   * leaves a recorded tool group unsettled (H08: flagged in `session_groups`,
+   * listed under `/status`'s `kill_unconfirmed`), ends `failed`
    * (`kill_incomplete`), a stream that had already ended keeps its outcome, and
    * a stop already in flight is shared. A session that already ended
    * `failed:auth` but whose group is still waiting for its auth kill timer gets
    * that kill now and its pending auth timer is cancelled (the kernel keeps
    * running in kill-switch mode, so the timer would otherwise fire later),
    * then is settled as the timer would settle it. Its outcome is `failed:auth`
-   * only once the group is confirmed gone; otherwise it is `stop_failed`
+   * only once its groups are settled; otherwise it is `stop_failed`
    * (`kill_incomplete`): the row keeps `failed:auth` with `kill_incomplete_at`
-   * set, so every later `reapOrphans` retries the kill.
+   * set (or its tool group flagged), so every later `reapOrphans` retries the
+   * kill.
    *
    * An outcome carries `ended_on_its_own: true` when the session had already
    * ended before the stop (its stream had ended, or it was already
-   * `failed:auth`) and the stop confirmed its group gone.
+   * `failed:auth`) and the stop settled its groups.
    */
   async stopAll(options: { readonly mode?: "stop" | "shutdown" } = {}): Promise<StopAllOutcome[]> {
     const mode = options.mode ?? "stop";
@@ -615,14 +625,15 @@ export class SessionManager {
         // so this live entry no longer hides the flagged row from `reapOrphans`.
         this.#settle(live);
         // A kill that gave up (or errored) already flagged the row
-        // (`kill_incomplete_at`); never report the session as ended.
+        // (`kill_incomplete_at`) or the tool group (`session_groups`); never
+        // report the session as ended.
         if (groupMayBeAlive(attempt)) throw new Error("kill_incomplete");
       }
       return { status: live.status, endedOnItsOwn: true };
     }
     const status = await (mode === "stop" ? this.stopSession(id) : this.#stopLive(id, "shutdown"));
     // A verdict is set only when the stream ended before any stop began
-    // (`#conclude`); a group the stop could not confirm gone never counts.
+    // (`#conclude`); a group (the CLI's or a tool's) the stop could not settle never counts.
     const endedOnItsOwn = live !== undefined && live.verdict !== undefined && !groupMayBeAlive(live.attempt);
     return { status, endedOnItsOwn };
   }
@@ -1501,7 +1512,8 @@ export class SessionManager {
       this.#closeQuery(attempt);
       attempt.authTimer?.();
     }
-    // A group that outlived the kill is not "stopped": `failed` (`kill_incomplete`).
+    // A group (the CLI's or a recorded tool group) that outlived the kill is
+    // not "stopped": `failed` (`kill_incomplete`).
     // A stream that had already ended keeps its computed outcome: the stop only
     // raced the cleanup of a session that was no longer running. A shutdown
     // ends a running session `interrupted` (non-terminal, resumable): `stopping`
@@ -1997,11 +2009,15 @@ export class SessionManager {
   /**
    * `#finish` for a status written after the attempt's group was killed: when
    * that kill did not confirm the group gone (it gave up at the deadline or
-   * errored, already recorded as `session_kill_incomplete`/`session_kill_error`),
-   * the session is `failed` with reason `kill_incomplete` and `cause` the
-   * intended outcome, never a status that claims the session ended cleanly.
-   * The kill already flagged the row (`kill_incomplete_at`), so every later
-   * `reapOrphans` retries it.
+   * errored, already recorded as `session_kill_incomplete`/`session_kill_error`)
+   * or left a recorded tool group unsettled (H08:
+   * `session_group_kill_incomplete`/`_kill_error`, or a `ps_failed` skip;
+   * `tool_groups_unsettled: true` in the payload), the session is `failed`
+   * with reason `kill_incomplete` and `cause` the intended outcome, never a
+   * status that claims the session ended cleanly. The kill already flagged the
+   * row (`kill_incomplete_at`) or the group (`session_groups.kill_incomplete_at`),
+   * so every later `reapOrphans` retries it and `/status` lists the session
+   * under `kill_unconfirmed` until then.
    */
   #finishAfterKill(
     live: LiveSession,
@@ -2015,6 +2031,7 @@ export class SessionManager {
       reason: "kill_incomplete",
       cause: { to, reason: payload["reason"] ?? null },
       pgid: attempt.pgid,
+      ...(attempt.toolGroupsDone ? {} : { tool_groups_unsettled: true }),
     });
   }
 

@@ -10,6 +10,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readStatus } from "../src/api/server.js";
+import { summarizeStopAll } from "../src/cli/index.js";
 import { LeaderProbeError, SessionManager, descendantGroups, parseProcessTable } from "../src/sessions/index.js";
 import type { GroupLeader, ProcessEntry, SessionManagerDeps } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
@@ -315,6 +317,100 @@ describe("stop, the kill switch and a natural end kill recorded groups (B2)", ()
     await env.manager.stopSession(handle.id);
     expect(env.signalled).toContain(SHELL);
     expect(groupRows(env.store, handle.id)[0]).toMatchObject({ pgid: SHELL, resolution: "killed" });
+  });
+});
+
+describe("a recorded tool group a kill cannot settle is never reported stopped (invariant 3)", () => {
+  async function runningWithTool() {
+    const env = setup();
+    const handle = await env.manager.startSession(startParams(tmp));
+    env.startTool(handle.pgid as number);
+    await vi.waitFor(() => expect(groupRows(env.store, handle.id)).toHaveLength(1));
+    return { ...env, handle };
+  }
+
+  const status = (env: ReturnType<typeof setup>) =>
+    readStatus(env.store, [], new Date(T1), { startedAt: new Date(T0), pid: 4242, dayOf: () => "2026-10-06" }).kill_unconfirmed;
+
+  /** The session's own `session_status` events, newest last. */
+  const statusEvents = (env: ReturnType<typeof setup>, id: number) => eventsOf(env.store, id, "session_status");
+
+  it.each([
+    ["its kill gives up (stubborn)", (env: ReturnType<typeof setup>) => env.stubborn.add(SHELL), "session_group_kill_incomplete"],
+    ["ps fails for its leader", (env: ReturnType<typeof setup>) => env.psFailsFor.add(SHELL), "session_group_skipped"],
+  ] as const)("kill switch, %s: not confirmed stopped, listed under kill_unconfirmed until a later reap settles it", async (_, arrange, kind) => {
+    const env = await runningWithTool();
+    arrange(env);
+    const outcomes = await env.manager.stopAll();
+    // The CLI's group is gone, yet the session is not `stopped`.
+    expect(env.fakes.allGroupsGone()).toBe(true);
+    expect(outcomes).toEqual([{ id: env.handle.id, status: "failed" }]);
+    // The stop's kill, then the stream's own cleanup retries the unsettled group once more.
+    expect(eventsOf(env.store, env.handle.id, kind).length).toBeGreaterThan(0);
+    expect(statusEvents(env, env.handle.id).at(-1)).toMatchObject({
+      to: "failed",
+      reason: "kill_incomplete",
+      cause: { to: "stopped", reason: "stop_requested" },
+      tool_groups_unsettled: true,
+    });
+    const summary = summarizeStopAll(outcomes);
+    expect(summary.confirmed).toBe(false);
+    expect(summary.text).toContain(`1 not confirmed stopped (#${env.handle.id} failed)`);
+    // The session's own flag is keyed on the CLI's (gone) group: only the tool group's flag lists it.
+    expect(env.manager.getSession(env.handle.id)?.kill_incomplete_at).toBeNull();
+    const [row] = groupRows(env.store, env.handle.id);
+    expect(status(env)).toEqual([
+      {
+        id: env.handle.id,
+        agent: "wright",
+        status: "failed",
+        pgid: env.handle.pgid,
+        kill_incomplete_at: row?.kill_incomplete_at,
+        tool_groups: [{ pgid: SHELL, command: "/bin/zsh", kill_incomplete_at: row?.kill_incomplete_at }],
+      },
+    ]);
+
+    // The next reap kills it: the session leaves the list, and its terminal status is kept.
+    env.stubborn.clear();
+    env.psFailsFor.clear();
+    expect(await env.manager.reapOrphans()).toEqual([]);
+    expect(groupRows(env.store, env.handle.id)[0]).toMatchObject({ resolution: "killed", kill_incomplete_at: null });
+    expect(status(env)).toEqual([]);
+    expect(env.manager.getSession(env.handle.id)?.status).toBe("failed");
+  });
+
+  it.each([
+    // The fake stream ends without a result: its own outcome would be `failed` (`ended_without_result`).
+    ["stopSession", { to: "stopped", reason: "stop_requested" }],
+    ["a natural end", { to: "failed", reason: "ended_without_result" }],
+  ] as const)("%s with a stubborn tool group ends failed (kill_incomplete), its own outcome only the cause", async (how, cause) => {
+    const env = await runningWithTool();
+    env.stubborn.add(SHELL);
+    if (how === "stopSession") {
+      expect(await env.manager.stopSession(env.handle.id)).toBe("failed");
+    } else {
+      env.fakes.calls[0]?.stream.end();
+      expect(await env.handle.done).toBe("failed");
+    }
+    expect(statusEvents(env, env.handle.id).at(-1)).toMatchObject({
+      reason: "kill_incomplete",
+      cause,
+      tool_groups_unsettled: true,
+    });
+    expect(status(env).map((r) => r.id)).toEqual([env.handle.id]);
+  });
+
+  it("an abandoned row's flagged tool groups are not listed (never signalled again)", () => {
+    const env = setup();
+    const id = orphanRow(env.store, "abandoned", ORPHAN_CLI);
+    recordGroup(env.store, id, SHELL, "/bin/zsh", T1, true);
+    expect(status(env)).toEqual([]);
+  });
+
+  it("a session whose groups are all settled is stopped and not listed", async () => {
+    const env = await runningWithTool();
+    expect(await env.manager.stopAll()).toEqual([{ id: env.handle.id, status: "stopped" }]);
+    expect(status(env)).toEqual([]);
   });
 });
 

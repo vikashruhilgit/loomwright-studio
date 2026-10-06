@@ -2280,11 +2280,16 @@ describe("a cwd in a macOS-protected folder (D31, protected_cwd)", () => {
     expect(s.store.prepare("SELECT count(*) AS n FROM sessions").get()).toEqual({ n: 0 });
   });
 
-  it("a symlink into a protected folder is refused; a cwd outside them starts", async () => {
+  it("a symlink or the firmlink form of a protected folder is refused; a cwd outside them starts", async () => {
     const s = setup();
     mkdirSync(join(s.home, "Documents", "repo"), { recursive: true });
     symlinkSync(join(s.home, "Documents", "repo"), join(tmp, "repo-link"));
     expect((await refusal(s.manager.startSession(startParams({ cwd: join(tmp, "repo-link") })))).code).toBe("protected_cwd");
+    expect(s.calls).toEqual([]);
+
+    // The /System/Volumes/Data firmlink form of the same folder (realpath leaves it as is).
+    const firmlinked = join("/System/Volumes/Data", s.home, "Documents", "repo");
+    expect((await refusal(s.manager.startSession(startParams({ cwd: firmlinked })))).code).toBe("protected_cwd");
     expect(s.calls).toEqual([]);
 
     const work = join(tmp, "work");

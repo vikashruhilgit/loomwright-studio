@@ -69,6 +69,26 @@ describe("isProtectedPath", () => {
     expect(isProtectedPath(join(tmp, "elsewhere"), home)).toBe(false);
   });
 
+  it("sees through the /System/Volumes/Data firmlink, on either side, case-insensitively", () => {
+    const data = "/System/Volumes/Data";
+    // The live-run alias: realpath leaves it unchanged, TCC still protects it.
+    expect(isProtectedPath(join(data, "Users", "someone", "Documents", "work"), join("/Users", "someone"))).toBe(true);
+    expect(isProtectedPath(join(data, home, "Documents", "repo"), home)).toBe(true);
+    expect(isProtectedPath(join(data, home, "Library", "Mobile Documents", "x"), home)).toBe(true);
+    expect(isProtectedPath(join("/system/volumes/DATA", home, "desktop"), home)).toBe(true);
+    // The home dir given in the firmlink form.
+    expect(isProtectedPath(join(home, "Downloads", "x"), join(data, home))).toBe(true);
+    // `..` is resolved before the prefix is removed.
+    expect(isProtectedPath(join(data, "..", "Data", home, "Documents"), home)).toBe(true);
+  });
+
+  it("removes the firmlink prefix only on a path-segment boundary, and nothing else through it", () => {
+    expect(isProtectedPath(join("/System/Volumes/DataX", home, "Documents", "repo"), home)).toBe(false);
+    expect(isProtectedPath(join("/System/Volumes/Data2", "Users", "someone", "Documents"), join("/Users", "someone"))).toBe(false);
+    expect(isProtectedPath(join("/System/Volumes/Data", home, "code", "repo"), home)).toBe(false);
+    expect(isProtectedPath("/System/Volumes/Data", home)).toBe(false);
+  });
+
   it("a relative path resolves against the cwd", () => {
     expect(isProtectedPath("relative/dir", home)).toBe(isProtectedPath(join(process.cwd(), "relative", "dir"), home));
   });

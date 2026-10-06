@@ -293,6 +293,10 @@ export function formatStatus(status: StatusBody): string {
     lines.push(`kill unconfirmed: ${plural(unconfirmed.length, "session")} whose group may still be alive (the reaper retries the kill)`);
     for (const s of unconfirmed) {
       lines.push(`  #${s.id} ${s.agent ?? "-"} ${s.status}, pgid ${s.pgid ?? "-"}, kill gave up at ${s.kill_incomplete_at}`);
+      // `?? []`: absent when no tool group (H08) is flagged, and from an older daemon.
+      for (const g of s.tool_groups ?? []) {
+        lines.push(`    tool group pgid ${g.pgid} (${g.command}), not confirmed gone since ${g.kill_incomplete_at}`);
+      }
     }
   }
   // `?? []`: a daemon older than this CLI does not send the field.

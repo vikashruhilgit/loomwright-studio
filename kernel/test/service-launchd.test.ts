@@ -642,6 +642,14 @@ describe("a protected install target (D31, A2)", () => {
     expect(l.calls).toEqual([]);
     expect(existsSync(join(homeDir, "Documents", "data"))).toBe(false);
   });
+
+  it("is refused through the /System/Volumes/Data firmlink form of a protected folder", () => {
+    const l = launchctl();
+    const target = join("/System/Volumes/Data", homeDir, "Documents", "studio");
+    expect(thrown(() => installService({ dataDir: target, sourceRoot, env: {} }, l.deps))).toMatch(/\(D31\)/);
+    expect(l.calls).toEqual([]);
+    expect(existsSync(join(homeDir, "Documents", "studio"))).toBe(false);
+  });
 });
 
 describe("a version-manager node (A4)", () => {
