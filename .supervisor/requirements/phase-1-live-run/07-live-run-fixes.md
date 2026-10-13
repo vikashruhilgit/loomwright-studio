@@ -20,7 +20,7 @@ So that the kernel works under launchd no matter where the repo lives, a broken 
 
 - The plist runs the build in place. `daemonPath` defaults to the repo's `dist/daemon.js` (`kernel/src/service/launchd.ts:320`) and `nodePath` defaults to `process.execPath` (`:191-192`). This repo is in `~/Documents`, so the kernel exited at once under launchd with `EPERM … open '…/kernel/dist/daemon.js'`. A throwaway `launchctl submit` job with the same `node` reproduced it: reading the repo file failed with `EPERM`, while reading a file in `/private/tmp` succeeded. The terminal can read `~/Documents`; a background launchd job can't (macOS privacy protection, TCC).
 - `service install` printed "installed and loaded" (`kernel/src/cli/index.ts:353`) while launchd showed `last exit code = 1` and `state = spawn scheduled`. Nothing checks that the kernel came up.
-- The plist's `node` was `/Users/vikashruhil/.nvm/versions/node/v22.14.0/bin/node`. That's an nvm path, which breaks if that version is removed.
+- The plist's `node` was `~/.nvm/versions/node/v22.14.0/bin/node`. That's an nvm path, which breaks if that version is removed.
 
 ### Part B: tool processes (verified 2026-10-06 with `probes/p8-tool-process-group.mjs`, SDK 0.3.284, CLI 2.1.284)
 

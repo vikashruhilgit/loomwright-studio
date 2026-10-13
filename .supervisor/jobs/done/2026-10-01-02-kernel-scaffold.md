@@ -1,7 +1,7 @@
 # Supervisor Job: Kernel package scaffold (`kernel/`)
 
 ## Environment
-- **Project:** /Users/vikashruhil/Documents/work/AI/loomwright-studio
+- **Project:** ~/Documents/work/AI/loomwright-studio
 - **CLAUDE.md:** ✓ Found (fresh — item 01 merged e6773ed)
 - **Git:** clean (0 files), branch: main
 - **GitHub CLI:** ✓ Authenticated (vikashruhilgit)

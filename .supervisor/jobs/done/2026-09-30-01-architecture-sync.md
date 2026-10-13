@@ -1,7 +1,7 @@
 # Supervisor Job: Bring ARCHITECTURE.md in line with the SDK probe findings (D26–D29)
 
 ## Environment
-- **Project:** /Users/vikashruhil/Documents/work/AI/loomwright-studio
+- **Project:** ~/Documents/work/AI/loomwright-studio
 - **CLAUDE.md:** ✓ Found (fresh)
 - **Git:** clean (0 files), branch: main
 - **GitHub CLI:** ✓ Authenticated
