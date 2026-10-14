@@ -7,7 +7,7 @@ import { nextPendingRow, toQueuedEvent } from "./queue.js";
 import type { QueueRow } from "./queue.js";
 import { WorkStepFailedError, WorkStepInterruptedError, getWorkStep, runStep, runStepAsync } from "./steps.js";
 import { isEventKind } from "./types.js";
-import type { EventContext, EventHandlers, EventLoopDeps, EventLoopOptions, QueuedEvent, TickResult } from "./types.js";
+import type { DueWork, EventContext, EventHandlers, EventLoopDeps, EventLoopOptions, QueuedEvent, TickResult } from "./types.js";
 import { fireDueWakeups } from "./wakeups.js";
 
 export const DEFAULT_TICK_MS = 1_000;
@@ -26,7 +26,9 @@ type Outcome = "done" | "unhandled" | "parked" | "failed";
 
 /**
  * The kernel's main loop (AC1, AC5, AC6): mechanism only. Each `tick()` fires
- * the wake-ups that are due into the queue, then processes `pending` queue
+ * the wake-ups that are due into the queue, runs the injected due work (each
+ * function in its own try/catch: a throw ⇒ one `due_work_failed` row naming
+ * its contributor, and the tick goes on), then processes `pending` queue
  * rows in id order, calling the injected handler for each row's kind:
  *
  * - the handler resolves ⇒ `done` + `event_done`, committed together, only
@@ -64,6 +66,7 @@ type Outcome = "done" | "unhandled" | "parked" | "failed";
 export class EventLoop {
   readonly #store: Store;
   readonly #handlers: EventHandlers;
+  readonly #dueWork: readonly DueWork[];
   readonly #now: () => Date;
   readonly #schedule: (fn: () => void, ms: number) => CancelTimer;
   readonly #tickMs: number;
@@ -78,6 +81,7 @@ export class EventLoop {
     this.#store = options.store;
     // A copy: the caller cannot swap handlers under a running loop.
     this.#handlers = { ...options.handlers };
+    this.#dueWork = [...(options.dueWork ?? [])];
     this.#now = deps.now ?? (() => new Date());
     this.#schedule = deps.schedule ?? defaultSchedule;
     const tickMs = deps.tickMs ?? DEFAULT_TICK_MS;
@@ -85,7 +89,7 @@ export class EventLoop {
     this.#tickMs = tickMs;
   }
 
-  /** Fire due wake-ups, then process every eligible pending row. Single-flight: an overlapping call gets the running tick. */
+  /** Fire due wake-ups, run the due work, then process every eligible pending row. Single-flight: an overlapping call gets the running tick. */
   tick(): Promise<TickResult> {
     if (this.#running !== undefined) return this.#running;
     this.#abortTick = false;
@@ -132,6 +136,7 @@ export class EventLoop {
 
   async #runTick(): Promise<TickResult> {
     const wakeupsFired = fireDueWakeups(this.#store, this.#now()).length;
+    await this.#runDueWork();
     const counts: Record<Outcome, number> = { done: 0, unhandled: 0, parked: 0, failed: 0 };
     // Strictly increasing id: a row parked this tick is not seen again in it,
     // while a row a handler enqueues (a higher id) is processed in it.
@@ -145,6 +150,18 @@ export class EventLoop {
       counts[await this.#process(row)]++;
     }
     return { wakeupsFired, ...counts };
+  }
+
+  /** Each due-work function once, in order; a throw is recorded and never stops the tick. */
+  async #runDueWork(): Promise<void> {
+    for (const work of this.#dueWork) {
+      if (this.#abortTick) return;
+      try {
+        await work.run({ store: this.#store, now: this.#now });
+      } catch (err) {
+        this.#recordSafely("due_work_failed", NO_REF, { contributor: work.owner, error: clip(errorMessage(err)) });
+      }
+    }
   }
 
   async #process(row: QueueRow): Promise<Outcome> {

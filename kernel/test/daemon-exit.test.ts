@@ -14,6 +14,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { ApiTokenError } from "../src/api/token.js";
 import { KeychainError } from "../src/auth/keychain.js";
 import { AuthProviderError } from "../src/auth/types.js";
+import { ContributionConflictError, InvalidContributionError, UnknownEventKindError } from "../src/features/contribution.js";
 import { DAEMON_NAME, DaemonArgumentError, parseArgs, startFailureExit, startFailureKind, stopFailureExit, underLaunchd } from "../src/daemon-exit.js";
 import { LAUNCHD_ARGUMENT, THROTTLE_INTERVAL_SECONDS } from "../src/service/index.js";
 import { DB_FILENAME, Store, StoreIntegrityError, StoreLockedError, StoreSchemaTooNewError } from "../src/store/index.js";
@@ -26,6 +27,9 @@ const keychain = new KeychainError("loomwright-studio-api", 36, null);
 const unavailable = new AuthProviderError("unavailable", "subscription-token", 'auth provider "subscription-token" is not available in this build');
 const missing = new AuthProviderError("missing", "api-key", "no API key in the Keychain");
 const invalidShape = new AuthProviderError("invalid_shape", "api-key", "the stored API key has the wrong shape");
+const contributionConflict = new ContributionConflictError("tool", "kernel_probe", ["alpha", "beta"]);
+const unknownKind = new UnknownEventKindError("probe", "webhook");
+const invalidContribution = new InvalidContributionError("probe", "tool", "tool name \"probe\" must start with kernel_");
 
 /** `parseArgs`'s error for `args`. */
 function argumentError(args: readonly string[]): unknown {
@@ -73,6 +77,12 @@ describe("startFailureKind", () => {
     expect(startFailureKind(unavailable)).toBe("permanent");
   });
 
+  it("a refused feature composition is permanent: a retry composes the same contributions again", () => {
+    expect(startFailureKind(contributionConflict)).toBe("permanent");
+    expect(startFailureKind(unknownKind)).toBe("permanent");
+    expect(startFailureKind(invalidContribution)).toBe("permanent");
+  });
+
   it("everything else is transient: Keychain, API token, other auth provider codes, a plain Error, a non-Error", () => {
     for (const err of [keychain, new ApiTokenError("bad token"), missing, invalidShape, new Error("SQLITE_CANTOPEN"), "a string"]) {
       expect(startFailureKind(err)).toBe("transient");
@@ -108,6 +118,15 @@ describe("startFailureExit", () => {
       status: 0,
       line: `${DAEMON_NAME}: failed to start (not restarting: auth provider not in this build): auth provider "subscription-token" is not available in this build`,
     });
+    expect(startFailureExit(contributionConflict, true)).toEqual({
+      status: 0,
+      line: `${DAEMON_NAME}: failed to start (not restarting: two owners register the same feature contribution name): tool "kernel_probe" is registered by both alpha and beta; refusing to start`,
+    });
+    expect(startFailureExit(unknownKind, true)).toEqual({
+      status: 0,
+      line: `${DAEMON_NAME}: failed to start (not restarting: a feature contribution handles an unknown event kind): contribution probe registers a handler for unknown event kind "webhook" (known: wakeup, message)`,
+    });
+    expect(startFailureExit(invalidContribution, true).status).toBe(0);
   });
 
   it("under launchd: a transient failure exits 1 (restarted, throttled) with one line naming the cause and the rate", () => {
