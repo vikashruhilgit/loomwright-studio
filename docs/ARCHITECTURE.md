@@ -152,7 +152,7 @@ Each feature exports one `FeatureContribution`: a name plus optional tools, rout
 ## Loomwright adapter (D13, D32)
 
 - Resolves the **active** install from `~/.claude/plugins/installed_plugins.json`, never the newest folder in the cache (observed for CLI installs on 2026-10-06; the desktop-app case and the file's stability are unverified, see `docs/OPEN_QUESTIONS.md`). Beware: the desktop app and the CLI install plugins in different places, and `~/.claude/plugins/cache/` can hold many stale versions.
-- Reads Loomwright's published, versioned `capabilities.json` (D32): the contract schema version, agents, commands and skills, result schemas, hooks and what each one writes, and the host switch (for example `STUDIO_HOST=1`) that stops repo-writing hooks from writing into the session's repo. It doesn't parse Loomwright's manifest, frontmatter or `hooks.json`.
+- Reads Loomwright's published, versioned `capabilities.json` (D32): the contract schema version, agents, commands and skills, result schemas, hooks and what each one writes, and the host switch that stops repo-writing hooks from writing into the session's repo (`LOOMWRIGHT_HOST_MODE=1`, with state under `LOOMWRIGHT_HOST_STATE_DIR`; contract schema 1). It doesn't parse Loomwright's manifest, frontmatter or `hooks.json`.
 - Requires a minimum contract version.
 - Tolerates fields it doesn't know, and reports a version change rather than breaking.
 - When the version changes, compares the changelogs and tells the user about new features, offering playbooks for them (D13).
