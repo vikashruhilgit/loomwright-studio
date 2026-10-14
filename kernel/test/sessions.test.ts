@@ -10,8 +10,8 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { HookCallback, HookInput, McpServerConfig, Options, SDKMessage, SDKUserMessage, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthProviderError, KeychainError } from "../src/auth/index.js";
-import type { AuthProvider } from "../src/auth/index.js";
+import { AuthProviderError, KeychainError, stripCredentialEnv } from "../src/auth/index.js";
+import type { AuthProvider, BaseEnv } from "../src/auth/index.js";
 import { LOOMWRIGHT_CONTRACT_ERROR_REASONS } from "../src/loomwright/index.js";
 import {
   DEFAULT_RESUME_PROMPT,
@@ -2451,6 +2451,69 @@ describe("Loomwright install, contract and host mode (D32)", () => {
     expect(failures).toHaveLength(3);
     for (const f of failures) expect(f.payload.error).toContain("LOOMWRIGHT_HOST_STATE_DIR");
     expect(events(store, "session_status").at(-1)?.payload).toMatchObject({ to: "failed", reason: "resume_failed" });
+  });
+
+  // The provider's real shape: the base env through the REAL stripCredentialEnv, plus its credential.
+  const strippingProvider = (seen: BaseEnv[] = []) =>
+    stubProvider({
+      buildEnv: (base: BaseEnv) => {
+        seen.push(base);
+        return { ...stripCredentialEnv(base), ANTHROPIC_API_KEY: SECRET };
+      },
+    });
+
+  it("invariant 3: a host switch naming a variable stripCredentialEnv strips can never re-add it (loomwright_contract, contract_invalid): start and resume refused, no row, nothing spawned", async () => {
+    const store = openStore();
+    const install = writeLoomwrightInstall(join(tmp, "installs", "bedrock"), {
+      ...fixtureContract(),
+      host_switch: { env: "CLAUDE_CODE_USE_BEDROCK", state_dir_env: "CLAUDE_CONFIG_DIR", effect: "x" },
+    });
+    const admission = vi.fn((): AdmissionDecision => ({ admitted: true }));
+    const { manager, calls } = harness({
+      store,
+      options: { loomwrightPath: install, authProvider: strippingProvider(), admission, baseEnv: { PATH: "/usr/bin", CLAUDE_CODE_USE_BEDROCK: "0" } },
+    });
+    const err = await refusal(manager.startSession(startParams()));
+    expect([err.code, err.detail, err.path]).toEqual(["loomwright_contract", "contract_invalid", install]);
+    expect(err.message).toContain("host_switch.env must not name CLAUDE_CODE_USE_BEDROCK");
+    expect(sessionCount(store)).toBe(0);
+    const id = interruptedAt(store, install);
+    const resumeErr = await refusal(manager.resumeSession(id, resumeParams));
+    expect([resumeErr.code, resumeErr.detail]).toEqual(["loomwright_contract", "contract_invalid"]);
+    expect(manager.getSession(id)).toMatchObject({ status: "interrupted", loomwright_path: install });
+    expect(refusals(store)).toEqual([
+      { session_id: null, payload: { reason: "loomwright_contract", detail: "contract_invalid", path: install } },
+      { session_id: id, payload: { reason: "loomwright_contract", detail: "contract_invalid", path: install } },
+    ]);
+    expect(calls).toEqual([]);
+    expect(admission).not.toHaveBeenCalled();
+  });
+
+  it("the kernel owns the host-switch names: an inherited LOOMWRIGHT_HOST_MODE=0 never reaches the provider or the child, and the session runs with the kernel's values (start and resume)", async () => {
+    const store = openStore();
+    const seen: BaseEnv[] = [];
+    const { manager, calls } = harness({
+      store,
+      script: ({ stream }) => {
+        stream.push(msg.init(SID));
+        stream.push(msg.success());
+      },
+      options: {
+        authProvider: strippingProvider(seen),
+        baseEnv: { PATH: "/usr/bin", LOOMWRIGHT_HOST_MODE: "0", LOOMWRIGHT_HOST_STATE_DIR: "/elsewhere" },
+      },
+    });
+    const handle = await manager.startSession(startParams());
+    expect(await handle.done).toBe("completed");
+    const id = interruptedAt(store, pluginDir);
+    const resumed = await manager.resumeSession(id, resumeParams);
+    expect(await resumed.done).toBe("completed");
+    expect(calls.map((c) => c.options.env)).toEqual([
+      { PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, LOOMWRIGHT_HOST_MODE: "1", LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(handle.id) },
+      { PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, LOOMWRIGHT_HOST_MODE: "1", LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(id) },
+    ]);
+    expect(seen).toEqual([{ PATH: "/usr/bin" }, { PATH: "/usr/bin" }]);
+    expect(refusals(store)).toEqual([]);
   });
 
   it("a state dir that cannot be created takes the spawn-failure path: the row ends failed (spawn_failed), nothing spawned", async () => {

@@ -31,6 +31,7 @@ import {
   resolveLoomwrightInstall,
 } from "../src/loomwright/index.js";
 import type { LoomwrightContract } from "../src/loomwright/index.js";
+import { hostSwitchNameProblem } from "../src/loomwright/contract.js";
 import type { Store } from "../src/store/index.js";
 import { contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolResult } from "../src/tools/server.js";
@@ -253,6 +254,31 @@ describe("readLoomwrightContract", () => {
       expect(err.reason, raw).toBe("contract_invalid");
       expect(err.message).toContain("not a JSON object");
     }
+  });
+
+  it("a host switch naming a credential, billing-routing or process-control variable is contract_invalid, naming the field and why (invariant 3)", () => {
+    const credential = ["CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"];
+    const processControl = ["PATH", "HOME", "SHELL", "USER", "TMPDIR", "NODE_OPTIONS", "NODE_PATH", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "HTTPS_PROXY"];
+    for (const [names, why] of [
+      [credential, "a credential or billing-routing variable the kernel strips"],
+      [processControl, "a process-control variable"],
+    ] as const) {
+      for (const name of names) {
+        for (const field of ["env", "state_dir_env"] as const) {
+          const dir = install(edited((c) => void ((c.host_switch as Record<string, unknown>)[field] = name)));
+          const err = refusal(() => readLoomwrightContract(dir));
+          expect(err.reason, `${field}=${name}`).toBe("contract_invalid");
+          expect(err.message).toContain(`capabilities.json invalid: host_switch.${field} must not name ${name}: ${why}`);
+        }
+      }
+    }
+  });
+
+  it("hostSwitchNameProblem needs no LOOMWRIGHT_ prefix: the renamed fixture's names, and lookalikes of refused names, are accepted", () => {
+    for (const name of ["LOOMWRIGHT_HOST_MODE", "LOOMWRIGHT_HOST_STATE_DIR", "TEST_HOST_FLAG", "TEST_HOST_STATE", "PATHFINDER_MODE", "HOMEBREW_STATE", "CLAUDE_CODE_USE_NATIVE_FILE_SEARCH"]) {
+      expect(hostSwitchNameProblem(name), name).toBeUndefined();
+    }
+    expect(requireHostSwitch(readLoomwrightContract(install("renamedHostSwitch")), "x")).toMatchObject({ env: "TEST_HOST_FLAG", state_dir_env: "TEST_HOST_STATE" });
   });
 
   it("optional fields: a non-string description and a missing or non-integer schema_version read as null; a description is one line", () => {

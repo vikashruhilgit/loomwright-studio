@@ -7,8 +7,10 @@
 // raw JSON, so unknown fields at every level are dropped, never an error (a
 // newer Loomwright may add fields). A missing, unreadable, malformed or
 // too-old contract is a `LoomwrightContractError` naming the install and the
-// reason. Imports only `node:*` (the `studio` CLI loads this module).
+// reason. Imports only `node:*` and the dependency-free credential list (the
+// `studio` CLI loads this module).
 import { join } from "node:path";
+import { isCredentialEnvVar } from "../auth/credential-env.js";
 import { readBounded } from "./bounded-read.js";
 
 /** The contract file's name inside a Loomwright install. */
@@ -22,6 +24,42 @@ export const MAX_CONTRACT_BYTES = 4 * 1024 * 1024;
 
 /** A host-switch variable name: an upper-case environment variable. */
 const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
+
+/**
+ * Process-control variables a host-switch name may never be: they decide what
+ * the child runs, loads or where it resolves files and network traffic.
+ */
+const PROCESS_CONTROL_ENV_NAMES: ReadonlySet<string> = new Set([
+  "PATH",
+  "HOME",
+  "SHELL",
+  "USER",
+  "LOGNAME",
+  "PWD",
+  "TMPDIR",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+]);
+
+/** Prefixes of process-control variables: the dynamic loaders' (`DYLD_*`, `LD_*`) and Node's (`NODE_OPTIONS`, `NODE_PATH`, ...). */
+const PROCESS_CONTROL_ENV_PREFIXES: readonly string[] = ["DYLD_", "LD_", "NODE_"];
+
+/**
+ * Why `name` may not be a host-switch variable, or `undefined` when it may.
+ * The contract is semi-trusted data (invariant 3): its host switch may never
+ * name a credential or billing-routing variable the kernel strips
+ * (`isCredentialEnvVar`), nor a process-control variable. No prefix is
+ * required, so a later Loomwright may rename its switch.
+ */
+export function hostSwitchNameProblem(name: string): string | undefined {
+  if (isCredentialEnvVar(name)) return "a credential or billing-routing variable the kernel strips";
+  if (PROCESS_CONTROL_ENV_NAMES.has(name) || PROCESS_CONTROL_ENV_PREFIXES.some((prefix) => name.startsWith(prefix))) {
+    return "a process-control variable";
+  }
+  return undefined;
+}
 
 /**
  * Every reason a `LoomwrightContractError` carries, in one closed list:
@@ -125,7 +163,8 @@ function oneLine(value: unknown): string | null {
  * `LoomwrightContractError` (`path` = `installPath`) when the file is missing
  * (`contract_missing`), unreadable or over 4 MiB (`contract_unreadable`), not
  * JSON (`contract_not_json`), not an object or missing / mistyping a required
- * field (`contract_invalid`, naming the field), or older than
+ * field (`contract_invalid`, naming the field; also a host-switch name that
+ * `hostSwitchNameProblem` refuses), or older than
  * `MIN_CONTRACT_SCHEMA_VERSION` (`contract_schema_too_old`). A contract
  * without `host_switch` is valid here (`host_switch: null`).
  */
@@ -191,6 +230,10 @@ export function readLoomwrightContract(installPath: string): LoomwrightContract 
     if (typeof env !== "string" || !ENV_NAME.test(env)) throw invalid("host_switch.env", `must match ${ENV_NAME.source}`);
     if (typeof stateDirEnv !== "string" || !ENV_NAME.test(stateDirEnv)) throw invalid("host_switch.state_dir_env", `must match ${ENV_NAME.source}`);
     if (env === stateDirEnv) throw invalid("host_switch.state_dir_env", "must differ from host_switch.env");
+    for (const [field, name] of [["host_switch.env", env], ["host_switch.state_dir_env", stateDirEnv]] as const) {
+      const problem = hostSwitchNameProblem(name);
+      if (problem !== undefined) throw invalid(field, `must not name ${name}: ${problem}`);
+    }
     if (typeof effect !== "string") throw invalid("host_switch.effect", "must be a string");
     hostSwitch = { env, state_dir_env: stateDirEnv, effect };
   }

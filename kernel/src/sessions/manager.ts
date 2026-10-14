@@ -19,6 +19,7 @@ import type { AuthProvider, BaseEnv, ChildEnv } from "../auth/types.js";
 import { isProtectedPath, protectedLocationsText } from "../protected-paths.js";
 import { loomwrightAdapterStatus } from "../loomwright/active-install.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
+import { hostSwitchNameProblem } from "../loomwright/contract.js";
 import type { LoomwrightHostSwitch } from "../loomwright/contract.js";
 import type { Store } from "../store/store.js";
 import { LoomwrightSessionError, readSessionLoomwright, resolveSessionLoomwright } from "./loomwright-path.js";
@@ -363,21 +364,50 @@ function checkPolicy(policy: unknown): ToolPolicy {
 /** The Loomwright host-mode state dirs live here, under the Studio data dir: `<dataDir>/loomwright-state/session-<id>`. */
 export const LOOMWRIGHT_STATE_DIR = "loomwright-state";
 
-/**
- * A host-switch variable the auth-built env already sets, or `undefined`. A
- * contract may never overwrite an auth variable (D32): such a contract is
- * refused (`loomwright_contract`, `contract_invalid`).
- */
-function hostSwitchCollision(env: ChildEnv, hostSwitch: LoomwrightHostSwitch): string | undefined {
-  return [hostSwitch.env, hostSwitch.state_dir_env].find((name) => Object.prototype.hasOwnProperty.call(env, name));
+/** The two variable names the contract's host switch gives the kernel to set. */
+function hostSwitchNames(hostSwitch: LoomwrightHostSwitch): readonly [string, string] {
+  return [hostSwitch.env, hostSwitch.state_dir_env];
 }
 
-function hostSwitchCollisionError(installPath: string, name: string): LoomwrightSessionError {
+/**
+ * `base` without the host-switch names: the kernel owns those two variables,
+ * so a value inherited from the daemon's own environment (for example
+ * `LOOMWRIGHT_HOST_MODE` exported in the launching shell) never reaches the
+ * auth provider or the child. Never mutates `base`.
+ */
+function withoutHostSwitch(base: BaseEnv, hostSwitch: LoomwrightHostSwitch): BaseEnv {
+  const out: Record<string, string | undefined> = { ...base };
+  for (const name of hostSwitchNames(hostSwitch)) delete out[name];
+  return out;
+}
+
+/**
+ * Why the host switch cannot be applied to the auth-built `env` (built from
+ * `withoutHostSwitch(baseEnv)`), as `{name, why}`, or `undefined`. Refused
+ * like any other bad contract (`loomwright_contract`, `contract_invalid`):
+ *
+ * - a name `hostSwitchNameProblem` refuses (a credential, billing-routing or
+ *   process-control variable). Contract validation already refuses it; this is
+ *   defence in depth, since `stripCredentialEnv` has emptied `env` of every
+ *   credential name and a presence check alone would let the switch add one back;
+ * - a name the auth provider itself put in `env` (D32: a contract may never
+ *   overwrite an auth variable). An inherited one was dropped before `buildEnv`.
+ */
+function hostSwitchCollision(env: ChildEnv, hostSwitch: LoomwrightHostSwitch): { readonly name: string; readonly why: string } | undefined {
+  for (const name of hostSwitchNames(hostSwitch)) {
+    const problem = hostSwitchNameProblem(name);
+    if (problem !== undefined) return { name, why: `${problem}, which a contract may never set` };
+    if (Object.prototype.hasOwnProperty.call(env, name)) return { name, why: "which the auth provider sets in the session's environment" };
+  }
+  return undefined;
+}
+
+function hostSwitchCollisionError(installPath: string, collision: { readonly name: string; readonly why: string }): LoomwrightSessionError {
   return new LoomwrightSessionError(
     "loomwright_contract",
     "contract_invalid",
     installPath,
-    `Loomwright at ${installPath}: capabilities.json host_switch names ${name}, which the auth provider's environment already sets`,
+    `Loomwright at ${installPath}: capabilities.json host_switch names ${collision.name}, ${collision.why}`,
   );
 }
 
@@ -528,8 +558,9 @@ export class SessionManager {
    * Loomwright the session cannot run with (D32, each with one
    * `session_refused` event `{reason: <code>, detail: <adapter reason>, path}`
    * and no row: no install found, `loomwright_not_found`; a missing or bad
-   * `capabilities.json`, or a host switch that would overwrite an auth
-   * variable, `loomwright_contract`; a contract without a host switch,
+   * `capabilities.json`, or a host switch naming a credential or
+   * process-control variable or one the auth provider sets,
+   * `loomwright_contract`; a contract without a host switch,
    * `loomwright_no_host_switch`), and `AdmissionRefusedError` when the `admission` check refuses
    * (budget or cap, item 06). An auth failure while building the env spawns
    * nothing: the row is inserted as `failed:auth` with one `notify` event, and
@@ -561,7 +592,7 @@ export class SessionManager {
 
     let env: ChildEnv;
     try {
-      env = this.#auth.buildEnv(this.#baseEnv);
+      env = this.#auth.buildEnv(withoutHostSwitch(this.#baseEnv, loomwright.hostSwitch));
     } catch (err) {
       const at = this.#nowIso();
       this.#store.transaction(() => {
@@ -571,7 +602,7 @@ export class SessionManager {
       });
       throw err;
     }
-    // A contract may never overwrite an auth variable: refused like any other bad contract, no row.
+    // A credential / process-control name, or one the auth provider sets: refused like any other bad contract, no row.
     const collision = hostSwitchCollision(env, loomwright.hostSwitch);
     if (collision !== undefined) this.#refuseLoomwright(hostSwitchCollisionError(loomwrightPath, collision), null);
 
@@ -1266,7 +1297,7 @@ export class SessionManager {
   #launchResumeAttempt(live: LiveSession, ctx: ResumeContext, number: number): Attempt {
     let env: ChildEnv;
     try {
-      env = this.#auth.buildEnv(this.#baseEnv);
+      env = this.#auth.buildEnv(withoutHostSwitch(this.#baseEnv, ctx.hostSwitch));
     } catch (err) {
       this.#finish(live, "failed:auth", { reason: "auth_failed", code: authErrorCode(err), attempt: number }, {
         reason: "auth_failed",
@@ -1274,7 +1305,7 @@ export class SessionManager {
       });
       throw err;
     }
-    // As at a start: a contract may never overwrite an auth variable. Here it fails the attempt.
+    // As at a start (a bad name, or one the auth provider sets). Here it fails the attempt.
     const collision = hostSwitchCollision(env, ctx.hostSwitch);
     if (collision !== undefined) throw hostSwitchCollisionError(ctx.loomwrightPath, collision);
     // Re-created for every attempt, before the spawn; a failure fails the attempt.
@@ -1963,8 +1994,9 @@ export class SessionManager {
   }
 
   /**
-   * D32: a Loomwright the session cannot run with is refused before admission,
-   * auth or any spawn, like `protected_cwd`: one `session_refused` event
+   * D32: a Loomwright the session cannot run with is refused before any row
+   * or spawn, like `protected_cwd` (before admission and auth too, except the
+   * host-switch check against the auth-built env): one `session_refused` event
    * (`session_id` null for a start, the session's id for a resume) with
    * `{reason: <SessionError code>, detail: <adapter reason>, path}`, then the
    * `LoomwrightSessionError` is thrown.

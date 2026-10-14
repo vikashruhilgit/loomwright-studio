@@ -17,11 +17,11 @@ A session keeps the Loomwright it started with: the row's `loomwright_path` reco
 
 ## The contract
 
-`readLoomwrightContract(installPath)` reads `<installPath>/capabilities.json` (at most 4 MiB) and validates it field by field. Required: `plugin_name` (must be `"loomwright"`), `plugin_version` (a non-empty string), `contract_schema_version` (an integer of at least `MIN_CONTRACT_SCHEMA_VERSION`, 1), and the arrays `agents`, `commands`, `skills`, `result_schemas` (entries with a non-empty `name`) and `hooks` (entries with string `event` and `host_mode`). Read when present: an entry's `description`, a result schema's `schema_version`, and `host_switch` (`env` and `state_dir_env`, two distinct upper-case variable names, and `effect`). Unknown fields at every level are dropped, never an error, so a newer Loomwright can add fields. The adapter never parses Loomwright's `plugin.json`, frontmatter, `hooks.json` or `CHANGELOG.md`.
+`readLoomwrightContract(installPath)` reads `<installPath>/capabilities.json` (at most 4 MiB) and validates it field by field. Required: `plugin_name` (must be `"loomwright"`), `plugin_version` (a non-empty string), `contract_schema_version` (an integer of at least `MIN_CONTRACT_SCHEMA_VERSION`, 1), and the arrays `agents`, `commands`, `skills`, `result_schemas` (entries with a non-empty `name`) and `hooks` (entries with string `event` and `host_mode`). Read when present: an entry's `description`, a result schema's `schema_version`, and `host_switch` (`env` and `state_dir_env`, two distinct upper-case variable names, and `effect`). Neither name may be a credential or billing-routing variable the kernel strips (`isCredentialEnvVar`: any `ANTHROPIC_*`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CONFIG_DIR`, ...) or a process-control variable (`PATH`, `HOME`, `SHELL`, `USER`, `LOGNAME`, `PWD`, `TMPDIR`, the `*_PROXY` variables, and any `DYLD_*`, `LD_*` or `NODE_*` name): the contract is data and may never undo the kernel's credential isolation (invariant 3). No `LOOMWRIGHT_` prefix is required, so a later Loomwright may rename its switch. Unknown fields at every level are dropped, never an error, so a newer Loomwright can add fields. The adapter never parses Loomwright's `plugin.json`, frontmatter, `hooks.json` or `CHANGELOG.md`.
 
 ## Refusals
 
-A session Studio cannot run with this Loomwright is refused before admission, auth or any spawn, in the same way as `protected_cwd` (D31). No `sessions` row is written and nothing is spawned. Exactly one `session_refused` event is appended: `session_id` is null for a start, or the session's id for a resume, whose row is left as it was. Its payload is:
+A session Studio cannot run with this Loomwright is refused before any row or spawn, in the same way as `protected_cwd` (D31). Every refusal but one also comes before admission and auth; the exception is a host switch the auth provider's env sets, which can only be checked against that env, so it runs after admission and `buildEnv`. No `sessions` row is written and nothing is spawned. Exactly one `session_refused` event is appended: `session_id` is null for a start, or the session's id for a resume, whose row is left as it was. Its payload is:
 
 ```json
 { "reason": "<SessionError code>", "detail": "<adapter reason>", "path": "<the install, or installed_plugins.json>" }
@@ -32,7 +32,7 @@ The thrown `SessionError` (a `LoomwrightSessionError`, carrying `detail` and `pa
 | `SessionError` code | When |
 |---|---|
 | `loomwright_not_found` | No install could be found: the reasons `installed_plugins_missing`, `installed_plugins_unreadable`, `not_installed`, `ambiguous_install`, `install_path_invalid`. |
-| `loomwright_contract` | The install's contract is missing or bad: the `contract_*` reasons. Also a host switch that names a variable the auth provider's environment already sets (detail `contract_invalid`): a contract may never overwrite an auth variable. |
+| `loomwright_contract` | The install's contract is missing or bad: the `contract_*` reasons. Also (detail `contract_invalid`) a host switch naming a credential or process-control variable (see the contract), or a variable the auth provider itself adds to the session's env: a contract may never overwrite an auth variable. A host-switch name inherited from the daemon's own environment is not a refusal: the kernel drops it (see host mode). |
 | `loomwright_no_host_switch` | The contract is valid but has no `host_switch` (reason `no_host_switch`). Studio runs Loomwright only in host mode. |
 
 The adapter's reasons (`LoomwrightContractErrorReason`, a closed list in `kernel/src/loomwright/contract.ts`):
@@ -42,7 +42,7 @@ The adapter's reasons (`LoomwrightContractErrorReason`, a closed list in `kernel
 | `contract_missing` | The install has no `capabilities.json`. | the install |
 | `contract_unreadable` | The file can't be read, or is over 4 MiB. | the install |
 | `contract_not_json` | The file is not JSON. | the install |
-| `contract_invalid` | Not a JSON object, or a required field is missing or mistyped (the message names it). Also a host switch that collides with an auth variable (see above). | the install |
+| `contract_invalid` | Not a JSON object, or a required field is missing or mistyped (the message names it). Also a host-switch name that is a credential or process-control variable, or that the auth provider sets (see above). | the install |
 | `contract_schema_too_old` | `contract_schema_version` is below `MIN_CONTRACT_SCHEMA_VERSION` (1). | the install |
 | `no_host_switch` | A valid contract without `host_switch`. | the install |
 | `installed_plugins_missing` | `installed_plugins.json` does not exist, and no path is configured. | the file |
@@ -59,12 +59,12 @@ The adapter's reasons (`LoomwrightContractErrorReason`, a closed list in `kernel
 
 ## Host mode
 
-Every session runs with the contract's host switch on, so Loomwright's repo-writing hooks write their state under the Studio data dir instead of into the session's repo (p9, 2026-10-06, saw `.claude/settings.local.json` and `.supervisor/logs/` written into the repo without it). The child env is the auth provider's env plus two variables whose **names come from the contract**, not from Studio:
+Every session runs with the contract's host switch on, so Loomwright's repo-writing hooks write their state under the Studio data dir instead of into the session's repo (p9, 2026-10-06, saw `.claude/settings.local.json` and `.supervisor/logs/` written into the repo without it). The kernel owns these two names: a value for either inherited from the daemon's environment (for example `LOOMWRIGHT_HOST_MODE` exported in the launching shell) is dropped before the auth provider builds the env, so it never reaches the child. The child env is the auth provider's env plus two variables whose **names come from the contract**, not from Studio:
 
 - `<host_switch.env>=1`
 - `<host_switch.state_dir_env>=<dataDir>/loomwright-state/session-<sessions.id>`
 
-For Loomwright 17.2.0 these are `LOOMWRIGHT_HOST_MODE` and `LOOMWRIGHT_HOST_STATE_DIR`. The state dir is created (mode 0700) after the row is written and before the spawn; if it can't be created, the start fails the same way a failed spawn does (`failed`, `spawn_failed`). A resume rebuilds both variables from the contract at the row's `loomwright_path` and re-creates the same dir before every launch attempt. If the auth env already sets a host-switch name at resume time, that attempt fails and is retried like any other failed attempt, and the session ends `failed` (`resume_failed`) without launching. Whether a real session under host mode leaves its repo clean is the owner's p9 rerun: until then it is Loomwright's declaration, not something Studio has observed (see the evidence page).
+For Loomwright 17.2.0 these are `LOOMWRIGHT_HOST_MODE` and `LOOMWRIGHT_HOST_STATE_DIR`. The state dir is created (mode 0700) after the row is written and before the spawn; if it can't be created, the start fails the same way a failed spawn does (`failed`, `spawn_failed`). A resume rebuilds both variables from the contract at the row's `loomwright_path` and re-creates the same dir before every launch attempt. If the auth provider sets a host-switch name at resume time (or the name is a credential or process-control variable, checked again at every launch as defence in depth), that attempt fails and is retried like any other failed attempt, and the session ends `failed` (`resume_failed`) without launching. Whether a real session under host mode leaves its repo clean is the owner's p9 rerun: until then it is Loomwright's declaration, not something Studio has observed (see the evidence page).
 
 ## The `kernel_loomwright_capabilities` tool
 
