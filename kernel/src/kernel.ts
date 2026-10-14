@@ -2,6 +2,8 @@
 // loop and the loopback API, started in a fixed order and stopped in reverse.
 // Mechanism only (invariant 1): the daemon passes no handler, nothing is
 // preinstalled; `KernelOptions.handlers` is for other compositions (tests).
+// The phase 2 feature contributions (`SHIPPED_CONTRIBUTIONS`, each empty until
+// its item builds it) are merged once, before the store opens.
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ensureApiToken } from "./api/token.js";
@@ -15,6 +17,9 @@ import type { KeychainReader, KeychainWriter } from "./auth/keychain.js";
 import { SUBSCRIPTION_TOKEN_ID, availableProviderIds, selectAuthProvider } from "./auth/registry.js";
 import type { AuthProvider, AuthProviderDeps, BaseEnv } from "./auth/types.js";
 import { Budget } from "./budget/index.js";
+import { PHASE1_RESERVED, mergeContributions } from "./features/contribution.js";
+import type { FeatureContribution, MergedContributions } from "./features/contribution.js";
+import { SHIPPED_CONTRIBUTIONS } from "./features/index.js";
 import { EventLoop } from "./loop/loop.js";
 import type { EventHandlers, EventLoopDeps } from "./loop/types.js";
 import { SessionManager } from "./sessions/manager.js";
@@ -57,6 +62,13 @@ export interface KernelOptions {
    * test's harness, standing in for a playbook) passes its own.
    */
   readonly handlers?: EventHandlers;
+  /**
+   * The feature contributions to compose. Default `SHIPPED_CONTRIBUTIONS`
+   * (every one empty: nothing is preinstalled). A collision between two of
+   * them, or with a phase 1 tool, route or subcommand or a `handlers` kind, is
+   * refused before the store opens.
+   */
+  readonly contributions?: readonly FeatureContribution[];
 }
 
 /** Every side effect of the composition, injectable for tests. */
@@ -86,6 +98,8 @@ export interface Kernel {
   readonly loop: EventLoop;
   readonly api: { readonly port: number; readonly host: typeof API_HOST };
   readonly apiInfoPath: string;
+  /** What the contributions registered (tools, routes, subcommands, handlers, due work), as merged. */
+  readonly contributions: MergedContributions;
   /**
    * Graceful stop (SIGTERM/SIGINT): close the API, stop the loop, stop every
    * session in `shutdown` mode (they end `interrupted`, resumable after the
@@ -117,11 +131,15 @@ function removeApiInfoIfOurs(path: string, pid: number): void {
 }
 
 /**
- * Start the kernel, in this order: open the `Store` (taking its lock); select
+ * Start the kernel, in this order: merge `options.contributions` (default
+ * `SHIPPED_CONTRIBUTIONS`; a `ContributionConflictError`,
+ * `UnknownEventKindError` or `InvalidContributionError` rejects before any
+ * side effect); open the `Store` (taking its lock); select
  * the auth provider (`--auth-provider`, else `STUDIO_AUTH_PROVIDER`, else the
  * build default); the `Budget`; the `SessionManager` (wired to the budget and
  * given the kernel MCP server per launch); reap orphans left by an earlier
- * kernel; the `EventLoop` with `options.handlers` (none by default), started only while the kill switch
+ * kernel; the `EventLoop` with `options.handlers` (none by default) plus the
+ * contributed handlers and due work, started only while the kill switch
  * is NOT engaged; the API token (generated on first start); the API server;
  * then `<dataDir>/api.json` (mode 0600, no token).
  *
@@ -137,6 +155,13 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
   const pid = deps.pid ?? process.pid;
   const startedAt = now();
   const apiInfoPath = join(dataDir, API_INFO_FILENAME);
+
+  // Before the store opens: a deterministically broken composition has no side effect.
+  const contributions = mergeContributions(options.contributions ?? SHIPPED_CONTRIBUTIONS, {
+    // The same phase 1 lists `runCli` reserves: the CLI warns about exactly what refuses here.
+    ...PHASE1_RESERVED,
+    handlerKinds: Object.keys(options.handlers ?? {}),
+  });
 
   const store = (deps.openStore ?? ((dir: string) => new Store({ dataDir: dir })))(dataDir);
   let sessions: SessionManager | undefined;
@@ -178,7 +203,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         onMessage: budget.observe,
         admission: budget.check,
         mcpServers: ({ sessionId }) => ({
-          [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now }),
+          [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now }, contributions.tools),
         }),
       },
       { now, ...deps.sessionDeps },
@@ -186,14 +211,26 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     sessions = manager;
     await manager.reapOrphans();
 
-    // The daemon passes no handler (invariant 1): every queued event is `event_unhandled`.
-    const eventLoop = new EventLoop({ store, handlers: options.handlers ?? {} }, { now, ...deps.loopDeps });
+    // The daemon passes no handler (invariant 1): every queued event is
+    // `event_unhandled` unless a contribution handles its kind (none shipped).
+    const eventLoop = new EventLoop(
+      { store, handlers: { ...options.handlers, ...contributions.handlers }, dueWork: contributions.dueWork },
+      { now, ...deps.loopDeps },
+    );
     loop = eventLoop;
     if (!isKillSwitchEngaged(store)) eventLoop.start();
 
     const token = ensureApiToken(keychain, deps.keychainWriter ?? securityCliKeychainWriter(), deps.randomBytes);
     const server = await (deps.startApiServer ?? startApiServer)(
-      { store, sessions: manager, loop: eventLoop, authProviders: [authProvider], token, ...(options.port === undefined ? {} : { port: options.port }) },
+      {
+        store,
+        sessions: manager,
+        loop: eventLoop,
+        authProviders: [authProvider],
+        token,
+        routes: contributions.routes,
+        ...(options.port === undefined ? {} : { port: options.port }),
+      },
       { now, startedAt, pid },
     );
     api = server;
@@ -210,6 +247,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
       loop: eventLoop,
       api: { port: server.port, host: API_HOST },
       apiInfoPath,
+      contributions,
       stop: () => (stopping ??= teardown()),
     };
   } catch (err) {

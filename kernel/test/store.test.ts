@@ -26,7 +26,7 @@ import {
   resolveDataDir,
 } from "../src/store/index.js";
 import type { Migration } from "../src/store/index.js";
-import { APPEND_ONLY_OBJECTS } from "../src/store/integrity.js";
+import { APPEND_ONLY_OBJECTS, checkAfterMigrating, checkBeforeMigrating } from "../src/store/integrity.js";
 import { LOCK_RETRIES, LOCK_RETRY_MAX_MS, LOCK_RETRY_MIN_MS, acquireStoreLock } from "../src/store/lock.js";
 import { initial } from "../src/store/migrations/001_initial.js";
 import { KNOWN_PROVIDER_IDS, capKeysProviderId } from "../src/store/migrations/009_cap_keys_provider_id.js";
@@ -187,10 +187,21 @@ describe("migrations", () => {
     expect(store.appliedMigrations().map((m) => [m.version, m.name])).toEqual([[1, "initial"]]);
   });
 
-  it("the default list adds auth_providers (migration 2), sessions.loomwright_path (migration 3), sessions.leader_started_at (migration 4), sessions.kill_incomplete_at (migration 5), the budget/cap_state details (migration 6), event_queue and the work_steps details (migration 7), the events explicit-id guard (migration 8), the cap keys on the provider id (migration 9), session_groups (migration 10) and no phase-2 table", () => {
+  it("the default list adds auth_providers (migration 2), sessions.loomwright_path (migration 3), sessions.leader_started_at (migration 4), sessions.kill_incomplete_at (migration 5), the budget/cap_state details (migration 6), event_queue and the work_steps details (migration 7), the events explicit-id guard (migration 8), the cap keys on the provider id (migration 9), session_groups (migration 10) and the phase 2 tables triggers, notifications, approvals and loomwright_contract_seen (migration 11)", () => {
     const store = open();
-    expect(tableNames(store)).toEqual([...PHASE1_TABLES, "auth_providers", "event_queue", "session_groups"].sort());
-    for (const later of ["agents", "playbooks", "triggers", "approvals", "hooks_installed", "connectors"]) {
+    expect(tableNames(store)).toEqual(
+      [
+        ...PHASE1_TABLES,
+        "auth_providers",
+        "event_queue",
+        "session_groups",
+        "triggers",
+        "notifications",
+        "approvals",
+        "loomwright_contract_seen",
+      ].sort(),
+    );
+    for (const later of ["agents", "playbooks", "hooks_installed", "connectors"]) {
       expect(tableNames(store)).not.toContain(later);
     }
     expect(store.appliedMigrations().map((m) => [m.version, m.name])).toEqual([
@@ -204,6 +215,7 @@ describe("migrations", () => {
       [8, "events_explicit_id_guard"],
       [9, "cap_keys_provider_id"],
       [10, "session_groups"],
+      [11, "phase_2_tables"],
     ]);
     expect(columns(store, "auth_providers")).toEqual(["id", "account", "token_created_at", "updated_at"]);
     expect(columns(store, "session_groups")).toEqual([
@@ -240,6 +252,54 @@ describe("migrations", () => {
       "done_at",
     ]);
     expect(columns(store, "work_steps").slice(-2)).toEqual(["failure_reason", "rerunnable"]);
+    expect(columns(store, "triggers")).toEqual([
+      "id",
+      "owning_agent",
+      "playbook",
+      "kind",
+      "spec_json",
+      "action",
+      "action_payload",
+      "created_by",
+      "enabled",
+      "enabled_changed_by",
+      "enabled_changed_at",
+      "next_fire_at",
+      "last_fired_at",
+      "last_result",
+      "created_at",
+    ]);
+    expect(columns(store, "notifications")).toEqual([
+      "id",
+      "source",
+      "title",
+      "body",
+      "deep_link",
+      "created_at",
+      "delivery_status",
+      "delivery_detail",
+      "delivered_at",
+    ]);
+    expect(columns(store, "approvals")).toEqual([
+      "id",
+      "requesting_agent",
+      "requesting_session",
+      "action",
+      "payload_json",
+      "requested_at",
+      "status",
+      "decision",
+      "decided_by",
+      "decided_at",
+    ]);
+    expect(columns(store, "loomwright_contract_seen")).toEqual([
+      "id",
+      "install_path",
+      "plugin_version",
+      "contract_schema_version",
+      "contract_json",
+      "first_seen_at",
+    ]);
   });
 
   it("gives sessions, work_steps and cap_state their required columns", () => {
@@ -476,7 +536,7 @@ describe("events (append-only audit log)", () => {
     v7.close();
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     expect(store.prepare(ROWS).raw().all()).toEqual(before);
   });
 });
@@ -524,7 +584,7 @@ describe("migration 9: cap keys on the provider id", () => {
     const before = inspect(tmp, (db) => db.prepare(EVENTS).raw().all());
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     expect(store.prepare(CAP_ROWS).all()).toEqual([
       { account: "subscription-token", rate_limit_type: "five_hour", status: "rejected", resets_at: RESET, reset_source: "event", notified_resets_at: RESET, warned_resets_at: null },
       { account: "subscription-token", rate_limit_type: "seven_day", status: "allowed", resets_at: null, reset_source: "event", notified_resets_at: null, warned_resets_at: null },
@@ -703,8 +763,154 @@ describe("migration 9: cap keys on the provider id", () => {
     cap(first, "subscription-token", "five_hour", "rejected", "2026-10-02T16:20:00.000Z");
     first.close();
     const store = open();
-    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     expect(store.prepare("SELECT account, status FROM cap_state").all()).toEqual([{ account: "subscription-token", status: "rejected" }]);
+  });
+});
+
+describe("migration 11: the phase 2 tables", () => {
+  const V10 = migrations.slice(0, 10);
+  const PHASE2_TABLES = ["triggers", "notifications", "approvals", "loomwright_contract_seen"];
+
+  /** Every row of every table but `schema_migrations`, by table, each value rendered with its storage class by quote(). */
+  function rows(db: Database.Database, tables: readonly string[]): Record<string, unknown[]> {
+    const out: Record<string, unknown[]> = {};
+    for (const table of tables) {
+      const cols = db.prepare<[], string>(`SELECT name FROM pragma_table_info('${table}')`).pluck().all();
+      out[table] = db.prepare(`SELECT ${cols.map((c) => `quote(${c})`).join(", ")} FROM ${table} ORDER BY rowid`).raw().all();
+    }
+    return out;
+  }
+
+  /** The stored schema of every object, and the `schema_migrations` records. */
+  function schema(db: Database.Database): { objects: unknown[]; versions: unknown[] } {
+    return {
+      objects: db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").all(),
+      versions: db.prepare("SELECT version, name, applied_at FROM schema_migrations ORDER BY version").all(),
+    };
+  }
+
+  /** A v10 store with a row in every phase 1 table. */
+  function seedV10(): void {
+    const store = open({ migrations: V10 });
+    store.prepare("INSERT INTO tasks (title, state, dedupe_key) VALUES ('t', 'open', 'd')").run();
+    store
+      .prepare(
+        "INSERT INTO sessions (agent, task_id, status, pgid, auth_account, loomwright_path, leader_started_at) VALUES ('wright', 1, 'completed', 4242, 'subscription-token', '/lw', '2026-10-01T00:00:00.000Z')",
+      )
+      .run();
+    store.prepare("INSERT INTO events (kind, actor, task_id, session_id, payload_json) VALUES ('task.created', 'wright', 1, 1, '{\"x\":\"\u00e9\"}')").run();
+    store.prepare("INSERT INTO events (kind, payload_json) VALUES ('second', NULL)").run();
+    store.prepare("INSERT INTO budget (day, session_id, model, input_tokens, output_tokens) VALUES ('2026-10-01', 1, 'm', 10, 20)").run();
+    store.prepare("INSERT INTO work_steps (key, status, result_json) VALUES ('kernel_x:session-1:k', 'done', '{}')").run();
+    store.prepare("INSERT INTO wakeups (due_at, reason, task_id) VALUES ('2026-10-02T00:00:00.000Z', 'r', 1)").run();
+    store.prepare("INSERT INTO cap_state (account, rate_limit_type, status) VALUES ('subscription-token', 'five_hour', 'allowed')").run();
+    store.prepare("INSERT INTO auth_providers (id, account) VALUES ('subscription-token', 'owner@example.test')").run();
+    store.prepare("INSERT INTO event_queue (kind, payload_json, source_ref) VALUES ('wakeup', '{}', 'wakeup:1')").run();
+    store
+      .prepare(
+        "INSERT INTO session_groups (session_id, pgid, leader_command, leader_started_at, first_seen) VALUES (1, 5151, 'bash', '2026-10-01T00:00:01.000Z', '2026-10-01T00:00:02.000Z')",
+      )
+      .run();
+    store.close();
+  }
+
+  it("migrates a v10 store with phase 1 rows to 11: every row and object intact, the integrity check passes before and after", () => {
+    seedV10();
+    const before = inspect(tmp, (db) => {
+      expect(() => checkBeforeMigrating(db, tmp, migrations, V10.map((m) => m.version))).not.toThrow();
+      const tables = tableNames(db).filter((t) => t !== "schema_migrations");
+      for (const t of tables) expect(db.prepare(`SELECT count(*) FROM ${t}`).pluck().get(), t).toBeGreaterThan(0);
+      return { tables, rows: rows(db, tables), schema: schema(db) };
+    });
+    for (const t of PHASE2_TABLES) expect(before.tables).not.toContain(t);
+
+    const store = open();
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([11, "phase_2_tables"]);
+    store.close();
+
+    inspect(tmp, (db) => {
+      expect(() => checkAfterMigrating(db, tmp, migrations)).not.toThrow();
+      expect(rows(db, before.tables)).toEqual(before.rows);
+      const after = schema(db);
+      // Migration 11 only adds: every earlier object keeps its stored text, every earlier record stays.
+      expect(after.objects.filter((o) => before.schema.objects.some((b) => (b as { name: string }).name === (o as { name: string }).name))).toEqual(
+        before.schema.objects,
+      );
+      expect(after.versions.slice(0, 10)).toEqual(before.schema.versions);
+      for (const t of PHASE2_TABLES) expect(db.prepare(`SELECT count(*) FROM ${t}`).pluck().get()).toBe(0);
+      // No trigger beyond the kernel's own events guards.
+      expect(db.prepare("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name <> 'events'").pluck().get()).toBe(0);
+    });
+  });
+
+  it("gives the phase 2 tables their defaults, indexes and the contract-seen UNIQUE key, with no value CHECK", () => {
+    const store = open();
+    store
+      .prepare(
+        "INSERT INTO triggers (owning_agent, kind, spec_json, action, action_payload, created_by) VALUES ('wright', 'once', '{\"at\":\"2026-10-15T09:00:00+01:00\"}', 'notify', 'hello', 'agent')",
+      )
+      .run();
+    store.prepare("INSERT INTO notifications (source, title, body, deep_link) VALUES ('trigger:1', 't', 'b', 'loomwright-studio://notifications/1')").run();
+    store.prepare("INSERT INTO approvals (requesting_agent, requesting_session, action, payload_json) VALUES ('wright', NULL, 'a', '{}')").run();
+    const seen = store.prepare(
+      "INSERT INTO loomwright_contract_seen (install_path, plugin_version, contract_schema_version, contract_json) VALUES ('/lw', '17.2.0', 1, '{}')",
+    );
+    seen.run();
+    expect(() => seen.run()).toThrow(/UNIQUE/);
+    const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+    const trigger = store.prepare("SELECT enabled, enabled_changed_by, playbook, created_at FROM triggers").get() as Record<string, unknown>;
+    expect(trigger).toMatchObject({ enabled: 1, enabled_changed_by: null, playbook: null });
+    expect(trigger.created_at).toMatch(ISO);
+    const note = store.prepare("SELECT delivery_status, created_at FROM notifications").get() as Record<string, unknown>;
+    expect(note.delivery_status).toBe("pending");
+    expect(note.created_at).toMatch(ISO);
+    const approval = store.prepare("SELECT status, decision, requested_at FROM approvals").get() as Record<string, unknown>;
+    expect(approval).toMatchObject({ status: "pending", decision: null });
+    expect(approval.requested_at).toMatch(ISO);
+    expect(store.prepare("SELECT first_seen_at FROM loomwright_contract_seen").pluck().get()).toMatch(ISO);
+    // Value sets are closed in code: a value a later item adds needs no rebuild.
+    store.prepare("UPDATE triggers SET kind = 'later_kind', action = 'later_action', created_by = 'later'").run();
+    store.prepare("UPDATE notifications SET delivery_status = 'later_status'").run();
+    store.prepare("UPDATE approvals SET status = 'later_status', decision = 'later'").run();
+    expect(
+      store
+        .prepare<[], { name: string; tbl_name: string }>(
+          "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('triggers', 'notifications', 'approvals') AND sql IS NOT NULL ORDER BY name",
+        )
+        .all(),
+    ).toEqual([
+      { name: "approvals_status_id", tbl_name: "approvals" },
+      { name: "notifications_delivery_status_id", tbl_name: "notifications" },
+      { name: "triggers_enabled_next_fire", tbl_name: "triggers" },
+    ]);
+    expect(store.prepare("SELECT name FROM pragma_index_info('triggers_enabled_next_fire') ORDER BY seqno").pluck().all()).toEqual(["enabled", "next_fire_at"]);
+    expect(store.prepare("SELECT name FROM pragma_index_info('notifications_delivery_status_id') ORDER BY seqno").pluck().all()).toEqual(["delivery_status", "id"]);
+    expect(store.prepare("SELECT name FROM pragma_index_info('approvals_status_id') ORDER BY seqno").pluck().all()).toEqual(["status", "id"]);
+  });
+
+  it("a database already at version 11 reopens unchanged, and a re-run of migration 11 (its record deleted) keeps every row", () => {
+    const first = open();
+    first.prepare("INSERT INTO notifications (source, title, body, deep_link) VALUES ('kernel:test', 't', 'b', 'loomwright-studio://notifications/1')").run();
+    first.close();
+    const snap = (): unknown =>
+      inspect(tmp, (db) => {
+        const tables = tableNames(db).filter((t) => t !== "schema_migrations");
+        return { rows: rows(db, tables), objects: schema(db).objects };
+      });
+    const before = snap();
+    const reopened = open();
+    expect(reopened.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    reopened.close();
+    expect(snap()).toEqual(before);
+
+    const db = new Database(join(tmp, DB_FILENAME));
+    db.exec("DELETE FROM schema_migrations WHERE version = 11");
+    db.close();
+    const rerun = open();
+    expect(rerun.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    rerun.close();
+    expect(snap()).toEqual(before);
   });
 });
 
@@ -846,7 +1052,7 @@ describe("Store: integrity check at open", () => {
       open().close();
       tamper("DELETE FROM schema_migrations WHERE version = 1; DROP TRIGGER events_no_update;");
       expect(refusal(StoreIntegrityError).problems).toEqual([
-        "schema_migrations records versions 2, 3, 4, 5, 6, 7, 8, 9, 10, not a contiguous run from 1",
+        "schema_migrations records versions 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, not a contiguous run from 1",
         "trigger events_no_update is missing",
       ]);
     });
@@ -855,13 +1061,13 @@ describe("Store: integrity check at open", () => {
       open().close();
       tamper("DELETE FROM schema_migrations WHERE version = 3");
       expect(refusal(StoreIntegrityError).problems).toEqual([
-        "schema_migrations records versions 1, 2, 4, 5, 6, 7, 8, 9, 10, not a contiguous run from 1",
+        "schema_migrations records versions 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, not a contiguous run from 1",
       ]);
     });
 
     it("refuses a deleted top row whose append-only object is still there", () => {
       open().close();
-      // The top two rows: 8 (with its trigger) and 9 (no append-only object) together stay a contiguous top.
+      // The top rows: 8 (with its trigger) and 9 to 11 (no append-only object) together stay a contiguous top.
       tamper("DELETE FROM schema_migrations WHERE version >= 8");
       expect(refusal(StoreIntegrityError).problems).toEqual([
         "events_no_explicit_id exists but migration 8 is not recorded",
@@ -878,13 +1084,13 @@ describe("Store: integrity check at open", () => {
       expect(problem).toMatch(/^schema_migrations records no migration, but the database already has .*events/);
     });
 
-    // Honest limit: indistinguishable from a v7 database awaiting migrations 8 to 10.
-    // The pending migrations restore the guard (9 and 10 are no-op re-runs): fail-safe, nothing lost.
+    // Honest limit: indistinguishable from a v7 database awaiting migrations 8 to 11.
+    // The pending migrations restore the guard (9, 10 and 11 are no-op re-runs): fail-safe, nothing lost.
     it("opens after a deleted top row together with its object, and restores the guard", () => {
       open().close();
       tamper("DELETE FROM schema_migrations WHERE version >= 8; DROP TRIGGER events_no_explicit_id;");
       const store = open();
-      expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
       expect(() => store.prepare("INSERT INTO events (id, kind) VALUES (5, 'x')").run()).toThrow(/append-only/);
     });
   });
@@ -895,7 +1101,7 @@ describe("Store: integrity check at open", () => {
     const err = refusal(StoreSchemaTooNewError);
     expect(err.code).toBe("STORE_SCHEMA_TOO_NEW");
     expect(err.unknownVersions).toEqual([99]);
-    expect(err.knownVersion).toBe(10);
+    expect(err.knownVersion).toBe(11);
     expect(err.message).toContain("99");
     inspect(tmp, (db) =>
       expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").pluck().all()).toEqual([
@@ -912,7 +1118,7 @@ describe("Store: integrity check at open", () => {
   });
 
   it("re-checks after migrating: a migration that breaks the audit log is refused and the lock released", () => {
-    const breaking: Migration = { version: 11, name: "breaks_events", up: "DROP TRIGGER events_no_update" };
+    const breaking: Migration = { version: migrations.length + 1, name: "breaks_events", up: "DROP TRIGGER events_no_update" };
     const err = catchError(() => new Store({ dataDir: tmp, migrations: [...migrations, breaking] }));
     expect(err).toBeInstanceOf(StoreIntegrityError);
     expect((err as StoreIntegrityError).problems).toEqual(["after migrating, trigger events_no_update is missing"]);

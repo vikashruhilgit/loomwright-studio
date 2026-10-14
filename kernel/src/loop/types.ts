@@ -144,9 +144,28 @@ export type EventHandler = (ctx: EventContext) => void | Promise<void>;
 
 export type EventHandlers = Partial<Record<EventKind, EventHandler>>;
 
+/** What a due-work function receives (see `EventLoopOptions.dueWork`). */
+export interface DueWorkContext {
+  readonly store: Store;
+  /** The loop's clock. */
+  readonly now: () => Date;
+}
+
+/** A due-work function and the contribution it belongs to (named in its `due_work_failed` row). */
+export interface DueWork {
+  readonly owner: string;
+  readonly run: (ctx: DueWorkContext) => void | Promise<void>;
+}
+
 export interface EventLoopOptions {
   readonly store: Store;
   readonly handlers: EventHandlers;
+  /**
+   * Run once per tick, in order, after due wake-ups fire and before the
+   * queue. Each runs in its own try/catch: a throw appends one
+   * `due_work_failed` row and the tick goes on. Default none.
+   */
+  readonly dueWork?: readonly DueWork[];
 }
 
 export interface EventLoopDeps {
