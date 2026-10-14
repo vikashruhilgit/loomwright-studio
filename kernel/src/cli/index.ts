@@ -17,6 +17,12 @@
 // as the other commands. Those only ever connect to 127.0.0.1 on the port in
 // <dataDir>/api.json, and read or send the Keychain token only after checking
 // that api.json's pid is alive. The CLI never prints the token.
+//
+// Later features add subcommands through their contributions
+// (`FeatureContribution.subcommands`, merged from `SHIPPED_CONTRIBUTIONS`):
+// each is dispatched after the api.json pid check and before the Keychain
+// token read, like the phase 1 commands, and its help line is appended to
+// the usage text.
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -25,6 +31,9 @@ import { pathToFileURL } from "node:url";
 import type { StatusBody } from "../api/server.js";
 import { API_TOKEN_KEYCHAIN_SERVICE } from "../api/token.js";
 import { securityCliKeychain } from "../auth/keychain.js";
+import { PHASE1_SUBCOMMANDS, mergeContributions } from "../features/contribution.js";
+import type { CliApiClient, ContributedSubcommand, FeatureContribution, RouteMethod } from "../features/contribution.js";
+import { SHIPPED_CONTRIBUTIONS } from "../features/index.js";
 import type { KeychainReader } from "../auth/keychain.js";
 import { ServiceError, installService, removeOldKernelApps, uninstallService, verifyServiceStart } from "../service/launchd.js";
 import type { ServiceDeps, ServiceOptions } from "../service/launchd.js";
@@ -87,6 +96,8 @@ export interface CliDeps {
   readonly isInteractive?: () => boolean;
   /** `session abandon` without `--yes`: ask, `true` to proceed. Defaults to `readlineConfirm()` (`y`/`yes`; EOF or an input error is a no). */
   readonly confirm?: (question: string) => Promise<boolean>;
+  /** The feature contributions whose subcommands this CLI offers. Defaults to `SHIPPED_CONTRIBUTIONS`. */
+  readonly contributions?: readonly FeatureContribution[];
 }
 
 type Command =
@@ -94,13 +105,21 @@ type Command =
   | { readonly kind: "stop-all" }
   | { readonly kind: "resume" }
   | { readonly kind: "abandon"; readonly id: number; readonly yes: boolean }
-  | { readonly kind: "service"; readonly action: "install" | "uninstall" };
+  | { readonly kind: "service"; readonly action: "install" | "uninstall" }
+  | { readonly kind: "contributed"; readonly subcommand: ContributedSubcommand; readonly args: readonly string[] };
 
 /** A failure that ends the CLI with one stderr line and exit code 1. */
 class CliFailure extends Error {}
 
-function parse(argv: readonly string[]): Command | undefined {
+/** The usage text: phase 1's `USAGE`, then each contributed subcommand's help line. */
+export function usageText(subcommands: readonly ContributedSubcommand[]): string {
+  return [USAGE, ...subcommands.map((s) => s.help)].join(" | ");
+}
+
+function parse(argv: readonly string[], subcommands: readonly ContributedSubcommand[]): Command | undefined {
   const [cmd, ...rest] = argv;
+  const contributed = subcommands.find((s) => s.name === cmd);
+  if (contributed !== undefined) return { kind: "contributed", subcommand: contributed, args: rest };
   if (cmd === "status" && rest.length === 0) return { kind: "status", json: false };
   if (cmd === "status" && rest.length === 1 && rest[0] === "--json") return { kind: "status", json: true };
   if (cmd === "stop" && rest.length === 1 && rest[0] === "--all") return { kind: "stop-all" };
@@ -344,19 +363,35 @@ export function formatStatus(status: StatusBody): string {
  * connection after connecting ⇒ one stderr line saying the session may or may
  * not be abandoned and to run `studio status`, 1 (only a refused connection
  * is "not running": nothing was sent).
+ * A contributed subcommand (`deps.contributions`, default
+ * `SHIPPED_CONTRIBUTIONS`) runs after the `api.json` pid check and before the
+ * Keychain token is read: its client reads the token on its first request.
+ * It resolves to the exit code (not an integer 0-255 ⇒ 1); a throw ⇒ one
+ * stderr line, 1. Contributions that collide (with each other or a phase 1
+ * command) ⇒ one stderr line naming both owners, 1, before anything else; a
+ * malformed one ⇒ one stderr line naming it, 1.
  * Never throws, never sets `process.exitCode`, never prints the token.
  */
 export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promise<number> {
   const stdout = deps.stdout ?? process.stdout;
   const stderr = deps.stderr ?? process.stderr;
-  const command = parse(argv);
+  let subcommands: readonly ContributedSubcommand[];
+  try {
+    subcommands = mergeContributions(deps.contributions ?? SHIPPED_CONTRIBUTIONS, { subcommands: PHASE1_SUBCOMMANDS }).subcommands;
+  } catch (err) {
+    // A collision or a malformed contribution: one line naming the owners, never a throw.
+    stderr.write(`studio: ${err instanceof Error ? err.message.split("\n", 1)[0] : String(err)}\n`);
+    return 1;
+  }
+  const usage = usageText(subcommands);
+  const command = parse(argv, subcommands);
   if (command === undefined) {
-    stderr.write(`${USAGE}\n`);
+    stderr.write(`${usage}\n`);
     return 2;
   }
   if (command.kind === "abandon" && !command.yes && !(deps.isInteractive ?? defaultIsInteractive)()) {
     // Nobody can answer the question: refuse rather than wait for stdin.
-    stderr.write(`studio: session abandon needs a terminal to confirm, or --yes\n${USAGE}\n`);
+    stderr.write(`studio: session abandon needs a terminal to confirm, or --yes\n${usage}\n`);
     return 2;
   }
   try {
@@ -402,16 +437,26 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
         throw new CliFailure(`studio: session ${command.id} not abandoned (not confirmed)`);
       }
     }
-    let token: string | undefined;
-    try {
-      token = (deps.keychain ?? securityCliKeychain()).read(API_TOKEN_KEYCHAIN_SERVICE);
-    } catch (err) {
-      // KeychainError carries the service and exit status only.
-      throw new CliFailure(`studio: ${err instanceof Error ? err.message : "Keychain read failed"}`);
+    const readToken = (): string => {
+      let token: string | undefined;
+      try {
+        token = (deps.keychain ?? securityCliKeychain()).read(API_TOKEN_KEYCHAIN_SERVICE);
+      } catch (err) {
+        // KeychainError carries the service and exit status only.
+        throw new CliFailure(`studio: ${err instanceof Error ? err.message : "Keychain read failed"}`);
+      }
+      if (token === undefined || token === "") {
+        throw new CliFailure(`studio: kernel daemon is not running (no API token in Keychain item "${API_TOKEN_KEYCHAIN_SERVICE}")`);
+      }
+      return token;
+    };
+    if (command.kind === "contributed") {
+      // After the pid check, before any token read: the client reads the token on its first call.
+      const client = apiClient(port, readToken, deps.fetch ?? fetch, deps.timeoutMs ?? CLI_TIMEOUT_MS);
+      const code = await command.subcommand.run(command.args, client, { stdout, stderr });
+      return Number.isInteger(code) && code >= 0 && code <= 255 ? code : 1;
     }
-    if (token === undefined || token === "") {
-      throw new CliFailure(`studio: kernel daemon is not running (no API token in Keychain item "${API_TOKEN_KEYCHAIN_SERVICE}")`);
-    }
+    const token = readToken();
 
     const method = command.kind === "status" ? "GET" : "POST";
     const path =
@@ -479,6 +524,43 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
     stderr.write(`${err instanceof CliFailure || err instanceof ServiceError ? err.message : `studio: ${err instanceof Error ? err.message.split("\n", 1)[0] : String(err)}`}\n`);
     return 1;
   }
+}
+
+/**
+ * The authenticated client a contributed subcommand gets. The token is read
+ * (once) on the first request, never before; it is never printed. A request
+ * that gets no answer (connection error, timeout) rejects with one line.
+ */
+function apiClient(port: number, readToken: () => string, fetchFn: typeof fetch, timeoutMs: number): CliApiClient {
+  let token: string | undefined;
+  return {
+    async request(method: RouteMethod, path: string, body?: unknown) {
+      if (!path.startsWith("/")) throw new CliFailure(`studio: API path ${JSON.stringify(path)} must start with /`);
+      token ??= readToken();
+      let res: Response;
+      try {
+        res = await fetchFn(`http://${HOST}:${port}${path}`, {
+          method,
+          headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          redirect: "error",
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (err) {
+        if (isTimeout(err)) throw new CliFailure(`studio: kernel daemon did not answer ${method} ${path} within ${timeoutMs / 1_000} s (${HOST}:${port})`);
+        const code = errorCode(err);
+        throw new CliFailure(`studio: connection to the kernel daemon failed during ${method} ${path} (${HOST}:${port}${code === undefined ? "" : `: ${code}`})`);
+      }
+      const text = await res.text().catch(() => "");
+      let parsed: unknown;
+      try {
+        parsed = text === "" ? undefined : (JSON.parse(text) as unknown);
+      } catch {
+        parsed = undefined;
+      }
+      return { status: res.status, body: parsed };
+    },
+  };
 }
 
 /** True only when this module is the process entry point (`realpath` resolves npm's `bin` symlink). */

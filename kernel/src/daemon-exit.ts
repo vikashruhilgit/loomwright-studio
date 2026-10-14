@@ -10,6 +10,7 @@
 // hand (no flag), every failure exits 1, as before. Every exit writes one
 // stderr line naming the cause and, under launchd, whether it restarts.
 import { AuthProviderError } from "./auth/types.js";
+import { ContributionConflictError, InvalidContributionError, UnknownEventKindError } from "./features/contribution.js";
 import { LAUNCHD_ARGUMENT, THROTTLE_INTERVAL_SECONDS } from "./service/launchd.js";
 import { StoreIntegrityError, StoreSchemaTooNewError } from "./store/integrity.js";
 import { StoreLockedError } from "./store/lock.js";
@@ -61,6 +62,9 @@ function permanentReason(err: unknown): string | undefined {
   if (err instanceof StoreSchemaTooNewError) return "the store's schema is newer than this kernel";
   if (err instanceof DaemonArgumentError) return "bad argument";
   if (err instanceof AuthProviderError && err.code === "unavailable") return "auth provider not in this build";
+  if (err instanceof ContributionConflictError) return "two owners register the same feature contribution name";
+  if (err instanceof UnknownEventKindError) return "a feature contribution handles an unknown event kind";
+  if (err instanceof InvalidContributionError) return "a feature contribution is malformed";
   return undefined;
 }
 

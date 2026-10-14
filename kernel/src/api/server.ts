@@ -1,13 +1,16 @@
 // The kernel's loopback HTTP API (AC1-AC3): 127.0.0.1 only, every request
 // authenticated with the Keychain bearer token before any routing. Mechanism
 // only (invariant 1): it reports state, pulls the kill switch and carries the
-// owner's abandon of an unverifiable orphan, nothing more.
+// owner's abandon of an unverifiable orphan, nothing more. Later features add
+// routes through their contributions (`FeatureContribution.routes`).
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { AuthHealth, AuthProvider } from "../auth/types.js";
 import { localDay } from "../budget/index.js";
+import { compileRoutePath, matchRoutePath } from "../features/contribution.js";
+import type { ContributedRoute, RouteSegment } from "../features/contribution.js";
 import type { EventLoop } from "../loop/loop.js";
 import type { AbandonVia, SessionManager, StopAllOutcome } from "../sessions/manager.js";
 import { orphanedSessions } from "../sessions/orphans.js";
@@ -27,6 +30,20 @@ export const STATUS_LIST_LIMIT = 50;
 const ABANDON_PATH = /^\/sessions\/(\d+)\/abandon$/;
 
 /**
+ * Phase 1's routes, as `mergeContributions` reserves them (owner `phase1`): a
+ * contributed route whose path overlaps one is refused, whatever its method.
+ */
+export const PHASE1_ROUTES: readonly { readonly method: string; readonly path: string }[] = [
+  { method: "GET", path: "/status" },
+  { method: "POST", path: "/stop-all" },
+  { method: "POST", path: "/resume" },
+  { method: "POST", path: "/sessions/:id/abandon" },
+];
+
+/** The largest JSON body a contributed route reads; beyond it ⇒ `413 {"error":"body_too_large"}`. */
+export const MAX_CONTRIBUTED_BODY_BYTES = 1024 * 1024;
+
+/**
  * The header the `studio` CLI sends with `POST /sessions/<id>/abandon`
  * (value `cli`), recorded as the abandon's `via`; anything else is `api`.
  * The request is authenticated either way: this only labels the caller.
@@ -43,6 +60,11 @@ export interface ApiServerOptions {
   readonly token: string;
   /** Default 0: an OS-assigned port. */
   readonly port?: number;
+  /**
+   * Contributed routes, as merged by `mergeContributions` (collisions already
+   * refused), matched after the phase 1 routes. Default none.
+   */
+  readonly routes?: readonly ContributedRoute[];
 }
 
 export interface ApiServerDeps {
@@ -181,6 +203,37 @@ function isAuthorized(req: IncomingMessage, expected: Buffer): boolean {
 }
 
 /**
+ * The request body, or `undefined` once it passes `limit` bytes: at most
+ * `limit` bytes are ever buffered, and the rest of a refused body is drained,
+ * unread.
+ */
+function readBoundedBody(req: IncomingMessage, limit: number): Promise<Buffer | undefined> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const onData = (chunk: Buffer): void => {
+      size += chunk.length;
+      if (size > limit) {
+        req.off("data", onData);
+        req.off("end", onEnd);
+        req.resume();
+        resolve(undefined);
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = (): void => resolve(Buffer.concat(chunks));
+    req.on("data", onData);
+    req.once("end", onEnd);
+    req.once("error", reject);
+    // A client gone mid-body: never left waiting for an `end` that cannot come.
+    req.once("close", () => {
+      if (!req.complete) reject(new Error("the request ended before its body"));
+    });
+  });
+}
+
+/**
  * `provider.health(at)` with `readStatus`'s one instant. Providers are total,
  * but a provider that still throws (a test stub, a future provider) reports
  * `error` (`health_threw`), never a 500.
@@ -312,7 +365,14 @@ export function readStatus(
  *   missing or wrong ⇒ `401 {"error":"unauthorized"}` with
  *   `WWW-Authenticate: Bearer`, so an unauthenticated caller learns nothing
  *   about the routes. Then: unknown path ⇒ 404, wrong method ⇒ 405.
- *   Request bodies are ignored.
+ *   Phase 1 routes ignore request bodies (every answer other than a matched
+ *   contributed route drains the body with `req.resume()`, unread).
+ * - Contributed routes (`options.routes`) match after the phase 1 routes; an
+ *   exact path or a `:param` pattern. Their handler gets `{params, query,
+ *   body}`, where `body` is the parsed JSON body (`undefined` when empty):
+ *   one over `MAX_CONTRIBUTED_BODY_BYTES` ⇒ `413 {"error":"body_too_large"}`,
+ *   malformed JSON ⇒ `400 {"error":"invalid_json"}`, both without calling
+ *   the handler. It answers `{status, body}`; a throw ⇒ 500.
  * - `GET /status` ⇒ `StatusBody`. Each provider's `health(at)` reads the
  *   request's one instant; its failures are typed `{status: "error", reason}`
  *   values, and a provider whose `health()` still throws reports
@@ -401,15 +461,20 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     "/resume": { method: "POST", run: resume },
   };
 
+  const contributed = (options.routes ?? []).map((route) => ({ route, segments: compileRoutePath(route.path) }));
+
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    req.resume();
+    // Headers only: the body is not touched before the caller is authenticated.
     if (!isAuthorized(req, expected)) {
+      req.resume();
       send(res, 401, UNAUTHORIZED_BODY, { "WWW-Authenticate": "Bearer" });
       return;
     }
-    const path = new URL(req.url ?? "/", "http://localhost").pathname;
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const path = url.pathname;
     const abandonMatch = ABANDON_PATH.exec(path);
     if (abandonMatch !== null) {
+      req.resume();
       if (req.method !== "POST") {
         send(res, 405, { error: "method_not_allowed" }, { Allow: "POST" });
         return;
@@ -429,14 +494,49 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     }
     const route = Object.hasOwn(routes, path) ? routes[path] : undefined;
     if (route === undefined) {
-      send(res, 404, { error: "not_found" });
+      await handleContributed(req, res, url);
       return;
     }
+    req.resume();
     if (req.method !== route.method) {
       send(res, 405, { error: "method_not_allowed" }, { Allow: route.method });
       return;
     }
     send(res, 200, await route.run());
+  };
+
+  /** A contributed route (after the phase 1 routes): 404 / 405 drain the body; only a match reads it. */
+  const handleContributed = async (req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> => {
+    const parts = url.pathname.slice(1).split("/");
+    const matches = contributed.flatMap(({ route, segments }) => {
+      const params = matchRoutePath(segments, parts);
+      return params === undefined ? [] : [{ route, params }];
+    });
+    const match = matches.find((m) => m.route.method === req.method);
+    if (match === undefined) {
+      req.resume();
+      if (matches.length === 0) send(res, 404, { error: "not_found" });
+      else send(res, 405, { error: "method_not_allowed" }, { Allow: [...new Set(matches.map((m) => m.route.method))].join(", ") });
+      return;
+    }
+    const raw = await readBoundedBody(req, MAX_CONTRIBUTED_BODY_BYTES);
+    if (raw === undefined) {
+      send(res, 413, { error: "body_too_large" });
+      return;
+    }
+    let body: unknown;
+    if (raw.length > 0) {
+      try {
+        body = JSON.parse(raw.toString("utf8"));
+      } catch {
+        send(res, 400, { error: "invalid_json" });
+        return;
+      }
+    }
+    const query: Record<string, string> = Object.create(null) as Record<string, string>;
+    for (const [key, value] of url.searchParams) query[key] = value;
+    const answer = await match.route.handler({ params: match.params, query, body });
+    send(res, answer.status, answer.body === undefined ? null : answer.body);
   };
 
   const server = createServer((req, res) => {

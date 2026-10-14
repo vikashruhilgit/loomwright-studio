@@ -17,9 +17,16 @@
 // resume or a kernel restart) returns the first result, even when its other
 // arguments differ. Another session reusing the same key is not deduplicated
 // against this one.
+//
+// Contributed tools (`FeatureContribution.tools`, merged by `startKernel`) are
+// built per launch beside the phase 1 six, with the same rules: arguments are
+// validated with zod (`safeParse`) before the handler runs, and every failure
+// is an `isError` result. `KERNEL_TOOL_NAMES` stays the phase 1 list;
+// `kernelToolNames(contributed)` lists both.
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import type { EventRef } from "../loop/internal.js";
 import { runStep, runStepAsync } from "../loop/steps.js";
@@ -48,12 +55,17 @@ export type KernelToolName = (typeof KERNEL_TOOL_NAMES)[number];
  * `ToolPolicy.allowedTools` lists to let a session call them. The kernel never
  * adds them to a policy itself.
  */
-export function kernelToolFullNames(): string[] {
-  return KERNEL_TOOL_NAMES.map((name) => `mcp__${KERNEL_MCP_SERVER_NAME}__${name}`);
+export function kernelToolFullNames(contributed: readonly ContributedTool[] = []): string[] {
+  return kernelToolNames(contributed).map((name) => `mcp__${KERNEL_MCP_SERVER_NAME}__${name}`);
 }
 
-/** The work-step key of a tool call: scoped to the session row. */
-export function kernelStepKey(toolName: KernelToolName, sessionId: number, idempotencyKey: string): string {
+/** The phase 1 tool names, then the contributed ones: what the server registers. */
+export function kernelToolNames(contributed: readonly ContributedTool[] = []): string[] {
+  return [...KERNEL_TOOL_NAMES, ...contributed.map((t) => t.name)];
+}
+
+/** The work-step key of a tool call (a phase 1 or a contributed tool): scoped to the session row. */
+export function kernelStepKey(toolName: string, sessionId: number, idempotencyKey: string): string {
   return `${toolName}:session-${sessionId}:${idempotencyKey}`;
 }
 
@@ -385,19 +397,49 @@ export function kernelToolHandlers(ctx: KernelToolContext): Record<KernelToolNam
   };
 }
 
-/** The SDK tool definitions, each delegating to `kernelToolHandlers(ctx)`. */
-export function kernelToolDefinitions(ctx: KernelToolContext): SdkMcpToolDefinition<z.ZodRawShape>[] {
+/**
+ * A contributed tool's handler over untrusted `args`. The arguments are
+ * `safeParse`d before the guard around the handler, so invalid input is an
+ * `isError` result without the handler running; the handler's value is the
+ * JSON result (`undefined` ⇒ `null`) and its throw an `isError` result.
+ * Never rejects.
+ */
+export function contributedToolHandler(contributed: ContributedTool, ctx: KernelToolContext): KernelToolHandler {
+  const { store, sessions, sessionId } = ctx;
+  const toolCtx: ContributedToolContext = {
+    store,
+    sessions,
+    sessionId,
+    now: ctx.now ?? (() => new Date()),
+    stepKey: (key) => kernelStepKey(contributed.name, sessionId, key),
+  };
+  const schema = z.object(contributed.shape);
+  return async (args) => {
+    const parsed = schema.safeParse(args ?? {});
+    if (!parsed.success) return fail(`${contributed.name}: invalid input: ${z.prettifyError(parsed.error)}`);
+    return guarded(async () => ok((await contributed.handler(parsed.data, toolCtx)) ?? null));
+  };
+}
+
+/** The SDK tool definitions: the phase 1 six delegating to `kernelToolHandlers(ctx)`, then each contributed tool. */
+export function kernelToolDefinitions(ctx: KernelToolContext, contributed: readonly ContributedTool[] = []): SdkMcpToolDefinition<z.ZodRawShape>[] {
   const handlers = kernelToolHandlers(ctx);
-  return KERNEL_TOOL_NAMES.map((name) =>
-    tool(name, descriptions[name], shapes[name] as z.ZodRawShape, (args) => handlers[name](args)),
-  );
+  return [
+    ...KERNEL_TOOL_NAMES.map((name) => tool(name, descriptions[name], shapes[name] as z.ZodRawShape, (args) => handlers[name](args))),
+    ...contributed.map((t) => {
+      const handler = contributedToolHandler(t, ctx);
+      return tool(t.name, t.description, t.shape, (args) => handler(args));
+    }),
+  ];
 }
 
 /**
  * A fresh `kernel` server for one session (one `query()` launch): the SDK's
  * server instance holds a live MCP connection and cannot be reused, so the
  * session manager's `mcpServers` factory calls this once per launch attempt.
+ * `contributed` (the merged contributions' tools, default none) are
+ * registered after the phase 1 six.
  */
-export function createKernelMcpServer(ctx: KernelToolContext): McpSdkServerConfigWithInstance {
-  return createSdkMcpServer({ name: KERNEL_MCP_SERVER_NAME, version: kernelVersion(), tools: kernelToolDefinitions(ctx) });
+export function createKernelMcpServer(ctx: KernelToolContext, contributed: readonly ContributedTool[] = []): McpSdkServerConfigWithInstance {
+  return createSdkMcpServer({ name: KERNEL_MCP_SERVER_NAME, version: kernelVersion(), tools: kernelToolDefinitions(ctx, contributed) });
 }
