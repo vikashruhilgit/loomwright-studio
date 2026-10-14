@@ -123,6 +123,26 @@ function startGroup(script: string, signal?: AbortSignal, tail?: StderrTail): nu
   return pgid;
 }
 
+/**
+ * Poll the group's leader until `ps` reports it present with its exec'd
+ * command. `startGroup` returns as soon as the child is spawned, and macOS
+ * `ps` shows a process caught mid-exec by its parenthesized name ("(sh)"), so
+ * two probes taken back to back can read two different images. Throws when
+ * the leader has not settled by the deadline.
+ */
+async function awaitExecSettled(pgid: number, deadlineMs = GONE_DEADLINE_MS): Promise<void> {
+  const until = Date.now() + deadlineMs;
+  let last: GroupLeader | undefined;
+  for (;;) {
+    last = readGroupLeader(pgid);
+    if (last.status === "present" && !/^\(.*\)$/.test(last.command)) return;
+    if (Date.now() >= until) {
+      throw new Error(`leader of group ${pgid} did not settle after exec within ${deadlineMs} ms: ${JSON.stringify(last)}`);
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 function openStore(): Store {
   const store = new Store({ dataDir: join(tmp, "data") });
   stores.push(store);
@@ -298,6 +318,8 @@ describe("process-group primitives", () => {
     // `sleep 60; :` keeps /bin/sh as the leader: a lone `sleep 60` is exec'd by
     // sh, so two probes could read the image before and after that exec.
     const pgid = startGroup("sleep 60; :");
+    // Compare settled images only, never one caught mid-exec.
+    await awaitExecSettled(pgid);
     let ticked = false;
     setImmediate(() => {
       ticked = true;
