@@ -3,7 +3,7 @@
 // injected (fake pids are above any real pid_max, so even a stray real signal
 // could only hit ESRCH).
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { PassThrough } from "node:stream";
@@ -12,7 +12,17 @@ import type { HookCallback, HookInput, McpServerConfig, Options, SDKMessage, SDK
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProviderError, KeychainError } from "../src/auth/index.js";
 import type { AuthProvider } from "../src/auth/index.js";
-import { DEFAULT_RESUME_PROMPT, LeaderProbeError, SessionError, SessionManager, resolveLoomwrightPath } from "../src/sessions/index.js";
+import { LOOMWRIGHT_CONTRACT_ERROR_REASONS } from "../src/loomwright/index.js";
+import {
+  DEFAULT_RESUME_PROMPT,
+  LeaderProbeError,
+  LoomwrightSessionError,
+  SessionError,
+  SessionManager,
+  loomwrightSessionErrorCode,
+  readSessionLoomwright,
+  resolveSessionLoomwright,
+} from "../src/sessions/index.js";
 import type {
   AdmissionDecision,
   CancelTimer,
@@ -27,6 +37,7 @@ import type {
   StartSessionParams,
 } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
+import { contractFixturePath, fixtureContract, userEntry, writeInstalledPlugins, writeLoomwrightInstall } from "./fixtures/loomwright/helpers.js";
 
 const SESSIONS_SRC = fileURLToPath(new URL("../src/sessions/", import.meta.url));
 const SECRET = "sk-ant-test-secret-value";
@@ -50,11 +61,18 @@ afterEach(() => {
 
 // ---- fixtures -------------------------------------------------------------
 
-function makePluginVersion(cacheRoot: string, version: string, withManifest = true): string {
+/** A Loomwright install: a manifest and the valid fixture `capabilities.json` (D32: the contract is what the manager checks). */
+function makePluginVersion(cacheRoot: string, version: string): string {
   const dir = join(cacheRoot, version);
   mkdirSync(join(dir, ".claude-plugin"), { recursive: true });
-  if (withManifest) writeFileSync(join(dir, ".claude-plugin", "plugin.json"), '{"name":"loomwright"}\n');
+  writeFileSync(join(dir, ".claude-plugin", "plugin.json"), '{"name":"loomwright"}\n');
+  copyFileSync(contractFixturePath("valid"), join(dir, "capabilities.json"));
   return dir;
+}
+
+/** Session `id`'s host-mode state dir under the test store's data dir. */
+function stateDirOf(id: number): string {
+  return join(tmp, "data", "loomwright-state", `session-${id}`);
 }
 
 function openStore(): Store {
@@ -386,7 +404,12 @@ describe("startSession: query options (AC1)", () => {
 
     expect(options.settingSources).toEqual([]);
     expect(options.plugins).toEqual([{ type: "local", path: pluginDir }]);
-    expect(options.env).toEqual({ PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET });
+    expect(options.env).toEqual({
+      PATH: "/usr/bin",
+      ANTHROPIC_API_KEY: SECRET,
+      LOOMWRIGHT_HOST_MODE: "1",
+      LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(handle.id),
+    });
     expect(options.model).toBe("claude-haiku-4-5");
     expect(options.permissionMode).toBe("default");
     expect(options.cwd).toBe(tmp);
@@ -1553,7 +1576,7 @@ describe("resumeSession (AC6)", () => {
       expect(call.options.model).toBe("claude-haiku-4-5");
       expect(call.options.permissionMode).toBe("default");
       expect(call.options.includeHookEvents).toBe(true);
-      expect(call.options.env).toEqual({ PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET });
+      expect(call.options.env).toEqual({ PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, LOOMWRIGHT_HOST_MODE: "1", LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(id) });
       expect(call.options.hooks?.PreToolUse).toHaveLength(1);
     }
     expect((await firstPrompt(calls[0] as QueryCall)).message).toEqual({ role: "user", content: DEFAULT_RESUME_PROMPT });
@@ -2096,74 +2119,350 @@ describe("auth failure (AC7)", () => {
   }
 });
 
-// ---- AC8: Loomwright path ------------------------------------------------------------
+// ---- AC8 / D32: which Loomwright, its contract and host mode -------------------------
 
-describe("resolveLoomwrightPath (AC8)", () => {
-  it("prefers a configured path, resolved to absolute", () => {
+describe("Loomwright install, contract and host mode (D32)", () => {
+  const SID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const resumeParams = { permissionMode: "default" as const, cwd: "/tmp", policy: { allowedTools: [], allowedBashPrefixes: [] } };
+
+  /** An `installed_plugins.json` under the test's temp dir (never the real home file). */
+  function installedPlugins(plugins: Parameters<typeof writeInstalledPlugins>[1]): string {
+    return writeInstalledPlugins(join(tmp, "claude", "plugins", "installed_plugins.json"), plugins);
+  }
+
+  /** A harness with no configured path (the active install from `file`), and spies on admission and auth. */
+  function activeHarness(file: string, h: HarnessOptions = {}) {
+    const admission = vi.fn((): AdmissionDecision => ({ admitted: true }));
+    const buildEnv = vi.fn(() => ({ PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET }));
+    let n = 0;
+    const r = harness({
+      ...h,
+      options: { loomwrightPath: undefined, installedPluginsPath: file, authProvider: stubProvider({ buildEnv }), admission, ...h.options },
+      deps: { randomUUID: () => `00000000-0000-4000-8000-${String(++n).padStart(12, "0")}`, ...h.deps },
+    });
+    return { ...r, admission, buildEnv };
+  }
+
+  function refusals(store: Store) {
+    return events(store, "session_refused").map((e) => ({ session_id: e.session_id, payload: e.payload }));
+  }
+
+  async function refusal(p: Promise<unknown>): Promise<LoomwrightSessionError> {
+    const err = await p.then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(LoomwrightSessionError);
+    expect(err).toBeInstanceOf(SessionError);
+    return err as LoomwrightSessionError;
+  }
+
+  function thrown(fn: () => unknown): unknown {
+    try {
+      fn();
+    } catch (e) {
+      return e;
+    }
+    return undefined;
+  }
+
+  function interruptedAt(store: Store, installPath: string, sid: string = SID): number {
+    return Number(
+      store
+        .prepare("INSERT INTO sessions (agent, status, sdk_session_id, model, loomwright_path, pgid) VALUES ('wright', 'interrupted', ?, 'claude-haiku-4-5', ?, 4242)")
+        .run(sid, installPath).lastInsertRowid,
+    );
+  }
+
+  it("AC1: loads the install installed_plugins.json names (17.2.0), never a newer cache folder (99.0.0)", async () => {
+    const cache = join(tmp, "cache", "atelier", "loomwright");
+    const active = writeLoomwrightInstall(join(cache, "17.2.0"));
+    // Newer, and with a valid contract of its own: still never loaded.
+    writeLoomwrightInstall(join(cache, "99.0.0"), { ...fixtureContract(), plugin_version: "99.0.0" });
+    const file = installedPlugins({ "loomwright@atelier": [userEntry(active, "17.2.0")] });
+    const { manager, calls, store } = activeHarness(file, { script: ({ stream }) => stream.push(msg.success()) });
+    const handle = await manager.startSession(startParams());
+    await handle.done;
+    expect(row(store, handle.id).loomwright_path).toBe(active);
+    expect(calls[0]?.options.plugins).toEqual([{ type: "local", path: active }]);
+    expect(manager.loomwrightStatus()).toEqual({ status: "ok", install_path: active, plugin_version: "17.2.0", contract_schema_version: 1, host_switch: true });
+  });
+
+  it("resolves with the session's cwd as the project: a local-scope entry applies only to its own project", async () => {
+    const user = writeLoomwrightInstall(join(tmp, "installs", "user"));
+    const local = writeLoomwrightInstall(join(tmp, "installs", "local"));
+    const project = join(tmp, "work");
+    mkdirSync(project);
+    const file = installedPlugins({
+      "loomwright@atelier": [userEntry(user, "17.2.0"), { scope: "local", installPath: local, version: "17.2.0", projectPath: project }],
+    });
+    const { manager, store } = activeHarness(file, { script: ({ stream }) => stream.push(msg.success()) });
+    const inProject = await manager.startSession(startParams({ cwd: project }));
+    await inProject.done;
+    const elsewhere = await manager.startSession(startParams());
+    await elsewhere.done;
+    expect(row(store, inProject.id).loomwright_path).toBe(local);
+    expect(row(store, elsewhere.id).loomwright_path).toBe(user);
+  });
+
+  it("prefers a configured path, resolved to absolute, with or without installed_plugins.json", () => {
     const configured = makePluginVersion(join(tmp, "configured"), "dev");
-    // A valid cache exists too (beforeEach); the configured path still wins.
-    expect(resolveLoomwrightPath({ configured, cacheRoot: join(tmp, "plugin-cache") })).toBe(configured);
+    const missing = join(tmp, "nowhere", "installed_plugins.json");
+    const other = installedPlugins({ "loomwright@atelier": [userEntry(writeLoomwrightInstall(join(tmp, "installs", "17.2.0")), "17.2.0")] });
+    expect(resolveSessionLoomwright({ configured, installedPluginsPath: other }).installPath).toBe(configured);
     const rel = relative(process.cwd(), configured);
     expect(isAbsolute(rel)).toBe(false);
-    expect(resolveLoomwrightPath({ configured: rel, cacheRoot: join(tmp, "nowhere") })).toBe(configured);
-    expect(resolveLoomwrightPath({ configured: `${configured}/.`, cacheRoot: join(tmp, "nowhere") })).toBe(configured);
+    expect(resolveSessionLoomwright({ configured: rel, installedPluginsPath: missing }).installPath).toBe(configured);
+    expect(resolveSessionLoomwright({ configured: `${configured}/.`, installedPluginsPath: missing }).installPath).toBe(configured);
+    expect(resolveSessionLoomwright({ configured, installedPluginsPath: missing }).hostSwitch).toMatchObject({
+      env: "LOOMWRIGHT_HOST_MODE",
+      state_dir_env: "LOOMWRIGHT_HOST_STATE_DIR",
+    });
   });
 
-  it("never falls back from a configured path without a manifest", () => {
-    const bad = makePluginVersion(join(tmp, "configured"), "broken", false);
-    const err = (() => {
-      try {
-        resolveLoomwrightPath({ configured: bad, cacheRoot: join(tmp, "plugin-cache") });
-      } catch (e) {
-        return e;
-      }
-      return undefined;
-    })();
-    expect(err).toBeInstanceOf(SessionError);
-    expect((err as SessionError).code).toBe("loomwright_not_found");
+  it("never falls back from a configured path without a valid contract", () => {
+    const bad = writeLoomwrightInstall(join(tmp, "configured", "broken"), null);
+    const file = installedPlugins({ "loomwright@atelier": [userEntry(writeLoomwrightInstall(join(tmp, "installs", "17.2.0")), "17.2.0")] });
+    const err = thrown(() => resolveSessionLoomwright({ configured: bad, installedPluginsPath: file }));
+    expect(err).toBeInstanceOf(LoomwrightSessionError);
+    const e = err as LoomwrightSessionError;
+    expect([e.code, e.detail, e.path]).toEqual(["loomwright_contract", "contract_missing", bad]);
   });
 
-  it("picks the numerically newest cached version that has a manifest", () => {
-    const cache = join(tmp, "cache");
-    makePluginVersion(cache, "15.98.0");
-    const newest = makePluginVersion(cache, "15.115.0");
-    makePluginVersion(cache, "15.61.0", false); // a stale leftover
-    makePluginVersion(cache, "15.200.0", false);
-    makePluginVersion(cache, "latest");
-    mkdirSync(join(cache, "16.0.0-beta"), { recursive: true });
-    writeFileSync(join(cache, "17.0.0"), "a file, not a dir");
-    expect(resolveLoomwrightPath({ cacheRoot: cache })).toBe(newest);
-    expect(resolveLoomwrightPath({ configured: "", cacheRoot: cache })).toBe(newest);
+  it("maps every adapter reason to one session error code", () => {
+    expect(Object.fromEntries(LOOMWRIGHT_CONTRACT_ERROR_REASONS.map((r) => [r, loomwrightSessionErrorCode(r)]))).toEqual({
+      contract_missing: "loomwright_contract",
+      contract_unreadable: "loomwright_contract",
+      contract_not_json: "loomwright_contract",
+      contract_invalid: "loomwright_contract",
+      contract_schema_too_old: "loomwright_contract",
+      no_host_switch: "loomwright_no_host_switch",
+      installed_plugins_missing: "loomwright_not_found",
+      installed_plugins_unreadable: "loomwright_not_found",
+      not_installed: "loomwright_not_found",
+      ambiguous_install: "loomwright_not_found",
+      install_path_invalid: "loomwright_not_found",
+    });
   });
 
-  it("throws loomwright_not_found when nothing valid is cached", () => {
-    const cache = join(tmp, "empty-cache");
-    makePluginVersion(cache, "15.61.0", false);
-    for (const cacheRoot of [cache, join(tmp, "missing")]) {
-      expect(() => resolveLoomwrightPath({ cacheRoot })).toThrow(SessionError);
+  it("AC2: an active install without capabilities.json refuses the session: loomwright_contract, one session_refused, no row, nothing spawned", async () => {
+    const cache = join(tmp, "cache", "atelier", "loomwright");
+    // Like the real 17.0.0, which shipped without a contract.
+    const active = writeLoomwrightInstall(join(cache, "17.0.0"), null);
+    // An older install with a valid contract: never used instead.
+    writeLoomwrightInstall(join(cache, "16.9.0"));
+    const file = installedPlugins({ "loomwright@atelier": [userEntry(active, "17.0.0")] });
+    const h = activeHarness(file);
+    const err = await refusal(h.manager.startSession(startParams()));
+    expect(err.code).toBe("loomwright_contract");
+    expect(err.message).toContain(active);
+    expect(err.message).toContain("capabilities.json missing");
+    expect(h.calls).toEqual([]);
+    expect(h.children.size).toBe(0);
+    expect(sessionCount(h.store)).toBe(0);
+    expect(refusals(h.store)).toEqual([{ session_id: null, payload: { reason: "loomwright_contract", detail: "contract_missing", path: active } }]);
+    expect(h.admission).not.toHaveBeenCalled();
+    expect(h.buildEnv).not.toHaveBeenCalled();
+    expect(existsSync(join(tmp, "data", "loomwright-state"))).toBe(false);
+    expect(h.manager.loomwrightStatus()).toMatchObject({ status: "error", reason: "contract_missing", path: active });
+  });
+
+  it("AC3: a too-old, invalid or non-JSON contract is the same refusal with its own reason", async () => {
+    const noVersion = fixtureContract();
+    delete noVersion.plugin_version;
+    const cases: [string, Parameters<typeof writeLoomwrightInstall>[1], string][] = [
+      ["contract_schema_too_old", { ...fixtureContract(), contract_schema_version: 0 }, "contract_schema_version 0"],
+      ["contract_invalid", noVersion, "plugin_version"],
+      ["contract_not_json", { raw: "{ not json" }, "not JSON"],
+    ];
+    const store = openStore();
+    for (const [detail, contract, text] of cases) {
+      const install = writeLoomwrightInstall(join(tmp, "installs", detail), contract);
+      const { manager, calls } = harness({ store, options: { loomwrightPath: install } });
+      const err = await refusal(manager.startSession(startParams()));
+      expect([err.code, err.detail, err.path]).toEqual(["loomwright_contract", detail, install]);
+      expect(err.message).toContain(text);
+      expect(calls).toEqual([]);
     }
+    expect(sessionCount(store)).toBe(0);
+    expect(refusals(store).map((r) => r.payload.detail)).toEqual(cases.map(([detail]) => detail));
   });
 
-  it("records the resolved path on the session row and in the plugin option", async () => {
-    const cache = join(tmp, "cache2");
-    makePluginVersion(cache, "15.98.0");
-    const newest = makePluginVersion(cache, "15.115.0");
-    const { manager, calls, store } = harness({
-      options: { loomwrightPath: undefined, pluginCacheRoot: cache },
-      script: ({ stream }) => stream.push(msg.success()),
+  it("AC5: with no installed_plugins.json and no configured path, sessions are refused (loomwright_not_found) naming that file", async () => {
+    const file = join(tmp, "claude", "plugins", "installed_plugins.json"); // never written
+    const h = activeHarness(file);
+    const err = await refusal(h.manager.startSession(startParams()));
+    expect(err.code).toBe("loomwright_not_found");
+    expect(err.message).toContain(file);
+    expect(h.calls).toEqual([]);
+    expect(h.children.size).toBe(0);
+    expect(sessionCount(h.store)).toBe(0);
+    expect(refusals(h.store)).toEqual([{ session_id: null, payload: { reason: "loomwright_not_found", detail: "installed_plugins_missing", path: file } }]);
+    expect(h.admission).not.toHaveBeenCalled();
+    expect(h.manager.loomwrightStatus()).toMatchObject({ status: "error", reason: "installed_plugins_missing", path: file });
+  });
+
+  it("AC5: an unparseable installed_plugins.json is refused the same way (installed_plugins_unreadable)", async () => {
+    const file = join(tmp, "claude", "plugins", "installed_plugins.json");
+    mkdirSync(join(tmp, "claude", "plugins"), { recursive: true });
+    writeFileSync(file, "{ not json");
+    const h = activeHarness(file);
+    const err = await refusal(h.manager.startSession(startParams()));
+    expect(err.code).toBe("loomwright_not_found");
+    expect(err.message).toContain(file);
+    expect(h.calls).toEqual([]);
+    expect(sessionCount(h.store)).toBe(0);
+    expect(refusals(h.store)).toEqual([{ session_id: null, payload: { reason: "loomwright_not_found", detail: "installed_plugins_unreadable", path: file } }]);
+  });
+
+  it("AC6: the child env turns the contract's host switch on, with a 0700 state dir that exists before the spawn", async () => {
+    const atSpawn: { dir: string | undefined; exists: boolean; mode: number }[] = [];
+    const { manager, calls } = harness({
+      // Inside query(), right after the spawn.
+      script: ({ stream, options }) => {
+        const dir = options.env?.LOOMWRIGHT_HOST_STATE_DIR;
+        const exists = dir !== undefined && existsSync(dir);
+        atSpawn.push({ dir, exists, mode: exists ? statSync(dir).mode & 0o777 : -1 });
+        stream.push(msg.success());
+      },
     });
     const handle = await manager.startSession(startParams());
     await handle.done;
-    expect(row(store, handle.id).loomwright_path).toBe(newest);
-    expect(calls[0]?.options.plugins).toEqual([{ type: "local", path: newest }]);
+    expect(calls[0]?.options.env).toEqual({
+      PATH: "/usr/bin",
+      ANTHROPIC_API_KEY: SECRET,
+      LOOMWRIGHT_HOST_MODE: "1",
+      LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(handle.id),
+    });
+    expect(atSpawn).toEqual([{ dir: stateDirOf(handle.id), exists: true, mode: 0o700 }]);
   });
 
-  it("refuses to start, with no row, when no Loomwright install is found", async () => {
-    const { manager, calls, store } = harness({ options: { loomwrightPath: join(tmp, "nope") } });
-    const err = await manager.startSession(startParams()).catch((e: unknown) => e);
-    expect((err as SessionError).code).toBe("loomwright_not_found");
-    expect(calls).toHaveLength(0);
+  it("AC6: the variable names come from the contract: a renamed host switch sets exactly those, never LOOMWRIGHT_HOST_MODE", async () => {
+    const renamed = writeLoomwrightInstall(join(tmp, "installs", "renamed"), "renamedHostSwitch");
+    expect(readSessionLoomwright(renamed).hostSwitch).toMatchObject({ env: "TEST_HOST_FLAG", state_dir_env: "TEST_HOST_STATE" });
+    const { manager, calls } = harness({ options: { loomwrightPath: renamed }, script: ({ stream }) => stream.push(msg.success()) });
+    const handle = await manager.startSession(startParams());
+    await handle.done;
+    expect(calls[0]?.options.env).toEqual({ PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, TEST_HOST_FLAG: "1", TEST_HOST_STATE: stateDirOf(handle.id) });
+    expect(calls[0]?.options.env).not.toHaveProperty("LOOMWRIGHT_HOST_MODE");
+    expect(calls[0]?.options.env).not.toHaveProperty("LOOMWRIGHT_HOST_STATE_DIR");
+    expect(existsSync(stateDirOf(handle.id))).toBe(true);
+  });
+
+  it("AC6: a resume rebuilds the host env from the contract at the row's loomwright_path, re-creating the same state dir every attempt", async () => {
+    const store = openStore();
+    // The manager's configured path (`pluginDir`) names LOOMWRIGHT_HOST_MODE: the row's own install wins.
+    const renamed = writeLoomwrightInstall(join(tmp, "installs", "renamed"), "renamedHostSwitch");
+    const existedAtSpawn: boolean[] = [];
+    const { manager, calls } = harness({
+      store,
+      script: ({ stream, options }, n) => {
+        const dir = options.env?.TEST_HOST_STATE;
+        existedAtSpawn.push(dir !== undefined && existsSync(dir));
+        // Gone before the next attempt: it must be created again.
+        if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
+        if (n === 1) stream.fail(new Error("attempt 1 broke"));
+        else {
+          stream.push(msg.init(SID));
+          stream.push(msg.assistant());
+          stream.push(msg.success());
+        }
+      },
+    });
+    const id = interruptedAt(store, renamed);
+    const handle = await manager.resumeSession(id, resumeParams);
+    expect(await handle.done).toBe("completed");
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.options.plugins).toEqual([{ type: "local", path: renamed }]);
+      expect(call.options.env).toEqual({ PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, TEST_HOST_FLAG: "1", TEST_HOST_STATE: stateDirOf(id) });
+    }
+    expect(existedAtSpawn).toEqual([true, true]);
+    expect(row(store, id).loomwright_path).toBe(renamed);
+  });
+
+  it("a resume whose recorded install has no contract, or no host switch, is refused before admission, logged with the session's id, the row untouched", async () => {
+    const admission = vi.fn((): AdmissionDecision => ({ admitted: true }));
+    const { manager, calls, store } = harness({ options: { admission } });
+    const cases = [
+      [null, "loomwright_contract", "contract_missing"],
+      ["noHostSwitch", "loomwright_no_host_switch", "no_host_switch"],
+    ] as const;
+    for (const [contract, code, detail] of cases) {
+      const install = writeLoomwrightInstall(join(tmp, "installs", detail), contract);
+      const id = interruptedAt(store, install, `sid-${detail}`);
+      const err = await refusal(manager.resumeSession(id, resumeParams));
+      expect(err.code).toBe(code);
+      expect(err.message).toContain(install);
+      expect(refusals(store).at(-1)).toEqual({ session_id: id, payload: { reason: code, detail, path: install } });
+      expect(manager.getSession(id)).toMatchObject({ status: "interrupted", loomwright_path: install });
+      expect(events(store, "session_status").filter((e) => e.session_id === id)).toEqual([]);
+    }
+    expect(refusals(store)).toHaveLength(2);
+    expect(calls).toEqual([]);
+    expect(admission).not.toHaveBeenCalled();
+  });
+
+  it("AC7: a contract without host_switch refuses the session: loomwright_no_host_switch, one session_refused, nothing spawned", async () => {
+    const install = writeLoomwrightInstall(join(tmp, "installs", "17.1.0-test"), "noHostSwitch");
+    const file = installedPlugins({ "loomwright@atelier": [userEntry(install, "17.1.0-test")] });
+    const h = activeHarness(file);
+    const err = await refusal(h.manager.startSession(startParams()));
+    expect(err.code).toBe("loomwright_no_host_switch");
+    expect(err.message).toContain(install);
+    expect(h.calls).toEqual([]);
+    expect(h.children.size).toBe(0);
+    expect(sessionCount(h.store)).toBe(0);
+    expect(refusals(h.store)).toEqual([{ session_id: null, payload: { reason: "loomwright_no_host_switch", detail: "no_host_switch", path: install } }]);
+    expect(h.admission).not.toHaveBeenCalled();
+    // `/status` still reports such a contract: readable, with no host switch.
+    expect(h.manager.loomwrightStatus()).toMatchObject({ status: "ok", install_path: install, host_switch: false });
+  });
+
+  it("refuses a host switch naming a variable the auth provider already sets (loomwright_contract, contract_invalid): no row, nothing spawned", async () => {
+    const names = ["LOOMWRIGHT_HOST_MODE", "LOOMWRIGHT_HOST_STATE_DIR"];
+    const buildEnv = vi.fn((): Record<string, string> => ({ PATH: "/usr/bin" }));
+    const { manager, calls, store } = harness({ options: { authProvider: stubProvider({ buildEnv }) } });
+    for (const name of names) {
+      buildEnv.mockReturnValueOnce({ PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, [name]: "set-by-auth" });
+      const err = await refusal(manager.startSession(startParams()));
+      expect([err.code, err.detail, err.path]).toEqual(["loomwright_contract", "contract_invalid", pluginDir]);
+      expect(err.message).toContain(name);
+      expect(err.message).not.toContain("set-by-auth");
+    }
+    expect(buildEnv).toHaveBeenCalledTimes(2);
+    expect(calls).toEqual([]);
     expect(sessionCount(store)).toBe(0);
+    expect(refusals(store)).toEqual(names.map(() => ({ session_id: null, payload: { reason: "loomwright_contract", detail: "contract_invalid", path: pluginDir } })));
+    for (const e of events(store)) expect(e.raw).not.toContain(SECRET);
+  });
+
+  it("a resume whose auth env already sets a host-switch name launches nothing: every attempt fails, then resume_failed", async () => {
+    const store = openStore();
+    const { manager, calls } = harness({
+      store,
+      options: { authProvider: stubProvider({ buildEnv: () => ({ PATH: "/usr/bin", LOOMWRIGHT_HOST_STATE_DIR: "/elsewhere" }) }) },
+    });
+    const id = interruptedAt(store, pluginDir);
+    const handle = await manager.resumeSession(id, resumeParams);
+    expect(await handle.done).toBe("failed");
+    expect(calls).toEqual([]);
+    const failures = events(store, "session_resume_failed");
+    expect(failures).toHaveLength(3);
+    for (const f of failures) expect(f.payload.error).toContain("LOOMWRIGHT_HOST_STATE_DIR");
+    expect(events(store, "session_status").at(-1)?.payload).toMatchObject({ to: "failed", reason: "resume_failed" });
+  });
+
+  it("a state dir that cannot be created takes the spawn-failure path: the row ends failed (spawn_failed), nothing spawned", async () => {
+    const store = openStore();
+    writeFileSync(join(tmp, "data", "loomwright-state"), "a file, not a dir");
+    const { manager, calls } = harness({ store });
+    const err = await manager.startSession(startParams()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(SessionError);
+    expect(calls).toEqual([]);
+    expect(store.prepare("SELECT status FROM sessions").all()).toEqual([{ status: "failed" }]);
+    expect(events(store, "session_status").at(-1)?.payload).toMatchObject({ to: "failed", reason: "spawn_failed" });
   });
 });
 

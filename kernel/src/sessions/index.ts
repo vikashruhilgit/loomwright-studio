@@ -26,8 +26,8 @@ export {
   spawnInNewProcessGroup,
 } from "./spawner.js";
 export type { KillGroupUntilGoneOptions } from "./spawner.js";
-export { defaultPluginCacheRoot, resolveLoomwrightPath } from "./loomwright-path.js";
-export type { ResolveLoomwrightPathOptions } from "./loomwright-path.js";
+export { LoomwrightSessionError, loomwrightSessionErrorCode, readSessionLoomwright, resolveSessionLoomwright } from "./loomwright-path.js";
+export type { LoomwrightSessionErrorCode, SessionLoomwright } from "./loomwright-path.js";
 export {
   AdmissionRefusedError,
   DEFAULT_RESUME_PROMPT,
