@@ -15,7 +15,7 @@
 // `features/index.ts`, so it imports only zod and type-level kernel modules:
 // never the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the module graph).
-import type { z } from "zod";
+import { z } from "zod";
 import { EVENT_KINDS, isEventKind } from "../loop/types.js";
 import type { DueWork, DueWorkContext, EventHandler, EventHandlers } from "../loop/types.js";
 import type { SessionRow, SessionStatus } from "../sessions/types.js";
@@ -289,6 +289,20 @@ export interface MergedContributions {
 
 const CONTRIBUTION_NAME = /^[a-z][a-z0-9-]{0,63}$/;
 
+/** The part a contribution's list holds, for a refusal. */
+const PART_OF = { tools: "tool", routes: "route", subcommands: "subcommand", dueWork: "dueWork" } as const satisfies Record<string, ContributionPart>;
+
+/**
+ * A zod raw shape, as the kernel MCP server needs it (`z.object(shape)`, the
+ * SDK's `tool()`): a plain object, not itself a zod schema, whose every value
+ * is a zod schema. Checked at composition so a bad shape refuses the start
+ * instead of failing every session launch.
+ */
+function isZodRawShape(shape: unknown): boolean {
+  if (typeof shape !== "object" || shape === null || Array.isArray(shape) || shape instanceof z.ZodType) return false;
+  return Object.values(shape).every((v) => v instanceof z.ZodType);
+}
+
 /**
  * Validate every part of every contribution and merge them. Throws, before
  * anything is registered:
@@ -301,8 +315,9 @@ const CONTRIBUTION_NAME = /^[a-z][a-z0-9-]{0,63}$/;
  *   method: phase 1 routes match first and would shadow it.
  * - `UnknownEventKindError` for a handler keyed by a kind outside `EVENT_KINDS`.
  * - `InvalidContributionError` for a malformed part (a tool name that does not
- *   start with `kernel_`, a bad route path or method, a subcommand name or
- *   help that is not one short line, a part that is not a function).
+ *   start with `kernel_`, a tool shape that is not a zod raw shape, a bad
+ *   route path or method, a subcommand name or help that is not one short
+ *   line, a part that is not a function, a part list that is not a list).
  */
 export function mergeContributions(contributions: readonly FeatureContribution[], reserved: ReservedNames = {}): MergedContributions {
   const contributorOwners = new Map<string, string>();
@@ -336,13 +351,20 @@ export function mergeContributions(contributions: readonly FeatureContribution[]
     if (owner === PHASE1_OWNER) throw new ContributionConflictError("contribution", owner, [PHASE1_OWNER, owner]);
     claim(contributorOwners, "contribution", owner, owner);
     const invalid = (part: ContributionPart, reason: string): InvalidContributionError => new InvalidContributionError(owner, part, reason);
+    // Each part's container: a list (or an object of handlers), or absent; anything else is refused, never a TypeError.
+    for (const key of ["tools", "routes", "subcommands", "dueWork"] as const) {
+      if (c[key] !== undefined && !Array.isArray(c[key])) throw invalid(PART_OF[key], `${key} must be a list`);
+    }
+    if (c.handlers !== undefined && (typeof c.handlers !== "object" || c.handlers === null || Array.isArray(c.handlers))) {
+      throw invalid("handler", "handlers must be an object keyed by event kind");
+    }
 
     for (const t of c.tools ?? []) {
       if (typeof t?.name !== "string" || !TOOL_NAME.test(t.name)) {
         throw invalid("tool", `tool name ${JSON.stringify(t?.name)} must start with kernel_ (lowercase letters, digits and _)`);
       }
       if (typeof t.description !== "string" || t.description.trim() === "") throw invalid("tool", `${t.name} needs a description`);
-      if (typeof t.shape !== "object" || t.shape === null) throw invalid("tool", `${t.name} needs a zod raw shape`);
+      if (!isZodRawShape(t.shape)) throw invalid("tool", `${t.name} needs a zod raw shape (an object whose every value is a zod schema)`);
       if (typeof t.handler !== "function") throw invalid("tool", `${t.name} needs a handler`);
       claim(toolOwners, "tool", t.name, owner);
       tools.push(t);

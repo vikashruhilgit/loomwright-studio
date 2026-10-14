@@ -153,6 +153,25 @@ describe("mergeContributions", () => {
     expect(thrown(() => mergeContributions([{ name: "probe", dueWork: ["nope" as unknown as () => void] }]))).toBeInstanceOf(InvalidContributionError);
   });
 
+  it("refuses a tool shape that is not a zod raw shape at composition, before any session launch", () => {
+    const shaped = (shape: unknown) => defineTool({ name: "kernel_probe", description: "test tool", shape: shape as z.ZodRawShape, handler: () => ({}) });
+    for (const shape of [{ a: "not-zod" }, { a: z.string(), b: 1 }, z.object({ a: z.string() }), [z.string()], null, "shape"]) {
+      const err = thrown(() => mergeContributions([{ name: "probe", tools: [shaped(shape)] }], PHASE1));
+      expect(err).toBeInstanceOf(InvalidContributionError);
+      expect((err as InvalidContributionError).part).toBe("tool");
+      expect((err as Error).message).toContain("kernel_probe");
+    }
+    // A zod raw shape (empty, or every value a schema) is accepted.
+    expect(mergeContributions([{ name: "probe", tools: [shaped({}), noopTool("kernel_other")] }], PHASE1).tools).toHaveLength(2);
+    expect(mergeContributions([{ name: "probe", tools: [shaped({ a: z.string(), b: z.number().optional() })] }], PHASE1).tools).toHaveLength(1);
+  });
+
+  it("refuses a part list that is not a list, or handlers that are not an object, as InvalidContributionError (never a TypeError)", () => {
+    for (const bad of [{ tools: {} }, { routes: "GET /x" }, { subcommands: 1 }, { dueWork: () => {} }, { handlers: [] }, { handlers: "message" }]) {
+      expect(thrown(() => mergeContributions([{ name: "probe", ...bad } as unknown as FeatureContribution], PHASE1))).toBeInstanceOf(InvalidContributionError);
+    }
+  });
+
   it("refuses a malformed contribution name, and phase1 as one (it names phase 1's own registrations)", () => {
     expect(thrown(() => mergeContributions([{ name: "Not Valid" }]))).toBeInstanceOf(InvalidContributionError);
     expect(conflict(() => mergeContributions([{ name: "phase1" }])).owners).toEqual(["phase1", "phase1"]);
@@ -336,6 +355,16 @@ function testContribution(seen: { bodies: unknown[]; messages: unknown[]; dueRun
       },
       {
         method: "GET",
+        path: "/probe/text",
+        handler: async () => ({ status: 200, body: "hello" }),
+      },
+      {
+        method: "GET",
+        path: "/probe/unserializable",
+        handler: async () => ({ status: 200, body: () => "not JSON" }),
+      },
+      {
+        method: "GET",
         path: "/probe/broken",
         handler: async () => {
           throw new Error("secret detail");
@@ -480,6 +509,29 @@ describe("a contribution composed from outside (AC4)", () => {
     expect((await fetch(url("/status"), { method: "POST", headers: auth, body: "{not json" })).status).toBe(405);
   });
 
+  it("a contributed route's body is always sent as JSON: a string answers a JSON string, an unserializable body 500", async () => {
+    const { token, url } = await composed();
+    const auth = { Authorization: `Bearer ${token}` };
+    const text = await fetch(url("/probe/text"), { headers: auth });
+    expect(text.status).toBe(200);
+    expect(text.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(await text.text()).toBe('"hello"');
+    const unserializable = await fetch(url("/probe/unserializable"), { headers: auth });
+    expect(unserializable.status).toBe(500);
+    expect(await unserializable.json()).toEqual({ error: "internal_error" });
+  });
+
+  it("a contributed tool whose value is not JSON is an isError result, never text: undefined", async () => {
+    const { kernel } = await composed();
+    const fn = defineTool({ name: "kernel_probe_fn", description: "Returns a function.", shape: {}, handler: () => () => 1 });
+    const result = await contributedToolHandler(fn, { store: kernel.store, sessions: kernel.sessions, sessionId: 1 })({});
+    expect(result).toEqual({ content: [{ type: "text", text: "kernel_probe_fn: the result is not JSON" }], isError: true });
+    const str = defineTool({ name: "kernel_probe_str", description: "Returns a string.", shape: {}, handler: () => "hello" });
+    expect(await contributedToolHandler(str, { store: kernel.store, sessions: kernel.sessions, sessionId: 1 })({})).toEqual({
+      content: [{ type: "text", text: '"hello"' }],
+    });
+  });
+
   it("malformed JSON to a contributed route ⇒ 400 invalid_json, the handler not called", async () => {
     const { seen, token, url } = await composed();
     const res = await fetch(url("/probe/items"), { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: "{not json" });
@@ -615,7 +667,7 @@ describe("refused compositions (AC5)", () => {
     expect(openStore).not.toHaveBeenCalled();
   });
 
-  it("runCli on a subcommand collision prints one stderr line naming both owners and returns 1, without throwing", async () => {
+  it("runCli on a subcommand collision, reached for a contributed word, prints one stderr line naming both owners and returns 1, without throwing", async () => {
     const exitCode = process.exitCode;
     for (const [contributions, owners] of [
       [[{ name: "alpha", subcommands: [noopSubcommand("probe")] }, { name: "beta", subcommands: [noopSubcommand("probe")] }], ["alpha", "beta"]],
@@ -623,7 +675,7 @@ describe("refused compositions (AC5)", () => {
     ] as const) {
       const stdout = out();
       const stderr = out();
-      const code = await runCli(["status"], { dataDir, stdout, stderr, contributions, keychain: { read: () => "unused" } });
+      const code = await runCli(["probe"], { dataDir, stdout, stderr, contributions, keychain: { read: () => "unused" } });
       expect(code).toBe(1);
       expect(stdout.text()).toBe("");
       expect(stderr.text().endsWith("\n")).toBe(true);
@@ -631,6 +683,65 @@ describe("refused compositions (AC5)", () => {
       for (const owner of owners) expect(stderr.text()).toContain(owner);
     }
     expect(process.exitCode).toBe(exitCode);
+  });
+});
+
+describe("phase 1 commands under a broken composition (AC5)", () => {
+  const colliding: readonly FeatureContribution[] = [
+    { name: "alpha", subcommands: [noopSubcommand("probe")] },
+    { name: "beta", subcommands: [noopSubcommand("probe")] },
+  ];
+
+  it("studio service uninstall still runs (no daemon, no api.json, no Keychain) when contributions collide", async () => {
+    const homeDir = join(tmp, "home");
+    mkdirSync(join(homeDir, "Library", "LaunchAgents"), { recursive: true });
+    const launchctl: string[][] = [];
+    const service = {
+      deps: {
+        exec: (_file: string, args: readonly string[]) => {
+          launchctl.push([...args]);
+          return { status: args[0] === "print" ? 113 : 0, stderr: "" };
+        },
+        uid: 501,
+        homeDir,
+        platform: "darwin" as const,
+      },
+    };
+    const stdout = out();
+    const stderr = out();
+    const reads: string[] = [];
+    const code = await runCli(["service", "uninstall"], {
+      dataDir,
+      stdout,
+      stderr,
+      contributions: colliding,
+      service,
+      keychain: {
+        read: (s) => {
+          reads.push(s);
+          return undefined;
+        },
+      },
+    });
+    expect(stderr.text()).toBe("");
+    expect(code).toBe(0);
+    expect(stdout.text()).toMatch(/^studio: service \S+ unloaded and removed \(.*\)\n$/);
+    expect(launchctl.map((a) => a[0])).toEqual(["print"]);
+    expect(reads).toEqual([]);
+  });
+
+  it("every other phase 1 word dispatches as in phase 1 (here: no api.json), not to the collision", async () => {
+    for (const argv of [["status"], ["stop", "--all"], ["resume"], ["session", "abandon", "1", "--yes"]]) {
+      const stderr = out();
+      const code = await runCli(argv, { dataDir, stdout: out(), stderr, contributions: colliding, keychain: { read: () => "unused" } });
+      expect(code).toBe(1);
+      expect(stderr.text()).toMatch(/^studio: kernel daemon is not running/);
+      expect(stderr.text()).not.toContain("alpha");
+    }
+    // A malformed phase 1 command: usage (phase 1's only, the merge failed), 2.
+    const usage = out();
+    expect(await runCli(["status", "--bad"], { dataDir, stdout: out(), stderr: usage, contributions: colliding })).toBe(2);
+    expect(usage.text()).toBe(`${USAGE}\n`);
   });
 });
 

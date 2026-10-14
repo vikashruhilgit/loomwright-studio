@@ -401,7 +401,8 @@ export function kernelToolHandlers(ctx: KernelToolContext): Record<KernelToolNam
  * A contributed tool's handler over untrusted `args`. The arguments are
  * `safeParse`d before the guard around the handler, so invalid input is an
  * `isError` result without the handler running; the handler's value is the
- * JSON result (`undefined` ⇒ `null`) and its throw an `isError` result.
+ * JSON result (`undefined` ⇒ `null`) and its throw, or a value that is not
+ * JSON, an `isError` result.
  * Never rejects.
  */
 export function contributedToolHandler(contributed: ContributedTool, ctx: KernelToolContext): KernelToolHandler {
@@ -417,7 +418,12 @@ export function contributedToolHandler(contributed: ContributedTool, ctx: Kernel
   return async (args) => {
     const parsed = schema.safeParse(args ?? {});
     if (!parsed.success) return fail(`${contributed.name}: invalid input: ${z.prettifyError(parsed.error)}`);
-    return guarded(async () => ok((await contributed.handler(parsed.data, toolCtx)) ?? null));
+    return guarded(async () => {
+      const value = (await contributed.handler(parsed.data, toolCtx)) ?? null;
+      // JSON text, as promised: a value JSON.stringify drops (a function, a symbol) is an error, never `text: undefined`.
+      if ((JSON.stringify(value) as string | undefined) === undefined) throw new Error(`${contributed.name}: the result is not JSON`);
+      return ok(value);
+    });
   };
 }
 

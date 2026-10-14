@@ -372,7 +372,9 @@ export function readStatus(
  *   body}`, where `body` is the parsed JSON body (`undefined` when empty):
  *   one over `MAX_CONTRIBUTED_BODY_BYTES` ⇒ `413 {"error":"body_too_large"}`,
  *   malformed JSON ⇒ `400 {"error":"invalid_json"}`, both without calling
- *   the handler. It answers `{status, body}`; a throw ⇒ 500.
+ *   the handler. It answers `{status, body}`: `body` is sent as JSON
+ *   (`undefined` ⇒ `null`; a string ⇒ a JSON string); a throw, or a body
+ *   `JSON.stringify` cannot serialize, ⇒ 500.
  * - `GET /status` ⇒ `StatusBody`. Each provider's `health(at)` reads the
  *   request's one instant; its failures are typed `{status: "error", reason}`
  *   values, and a provider whose `health()` still throws reports
@@ -536,7 +538,11 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     const query: Record<string, string> = Object.create(null) as Record<string, string>;
     for (const [key, value] of url.searchParams) query[key] = value;
     const answer = await match.route.handler({ params: match.params, query, body });
-    send(res, answer.status, answer.body === undefined ? null : answer.body);
+    // The seam's body is JSON: serialized here, so a string answers a JSON
+    // string (`send` writes a string as already-serialized text, phase 1's use).
+    const text = JSON.stringify(answer.body ?? null) as string | undefined;
+    if (text === undefined) throw new Error("a contributed route answered a body that is not JSON");
+    send(res, answer.status, text);
   };
 
   const server = createServer((req, res) => {

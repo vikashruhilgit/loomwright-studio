@@ -369,22 +369,32 @@ export function formatStatus(status: StatusBody): string {
  * It resolves to the exit code (not an integer 0-255 ⇒ 1); a throw ⇒ one
  * stderr line, 1. Contributions that collide (with each other or a phase 1
  * command) ⇒ one stderr line naming both owners, 1, before anything else; a
- * malformed one ⇒ one stderr line naming it, 1.
+ * malformed one ⇒ one stderr line naming it, 1. A phase 1 command word
+ * (`PHASE1_SUBCOMMANDS`) never depends on the merge: it runs as in phase 1
+ * whatever the contributions (its usage text then lists no contributed line).
  * Never throws, never sets `process.exitCode`, never prints the token.
  */
 export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promise<number> {
   const stdout = deps.stdout ?? process.stdout;
   const stderr = deps.stderr ?? process.stderr;
-  let subcommands: readonly ContributedSubcommand[];
+  let merged: { readonly subcommands: readonly ContributedSubcommand[] } | { readonly error: string };
   try {
-    subcommands = mergeContributions(deps.contributions ?? SHIPPED_CONTRIBUTIONS, { subcommands: PHASE1_SUBCOMMANDS }).subcommands;
+    merged = { subcommands: mergeContributions(deps.contributions ?? SHIPPED_CONTRIBUTIONS, { subcommands: PHASE1_SUBCOMMANDS }).subcommands };
   } catch (err) {
+    merged = { error: `studio: ${err instanceof Error ? err.message.split("\n", 1)[0] : String(err)}` };
+  }
+  // A phase 1 word never depends on the contributions: no contribution can take
+  // one, so a broken composition never blocks `studio stop --all` or `studio
+  // service uninstall`. Any other word needs the merge.
+  const phase1 = argv[0] !== undefined && PHASE1_SUBCOMMANDS.includes(argv[0]);
+  if (!phase1 && "error" in merged) {
     // A collision or a malformed contribution: one line naming the owners, never a throw.
-    stderr.write(`studio: ${err instanceof Error ? err.message.split("\n", 1)[0] : String(err)}\n`);
+    stderr.write(`${merged.error}\n`);
     return 1;
   }
+  const subcommands = "error" in merged ? [] : merged.subcommands;
   const usage = usageText(subcommands);
-  const command = parse(argv, subcommands);
+  const command = parse(argv, phase1 ? [] : subcommands);
   if (command === undefined) {
     stderr.write(`${usage}\n`);
     return 2;
