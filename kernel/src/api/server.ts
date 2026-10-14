@@ -10,7 +10,8 @@ import type { AddressInfo } from "node:net";
 import type { AuthHealth, AuthProvider } from "../auth/types.js";
 import { localDay } from "../budget/index.js";
 import { compileRoutePath, matchRoutePath } from "../features/contribution.js";
-import type { ContributedRoute, RouteSegment } from "../features/contribution.js";
+import type { OwnedRoute } from "../features/contribution.js";
+import { NO_REF, appendEvent, clip, errorMessage } from "../loop/internal.js";
 import type { EventLoop } from "../loop/loop.js";
 import type { AbandonVia, SessionManager, StopAllOutcome } from "../sessions/manager.js";
 import { orphanedSessions } from "../sessions/orphans.js";
@@ -32,13 +33,10 @@ const ABANDON_PATH = /^\/sessions\/(\d+)\/abandon$/;
 /**
  * Phase 1's routes, as `mergeContributions` reserves them (owner `phase1`): a
  * contributed route whose path overlaps one is refused, whatever its method.
+ * Defined beside the other reserved lists (`PHASE1_RESERVED`), which the
+ * `studio` CLI reserves too.
  */
-export const PHASE1_ROUTES: readonly { readonly method: string; readonly path: string }[] = [
-  { method: "GET", path: "/status" },
-  { method: "POST", path: "/stop-all" },
-  { method: "POST", path: "/resume" },
-  { method: "POST", path: "/sessions/:id/abandon" },
-];
+export { PHASE1_ROUTES } from "../features/contribution.js";
 
 /** The largest JSON body a contributed route reads; beyond it ⇒ `413 {"error":"body_too_large"}`. */
 export const MAX_CONTRIBUTED_BODY_BYTES = 1024 * 1024;
@@ -74,9 +72,10 @@ export interface ApiServerOptions {
   readonly port?: number;
   /**
    * Contributed routes, as merged by `mergeContributions` (collisions already
-   * refused), matched after the phase 1 routes. Default none.
+   * refused; each names its contribution as `owner`), matched after the
+   * phase 1 routes. Default none.
    */
-  readonly routes?: readonly ContributedRoute[];
+  readonly routes?: readonly OwnedRoute[];
 }
 
 export interface ApiServerDeps {
@@ -388,7 +387,10 @@ export function readStatus(
  *   (`undefined` ⇒ `null`; a string ⇒ a JSON string); a throw, a body
  *   `JSON.stringify` cannot serialize, or a `status` that cannot carry that
  *   JSON body (not an integer 200-599, or 204/205/304, which have no body)
- *   ⇒ 500, nothing of the answer sent.
+ *   ⇒ 500 `{"error":"internal_error"}`, nothing of the answer sent, and one
+ *   `route_failed` event (actor `kernel`) naming the contributor, the
+ *   route's method and declared path, and the clipped error (the same idiom
+ *   as the loop's `due_work_failed`; a failed write never changes the 500).
  * - `GET /status` ⇒ `StatusBody`. Each provider's `health(at)` reads the
  *   request's one instant; its failures are typed `{status: "error", reason}`
  *   values, and a provider whose `health()` still throws reports
@@ -551,16 +553,45 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     }
     const query: Record<string, string> = Object.create(null) as Record<string, string>;
     for (const [key, value] of url.searchParams) query[key] = value;
-    const answer = await match.route.handler({ params: match.params, query, body });
-    // The seam's body is JSON: serialized here, so a string answers a JSON
-    // string (`send` writes a string as already-serialized text, phase 1's use).
-    // Checked before anything is written: an invalid status reaches the 500 path,
-    // never `writeHead` (which would close the socket on a 1xx or send a 204's
-    // Content-Length with no body).
-    if (!isContributedRouteStatus(answer.status)) throw new Error("a contributed route answered a status that cannot carry a JSON body");
-    const text = JSON.stringify(answer.body ?? null) as string | undefined;
-    if (text === undefined) throw new Error("a contributed route answered a body that is not JSON");
-    send(res, answer.status, text);
+    let status: number;
+    let text: string;
+    try {
+      const { status: answered, body: answerBody } = await match.route.handler({ params: match.params, query, body });
+      // The seam's body is JSON: serialized here, so a string answers a JSON
+      // string (`send` writes a string as already-serialized text, phase 1's use).
+      // Checked before anything is written: an invalid status reaches the 500 path,
+      // never `writeHead` (which would close the socket on a 1xx or send a 204's
+      // Content-Length with no body).
+      if (!isContributedRouteStatus(answered)) throw new Error(`a contributed route answered status ${String(answered)}, which cannot carry a JSON body`);
+      const json = JSON.stringify(answerBody ?? null) as string | undefined;
+      if (json === undefined) throw new Error("a contributed route answered a body that is not JSON");
+      status = answered;
+      text = json;
+    } catch (err) {
+      // The client gets only `internal_error`; the cause goes to the daemon's own record.
+      recordRouteFailure(match.route, err);
+      throw err;
+    }
+    send(res, status, text);
+  };
+
+  /**
+   * One `route_failed` row naming the contributor, the route (its declared
+   * pattern, never the request's path) and the clipped error. Fails safe: a
+   * failed write (the store failing or already closed) never changes the 500.
+   */
+  const recordRouteFailure = (route: OwnedRoute, err: unknown): void => {
+    try {
+      appendEvent(
+        store,
+        "route_failed",
+        NO_REF,
+        { contributor: route.owner, method: route.method, path: route.path, error: clip(errorMessage(err)) },
+        now().toISOString(),
+      );
+    } catch {
+      // Nothing to add: the answer is the 500 either way.
+    }
   };
 
   const server = createServer((req, res) => {

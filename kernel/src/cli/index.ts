@@ -31,7 +31,7 @@ import { pathToFileURL } from "node:url";
 import type { StatusBody } from "../api/server.js";
 import { API_TOKEN_KEYCHAIN_SERVICE } from "../api/token.js";
 import { securityCliKeychain } from "../auth/keychain.js";
-import { PHASE1_SUBCOMMANDS, mergeContributions } from "../features/contribution.js";
+import { PHASE1_RESERVED, PHASE1_SUBCOMMANDS, mergeContributions } from "../features/contribution.js";
 import type { CliApiClient, ContributedSubcommand, FeatureContribution, RouteMethod } from "../features/contribution.js";
 import { SHIPPED_CONTRIBUTIONS } from "../features/index.js";
 import type { KeychainReader } from "../auth/keychain.js";
@@ -370,7 +370,9 @@ export function formatStatus(status: StatusBody): string {
  * naming the subcommand, 1); a throw ⇒ one stderr line, 1. Contributions that
  * collide (with each other or a phase 1 command) ⇒ one stderr line naming
  * both owners, 1, before anything else; a malformed one ⇒ one stderr line
- * naming it, 1. A phase 1 command word (`PHASE1_SUBCOMMANDS`) never depends
+ * naming it, 1. The merge reserves `PHASE1_RESERVED` (phase 1's tools,
+ * routes and command words), the lists `startKernel` reserves, so the CLI
+ * refuses exactly the compositions the daemon refuses to start. A phase 1 command word (`PHASE1_SUBCOMMANDS`) never depends
  * on the merge: when the merge fails, that same line is first written once to
  * stderr as a warning (`studio: warning: …`), then the command runs as in
  * phase 1 (when the merge fails, its usage text lists no contributed line).
@@ -381,7 +383,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
   const stderr = deps.stderr ?? process.stderr;
   let merged: { readonly subcommands: readonly ContributedSubcommand[] } | { readonly error: string };
   try {
-    merged = { subcommands: mergeContributions(deps.contributions ?? SHIPPED_CONTRIBUTIONS, { subcommands: PHASE1_SUBCOMMANDS }).subcommands };
+    merged = { subcommands: mergeContributions(deps.contributions ?? SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).subcommands };
   } catch (err) {
     merged = { error: err instanceof Error ? (err.message.split("\n", 1)[0] as string) : String(err) };
   }

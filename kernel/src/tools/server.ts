@@ -26,6 +26,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { PHASE1_TOOL_NAMES } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import type { EventRef } from "../loop/internal.js";
@@ -39,14 +40,8 @@ import type { HandoffRef } from "./handoff.js";
 
 export const KERNEL_MCP_SERVER_NAME = "kernel";
 
-export const KERNEL_TOOL_NAMES = [
-  "kernel_task_create",
-  "kernel_task_update",
-  "kernel_task_list",
-  "kernel_task_get",
-  "kernel_schedule_wakeup",
-  "kernel_request_stop",
-] as const;
+/** The phase 1 six: `PHASE1_TOOL_NAMES`, the one list `mergeContributions` reserves in the daemon and the CLI. */
+export const KERNEL_TOOL_NAMES = PHASE1_TOOL_NAMES;
 
 export type KernelToolName = (typeof KERNEL_TOOL_NAMES)[number];
 

@@ -8,7 +8,7 @@ import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ensureApiToken } from "./api/token.js";
 import { isKillSwitchEngaged } from "./api/kill-switch.js";
-import { API_HOST, PHASE1_ROUTES, startApiServer } from "./api/server.js";
+import { API_HOST, startApiServer } from "./api/server.js";
 import type { ApiServer, ApiServerDeps, ApiServerOptions } from "./api/server.js";
 import { API_KEY_PROVIDER_ID } from "./auth/api-key.js";
 import { AUTH_PROVIDER_ENV, authProviderFromEnv } from "./auth/provider-env.js";
@@ -17,7 +17,7 @@ import type { KeychainReader, KeychainWriter } from "./auth/keychain.js";
 import { SUBSCRIPTION_TOKEN_ID, availableProviderIds, selectAuthProvider } from "./auth/registry.js";
 import type { AuthProvider, AuthProviderDeps, BaseEnv } from "./auth/types.js";
 import { Budget } from "./budget/index.js";
-import { PHASE1_SUBCOMMANDS, mergeContributions } from "./features/contribution.js";
+import { PHASE1_RESERVED, mergeContributions } from "./features/contribution.js";
 import type { FeatureContribution, MergedContributions } from "./features/contribution.js";
 import { SHIPPED_CONTRIBUTIONS } from "./features/index.js";
 import { EventLoop } from "./loop/loop.js";
@@ -25,7 +25,7 @@ import type { EventHandlers, EventLoopDeps } from "./loop/types.js";
 import { SessionManager } from "./sessions/manager.js";
 import type { SessionManagerDeps, SessionManagerOptions } from "./sessions/types.js";
 import { Store, resolveDataDir } from "./store/store.js";
-import { KERNEL_MCP_SERVER_NAME, KERNEL_TOOL_NAMES, createKernelMcpServer } from "./tools/server.js";
+import { KERNEL_MCP_SERVER_NAME, createKernelMcpServer } from "./tools/server.js";
 import { writeFileAtomic } from "./tools/handoff.js";
 
 /** Selects the auth provider when `--auth-provider` is not given. */
@@ -158,9 +158,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
 
   // Before the store opens: a deterministically broken composition has no side effect.
   const contributions = mergeContributions(options.contributions ?? SHIPPED_CONTRIBUTIONS, {
-    tools: KERNEL_TOOL_NAMES,
-    routes: PHASE1_ROUTES,
-    subcommands: PHASE1_SUBCOMMANDS,
+    // The same phase 1 lists `runCli` reserves: the CLI warns about exactly what refuses here.
+    ...PHASE1_RESERVED,
     handlerKinds: Object.keys(options.handlers ?? {}),
   });
 

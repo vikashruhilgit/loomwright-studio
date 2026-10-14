@@ -34,6 +34,33 @@ export const OPTIONS_HANDLERS_OWNER = "options.handlers";
  */
 export const PHASE1_SUBCOMMANDS: readonly string[] = ["status", "stop", "resume", "session", "service"];
 
+/**
+ * Phase 1's kernel tool names (the tool server's `KERNEL_TOOL_NAMES`, which
+ * re-exports this list): a contributed tool may not take one. Kept here, not
+ * in the tool server (which loads the Agent SDK), so the `studio` CLI can
+ * reserve it too.
+ */
+export const PHASE1_TOOL_NAMES = [
+  "kernel_task_create",
+  "kernel_task_update",
+  "kernel_task_list",
+  "kernel_task_get",
+  "kernel_schedule_wakeup",
+  "kernel_request_stop",
+] as const;
+
+/**
+ * Phase 1's API routes (the API server answers them before any contributed
+ * route): a contributed route whose path overlaps one is refused, whatever
+ * its method.
+ */
+export const PHASE1_ROUTES: readonly { readonly method: string; readonly path: string }[] = [
+  { method: "GET", path: "/status" },
+  { method: "POST", path: "/stop-all" },
+  { method: "POST", path: "/resume" },
+  { method: "POST", path: "/sessions/:id/abandon" },
+];
+
 /** The part of a contribution a refusal is about. */
 export type ContributionPart = "contribution" | "tool" | "route" | "subcommand" | "handler" | "dueWork";
 
@@ -280,11 +307,23 @@ export interface ReservedNames {
   readonly handlerKinds?: readonly string[];
 }
 
+/**
+ * Everything phase 1 registers, reserved by both `startKernel` (plus its
+ * `KernelOptions.handlers` kinds) and `runCli`: one list, so the CLI refuses
+ * (and warns about) exactly the compositions the daemon refuses to start.
+ */
+export const PHASE1_RESERVED: ReservedNames = { tools: PHASE1_TOOL_NAMES, routes: PHASE1_ROUTES, subcommands: PHASE1_SUBCOMMANDS };
+
+/** A merged route with its contribution's name as `owner` (named in the API's `route_failed` row). */
+export interface OwnedRoute extends ContributedRoute {
+  readonly owner: string;
+}
+
 /** The merged parts, in contribution order (each contribution's parts in its own order). */
 export interface MergedContributions {
   readonly contributors: readonly string[];
   readonly tools: readonly ContributedTool[];
-  readonly routes: readonly ContributedRoute[];
+  readonly routes: readonly OwnedRoute[];
   readonly subcommands: readonly ContributedSubcommand[];
   /** The contributed handlers only (never `KernelOptions.handlers`). */
   readonly handlers: EventHandlers;
@@ -343,7 +382,7 @@ export function mergeContributions(contributions: readonly FeatureContribution[]
   };
 
   const tools: ContributedTool[] = [];
-  const routes: ContributedRoute[] = [];
+  const routes: OwnedRoute[] = [];
   const subcommands: ContributedSubcommand[] = [];
   const handlers: Partial<Record<string, EventHandler>> = {};
   const dueWork: DueWork[] = [];
@@ -396,7 +435,8 @@ export function mergeContributions(contributions: readonly FeatureContribution[]
         throw new ContributionConflictError("route", name, [other.owner, owner]);
       }
       routeOwners.push({ method: r.method, path: r.path, segments, owner });
-      routes.push(r);
+      // A new object, never the contribution's own: the handler is still called on `r`.
+      routes.push({ owner, method: r.method, path: r.path, handler: (req) => r.handler(req) });
     }
 
     for (const s of c.subcommands ?? []) {

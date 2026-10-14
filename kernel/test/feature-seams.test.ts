@@ -542,6 +542,47 @@ describe("a contribution composed from outside (AC4)", () => {
     }
   });
 
+  it("every contributed-route 500 (a throw, an invalid status, a body that is not JSON) appends exactly one route_failed row naming the contributor; the client gets only internal_error", async () => {
+    const { kernel, token, url } = await composed();
+    const auth = { Authorization: `Bearer ${token}` };
+    const failures: readonly [string, string, RegExp][] = [
+      ["/probe/broken", "/probe/broken", /^secret detail$/],
+      ["/probe/status?code=204", "/probe/status", /status 204/],
+      ["/probe/status?code=101", "/probe/status", /status 101/],
+      ["/probe/unserializable", "/probe/unserializable", /not JSON/],
+    ];
+    for (const [requestPath, routePath, error] of failures) {
+      const before = events(kernel.store, "route_failed").length;
+      const res = await fetch(url(requestPath), { headers: auth });
+      expect(res.status, requestPath).toBe(500);
+      expect(await res.text(), requestPath).toBe('{"error":"internal_error"}');
+      const rows = events(kernel.store, "route_failed");
+      expect(rows, requestPath).toHaveLength(before + 1);
+      const row = rows.at(-1);
+      expect({ actor: row?.actor, session_id: row?.session_id, task_id: row?.task_id }).toEqual({ actor: "kernel", session_id: null, task_id: null });
+      expect(row?.payload, requestPath).toEqual({ contributor: "probe", method: "GET", path: routePath, error: expect.stringMatching(error) });
+    }
+    // An answered route, a 404, a 405, a 400 and a phase 1 route record nothing.
+    expect((await fetch(url("/probe/items/1"), { headers: auth })).status).toBe(200);
+    expect((await fetch(url("/probe/nothing"), { headers: auth })).status).toBe(404);
+    expect((await fetch(url("/probe/items"), { headers: auth })).status).toBe(405);
+    expect((await fetch(url("/probe/items"), { method: "POST", headers: auth, body: "{not json" })).status).toBe(400);
+    expect((await fetch(url("/status"), { headers: auth })).status).toBe(200);
+    expect(events(kernel.store, "route_failed")).toHaveLength(failures.length);
+
+    // A failed audit write never changes the answer: still the 500, still no error text.
+    const prepare = kernel.store.prepare.bind(kernel.store);
+    vi.spyOn(kernel.store, "prepare").mockImplementation(((sql: string) => {
+      if (sql.startsWith("INSERT INTO events")) throw new Error("disk I/O error");
+      return prepare(sql);
+    }) as typeof kernel.store.prepare);
+    const res = await fetch(url("/probe/broken"), { headers: auth });
+    expect(res.status).toBe(500);
+    expect(await res.text()).toBe('{"error":"internal_error"}');
+    vi.restoreAllMocks();
+    expect(events(kernel.store, "route_failed")).toHaveLength(failures.length);
+  });
+
   it("a contributed tool whose value is not JSON is an isError result, never text: undefined", async () => {
     const { kernel } = await composed();
     const fn = defineTool({ name: "kernel_probe_fn", description: "Returns a function.", shape: {}, handler: () => () => 1 });
@@ -709,6 +750,35 @@ describe("refused compositions (AC5)", () => {
     }
     expect(process.exitCode).toBe(exitCode);
   });
+  it("the daemon and the CLI refuse the same compositions: startKernel's refusal is studio's warning, word for word; an accepted one warns about nothing", async () => {
+    const compositions: readonly (readonly FeatureContribution[])[] = [
+      [{ name: "alpha", tools: [noopTool("kernel_task_create")] }],
+      [{ name: "alpha", routes: [noopRoute("POST", "/status")] }],
+      [{ name: "alpha", routes: [noopRoute("GET", "/sessions/:sid/abandon")] }],
+      [{ name: "alpha", subcommands: [noopSubcommand("resume")] }],
+      [{ name: "alpha", tools: [noopTool("probe")] }],
+      [{ name: "alpha", tools: [noopTool("kernel_probe")] }, { name: "beta", tools: [noopTool("kernel_probe")] }],
+      [{ name: "alpha", routes: [noopRoute("GET", "/probe/:id")] }, { name: "beta", routes: [noopRoute("GET", "/probe/x")] }],
+      [{ name: "alpha", tools: [noopTool("kernel_probe")], routes: [noopRoute("GET", "/probe")], subcommands: [noopSubcommand("probe")] }],
+    ];
+    let refused = 0;
+    for (const contributions of compositions) {
+      const daemon = await startKernel(options({ contributions }), deps().d).catch((e: unknown) => e);
+      if (!(daemon instanceof Error)) await (daemon as Kernel).stop();
+      const stderr = out();
+      expect(await runCli(["status"], { dataDir, stdout: out(), stderr, contributions, keychain: { read: () => undefined } })).toBe(1);
+      const lines = stderr.text().trimEnd().split("\n");
+      if (daemon instanceof Error) {
+        refused++;
+        expect(lines[0]).toBe(`studio: warning: ${daemon.message}`);
+        expect(lines).toHaveLength(2);
+      } else {
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toMatch(/^studio: kernel daemon is not running/);
+      }
+    }
+    expect(refused).toBe(compositions.length - 1);
+  });
 });
 
 describe("phase 1 commands under a broken composition (AC5)", () => {
@@ -754,6 +824,32 @@ describe("phase 1 commands under a broken composition (AC5)", () => {
     expect(stdout.text()).toMatch(/^studio: service \S+ unloaded and removed \(.*\)\n$/);
     expect(launchctl.map((a) => a[0])).toEqual(["print"]);
     expect(reads).toEqual([]);
+  });
+
+  it("a contribution claiming a phase 1 tool name or route: studio status warns once (the CLI reserves what the daemon does), then runs as in phase 1", async () => {
+    const exitCode = process.exitCode;
+    const cases: readonly [readonly FeatureContribution[], string][] = [
+      [[{ name: "alpha", tools: [noopTool("kernel_task_create")] }], 'tool "kernel_task_create"'],
+      [[{ name: "alpha", routes: [noopRoute("POST", "/status")] }], 'route "POST /status (overlaps GET /status)"'],
+    ];
+    for (const [contributions, named] of cases) {
+      const stderr = out();
+      const reads: string[] = [];
+      const keychain = {
+        read: (service: string) => {
+          reads.push(service);
+          return "unused";
+        },
+      };
+      const code = await runCli(["status"], { dataDir, stdout: out(), stderr, contributions, keychain });
+      expect(code).toBe(1);
+      const lines = stderr.text().trimEnd().split("\n");
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toBe(`studio: warning: ${named} is registered by both phase1 and alpha; refusing to start`);
+      expect(lines[1]).toMatch(/^studio: kernel daemon is not running/);
+      expect(reads).toEqual([]);
+    }
+    expect(process.exitCode).toBe(exitCode);
   });
 
   it("every other phase 1 word warns once about the collision, then dispatches as in phase 1 (here: no api.json)", async () => {
