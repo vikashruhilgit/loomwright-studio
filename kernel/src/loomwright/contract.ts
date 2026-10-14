@@ -26,38 +26,73 @@ export const MAX_CONTRACT_BYTES = 4 * 1024 * 1024;
 const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
 
 /**
- * Process-control variables a host-switch name may never be: they decide what
- * the child runs, loads or where it resolves files and network traffic.
+ * Process-control variables a host-switch name may never be. The class: a
+ * variable whose value an interpreter, loader, shell or tool reads as a path,
+ * code or a behaviour switch. The kernel sets the switch to the relative value
+ * `"1"` with the session's `cwd` in the repo, so `BASH_ENV=1` would run `./1`
+ * and `PYTHONPATH=1` would import from `./1`: repo content would become code.
+ * `docs/architecture/loomwright.md` lists the same groups.
+ *
+ * Honest limit: a deny-list cannot be complete. The kernel never sets any of
+ * these names itself; a namespace allowlist (for example requiring every name
+ * to start with `LOOMWRIGHT_`) would close the class, but that is an owner
+ * decision, because the brief's AC6 fixture renames the switch to
+ * `TEST_HOST_FLAG` / `TEST_HOST_STATE`.
  */
-const PROCESS_CONTROL_ENV_NAMES: ReadonlySet<string> = new Set([
-  "PATH",
-  "HOME",
-  "SHELL",
-  "USER",
-  "LOGNAME",
-  "PWD",
-  "TMPDIR",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "ALL_PROXY",
-  "NO_PROXY",
-]);
+const PROCESS_CONTROL_ENV: {
+  readonly exact: ReadonlySet<string>;
+  readonly prefixes: readonly string[];
+  readonly suffixes: readonly string[];
+} = {
+  exact: new Set([
+    // Where the child resolves programs, its home, user and working/temp dirs.
+    "PATH", "HOME", "SHELL", "USER", "LOGNAME", "PWD", "TMPDIR", "CDPATH",
+    // Shell startup files and behaviour: sourced, evaluated or parsed by sh/bash/zsh.
+    "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4", "IFS", "PROMPT_COMMAND", "ZDOTDIR", "GLOBIGNORE",
+    // Locale, time zone and terminal: change how every tool parses and prints.
+    "LANG", "TZ", "TERM",
+    // The CLI's own shell and env-file hooks (CLAUDE_CODE_* is also a prefix below).
+    "CLAUDE_ENV_FILE", "CLAUDE_CODE_SHELL", "CLAUDE_CODE_SHELL_PREFIX",
+  ]),
+  prefixes: [
+    // Dynamic loaders (DYLD_INSERT_LIBRARIES, LD_PRELOAD, ...).
+    "DYLD_", "LD_",
+    // Interpreters' module paths, startup files and options (NODE_OPTIONS, PYTHONPATH, PERL5OPT, RUBYOPT, ...).
+    "NODE_", "PYTHON", "PERL", "RUBY", "NPM_CONFIG_",
+    // Exported bash functions: bash imports BASH_FUNC_<name>%% as code.
+    "BASH_FUNC_",
+    // git's exec path, repo dir, ssh command, config.
+    "GIT_",
+    // Config and data search dirs, TLS trust stores, locale categories.
+    "XDG_", "SSL_", "LC_",
+    // The CLI's and the kernel's own namespaces: no contract may set them.
+    "CLAUDE_CODE_", "ANTHROPIC_",
+  ],
+  suffixes: [
+    // Every proxy variable (HTTP_PROXY, FTP_PROXY, SOCKS_PROXY, NO_PROXY, ...): names are upper case (ENV_NAME).
+    "_PROXY",
+  ],
+};
 
-/** Prefixes of process-control variables: the dynamic loaders' (`DYLD_*`, `LD_*`) and Node's (`NODE_OPTIONS`, `NODE_PATH`, ...). */
-const PROCESS_CONTROL_ENV_PREFIXES: readonly string[] = ["DYLD_", "LD_", "NODE_"];
+function isProcessControlEnvName(name: string): boolean {
+  return (
+    PROCESS_CONTROL_ENV.exact.has(name) ||
+    PROCESS_CONTROL_ENV.prefixes.some((prefix) => name.startsWith(prefix)) ||
+    PROCESS_CONTROL_ENV.suffixes.some((suffix) => name.endsWith(suffix))
+  );
+}
 
 /**
  * Why `name` may not be a host-switch variable, or `undefined` when it may.
  * The contract is semi-trusted data (invariant 3): its host switch may never
  * name a credential or billing-routing variable the kernel strips
- * (`isCredentialEnvVar`), nor a process-control variable. No prefix is
- * required, so a later Loomwright may rename its switch.
+ * (`isCredentialEnvVar`), nor a process-control variable
+ * (`PROCESS_CONTROL_ENV`). No prefix is required, so a later Loomwright may
+ * rename its switch (see the honest limit on `PROCESS_CONTROL_ENV`).
  */
 export function hostSwitchNameProblem(name: string): string | undefined {
   if (isCredentialEnvVar(name)) return "a credential or billing-routing variable the kernel strips";
-  if (PROCESS_CONTROL_ENV_NAMES.has(name) || PROCESS_CONTROL_ENV_PREFIXES.some((prefix) => name.startsWith(prefix))) {
-    return "a process-control variable";
-  }
+  if (isProcessControlEnvName(name)) return "a process-control variable";
   return undefined;
 }
 

@@ -36,6 +36,7 @@ import type {
   SpawnHooks,
   StartSessionParams,
 } from "../src/sessions/index.js";
+import { hostSwitchCollision } from "../src/sessions/manager.js";
 import { Store } from "../src/store/index.js";
 import { contractFixturePath, fixtureContract, userEntry, writeInstalledPlugins, writeLoomwrightInstall } from "./fixtures/loomwright/helpers.js";
 
@@ -2122,6 +2123,22 @@ describe("auth failure (AC7)", () => {
 // ---- AC8 / D32: which Loomwright, its contract and host mode -------------------------
 
 describe("Loomwright install, contract and host mode (D32)", () => {
+  it("hostSwitchCollision re-checks the names at launch: a refused name is a collision even when the auth env lacks it, and an auth-set name collides (defence in depth)", () => {
+    const hostSwitch = (env: string, state_dir_env: string) => ({ env, state_dir_env, effect: "" });
+    // Contract validation already refuses these names; the launch check must refuse them on its own too.
+    for (const name of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "BASH_ENV", "PYTHONPATH", "GIT_SSH_COMMAND", "FTP_PROXY"]) {
+      for (const sw of [hostSwitch(name, "TEST_HOST_STATE"), hostSwitch("TEST_HOST_FLAG", name)]) {
+        expect(hostSwitchCollision({}, sw), name).toEqual({ name, why: expect.stringContaining("which a contract may never set") });
+      }
+    }
+    expect(hostSwitchCollision({ TEST_HOST_STATE: "x" }, hostSwitch("TEST_HOST_FLAG", "TEST_HOST_STATE"))).toEqual({
+      name: "TEST_HOST_STATE",
+      why: "which the auth provider sets in the session's environment",
+    });
+    expect(hostSwitchCollision({ OTHER: "x" }, hostSwitch("LOOMWRIGHT_HOST_MODE", "LOOMWRIGHT_HOST_STATE_DIR"))).toBeUndefined();
+    expect(hostSwitchCollision({}, hostSwitch("TEST_HOST_FLAG", "TEST_HOST_STATE"))).toBeUndefined();
+  });
+
   const SID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
   const resumeParams = { permissionMode: "default" as const, cwd: "/tmp", policy: { allowedTools: [], allowedBashPrefixes: [] } };
 

@@ -392,8 +392,10 @@ function withoutHostSwitch(base: BaseEnv, hostSwitch: LoomwrightHostSwitch): Bas
  *   credential name and a presence check alone would let the switch add one back;
  * - a name the auth provider itself put in `env` (D32: a contract may never
  *   overwrite an auth variable). An inherited one was dropped before `buildEnv`.
+ *
+ * Exported for its unit test only; the public `sessions/index.ts` does not re-export it.
  */
-function hostSwitchCollision(env: ChildEnv, hostSwitch: LoomwrightHostSwitch): { readonly name: string; readonly why: string } | undefined {
+export function hostSwitchCollision(env: ChildEnv, hostSwitch: LoomwrightHostSwitch): { readonly name: string; readonly why: string } | undefined {
   for (const name of hostSwitchNames(hostSwitch)) {
     const problem = hostSwitchNameProblem(name);
     if (problem !== undefined) return { name, why: `${problem}, which a contract may never set` };

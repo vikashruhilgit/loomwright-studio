@@ -258,7 +258,22 @@ describe("readLoomwrightContract", () => {
 
   it("a host switch naming a credential, billing-routing or process-control variable is contract_invalid, naming the field and why (invariant 3)", () => {
     const credential = ["CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"];
-    const processControl = ["PATH", "HOME", "SHELL", "USER", "TMPDIR", "NODE_OPTIONS", "NODE_PATH", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "HTTPS_PROXY"];
+    const processControl = [
+      // Exact names: paths, shell startup and behaviour, locale/terminal, the CLI's shell hooks.
+      "PATH", "HOME", "SHELL", "USER", "TMPDIR", "CDPATH",
+      "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4", "IFS", "PROMPT_COMMAND", "ZDOTDIR", "GLOBIGNORE",
+      "LANG", "TZ", "TERM",
+      "CLAUDE_ENV_FILE", "CLAUDE_CODE_SHELL", "CLAUDE_CODE_SHELL_PREFIX",
+      // Prefixes: loaders, interpreters, bash functions, git, config/TLS/locale dirs, the CLI's namespace.
+      "NODE_OPTIONS", "NODE_PATH", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD",
+      "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PERL5LIB", "PERL5OPT", "RUBYOPT", "RUBYLIB", "NPM_CONFIG_PREFIX",
+      "BASH_FUNC_X",
+      "GIT_EXEC_PATH", "GIT_DIR", "GIT_SSH_COMMAND",
+      "XDG_CONFIG_HOME", "SSL_CERT_DIR", "LC_ALL",
+      "CLAUDE_CODE_USE_NATIVE_FILE_SEARCH",
+      // Suffix: every proxy variable.
+      "HTTPS_PROXY", "HTTP_PROXY", "FTP_PROXY", "SOCKS_PROXY", "NO_PROXY", "ALL_PROXY",
+    ];
     for (const [names, why] of [
       [credential, "a credential or billing-routing variable the kernel strips"],
       [processControl, "a process-control variable"],
@@ -275,7 +290,7 @@ describe("readLoomwrightContract", () => {
   });
 
   it("hostSwitchNameProblem needs no LOOMWRIGHT_ prefix: the renamed fixture's names, and lookalikes of refused names, are accepted", () => {
-    for (const name of ["LOOMWRIGHT_HOST_MODE", "LOOMWRIGHT_HOST_STATE_DIR", "TEST_HOST_FLAG", "TEST_HOST_STATE", "PATHFINDER_MODE", "HOMEBREW_STATE", "CLAUDE_CODE_USE_NATIVE_FILE_SEARCH"]) {
+    for (const name of ["LOOMWRIGHT_HOST_MODE", "LOOMWRIGHT_HOST_STATE_DIR", "TEST_HOST_FLAG", "TEST_HOST_STATE", "PATHFINDER_MODE", "HOMEBREW_STATE", "PROXY_MODE", "ENVIRONMENT_FLAG", "TERMINUS_STATE", "GITHUB_HOST_FLAG"]) {
       expect(hostSwitchNameProblem(name), name).toBeUndefined();
     }
     expect(requireHostSwitch(readLoomwrightContract(install("renamedHostSwitch")), "x")).toMatchObject({ env: "TEST_HOST_FLAG", state_dir_env: "TEST_HOST_STATE" });
