@@ -9,7 +9,7 @@
 // child forked during it, so cleanup re-sends SIGKILL until ESRCH.
 import { execFileSync } from "node:child_process";
 import { getEventListeners } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SDKMessage, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
@@ -30,6 +30,7 @@ import {
 } from "../src/sessions/index.js";
 import type { GroupLeader, QueryFn } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
+import { contractFixturePath } from "./fixtures/loomwright/helpers.js";
 
 const GONE_DEADLINE_MS = 2_000;
 
@@ -43,6 +44,7 @@ beforeEach(() => {
   pluginDir = join(tmp, "loomwright");
   mkdirSync(join(pluginDir, ".claude-plugin"), { recursive: true });
   writeFileSync(join(pluginDir, ".claude-plugin", "plugin.json"), "{}\n");
+  copyFileSync(contractFixturePath(), join(pluginDir, "capabilities.json"));
 });
 
 afterEach(async () => {

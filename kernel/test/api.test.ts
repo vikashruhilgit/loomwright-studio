@@ -7,14 +7,16 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { startApiServer } from "../src/api/index.js";
+import { API_TOKEN_KEYCHAIN_SERVICE, startApiServer } from "../src/api/index.js";
 import type { ApiServer, ApiServerOptions, StatusBody } from "../src/api/index.js";
 import type { AuthProvider } from "../src/auth/index.js";
 import { CLIENT_HEADER } from "../src/api/server.js";
+import { startKernel } from "../src/kernel.js";
 import { SessionError, SessionManager } from "../src/sessions/index.js";
 import type { AbandonVia, SessionHandle, SessionRow } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import { kernelVersion } from "../src/version.js";
+import { userEntry, writeInstalledPlugins, writeLoomwrightInstall } from "./fixtures/loomwright/helpers.js";
 import { fakeSessions, flush, makePluginDir, startParams, stubProvider, unexpectedAbandon } from "./session-fakes.js";
 
 const TOKEN = "0123456789abcdef".repeat(4);
@@ -347,6 +349,85 @@ describe("GET /status (AC2)", () => {
     expect(body.queue.events).toHaveLength(50);
     expect(body.wakeups.pending).toBe(60);
     expect(body.wakeups.items).toHaveLength(50);
+  });
+});
+
+describe("GET /status: the loomwright field (D32)", () => {
+  function managerWith(options: { readonly loomwrightPath?: string; readonly installedPluginsPath?: string }): SessionManager {
+    return new SessionManager({ store, authProvider: stubProvider(), stopGraceMs: 10, baseEnv: { PATH: "/usr/bin" }, ...options }, fakeSessions().deps);
+  }
+
+  it("is absent when the sessions object does not report it (an API fake)", async () => {
+    const body = (await call(await serve(), "/status")).json() as Record<string, unknown>;
+    expect(body).not.toHaveProperty("loomwright");
+  });
+
+  it("reports the configured install's versions and host switch", async () => {
+    const pluginDir = makePluginDir(tmp);
+    const res = await call(await serve({ sessions: managerWith({ loomwrightPath: pluginDir }) }), "/status");
+    expect(res.status).toBe(200);
+    expect((res.json() as StatusBody).loomwright).toEqual({
+      status: "ok",
+      install_path: pluginDir,
+      plugin_version: "17.2.0",
+      contract_schema_version: 1,
+      host_switch: true,
+    });
+  });
+
+  it("AC5: answers 200 with loomwright.status error when installed_plugins.json is missing", async () => {
+    const file = join(tmp, "claude", "plugins", "installed_plugins.json"); // never written
+    const res = await call(await serve({ sessions: managerWith({ installedPluginsPath: file }) }), "/status");
+    expect(res.status).toBe(200);
+    const loomwright = (res.json() as StatusBody).loomwright;
+    expect(loomwright).toMatchObject({ status: "error", reason: "installed_plugins_missing", path: file });
+    expect(loomwright?.status === "error" ? loomwright.message : "").toContain(file);
+  });
+
+  it("AC2: reports contract_missing for an active install without capabilities.json, read fresh on every request", async () => {
+    const install = writeLoomwrightInstall(join(tmp, "cache", "17.0.0"), null);
+    const file = writeInstalledPlugins(join(tmp, "claude", "plugins", "installed_plugins.json"), { "loomwright@atelier": [userEntry(install, "17.0.0")] });
+    const server = await serve({ sessions: managerWith({ installedPluginsPath: file }) });
+    expect(((await call(server, "/status")).json() as StatusBody).loomwright).toMatchObject({ status: "error", reason: "contract_missing", path: install });
+    // The owner fixes the install: the next request sees it, no restart.
+    writeLoomwrightInstall(install);
+    expect(((await call(server, "/status")).json() as StatusBody).loomwright).toMatchObject({ status: "ok", install_path: install, plugin_version: "17.2.0" });
+  });
+
+  it("a loomwrightStatus that throws is reported as status_threw, never a 500", async () => {
+    const loomwrightStatus = (): never => {
+      throw new Error("adapter exploded");
+    };
+    const res = await call(await serve({ sessions: { stopAll: async () => [], abandonSession: unexpectedAbandon, loomwrightStatus } }), "/status");
+    expect(res.status).toBe(200);
+    expect((res.json() as StatusBody).loomwright).toEqual({ status: "error", reason: "status_threw", path: "", message: "adapter exploded" });
+  });
+
+  it("AC5: startKernel starts without any Loomwright install, and /status answers 200 with loomwright.status error", async () => {
+    const items = new Map<string, string>();
+    const file = join(tmp, "claude", "plugins", "installed_plugins.json"); // never written
+    const kernel = await startKernel(
+      { dataDir: join(tmp, "kernel-data"), env: { PATH: "/usr/bin" }, sessions: { installedPluginsPath: file, stopGraceMs: 10 } },
+      {
+        keychain: { read: (service) => items.get(service) },
+        keychainWriter: {
+          add(service, _account, secret) {
+            items.set(service, secret);
+          },
+        },
+        sessionDeps: fakeSessions().deps,
+        selectAuthProvider: async (): Promise<AuthProvider> => stubProvider(),
+        availableProviderIds: async () => ["api-key"],
+      },
+    );
+    try {
+      const token = items.get(API_TOKEN_KEYCHAIN_SERVICE) ?? "";
+      const res = await fetch(`http://127.0.0.1:${kernel.api.port}/status`, { headers: { Authorization: `Bearer ${token}` } });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as StatusBody).loomwright).toMatchObject({ status: "error", reason: "installed_plugins_missing", path: file });
+    } finally {
+      await kernel.stop();
+    }
   });
 });
 

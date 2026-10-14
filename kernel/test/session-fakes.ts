@@ -3,12 +3,13 @@
 // it is). Never the real SDK, a model or a real process: fake pids are above
 // any real pid_max, and every process-group call is answered from memory.
 import { EventEmitter } from "node:events";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { Options, SDKMessage, SDKUserMessage, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import type { AuthProvider } from "../src/auth/index.js";
 import type { CancelTimer, QueryFn, QueryHandle, SessionManagerDeps, SpawnFn, StartSessionParams } from "../src/sessions/index.js";
+import { contractFixturePath } from "./fixtures/loomwright/helpers.js";
 
 export class FakeChild extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -173,11 +174,12 @@ export const immediate = (fn: () => void, _ms: number): CancelTimer => {
   return () => clearImmediate(t);
 };
 
-/** A Loomwright install the manager accepts as `loomwrightPath`. */
+/** A Loomwright install the manager accepts as `loomwrightPath`: a manifest and the valid fixture `capabilities.json`. */
 export function makePluginDir(root: string): string {
   const dir = join(root, "plugin-cache", "15.115.0");
   mkdirSync(join(dir, ".claude-plugin"), { recursive: true });
   writeFileSync(join(dir, ".claude-plugin", "plugin.json"), '{"name":"loomwright"}\n');
+  copyFileSync(contractFixturePath("valid"), join(dir, "capabilities.json"));
   return dir;
 }
 

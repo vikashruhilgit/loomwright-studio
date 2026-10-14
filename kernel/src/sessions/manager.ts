@@ -1,5 +1,7 @@
 import { randomUUID as nodeRandomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
   HookCallback,
@@ -15,8 +17,12 @@ import { KeychainError } from "../auth/keychain.js";
 import { AuthProviderError } from "../auth/types.js";
 import type { AuthProvider, BaseEnv, ChildEnv } from "../auth/types.js";
 import { isProtectedPath, protectedLocationsText } from "../protected-paths.js";
+import { loomwrightAdapterStatus } from "../loomwright/active-install.js";
+import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
+import type { LoomwrightHostSwitch } from "../loomwright/contract.js";
 import type { Store } from "../store/store.js";
-import { resolveLoomwrightPath } from "./loomwright-path.js";
+import { LoomwrightSessionError, readSessionLoomwright, resolveSessionLoomwright } from "./loomwright-path.js";
+import type { SessionLoomwright } from "./loomwright-path.js";
 import { latestOrphanReason } from "./orphans.js";
 import { bashCommandOf, decideToolUse, freezePolicy } from "./policy.js";
 import {
@@ -301,6 +307,8 @@ interface ResumeContext {
   readonly permissionMode: AllowedPermissionMode;
   readonly cwd: string;
   readonly loomwrightPath: string;
+  /** The host switch of the contract at `loomwrightPath`, read once when the resume began. */
+  readonly hostSwitch: LoomwrightHostSwitch;
   readonly closeInputOnResult: boolean;
   readonly sdkSessionId: string;
   /** The row's agent and task, for the admission request of every retry attempt. */
@@ -350,6 +358,32 @@ function checkPolicy(policy: unknown): ToolPolicy {
     throw new SessionError("invalid_params", "policy must have string arrays allowedTools and allowedBashPrefixes");
   }
   return freezePolicy(p as ToolPolicy);
+}
+
+/** The Loomwright host-mode state dirs live here, under the Studio data dir: `<dataDir>/loomwright-state/session-<id>`. */
+export const LOOMWRIGHT_STATE_DIR = "loomwright-state";
+
+/**
+ * A host-switch variable the auth-built env already sets, or `undefined`. A
+ * contract may never overwrite an auth variable (D32): such a contract is
+ * refused (`loomwright_contract`, `contract_invalid`).
+ */
+function hostSwitchCollision(env: ChildEnv, hostSwitch: LoomwrightHostSwitch): string | undefined {
+  return [hostSwitch.env, hostSwitch.state_dir_env].find((name) => Object.prototype.hasOwnProperty.call(env, name));
+}
+
+function hostSwitchCollisionError(installPath: string, name: string): LoomwrightSessionError {
+  return new LoomwrightSessionError(
+    "loomwright_contract",
+    "contract_invalid",
+    installPath,
+    `Loomwright at ${installPath}: capabilities.json host_switch names ${name}, which the auth provider's environment already sets`,
+  );
+}
+
+/** The launch env: the auth-built env plus the contract's host switch on, with its state dir. */
+function withHostSwitch(env: ChildEnv, hostSwitch: LoomwrightHostSwitch, stateDir: string): ChildEnv {
+  return { ...env, [hostSwitch.env]: "1", [hostSwitch.state_dir_env]: stateDir };
 }
 
 function userMessage(prompt: string): SDKUserMessage {
@@ -404,7 +438,7 @@ export class SessionManager {
   readonly #store: Store;
   readonly #auth: AuthProvider;
   readonly #configuredLoomwrightPath: string | undefined;
-  readonly #pluginCacheRoot: string | undefined;
+  readonly #installedPluginsPath: string | undefined;
   readonly #baseEnv: BaseEnv;
   readonly #stopGraceMs: number;
   readonly #authTimeoutMs: number;
@@ -440,7 +474,7 @@ export class SessionManager {
     this.#store = options.store;
     this.#auth = options.authProvider;
     this.#configuredLoomwrightPath = options.loomwrightPath;
-    this.#pluginCacheRoot = options.pluginCacheRoot;
+    this.#installedPluginsPath = options.installedPluginsPath;
     this.#baseEnv = options.baseEnv ?? process.env;
     this.#stopGraceMs = options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
     this.#authTimeoutMs = options.authTimeoutMs ?? 30_000;
@@ -479,13 +513,30 @@ export class SessionManager {
   }
 
   /**
+   * The Loomwright adapter's state for `GET /status`: the configured path, else
+   * the active install from `installed_plugins.json` (the user-scope view),
+   * read fresh on every call. Never throws.
+   */
+  loomwrightStatus(): LoomwrightAdapterStatus {
+    return loomwrightAdapterStatus({ configured: this.#configuredLoomwrightPath, installedPluginsPath: this.#installedPluginsPath });
+  }
+
+  /**
    * Start a session (AC1, AC2, AC8). Throws `SessionError` before any row or
    * spawn for invalid params, `bypassPermissions`, a `cwd` in a protected
    * folder (`protected_cwd`, D31: one `session_refused` event, no row) or a
-   * missing Loomwright install, and `AdmissionRefusedError` when the `admission` check refuses
+   * Loomwright the session cannot run with (D32, each with one
+   * `session_refused` event `{reason: <code>, detail: <adapter reason>, path}`
+   * and no row: no install found, `loomwright_not_found`; a missing or bad
+   * `capabilities.json`, or a host switch that would overwrite an auth
+   * variable, `loomwright_contract`; a contract without a host switch,
+   * `loomwright_no_host_switch`), and `AdmissionRefusedError` when the `admission` check refuses
    * (budget or cap, item 06). An auth failure while building the env spawns
    * nothing: the row is inserted as `failed:auth` with one `notify` event, and
-   * the error is rethrown.
+   * the error is rethrown. The session runs in Loomwright's host mode: its env
+   * gets the contract's `host_switch.env=1` and `host_switch.state_dir_env` set
+   * to `<dataDir>/loomwright-state/session-<id>`, created (mode 0700) before
+   * the spawn.
    */
   async startSession(params: StartSessionParams): Promise<SessionHandle> {
     const permissionMode = checkPermissionMode(params.permissionMode);
@@ -497,10 +548,14 @@ export class SessionManager {
     if (params.task !== undefined && !Number.isInteger(params.task)) throw new SessionError("invalid_params", "task must be an integer id");
     const policy = checkPolicy(params.policy);
 
-    const loomwrightPath = resolveLoomwrightPath({
-      configured: this.#configuredLoomwrightPath,
-      cacheRoot: this.#pluginCacheRoot,
-    });
+    const loomwright = this.#refusingLoomwright(null, () =>
+      resolveSessionLoomwright({
+        configured: this.#configuredLoomwrightPath,
+        installedPluginsPath: this.#installedPluginsPath,
+        projectPath: params.cwd,
+      }),
+    );
+    const loomwrightPath = loomwright.installPath;
 
     this.#admit({ kind: "start", agent: params.agent, account: this.#auth.account, provider: this.#auth.id, task: params.task ?? null });
 
@@ -516,6 +571,9 @@ export class SessionManager {
       });
       throw err;
     }
+    // A contract may never overwrite an auth variable: refused like any other bad contract, no row.
+    const collision = hostSwitchCollision(env, loomwright.hostSwitch);
+    if (collision !== undefined) this.#refuseLoomwright(hostSwitchCollisionError(loomwrightPath, collision), null);
 
     const sdkSessionId = this.#randomUUID();
     const at = this.#nowIso();
@@ -528,13 +586,15 @@ export class SessionManager {
     const live = this.#newLive(id, sdkSessionId, policy, "starting");
     let attempt: Attempt;
     try {
+      // Before the spawn; a failure here is a spawn failure.
+      const stateDir = this.#makeLoomwrightStateDir(id);
       attempt = this.#launch(live, {
         number: 1,
         prompt: params.prompt,
         model: params.model,
         permissionMode,
         cwd: params.cwd,
-        env,
+        env: withHostSwitch(env, loomwright.hostSwitch, stateDir),
         loomwrightPath,
         closeInputOnResult: params.closeInputOnResult ?? true,
         sessionOptions: { sessionId: sdkSessionId },
@@ -661,6 +721,15 @@ export class SessionManager {
    * the caller passes the policy, `permissionMode` and `cwd` again (the policy
    * is not persisted in phase 1).
    *
+   * A session keeps the Loomwright it started with: the contract at the row's
+   * `loomwright_path` is read again (never re-resolved) after the row checks
+   * and before admission. A missing or bad contract, or one without a host
+   * switch, is refused like a start (`loomwright_contract` /
+   * `loomwright_no_host_switch`, one `session_refused` event with the
+   * session's id), and the row is left as it was. Every launch attempt
+   * rebuilds the host-mode env from that contract and re-creates the same
+   * state dir (`<dataDir>/loomwright-state/session-<id>`).
+   *
    * The `admission` check (item 06) runs after the row checks and before the
    * group check: a refusal throws `AdmissionRefusedError` and leaves the row's
    * status and its events unchanged.
@@ -710,6 +779,9 @@ export class SessionManager {
     if (!isNonEmptyString(row.model) || !isNonEmptyString(row.loomwright_path)) {
       throw new SessionError("not_resumable", `session ${id} has no recorded model or Loomwright path`);
     }
+    // The Loomwright the session started with, never re-resolved; before admission, the row untouched.
+    const recordedPath = row.loomwright_path;
+    const loomwright = this.#refusingLoomwright(id, () => readSessionLoomwright(recordedPath));
     // Before the group check: a refused resume leaves the row and its events untouched.
     this.#admit({ kind: "resume", agent: row.agent, account: this.#auth.account, provider: this.#auth.id, task: row.task_id });
 
@@ -739,6 +811,7 @@ export class SessionManager {
       permissionMode,
       cwd: params.cwd,
       loomwrightPath: row.loomwright_path,
+      hostSwitch: loomwright.hostSwitch,
       closeInputOnResult: params.closeInputOnResult ?? true,
       sdkSessionId: row.sdk_session_id,
       agent: row.agent,
@@ -1201,6 +1274,11 @@ export class SessionManager {
       });
       throw err;
     }
+    // As at a start: a contract may never overwrite an auth variable. Here it fails the attempt.
+    const collision = hostSwitchCollision(env, ctx.hostSwitch);
+    if (collision !== undefined) throw hostSwitchCollisionError(ctx.loomwrightPath, collision);
+    // Re-created for every attempt, before the spawn; a failure fails the attempt.
+    const stateDir = this.#makeLoomwrightStateDir(live.id);
     if (live.status !== "starting") this.#transition(live, "starting", { reason: "resume_attempt", attempt: number });
     return this.#launch(live, {
       number,
@@ -1208,7 +1286,7 @@ export class SessionManager {
       model: ctx.model,
       permissionMode: ctx.permissionMode,
       cwd: ctx.cwd,
-      env,
+      env: withHostSwitch(env, ctx.hostSwitch, stateDir),
       loomwrightPath: ctx.loomwrightPath,
       closeInputOnResult: ctx.closeInputOnResult,
       sessionOptions: { resume: ctx.sdkSessionId },
@@ -1882,6 +1960,35 @@ export class SessionManager {
       "protected_cwd",
       `cwd ${cwd} is inside a macOS-protected folder (${protectedLocationsText()}); agents work only on repos outside them (D31)`,
     );
+  }
+
+  /**
+   * D32: a Loomwright the session cannot run with is refused before admission,
+   * auth or any spawn, like `protected_cwd`: one `session_refused` event
+   * (`session_id` null for a start, the session's id for a resume) with
+   * `{reason: <SessionError code>, detail: <adapter reason>, path}`, then the
+   * `LoomwrightSessionError` is thrown.
+   */
+  #refuseLoomwright(err: LoomwrightSessionError, sessionId: number | null): never {
+    this.#recordSafely("session_refused", sessionId, { reason: err.code, detail: err.detail, path: err.path });
+    throw err;
+  }
+
+  /** `fn`'s Loomwright, or the refusal (`#refuseLoomwright`) of the one it threw. */
+  #refusingLoomwright(sessionId: number | null, fn: () => SessionLoomwright): SessionLoomwright {
+    try {
+      return fn();
+    } catch (err) {
+      if (err instanceof LoomwrightSessionError) this.#refuseLoomwright(err, sessionId);
+      throw err;
+    }
+  }
+
+  /** Create (mode 0700) and return session `id`'s host-mode state dir, `<dataDir>/loomwright-state/session-<id>`. */
+  #makeLoomwrightStateDir(id: number): string {
+    const dir = join(this.#store.dataDir, LOOMWRIGHT_STATE_DIR, `session-${id}`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return dir;
   }
 
   /** Append an event; a store failure is swallowed (nothing more can be done). */
