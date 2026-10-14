@@ -136,6 +136,11 @@ export interface ContributedRouteRequest {
   readonly body: unknown;
 }
 
+/**
+ * A contributed route's answer, always sent with a JSON body: `status` must
+ * be an integer 200-599 other than 204/205/304 (statuses that have no body),
+ * or the API answers 500 instead.
+ */
 export interface ContributedRouteResponse {
   readonly status: number;
   readonly body: unknown;

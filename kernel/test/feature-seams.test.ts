@@ -365,6 +365,11 @@ function testContribution(seen: { bodies: unknown[]; messages: unknown[]; dueRun
       },
       {
         method: "GET",
+        path: "/probe/status",
+        handler: async (req) => ({ status: Number(req.query.code), body: { answered: req.query.code } }),
+      },
+      {
+        method: "GET",
         path: "/probe/broken",
         handler: async () => {
           throw new Error("secret detail");
@@ -521,6 +526,22 @@ describe("a contribution composed from outside (AC4)", () => {
     expect(await unserializable.json()).toEqual({ error: "internal_error" });
   });
 
+  it("a contributed route's status must carry its JSON body: 1xx, 204/205/304, outside 200-599 or not an integer ⇒ 500, nothing of the answer sent", async () => {
+    const { token, url } = await composed();
+    const auth = { Authorization: `Bearer ${token}` };
+    for (const code of ["200", "201", "299", "404", "599"]) {
+      const res = await fetch(url(`/probe/status?code=${code}`), { headers: auth });
+      expect(res.status).toBe(Number(code));
+      expect(await res.json()).toEqual({ answered: code });
+    }
+    for (const code of ["101", "99", "100", "199", "204", "205", "304", "600", "1000", "200.5", "NaN", "-200"]) {
+      const res = await fetch(url(`/probe/status?code=${code}`), { headers: auth });
+      expect(res.status, code).toBe(500);
+      expect(res.headers.get("content-length"), code).toBe(String(Buffer.byteLength('{"error":"internal_error"}')));
+      expect(await res.json(), code).toEqual({ error: "internal_error" });
+    }
+  });
+
   it("a contributed tool whose value is not JSON is an isError result, never text: undefined", async () => {
     const { kernel } = await composed();
     const fn = defineTool({ name: "kernel_probe_fn", description: "Returns a function.", shape: {}, handler: () => () => 1 });
@@ -605,7 +626,11 @@ describe("a contribution composed from outside (AC4)", () => {
 
     // The subcommand's exit code is passed on; a throw or a non-code is one stderr line / 1.
     expect(await runCli(["probe", "--code", "7"], cliDeps().deps)).toBe(7);
-    expect(await runCli(["probe", "--code", "1.5"], cliDeps().deps)).toBe(1);
+    for (const bad of ["1.5", "256", "-1", "NaN"]) {
+      const nonCode = cliDeps();
+      expect(await runCli(["probe", "--code", bad], nonCode.deps)).toBe(1);
+      expect(nonCode.stderr.text()).toBe("studio: subcommand probe did not resolve to an exit code 0-255\n");
+    }
     const throws = cliDeps();
     expect(await runCli(["probe", "--throw"], throws.deps)).toBe(1);
     expect(throws.stderr.text()).toBe("studio: first line\n");
@@ -723,25 +748,40 @@ describe("phase 1 commands under a broken composition (AC5)", () => {
         },
       },
     });
-    expect(stderr.text()).toBe("");
+    // One warning line saying why the daemon refuses to start, then the command as in phase 1.
+    expect(stderr.text()).toMatch(/^studio: warning: [^\n]*alpha[^\n]*beta[^\n]*\n$/);
     expect(code).toBe(0);
     expect(stdout.text()).toMatch(/^studio: service \S+ unloaded and removed \(.*\)\n$/);
     expect(launchctl.map((a) => a[0])).toEqual(["print"]);
     expect(reads).toEqual([]);
   });
 
-  it("every other phase 1 word dispatches as in phase 1 (here: no api.json), not to the collision", async () => {
+  it("every other phase 1 word warns once about the collision, then dispatches as in phase 1 (here: no api.json)", async () => {
+    const exitCode = process.exitCode;
     for (const argv of [["status"], ["stop", "--all"], ["resume"], ["session", "abandon", "1", "--yes"]]) {
       const stderr = out();
-      const code = await runCli(argv, { dataDir, stdout: out(), stderr, contributions: colliding, keychain: { read: () => "unused" } });
+      const reads: string[] = [];
+      const keychain = {
+        read: (service: string) => {
+          reads.push(service);
+          return "unused";
+        },
+      };
+      const code = await runCli(argv, { dataDir, stdout: out(), stderr, contributions: colliding, keychain });
       expect(code).toBe(1);
-      expect(stderr.text()).toMatch(/^studio: kernel daemon is not running/);
-      expect(stderr.text()).not.toContain("alpha");
+      const lines = stderr.text().trimEnd().split("\n");
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toMatch(/^studio: warning: .*alpha.*beta/);
+      expect(lines[1]).toMatch(/^studio: kernel daemon is not running/);
+      expect(reads).toEqual([]);
     }
-    // A malformed phase 1 command: usage (phase 1's only, the merge failed), 2.
+    // A malformed phase 1 command: the warning, then usage (phase 1's only, the merge failed), 2.
     const usage = out();
     expect(await runCli(["status", "--bad"], { dataDir, stdout: out(), stderr: usage, contributions: colliding })).toBe(2);
-    expect(usage.text()).toBe(`${USAGE}\n`);
+    const [warning, ...rest] = usage.text().split("\n");
+    expect(warning).toMatch(/^studio: warning: .*alpha.*beta/);
+    expect(rest.join("\n")).toBe(`${USAGE}\n`);
+    expect(process.exitCode).toBe(exitCode);
   });
 });
 

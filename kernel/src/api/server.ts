@@ -43,6 +43,18 @@ export const PHASE1_ROUTES: readonly { readonly method: string; readonly path: s
 /** The largest JSON body a contributed route reads; beyond it ⇒ `413 {"error":"body_too_large"}`. */
 export const MAX_CONTRIBUTED_BODY_BYTES = 1024 * 1024;
 
+/** The statuses that carry no body (RFC 9110): a contributed route's answer always has a JSON one. */
+const BODYLESS_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
+
+/**
+ * Whether a contributed route may answer `status`: an integer 200-599 that
+ * carries a body. 1xx (informational, never a final answer), 204/205/304 (no
+ * body) and anything outside HTTP's range are refused (the route's 500).
+ */
+function isContributedRouteStatus(status: unknown): boolean {
+  return typeof status === "number" && Number.isInteger(status) && status >= 200 && status <= 599 && !BODYLESS_STATUSES.has(status);
+}
+
 /**
  * The header the `studio` CLI sends with `POST /sessions/<id>/abandon`
  * (value `cli`), recorded as the abandon's `via`; anything else is `api`.
@@ -373,8 +385,10 @@ export function readStatus(
  *   one over `MAX_CONTRIBUTED_BODY_BYTES` ⇒ `413 {"error":"body_too_large"}`,
  *   malformed JSON ⇒ `400 {"error":"invalid_json"}`, both without calling
  *   the handler. It answers `{status, body}`: `body` is sent as JSON
- *   (`undefined` ⇒ `null`; a string ⇒ a JSON string); a throw, or a body
- *   `JSON.stringify` cannot serialize, ⇒ 500.
+ *   (`undefined` ⇒ `null`; a string ⇒ a JSON string); a throw, a body
+ *   `JSON.stringify` cannot serialize, or a `status` that cannot carry that
+ *   JSON body (not an integer 200-599, or 204/205/304, which have no body)
+ *   ⇒ 500, nothing of the answer sent.
  * - `GET /status` ⇒ `StatusBody`. Each provider's `health(at)` reads the
  *   request's one instant; its failures are typed `{status: "error", reason}`
  *   values, and a provider whose `health()` still throws reports
@@ -540,6 +554,10 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     const answer = await match.route.handler({ params: match.params, query, body });
     // The seam's body is JSON: serialized here, so a string answers a JSON
     // string (`send` writes a string as already-serialized text, phase 1's use).
+    // Checked before anything is written: an invalid status reaches the 500 path,
+    // never `writeHead` (which would close the socket on a 1xx or send a 204's
+    // Content-Length with no body).
+    if (!isContributedRouteStatus(answer.status)) throw new Error("a contributed route answered a status that cannot carry a JSON body");
     const text = JSON.stringify(answer.body ?? null) as string | undefined;
     if (text === undefined) throw new Error("a contributed route answered a body that is not JSON");
     send(res, answer.status, text);

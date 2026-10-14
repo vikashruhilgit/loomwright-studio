@@ -366,12 +366,14 @@ export function formatStatus(status: StatusBody): string {
  * A contributed subcommand (`deps.contributions`, default
  * `SHIPPED_CONTRIBUTIONS`) runs after the `api.json` pid check and before the
  * Keychain token is read: its client reads the token on its first request.
- * It resolves to the exit code (not an integer 0-255 ⇒ 1); a throw ⇒ one
- * stderr line, 1. Contributions that collide (with each other or a phase 1
- * command) ⇒ one stderr line naming both owners, 1, before anything else; a
- * malformed one ⇒ one stderr line naming it, 1. A phase 1 command word
- * (`PHASE1_SUBCOMMANDS`) never depends on the merge: it runs as in phase 1
- * whatever the contributions (its usage text then lists no contributed line).
+ * It resolves to the exit code (not an integer 0-255 ⇒ one stderr line
+ * naming the subcommand, 1); a throw ⇒ one stderr line, 1. Contributions that
+ * collide (with each other or a phase 1 command) ⇒ one stderr line naming
+ * both owners, 1, before anything else; a malformed one ⇒ one stderr line
+ * naming it, 1. A phase 1 command word (`PHASE1_SUBCOMMANDS`) never depends
+ * on the merge: when the merge fails, that same line is first written once to
+ * stderr as a warning (`studio: warning: …`), then the command runs as in
+ * phase 1 (when the merge fails, its usage text lists no contributed line).
  * Never throws, never sets `process.exitCode`, never prints the token.
  */
 export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promise<number> {
@@ -381,16 +383,21 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
   try {
     merged = { subcommands: mergeContributions(deps.contributions ?? SHIPPED_CONTRIBUTIONS, { subcommands: PHASE1_SUBCOMMANDS }).subcommands };
   } catch (err) {
-    merged = { error: `studio: ${err instanceof Error ? err.message.split("\n", 1)[0] : String(err)}` };
+    merged = { error: err instanceof Error ? (err.message.split("\n", 1)[0] as string) : String(err) };
   }
   // A phase 1 word never depends on the contributions: no contribution can take
   // one, so a broken composition never blocks `studio stop --all` or `studio
   // service uninstall`. Any other word needs the merge.
   const phase1 = argv[0] !== undefined && PHASE1_SUBCOMMANDS.includes(argv[0]);
-  if (!phase1 && "error" in merged) {
-    // A collision or a malformed contribution: one line naming the owners, never a throw.
-    stderr.write(`${merged.error}\n`);
-    return 1;
+  if ("error" in merged) {
+    if (!phase1) {
+      // A collision or a malformed contribution: one line naming the owners, never a throw.
+      stderr.write(`studio: ${merged.error}\n`);
+      return 1;
+    }
+    // The command still runs, but the owner learns why the daemon refuses to
+    // start (the same merge fails there): once, before anything is read.
+    stderr.write(`studio: warning: ${merged.error}\n`);
   }
   const subcommands = "error" in merged ? [] : merged.subcommands;
   const usage = usageText(subcommands);
@@ -463,8 +470,10 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
     if (command.kind === "contributed") {
       // After the pid check, before any token read: the client reads the token on its first call.
       const client = apiClient(port, readToken, deps.fetch ?? fetch, deps.timeoutMs ?? CLI_TIMEOUT_MS);
-      const code = await command.subcommand.run(command.args, client, { stdout, stderr });
-      return Number.isInteger(code) && code >= 0 && code <= 255 ? code : 1;
+      const code: unknown = await command.subcommand.run(command.args, client, { stdout, stderr });
+      if (typeof code === "number" && Number.isInteger(code) && code >= 0 && code <= 255) return code;
+      // Never a silent 1: the value itself is not echoed (it could be anything).
+      throw new CliFailure(`studio: subcommand ${command.subcommand.name} did not resolve to an exit code 0-255`);
     }
     const token = readToken();
 
