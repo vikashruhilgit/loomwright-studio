@@ -14,7 +14,11 @@ Only the owner runs this. It uses his subscription, his launchd service and his 
 Read this before starting.
 
 - **Reminders go into your real store.** Steps 1, 2, 3 and 5 ask Wright for reminders on the installed service, so Wright creates real `once` triggers in `~/.loomwright-studio/studio.db` (or `$STUDIO_DATA_DIR`). The step 2 trigger is yours, and it is spent once it fires.
-- **The harness touches only its own triggers.** Each harness reminder's text is `check X <tag>`, with a tag unique to the run and the step: `phase2-exit-<run>-step1`, `-step3` and `-step5`. The harness prints the run tag (`phase2-exit-<run>`) at the start and the end. A trigger counts as the harness's only when its owning agent is `wright` and its text contains that tag. When each step ends, the harness reads those triggers again (catching one Wright registered after `studio ask` stopped waiting) and turns each off with `studio triggers off <id>`. After the last step it turns off any trigger with the run tag that is still on. It never turns off any other trigger: one another agent registers during the run, your step 2 trigger, or one Wright created without the tag. It lists those under `other_new_triggers` in the summary (id, owner, kind; not the text) and leaves them as they are. Because the text differs, the harness's turn-offs can't block your step 2 reminder, and its notifications show the tag, so you can tell them from yours.
+- **The harness touches only its own triggers.** Each harness reminder's text is `check X <tag>`, with a tag unique to the run and the step: `phase2-exit-<run>-step1`, `-step3` and `-step5`. The harness prints the run tag (`phase2-exit-<run>`) at the start and the end. A trigger counts as the harness's only when its owning agent is `wright` and one of two things holds:
+  1. **Session provenance (the kernel's record).** The kernel recorded its `trigger_registered` event under the session of a Wright `ask` message whose text, the harness's own input as the kernel keeps it in `brain_messages`, contains the tag. Every `studio ask` runs its own session, so this holds even when Wright leaves the tag out of the reminder it stores.
+  2. **The tag in the trigger's own text.** This is the fallback, matched case-insensitively.
+
+  When each step ends, the harness reads those triggers again. This catches one Wright registered after `studio ask` stopped waiting, or from a parked ask whose session started later (an ask has no session until it starts, so it matches nothing before then). It then turns off each one that is still on with `studio triggers off <id>`. After the last step it does the same for the run tag. It never writes to a trigger that is already off: a reminder that already fired (a spent `once`) or the one step 3 turned off. An owner off of such a row would record you as turning off a trigger you never touched, so the harness lists it in the summary's `cleanup` as `skipped` (`already_spent` or `already_off`) instead. A re-read that fails is listed as `reread_failed`, with no write. It never turns off any other trigger: one another agent registers during the run, your step 2 trigger (its ask is your own, untagged, in its own session), or one Wright created from a session the harness didn't start and without the tag. It lists those under `other_new_triggers` in the summary (id, owner, kind; not the text) and leaves them as they are. Because the text differs, the harness's turn-offs can't block your step 2 reminder, and its notifications show the tag when Wright kept it, so you can tell them from yours.
 - **Step 5 kills your running kernel.** The harness reads the kernel's pid from `api.json`, checks it against `launchctl print`, and sends `kill -9` to that pid only. launchd then restarts the kernel. The harness never stops, uninstalls or reinstalls the service.
 - **Real notifications appear.** Steps 1 and 5 each post one, and step 4 posts one more from a kernel the harness starts itself, under a temp dir that is deleted afterwards. Step 3 posts none.
 - **Wright sessions spend tokens** on your subscription: four `studio ask` calls in total (three from the harness, one from you in step 2).
@@ -23,11 +27,11 @@ Afterwards, check that nothing is left behind:
 
 ```bash
 launchctl print gui/$(id -u)/com.loomwright.studio.kernel | grep -E 'state|pid'   # the service, still running
-node kernel/dist/cli/index.js triggers --all | grep -A1 'phase2-exit-<run>'         # the harness's triggers (the run tag it printed) are off
+node kernel/dist/cli/index.js triggers --all | grep -i -A1 'phase2-exit-<run>'      # the harness's tagged triggers (the run tag it printed) are off
 ps -axo pid,command | grep -v grep | grep -E 'vitest|phase-2-exit'                  # no harness process left
 ```
 
-If a trigger with the run tag is still `on`, Wright created it after the harness ended (a `studio ask` that came back parked and ran later). Turn it off with `studio triggers off <id>` and note it in the evidence file's `cleanup`.
+The `grep` sees only triggers whose text kept the tag. The summary's `cleanup` list covers every trigger the harness counted as its own up to its end, tagged or not. Act in two cases. A tagged trigger is still `on`: Wright created it after the harness ended (a `studio ask` that came back parked and ran later). Or the `cleanup` list has a `reread_failed` entry: the harness could not read the store, so it wrote nothing for that tag or trigger. Check the row with `studio triggers --all`, turn it off with `studio triggers off <id>` only if it is still on, and note it in the evidence file's `cleanup`.
 
 ## Setup
 
@@ -57,7 +61,7 @@ In the commands below, `studio` means `node kernel/dist/cli/index.js`, run from 
 
 ## Step 1: a reminder 3 minutes ahead (harness and owner)
 
-The harness's step 1 runs `studio ask "remind me at <HH:MM> to check X phase2-exit-<run>-step1" --timeout 120`, with `<HH:MM>` the next whole local minute at least 3 minutes ahead. It records Wright's reply, the one Wright trigger whose text carries the step's tag (and its `studio triggers --all --json` entry), any other trigger that appeared meanwhile (`other_new_triggers`, untouched), and the notification row at that minute. It passes when exactly one Wright trigger carries the tag, it is for that minute, and exactly one notification row exists for it, `delivered`, with deep link `loomwright-studio://notifications/<id>`. If Wright stored the reminder without the tag, the step fails and that trigger is left on (it is in `other_new_triggers`); turn it off yourself with `studio triggers off <id>`.
+The harness's step 1 runs `studio ask "remind me at <HH:MM> to check X phase2-exit-<run>-step1" --timeout 120`, with `<HH:MM>` the next whole local minute at least 3 minutes ahead. It records Wright's reply, the one Wright trigger that is the harness's for the step's tag by the rule above (with `by_session` and `by_tag` saying which part matched, and its `studio triggers --all --json` entry), any other trigger that appeared meanwhile (`other_new_triggers`, untouched), and the notification row at that minute. It passes when exactly one such trigger exists, it is for that minute, and exactly one notification row exists for it, `delivered`, with deep link `loomwright-studio://notifications/<id>`. If Wright stored the reminder without the tag, the session rule still selects it (`by_tag` 0) and cleanup still handles it.
 
 Start the harness (it runs steps 1, 3, 5 and 4 in that order, and takes about 20 minutes):
 
@@ -86,7 +90,7 @@ Your text is the plain `check X`, with no tag, so the harness never selects or t
 
 ## Step 3: a reminder turned off before its time (harness)
 
-The harness's step 3 asks for a third reminder (tag `phase2-exit-<run>-step3`), runs `studio triggers off <id>` on the tagged trigger at once, and waits past the reminder's minute plus 90 seconds. It passes when no notification and no `trigger_fired` event exist for that trigger, and its row says `enabled 0`, turned off by `owner`, never fired. Record whether any notification appeared on screen at that minute (none should).
+The harness's step 3 asks for a third reminder (tag `phase2-exit-<run>-step3`), checks that the step's trigger is on (the step fails without writing if it is not), runs `studio triggers off <id>` on it at once, and waits past the reminder's minute plus 90 seconds. It passes when no notification and no `trigger_fired` event exist for that trigger, and its row says `enabled 0`, turned off by `owner`, never fired. Record whether any notification appeared on screen at that minute (none should).
 
 ## Step 4: a Loomwright version change (harness, with your consent)
 

@@ -42,16 +42,25 @@
 // Every reminder the harness asks for carries a tag unique to the run and the
 // step (`phase2-exit-<run>-step<N>`, so the text is `check X <tag>`, never the
 // owner's step 2 `check X`). A trigger counts as the harness's only when its
-// owning agent is `wright` and its text contains that tag; any other trigger
-// that appears on the service meanwhile (another agent's, the owner's, or
-// Wright's without the tag) is recorded in the summary and never touched.
+// owning agent is `wright` and either (a) the kernel recorded its
+// `trigger_registered` event under the session of a Wright `ask` message whose
+// text (the harness's own input, kept in `brain_messages`) carries the tag, or
+// (b) its own text carries the tag. (a) is the kernel's provenance and does
+// not depend on Wright copying the tag; (b) is the fallback. Any other trigger
+// that appears on the service meanwhile (another agent's, the owner's, or one
+// from a session the harness did not start, without the tag) is recorded in
+// the summary and never touched.
 //
-// Cleanup: `afterEach` re-reads the triggers carrying the current step's tags
-// (so one Wright registers after `studio ask` gave up is caught) and turns
-// each off (`studio triggers off <id>`); `afterAll` turns off any still-on
-// trigger carrying the run's tag (a late registration after its step ended).
-// The step 4 kernel is stopped and its temp dir removed. Nothing the harness
-// did not start or create is stopped, turned off or removed.
+// Cleanup: `afterEach` re-reads the current step's triggers by that rule (so
+// one Wright registers after `studio ask` gave up, or once a parked ask runs,
+// is caught) and turns off each one that is on (`studio triggers off <id>`);
+// `afterAll` does the same for the run's tag (a late registration after its
+// step ended). A trigger that is already off (a spent `once`, or one step 3
+// turned off) is never written to: an owner off of it would record a turn-off
+// the owner never made. It is listed in the cleanup as skipped, with why; a
+// failed re-read is listed too, never skipped silently. The step 4 kernel is
+// stopped and its temp dir removed. Nothing the harness did not start or
+// create is stopped, turned off or removed.
 //
 // A run summary (timings, row counts, event kinds, the commit, the run tag;
 // never env or tokens, and any `sk-ant-…` string redacted) is written after
@@ -63,6 +72,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type Database from "better-sqlite3";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
 import { ASK_AGENT } from "../src/brain/index.js";
@@ -105,6 +115,53 @@ function clipped(text: string, max = 1_000): string {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** A trigger the harness counts as its own, and which rule matched it. */
+export interface HarnessTriggerRow {
+  readonly id: number;
+  readonly owning_agent: string;
+  readonly kind: string;
+  readonly action: string;
+  readonly enabled: number;
+  readonly next_fire_at: string | null;
+  /** 1: registered (per its `trigger_registered` event) by the session of a Wright `ask` whose text carries the tag. */
+  readonly by_session: number;
+  /** 1: its own text carries the tag. */
+  readonly by_tag: number;
+}
+
+/**
+ * The harness's triggers for `tag` (a step's tag, or the run's tag for all of
+ * them): owned by `agent`, and either registered by the session of an `ask`
+ * message to `agent` whose text (the harness's own input) carries the tag, or
+ * whose own text carries it. The session rule is kernel-recorded provenance
+ * (`brain_messages.session_id`, set when the session starts; the session id on
+ * the `trigger_registered` event row) and holds when Wright drops the tag; an
+ * `ask` without a session yet (queued or parked) selects nothing until its
+ * session runs, so callers re-read. Every `ask` starts its own session (no
+ * task, so the brain never resumes one), so the owner's untagged ask never
+ * shares a session with the harness's.
+ */
+export const HARNESS_TRIGGERS_SQL = `
+WITH harness_sessions AS (
+  SELECT DISTINCT session_id FROM brain_messages
+   WHERE agent = :agent AND source = 'ask' AND session_id IS NOT NULL AND instr(lower(text), :tag) > 0
+),
+session_triggers AS (
+  SELECT DISTINCT json_extract(payload_json, '$.trigger_id') AS trigger_id FROM events
+   WHERE kind = 'trigger_registered' AND json_valid(payload_json) AND session_id IN (SELECT session_id FROM harness_sessions)
+)
+SELECT t.id, t.owning_agent, t.kind, t.action, t.enabled, t.next_fire_at,
+       (t.id IN (SELECT trigger_id FROM session_triggers)) AS by_session,
+       (instr(lower(t.action_payload), :tag) > 0) AS by_tag
+  FROM triggers t
+ WHERE t.owning_agent = :agent
+   AND (t.id IN (SELECT trigger_id FROM session_triggers) OR instr(lower(t.action_payload), :tag) > 0)
+ ORDER BY t.id`;
+
+export function harnessTriggerRows(db: Database.Database, agent: string, tag: string): HarnessTriggerRow[] {
+  return db.prepare<[{ agent: string; tag: string }], HarnessTriggerRow>(HARNESS_TRIGGERS_SQL).all({ agent, tag: tag.toLowerCase() });
+}
+
 describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a version change on a harness kernel (STUDIO_LIVE=1)", () => {
   const dataDir = resolveDataDir(process.env);
   const summaryPath = join(tmpdir(), `studio-phase-2-exit-live-summary-${Date.now()}.json`);
@@ -116,8 +173,13 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
   const stepTags = new Set<string>();
   /** Triggers this harness created on the service in the current test (turned off in `afterEach`). */
   const created = new Set<number>();
-  /** Every trigger the harness created and what cleanup did with it. */
-  const cleanup: { trigger_id: number; when: "after_each" | "after_all"; off_exit: number; off_output: string }[] = [];
+  type When = "after_each" | "after_all";
+  /** Every trigger the harness created and what cleanup did with it: turned off, skipped (not on, so never written), or a re-read that failed. */
+  const cleanup: (
+    | { trigger_id: number; when: When; off_exit: number; off_output: string }
+    | { trigger_id: number; when: When; skipped: "already_spent" | "already_off" | "gone"; last_result?: string | null; enabled_changed_by?: string | null }
+    | { when: When; reread_failed: string }
+  )[] = [];
   let ownKernel: Kernel | undefined;
   let ownTmp: string | undefined;
 
@@ -185,23 +247,39 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
     return { hhmm, at: new Date(ms).toISOString() };
   }
 
-  /**
-   * The triggers provably the harness's: owned by Wright, with `tag` (a step's
-   * tag, or the run's tag for all of them) in their text. Nothing else is ever
-   * turned off.
-   */
-  const taggedTriggers = (tag: string) =>
-    withDb(dataDir, (db) =>
-      db
-        .prepare<[string, string], { id: number; owning_agent: string; kind: string; action: string; enabled: number; next_fire_at: string | null }>(
-          "SELECT id, owning_agent, kind, action, enabled, next_fire_at FROM triggers WHERE owning_agent = ? AND instr(lower(action_payload), ?) > 0 ORDER BY id",
-        )
-        .all(ASK_AGENT, tag),
-    );
+  /** The triggers provably the harness's for `tag` (see `HARNESS_TRIGGERS_SQL`). Nothing else is ever turned off. */
+  const harnessTriggers = (tag: string) => withDb(dataDir, (db) => harnessTriggerRows(db, ASK_AGENT, tag));
 
-  /** `studio triggers off <id>` for each id, as the owner, recorded in the summary's cleanup list. */
-  async function turnOff(ids: Iterable<number>, when: "after_each" | "after_all"): Promise<void> {
+  /**
+   * `studio triggers off <id>`, as the owner, for each id whose row is on when
+   * re-read just before; a row that is not on (a spent `once`, one already
+   * turned off) is never written to, since an owner off of it would record a
+   * turn-off the owner never made. Every id is recorded in the cleanup list:
+   * turned off, skipped with why, or a re-read that failed (no write then).
+   */
+  async function turnOffIfOn(ids: Iterable<number>, when: When): Promise<void> {
     for (const id of ids) {
+      const read = tryDb(dataDir, (db) => ({
+        row: db
+          .prepare<[number], { enabled: number; kind: string; last_result: string | null; enabled_changed_by: string | null }>(
+            "SELECT enabled, kind, last_result, enabled_changed_by FROM triggers WHERE id = ?",
+          )
+          .get(id),
+      }));
+      if (read === undefined) {
+        cleanup.push({ when, reread_failed: `trigger:${id}` });
+        continue;
+      }
+      const row = read.row;
+      if (row === undefined) {
+        cleanup.push({ trigger_id: id, when, skipped: "gone" });
+        continue;
+      }
+      if (row.enabled !== 1) {
+        const spent = row.kind === "once" && row.last_result !== null;
+        cleanup.push({ trigger_id: id, when, skipped: spent ? "already_spent" : "already_off", last_result: row.last_result, enabled_changed_by: row.enabled_changed_by });
+        continue;
+      }
       const r = await studio(["triggers", "off", String(id)], 30_000);
       cleanup.push({ trigger_id: id, when, off_exit: r.code, off_output: clipped((r.stdout + r.stderr).trim(), 300) });
     }
@@ -209,8 +287,9 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
 
   /**
    * `studio ask` a reminder for `hhmm` whose text carries `step`'s unique tag;
-   * returns the one trigger Wright created with that tag (tracked for cleanup).
-   * Other triggers that appeared meanwhile are recorded, never touched.
+   * returns the one trigger that is the harness's for that tag (registered by
+   * that ask's session, or carrying the tag; tracked for cleanup). Other
+   * triggers that appeared meanwhile are recorded, never touched.
    */
   async function askReminder(rec: Record<string, unknown>, hhmm: string, step: string): Promise<{ id: number; next_fire_at: string | null }> {
     const tag = `${runTag}-${step}`;
@@ -220,10 +299,10 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
     const t = Date.now();
     const r = await studio(["ask", text, "--timeout", String(ASK_TIMEOUT_S)], ASK_PROCESS_TIMEOUT_MS);
     rec.ask = { text, tag, exit: r.code, reply: clipped(r.stdout.trim()), stderr: clipped(r.stderr.trim()), took_ms: Date.now() - t };
-    const rows = taggedTriggers(tag);
+    const rows = harnessTriggers(tag);
     for (const row of rows) created.add(row.id);
     rec.triggers_created = rows;
-    // Not the harness's (no Wright owner or no tag): ids and owners only, left as they are.
+    // Not the harness's (no Wright owner, or neither the ask's session nor the tag): ids and owners only, left as they are.
     rec.other_new_triggers = withDb(dataDir, (db) =>
       db
         .prepare<[number], { id: number; owning_agent: string; kind: string; created_by: string; enabled: number }>(
@@ -232,7 +311,7 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
         .all(before),
     ).filter((o) => !rows.some((x) => x.id === o.id));
     expect(r.code, r.stderr).toBe(0);
-    expect(rows, "exactly one Wright trigger carrying the step's tag").toHaveLength(1);
+    expect(rows, "exactly one Wright trigger from the step's ask (its session or its tag)").toHaveLength(1);
     const row = rows[0] as (typeof rows)[number];
     // `studio triggers --all --json`, this trigger only (the owner's other triggers are not recorded).
     const listed = await studio(["triggers", "--all", "--json"], 15_000);
@@ -312,10 +391,14 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
   }, 60_000);
 
   afterEach(async () => {
-    // Re-read by tag: a trigger Wright registered after `studio ask` returned (no reply in time, or parked) is the harness's too.
-    for (const tag of stepTags) for (const row of tryDb(dataDir, () => taggedTriggers(tag)) ?? []) created.add(row.id);
+    // Re-read: a trigger Wright registered after `studio ask` returned (no reply in time, or a parked ask whose session ran later) is the harness's too.
+    for (const tag of stepTags) {
+      const rows = tryDb(dataDir, () => harnessTriggers(tag));
+      if (rows === undefined) cleanup.push({ when: "after_each", reread_failed: tag });
+      for (const row of rows ?? []) created.add(row.id);
+    }
     stepTags.clear();
-    await turnOff(created, "after_each");
+    await turnOffIfOn(created, "after_each");
     created.clear();
     if (ownKernel !== undefined) await ownKernel.stop();
     ownKernel = undefined;
@@ -325,9 +408,12 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
   }, 120_000);
 
   afterAll(async () => {
-    // A tagged trigger still on here was registered after its step's cleanup (a session that outlived the step).
-    const late = (tryDb(dataDir, () => taggedTriggers(runTag)) ?? []).filter((row) => row.enabled === 1).map((row) => row.id);
-    await turnOff(late, "after_all");
+    // One of the harness's triggers still on here was registered after its step's cleanup (a session that outlived the step).
+    const rows = tryDb(dataDir, () => harnessTriggers(runTag));
+    if (rows === undefined) cleanup.push({ when: "after_all", reread_failed: runTag });
+    // Still on, or never seen by an `afterEach` (recorded as skipped when it is already spent or off).
+    const recorded = new Set(cleanup.flatMap((c) => ("trigger_id" in c ? [c.trigger_id] : [])));
+    await turnOffIfOn((rows ?? []).filter((row) => row.enabled === 1 || !recorded.has(row.id)).map((row) => row.id), "after_all");
     summary.finished_at = new Date().toISOString();
     writeSummary();
     console.log(`phase-2-exit-live summary: ${summaryPath} (run tag ${runTag})`);
@@ -371,6 +457,9 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
         const { hhmm, at } = reminderMinute();
         rec.reminder = { hhmm, expected_fire_at: at };
         const trigger = await askReminder(rec, hhmm, "step3");
+        // An owner off of a row that is not on would be a write he never made: check first, and fail without writing.
+        rec.enabled_before_off = withDb(dataDir, (db) => db.prepare("SELECT enabled FROM triggers WHERE id = ?").pluck().get(trigger.id)) ?? null;
+        expect(rec.enabled_before_off, "the trigger is on before studio triggers off").toBe(1);
         const off = await studio(["triggers", "off", String(trigger.id)], 30_000);
         rec.off = { exit: off.code, output: clipped((off.stdout + off.stderr).trim(), 300), at: new Date().toISOString() };
         expect(off.code, off.stderr).toBe(0);
