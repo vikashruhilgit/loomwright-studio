@@ -133,12 +133,18 @@ function agentOf(agent: string | null): string {
  * (`{id, action, source, agent}`, linked to the session) and one
  * `kernel:approval` notification, in one transaction (nested in a caller's,
  * it joins it). Returns the row. Throws `ApprovalError` (`invalid_approval`)
- * before writing when the action is empty or longer than 200 characters.
+ * before writing when the action is empty, longer than 200 characters or
+ * holds a NUL, or the agent's name holds a NUL (both go into the
+ * notification's text, which `recordNotification` refuses with a NUL).
  */
 export function requestApproval(store: Store, request: ApprovalRequest, now: Date): ApprovalRow {
   const { action, sessionId, source } = request;
   if (typeof action !== "string" || action.length === 0 || action.length > MAX_APPROVAL_ACTION) {
     throw new ApprovalError("invalid_approval", `the action must be 1-${MAX_APPROVAL_ACTION} characters`);
+  }
+  if (action.includes("\u0000")) throw new ApprovalError("invalid_approval", "the action must not contain a NUL character");
+  if (typeof request.agent === "string" && request.agent.includes("\u0000")) {
+    throw new ApprovalError("invalid_approval", "the agent must not contain a NUL character");
   }
   const payloadJson = canonicalJson(request.payload);
   const agent = agentOf(request.agent);

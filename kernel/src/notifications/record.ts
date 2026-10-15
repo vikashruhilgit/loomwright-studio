@@ -72,8 +72,12 @@ const COLUMNS = "id, source, title, body, deep_link, created_at, delivery_status
  * `input.sessionId` when given). Delivery happens after the commit, on a later
  * loop tick (`deliver.ts`). Throws `InvalidNotificationError` before writing
  * anything when the source is not `trigger:<id>`, `agent:<name>` or
- * `kernel:<reason>`, the title is empty or longer than 200 characters, or the
- * body is longer than 4000. Nested in a caller's transaction, it joins it.
+ * `kernel:<reason>`, the title is empty or longer than 200 characters, the
+ * body is longer than 4000, or either holds a NUL (an argv item cannot hold
+ * one: the title is always an argv item, and so is osascript's body, so that
+ * spawn would fail and the row end `failed`; terminal-notifier takes the body
+ * on stdin, and how it handles a NUL there is unprobed).
+ * Nested in a caller's transaction, it joins it.
  */
 export function recordNotification(store: Store, input: NotificationInput, now: Date): NotificationRow {
   const { source, title, body } = input;
@@ -86,6 +90,7 @@ export function recordNotification(store: Store, input: NotificationInput, now: 
   if (typeof body !== "string" || body.length > MAX_NOTIFICATION_BODY) {
     throw new InvalidNotificationError(`the body must be at most ${MAX_NOTIFICATION_BODY} characters`);
   }
+  if (title.includes("\u0000") || body.includes("\u0000")) throw new InvalidNotificationError("the title and body must not contain a NUL character");
   const at = now.toISOString();
   return store.transaction(() => {
     // The deep link names the inserted row's own id, so it is written in the same transaction.

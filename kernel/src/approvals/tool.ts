@@ -47,7 +47,12 @@ export const approvalRequestTool = defineTool({
     "as a new message, so end your turn after calling this. " +
     "Repeating a call with the same idempotency_key in this session returns the first approval, even if other arguments differ.",
   shape: {
-    action: z.string().min(1).max(MAX_APPROVAL_ACTION),
+    // A NUL is refused at argument validation, before the step runs (`requestApproval` refuses it too).
+    action: z
+      .string()
+      .min(1)
+      .max(MAX_APPROVAL_ACTION)
+      .refine((text) => !text.includes("\u0000"), "must not contain a NUL character"),
     // Not `z.record`: it rebuilds the object in a plain `{}`, dropping a `__proto__` key (an own property of the
     // parsed arguments). This passes the object through as given, so the payload is stored exactly as sent.
     payload: z

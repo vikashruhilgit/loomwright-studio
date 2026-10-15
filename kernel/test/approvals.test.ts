@@ -15,6 +15,7 @@ import type { ApiServer } from "../src/api/index.js";
 import {
   ALWAYS_REFUSED,
   APPROVALS_HELP,
+  ApprovalError,
   APPROVE_HELP,
   DENY_HELP,
   approvalRequestTool,
@@ -1032,6 +1033,45 @@ describe("kernel_approval_request", () => {
       expect((await call(c, bad)).isError, JSON.stringify(bad).slice(0, 80)).toBe(true);
     }
     expect(count(env.store, "SELECT count(*) FROM approvals")).toBe(1);
+  });
+
+  it("requestApproval refuses a NUL in the action or the agent as invalid_approval, before touching the store", () => {
+    const c = ctx("wright");
+    const transaction = vi.spyOn(env.store, "transaction");
+    const prepare = vi.spyOn(env.store, "prepare");
+    const cases: [string | null, string, string][] = [
+      ["wright", "push\u0000x", "the action must not contain a NUL character"],
+      ["wright", "\u0000", "the action must not contain a NUL character"],
+      ["wri\u0000ght", "push", "the agent must not contain a NUL character"],
+    ];
+    for (const [agent, action, message] of cases) {
+      const request = { agent, sessionId: c.sessionId, action, payload: {}, source: "tool" as const };
+      let thrown: unknown;
+      try {
+        requestApproval(env.store, request, env.now());
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown, JSON.stringify(request)).toBeInstanceOf(ApprovalError);
+      expect(thrown, JSON.stringify(request)).toMatchObject({ code: "invalid_approval", message });
+    }
+    expect(transaction).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+    expect(count(env.store, "SELECT count(*) FROM approvals")).toBe(0);
+    expect(count(env.store, "SELECT count(*) FROM notifications")).toBe(0);
+    expect(events(env.store, "approval_requested")).toEqual([]);
+  });
+
+  it("a NUL in the action is refused at argument validation: an isError result naming the field, no approval, no notification, no work step", async () => {
+    const c = ctx("wright");
+    expect(await call(c, { action: "push\u0000x", payload: {}, idempotency_key: "k1" })).toEqual({
+      isError: true,
+      value: "kernel_approval_request: invalid input: \u2716 must not contain a NUL character\n  \u2192 at action",
+    });
+    expect(count(env.store, "SELECT count(*) FROM approvals")).toBe(0);
+    expect(count(env.store, "SELECT count(*) FROM notifications")).toBe(0);
+    expect(count(env.store, `SELECT count(*) FROM work_steps WHERE key LIKE 'kernel_approval_request:session-${c.sessionId}:%'`)).toBe(0);
   });
 });
 
