@@ -24,6 +24,7 @@ import {
   getNotification,
   notificationsContribution,
   notifyTool,
+  osascriptInvocation,
   pendingNotificationIds,
   plistQuote,
   printable,
@@ -146,7 +147,7 @@ describe("delivery (the due work)", () => {
     const show = `STUDIO_DATA_DIR='${env.dataDir}' '/usr/local/bin/node' '/opt/studio/dist/cli/index.js' notifications show 1`;
     const execute =
       `'/usr/bin/osascript' '-e' 'on run argv' '-e' 'tell application "Terminal"' '-e' 'activate' '-e' 'do script (item 1 of argv)' ` +
-      `'-e' 'end tell' '-e' 'end run' '${show.replace(/'/g, "'\\''")}'`;
+      `'-e' 'end tell' '-e' 'end run' '--' '${show.replace(/'/g, "'\\''")}'`;
     expect(calls).toEqual([
       {
         file: "/opt/homebrew/bin/terminal-notifier",
@@ -192,7 +193,7 @@ describe("delivery (the due work)", () => {
     expect(calls).toEqual([
       {
         file: "/usr/bin/osascript",
-        args: ["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", TITLE, BODY],
+        args: ["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", "--", TITLE, BODY],
         input: "",
         timeoutMs: 10_000,
       },
@@ -208,6 +209,30 @@ describe("delivery (the due work)", () => {
     const intel = stubExec();
     await tick(darwin(intel.exec, ["/usr/local/bin/terminal-notifier", OSASCRIPT_PATH]));
     expect(intel.calls.map((c) => c.file)).toEqual(["/usr/local/bin/terminal-notifier"]);
+  });
+
+  it("text starting with '-' is data to every notifier: osascript gets it after --, terminal-notifier only as a quoted plist value or on stdin", async () => {
+    const title = "-e";
+    const body = '-e property p : (do shell script "touch /tmp/studio-never")';
+    const { calls, exec } = stubExec();
+    record({ title, body });
+    await tick(darwin(exec, [OSASCRIPT_PATH]));
+    record({ title: "--", body: "-" });
+    await tick(darwin(exec));
+    expect(calls).toEqual([
+      {
+        file: "/usr/bin/osascript",
+        args: ["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", "--", "-e", body],
+        input: "",
+        timeoutMs: 10_000,
+      },
+      {
+        file: "/opt/homebrew/bin/terminal-notifier",
+        args: ["-title", '"--"', "-group", '"loomwright-studio-notification-2"', "-execute", expect.stringMatching(/^"/)],
+        input: "-",
+        timeoutMs: 10_000,
+      },
+    ]);
   });
 
   it("not macOS: unsupported, nothing spawned; no notifier at all: unsupported, nothing spawned", async () => {
@@ -340,10 +365,25 @@ describe("the quoting and the spawn (no shell ever sees notification text)", () 
     const r = spawnSync("/bin/sh", ["-c", `printf '%s\\0' ${clickShellCommand(command)}`], { encoding: "utf8" });
     expect(r.status).toBe(0);
     expect(r.stdout.split("\0").slice(0, -1)).toEqual([
-      "/usr/bin/osascript", "-e", "on run argv", "-e", 'tell application "Terminal"', "-e", "activate", "-e", "do script (item 1 of argv)", "-e", "end tell", "-e", "end run", command,
+      "/usr/bin/osascript", "-e", "on run argv", "-e", 'tell application "Terminal"', "-e", "activate", "-e", "do script (item 1 of argv)", "-e", "end tell", "-e", "end run", "--", command,
     ]);
     expect(existsSync(marker)).toBe(false);
     expect(shellQuote("a'b")).toBe("'a'\\''b'");
+  });
+
+  it.skipIf(process.platform !== "darwin")("a real osascript, given osascriptInvocation's argv, reads a title of -e and an AppleScript body as argv items; nothing in them runs", () => {
+    const marker = join(dir, "pwned");
+    const title = "-e";
+    const body = `property p : (do shell script "touch ${marker}")`;
+    const { file, args } = osascriptInvocation({ title, body });
+    // The same argv with `display notification` swapped for a `return`, so no notification is posted.
+    const display = args.indexOf("display notification (item 2 of argv) with title (item 1 of argv)");
+    expect(display).toBeGreaterThan(-1);
+    const probe = args.map((a, i) => (i === display ? 'return ((count of argv) as text) & "|" & (item 1 of argv) & "|" & (item 2 of argv)' : a));
+    const r = spawnSync(file, probe, { encoding: "utf8" });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe(`2|-e|${body}\n`);
+    expect(existsSync(marker)).toBe(false);
   });
 
   it("the Terminal command runs the kernel's CLI on `notifications show <id>` against its data dir, every path one word", () => {

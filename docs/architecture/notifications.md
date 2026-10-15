@@ -52,7 +52,7 @@ The p11 probe ran each candidate from inside a launchd agent in the owner's GUI 
 
 How the text is passed (every process gets an argv array, never a shell string or `shell: true`):
 
-- **osascript:** the title and body are the `on run argv` items, never part of the script source.
+- **osascript:** the title and body are the `on run argv` items, after a `--` end-of-options marker, never part of the script source. Without the `--`, a title of `-e` is read as an option and the body becomes AppleScript source that runs at compile time. The click's `osascript … do script` passes its command after `--` too.
 - **terminal-notifier:** the body goes on stdin. The title is passed as a quoted plist string, because Cocoa parses a `-key value` argument as a property list: when this was explored on the owner's Mac (see the evidence), an unquoted `(a, b)` title made terminal-notifier hang, while quoted titles came back exactly as sent.
 - **The click:** `-execute` is a shell command that terminal-notifier runs on click. It has Terminal run, through `osascript … do script` with the command as an `argv` item, `STUDIO_DATA_DIR=<data dir> <node> <the kernel's cli/index.js> notifications show <id>`. It contains only the kernel's own paths (each quoted as one shell word) and the validated integer id, never notification text.
 

@@ -76,7 +76,7 @@ async function inner(outPath) {
   };
 
   // 1. osascript: ships with macOS; text as AppleScript `argv` items, never in the script source.
-  const osa = await run(OSASCRIPT, ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', title, body]);
+  const osa = await run(OSASCRIPT, ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', '--', title, body]);
   result.candidates.push({ name: 'osascript', path: OSASCRIPT, click: false, post: osa });
 
   // 2. terminal-notifier, from a fixed absolute path only.
@@ -88,7 +88,7 @@ async function inner(outPath) {
     const group = `p11-${runId}`;
     // The click: Terminal runs a harmless command (the kernel's runs `studio notifications show <id>`).
     const terminalCommand = `echo ${shellQuote('p11: the click opened Terminal')}; /usr/bin/touch ${shellQuote(marker)}`;
-    const execute = [OSASCRIPT, '-e', 'on run argv', '-e', 'tell application "Terminal"', '-e', 'activate', '-e', 'do script (item 1 of argv)', '-e', 'end tell', '-e', 'end run', terminalCommand]
+    const execute = [OSASCRIPT, '-e', 'on run argv', '-e', 'tell application "Terminal"', '-e', 'activate', '-e', 'do script (item 1 of argv)', '-e', 'end tell', '-e', 'end run', '--', terminalCommand]
       .map(shellQuote)
       .join(' ');
     const args = ['-title', plistQuote(title), '-group', plistQuote(group), '-execute', plistQuote(execute)];

@@ -12,7 +12,10 @@
 // Notification text is untrusted data (invariant 3) and never reaches a
 // shell or a parser: every process is spawned with an argv array (never a
 // shell string, never `shell: true`). osascript gets the text as `on run argv`
-// items, never in the script source. terminal-notifier gets the body on stdin
+// items after a `--`, never in the script source: without the end-of-options
+// marker a title of `-e` is read as an option and the body becomes AppleScript
+// source (a `property p : (do shell script …)` runs at compile time).
+// terminal-notifier gets the body on stdin
 // and the title as a quoted plist string, because Cocoa parses a `-key value`
 // argument as a property list (p11: an unquoted `(a, b)` title hung it). The
 // click's shell command holds only the kernel's own paths and the integer id.
@@ -101,10 +104,10 @@ export function showCommand(id: number, dataDir: string, deps: NotifierDeps = {}
 /**
  * terminal-notifier's `-execute` value: a shell command (terminal-notifier
  * runs it with a shell on click) that has Terminal run `command`, passed to
- * osascript as an `on run argv` item, never in the script source.
+ * osascript as an `on run argv` item after `--`, never in the script source.
  */
 export function clickShellCommand(command: string): string {
-  return [OSASCRIPT_PATH, "-e", "on run argv", "-e", 'tell application "Terminal"', "-e", "activate", "-e", "do script (item 1 of argv)", "-e", "end tell", "-e", "end run", command]
+  return [OSASCRIPT_PATH, "-e", "on run argv", "-e", 'tell application "Terminal"', "-e", "activate", "-e", "do script (item 1 of argv)", "-e", "end tell", "-e", "end run", "--", command]
     .map(shellQuote)
     .join(" ");
 }
@@ -115,11 +118,11 @@ export function terminalNotifierInvocation(path: string, n: { readonly id: numbe
   return { file: path, args: ["-title", plistQuote(n.title), "-group", plistQuote(notifierGroup(n.id)), "-execute", plistQuote(click)], input: n.body };
 }
 
-/** osascript `display notification`: the text as `argv` items 1 (title) and 2 (body). No click action. */
+/** osascript `display notification`: the text as `argv` items 1 (title) and 2 (body), after `--` so a leading `-` is data. No click action. */
 export function osascriptInvocation(n: { readonly title: string; readonly body: string }): NotifierInvocation {
   return {
     file: OSASCRIPT_PATH,
-    args: ["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", n.title, n.body],
+    args: ["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", "--", n.title, n.body],
     input: "",
   };
 }
