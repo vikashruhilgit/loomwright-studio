@@ -116,7 +116,13 @@ export interface RailContext {
   readonly dataDir: string;
   /** The owner's home dir (for `~/` and `~/.claude/`). */
   readonly homeDir: string;
-  /** The directory a relative path is resolved against (the hook input's `cwd`); `/` when absent or not absolute. */
+  /**
+   * The hook input's `cwd`. When absolute, a relative path is ALSO resolved
+   * against it; a relative path is always read as anchored elsewhere too
+   * (`relativeTargets`), since this may be stale after a persisted `cd`. When
+   * absent or not absolute, a relative path is never resolved against `/`:
+   * it is read only as anchored in any directory. The payload records `/`.
+   */
   readonly cwd?: string;
 }
 
@@ -258,9 +264,18 @@ const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge|enqueueP
  * an unquoted one, cobra skips a quoted one). Paths compare case-insensitively (APFS is by default),
  * on a path-segment boundary, after `..` is applied and a leading
  * `/System/Volumes/Data` firmlink is removed; symlinks are not followed.
+ *
+ * A relative path (a Bash word's value, `~+…`, or a tool's path not starting
+ * with `/` or `~/`) fails closed whatever the hook's `cwd` says: it is resolved
+ * against an absolute `cwd` (never against `/`), and ALSO read as anchored in
+ * any directory the session could be in (`relativeTargets`), because the
+ * `cwd` may be absent or stale after a persisted `cd` (NEEDS VERIFICATION,
+ * OPEN_QUESTIONS).
  */
 export function classifyToolCall(toolName: string, toolInput: unknown, ctx: RailContext): ToolCallClass {
-  const base = typeof ctx.cwd === "string" && ctx.cwd.startsWith("/") ? ctx.cwd : "/";
+  const cwd = typeof ctx.cwd === "string" && ctx.cwd.startsWith("/") ? ctx.cwd : undefined;
+  // What the payload records (a grant is scoped to it); never a base a path is resolved against.
+  const payloadCwd = cwd ?? "/";
   const homeDir = resolve(ctx.homeDir);
   const targets = railTargets(resolve(ctx.dataDir), homeDir);
 
@@ -270,14 +285,16 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
     if (UNREADABLE_BASH_CHARS.test(command)) return { kind: "deny", reason: "bash_shell_metacharacter" };
     if (command.length > MAX_RAIL_COMMAND_LENGTH) return { kind: "deny", reason: "bash_command_too_large" };
     const words = shellWords(command);
-    const patterns = bashPathPatterns(words, base, homeDir);
-    if (patterns === undefined) return { kind: "deny", reason: "bash_command_too_large" };
-    if (patterns.some((p) => targets.protectedPaths.some((t) => couldMatch(p, t)))) return { kind: "deny", reason: "protected_kernel_path" };
-    const payload: ApprovalPayload = { tool: "Bash", command, cwd: base };
+    const read = bashPathPatterns(words, cwd, homeDir);
+    if (read === undefined) return { kind: "deny", reason: "bash_command_too_large" };
+    // A `cd`/`pushd` operand can land anywhere on `CDPATH`, so it is read as anchored in any directory.
+    const protectedRel = cwd === undefined || changesDirectory(words) ? targets.protectedRelAny : targets.protectedRelReachable;
+    if (namesAny(read, targets.protectedPaths, protectedRel)) return { kind: "deny", reason: "protected_kernel_path" };
+    const payload: ApprovalPayload = { tool: "Bash", command, cwd: payloadCwd };
     const form = commandForm(words);
     if (form === "merge") return { kind: "deny", reason: "merge_blocked" };
     if (form !== undefined) return { kind: "outward", action: form, payload };
-    const label = outwardLabel(patterns, targets);
+    const label = outwardLabel(read, targets);
     if (label !== undefined) return { kind: "outward", action: `Bash naming ${label}`, payload };
     return { kind: "ordinary" };
   }
@@ -287,10 +304,45 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
   const raw = (toolInput as Record<string, unknown>)[field];
   if (typeof raw !== "string" || raw === "") return { kind: "ordinary" };
   // A tool's path is not shell-expanded: its characters are literal.
-  const pattern = patternOf(withoutFirmlink(expandPath(raw, base, homeDir)), false);
-  if (targets.protectedPaths.some((t) => couldMatch(pattern, t))) return { kind: "deny", reason: "protected_kernel_path" };
-  const label = outwardLabel([pattern], targets);
-  return label === undefined ? { kind: "ordinary" } : { kind: "outward", action: `${toolName} ${label}`, payload: { tool: toolName, input: toolInput, cwd: base } };
+  const read = toolPathPatterns(raw, cwd, homeDir);
+  if (namesAny(read, targets.protectedPaths, cwd === undefined ? targets.protectedRelAny : targets.protectedRelReachable)) {
+    return { kind: "deny", reason: "protected_kernel_path" };
+  }
+  const label = outwardLabel(read, targets);
+  return label === undefined
+    ? { kind: "ordinary" }
+    : { kind: "outward", action: `${toolName} ${label}`, payload: { tool: toolName, input: toolInput, cwd: payloadCwd } };
+}
+
+/**
+ * The paths a call names: `abs`, absolute patterns; `rel`, relative patterns
+ * (their segments, `..` applied, a leading `..` dropped) that are matched
+ * against `relativeTargets`, since the directory they are relative to is not
+ * known for certain.
+ */
+interface PathRead {
+  readonly abs: readonly Seg[][];
+  readonly rel: readonly Seg[][];
+}
+
+/** Whether `read` could name one of `absTargets`, or (a relative path) one of `relTargets`. */
+function namesAny(read: PathRead, absTargets: readonly (readonly Seg[])[], relTargets: readonly (readonly Seg[])[]): boolean {
+  return read.abs.some((p) => absTargets.some((t) => couldMatch(p, t))) || read.rel.some((p) => relTargets.some((t) => couldMatch(p, t)));
+}
+
+/** Whether the Bash command is a directory change (`cd`, `pushd`, as the program word could expand). */
+function changesDirectory(words: readonly string[]): boolean {
+  const program = words.flatMap(braceExpand).find((w) => w !== "");
+  return program !== undefined && (wordCouldBe(basename(program), "cd") || wordCouldBe(basename(program), "pushd"));
+}
+
+/** A tool's literal path: `~` / `~/…` under the home dir; anything else absolute, or relative (resolved against `cwd` when known). */
+function toolPathPatterns(raw: string, cwd: string | undefined, homeDir: string): PathRead {
+  if (raw === "~" || raw.startsWith("~/") || raw.startsWith("/")) {
+    return { abs: [patternOf(withoutFirmlink(expandPath(raw, "/", homeDir)), false)], rel: [] };
+  }
+  const abs = cwd === undefined ? [] : [patternOf(withoutFirmlink(expandPath(raw, cwd, homeDir)), false)];
+  return { abs, rel: [patternOf(normalisePath(`/${raw}`, false), false)] };
 }
 
 /**
@@ -488,15 +540,19 @@ function expandPath(raw: string, base: string, homeDir: string): string {
   return resolve(base, raw);
 }
 
-/** A shell word's value as an absolute path: `~`/`~/…` home, `~+` the cwd, any other `~…` (`~user`, `~-`, a named dir) "any directory". */
-function shellPath(value: string, base: string, homeDir: string): string {
-  if (!value.startsWith("~")) return value.startsWith("/") ? value : `${base}/${value}`;
+/**
+ * A shell word's value as a path: absolute (`/…`; `~`/`~/…` home; any other
+ * `~…` but `~+` — `~user`, `~-`, a named dir — "any directory"), or relative
+ * (anything else, and `~+`/`~+/…`, the cwd), with the relative text.
+ */
+function shellPath(value: string, homeDir: string): { readonly abs: string } | { readonly rel: string } {
+  if (!value.startsWith("~")) return value.startsWith("/") ? { abs: value } : { rel: value };
   const slash = value.indexOf("/");
   const head = slash === -1 ? value : value.slice(0, slash);
   const rest = slash === -1 ? "" : value.slice(slash);
-  if (head === "~") return `${homeDir}${rest}`;
-  if (head === "~+") return `${base}${rest}`;
-  return `/**${rest === "" ? "/*" : rest}`;
+  if (head === "~") return { abs: `${homeDir}${rest}` };
+  if (head === "~+") return { rel: rest };
+  return { abs: `/**${rest === "" ? "/*" : rest}` };
 }
 
 /**
@@ -508,26 +564,40 @@ function shellPath(value: string, base: string, homeDir: string): string {
  * `-d@file`) and `:` (`file:api.json`), the rest of a glued short option
  * (`-C/path`), and every substring starting at a `/` (`file:///abs`,
  * `-d@/abs`, `x/../abs`) or at a `~/` inside the word. Each is `~`-expanded,
- * resolved against `base`, normalised and without a `/System/Volumes/Data`
- * firmlink prefix; texts that normalise to the same path are read once.
+ * normalised and without a `/System/Volumes/Data` firmlink prefix; a relative
+ * one is read both as relative (`PathRead.rel`) and, when `cwd` is known,
+ * resolved against it; texts that normalise to the same path are read once.
  * `undefined` when the distinct texts sum to more than `MAX_RAIL_PATH_TEXT`
  * characters (the caller denies).
  */
-function bashPathPatterns(words: readonly string[], base: string, homeDir: string): Seg[][] | undefined {
+function bashPathPatterns(words: readonly string[], cwd: string | undefined, homeDir: string): PathRead | undefined {
   const budget = { left: MAX_RAIL_PATH_TEXT };
   const seen = new Set<string>();
-  const patterns: Seg[][] = [];
+  const abs: Seg[][] = [];
+  const rel: Seg[][] = [];
+  const addAbs = (text: string): void => {
+    const path = withoutFirmlink(normalisePath(text, true));
+    if (seen.has(path)) return;
+    seen.add(path);
+    abs.push(patternOf(path, true));
+  };
   for (const word of words) {
     const values = bashPathValues(word, budget);
     if (values === undefined) return undefined;
     for (const v of values) {
-      const path = withoutFirmlink(normalisePath(shellPath(v, base, homeDir), true));
-      if (seen.has(path)) continue;
-      seen.add(path);
-      patterns.push(patternOf(path, true));
+      const p = shellPath(v, homeDir);
+      if ("abs" in p) {
+        addAbs(p.abs);
+        continue;
+      }
+      if (cwd !== undefined) addAbs(`${cwd}/${p.rel}`);
+      const path = normalisePath(`/${p.rel}`, true);
+      if (seen.has(`rel:${path}`)) continue;
+      seen.add(`rel:${path}`);
+      rel.push(patternOf(path, true));
     }
   }
-  return patterns;
+  return { abs, rel };
 }
 
 /**
@@ -571,15 +641,53 @@ function percentDecoded(text: string): string {
 interface RailTargets {
   /** Protected kernel paths, in both firmlink spellings of the data dir. */
   readonly protectedPaths: readonly Seg[][];
+  /**
+   * The protected paths as a relative path could name them from a directory
+   * the session can reach (`relativeTargets` with the cut at the data dir's
+   * own name): used when the hook's `cwd` is known (at worst stale).
+   */
+  readonly protectedRelReachable: readonly Seg[][];
+  /** The protected paths as a relative path could name them from any directory outside each entry: no `cwd`, or a `cd`. */
+  readonly protectedRelAny: readonly Seg[][];
   /** The outward paths with the short label an approval's action shows. */
   readonly outward: readonly (readonly [string, readonly Seg[]])[];
+  /** The outward paths as a relative path could name them from any directory outside each entry. */
+  readonly outwardRel: readonly (readonly [string, readonly Seg[]])[];
+}
+
+/**
+ * `target` as a relative path could name it from a directory the session is
+ * in but the rail does not know: every tail of `target` that starts at one of
+ * its segments before `limit` (default: before its last named segment, so the
+ * directory is an ancestor of the entry, never inside it), keeping a trailing
+ * `GLOBSTAR`. A tail starting at a `GLOBSTAR` covers every directory that
+ * `GLOBSTAR` could stand for. (`[…, .git, hooks, **]` gives `.git/hooks/…` and
+ * `hooks/…`; `<dataDir>/config/**` gives `config/…`, `Loomwright Studio/config/…`
+ * and so on up to the root.)
+ */
+function relativeTargets(target: readonly Seg[], limit?: number): Seg[][] {
+  const named = target[target.length - 1] === GLOBSTAR ? target.length - 1 : target.length;
+  const end = Math.min(limit ?? named, named);
+  const tails: Seg[][] = [];
+  for (let i = 0; i < end; i++) tails.push(target.slice(i));
+  return tails;
 }
 
 function railTargets(dataDir: string, homeDir: string): RailTargets {
-  const protectedPaths = firmlinkForms(dataDir).flatMap((d): Seg[][] => {
+  const protectedPaths: Seg[][] = [];
+  const protectedRelReachable: Seg[][] = [];
+  const protectedRelAny: Seg[][] = [];
+  for (const d of firmlinkForms(dataDir)) {
     const root = patternOf(normalisePath(d, false), false);
-    return [root, ...PROTECTED_DATA_DIRS.map((n) => [...root, lit(n), GLOBSTAR]), ...PROTECTED_DATA_FILES.map((f) => [...root, lit(f)])];
-  });
+    for (const t of [root, ...PROTECTED_DATA_DIRS.map((n) => [...root, lit(n), GLOBSTAR]), ...PROTECTED_DATA_FILES.map((f) => [...root, lit(f)])]) {
+      protectedPaths.push(t);
+      // A session cannot `cd` to or into the data dir: every `cd` that names it is denied. If it started there,
+      // its reported cwd (at worst stale, still that start) resolves every relative path inside and denies it.
+      // So with a known cwd a tail must start at or above the data dir's own name.
+      protectedRelReachable.push(...relativeTargets(t, root.length));
+      protectedRelAny.push(...relativeTargets(t));
+    }
+  }
   const outward: (readonly [string, readonly Seg[]])[] = [
     ...firmlinkForms(homeDir).map((h): readonly [string, readonly Seg[]] => ["~/.claude/", [...patternOf(normalisePath(h, false), false), lit(".claude"), GLOBSTAR]]),
     ["a settings*.json file", [GLOBSTAR, segment("settings*.json", true)]],
@@ -587,12 +695,14 @@ function railTargets(dataDir: string, homeDir: string): RailTargets {
     ["a hooks file", [GLOBSTAR, lit(".git"), lit("hooks"), GLOBSTAR]],
     ["a hooks file", [GLOBSTAR, lit(".claude"), GLOBSTAR, lit("hooks"), GLOBSTAR]],
   ];
-  return { protectedPaths, outward };
+  const outwardRel = outward.flatMap(([label, t]) => relativeTargets(t).map((tail): readonly [string, readonly Seg[]] => [label, tail]));
+  return { protectedPaths, protectedRelReachable, protectedRelAny, outward, outwardRel };
 }
 
-/** Why one of `patterns` is in the outward set (a short label for the approval's action), or `undefined`. */
-function outwardLabel(patterns: readonly Seg[][], targets: RailTargets): string | undefined {
-  for (const [label, target] of targets.outward) if (patterns.some((p) => couldMatch(p, target))) return label;
+/** Why the paths `read` names are in the outward set (a short label for the approval's action), or `undefined`. */
+function outwardLabel(read: PathRead, targets: RailTargets): string | undefined {
+  for (const [label, target] of targets.outward) if (read.abs.some((p) => couldMatch(p, target))) return label;
+  for (const [label, target] of targets.outwardRel) if (read.rel.some((p) => couldMatch(p, target))) return label;
   return undefined;
 }
 

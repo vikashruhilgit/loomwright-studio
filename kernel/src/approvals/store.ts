@@ -93,12 +93,16 @@ const COLUMNS = "id, requesting_agent, requesting_session, action, payload_json,
 /**
  * `value` as JSON with every object's keys sorted, so the same payload always
  * has the same text (a grant matches it exactly, whatever key order the model
- * sent). Throws `TypeError` for a value JSON cannot represent.
+ * sent). Every own key is kept, `__proto__` included. Throws `TypeError` for a
+ * value JSON cannot represent.
  */
 export function canonicalJson(value: unknown): string {
   const text = JSON.stringify(value, (_key, v: unknown) => {
     if (typeof v !== "object" || v === null || Array.isArray(v)) return v;
-    const sorted: Record<string, unknown> = {};
+    // A null-prototype accumulator: an untrusted `__proto__` key (an own
+    // property after `JSON.parse`) is copied as data, never through
+    // `Object.prototype`'s setter, so it is kept and still tells payloads apart.
+    const sorted: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const k of Object.keys(v).sort()) sorted[k] = (v as Record<string, unknown>)[k];
     return sorted;
   });

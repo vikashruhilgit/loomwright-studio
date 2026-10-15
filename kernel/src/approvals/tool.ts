@@ -48,7 +48,12 @@ export const approvalRequestTool = defineTool({
     "Repeating a call with the same idempotency_key in this session returns the first approval, even if other arguments differ.",
   shape: {
     action: z.string().min(1).max(MAX_APPROVAL_ACTION),
-    payload: z.record(z.string(), z.unknown()),
+    // Not `z.record`: it rebuilds the object in a plain `{}`, dropping a `__proto__` key (an own property of the
+    // parsed arguments). This passes the object through as given, so the payload is stored exactly as sent.
+    payload: z
+      .unknown()
+      .refine((v) => typeof v === "object" && v !== null && !Array.isArray(v), { message: "payload must be a JSON object" })
+      .meta({ type: "object" }),
     idempotency_key: z.string().min(1).max(200),
   },
   handler: (args, ctx): KernelApprovalRequestResult => {
