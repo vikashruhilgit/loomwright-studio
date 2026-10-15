@@ -135,6 +135,52 @@ async function transition(next: Contract | null, nextVersion: string): Promise<{
   return { loop, from, to };
 }
 
+/**
+ * A line's CommonMark code spans and the text outside them: a run of n
+ * backticks opens a span that only the next run of exactly n closes, and one
+ * space is stripped from each side of content that has one on both. Asserts
+ * each span's delimiter is longer than any backtick run inside it.
+ */
+function codeSpans(line: string): { outside: string; spans: string[] } {
+  let outside = "";
+  const spans: string[] = [];
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== "`") {
+      outside += line[i];
+      i++;
+      continue;
+    }
+    let n = 0;
+    while (line[i + n] === "`") n++;
+    let close = -1;
+    for (let j = i + n; j < line.length; ) {
+      if (line[j] !== "`") {
+        j++;
+        continue;
+      }
+      let m = 0;
+      while (line[j + m] === "`") m++;
+      if (m === n) {
+        close = j;
+        break;
+      }
+      j += m;
+    }
+    if (close === -1) {
+      outside += "`".repeat(n);
+      i += n;
+      continue;
+    }
+    let content = line.slice(i + n, close);
+    expect(n).toBeGreaterThan(Math.max(0, ...(content.match(/`+/g) ?? []).map((r) => r.length)));
+    if (content.startsWith(" ") && content.endsWith(" ") && content.trim() !== "") content = content.slice(1, -1);
+    spans.push(content);
+    i = close + n;
+  }
+  return { outside, spans };
+}
+
 function noFailures(): void {
   expect(events(env.store, "due_work_failed")).toEqual([]);
 }
@@ -253,10 +299,40 @@ describe("a version change (AC2)", () => {
     noFailures();
     const [file] = noteFiles();
     expect(file).toBe(`17.2.0-to-${version.slice(0, 64)}.md`);
-    expect(sectionOf(note(file ?? ""), "Added")).toEqual(["- Command `` a`b `` — tick"]);
+    expect(sectionOf(note(file ?? ""), "Added")).toEqual(["- Command `` a`b `` — `tick`"]);
     const title = notifications()[0]?.title ?? "";
     expect(title).toHaveLength(200);
     expect(title.endsWith("…")).toBe(true);
+  });
+
+  it("contract text is inert markdown: a double or triple backtick stays inside one code span, and a description's markdown is never live", async () => {
+    const markdown = "**x** [l](u) `a`";
+    const version = "17.3.0-*x*[l](u)";
+    await transition(
+      contract(version, (c) => {
+        list<Entry>(c, "commands").push({ name: "a``b", description: markdown }, { name: "x```y", description: "``z``" });
+        const automate = list<Entry>(c, "commands").find((e) => e.name === "automate");
+        if (automate !== undefined) automate.description = markdown;
+      }),
+      version,
+    );
+    noFailures();
+    const [file] = noteFiles();
+    const text = note(file ?? "");
+    // Every contract-supplied string is one intact code span: the kernel's own words are all that is outside.
+    expect(sectionOf(text, "Added").map(codeSpans)).toEqual([
+      { outside: "- Command  — ", spans: ["a``b", markdown] },
+      { outside: "- Command  — ", spans: ["x```y", "``z``"] },
+    ]);
+    const [change] = sectionOf(text, "Description changes");
+    const parsed = codeSpans(change ?? "");
+    expect(parsed.outside).toBe("- Command :  → ");
+    expect(parsed.spans).toHaveLength(3);
+    expect(parsed.spans[0]).toBe("automate");
+    expect(parsed.spans[2]).toBe(markdown);
+    // The plugin version is a code span in the version lines, and backslash-escaped in the heading.
+    expect(codeSpans(text.split("\n").find((l) => l.startsWith("- To: ")) ?? "").spans[0]).toBe(version);
+    expect(text.split("\n")[1]).toBe("# Loomwright 17\\.2\\.0 → 17\\.3\\.0\\-\\*x\\*\\[l\\]\\(u\\)");
   });
 
   it("one note listing the added command and the removed skill with their one-liners, one notification, one row; later ticks add nothing", async () => {
@@ -265,8 +341,8 @@ describe("a version change (AC2)", () => {
     expect(noteFiles()).toEqual(["17.2.0-to-17.3.0.md"]);
     const path = join(notesDir(), "17.2.0-to-17.3.0.md");
     const text = note("17.2.0-to-17.3.0.md");
-    expect(text.split("\n")[1]).toBe("# Loomwright 17.2.0 → 17.3.0");
-    expect(sectionOf(text, "Added")).toEqual(["- Command `doctor` — Check an install and report"]);
+    expect(text.split("\n")[1]).toBe("# Loomwright 17\\.2\\.0 → 17\\.3\\.0");
+    expect(sectionOf(text, "Added")).toEqual(["- Command `doctor` — `Check an install and report`"]);
     expect(sectionOf(text, "Removed")).toEqual(["- Skill `error-handling` — (no description)"]);
     expect(headings(text)).toEqual(["## Added", "## Removed", "## Changed", "## Description changes"]);
 
@@ -343,12 +419,12 @@ describe("breaking signals (AC3, AC4, AC5)", () => {
     const text = note("17.2.0-to-17.3.0.md");
     expect(headings(text)[0]).toBe("## Breaking");
     expect(sectionOf(text, "Breaking")).toEqual([
-      "- Command removed: `review-pr` — Run a bounded review→fix→re-review heal loop against an existing PR URL; never auto-merges",
+      "- Command removed: `review-pr` — `Run a bounded review→fix→re-review heal loop against an existing PR URL; never auto-merges`",
       "- Agent removed: `loomwright:worker` — (no description)",
     ]);
     expect(sectionOf(text, "Removed")).toEqual([
       "- Agent `loomwright:worker` — (no description)",
-      "- Command `review-pr` — Run a bounded review→fix→re-review heal loop against an existing PR URL; never auto-merges",
+      "- Command `review-pr` — `Run a bounded review→fix→re-review heal loop against an existing PR URL; never auto-merges`",
     ]);
     expect(notifications()[0]?.body).toMatch(/^2 breaking, 0 added, 2 removed\. Note: /);
   });
@@ -545,8 +621,8 @@ describe("a downgrade (AC8)", () => {
 
     expect(noteFiles()).toEqual(["17.2.0-to-17.3.0.md", "17.3.0-to-17.2.0.md"]);
     const text = note("17.3.0-to-17.2.0.md");
-    expect(text.split("\n")[1]).toBe("# Loomwright downgrade 17.3.0 → 17.2.0");
-    expect(sectionOf(text, "Removed")).toEqual(["- Command `doctor` — Check"]);
+    expect(text.split("\n")[1]).toBe("# Loomwright downgrade 17\\.3\\.0 → 17\\.2\\.0");
+    expect(sectionOf(text, "Removed")).toEqual(["- Command `doctor` — `Check`"]);
     expect(notifications().map((r) => r.title)).toEqual(["Loomwright 17.2.0 → 17.3.0", "Loomwright downgrade 17.3.0 → 17.2.0"]);
     const rows = seenRows();
     expect(rows.map((r) => [r.install_path, r.plugin_version])).toEqual([
@@ -688,8 +764,8 @@ describe("description-only changes (AC11)", () => {
     expect(headings(text).at(-1)).toBe("## Description changes");
     const changes = sectionOf(text, "Description changes");
     expect(changes).toHaveLength(2);
-    expect(changes[0]).toMatch(/^- Command `automate`: Generic automation engine .* → Automate, reworded$/);
-    expect(changes[1]).toBe("- Skill `unit-testing`: (no description) → Now described");
+    expect(changes[0]).toMatch(/^- Command `automate`: `Generic automation engine .*` → `Automate, reworded`$/);
+    expect(changes[1]).toBe("- Skill `unit-testing`: (no description) → `Now described`");
     expect(sectionOf(text, "Added")).toEqual(["- (none)"]);
     expect(notifications()[0]?.body).toMatch(/^0 added, 0 removed\. Note: /);
   });

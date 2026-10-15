@@ -30,8 +30,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { DueWorkContext, LoomwrightInstallSettings } from "../loop/types.js";
 import { MAX_NOTIFICATION_BODY, MAX_NOTIFICATION_TITLE, recordNotification } from "../notifications/record.js";
 import type { Store } from "../store/store.js";
-import { resolveLoomwrightInstall } from "./active-install.js";
-import { CONTRACT_FILE, LoomwrightContractError, parseLoomwrightContract, readLoomwrightContractText } from "./contract.js";
+import { resolveLoomwrightInstallWithText } from "./active-install.js";
+import { CONTRACT_FILE, LoomwrightContractError } from "./contract.js";
 import type { LoomwrightContractErrorReason } from "./contract.js";
 
 /** The highest `contract_schema_version` this kernel was written against. A newer one is a breaking signal, never a refusal (D32). */
@@ -366,14 +366,58 @@ export interface VersionNoteMeta {
   readonly at: string;
 }
 
-/** Inline code that a backtick in `text` cannot end early. */
+// Every string the contract supplies (names, descriptions, plugin versions,
+// hook events and host modes, host-switch variable names) is rendered as a
+// code span (`codeSpan`), so no markdown in it is live: inside a code span
+// CommonMark gives no meaning to emphasis, links, HTML, entities or backslash
+// escapes. The heading is the notification title, which also carries plugin
+// versions; it is backslash-escaped instead (`escapeMarkdown`), since it is
+// one plain-text string. The notification's own title and body are plain
+// text, not markdown, and are not escaped. What the kernel writes itself
+// (labels, counts, `(none)`, `(no description)`) stays plain.
+
+/** The longest run of consecutive backticks in `text` (0 when there is none). */
+function longestBacktickRun(text: string): number {
+  let longest = 0;
+  for (const run of text.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  return longest;
+}
+
+/**
+ * `text` (collapsed to one line, non-empty) as one CommonMark code span: the
+ * delimiter is one backtick longer than the longest backtick run inside, so
+ * no run inside can close it. The text is padded with a space on each side
+ * when it holds a backtick or starts or ends with a space; CommonMark strips
+ * exactly one space from each side, so the span shows `text` unchanged.
+ */
+function codeSpan(text: string): string {
+  const fence = "`".repeat(longestBacktickRun(text) + 1);
+  const pad = text.includes("`") || text.startsWith(" ") || text.endsWith(" ") ? " " : "";
+  return `${fence}${pad}${text}${pad}${fence}`;
+}
+
+/** A contract-supplied value as inert inline code; `(none)` when it is missing or empty. */
 function code(text: string | null): string {
-  const t = oneLine(text) ?? "(none)";
-  return t.includes("`") ? `\`\` ${t} \`\`` : `\`${t}\``;
+  const t = oneLine(text);
+  return t === null ? "`(none)`" : codeSpan(t);
+}
+
+/** A contract-supplied description as inert inline code; `(no description)` (plain) when there is none. */
+function descriptionText(description: string | null): string {
+  const t = oneLine(description);
+  return t === null ? "(no description)" : codeSpan(t);
+}
+
+/** Every CommonMark ASCII punctuation character, which a backslash makes literal. */
+const MARKDOWN_PUNCTUATION = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g;
+
+/** `text` with every ASCII punctuation character backslash-escaped, so none of it is live markdown. */
+function escapeMarkdown(text: string): string {
+  return text.replace(MARKDOWN_PUNCTUATION, (c) => `\\${c}`);
 }
 
 function described(name: string, description: string | null): string {
-  return `${code(name)} — ${description ?? "(no description)"}`;
+  return `${code(name)} — ${descriptionText(description)}`;
 }
 
 function plural(n: number, word: string): string {
@@ -381,7 +425,8 @@ function plural(n: number, word: string): string {
 }
 
 function versionLabel(v: ContractVersion): string {
-  return `Loomwright ${oneLine(v.plugin_version) ?? "(unknown)"} (contract ${v.contract_schema_version ?? "unknown"})`;
+  const version = oneLine(v.plugin_version);
+  return `Loomwright ${version === null ? "(unknown)" : codeSpan(version)} (contract ${v.contract_schema_version ?? "unknown"})`;
 }
 
 function breakingLine(signal: BreakingSignal, diff: LoomwrightContractDiff): string {
@@ -440,12 +485,14 @@ function section(heading: string, lines: readonly string[]): string[] {
  * the contract schema version), Description changes (last). Each entry shows
  * its name and one-line description, or `(no description)`. A hook is shown by
  * its event and change kind with counts of write paths, never its script,
- * matcher or paths.
+ * matcher or paths. Every contract-supplied string is an inert code span and
+ * the heading is backslash-escaped (see `codeSpan`), so the contract cannot
+ * put live markdown in the note.
  */
 export function renderVersionNote(diff: LoomwrightContractDiff, meta: VersionNoteMeta): string {
   const lines = [
     meta.marker,
-    `# ${oneLine(meta.title) ?? "Loomwright"}`,
+    `# ${escapeMarkdown(oneLine(meta.title) ?? "Loomwright")}`,
     "",
     `- From: ${versionLabel(diff.from)} at ${code(meta.fromInstallPath)}`,
     `- To: ${versionLabel(diff.to)} at ${code(meta.toInstallPath)}`,
@@ -460,7 +507,7 @@ export function renderVersionNote(diff: LoomwrightContractDiff, meta: VersionNot
   lines.push(
     ...section(
       "Description changes",
-      diff.description_changes.map((d) => `- ${GROUP_LABEL[d.group]} ${code(d.name)}: ${d.from ?? "(no description)"} → ${d.to ?? "(no description)"}`),
+      diff.description_changes.map((d) => `- ${GROUP_LABEL[d.group]} ${code(d.name)}: ${descriptionText(d.from)} → ${descriptionText(d.to)}`),
     ),
   );
   return `${lines.join("\n")}\n`;
@@ -690,7 +737,8 @@ function notifyNoContract(store: Store, err: LoomwrightContractError, now: Date)
 /**
  * One check (the due work's body; see the header). Resolves the active
  * install with `settings` and no project (the user-scope view `/status`
- * uses), reads its contract once and validates that same text, so the stored
+ * uses), reading its contract once: the resolver validates the text it read
+ * and returns it (`resolveLoomwrightInstallWithText`), so the stored
  * `contract_json` is exactly the validated bytes. Then, against the latest
  * row (highest `id`): none ⇒ baseline; same triple ⇒ nothing; only the
  * install path differs ⇒ recorded silently; otherwise the note is written,
@@ -706,9 +754,10 @@ export function checkLoomwrightVersion(ctx: DueWorkContext, settings: Loomwright
   let observed: ObservedContract;
   let text: string;
   try {
-    const { installPath } = resolveLoomwrightInstall({ configured: settings.configured, installedPluginsPath: settings.installedPluginsPath });
-    text = readLoomwrightContractText(installPath);
-    const contract = parseLoomwrightContract(text, installPath);
+    // One read: the resolver validates the text it read and returns it.
+    const resolved = resolveLoomwrightInstallWithText({ configured: settings.configured, installedPluginsPath: settings.installedPluginsPath });
+    const { installPath, contract } = resolved;
+    text = resolved.contractText;
     observed = { install_path: installPath, plugin_version: contract.plugin_version, contract_schema_version: contract.contract_schema_version };
   } catch (err) {
     if (!(err instanceof LoomwrightContractError)) throw err;

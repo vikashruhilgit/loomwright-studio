@@ -114,7 +114,7 @@ The `loomwright` feature also contributes one due work, the version watcher (`ke
 
 ### Detection
 
-The watcher checks on the loop's first tick after the kernel starts, then at most once a minute. It resolves the active install the way `/status` does: with the same `loomwrightPath` and `installedPluginsPath` settings the session manager gets, and no project (the user-scope view). It reads that install's `capabilities.json` once and validates that same text, so the row stores exactly the bytes it validated. Then it compares the install path, plugin version and contract schema version with the latest `loomwright_contract_seen` row (the highest `id`):
+The watcher checks on the loop's first tick after the kernel starts, then at most once a minute. It resolves the active install the way `/status` does: with the same `loomwrightPath` and `installedPluginsPath` settings the session manager gets, and no project (the user-scope view). The resolver reads that install's `capabilities.json` once, validates that same text and returns it with the install, so the row stores exactly the bytes it validated and there is no second read for the file to change between. Then it compares the install path, plugin version and contract schema version with the latest `loomwright_contract_seen` row (the highest `id`):
 
 - **No row yet:** the first observation is recorded silently. This is the baseline. There is no note and no notification.
 - **The same three values:** nothing happens.
@@ -147,7 +147,7 @@ D32 says the adapter tolerates a newer contract and reports the change rather th
 
 ### The note
 
-The note is markdown at `<dataDir>/memory/shared/loomwright-updates/<old>-to-<new>.md` (invariant 8: the owner can read and edit it). Its sections, in order: Breaking (only when there is a breaking signal), Added, Removed, Changed (hooks, result-schema versions, the contract schema version), Description changes (last). Each entry shows its name and its one-line description, or `(no description)`. A removed command or agent is listed under Breaking and also under Removed.
+The note is markdown at `<dataDir>/memory/shared/loomwright-updates/<old>-to-<new>.md` (invariant 8: the owner can read and edit it). Its sections, in order: Breaking (only when there is a breaking signal), Added, Removed, Changed (hooks, result-schema versions, the contract schema version), Description changes (last). Each entry shows its name and its one-line description, or `(no description)`. The contract is data, so nothing it supplies is live markdown: every name, description, plugin version, hook event, host mode and host-switch variable name is a code span whose backtick delimiter is one longer than the longest backtick run inside it, and the heading (the notification title, which carries the plugin versions) has every ASCII punctuation character backslash-escaped. A removed command or agent is listed under Breaking and also under Removed.
 
 A hook is shown only by its event and the kind of change, with counts of write paths. Its script, matcher and paths never appear: memory files go into Wright's context, and this is the same rule the capabilities tool follows.
 
