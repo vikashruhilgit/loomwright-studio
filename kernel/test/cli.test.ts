@@ -81,7 +81,8 @@ function cli(overrides: Partial<CliDeps> = {}) {
     },
   };
   const fetchSpy = vi.fn(fetch);
-  const deps: CliDeps = { dataDir, keychain, fetch: fetchSpy, isPidAlive: () => true, stdout, stderr, ...overrides };
+  // `contributions: []`: phase 1's own usage text, whatever features ship (their subcommands are tested with them).
+  const deps: CliDeps = { dataDir, keychain, fetch: fetchSpy, isPidAlive: () => true, stdout, stderr, contributions: [], ...overrides };
   return { deps, stdout, stderr, reads, fetchSpy, run: (...argv: string[]) => runCli(argv, deps) };
 }
 
