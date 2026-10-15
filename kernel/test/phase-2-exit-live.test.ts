@@ -41,8 +41,10 @@
 //
 // Every reminder the harness asks for carries a tag unique to the run and the
 // step (`phase2-exit-<run>-step<N>`, so the text is `check X <tag>`, never the
-// owner's step 2 `check X`). A trigger counts as the harness's only when its
-// owning agent is `wright` and either (a) the kernel recorded its
+// owner's step 2 `check X`), and is never for 17:00 local (the owner's step 2
+// minute; see `harnessReminderMinute`), so an owner off of a harness trigger
+// can't block the owner's reminder even if Wright drops the tag. A trigger
+// counts as the harness's only when its owning agent is `wright` and either (a) the kernel recorded its
 // `trigger_registered` event under the session of a Wright `ask` message whose
 // text (the harness's own input, kept in `brain_messages`) carries the tag, or
 // (b) its own text carries the tag. (a) is the kernel's provenance and does
@@ -114,6 +116,61 @@ function clipped(text: string, max = 1_000): string {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** The local minute of the owner's step 2 reminder (`remind me at 5pm`). The harness never asks for a reminder at it. */
+export const OWNER_STEP2_HHMM = "17:00";
+
+/** `ms` as a local `HH:MM` (24-hour), the form the harness puts in its `remind me at …` text. */
+const localHHMM = (ms: number): string => new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms));
+
+/**
+ * The minute every harness reminder (steps 1, 3 and 5) is for, from `now`:
+ * the next whole local minute at least 3 minutes ahead, as `HH:MM` and its
+ * instant, moved one minute later when that is 17:00 local. A harness trigger
+ * is turned off by the owner (step 3, and cleanup of rows still on), and the
+ * kernel refuses a Wright registration that matches an owner-off trigger's
+ * kind, schedule, action and text (`owner_off`); a harness reminder whose tag
+ * Wright dropped is stored as plain `check X`, so at 17:00 it would match the
+ * owner's step 2 reminder and block it. Never at 17:00, it can't. Refuses
+ * (throws) when the minute, after that move, would fall on another local day
+ * than `now`: it never rolls into tomorrow.
+ */
+export function harnessReminderMinute(now: number): { hhmm: string; at: string } {
+  let ms = Math.ceil((now + 3 * MINUTE) / MINUTE) * MINUTE;
+  if (localHHMM(ms) === OWNER_STEP2_HHMM) ms += MINUTE;
+  if (new Date(ms).toDateString() !== new Date(now).toDateString()) {
+    throw new Error("the reminder minute would fall after midnight; run the harness between 00:00 and 23:55 local time");
+  }
+  return { hhmm: localHHMM(ms), at: new Date(ms).toISOString() };
+}
+
+// Deterministic (runs in CI, no service): the reminder minute's guarantees.
+describe("harnessReminderMinute", () => {
+  const local = (h: number, m: number, s = 0): number => new Date(2026, 9, 15, h, m, s).getTime();
+
+  it("never returns 17:00 local, and stays at least 3 minutes and at most 5 minutes ahead, for every start from 16:50 to 17:05", () => {
+    for (let now = local(16, 50); now <= local(17, 5); now += 5_000) {
+      const { hhmm, at } = harnessReminderMinute(now);
+      expect(hhmm, new Date(now).toString()).not.toBe(OWNER_STEP2_HHMM);
+      expect(hhmm).toBe(localHHMM(Date.parse(at)));
+      expect(Date.parse(at) - now).toBeGreaterThanOrEqual(3 * MINUTE);
+      expect(Date.parse(at) - now).toBeLessThan(5 * MINUTE);
+    }
+  });
+
+  it("moves a 17:00 minute to 17:01, and leaves 16:59 and 17:02 alone", () => {
+    expect(harnessReminderMinute(local(16, 56, 30)).hhmm).toBe("17:01");
+    expect(harnessReminderMinute(local(16, 57)).hhmm).toBe("17:01");
+    expect(harnessReminderMinute(local(16, 55, 30)).hhmm).toBe("16:59");
+    expect(harnessReminderMinute(local(16, 58, 30)).hhmm).toBe("17:02");
+  });
+
+  it("refuses a minute after midnight instead of rolling into the next day", () => {
+    expect(harnessReminderMinute(local(23, 56)).hhmm).toBe("23:59");
+    expect(() => harnessReminderMinute(local(23, 56, 1))).toThrow(/after midnight/);
+    expect(() => harnessReminderMinute(local(23, 59, 59))).toThrow(/after midnight/);
+  });
+});
 
 /** A trigger the harness counts as its own, and which rule matched it. */
 export interface HarnessTriggerRow {
@@ -237,15 +294,8 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
 
   const scalar = (sql: string, ...p: unknown[]): unknown => withDb(dataDir, (db) => db.prepare(sql).pluck().get(...p));
 
-  /** The next whole local minute at least 3 minutes ahead, as `HH:MM` and its instant. Refuses to cross midnight. */
-  function reminderMinute(): { hhmm: string; at: string } {
-    const now = Date.now();
-    const ms = Math.ceil((now + 3 * MINUTE) / MINUTE) * MINUTE;
-    const day = (t: number): string => new Date(t).toDateString();
-    if (day(ms) !== day(now)) throw new Error("the reminder minute would fall after midnight; run the harness between 00:00 and 23:55 local time");
-    const hhmm = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms));
-    return { hhmm, at: new Date(ms).toISOString() };
-  }
+  /** The minute for a harness reminder asked for now (see `harnessReminderMinute`: never 17:00 local, never past midnight). */
+  const reminderMinute = (): { hhmm: string; at: string } => harnessReminderMinute(Date.now());
 
   /** The triggers provably the harness's for `tag` (see `HARNESS_TRIGGERS_SQL`). Nothing else is ever turned off. */
   const harnessTriggers = (tag: string) => withDb(dataDir, (db) => harnessTriggerRows(db, ASK_AGENT, tag));
