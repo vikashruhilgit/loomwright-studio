@@ -164,16 +164,51 @@ function notifierEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-/** The default `NotifierExec`: `spawn` with an argv array (no shell), bounded output, SIGKILL after `timeoutMs`. */
+/**
+ * After the notifier exits, how long its output may still drain. 'close' waits
+ * for every holder of the stdio pipes, and a descendant the notifier left
+ * behind can hold them for as long as it lives.
+ */
+const DRAIN_MS = 250;
+/** After the timeout's SIGKILL, how long to wait for 'exit' before settling anyway. */
+const KILL_GRACE_MS = 1_000;
+
+/**
+ * The default `NotifierExec`: `spawn` with an argv array (no shell), bounded
+ * output, SIGKILL after `timeoutMs`. A hard bound of `timeoutMs` plus
+ * `KILL_GRACE_MS`: it settles exactly once, on 'close', or `DRAIN_MS` after
+ * 'exit', or `KILL_GRACE_MS` after the kill, whichever is first. Settling
+ * destroys the pipes and unrefs the child, so a descendant still holding the
+ * pipes neither stretches the wait nor keeps the event loop alive.
+ */
 export const spawnNotifier: NotifierExec = (file, args, input, timeoutMs) =>
   new Promise((resolve, reject) => {
     const child = spawn(file, [...args], { stdio: ["pipe", "pipe", "pipe"], env: notifierEnv() });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let settled = false;
+    let drainTimer: NodeJS.Timeout | undefined;
+    let graceTimer: NodeJS.Timeout | undefined;
+    const release = (): void => {
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(drainTimer);
+      clearTimeout(graceTimer);
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.unref();
+    };
+    const settle = (status: number | null, signal: string | null): void => {
+      if (settled) return;
+      release();
+      resolve({ status, signal, timedOut, stdout, stderr });
+    };
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
+      graceTimer = setTimeout(() => settle(child.exitCode, child.signalCode ?? "SIGKILL"), KILL_GRACE_MS);
     }, timeoutMs);
     child.stdout.setEncoding("utf8").on("data", (c: string) => {
       if (stdout.length < MAX_OUTPUT) stdout += c;
@@ -181,14 +216,18 @@ export const spawnNotifier: NotifierExec = (file, args, input, timeoutMs) =>
     child.stderr.setEncoding("utf8").on("data", (c: string) => {
       if (stderr.length < MAX_OUTPUT) stderr += c;
     });
-    child.once("error", (err) => {
-      clearTimeout(timer);
+    child.on("error", (err) => {
+      if (settled) return;
+      release();
       reject(err);
     });
-    child.once("close", (status, signal) => {
+    child.once("exit", (status, signal) => {
+      if (settled) return;
       clearTimeout(timer);
-      resolve({ status, signal, timedOut, stdout, stderr });
+      clearTimeout(graceTimer);
+      drainTimer = setTimeout(() => settle(status, signal), DRAIN_MS);
     });
+    child.once("close", (status, signal) => settle(status, signal));
     // A notifier that exits without reading stdin is not an error of the post.
     child.stdin.on("error", () => {});
     child.stdin.end(input);

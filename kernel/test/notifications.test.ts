@@ -411,6 +411,45 @@ describe("the quoting and the spawn (no shell ever sees notification text)", () 
     expect(envOut).not.toContain("ANTHROPIC_API_KEY");
     expect(envOut).toContain("PATH=/usr/bin:/bin:/usr/sbin:/sbin");
   });
+
+  /** Kill the descendants a `sh -c '… & echo $!'` printed, so none outlives the test. */
+  function killPrinted(stdout: string): void {
+    for (const pid of stdout.split("\n").filter((l) => /^\d+$/.test(l))) {
+      try {
+        process.kill(Number(pid), "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+  }
+  /** Child-process handles still open, once a destroyed pipe's asynchronous close (a couple of loop turns) has run. */
+  const handles = async (): Promise<number> => {
+    await new Promise((r) => setTimeout(r, 50));
+    return process.getActiveResourcesInfo().filter((r) => r === "PipeWrap" || r === "ProcessWrap").length;
+  };
+
+  it("spawnNotifier: a descendant holding the pipes cannot stretch the timeout, and leaves no handle behind", async () => {
+    const before = await handles();
+    const started = Date.now();
+    const run = await spawnNotifier("/bin/sh", ["-c", "/bin/sleep 30 & echo $!; /bin/sleep 30"], "", 300);
+    const took = Date.now() - started;
+    killPrinted(run.stdout);
+    expect(run).toMatchObject({ timedOut: true, signal: "SIGKILL" });
+    expect(run.stdout).toMatch(/^\d+\n$/);
+    expect(took).toBeLessThan(3_000);
+    expect(await handles()).toBe(before);
+  });
+
+  it("spawnNotifier: a notifier that exits 0 and leaves a descendant holding the pipes settles with its own status, not the timeout", async () => {
+    const before = await handles();
+    const started = Date.now();
+    const run = await spawnNotifier("/bin/sh", ["-c", "/bin/sleep 30 & echo $!"], "", 10_000);
+    const took = Date.now() - started;
+    killPrinted(run.stdout);
+    expect(run).toMatchObject({ status: 0, signal: null, timedOut: false });
+    expect(took).toBeLessThan(3_000);
+    expect(await handles()).toBe(before);
+  });
 });
 
 describe("kernel_notify", () => {
