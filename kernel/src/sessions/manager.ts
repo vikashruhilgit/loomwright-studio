@@ -269,6 +269,8 @@ interface Attempt {
   sawInit: boolean;
   firstResult: SDKResultMessage | undefined;
   lastResult: SDKResultMessage | undefined;
+  /** The `result` text of this attempt's last successful `result` message (`SessionHandle.result`). */
+  lastSuccessText: string | undefined;
   authTimer: CancelTimer | undefined;
 }
 
@@ -296,6 +298,8 @@ interface LiveSession {
   settled: boolean;
   readonly done: Promise<SessionStatus>;
   resolveDone: (status: SessionStatus) => void;
+  /** `SessionHandle.result`: derived from `done`, never rejects. */
+  readonly result: Promise<string | null>;
 }
 
 type ConsumeOutcome =
@@ -662,7 +666,7 @@ export class SessionManager {
     }
 
     void this.#runStart(live, attempt).catch((err: unknown) => this.#crash(live, err));
-    return { id, sdkSessionId, pgid: attempt.pgid, done: live.done };
+    return { id, sdkSessionId, pgid: attempt.pgid, done: live.done, result: live.result };
   }
 
   /**
@@ -880,15 +884,15 @@ export class SessionManager {
         // unless its group may still be alive.
         if (live.attempt !== undefined) await this.#killAttemptGroup(live, live.attempt);
         this.#recordResumeFailure(live, 1, err, undefined);
-        if (this.#endIfGroupMayBeAlive(live)) return { id, sdkSessionId: ctx.sdkSessionId, pgid: live.attempt?.pgid, done: live.done };
+        if (this.#endIfGroupMayBeAlive(live)) return { id, sdkSessionId: ctx.sdkSessionId, pgid: live.attempt?.pgid, done: live.done, result: live.result };
         void this.#resumeLoop(live, ctx, undefined).catch((e: unknown) => this.#crash(live, e));
-        return { id, sdkSessionId: ctx.sdkSessionId, pgid: undefined, done: live.done };
+        return { id, sdkSessionId: ctx.sdkSessionId, pgid: undefined, done: live.done, result: live.result };
       }
       this.#settle(live);
       throw err;
     }
     void this.#resumeLoop(live, ctx, first).catch((err: unknown) => this.#crash(live, err));
-    return { id, sdkSessionId: ctx.sdkSessionId, pgid: first.pgid, done: live.done };
+    return { id, sdkSessionId: ctx.sdkSessionId, pgid: first.pgid, done: live.done, result: live.result };
   }
 
   /**
@@ -1214,6 +1218,11 @@ export class SessionManager {
     const done = new Promise<SessionStatus>((resolve) => {
       resolveDone = resolve;
     });
+    // Read when `done` settles, so `live.attempt` is the last attempt.
+    const result = done.then(
+      (final) => (final === "completed" ? (live.attempt?.lastSuccessText ?? null) : null),
+      () => null,
+    );
     const live: LiveSession = {
       id,
       sdkSessionId,
@@ -1227,6 +1236,7 @@ export class SessionManager {
       settled: false,
       done,
       resolveDone,
+      result,
     };
     this.#live.set(id, live);
     return live;
@@ -1260,6 +1270,7 @@ export class SessionManager {
       sawInit: false,
       firstResult: undefined,
       lastResult: undefined,
+      lastSuccessText: undefined,
       authTimer: undefined,
     };
     live.attempt = attempt;
@@ -1465,6 +1476,7 @@ export class SessionManager {
     }
     if (message.type === "result") {
       attempt.lastResult = message;
+      if (message.subtype === "success" && isSuccessResult(message)) attempt.lastSuccessText = message.result;
       if (attempt.firstResult === undefined) {
         attempt.firstResult = message;
         if (attempt.closeInputOnResult) attempt.input.close();

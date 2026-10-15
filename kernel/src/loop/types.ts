@@ -1,4 +1,4 @@
-import type { CancelTimer } from "../sessions/types.js";
+import type { CancelTimer, ResumeSessionParams, SessionHandle, SessionRow, StartSessionParams } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 
 /**
@@ -105,6 +105,22 @@ export interface EventContext {
    * `notify`) instead of parking it: its redelivery could not complete.
    */
   runStepAsync<T>(name: string, fn: () => Promise<T>, opts?: StepOptions): Promise<T>;
+  /** `EventLoopOptions.sessions`, or `undefined` when the loop was built without it. */
+  readonly sessions?: EventSessions;
+}
+
+/**
+ * The part of the session manager a handler may use: start, resume and read a
+ * session. Type-only, so a module that handles events never imports the
+ * manager (or the Agent SDK) at runtime; the kernel passes its
+ * `SessionManager`, which satisfies it. A session started here goes through
+ * the manager's own admission, policy and lifecycle: the handler never owns it
+ * (invariant 2).
+ */
+export interface EventSessions {
+  startSession(params: StartSessionParams): Promise<SessionHandle>;
+  resumeSession(id: number, params: ResumeSessionParams): Promise<SessionHandle>;
+  getSession(id: number): SessionRow | undefined;
 }
 
 /**
@@ -166,6 +182,8 @@ export interface EventLoopOptions {
    * `due_work_failed` row and the tick goes on. Default none.
    */
   readonly dueWork?: readonly DueWork[];
+  /** Passed as `ctx.sessions` to every handler. Absent: handlers see `undefined`. */
+  readonly sessions?: EventSessions;
 }
 
 export interface EventLoopDeps {
