@@ -72,3 +72,9 @@ probes/p9-loomwright-hooks.mjs
 probes/p10-desktop-plugin-install.mjs
 docs/architecture/loomwright.md
 docs/evidence/phase-2-loomwright-host-mode.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-15T02:25:18Z
+- **Brief:** .supervisor/jobs/done/2026-10-14-loomwright-adapter-active-contract.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/48
