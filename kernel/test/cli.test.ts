@@ -81,7 +81,8 @@ function cli(overrides: Partial<CliDeps> = {}) {
     },
   };
   const fetchSpy = vi.fn(fetch);
-  const deps: CliDeps = { dataDir, keychain, fetch: fetchSpy, isPidAlive: () => true, stdout, stderr, ...overrides };
+  // `contributions: []`: phase 1's own usage text, whatever features ship (their subcommands are tested with them).
+  const deps: CliDeps = { dataDir, keychain, fetch: fetchSpy, isPidAlive: () => true, stdout, stderr, contributions: [], ...overrides };
   return { deps, stdout, stderr, reads, fetchSpy, run: (...argv: string[]) => runCli(argv, deps) };
 }
 
@@ -611,8 +612,8 @@ describe("studio service (item 09, AC1; H07)", () => {
     for (const argv of [["service"], ["service", "start"], ["service", "install", "--force"]]) {
       const c = serviceCli();
       expect(await c.run(...argv)).toBe(2);
-      // The default contributions: phase 1's usage plus the notifications help line.
-      expect(c.stderr.text()).toBe(`${USAGE} | studio notifications [--limit N] [--json] | studio notifications show <id>\n`);
+      // `cli()` passes `contributions: []`: phase 1's own usage, whatever features ship.
+      expect(c.stderr.text()).toBe(`${USAGE}\n`);
       expect(c.launchctl).toEqual([]);
     }
     expect(USAGE).toContain("studio service install|uninstall");
