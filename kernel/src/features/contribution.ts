@@ -156,11 +156,18 @@ const TOOL_NAME = /^kernel_[a-z0-9_]{1,64}$/;
 export const ROUTE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 export type RouteMethod = (typeof ROUTE_METHODS)[number];
 
-/** What a contributed route's handler receives. `body` is the parsed JSON body (`undefined` when empty). */
+/**
+ * What a contributed route's handler receives. `body` is the parsed JSON body
+ * (`undefined` when empty); `store` and `now` are the kernel's (contributions
+ * are merged before the store opens, so a route reads its tables through these).
+ */
 export interface ContributedRouteRequest {
   readonly params: Readonly<Record<string, string>>;
   readonly query: Readonly<Record<string, string>>;
   readonly body: unknown;
+  readonly store: Store;
+  /** The kernel's clock. */
+  readonly now: () => Date;
 }
 
 /**

@@ -13,6 +13,7 @@ import { compileRoutePath, matchRoutePath } from "../features/contribution.js";
 import type { OwnedRoute } from "../features/contribution.js";
 import { NO_REF, appendEvent, clip, errorMessage } from "../loop/internal.js";
 import type { EventLoop } from "../loop/loop.js";
+import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
 import type { AbandonVia, SessionManager, StopAllOutcome } from "../sessions/manager.js";
 import { orphanedSessions } from "../sessions/orphans.js";
 import type { OrphanedSession } from "../sessions/orphans.js";
@@ -62,7 +63,8 @@ export const CLIENT_HEADER = "x-studio-client";
 
 export interface ApiServerOptions {
   readonly store: Store;
-  readonly sessions: Pick<SessionManager, "stopAll" | "abandonSession">;
+  /** With `loomwrightStatus` (the real manager has it), `/status` reports the Loomwright adapter's state. */
+  readonly sessions: Pick<SessionManager, "stopAll" | "abandonSession"> & Partial<Pick<SessionManager, "loomwrightStatus">>;
   readonly loop: Pick<EventLoop, "start" | "stop">;
   /** Reported in `/status` (id, account, health); never their secrets. */
   readonly authProviders: readonly AuthProvider[];
@@ -181,6 +183,16 @@ export interface StatusBody {
       readonly reset_source: string | null;
     }[];
   }[];
+  /**
+   * The Loomwright adapter's state (D32): the active install with its plugin
+   * and contract version and whether its contract has a host switch, or why
+   * sessions are refused (`{status: "error", reason, path, message}`), read
+   * fresh on every request. A reader that throws is reported as
+   * `{status: "error", reason: "status_threw"}`, never a 500. Present whenever
+   * the server has a session manager that reports it (additive: an older CLI
+   * ignores it).
+   */
+  readonly loomwright?: LoomwrightAdapterStatus;
 }
 
 const UNAUTHORIZED_BODY = JSON.stringify({ error: "unauthorized" });
@@ -258,6 +270,20 @@ function healthOf(provider: AuthProvider, at: Date): AuthHealth {
   }
 }
 
+/**
+ * The Loomwright adapter's state. The manager's reader never throws, but one
+ * that still does (a test stub, a future reader) reports `error`
+ * (`status_threw`, with its clipped message), never a 500: the `healthOf`
+ * precedent.
+ */
+function loomwrightOf(read: () => LoomwrightAdapterStatus): LoomwrightAdapterStatus {
+  try {
+    return read();
+  } catch (err) {
+    return { status: "error", reason: "status_threw", path: "", message: clip(errorMessage(err)) };
+  }
+}
+
 function safeAccount(provider: AuthProvider): string | null {
   try {
     return provider.account;
@@ -300,12 +326,17 @@ function killUnconfirmed(store: Store): StatusBody["kill_unconfirmed"] {
   });
 }
 
-/** Read the `/status` body from the store (AC2). Exported for the CLI's tests and later surfaces. */
+/**
+ * Read the `/status` body from the store (AC2). Exported for the CLI's tests
+ * and later surfaces. With `loomwrightStatus`, the body always has a
+ * `loomwright` field (`loomwrightOf`: never a throw); without it, none.
+ */
 export function readStatus(
   store: Store,
   authProviders: readonly AuthProvider[],
   at: Date,
   info: { readonly startedAt: Date; readonly pid: number; readonly dayOf: (at: Date) => string },
+  loomwrightStatus?: () => LoomwrightAdapterStatus,
 ): StatusBody {
   const day = info.dayOf(at);
   const capRows = store
@@ -366,6 +397,7 @@ export function readStatus(
         .all(day),
     },
     cap_state: [...capByKey].map(([key, limits]) => ({ account: labelOf(key), provider: key, limits })),
+    ...(loomwrightStatus === undefined ? {} : { loomwright: loomwrightOf(loomwrightStatus) }),
   };
 }
 
@@ -380,7 +412,8 @@ export function readStatus(
  *   contributed route drains the body with `req.resume()`, unread).
  * - Contributed routes (`options.routes`) match after the phase 1 routes; an
  *   exact path or a `:param` pattern. Their handler gets `{params, query,
- *   body}`, where `body` is the parsed JSON body (`undefined` when empty):
+ *   body, store, now}` (the server's store and clock), where `body` is the
+ *   parsed JSON body (`undefined` when empty):
  *   one over `MAX_CONTRIBUTED_BODY_BYTES` ⇒ `413 {"error":"body_too_large"}`,
  *   malformed JSON ⇒ `400 {"error":"invalid_json"}`, both without calling
  *   the handler. It answers `{status, body}`: `body` is sent as JSON
@@ -394,7 +427,9 @@ export function readStatus(
  * - `GET /status` ⇒ `StatusBody`. Each provider's `health(at)` reads the
  *   request's one instant; its failures are typed `{status: "error", reason}`
  *   values, and a provider whose `health()` still throws reports
- *   `{status: "error", reason: "health_threw"}`, never a 500.
+ *   `{status: "error", reason: "health_threw"}`, never a 500. With a session
+ *   manager that has `loomwrightStatus`, the body's `loomwright` field is the
+ *   adapter's state (a reader that throws ⇒ `status_threw`, never a 500).
  * - `POST /stop-all` ⇒ engage the kill switch (`kill_switch_engaged`), stop
  *   the loop (its current event finishes, no other starts, so a session an
  *   in-flight handler starts is live before the next step), stop every
@@ -421,6 +456,8 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
   const dayOf = deps.dayOf ?? localDay;
   const startedAt = deps.startedAt ?? now();
   const pid = deps.pid ?? process.pid;
+  // Bound: `/status` calls it detached from the manager.
+  const loomwrightStatus = sessions.loomwrightStatus?.bind(sessions);
 
   let control: Promise<unknown> = Promise.resolve();
   const serialized = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -473,7 +510,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
   const routes: Record<string, { readonly method: string; readonly run: () => Promise<unknown> }> = {
     "/status": {
       method: "GET",
-      run: async () => readStatus(store, authProviders, now(), { startedAt, pid, dayOf }),
+      run: async () => readStatus(store, authProviders, now(), { startedAt, pid, dayOf }, loomwrightStatus),
     },
     "/stop-all": { method: "POST", run: stopAll },
     "/resume": { method: "POST", run: resume },
@@ -556,7 +593,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     let status: number;
     let text: string;
     try {
-      const { status: answered, body: answerBody } = await match.route.handler({ params: match.params, query, body });
+      const { status: answered, body: answerBody } = await match.route.handler({ params: match.params, query, body, store, now });
       // The seam's body is JSON: serialized here, so a string answers a JSON
       // string (`send` writes a string as already-serialized text, phase 1's use).
       // Checked before anything is written: an invalid status reaches the 500 path,

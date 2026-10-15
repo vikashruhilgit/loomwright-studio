@@ -126,6 +126,14 @@ export type SessionErrorCode =
   | "invalid_params"
   | "forbidden_permission_mode"
   | "loomwright_not_found"
+  /**
+   * The Loomwright install's `capabilities.json` contract is missing, unreadable,
+   * not JSON, invalid or too old, or its host switch would overwrite an auth
+   * variable (D32): refused before anything starts, one `session_refused` event.
+   */
+  | "loomwright_contract"
+  /** The Loomwright install's contract has no `host_switch`, and Studio runs Loomwright only in host mode (D32): refused before anything starts, one `session_refused` event. */
+  | "loomwright_no_host_switch"
   | "not_resumable"
   | "not_found"
   | "not_live"
@@ -316,10 +324,14 @@ export interface SessionManagerDeps {
 export interface SessionManagerOptions {
   readonly store: Store;
   readonly authProvider: AuthProvider;
-  /** The configured Loomwright plugin dir. When unset, the newest valid cached install is used. */
+  /**
+   * The configured Loomwright plugin dir. When set (non-empty) it wins, and it
+   * must hold a valid `capabilities.json`; when unset, the active install named
+   * by `installed_plugins.json` is used (D32). The plugin cache is never scanned.
+   */
   readonly loomwrightPath?: string;
-  /** Defaults to `~/.claude/plugins/cache/atelier/loomwright`. */
-  readonly pluginCacheRoot?: string;
+  /** Claude Code's record of installed plugins. Defaults to `~/.claude/plugins/installed_plugins.json`. */
+  readonly installedPluginsPath?: string;
   /** The environment the auth provider builds the child's from. Defaults to `process.env`. */
   readonly baseEnv?: BaseEnv;
   /** How long `stopSession` waits after closing the input before killing the group. Default `DEFAULT_STOP_GRACE_MS` (2 000 ms). */

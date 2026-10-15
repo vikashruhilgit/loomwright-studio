@@ -53,7 +53,7 @@ export interface KernelOptions {
   readonly port?: number;
   /** Session-manager settings other than the ones the kernel wires itself. */
   readonly sessions?: Partial<
-    Pick<SessionManagerOptions, "loomwrightPath" | "pluginCacheRoot" | "stopGraceMs" | "authTimeoutMs" | "resumeBackoffMs">
+    Pick<SessionManagerOptions, "loomwrightPath" | "installedPluginsPath" | "stopGraceMs" | "authTimeoutMs" | "resumeBackoffMs">
   >;
   /**
    * The event loop's handlers. Default none: every queued event ends
