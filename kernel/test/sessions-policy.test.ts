@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PROPOSED_ALLOWED_TOOLS } from "../src/brain/index.js";
 import { decideToolUse, freezePolicy } from "../src/sessions/index.js";
 import { classifyToolCall } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
@@ -29,6 +30,16 @@ describe("decideToolUse: non-Bash tools", () => {
     const empty: ToolPolicy = { allowedTools: [], allowedBashPrefixes: [] };
     expect(decideToolUse(empty, "Read", {}).decision).toBe("deny");
     expect(decideToolUse(empty, "Bash", { command: "echo hi" }).decision).toBe("deny");
+  });
+
+  it("denies the SDK's ToolSearch meta-tool under Wright's proposed policy (no gate exception: deferral is off at launch instead)", () => {
+    const wright: ToolPolicy = { allowedTools: [...PROPOSED_ALLOWED_TOOLS], allowedBashPrefixes: [] };
+    expect(PROPOSED_ALLOWED_TOOLS).not.toContain("ToolSearch");
+    for (const name of ["ToolSearch", "toolsearch", "ToolSearchX", "Toolbox"]) {
+      expect(decideToolUse(wright, name, {})).toEqual({ decision: "deny", reason: "tool_not_allowed" });
+    }
+    // The kernel tools it lists are still allowed by exact name.
+    expect(decideToolUse(wright, "mcp__kernel__kernel_trigger_register", {})).toEqual({ decision: "allow", reason: "tool_allowed" });
   });
 });
 

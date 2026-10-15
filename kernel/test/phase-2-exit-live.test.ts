@@ -84,6 +84,7 @@ import type { Kernel } from "../src/kernel.js";
 import { resolveLoomwrightInstallWithText } from "../src/loomwright/active-install.js";
 import { VERSION_NOTES_DIR, VERSION_NOTE_SOURCE, defaultInstalledPluginsPath } from "../src/loomwright/index.js";
 import { createDeliveryDueWork, notificationsContribution } from "../src/notifications/index.js";
+import { deepLinkFor } from "../src/notifications/record.js";
 import { LAUNCHCTL_PATH, SERVICE_LABEL, parseLaunchctlPrint } from "../src/service/index.js";
 import { resolveDataDir } from "../src/store/index.js";
 import { tryDb, waitFor, withDb } from "./crash-helpers.js";
@@ -360,7 +361,7 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
         )
         .all(before),
     ).filter((o) => !rows.some((x) => x.id === o.id));
-    expect(r.code, r.stderr).toBe(0);
+    expect(r.code, clipped(r.stderr)).toBe(0);
     expect(rows, "exactly one Wright trigger from the step's ask (its session or its tag)").toHaveLength(1);
     const row = rows[0] as (typeof rows)[number];
     // `studio triggers --all --json`, this trigger only (the owner's other triggers are not recorded).
@@ -370,15 +371,16 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
     return { id: row.id, next_fire_at: row.next_fire_at };
   }
 
+  /** Notifications whose source is trigger `id`, read on `db` (the caller's one connection). */
+  const triggerNotificationsIn = (db: Database.Database, id: number) =>
+    db
+      .prepare<[string], { id: number; source: string; title: string; deep_link: string; created_at: string; delivery_status: string; delivery_detail: string | null; delivered_at: string | null }>(
+        "SELECT id, source, title, deep_link, created_at, delivery_status, delivery_detail, delivered_at FROM notifications WHERE source = ? ORDER BY id",
+      )
+      .all(`trigger:${id}`);
+
   /** Notifications whose source is trigger `id`. */
-  const triggerNotifications = (id: number) =>
-    withDb(dataDir, (db) =>
-      db
-        .prepare<[string], { id: number; source: string; title: string; deep_link: string; created_at: string; delivery_status: string; delivery_detail: string | null; delivered_at: string | null }>(
-          "SELECT id, source, title, deep_link, created_at, delivery_status, delivery_detail, delivered_at FROM notifications WHERE source = ? ORDER BY id",
-        )
-        .all(`trigger:${id}`),
-    );
+  const triggerNotifications = (id: number) => withDb(dataDir, (db) => triggerNotificationsIn(db, id));
 
   /** `trigger_*` audit events about trigger `id`, by kind. */
   const triggerEvents = (id: number): Record<string, number> =>
@@ -443,7 +445,7 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
   afterEach(async () => {
     // Re-read: a trigger Wright registered after `studio ask` returned (no reply in time, or a parked ask whose session ran later) is the harness's too.
     for (const tag of stepTags) {
-      const rows = tryDb(dataDir, () => harnessTriggers(tag));
+      const rows = tryDb(dataDir, (db) => harnessTriggerRows(db, ASK_AGENT, tag));
       if (rows === undefined) cleanup.push({ when: "after_each", reread_failed: tag });
       for (const row of rows ?? []) created.add(row.id);
     }
@@ -459,7 +461,7 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
 
   afterAll(async () => {
     // One of the harness's triggers still on here was registered after its step's cleanup (a session that outlived the step).
-    const rows = tryDb(dataDir, () => harnessTriggers(runTag));
+    const rows = tryDb(dataDir, (db) => harnessTriggerRows(db, ASK_AGENT, runTag));
     if (rows === undefined) cleanup.push({ when: "after_all", reread_failed: runTag });
     // Still on, or never seen by an `afterEach` (recorded as skipped when it is already spent or off).
     const recorded = new Set(cleanup.flatMap((c) => ("trigger_id" in c ? [c.trigger_id] : [])));
@@ -481,7 +483,7 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
         const notes = await waitFor(
           "the reminder's notification, delivered or settled",
           () => {
-            const n = tryDb(dataDir, () => triggerNotifications(trigger.id));
+            const n = tryDb(dataDir, (db) => triggerNotificationsIn(db, trigger.id));
             return n !== undefined && n.length > 0 && n.every((x) => x.delivery_status !== "pending") ? n : undefined;
           },
           Date.parse(at) - Date.now() + FIRE_SLACK_MS,
@@ -492,7 +494,8 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
         rec.trigger_events = triggerEvents(trigger.id);
         rec.event_kinds = eventKindsSince(firstEvent);
         expect(notes).toHaveLength(1);
-        expect(notes[0]?.deep_link).toBe(`loomwright-studio://notifications/${notes[0]?.id}`);
+        const note = notes[0] as (typeof notes)[number];
+        expect(note.deep_link).toBe(deepLinkFor(note.id));
         expect(notes[0]?.delivery_status).toBe("delivered");
         expect(rec.trigger_events).toMatchObject({ trigger_fired: 1 });
       }),
@@ -512,7 +515,7 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
         expect(rec.enabled_before_off, "the trigger is on before studio triggers off").toBe(1);
         const off = await studio(["triggers", "off", String(trigger.id)], 30_000);
         rec.off = { exit: off.code, output: clipped((off.stdout + off.stderr).trim(), 300), at: new Date().toISOString() };
-        expect(off.code, off.stderr).toBe(0);
+        expect(off.code, clipped(off.stderr)).toBe(0);
         expect(Date.now(), "the off came after the reminder's time").toBeLessThan(Date.parse(at));
         // Past its minute, plus the slack a fire would have needed.
         await sleep(Math.max(0, Date.parse(at) - Date.now() + FIRE_SLACK_MS));
@@ -564,7 +567,7 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
         const notes = await waitFor(
           "the reminder's notification after the restart",
           () => {
-            const n = tryDb(dataDir, () => triggerNotifications(trigger.id));
+            const n = tryDb(dataDir, (db) => triggerNotificationsIn(db, trigger.id));
             return n !== undefined && n.length > 0 && n.every((x) => x.delivery_status !== "pending") ? n : undefined;
           },
           Date.parse(at) - Date.now() + FIRE_SLACK_MS,
