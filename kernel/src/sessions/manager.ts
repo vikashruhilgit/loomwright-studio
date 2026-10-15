@@ -441,6 +441,19 @@ function withHostSwitch(env: ChildEnv, hostSwitch: LoomwrightHostSwitch, stateDi
   return { ...env, [hostSwitch.env]: "1", [hostSwitch.state_dir_env]: stateDir };
 }
 
+/**
+ * The Agent SDK's tool deferral, turned off on every launch (a start and
+ * every resume attempt). With deferral on, the bundled CLI offers MCP tools
+ * only through its `ToolSearch` meta-tool, which no policy lists, so the gate
+ * denies the load and the session can call none of its kernel tools. With it
+ * off, every tool is offered from the start and the gate decides each call by
+ * its exact name, so the policy stays exactly the user's list. Undocumented in
+ * the SDK's types: probed on 0.3.284 (docs/evidence/agent-sdk-tool-loading-probe.md).
+ * Spread last, after the auth env and the host switch, so neither an
+ * inherited daemon variable nor a contract can turn it back on.
+ */
+const TOOL_DEFERRAL_OFF: Readonly<ChildEnv> = Object.freeze({ ENABLE_TOOL_SEARCH: "false" });
+
 function userMessage(prompt: string): SDKUserMessage {
   return { type: "user", message: { role: "user", content: prompt }, parent_tool_use_id: null };
 }
@@ -478,7 +491,8 @@ const defaultSchedule = (fn: () => void, ms: number): CancelTimer => {
  * itself in a new process group, with:
  *
  * - isolation: `settingSources: []`, one local Loomwright plugin, the auth
- *   provider's env, explicit `model` and `permissionMode` (never
+ *   provider's env with the SDK's tool deferral off (`TOOL_DEFERRAL_OFF`),
+ *   explicit `model` and `permissionMode` (never
  *   `bypassPermissions`), streaming input, `includeHookEvents: true`;
  * - a kernel `PreToolUse` hook that decides every tool call from the
  *   session's frozen policy and records each decision (invariant 3);
@@ -1281,7 +1295,8 @@ export class SessionManager {
       cwd: config.cwd,
       settingSources: [],
       plugins: [{ type: "local", path: config.loomwrightPath }],
-      env: config.env,
+      // Start and resume share this line, so they cannot diverge; the kernel's value wins.
+      env: { ...config.env, ...TOOL_DEFERRAL_OFF },
       includeHookEvents: true,
       hooks: { PreToolUse: [{ hooks: [this.#gate(live)] }] },
       ...(mcpServers === undefined ? {} : { mcpServers }),
