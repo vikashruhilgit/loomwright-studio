@@ -143,7 +143,7 @@ These go first in the note and in the notification:
 - any `host_switch` change;
 - a contract schema version that crosses `KNOWN_CONTRACT_SCHEMA_VERSION` (1, the highest this kernel was written against): the new version is above it and the old one is not.
 
-D32 says the adapter tolerates a newer contract and reports the change rather than breaking. So a newer schema version is flagged, and the note says that the adapter still reads the contract and does not refuse sessions. It is flagged only on a change that crosses the known version, so when the warning appears it is new. It does not always appear: the baseline is never diffed (see § Its limits), and a change back down to the known version and up again crosses again, so it is flagged again. A later change between two versions above it (2 to 3, or a new plugin version still at 2) is not flagged again, and neither is a change back down to it; the Changed section still reports any schema change, and the note's From and To lines always state both schema versions. The adapter only has a minimum version (`MIN_CONTRACT_SCHEMA_VERSION`).
+D32 says the adapter tolerates a newer contract and reports the change rather than breaking. So a newer schema version is flagged, and the note says that the adapter still reads the contract and does not refuse sessions. It is flagged only on a change that crosses the known version, so when the warning appears it is new. It does not always appear: the baseline is never diffed (see § Its limits). A change back down to the known version and up again crosses again, so it is flagged again. A later change between two versions above it (2 to 3, or a new plugin version still at 2) is not flagged again, and neither is a change back down to it; the Changed section still reports any schema change, and the note's From and To lines always state both schema versions. The adapter only has a minimum version (`MIN_CONTRACT_SCHEMA_VERSION`).
 
 ### The note
 
@@ -181,7 +181,7 @@ When the active install has no usable contract (any `contract_*` reason: missing
 - An unexpected error in a check is one `due_work_failed` row, and the next check, a minute later, tries again.
 - A re-activated triple's row is replaced, so its first-seen time is its latest sighting, not its first.
 - If the kernel crashes between the note and the row, and the install changes back before the next check, that note stays without a row or a notification.
-- A kernel whose first observation is already above `KNOWN_CONTRACT_SCHEMA_VERSION` never flags it: the baseline is silent and no later change crosses. `/status` still shows `contract_schema_version`.
+- A kernel whose first observation is already above `KNOWN_CONTRACT_SCHEMA_VERSION` does not flag it, because the baseline is silent. It is flagged only if a later change goes down to the known version and back up. `/status` still shows `contract_schema_version`.
 - The note says only what the contract records. Release notes can join the contract later (a Loomwright change).
 - The requirement said a newer contract schema version makes the adapter refuse sessions. It does not: D32 tolerates newer contracts, so the note says sessions are not refused.
 

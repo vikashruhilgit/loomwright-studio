@@ -490,6 +490,48 @@ describe("breaking signals (AC3, AC4, AC5)", () => {
     expect(sectionOf(text, "Changed")).toEqual(["- Contract schema version: 2 → 1"]);
   });
 
+  /**
+   * Drive the watcher through `steps` ([plugin version, schema version]), each
+   * at a fresh install, a minute apart; the first is the baseline. Returns, per
+   * later step, whether its note has a Breaking heading and its notification body.
+   */
+  async function walk(steps: Array<[string, number]>): Promise<Array<{ breaking: boolean; body: string }>> {
+    const loop = watchLoop();
+    const out: Array<{ breaking: boolean; body: string }> = [];
+    for (const [i, [version, schema]] of steps.entries()) {
+      activate(contract(version, (c) => (c.contract_schema_version = schema)), version);
+      if (i > 0) env.advance(MINUTE);
+      await loop.tick();
+      noFailures();
+      expect(seenRows()).toHaveLength(i + 1);
+      if (i === 0) {
+        expect(noteFiles()).toEqual([]);
+        expect(notifications()).toEqual([]);
+        continue;
+      }
+      const text = note(`${steps[i - 1]?.[0]}-to-${version}.md`);
+      const breaking = headings(text).includes("## Breaking");
+      if (breaking) expect(sectionOf(text, "Breaking")).toEqual([expect.stringContaining("is newer than this kernel knows")]);
+      out.push({ breaking, body: (notifications().at(-1)?.body ?? "").replace(/\. Note: .*$/s, "") });
+    }
+    return out;
+  }
+
+  it("a baseline already above known is silent; it is flagged only after a change down to known and back up (2 → 1 → 2)", async () => {
+    expect(await walk([["17.2.0", 2], ["17.3.0", 1], ["17.4.0", 2]])).toEqual([
+      { breaking: false, body: "0 added, 0 removed, 1 changed" },
+      { breaking: true, body: "1 breaking, 0 added, 0 removed, 1 changed" },
+    ]);
+  });
+
+  it("each crossing is flagged, so a change down to known and back up flags again (1 → 2 → 1 → 2)", async () => {
+    expect(await walk([["17.2.0", 1], ["17.3.0", 2], ["17.4.0", 1], ["17.5.0", 2]])).toEqual([
+      { breaking: true, body: "1 breaking, 0 added, 0 removed, 1 changed" },
+      { breaking: false, body: "0 added, 0 removed, 1 changed" },
+      { breaking: true, body: "1 breaking, 0 added, 0 removed, 1 changed" },
+    ]);
+  });
+
   it("an old side with no schema version (not a contract) and a new one above known is a crossing", () => {
     const above = JSON.stringify(contract("17.3.0", (c) => (c.contract_schema_version = 2)));
     expect(diffLoomwrightContracts("not json", above).breaking.map((b) => b.kind)).toContain("schema_above_known");
