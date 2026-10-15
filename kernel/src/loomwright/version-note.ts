@@ -25,7 +25,7 @@
 // through it, `../loop/internal.js`) and type-level kernel modules: never the
 // Agent SDK (the `studio` CLI loads `loomwright/index.ts`).
 import { randomBytes } from "node:crypto";
-import { closeSync, linkSync, mkdirSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, linkSync, mkdirSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { DueWorkContext, LoomwrightInstallSettings } from "../loop/types.js";
 import { MAX_NOTIFICATION_BODY, MAX_NOTIFICATION_TITLE, recordNotification } from "../notifications/record.js";
@@ -34,7 +34,7 @@ import { resolveLoomwrightInstallWithText } from "./active-install.js";
 import { CONTRACT_FILE, LoomwrightContractError } from "./contract.js";
 import type { LoomwrightContractErrorReason } from "./contract.js";
 
-/** The highest `contract_schema_version` this kernel was written against. A newer one is a breaking signal, never a refusal (D32). */
+/** The highest `contract_schema_version` this kernel was written against. A diffed change that crosses to a newer one is a breaking signal, never a refusal (D32); the baseline observation itself is never diffed, so it is silent even when above it. */
 export const KNOWN_CONTRACT_SCHEMA_VERSION = 1;
 
 /** The source of every notification the watcher creates. */
@@ -299,8 +299,13 @@ function hostSwitchChange(from: HostSwitchView | null, to: HostSwitchView | null
  * removed, `host_mode` changed, `writes` changed as a set); the host switch
  * (`env`, `state_dir_env`, `effect`, or presence); `contract_schema_version`.
  *
- * Breaking: a removed command or agent, any host-switch change, and a new
- * `contract_schema_version` above `KNOWN_CONTRACT_SCHEMA_VERSION`.
+ * Breaking: a removed command or agent, any host-switch change, and a
+ * `contract_schema_version` that crosses `KNOWN_CONTRACT_SCHEMA_VERSION`: the
+ * new one is above it and the old one is not. A change between two versions
+ * above it, or back down to it, is not flagged again; the Changed section
+ * still reports it. Only a diff can flag it, so the baseline observation
+ * (never diffed) is not flagged even when above it; a later change down to it
+ * and back up is a crossing.
  */
 export function diffLoomwrightContracts(oldText: string, newText: string): LoomwrightContractDiff {
   const from = viewOf(oldText);
@@ -336,7 +341,9 @@ export function diffLoomwrightContracts(oldText: string, newText: string): Loomw
     for (const e of removed) if (e.group === kind) breaking.push({ kind: `${kind}_removed`, name: e.name, description: e.description });
   }
   if (hostSwitch !== null) breaking.push({ kind: "host_switch_changed", name: null, description: null });
-  if (schemaTo !== null && schemaTo > KNOWN_CONTRACT_SCHEMA_VERSION) breaking.push({ kind: "schema_above_known", name: null, description: null });
+  // Only the change that crosses the known version; `schemaFrom` is the stored row's, validated when stored, so `null` is defensive.
+  const crossesKnown = schemaTo !== null && schemaTo > KNOWN_CONTRACT_SCHEMA_VERSION && (schemaFrom === null || schemaFrom <= KNOWN_CONTRACT_SCHEMA_VERSION);
+  if (crossesKnown) breaking.push({ kind: "schema_above_known", name: null, description: null });
 
   return {
     from: from.version,
@@ -598,7 +605,8 @@ function createExclusive(path: string, content: string): boolean {
  * Whether the first line of the file at `path` is exactly `marker`. Reads
  * `marker`'s UTF-8 length plus one byte (its newline), however long the
  * marker is: the marker carries the percent-encoded install path and plugin
- * version, which only the contract's size bounds. `false` when the file
+ * version, which only the contract's size bounds. A smaller file is read
+ * whole, and no more is allocated than its size. `false` when the file
  * cannot be read.
  */
 function startsWithMarkerLine(path: string, marker: string): boolean {
@@ -606,7 +614,13 @@ function startsWithMarkerLine(path: string, marker: string): boolean {
   return line === marker;
 }
 
-/** The first line within the first `maxBytes` bytes of the file at `path`, or `undefined` when it cannot be read. */
+/**
+ * The first line within the first `maxBytes` bytes of the file at `path`, or
+ * `undefined` when it cannot be read. The buffer is `maxBytes` or the file's
+ * size when that is smaller, so a small file costs only its size. A file that
+ * grows after the size is read is read only up to that size; a note file never
+ * grows, since `createExclusive` links it into place complete.
+ */
 function firstLineOf(path: string, maxBytes: number): string | undefined {
   let fd: number;
   try {
@@ -615,7 +629,8 @@ function firstLineOf(path: string, maxBytes: number): string | undefined {
     return undefined;
   }
   try {
-    const buffer = Buffer.alloc(maxBytes);
+    const size = fstatSync(fd).size;
+    const buffer = Buffer.alloc(Math.min(maxBytes, size));
     let n = 0;
     // A read may return fewer bytes than asked: read until full or end of file.
     while (n < buffer.length) {
