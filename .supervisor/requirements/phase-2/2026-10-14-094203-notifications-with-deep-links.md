@@ -66,3 +66,9 @@ kernel/package-lock.json
 probes/p11-notifier-under-launchd.mjs
 docs/architecture/notifications.md
 docs/evidence/phase-2-notifier-probe.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-15T02:25:35Z
+- **Brief:** .supervisor/jobs/done/2026-10-15-notifications-with-deep-links.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/50
