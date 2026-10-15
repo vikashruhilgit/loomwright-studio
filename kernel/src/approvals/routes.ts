@@ -1,0 +1,59 @@
+// The owner's approval decisions, on the loopback API (bearer token, like
+// every route): what `studio approvals` / `approve` / `deny` call.
+//
+//   GET  /approvals[?all=1]        {approvals: [...]}: pending first (oldest first); all=1 adds decided ones (newest first)
+//   POST /approvals/:id/approve    body {decision: "once"}; "always" is refused (phase 3)
+//   POST /approvals/:id/deny
+//
+// A decision is the owner's (`by: "owner"`). Refusals write nothing:
+// `400 invalid_id` / `invalid_body`, `404 no_such_approval`,
+// `409 approval_not_pending` (with the current `status`),
+// `409 always_not_supported` (with the phase 3 message).
+import type { ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
+import { ALWAYS_REFUSED, ApprovalError, OWNER, approvalView, decideApproval, getApproval, listApprovals } from "./store.js";
+import type { ApprovalDecision } from "./store.js";
+
+const ID = /^[1-9]\d{0,15}$/;
+
+function idOf(req: ContributedRouteRequest): number | undefined {
+  const raw = req.params.id ?? "";
+  const id = Number(raw);
+  return ID.test(raw) && Number.isSafeInteger(id) ? id : undefined;
+}
+
+/** The decision a request asks for, or `undefined` for a malformed body. `deny` takes no body (or an empty object). */
+function decisionOf(req: ContributedRouteRequest, approve: boolean): ApprovalDecision | undefined {
+  const body = req.body;
+  if (body !== undefined && (typeof body !== "object" || body === null || Array.isArray(body))) return undefined;
+  if (!approve) return "deny";
+  const decision = (body as { decision?: unknown } | undefined)?.decision;
+  return decision === "once" || decision === "always" ? decision : undefined;
+}
+
+function decide(approve: boolean): (req: ContributedRouteRequest) => Promise<ContributedRouteResponse> {
+  return async (req) => {
+    const id = idOf(req);
+    if (id === undefined) return { status: 400, body: { error: "invalid_id" } };
+    const decision = decisionOf(req, approve);
+    if (decision === undefined) return { status: 400, body: { error: "invalid_body", message: 'approve needs {"decision": "once"}' } };
+    try {
+      return { status: 200, body: { approval: approvalView(decideApproval(req.store, { id, decision, by: OWNER }, req.now())) } };
+    } catch (err) {
+      if (!(err instanceof ApprovalError)) throw err;
+      if (err.code === "no_such_approval") return { status: 404, body: { error: "no_such_approval" } };
+      if (err.code === "approval_not_pending") return { status: 409, body: { error: "approval_not_pending", status: getApproval(req.store, id)?.status ?? null } };
+      if (err.code === "always_not_supported") return { status: 409, body: { error: "always_not_supported", message: ALWAYS_REFUSED } };
+      return { status: 400, body: { error: err.code, message: err.message } };
+    }
+  };
+}
+
+export const approvalRoutes: readonly ContributedRoute[] = Object.freeze([
+  {
+    method: "GET",
+    path: "/approvals",
+    handler: async (req) => ({ status: 200, body: { approvals: listApprovals(req.store, { all: req.query.all === "1" || req.query.all === "true" }) } }),
+  },
+  { method: "POST", path: "/approvals/:id/approve", handler: decide(true) },
+  { method: "POST", path: "/approvals/:id/deny", handler: decide(false) },
+]);

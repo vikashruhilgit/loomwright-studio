@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { decideToolUse, freezePolicy } from "../src/sessions/index.js";
+import { classifyToolCall } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
 
 const policy: ToolPolicy = {
@@ -108,5 +109,28 @@ describe("freezePolicy", () => {
     expect(Object.isFrozen(frozen)).toBe(true);
     expect(Object.isFrozen(frozen.allowedTools)).toBe(true);
     expect(() => (frozen.allowedTools as string[]).push("Write")).toThrow();
+  });
+});
+
+describe("decideToolUse and the fixed rail (approvals)", () => {
+  const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work" };
+
+  it("decideToolUse itself is unchanged: an outward or merge command is still a policy allow, and the gate applies the rail after it", () => {
+    const gh: ToolPolicy = { allowedTools: ["Write"], allowedBashPrefixes: ["git", "gh"] };
+    expect(decideToolUse(gh, "Bash", { command: "git push origin main" })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(decideToolUse(gh, "Bash", { command: "gh pr merge 12" })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(classifyToolCall("Bash", { command: "git push origin main" }, rail)).toMatchObject({ kind: "outward", action: "git push" });
+    // The held payload carries the cwd it would run in, and no git option spelling hides the push.
+    expect(classifyToolCall("Bash", { command: "git --attr-source HEAD push origin main" }, rail)).toEqual({
+      kind: "outward",
+      action: "git push",
+      payload: { tool: "Bash", command: "git --attr-source HEAD push origin main", cwd: "/work" },
+    });
+    expect(decideToolUse(gh, "Bash", { command: "rm /data/studio.d*" })).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    expect(classifyToolCall("Bash", { command: "rm /data/studio.d*" }, rail)).toEqual({ kind: "deny", reason: "protected_kernel_path" });
+    expect(classifyToolCall("Bash", { command: "gh pr merge 12" }, rail)).toEqual({ kind: "deny", reason: "merge_blocked" });
+    expect(classifyToolCall("Write", { file_path: "/data/studio.db", content: "" }, rail)).toEqual({ kind: "deny", reason: "protected_kernel_path" });
+    // The metacharacter refusal still comes first: a chained push never reaches the rail.
+    expect(decideToolUse(gh, "Bash", { command: "echo hi; git push" })).toEqual({ decision: "deny", reason: "bash_shell_metacharacter" });
   });
 });

@@ -13,6 +13,7 @@ import type {
   SpawnOptions,
   SpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
+import { holdOrUseGrant } from "../approvals/store.js";
 import { KeychainError } from "../auth/keychain.js";
 import { AuthProviderError } from "../auth/types.js";
 import type { AuthProvider, BaseEnv, ChildEnv } from "../auth/types.js";
@@ -25,7 +26,8 @@ import type { Store } from "../store/store.js";
 import { LoomwrightSessionError, readSessionLoomwright, resolveSessionLoomwright } from "./loomwright-path.js";
 import type { SessionLoomwright } from "./loomwright-path.js";
 import { latestOrphanReason } from "./orphans.js";
-import { bashCommandOf, decideToolUse, freezePolicy } from "./policy.js";
+import { bashCommandOf, classifyToolCall, decideToolUse, freezePolicy } from "./policy.js";
+import type { ToolCallClass, ToolDecisionReason } from "./policy.js";
 import {
   KILL_GROUP_DEADLINE_MS,
   LEADER_EXIT_WAIT_MS,
@@ -75,6 +77,23 @@ import type {
 const MAX_RECORDED_TEXT = 64 * 1024;
 /** A Bash command in a `tool_decision` event is truncated to this many characters. */
 const MAX_EVENT_COMMAND_CHARS = 500;
+
+/** One `tool_decision` event's payload: the Bash command (truncated) and the approval id only when present. */
+function toolDecisionPayload(
+  tool: string | null,
+  decision: "allow" | "deny",
+  reason: string,
+  command: string | undefined,
+  approvalId: number | undefined,
+): Record<string, unknown> {
+  return {
+    tool,
+    decision,
+    reason,
+    ...(command === undefined ? {} : { command: command.slice(0, MAX_EVENT_COMMAND_CHARS) }),
+    ...(approvalId === undefined ? {} : { approval_id: approvalId }),
+  };
+}
 /** The bundled CLI's executable name; the reaper kills only groups led by it (or leaderless). */
 const CLI_BASENAME = "claude";
 /**
@@ -2083,41 +2102,66 @@ export class SessionManager {
 
   /**
    * The kernel's `PreToolUse` hook callback for one session. Decides from the
-   * session's frozen policy, records one `tool_decision` event per call, and
-   * fails closed: any exception (including failing to record an allow) denies
-   * with `kernel_gate_error`. The hook runs for read-only commands too, which
+   * session's frozen policy, then, for a call the policy allowed, applies the
+   * fixed rail (`classifyToolCall`): a protected kernel path is denied
+   * (`protected_kernel_path`), a merge is denied (`merge_blocked`), a Bash
+   * command the rail will not read is denied (`bash_shell_metacharacter`,
+   * `bash_command_too_large`), and a call
+   * in the outward set runs only on an unused one-shot grant for exactly its
+   * payload (`approval_granted`, consumed now) or is held as a new pending
+   * approval and denied (`approval_required`, the hook's reason naming the
+   * approval id). Records one `tool_decision` event per call (for an outward
+   * call, in the same transaction as the grant's use or the new approval),
+   * and fails closed: any exception (including failing to create the
+   * approval, consume the grant or record an allow) denies with
+   * `kernel_gate_error`. The hook runs for read-only commands too, which
    * `canUseTool` skips (Q5; probed 2026-10-02).
    */
   #gate(live: LiveSession): HookCallback {
     return async (input): Promise<HookJSONOutput> => {
       let decision: "allow" | "deny" = "deny";
-      let reason = "kernel_gate_error";
+      let reason: ToolDecisionReason | "kernel_gate_error" = "kernel_gate_error";
       let tool: string | null = null;
       let command: string | undefined;
+      const record = (): void =>
+        this.#appendEvent("tool_decision", live.id, toolDecisionPayload(tool, decision, reason, command, undefined), this.#nowIso());
       try {
         if (input.hook_event_name === "PreToolUse") {
           tool = input.tool_name;
           if (tool === "Bash") command = bashCommandOf(input.tool_input);
           const d = decideToolUse(live.policy, input.tool_name, input.tool_input);
-          decision = d.decision;
-          reason = d.reason;
+          // The rail applies only after the policy allowed: it never widens a policy.
+          const rail: ToolCallClass =
+            d.decision === "allow"
+              ? classifyToolCall(input.tool_name, input.tool_input, { dataDir: this.#store.dataDir, homeDir: this.#homeDir, cwd: input.cwd })
+              : { kind: "ordinary" };
+          if (rail.kind === "outward") {
+            const call = { agent: this.getSession(live.id)?.agent ?? null, sessionId: live.id, action: rail.action, payload: rail.payload, tool };
+            // One transaction: the grant's use (or the new approval) and this call's one decision event.
+            // A throw rolls all of it back and falls through to the fail-closed deny below.
+            const outcome = this.#store.transaction(() => {
+              const o = holdOrUseGrant(this.#store, call, this.#now());
+              const granted = o.kind === "granted";
+              const payload = toolDecisionPayload(tool, granted ? "allow" : "deny", granted ? "approval_granted" : "approval_required", command, o.id);
+              this.#appendEvent("tool_decision", live.id, payload, this.#nowIso());
+              return o;
+            });
+            const permissionDecisionReason =
+              outcome.kind === "granted"
+                ? "approval_granted"
+                : `approval_required: held as approval ${outcome.id}; it did not run. The owner decides (studio approve ${outcome.id} once, ` +
+                  `or studio deny ${outcome.id}) and the decision arrives as a new message. End your turn now; if it is approved, run exactly the same call again, once.`;
+            return {
+              hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: outcome.kind === "granted" ? "allow" : "deny", permissionDecisionReason },
+            };
+          }
+          decision = rail.kind === "deny" ? "deny" : d.decision;
+          reason = rail.kind === "deny" ? rail.reason : d.reason;
         }
       } catch {
         decision = "deny";
         reason = "kernel_gate_error";
       }
-      const record = (): void =>
-        this.#appendEvent(
-          "tool_decision",
-          live.id,
-          {
-            tool,
-            decision,
-            reason,
-            ...(command === undefined ? {} : { command: command.slice(0, MAX_EVENT_COMMAND_CHARS) }),
-          },
-          this.#nowIso(),
-        );
       try {
         record();
       } catch {
