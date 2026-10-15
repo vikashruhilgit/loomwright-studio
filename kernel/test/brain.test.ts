@@ -880,11 +880,55 @@ describe("a redelivery keeps a running row only while its session is live (redel
     await vi.waitFor(() => expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "replied", reply_text: "the live reply" }));
   });
 
-  it("a session no longer live (interrupted, ended, or no row): the row ends failed with the fault, never left running", async () => {
+  it("a session still starting counts as live: the row stays running, the handler throws, and the session's result still replies", async () => {
+    setModel();
+    const store = openStore();
+    const { id } = enqueueMessage(store, { text: "hi", agent: "wright" });
+    const held = heldSessions(store);
+    const handler = brainMessageHandler({ loomwright: () => UNAVAILABLE });
+    await handler(eventCtx(store, id, held.sessions));
+    // The manager inserts a session as `starting`; a redelivery soon after start sees that.
+    store.prepare("UPDATE sessions SET status = 'starting' WHERE id = ?").run(1);
+    breakDir("memory");
+    await expect(handler(eventCtx(store, id, held.sessions))).rejects.toThrow();
+    expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "running", session_id: 1, detail: null });
+    held.settle("completed", "the live reply");
+    await vi.waitFor(() => expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "replied", reply_text: "the live reply" }));
+  });
+
+  it("a running row with no session id is not live, even when the manager reports every session running: the row ends failed", async () => {
+    setModel();
+    const store = openStore();
+    const { id } = enqueueMessage(store, { text: "hi", agent: "wright" });
+    const held = heldSessions(store);
+    const handler = brainMessageHandler({ loomwright: () => UNAVAILABLE });
+    await handler(eventCtx(store, id, held.sessions));
+    store.prepare("UPDATE brain_messages SET session_id = NULL WHERE queue_id = ?").run(id);
+    (held.sessions as { getSession: EventSessions["getSession"] }).getSession = () => ({ status: "running" }) as SessionRow;
+    breakDir("memory");
+    await expect(handler(eventCtx(store, id, held.sessions))).rejects.toThrow();
+    expect(getBrainMessageByQueueId(store, id)?.status).toBe("failed");
+    expect(getBrainMessageByQueueId(store, id)?.detail).toMatch(/^memory_unwritable: /);
+  });
+
+  it("a redelivery with no session manager cannot see the session live: the row ends failed no_session_manager", async () => {
+    setModel();
+    const store = openStore();
+    const { id } = enqueueMessage(store, { text: "hi", agent: "wright" });
+    const held = heldSessions(store);
+    const handler = brainMessageHandler({ loomwright: () => UNAVAILABLE });
+    await handler(eventCtx(store, id, held.sessions));
+    expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "running", session_id: 1 });
+    await handler(eventCtx(store, id, undefined));
+    expect(getBrainMessageByQueueId(store, id)?.status).toBe("failed");
+    expect(getBrainMessageByQueueId(store, id)?.detail).toMatch(/^no_session_manager: /);
+  });
+
+  it("a session no longer live (interrupted, orphaned, stopped, ended, failed, or no row): the row ends failed with the fault, never left running", async () => {
     setModel();
     const store = openStore();
     const handler = brainMessageHandler({ loomwright: () => UNAVAILABLE });
-    for (const gone of ["interrupted", "completed", "no row"] as const) {
+    for (const gone of ["interrupted", "orphaned", "stopped", "completed", "failed", "failed:auth", "no row"] as const) {
       rmSync(join(dataDir, "memory"), { recursive: true, force: true });
       const { id } = enqueueMessage(store, { text: `hi ${gone}`, agent: "wright" });
       const held = heldSessions(store);
