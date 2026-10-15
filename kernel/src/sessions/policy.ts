@@ -16,7 +16,9 @@ export type ToolDecisionReason =
   /** Names a protected kernel path: denied whatever the policy, never an approval. */
   | "protected_kernel_path"
   /** `gh pr merge` (or a merge through `gh api`): denied whatever the policy, never an approval. */
-  | "merge_blocked";
+  | "merge_blocked"
+  /** A Bash command longer than `MAX_RAIL_COMMAND_LENGTH`, or naming more path text than `MAX_RAIL_PATH_TEXT`: the rail does not read it, so it is denied. */
+  | "bash_command_too_large";
 
 export interface ToolDecision {
   readonly decision: "allow" | "deny";
@@ -95,9 +97,18 @@ export type ApprovalPayload =
  * - `outward`: in the fixed outward/persistent set, so it runs only with a
  *   one-shot grant for exactly `payload`; otherwise it is held as an approval.
  */
+/**
+ * Why the rail denies a call whatever the policy (never an approval). The two
+ * Bash-only reasons are the rail refusing a command it will not read:
+ * `bash_shell_metacharacter` for a character the shell could split or read
+ * differently from what `shellWords` sees (`UNREADABLE_BASH_CHARS`), and
+ * `bash_command_too_large` past its fixed size bounds.
+ */
+export type RailDenyReason = "protected_kernel_path" | "merge_blocked" | "bash_shell_metacharacter" | "bash_command_too_large";
+
 export type ToolCallClass =
   | { readonly kind: "ordinary" }
-  | { readonly kind: "deny"; readonly reason: "protected_kernel_path" | "merge_blocked" }
+  | { readonly kind: "deny"; readonly reason: RailDenyReason }
   | { readonly kind: "outward"; readonly action: string; readonly payload: ApprovalPayload };
 
 export interface RailContext {
@@ -173,6 +184,30 @@ const GIT_OUTWARD: readonly (readonly [string, string])[] = [
  * `--config-env`); a globbed word that could expand to one counts.
  */
 const GIT_ALIAS_CONFIG: readonly string[] = ["*alias.*", "*include.path*", "*includeif.*", "*help.autocorrect*", "--config-env*"];
+/**
+ * Characters in a Bash command the rail refuses to read (`bash_shell_metacharacter`):
+ * every control character (C0, DEL, C1) but tab, every Unicode space and line or
+ * paragraph separator but the ASCII space, and every format character (zero-width
+ * spaces and joiners, bidi controls, the BOM, a soft hyphen). bash splits words
+ * only on space and tab (newline is refused by the policy), so `shellWords`
+ * splits only there; refusing the rest means no character can be split one way
+ * by the rail and another by the shell, or hide a word from the owner.
+ */
+const UNREADABLE_BASH_CHARS = /(?![\t ])[\p{Cc}\p{Z}\p{Cf}]/u;
+/**
+ * A Bash command longer than this (UTF-16 code units) is denied
+ * (`bash_command_too_large`) before the rail reads it, bounding the rail's
+ * synchronous cost in the daemon's hook (brace expansion and gh's readings scan a word per brace or flag).
+ */
+export const MAX_RAIL_COMMAND_LENGTH = 8192;
+/**
+ * The most path text (the summed length of the distinct texts
+ * `bashPathValues` reads as paths, across the command) the rail reads; more
+ * is denied (`bash_command_too_large`). Every `/`-starting substring of a word
+ * is a path, so a slash-heavy word is quadratic in its length: this bound
+ * keeps the rail's cost and memory linear in it.
+ */
+export const MAX_RAIL_PATH_TEXT = 262144;
 /** The GraphQL mutations that merge a pull request or queue it for merging. */
 const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest/i;
 
@@ -183,6 +218,9 @@ const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge|enqueueP
  * never executed or interpolated.
  *
  * In order:
+ * 0. A Bash command the rail will not read is denied: `bash_shell_metacharacter`
+ *    for any `UNREADABLE_BASH_CHARS` character, `bash_command_too_large` past
+ *    `MAX_RAIL_COMMAND_LENGTH` or `MAX_RAIL_PATH_TEXT`.
  * 1. `protected_kernel_path`: a Write/Edit/NotebookEdit to, or a Bash command
  *    with any word that names or could expand to, `<dataDir>` itself,
  *    anything under `<dataDir>/config/` or `<dataDir>/app/`, or one of
@@ -216,7 +254,8 @@ const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge|enqueueP
  * `~-`) "any directory"; a word is also read as the paths a program could take
  * from it (`bashPathPatterns`: after `=`, `@`, `:`, from any `/`,
  * percent-decoded), and gh's flags as cobra/pflag could read them
- * (`ghPositionals`, `ghApiForm`). Paths compare case-insensitively (APFS is by default),
+ * (`ghPositionals`, `ghApiForm`); an empty word is no command word (bash drops
+ * an unquoted one, cobra skips a quoted one). Paths compare case-insensitively (APFS is by default),
  * on a path-segment boundary, after `..` is applied and a leading
  * `/System/Volumes/Data` firmlink is removed; symlinks are not followed.
  */
@@ -228,8 +267,11 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
   if (toolName === "Bash") {
     const command = bashCommandOf(toolInput);
     if (command === undefined) return { kind: "ordinary" };
+    if (UNREADABLE_BASH_CHARS.test(command)) return { kind: "deny", reason: "bash_shell_metacharacter" };
+    if (command.length > MAX_RAIL_COMMAND_LENGTH) return { kind: "deny", reason: "bash_command_too_large" };
     const words = shellWords(command);
-    const patterns = words.flatMap((w) => bashPathPatterns(w, base, homeDir));
+    const patterns = bashPathPatterns(words, base, homeDir);
+    if (patterns === undefined) return { kind: "deny", reason: "bash_command_too_large" };
     if (patterns.some((p) => targets.protectedPaths.some((t) => couldMatch(p, t)))) return { kind: "deny", reason: "protected_kernel_path" };
     const payload: ApprovalPayload = { tool: "Bash", command, cwd: base };
     const form = commandForm(words);
@@ -253,7 +295,9 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
 
 /**
  * `command` split into words as the shell would before running it, for
- * inspection only: whitespace separates words; single quotes keep everything
+ * inspection only: a space or tab separates words (as in bash; the rail
+ * refuses any other whitespace or control character before splitting,
+ * `UNREADABLE_BASH_CHARS`); single quotes keep everything
  * up to the next `'`; double quotes keep everything up to the next unescaped
  * `"` (a backslash there escapes a `"` or `\`); a backslash outside
  * quotes escapes the next character (`Application\ Support` is one word).
@@ -283,7 +327,7 @@ export function shellWords(command: string): string[] {
     } else if (c === "\\") {
       inWord = true;
       if (i + 1 < command.length) word += command[++i];
-    } else if (/\s/.test(c)) {
+    } else if (c === " " || c === "\t") {
       if (inWord) words.push(word);
       word = "";
       inWord = false;
@@ -456,7 +500,7 @@ function shellPath(value: string, base: string, homeDir: string): string {
 }
 
 /**
- * Every path pattern a Bash word could name, as the program reading it might
+ * Every path pattern the Bash `words` could name, as the program reading each might
  * (failing closed): the word brace-expanded, both raw and percent-decoded
  * (`file:///…/Loomwright%20Studio/api.json`), and when it holds a `:` also
  * with any `?query` / `#fragment` cut off; then for each of those the whole
@@ -465,29 +509,54 @@ function shellPath(value: string, base: string, homeDir: string): string {
  * (`-C/path`), and every substring starting at a `/` (`file:///abs`,
  * `-d@/abs`, `x/../abs`) or at a `~/` inside the word. Each is `~`-expanded,
  * resolved against `base`, normalised and without a `/System/Volumes/Data`
- * firmlink prefix.
+ * firmlink prefix; texts that normalise to the same path are read once.
+ * `undefined` when the distinct texts sum to more than `MAX_RAIL_PATH_TEXT`
+ * characters (the caller denies).
  */
-function bashPathPatterns(word: string, base: string, homeDir: string): Seg[][] {
-  return bashPathValues(word).map((v) => patternOf(withoutFirmlink(normalisePath(shellPath(v, base, homeDir), true)), true));
+function bashPathPatterns(words: readonly string[], base: string, homeDir: string): Seg[][] | undefined {
+  const budget = { left: MAX_RAIL_PATH_TEXT };
+  const seen = new Set<string>();
+  const patterns: Seg[][] = [];
+  for (const word of words) {
+    const values = bashPathValues(word, budget);
+    if (values === undefined) return undefined;
+    for (const v of values) {
+      const path = withoutFirmlink(normalisePath(shellPath(v, base, homeDir), true));
+      if (seen.has(path)) continue;
+      seen.add(path);
+      patterns.push(patternOf(path, true));
+    }
+  }
+  return patterns;
 }
 
-/** The texts `bashPathPatterns` reads as paths in one Bash word. */
-function bashPathValues(word: string): string[] {
+/**
+ * The texts `bashPathPatterns` reads as paths in one Bash word, each new one
+ * charged to `budget` by its length; `undefined` as soon as the budget runs
+ * out, before any more text is built.
+ */
+function bashPathValues(word: string, budget: { left: number }): string[] | undefined {
   const values = new Set<string>();
+  const add = (v: string): boolean => {
+    if (v === "" || values.has(v)) return true;
+    budget.left -= v.length;
+    values.add(v);
+    return budget.left >= 0;
+  };
   for (const expanded of braceExpand(word)) {
     const forms = new Set([expanded, percentDecoded(expanded)]);
     for (const f of [...forms]) if (f.includes(":")) forms.add(f.replace(/[?#].*$/, ""));
     for (const e of forms) {
-      values.add(e);
-      if (/^-[^-]./.test(e)) values.add(e.slice(2));
+      if (!add(e)) return undefined;
+      if (/^-[^-]./.test(e) && !add(e.slice(2))) return undefined;
       for (let k = 0; k < e.length; k++) {
         const c = e[k] as string;
-        if ((c === "=" || c === "@" || c === ":") && k < e.length - 1) values.add(e.slice(k + 1));
-        if (k > 0 && (c === "/" || (c === "~" && (k === e.length - 1 || e[k + 1] === "/")))) values.add(e.slice(k));
+        if ((c === "=" || c === "@" || c === ":") && k < e.length - 1 && !add(e.slice(k + 1))) return undefined;
+        if (k > 0 && (c === "/" || (c === "~" && (k === e.length - 1 || e[k + 1] === "/"))) && !add(e.slice(k))) return undefined;
       }
     }
   }
-  return [...values].filter((v) => v !== "");
+  return [...values];
 }
 
 /** `text` percent-decoded, or as it is when its percent-encoding is malformed. */
@@ -548,7 +617,9 @@ const globsMeet = (word: string, glob: string): boolean => tokensIntersect(segme
 /** The recognised outward form of a Bash command's words (`git push`, `gh pr create`, `gh api POST`), `"merge"`, or `undefined`. */
 function commandForm(words: readonly string[]): string | undefined {
   // Brace expansion can turn one word into several argv words (`gh {pr,merge} 12` is `gh pr merge 12`).
-  const [program, ...rest] = words.flatMap(braceExpand);
+  // An empty word is dropped: bash removes an unquoted empty one (`{,} gh pr merge`, `gh api -X {,} PUT …`),
+  // cobra skips a quoted one when it looks up a subcommand, and reading one away only over-holds.
+  const [program, ...rest] = words.flatMap(braceExpand).filter((w) => w !== "");
   if (program === undefined) return undefined;
   const name = basename(program).toLowerCase();
   // `git-push` (git's libexec spelling) is `git push`.
@@ -585,10 +656,11 @@ function ghForm(args: readonly string[], [group, sub]: readonly { word: string; 
  * after `p4`, or an alias definition (`GIT_ALIAS_CONFIG`, `--config-env`).
  */
 function gitForm(args: readonly string[]): string | undefined {
-  for (let i = 0; i < args.length; i++) {
-    const word = args[i] as string;
+  let p4 = false;
+  for (const word of args) {
     for (const [sub, label] of GIT_OUTWARD) if (wordCouldBe(word, sub)) return label;
-    if (wordCouldBe(word, "submit") && args.slice(0, i).some((w) => wordCouldBe(w, "p4"))) return "git p4 submit";
+    if (p4 && wordCouldBe(word, "submit")) return "git p4 submit";
+    p4 ||= wordCouldBe(word, "p4");
   }
   if (args.some((w) => GIT_ALIAS_CONFIG.some((g) => globsMeet(w, g)))) return "git alias";
   return undefined;
@@ -610,7 +682,7 @@ function ghFlagCouldTakeNext(a: string): boolean {
 
 /**
  * Every reading of `gh`'s first two command words (with their index in
- * `args`): a flag that could take the next word as its value
+ * `args`; an empty word is neither a command word nor a flag): a flag that could take the next word as its value
  * (`ghFlagCouldTakeNext`) is read both ways, so `gh pr -R o/r merge 12` and
  * `gh pr -b x merge 12` are merges in one reading. More than
  * `MAX_GH_READINGS` readings is `undefined` (the caller fails closed).
@@ -621,6 +693,8 @@ function ghPositionals(args: readonly string[]): { word: string; index: number }
     const words = [...found];
     for (let i = from; i < args.length && words.length < 2; i++) {
       const a = args[i] as string;
+      // cobra skips an empty word when it looks up a subcommand (`gh pr '' merge` is `gh pr merge`).
+      if (a === "") continue;
       if (!a.startsWith("-")) words.push({ word: a, index: i });
       else if (ghFlagCouldTakeNext(a) && i + 1 < args.length && !walk(i + 2, words)) return false;
     }

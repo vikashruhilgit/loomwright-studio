@@ -110,7 +110,7 @@ Every agent session is an SDK `query()`, never a `claude --bg` session: those be
   - block `gh pr merge` outside Loomwright's sanctioned gate
   - block pushes to protected branches
   - block writes to kernel files and to global settings without approval
-  - phase 2 builds this as a fixed rail after the policy decision ([approvals](architecture/approvals.md)): `gh pr merge` is denied outright (`merge_blocked`), writes to the kernel's own files are denied outright (`protected_kernel_path`), and every recognised `git push`, the listed gh writes and every write to global settings or hooks are held as a pending approval the owner decides once
+  - phase 2 builds this as a fixed rail after the policy decision ([approvals](architecture/approvals.md)): `gh pr merge` is denied outright (`merge_blocked`), writes to the kernel's own files are denied outright (`protected_kernel_path`), a Bash command the rail will not read (an unusual control or space character, or past its size bounds) is denied outright, and every recognised `git push`, the listed gh writes and every write to global settings or hooks are held as a pending approval the owner decides once
 - **Untrusted input is data.** PR bodies, comments and ticket text reach the model as quoted data. There's an injection test in the roadmap.
 - **A worked-on repo's `AGENTS.md` is untrusted input too.** The CLI's builtin `agents-md` plugin loads even with no plugins configured and puts that file into the model as project instructions where the repo has no `CLAUDE.md` (invariant 3, Q4).
 - **Budget ceilings.** Per day, per playbook and per agent, plus a limit on concurrent sessions. Fails closed: park and notify.

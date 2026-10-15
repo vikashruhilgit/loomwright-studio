@@ -33,7 +33,14 @@ import { runCli } from "../src/cli/index.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { APP_DIRNAME } from "../src/service/launchd.js";
 import { SessionManager } from "../src/sessions/index.js";
-import { PROTECTED_DATA_DIRS, PROTECTED_DATA_FILES, classifyToolCall, shellWords } from "../src/sessions/policy.js";
+import {
+  MAX_RAIL_COMMAND_LENGTH,
+  MAX_RAIL_PATH_TEXT,
+  PROTECTED_DATA_DIRS,
+  PROTECTED_DATA_FILES,
+  classifyToolCall,
+  shellWords,
+} from "../src/sessions/policy.js";
 import type { ToolCallClass } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/types.js";
 import { LOCK_DB_FILENAME, LOCK_PID_FILENAME } from "../src/store/lock.js";
@@ -448,6 +455,56 @@ describe("classifyToolCall: review fixes (iteration 2) — a word is read every 
     for (const command of ["git status", "git log", "git add .", "gh pr view 1", "gh api repos/o/r/pulls", "npm test", "ls src/*.ts"]) {
       expect(kindOf(bash(command)), command).toBe("ordinary");
     }
+  });
+});
+
+describe("classifyToolCall: review fixes (iteration 3) — empty words, unreadable characters, size bounds", () => {
+  it("skips an empty word when finding gh's command words (as cobra does) and drops brace expansion's empty words (as bash does)", () => {
+    for (const command of [
+      "gh pr '' merge",
+      "gh '' pr merge",
+      'gh pr "" merge --squash',
+      "gh pr '' '' merge 12",
+      "gh -R o/r '' pr merge 12",
+      "{,} gh pr merge 12",
+      "gh pr {,} merge 12",
+      "gh api -X {,} PUT repos/o/r/pulls/1/merge",
+    ]) {
+      expect(bash(command), command).toEqual({ kind: "deny", reason: "merge_blocked" });
+    }
+    expect(kindOf(bash("gh pr '' comment 1 -b x"))).toBe("outward:gh pr comment");
+    expect(kindOf(bash("gh pr '' close 1"))).toBe("outward:gh pr close");
+    expect(kindOf(bash("gh '' issue '' create"))).toBe("outward:gh issue create");
+    expect(kindOf(bash("gh pr '' view 1"))).toBe("ordinary");
+  });
+
+  it("splits words only on space and tab, and denies a command holding any other control, Unicode space or format character", () => {
+    expect(shellWords("a\u000bb\tc d e")).toEqual(["a\u000bb", "c d", "e"]);
+    for (const ch of ["\u000b", "\u000c", "\u0000", "\u001b", "\u007f", "\u0085", " ", " ", " ", "​", "‮", "﻿", "\n"]) {
+      const command = `cp evil x${ch}/../../../.claude/CLAUDE.md`;
+      expect(bash(command), JSON.stringify(command)).toEqual({ kind: "deny", reason: "bash_shell_metacharacter" });
+    }
+    expect(bash(`rm x /../../../Library/Application\\ Support/Loomwright\\ Studio/api.json`)).toEqual({ kind: "deny", reason: "bash_shell_metacharacter" });
+    for (const command of ["git\tstatus", "echo café naïve 日本", "npm test -- src/a.ts"]) expect(kindOf(bash(command)), command).toBe("ordinary");
+  });
+
+  it("denies a command past the fixed size bounds before reading it, quickly; a realistic long command stays ordinary and fast", () => {
+    expect(kindOf(bash(`echo ${"a".repeat(MAX_RAIL_COMMAND_LENGTH - 5)}`))).toBe("ordinary");
+    expect(bash(`echo ${"a".repeat(MAX_RAIL_COMMAND_LENGTH - 4)}`)).toEqual({ kind: "deny", reason: "bash_command_too_large" });
+    // Every `/`-starting substring is a path: a slash-heavy word reads ~n²/4 characters of path text.
+    const side = Math.ceil(Math.sqrt(MAX_RAIL_PATH_TEXT * 4)) + 8;
+    expect(kindOf(bash(`cat ${"a/".repeat(Math.floor(side / 4))}`))).toBe("ordinary");
+    let started = performance.now();
+    for (const command of [`cat ${"a/".repeat(side / 2)}`, `cat ${"a/".repeat(4000)}`, `cp x ${"=a/".repeat(2700)}`]) {
+      expect(bash(command), command.slice(0, 40)).toEqual({ kind: "deny", reason: "bash_command_too_large" });
+    }
+    expect(performance.now() - started).toBeLessThan(500);
+    const files = Array.from({ length: 50 }, (_, i) => `src/features/module${i}/sub/file-${i}.test.ts`).join(" ");
+    const npm = `npm test -- ${files}`;
+    expect(npm.length).toBeGreaterThan(2000);
+    started = performance.now();
+    expect(kindOf(bash(npm))).toBe("ordinary");
+    expect(performance.now() - started).toBeLessThan(250);
   });
 });
 

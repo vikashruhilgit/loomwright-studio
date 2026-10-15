@@ -2104,7 +2104,9 @@ export class SessionManager {
    * The kernel's `PreToolUse` hook callback for one session. Decides from the
    * session's frozen policy, then, for a call the policy allowed, applies the
    * fixed rail (`classifyToolCall`): a protected kernel path is denied
-   * (`protected_kernel_path`), a merge is denied (`merge_blocked`), and a call
+   * (`protected_kernel_path`), a merge is denied (`merge_blocked`), a Bash
+   * command the rail will not read is denied (`bash_shell_metacharacter`,
+   * `bash_command_too_large`), and a call
    * in the outward set runs only on an unused one-shot grant for exactly its
    * payload (`approval_granted`, consumed now) or is held as a new pending
    * approval and denied (`approval_required`, the hook's reason naming the
