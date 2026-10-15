@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API_TOKEN_KEYCHAIN_SERVICE, engageKillSwitch } from "../src/api/index.js";
 import { KeychainError } from "../src/auth/index.js";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
+import { SHIPPED_CONTRIBUTIONS } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
 import type { Kernel, KernelDeps, KernelOptions } from "../src/kernel.js";
 import { EventLoop, enqueueMessage, getQueueRow } from "../src/loop/index.js";
@@ -50,6 +51,9 @@ function memoryKeychain(initial: Record<string, string> = {}) {
   };
   return { items, reader, writer };
 }
+
+/** The shipped contributions minus the brain, which owns the `message` kind (a second owner is refused at composition). */
+const WITHOUT_BRAIN = SHIPPED_CONTRIBUTIONS.filter((c) => c.name !== "brain");
 
 function options(overrides: Partial<KernelOptions> = {}): KernelOptions {
   return { dataDir, env: { PATH: "/usr/bin" }, sessions: { loomwrightPath: pluginDir, stopGraceMs: 10 }, ...overrides };
@@ -181,7 +185,8 @@ describe("startKernel", () => {
     const store = new Store({ dataDir });
     const { id } = enqueueMessage(store, { text: "hello" });
     store.close();
-    const kernel = await start();
+    // Without the brain (which handles `message`): the daemon itself adds no handler.
+    const kernel = await start(options({ contributions: WITHOUT_BRAIN }));
     await vi.waitFor(() => expect(getQueueRow(kernel.store, id)?.status).toBe("done"));
     const kinds = kernel.store.prepare<[], string>("SELECT kind FROM events WHERE kind IN ('event_unhandled', 'event_done')").pluck().all();
     expect(kinds).toEqual(["event_unhandled"]);
@@ -195,7 +200,7 @@ describe("startKernel", () => {
     const { id } = enqueueMessage(store, { text: "hello" });
     store.close();
     const seen: unknown[] = [];
-    const kernel = await start(options({ handlers: { message: (ctx) => void seen.push(ctx.event.payload) } }));
+    const kernel = await start(options({ handlers: { message: (ctx) => void seen.push(ctx.event.payload) }, contributions: WITHOUT_BRAIN }));
     await vi.waitFor(() => expect(getQueueRow(kernel.store, id)?.status).toBe("done"));
     expect(seen).toEqual([{ text: "hello", agent: null }]);
     const kinds = kernel.store.prepare<[], string>("SELECT kind FROM events WHERE kind IN ('event_unhandled', 'event_done')").pluck().all();

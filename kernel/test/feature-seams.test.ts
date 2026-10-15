@@ -1,9 +1,12 @@
 // The phase 2 feature seams (AC3-AC6, AC9): one `FeatureContribution` per
 // feature, merged by `startKernel` and `runCli`. The shipped contributions add
-// only the loomwright feature's one tool (`kernel_loomwright_capabilities`),
-// the notifications feature's tool (`kernel_notify`), two routes, one
-// subcommand and one due work, and the triggers feature's three tools, three
-// routes, one subcommand and one due work (pinned in triggers.test.ts); a test contribution composed from outside reaches every part
+// only the loomwright feature's one tool (`kernel_loomwright_capabilities`)
+// and one due work (the version watcher), the notifications feature's tool
+// (`kernel_notify`), two routes, one subcommand and one due work, the triggers
+// feature's three tools, three routes, one subcommand and one due work (pinned
+// in triggers.test.ts), the approvals feature's tool (`kernel_approval_request`),
+// three routes and three subcommands (pinned in approvals.test.ts), and the
+// brain's two routes, one subcommand and its `message` handler (pinned in brain.test.ts); a test contribution composed from outside reaches every part
 // through the normal path (the kernel MCP server, the loopback API, `studio`,
 // the event loop). A temp data dir, an in-memory Keychain, the fake
 // spawner/query and stub auth: never the real SDK, a model or the Keychain.
@@ -31,7 +34,9 @@ import {
 } from "../src/features/index.js";
 import type { ContributedRoute, ContributedRouteRequest, ContributedSubcommand, FeatureContribution } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
+import { versionWatchDueWork } from "../src/loomwright/index.js";
 import { NOTIFICATIONS_HELP, deliveryDueWork } from "../src/notifications/index.js";
+import { ASK_HELP, brainContribution } from "../src/brain/index.js";
 import type { Kernel, KernelDeps, KernelOptions } from "../src/kernel.js";
 import { EventLoop } from "../src/loop/loop.js";
 import { enqueueMessage, getQueueRow } from "../src/loop/queue.js";
@@ -75,7 +80,7 @@ const noopSubcommand = (name: string): ContributedSubcommand => ({ name, help: `
 const noopTool = (name: string) => defineTool({ name, description: "test tool", shape: {}, handler: () => ({}) });
 
 describe("mergeContributions", () => {
-  it("the shipped contributions: the five features in a fixed order, registering nothing but loomwright's one tool, the notifications parts and the triggers parts (AC3)", () => {
+  it("the shipped contributions: the five features in a fixed order, registering nothing but loomwright's one tool and one due work, the notifications parts, the triggers parts, the approvals parts and the brain parts (AC3)", () => {
     expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1);
     expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
@@ -85,6 +90,7 @@ describe("mergeContributions", () => {
       "kernel_trigger_register",
       "kernel_trigger_remove",
       "kernel_trigger_list",
+      "kernel_approval_request",
     ]);
     expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual([
       "notifications GET /notifications",
@@ -92,15 +98,25 @@ describe("mergeContributions", () => {
       "triggers GET /triggers",
       "triggers POST /triggers/:id/on",
       "triggers POST /triggers/:id/off",
+      "approvals GET /approvals",
+      "approvals POST /approvals/:id/approve",
+      "approvals POST /approvals/:id/deny",
+      "brain POST /ask",
+      "brain GET /messages/:id",
     ]);
-    expect(merged.subcommands.map((s) => s.name)).toEqual(["notifications", "triggers"]);
-    expect(merged.handlers).toEqual({});
-    expect(merged.dueWork.map((d) => d.owner)).toEqual(["notifications", "triggers"]);
-    expect(merged.dueWork[0]?.run).toBe(deliveryDueWork);
+    expect(merged.subcommands.map((s) => s.name)).toEqual(["notifications", "triggers", "approvals", "approve", "deny", "ask"]);
+    // The brain's `message` handler is the only shipped handler.
+    expect(Object.keys(merged.handlers)).toEqual(["message"]);
+    expect(merged.handlers.message).toBe(brainContribution.handlers?.message);
+    expect(merged.dueWork.map((d) => d.owner)).toEqual(["loomwright", "notifications", "triggers"]);
+    expect(merged.dueWork[0]?.run).toBe(versionWatchDueWork);
+    expect(merged.dueWork[1]?.run).toBe(deliveryDueWork);
     const keys: Record<string, string[]> = {
-      loomwright: ["name", "tools"],
+      loomwright: ["name", "tools", "dueWork"],
       notifications: ["name", "tools", "routes", "subcommands", "dueWork"],
       triggers: ["name", "tools", "routes", "subcommands", "dueWork"],
+      approvals: ["name", "tools", "routes", "subcommands"],
+      brain: ["name", "routes", "subcommands", "handlers"],
     };
     for (const c of SHIPPED_CONTRIBUTIONS) expect(Object.keys(c), c.name).toEqual(keys[c.name] ?? ["name"]);
   });
@@ -441,7 +457,7 @@ function out() {
 }
 
 describe("the shipped kernel (AC3)", () => {
-  it("registers no kernel tool beyond phase 1's but kernel_loomwright_capabilities, kernel_notify and the three kernel_trigger_ tools, and no API route, CLI subcommand, event handler or due work beyond phase 1's but the notifications and triggers ones", async () => {
+  it("registers no kernel tool beyond phase 1's but kernel_loomwright_capabilities, kernel_notify, the three kernel_trigger_ tools and kernel_approval_request, and no API route, CLI subcommand, event handler or due work beyond phase 1's but the loomwright, notifications, triggers, approvals and brain ones", async () => {
     const store = new Store({ dataDir });
     const { id } = enqueueMessage(store, { text: "hello" });
     store.close();
@@ -455,6 +471,7 @@ describe("the shipped kernel (AC3)", () => {
       "kernel_trigger_register",
       "kernel_trigger_remove",
       "kernel_trigger_list",
+      "kernel_approval_request",
     ];
     expect(kernelToolNames(kernel.contributions.tools)).toEqual([...KERNEL_TOOL_NAMES, ...shippedTools]);
     expect(Object.keys(await launchedTools(kernel, fakes))).toEqual([...KERNEL_TOOL_NAMES, ...shippedTools]);
@@ -464,30 +481,41 @@ describe("the shipped kernel (AC3)", () => {
       "triggers GET /triggers",
       "triggers POST /triggers/:id/on",
       "triggers POST /triggers/:id/off",
+      "approvals GET /approvals",
+      "approvals POST /approvals/:id/approve",
+      "approvals POST /approvals/:id/deny",
+      "brain POST /ask",
+      "brain GET /messages/:id",
     ]);
-    expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(["notifications", "triggers"]);
-    expect(kernel.contributions.handlers).toEqual({});
-    expect(kernel.contributions.dueWork.map((w) => w.owner)).toEqual(["notifications", "triggers"]);
-    expect(kernel.contributions.dueWork[0]?.run).toBe(deliveryDueWork);
+    expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(["notifications", "triggers", "approvals", "approve", "deny", "ask"]);
+    // Was `{}` before the brain: the brain now ships the kernel's only handler, for `message`.
+    expect(Object.keys(kernel.contributions.handlers)).toEqual(["message"]);
+    expect(kernel.contributions.handlers.message).toBe(brainContribution.handlers?.message);
+    expect(kernel.contributions.dueWork.map((w) => w.owner)).toEqual(["loomwright", "notifications", "triggers"]);
+    expect(kernel.contributions.dueWork[0]?.run).toBe(versionWatchDueWork);
+    expect(kernel.contributions.dueWork[1]?.run).toBe(deliveryDueWork);
 
-    // No handler: the message ends event_unhandled, as in phase 1.
+    // The brain handles `message`: a message for no agent (not Wright) ends done, with no effect and no brain_messages row.
     await vi.waitFor(() => expect(getQueueRow(kernel.store, id)?.status).toBe("done"));
-    expect(events(kernel.store, "event_unhandled")).toHaveLength(1);
-    // No route beyond phase 1's and the notifications ones: an unknown path is 404.
+    expect(events(kernel.store, "event_unhandled")).toHaveLength(0);
+    expect(events(kernel.store, "event_done")).toHaveLength(1);
+    expect(count(kernel.store, "SELECT count(*) FROM brain_messages")).toBe(0);
+    // No route beyond phase 1's and the features' ones: an unknown path is 404.
     const token = keychain.items.get(API_TOKEN_KEYCHAIN_SERVICE) ?? "";
     const res = await fetch(`http://127.0.0.1:${kernel.api.port}/probe/items/1`, { headers: { Authorization: `Bearer ${token}` } });
     expect(res.status).toBe(404);
     const listed = await fetch(`http://127.0.0.1:${kernel.api.port}/notifications`, { headers: { Authorization: `Bearer ${token}` } });
     expect(listed.status).toBe(200);
     expect(await listed.json()).toEqual({ notifications: [] });
-    // No subcommand beyond phase 1's but notifications and triggers: the usage text is phase 1's plus their help lines.
+    // No subcommand beyond phase 1's but notifications, triggers, the approvals ones and ask: the usage text is phase 1's plus their help lines.
     const stderr = out();
     expect(await runCli(["probe"], { dataDir, stderr, stdout: out() })).toBe(2);
     expect(stderr.text()).toBe(
-      `${USAGE} | studio notifications [--limit N] [--json] | studio notifications show <id> | studio triggers [--all] [--json] | studio triggers on|off <id> [--yes]\n`,
+      `${USAGE} | studio notifications [--limit N] [--json] | studio notifications show <id> | studio triggers [--all] [--json] | studio triggers on|off <id> [--yes] | studio approvals [--all] [--json] | studio approve <id> once|always | studio deny <id> | studio ask "<text>" [--json] [--timeout <s>]\n`,
     );
     expect(stderr.text()).toBe(`${usageText(kernel.contributions.subcommands)}\n`);
     expect(NOTIFICATIONS_HELP).toBe("studio notifications [--limit N] [--json] | studio notifications show <id>");
+    expect(ASK_HELP).toBe('studio ask "<text>" [--json] [--timeout <s>]');
   });
 });
 
@@ -499,7 +527,9 @@ describe("a contribution composed from outside (AC4)", () => {
     enqueueMessage(store, { text: "hello" });
     store.close();
     const k = deps();
-    const kernel = await start(options({ contributions: [...SHIPPED_CONTRIBUTIONS, contribution] }), k.d);
+    // Without the brain: the test contribution handles `message` (a second owner is refused at composition).
+    const shipped = SHIPPED_CONTRIBUTIONS.filter((c) => c.name !== "brain");
+    const kernel = await start(options({ contributions: [...shipped, contribution] }), k.d);
     const token = k.keychain.items.get(API_TOKEN_KEYCHAIN_SERVICE) ?? "";
     const url = (path: string): string => `http://127.0.0.1:${kernel.api.port}${path}`;
     return { kernel, seen, contribution, token, url, ...k };
@@ -515,6 +545,7 @@ describe("a contribution composed from outside (AC4)", () => {
       "kernel_trigger_register",
       "kernel_trigger_remove",
       "kernel_trigger_list",
+      "kernel_approval_request",
       "kernel_probe_echo",
     ]);
     const sessionId = Number(kernel.store.prepare<[], number>("SELECT max(id) FROM sessions").pluck().get());
@@ -777,7 +808,7 @@ describe("a contribution composed from outside (AC4)", () => {
     const usage = cliDeps();
     expect(await runCli(["nope"], usage.deps)).toBe(2);
     expect(usage.stderr.text()).toBe(`${USAGE} | studio probe <id>\n`);
-    expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(["notifications", "triggers", "probe"]);
+    expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(["notifications", "triggers", "approvals", "approve", "deny", "probe"]);
   });
 
   it("the handler runs for its event kind and the due work runs on each tick", async () => {

@@ -79,6 +79,19 @@ function failPrecondition(message) {
   process.exit(1);
 }
 
+/**
+ * Where the kernel finds Loomwright: `--plugin-dir` when given. Without it, a
+ * deterministic run gets an `installed_plugins.json` path under its data dir
+ * that is never written (`installed_plugins_missing`: the version watcher
+ * does nothing), so no test reads the real file. Only `--live`, the owner's
+ * real-machine run, reads the real one.
+ */
+function loomwrightSettings(args) {
+  if (args.pluginDir !== undefined) return { loomwrightPath: args.pluginDir };
+  if (args.live) return {};
+  return { installedPluginsPath: join(args.dataDir, "no-installed-plugins.json") };
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise((r) => {
@@ -232,6 +245,7 @@ async function main() {
   const { Store } = await import(dist("store/store.js"));
   const { enqueueMessage } = await import(dist("loop/queue.js"));
   const { API_TOKEN_KEYCHAIN_SERVICE } = await import(dist("api/token.js"));
+  const { SHIPPED_CONTRIBUTIONS } = await import(dist("features/index.js"));
 
   const kernelReady = deferred();
   const startStepCommitted = deferred();
@@ -318,7 +332,9 @@ async function main() {
       env: args.live ? process.env : { PATH: "/usr/bin:/bin" },
       ...(args.live ? { authProviderId: "subscription-token" } : {}),
       handlers: { message },
-      sessions: { ...(args.pluginDir === undefined ? {} : { loomwrightPath: args.pluginDir }), stopGraceMs: 100 },
+      // The harness stands in for a playbook, not for the brain (which owns `message` in the shipped list).
+      contributions: SHIPPED_CONTRIBUTIONS.filter((c) => c.name !== "brain"),
+      sessions: { ...loomwrightSettings(args), stopGraceMs: 100 },
     },
     deps,
   );

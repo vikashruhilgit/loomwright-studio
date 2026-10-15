@@ -1,4 +1,4 @@
-import type { CancelTimer } from "../sessions/types.js";
+import type { CancelTimer, ResumeSessionParams, SessionHandle, SessionRow, StartSessionParams } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 
 /**
@@ -105,6 +105,22 @@ export interface EventContext {
    * `notify`) instead of parking it: its redelivery could not complete.
    */
   runStepAsync<T>(name: string, fn: () => Promise<T>, opts?: StepOptions): Promise<T>;
+  /** `EventLoopOptions.sessions`, or `undefined` when the loop was built without it. */
+  readonly sessions?: EventSessions;
+}
+
+/**
+ * The part of the session manager a handler may use: start, resume and read a
+ * session. Type-only, so a module that handles events never imports the
+ * manager (or the Agent SDK) at runtime; the kernel passes its
+ * `SessionManager`, which satisfies it. A session started here goes through
+ * the manager's own admission, policy and lifecycle: the handler never owns it
+ * (invariant 2).
+ */
+export interface EventSessions {
+  startSession(params: StartSessionParams): Promise<SessionHandle>;
+  resumeSession(id: number, params: ResumeSessionParams): Promise<SessionHandle>;
+  getSession(id: number): SessionRow | undefined;
 }
 
 /**
@@ -144,11 +160,25 @@ export type EventHandler = (ctx: EventContext) => void | Promise<void>;
 
 export type EventHandlers = Partial<Record<EventKind, EventHandler>>;
 
+/**
+ * Where the kernel finds the active Loomwright: the same two settings the
+ * session manager gets (`loomwrightPath`, `installedPluginsPath`), so due work
+ * resolves the install that sessions and `/status` resolve. Absent ⇒ the
+ * adapter's defaults.
+ */
+export interface LoomwrightInstallSettings {
+  /** A configured Loomwright plugin dir (`loomwrightPath`). */
+  readonly configured?: string;
+  readonly installedPluginsPath?: string;
+}
+
 /** What a due-work function receives (see `EventLoopOptions.dueWork`). */
 export interface DueWorkContext {
   readonly store: Store;
   /** The loop's clock. */
   readonly now: () => Date;
+  /** `EventLoopOptions.loomwright`, when the loop was given it. */
+  readonly loomwright?: LoomwrightInstallSettings;
 }
 
 /** A due-work function and the contribution it belongs to (named in its `due_work_failed` row). */
@@ -166,6 +196,10 @@ export interface EventLoopOptions {
    * `due_work_failed` row and the tick goes on. Default none.
    */
   readonly dueWork?: readonly DueWork[];
+  /** Passed as `ctx.sessions` to every handler. Absent: handlers see `undefined`. */
+  readonly sessions?: EventSessions;
+  /** Passed to every due-work call as `DueWorkContext.loomwright`. Default none. */
+  readonly loomwright?: LoomwrightInstallSettings;
 }
 
 export interface EventLoopDeps {
