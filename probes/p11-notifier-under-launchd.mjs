@@ -50,33 +50,39 @@ function run(file, args, input = '') {
       return;
     }
     // Settles exactly once: on 'close', or 250 ms after 'exit' (a descendant can
-    // hold the pipes, and 'close' waits for it), or 1 s after the timeout's kill.
+    // hold the pipes, and 'close' waits for it), or at most 1 s after the timeout's kill.
     let settled = false;
-    let after;
+    let timer;
+    let drain;
+    let grace;
     const settle = (r) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      clearTimeout(after);
-      child.stdin.destroy();
-      child.stdout.destroy();
-      child.stderr.destroy();
+      clearTimeout(drain);
+      clearTimeout(grace);
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
       child.unref();
       resolve({ ...r, ms: Date.now() - started });
     };
+    // First, before any pipe is touched: a failed spawn (EMFILE returns a child
+    // with no stdio and emits 'error' on the next tick) reports only here.
+    child.on('error', (e) => settle({ status: null, signal: null, error: String(e?.message || e), stdout, stderr }));
+    if (!child.stdin || !child.stdout || !child.stderr) return;
     const ended = (status, signal) => ({ status, signal, stdout: stdout.slice(0, 2000), stderr: stderr.slice(0, 2000) });
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       child.kill('SIGKILL');
-      after = setTimeout(() => settle(ended(child.exitCode, child.signalCode ?? 'SIGKILL')), 1_000);
+      grace = setTimeout(() => settle(ended(child.exitCode, child.signalCode ?? 'SIGKILL')), 1_000);
     }, STEP_TIMEOUT_MS);
     child.stdout.on('data', (c) => { stdout += c; });
     child.stderr.on('data', (c) => { stderr += c; });
-    child.on('error', (e) => settle({ status: null, signal: null, error: String(e?.message || e), stdout, stderr }));
     child.on('exit', (status, signal) => {
       if (settled) return;
       clearTimeout(timer);
-      clearTimeout(after);
-      after = setTimeout(() => settle(ended(status, signal)), 250);
+      // grace (armed only after the timeout) stays: it is the hard cap.
+      drain = setTimeout(() => settle(ended(status, signal)), 250);
     });
     child.on('close', (status, signal) => settle(ended(status, signal)));
     child.stdin.on('error', () => {});

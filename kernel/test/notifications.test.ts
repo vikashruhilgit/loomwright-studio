@@ -5,6 +5,8 @@
 // `/bin/sh`, `/bin/echo`, `/bin/cat`, `/bin/sleep` and `/usr/bin/env`, to pin
 // the quoting and the no-shell spawn. Never a real notification.
 import { spawnSync } from "node:child_process";
+import type { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +28,7 @@ import {
   notifyTool,
   osascriptInvocation,
   pendingNotificationIds,
+  postNotification,
   plistQuote,
   printable,
   recordNotification,
@@ -34,6 +37,7 @@ import {
   spawnNotifier,
 } from "../src/notifications/index.js";
 import type { NotifierDeps, NotifierExec, NotifierRun } from "../src/notifications/index.js";
+import { spawnNotifierWith } from "../src/notifications/notifier.js";
 import type { Store } from "../src/store/index.js";
 import { contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolContext } from "../src/tools/server.js";
@@ -449,6 +453,42 @@ describe("the quoting and the spawn (no shell ever sees notification text)", () 
     expect(run).toMatchObject({ status: 0, signal: null, timedOut: false });
     expect(took).toBeLessThan(3_000);
     expect(await handles()).toBe(before);
+  });
+
+  it("spawnNotifier: a spawn that fails with no stdio (EMFILE) rejects exactly once, and its 'error' never goes unhandled", async () => {
+    // What Node returns when it cannot create the pipes (observed under
+    // `ulimit -n` with the fds exhausted): a child whose stdio is undefined and
+    // whose 'error' is emitted on the next tick.
+    let unhandled: unknown;
+    let spawned = 0;
+    const fakeSpawn = (() => {
+      spawned += 1;
+      const child = Object.assign(new EventEmitter(), { stdin: undefined, stdout: undefined, stderr: undefined, exitCode: null, signalCode: null, unref: () => {}, kill: () => true });
+      process.nextTick(() => {
+        try {
+          child.emit("error", Object.assign(new Error("spawn /bin/echo EMFILE"), { code: "EMFILE" }));
+        } catch (err) {
+          unhandled = err;
+        }
+      });
+      return child;
+    }) as unknown as typeof spawn;
+    let settledCount = 0;
+    const outcome = spawnNotifierWith(fakeSpawn, "/bin/echo", [], "", 5_000).then(
+      () => (settledCount += 1, "resolved"),
+      (err: Error) => (settledCount += 1, err.message),
+    );
+    expect(await outcome).toBe("spawn /bin/echo EMFILE");
+    await new Promise((r) => setTimeout(r, 20));
+    expect({ spawned, settledCount, unhandled }).toEqual({ spawned: 1, settledCount: 1, unhandled: undefined });
+    // Through postNotification it is a failed post, never a throw.
+    const exec: NotifierExec = (file, args, input, timeoutMs) => spawnNotifierWith(fakeSpawn, file, args, input, timeoutMs);
+    expect(await postNotification({ id: 1, title: "t", body: "b" }, dir, darwin(exec))).toMatchObject({
+      status: "failed",
+      detail: `${TN} could not be run: spawn /bin/echo EMFILE`,
+      posted: false,
+    });
+    expect(unhandled).toBeUndefined();
   });
 });
 

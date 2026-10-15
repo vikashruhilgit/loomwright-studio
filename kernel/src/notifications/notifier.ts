@@ -179,15 +179,34 @@ const KILL_GRACE_MS = 1_000;
  * `KILL_GRACE_MS`: it settles exactly once, on 'close', or `DRAIN_MS` after
  * 'exit', or `KILL_GRACE_MS` after the kill, whichever is first. Settling
  * destroys the pipes and unrefs the child, so a descendant still holding the
- * pipes neither stretches the wait nor keeps the event loop alive.
+ * pipes neither stretches the wait nor keeps the event loop alive. Once the
+ * timeout has fired, an 'exit' inside the grace may settle sooner but never
+ * later than the grace.
+ *
+ * A failed spawn (ENOENT, EACCES, EMFILE …) rejects once, through the child's
+ * 'error' event, which is listened for before anything else is touched: on
+ * EMFILE Node returns a child with no stdio and emits 'error' on the next
+ * tick, so dereferencing a pipe first would throw and leave that 'error'
+ * unhandled (an uncaught exception in the daemon).
  */
 export const spawnNotifier: NotifierExec = (file, args, input, timeoutMs) =>
-  new Promise((resolve, reject) => {
-    const child = spawn(file, [...args], { stdio: ["pipe", "pipe", "pipe"], env: notifierEnv() });
+  spawnNotifierWith(spawn, file, args, input, timeoutMs);
+
+/** `spawnNotifier` over an injectable `spawn` (a test seam). */
+export function spawnNotifierWith(
+  spawnImpl: typeof spawn,
+  file: string,
+  args: readonly string[],
+  input: string,
+  timeoutMs: number,
+): Promise<NotifierRun> {
+  return new Promise((resolve, reject) => {
+    const child = spawnImpl(file, [...args], { stdio: ["pipe", "pipe", "pipe"], env: notifierEnv() });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
     let settled = false;
+    let timer: NodeJS.Timeout | undefined;
     let drainTimer: NodeJS.Timeout | undefined;
     let graceTimer: NodeJS.Timeout | undefined;
     const release = (): void => {
@@ -195,43 +214,49 @@ export const spawnNotifier: NotifierExec = (file, args, input, timeoutMs) =>
       clearTimeout(timer);
       clearTimeout(drainTimer);
       clearTimeout(graceTimer);
-      child.stdin.destroy();
-      child.stdout.destroy();
-      child.stderr.destroy();
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
       child.unref();
     };
-    const settle = (status: number | null, signal: string | null): void => {
-      if (settled) return;
-      release();
-      resolve({ status, signal, timedOut, stdout, stderr });
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-      graceTimer = setTimeout(() => settle(child.exitCode, child.signalCode ?? "SIGKILL"), KILL_GRACE_MS);
-    }, timeoutMs);
-    child.stdout.setEncoding("utf8").on("data", (c: string) => {
-      if (stdout.length < MAX_OUTPUT) stdout += c;
-    });
-    child.stderr.setEncoding("utf8").on("data", (c: string) => {
-      if (stderr.length < MAX_OUTPUT) stderr += c;
-    });
+    // First, before any pipe is touched: a failed spawn reports only here.
     child.on("error", (err) => {
       if (settled) return;
       release();
       reject(err);
     });
+    const { stdin, stdout: out, stderr: errOut } = child;
+    // No stdio (undefined on EMFILE, despite the typing) means the spawn
+    // failed; its queued 'error' rejects.
+    if (!stdin || !out || !errOut) return;
+    const settle = (status: number | null, signal: string | null): void => {
+      if (settled) return;
+      release();
+      resolve({ status, signal, timedOut, stdout, stderr });
+    };
+    timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+      graceTimer = setTimeout(() => settle(child.exitCode, child.signalCode ?? "SIGKILL"), KILL_GRACE_MS);
+    }, timeoutMs);
+    out.setEncoding("utf8").on("data", (c: string) => {
+      if (stdout.length < MAX_OUTPUT) stdout += c;
+    });
+    errOut.setEncoding("utf8").on("data", (c: string) => {
+      if (stderr.length < MAX_OUTPUT) stderr += c;
+    });
     child.once("exit", (status, signal) => {
       if (settled) return;
       clearTimeout(timer);
-      clearTimeout(graceTimer);
+      // graceTimer (armed only after a timeout) stays: it is the hard cap.
       drainTimer = setTimeout(() => settle(status, signal), DRAIN_MS);
     });
     child.once("close", (status, signal) => settle(status, signal));
     // A notifier that exits without reading stdin is not an error of the post.
-    child.stdin.on("error", () => {});
-    child.stdin.end(input);
+    stdin.on("error", () => {});
+    stdin.end(input);
   });
+}
 
 /** Why `run` is a failed post, or `undefined` when it exited 0. */
 function failureOf(file: string, run: NotifierRun, timeoutMs: number): string | undefined {
