@@ -34,7 +34,7 @@ import { resolveLoomwrightInstallWithText } from "./active-install.js";
 import { CONTRACT_FILE, LoomwrightContractError } from "./contract.js";
 import type { LoomwrightContractErrorReason } from "./contract.js";
 
-/** The highest `contract_schema_version` this kernel was written against. The change to a newer one is a breaking signal, never a refusal (D32). */
+/** The highest `contract_schema_version` this kernel was written against. A diffed change that crosses to a newer one is a breaking signal, never a refusal (D32); a baseline already above it is silent and never flagged. */
 export const KNOWN_CONTRACT_SCHEMA_VERSION = 1;
 
 /** The source of every notification the watcher creates. */
@@ -303,7 +303,8 @@ function hostSwitchChange(from: HostSwitchView | null, to: HostSwitchView | null
  * `contract_schema_version` that crosses `KNOWN_CONTRACT_SCHEMA_VERSION`: the
  * new one is above it and the old one is not. A change between two versions
  * above it, or back down to it, is not flagged again; the Changed section
- * still reports it.
+ * still reports it. Only a diff can flag it, so a baseline (never diffed)
+ * already above it is never flagged.
  */
 export function diffLoomwrightContracts(oldText: string, newText: string): LoomwrightContractDiff {
   const from = viewOf(oldText);
