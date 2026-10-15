@@ -15,9 +15,13 @@ Agents get three kernel tools. Their input is untrusted data, and every refusal 
 - **`kernel_trigger_remove(id, idempotency_key)`** deletes a trigger the calling agent owns. It refuses another agent's trigger and one the owner turned off, because remove-then-re-register would undo the owner's off.
 - **`kernel_trigger_list()`** lists the calling agent's own triggers, enabled and disabled, in id order.
 
-Register and remove run as a work step keyed `<tool>:session-<id>:<idempotency_key>`, so a repeat in the same session returns the first result.
+Register and remove run as a work step keyed `<tool>:session-<id>:<idempotency_key>`, so a repeat in the same session returns the first result. The one exception: a register repeated after the owner turned that trigger off returns the `owner_off` error, not the stored `{id, next_fire_at}`.
 
-**The owner's off is final for agents.** A trigger with `enabled = 0` and `enabled_changed_by = owner` can't be re-enabled, re-registered or removed by an agent. Re-registering means the same agent, kind, spec (the same instant written another way counts), action and text. The error result says the owner turned it off.
+Trigger ids are never reused. A new trigger's id is one above the highest any trigger ever had, counting the rows and the `trigger_registered` / `trigger_removed` events, so an old notification's `source` `trigger:<id>`, an audit event's `trigger_id`, a work-step key and `studio triggers off <id>` never point at a different trigger.
+
+**The owner's off is final for agents.** A trigger the owner turned off (`enabled = 0` and `enabled_changed_by = owner`, unless it is a `once` that was spent after its last turn-on) can't be re-enabled, re-registered or removed by an agent. The error result says the owner turned it off.
+
+Re-registering means the same agent, kind, schedule, action and text. The schedule is compared by meaning, not by text: a `once` by its instant (the same instant written with another offset counts), a `cron` by the value sets its fields parse to and the day rule (`1-5`, `1,2,3,4,5` and `5,4,3,2,1` are the same) and by the zone as ICU resolves it (`Asia/Kolkata`, `asia/kolkata` and `Asia/Calcutta` are the same; the zone is still stored as given). The honest limit: a schedule that is written to mean something different is a different trigger, even when it happens to fire at the same instants (`0 9 1-31 * 1-5` fires every day under the day rule, so it is not `0 9 * * 1-5`). The owner sees every trigger, and can turn that one off too.
 
 ### Cron
 
@@ -37,11 +41,13 @@ The contribution's due work runs once per loop tick. It fires every enabled trig
 - The effect:
   - `notify`: one `notifications` row with `source` `trigger:<id>`, title `Trigger <id> (<agent>)`, `body` the stored text, `deep_link` `loomwright-studio://notifications/<notification id>` and `delivery_status` `pending`. The row's id is known only after the insert, so `deep_link` starts as `''` (the column is NOT NULL) and is set by the next statement in the same transaction. Delivering it belongs to the notifications feature.
   - `wake_agent`: one `event_queue` row (`kind: message`, payload `{text, agent, trigger_id}`, `source_ref` `trigger:<id>:<instant>`), plus the queue's own `event_enqueued` row.
-- The bookkeeping: `last_fired_at` and `last_result = fired`. A `cron` trigger also gets its next future instant as `next_fire_at`. A `once` trigger is spent: `enabled = 0` and no next fire. Its `enabled_changed_by` / `enabled_changed_at` are cleared, because nobody turned it off.
+- The bookkeeping: `last_fired_at` and `last_result = fired`. A `cron` trigger also gets its next future instant as `next_fire_at`. A `once` trigger is spent: `enabled = 0` and no next fire. Its `enabled_changed_by` / `enabled_changed_at` stay, so `studio triggers` still shows who last toggled it. A spent `once` is told from an off by the log: when the newest `trigger_toggled` for it turned it on, it was spent, not turned off. Without such an event, a toggle recorded in the columns counts as that toggler's off, so a gap in the evidence never unlocks an owner's off.
 - The `trigger_fired` audit event.
 - The step's `done` row.
 
 So a `kill -9` at any point either committed all of it, and the instant is never fired again, or none of it, and the next tick fires it. Both cases are tested against a separate `node` process in `kernel/test/triggers-crash.test.ts`. A step that finds its trigger no longer enabled, or no longer due at that instant, does nothing.
+
+An instant whose work step already exists is never scheduled again, because its step would only replay the stored result and the trigger would stay due at it for ever. This can happen when the wall clock steps back: an hourly trigger fired at 10:00, the clock reads 09:59, and the owner turns it off and on. Every next fire (after a fire, and on turning a trigger on) skips instants already taken, and a `once` whose instant is taken counts as past due. As a last guard, a due trigger that is still due at the same instant after its step ran was replayed. It is moved past that instant in one transaction with one `trigger_missed` (`reason: already_done`): a `cron` gets its next free instant, and a `once` is spent.
 
 One trigger's failure never stops the others. A trigger whose stored spec the kernel can't evaluate (a corrupt row, or a zone the runtime no longer knows) is parked: its `next_fire_at` is cleared, so it stops coming due, and the failure is reported once as the loop's `due_work_failed` rather than on every tick. It stays listed, and the owner's off-then-on recomputes it.
 
@@ -74,7 +80,7 @@ Every register, remove, fire, miss and toggle appends exactly one event of its o
 - `trigger_registered`: `trigger_id`, `owning_agent`, `kind`, `spec`, `action`, `text`, `created_by`, `next_fire_at`. The row's `session_id` is the calling session.
 - `trigger_removed`: `trigger_id`, `owning_agent`, `kind`, `spec`, `action`, `enabled`, `by: agent`.
 - `trigger_fired`: `trigger_id`, `action`, `scheduled_at` (the first due instant, the step's key), `latest_due_at`, `missed`, `missed_kill_switch` (only when non-zero), `missed_at_least` (only when counting stopped), `enabled` (false for a spent `once`), `next_fire_at`, and `notification_id` or `queue_id`.
-- `trigger_missed`: `trigger_id`, `reason: kill_switch`, `scheduled_at`, `latest_due_at`, `missed_kill_switch`, `enabled`, `next_fire_at`.
+- `trigger_missed`: `trigger_id`, `reason`, `scheduled_at`, `enabled`, `next_fire_at`. With `reason: kill_switch` it also has `latest_due_at` and `missed_kill_switch`. `reason: already_done` means the instant's work step was already done and the trigger was moved past it.
 - `trigger_toggled`: `trigger_id`, `enabled`, `was_enabled`, `by` (`owner`), `next_fire_at`.
 
 ## Values
@@ -84,7 +90,7 @@ These sets are closed in code (`kernel/src/triggers/store.ts`), not by SQL:
 - `kind`: `once`, `cron`
 - `action`: `notify`, `wake_agent`
 - `created_by`: `agent`, `owner`. Owner-created triggers come later; only agents create them now.
-- `enabled_changed_by`: `owner`, `agent`, or null until someone toggles it (and again after a `once` is spent).
+- `enabled_changed_by`: `owner`, `agent`, or null until someone toggles it. A spent `once` keeps it.
 - `last_result`: `fired`, `missed_kill_switch`
 
 The `spec_json` shapes are `once` `{at}` and `cron` `{cron, tz}`. `action_payload` is the stored text.

@@ -7,14 +7,16 @@
 // `isError` result with the message (never a throw through the SDK). Register
 // and remove run as a work step keyed `ctx.stepKey(idempotency_key)`, so a
 // repeat in the same session returns the first result; a refused call rolls
-// back with its step, so nothing of it is stored (no row, no event).
+// back with its step, so nothing of it is stored (no row, no event). The one
+// exception to the repeat: a register repeated after the owner turned its
+// trigger off is refused (`owner_off`), as a new register of it would be.
 import { z } from "zod";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { errorMessage } from "../loop/internal.js";
 import { runStep } from "../loop/steps.js";
 import { MAX_CRON_LENGTH } from "./cron.js";
-import { MAX_TRIGGER_TEXT, TRIGGER_ACTIONS, TRIGGER_KINDS, TriggerError, listTriggers, registerTrigger, removeTrigger } from "./store.js";
+import { MAX_TRIGGER_TEXT, TRIGGER_ACTIONS, TRIGGER_KINDS, TriggerError, listTriggers, refuseIfOwnerOff, registerTrigger, removeTrigger } from "./store.js";
 
 export const TRIGGER_TOOL_NAMES = ["kernel_trigger_register", "kernel_trigger_remove", "kernel_trigger_list"] as const;
 
@@ -47,7 +49,7 @@ const register = defineTool({
     "kind cron: spec is a 5-field cron expression (minute hour day-of-month month day-of-week) and tz an IANA zone (Asia/Kolkata). " +
     "action notify posts text as a notification; action wake_agent queues text as a message to you. Returns {id, next_fire_at} (UTC): " +
     "tell the user when it fires. The owner sees and can turn off every trigger; one the owner turned off cannot be turned back on or " +
-    `re-registered by an agent. ${REPEAT}`,
+    `re-registered by an agent (a repeat of this call then returns that error too). ${REPEAT}`,
   shape: {
     kind: z.enum(TRIGGER_KINDS),
     spec: z.string().min(1).max(MAX_CRON_LENGTH),
@@ -59,12 +61,16 @@ const register = defineTool({
   handler: (a, ctx) =>
     named("kernel_trigger_register", () => {
       const agent = owningAgent(ctx);
-      return runStep(
+      const registered = runStep(
         ctx.store,
         ctx.stepKey(a.idempotency_key),
         () => registerTrigger(ctx.store, { agent, kind: a.kind, spec: a.spec, tz: a.tz, action: a.action, text: a.text, sessionId: ctx.sessionId }, ctx.now()),
         { now: ctx.now },
       );
+      // A repeat replays the first result, which predates any owner's off: the
+      // agent must not be told its trigger is on when the owner turned it off.
+      refuseIfOwnerOff(ctx.store, registered.id);
+      return registered;
     }),
 });
 

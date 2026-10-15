@@ -25,7 +25,9 @@ import {
   TRIGGER_TOOL_NAMES,
   TriggerError,
   fireDueTriggers,
+  formatTriggers,
   formatZoned,
+  listTriggers,
   nextCronFire,
   parseCron,
   registerTrigger,
@@ -703,8 +705,8 @@ describe("owner control: studio triggers and the /triggers routes (AC9)", () => 
     // It fires now (its own new instant), once.
     expect(fireDueTriggers(env.store, new Date("2026-10-14T12:00:00.000Z"))).toMatchObject([{ trigger_id: id, result: "fired" }]);
     expect(notifications()).toHaveLength(2);
-    // Spent again: nobody turned it off, so an agent may register the same trigger anew.
-    expect(row(id)).toMatchObject({ enabled: 0, enabled_changed_by: null });
+    // Spent again: it keeps who last toggled it (the owner's on), and nobody turned it off.
+    expect(row(id)).toMatchObject({ enabled: 0, enabled_changed_by: "owner", enabled_changed_at: "2026-10-14T12:00:00.000Z" });
 
     apiNow = new Date("2026-10-14T13:00:00.000Z");
     const askNever = vi.fn(async () => false);
@@ -785,5 +787,127 @@ describe("studio triggers: the answers it does not expect", () => {
     expect(() => registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T11:00:00Z", action: "notify", text: "x" }, new Date("2026-10-14T10:00:00.000Z"))).toThrow(
       /turned off by the owner/,
     );
+  });
+});
+
+describe("review fixes: done instants, repeats after an owner's off, spec identity, id reuse, toggle history", () => {
+  const hourly = { agent: "wright", kind: "cron", spec: "0 * * * *", tz: "UTC", action: "notify", text: "hourly" } as const;
+
+  it("a cron turned back on after the clock stepped back is never scheduled onto an instant it already fired", () => {
+    const { id } = registerTrigger(env.store, hourly, new Date("2026-10-14T09:30:00.000Z"));
+    expect(fireDueTriggers(env.store, new Date("2026-10-14T10:00:00.000Z"))).toMatchObject([{ trigger_id: id, result: "fired" }]);
+    // The wall clock steps back a minute; the owner turns it off and on again.
+    const back = new Date("2026-10-14T09:59:00.000Z");
+    setTriggerEnabled(env.store, { id, enabled: false, by: "owner" }, back);
+    setTriggerEnabled(env.store, { id, enabled: true, by: "owner" }, back);
+    expect(row(id)?.next_fire_at).toBe("2026-10-14T11:00:00.000Z");
+    expect(fireDueTriggers(env.store, new Date("2026-10-14T11:00:00.000Z"))).toMatchObject([{ trigger_id: id, result: "fired" }]);
+    expect(notifications()).toHaveLength(2);
+  });
+
+  it("a due trigger whose instant's work step is already done is moved past it (trigger_missed, already_done) instead of staying due for ever", () => {
+    const { id } = registerTrigger(env.store, hourly, new Date("2026-10-14T09:30:00.000Z"));
+    fireDueTriggers(env.store, new Date("2026-10-14T10:00:00.000Z"));
+    // Any path that puts a done instant back as the next fire.
+    env.store.prepare("UPDATE triggers SET next_fire_at = ? WHERE id = ?").run("2026-10-14T10:00:00.000Z", id);
+    expect(fireDueTriggers(env.store, new Date("2026-10-14T10:30:00.000Z"))).toEqual([{ trigger_id: id, scheduled_at: "2026-10-14T10:00:00.000Z", result: "already_done" }]);
+    expect(row(id)).toMatchObject({ enabled: 1, next_fire_at: "2026-10-14T11:00:00.000Z" });
+    expect(events(env.store, "trigger_missed").map((e) => e.payload)).toEqual([
+      { trigger_id: id, reason: "already_done", scheduled_at: "2026-10-14T10:00:00.000Z", enabled: true, next_fire_at: "2026-10-14T11:00:00.000Z" },
+    ]);
+    expect(notifications()).toHaveLength(1);
+    expect(fireDueTriggers(env.store, new Date("2026-10-14T11:00:00.000Z"))).toMatchObject([{ trigger_id: id, result: "fired" }]);
+    expect(notifications()).toHaveLength(2);
+
+    // A once whose done instant is due again is spent, not fired twice.
+    const once = registerTrigger(env.store, { ...hourly, kind: "once", spec: "2026-10-14T12:00:00Z", tz: undefined }, new Date("2026-10-14T11:00:00.000Z"));
+    // 12:00 fires the hourly one and the once.
+    fireDueTriggers(env.store, new Date("2026-10-14T12:00:00.000Z"));
+    expect(notifications()).toHaveLength(4);
+    env.store.prepare("UPDATE triggers SET enabled = 1, next_fire_at = ? WHERE id = ?").run("2026-10-14T12:00:00.000Z", once.id);
+    expect(fireDueTriggers(env.store, new Date("2026-10-14T12:00:30.000Z"))).toMatchObject([{ trigger_id: once.id, result: "already_done" }]);
+    expect(row(once.id)).toMatchObject({ enabled: 0, next_fire_at: null });
+    expect(notifications()).toHaveLength(4);
+  });
+
+  it("a fired once turned back on after the clock stepped back is past due (needs confirmation), not given its fired instant again", () => {
+    const { id } = registerTrigger(env.store, { ...hourly, kind: "once", spec: "2026-10-14T11:00:00Z", tz: undefined }, env.now());
+    fireDueTriggers(env.store, new Date("2026-10-14T11:00:00.000Z"));
+    const back = new Date("2026-10-14T10:59:00.000Z");
+    expect(() => setTriggerEnabled(env.store, { id, enabled: true, by: "owner" }, back)).toThrow(/turning it on fires it now/);
+    setTriggerEnabled(env.store, { id, enabled: true, by: "owner", confirm: true }, back);
+    expect(row(id)?.next_fire_at).toBe("2026-10-14T10:59:00.000Z");
+    expect(fireDueTriggers(env.store, back)).toMatchObject([{ trigger_id: id, result: "fired" }]);
+    expect(notifications()).toHaveLength(2);
+  });
+
+  it("repeating a register after the owner turned its trigger off returns owner_off, not the stored success", async () => {
+    const args = { kind: "cron", spec: "0 9 * * *", tz: "UTC", action: "notify", text: "daily", idempotency_key: "same" };
+    const { id } = value<{ id: number }>(await call("kernel_trigger_register", args));
+    setTriggerEnabled(env.store, { id, enabled: false, by: "owner" }, env.now());
+    expect(errorText(await call("kernel_trigger_register", args))).toBe(
+      `kernel_trigger_register: trigger ${id} was turned off by the owner; an agent cannot turn it back on, re-register or remove it`,
+    );
+    expect(count(env.store, "SELECT count(*) FROM triggers")).toBe(1);
+    expect(row(id)).toMatchObject({ enabled: 0, enabled_changed_by: "owner" });
+  });
+
+  it("an equivalent cron expression or a zone alias is the trigger the owner turned off; a schedule that differs in meaning is not", async () => {
+    const base = { kind: "cron", action: "notify", text: "standup" };
+    const { id } = value<{ id: number }>(await register({ ...base, spec: "0 9 * * 1-5", tz: "Asia/Kolkata" }));
+    setTriggerEnabled(env.store, { id, enabled: false, by: "owner" }, env.now());
+    for (const [spec, tz] of [
+      ["0 9 * * 1,2,3,4,5", "Asia/Kolkata"],
+      ["0 9 * * 5,4,3,2,1", "Asia/Kolkata"],
+      ["0 9 * * 1-5", "Asia/Calcutta"],
+      ["0 9 * * 1-5", "asia/kolkata"],
+      ["0 9 * 1-12 1-5", "Asia/Calcutta"],
+    ] as const) {
+      expect(errorText(await register({ ...base, spec, tz })), `${spec} ${tz}`).toMatch(new RegExp(`trigger ${id} was turned off by the owner`));
+    }
+    // 1-31 restricts day-of-month, so the day OR rule makes it every day: another schedule.
+    value(await register({ ...base, spec: "0 9 1-31 * 1-5", tz: "Asia/Kolkata" }));
+    value(await register({ ...base, spec: "0 9 * * 1-6", tz: "Asia/Kolkata" }));
+    // The zone is stored as given.
+    expect(JSON.parse(row(id + 1)?.spec_json ?? "null")).toEqual({ cron: "0 9 1-31 * 1-5", tz: "Asia/Kolkata" });
+  });
+
+  it("a removed trigger's id is never given to a new trigger", () => {
+    const a = registerTrigger(env.store, hourly, env.now());
+    const b = registerTrigger(env.store, { ...hourly, text: "b" }, env.now());
+    removeTrigger(env.store, { id: b.id, agent: "wright" }, env.now());
+    const c = registerTrigger(env.store, { ...hourly, text: "c" }, env.now());
+    expect(c.id).toBe(b.id + 1);
+    removeTrigger(env.store, { id: a.id, agent: "wright" }, env.now());
+    removeTrigger(env.store, { id: c.id, agent: "wright" }, env.now());
+    expect(count(env.store, "SELECT count(*) FROM triggers")).toBe(0);
+    expect(registerTrigger(env.store, { ...hourly, text: "d" }, env.now()).id).toBe(c.id + 1);
+  });
+
+  it("a spent once keeps who last toggled it, and is still not an owner's off", async () => {
+    const { id } = registerTrigger(env.store, { ...hourly, kind: "once", spec: "2026-10-14T11:00:00Z", tz: undefined }, env.now());
+    setTriggerEnabled(env.store, { id, enabled: false, by: "owner" }, new Date("2026-10-14T10:01:00.000Z"));
+    setTriggerEnabled(env.store, { id, enabled: true, by: "owner" }, new Date("2026-10-14T10:02:00.000Z"));
+    fireDueTriggers(env.store, new Date("2026-10-14T11:00:00.000Z"));
+    expect(row(id)).toMatchObject({ enabled: 0, last_result: "fired", enabled_changed_by: "owner", enabled_changed_at: "2026-10-14T10:02:00.000Z" });
+    expect(formatTriggers(listTriggers(env.store, { all: true }), "UTC", true)).toContain("last toggled by owner at 2026-10-14 10:02 +00:00");
+    // Spent, not turned off: the owner's off records the owner and seals it.
+    expect(setTriggerEnabled(env.store, { id, enabled: false, by: "owner" }, new Date("2026-10-14T11:05:00.000Z")).changed).toBe(true);
+    expect(() => removeTrigger(env.store, { id, agent: "wright" }, env.now())).toThrow(/turned off by the owner/);
+
+    // Missed under the kill switch after the owner's on: kept too, and an agent may still remove it.
+    const missed = registerTrigger(env.store, { ...hourly, kind: "once", spec: "2026-10-14T12:00:00Z", tz: undefined }, env.now());
+    setTriggerEnabled(env.store, { id: missed.id, enabled: false, by: "owner" }, new Date("2026-10-14T10:03:00.000Z"));
+    setTriggerEnabled(env.store, { id: missed.id, enabled: true, by: "owner" }, new Date("2026-10-14T10:04:00.000Z"));
+    engageKillSwitch(env.store, "2026-10-14T11:59:00.000Z");
+    releaseKillSwitch(env.store, "2026-10-14T12:01:00.000Z");
+    expect(fireDueTriggers(env.store, new Date("2026-10-14T12:02:00.000Z"))).toMatchObject([{ trigger_id: missed.id, result: "missed_kill_switch" }]);
+    expect(row(missed.id)).toMatchObject({ enabled: 0, enabled_changed_by: "owner", enabled_changed_at: "2026-10-14T10:04:00.000Z" });
+    expect(removeTrigger(env.store, { id: missed.id, agent: "wright" }, env.now())).toEqual({ id: missed.id, removed: true });
+
+    // Without a turn-on event to show it was spent, the owner's toggle reads as the owner's off (closed).
+    const bare = registerTrigger(env.store, { ...hourly, text: "bare" }, env.now());
+    env.store.prepare("UPDATE triggers SET kind = 'once', enabled = 0, enabled_changed_by = 'owner', last_result = 'fired' WHERE id = ?").run(bare.id);
+    expect(() => removeTrigger(env.store, { id: bare.id, agent: "wright" }, env.now())).toThrow(/turned off by the owner/);
   });
 });

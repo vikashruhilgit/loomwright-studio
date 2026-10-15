@@ -24,15 +24,23 @@
 // inside a kill-switch engagement is recorded `missed_kill_switch` with a
 // `trigger_missed` event after the release and never fired.
 //
+// A due instant whose work step is already done (the instant was fired or
+// recorded before, and the clock or a toggle put it back) is never scheduled
+// again: every next fire skips done instants, and a due trigger whose step
+// replays a done result is moved past it (`trigger_missed`, reason
+// `already_done`) instead of staying due at it for ever.
+//
 // The owner's off is final for agents: an agent cannot re-enable, re-register
-// (same agent, kind, spec, action and text) or remove a trigger the owner
-// turned off (`enabled = 0` with `enabled_changed_by = 'owner'`).
+// (same agent, kind, schedule, action and text) or remove a trigger the owner
+// turned off (`enabled = 0`, `enabled_changed_by = 'owner'`, and not a `once`
+// that was spent after its last turn-on). Trigger ids are never reused.
 import { KILL_SWITCH_ENGAGED, KILL_SWITCH_RELEASED, isKillSwitchEngaged } from "../api/kill-switch.js";
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
-import { runStep } from "../loop/steps.js";
+import { getWorkStep, runStep } from "../loop/steps.js";
 import type { Store } from "../store/store.js";
-import { checkTimeZone, nextCronFire, parseCron } from "./cron.js";
+import { canonicalZone, checkTimeZone, nextCronFire, parseCron, scheduleIdentity } from "./cron.js";
+import type { CronSchedule } from "./cron.js";
 
 /** `triggers.kind`. */
 export const TRIGGER_KINDS = ["once", "cron"] as const;
@@ -46,7 +54,7 @@ export type TriggerAction = (typeof TRIGGER_ACTIONS)[number];
 export const TRIGGER_CREATORS = ["agent", "owner"] as const;
 export type TriggerCreator = (typeof TRIGGER_CREATORS)[number];
 
-/** `triggers.enabled_changed_by`: who last turned it on or off (null until someone does, and after a `once` is spent). */
+/** `triggers.enabled_changed_by`: who last turned it on or off (null until someone does; kept when a `once` is spent). */
 export const TRIGGER_TOGGLERS = ["owner", "agent"] as const;
 export type TriggerToggler = (typeof TRIGGER_TOGGLERS)[number];
 
@@ -164,9 +172,50 @@ function isOneOf<T extends string>(set: readonly T[], value: unknown): value is 
   return typeof value === "string" && (set as readonly string[]).includes(value);
 }
 
+/**
+ * Whether the last `trigger_toggled` of trigger `id` turned it on. Read from
+ * the append-only log, newest first: a toggle writes its event in the same
+ * transaction as `enabled_changed_by`, so the newest one is the toggle the
+ * columns record.
+ */
+function lastToggleTurnedOn(store: Store, id: number): boolean {
+  const last = store
+    .prepare<[number], { enabled: number | null }>(
+      `SELECT json_extract(payload_json, '$.enabled') AS enabled FROM events
+        WHERE kind = 'trigger_toggled' AND json_valid(payload_json) AND json_extract(payload_json, '$.trigger_id') = ?
+        ORDER BY id DESC LIMIT 1`,
+    )
+    .get(id);
+  return last?.enabled === 1;
+}
+
+/**
+ * Who turned this trigger off, or `null` when it is on, nobody toggled it, or
+ * it is a `once` that was spent (fired or missed) after someone last turned it
+ * on: a spent `once` keeps `enabled_changed_by` / `enabled_changed_at` (who
+ * last toggled it), so the columns alone cannot tell a spend from an off.
+ * Without a turn-on event to show otherwise, the columns' toggler is the one
+ * who turned it off (closed for the owner's off).
+ */
+function turnedOffBy(store: Store, row: TriggerRow): string | null {
+  if (row.enabled !== 0 || row.enabled_changed_by === null) return null;
+  if (row.kind === "once" && row.last_result !== null && lastToggleTurnedOn(store, row.id)) return null;
+  return row.enabled_changed_by;
+}
+
 /** Whether the owner turned this trigger off (the state no agent may undo). */
-function ownerTurnedOff(row: TriggerRow): boolean {
-  return row.enabled === 0 && row.enabled_changed_by === "owner";
+function ownerTurnedOff(store: Store, row: TriggerRow): boolean {
+  return turnedOffBy(store, row) === "owner";
+}
+
+/**
+ * Throws `owner_off` when the owner turned trigger `id` off (a missing
+ * trigger passes): for a repeated tool call, whose stored first result
+ * predates the owner's off.
+ */
+export function refuseIfOwnerOff(store: Store, id: number): void {
+  const row = readRow(store, id);
+  if (row !== undefined && ownerTurnedOff(store, row)) throw ownerOff(id);
 }
 
 function ownerOff(id: number): TriggerError {
@@ -176,7 +225,10 @@ function ownerOff(id: number): TriggerError {
 /** A validated spec: what is stored and when it first fires. */
 interface CheckedSpec {
   readonly spec: TriggerSpec;
-  /** Compared to find a re-registration of a trigger the owner turned off. */
+  /**
+   * Compared to find a re-registration of a trigger the owner turned off:
+   * built from what the spec means, not how it is written (`cronIdentity`).
+   */
   readonly identity: string;
   readonly nextFireAt: string;
 }
@@ -199,17 +251,28 @@ function checkSpec(kind: TriggerKind, spec: string, tz: string | undefined, now:
   if (tz === undefined) throw invalid("a cron trigger needs an IANA time zone (tz, e.g. Asia/Kolkata)");
   let zone: string;
   let next: Date | undefined;
-  let expr: string;
+  let schedule: CronSchedule;
+  let identity: string;
   try {
     zone = checkTimeZone(tz);
-    const schedule = parseCron(spec);
-    expr = schedule.expr;
+    schedule = parseCron(spec);
+    identity = cronIdentity(schedule, zone);
     next = nextCronFire(schedule, zone, now);
   } catch (err) {
     throw invalid(errorMessage(err));
   }
   if (next === undefined) throw invalid(`cron ${JSON.stringify(spec)} never fires (no matching day within eight years)`);
-  return { spec: { cron: expr, tz: zone }, identity: `cron ${expr} ${zone}`, nextFireAt: next.toISOString() };
+  return { spec: { cron: schedule.expr, tz: zone }, identity, nextFireAt: next.toISOString() };
+}
+
+/**
+ * A cron trigger's identity: the schedule's value sets and the zone as ICU
+ * resolves it, so `1-5` and `1,2,3,4,5`, or `Asia/Calcutta` and
+ * `Asia/Kolkata`, are the same trigger. A spec that differs in meaning is a
+ * different trigger (the owner sees every trigger, and can turn it off too).
+ */
+function cronIdentity(schedule: CronSchedule, zone: string): string {
+  return `cron ${scheduleIdentity(schedule)} ${canonicalZone(zone)}`;
 }
 
 /** The stored spec's identity (see `CheckedSpec.identity`), or `undefined` when it cannot be read. */
@@ -220,7 +283,12 @@ function storedIdentity(row: TriggerRow): string | undefined {
     const at = normalizeInstant(spec.at);
     return at === undefined ? undefined : `once ${at}`;
   }
-  return typeof spec.cron === "string" && typeof spec.tz === "string" ? `cron ${spec.cron} ${spec.tz}` : undefined;
+  if (typeof spec.cron !== "string" || typeof spec.tz !== "string") return undefined;
+  try {
+    return cronIdentity(parseCron(spec.cron), spec.tz);
+  } catch {
+    return undefined;
+  }
 }
 
 export interface RegisterParams {
@@ -251,12 +319,33 @@ function checkText(text: unknown): string {
 }
 
 /**
+ * The id a new trigger gets: one above the highest any trigger ever had, from
+ * the rows and from the append-only `trigger_registered` / `trigger_removed`
+ * events. `id INTEGER PRIMARY KEY` alone would hand a removed highest id to
+ * the next row, and old notifications (`source` `trigger:<id>`), audit events,
+ * work-step keys (`trigger:<id>:<instant>`) and the owner's `studio triggers
+ * off <id>` would then point at a trigger the owner never saw.
+ */
+function nextTriggerId(store: Store): number {
+  const row = store
+    .prepare<[], { id: number }>(
+      `SELECT max(
+         coalesce((SELECT max(id) FROM triggers), 0),
+         coalesce((SELECT max(CAST(json_extract(payload_json, '$.trigger_id') AS INTEGER)) FROM events
+                    WHERE kind IN ('trigger_registered', 'trigger_removed') AND json_valid(payload_json)), 0)
+       ) + 1 AS id`,
+    )
+    .get();
+  return Number(row?.id ?? 1);
+}
+
+/**
  * Create an agent's trigger (`created_by` `agent`, enabled) and append
  * `trigger_registered`, in one transaction (a savepoint inside the caller's).
  * Throws `TriggerError` before any write: `invalid_input` for an unknown kind
  * or action, an empty agent or text; `invalid_spec` for a spec `checkSpec`
  * refuses; `owner_off` when the owner turned off a trigger of this agent with
- * the same kind, spec, action and text.
+ * the same kind, schedule (`CheckedSpec.identity`), action and text.
  */
 export function registerTrigger(store: Store, params: RegisterParams, now: Date): Registered {
   if (typeof params.agent !== "string" || params.agent === "") throw new TriggerError("invalid_input", "a trigger needs an owning agent");
@@ -273,16 +362,15 @@ export function registerTrigger(store: Store, params: RegisterParams, now: Date)
           ORDER BY id`,
       )
       .all(params.agent, params.kind, params.action, text)
-      .find((row) => storedIdentity(row) === checked.identity);
+      .find((row) => storedIdentity(row) === checked.identity && ownerTurnedOff(store, row));
     if (offByOwner !== undefined) throw ownerOff(offByOwner.id);
-    const id = Number(
-      store
-        .prepare(
-          `INSERT INTO triggers (owning_agent, kind, spec_json, action, action_payload, created_by, enabled, next_fire_at, created_at)
-           VALUES (?, ?, ?, ?, ?, 'agent', 1, ?, ?)`,
-        )
-        .run(params.agent, params.kind, JSON.stringify(checked.spec), params.action, text, checked.nextFireAt, at).lastInsertRowid,
-    );
+    const id = nextTriggerId(store);
+    store
+      .prepare(
+        `INSERT INTO triggers (id, owning_agent, kind, spec_json, action, action_payload, created_by, enabled, next_fire_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'agent', 1, ?, ?)`,
+      )
+      .run(id, params.agent, params.kind, JSON.stringify(checked.spec), params.action, text, checked.nextFireAt, at);
     appendEvent(
       store,
       "trigger_registered",
@@ -315,7 +403,7 @@ export function removeTrigger(store: Store, params: RemoveParams, now: Date): { 
     if (row.owning_agent !== params.agent) {
       throw new TriggerError("not_owner", `trigger ${row.id} belongs to agent ${row.owning_agent}; an agent can remove only its own triggers`);
     }
-    if (ownerTurnedOff(row)) throw ownerOff(row.id);
+    if (ownerTurnedOff(store, row)) throw ownerOff(row.id);
     store.prepare("DELETE FROM triggers WHERE id = ?").run(row.id);
     appendEvent(
       store,
@@ -373,13 +461,46 @@ export interface Toggled {
   readonly changed: boolean;
 }
 
-/** The next fire of a trigger being turned on at `now`; throws `needs_confirmation` for a past `once` unless confirmed. */
-function nextFireOnEnable(row: TriggerRow, now: Date, confirm: boolean): string | null {
+/** The work step key of trigger `id`'s scheduled instant `iso`. */
+function fireStepKey(id: number, iso: string): string {
+  return `trigger:${id}:${iso}`;
+}
+
+/**
+ * Whether trigger `id`'s instant `iso` already has a work step: it was fired
+ * or recorded, and scheduling it again would only replay that result (the
+ * work never runs twice for one key), leaving the trigger due at it for ever.
+ */
+function instantTaken(store: Store, id: number, iso: string): boolean {
+  return getWorkStep(store, fireStepKey(id, iso)) !== undefined;
+}
+
+/**
+ * The first instant of `schedule` in `tz` strictly after `after` that trigger
+ * `id` has not already fired or recorded (a clock stepped back can put such
+ * an instant in the future again), or `null` when it never fires again.
+ */
+function nextFreeCronFire(store: Store, id: number, schedule: CronSchedule, tz: string, after: Date): string | null {
+  for (let next = nextCronFire(schedule, tz, after); next !== undefined; next = nextCronFire(schedule, tz, next)) {
+    const iso = next.toISOString();
+    if (!instantTaken(store, id, iso)) return iso;
+  }
+  return null;
+}
+
+/**
+ * The next fire of a trigger being turned on at `now`; throws
+ * `needs_confirmation` for a past `once` unless confirmed. An instant already
+ * fired or recorded is never given back, even when the clock now reads it as
+ * the future: a `once` whose instant is taken counts as past, and a `cron`
+ * skips taken instants.
+ */
+function nextFireOnEnable(store: Store, row: TriggerRow, now: Date, confirm: boolean): string | null {
   const spec = parseSpec(row.spec_json) as { at?: unknown; cron?: unknown; tz?: unknown } | null;
   if (row.kind === "once") {
     const at = normalizeInstant(spec?.at);
     if (at === undefined) throw new TriggerError("invalid_spec", `trigger ${row.id} has an unreadable spec`);
-    if (Date.parse(at) > now.getTime()) return at;
+    if (Date.parse(at) > now.getTime() && !instantTaken(store, row.id, at)) return at;
     if (!confirm) {
       throw new TriggerError("needs_confirmation", `trigger ${row.id} was due at ${at}; turning it on fires it now`);
     }
@@ -388,7 +509,7 @@ function nextFireOnEnable(row: TriggerRow, now: Date, confirm: boolean): string 
   }
   if (typeof spec?.cron !== "string" || typeof spec.tz !== "string") throw new TriggerError("invalid_spec", `trigger ${row.id} has an unreadable spec`);
   // From now: the instants it missed while off are not fired.
-  return nextCronFire(spec.cron, spec.tz, now)?.toISOString() ?? null;
+  return nextFreeCronFire(store, row.id, parseCron(spec.cron), spec.tz, now);
 }
 
 /**
@@ -398,8 +519,9 @@ function nextFireOnEnable(row: TriggerRow, now: Date, confirm: boolean): string 
  * computes it from now (a `cron` does not fire the instants it missed while
  * off; a past `once` needs `confirm` and then fires on the next tick).
  * Already in that state ⇒ `changed: false`, nothing written, except that the
- * owner's off of a trigger that is off for another reason (a spent `once`, an
- * agent's off) records the owner as the one who turned it off.
+ * owner's off of a trigger that is off for another reason (a spent `once`,
+ * even one the owner had turned on; an agent's off) records the owner as the
+ * one who turned it off.
  * Throws `TriggerError`: `not_found`; `owner_off` when `by` is `agent` and the
  * owner turned it off (on or off: either would undo the owner's say);
  * `needs_confirmation` (see `confirm`).
@@ -411,9 +533,9 @@ export function setTriggerEnabled(store: Store, params: ToggleParams, now: Date)
     if (row === undefined) throw new TriggerError("not_found", `no trigger ${params.id}`);
     const wasEnabled = row.enabled === 1;
     // Any agent change, on or off: an agent's off would overwrite `enabled_changed_by` and unlock it.
-    if (params.by === "agent" && ownerTurnedOff(row)) throw ownerOff(row.id);
-    if (wasEnabled === params.enabled && (params.enabled || row.enabled_changed_by === params.by)) return { trigger: view(row), changed: false };
-    const next = params.enabled ? nextFireOnEnable(row, now, params.confirm === true) : null;
+    if (params.by === "agent" && ownerTurnedOff(store, row)) throw ownerOff(row.id);
+    if (wasEnabled === params.enabled && (params.enabled || turnedOffBy(store, row) === params.by)) return { trigger: view(row), changed: false };
+    const next = params.enabled ? nextFireOnEnable(store, row, now, params.confirm === true) : null;
     store
       .prepare("UPDATE triggers SET enabled = ?, enabled_changed_by = ?, enabled_changed_at = ?, next_fire_at = ? WHERE id = ?")
       .run(params.enabled ? 1 : 0, params.by, at, next, row.id);
@@ -474,10 +596,11 @@ interface FirePlan {
 /**
  * Every due instant from `row.next_fire_at` up to `now` (one for `once`; for
  * `cron`, each scheduled instant, looked up in its zone), split by the
- * kill-switch windows, and the next future instant. Throws when the stored
+ * kill-switch windows, and the next future instant not already fired or
+ * recorded. Throws when the stored
  * spec cannot be evaluated (`parkUnreadable` handles that).
  */
-function planFire(row: TriggerRow, first: string, now: Date, windows: readonly KillSwitchWindow[]): FirePlan {
+function planFire(store: Store, row: TriggerRow, first: string, now: Date, windows: readonly KillSwitchWindow[]): FirePlan {
   const nowMs = now.getTime();
   let toFire = 0;
   let missedKillSwitch = 0;
@@ -506,7 +629,7 @@ function planFire(row: TriggerRow, first: string, now: Date, windows: readonly K
     count(latestDue);
     counted++;
   }
-  return { toFire, missedKillSwitch, atLeast, latestDue, next: nextCronFire(schedule, spec.tz, now)?.toISOString() ?? null };
+  return { toFire, missedKillSwitch, atLeast, latestDue, next: nextFreeCronFire(store, row.id, schedule, spec.tz, now) };
 }
 
 /**
@@ -530,7 +653,8 @@ export interface TriggerFireOutcome {
   readonly trigger_id: number;
   /** The first due instant: the work step's key (`trigger:<id>:<scheduled_at>`). */
   readonly scheduled_at: string;
-  readonly result: TriggerResult | "skipped";
+  /** `already_done`: the instant's work step was already done, so the trigger was moved past it (see `movePastDone`). */
+  readonly result: TriggerResult | "skipped" | "already_done";
   readonly notification_id?: number;
   readonly queue_id?: number;
 }
@@ -555,8 +679,8 @@ function fireOne(store: Store, id: number, scheduledAt: string, plan: FirePlan, 
   if (plan.toFire === 0) {
     // Every due instant fell inside a kill-switch engagement: recorded, not fired.
     store.prepare("UPDATE triggers SET last_result = 'missed_kill_switch', next_fire_at = ? WHERE id = ?").run(plan.next, id);
-    // A `once` is spent: off, and nobody's toggle (it was not turned off by anyone).
-    if (once) store.prepare("UPDATE triggers SET enabled = 0, enabled_changed_by = NULL, enabled_changed_at = NULL WHERE id = ?").run(id);
+    // A `once` is spent: off. Who last toggled it stays (`turnedOffBy` tells a spend from an off).
+    if (once) store.prepare("UPDATE triggers SET enabled = 0 WHERE id = ?").run(id);
     appendEvent(
       store,
       "trigger_missed",
@@ -581,8 +705,8 @@ function fireOne(store: Store, id: number, scheduledAt: string, plan: FirePlan, 
     throw new Error(`trigger ${id} has unknown action ${JSON.stringify(row.action)}`);
   }
   store.prepare("UPDATE triggers SET last_fired_at = ?, last_result = 'fired', next_fire_at = ? WHERE id = ?").run(at, plan.next, id);
-  // A fired `once` is spent: off, and nobody's toggle (it was not turned off by anyone).
-  if (once) store.prepare("UPDATE triggers SET enabled = 0, enabled_changed_by = NULL, enabled_changed_at = NULL WHERE id = ?").run(id);
+  // A fired `once` is spent: off. Who last toggled it stays (`turnedOffBy` tells a spend from an off).
+  if (once) store.prepare("UPDATE triggers SET enabled = 0 WHERE id = ?").run(id);
   appendEvent(
     store,
     "trigger_fired",
@@ -601,6 +725,34 @@ function fireOne(store: Store, id: number, scheduledAt: string, plan: FirePlan, 
     at,
   );
   return { trigger_id: id, scheduled_at: scheduledAt, result: "fired", ...effect };
+}
+
+/**
+ * A due trigger whose work step for `scheduledAt` was already done: `runStep`
+ * replayed the stored result without running `fireOne`, so nothing moved it
+ * and it would stay due at that instant, never firing again. Moves it past
+ * the instant in one transaction with one `trigger_missed` (reason
+ * `already_done`): a `cron` to its next instant not already taken, a `once`
+ * is spent (its instant already fired or was recorded). Re-checks the row
+ * first and does nothing (`skipped`) unless it is still enabled and due there.
+ */
+function movePastDone(store: Store, id: number, scheduledAt: string, plan: FirePlan, now: Date): TriggerFireOutcome {
+  const at = now.toISOString();
+  return store.transaction((): TriggerFireOutcome => {
+    const row = readRow(store, id);
+    if (row === undefined || row.enabled !== 1 || row.next_fire_at !== scheduledAt) return { trigger_id: id, scheduled_at: scheduledAt, result: "skipped" };
+    const once = row.kind === "once";
+    const next = once ? null : plan.next;
+    store.prepare("UPDATE triggers SET enabled = ?, next_fire_at = ? WHERE id = ?").run(once ? 0 : 1, next, id);
+    appendEvent(
+      store,
+      "trigger_missed",
+      { sessionId: null, taskId: null },
+      { trigger_id: id, reason: "already_done", scheduled_at: scheduledAt, enabled: !once, next_fire_at: next },
+      at,
+    );
+    return { trigger_id: id, scheduled_at: scheduledAt, result: "already_done" };
+  });
 }
 
 /**
@@ -639,14 +791,19 @@ export function fireDueTriggers(store: Store, now: Date = new Date()): TriggerFi
     const scheduledAt = row.next_fire_at as string;
     let plan: FirePlan;
     try {
-      plan = planFire(row, scheduledAt, now, windows);
+      plan = planFire(store, row, scheduledAt, now, windows);
     } catch (err) {
       parkUnreadable(store, row.id, scheduledAt);
       failures.push(`trigger ${row.id}: ${errorMessage(err)} (parked: no next fire)`);
       continue;
     }
     try {
-      outcomes.push(runStep(store, `trigger:${row.id}:${scheduledAt}`, () => fireOne(store, row.id, scheduledAt, plan, now), { now: () => now }));
+      const outcome = runStep(store, fireStepKey(row.id, scheduledAt), () => fireOne(store, row.id, scheduledAt, plan, now), { now: () => now });
+      // `fireOne` always moves a trigger it fires or records off `scheduledAt` (a
+      // cron's next is after now): still enabled and due there means the step
+      // replayed an earlier done result and nothing moved it.
+      const after = readRow(store, row.id);
+      outcomes.push(after?.enabled === 1 && after.next_fire_at === scheduledAt ? movePastDone(store, row.id, scheduledAt, plan, now) : outcome);
     } catch (err) {
       failures.push(`trigger ${row.id}: ${errorMessage(err)}`);
     }

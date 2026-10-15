@@ -176,6 +176,30 @@ export function checkTimeZone(tz: unknown): string {
   return tz;
 }
 
+/**
+ * The zone ICU resolves `tz` to (`Asia/Kolkata` and `asia/kolkata` both give
+ * `Asia/Calcutta`; `US/Eastern` gives `America/New_York`): for comparing two
+ * zones, never for storing or showing one. Throws `RangeError` for a zone the
+ * runtime does not know.
+ */
+export function canonicalZone(tz: string): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone: tz }).resolvedOptions().timeZone;
+}
+
+/**
+ * A parsed schedule's value sets as one string: two expressions that parse to
+ * the same sets and the same day rule (`1-5` and `1,2,3,4,5`, `*\/30` and
+ * `0,30`, day-of-week 7 and 0) give the same string. Equal strings mean the
+ * same instants; the converse is not promised (two expressions that differ
+ * in their sets can still fire at the same instants).
+ */
+export function scheduleIdentity(s: CronSchedule): string {
+  const list = (values: Iterable<number>): string => [...values].sort((x, y) => x - y).join(",");
+  // The day rule only matters when both day fields are restricted (OR); otherwise both sets must match (AND).
+  const rule = s.domRestricted && s.dowRestricted ? "or" : "and";
+  return `${list(s.minutes)} ${list(s.hours)} ${list(s.daysOfMonth)} ${list(s.months)} ${list(s.daysOfWeek)} ${rule}`;
+}
+
 /** A wall-clock reading in a zone. `month` is 1-12. */
 export interface WallClock {
   readonly year: number;
