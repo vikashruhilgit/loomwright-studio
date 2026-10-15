@@ -1,0 +1,201 @@
+{
+  "test": "phase-2-exit-live",
+  "date": "2026-10-15",
+  "result": "failed — steps 1, 3 and 5 failed, step 4 passed, step 2 not run; phase 2 stays not done",
+  "run_by": "Claude (Claude Code session) at the owner's request, owner present and watching the screen; deviates from the runbook's owner-only rule by the owner's choice on 2026-10-15",
+  "commit": "05e53624f9b251e1df33f4fde1e096316c8b971a",
+  "dirty_worktree": false,
+  "machine": {
+    "macos": "26.6.2",
+    "node": "v24.11.1",
+    "notifier": "terminal-notifier 2.0.0"
+  },
+  "wright_model": "claude-sonnet-5-5",
+  "extra_asks": [
+    "one smoke ask before the harness (\"Reply with one short sentence: are you there?\" → \"Yes, I'm here.\") to confirm the model id; not one of the runbook's four"
+  ],
+  "service": {
+    "launchd_pid": 27690,
+    "api_json_pid": 27690,
+    "status_pid": 27690
+  },
+  "harness_summary": "/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase-2-exit-live-summary-1792053302866.json",
+  "steps": {
+    "1_reminder_fires": {
+      "outcome": "failed",
+      "harness": {
+        "started_at": "2026-10-15T08:35:03.046Z",
+        "reminder": {
+          "hhmm": "14:09",
+          "expected_fire_at": "2026-10-15T08:39:00.000Z"
+        },
+        "ask": {
+          "text": "remind me at 14:09 to check X phase2-exit-mv9a9m4y3016a5-step1",
+          "tag": "phase2-exit-mv9a9m4y3016a5-step1",
+          "exit": 0,
+          "reply": "I can't set that reminder. The tool I need to schedule it (the kernel trigger tool) is refused in this session, so nothing is scheduled for 14:09.\n\nPlease set a reminder yourself for 14:09 to check X phase2-exit-mv9a9m4y3016a5-step1. If you allow the kernel trigger or notify tools for this session, I'll try again.",
+          "stderr": "",
+          "took_ms": 8632
+        },
+        "triggers_created": [],
+        "other_new_triggers": [],
+        "took_ms": 8799
+      },
+      "owner": {
+        "notification_appeared": null,
+        "note": "no trigger was created, so no notification was due"
+      },
+      "findings": [
+        "exactly one Wright trigger from the step's ask (its session or its tag): expected [] to have a length of 1 but got +0",
+        "Wright could not load mcp__kernel__kernel_trigger_register: the SDK offers kernel MCP tools through its ToolSearch meta-tool and the kernel gate denied it (tool_decision ToolSearch deny tool_not_allowed). Fix: .supervisor/requirements/phase-2/2026-10-15-084410-wright-can-load-its-kernel-tools.md"
+      ]
+    },
+    "2_literal_5pm": {
+      "outcome": "not_run",
+      "owner": null,
+      "findings": [
+        "not run: it depends on the same tool loading that failed steps 1, 3 and 5"
+      ]
+    },
+    "3_reminder_off": {
+      "outcome": "failed",
+      "harness": {
+        "started_at": "2026-10-15T08:35:11.850Z",
+        "reminder": {
+          "hhmm": "14:09",
+          "expected_fire_at": "2026-10-15T08:39:00.000Z"
+        },
+        "ask": {
+          "text": "remind me at 14:09 to check X phase2-exit-mv9a9m4y3016a5-step3",
+          "tag": "phase2-exit-mv9a9m4y3016a5-step3",
+          "exit": 0,
+          "reply": "I couldn't set the reminder. The tool I need to schedule it, `kernel_trigger_register`, was refused: my attempt to load it failed with \"tool_not_allowed\". Nothing is scheduled for 14:09.\n\nSet a reminder yourself for 14:09 to check X phase2-exit-mv9a9m4y3016a5-step3. If you'd rather I try again, allow the trigger tools for this session and tell me.",
+          "stderr": "",
+          "took_ms": 7132
+        },
+        "triggers_created": [],
+        "other_new_triggers": [],
+        "took_ms": 7133
+      },
+      "owner": {
+        "nothing_appeared": null,
+        "note": "no trigger was created"
+      },
+      "findings": [
+        "exactly one Wright trigger from the step's ask (its session or its tag): expected [] to have a length of 1 but got +0",
+        "Wright could not load mcp__kernel__kernel_trigger_register: the SDK offers kernel MCP tools through its ToolSearch meta-tool and the kernel gate denied it (tool_decision ToolSearch deny tool_not_allowed). Fix: .supervisor/requirements/phase-2/2026-10-15-084410-wright-can-load-its-kernel-tools.md"
+      ]
+    },
+    "4_version_change": {
+      "outcome": "passed",
+      "mode": "fixture_switch",
+      "owner_consent": "the owner, 2026-10-15, by asking Claude to run the harness",
+      "harness": {
+        "started_at": "2026-10-15T08:35:27.114Z",
+        "contract": {
+          "from_version": "17.2.0",
+          "to_version": "17.2.0-phase2-exit-test",
+          "added_command": "phase-2-exit-added",
+          "removed_skill": "agent-output",
+          "real_install_scope": "user"
+        },
+        "baseline_ms": 211,
+        "noted_after_switch_ms": 60132,
+        "note_files": [
+          "17.2.0-to-17.2.0-phase2-exit-test.md"
+        ],
+        "notifications": [
+          {
+            "id": 1,
+            "title": "Loomwright 17.2.0 → 17.2.0-phase2-exit-test",
+            "deep_link": "loomwright-studio://notifications/1",
+            "delivery_status": "delivered",
+            "delivery_detail": "posted by /opt/homebrew/bin/terminal-notifier; a click runs studio notifications show 1 in Terminal"
+          }
+        ],
+        "seen_versions": [
+          "17.2.0",
+          "17.2.0-phase2-exit-test"
+        ],
+        "note_first_lines": [
+          "<!-- loomwright-version-note from:1 to:%2Fvar%2Ffolders%2Fjh%2Fsbkxjbkj7y959rkxq2m61rbw0000gn%2FT%2Fstudio-phase2-exit-live-p6mwc5%2Fcache%2Fb|17.2.0-phase2-exit-test|1 -->",
+          "# Loomwright 17\\.2\\.0 → 17\\.2\\.0\\-phase2\\-exit\\-test",
+          "",
+          "- From: Loomwright `17.2.0` (contract 1) at `/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase2-exit-live-p6mwc5/cache/a`",
+          "- To: Loomwright `17.2.0-phase2-exit-test` (contract 1) at `/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase2-exit-live-p6mwc5/cache/b`",
+          "- Seen: 2026-10-15T08:36:27.210Z",
+          "",
+          "Built only from the two versions' `capabilities.json` contracts.",
+          "",
+          "## Added",
+          "",
+          "- Command `phase-2-exit-added` — `Added by the phase 2 exit harness (a test copy, not a real release).`"
+        ],
+        "took_ms": 130349
+      },
+      "owner": {
+        "notification_appeared": true
+      },
+      "findings": []
+    },
+    "5_kill_9_restart": {
+      "outcome": "failed",
+      "harness": {
+        "started_at": "2026-10-15T08:35:18.984Z",
+        "reminder": {
+          "hhmm": "14:09",
+          "expected_fire_at": "2026-10-15T08:39:00.000Z"
+        },
+        "ask": {
+          "text": "remind me at 14:09 to check X phase2-exit-mv9a9m4y3016a5-step5",
+          "tag": "phase2-exit-mv9a9m4y3016a5-step5",
+          "exit": 0,
+          "reply": "I couldn't set the reminder. The tool lookup that loads my scheduling tools (trigger and wakeup) was refused with `tool_not_allowed`. Without those tools I can't schedule anything for 14:09, so nothing will fire.\n\nYou'll need to set the 14:09 reminder to check `phase2-exit-mv9a9m4y3016a5-step5` another way. If you allow the kernel scheduling tools for this session, I'll try again.",
+          "stderr": "",
+          "took_ms": 8128
+        },
+        "triggers_created": [],
+        "other_new_triggers": [],
+        "took_ms": 8129
+      },
+      "owner": {
+        "exactly_one_notification_appeared": null,
+        "note": "the step failed at its ask, before the kill: the kernel was never killed (still pid 27690 afterwards)"
+      },
+      "findings": [
+        "exactly one Wright trigger from the step's ask (its session or its tag): expected [] to have a length of 1 but got +0",
+        "Wright could not load mcp__kernel__kernel_trigger_register: the SDK offers kernel MCP tools through its ToolSearch meta-tool and the kernel gate denied it (tool_decision ToolSearch deny tool_not_allowed). Fix: .supervisor/requirements/phase-2/2026-10-15-084410-wright-can-load-its-kernel-tools.md"
+      ]
+    }
+  },
+  "store_evidence": {
+    "tool_decision_denials": [
+      {
+        "event": 14,
+        "session": 2
+      },
+      {
+        "event": 20,
+        "session": 3
+      },
+      {
+        "event": 30,
+        "session": 4
+      }
+    ],
+    "payload": {
+      "tool": "ToolSearch",
+      "decision": "deny",
+      "reason": "tool_not_allowed"
+    }
+  },
+  "run_tag": "phase2-exit-mv9a9m4y3016a5",
+  "cleanup": {
+    "harness": [],
+    "checks": {
+      "service": "running, pid 27690",
+      "tagged_triggers": "none",
+      "harness_processes": "none"
+    }
+  }
+}
