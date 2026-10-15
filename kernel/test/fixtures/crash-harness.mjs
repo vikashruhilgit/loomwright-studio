@@ -232,6 +232,7 @@ async function main() {
   const { Store } = await import(dist("store/store.js"));
   const { enqueueMessage } = await import(dist("loop/queue.js"));
   const { API_TOKEN_KEYCHAIN_SERVICE } = await import(dist("api/token.js"));
+  const { SHIPPED_CONTRIBUTIONS } = await import(dist("features/index.js"));
 
   const kernelReady = deferred();
   const startStepCommitted = deferred();
@@ -318,6 +319,8 @@ async function main() {
       env: args.live ? process.env : { PATH: "/usr/bin:/bin" },
       ...(args.live ? { authProviderId: "subscription-token" } : {}),
       handlers: { message },
+      // The harness stands in for a playbook, not for the brain (which owns `message` in the shipped list).
+      contributions: SHIPPED_CONTRIBUTIONS.filter((c) => c.name !== "brain"),
       sessions: { ...(args.pluginDir === undefined ? {} : { loomwrightPath: args.pluginDir }), stopGraceMs: 100 },
     },
     deps,

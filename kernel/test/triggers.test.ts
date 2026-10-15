@@ -13,6 +13,7 @@ import { API_TOKEN_KEYCHAIN_SERVICE, engageKillSwitch, releaseKillSwitch, startA
 import type { ApiServer } from "../src/api/index.js";
 import { USAGE, runCli } from "../src/cli/index.js";
 import { NOTIFICATIONS_HELP } from "../src/notifications/index.js";
+import { ASK_HELP } from "../src/brain/index.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { ContributedTool, FeatureContribution } from "../src/features/index.js";
 import { EventLoop } from "../src/loop/loop.js";
@@ -143,10 +144,10 @@ describe("the triggers contribution", () => {
     expect(Object.keys(triggersContribution).sort()).toEqual(["dueWork", "name", "routes", "subcommands", "tools"]);
   });
 
-  it("studio's usage text is phase 1's plus each shipped help line (notifications, then triggers), with the shipped contributions", async () => {
+  it("studio's usage text is phase 1's plus each shipped help line (notifications, triggers, then the brain's ask), with the shipped contributions", async () => {
     const stderr: string[] = [];
     expect(await runCli(["nope"], { dataDir: env.dataDir, stderr: { write: (c: string) => stderr.push(c) }, stdout: { write: () => true } })).toBe(2);
-    expect(stderr.join("")).toBe(`${USAGE} | ${NOTIFICATIONS_HELP} | ${TRIGGERS_HELP}\n`);
+    expect(stderr.join("")).toBe(`${USAGE} | ${NOTIFICATIONS_HELP} | ${TRIGGERS_HELP} | ${ASK_HELP}\n`);
   });
 
   it("nothing is preinstalled: a fresh store has no trigger, and ticking creates none", async () => {
