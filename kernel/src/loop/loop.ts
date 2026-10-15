@@ -7,7 +7,7 @@ import { nextPendingRow, toQueuedEvent } from "./queue.js";
 import type { QueueRow } from "./queue.js";
 import { WorkStepFailedError, WorkStepInterruptedError, getWorkStep, runStep, runStepAsync } from "./steps.js";
 import { isEventKind } from "./types.js";
-import type { DueWork, EventContext, EventHandlers, EventLoopDeps, EventLoopOptions, QueuedEvent, TickResult } from "./types.js";
+import type { DueWork, EventContext, EventHandlers, EventLoopDeps, EventLoopOptions, EventSessions, QueuedEvent, TickResult } from "./types.js";
 import { fireDueWakeups } from "./wakeups.js";
 
 export const DEFAULT_TICK_MS = 1_000;
@@ -67,6 +67,7 @@ export class EventLoop {
   readonly #store: Store;
   readonly #handlers: EventHandlers;
   readonly #dueWork: readonly DueWork[];
+  readonly #sessions: EventSessions | undefined;
   readonly #now: () => Date;
   readonly #schedule: (fn: () => void, ms: number) => CancelTimer;
   readonly #tickMs: number;
@@ -82,6 +83,7 @@ export class EventLoop {
     // A copy: the caller cannot swap handlers under a running loop.
     this.#handlers = { ...options.handlers };
     this.#dueWork = [...(options.dueWork ?? [])];
+    this.#sessions = options.sessions;
     this.#now = deps.now ?? (() => new Date());
     this.#schedule = deps.schedule ?? defaultSchedule;
     const tickMs = deps.tickMs ?? DEFAULT_TICK_MS;
@@ -199,6 +201,7 @@ export class EventLoop {
     return {
       event,
       store,
+      sessions: this.#sessions,
       runStep: (name, fn, opts) => runStep(store, prefix + name, fn, { now, ...opts }),
       runStepAsync: (name, fn, opts) => {
         const key = prefix + name;

@@ -120,6 +120,14 @@ export interface SessionHandle {
    * `interrupted`: nothing was launched and the session stays resumable.
    */
   readonly done: Promise<SessionStatus>;
+  /**
+   * Settles when `done` settles. Never rejects. The `result` text of the
+   * session's last successful `result` message (`subtype` `success`, not
+   * `is_error`) from its last attempt, when the session ended `completed`;
+   * `null` for any other terminal status (failed, stopped, interrupted, …) or
+   * when no successful result came. Held in memory only: nothing is persisted.
+   */
+  readonly result: Promise<string | null>;
 }
 
 export type SessionErrorCode =

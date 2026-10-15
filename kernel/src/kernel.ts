@@ -1,9 +1,10 @@
 // Composes the kernel daemon (item 08): store, auth, budget, sessions, event
 // loop and the loopback API, started in a fixed order and stopped in reverse.
-// Mechanism only (invariant 1): the daemon passes no handler, nothing is
-// preinstalled; `KernelOptions.handlers` is for other compositions (tests).
-// The phase 2 feature contributions (`SHIPPED_CONTRIBUTIONS`, each empty until
-// its item builds it) are merged once, before the store opens.
+// Mechanism only (invariant 1): the daemon passes no handler of its own and
+// nothing is preinstalled; `KernelOptions.handlers` is for other compositions
+// (tests). The phase 2 feature contributions (`SHIPPED_CONTRIBUTIONS`, each
+// shipping only what its item has built, e.g. the brain's `message` handler)
+// are merged once, before the store opens.
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ensureApiToken } from "./api/token.js";
@@ -211,10 +212,11 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     sessions = manager;
     await manager.reapOrphans();
 
-    // The daemon passes no handler (invariant 1): every queued event is
-    // `event_unhandled` unless a contribution handles its kind (none shipped).
+    // The daemon passes no handler of its own (invariant 1): a queued event is
+    // `event_unhandled` unless a contribution handles its kind (the brain
+    // contribution handles `message`). Handlers get the manager as `ctx.sessions`.
     const eventLoop = new EventLoop(
-      { store, handlers: { ...options.handlers, ...contributions.handlers }, dueWork: contributions.dueWork },
+      { store, handlers: { ...options.handlers, ...contributions.handlers }, dueWork: contributions.dueWork, sessions: manager },
       { now, ...deps.loopDeps },
     );
     loop = eventLoop;
