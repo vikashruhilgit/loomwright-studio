@@ -162,7 +162,7 @@ export function readWrightSettings(dataDir: string): WrightSettingsResult {
     ok: true,
     file,
     settings: {
-      model: s.model,
+      model: s.model.trim(),
       effort: s.effort ?? null,
       permissionMode: s.permission_mode,
       policy: { allowedTools: [...s.tool_policy.allowedTools], allowedBashPrefixes: [...s.tool_policy.allowedBashPrefixes] },

@@ -12,10 +12,14 @@
 //      one started, and "follow up with `studio status`". The session keeps
 //      running: the CLI never stops it (invariant 2).
 //
-// `--json` prints the last message row as JSON on stdout (the exit code is
-// the same). Text from the store (a reply, a reason) is data, never terminal
-// control: control characters other than newline and tab, and bidi
-// overrides, are printed escaped (`\u001b`). This module never imports
+// Text from the store (a reply, a reason) is data, never terminal control: in
+// the plain output (`terminalText`), control characters other than newline
+// and tab, and bidi overrides, are printed escaped (`\u001b`). `--json`
+// prints the last message row as standard `JSON.stringify` output on stdout,
+// like every `--json` in the CLI (the exit code is the same): it escapes
+// only what JSON requires (U+0000 to U+001F, `"` and `\`; and lone
+// surrogates), so DEL, a C1 control or a bidi override (U+009B, U+202E) in a
+// reply is left raw for the reader to handle. This module never imports
 // `../cli/index.js` (that one imports the feature registry, which imports this).
 import type { CliApiClient, CliSubcommandOutput, ContributedSubcommand } from "../features/contribution.js";
 import { askTextProblem } from "./routes.js";
