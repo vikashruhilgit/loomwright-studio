@@ -7,10 +7,12 @@
 // raw JSON, so unknown fields at every level are dropped, never an error (a
 // newer Loomwright may add fields). A missing, unreadable, malformed or
 // too-old contract is a `LoomwrightContractError` naming the install and the
-// reason. Imports only `node:*` and the dependency-free credential list (the
-// `studio` CLI loads this module).
+// reason. Imports only `node:*`, the dependency-free credential list and the
+// dependency-free list of the kernel's own session variables (the `studio`
+// CLI loads this module).
 import { join } from "node:path";
 import { isCredentialEnvVar } from "../auth/credential-env.js";
+import { isKernelSessionEnvVar } from "../sessions/kernel-env.js";
 import { readBounded } from "./bounded-read.js";
 
 /** The contract file's name inside a Loomwright install. */
@@ -87,12 +89,15 @@ function isProcessControlEnvName(name: string): boolean {
  * The contract is semi-trusted data (invariant 3): its host switch may never
  * name a credential or billing-routing variable the kernel strips
  * (`isCredentialEnvVar`), nor a process-control variable
- * (`PROCESS_CONTROL_ENV`). No prefix is required, so a later Loomwright may
+ * (`PROCESS_CONTROL_ENV`), nor a variable the kernel itself sets in every
+ * session's environment (`isKernelSessionEnvVar`: the kernel's value would
+ * silently replace the switch's). No prefix is required, so a later Loomwright may
  * rename its switch (see the honest limit on `PROCESS_CONTROL_ENV`).
  */
 export function hostSwitchNameProblem(name: string): string | undefined {
   if (isCredentialEnvVar(name)) return "a credential or billing-routing variable the kernel strips";
   if (isProcessControlEnvName(name)) return "a process-control variable";
+  if (isKernelSessionEnvVar(name)) return "a variable the kernel sets in every session's environment";
   return undefined;
 }
 

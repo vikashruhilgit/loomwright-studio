@@ -2133,7 +2133,7 @@ describe("Loomwright install, contract and host mode (D32)", () => {
   it("hostSwitchCollision re-checks the names at launch: a refused name is a collision even when the auth env lacks it, and an auth-set name collides (defence in depth)", () => {
     const hostSwitch = (env: string, state_dir_env: string) => ({ env, state_dir_env, effect: "" });
     // Contract validation already refuses these names; the launch check must refuse them on its own too.
-    for (const name of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "BASH_ENV", "PYTHONPATH", "GIT_SSH_COMMAND", "FTP_PROXY"]) {
+    for (const name of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "BASH_ENV", "PYTHONPATH", "GIT_SSH_COMMAND", "FTP_PROXY", "ENABLE_TOOL_SEARCH"]) {
       for (const sw of [hostSwitch(name, "TEST_HOST_STATE"), hostSwitch("TEST_HOST_FLAG", name)]) {
         expect(hostSwitchCollision({}, sw), name).toEqual({ name, why: expect.stringContaining("which a contract may never set") });
       }

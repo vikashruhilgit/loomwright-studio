@@ -256,7 +256,7 @@ describe("readLoomwrightContract", () => {
     }
   });
 
-  it("a host switch naming a credential, billing-routing or process-control variable is contract_invalid, naming the field and why (invariant 3)", () => {
+  it("a host switch naming a credential, billing-routing, process-control or kernel-set session variable is contract_invalid, naming the field and why (invariant 3)", () => {
     const credential = ["CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"];
     const processControl = [
       // Exact names: paths, shell startup and behaviour, locale/terminal, the CLI's shell hooks.
@@ -277,6 +277,8 @@ describe("readLoomwrightContract", () => {
     for (const [names, why] of [
       [credential, "a credential or billing-routing variable the kernel strips"],
       [processControl, "a process-control variable"],
+      // The kernel's own session variables (TOOL_DEFERRAL_OFF): its value would silently replace the switch's.
+      [["ENABLE_TOOL_SEARCH"], "a variable the kernel sets in every session's environment"],
     ] as const) {
       for (const name of names) {
         for (const field of ["env", "state_dir_env"] as const) {

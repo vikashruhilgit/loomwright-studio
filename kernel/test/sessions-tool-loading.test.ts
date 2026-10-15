@@ -4,13 +4,14 @@
 // its `ToolSearch` meta-tool (which no policy lists). The setting was probed
 // on SDK 0.3.284: docs/evidence/agent-sdk-tool-loading-probe.md. Over the fake
 // spawner/query in session-fakes.ts: never the real SDK, a model or a process.
+// The variable is kernel-owned: a contract whose host switch names it is refused.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stripCredentialEnv } from "../src/auth/index.js";
 import type { BaseEnv } from "../src/auth/index.js";
-import { SessionManager } from "../src/sessions/index.js";
+import { LoomwrightSessionError, SessionManager } from "../src/sessions/index.js";
 import type { ResumeSessionParams, SessionManagerOptions } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import { fixtureContract, writeLoomwrightInstall } from "./fixtures/loomwright/helpers.js";
@@ -38,8 +39,8 @@ const resumeParams: ResumeSessionParams = {
   policy: { allowedTools: ["Read"], allowedBashPrefixes: [] },
 };
 
-function setup(options: Partial<SessionManagerOptions> = {}) {
-  const dataDir = join(tmp, "data");
+function setup(options: Partial<SessionManagerOptions> = {}, dataDirName = "data") {
+  const dataDir = join(tmp, dataDirName);
   const store = new Store({ dataDir });
   stores.push(store);
   const fakes = fakeSessions();
@@ -49,6 +50,15 @@ function setup(options: Partial<SessionManagerOptions> = {}) {
   );
   const stateDirOf = (id: number): string => join(dataDir, "loomwright-state", `session-${id}`);
   return { store, manager, stateDirOf, ...fakes };
+}
+
+async function refusal(p: Promise<unknown>): Promise<LoomwrightSessionError> {
+  const err = await p.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  expect(err).toBeInstanceOf(LoomwrightSessionError);
+  return err as LoomwrightSessionError;
 }
 
 /** A start, a graceful shutdown (the row ends `interrupted`), then a resume: the two launches' env, in order. */
@@ -106,21 +116,32 @@ describe("the launch env turns the SDK's tool deferral off", () => {
     expect(envs).toEqual([expected, expected]);
   });
 
-  it("the kernel's value wins over a contract whose host switch names ENABLE_TOOL_SEARCH, at a start and a resume", async () => {
+  it("a contract whose host switch names ENABLE_TOOL_SEARCH is refused (loomwright_contract, contract_invalid): a start writes no row, a resume launches nothing and leaves the row interrupted", async () => {
     const contract = fixtureContract("valid");
     const hostSwitch = contract.host_switch as Record<string, unknown>;
-    const install = writeLoomwrightInstall(join(tmp, "installs", "tool-search-switch"), {
-      ...contract,
-      host_switch: { ...hostSwitch, env: "ENABLE_TOOL_SEARCH" },
-    });
-    const s = setup({ loomwrightPath: install });
-    const { id, envs } = await startThenResume(s);
-    const expected = {
-      PATH: "/usr/bin",
-      ANTHROPIC_API_KEY: SECRET,
-      ENABLE_TOOL_SEARCH: "false",
-      LOOMWRIGHT_HOST_STATE_DIR: s.stateDirOf(id),
-    };
-    expect(envs).toEqual([expected, expected]);
+    for (const field of ["env", "state_dir_env"] as const) {
+      const naming = { ...contract, host_switch: { ...hostSwitch, [field]: "ENABLE_TOOL_SEARCH" } };
+      // A start: refused before admission and before any row is written.
+      const refusedInstall = writeLoomwrightInstall(join(tmp, "installs", `refused-${field}`), naming);
+      const refused = setup({ loomwrightPath: refusedInstall }, `data-refused-${field}`);
+      const startErr = await refusal(refused.manager.startSession(startParams(tmp)));
+      expect([startErr.code, startErr.detail, startErr.path], field).toEqual(["loomwright_contract", "contract_invalid", refusedInstall]);
+      expect(startErr.message).toContain(`host_switch.${field} must not name ENABLE_TOOL_SEARCH: a variable the kernel sets in every session's environment`);
+      expect(refused.store.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 0 });
+      expect(refused.calls).toEqual([]);
+
+      // A resume: the row's install turns bad after the start; nothing launches and the row keeps its status.
+      const install = writeLoomwrightInstall(join(tmp, "installs", `resumed-${field}`));
+      const s = setup({ loomwrightPath: install }, `data-resumed-${field}`);
+      const handle = await s.manager.startSession(startParams(tmp));
+      await vi.waitFor(() => expect(s.manager.getSession(handle.id)?.status).toBe("running"));
+      await s.manager.stopAll({ mode: "shutdown" });
+      expect(await handle.done).toBe("interrupted");
+      writeLoomwrightInstall(install, naming);
+      const resumeErr = await refusal(s.manager.resumeSession(handle.id, { ...resumeParams, cwd: tmp }));
+      expect([resumeErr.code, resumeErr.detail, resumeErr.path], field).toEqual(["loomwright_contract", "contract_invalid", install]);
+      expect(s.manager.getSession(handle.id)).toMatchObject({ status: "interrupted", loomwright_path: install });
+      expect(s.calls).toHaveLength(1);
+    }
   });
 });

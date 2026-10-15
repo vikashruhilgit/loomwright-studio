@@ -25,6 +25,7 @@ import type { LoomwrightHostSwitch } from "../loomwright/contract.js";
 import type { Store } from "../store/store.js";
 import { LoomwrightSessionError, readSessionLoomwright, resolveSessionLoomwright } from "./loomwright-path.js";
 import type { SessionLoomwright } from "./loomwright-path.js";
+import { TOOL_DEFERRAL_OFF } from "./kernel-env.js";
 import { latestOrphanReason } from "./orphans.js";
 import { bashCommandOf, classifyToolCall, decideToolUse, freezePolicy } from "./policy.js";
 import type { ToolCallClass, ToolDecisionReason } from "./policy.js";
@@ -410,7 +411,8 @@ function withoutHostSwitch(base: BaseEnv, hostSwitch: LoomwrightHostSwitch): Bas
  * like any other bad contract (`loomwright_contract`, `contract_invalid`):
  *
  * - a name `hostSwitchNameProblem` refuses (a credential, billing-routing or
- *   process-control variable). Contract validation already refuses it; this is
+ *   process-control variable, or one the kernel sets in every session's
+ *   environment, such as `TOOL_DEFERRAL_OFF`'s). Contract validation already refuses it; this is
  *   defence in depth, since `stripCredentialEnv` has emptied `env` of every
  *   credential name and a presence check alone would let the switch add one back;
  * - a name the auth provider itself put in `env` (D32: a contract may never
@@ -440,19 +442,6 @@ function hostSwitchCollisionError(installPath: string, collision: { readonly nam
 function withHostSwitch(env: ChildEnv, hostSwitch: LoomwrightHostSwitch, stateDir: string): ChildEnv {
   return { ...env, [hostSwitch.env]: "1", [hostSwitch.state_dir_env]: stateDir };
 }
-
-/**
- * The Agent SDK's tool deferral, turned off on every launch (a start and
- * every resume attempt). With deferral on, the bundled CLI offers MCP tools
- * only through its `ToolSearch` meta-tool, which no policy lists, so the gate
- * denies the load and the session can call none of its kernel tools. With it
- * off, every tool is offered from the start and the gate decides each call by
- * its exact name, so the policy stays exactly the user's list. Undocumented in
- * the SDK's types: probed on 0.3.284 (docs/evidence/agent-sdk-tool-loading-probe.md).
- * Spread last, after the auth env and the host switch, so neither an
- * inherited daemon variable nor a contract can turn it back on.
- */
-const TOOL_DEFERRAL_OFF: Readonly<ChildEnv> = Object.freeze({ ENABLE_TOOL_SEARCH: "false" });
 
 function userMessage(prompt: string): SDKUserMessage {
   return { type: "user", message: { role: "user", content: prompt }, parent_tool_use_id: null };
@@ -641,7 +630,7 @@ export class SessionManager {
       });
       throw err;
     }
-    // A credential / process-control name, or one the auth provider sets: refused like any other bad contract, no row.
+    // A credential / process-control / kernel-set name, or one the auth provider sets: refused like any other bad contract, no row.
     const collision = hostSwitchCollision(env, loomwright.hostSwitch);
     if (collision !== undefined) this.#refuseLoomwright(hostSwitchCollisionError(loomwrightPath, collision), null);
 

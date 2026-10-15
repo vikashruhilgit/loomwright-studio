@@ -25,7 +25,7 @@ The relevant lines of the output (lines of minified code clipped):
 
 So tool search is on by default on the Claude API, `false` is the documented off value, and `true`, `auto` and `auto:N` are the other values. That text is the CLI's own documentation, not a result. Section 2 is the result.
 
-## 2. The probe: one kernel session without the setting, one with it
+## 2. The probe: four kernel sessions, with and without the setting
 
 The probe used the kernel's own launch path, unchanged: the code at base commit `95d3156` (before the fix), a `SessionManager` with the subscription token from the Keychain (`selectAuthProvider(SUBSCRIPTION_TOKEN_ID, { store })`), and the kernel MCP server attached the way `kernel/src/kernel.ts` attaches it (`createKernelMcpServer({ store, sessions: manager, sessionId }, tools)` through the `mcpServers` factory, `tools` merged from `SHIPPED_CONTRIBUTIONS`). That gives `settingSources: []`, the local Loomwright plugin, streaming input and the kernel's PreToolUse gate. Every session ran under Wright's proposed policy, unchanged (`PROPOSED_ALLOWED_TOOLS`, no Bash prefixes), with `permissionMode: "default"`, model `claude-haiku-4-5`, a fresh store, and a cwd from `mkdtempSync(join(tmpdir(), …))` (never under `~/Documents`, D31). The prompt was:
 
@@ -92,9 +92,10 @@ The Loomwright plugin added no tool of its own to the list; its skills and comma
 
 ## 4. The fix, and what pins it
 
-`SessionManager.#launch` builds the one `Options` object for a start and for every resume attempt. Its `env` is now `{ ...config.env, ENABLE_TOOL_SEARCH: "false" }` (`TOOL_DEFERRAL_OFF` in `kernel/src/sessions/manager.ts`). It is spread last, after the auth provider's env and the Loomwright host switch, so neither a variable inherited from the daemon's environment nor a contract whose host switch names it can turn deferral back on. The auth provider still sees the base env without it. Pinned by:
+`SessionManager.#launch` builds the one `Options` object for a start and for every resume attempt. Its `env` is now `{ ...config.env, ENABLE_TOOL_SEARCH: "false" }` (`TOOL_DEFERRAL_OFF` in `kernel/src/sessions/kernel-env.ts`). It is spread last, after the auth provider's env and the Loomwright host switch, so a variable inherited from the daemon's environment cannot turn deferral back on. The auth provider still sees the base env without it. The name is kernel-owned: a contract whose `host_switch.env` or `state_dir_env` names it is refused (`loomwright_contract`, `contract_invalid`) at contract validation and again at every launch, because the kernel's value would otherwise silently replace the switch's (host mode off, or a relative state dir `false` in the repo). Pinned by:
 
-- `kernel/test/sessions-tool-loading.test.ts`: the exact launch env of a start and a resume; the same with `ENABLE_TOOL_SEARCH=true` inherited in `baseEnv`; and the same with a contract whose `host_switch.env` is `ENABLE_TOOL_SEARCH`.
+- `kernel/test/sessions-tool-loading.test.ts`: the exact launch env of a start and a resume; the same with `ENABLE_TOOL_SEARCH=true` inherited in `baseEnv`; and a contract whose `host_switch.env` or `state_dir_env` is `ENABLE_TOOL_SEARCH` refused at a start (no row, nothing spawned) and at a resume (nothing launched, the row left `interrupted`).
+- `kernel/test/loomwright-adapter.test.ts` and `kernel/test/sessions.test.ts`: contract validation and `hostSwitchCollision` refuse the name.
 - `kernel/test/sessions.test.ts`: the six exact launch-env assertions now include the entry.
 - `kernel/test/sessions-policy.test.ts`: `ToolSearch` (and `toolsearch`, `ToolSearchX`, `Toolbox`) denied with `tool_not_allowed` under `PROPOSED_ALLOWED_TOOLS`.
 - `kernel/test/sessions-live.test.ts` (opt-in): a real session under Wright's proposed policy, with the kernel server attached, sets a reminder; the test asserts a `once` `notify` trigger owned by `wright`, an allowed `mcp__kernel__kernel_trigger_register` decision, and no `ToolSearch` `tool_decision` for the session.
