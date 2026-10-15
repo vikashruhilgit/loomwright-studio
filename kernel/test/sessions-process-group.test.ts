@@ -9,7 +9,7 @@
 // child forked during it, so cleanup re-sends SIGKILL until ESRCH.
 import { execFileSync } from "node:child_process";
 import { getEventListeners } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SDKMessage, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
@@ -30,6 +30,7 @@ import {
 } from "../src/sessions/index.js";
 import type { GroupLeader, QueryFn } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
+import { contractFixturePath } from "./fixtures/loomwright/helpers.js";
 
 const GONE_DEADLINE_MS = 2_000;
 
@@ -43,6 +44,7 @@ beforeEach(() => {
   pluginDir = join(tmp, "loomwright");
   mkdirSync(join(pluginDir, ".claude-plugin"), { recursive: true });
   writeFileSync(join(pluginDir, ".claude-plugin", "plugin.json"), "{}\n");
+  copyFileSync(contractFixturePath(), join(pluginDir, "capabilities.json"));
 });
 
 afterEach(async () => {
@@ -119,6 +121,26 @@ function startGroup(script: string, signal?: AbortSignal, tail?: StderrTail): nu
   groups.push(pgid);
   expect(pgid).toBe(child.pid);
   return pgid;
+}
+
+/**
+ * Poll the group's leader until `ps` reports it present with its exec'd
+ * command. `startGroup` returns as soon as the child is spawned, and macOS
+ * `ps` shows a process caught mid-exec by its parenthesized name ("(sh)"), so
+ * two probes taken back to back can read two different images. Throws when
+ * the leader has not settled by the deadline.
+ */
+async function awaitExecSettled(pgid: number, deadlineMs = GONE_DEADLINE_MS): Promise<void> {
+  const until = Date.now() + deadlineMs;
+  let last: GroupLeader | undefined;
+  for (;;) {
+    last = readGroupLeader(pgid);
+    if (last.status === "present" && !/^\(.*\)$/.test(last.command)) return;
+    if (Date.now() >= until) {
+      throw new Error(`leader of group ${pgid} did not settle after exec within ${deadlineMs} ms: ${JSON.stringify(last)}`);
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
 }
 
 function openStore(): Store {
@@ -296,6 +318,8 @@ describe("process-group primitives", () => {
     // `sleep 60; :` keeps /bin/sh as the leader: a lone `sleep 60` is exec'd by
     // sh, so two probes could read the image before and after that exec.
     const pgid = startGroup("sleep 60; :");
+    // Compare settled images only, never one caught mid-exec.
+    await awaitExecSettled(pgid);
     let ticked = false;
     setImmediate(() => {
       ticked = true;

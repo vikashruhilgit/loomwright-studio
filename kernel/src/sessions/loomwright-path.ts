@@ -1,88 +1,105 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+// The session side of the Loomwright adapter (D32): which install a session
+// loads, and its host switch, as a `SessionError` the manager can refuse with.
+// Finding the install and reading its contract is the adapter's
+// (`../loomwright/`); this module only maps the adapter's refusal reasons to
+// session error codes. The plugin cache is never scanned.
+import { resolveLoomwrightInstall } from "../loomwright/active-install.js";
+import type { ResolveLoomwrightInstallOptions } from "../loomwright/active-install.js";
+import { LoomwrightContractError, readLoomwrightContract, requireHostSwitch } from "../loomwright/contract.js";
+import type { LoomwrightContract, LoomwrightContractErrorReason, LoomwrightHostSwitch } from "../loomwright/contract.js";
 import { SessionError } from "./types.js";
+import type { SessionErrorCode } from "./types.js";
 
-/** Where Claude Code caches installed versions of the Loomwright plugin. */
-export function defaultPluginCacheRoot(home: string = homedir()): string {
-  return join(home, ".claude", "plugins", "cache", "atelier", "loomwright");
-}
+/** The session error codes a Loomwright refusal maps to. */
+export type LoomwrightSessionErrorCode = Extract<SessionErrorCode, "loomwright_not_found" | "loomwright_contract" | "loomwright_no_host_switch">;
 
-const MANIFEST = join(".claude-plugin", "plugin.json");
-const VERSION_DIR = /^(\d+)\.(\d+)\.(\d+)$/;
-
-function hasManifest(dir: string): boolean {
-  return existsSync(join(dir, MANIFEST));
-}
-
-function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
+/**
+ * The session error code for an adapter refusal reason: finding the install
+ * ⇒ `loomwright_not_found`, its contract ⇒ `loomwright_contract`, a contract
+ * without a host switch ⇒ `loomwright_no_host_switch`.
+ */
+export function loomwrightSessionErrorCode(reason: LoomwrightContractErrorReason): LoomwrightSessionErrorCode {
+  switch (reason) {
+    case "installed_plugins_missing":
+    case "installed_plugins_unreadable":
+    case "not_installed":
+    case "ambiguous_install":
+    case "install_path_invalid":
+      return "loomwright_not_found";
+    case "contract_missing":
+    case "contract_unreadable":
+    case "contract_not_json":
+    case "contract_invalid":
+    case "contract_schema_too_old":
+      return "loomwright_contract";
+    case "no_host_switch":
+      return "loomwright_no_host_switch";
   }
-}
-
-export interface ResolveLoomwrightPathOptions {
-  /** The configured plugin dir. Non-empty wins, and must hold `.claude-plugin/plugin.json`. */
-  readonly configured?: string;
-  /** Defaults to `defaultPluginCacheRoot()`. */
-  readonly cacheRoot?: string;
 }
 
 /**
- * The absolute Loomwright plugin dir a session loads (AC8).
- *
- * A non-empty `configured` path wins; it must contain
- * `.claude-plugin/plugin.json`, and a bad configured path is an error — never
- * a silent fallback to the cache. Otherwise: the numerically newest
- * `<major>.<minor>.<patch>` directory under `cacheRoot` that has the manifest
- * (the cache keeps stale leftovers without one, and a lexical sort would put
- * 15.98.0 above 15.115.0). Throws `SessionError` (`loomwright_not_found`).
+ * A session refused because of its Loomwright install. `code` is the stable
+ * `SessionError` code, `message` the adapter's; `detail` (the adapter's
+ * reason) and `path` (the install, or the `installed_plugins.json` file) go
+ * into the `session_refused` event.
  */
-export function resolveLoomwrightPath(options: ResolveLoomwrightPathOptions = {}): string {
-  const configured = options.configured;
-  if (configured !== undefined && configured !== "") {
-    const path = resolve(configured);
-    if (!hasManifest(path)) {
-      throw new SessionError(
-        "loomwright_not_found",
-        `configured Loomwright path ${path} has no ${MANIFEST}`,
-      );
-    }
-    return path;
-  }
+export class LoomwrightSessionError extends SessionError {
+  readonly detail: LoomwrightContractErrorReason;
+  readonly path: string;
 
-  const cacheRoot = resolve(options.cacheRoot ?? defaultPluginCacheRoot());
-  let names: string[];
-  try {
-    names = readdirSync(cacheRoot);
-  } catch {
-    names = [];
+  constructor(code: LoomwrightSessionErrorCode, detail: LoomwrightContractErrorReason, path: string, message: string) {
+    super(code, message);
+    this.name = "LoomwrightSessionError";
+    this.detail = detail;
+    this.path = path;
   }
-
-  let best: { path: string; version: [number, number, number] } | undefined;
-  for (const name of names) {
-    const m = VERSION_DIR.exec(name);
-    if (m === null) continue;
-    const path = join(cacheRoot, name);
-    if (!isDirectory(path) || !hasManifest(path)) continue;
-    const version: [number, number, number] = [Number(m[1]), Number(m[2]), Number(m[3])];
-    if (best === undefined || compareVersions(version, best.version) > 0) best = { path, version };
-  }
-  if (best === undefined) {
-    throw new SessionError(
-      "loomwright_not_found",
-      `no Loomwright install with ${MANIFEST} under ${cacheRoot}, and no configured path`,
-    );
-  }
-  return best.path;
 }
 
-function compareVersions(a: readonly number[], b: readonly number[]): number {
-  for (let i = 0; i < 3; i++) {
-    const d = (a[i] ?? 0) - (b[i] ?? 0);
-    if (d !== 0) return d;
+/** The install a session runs with: its path, its contract and the contract's host switch. */
+export interface SessionLoomwright {
+  readonly installPath: string;
+  readonly contract: LoomwrightContract;
+  readonly hostSwitch: LoomwrightHostSwitch;
+}
+
+/** Run `fn`, turning an adapter refusal into a `LoomwrightSessionError`; anything else is rethrown as is. */
+function mapRefusal<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof LoomwrightContractError) {
+      throw new LoomwrightSessionError(loomwrightSessionErrorCode(err.reason), err.reason, err.path, err.message);
+    }
+    throw err;
   }
-  return 0;
+}
+
+/**
+ * The Loomwright a new session loads, with its host switch.
+ *
+ * A non-empty configured path wins (resolved to absolute) and must hold a
+ * valid contract: a bad configured path is an error — never
+ * a silent fallback to the cache (which is never scanned, D32) or to
+ * `installed_plugins.json`. Otherwise the active install from
+ * `installed_plugins.json` (`resolveLoomwrightInstall`, with the session's
+ * `cwd` as `projectPath`). A contract without a host switch is refused: Studio
+ * runs Loomwright only in host mode. Throws `LoomwrightSessionError`.
+ */
+export function resolveSessionLoomwright(options: ResolveLoomwrightInstallOptions = {}): SessionLoomwright {
+  return mapRefusal(() => {
+    const { installPath, contract } = resolveLoomwrightInstall(options);
+    return { installPath, contract, hostSwitch: requireHostSwitch(contract, installPath) };
+  });
+}
+
+/**
+ * The Loomwright a resumed session keeps: the contract at the row's recorded
+ * `loomwright_path`, never re-resolved (a session keeps the Loomwright it
+ * started with). Throws `LoomwrightSessionError`.
+ */
+export function readSessionLoomwright(installPath: string): SessionLoomwright {
+  return mapRefusal(() => {
+    const contract = readLoomwrightContract(installPath);
+    return { installPath, contract, hostSwitch: requireHostSwitch(contract, installPath) };
+  });
 }

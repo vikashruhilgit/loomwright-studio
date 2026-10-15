@@ -1,0 +1,197 @@
+{
+  "agents": [
+    {
+      "model": "inherit",
+      "name": "loomwright:code-reviewer",
+      "result_block": "CODE_REVIEW_RESULT",
+      "result_blocks": [
+        "CODE_REVIEW_RESULT"
+      ],
+      "runtime_agent_type": "loomwright:loomwright:code-reviewer",
+      "tools": [
+        "Bash",
+        "Glob",
+        "Grep",
+        "LSP",
+        "Read"
+      ]
+    },
+    {
+      "model": "haiku",
+      "name": "loomwright:rubric-grader",
+      "result_block": null,
+      "result_blocks": [],
+      "runtime_agent_type": "loomwright:loomwright:rubric-grader",
+      "tools": [
+        "Bash",
+        "Glob",
+        "Grep",
+        "Read"
+      ]
+    },
+    {
+      "model": "inherit",
+      "name": "loomwright:worker",
+      "result_block": "WORKER_RESULT",
+      "result_blocks": [
+        "WORKER_RESULT"
+      ],
+      "runtime_agent_type": "loomwright:loomwright:worker",
+      "tools": [
+        "Bash",
+        "Edit",
+        "Glob",
+        "Grep",
+        "LSP",
+        "Read",
+        "Write"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "description": "Generic automation engine — turn any source (prompt / folder / backlog-doc) into a Queue and drive each item through /autonomous + an owned /review-pr drain to a reviewed PR (opt-in trusted auto-merge)",
+      "name": "automate"
+    },
+    {
+      "description": "Continuous autonomous mode — chain Launch Pad → Supervisor and loop by default with stacked PRs; rubric / Option-C signals drive re-planning, gate firings can ping a webhook",
+      "name": "autonomous"
+    },
+    {
+      "description": "Run a bounded review→fix→re-review heal loop against an existing PR URL; never auto-merges",
+      "name": "review-pr"
+    }
+  ],
+  "contract_schema_version": 1,
+  "generated_by": "loomwright/scripts/build-capabilities.sh",
+  "hooks": [
+    {
+      "blocking": false,
+      "event": "Notification",
+      "host_mode": "redirects",
+      "matcher": "permission_prompt|idle_prompt|elicitation_dialog|elicitation_complete|elicitation_response",
+      "script": "scripts/notify-desktop.sh",
+      "scripts": [
+        "scripts/notify-desktop.sh",
+        "scripts/emit-lifecycle.sh"
+      ],
+      "source": "hooks.Notification[0].hooks[0]",
+      "type": "command",
+      "writes": [
+        ".supervisor/logs/.lifecycle-answered-ids",
+        ".supervisor/logs/.lifecycle-asked-ids",
+        ".supervisor/logs/.lifecycle-heartbeat-debounce-<agent>",
+        ".supervisor/logs/.notified-ids",
+        ".supervisor/logs/.notify-debounce",
+        ".supervisor/logs/<session>.jsonl",
+        ".supervisor/logs/notifications.log"
+      ]
+    },
+    {
+      "blocking": false,
+      "event": "PostToolUse",
+      "host_mode": "redirects",
+      "matcher": "AskUserQuestion",
+      "script": "scripts/emit-lifecycle.sh",
+      "scripts": [
+        "scripts/emit-lifecycle.sh"
+      ],
+      "source": "hooks.PostToolUse[0].hooks[0]",
+      "type": "command",
+      "writes": [
+        ".supervisor/logs/.lifecycle-answered-ids",
+        ".supervisor/logs/.lifecycle-asked-ids",
+        ".supervisor/logs/.lifecycle-heartbeat-debounce-<agent>",
+        ".supervisor/logs/<session>.jsonl"
+      ]
+    },
+    {
+      "blocking": false,
+      "event": "PostToolUse",
+      "host_mode": "redirects",
+      "matcher": "Bash",
+      "script": "scripts/hook-dispatch-on-pr-create.sh",
+      "scripts": [
+        "scripts/hook-dispatch-on-pr-create.sh"
+      ],
+      "source": "hooks.PostToolUse[1].hooks[0]",
+      "type": "command",
+      "writes": [
+        "unknown"
+      ]
+    },
+    {
+      "blocking": false,
+      "event": "PreToolUse",
+      "host_mode": "unaffected",
+      "matcher": "AskUserQuestion",
+      "script": "scripts/send-webhook.sh",
+      "scripts": [
+        "scripts/send-webhook.sh"
+      ],
+      "source": "hooks.PreToolUse[0].hooks[1]",
+      "type": "command",
+      "writes": []
+    },
+    {
+      "blocking": false,
+      "event": "SessionStart",
+      "host_mode": "skips",
+      "matcher": null,
+      "script": "scripts/set-otel-resource-attrs.sh",
+      "scripts": [
+        "scripts/set-otel-resource-attrs.sh"
+      ],
+      "source": "hooks.SessionStart[1].hooks[0]",
+      "type": "command",
+      "writes": [
+        ".claude/settings.local.json#env.OTEL_RESOURCE_ATTRIBUTES"
+      ]
+    },
+    {
+      "blocking": false,
+      "event": "Stop",
+      "host_mode": "unaffected",
+      "matcher": null,
+      "script": "scripts/validate-code-review-result.py",
+      "scripts": [
+        "scripts/validate-code-review-result.py"
+      ],
+      "source": "hooks.Stop[0].hooks[0]",
+      "type": "command",
+      "writes": []
+    }
+  ],
+  "host_switch": {
+    "effect": "Host mode is on only when env is exactly 1; then no hook writes the session's working tree: hook state goes to the state_dir_env directory when it is valid, otherwise gate state goes to a per-user temp root and every other hook write is skipped.",
+    "env": "LOOMWRIGHT_HOST_MODE",
+    "state_dir_env": "LOOMWRIGHT_HOST_STATE_DIR"
+  },
+  "plugin_name": "loomwright",
+  "plugin_version": "17.2.0",
+  "result_schemas": [
+    {
+      "name": "AUTOMATE_RUN",
+      "schema_version": 1
+    },
+    {
+      "name": "CODE_REVIEW_RESULT",
+      "schema_version": 3
+    },
+    {
+      "name": "WORKER_RESULT",
+      "schema_version": 2
+    }
+  ],
+  "skills": [
+    {
+      "name": "agent-output"
+    },
+    {
+      "name": "error-handling"
+    },
+    {
+      "name": "unit-testing"
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 // AC2, AC4, AC6-AC8). The manager runs on a fake `query`/spawn: never the real
 // SDK, a model or a real process (fake pids are above any real pid_max).
 import { EventEmitter } from "node:events";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { SDKMessage, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
@@ -32,6 +32,7 @@ import {
   result,
   testEnv,
 } from "./budget-helpers.js";
+import { contractFixturePath } from "./fixtures/loomwright/helpers.js";
 import type { TestEnv } from "./budget-helpers.js";
 
 // Before the p6 event's five_hour reset (2026-09-29T16:20:00Z).
@@ -279,6 +280,7 @@ function managerHarness(h: ManagerHarnessOptions) {
   const pluginDir = join(env.store.dataDir, "..", "plugin");
   mkdirSync(join(pluginDir, ".claude-plugin"), { recursive: true });
   writeFileSync(join(pluginDir, ".claude-plugin", "plugin.json"), '{"name":"loomwright"}\n');
+  copyFileSync(contractFixturePath(), join(pluginDir, "capabilities.json"));
 
   const counts = { query: 0, spawn: 0, buildEnv: 0, groupProbe: 0 };
   const requests: AdmissionRequest[] = [];

@@ -1,6 +1,7 @@
 // The phase 2 feature seams (AC3-AC6, AC9): one `FeatureContribution` per
 // feature, merged by `startKernel` and `runCli`. The shipped contributions add
-// nothing; a test contribution composed from outside reaches every part
+// only the loomwright feature's one tool (`kernel_loomwright_capabilities`);
+// a test contribution composed from outside reaches every part
 // through the normal path (the kernel MCP server, the loopback API, `studio`,
 // the event loop). A temp data dir, an in-memory Keychain, the fake
 // spawner/query and stub auth: never the real SDK, a model or the Keychain.
@@ -69,16 +70,16 @@ const noopSubcommand = (name: string): ContributedSubcommand => ({ name, help: `
 const noopTool = (name: string) => defineTool({ name, description: "test tool", shape: {}, handler: () => ({}) });
 
 describe("mergeContributions", () => {
-  it("the shipped contributions: the five features in a fixed order, each registering nothing (AC3)", () => {
+  it("the shipped contributions: the five features in a fixed order, registering nothing but loomwright's one tool (AC3)", () => {
     expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1);
     expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
-    expect(merged.tools).toEqual([]);
+    expect(merged.tools.map((t) => t.name)).toEqual(["kernel_loomwright_capabilities"]);
     expect(merged.routes).toEqual([]);
     expect(merged.subcommands).toEqual([]);
     expect(merged.handlers).toEqual({});
     expect(merged.dueWork).toEqual([]);
-    for (const c of SHIPPED_CONTRIBUTIONS) expect(Object.keys(c)).toEqual(["name"]);
+    for (const c of SHIPPED_CONTRIBUTIONS) expect(Object.keys(c), c.name).toEqual(c.name === "loomwright" ? ["name", "tools"] : ["name"]);
   });
 
   it("a contributed tool whose name does not start with kernel_ is refused", () => {
@@ -417,7 +418,7 @@ function out() {
 }
 
 describe("the shipped kernel (AC3)", () => {
-  it("registers no kernel tool, API route, CLI subcommand, event handler or due work beyond phase 1's", async () => {
+  it("registers no kernel tool beyond phase 1's but kernel_loomwright_capabilities, and no API route, CLI subcommand, event handler or due work beyond phase 1's", async () => {
     const store = new Store({ dataDir });
     const { id } = enqueueMessage(store, { text: "hello" });
     store.close();
@@ -425,8 +426,8 @@ describe("the shipped kernel (AC3)", () => {
     const kernel = await start(options(), d);
 
     expect(kernel.contributions.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
-    expect(kernelToolNames(kernel.contributions.tools)).toEqual([...KERNEL_TOOL_NAMES]);
-    expect(Object.keys(await launchedTools(kernel, fakes))).toEqual([...KERNEL_TOOL_NAMES]);
+    expect(kernelToolNames(kernel.contributions.tools)).toEqual([...KERNEL_TOOL_NAMES, "kernel_loomwright_capabilities"]);
+    expect(Object.keys(await launchedTools(kernel, fakes))).toEqual([...KERNEL_TOOL_NAMES, "kernel_loomwright_capabilities"]);
     expect(kernel.contributions.routes).toEqual([]);
     expect(kernel.contributions.subcommands).toEqual([]);
     expect(kernel.contributions.handlers).toEqual({});
@@ -463,7 +464,7 @@ describe("a contribution composed from outside (AC4)", () => {
   it("the tool is on the kernel MCP server (kernel_ prefix) and validates its arguments with zod", async () => {
     const { kernel, fakes } = await composed();
     const tools = await launchedTools(kernel, fakes);
-    expect(Object.keys(tools)).toEqual([...KERNEL_TOOL_NAMES, "kernel_probe_echo"]);
+    expect(Object.keys(tools)).toEqual([...KERNEL_TOOL_NAMES, "kernel_loomwright_capabilities", "kernel_probe_echo"]);
     const sessionId = Number(kernel.store.prepare<[], number>("SELECT max(id) FROM sessions").pluck().get());
 
     const ok = await tools.kernel_probe_echo?.handler({ text: "hi", idempotency_key: "k1" }, {});
