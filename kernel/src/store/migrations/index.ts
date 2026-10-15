@@ -9,6 +9,7 @@ import { eventsExplicitIdGuard } from "./008_events_explicit_id_guard.js";
 import { capKeysProviderId } from "./009_cap_keys_provider_id.js";
 import { sessionGroups } from "./010_session_groups.js";
 import { phase2Tables } from "./011_phase_2_tables.js";
+import { brainMessages } from "./012_brain_messages.js";
 import type { Migration } from "./types.js";
 
 export type { Migration } from "./types.js";
@@ -26,4 +27,5 @@ export const migrations: readonly Migration[] = [
   capKeysProviderId,
   sessionGroups,
   phase2Tables,
+  brainMessages,
 ];
