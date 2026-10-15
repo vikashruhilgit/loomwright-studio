@@ -69,7 +69,7 @@ win.
 
 ## The settings file
 
-`<dataDir>/config/agents/wright.json` sits outside `memory/` on purpose: Wright's session runs with `memory/wright` as its working directory, and item 05 denies session writes under `<dataDir>/config/`. A fresh data dir gets:
+`<dataDir>/config/agents/wright.json` sits outside `memory/` on purpose: Wright's session runs with `memory/wright` as its working directory. The deny on session writes under `<dataDir>/config/` belongs to item 05 (the approval gate, PR #52) and is not on this branch yet; see "Honest limits". A fresh data dir gets:
 
 ```json
 {
@@ -166,6 +166,7 @@ On a timeout the session keeps running: the CLI never stops it. `--json` prints 
 - **A reply can be lost.** The session's final text is held in memory (`SessionHandle.result`) until the listener writes it. If the kernel dies between the session's result and that write, the row stays `running` with its `session_id`; `studio ask` times out naming the session, and `studio status` shows how it ended. A redelivered event finds its stored `start-session` step and does not start a second session, so it can't reattach a listener either.
 - **`effort` is recorded, not applied**: the session manager has no effort option.
 - **`kernel_approval_request` is proposed before it exists.** It is in the proposed tool policy and named in `role.md`, but it takes effect only once item 05 (approvals) ships the tool. Until then the kernel server has no such tool, so Wright can't call it.
+- **Nothing protects the settings file from a session yet.** The gate matches tool names only, and the deny on session writes under `<dataDir>/config/` is item 05's (PR #52), not on this branch. Until item 05 merges, a session whose policy grants a write-capable tool (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`, or a Bash prefix that writes) can edit `config/agents/wright.json`, including its own model and tool policy. The shipped proposed policy grants none of these.
 - **`Read`, `Glob` and `Grep` are allowed by name, not by path.** The gate matches tool names only, so the proposed policy lets Wright read any file the owner's account can, not just `memory/wright` (its `cwd`). The memory it needs is already in the prompt; an owner who wants less removes those three from `allowedTools`.
 - **The context is rebuilt per message.** A resumed session gets the current memory again as its prompt; nothing summarises the earlier conversation.
 - **One stand-in for the owner.** Only `ask` is labelled as the owner's. A message queued another way (a future UI) is wrapped as data until it gets its own source.

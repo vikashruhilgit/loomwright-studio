@@ -476,6 +476,7 @@ describe("the shipped kernel (AC3)", () => {
       "brain GET /messages/:id",
     ]);
     expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(["notifications", "triggers", "ask"]);
+    // Was `{}` before the brain: the brain now ships the kernel's only handler, for `message`.
     expect(Object.keys(kernel.contributions.handlers)).toEqual(["message"]);
     expect(kernel.contributions.handlers.message).toBe(brainContribution.handlers?.message);
     expect(kernel.contributions.dueWork.map((w) => w.owner)).toEqual(["notifications", "triggers"]);

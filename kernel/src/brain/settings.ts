@@ -1,7 +1,10 @@
 // Wright's settings file, `<dataDir>/config/agents/wright.json`: the model,
 // the permission mode and the tool policy its sessions run with. Outside
-// `memory/` on purpose (a session's working directory is `memory/wright`, and
-// item 05 denies session writes under `<dataDir>/config/`).
+// `memory/` on purpose (a session's working directory is `memory/wright`).
+// Nothing on this branch stops a session writing it: the session gate checks
+// tool names only. The deny on session writes under `<dataDir>/config/` is
+// item 05's (approval gate, PR #52) and is not here yet; until it merges, only
+// the policy keeps a session out (the proposed one grants no write-capable tool).
 //
 // Mechanism only (invariant 1): the kernel never picks a model. A fresh file
 // says `"model": null`, and a Wright message is refused (`model_unset`, naming
