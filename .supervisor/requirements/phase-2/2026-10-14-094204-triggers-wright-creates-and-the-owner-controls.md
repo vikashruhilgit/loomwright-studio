@@ -65,3 +65,9 @@ Phase 1 has wake-ups (`kernel_schedule_wakeup`), which only queue a `wakeup` eve
 kernel/src/triggers/
 kernel/test/triggers.test.ts
 docs/architecture/triggers.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-15T02:25:53Z
+- **Brief:** .supervisor/jobs/done/2026-10-14-triggers-wright-creates-and-the-owner-controls.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/49
