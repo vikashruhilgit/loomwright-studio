@@ -22,6 +22,7 @@ import {
   approvalsContribution,
   canonicalJson,
   decideApproval,
+  formatApprovals,
   getApproval,
   listApprovals,
   payloadText,
@@ -113,10 +114,13 @@ describe("classifyToolCall: the fixed outward set (Bash forms)", () => {
     expect(classify("Bash", { command: "git push origin main", description: "Push", timeout: 5 })).toEqual({
       kind: "outward",
       action: "git push",
-      payload: { tool: "Bash", command: "git push origin main" },
+      payload: { tool: "Bash", command: "git push origin main", cwd: RAIL.cwd },
     });
     const input = { file_path: `${HOME}/.claude/settings.json`, content: "{}" };
-    expect(classify("Write", input)).toEqual({ kind: "outward", action: "Write ~/.claude/", payload: { tool: "Write", input } });
+    expect(classify("Write", input)).toEqual({ kind: "outward", action: "Write ~/.claude/", payload: { tool: "Write", input, cwd: RAIL.cwd } });
+    // An absent or relative cwd is recorded as `/`, the base the rail resolved against.
+    expect(classify("Bash", { command: "git push" }, { cwd: undefined })).toMatchObject({ payload: { cwd: "/" } });
+    expect(classify("Bash", { command: "git push" }, { cwd: "rel/dir" })).toMatchObject({ payload: { cwd: "/" } });
   });
 });
 
@@ -201,6 +205,148 @@ describe("shellWords", () => {
     expect(shellWords(`echo "say \\"hi\\" \\\\ \\n" ''`)).toEqual(["echo", 'say "hi" \\ \\n', ""]);
     expect(shellWords("echo 'unterminated here")).toEqual(["echo", "unterminated here"]);
     expect(shellWords("")).toEqual([]);
+  });
+});
+
+describe("classifyToolCall: review fixes (iteration 1)", () => {
+  it("holds a git command with any later word push, whatever option precedes it, and git's other sending subcommands", () => {
+    const held: [string, string][] = [
+      ["git --attr-source HEAD push origin main", "git push"],
+      ["git --exec-path /x push origin main", "git push"],
+      ["git --super-prefix x/ push", "git push"],
+      ["git subtree push --prefix d origin main", "git push"],
+      ["git lfs push origin main", "git push"],
+      ["git pu* origin main", "git push"],
+      ["git p{u,x}sh origin main", "git push"],
+      ["/usr/libexec/git-core/git-push origin main", "git push"],
+      ["git send-pack origin main", "git send-pack"],
+      ["git http-push https://x/r.git main", "git http-push"],
+      ["git svn dcommit", "git svn dcommit"],
+      ["git svn set-tree HEAD", "git svn set-tree"],
+      ["git p4 submit", "git p4 submit"],
+      ["git send-email 0001.patch", "git send-email"],
+      ["git imap-send", "git imap-send"],
+      ["git cvsexportcommit -c HEAD", "git cvsexportcommit"],
+    ];
+    for (const [command, action] of held) expect(kindOf(bash(command)), command).toBe(`outward:${action}`);
+    for (const command of ["git status", "git pushx", "git submit", "git log --oneline", "git add src/a.ts"]) expect(kindOf(bash(command)), command).toBe("ordinary");
+  });
+
+  it("holds alias definitions that could make a later allowed call push or merge (gh alias set|import, git alias.* / include config, --config-env)", () => {
+    const held: [string, string][] = [
+      ["gh alias set m 'pr merge'", "gh alias set"],
+      ["gh alias import aliases.yml", "gh alias import"],
+      ["git -c alias.p=push p origin main", "git alias"],
+      ["git -c Alias.P=push p", "git alias"],
+      ["git config --global alias.x '!sh -c x'", "git alias"],
+      ["git --config-env=alias.p=E p", "git alias"],
+      ["git --config-env core.x=E status", "git alias"],
+      ["git -c include.path=/tmp/x p", "git alias"],
+      ["git -c includeIf.onbranch:main.path=/tmp/x p", "git alias"],
+      ["git -c alia?.p=pu.sh p", "git alias"],
+    ];
+    for (const [command, action] of held) expect(kindOf(bash(command)), command).toBe(`outward:${action}`);
+    for (const command of ["gh alias list", "gh alias delete m", "git -c core.pager=cat log"]) expect(kindOf(bash(command)), command).toBe("ordinary");
+  });
+
+  it("denies a merge through gh api whatever the endpoint's spelling, and a GraphQL query it cannot read", () => {
+    for (const command of [
+      "gh api -X PUT repos/o/r/pulls/1/merge?merge_method=squash",
+      "gh api -X PUT 'repos/o/r/pulls/1/merge#frag'",
+      "gh api -X PUT repos/o/r/pulls/1//merge",
+      "gh api -X PUT repos/o/r/pulls/1/x/../merge",
+      "gh api -X PUT repos/o/r/pulls/1/%6Derge",
+      "gh api -X PUT repos/o/r/pulls/1/merg*",
+      "gh api -X PUT repos/o/r/pulls/1/{merge,x}",
+      "gh api -X PUT https://api.github.com/repos/o/r/pulls/1/merge",
+      "gh api graphql -f query=mutation{enqueuePullRequest(input:{pullRequestId:1}){clientMutationId}}",
+      "gh api graphql -F query=@q.graphql",
+      "gh api graphql -Fquery=@q.graphql",
+      "gh api graphql --field=query=@q.graphql",
+      "gh api graphql --field query=@q.graphql",
+      "gh api graphql --input body.json",
+      "gh api graphql --input=body.json",
+      "gh api https://api.github.com/graphql --input body.json",
+      "gh pr mer* 12",
+      "gh pr {merge,view} 12",
+      // Brace expansion splitting one word into argv words, and a globbed flag hiding -R / -X.
+      "gh {pr,merge} 12",
+      "gh -[R] o/r pr merge 12",
+      "gh api -[X] PUT repos/o/r/pulls/1/merge",
+      "gh api graphql -f query=mutation{merge{P,}ullRequest}",
+      "gh api graphql -f query=mutation{merge*}",
+    ]) {
+      expect(bash(command), command).toEqual({ kind: "deny", reason: "merge_blocked" });
+    }
+    // A readable query that merges nothing is an ordinary POST; a GET of the merge endpoint (with a query) is a read.
+    expect(kindOf(bash("gh api graphql -f query=query{viewer{login}}"))).toBe("outward:gh api POST");
+    expect(kindOf(bash("gh api graphql -F owner=o -f query=query{viewer{login}}"))).toBe("outward:gh api POST");
+    expect(kindOf(bash("gh api repos/o/r/pulls/1/merge?x=1"))).toBe("ordinary");
+    expect(kindOf(bash("gh api -X PUT repos/o/r/pulls/1/mergeable"))).toBe("outward:gh api PUT");
+    expect(kindOf(bash("gh api -X POST repos/o/r/issues --input body.json"))).toBe("outward:gh api POST");
+    // A globbed flag could be -X: held, not read as a GET.
+    expect(kindOf(bash("gh api -[X] DELETE repos/o/r"))).toBe("outward:gh api (flag unread)");
+  });
+
+  it("denies a Bash word that could expand to a protected kernel path: globs, braces, ~user, ~+, firmlink aliases, glued options", () => {
+    const d = `"${DATA}"`;
+    for (const command of [
+      `rm ${d}/studio.d*`,
+      `rm ${d}/studio.db?wal`,
+      `cp x ${d}/studio.{db,x}`,
+      `rm ${d}/studio.db{,-wal}`,
+      `rm -rf "/Users/owner/Library/Application Support"/Loomwright*`,
+      `cp x ${d}/conf?g/a.json`,
+      `cp x ${d}/[c]onfig/a.json`,
+      `cp x ${d}/*/agents/wright.json`,
+      `rm ~owner/"Library/Application Support/Loomwright Studio/studio.db"`,
+      `cat ~-/studio.db`,
+      `rm "/System/Volumes/Data${DATA}/studio.db"`,
+      `rm "/system/volumes/data${DATA}/api.json"`,
+      `rm "/Sys*/Volumes/Data${DATA}/api.json"`,
+      `tar -C${d}/app -xf x.tar`,
+      `rm ~/**/studio.db`,
+      `rm ${d}/notes/../studio.d?`,
+      `rm ${d}/x*/../api.json`,
+      `echo {${d},/tmp}/api.json`,
+      `cat {a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}`,
+    ]) {
+      expect(bash(command), command).toEqual({ kind: "deny", reason: "protected_kernel_path" });
+    }
+    expect(bash("cat ~+/studio.db", { cwd: DATA })).toEqual({ kind: "deny", reason: "protected_kernel_path" });
+    expect(bash("cat ~+/studio.db")).toEqual({ kind: "ordinary" });
+    // The firmlink alias of a Write path too.
+    expect(classify("Write", { file_path: `/System/Volumes/Data${DATA}/config/x.json`, content: "" })).toEqual({ kind: "deny", reason: "protected_kernel_path" });
+    // A Write path is not shell-expanded: a literal `*` names a file called `*`.
+    expect(kindOf(classify("Write", { file_path: `${DATA}/studio.d*`, content: "" }))).toBe("ordinary");
+    for (const command of [
+      "ls *.ts",
+      "rm -rf /tmp/build/*.o",
+      `cat ${d}/notes/*.md`,
+      `ls ${d}/studio.db.bak*`,
+      "echo {a,b}",
+      "ls -la",
+      'grep -r "TODO*" src',
+      "ls ~/code/*.md",
+    ]) {
+      expect(kindOf(bash(command)), command).toBe("ordinary");
+    }
+  });
+
+  it("holds a Bash word that could expand to an outward path (globs, braces, firmlink alias)", () => {
+    const held: [string, string][] = [
+      ["cp x ~/.cla*/sett*", "~/.claude/"],
+      ["cp x /System/Volumes/Data/Users/owner/.claude/CLAUDE.md", "~/.claude/"],
+      ["cp x .git/hoo*/pre-commit", "a hooks file"],
+      ["cp x .git/hooks/pre-*", "a hooks file"],
+      ["cp x .git/*/pre-commit", "a hooks file"],
+      ["cp x .claude/settings.{json,x}", "a settings*.json file"],
+      ["cp x .claude/sett?ngs.local.json", "a settings*.json file"],
+      ["cp x plugin/hook?.json", "a hooks file"],
+      // Over-holding, documented: a bare `*` could expand to a settings*.json in the cwd.
+      ["ls *", "a settings*.json file"],
+    ];
+    for (const [command, label] of held) expect(kindOf(bash(command)), command).toBe(`outward:Bash naming ${label}`);
   });
 });
 
@@ -318,7 +464,7 @@ describe("the rail: an outward call is held as a pending approval", () => {
         requesting_agent: "wright",
         requesting_session: s.id,
         action: "git push",
-        payload_json: '{"command":"git push origin main","tool":"Bash"}',
+        payload_json: canonicalJson({ tool: "Bash", command: PUSH, cwd: tmp }),
         requested_at: "2026-10-14T09:00:00.000Z",
         status: "pending",
         decision: null,
@@ -375,7 +521,7 @@ describe("the rail: an outward call is held as a pending approval", () => {
     // The grant is still wright's, and wright's identical call runs (also from a new session of wright).
     const wright2 = await t.session(GIT, "wright");
     expect((await wright2.push()).permissionDecision).toBe("allow");
-    expect(getApproval(t.store, 4)).toMatchObject({ requesting_agent: "builder", payload_json: '{"command":"git push origin main","tool":"Bash"}' });
+    expect(getApproval(t.store, 4)).toMatchObject({ requesting_agent: "builder", payload_json: canonicalJson({ tool: "Bash", command: PUSH, cwd: tmp }) });
   });
 
   it("a write's grant matches its whole input whatever the key order", async () => {
@@ -383,10 +529,25 @@ describe("the rail: an outward call is held as a pending approval", () => {
     const s = await t.session({ allowedTools: ["Write"], allowedBashPrefixes: [] });
     const path = join(home, ".claude", "settings.json");
     expect((await s.gate("Write", { file_path: path, content: "{}" })).permissionDecision).toBe("deny");
-    expect(t.approvals()[0]).toMatchObject({ action: "Write ~/.claude/", payload_json: canonicalJson({ tool: "Write", input: { file_path: path, content: "{}" } }) });
+    expect(t.approvals()[0]).toMatchObject({ action: "Write ~/.claude/", payload_json: canonicalJson({ tool: "Write", input: { file_path: path, content: "{}" }, cwd: tmp }) });
     decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date());
     expect((await s.gate("Write", { file_path: path, content: "{ }" })).permissionDecision).toBe("deny");
     expect((await s.gate("Write", { content: "{}", file_path: path })).permissionDecision).toBe("allow");
+  });
+
+  it("a grant is scoped to the cwd the call ran in, and studio approvals shows that cwd", async () => {
+    const t = setup();
+    const s = await t.session(GIT);
+    const other = join(tmp, "other-repo");
+    await s.push();
+    decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date());
+    // The identical push from another directory is held, never let through on the grant for `tmp`.
+    expect((await s.gate("Bash", { command: PUSH }, other)).permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
+    expect(getApproval(t.store, 2)).toMatchObject({ payload_json: canonicalJson({ tool: "Bash", command: PUSH, cwd: other }) });
+    expect(formatApprovals(listApprovals(t.store), false)).toContain(`"cwd": ${JSON.stringify(other)}`);
+    // The grant still lets the push through once from the cwd it was approved for.
+    expect((await s.gate("Bash", { command: PUSH }, tmp)).permissionDecision).toBe("allow");
+    expect(events(t.store, "approval_used")).toEqual([expect.objectContaining({ payload: { id: 1, tool: "Bash" } })]);
   });
 
   it("deny: denied/deny, one message saying so; the command never runs and a later identical call is a new approval", async () => {

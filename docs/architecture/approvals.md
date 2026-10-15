@@ -20,32 +20,38 @@ An approval an agent requested through the tool never lets a tool call through t
 The kernel's one `PreToolUse` hook decides every call in order:
 
 1. **The session's policy** (`decideToolUse`, unchanged from phase 1). A call the policy denies is denied as before. The sets below apply only after the policy allowed the call, so they never widen a policy.
-2. **Protected kernel paths: denied, whatever the policy, never an approval** (`protected_kernel_path`). A Write, Edit or NotebookEdit whose path is, or a Bash command any of whose words names:
+2. **Protected kernel paths: denied, whatever the policy, never an approval** (`protected_kernel_path`). A Write, Edit or NotebookEdit whose path is, or a Bash command any of whose words names or could expand to (see [the forms below](#which-command-forms-the-matcher-recognises)):
    - the data dir itself;
    - anything under `<dataDir>/config/` (each agent's settings) or `<dataDir>/app/` (the kernel's install copy);
    - `<dataDir>/studio.db`, `studio.db-wal`, `studio.db-shm`, `studio.db-journal`, `studio.lock`, `studio.lock-journal`, `studio.lock.pid` or `api.json`.
 
    A Bash command that only names such a path (`cat …/api.json`) is denied too: the rail cannot tell a read from a write in a shell command.
-3. **The merge block: denied, whatever the policy, never an approval** (`merge_blocked`, invariant 4: Studio merges only through Loomwright's sanctioned gate). `gh pr merge …` in any form, and `gh api` reaching a pull request's `…/pulls/<n>/merge` with a non-GET method or naming the GraphQL `mergePullRequest` or `enablePullRequestAutoMerge` mutation.
+3. **The merge block: denied, whatever the policy, never an approval** (`merge_blocked`, invariant 4: Studio merges only through Loomwright's sanctioned gate). `gh pr merge …` in any form, and `gh api`:
+   - reaching a pull request's `…/pulls/<n>/merge` with a non-GET method (or a globbed flag that could be one). The endpoint is compared with its `?query` and `#fragment` cut off, percent-decoded, with empty, `.` and `..` segments normalised, and as a glob (`merg*`, `{merge,x}`);
+   - naming the GraphQL `mergePullRequest`, `enablePullRequestAutoMerge` or `enqueuePullRequest` mutation;
+   - sending a GraphQL query whose text the rail cannot read: `gh api graphql` (or any `…/graphql` endpoint) with a field read from a file (`-F query=@file`, `--field=…=@…`), `--input`, a globbed word or a globbed flag.
 4. **The outward set: held as a pending approval** (`approval_required`), unless an unused one-shot grant matches exactly (`approval_granted`, see below):
-   - `git push …`;
+   - git with any word after `git` that is (or could expand to) `push` (`git push`, `git --attr-source X push`, `git subtree push`, `git lfs push`), `send-pack`, `http-push`, `dcommit` or `set-tree` (git svn), `send-email`, `imap-send` or `cvsexportcommit`, or `submit` after `p4`. Over-holding (`git commit -m push`) is the safe direction;
+   - an alias definition that could make a later allowed call push or merge under another name: `gh alias set|import`, and git with any word holding `alias.`, `include.path` or `includeIf.` (`git -c alias.p=push p`, `git config alias.p push`) or `--config-env`;
    - `gh pr create|comment|review|edit|close …` and `gh issue create|comment|edit|close …`;
-   - `gh api …` with a non-GET method: `-X`/`--method` (also `-XPOST`, `--method=POST`) other than GET, or, with no explicit method, any `-f`, `-F`, `--field`, `--raw-field` or `--input` (gh sends those as POST);
-   - a Write, Edit or NotebookEdit to, or a Bash command naming, anything under `~/.claude/`, any `settings*.json`, any `hooks.json`, or anything under a `.git/hooks/` dir or a `hooks` dir inside a `.claude` dir.
+   - `gh api …` with a non-GET method: `-X`/`--method` (also `-XPOST`, `--method=POST`) other than GET, or, with no explicit method, any `-f`, `-F`, `--field`, `--raw-field` or `--input` (gh sends those as POST), or a globbed flag (`gh api (flag unread)`);
+   - a Write, Edit or NotebookEdit to, or a Bash command naming or globbing, anything under `~/.claude/`, any `settings*.json`, any `hooks.json`, or anything under a `.git/hooks/` dir or a `hooks` dir inside a `.claude` dir. A bare `*` could expand to a `settings.json` in the cwd, so `ls *` is held too (`*.ts` is not).
 5. Anything else runs as the policy says.
 
 Every call still records exactly one `tool_decision` event (with `approval_id` when one was held or used). The gate fails closed: if creating the approval, consuming a grant or recording the decision throws, the whole transaction rolls back and the call is denied with `kernel_gate_error`.
 
 ### Which command forms the matcher recognises
 
-The rail reads a Bash command the way the shell splits it into words (`shellWords`: whitespace separates words, single and double quotes and backslash escapes are read as the shell reads them, adjacent parts join into one word), with no expansion of any kind. The policy has already refused shell control and substitution characters (`;` `&` `|` `<` `>` `(` `)` `$`, backtick, newline), so a command is one program and its arguments.
+The rail reads a Bash command the way the shell splits it into words (`shellWords`: whitespace separates words, single and double quotes and backslash escapes are read as the shell reads them, adjacent parts join into one word). The policy has already refused shell control and substitution characters (`;` `&` `|` `<` `>` `(` `)` `$`, backtick, newline), so a command is one program and its arguments. The expansions the shell can still apply are read failing closed: a word that **could** expand to a protected, merge or outward form counts as that form.
 
-- **The program** is the first word's basename, case-folded: `git`, `/usr/bin/git` and `GIT` are all git.
-- **git:** the subcommand is the first word after git's own options; `-c`, `-C`, `--git-dir`, `--work-tree`, `--namespace` and `--config-env` take the next word as their value (`git -C repo push` is a push).
-- **gh:** the command words are the first two words that are not flags, skipping `-R`/`--repo`'s value (`gh -R o/r pr merge 12` is a merge).
-- **Paths:** every word, and the part after a word's first `=` (`--file=…`), is a path: `~` and `~/…` expand to the home dir, and anything else resolves against the hook's `cwd`. Paths compare case-insensitively (APFS is by default) on a path-segment boundary, lexically: symlinks are not followed.
+- **Brace expansion** is expanded (`{a,b}` alternatives, nested and repeated; a `{1..9}` sequence reads as `*`), and one word can become several argv words (`gh {pr,merge} 12` is a merge). More than 64 results read as "any path".
+- **Globs:** `*`, `?`, `[…]` (any one character) and a `**` segment followed by another segment (zsh's recursive glob, any depth) are matched as patterns against the protected and outward paths and the subcommand names (`git pu*` is a push). A glob followed by `..` is its parent.
+- **The program** is the first word's basename, case-folded: `git`, `/usr/bin/git` and `GIT` are all git, and `git-push` (git's libexec spelling) is `git push`.
+- **git:** every word after `git` is read, so no option before the subcommand (`--attr-source`, `--exec-path`, …) can hide a push.
+- **gh:** the command words are the first two words that are not flags, skipping `-R`/`--repo`'s value (`gh -R o/r pr merge 12` is a merge). A globbed flag (`-[R]`) is read both as `-R` and as a flag without a value, and a merge in either reading wins (more than four globbed flags read as a merge).
+- **Paths:** every word, the part after a word's first `=` (`--file=…`) and the rest of a glued short option (`-C/path`) is a path. `~` and `~/…` expand to the home dir, `~+` to the cwd, and any other `~…` (`~user`, `~-`, a named dir) to "any directory"; anything else resolves against the hook's `cwd`. Paths compare case-insensitively (APFS is by default) on a path-segment boundary, after `..` is applied and a leading `/System/Volumes/Data` firmlink is removed (the same rule as the protected-folder check in `kernel/src/protected-paths.ts`). A Write, Edit or NotebookEdit path is not shell-expanded: its characters are literal.
 
-**Not recognised:** `env git push`, `xargs git push`, `sh -c "…"`, a git or gh alias, a script or Makefile target that pushes, or any other program that runs others. Allowing such a program in a policy grants whatever it can run, exactly as the [safety kernel](../ARCHITECTURE.md#safety-kernel-fixed-d5) says for the Bash allowlist. Other gh write subcommands (`gh pr ready`, `gh release create`, `gh repo delete`, …) are not in phase 2's set either: a policy that allows the `gh` prefix allows them. Keep such prefixes out of a policy unless that is the intent.
+**Not recognised:** `env git push`, `xargs git push`, `sh -c "…"`, a gh or git alias defined before the session (or by a config file the rail never reads), a script or Makefile target that pushes, a git hook, or any other program that runs others. Symlinks (and other path aliases than the firmlink) are not followed, and a command that names only a parent of the data dir (`rm -rf ~/Library/Application\ Support`) is not denied: the rail denies a word that names or could expand to a protected path, not one that contains it. Branch merges that are not pull-request merges (`gh api … /merges`, the GraphQL `mergeBranch`) are held as `gh api POST`, not denied. Allowing such a program in a policy grants whatever it can run, exactly as the [safety kernel](../ARCHITECTURE.md#safety-kernel-fixed-d5) says for the Bash allowlist. Other gh write subcommands (`gh pr ready`, `gh release create`, `gh repo delete`, …) are not in phase 2's set either: a policy that allows the `gh` prefix allows them. Keep such prefixes out of a policy unless that is the intent.
 
 ## Deciding
 
@@ -70,7 +76,7 @@ Deciding queues one `message` event with payload `{text: "<approved|denied> appr
 
 An approved rail approval lets **exactly** that call through **once**:
 
-- **Exact payload.** A Bash call's payload is `{tool: "Bash", command}` (the command string exactly, not the description or timeout); any other tool's is `{tool, input}` with its whole input. Matching is on the canonical JSON, so key order does not matter but every character does: `git push --force origin main` does not match a grant for `git push origin main`, and neither does a trailing space.
+- **Exact payload.** A Bash call's payload is `{tool: "Bash", command, cwd}` (the command string exactly, not the description or timeout); any other tool's is `{tool, input, cwd}` with its whole input. `cwd` is the hook input's working directory (`/` when absent or not absolute), so the owner sees where the call runs (`studio approvals` prints it with the payload) and a grant for a push in one repo never lets the identical push through in another. Matching is on the canonical JSON, so key order does not matter but every character does: `git push --force origin main` does not match a grant for `git push origin main`, and neither does a trailing space or another cwd.
 - **Same requester.** For a named agent: the same agent name, and a requesting session that ran that agent (any session of it, since the decision usually arrives in a new one). For a session with no agent: that same session only, never another agent-less session, and never an agent literally named `unknown`. A grant for one agent never lets another agent's identical call through.
 - **Once.** The grant's use is one `approval_used` event (`{id, tool}`, linked to the session) written in the same transaction as the allow and its `tool_decision` event; a used grant never matches again. A second identical call is held as a new approval.
 

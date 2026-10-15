@@ -56,10 +56,20 @@ const FIRMLINK_DATA_ROOT = `${sep}system${sep}volumes${sep}data`;
  * case-insensitively and only on a path-segment boundary
  * (`/System/Volumes/DataX` is left alone). Anything else is returned as is.
  */
-function withoutFirmlink(path: string): string {
+export function withoutFirmlink(path: string): string {
   const lower = path.toLowerCase();
   if (lower === FIRMLINK_DATA_ROOT) return sep;
   return lower.startsWith(`${FIRMLINK_DATA_ROOT}${sep}`) ? path.slice(FIRMLINK_DATA_ROOT.length) : path;
+}
+
+/**
+ * Both spellings of `path` (absolute, normalised): without the firmlink prefix
+ * (`withoutFirmlink`) and with it, so a pattern that globs the prefix itself
+ * (`/Sys*` …) is still compared against the form it could expand to. Pure.
+ */
+export function firmlinkForms(path: string): string[] {
+  const bare = withoutFirmlink(path);
+  return [bare, bare === sep ? FIRMLINK_DATA_ROOT : `${FIRMLINK_DATA_ROOT}${bare}`];
 }
 
 /** Each path, and each path without its firmlink prefix (`withoutFirmlink`). */

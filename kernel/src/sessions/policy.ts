@@ -1,4 +1,5 @@
-import { basename, join, resolve, sep } from "node:path";
+import { basename, resolve } from "node:path";
+import { firmlinkForms, withoutFirmlink } from "../protected-paths.js";
 import type { ToolPolicy } from "./types.js";
 
 export type ToolDecisionReason =
@@ -77,8 +78,15 @@ export function bashCommandOf(toolInput: unknown): string | undefined {
 
 // ---- The fixed rail: protected kernel paths, the merge block, the outward set ----
 
-/** What an approval holds and a one-shot grant matches exactly: a Bash command, or another tool's whole input. */
-export type ApprovalPayload = { readonly tool: "Bash"; readonly command: string } | { readonly tool: string; readonly input: unknown };
+/**
+ * What an approval holds and a one-shot grant matches exactly: a Bash command,
+ * or another tool's whole input, with the directory the call runs in (`cwd`,
+ * the hook input's, `/` when absent), so a grant for one repo never lets an
+ * identical call through in another.
+ */
+export type ApprovalPayload =
+  | { readonly tool: "Bash"; readonly command: string; readonly cwd: string }
+  | { readonly tool: string; readonly input: unknown; readonly cwd: string };
 
 /**
  * `classifyToolCall`'s answer for a call the policy already allowed:
@@ -124,13 +132,30 @@ export const PROTECTED_DATA_DIRS: readonly string[] = ["config", "app"];
 /** The tools whose path argument is a write. */
 const WRITE_TOOLS: Readonly<Record<string, string>> = { Write: "file_path", Edit: "file_path", NotebookEdit: "notebook_path" };
 
-const GH_PR_OUTWARD = new Set(["create", "comment", "review", "edit", "close"]);
-const GH_ISSUE_OUTWARD = new Set(["create", "comment", "edit", "close"]);
-/** `git` options before the subcommand that take the next word as their value. */
-const GIT_VALUE_OPTIONS = new Set(["-c", "-C", "--git-dir", "--work-tree", "--namespace", "--config-env"]);
-/** A GitHub merge reached through `gh api`: the REST merge endpoint or the GraphQL merge mutations. */
-const API_MERGE_PATH = /(^|\/)pulls\/[^/]+\/merge\/?$/i;
-const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge/i;
+const GH_PR_OUTWARD = ["create", "comment", "review", "edit", "close"] as const;
+const GH_ISSUE_OUTWARD = ["create", "comment", "edit", "close"] as const;
+/** `gh alias` subcommands that define an alias: a later `gh <alias>` could merge or push under any name. */
+const GH_ALIAS_OUTWARD = ["set", "import"] as const;
+/**
+ * git words that send commits or mail out, whichever position they take
+ * (`git push`, `git subtree push`, `git lfs push`, `git --attr-source X push`):
+ * any word after `git` equal to one of these holds the command. Over-holding
+ * (`git commit -m push`) is the safe direction.
+ */
+const GIT_OUTWARD: readonly (readonly [string, string])[] = [
+  ["push", "git push"],
+  ["send-pack", "git send-pack"],
+  ["http-push", "git http-push"],
+  ["dcommit", "git svn dcommit"],
+  ["set-tree", "git svn set-tree"],
+  ["send-email", "git send-email"],
+  ["imap-send", "git imap-send"],
+  ["cvsexportcommit", "git cvsexportcommit"],
+];
+/** A git word that defines or pulls in an alias, as globs (`-c alias.p=push`, `git config alias.p push`, `include.path`, `--config-env`); a globbed word that could expand to one counts. */
+const GIT_ALIAS_CONFIG: readonly string[] = ["*alias.*", "*include.path*", "*includeif.*", "--config-env*"];
+/** The GraphQL mutations that merge a pull request or queue it for merging. */
+const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest/i;
 
 /**
  * The fixed rail for a call `decideToolUse` ALREADY allowed (it never widens a
@@ -140,42 +165,54 @@ const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge/i;
  *
  * In order:
  * 1. `protected_kernel_path`: a Write/Edit/NotebookEdit to, or a Bash command
- *    with any word naming, `<dataDir>` itself, anything under `<dataDir>/config/`
- *    or `<dataDir>/app/`, or one of `PROTECTED_DATA_FILES` in `<dataDir>`.
+ *    with any word that names or could expand to, `<dataDir>` itself,
+ *    anything under `<dataDir>/config/` or `<dataDir>/app/`, or one of
+ *    `PROTECTED_DATA_FILES` in `<dataDir>`.
  * 2. `merge_blocked`: `gh pr merge …`, or `gh api` reaching a pull request's
- *    `…/pulls/<n>/merge` with a non-GET method or naming the GraphQL
- *    `mergePullRequest` / `enablePullRequestAutoMerge` mutation.
- * 3. `outward`: `git [options] push …`; `gh pr create|comment|review|edit|close`;
- *    `gh issue create|comment|edit|close`; `gh api` with a non-GET method
- *    (`-X`/`--method`, or any `-f`/`-F`/`--field`/`--raw-field`/`--input`
- *    without an explicit method, which gh sends as POST); a write to, or a Bash
- *    command naming, anything under `~/.claude/`, any `settings*.json`, any
- *    `hooks.json`, or anything under a `.git/hooks` or `.claude/…/hooks` dir.
+ *    `…/pulls/<n>/merge` with a non-GET method (query and fragment ignored),
+ *    naming the GraphQL `mergePullRequest` / `enablePullRequestAutoMerge` /
+ *    `enqueuePullRequest` mutation, or sending a GraphQL query whose text the
+ *    rail cannot read (`-F field=@file`, `--input`).
+ * 3. `outward`: git with any later word `push` (or another word in
+ *    `GIT_OUTWARD`, or `submit` after `p4`), or defining an alias
+ *    (`GIT_ALIAS_CONFIG`, `--config-env`); `gh pr create|comment|review|edit|close`;
+ *    `gh issue create|comment|edit|close`; `gh alias set|import`; `gh api`
+ *    with a non-GET method (`-X`/`--method`, or any `-f`/`-F`/`--field`/
+ *    `--raw-field`/`--input` without an explicit method, which gh sends as
+ *    POST); a write to, or a Bash command naming or globbing, anything under
+ *    `~/.claude/`, any `settings*.json`, any `hooks.json`, or anything under a
+ *    `.git/hooks` or `.claude/…/hooks` dir.
  *
  * Bash recognition is argv-shaped: the command is split into shell words
- * (`shellWords`: quotes and backslash escapes as the shell reads them), and
- * only the program's basename (case-folded) and the words after it are read. `env git push`, an alias, a script, `sh -c`
- * or any allowed program that runs others is NOT recognised: allowing such a
- * program grants what it can run (see `decideToolUse`). Paths are compared
- * lexically (case-insensitive, on a segment boundary), after `~/` expansion and
- * resolution against `ctx.cwd`; symlinks are not followed.
+ * (`shellWords`), and only the program's basename (case-folded) and the words
+ * after it are read. `env git push`, an alias defined earlier, a script,
+ * `sh -c` or any allowed program that runs others is NOT recognised: allowing
+ * such a program grants what it can run (see `decideToolUse`). A Bash word is
+ * read as the shell could expand it, failing closed: brace expansion is
+ * expanded (more than `MAX_BRACE_EXPANSIONS` results reads as "anything");
+ * `*`, `?`, `[…]` and a `**` segment are matched as globs against the protected
+ * and outward paths (a word that COULD match one is treated as naming it);
+ * `~`/`~/…` is the home dir, `~+` the cwd, and any other `~…` (`~user`,
+ * `~-`) "any directory". Paths compare case-insensitively (APFS is by default),
+ * on a path-segment boundary, after `..` is applied and a leading
+ * `/System/Volumes/Data` firmlink is removed; symlinks are not followed.
  */
 export function classifyToolCall(toolName: string, toolInput: unknown, ctx: RailContext): ToolCallClass {
   const base = typeof ctx.cwd === "string" && ctx.cwd.startsWith("/") ? ctx.cwd : "/";
-  const dataDir = resolve(ctx.dataDir);
   const homeDir = resolve(ctx.homeDir);
+  const targets = railTargets(resolve(ctx.dataDir), homeDir);
 
   if (toolName === "Bash") {
     const command = bashCommandOf(toolInput);
     if (command === undefined) return { kind: "ordinary" };
     const words = shellWords(command);
-    const paths = words.flatMap((w) => pathsNamedBy(w, base, homeDir));
-    if (paths.some((p) => isProtectedKernelPath(p, dataDir))) return { kind: "deny", reason: "protected_kernel_path" };
-    const payload: ApprovalPayload = { tool: "Bash", command };
+    const patterns = words.flatMap((w) => bashPathPatterns(w, base, homeDir));
+    if (patterns.some((p) => targets.protectedPaths.some((t) => couldMatch(p, t)))) return { kind: "deny", reason: "protected_kernel_path" };
+    const payload: ApprovalPayload = { tool: "Bash", command, cwd: base };
     const form = commandForm(words);
     if (form === "merge") return { kind: "deny", reason: "merge_blocked" };
     if (form !== undefined) return { kind: "outward", action: form, payload };
-    const label = paths.map((p) => outwardPathLabel(p, homeDir)).find((l) => l !== undefined);
+    const label = outwardLabel(patterns, targets);
     if (label !== undefined) return { kind: "outward", action: `Bash naming ${label}`, payload };
     return { kind: "ordinary" };
   }
@@ -184,10 +221,11 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
   if (field === undefined || typeof toolInput !== "object" || toolInput === null) return { kind: "ordinary" };
   const raw = (toolInput as Record<string, unknown>)[field];
   if (typeof raw !== "string" || raw === "") return { kind: "ordinary" };
-  const path = expandPath(raw, base, homeDir);
-  if (isProtectedKernelPath(path, dataDir)) return { kind: "deny", reason: "protected_kernel_path" };
-  const label = outwardPathLabel(path, homeDir);
-  return label === undefined ? { kind: "ordinary" } : { kind: "outward", action: `${toolName} ${label}`, payload: { tool: toolName, input: toolInput } };
+  // A tool's path is not shell-expanded: its characters are literal.
+  const pattern = patternOf(withoutFirmlink(expandPath(raw, base, homeDir)), false);
+  if (targets.protectedPaths.some((t) => couldMatch(pattern, t))) return { kind: "deny", reason: "protected_kernel_path" };
+  const label = outwardLabel([pattern], targets);
+  return label === undefined ? { kind: "ordinary" } : { kind: "outward", action: `${toolName} ${label}`, payload: { tool: toolName, input: toolInput, cwd: base } };
 }
 
 /**
@@ -197,8 +235,9 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
  * `"` (a backslash there escapes a `"` or `\`); a backslash outside
  * quotes escapes the next character (`Application\ Support` is one word).
  * Adjacent quoted and unquoted parts join into one word; an unterminated quote
- * runs to the end. No expansion of any kind (the policy already refused `$`,
- * backticks and the other shell metacharacters).
+ * runs to the end. No expansion here (the policy already refused `$`,
+ * backticks and the other shell metacharacters); the rail reads globs, braces
+ * and `~` itself, failing closed (`classifyToolCall`).
  */
 export function shellWords(command: string): string[] {
   const words: string[] = [];
@@ -234,81 +273,279 @@ export function shellWords(command: string): string[] {
   return words;
 }
 
-/** `raw` as an absolute, normalised path: `~` / `~/…` under `homeDir`, anything else resolved against `base`. */
+// ---- Path patterns: what a word names, or could expand to ----
+
+/** One char-level glob token: a literal character (length 1), or `ANY` / `STAR` (length 2, never a literal). */
+const ANY = "\0?";
+const STAR = "\0*";
+/** A path segment that matches any number of segments (a zsh recursive `**` segment, and "anywhere" for an unknown `~user`). */
+const GLOBSTAR: "**" = "**";
+/** A path segment: its glob tokens (case-folded), or `GLOBSTAR`. */
+type Seg = readonly string[] | typeof GLOBSTAR;
+
+/** More brace-expansion results than this read as "anything" (fail closed). */
+export const MAX_BRACE_EXPANSIONS = 64;
+
+/** `segment` as glob tokens (`*` `?` `[…]` when `glob`), case-folded; a `[…]` class reads as any one character. */
+function segment(part: string, glob: boolean): readonly string[] {
+  const toks: string[] = [];
+  const lower = part.toLowerCase();
+  for (let i = 0; i < lower.length; i++) {
+    const c = lower[i] as string;
+    if (glob && c === "*") {
+      if (toks[toks.length - 1] !== STAR) toks.push(STAR);
+    } else if (glob && c === "?") toks.push(ANY);
+    else if (glob && c === "[" && lower.indexOf("]", i + 2) !== -1) {
+      toks.push(ANY);
+      i = lower.indexOf("]", i + 2);
+    } else toks.push(c);
+  }
+  return toks;
+}
+
+/**
+ * `path` (absolute) normalised as text: empty and `.` segments dropped, `..`
+ * applied. When `glob`, a glob segment followed by `..` is its parent (the shell only expands `x*` to
+ * an existing dir), and a `**` segment followed by `..` stays `**` (it could be any depth).
+ */
+function normalisePath(path: string, glob: boolean): string {
+  const out: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      const last = out.pop();
+      if (glob && last !== undefined && /^\*\*+$/.test(last)) out.push(last);
+      continue;
+    }
+    out.push(part);
+  }
+  return `/${out.join("/")}`;
+}
+
+/** A normalised absolute path as segments; when `glob`, a `**` segment other than the last is `GLOBSTAR` (as in zsh; a last `**` is `*`). */
+function patternOf(path: string, glob: boolean): Seg[] {
+  const parts = path.split("/").filter((p) => p !== "");
+  return parts.map((p, i) => (glob && /^\*\*+$/.test(p) && i < parts.length - 1 ? GLOBSTAR : segment(p, glob)));
+}
+
+/** A literal path segment. */
+const lit = (name: string): Seg => segment(name, false);
+
+/**
+ * Whether some string matches both token lists `a` and `b` (or, one level up,
+ * some path matches both segment lists): a search over the product of the two
+ * patterns. `isStar(t)` marks a token that matches any run (including none);
+ * `compatible(x, y)` says whether two other tokens can match the same item.
+ */
+function intersects<T>(a: readonly T[], b: readonly T[], isStar: (t: T) => boolean, compatible: (x: T, y: T) => boolean): boolean {
+  const width = b.length + 1;
+  const seen = new Set<number>();
+  const stack: [number, number][] = [[0, 0]];
+  while (stack.length > 0) {
+    const [i, j] = stack.pop() as [number, number];
+    if (seen.has(i * width + j)) continue;
+    seen.add(i * width + j);
+    if (i === a.length && j === b.length) return true;
+    const sa = i < a.length && isStar(a[i] as T);
+    const sb = j < b.length && isStar(b[j] as T);
+    if (sa) {
+      stack.push([i + 1, j]);
+      if (j < b.length && !sb) stack.push([i, j + 1]);
+    }
+    if (sb) {
+      stack.push([i, j + 1]);
+      if (i < a.length && !sa) stack.push([i + 1, j]);
+    }
+    if (i < a.length && j < b.length && !sa && !sb && compatible(a[i] as T, b[j] as T)) stack.push([i + 1, j + 1]);
+  }
+  return false;
+}
+
+const tokensIntersect = (a: readonly string[], b: readonly string[]): boolean =>
+  intersects(a, b, (t) => t === STAR, (x, y) => x === ANY || y === ANY || x === y);
+
+/** Whether some path matches both segment patterns (`GLOBSTAR` on either side). */
+function couldMatch(path: readonly Seg[], target: readonly Seg[]): boolean {
+  return intersects(
+    path,
+    target,
+    (s) => s === GLOBSTAR,
+    (x, y) => tokensIntersect(x as readonly string[], y as readonly string[]),
+  );
+}
+
+/**
+ * `word` after the shell's brace expansion: `{a,b}` alternatives (nested and
+ * repeated) and a `{1..9}` / `{a..z}` sequence (read as `*`: it never yields a
+ * `/`). More than `MAX_BRACE_EXPANSIONS` results reads as "any path" (fail closed).
+ */
+export function braceExpand(word: string): string[] {
+  const out: string[] = [];
+  return expandBraces(word, 0, out) ? out : ["/**/*"];
+}
+
+const BRACE_SEQUENCE = /^(-?\d+\.\.-?\d+|[a-z]\.\.[a-z])(\.\.-?\d+)?$/i;
+
+function expandBraces(s: string, from: number, out: string[]): boolean {
+  for (let i = s.indexOf("{", from); i !== -1; i = s.indexOf("{", i + 1)) {
+    let depth = 0;
+    let close = -1;
+    const commas: number[] = [];
+    for (let j = i; j < s.length && close === -1; j++) {
+      if (s[j] === "{") depth++;
+      else if (s[j] === "}" && --depth === 0) close = j;
+      else if (s[j] === "," && depth === 1) commas.push(j);
+    }
+    if (close === -1) continue;
+    const pre = s.slice(0, i);
+    const post = s.slice(close + 1);
+    if (commas.length > 0) {
+      let start = i + 1;
+      for (const end of [...commas, close]) {
+        if (!expandBraces(pre + s.slice(start, end) + post, i, out)) return false;
+        start = end + 1;
+      }
+      return true;
+    }
+    if (BRACE_SEQUENCE.test(s.slice(i + 1, close))) return expandBraces(`${pre}*${post}`, i, out);
+  }
+  if (out.length >= MAX_BRACE_EXPANSIONS) return false;
+  out.push(s);
+  return true;
+}
+
+/** `raw` (a tool's literal path) as an absolute, normalised path: `~` / `~/…` under `homeDir`, anything else resolved against `base`. */
 function expandPath(raw: string, base: string, homeDir: string): string {
   if (raw === "~") return homeDir;
   if (raw.startsWith("~/")) return resolve(homeDir, raw.slice(2));
   return resolve(base, raw);
 }
 
-/** Every path a Bash word could name: the word itself, and the value after its first `=` (`--file=…`, `key=…`). */
-function pathsNamedBy(word: string, base: string, homeDir: string): string[] {
+/** A shell word's value as an absolute path: `~`/`~/…` home, `~+` the cwd, any other `~…` (`~user`, `~-`, a named dir) "any directory". */
+function shellPath(value: string, base: string, homeDir: string): string {
+  if (!value.startsWith("~")) return value.startsWith("/") ? value : `${base}/${value}`;
+  const slash = value.indexOf("/");
+  const head = slash === -1 ? value : value.slice(0, slash);
+  const rest = slash === -1 ? "" : value.slice(slash);
+  if (head === "~") return `${homeDir}${rest}`;
+  if (head === "~+") return `${base}${rest}`;
+  return `/**${rest === "" ? "/*" : rest}`;
+}
+
+/**
+ * Every path pattern a Bash word could name: the word itself, the value after
+ * its first `=` (`--file=…`, `key=…`), and the rest of a glued short option
+ * (`-C/path`), each brace-expanded, `~`-expanded, resolved against `base`,
+ * normalised and without a `/System/Volumes/Data` firmlink prefix.
+ */
+function bashPathPatterns(word: string, base: string, homeDir: string): Seg[][] {
   const values = [word];
   const eq = word.indexOf("=");
   if (eq >= 0 && eq < word.length - 1) values.push(word.slice(eq + 1));
-  return values.map((v) => expandPath(v, base, homeDir));
+  if (/^-[^-]./.test(word)) values.push(word.slice(2));
+  return values.flatMap(braceExpand).map((v) => patternOf(withoutFirmlink(normalisePath(shellPath(v, base, homeDir), true)), true));
 }
 
-/** Case-insensitive (APFS is by default), on a path-segment boundary. */
-function isInside(path: string, root: string): boolean {
-  const p = path.toLowerCase();
-  const r = root.toLowerCase().replace(/[\\/]+$/, "");
-  return p === r || p.startsWith(`${r}${sep}`);
+interface RailTargets {
+  /** Protected kernel paths, in both firmlink spellings of the data dir. */
+  readonly protectedPaths: readonly Seg[][];
+  /** The outward paths with the short label an approval's action shows. */
+  readonly outward: readonly (readonly [string, readonly Seg[]])[];
 }
 
-function isProtectedKernelPath(path: string, dataDir: string): boolean {
-  if (path.toLowerCase() === dataDir.toLowerCase()) return true;
-  if (PROTECTED_DATA_DIRS.some((d) => isInside(path, join(dataDir, d)))) return true;
-  return PROTECTED_DATA_FILES.some((f) => path.toLowerCase() === join(dataDir, f).toLowerCase());
+function railTargets(dataDir: string, homeDir: string): RailTargets {
+  const protectedPaths = firmlinkForms(dataDir).flatMap((d): Seg[][] => {
+    const root = patternOf(normalisePath(d, false), false);
+    return [root, ...PROTECTED_DATA_DIRS.map((n) => [...root, lit(n), GLOBSTAR]), ...PROTECTED_DATA_FILES.map((f) => [...root, lit(f)])];
+  });
+  const outward: (readonly [string, readonly Seg[]])[] = [
+    ...firmlinkForms(homeDir).map((h): readonly [string, readonly Seg[]] => ["~/.claude/", [...patternOf(normalisePath(h, false), false), lit(".claude"), GLOBSTAR]]),
+    ["a settings*.json file", [GLOBSTAR, segment("settings*.json", true)]],
+    ["a hooks file", [GLOBSTAR, lit("hooks.json")]],
+    ["a hooks file", [GLOBSTAR, lit(".git"), lit("hooks"), GLOBSTAR]],
+    ["a hooks file", [GLOBSTAR, lit(".claude"), GLOBSTAR, lit("hooks"), GLOBSTAR]],
+  ];
+  return { protectedPaths, outward };
 }
 
-/** Why `path` is in the outward set (a short label for the approval's action), or `undefined`. */
-function outwardPathLabel(path: string, homeDir: string): string | undefined {
-  if (isInside(path, join(homeDir, ".claude"))) return "~/.claude/";
-  const name = basename(path).toLowerCase();
-  if (/^settings.*\.json$/.test(name)) return "a settings*.json file";
-  if (name === "hooks.json") return "a hooks file";
-  const segments = path.toLowerCase().split(sep);
-  for (let i = 1; i < segments.length; i++) {
-    if (segments[i] !== "hooks") continue;
-    if (segments[i - 1] === ".git" || segments.slice(0, i).includes(".claude")) return "a hooks file";
-  }
+/** Why one of `patterns` is in the outward set (a short label for the approval's action), or `undefined`. */
+function outwardLabel(patterns: readonly Seg[][], targets: RailTargets): string | undefined {
+  for (const [label, target] of targets.outward) if (patterns.some((p) => couldMatch(p, target))) return label;
   return undefined;
 }
+
+/** Whether a shell word could be `literal` (case-folded), after brace expansion and as a glob. */
+function wordCouldBe(word: string, literal: string): boolean {
+  const target = segment(literal, false);
+  return braceExpand(word).some((e) => tokensIntersect(segment(e, true), target));
+}
+
+// ---- Command forms ----
+
+/** Shell glob characters: a word holding one could expand to another word. */
+const GLOB_CHARS = /[*?[]/;
+/** A flag word the shell could expand (`-[X]`): the rail cannot tell which flag it is. */
+const isGlobbedFlag = (word: string): boolean => word.startsWith("-") && GLOB_CHARS.test(word);
+/** More globbed flags than this in one gh command reads as a merge (fail closed). */
+const MAX_GLOBBED_FLAGS = 4;
+
+/** Whether a shell word (a glob) and `glob` could match the same text, case-folded. */
+const globsMeet = (word: string, glob: string): boolean => tokensIntersect(segment(word, true), segment(glob, true));
 
 /** The recognised outward form of a Bash command's words (`git push`, `gh pr create`, `gh api POST`), `"merge"`, or `undefined`. */
 function commandForm(words: readonly string[]): string | undefined {
-  const [program, ...rest] = words;
+  // Brace expansion can turn one word into several argv words (`gh {pr,merge} 12` is `gh pr merge 12`).
+  const [program, ...rest] = words.flatMap(braceExpand);
   if (program === undefined) return undefined;
   const name = basename(program).toLowerCase();
-  if (name === "git") return gitSubcommand(rest) === "push" ? "git push" : undefined;
+  // `git-push` (git's libexec spelling) is `git push`.
+  if (name === "git") return gitForm(rest);
+  if (name.startsWith("git-")) return gitForm([name.slice(4), ...rest]);
   if (name !== "gh") return undefined;
-  const positional = ghPositionals(rest);
-  const [group, sub] = positional;
-  if (group === "pr" && sub === "merge") return "merge";
-  if (group === "pr" && sub !== undefined && GH_PR_OUTWARD.has(sub)) return `gh pr ${sub}`;
-  if (group === "issue" && sub !== undefined && GH_ISSUE_OUTWARD.has(sub)) return `gh issue ${sub}`;
-  if (group === "api") return ghApiForm(rest.slice(rest.findIndex((w) => w.toLowerCase() === "api") + 1));
-  return undefined;
-}
-
-/** The first word after `git`'s own options (`-C <dir>`, `-c <k=v>`, `--git-dir <dir>`, `--no-pager`, …), case-folded. */
-function gitSubcommand(args: readonly string[]): string | undefined {
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i] as string;
-    if (GIT_VALUE_OPTIONS.has(a) || GIT_VALUE_OPTIONS.has(a.toLowerCase())) {
-      i++;
-      continue;
-    }
-    if (a.startsWith("-")) continue;
-    return a.toLowerCase();
+  // A globbed flag could be `-R` (taking the next word as its value) or not: both readings are checked, a merge in either wins.
+  const globbed = rest.flatMap((w, i) => (isGlobbedFlag(w) ? [i] : []));
+  if (globbed.length > MAX_GLOBBED_FLAGS) return "merge";
+  let form: string | undefined;
+  for (let mask = 0; mask < 1 << globbed.length; mask++) {
+    const reading = rest.map((w, i) => (globbed.includes(i) && (mask >> globbed.indexOf(i)) & 1 ? "-R" : w));
+    const f = ghForm(reading);
+    if (f === "merge") return f;
+    form ??= f;
   }
+  return form;
+}
+
+/** `gh`'s outward form for one reading of its arguments. */
+function ghForm(args: readonly string[]): string | undefined {
+  const [group, sub] = ghPositionals(args);
+  if (group === undefined) return undefined;
+  const is = (w: { word: string } | undefined, literal: string): boolean => w !== undefined && wordCouldBe(w.word, literal);
+  if (is(group, "pr") && is(sub, "merge")) return "merge";
+  if (is(group, "pr")) for (const s of GH_PR_OUTWARD) if (is(sub, s)) return `gh pr ${s}`;
+  if (is(group, "issue")) for (const s of GH_ISSUE_OUTWARD) if (is(sub, s)) return `gh issue ${s}`;
+  if (is(group, "alias")) for (const s of GH_ALIAS_OUTWARD) if (is(sub, s)) return `gh alias ${s}`;
+  if (is(group, "api")) return ghApiForm(args.slice(group.index + 1));
   return undefined;
 }
 
-/** `gh`'s first two command words, case-folded, skipping flags (and `-R`/`--repo`'s value). */
-function ghPositionals(args: readonly string[]): string[] {
-  const out: string[] = [];
+/**
+ * git's outward form: any word after `git` that could be one of `GIT_OUTWARD`
+ * (so no option spelling before the subcommand can hide a push), `submit`
+ * after `p4`, or an alias definition (`GIT_ALIAS_CONFIG`, `--config-env`).
+ */
+function gitForm(args: readonly string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i] as string;
+    for (const [sub, label] of GIT_OUTWARD) if (wordCouldBe(word, sub)) return label;
+    if (wordCouldBe(word, "submit") && args.slice(0, i).some((w) => wordCouldBe(w, "p4"))) return "git p4 submit";
+  }
+  if (args.some((w) => GIT_ALIAS_CONFIG.some((g) => globsMeet(w, g)))) return "git alias";
+  return undefined;
+}
+
+/** `gh`'s first two command words and their index in `args`, skipping flags (and `-R`/`--repo`'s value). */
+function ghPositionals(args: readonly string[]): { word: string; index: number }[] {
+  const out: { word: string; index: number }[] = [];
   for (let i = 0; i < args.length && out.length < 2; i++) {
     const a = args[i] as string;
     if (a === "-R" || a === "--repo") {
@@ -316,31 +553,70 @@ function ghPositionals(args: readonly string[]): string[] {
       continue;
     }
     if (a.startsWith("-")) continue;
-    out.push(a.toLowerCase());
+    out.push({ word: a, index: i });
   }
   return out;
 }
 
-/** `gh api …`'s form: `merge` for a merge, `gh api <METHOD>` for a non-GET method, `undefined` for a GET. */
+/** The REST merge endpoint and the GraphQL endpoint, as segment patterns. */
+const MERGE_ENDPOINT: readonly Seg[] = [GLOBSTAR, lit("pulls"), [STAR], lit("merge")];
+const GRAPHQL_ENDPOINT: readonly Seg[] = [GLOBSTAR, lit("graphql")];
+
+/**
+ * Whether a `gh api` word could reach `target`: brace-expanded, read both
+ * with its `?query` / `#fragment` cut off and as a glob, percent-decoded or
+ * not, with empty, `.` and `..` segments normalised.
+ */
+function endpointCouldBe(word: string, target: readonly Seg[]): boolean {
+  return braceExpand(word).some((e) => {
+    let decoded = e;
+    try {
+      decoded = decodeURIComponent(e);
+    } catch {
+      // Malformed percent-encoding: the raw text is still compared.
+    }
+    return [e, decoded].some((v) => [v, v.replace(/[?#].*$/, "")].some((x) => couldMatch(patternOf(normalisePath(`/${x}`, true), true), target)));
+  });
+}
+
+/**
+ * `gh api …`'s form: `merge` for a merge (or a GraphQL query the rail cannot
+ * read), `gh api <METHOD>` for a non-GET method (`gh api (flag unread)` when
+ * a globbed flag hides it), `undefined` for a GET.
+ */
 function ghApiForm(args: readonly string[]): string | undefined {
   let method: string | undefined;
   let fields = false;
+  // A body the rail cannot read: a field read from a file (`-F k=@file`), `--input`, or a globbed word.
+  let opaque = false;
+  // A globbed flag could be `-X PUT`, `--input` or anything else.
+  const unread = args.some(isGlobbedFlag);
   for (let i = 0; i < args.length; i++) {
     const a = args[i] as string;
     if (a === "-X" || a === "--method") method = args[++i] ?? "";
     else if (a.startsWith("--method=")) method = a.slice("--method=".length);
     else if (a.startsWith("-X")) method = a.slice(2);
-    else if (["-f", "-F", "--field", "--raw-field", "--input"].includes(a)) {
+    else if (a === "--input" || a.startsWith("--input=")) {
       fields = true;
+      opaque = true;
+      if (a === "--input") i++;
+    } else if (["-f", "-F", "--field", "--raw-field"].includes(a)) {
+      fields = true;
+      if ((a === "-F" || a === "--field") && (args[i + 1] ?? "").includes("=@")) opaque = true;
       i++;
-    } else if (/^(-f|-F).+/.test(a) || /^--(field|raw-field|input)=/.test(a)) fields = true;
+    } else if (/^(-f|-F).+/.test(a) || /^--(field|raw-field)=/.test(a)) {
+      fields = true;
+      if (/^(-F|--field=)/.test(a) && a.includes("=@")) opaque = true;
+    }
   }
+  if (unread || args.some((a) => GLOB_CHARS.test(a))) opaque = true;
   // A flag with no value (`gh api -X`) is gh's own usage error; it is read as no explicit method.
   const verb = (method === undefined || method === "" ? (fields ? "POST" : "GET") : method).toUpperCase();
   if (args.some((a) => API_MERGE_MUTATION.test(a))) return "merge";
-  if (verb === "GET") return undefined;
-  if (args.some((a) => API_MERGE_PATH.test(a))) return "merge";
-  return `gh api ${verb}`;
+  if (opaque && args.some((a) => endpointCouldBe(a, GRAPHQL_ENDPOINT))) return "merge";
+  if (verb === "GET" && !unread) return undefined;
+  if (args.some((a) => endpointCouldBe(a, MERGE_ENDPOINT))) return "merge";
+  return verb === "GET" ? "gh api (flag unread)" : `gh api ${verb}`;
 }
 
 /** A defensive, frozen copy: later changes to the caller's arrays cannot reach the gate. */
