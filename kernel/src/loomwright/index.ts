@@ -77,6 +77,7 @@ export {
   isDowngrade,
   renderVersionNote,
   safeVersionComponent,
+  versionNoteBody,
   versionNoteCounts,
   versionNoteMarker,
   versionWatchDueWork,

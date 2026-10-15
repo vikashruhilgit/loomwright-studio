@@ -478,6 +478,48 @@ describe("the note file (AC7)", () => {
     expect(notifications()[0]?.body).toContain(join(notesDir(), "17.2.0-to-17.3.0.md"));
   });
 
+  it("a crash-retry with a marker over 16 KiB (a long plugin version) still reuses its own note: one file, one notification", async () => {
+    const longVersion = "é".repeat(3000); // percent-encoded: 18,000 bytes in the marker
+    activate(contract("17.2.0"), "17.2.0");
+    const loop = watchLoop();
+    await loop.tick();
+    activate(contract(longVersion), longVersion);
+
+    // The row-and-notification transaction fails once: the note stays, nothing else commits.
+    const transaction = env.store.transaction.bind(env.store);
+    let failed = false;
+    vi.spyOn(env.store, "transaction").mockImplementation(((fn: () => unknown) => {
+      if (!failed && seenRows().length === 1 && noteFiles().length === 1) {
+        failed = true;
+        throw new Error("simulated crash before the commit");
+      }
+      return transaction(fn);
+    }) as Store["transaction"]);
+    env.advance(MINUTE);
+    await loop.tick();
+    expect(failed).toBe(true);
+    const [name] = noteFiles();
+    expect(noteFiles()).toHaveLength(1);
+    expect(Buffer.byteLength(note(name ?? "").split("\n")[0] ?? "", "utf8")).toBeGreaterThan(16 * 1024);
+    expect(notifications()).toEqual([]);
+
+    env.advance(MINUTE);
+    await loop.tick();
+    expect(noteFiles()).toEqual([name]);
+    expect(seenRows()).toHaveLength(2);
+    expect(notifications()).toHaveLength(1);
+    expect(notifications()[0]?.body).toContain(join(notesDir(), name ?? ""));
+  });
+
+  it("writeVersionNote: a file whose first line only starts with the marker is not reused", () => {
+    const dir = join(root, "notes");
+    const marker = `<!-- ${"m".repeat(20_000)} -->`;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "a-to-b.md"), `${marker}x\n`);
+    expect(writeVersionNote(dir, "a-to-b", `${marker}\n`, marker)).toBe(join(dir, "a-to-b-2.md"));
+    expect(writeVersionNote(dir, "a-to-b", `${marker}\nagain\n`, marker)).toBe(join(dir, "a-to-b-2.md"));
+  });
+
   it("the note's first line is its provenance marker: the row it diffs from and the new triple", async () => {
     const { to } = await transition(contract("17.3.0"), "17.3.0");
     const [first] = seenRows();
@@ -577,6 +619,11 @@ describe("hooks and unknown fields (AC9)", () => {
     expect(plain.hooks).toHaveLength(4);
     expect(diffLoomwrightContracts(JSON.stringify(extras(old)), JSON.stringify(extras(nxt)))).toEqual(plain);
     expect(diffLoomwrightContracts(JSON.stringify(old), JSON.stringify(extras(old)))).toEqual(diffLoomwrightContracts(JSON.stringify(old), JSON.stringify(old)));
+  });
+
+  it("a hook-only change: the notification body counts the Changed lines, and added/removed stay 0", async () => {
+    await transition(next(), "17.3.0");
+    expect(notifications()[0]?.body).toMatch(/^0 added, 0 removed, 4 changed\. Note: /);
   });
 
   it("result-schema version changes are listed under Changed", () => {

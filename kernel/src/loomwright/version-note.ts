@@ -55,9 +55,6 @@ const MAX_VERSION_COMPONENT = 64;
 /** `<old>-to-<new>.md`, then `-2` … up to this suffix; beyond it the check throws. */
 const MAX_NOTE_SUFFIX = 1_000;
 
-/** How much of an existing note is read to find its marker line. */
-const MARKER_READ_BYTES = 16 * 1024;
-
 // ---- The diff --------------------------------------------------------------
 
 /** The contract lists whose entries are keyed by `name`, in the note's order. */
@@ -421,6 +418,17 @@ function hookLine(h: HookChange): string {
   }
 }
 
+/** The Changed section's lines: hooks, result-schema versions, the contract schema version (never description changes). */
+function changedLines(diff: LoomwrightContractDiff): string[] {
+  return [
+    ...diff.hooks.map(hookLine),
+    ...diff.result_schema_versions.map((s) => `- Result schema ${code(s.name)} schema version: ${s.from ?? "none"} → ${s.to ?? "none"}`),
+    ...(diff.contract_schema_version === null
+      ? []
+      : [`- Contract schema version: ${diff.contract_schema_version.from ?? "unknown"} → ${diff.contract_schema_version.to ?? "unknown"}`]),
+  ];
+}
+
 function section(heading: string, lines: readonly string[]): string[] {
   return ["", `## ${heading}`, "", ...(lines.length === 0 ? ["- (none)"] : lines)];
 }
@@ -448,14 +456,7 @@ export function renderVersionNote(diff: LoomwrightContractDiff, meta: VersionNot
   if (diff.breaking.length > 0) lines.push(...section("Breaking", diff.breaking.map((b) => breakingLine(b, diff))));
   lines.push(...section("Added", diff.added.map((e) => `- ${GROUP_LABEL[e.group]} ${described(e.name, e.description)}`)));
   lines.push(...section("Removed", diff.removed.map((e) => `- ${GROUP_LABEL[e.group]} ${described(e.name, e.description)}`)));
-  const changed = [
-    ...diff.hooks.map(hookLine),
-    ...diff.result_schema_versions.map((s) => `- Result schema ${code(s.name)} schema version: ${s.from ?? "none"} → ${s.to ?? "none"}`),
-    ...(diff.contract_schema_version === null
-      ? []
-      : [`- Contract schema version: ${diff.contract_schema_version.from ?? "unknown"} → ${diff.contract_schema_version.to ?? "unknown"}`]),
-  ];
-  lines.push(...section("Changed", changed));
+  lines.push(...section("Changed", changedLines(diff)));
   lines.push(
     ...section(
       "Description changes",
@@ -465,9 +466,31 @@ export function renderVersionNote(diff: LoomwrightContractDiff, meta: VersionNot
   return `${lines.join("\n")}\n`;
 }
 
-/** The counts a notification carries: description changes are never counted. */
-export function versionNoteCounts(diff: LoomwrightContractDiff): { readonly breaking: number; readonly added: number; readonly removed: number } {
-  return { breaking: diff.breaking.length, added: diff.added.length, removed: diff.removed.length };
+/**
+ * The counts a notification carries: breaking signals, additions, removals,
+ * and the lines of the note's Changed section (hooks, result-schema versions,
+ * the contract schema version). Description changes are never counted.
+ */
+export function versionNoteCounts(diff: LoomwrightContractDiff): {
+  readonly breaking: number;
+  readonly added: number;
+  readonly removed: number;
+  readonly changed: number;
+} {
+  return { breaking: diff.breaking.length, added: diff.added.length, removed: diff.removed.length, changed: changedLines(diff).length };
+}
+
+/**
+ * The notification body: `[<b> breaking, ]<a> added, <r> removed[, <c> changed]. Note: <path>`.
+ * The changed clause appears only when the note's Changed section is non-empty.
+ */
+export function versionNoteBody(diff: LoomwrightContractDiff, notePath: string): string {
+  const counts = versionNoteCounts(diff);
+  return clipText(
+    `${counts.breaking > 0 ? `${counts.breaking} breaking, ` : ""}${counts.added} added, ${counts.removed} removed` +
+      `${counts.changed > 0 ? `, ${counts.changed} changed` : ""}. Note: ${notePath}`,
+    MAX_NOTIFICATION_BODY,
+  );
 }
 
 // ---- The note file ---------------------------------------------------------
@@ -524,8 +547,20 @@ function createExclusive(path: string, content: string): boolean {
   }
 }
 
-/** The first line of the file at `path` (read from its first 16 KiB), or `undefined` when it cannot be read. */
-function firstLineOf(path: string): string | undefined {
+/**
+ * Whether the first line of the file at `path` is exactly `marker`. Reads
+ * `marker`'s UTF-8 length plus one byte (its newline), however long the
+ * marker is: the marker carries the percent-encoded install path and plugin
+ * version, which only the contract's size bounds. `false` when the file
+ * cannot be read.
+ */
+function startsWithMarkerLine(path: string, marker: string): boolean {
+  const line = firstLineOf(path, Buffer.byteLength(marker, "utf8") + 1);
+  return line === marker;
+}
+
+/** The first line within the first `maxBytes` bytes of the file at `path`, or `undefined` when it cannot be read. */
+function firstLineOf(path: string, maxBytes: number): string | undefined {
   let fd: number;
   try {
     fd = openSync(path, "r");
@@ -533,8 +568,14 @@ function firstLineOf(path: string): string | undefined {
     return undefined;
   }
   try {
-    const buffer = Buffer.alloc(MARKER_READ_BYTES);
-    const n = readSync(fd, buffer, 0, buffer.length, 0);
+    const buffer = Buffer.alloc(maxBytes);
+    let n = 0;
+    // A read may return fewer bytes than asked: read until full or end of file.
+    while (n < buffer.length) {
+      const got = readSync(fd, buffer, n, buffer.length - n, n);
+      if (got === 0) break;
+      n += got;
+    }
     const text = buffer.subarray(0, n).toString("utf8");
     const end = text.indexOf("\n");
     return end === -1 ? text : text.slice(0, end);
@@ -561,7 +602,7 @@ export function writeVersionNote(dir: string, base: string, content: string, mar
   for (let n = 1; n <= MAX_NOTE_SUFFIX; n++) {
     const path = containedNotePath(dir, n === 1 ? `${base}.md` : `${base}-${n}.md`);
     if (createExclusive(path, content)) return path;
-    if (firstLineOf(path) === marker) return path;
+    if (startsWithMarkerLine(path, marker)) return path;
   }
   throw new Error(`no free version note name for ${base}.md in ${dir} (tried ${MAX_NOTE_SUFFIX})`);
 }
@@ -699,11 +740,7 @@ export function checkLoomwrightVersion(ctx: DueWorkContext, settings: Loomwright
     marker,
   );
 
-  const counts = versionNoteCounts(diff);
-  const body = clipText(
-    `${counts.breaking > 0 ? `${counts.breaking} breaking, ` : ""}${counts.added} added, ${counts.removed} removed. Note: ${notePath}`,
-    MAX_NOTIFICATION_BODY,
-  );
+  const body = versionNoteBody(diff, notePath);
   return store.transaction((): VersionCheckOutcome => {
     const rowId = recordSeen(store, observed, text, at);
     const notification = recordNotification(store, { source: VERSION_NOTE_SOURCE, title, body }, now);

@@ -153,7 +153,7 @@ The note's first line is a provenance marker: `<!-- loomwright-version-note from
 
 - **The file name.** A plugin version is contract data, never a path. Each version keeps only `[A-Za-z0-9._-]` (any other character becomes `_`), loses its leading dots, and is cut to 64 characters; an empty result is `unknown`. The resolved path must sit directly in `loomwright-updates/`. Directories are created with mode 0700.
 - **Never overwritten.** If the name is taken (an earlier note, or a file the owner wrote), the note goes to the first free `-2`, `-3`, …. It is written to a temp file and hard-linked into place, so a note file is never torn.
-- **A crash between the note and the row.** The next check finds a file whose first line is this transition's marker and reuses it, so there is no duplicate note.
+- **A crash between the note and the row.** The next check finds a file whose first line is this transition's marker and reuses it, so there is no duplicate note. It reads as many bytes as the marker has (plus its newline), so a long install path or plugin version still matches.
 
 ### The notification
 
@@ -161,7 +161,7 @@ One notification per version change, created with the row:
 
 - source `kernel:loomwright_version`;
 - title `Loomwright <old> → <new>`;
-- body `<b> breaking, <n> added, <m> removed. Note: <path>`. The breaking count comes first and only when it is not zero. Description changes, hooks and version changes are not counted; the note has them.
+- body `<b> breaking, <n> added, <m> removed, <c> changed. Note: <path>`. The breaking count comes first and only when it is not zero. The added and removed counts are the note's Added and Removed sections only. The changed count is the number of lines in the note's Changed section (hook changes, result-schema versions, the contract schema version), and it appears only when that section is not empty, so a hook-only change still shows in the notification. Description changes are never counted; the note has them.
 
 ### Downgrade
 
