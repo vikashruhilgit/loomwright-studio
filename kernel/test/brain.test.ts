@@ -369,6 +369,23 @@ describe("settings: no model, no message (AC2)", () => {
     expect(await res.json()).toMatchObject({ error: "model_unset", file: wrightSettingsPath(dataDir), field: "model" });
   });
 
+  it("the API answers 409 settings_invalid with the file for malformed settings, queueing nothing and leaving the file untouched", async () => {
+    const file = wrightSettingsPath(dataDir);
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, "{not json");
+    const { kernel, keychain } = await startBrainKernel();
+    const res = await fetch(`http://127.0.0.1:${kernel.api.port}/ask`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${keychain.items.get(API_TOKEN_KEYCHAIN_SERVICE)}` },
+      body: JSON.stringify({ text: "hi" }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "settings_invalid", file, message: `${file}: not JSON` });
+    expect(count(kernel.store, "SELECT count(*) FROM event_queue")).toBe(0);
+    expect(count(kernel.store, "SELECT count(*) FROM brain_messages")).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe("{not json");
+  });
+
   it("readWrightSettings: never overwrites; null, empty or non-string model is model_unset; malformed is settings_invalid naming the file", () => {
     const file = wrightSettingsPath(dataDir);
     expect(readWrightSettings(dataDir)).toMatchObject({ ok: false, error: "model_unset", file, field: "model" });
@@ -641,6 +658,45 @@ describe("routing a message (the handler)", () => {
     expect(rows(store)[0]?.status).toBe("failed");
     expect(rows(store)[0]?.detail).toMatch(/^memory_unwritable: /);
     expect(getQueueRow(store, id)?.status).toBe("failed");
+  });
+
+  it("settings that cannot be written (config/ is a file) fail the row settings_unwritable and the event (the handler rejects)", async () => {
+    const store = openStore();
+    writeFileSync(join(dataDir, "config"), "a file where the config dir should be");
+    const { id } = enqueueMessage(store, { text: "hi", agent: "wright" });
+    const sessions = stubSessions(store);
+    const result = await tickBrain(store, sessions);
+    expect(result.failed).toBe(1);
+    expect(sessions.starts).toEqual([]);
+    expect(rows(store)[0]?.status).toBe("failed");
+    expect(rows(store)[0]?.detail).toMatch(/^settings_unwritable: /);
+    expect(getQueueRow(store, id)?.status).toBe("failed");
+  });
+
+  it("a redelivered event whose row is already final changes nothing: one row, still failed, no session (even once the model is set)", async () => {
+    const store = openStore();
+    const { id } = enqueueMessage(store, { text: "hi", agent: "wright" });
+    const sessions = stubSessions(store);
+    const handler = brainMessageHandler({ loomwright: () => UNAVAILABLE });
+    const row = getQueueRow(store, id);
+    const ctx = (): EventContext => ({
+      event: toQueuedEvent(row as NonNullable<typeof row>, "message"),
+      store,
+      runStep: (name, fn, opts) => runStep(store, `event:${id}:${name}`, fn, opts),
+      runStepAsync: (name, fn, opts) => runStepAsync(store, `event:${id}:${name}`, fn, opts),
+      sessions,
+    });
+    await handler(ctx());
+    const first = getBrainMessageByQueueId(store, id);
+    expect(first).toMatchObject({ status: "failed" });
+    expect(first?.detail).toMatch(/^model_unset: /);
+    // The owner sets the model before the redelivery: the final row is not re-run.
+    setModel();
+    await handler(ctx());
+    expect(sessions.starts).toEqual([]);
+    expect(sessions.resumes).toEqual([]);
+    expect(rows(store)).toHaveLength(1);
+    expect(getBrainMessageByQueueId(store, id)).toEqual(first);
   });
 
   it("model unset (a trigger's message): the row fails model_unset naming the file, no session, the event done", async () => {
