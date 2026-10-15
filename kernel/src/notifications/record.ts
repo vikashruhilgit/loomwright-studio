@@ -73,9 +73,10 @@ const COLUMNS = "id, source, title, body, deep_link, created_at, delivery_status
  * loop tick (`deliver.ts`). Throws `InvalidNotificationError` before writing
  * anything when the source is not `trigger:<id>`, `agent:<name>` or
  * `kernel:<reason>`, the title is empty or longer than 200 characters, the
- * body is longer than 4000, or either holds a NUL (the title is always an
- * argv item, and so is osascript's body; an argv item cannot hold a NUL, so
- * the spawn would fail and the row end `failed`).
+ * body is longer than 4000, or either holds a NUL (an argv item cannot hold
+ * one: the title is always an argv item, and so is osascript's body, so that
+ * spawn would fail and the row end `failed`; terminal-notifier takes the body
+ * on stdin, and how it handles a NUL there is unprobed).
  * Nested in a caller's transaction, it joins it.
  */
 export function recordNotification(store: Store, input: NotificationInput, now: Date): NotificationRow {
