@@ -1,7 +1,8 @@
 // The phase 2 feature seams (AC3-AC6, AC9): one `FeatureContribution` per
 // feature, merged by `startKernel` and `runCli`. The shipped contributions add
-// only the loomwright feature's one tool (`kernel_loomwright_capabilities`);
-// a test contribution composed from outside reaches every part
+// only the loomwright feature's one tool (`kernel_loomwright_capabilities`)
+// and the notifications feature's tool (`kernel_notify`), two routes, one
+// subcommand and one due work; a test contribution composed from outside reaches every part
 // through the normal path (the kernel MCP server, the loopback API, `studio`,
 // the event loop). A temp data dir, an in-memory Keychain, the fake
 // spawner/query and stub auth: never the real SDK, a model or the Keychain.
@@ -27,8 +28,9 @@ import {
   defineTool,
   mergeContributions,
 } from "../src/features/index.js";
-import type { ContributedRoute, ContributedSubcommand, FeatureContribution } from "../src/features/index.js";
+import type { ContributedRoute, ContributedRouteRequest, ContributedSubcommand, FeatureContribution } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
+import { NOTIFICATIONS_HELP, deliveryDueWork } from "../src/notifications/index.js";
 import type { Kernel, KernelDeps, KernelOptions } from "../src/kernel.js";
 import { EventLoop } from "../src/loop/loop.js";
 import { enqueueMessage, getQueueRow } from "../src/loop/queue.js";
@@ -70,16 +72,17 @@ const noopSubcommand = (name: string): ContributedSubcommand => ({ name, help: `
 const noopTool = (name: string) => defineTool({ name, description: "test tool", shape: {}, handler: () => ({}) });
 
 describe("mergeContributions", () => {
-  it("the shipped contributions: the five features in a fixed order, registering nothing but loomwright's one tool (AC3)", () => {
+  it("the shipped contributions: the five features in a fixed order, registering nothing but loomwright's one tool and the notifications parts (AC3)", () => {
     expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1);
     expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
-    expect(merged.tools.map((t) => t.name)).toEqual(["kernel_loomwright_capabilities"]);
-    expect(merged.routes).toEqual([]);
-    expect(merged.subcommands).toEqual([]);
+    expect(merged.tools.map((t) => t.name)).toEqual(["kernel_loomwright_capabilities", "kernel_notify"]);
+    expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(["notifications GET /notifications", "notifications GET /notifications/:id"]);
+    expect(merged.subcommands.map((s) => s.name)).toEqual(["notifications"]);
     expect(merged.handlers).toEqual({});
-    expect(merged.dueWork).toEqual([]);
-    for (const c of SHIPPED_CONTRIBUTIONS) expect(Object.keys(c), c.name).toEqual(c.name === "loomwright" ? ["name", "tools"] : ["name"]);
+    expect(merged.dueWork).toEqual([{ owner: "notifications", run: deliveryDueWork }]);
+    const keys: Record<string, string[]> = { loomwright: ["name", "tools"], notifications: ["name", "tools", "routes", "subcommands", "dueWork"] };
+    for (const c of SHIPPED_CONTRIBUTIONS) expect(Object.keys(c), c.name).toEqual(keys[c.name] ?? ["name"]);
   });
 
   it("a contributed tool whose name does not start with kernel_ is refused", () => {
@@ -418,7 +421,7 @@ function out() {
 }
 
 describe("the shipped kernel (AC3)", () => {
-  it("registers no kernel tool beyond phase 1's but kernel_loomwright_capabilities, and no API route, CLI subcommand, event handler or due work beyond phase 1's", async () => {
+  it("registers no kernel tool beyond phase 1's but kernel_loomwright_capabilities and kernel_notify, and no API route, CLI subcommand, event handler or due work beyond phase 1's but the notifications ones", async () => {
     const store = new Store({ dataDir });
     const { id } = enqueueMessage(store, { text: "hello" });
     store.close();
@@ -426,24 +429,31 @@ describe("the shipped kernel (AC3)", () => {
     const kernel = await start(options(), d);
 
     expect(kernel.contributions.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
-    expect(kernelToolNames(kernel.contributions.tools)).toEqual([...KERNEL_TOOL_NAMES, "kernel_loomwright_capabilities"]);
-    expect(Object.keys(await launchedTools(kernel, fakes))).toEqual([...KERNEL_TOOL_NAMES, "kernel_loomwright_capabilities"]);
-    expect(kernel.contributions.routes).toEqual([]);
-    expect(kernel.contributions.subcommands).toEqual([]);
+    expect(kernelToolNames(kernel.contributions.tools)).toEqual([...KERNEL_TOOL_NAMES, "kernel_loomwright_capabilities", "kernel_notify"]);
+    expect(Object.keys(await launchedTools(kernel, fakes))).toEqual([...KERNEL_TOOL_NAMES, "kernel_loomwright_capabilities", "kernel_notify"]);
+    expect(kernel.contributions.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual([
+      "notifications GET /notifications",
+      "notifications GET /notifications/:id",
+    ]);
+    expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(["notifications"]);
     expect(kernel.contributions.handlers).toEqual({});
-    expect(kernel.contributions.dueWork).toEqual([]);
+    expect(kernel.contributions.dueWork).toEqual([{ owner: "notifications", run: deliveryDueWork }]);
 
     // No handler: the message ends event_unhandled, as in phase 1.
     await vi.waitFor(() => expect(getQueueRow(kernel.store, id)?.status).toBe("done"));
     expect(events(kernel.store, "event_unhandled")).toHaveLength(1);
-    // No route beyond phase 1's: an unknown path is 404.
+    // No route beyond phase 1's and the notifications ones: an unknown path is 404.
     const token = keychain.items.get(API_TOKEN_KEYCHAIN_SERVICE) ?? "";
     const res = await fetch(`http://127.0.0.1:${kernel.api.port}/probe/items/1`, { headers: { Authorization: `Bearer ${token}` } });
     expect(res.status).toBe(404);
-    // No subcommand beyond phase 1's: the usage text is phase 1's, unchanged.
+    const listed = await fetch(`http://127.0.0.1:${kernel.api.port}/notifications`, { headers: { Authorization: `Bearer ${token}` } });
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toEqual({ notifications: [] });
+    // No subcommand beyond phase 1's but notifications: the usage text is phase 1's plus its help line.
     const stderr = out();
     expect(await runCli(["probe"], { dataDir, stderr, stdout: out() })).toBe(2);
-    expect(stderr.text()).toBe(`${USAGE}\n`);
+    expect(stderr.text()).toBe(`${USAGE} | studio notifications [--limit N] [--json] | studio notifications show <id>\n`);
+    expect(NOTIFICATIONS_HELP).toBe("studio notifications [--limit N] [--json] | studio notifications show <id>");
   });
 });
 
@@ -464,7 +474,7 @@ describe("a contribution composed from outside (AC4)", () => {
   it("the tool is on the kernel MCP server (kernel_ prefix) and validates its arguments with zod", async () => {
     const { kernel, fakes } = await composed();
     const tools = await launchedTools(kernel, fakes);
-    expect(Object.keys(tools)).toEqual([...KERNEL_TOOL_NAMES, "kernel_loomwright_capabilities", "kernel_probe_echo"]);
+    expect(Object.keys(tools)).toEqual([...KERNEL_TOOL_NAMES, "kernel_loomwright_capabilities", "kernel_notify", "kernel_probe_echo"]);
     const sessionId = Number(kernel.store.prepare<[], number>("SELECT max(id) FROM sessions").pluck().get());
 
     const ok = await tools.kernel_probe_echo?.handler({ text: "hi", idempotency_key: "k1" }, {});
@@ -513,6 +523,40 @@ describe("a contribution composed from outside (AC4)", () => {
     // Phase 1 routes still answer as before.
     expect((await fetch(url("/status"), { headers: auth })).status).toBe(200);
     expect((await fetch(url("/status"), { method: "POST", headers: auth, body: "{not json" })).status).toBe(405);
+  });
+
+  it("the route also gets the kernel's store and clock (the seam fields are additive: params, query and body as before)", async () => {
+    const seen: ContributedRouteRequest[] = [];
+    const contribution: FeatureContribution = {
+      name: "probe",
+      routes: [
+        {
+          method: "POST",
+          path: "/probe/context/:id",
+          handler: async (req) => {
+            seen.push(req);
+            const count = req.store.prepare<[], number>("SELECT count(*) FROM notifications").pluck().get();
+            return { status: 200, body: { keys: Object.keys(req), at: req.now().toISOString(), notifications: count } };
+          },
+        },
+      ],
+    };
+    const fixed = new Date("2026-10-15T08:00:00.000Z");
+    const k = deps({ now: () => fixed });
+    const kernel = await start(options({ contributions: [...SHIPPED_CONTRIBUTIONS, contribution] }), k.d);
+    const token = k.keychain.items.get(API_TOKEN_KEYCHAIN_SERVICE) ?? "";
+    const res = await fetch(`http://127.0.0.1:${kernel.api.port}/probe/context/7?q=1`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ a: 1 }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ keys: ["params", "query", "body", "store", "now"], at: "2026-10-15T08:00:00.000Z", notifications: 0 });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.store).toBe(kernel.store);
+    expect({ ...seen[0]?.params }).toEqual({ id: "7" });
+    expect({ ...seen[0]?.query }).toEqual({ q: "1" });
+    expect(seen[0]?.body).toEqual({ a: 1 });
   });
 
   it("a contributed route's body is always sent as JSON: a string answers a JSON string, an unserializable body 500", async () => {
@@ -691,7 +735,7 @@ describe("a contribution composed from outside (AC4)", () => {
     const usage = cliDeps();
     expect(await runCli(["nope"], usage.deps)).toBe(2);
     expect(usage.stderr.text()).toBe(`${USAGE} | studio probe <id>\n`);
-    expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(["probe"]);
+    expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(["notifications", "probe"]);
   });
 
   it("the handler runs for its event kind and the due work runs on each tick", async () => {

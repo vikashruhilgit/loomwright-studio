@@ -412,7 +412,8 @@ export function readStatus(
  *   contributed route drains the body with `req.resume()`, unread).
  * - Contributed routes (`options.routes`) match after the phase 1 routes; an
  *   exact path or a `:param` pattern. Their handler gets `{params, query,
- *   body}`, where `body` is the parsed JSON body (`undefined` when empty):
+ *   body, store, now}` (the server's store and clock), where `body` is the
+ *   parsed JSON body (`undefined` when empty):
  *   one over `MAX_CONTRIBUTED_BODY_BYTES` ⇒ `413 {"error":"body_too_large"}`,
  *   malformed JSON ⇒ `400 {"error":"invalid_json"}`, both without calling
  *   the handler. It answers `{status, body}`: `body` is sent as JSON
@@ -592,7 +593,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     let status: number;
     let text: string;
     try {
-      const { status: answered, body: answerBody } = await match.route.handler({ params: match.params, query, body });
+      const { status: answered, body: answerBody } = await match.route.handler({ params: match.params, query, body, store, now });
       // The seam's body is JSON: serialized here, so a string answers a JSON
       // string (`send` writes a string as already-serialized text, phase 1's use).
       // Checked before anything is written: an invalid status reaches the 500 path,
