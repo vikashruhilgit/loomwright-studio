@@ -123,6 +123,8 @@ The watcher checks on the loop's first tick after the kernel starts, then at mos
 
 A triple seen before (a return to an older version, say) replaces its old row, so the latest row is always the active contract.
 
+The watcher runs on every kernel's first tick, whatever else is configured. So a kernel started with neither `loomwrightPath` nor `installedPluginsPath` reads the host's real `~/.claude/plugins/installed_plugins.json`, exactly as `/status` does, and may write a real note and notification into its data dir. Every test must inject one of them (the fixture convention in `kernel/test/fixtures/loomwright/README.md`). A guard test in `kernel/test/loomwright-version-note.test.ts` fails when a test file calls `startKernel(` without mentioning either setting. It checks each file, not each call.
+
 ### The diff
 
 The note is built only from the two contracts: the old row's `contract_json` and the new file. No changelog, frontmatter or other Loomwright file is read. Both contracts are read field by field, and unknown fields at every level are ignored, so a contract with extra fields diffs the same as one without them. The diff compares:
@@ -175,6 +177,7 @@ When the active install has no usable contract (any `contract_*` reason: missing
 
 - A change is seen within about a minute while the loop runs. While the kill switch is engaged the loop does not run, so nothing is checked.
 - Only the user-scope view is watched. A `project` or `local` install that one repo's sessions use is not.
+- A kernel with neither `loomwrightPath` nor `installedPluginsPath` watches the host's real install. Tests are kept off it by convention and a per-file guard, not by the kernel.
 - An unexpected error in a check is one `due_work_failed` row, and the next check, a minute later, tries again.
 - A re-activated triple's row is replaced, so its first-seen time is its latest sighting, not its first.
 - If the kernel crashes between the note and the row, and the install changes back before the next check, that note stays without a row or a notification.

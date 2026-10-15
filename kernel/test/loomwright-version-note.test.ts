@@ -8,7 +8,8 @@
 // once-a-minute check; no notification is ever posted (no delivery due work
 // runs here, and the one kernel test creates none).
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
 import { startKernel } from "../src/kernel.js";
@@ -691,5 +692,28 @@ describe("description-only changes (AC11)", () => {
     expect(changes[1]).toBe("- Skill `unit-testing`: (no description) → Now described");
     expect(sectionOf(text, "Added")).toEqual(["- (none)"]);
     expect(notifications()[0]?.body).toMatch(/^0 added, 0 removed\. Note: /);
+  });
+});
+
+// A guard, not a behaviour test. The watcher runs on every kernel's first
+// tick, and with neither `loomwrightPath` nor `installedPluginsPath` set it
+// reads the host's real `~/.claude/plugins/installed_plugins.json` (as
+// `/status` does). So every test file that starts a kernel must inject one of
+// them. Honest limit: this is a static scan per file, not per call, so a file
+// that injects one in some calls and forgets it in another still passes.
+describe("test sandboxing guard", () => {
+  const TEST_DIR = fileURLToPath(new URL(".", import.meta.url));
+  const FIXTURES_DIR = join(TEST_DIR, "fixtures");
+
+  function walk(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
+  }
+
+  it("every test file that calls startKernel( injects loomwrightPath or installedPluginsPath", () => {
+    const files = walk(TEST_DIR).filter((f) => f.endsWith(".ts") || (f.endsWith(".mjs") && f.startsWith(FIXTURES_DIR + sep)));
+    const starters = files.filter((f) => readFileSync(f, "utf8").includes("startKernel("));
+    expect(starters.length).toBeGreaterThan(0);
+    const unsandboxed = starters.filter((f) => !/\b(loomwrightPath|installedPluginsPath)\b/.test(readFileSync(f, "utf8")));
+    expect(unsandboxed.map((f) => relative(TEST_DIR, f))).toEqual([]);
   });
 });
