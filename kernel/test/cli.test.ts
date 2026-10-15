@@ -611,7 +611,8 @@ describe("studio service (item 09, AC1; H07)", () => {
     for (const argv of [["service"], ["service", "start"], ["service", "install", "--force"]]) {
       const c = serviceCli();
       expect(await c.run(...argv)).toBe(2);
-      expect(c.stderr.text()).toBe(`${USAGE}\n`);
+      // The default contributions: phase 1's usage plus the notifications help line.
+      expect(c.stderr.text()).toBe(`${USAGE} | studio notifications [--limit N] [--json] | studio notifications show <id>\n`);
       expect(c.launchctl).toEqual([]);
     }
     expect(USAGE).toContain("studio service install|uninstall");
