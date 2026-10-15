@@ -14,6 +14,10 @@ export interface KernelNotifyResult {
   readonly delivery_status: string;
 }
 
+// A NUL is refused at argument validation, before the step runs (`recordNotification` refuses it too).
+const noNul = (text: string): boolean => !text.includes("\u0000");
+const NO_NUL = "must not contain a NUL character";
+
 /**
  * Runs as one work step keyed `ctx.stepKey(idempotency_key)`
  * (`kernel_notify:session-<id>:<key>`), so a repeat in the same session (also
@@ -27,8 +31,8 @@ export const notifyTool = defineTool({
     "Send the owner a notification: a native macOS notification plus an entry in studio notifications. Plain text, shown as given. " +
     "Repeating a call with the same idempotency_key in this session returns the first result, even if other arguments differ.",
   shape: {
-    title: z.string().min(1).max(MAX_NOTIFICATION_TITLE),
-    body: z.string().max(MAX_NOTIFICATION_BODY),
+    title: z.string().min(1).max(MAX_NOTIFICATION_TITLE).refine(noNul, NO_NUL),
+    body: z.string().max(MAX_NOTIFICATION_BODY).refine(noNul, NO_NUL),
     idempotency_key: z.string().min(1).max(200),
   },
   handler: (args, ctx): KernelNotifyResult =>
