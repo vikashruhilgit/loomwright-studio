@@ -132,8 +132,22 @@ export const PROTECTED_DATA_DIRS: readonly string[] = ["config", "app"];
 /** The tools whose path argument is a write. */
 const WRITE_TOOLS: Readonly<Record<string, string>> = { Write: "file_path", Edit: "file_path", NotebookEdit: "notebook_path" };
 
-const GH_PR_OUTWARD = ["create", "comment", "review", "edit", "close"] as const;
-const GH_ISSUE_OUTWARD = ["create", "comment", "edit", "close"] as const;
+/** `gh pr` / `gh issue` write subcommands, each with the subcommand it is (gh's built-in `new` alias is `create`). */
+const GH_PR_OUTWARD: readonly (readonly [string, string])[] = [
+  ["create", "create"],
+  ["new", "create"],
+  ["comment", "comment"],
+  ["review", "review"],
+  ["edit", "edit"],
+  ["close", "close"],
+];
+const GH_ISSUE_OUTWARD: readonly (readonly [string, string])[] = [
+  ["create", "create"],
+  ["new", "create"],
+  ["comment", "comment"],
+  ["edit", "edit"],
+  ["close", "close"],
+];
 /** `gh alias` subcommands that define an alias: a later `gh <alias>` could merge or push under any name. */
 const GH_ALIAS_OUTWARD = ["set", "import"] as const;
 /**
@@ -152,8 +166,13 @@ const GIT_OUTWARD: readonly (readonly [string, string])[] = [
   ["imap-send", "git imap-send"],
   ["cvsexportcommit", "git cvsexportcommit"],
 ];
-/** A git word that defines or pulls in an alias, as globs (`-c alias.p=push`, `git config alias.p push`, `include.path`, `--config-env`); a globbed word that could expand to one counts. */
-const GIT_ALIAS_CONFIG: readonly string[] = ["*alias.*", "*include.path*", "*includeif.*", "--config-env*"];
+/**
+ * A git word that defines or pulls in an alias, or turns on autocorrect (which
+ * runs a mistyped `psuh` as `push`), as globs (`-c alias.p=push`, `git config
+ * alias.p push`, `include.path`, `-c help.autocorrect=immediate`,
+ * `--config-env`); a globbed word that could expand to one counts.
+ */
+const GIT_ALIAS_CONFIG: readonly string[] = ["*alias.*", "*include.path*", "*includeif.*", "*help.autocorrect*", "--config-env*"];
 /** The GraphQL mutations that merge a pull request or queue it for merging. */
 const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest/i;
 
@@ -174,9 +193,10 @@ const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge|enqueueP
  *    `enqueuePullRequest` mutation, or sending a GraphQL query whose text the
  *    rail cannot read (`-F field=@file`, `--input`).
  * 3. `outward`: git with any later word `push` (or another word in
- *    `GIT_OUTWARD`, or `submit` after `p4`), or defining an alias
- *    (`GIT_ALIAS_CONFIG`, `--config-env`); `gh pr create|comment|review|edit|close`;
- *    `gh issue create|comment|edit|close`; `gh alias set|import`; `gh api`
+ *    `GIT_OUTWARD`, or `submit` after `p4`), or defining an alias or
+ *    autocorrect (`GIT_ALIAS_CONFIG`, `--config-env`);
+ *    `gh pr create|new|comment|review|edit|close`;
+ *    `gh issue create|new|comment|edit|close`; `gh alias set|import`; `gh api`
  *    with a non-GET method (`-X`/`--method`, or any `-f`/`-F`/`--field`/
  *    `--raw-field`/`--input` without an explicit method, which gh sends as
  *    POST); a write to, or a Bash command naming or globbing, anything under
@@ -193,7 +213,10 @@ const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge|enqueueP
  * `*`, `?`, `[…]` and a `**` segment are matched as globs against the protected
  * and outward paths (a word that COULD match one is treated as naming it);
  * `~`/`~/…` is the home dir, `~+` the cwd, and any other `~…` (`~user`,
- * `~-`) "any directory". Paths compare case-insensitively (APFS is by default),
+ * `~-`) "any directory"; a word is also read as the paths a program could take
+ * from it (`bashPathPatterns`: after `=`, `@`, `:`, from any `/`,
+ * percent-decoded), and gh's flags as cobra/pflag could read them
+ * (`ghPositionals`, `ghApiForm`). Paths compare case-insensitively (APFS is by default),
  * on a path-segment boundary, after `..` is applied and a leading
  * `/System/Volumes/Data` firmlink is removed; symlinks are not followed.
  */
@@ -433,17 +456,47 @@ function shellPath(value: string, base: string, homeDir: string): string {
 }
 
 /**
- * Every path pattern a Bash word could name: the word itself, the value after
- * its first `=` (`--file=…`, `key=…`), and the rest of a glued short option
- * (`-C/path`), each brace-expanded, `~`-expanded, resolved against `base`,
- * normalised and without a `/System/Volumes/Data` firmlink prefix.
+ * Every path pattern a Bash word could name, as the program reading it might
+ * (failing closed): the word brace-expanded, both raw and percent-decoded
+ * (`file:///…/Loomwright%20Studio/api.json`), and when it holds a `:` also
+ * with any `?query` / `#fragment` cut off; then for each of those the whole
+ * text, the text after EVERY `=` (`--file=…`, `key=…`), `@` (`-d @file`,
+ * `-d@file`) and `:` (`file:api.json`), the rest of a glued short option
+ * (`-C/path`), and every substring starting at a `/` (`file:///abs`,
+ * `-d@/abs`, `x/../abs`) or at a `~/` inside the word. Each is `~`-expanded,
+ * resolved against `base`, normalised and without a `/System/Volumes/Data`
+ * firmlink prefix.
  */
 function bashPathPatterns(word: string, base: string, homeDir: string): Seg[][] {
-  const values = [word];
-  const eq = word.indexOf("=");
-  if (eq >= 0 && eq < word.length - 1) values.push(word.slice(eq + 1));
-  if (/^-[^-]./.test(word)) values.push(word.slice(2));
-  return values.flatMap(braceExpand).map((v) => patternOf(withoutFirmlink(normalisePath(shellPath(v, base, homeDir), true)), true));
+  return bashPathValues(word).map((v) => patternOf(withoutFirmlink(normalisePath(shellPath(v, base, homeDir), true)), true));
+}
+
+/** The texts `bashPathPatterns` reads as paths in one Bash word. */
+function bashPathValues(word: string): string[] {
+  const values = new Set<string>();
+  for (const expanded of braceExpand(word)) {
+    const forms = new Set([expanded, percentDecoded(expanded)]);
+    for (const f of [...forms]) if (f.includes(":")) forms.add(f.replace(/[?#].*$/, ""));
+    for (const e of forms) {
+      values.add(e);
+      if (/^-[^-]./.test(e)) values.add(e.slice(2));
+      for (let k = 0; k < e.length; k++) {
+        const c = e[k] as string;
+        if ((c === "=" || c === "@" || c === ":") && k < e.length - 1) values.add(e.slice(k + 1));
+        if (k > 0 && (c === "/" || (c === "~" && (k === e.length - 1 || e[k + 1] === "/")))) values.add(e.slice(k));
+      }
+    }
+  }
+  return [...values].filter((v) => v !== "");
+}
+
+/** `text` percent-decoded, or as it is when its percent-encoding is malformed. */
+function percentDecoded(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
 }
 
 interface RailTargets {
@@ -486,8 +539,8 @@ function wordCouldBe(word: string, literal: string): boolean {
 const GLOB_CHARS = /[*?[]/;
 /** A flag word the shell could expand (`-[X]`): the rail cannot tell which flag it is. */
 const isGlobbedFlag = (word: string): boolean => word.startsWith("-") && GLOB_CHARS.test(word);
-/** More globbed flags than this in one gh command reads as a merge (fail closed). */
-const MAX_GLOBBED_FLAGS = 4;
+/** More readings of gh's command words than this reads as a merge (fail closed). */
+const MAX_GH_READINGS = 64;
 
 /** Whether a shell word (a glob) and `glob` could match the same text, case-folded. */
 const globsMeet = (word: string, glob: string): boolean => tokensIntersect(segment(word, true), segment(glob, true));
@@ -502,27 +555,25 @@ function commandForm(words: readonly string[]): string | undefined {
   if (name === "git") return gitForm(rest);
   if (name.startsWith("git-")) return gitForm([name.slice(4), ...rest]);
   if (name !== "gh") return undefined;
-  // A globbed flag could be `-R` (taking the next word as its value) or not: both readings are checked, a merge in either wins.
-  const globbed = rest.flatMap((w, i) => (isGlobbedFlag(w) ? [i] : []));
-  if (globbed.length > MAX_GLOBBED_FLAGS) return "merge";
+  // A flag word could take the next word as its value or not: every reading is checked, a merge in any wins.
+  const readings = ghPositionals(rest);
+  if (readings === undefined) return "merge";
   let form: string | undefined;
-  for (let mask = 0; mask < 1 << globbed.length; mask++) {
-    const reading = rest.map((w, i) => (globbed.includes(i) && (mask >> globbed.indexOf(i)) & 1 ? "-R" : w));
-    const f = ghForm(reading);
+  for (const reading of readings) {
+    const f = ghForm(rest, reading);
     if (f === "merge") return f;
     form ??= f;
   }
   return form;
 }
 
-/** `gh`'s outward form for one reading of its arguments. */
-function ghForm(args: readonly string[]): string | undefined {
-  const [group, sub] = ghPositionals(args);
+/** `gh`'s outward form for one reading of its command words. */
+function ghForm(args: readonly string[], [group, sub]: readonly { word: string; index: number }[]): string | undefined {
   if (group === undefined) return undefined;
   const is = (w: { word: string } | undefined, literal: string): boolean => w !== undefined && wordCouldBe(w.word, literal);
   if (is(group, "pr") && is(sub, "merge")) return "merge";
-  if (is(group, "pr")) for (const s of GH_PR_OUTWARD) if (is(sub, s)) return `gh pr ${s}`;
-  if (is(group, "issue")) for (const s of GH_ISSUE_OUTWARD) if (is(sub, s)) return `gh issue ${s}`;
+  if (is(group, "pr")) for (const [s, label] of GH_PR_OUTWARD) if (is(sub, s)) return `gh pr ${label}`;
+  if (is(group, "issue")) for (const [s, label] of GH_ISSUE_OUTWARD) if (is(sub, s)) return `gh issue ${label}`;
   if (is(group, "alias")) for (const s of GH_ALIAS_OUTWARD) if (is(sub, s)) return `gh alias ${s}`;
   if (is(group, "api")) return ghApiForm(args.slice(group.index + 1));
   return undefined;
@@ -543,19 +594,40 @@ function gitForm(args: readonly string[]): string | undefined {
   return undefined;
 }
 
-/** `gh`'s first two command words and their index in `args`, skipping flags (and `-R`/`--repo`'s value). */
-function ghPositionals(args: readonly string[]): { word: string; index: number }[] {
-  const out: { word: string; index: number }[] = [];
-  for (let i = 0; i < args.length && out.length < 2; i++) {
-    const a = args[i] as string;
-    if (a === "-R" || a === "--repo") {
-      i++;
-      continue;
+/**
+ * Whether a gh flag word could take the next word as its value when gh looks
+ * up its subcommand: cobra skips the next word after any two-character short
+ * flag and any `--long` flag without `=` it does not know as a bool (an
+ * unknown one included), and pflag after a short group ending in `-R`'s
+ * letter (`-hR o/r`); a globbed flag could be any of them. Only `-h`,
+ * `--help` and `--` are known to take none.
+ */
+function ghFlagCouldTakeNext(a: string): boolean {
+  if (isGlobbedFlag(a)) return true;
+  if (a === "-h" || a === "--help" || a === "--" || a.includes("=")) return false;
+  return a.length === 2 || a.startsWith("--") || a.endsWith("R");
+}
+
+/**
+ * Every reading of `gh`'s first two command words (with their index in
+ * `args`): a flag that could take the next word as its value
+ * (`ghFlagCouldTakeNext`) is read both ways, so `gh pr -R o/r merge 12` and
+ * `gh pr -b x merge 12` are merges in one reading. More than
+ * `MAX_GH_READINGS` readings is `undefined` (the caller fails closed).
+ */
+function ghPositionals(args: readonly string[]): { word: string; index: number }[][] | undefined {
+  const readings: { word: string; index: number }[][] = [];
+  const walk = (from: number, found: readonly { word: string; index: number }[]): boolean => {
+    const words = [...found];
+    for (let i = from; i < args.length && words.length < 2; i++) {
+      const a = args[i] as string;
+      if (!a.startsWith("-")) words.push({ word: a, index: i });
+      else if (ghFlagCouldTakeNext(a) && i + 1 < args.length && !walk(i + 2, words)) return false;
     }
-    if (a.startsWith("-")) continue;
-    out.push({ word: a, index: i });
-  }
-  return out;
+    readings.push(words);
+    return readings.length <= MAX_GH_READINGS;
+  };
+  return walk(0, []) ? readings : undefined;
 }
 
 /** The REST merge endpoint and the GraphQL endpoint, as segment patterns. */
@@ -579,34 +651,62 @@ function endpointCouldBe(word: string, target: readonly Seg[]): boolean {
   });
 }
 
+/** `gh api`'s boolean short flags (`-i`/`--include`): pflag lets them lead a group (`-iX PUT`). */
+const GH_API_SHORT_BOOL = "i";
+/** `gh api`'s short flags that take a value (glued, after `=`, or the next word). */
+const GH_API_SHORT_VALUE = "XfFHpqt";
+
 /**
  * `gh api …`'s form: `merge` for a merge (or a GraphQL query the rail cannot
  * read), `gh api <METHOD>` for a non-GET method (`gh api (flag unread)` when
- * a globbed flag hides it), `undefined` for a GET.
+ * a flag the rail cannot account for could hide it), `undefined` for a GET.
+ *
+ * A single-dash word is read as pflag reads it, a group of short flags
+ * (`-iX PUT`, `-iXPUT`, `-if body=x`, `-X=PUT`): `i` is a bool, and the first
+ * of `X`/`f`/`F`/`H`/`p`/`q`/`t` takes the rest of the word (after an `=`) or,
+ * for `X`/`f`/`F`, the next word. A group holding any other character (a
+ * glob, a flag the rail does not know) is unread: fail closed.
  */
 function ghApiForm(args: readonly string[]): string | undefined {
   let method: string | undefined;
   let fields = false;
   // A body the rail cannot read: a field read from a file (`-F k=@file`), `--input`, or a globbed word.
   let opaque = false;
-  // A globbed flag could be `-X PUT`, `--input` or anything else.
-  const unread = args.some(isGlobbedFlag);
+  // A flag the rail cannot account for (a glob, an unknown short flag) could be `-X PUT`, `--input` or anything else.
+  let unread = args.some(isGlobbedFlag);
+  const field = (flag: string, value: string): void => {
+    fields = true;
+    if (flag === "F" && value.includes("=@")) opaque = true;
+  };
   for (let i = 0; i < args.length; i++) {
     const a = args[i] as string;
-    if (a === "-X" || a === "--method") method = args[++i] ?? "";
+    if (a === "--method") method = args[++i] ?? "";
     else if (a.startsWith("--method=")) method = a.slice("--method=".length);
-    else if (a.startsWith("-X")) method = a.slice(2);
     else if (a === "--input" || a.startsWith("--input=")) {
       fields = true;
       opaque = true;
       if (a === "--input") i++;
-    } else if (["-f", "-F", "--field", "--raw-field"].includes(a)) {
-      fields = true;
-      if ((a === "-F" || a === "--field") && (args[i + 1] ?? "").includes("=@")) opaque = true;
-      i++;
-    } else if (/^(-f|-F).+/.test(a) || /^--(field|raw-field)=/.test(a)) {
-      fields = true;
-      if (/^(-F|--field=)/.test(a) && a.includes("=@")) opaque = true;
+    } else if (a === "--field" || a === "--raw-field") field(a === "--field" ? "F" : "f", args[++i] ?? "");
+    else if (/^--(field|raw-field)=/.test(a)) field(a.startsWith("--field=") ? "F" : "f", a.slice(a.indexOf("=") + 1));
+    else if (/^-[^-]/.test(a)) {
+      let accounted = false;
+      for (let j = 1; j < a.length && !accounted; j++) {
+        const c = a[j] as string;
+        if (GH_API_SHORT_BOOL.includes(c)) {
+          // `-i=true`: a bool's value ends the group.
+          if (a[j + 1] === "=") accounted = true;
+          else if (j === a.length - 1) accounted = true;
+          continue;
+        }
+        if (!GH_API_SHORT_VALUE.includes(c)) break;
+        accounted = true;
+        const glued = a.slice(j + 1);
+        const takesNext = glued === "" && "XfF".includes(c);
+        const value = takesNext ? (args[++i] ?? "") : glued.replace(/^=/, "");
+        if (c === "X") method = value;
+        else if (c === "f" || c === "F") field(c, value);
+      }
+      if (!accounted) unread = true;
     }
   }
   if (unread || args.some((a) => GLOB_CHARS.test(a))) opaque = true;
