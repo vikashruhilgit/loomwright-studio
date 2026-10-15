@@ -108,8 +108,81 @@ or, when sessions would be refused:
 
 A contract without a host switch reads `status: "ok"` with `host_switch: false`, and sessions are still refused (`loomwright_no_host_switch`). A missing or broken Loomwright never stops the kernel: `startKernel` succeeds and `/status` answers 200. `studio status --json` prints the field. The short `studio status` summary does not show it yet.
 
+## Version changes
+
+The `loomwright` feature also contributes one due work, the version watcher (`kernel/src/loomwright/version-note.ts`). When the active Loomwright changes, it writes a note of what was added, removed or changed, and tells the owner (D13's goal, D32's mechanism). Like the rest of the adapter, it reports and decides nothing.
+
+### Detection
+
+The watcher checks on the loop's first tick after the kernel starts, then at most once a minute. It resolves the active install the way `/status` does: with the same `loomwrightPath` and `installedPluginsPath` settings the session manager gets, and no project (the user-scope view). It reads that install's `capabilities.json` once and validates that same text, so the row stores exactly the bytes it validated. Then it compares the install path, plugin version and contract schema version with the latest `loomwright_contract_seen` row (the highest `id`):
+
+- **No row yet:** the first observation is recorded silently. This is the baseline. There is no note and no notification.
+- **The same three values:** nothing happens.
+- **Only the install path differs:** the new row is recorded silently.
+- **A new plugin version or contract schema version:** the watcher writes the note, then records the row and creates one notification in one transaction.
+
+A triple seen before (a return to an older version, say) replaces its old row, so the latest row is always the active contract.
+
+### The diff
+
+The note is built only from the two contracts: the old row's `contract_json` and the new file. No changelog, frontmatter or other Loomwright file is read. Both contracts are read field by field, and unknown fields at every level are ignored, so a contract with extra fields diffs the same as one without them. The diff compares:
+
+- agents, commands, skills and result schemas, by `name`: added, removed, description changed, and a result schema's `schema_version`;
+- hooks, by event, matcher and script (two identical hooks count twice): added, removed, `host_mode` changed, `writes` changed (compared as a set);
+- `host_switch`: its `env`, `state_dir_env` or `effect`, or one side having none;
+- `contract_schema_version`.
+
+### Breaking signals
+
+These go first in the note and in the notification:
+
+- a removed command;
+- a removed agent;
+- any `host_switch` change;
+- a contract schema version above `KNOWN_CONTRACT_SCHEMA_VERSION` (1, the highest this kernel was written against).
+
+D32 says the adapter tolerates a newer contract and reports the change rather than breaking. So a newer schema version is flagged, and the note says that the adapter still reads the contract and does not refuse sessions. The adapter only has a minimum version (`MIN_CONTRACT_SCHEMA_VERSION`).
+
+### The note
+
+The note is markdown at `<dataDir>/memory/shared/loomwright-updates/<old>-to-<new>.md` (invariant 8: the owner can read and edit it). Its sections, in order: Breaking (only when there is a breaking signal), Added, Removed, Changed (hooks, result-schema versions, the contract schema version), Description changes (last). Each entry shows its name and its one-line description, or `(no description)`. A removed command or agent is listed under Breaking and also under Removed.
+
+A hook is shown only by its event and the kind of change, with counts of write paths. Its script, matcher and paths never appear: memory files go into Wright's context, and this is the same rule the capabilities tool follows.
+
+The note's first line is a provenance marker: `<!-- loomwright-version-note from:<old row id> to:<install path>|<plugin version>|<contract schema version> -->`, with the three values percent-encoded so the marker stays one line.
+
+- **The file name.** A plugin version is contract data, never a path. Each version keeps only `[A-Za-z0-9._-]` (any other character becomes `_`), loses its leading dots, and is cut to 64 characters; an empty result is `unknown`. The resolved path must sit directly in `loomwright-updates/`. Directories are created with mode 0700.
+- **Never overwritten.** If the name is taken (an earlier note, or a file the owner wrote), the note goes to the first free `-2`, `-3`, …. It is written to a temp file and hard-linked into place, so a note file is never torn.
+- **A crash between the note and the row.** The next check finds a file whose first line is this transition's marker and reuses it, so there is no duplicate note.
+
+### The notification
+
+One notification per version change, created with the row:
+
+- source `kernel:loomwright_version`;
+- title `Loomwright <old> → <new>`;
+- body `<b> breaking, <n> added, <m> removed. Note: <path>`. The breaking count comes first and only when it is not zero. Description changes, hooks and version changes are not counted; the note has them.
+
+### Downgrade
+
+When the new version is numerically lower (`MAJOR.MINOR.PATCH`, compared segment by segment), the note and the notification are titled `Loomwright downgrade <old> → <new>`. Everything else is the same. A version that is not three numbers is never called a downgrade.
+
+### No contract
+
+When the active install has no usable contract (any `contract_*` reason: missing, unreadable, not JSON, invalid, too old), there is no note and no row, and `/status` shows the adapter's error. The watcher creates one notification titled `The active Loomwright has no usable contract`, whose body names the install and the adapter's message. It is created only when no notification with the same source, title and body exists. That makes it once per install path, which for a marketplace install is once per version, and a restart does not repeat it. When no install is found at all (`installed_plugins_missing`, `not_installed` and the other install reasons), the watcher does nothing: reporting that is `/status`'s job.
+
+### Its limits
+
+- A change is seen within about a minute while the loop runs. While the kill switch is engaged the loop does not run, so nothing is checked.
+- Only the user-scope view is watched. A `project` or `local` install that one repo's sessions use is not.
+- An unexpected error in a check is one `due_work_failed` row, and the next check, a minute later, tries again.
+- A re-activated triple's row is replaced, so its first-seen time is its latest sighting, not its first.
+- If the kernel crashes between the note and the row, and the install changes back before the next check, that note stays without a row or a notification.
+- The note says only what the contract records. Release notes can join the contract later (a Loomwright change).
+- The requirement said a newer contract schema version makes the adapter refuse sessions. It does not: D32 tolerates newer contracts, so the note says sessions are not refused.
+
 ## Limits
 
 - **Synced and desktop installs.** "Each of these plugins loads as `<name>@synced`, with no marketplace and no install record." ([plugins/loading.md](https://code.claude.com/docs/en/plugins/loading.md), read 2026-10-14.) A Loomwright synced from claude.ai or installed through the desktop app may not appear in `installed_plugins.json`. Sessions are then refused with `not_installed` (or `installed_plugins_missing`), and the message names the file. A configured `loomwrightPath` is the way round it. Whether desktop-app installs are recorded, and the exact shape of `project`/`local` entries, are for the owner's p10 probe ([`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md), [evidence](../evidence/phase-2-loomwright-host-mode.md)).
 - **`installed_plugins.json` is an internal Claude Code format.** The adapter refuses any entry shape it does not recognise rather than guess.
-- **Not in this item:** recording the contract version each session saw, and the version-change note (item 07); putting the manifest summary into Wright's context (item 06).
+- **Not yet built:** recording the contract version each session saw (the version watcher records the active contract, not each session's); putting the manifest summary into Wright's context (item 06).

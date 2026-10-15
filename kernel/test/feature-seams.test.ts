@@ -1,8 +1,9 @@
 // The phase 2 feature seams (AC3-AC6, AC9): one `FeatureContribution` per
 // feature, merged by `startKernel` and `runCli`. The shipped contributions add
-// only the loomwright feature's one tool (`kernel_loomwright_capabilities`),
-// the notifications feature's tool (`kernel_notify`), two routes, one
-// subcommand and one due work, and the triggers feature's three tools, three
+// only the loomwright feature's one tool (`kernel_loomwright_capabilities`)
+// and one due work (the version watcher), the notifications feature's tool
+// (`kernel_notify`), two routes, one subcommand and one due work, and the
+// triggers feature's three tools, three
 // routes, one subcommand and one due work (pinned in triggers.test.ts); a test contribution composed from outside reaches every part
 // through the normal path (the kernel MCP server, the loopback API, `studio`,
 // the event loop). A temp data dir, an in-memory Keychain, the fake
@@ -31,6 +32,7 @@ import {
 } from "../src/features/index.js";
 import type { ContributedRoute, ContributedRouteRequest, ContributedSubcommand, FeatureContribution } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
+import { versionWatchDueWork } from "../src/loomwright/index.js";
 import { NOTIFICATIONS_HELP, deliveryDueWork } from "../src/notifications/index.js";
 import type { Kernel, KernelDeps, KernelOptions } from "../src/kernel.js";
 import { EventLoop } from "../src/loop/loop.js";
@@ -75,7 +77,7 @@ const noopSubcommand = (name: string): ContributedSubcommand => ({ name, help: `
 const noopTool = (name: string) => defineTool({ name, description: "test tool", shape: {}, handler: () => ({}) });
 
 describe("mergeContributions", () => {
-  it("the shipped contributions: the five features in a fixed order, registering nothing but loomwright's one tool, the notifications parts and the triggers parts (AC3)", () => {
+  it("the shipped contributions: the five features in a fixed order, registering nothing but loomwright's one tool and one due work, the notifications parts and the triggers parts (AC3)", () => {
     expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1);
     expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
@@ -95,10 +97,11 @@ describe("mergeContributions", () => {
     ]);
     expect(merged.subcommands.map((s) => s.name)).toEqual(["notifications", "triggers"]);
     expect(merged.handlers).toEqual({});
-    expect(merged.dueWork.map((d) => d.owner)).toEqual(["notifications", "triggers"]);
-    expect(merged.dueWork[0]?.run).toBe(deliveryDueWork);
+    expect(merged.dueWork.map((d) => d.owner)).toEqual(["loomwright", "notifications", "triggers"]);
+    expect(merged.dueWork[0]?.run).toBe(versionWatchDueWork);
+    expect(merged.dueWork[1]?.run).toBe(deliveryDueWork);
     const keys: Record<string, string[]> = {
-      loomwright: ["name", "tools"],
+      loomwright: ["name", "tools", "dueWork"],
       notifications: ["name", "tools", "routes", "subcommands", "dueWork"],
       triggers: ["name", "tools", "routes", "subcommands", "dueWork"],
     };
@@ -441,7 +444,7 @@ function out() {
 }
 
 describe("the shipped kernel (AC3)", () => {
-  it("registers no kernel tool beyond phase 1's but kernel_loomwright_capabilities, kernel_notify and the three kernel_trigger_ tools, and no API route, CLI subcommand, event handler or due work beyond phase 1's but the notifications and triggers ones", async () => {
+  it("registers no kernel tool beyond phase 1's but kernel_loomwright_capabilities, kernel_notify and the three kernel_trigger_ tools, and no API route, CLI subcommand, event handler or due work beyond phase 1's but the loomwright, notifications and triggers ones", async () => {
     const store = new Store({ dataDir });
     const { id } = enqueueMessage(store, { text: "hello" });
     store.close();
@@ -467,8 +470,9 @@ describe("the shipped kernel (AC3)", () => {
     ]);
     expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(["notifications", "triggers"]);
     expect(kernel.contributions.handlers).toEqual({});
-    expect(kernel.contributions.dueWork.map((w) => w.owner)).toEqual(["notifications", "triggers"]);
-    expect(kernel.contributions.dueWork[0]?.run).toBe(deliveryDueWork);
+    expect(kernel.contributions.dueWork.map((w) => w.owner)).toEqual(["loomwright", "notifications", "triggers"]);
+    expect(kernel.contributions.dueWork[0]?.run).toBe(versionWatchDueWork);
+    expect(kernel.contributions.dueWork[1]?.run).toBe(deliveryDueWork);
 
     // No handler: the message ends event_unhandled, as in phase 1.
     await vi.waitFor(() => expect(getQueueRow(kernel.store, id)?.status).toBe("done"));

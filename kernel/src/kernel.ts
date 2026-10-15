@@ -213,8 +213,15 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
 
     // The daemon passes no handler (invariant 1): every queued event is
     // `event_unhandled` unless a contribution handles its kind (none shipped).
+    // The due work's Loomwright settings are the session manager's own, so the
+    // version watcher, sessions and `/status` resolve the same install.
     const eventLoop = new EventLoop(
-      { store, handlers: { ...options.handlers, ...contributions.handlers }, dueWork: contributions.dueWork },
+      {
+        store,
+        handlers: { ...options.handlers, ...contributions.handlers },
+        dueWork: contributions.dueWork,
+        loomwright: { configured: options.sessions?.loomwrightPath, installedPluginsPath: options.sessions?.installedPluginsPath },
+      },
       { now, ...deps.loopDeps },
     );
     loop = eventLoop;

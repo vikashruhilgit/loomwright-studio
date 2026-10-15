@@ -79,6 +79,19 @@ function failPrecondition(message) {
   process.exit(1);
 }
 
+/**
+ * Where the kernel finds Loomwright: `--plugin-dir` when given. Without it, a
+ * deterministic run gets an `installed_plugins.json` path under its data dir
+ * that is never written (`installed_plugins_missing`: the version watcher
+ * does nothing), so no test reads the real file. Only `--live`, the owner's
+ * real-machine run, reads the real one.
+ */
+function loomwrightSettings(args) {
+  if (args.pluginDir !== undefined) return { loomwrightPath: args.pluginDir };
+  if (args.live) return {};
+  return { installedPluginsPath: join(args.dataDir, "no-installed-plugins.json") };
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise((r) => {
@@ -318,7 +331,7 @@ async function main() {
       env: args.live ? process.env : { PATH: "/usr/bin:/bin" },
       ...(args.live ? { authProviderId: "subscription-token" } : {}),
       handlers: { message },
-      sessions: { ...(args.pluginDir === undefined ? {} : { loomwrightPath: args.pluginDir }), stopGraceMs: 100 },
+      sessions: { ...loomwrightSettings(args), stopGraceMs: 100 },
     },
     deps,
   );

@@ -204,18 +204,37 @@ function oneLine(value: unknown): string | null {
  * without `host_switch` is valid here (`host_switch: null`).
  */
 export function readLoomwrightContract(installPath: string): LoomwrightContract {
-  const file = join(installPath, CONTRACT_FILE);
-  const fail = (reason: LoomwrightContractErrorReason, what: string): LoomwrightContractError =>
-    new LoomwrightContractError(reason, installPath, `Loomwright at ${installPath}: ${what}`);
+  return parseLoomwrightContract(readLoomwrightContractText(installPath), installPath);
+}
 
-  const read = readBounded(file, MAX_CONTRACT_BYTES);
-  if (read.kind === "missing") throw fail("contract_missing", `${CONTRACT_FILE} missing`);
-  if (read.kind === "too_large") throw fail("contract_unreadable", `${CONTRACT_FILE} is over ${MAX_CONTRACT_BYTES} bytes`);
-  if (read.kind === "error") throw fail("contract_unreadable", `${CONTRACT_FILE} unreadable (${read.detail})`);
+function contractError(installPath: string, reason: LoomwrightContractErrorReason, what: string): LoomwrightContractError {
+  return new LoomwrightContractError(reason, installPath, `Loomwright at ${installPath}: ${what}`);
+}
+
+/**
+ * The text of `<installPath>/capabilities.json`, read once (at most 4 MiB).
+ * Throws `LoomwrightContractError` (`path` = `installPath`): `contract_missing`
+ * or `contract_unreadable`, as `readLoomwrightContract` does.
+ */
+export function readLoomwrightContractText(installPath: string): string {
+  const read = readBounded(join(installPath, CONTRACT_FILE), MAX_CONTRACT_BYTES);
+  if (read.kind === "missing") throw contractError(installPath, "contract_missing", `${CONTRACT_FILE} missing`);
+  if (read.kind === "too_large") throw contractError(installPath, "contract_unreadable", `${CONTRACT_FILE} is over ${MAX_CONTRACT_BYTES} bytes`);
+  if (read.kind === "error") throw contractError(installPath, "contract_unreadable", `${CONTRACT_FILE} unreadable (${read.detail})`);
+  return read.text;
+}
+
+/**
+ * Validate `text`, the contract of the install at `installPath`, exactly as
+ * `readLoomwrightContract` validates the file: the same `contract_not_json`,
+ * `contract_invalid` and `contract_schema_too_old` errors and messages.
+ */
+export function parseLoomwrightContract(text: string, installPath: string): LoomwrightContract {
+  const fail = (reason: LoomwrightContractErrorReason, what: string): LoomwrightContractError => contractError(installPath, reason, what);
 
   let raw: unknown;
   try {
-    raw = JSON.parse(read.text);
+    raw = JSON.parse(text);
   } catch {
     throw fail("contract_not_json", `${CONTRACT_FILE} is not JSON`);
   }

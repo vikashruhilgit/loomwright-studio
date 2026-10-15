@@ -144,11 +144,25 @@ export type EventHandler = (ctx: EventContext) => void | Promise<void>;
 
 export type EventHandlers = Partial<Record<EventKind, EventHandler>>;
 
+/**
+ * Where the kernel finds the active Loomwright: the same two settings the
+ * session manager gets (`loomwrightPath`, `installedPluginsPath`), so due work
+ * resolves the install that sessions and `/status` resolve. Absent ⇒ the
+ * adapter's defaults.
+ */
+export interface LoomwrightInstallSettings {
+  /** A configured Loomwright plugin dir (`loomwrightPath`). */
+  readonly configured?: string;
+  readonly installedPluginsPath?: string;
+}
+
 /** What a due-work function receives (see `EventLoopOptions.dueWork`). */
 export interface DueWorkContext {
   readonly store: Store;
   /** The loop's clock. */
   readonly now: () => Date;
+  /** `EventLoopOptions.loomwright`, when the loop was given it. */
+  readonly loomwright?: LoomwrightInstallSettings;
 }
 
 /** A due-work function and the contribution it belongs to (named in its `due_work_failed` row). */
@@ -166,6 +180,8 @@ export interface EventLoopOptions {
    * `due_work_failed` row and the tick goes on. Default none.
    */
   readonly dueWork?: readonly DueWork[];
+  /** Passed to every due-work call as `DueWorkContext.loomwright`. Default none. */
+  readonly loomwright?: LoomwrightInstallSettings;
 }
 
 export interface EventLoopDeps {
