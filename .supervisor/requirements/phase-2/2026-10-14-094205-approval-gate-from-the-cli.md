@@ -64,3 +64,9 @@ kernel/src/sessions/policy.ts
 kernel/test/approvals.test.ts
 kernel/test/sessions-policy.test.ts
 docs/architecture/approvals.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-15T05:32:30Z
+- **Brief:** .supervisor/jobs/done/2026-10-15-approval-gate-from-the-cli.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/52
