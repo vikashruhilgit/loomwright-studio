@@ -49,7 +49,7 @@ import { EventLoop } from "../src/loop/loop.js";
 import { enqueueEvent, enqueueMessage, getQueueRow, toQueuedEvent } from "../src/loop/queue.js";
 import { runStep, runStepAsync } from "../src/loop/steps.js";
 import type { EventContext, EventSessions } from "../src/loop/types.js";
-import type { ResumeSessionParams, SessionHandle, SessionStatus, StartSessionParams } from "../src/sessions/index.js";
+import type { ResumeSessionParams, SessionHandle, SessionRow, SessionStatus, StartSessionParams } from "../src/sessions/index.js";
 import { AdmissionRefusedError } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import type { KernelToolResult } from "../src/tools/server.js";
@@ -226,6 +226,48 @@ function openStore(): Store {
   const store = new Store({ dataDir });
   stores.push(store);
   return store;
+}
+
+/** One delivery's `EventContext` for queue row `id`, outside the loop (so a test can deliver the same event again). */
+function eventCtx(store: Store, id: number, sessions: EventSessions | undefined): EventContext {
+  const row = getQueueRow(store, id);
+  return {
+    event: toQueuedEvent(row as NonNullable<typeof row>, "message"),
+    store,
+    runStep: (name, fn, opts) => runStep(store, `event:${id}:${name}`, fn, opts),
+    runStepAsync: (name, fn, opts) => runStepAsync(store, `event:${id}:${name}`, fn, opts),
+    ...(sessions === undefined ? {} : { sessions }),
+  };
+}
+
+/**
+ * A stub whose session keeps running until `settle`, and whose `getSession`
+ * reads the `sessions` row the stub inserted (as the real manager reports it).
+ */
+function heldSessions(store: Store) {
+  const sessions = stubSessions(store);
+  const start = sessions.startSession.bind(sessions);
+  let settle: (status: SessionStatus, reply: string | null) => void = () => {};
+  const s = sessions as { startSession: EventSessions["startSession"]; getSession: EventSessions["getSession"] };
+  s.startSession = async (params) => {
+    const handle = await start(params);
+    let done: (status: SessionStatus) => void = () => {};
+    let result: (reply: string | null) => void = () => {};
+    const held = { ...handle, done: new Promise<SessionStatus>((r) => (done = r)), result: new Promise<string | null>((r) => (result = r)) };
+    settle = (status, reply) => {
+      done(status);
+      result(reply);
+    };
+    return held;
+  };
+  s.getSession = (id) => store.prepare<[number], SessionRow>("SELECT * FROM sessions WHERE id = ?").get(id);
+  return { sessions, settle: (status: SessionStatus, reply: string | null) => settle(status, reply) };
+}
+
+/** Put a file where the data dir's `memory/` or `config/` directory should be, so creating anything under it throws. */
+function breakDir(name: "memory" | "config"): void {
+  rmSync(join(dataDir, name), { recursive: true, force: true });
+  writeFileSync(join(dataDir, name), `a file where the ${name} dir should be`);
 }
 
 /** One loop tick with the brain's handler (fixed clock and zone) and `sessions`. */
@@ -406,6 +448,22 @@ describe("settings: no model, no message (AC2)", () => {
     }
     writeFileSync(file, `{"model":"${"x".repeat(70_000)}"}`);
     expect(readWrightSettings(dataDir)).toMatchObject({ ok: false, error: "settings_invalid" });
+  });
+
+  it("the model is trimmed: \"  claude-x  \" starts the session with claude-x; an all-whitespace model fails the message model_unset", async () => {
+    setModel(dataDir, "  claude-x  ");
+    const store = openStore();
+    enqueueMessage(store, { text: "hi", agent: "wright" });
+    const sessions = stubSessions(store);
+    await tickBrain(store, sessions);
+    expect(sessions.starts.map((p) => p.model)).toEqual(["claude-x"]);
+
+    setModel(dataDir, "   ");
+    enqueueMessage(store, { text: "again", agent: "wright" });
+    await tickBrain(store, sessions);
+    expect(sessions.starts).toHaveLength(1);
+    expect(rows(store)[1]).toMatchObject({ status: "failed" });
+    expect(rows(store)[1]?.detail).toMatch(/^model_unset: /);
   });
 });
 
@@ -721,21 +779,13 @@ describe("routing a message (the handler)", () => {
     const { id } = enqueueMessage(store, { text: "hi", agent: "wright" });
     const sessions = stubSessions(store);
     const handler = brainMessageHandler({ loomwright: () => UNAVAILABLE });
-    const row = getQueueRow(store, id);
-    const ctx = (): EventContext => ({
-      event: toQueuedEvent(row as NonNullable<typeof row>, "message"),
-      store,
-      runStep: (name, fn, opts) => runStep(store, `event:${id}:${name}`, fn, opts),
-      runStepAsync: (name, fn, opts) => runStepAsync(store, `event:${id}:${name}`, fn, opts),
-      sessions,
-    });
-    await handler(ctx());
+    await handler(eventCtx(store, id, sessions));
     const first = getBrainMessageByQueueId(store, id);
     expect(first).toMatchObject({ status: "failed" });
     expect(first?.detail).toMatch(/^model_unset: /);
     // The owner sets the model before the redelivery: the final row is not re-run.
     setModel();
-    await handler(ctx());
+    await handler(eventCtx(store, id, sessions));
     expect(sessions.starts).toEqual([]);
     expect(sessions.resumes).toEqual([]);
     expect(rows(store)).toHaveLength(1);
@@ -774,19 +824,98 @@ describe("routing a message (the handler)", () => {
       result: new Promise<string | null>(() => {}),
     });
     const handler = brainMessageHandler({ loomwright: () => UNAVAILABLE });
-    const row = getQueueRow(store, id);
-    const ctx = (): EventContext => ({
-      event: toQueuedEvent(row as NonNullable<typeof row>, "message"),
-      store,
-      runStep: (name, fn, opts) => runStep(store, `event:${id}:${name}`, fn, opts),
-      runStepAsync: (name, fn, opts) => runStepAsync(store, `event:${id}:${name}`, fn, opts),
-      sessions,
-    });
-    await handler(ctx());
-    await handler(ctx());
+    await handler(eventCtx(store, id, sessions));
+    await handler(eventCtx(store, id, sessions));
     expect(sessions.starts).toHaveLength(1);
     expect(rows(store)).toHaveLength(1);
     expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "running", session_id: 1 });
+  });
+});
+
+// ---- A redelivery never drops a live session's reply ---------------------------------------------
+
+describe("a redelivery keeps a running row only while its session is live (redelivery rule)", () => {
+  /** Deliver once (the row becomes `running` with a held session), then break `what` and deliver again. */
+  async function redeliverBroken(what: "memory" | "config") {
+    setModel();
+    const store = openStore();
+    const { id } = enqueueMessage(store, { text: "hi", agent: "wright" });
+    const held = heldSessions(store);
+    const handler = brainMessageHandler({ loomwright: () => UNAVAILABLE });
+    await handler(eventCtx(store, id, held.sessions));
+    expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "running", session_id: 1 });
+    breakDir(what);
+    const again = handler(eventCtx(store, id, held.sessions));
+    return { store, id, held, again };
+  }
+
+  it("memory that cannot be written: the row stays running, the handler throws, and the session's result still replies", async () => {
+    const { store, id, held, again } = await redeliverBroken("memory");
+    await expect(again).rejects.toThrow();
+    expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "running", session_id: 1, detail: null });
+    held.settle("completed", "the live reply");
+    await vi.waitFor(() => expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "replied", reply_text: "the live reply" }));
+    expect(held.sessions.starts).toHaveLength(1);
+  });
+
+  it("settings that cannot be written: the row stays running, the handler throws, and the session's result still replies", async () => {
+    const { store, id, held, again } = await redeliverBroken("config");
+    await expect(again).rejects.toThrow();
+    expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "running", session_id: 1, detail: null });
+    held.settle("completed", "the live reply");
+    await vi.waitFor(() => expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "replied", reply_text: "the live reply" }));
+  });
+
+  it("a refusal before the session step (model unset meanwhile) leaves the row running too, and the session's result still replies", async () => {
+    setModel();
+    const store = openStore();
+    const { id } = enqueueMessage(store, { text: "hi", agent: "wright" });
+    const held = heldSessions(store);
+    const handler = brainMessageHandler({ loomwright: () => UNAVAILABLE });
+    await handler(eventCtx(store, id, held.sessions));
+    setModel(dataDir, null);
+    await handler(eventCtx(store, id, held.sessions));
+    expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "running", session_id: 1, detail: null });
+    held.settle("completed", "the live reply");
+    await vi.waitFor(() => expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "replied", reply_text: "the live reply" }));
+  });
+
+  it("a session no longer live (interrupted, ended, or no row): the row ends failed with the fault, never left running", async () => {
+    setModel();
+    const store = openStore();
+    const handler = brainMessageHandler({ loomwright: () => UNAVAILABLE });
+    for (const gone of ["interrupted", "completed", "no row"] as const) {
+      rmSync(join(dataDir, "memory"), { recursive: true, force: true });
+      const { id } = enqueueMessage(store, { text: `hi ${gone}`, agent: "wright" });
+      const held = heldSessions(store);
+      await handler(eventCtx(store, id, held.sessions));
+      expect(getBrainMessageByQueueId(store, id)?.status, gone).toBe("running");
+      const sessionId = getBrainMessageByQueueId(store, id)?.session_id as number;
+      if (gone === "no row") (held.sessions as { getSession: EventSessions["getSession"] }).getSession = () => undefined;
+      else store.prepare("UPDATE sessions SET status = ? WHERE id = ?").run(gone, sessionId);
+      breakDir("memory");
+      await expect(handler(eventCtx(store, id, held.sessions)), gone).rejects.toThrow();
+      expect(getBrainMessageByQueueId(store, id)?.status, gone).toBe("failed");
+      expect(getBrainMessageByQueueId(store, id)?.detail, gone).toMatch(/^memory_unwritable: /);
+    }
+  });
+
+  it("a parked row whose redelivery hits the same fault ends failed with it, as before", async () => {
+    const store = openStore();
+    const handler = brainMessageHandler({ loomwright: () => UNAVAILABLE });
+    const refusal = new AdmissionRefusedError("agent_daily_limit", "2026-10-16T00:00:00.000Z", "wright reached its daily token limit");
+    for (const what of ["memory", "config"] as const) {
+      rmSync(join(dataDir, "memory"), { recursive: true, force: true });
+      rmSync(join(dataDir, "config"), { recursive: true, force: true });
+      setModel();
+      const { id } = enqueueMessage(store, { text: `hi ${what}`, agent: "wright" });
+      await expect(handler(eventCtx(store, id, stubSessions(store, { refuse: refusal })))).rejects.toThrow();
+      expect(getBrainMessageByQueueId(store, id)?.status, what).toBe("parked");
+      breakDir(what);
+      await expect(handler(eventCtx(store, id, stubSessions(store))), what).rejects.toThrow();
+      expect(getBrainMessageByQueueId(store, id)?.status, what).toBe("failed");
+      expect(getBrainMessageByQueueId(store, id)?.detail, what).toMatch(what === "memory" ? /^memory_unwritable: / : /^settings_unwritable: /);
+    }
   });
 });
 

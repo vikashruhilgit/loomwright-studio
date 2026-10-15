@@ -65,7 +65,9 @@ export interface KernelOptions {
   readonly handlers?: EventHandlers;
   /**
    * The feature contributions to compose. Default `SHIPPED_CONTRIBUTIONS`
-   * (every one empty: nothing is preinstalled). A collision between two of
+   * (each ships only what its item has built, e.g. the brain's `message`
+   * handler, `POST /ask`, `GET /messages/:id` and `studio ask`; still no
+   * playbook is preinstalled, invariant 1). A collision between two of
    * them, or with a phase 1 tool, route or subcommand or a `handlers` kind, is
    * refused before the store opens.
    */

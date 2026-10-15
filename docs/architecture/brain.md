@@ -142,6 +142,8 @@ The brain contributes the kernel's only `message` handler. For a message whose p
 
 An admission refusal (a parked account cap, an agent's daily limit) parks the row (`parked`, with the reason and the retry time) and is rethrown, so the loop parks the event under the phase 1 park rules: the queue row stays `pending` with `not_before` set, and the same row runs when the event is delivered again. Any other refusal (no Loomwright install, a bad permission mode) fails the row with the reason and fails the event (one `notify`). A kernel composed without a session manager fails the row with `no_session_manager`.
 
+**A redelivery never drops a live session's reply.** A redelivered message whose row is already `running`, and whose session the session manager reports live (`getSession` answers `starting` or `running`), keeps its row `running` whatever goes wrong before the session step. A fault (the memory files or the settings file can't be written) is still raised, so the loop fails the event as before; a refusal (`model_unset`, `settings_invalid`) still ends the delivery. Either way the session's result still writes the reply. Liveness is the session manager's report, never the row's: a row whose session is gone (`interrupted`, `orphaned`, ended, or no row) ends `failed` with the detail.
+
 ## API and CLI
 
 The routes are contributed, so they are reached only with the bearer token.
@@ -159,7 +161,7 @@ The routes are contributed, so they are reached only with the bearer token.
 | `model_unset`, `kill_switch_engaged`, `settings_invalid` at the POST | one line; nothing was queued | 2 |
 | no answer within `--timeout` (default 120 s) | the session id (if one started) and "follow up with `studio status`" | 3 |
 
-On a timeout the session keeps running: the CLI never stops it. `--json` prints the last row as JSON on stdout, with the same exit code. Text from the store is data, never terminal control: control characters other than newline and tab, and bidi overrides, are printed escaped (`\u001b`).
+On a timeout the session keeps running: the CLI never stops it. Text from the store is data, never terminal control: in the plain output (`terminalText`), control characters other than newline and tab, and bidi overrides, are printed escaped (`\u001b`). `--json` prints the last row on stdout, with the same exit code, as standard `JSON.stringify` output like every `--json` in the CLI: it escapes only what JSON requires (U+0000 to U+001F, `"` and `\`; and lone surrogates), so DEL, a C1 control or a bidi override (U+009B, U+202E) in a reply is left raw for whatever reads the JSON.
 
 ## Honest limits
 

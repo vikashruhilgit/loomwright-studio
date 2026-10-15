@@ -19,7 +19,11 @@
 // An admission refusal parks the row (`parked`, the reason and retry time)
 // and is rethrown, so the loop parks the event (phase 1 park rules). Any
 // other refusal fails the row and is rethrown (the loop fails the event, with
-// one notify). Messages for other agents change nothing (later phases).
+// one notify). A redelivery that finds its row `running` with the session the
+// session manager still reports live (`sessionStillLive`) never fails the row
+// on a fault before step d (a throw is still rethrown), so that session's
+// reply is kept; a row whose session is gone fails as above. Messages for
+// other agents change nothing (later phases).
 //
 // Imports only types from the loop and the session manager (never the
 // manager itself or the Agent SDK: the `studio` CLI loads this module).
@@ -73,6 +77,19 @@ function messageOf(err: unknown): string {
   return typeof code === "string" && !line.startsWith(code) ? `${code}: ${line}` : line;
 }
 
+/**
+ * Whether the session manager reports the session live (`starting` or
+ * `running`). Never inferred from the message row: an absent session,
+ * `interrupted`, `orphaned` or a terminal status is not live. The two
+ * literals are compared inline, so nothing is imported from the session layer
+ * at runtime.
+ */
+function sessionStillLive(sessions: EventSessions | undefined, sessionId: number | null): boolean {
+  if (sessionId === null || sessions === undefined) return false;
+  const status = sessions.getSession(sessionId)?.status;
+  return status === "starting" || status === "running";
+}
+
 /** The task's latest Wright session, when it is `interrupted` (resumable): its id. */
 function interruptedWrightSession(store: Store, agent: string, taskId: number | null): number | undefined {
   if (taskId === null) return undefined;
@@ -119,7 +136,11 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
     // a. The row (idempotent on queue_id), then the memory files.
     const row = ensureBrainMessage(store, { queueId: event.id, agent, source: messageSourceOf(event.payload), text }, now());
     if (FINAL_MESSAGE_STATUSES.includes(row.status)) return;
+    // A redelivery that found the row `running` with its session still live
+    // writes nothing: that session's listener writes the reply (only from
+    // `running`). The caller still throws or returns as it would.
     const fail = (detail: string): void => {
+      if (row.status === "running" && sessionStillLive(ctx.sessions, row.session_id)) return;
       updateBrainMessage(store, row.id, ["queued", "parked", "running"], { status: "failed", detail }, now());
     };
     const dataDir = store.dataDir;
