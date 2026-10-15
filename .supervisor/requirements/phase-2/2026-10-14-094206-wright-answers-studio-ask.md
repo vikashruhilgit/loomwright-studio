@@ -56,3 +56,9 @@ There is no `studio ask`, no handler for a `message` event (the daemon registers
 kernel/src/brain/
 kernel/test/brain.test.ts
 docs/architecture/brain.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-15T05:32:47Z
+- **Brief:** .supervisor/jobs/done/2026-10-15-wright-answers-studio-ask.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/54
