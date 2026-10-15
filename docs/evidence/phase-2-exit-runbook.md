@@ -13,7 +13,8 @@ Only the owner runs this. It uses his subscription, his launchd service and his 
 
 Read this before starting.
 
-- **Reminders go into your real store.** Steps 1, 2, 3 and 5 ask Wright for reminders on the installed service, so Wright creates real `once` triggers in `~/.loomwright-studio/studio.db` (or `$STUDIO_DATA_DIR`). The harness turns off every trigger it created when each of its steps ends. The step 2 trigger is yours, and it is spent once it fires.
+- **Reminders go into your real store.** Steps 1, 2, 3 and 5 ask Wright for reminders on the installed service, so Wright creates real `once` triggers in `~/.loomwright-studio/studio.db` (or `$STUDIO_DATA_DIR`). The step 2 trigger is yours, and it is spent once it fires.
+- **The harness touches only its own triggers.** Each harness reminder's text is `check X <tag>`, with a tag unique to the run and the step: `phase2-exit-<run>-step1`, `-step3` and `-step5`. The harness prints the run tag (`phase2-exit-<run>`) at the start and the end. A trigger counts as the harness's only when its owning agent is `wright` and its text contains that tag. When each step ends, the harness reads those triggers again (catching one Wright registered after `studio ask` stopped waiting) and turns each off with `studio triggers off <id>`. After the last step it turns off any trigger with the run tag that is still on. It never turns off any other trigger: one another agent registers during the run, your step 2 trigger, or one Wright created without the tag. It lists those under `other_new_triggers` in the summary (id, owner, kind; not the text) and leaves them as they are. Because the text differs, the harness's turn-offs can't block your step 2 reminder, and its notifications show the tag, so you can tell them from yours.
 - **Step 5 kills your running kernel.** The harness reads the kernel's pid from `api.json`, checks it against `launchctl print`, and sends `kill -9` to that pid only. launchd then restarts the kernel. The harness never stops, uninstalls or reinstalls the service.
 - **Real notifications appear.** Steps 1 and 5 each post one, and step 4 posts one more from a kernel the harness starts itself, under a temp dir that is deleted afterwards. Step 3 posts none.
 - **Wright sessions spend tokens** on your subscription: four `studio ask` calls in total (three from the harness, one from you in step 2).
@@ -22,9 +23,11 @@ Afterwards, check that nothing is left behind:
 
 ```bash
 launchctl print gui/$(id -u)/com.loomwright.studio.kernel | grep -E 'state|pid'   # the service, still running
-node kernel/dist/cli/index.js triggers --all                                        # the harness's triggers are off
+node kernel/dist/cli/index.js triggers --all | grep -A1 'phase2-exit-<run>'         # the harness's triggers (the run tag it printed) are off
 ps -axo pid,command | grep -v grep | grep -E 'vitest|phase-2-exit'                  # no harness process left
 ```
+
+If a trigger with the run tag is still `on`, Wright created it after the harness ended (a `studio ask` that came back parked and ran later). Turn it off with `studio triggers off <id>` and note it in the evidence file's `cleanup`.
 
 ## Setup
 
@@ -54,7 +57,7 @@ In the commands below, `studio` means `node kernel/dist/cli/index.js`, run from 
 
 ## Step 1: a reminder 3 minutes ahead (harness and owner)
 
-The harness's step 1 runs `studio ask "remind me at <HH:MM> to check X"`, with `<HH:MM>` the next whole local minute at least 3 minutes ahead. It records Wright's reply, the trigger Wright created (and its `studio triggers --all --json` entry), and the notification row at that minute. It passes when the trigger is for that minute and exactly one notification row exists for it, `delivered`, with deep link `loomwright-studio://notifications/<id>`.
+The harness's step 1 runs `studio ask "remind me at <HH:MM> to check X phase2-exit-<run>-step1" --timeout 120`, with `<HH:MM>` the next whole local minute at least 3 minutes ahead. It records Wright's reply, the one Wright trigger whose text carries the step's tag (and its `studio triggers --all --json` entry), any other trigger that appeared meanwhile (`other_new_triggers`, untouched), and the notification row at that minute. It passes when exactly one Wright trigger carries the tag, it is for that minute, and exactly one notification row exists for it, `delivered`, with deep link `loomwright-studio://notifications/<id>`. If Wright stored the reminder without the tag, the step fails and that trigger is left on (it is in `other_new_triggers`); turn it off yourself with `studio triggers off <id>`.
 
 Start the harness (it runs steps 1, 3, 5 and 4 in that order, and takes about 20 minutes):
 
@@ -79,11 +82,11 @@ studio ask "remind me at 5pm to check X"
 studio triggers
 ```
 
-Record Wright's reply and the trigger row (`next fire` must be today 17:00 local). At 17:00, record whether the notification appeared, and run `studio notifications` to record its row (status and deep link).
+Your text is the plain `check X`, with no tag, so the harness never selects or turns off this trigger. Record Wright's reply and the trigger row (`next fire` must be today 17:00 local). At 17:00, record whether the notification appeared, and run `studio notifications` to record its row (status and deep link).
 
 ## Step 3: a reminder turned off before its time (harness)
 
-The harness's step 3 asks for a third reminder, runs `studio triggers off <id>` at once, and waits past the reminder's minute plus 90 seconds. It passes when no notification and no `trigger_fired` event exist for that trigger, and its row says `enabled 0`, turned off by `owner`, never fired. Record whether any notification appeared on screen at that minute (none should).
+The harness's step 3 asks for a third reminder (tag `phase2-exit-<run>-step3`), runs `studio triggers off <id>` on the tagged trigger at once, and waits past the reminder's minute plus 90 seconds. It passes when no notification and no `trigger_fired` event exist for that trigger, and its row says `enabled 0`, turned off by `owner`, never fired. Record whether any notification appeared on screen at that minute (none should).
 
 ## Step 4: a Loomwright version change (harness, with your consent)
 
@@ -96,7 +99,7 @@ What only you can see: the step 4 notification appeared (title "Loomwright `<fro
 
 ## Step 5: `kill -9` before a reminder's time (harness)
 
-The harness's step 5 asks for a reminder 3 minutes ahead and then sends `kill -9` to the service's kernel, after checking that `api.json` and `launchctl print` name the same pid. It waits for launchd to restart the kernel (a new pid that answers `studio status`; launchd's `ThrottleInterval` is 60 seconds) and then waits for the reminder. It passes when the restart came before the reminder's minute, and the reminder fired exactly once: one notification row and one `trigger_fired` event, still one after 15 more seconds. Record whether exactly one notification appeared on screen.
+The harness's step 5 asks for a reminder 3 minutes ahead (tag `phase2-exit-<run>-step5`) and then sends `kill -9` to the service's kernel, after checking that `api.json` and `launchctl print` name the same pid. It waits for launchd to restart the kernel (a new pid that answers `studio status`; launchd's `ThrottleInterval` is 60 seconds) and then waits for the reminder. It passes when the restart came before the reminder's minute, and the reminder fired exactly once: one notification row and one `trigger_fired` event, still one after 15 more seconds. Record whether exactly one notification appeared on screen.
 
 ## If a step fails
 
@@ -118,7 +121,7 @@ Commit `docs/evidence/phase-2-exit-live-<YYYY-MM-DD>.json` on this PR's branch, 
   "steps": {
     "1_reminder_fires": {
       "outcome": "passed | failed",
-      "harness": { "reminder": {}, "ask": {}, "triggers_created": [], "studio_triggers_entry": {}, "notifications": [], "fired_late_ms": 0, "trigger_events": {} },
+      "harness": { "reminder": {}, "ask": {}, "triggers_created": [], "other_new_triggers": [], "studio_triggers_entry": {}, "notifications": [], "fired_late_ms": 0, "trigger_events": {} },
       "owner": { "notification_appeared": true, "title_and_body": "", "click_opened_terminal": true, "terminal_output": "", "prompts": "" },
       "findings": []
     },
@@ -129,7 +132,7 @@ Commit `docs/evidence/phase-2-exit-live-<YYYY-MM-DD>.json` on this PR's branch, 
     },
     "3_reminder_off": {
       "outcome": "passed | failed",
-      "harness": { "reminder": {}, "off": {}, "notifications": [], "trigger_events": {}, "trigger_row": {} },
+      "harness": { "reminder": {}, "ask": {}, "triggers_created": [], "other_new_triggers": [], "off": {}, "notifications": [], "trigger_events": {}, "trigger_row": {} },
       "owner": { "nothing_appeared": true },
       "findings": []
     },
@@ -143,11 +146,12 @@ Commit `docs/evidence/phase-2-exit-live-<YYYY-MM-DD>.json` on this PR's branch, 
     },
     "5_kill_9_restart": {
       "outcome": "passed | failed",
-      "harness": { "reminder": {}, "before_kill": {}, "killed": {}, "restarted": {}, "notifications": [], "trigger_events": {}, "fired_late_ms": 0 },
+      "harness": { "reminder": {}, "ask": {}, "triggers_created": [], "other_new_triggers": [], "before_kill": {}, "killed": {}, "restarted": {}, "notifications": [], "trigger_events": {}, "fired_late_ms": 0 },
       "owner": { "exactly_one_notification_appeared": true },
       "findings": []
     }
   },
+  "run_tag": "<the summary's run_tag>",
   "cleanup": "<the summary's cleanup list, and the result of the three checks under 'What this run does to the machine'>"
 }
 ```

@@ -15,7 +15,7 @@
 // `api.json` and checked against `launchctl print` first) so launchd restarts
 // it. The harness never stops, uninstalls or reinstalls the service.
 //
-//   1. `studio ask "remind me at <HH:MM, 3 to 4 minutes ahead> to check X"`:
+//   1. `studio ask "remind me at <HH:MM, 3 to 4 minutes ahead> to check X <tag>"`:
 //      Wright's reply, the trigger row it created, and the notification row
 //      at that minute with its deep link and delivery status.
 //   3. A third reminder, turned off with `studio triggers off <id>` before
@@ -39,20 +39,33 @@
 // `remind me at 5pm` reminder at 17:00, step 2) is not here: the runbook
 // lists it as fields he fills in.
 //
-// Cleanup in `afterEach`: every trigger the harness created on the service is
-// turned off (`studio triggers off <id>`); the step 4 kernel is stopped and
-// its temp dir removed. Nothing the harness did not start is stopped or
-// removed. A run summary (timings, row counts, event kinds, the commit; never
-// env or tokens, and any `sk-ant-…` string redacted) is written after every
-// step to the path printed at the start; the owner copies what he needs into
-// the evidence file.
+// Every reminder the harness asks for carries a tag unique to the run and the
+// step (`phase2-exit-<run>-step<N>`, so the text is `check X <tag>`, never the
+// owner's step 2 `check X`). A trigger counts as the harness's only when its
+// owning agent is `wright` and its text contains that tag; any other trigger
+// that appears on the service meanwhile (another agent's, the owner's, or
+// Wright's without the tag) is recorded in the summary and never touched.
+//
+// Cleanup: `afterEach` re-reads the triggers carrying the current step's tags
+// (so one Wright registers after `studio ask` gave up is caught) and turns
+// each off (`studio triggers off <id>`); `afterAll` turns off any still-on
+// trigger carrying the run's tag (a late registration after its step ended).
+// The step 4 kernel is stopped and its temp dir removed. Nothing the harness
+// did not start or create is stopped, turned off or removed.
+//
+// A run summary (timings, row counts, event kinds, the commit, the run tag;
+// never env or tokens, and any `sk-ant-…` string redacted) is written after
+// every step to the path printed at the start; the owner copies what he needs
+// into the evidence file.
 import { execFile, execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
+import { ASK_AGENT } from "../src/brain/index.js";
 import { SHIPPED_CONTRIBUTIONS } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
 import type { Kernel } from "../src/kernel.js";
@@ -74,6 +87,10 @@ const MINUTE = 60_000;
 /** How long after a reminder's minute the harness waits for its notification (one tick, the delivery, slack). */
 const FIRE_SLACK_MS = 90_000;
 const STEP_TIMEOUT_MS = 15 * MINUTE;
+/** The reply wait passed to every harness `studio ask` (the CLI's own default, made explicit). */
+const ASK_TIMEOUT_S = 120;
+/** The `studio ask` process timeout: above the CLI's own wait, so the CLI always reports its own outcome. */
+const ASK_PROCESS_TIMEOUT_MS = (ASK_TIMEOUT_S + 30) * 1_000;
 
 /** Replace anything token-shaped before it is written anywhere. */
 function redact(text: string): string {
@@ -92,10 +109,15 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
   const dataDir = resolveDataDir(process.env);
   const summaryPath = join(tmpdir(), `studio-phase-2-exit-live-summary-${Date.now()}.json`);
   const summary: Record<string, unknown> & { steps: Record<string, Record<string, unknown>> } = { test: "phase-2-exit-live", steps: {} };
+  /** Unique to this run; every reminder text the harness asks for contains it (lowercase, so a case change by Wright still matches). */
+  const runTag = `phase2-exit-${Date.now().toString(36)}${randomBytes(3).toString("hex")}`;
+  summary.run_tag = runTag;
+  /** The per-step tags asked for in the current test (re-read in `afterEach`). */
+  const stepTags = new Set<string>();
   /** Triggers this harness created on the service in the current test (turned off in `afterEach`). */
   const created = new Set<number>();
-  /** Every trigger the harness created and what `afterEach` did with it. */
-  const cleanup: { trigger_id: number; off_exit: number; off_output: string }[] = [];
+  /** Every trigger the harness created and what cleanup did with it. */
+  const cleanup: { trigger_id: number; when: "after_each" | "after_all"; off_exit: number; off_output: string }[] = [];
   let ownKernel: Kernel | undefined;
   let ownTmp: string | undefined;
 
@@ -163,24 +185,54 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
     return { hhmm, at: new Date(ms).toISOString() };
   }
 
-  /** `studio ask` a reminder for `hhmm`; returns the reply and the one new trigger Wright created (tracked for cleanup). */
-  async function askReminder(rec: Record<string, unknown>, hhmm: string): Promise<{ id: number; next_fire_at: string | null }> {
-    const before = Number(scalar("SELECT coalesce(max(id), 0) FROM triggers"));
-    const text = `remind me at ${hhmm} to check X`;
-    const t = Date.now();
-    const r = await studio(["ask", text]);
-    rec.ask = { text, exit: r.code, reply: clipped(r.stdout.trim()), stderr: clipped(r.stderr.trim()), took_ms: Date.now() - t };
-    const rows = withDb(dataDir, (db) =>
+  /**
+   * The triggers provably the harness's: owned by Wright, with `tag` (a step's
+   * tag, or the run's tag for all of them) in their text. Nothing else is ever
+   * turned off.
+   */
+  const taggedTriggers = (tag: string) =>
+    withDb(dataDir, (db) =>
       db
-        .prepare<[number], { id: number; owning_agent: string; kind: string; action: string; enabled: number; next_fire_at: string | null }>(
-          "SELECT id, owning_agent, kind, action, enabled, next_fire_at FROM triggers WHERE id > ? ORDER BY id",
+        .prepare<[string, string], { id: number; owning_agent: string; kind: string; action: string; enabled: number; next_fire_at: string | null }>(
+          "SELECT id, owning_agent, kind, action, enabled, next_fire_at FROM triggers WHERE owning_agent = ? AND instr(lower(action_payload), ?) > 0 ORDER BY id",
         )
-        .all(before),
+        .all(ASK_AGENT, tag),
     );
+
+  /** `studio triggers off <id>` for each id, as the owner, recorded in the summary's cleanup list. */
+  async function turnOff(ids: Iterable<number>, when: "after_each" | "after_all"): Promise<void> {
+    for (const id of ids) {
+      const r = await studio(["triggers", "off", String(id)], 30_000);
+      cleanup.push({ trigger_id: id, when, off_exit: r.code, off_output: clipped((r.stdout + r.stderr).trim(), 300) });
+    }
+  }
+
+  /**
+   * `studio ask` a reminder for `hhmm` whose text carries `step`'s unique tag;
+   * returns the one trigger Wright created with that tag (tracked for cleanup).
+   * Other triggers that appeared meanwhile are recorded, never touched.
+   */
+  async function askReminder(rec: Record<string, unknown>, hhmm: string, step: string): Promise<{ id: number; next_fire_at: string | null }> {
+    const tag = `${runTag}-${step}`;
+    stepTags.add(tag);
+    const before = Number(scalar("SELECT coalesce(max(id), 0) FROM triggers"));
+    const text = `remind me at ${hhmm} to check X ${tag}`;
+    const t = Date.now();
+    const r = await studio(["ask", text, "--timeout", String(ASK_TIMEOUT_S)], ASK_PROCESS_TIMEOUT_MS);
+    rec.ask = { text, tag, exit: r.code, reply: clipped(r.stdout.trim()), stderr: clipped(r.stderr.trim()), took_ms: Date.now() - t };
+    const rows = taggedTriggers(tag);
     for (const row of rows) created.add(row.id);
     rec.triggers_created = rows;
+    // Not the harness's (no Wright owner or no tag): ids and owners only, left as they are.
+    rec.other_new_triggers = withDb(dataDir, (db) =>
+      db
+        .prepare<[number], { id: number; owning_agent: string; kind: string; created_by: string; enabled: number }>(
+          "SELECT id, owning_agent, kind, created_by, enabled FROM triggers WHERE id > ? ORDER BY id",
+        )
+        .all(before),
+    ).filter((o) => !rows.some((x) => x.id === o.id));
     expect(r.code, r.stderr).toBe(0);
-    expect(rows).toHaveLength(1);
+    expect(rows, "exactly one Wright trigger carrying the step's tag").toHaveLength(1);
     const row = rows[0] as (typeof rows)[number];
     // `studio triggers --all --json`, this trigger only (the owner's other triggers are not recorded).
     const listed = await studio(["triggers", "--all", "--json"], 15_000);
@@ -238,7 +290,7 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
   }
 
   beforeAll(async () => {
-    console.log(`phase-2-exit-live summary: ${summaryPath}`);
+    console.log(`phase-2-exit-live summary: ${summaryPath} (run tag ${runTag})`);
     expect(process.platform, "the live harness runs on macOS only").toBe("darwin");
     expect(existsSync(CLI_PATH), `${CLI_PATH} is missing: run npm run build first`).toBe(true);
     let commit = "unknown";
@@ -260,10 +312,10 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
   }, 60_000);
 
   afterEach(async () => {
-    for (const id of created) {
-      const r = await studio(["triggers", "off", String(id)], 30_000);
-      cleanup.push({ trigger_id: id, off_exit: r.code, off_output: clipped((r.stdout + r.stderr).trim(), 300) });
-    }
+    // Re-read by tag: a trigger Wright registered after `studio ask` returned (no reply in time, or parked) is the harness's too.
+    for (const tag of stepTags) for (const row of tryDb(dataDir, () => taggedTriggers(tag)) ?? []) created.add(row.id);
+    stepTags.clear();
+    await turnOff(created, "after_each");
     created.clear();
     if (ownKernel !== undefined) await ownKernel.stop();
     ownKernel = undefined;
@@ -272,11 +324,14 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
     writeSummary();
   }, 120_000);
 
-  afterAll(() => {
+  afterAll(async () => {
+    // A tagged trigger still on here was registered after its step's cleanup (a session that outlived the step).
+    const late = (tryDb(dataDir, () => taggedTriggers(runTag)) ?? []).filter((row) => row.enabled === 1).map((row) => row.id);
+    await turnOff(late, "after_all");
     summary.finished_at = new Date().toISOString();
     writeSummary();
-    console.log(`phase-2-exit-live summary: ${summaryPath}`);
-  });
+    console.log(`phase-2-exit-live summary: ${summaryPath} (run tag ${runTag})`);
+  }, 120_000);
 
   it(
     "step 1: studio ask a reminder 3 minutes ahead; Wright's trigger fires one notification at that minute",
@@ -285,7 +340,7 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
         const firstEvent = Number(scalar("SELECT coalesce(max(id), 0) FROM events"));
         const { hhmm, at } = reminderMinute();
         rec.reminder = { hhmm, expected_fire_at: at };
-        const trigger = await askReminder(rec, hhmm);
+        const trigger = await askReminder(rec, hhmm, "step1");
         expect(trigger.next_fire_at, "Wright's trigger is not for the minute asked").toBe(at);
         const notes = await waitFor(
           "the reminder's notification, delivered or settled",
@@ -315,7 +370,7 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
         const firstEvent = Number(scalar("SELECT coalesce(max(id), 0) FROM events"));
         const { hhmm, at } = reminderMinute();
         rec.reminder = { hhmm, expected_fire_at: at };
-        const trigger = await askReminder(rec, hhmm);
+        const trigger = await askReminder(rec, hhmm, "step3");
         const off = await studio(["triggers", "off", String(trigger.id)], 30_000);
         rec.off = { exit: off.code, output: clipped((off.stdout + off.stderr).trim(), 300), at: new Date().toISOString() };
         expect(off.code, off.stderr).toBe(0);
@@ -342,7 +397,7 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
         const firstEvent = Number(scalar("SELECT coalesce(max(id), 0) FROM events"));
         const { hhmm, at } = reminderMinute();
         rec.reminder = { hhmm, expected_fire_at: at };
-        const trigger = await askReminder(rec, hhmm);
+        const trigger = await askReminder(rec, hhmm, "step5");
         expect(trigger.next_fire_at, "Wright's trigger is not for the minute asked").toBe(at);
         const oldLaunchd = launchdPid();
         const oldApi = apiPid();
