@@ -141,9 +141,9 @@ These go first in the note and in the notification:
 - a removed command;
 - a removed agent;
 - any `host_switch` change;
-- a contract schema version above `KNOWN_CONTRACT_SCHEMA_VERSION` (1, the highest this kernel was written against).
+- a contract schema version that crosses `KNOWN_CONTRACT_SCHEMA_VERSION` (1, the highest this kernel was written against): the new version is above it and the old one is not.
 
-D32 says the adapter tolerates a newer contract and reports the change rather than breaking. So a newer schema version is flagged, and the note says that the adapter still reads the contract and does not refuse sessions. The adapter only has a minimum version (`MIN_CONTRACT_SCHEMA_VERSION`).
+D32 says the adapter tolerates a newer contract and reports the change rather than breaking. So a newer schema version is flagged, and the note says that the adapter still reads the contract and does not refuse sessions. It is flagged once, on the change that crosses the known version, so the warning is new when it appears. A later change between two versions above it (2 to 3, or a new plugin version still at 2) is not flagged again, and neither is a change back down to it; the Changed section still reports any schema change, and the note's From and To lines always state both schema versions. The adapter only has a minimum version (`MIN_CONTRACT_SCHEMA_VERSION`).
 
 ### The note
 
@@ -155,7 +155,7 @@ The note's first line is a provenance marker: `<!-- loomwright-version-note from
 
 - **The file name.** A plugin version is contract data, never a path. Each version keeps only `[A-Za-z0-9._-]` (any other character becomes `_`), loses its leading dots, and is cut to 64 characters; an empty result is `unknown`. The resolved path must sit directly in `loomwright-updates/`. Directories are created with mode 0700.
 - **Never overwritten.** If the name is taken (an earlier note, or a file the owner wrote), the note goes to the first free `-2`, `-3`, …. It is written to a temp file and hard-linked into place, so a note file is never torn.
-- **A crash between the note and the row.** The next check finds a file whose first line is this transition's marker and reuses it, so there is no duplicate note. It reads as many bytes as the marker has (plus its newline), so a long install path or plugin version still matches.
+- **A crash between the note and the row.** The next check finds a file whose first line is this transition's marker and reuses it, so there is no duplicate note. It reads as many bytes as the marker has (plus its newline), so a long install path or plugin version still matches, and never more than the file holds: a smaller file is read whole, with no more allocated than its size. The whole first line must equal the marker; a line that only starts with it is not this note.
 
 ### The notification
 
@@ -171,7 +171,7 @@ When the new version is numerically lower (`MAJOR.MINOR.PATCH`, compared segment
 
 ### No contract
 
-When the active install has no usable contract (any `contract_*` reason: missing, unreadable, not JSON, invalid, too old), there is no note and no row, and `/status` shows the adapter's error. The watcher creates one notification titled `The active Loomwright has no usable contract`, whose body names the install and the adapter's message. It is created only when no notification with the same source, title and body exists. That makes it once per install path, which for a marketplace install is once per version, and a restart does not repeat it. When no install is found at all (`installed_plugins_missing`, `not_installed` and the other install reasons), the watcher does nothing: reporting that is `/status`'s job.
+When the active install has no usable contract (any `contract_*` reason: missing, unreadable, not JSON, invalid, too old), there is no note and no row, and `/status` shows the adapter's error. The watcher creates one notification titled `The active Loomwright has no usable contract`, whose body names the install and the adapter's message. It is created only when no notification with the same source, title and body exists, and the body carries both the install path and the adapter's message. That makes it once per install path and message, which for a marketplace install is once per version, and a restart does not repeat it. A different problem with the same install (a missing `capabilities.json` that comes back as invalid JSON, say) changes the message, so it gets a new notification. When no install is found at all (`installed_plugins_missing`, `not_installed` and the other install reasons), the watcher does nothing: reporting that is `/status`'s job.
 
 ### Its limits
 
