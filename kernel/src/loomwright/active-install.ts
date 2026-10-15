@@ -12,7 +12,7 @@ import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { readBounded } from "./bounded-read.js";
-import { LOOMWRIGHT_CONTRACT_ERROR_REASONS, LoomwrightContractError, readLoomwrightContract } from "./contract.js";
+import { LOOMWRIGHT_CONTRACT_ERROR_REASONS, LoomwrightContractError, parseLoomwrightContract, readLoomwrightContractText } from "./contract.js";
 import type { LoomwrightContract, LoomwrightContractErrorReason } from "./contract.js";
 
 /** Where Claude Code records installed plugins. */
@@ -54,6 +54,17 @@ export interface LoomwrightInstall {
   readonly scope: string | null;
 }
 
+/** A `LoomwrightInstall` plus the exact `capabilities.json` text its `contract` was validated from. */
+export interface LoomwrightInstallWithText extends LoomwrightInstall {
+  readonly contractText: string;
+}
+
+/** Read the install's contract once and validate that same text: the same errors and messages as `readLoomwrightContract`. */
+function readContract(installPath: string): { readonly contract: LoomwrightContract; readonly contractText: string } {
+  const contractText = readLoomwrightContractText(installPath);
+  return { contract: parseLoomwrightContract(contractText, installPath), contractText };
+}
+
 interface Candidate {
   readonly key: string;
   readonly scope: Scope;
@@ -87,10 +98,21 @@ function isDirectory(path: string): boolean {
  * `readLoomwrightContract` reason.
  */
 export function resolveLoomwrightInstall(options: ResolveLoomwrightInstallOptions = {}): LoomwrightInstall {
+  const { installPath, contract, source, scope } = resolveLoomwrightInstallWithText(options);
+  return { installPath, contract, source, scope };
+}
+
+/**
+ * `resolveLoomwrightInstall`, plus the contract text it read: the same
+ * resolution, the same errors, and one read of `capabilities.json`, so a
+ * caller that keeps the text (the version watcher) stores exactly the bytes
+ * that were validated, with no second read for the file to change between.
+ */
+export function resolveLoomwrightInstallWithText(options: ResolveLoomwrightInstallOptions = {}): LoomwrightInstallWithText {
   const configured = options.configured;
   if (configured !== undefined && configured !== "") {
     const installPath = resolve(configured);
-    return { installPath, contract: readLoomwrightContract(installPath), source: "configured", scope: null };
+    return { installPath, ...readContract(installPath), source: "configured", scope: null };
   }
 
   const file = resolve(options.installedPluginsPath ?? defaultInstalledPluginsPath());
@@ -158,7 +180,7 @@ export function resolveLoomwrightInstall(options: ResolveLoomwrightInstallOption
       `${file} names ${winner.key} (${winner.scope}) at ${winner.installPath}, which is not a directory`,
     );
   }
-  return { installPath: winner.installPath, contract: readLoomwrightContract(winner.installPath), source: "installed_plugins", scope: winner.scope };
+  return { installPath: winner.installPath, ...readContract(winner.installPath), source: "installed_plugins", scope: winner.scope };
 }
 
 /** Every `LoomwrightAdapterStatus` error reason: the adapter's, plus `status_threw` for a status reader that threw. */

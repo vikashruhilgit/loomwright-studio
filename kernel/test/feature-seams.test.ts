@@ -1,12 +1,12 @@
 // The phase 2 feature seams (AC3-AC6, AC9): one `FeatureContribution` per
 // feature, merged by `startKernel` and `runCli`. The shipped contributions add
-// only the loomwright feature's one tool (`kernel_loomwright_capabilities`),
-// the notifications feature's tool (`kernel_notify`), two routes, one
-// subcommand and one due work, the triggers feature's three tools, three
-// routes, one subcommand and one due work (pinned in triggers.test.ts), the
-// approvals feature's tool (`kernel_approval_request`), three routes and
-// three subcommands (pinned in approvals.test.ts), and the brain's two routes,
-// one subcommand and its `message` handler (pinned in brain.test.ts); a test contribution composed from outside reaches every part
+// only the loomwright feature's one tool (`kernel_loomwright_capabilities`)
+// and one due work (the version watcher), the notifications feature's tool
+// (`kernel_notify`), two routes, one subcommand and one due work, the triggers
+// feature's three tools, three routes, one subcommand and one due work (pinned
+// in triggers.test.ts), the approvals feature's tool (`kernel_approval_request`),
+// three routes and three subcommands (pinned in approvals.test.ts), and the
+// brain's two routes, one subcommand and its `message` handler (pinned in brain.test.ts); a test contribution composed from outside reaches every part
 // through the normal path (the kernel MCP server, the loopback API, `studio`,
 // the event loop). A temp data dir, an in-memory Keychain, the fake
 // spawner/query and stub auth: never the real SDK, a model or the Keychain.
@@ -34,6 +34,7 @@ import {
 } from "../src/features/index.js";
 import type { ContributedRoute, ContributedRouteRequest, ContributedSubcommand, FeatureContribution } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
+import { versionWatchDueWork } from "../src/loomwright/index.js";
 import { NOTIFICATIONS_HELP, deliveryDueWork } from "../src/notifications/index.js";
 import { ASK_HELP, brainContribution } from "../src/brain/index.js";
 import type { Kernel, KernelDeps, KernelOptions } from "../src/kernel.js";
@@ -79,7 +80,7 @@ const noopSubcommand = (name: string): ContributedSubcommand => ({ name, help: `
 const noopTool = (name: string) => defineTool({ name, description: "test tool", shape: {}, handler: () => ({}) });
 
 describe("mergeContributions", () => {
-  it("the shipped contributions: the five features in a fixed order, registering nothing but loomwright's one tool, the notifications parts, the triggers parts, the approvals parts and the brain parts (AC3)", () => {
+  it("the shipped contributions: the five features in a fixed order, registering nothing but loomwright's one tool and one due work, the notifications parts, the triggers parts, the approvals parts and the brain parts (AC3)", () => {
     expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1);
     expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
@@ -107,10 +108,11 @@ describe("mergeContributions", () => {
     // The brain's `message` handler is the only shipped handler.
     expect(Object.keys(merged.handlers)).toEqual(["message"]);
     expect(merged.handlers.message).toBe(brainContribution.handlers?.message);
-    expect(merged.dueWork.map((d) => d.owner)).toEqual(["notifications", "triggers"]);
-    expect(merged.dueWork[0]?.run).toBe(deliveryDueWork);
+    expect(merged.dueWork.map((d) => d.owner)).toEqual(["loomwright", "notifications", "triggers"]);
+    expect(merged.dueWork[0]?.run).toBe(versionWatchDueWork);
+    expect(merged.dueWork[1]?.run).toBe(deliveryDueWork);
     const keys: Record<string, string[]> = {
-      loomwright: ["name", "tools"],
+      loomwright: ["name", "tools", "dueWork"],
       notifications: ["name", "tools", "routes", "subcommands", "dueWork"],
       triggers: ["name", "tools", "routes", "subcommands", "dueWork"],
       approvals: ["name", "tools", "routes", "subcommands"],
@@ -455,7 +457,7 @@ function out() {
 }
 
 describe("the shipped kernel (AC3)", () => {
-  it("registers no kernel tool beyond phase 1's but kernel_loomwright_capabilities, kernel_notify, the three kernel_trigger_ tools and kernel_approval_request, and no API route, CLI subcommand, event handler or due work beyond phase 1's but the notifications, triggers, approvals and brain ones", async () => {
+  it("registers no kernel tool beyond phase 1's but kernel_loomwright_capabilities, kernel_notify, the three kernel_trigger_ tools and kernel_approval_request, and no API route, CLI subcommand, event handler or due work beyond phase 1's but the loomwright, notifications, triggers, approvals and brain ones", async () => {
     const store = new Store({ dataDir });
     const { id } = enqueueMessage(store, { text: "hello" });
     store.close();
@@ -489,8 +491,9 @@ describe("the shipped kernel (AC3)", () => {
     // Was `{}` before the brain: the brain now ships the kernel's only handler, for `message`.
     expect(Object.keys(kernel.contributions.handlers)).toEqual(["message"]);
     expect(kernel.contributions.handlers.message).toBe(brainContribution.handlers?.message);
-    expect(kernel.contributions.dueWork.map((w) => w.owner)).toEqual(["notifications", "triggers"]);
-    expect(kernel.contributions.dueWork[0]?.run).toBe(deliveryDueWork);
+    expect(kernel.contributions.dueWork.map((w) => w.owner)).toEqual(["loomwright", "notifications", "triggers"]);
+    expect(kernel.contributions.dueWork[0]?.run).toBe(versionWatchDueWork);
+    expect(kernel.contributions.dueWork[1]?.run).toBe(deliveryDueWork);
 
     // The brain handles `message`: a message for no agent (not Wright) ends done, with no effect and no brain_messages row.
     await vi.waitFor(() => expect(getQueueRow(kernel.store, id)?.status).toBe("done"));

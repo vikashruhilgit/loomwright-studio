@@ -7,7 +7,17 @@ import { nextPendingRow, toQueuedEvent } from "./queue.js";
 import type { QueueRow } from "./queue.js";
 import { WorkStepFailedError, WorkStepInterruptedError, getWorkStep, runStep, runStepAsync } from "./steps.js";
 import { isEventKind } from "./types.js";
-import type { DueWork, EventContext, EventHandlers, EventLoopDeps, EventLoopOptions, EventSessions, QueuedEvent, TickResult } from "./types.js";
+import type {
+  DueWork,
+  EventContext,
+  EventHandlers,
+  EventLoopDeps,
+  EventLoopOptions,
+  EventSessions,
+  LoomwrightInstallSettings,
+  QueuedEvent,
+  TickResult,
+} from "./types.js";
 import { fireDueWakeups } from "./wakeups.js";
 
 export const DEFAULT_TICK_MS = 1_000;
@@ -68,6 +78,7 @@ export class EventLoop {
   readonly #handlers: EventHandlers;
   readonly #dueWork: readonly DueWork[];
   readonly #sessions: EventSessions | undefined;
+  readonly #loomwright: LoomwrightInstallSettings | undefined;
   readonly #now: () => Date;
   readonly #schedule: (fn: () => void, ms: number) => CancelTimer;
   readonly #tickMs: number;
@@ -84,6 +95,7 @@ export class EventLoop {
     this.#handlers = { ...options.handlers };
     this.#dueWork = [...(options.dueWork ?? [])];
     this.#sessions = options.sessions;
+    this.#loomwright = options.loomwright === undefined ? undefined : Object.freeze({ ...options.loomwright });
     this.#now = deps.now ?? (() => new Date());
     this.#schedule = deps.schedule ?? defaultSchedule;
     const tickMs = deps.tickMs ?? DEFAULT_TICK_MS;
@@ -159,7 +171,7 @@ export class EventLoop {
     for (const work of this.#dueWork) {
       if (this.#abortTick) return;
       try {
-        await work.run({ store: this.#store, now: this.#now });
+        await work.run({ store: this.#store, now: this.#now, ...(this.#loomwright === undefined ? {} : { loomwright: this.#loomwright }) });
       } catch (err) {
         this.#recordSafely("due_work_failed", NO_REF, { contributor: work.owner, error: clip(errorMessage(err)) });
       }
