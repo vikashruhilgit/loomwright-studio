@@ -5,11 +5,11 @@ import type { Store } from "../store/store.js";
  * D28's API-key fallback: when the subscription cap is hit, continue on the
  * user's own API key under a hard dollar ceiling the user sets.
  *
- * D28 makes this a per-playbook opt-in, and this is the shape a playbook will
- * carry (phase 3). Phase 1 has no playbooks, so the only instance is the
- * kernel-wide `BudgetConfig.apiKeyFallback` placeholder, off by default. Once
- * playbooks exist the policy is read per playbook and the kernel-wide value is
- * never consulted. Nothing in phase 1 switches provider on it (AC7).
+ * D28 makes this a per-playbook opt-in, and this is the shape a playbook
+ * carries (`playbooks.api_key_fallback_json`, migration 13). The playbook gate
+ * (`PlaybookAdmission`) reads it per playbook and never consults the
+ * kernel-wide `BudgetConfig.apiKeyFallback` placeholder (off by default), on
+ * which nothing switches provider (`BudgetAdmission.check` never does).
  */
 export interface ApiKeyFallbackPolicy {
   readonly enabled: boolean;
@@ -74,9 +74,20 @@ export function validateBudgetConfig(config: BudgetConfig): BudgetConfig {
     }
     copy[agent] = limit;
   }
-  const fallback = config.apiKeyFallback as unknown;
-  if (typeof fallback !== "object" || fallback === null) throw new BudgetConfigError("apiKeyFallback must be an object");
-  const { enabled, dollarCeilingUsd } = fallback as Partial<ApiKeyFallbackPolicy>;
+  return Object.freeze({
+    agentDailyTokenLimits: Object.freeze(copy),
+    apiKeyFallback: validateApiKeyFallbackPolicy(config.apiKeyFallback),
+  });
+}
+
+/**
+ * Check an API-key fallback policy (the kernel-wide placeholder, or a
+ * playbook's stored one) and return a frozen copy: `enabled` must be a
+ * boolean, the ceiling `null` or a positive finite number.
+ */
+export function validateApiKeyFallbackPolicy(value: unknown): ApiKeyFallbackPolicy {
+  if (typeof value !== "object" || value === null) throw new BudgetConfigError("apiKeyFallback must be an object");
+  const { enabled, dollarCeilingUsd } = value as Partial<ApiKeyFallbackPolicy>;
   if (typeof enabled !== "boolean") throw new BudgetConfigError("apiKeyFallback.enabled must be a boolean");
   if (
     dollarCeilingUsd !== null &&
@@ -84,10 +95,7 @@ export function validateBudgetConfig(config: BudgetConfig): BudgetConfig {
   ) {
     throw new BudgetConfigError("apiKeyFallback.dollarCeilingUsd must be null or a positive finite number");
   }
-  return Object.freeze({
-    agentDailyTokenLimits: Object.freeze(copy),
-    apiKeyFallback: Object.freeze({ enabled, dollarCeilingUsd: dollarCeilingUsd ?? null }),
-  });
+  return Object.freeze({ enabled, dollarCeilingUsd: dollarCeilingUsd ?? null });
 }
 
 /**
@@ -114,6 +122,13 @@ export interface BudgetOptions {
    * row's `auth_account` is never read.
    */
   readonly authProvider: BudgetAuth;
+  /**
+   * The API-key provider a playbook's D28 fallback admits on, by its stable
+   * `id` (its `account` is display text). Absent: no playbook is ever admitted
+   * on an API key, whatever its policy says. Must not share `authProvider`'s
+   * id. Only the playbook gate reads it.
+   */
+  readonly apiKeyProvider?: BudgetAuth;
   /** Defaults to `DEFAULT_BUDGET_CONFIG`. Validated at construction. */
   readonly config?: BudgetConfig;
 }

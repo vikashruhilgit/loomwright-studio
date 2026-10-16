@@ -7,9 +7,9 @@ import type { BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions } from "./type
 
 /**
  * Whether D28's API-key fallback would be in force: enabled AND a positive
- * dollar ceiling set. Off under `DEFAULT_BUDGET_CONFIG`. Phase 1 has no
- * playbooks and nothing switches provider on this (AC7); once playbooks exist
- * it is read from the playbook's own policy.
+ * dollar ceiling set. Off under `DEFAULT_BUDGET_CONFIG`. Nothing switches
+ * provider on this kernel-wide placeholder (AC7): the playbook gate
+ * (`PlaybookAdmission`) reads each playbook's own policy and never this one.
  */
 export function apiKeyFallbackActive(config: BudgetConfig): boolean {
   const { enabled, dollarCeilingUsd } = config.apiKeyFallback;

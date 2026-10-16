@@ -99,6 +99,77 @@ export function noteAgentLimitReached(
   return true;
 }
 
+/**
+ * The `budget.playbook` value of playbook `id`: the column is TEXT
+ * (migration 1), so the id is written and compared as its decimal string.
+ */
+export function playbookKey(id: number): string {
+  return String(id);
+}
+
+/** Counted tokens (input + output + cache writes, D26) playbook `id`'s sessions used on `day`. */
+export function playbookCountedTokens(store: Store, id: number, day: string): number {
+  return (
+    store
+      .prepare<[string, string], number>("SELECT COALESCE(SUM(counted_tokens), 0) FROM budget WHERE playbook = ? AND day = ?")
+      .pluck()
+      .get(playbookKey(id), day) ?? 0
+  );
+}
+
+/**
+ * A stored `playbooks.token_limit_per_day`: `null` when unset, the limit when
+ * it is a positive safe integer, `undefined` when it is anything else (the
+ * playbooks feature validates its writes, so that is a damaged row). The
+ * meter skips a damaged limit; admission refuses on it (fail closed).
+ */
+export function playbookTokenLimit(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * Record that playbook `id` reached its daily limit on `day`: one
+ * `playbook_limit_reached` event and one `notify`, once per playbook-day
+ * (whether the meter saw the crossing or admission found it first), the
+ * playbook twin of `noteAgentLimitReached`. Call inside a transaction.
+ * Returns whether anything was written.
+ */
+export function notePlaybookLimitReached(
+  store: Store,
+  auth: BudgetAuth,
+  details: {
+    playbook: number;
+    slug: string;
+    day: string;
+    countedTokens: number;
+    limit: number;
+    retryAt: string;
+    ref: EventRef;
+  },
+  at: string,
+): boolean {
+  const seen = store
+    .prepare<[number, string], number>(
+      `SELECT 1 FROM events WHERE kind = 'playbook_limit_reached'
+          AND json_extract(payload_json, '$.playbook') = ? AND json_extract(payload_json, '$.day') = ?`,
+    )
+    .pluck()
+    .get(details.playbook, details.day);
+  if (seen !== undefined) return false;
+  const payload = {
+    playbook: details.playbook,
+    slug: details.slug,
+    day: details.day,
+    counted_tokens: details.countedTokens,
+    limit: details.limit,
+    retry_at: details.retryAt,
+  };
+  appendEvent(store, "playbook_limit_reached", details.ref, payload, at);
+  appendNotify(store, auth, auth.account, details.ref, { reason: "playbook_daily_limit", ...payload }, at);
+  return true;
+}
+
 /** One `cap_state` row the kernel is parked on: `rejected`, reset unknown or still ahead. */
 export interface ActivePark {
   readonly rate_limit_type: string;
