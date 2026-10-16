@@ -1,10 +1,10 @@
 // The `playbooks` feature (phase 3): one contribution built from one part per
-// sub-file (`drafts.ts`, `dry-run.ts`, `enable.ts`, `runs.ts`), so each phase
-// 3 item edits only its own sub-file. Every part is empty until its item
-// fills it in; today the contribution is the one `studio playbooks`
-// subcommand, with no verbs. Mechanism only (invariant 1): no playbook ships
-// preinstalled. `startKernel` and `runCli` merge it through
-// `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`).
+// sub-file, so each phase 3 item edits only the sub-file(s) it owns: item 02
+// `drafts.ts`, item 07 `dry-run.ts` and `enable.ts`, item 08 `runs.ts`.
+// Every part is empty until its item fills it in; today the contribution is
+// the one `studio playbooks` subcommand, with no verbs. Mechanism only
+// (invariant 1): no playbook ships preinstalled. `startKernel` and `runCli`
+// merge it through `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`).
 //
 // The `studio` CLI loads it, so it imports only types and zod and the feature
 // seam: never the Agent SDK, the session manager or `kernel.ts`

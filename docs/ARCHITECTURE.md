@@ -147,7 +147,7 @@ Each feature exports one `FeatureContribution`: a name plus optional tools, rout
 
 ## Phase 3 features
 
-Phase 3 adds one feature, playbooks, in `kernel/src/playbooks/`, registered as the sixth contribution (`playbooksContribution`, after the brain). Each phase 3 item builds in its own sub-file (`drafts.ts`, `dry-run.ts`, `enable.ts`, `runs.ts`), and each sub-file exports one part listed in `PLAYBOOK_PARTS`: its tools, routes, handlers, and verbs of the one `studio playbooks` subcommand. The parts merge in that order; a verb or handler kind claimed by two parts is refused with `ContributionConflictError` naming both, like any other collision. Until an item adds a verb, `studio playbooks` prints its help.
+Phase 3 adds one feature, playbooks, in `kernel/src/playbooks/`, registered as the sixth contribution (`playbooksContribution`, after the brain). Each phase 3 item builds only in the sub-file(s) it owns (item 02 `drafts.ts`, item 07 `dry-run.ts` and `enable.ts`, item 08 `runs.ts`), and each sub-file exports one part listed in `PLAYBOOK_PARTS`: its tools, routes, handlers, and verbs of the one `studio playbooks` subcommand. The parts merge in that order; a verb or handler kind claimed by two parts is refused with `ContributionConflictError` naming both, like any other collision. Until an item adds a verb, `studio playbooks` prints its help.
 
 Migration 13 creates the `playbooks`, `playbook_versions` and `playbook_runs` tables and adds `sessions.playbook` / `playbook_version`, `approvals.playbook` and `event_queue.priority` (see the data model). As in phase 2, every value set is checked in code, not by SQL, and none of these columns holds a policy the kernel chose: no playbook ships preinstalled (invariant 1).
 
