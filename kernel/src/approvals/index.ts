@@ -8,8 +8,11 @@
 // through `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`). The `studio` CLI
 // loads it, so it imports only types and zod: never the Agent SDK. (Beyond
 // types and zod, its modules import only each other, the feature seam, the
-// loop's work steps, queue and audit helpers, and the notifications record and
-// CLI escape.)
+// loop's work steps, queue and audit helpers, the notifications record and
+// CLI escape, and `sessions/policy.ts` for `ALWAYS_HELD_TOOLS`, which itself
+// imports only `node:path`, `protected-paths.ts` and types.) Standing grants
+// ("always", per playbook version) are approved/always rows: no grant exists
+// until the owner answers `always`.
 import type { FeatureContribution } from "../features/contribution.js";
 import { approvalsSubcommand, approveSubcommand, denySubcommand } from "./cli.js";
 import { approvalRoutes } from "./routes.js";
@@ -22,7 +25,7 @@ export const approvalsContribution: FeatureContribution = Object.freeze({
   subcommands: Object.freeze([approvalsSubcommand, approveSubcommand, denySubcommand]),
 });
 
-export { APPROVALS_HELP, APPROVE_HELP, DENY_HELP, approvalsSubcommand, approveSubcommand, denySubcommand, formatApprovals, payloadText, shown } from "./cli.js";
+export { APPROVALS_HELP, APPROVE_HELP, DENY_HELP, approvalsSubcommand, approveSubcommand, denySubcommand, formatApprovals, formatGrants, payloadText, shown } from "./cli.js";
 export { approvalRoutes } from "./routes.js";
 export {
   ALWAYS_REFUSED,
@@ -41,8 +44,23 @@ export {
   getApproval,
   holdOrUseGrant,
   listApprovals,
+  listGrants,
   requestApproval,
+  revokeGrant,
 } from "./store.js";
-export type { ApprovalDecision, ApprovalRequest, ApprovalRow, ApprovalSource, ApprovalStatus, ApprovalView, DecisionInput, RailCall, RailOutcome } from "./store.js";
+export type {
+  ApprovalDecision,
+  ApprovalPlaybook,
+  ApprovalRequest,
+  ApprovalRow,
+  ApprovalSource,
+  ApprovalStatus,
+  ApprovalView,
+  DecisionInput,
+  GrantView,
+  RailCall,
+  RailOutcome,
+  RevokeInput,
+} from "./store.js";
 export { approvalRequestTool } from "./tool.js";
 export type { KernelApprovalRequestResult } from "./tool.js";
