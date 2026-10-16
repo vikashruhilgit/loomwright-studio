@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "companions": [
+    { "when": "kernel/src/brain/templates.ts", "add": ["docs/architecture/brain.md", "kernel/test/brain.test.ts"] },
+    { "when": "kernel/src/brain/settings.ts", "add": ["kernel/src/brain/templates.ts", "docs/architecture/brain.md", "kernel/test/brain.test.ts"] },
+    { "when": "docs/architecture/brain.md", "add": ["kernel/src/brain/templates.ts", "kernel/test/brain.test.ts"] },
+    { "when": "kernel/src/store/migrations/*", "add": ["kernel/test/store.test.ts"] },
+    { "when": "kernel/src/features/index.ts", "add": ["kernel/test/feature-seams.test.ts"] },
+    { "when": "kernel/src/sessions/policy.ts", "add": ["kernel/test/sessions-policy.test.ts"] }
+  ]
+}
