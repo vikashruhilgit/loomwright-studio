@@ -1,15 +1,15 @@
 import type { AdmissionDecision, AdmissionRequest } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
-import { activeParks, agentCountedTokens, appendEvent, clockOf, noteAgentLimitReached } from "./internal.js";
+import { activeParks, admissionProvider, agentLimitRefusal, appendEvent, capRetryAt, clockOf } from "./internal.js";
 import type { Clock } from "./internal.js";
-import { DEFAULT_BUDGET_CONFIG, agentDailyTokenLimit, validateBudgetConfig } from "./types.js";
+import { DEFAULT_BUDGET_CONFIG, validateBudgetConfig } from "./types.js";
 import type { BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions } from "./types.js";
 
 /**
  * Whether D28's API-key fallback would be in force: enabled AND a positive
- * dollar ceiling set. Off under `DEFAULT_BUDGET_CONFIG`. Phase 1 has no
- * playbooks and nothing switches provider on this (AC7); once playbooks exist
- * it is read from the playbook's own policy.
+ * dollar ceiling set. Off under `DEFAULT_BUDGET_CONFIG`. Nothing switches
+ * provider on this kernel-wide placeholder (AC7): the playbook gate
+ * (`PlaybookAdmission`) reads each playbook's own policy and never this one.
  */
 export function apiKeyFallbackActive(config: BudgetConfig): boolean {
   const { enabled, dollarCeilingUsd } = config.apiKeyFallback;
@@ -66,38 +66,17 @@ export class BudgetAdmission {
       const ref = { sessionId: null, taskId: request.task };
 
       // One key: the provider's stable id, as the cap tracker keys parks. The label is never compared.
-      const provider = this.#auth.id;
-      if (request.provider !== provider) {
-        throw new Error(
-          `admission asked for provider ${request.provider} but the budget's auth provider is ${provider}: refusing (fail closed)`,
-        );
-      }
+      const provider = admissionProvider(this.#auth, request.provider);
       const parks = activeParks(this.#store, provider, at);
       if (parks.length > 0) {
-        const retryAt = parks.some((p) => p.resets_at === null)
-          ? null
-          : parks.map((p) => p.resets_at as string).reduce((a, b) => (b > a ? b : a));
         // The cap's notify went out when the account was parked (once per window).
-        return this.#refuse(request, "cap_parked", retryAt, { rate_limit_types: parks.map((p) => p.rate_limit_type) }, at);
+        return this.#refuse(request, "cap_parked", capRetryAt(parks), { rate_limit_types: parks.map((p) => p.rate_limit_type) }, at);
       }
 
       // Agent limit gates starts only; a resume is admitted past it (see the class doc).
-      if (request.kind === "start" && request.agent !== null) {
-        const limit = agentDailyTokenLimit(this.#config, request.agent);
-        if (limit !== undefined) {
-          const day = this.#clock.dayOf(now);
-          const counted = agentCountedTokens(this.#store, request.agent, day);
-          if (counted >= limit) {
-            const retryAt = this.#clock.startOfNextDay(now).toISOString();
-            noteAgentLimitReached(
-              this.#store,
-              this.#auth,
-              { agent: request.agent, day, countedTokens: counted, limit, retryAt, ref },
-              at,
-            );
-            return this.#refuse(request, "agent_daily_limit", retryAt, { day, counted_tokens: counted, limit }, at);
-          }
-        }
+      const agentRefusal = agentLimitRefusal(this.#store, this.#auth, this.#config, this.#clock, request, now, ref, at);
+      if (agentRefusal !== null) {
+        return this.#refuse(request, "agent_daily_limit", agentRefusal.retryAt, agentRefusal.details, at);
       }
       return { admitted: true };
     });

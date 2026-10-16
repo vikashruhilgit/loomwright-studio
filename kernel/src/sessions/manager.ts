@@ -26,6 +26,7 @@ import type { Store } from "../store/store.js";
 import { LoomwrightSessionError, readSessionLoomwright, resolveSessionLoomwright } from "./loomwright-path.js";
 import type { SessionLoomwright } from "./loomwright-path.js";
 import { TOOL_DEFERRAL_OFF } from "./kernel-env.js";
+import { DRY_RUN_DENY_MESSAGE, classifyDryRunCall, dryRunUsage } from "./dry-run.js";
 import { latestOrphanReason } from "./orphans.js";
 import { bashCommandOf, classifyToolCall, decideToolUse, freezePolicy } from "./policy.js";
 import type { ToolCallClass, ToolDecisionReason } from "./policy.js";
@@ -58,6 +59,7 @@ import type {
   AdmissionRequest,
   AllowedPermissionMode,
   CancelTimer,
+  DryRunReport,
   GroupLeader,
   ProcessEntry,
   ProcessTable,
@@ -72,6 +74,7 @@ import type {
   SpawnFn,
   StartSessionParams,
   ToolPolicy,
+  WouldDoEntry,
 } from "./types.js";
 
 /** Cap for a recorded stack or stderr tail. The error message itself is never truncated. */
@@ -95,6 +98,11 @@ function toolDecisionPayload(
     ...(approvalId === undefined ? {} : { approval_id: approvalId }),
   };
 }
+/**
+ * The event a dry-run start writes with its row (payload `{}`). A resume reads
+ * it back: a session that started as a dry run stays one on every resume.
+ */
+const DRY_RUN_EVENT = "session_dry_run";
 /** The bundled CLI's executable name; the reaper kills only groups led by it (or leaderless). */
 const CLI_BASENAME = "claude";
 /**
@@ -301,6 +309,31 @@ interface LiveSession {
   resolveDone: (status: SessionStatus) => void;
   /** `SessionHandle.result`: derived from `done`, never rejects. */
   readonly result: Promise<string | null>;
+  /**
+   * Set for a dry-run session (a dry-run start, a dry-run resume, or any
+   * resume of a session that started as one), for every attempt: the gate
+   * reads it on each call, so a launch can never drop it.
+   */
+  readonly dryRun: DryRunState | undefined;
+  /** `SessionHandle.dryRun`: derived from `result`, never rejects; `null` for a real run. */
+  readonly dryRunReport: Promise<DryRunReport | null>;
+}
+
+/**
+ * A dry-run session's in-memory record (`DryRunReport`), across the launch
+ * attempts of one `startSession`/`resumeSession` call. A resume starts a fresh
+ * one; earlier entries survive only as `tool_decision` events (`dry_run`).
+ */
+interface DryRunState {
+  /** Every would-do entry whose deny was recorded, in call order. */
+  readonly wouldDo: WouldDoEntry[];
+  /** The last `result` message's raw `modelUsage` (a cumulative total: replaced, never added). */
+  lastModelUsage: unknown;
+}
+
+/** The frozen report of a dry-run session that ended with `finalText`. */
+function dryRunReportOf(state: DryRunState, finalText: string | null): DryRunReport {
+  return Object.freeze({ wouldDo: Object.freeze([...state.wouldDo]), finalText, usage: dryRunUsage(state.lastModelUsage) });
 }
 
 type ConsumeOutcome =
@@ -595,7 +628,8 @@ export class SessionManager {
    * the error is rethrown. The session runs in Loomwright's host mode: its env
    * gets the contract's `host_switch.env=1` and `host_switch.state_dir_env` set
    * to `<dataDir>/loomwright-state/session-<id>`, created (mode 0700) before
-   * the spawn.
+   * the spawn. A `dryRun: true` start writes one `session_dry_run` event with
+   * its row and runs as a dry run (`#gate`, `SessionHandle.dryRun`).
    */
   async startSession(params: StartSessionParams): Promise<SessionHandle> {
     const permissionMode = checkPermissionMode(params.permissionMode);
@@ -636,14 +670,17 @@ export class SessionManager {
     if (collision !== undefined) this.#refuseLoomwright(hostSwitchCollisionError(loomwrightPath, collision), null);
 
     const sdkSessionId = this.#randomUUID();
+    const dryRun = params.dryRun === true;
     const at = this.#nowIso();
     const id = this.#store.transaction(() => {
       const rowId = this.#insertRow(params, loomwrightPath, sdkSessionId, "starting", at);
       this.#appendStatusEvent(rowId, null, "starting", {}, at);
+      // With the row: every later resume of this session reads it back and runs dry too.
+      if (dryRun) this.#appendEvent(DRY_RUN_EVENT, rowId, {}, at);
       return rowId;
     });
 
-    const live = this.#newLive(id, sdkSessionId, policy, "starting");
+    const live = this.#newLive(id, sdkSessionId, policy, "starting", dryRun);
     let attempt: Attempt;
     try {
       // Before the spawn; a failure here is a spawn failure.
@@ -670,7 +707,7 @@ export class SessionManager {
     }
 
     void this.#runStart(live, attempt).catch((err: unknown) => this.#crash(live, err));
-    return { id, sdkSessionId, pgid: attempt.pgid, done: live.done, result: live.result };
+    return { id, sdkSessionId, pgid: attempt.pgid, done: live.done, result: live.result, dryRun: live.dryRunReport };
   }
 
   /**
@@ -840,6 +877,8 @@ export class SessionManager {
     if (!isNonEmptyString(row.model) || !isNonEmptyString(row.loomwright_path)) {
       throw new SessionError("not_resumable", `session ${id} has no recorded model or Loomwright path`);
     }
+    // A dry run only narrows: a session that started as one resumes as one, whatever `params.dryRun` says.
+    const dryRun = params.dryRun === true || this.#startedAsDryRun(id);
     // The Loomwright the session started with, never re-resolved; before admission, the row untouched.
     const recordedPath = row.loomwright_path;
     const loomwright = this.#refusingLoomwright(id, () => readSessionLoomwright(recordedPath));
@@ -880,7 +919,7 @@ export class SessionManager {
       agent: row.agent,
       taskId: row.task_id,
     };
-    const live = this.#newLive(id, row.sdk_session_id, policy, "interrupted");
+    const live = this.#newLive(id, row.sdk_session_id, policy, "interrupted", dryRun);
 
     let first: Attempt;
     try {
@@ -891,15 +930,15 @@ export class SessionManager {
         // unless its group may still be alive.
         if (live.attempt !== undefined) await this.#killAttemptGroup(live, live.attempt);
         this.#recordResumeFailure(live, 1, err, undefined);
-        if (this.#endIfGroupMayBeAlive(live)) return { id, sdkSessionId: ctx.sdkSessionId, pgid: live.attempt?.pgid, done: live.done, result: live.result };
+        if (this.#endIfGroupMayBeAlive(live)) return { id, sdkSessionId: ctx.sdkSessionId, pgid: live.attempt?.pgid, done: live.done, result: live.result, dryRun: live.dryRunReport };
         void this.#resumeLoop(live, ctx, undefined).catch((e: unknown) => this.#crash(live, e));
-        return { id, sdkSessionId: ctx.sdkSessionId, pgid: undefined, done: live.done, result: live.result };
+        return { id, sdkSessionId: ctx.sdkSessionId, pgid: undefined, done: live.done, result: live.result, dryRun: live.dryRunReport };
       }
       this.#settle(live);
       throw err;
     }
     void this.#resumeLoop(live, ctx, first).catch((err: unknown) => this.#crash(live, err));
-    return { id, sdkSessionId: ctx.sdkSessionId, pgid: first.pgid, done: live.done, result: live.result };
+    return { id, sdkSessionId: ctx.sdkSessionId, pgid: first.pgid, done: live.done, result: live.result, dryRun: live.dryRunReport };
   }
 
   /**
@@ -1220,7 +1259,7 @@ export class SessionManager {
 
   // ---- launching -----------------------------------------------------------
 
-  #newLive(id: number, sdkSessionId: string, policy: ToolPolicy, status: SessionStatus): LiveSession {
+  #newLive(id: number, sdkSessionId: string, policy: ToolPolicy, status: SessionStatus, dryRun: boolean): LiveSession {
     let resolveDone!: (status: SessionStatus) => void;
     const done = new Promise<SessionStatus>((resolve) => {
       resolveDone = resolve;
@@ -1230,6 +1269,18 @@ export class SessionManager {
       (final) => (final === "completed" ? (live.attempt?.lastSuccessText ?? null) : null),
       () => null,
     );
+    const dryState: DryRunState | undefined = dryRun ? { wouldDo: [], lastModelUsage: undefined } : undefined;
+    // Never rejects: a report whose usage cannot be read still lists what was recorded, with no usage.
+    const dryRunReport: Promise<DryRunReport | null> =
+      dryState === undefined
+        ? result.then(() => null)
+        : result.then((finalText) => {
+            try {
+              return dryRunReportOf(dryState, finalText);
+            } catch {
+              return dryRunReportOf({ wouldDo: dryState.wouldDo, lastModelUsage: undefined }, finalText);
+            }
+          });
     const live: LiveSession = {
       id,
       sdkSessionId,
@@ -1244,6 +1295,8 @@ export class SessionManager {
       done,
       resolveDone,
       result,
+      dryRun: dryState,
+      dryRunReport,
     };
     this.#live.set(id, live);
     return live;
@@ -1484,6 +1537,8 @@ export class SessionManager {
     }
     if (message.type === "result") {
       attempt.lastResult = message;
+      // A cumulative total for the SDK session: the last one replaces the one before.
+      if (live.dryRun !== undefined) live.dryRun.lastModelUsage = (message as { modelUsage?: unknown }).modelUsage;
       if (message.subtype === "success" && isSuccessResult(message)) attempt.lastSuccessText = message.result;
       if (attempt.firstResult === undefined) {
         attempt.firstResult = message;
@@ -2136,13 +2191,24 @@ export class SessionManager {
    * approval, consume the grant or record an allow) denies with
    * `kernel_gate_error`. The hook runs for read-only commands too, which
    * `canUseTool` skips (Q5; probed 2026-10-02).
+   *
+   * A dry-run session (`live.dryRun`) narrows this, never widens it: after
+   * the policy and the rail answered, `classifyDryRunCall` lets only a
+   * read-only call run, and denies every other call they would let through
+   * (an outward one included) with reason `dry_run`, recording it as a
+   * would-do entry. Such a call never reaches the outward path below, so no
+   * approval is written and no grant is consumed. A call the policy or the
+   * rail denies is denied exactly as in a real run, with no entry. The entry
+   * is kept only once its deny was recorded; a deny that cannot be recorded
+   * becomes `kernel_gate_error`.
    */
   #gate(live: LiveSession): HookCallback {
     return async (input): Promise<HookJSONOutput> => {
       let decision: "allow" | "deny" = "deny";
-      let reason: ToolDecisionReason | "kernel_gate_error" = "kernel_gate_error";
+      let reason: ToolDecisionReason | "kernel_gate_error" | "dry_run" = "kernel_gate_error";
       let tool: string | null = null;
       let command: string | undefined;
+      let wouldDo: WouldDoEntry | undefined;
       const record = (): void =>
         this.#appendEvent("tool_decision", live.id, toolDecisionPayload(tool, decision, reason, command, undefined), this.#nowIso());
       try {
@@ -2155,7 +2221,13 @@ export class SessionManager {
             d.decision === "allow"
               ? classifyToolCall(input.tool_name, input.tool_input, { dataDir: this.#store.dataDir, homeDir: this.#homeDir, cwd: input.cwd })
               : { kind: "ordinary" };
-          if (rail.kind === "outward") {
+          // A dry run narrows the policy and the rail: it is read only after both answered.
+          const dry = live.dryRun === undefined ? undefined : classifyDryRunCall(input.tool_name, input.tool_input, d, rail);
+          if (dry?.kind === "would_do") {
+            // Denied and recorded below; an outward call never reaches the approval path.
+            wouldDo = dry.entry;
+            reason = "dry_run";
+          } else if (rail.kind === "outward") {
             const call = { agent: this.getSession(live.id)?.agent ?? null, sessionId: live.id, action: rail.action, payload: rail.payload, tool };
             // One transaction: the grant's use (or the new approval) and this call's one decision event.
             // A throw rolls all of it back and falls through to the fail-closed deny below.
@@ -2174,21 +2246,25 @@ export class SessionManager {
             return {
               hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: outcome.kind === "granted" ? "allow" : "deny", permissionDecisionReason },
             };
+          } else {
+            decision = rail.kind === "deny" ? "deny" : d.decision;
+            reason = rail.kind === "deny" ? rail.reason : d.reason;
           }
-          decision = rail.kind === "deny" ? "deny" : d.decision;
-          reason = rail.kind === "deny" ? rail.reason : d.reason;
         }
       } catch {
         decision = "deny";
         reason = "kernel_gate_error";
+        wouldDo = undefined;
       }
       try {
         record();
       } catch {
-        if (decision === "allow") {
+        // A dry_run deny claims the call was recorded: unrecorded, it is a gate error instead.
+        if (decision === "allow" || reason === "dry_run") {
           // No tool runs without a recorded kernel decision.
           decision = "deny";
           reason = "kernel_gate_error";
+          wouldDo = undefined;
           try {
             record();
           } catch {
@@ -2196,8 +2272,14 @@ export class SessionManager {
           }
         }
       }
+      // The would-do entry is kept only once its deny was recorded.
+      if (wouldDo !== undefined) live.dryRun?.wouldDo.push(wouldDo);
       return {
-        hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: decision, permissionDecisionReason: reason },
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: decision,
+          permissionDecisionReason: reason === "dry_run" ? DRY_RUN_DENY_MESSAGE : reason,
+        },
       };
     };
   }
@@ -2318,9 +2400,12 @@ export class SessionManager {
    * any row or spawn: a given value must be a positive integer, and a given
    * `playbook` must name an existing `playbooks` row (`sessions.playbook`
    * references it, so an unknown id would otherwise fail the insert untyped).
-   * `dryRun` is accepted and ignored until item 03.
+   * A given `dryRun` must be a boolean (`invalid_params` otherwise): `true`
+   * runs the session as a dry run (`sessions/dry-run.ts`, the gate), and
+   * `false` or absent is a real run.
    */
-  #checkPlaybookParams(params: { readonly playbook?: unknown; readonly playbookVersion?: unknown }): void {
+  #checkPlaybookParams(params: { readonly playbook?: unknown; readonly playbookVersion?: unknown; readonly dryRun?: unknown }): void {
+    if (params.dryRun !== undefined && typeof params.dryRun !== "boolean") throw new SessionError("invalid_params", "dryRun must be a boolean");
     for (const [name, value] of [
       ["playbook", params.playbook],
       ["playbookVersion", params.playbookVersion],
@@ -2333,6 +2418,16 @@ export class SessionManager {
       const found = this.#store.prepare<[number], number>("SELECT 1 FROM playbooks WHERE id = ?").pluck().get(params.playbook as number);
       if (found === undefined) throw new SessionError("invalid_params", `no playbook ${String(params.playbook)}`);
     }
+  }
+
+  /** Whether session `id` started as a dry run: its `session_dry_run` event, written with its row. */
+  #startedAsDryRun(id: number): boolean {
+    return (
+      this.#store
+        .prepare<[number, string], number>("SELECT 1 FROM events WHERE session_id = ? AND kind = ? LIMIT 1")
+        .pluck()
+        .get(id, DRY_RUN_EVENT) !== undefined
+    );
   }
 
   /** A resume's `playbook` / `playbookVersion`, each written only when given. */

@@ -1,6 +1,20 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Store } from "../store/store.js";
-import { agentCountedTokens, appendEvent, clockOf, finiteNonNegative, noteAgentLimitReached } from "./internal.js";
+import {
+  agentCountedTokens,
+  appendEvent,
+  clockOf,
+  fallbackOptedIn,
+  finiteNonNegative,
+  noteAgentLimitReached,
+  noteApiKeyCeilingReached,
+  notePlaybookLimitReached,
+  parseApiKeyFallbackPolicy,
+  playbookApiKeySpendUsd,
+  playbookCountedTokens,
+  playbookKey,
+  playbookTokenLimit,
+} from "./internal.js";
 import type { Clock, EventRef } from "./internal.js";
 import { DEFAULT_BUDGET_CONFIG, agentDailyTokenLimit, validateBudgetConfig } from "./types.js";
 import type { BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions, UsageTotals } from "./types.js";
@@ -77,7 +91,15 @@ function minus(a: UsageTotals, b: UsageTotals): UsageTotals {
 interface SessionUsageRow {
   readonly agent: string | null;
   readonly task_id: number | null;
+  /** `sessions.playbook` (migration 13): the playbook the session runs for, or null. */
+  readonly playbook: number | null;
   readonly model_usage_json: string | null;
+}
+
+interface PlaybookLimitRow {
+  readonly slug: string;
+  readonly token_limit_per_day: unknown;
+  readonly api_key_fallback_json: string | null;
 }
 
 /**
@@ -112,6 +134,21 @@ interface SessionUsageRow {
  * and one `notify` are appended, once per agent-day. The running session is
  * not touched: it finishes its current turn, and admission refuses the
  * agent's next start (AC2).
+ *
+ * A playbook's session (`sessions.playbook` set) writes that playbook's id to
+ * every `budget` row it records, so its usage counts toward its agent, its
+ * playbook and the day alike. When the playbook's `token_limit_per_day` is set
+ * and its counted tokens for the day reach it, one `playbook_limit_reached`
+ * event and one `notify` are appended, once per playbook-day; the playbook
+ * gate refuses its next start. A damaged stored limit is skipped here (the
+ * gate refuses on it).
+ *
+ * When the playbook opts in to the D28 API-key fallback and its spend
+ * (`playbookApiKeySpendUsd`) reaches the policy's dollar ceiling, one
+ * `api_key_ceiling_reached` event and one `notify` are appended, once per
+ * playbook and ceiling (spend never resets, so the crossing is final). This
+ * is a record only: a session running on the API key is not stopped here,
+ * and the gate admits no new one on it.
  */
 export class BudgetMeter {
   readonly #store: Store;
@@ -136,7 +173,7 @@ export class BudgetMeter {
 
     this.#store.transaction(() => {
       const row = this.#store
-        .prepare<[number], SessionUsageRow>("SELECT agent, task_id, model_usage_json FROM sessions WHERE id = ?")
+        .prepare<[number], SessionUsageRow>("SELECT agent, task_id, playbook, model_usage_json FROM sessions WHERE id = ?")
         .get(sessionId);
       const ref: EventRef = { sessionId, taskId: row?.task_id ?? null };
       if (row === undefined) {
@@ -160,10 +197,11 @@ export class BudgetMeter {
       const stored = this.#readStored(row.model_usage_json, ref, at);
       const merged: Totals = Object.assign(emptyTotals(), stored);
       const insert = this.#store.prepare(
-        `INSERT INTO budget (day, session_id, agent, model, input_tokens, output_tokens, cache_write_tokens,
+        `INSERT INTO budget (day, session_id, agent, playbook, model, input_tokens, output_tokens, cache_write_tokens,
                              cache_read_tokens, thinking_tokens, cost_usd, recorded_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
+      const playbook = row.playbook === null ? null : playbookKey(row.playbook);
       for (const model of models) {
         const next = incoming[model] ?? ZERO;
         // A zeroed entry beside real ones carries no information: keep the stored total.
@@ -182,6 +220,7 @@ export class BudgetMeter {
           day,
           sessionId,
           row.agent,
+          playbook,
           model,
           delta.inputTokens,
           delta.outputTokens,
@@ -197,6 +236,7 @@ export class BudgetMeter {
         .run(JSON.stringify(merged), at, sessionId);
 
       if (row.agent !== null) this.#checkLimit(row.agent, day, now, ref, at);
+      if (row.playbook !== null) this.#checkPlaybookLimit(row.playbook, day, now, ref, at);
     });
   }
 
@@ -220,6 +260,46 @@ export class BudgetMeter {
       this.#store,
       this.#auth,
       { agent, day, countedTokens: counted, limit, retryAt: this.#clock.startOfNextDay(now).toISOString(), ref },
+      at,
+    );
+  }
+
+  #checkPlaybookLimit(id: number, day: string, now: Date, ref: EventRef, at: string): void {
+    const playbook = this.#store
+      .prepare<[number], PlaybookLimitRow>(
+        "SELECT slug, token_limit_per_day, api_key_fallback_json FROM playbooks WHERE id = ?",
+      )
+      .get(id);
+    if (playbook === undefined) return;
+    // The two checks are independent: no daily limit (or a damaged one) never skips the ceiling.
+    const limit = playbookTokenLimit(playbook.token_limit_per_day);
+    if (limit !== null && limit !== undefined) {
+      const counted = playbookCountedTokens(this.#store, id, day);
+      if (counted >= limit) {
+        notePlaybookLimitReached(
+          this.#store,
+          this.#auth,
+          {
+            playbook: id,
+            slug: playbook.slug,
+            day,
+            countedTokens: counted,
+            limit,
+            retryAt: this.#clock.startOfNextDay(now).toISOString(),
+            ref,
+          },
+          at,
+        );
+      }
+    }
+    const policy = parseApiKeyFallbackPolicy(playbook.api_key_fallback_json);
+    if (!fallbackOptedIn(policy)) return;
+    const spendUsd = playbookApiKeySpendUsd(this.#store, id);
+    if (spendUsd < policy.dollarCeilingUsd) return;
+    noteApiKeyCeilingReached(
+      this.#store,
+      this.#auth,
+      { playbook: id, slug: playbook.slug, spendUsd, ceilingUsd: policy.dollarCeilingUsd, ref },
       at,
     );
   }

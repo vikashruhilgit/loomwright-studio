@@ -1,6 +1,8 @@
 // The durable event queue (AC1). An event is written to SQLite before
 // anything acts on it: an `event_queue` row plus an `event_enqueued` audit row
 // in `events`, in one transaction.
+import { PLAYBOOK_PRIORITIES } from "../playbooks/types.js";
+import type { PlaybookPriority } from "../playbooks/types.js";
 import type { Store } from "../store/store.js";
 import { appendEvent } from "./internal.js";
 import { isEventKind } from "./types.js";
@@ -18,6 +20,11 @@ export interface EnqueueParams {
    * the first row's id.
    */
   readonly sourceRef?: string | null;
+  /**
+   * Checked against `PLAYBOOK_PRIORITIES`; absent or `null` ⇒ `normal`. The
+   * caller sets it (a playbook's priority); the kernel only orders by it.
+   */
+  readonly priority?: PlaybookPriority;
 }
 
 export interface EnqueueResult {
@@ -33,7 +40,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /**
  * Write one event to the queue: the row and its `event_enqueued` audit row in
  * one transaction (nested as a savepoint when the caller holds one). Throws a
- * `TypeError` for an unknown kind or a non-object payload, before any write.
+ * `TypeError` for an unknown kind, a non-object payload or a priority outside
+ * `PLAYBOOK_PRIORITIES`, before any write. A `sourceRef` duplicate keeps the
+ * first row as it is, priority included.
  */
 export function enqueueEvent(store: Store, params: EnqueueParams, at: Date = new Date()): EnqueueResult {
   if (!isEventKind(params.kind)) throw new TypeError(`unknown event kind ${JSON.stringify(params.kind)}`);
@@ -41,6 +50,10 @@ export function enqueueEvent(store: Store, params: EnqueueParams, at: Date = new
   const sourceRef = params.sourceRef ?? null;
   if (sourceRef !== null && (typeof sourceRef !== "string" || sourceRef === "")) {
     throw new TypeError("sourceRef must be a non-empty string or null");
+  }
+  const priority: unknown = params.priority ?? "normal";
+  if (!(PLAYBOOK_PRIORITIES as readonly unknown[]).includes(priority)) {
+    throw new TypeError(`unknown priority ${JSON.stringify(priority)}`);
   }
   const payloadJson = JSON.stringify(params.payload);
   const iso = at.toISOString();
@@ -58,10 +71,10 @@ export function enqueueEvent(store: Store, params: EnqueueParams, at: Date = new
     const id = Number(
       store
         .prepare(
-          `INSERT INTO event_queue (kind, payload_json, source_ref, status, task_id, session_id, enqueued_at)
-           VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
+          `INSERT INTO event_queue (kind, payload_json, source_ref, status, priority, task_id, session_id, enqueued_at)
+           VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
         )
-        .run(params.kind, payloadJson, sourceRef, taskId, sessionId, iso).lastInsertRowid,
+        .run(params.kind, payloadJson, sourceRef, priority, taskId, sessionId, iso).lastInsertRowid,
     );
     appendEvent(store, "event_enqueued", { sessionId, taskId }, { queue_id: id, kind: params.kind, source_ref: sourceRef }, iso);
     return { id, created: true };
@@ -93,6 +106,8 @@ export interface QueueRow {
   readonly payload_json: string;
   readonly source_ref: string | null;
   readonly status: QueueStatus;
+  /** `low` / `normal` / `high` when written by `enqueueEvent`; no SQL CHECK closes it. */
+  readonly priority: string;
   readonly not_before: string | null;
   readonly attempts: number;
   readonly last_error: string | null;
@@ -103,22 +118,30 @@ export interface QueueRow {
 }
 
 const ROW_COLUMNS =
-  "id, kind, payload_json, source_ref, status, not_before, attempts, last_error, task_id, session_id, enqueued_at, done_at";
+  "id, kind, payload_json, source_ref, status, priority, not_before, attempts, last_error, task_id, session_id, enqueued_at, done_at";
 
 /** The stored queue row, or `undefined`. */
 export function getQueueRow(store: Store, id: number): QueueRow | undefined {
   return store.prepare<[number], QueueRow>(`SELECT ${ROW_COLUMNS} FROM event_queue WHERE id = ?`).get(id);
 }
 
-/** The first `pending` row after `afterId` that is not parked past `nowIso`, in id order. */
-export function nextPendingRow(store: Store, afterId: number, nowIso: string): QueueRow | undefined {
+/**
+ * The next `pending` row to handle: not parked past `nowIso`, not one of
+ * `seen` (the ids this tick already handled), `high` before `normal` before
+ * `low`, and the lowest id within a level. A stored priority outside
+ * `PLAYBOOK_PRIORITIES` (only hand-written SQL can store one: there is no SQL
+ * CHECK) sorts as `normal`.
+ */
+export function nextPendingRow(store: Store, nowIso: string, seen: readonly number[]): QueueRow | undefined {
   return store
-    .prepare<[number, string], QueueRow>(
+    .prepare<[string, string], QueueRow>(
       `SELECT ${ROW_COLUMNS} FROM event_queue
-        WHERE status = 'pending' AND id > ? AND (not_before IS NULL OR not_before <= ?)
-        ORDER BY id LIMIT 1`,
+        WHERE status = 'pending' AND (not_before IS NULL OR not_before <= ?)
+          AND id NOT IN (SELECT value FROM json_each(?))
+        ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 WHEN 'low' THEN 2 ELSE 1 END, id
+        LIMIT 1`,
     )
-    .get(afterId, nowIso);
+    .get(nowIso, JSON.stringify(seen));
 }
 
 /** The handler's view of a row whose kind is known. Throws when its payload is not a JSON object. */

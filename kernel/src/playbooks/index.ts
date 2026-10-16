@@ -1,8 +1,9 @@
 // The `playbooks` feature (phase 3): one contribution built from one part per
 // sub-file, so each phase 3 item edits only the sub-file(s) it owns: item 02
 // `drafts.ts`, item 07 `dry-run.ts` and `enable.ts`, item 08 `runs.ts`.
-// Every part is empty until its item fills it in; today the contribution is
-// the one `studio playbooks` subcommand, with no verbs. Mechanism only
+// A part is empty until its item fills it in; today `drafts` is filled (the
+// playbook tools, the `/playbooks` routes, the `list` / `show` / `set` / `off`
+// verbs and the mirror resync's due work). Mechanism only
 // (invariant 1): no playbook ships preinstalled. `startKernel` and `runCli`
 // merge it through `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`).
 //
@@ -16,6 +17,7 @@ import type {
   ContributedRoute,
   ContributedSubcommand,
   ContributedTool,
+  DueWorkFn,
   FeatureContribution,
 } from "../features/contribution.js";
 import type { EventHandler, EventKind } from "../loop/types.js";
@@ -34,12 +36,13 @@ export const PLAYBOOKS_HELP_VERB = "help";
 /** Every part, in merge order: tools, routes and verbs keep this order. */
 export const PLAYBOOK_PARTS: readonly PlaybookPart[] = Object.freeze([draftsPart, dryRunPart, enablePart, runsPart]);
 
-/** The parts joined: tools and routes in part order, the verbs of the one subcommand, the handlers. */
+/** The parts joined: tools, routes and due work in part order, the verbs of the one subcommand, the handlers. */
 export interface MergedPlaybookParts {
   readonly tools: readonly ContributedTool[];
   readonly routes: readonly ContributedRoute[];
   readonly verbs: readonly PlaybookVerb[];
   readonly handlers: Readonly<Partial<Record<EventKind, EventHandler>>>;
+  readonly dueWork: readonly DueWorkFn[];
 }
 
 /**
@@ -56,9 +59,11 @@ export function mergePlaybookParts(parts: readonly PlaybookPart[]): MergedPlaybo
   const routes: ContributedRoute[] = [];
   const verbs: PlaybookVerb[] = [];
   const handlers: Partial<Record<EventKind, EventHandler>> = {};
+  const dueWork: DueWorkFn[] = [];
   for (const part of parts) {
     tools.push(...part.tools);
     routes.push(...part.routes);
+    dueWork.push(...(part.dueWork ?? []));
     for (const verb of part.verbs) {
       if (verb.name === PLAYBOOKS_HELP_VERB) {
         throw new InvalidContributionError(PLAYBOOKS_NAME, "subcommand", `part ${part.name}: the verb "${PLAYBOOKS_HELP_VERB}" is the built-in help`);
@@ -75,7 +80,13 @@ export function mergePlaybookParts(parts: readonly PlaybookPart[]): MergedPlaybo
       handlers[kind] = part.handlers[kind];
     }
   }
-  return Object.freeze({ tools: Object.freeze(tools), routes: Object.freeze(routes), verbs: Object.freeze(verbs), handlers: Object.freeze(handlers) });
+  return Object.freeze({
+    tools: Object.freeze(tools),
+    routes: Object.freeze(routes),
+    verbs: Object.freeze(verbs),
+    handlers: Object.freeze(handlers),
+    dueWork: Object.freeze(dueWork),
+  });
 }
 
 /** `studio playbooks <verb>`, then each verb's help line, joined with ` | ` (one line). */
@@ -111,8 +122,10 @@ export function playbooksSubcommand(verbs: readonly PlaybookVerb[]): Contributed
 }
 
 /**
- * The contribution `parts` make: only the non-empty keys (today `name` and
- * `subcommands`), like the phase 2 features. Never `dueWork`: a part has none.
+ * The contribution `parts` make: only the non-empty keys (`name` and
+ * `subcommands` always; `tools`, `routes`, `handlers` and `dueWork` when a
+ * part has some), like the phase 2 features. `dueWork` is the parts' due work
+ * concatenated in part order.
  */
 export function playbooksContributionOf(parts: readonly PlaybookPart[]): FeatureContribution {
   const merged = mergePlaybookParts(parts);
@@ -123,16 +136,59 @@ export function playbooksContributionOf(parts: readonly PlaybookPart[]): Feature
     ...(merged.routes.length > 0 ? { routes: merged.routes } : {}),
     subcommands: Object.freeze([playbooksSubcommand(merged.verbs)]),
     ...(Object.keys(handlers).length > 0 ? { handlers } : {}),
+    ...(merged.dueWork.length > 0 ? { dueWork: merged.dueWork } : {}),
   });
 }
 
-/** The shipped contribution: `PLAYBOOK_PARTS` merged at module load (four empty parts cannot throw). */
+/** The shipped contribution: `PLAYBOOK_PARTS` merged at module load (the parts claim distinct verbs, so it does not throw). */
 export const playbooksContribution: FeatureContribution = playbooksContributionOf(PLAYBOOK_PARTS);
 
-/** The shipped `studio playbooks` help line (today exactly `studio playbooks <verb>`). */
+/** The shipped `studio playbooks` help line: `studio playbooks <verb>`, then each verb's help (one line, at most 200 characters). */
 export const PLAYBOOKS_HELP: string = playbooksHelp(mergePlaybookParts(PLAYBOOK_PARTS).verbs);
 
-export { draftsPart } from "./drafts.js";
+export { PLAYBOOK_TOOL_NAMES, PLAYBOOK_VERB_HELP, draftsPart, formatPlaybook, formatPlaybooks, playbookRoutes, playbookTools, playbookVerbs, resyncPlaybookMirrors } from "./drafts.js";
+export type { PlaybookVerbDeps } from "./drafts.js";
+export { PLAYBOOK_SLUG_PATTERN, PlaybookMirrorPathError, mirrorPath, mirrorRelativePath, renderPlaybookMirror, writePlaybookMirror } from "./mirror.js";
+export type { MirrorTrigger } from "./mirror.js";
+export {
+  CLEAR_VALUE,
+  MAX_PLAYBOOK_INTENT,
+  MAX_PLAYBOOK_MODEL,
+  MAX_PLAYBOOK_NAME,
+  MAX_SLUG_BASE,
+  PLAYBOOK_AUDIT_KINDS,
+  PLAYBOOK_CHANGE_FIELDS,
+  PLAYBOOK_POLICY_FIELDS,
+  PlaybookError,
+  checkPolicyValue,
+  createPlaybook,
+  disablePlaybook,
+  getPlaybook,
+  linkedTriggerOf,
+  listPlaybookVersions,
+  listPlaybooks,
+  parseOwnerPolicyValue,
+  refuseIfOwnerTurnedOff,
+  setPlaybookPolicy,
+  slugBase,
+  updatePlaybook,
+} from "./store.js";
+export type {
+  CreatePlaybookParams,
+  DisablePlaybookParams,
+  ListPlaybooksParams,
+  PlaybookChange,
+  PlaybookChangeField,
+  PlaybookChanges,
+  PlaybookErrorCode,
+  PlaybookListing,
+  PlaybookPolicyField,
+  PlaybookRow,
+  PlaybookTriggerInput,
+  PlaybookVersion,
+  SetPlaybookPolicyParams,
+  UpdatePlaybookParams,
+} from "./store.js";
 export { dryRunPart } from "./dry-run.js";
 export { enablePart } from "./enable.js";
 export { runsPart } from "./runs.js";

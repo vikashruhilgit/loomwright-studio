@@ -8,6 +8,7 @@ import type {
   SpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { AuthProvider, BaseEnv } from "../auth/types.js";
+import type { UsageTotals } from "../budget/types.js";
 import type { Store } from "../store/store.js";
 
 /**
@@ -95,7 +96,15 @@ export interface StartSessionParams {
   readonly playbook?: number;
   /** The playbook version it runs, recorded as `sessions.playbook_version`. A positive integer; absent ⇒ null. */
   readonly playbookVersion?: number;
-  /** A dry run. Accepted and ignored until item 03 (phase 3 dry runs) gives it a meaning. */
+  /**
+   * A dry run (`docs/architecture/dry-run.md`): the gate runs only read-only
+   * calls (`sessions/dry-run.ts`), denies every other call the policy and the
+   * rail would let through with reason `dry_run` and records it as a would-do
+   * entry, and `SessionHandle.dryRun` resolves to the report. It only narrows
+   * the policy and the rail: never an approval, never a grant consumed. Recorded
+   * as one `session_dry_run` event, so every resume of the session is a dry run
+   * too. A boolean when given; absent or `false` ⇒ a real run.
+   */
   readonly dryRun?: boolean;
 }
 
@@ -114,7 +123,12 @@ export interface ResumeSessionParams {
    */
   readonly playbook?: number;
   readonly playbookVersion?: number;
-  /** A dry run. Accepted and ignored until item 03 (phase 3 dry runs) gives it a meaning. */
+  /**
+   * Resume as a dry run (same meaning as `StartSessionParams.dryRun`). A dry
+   * run only narrows, so a session that STARTED as a dry run (its
+   * `session_dry_run` event) resumes as one whatever this says; `true` makes
+   * this resume of a real session a dry run too (that resume only).
+   */
   readonly dryRun?: boolean;
 }
 
@@ -147,6 +161,55 @@ export interface SessionHandle {
    * when no successful result came. Held in memory only: nothing is persisted.
    */
   readonly result: Promise<string | null>;
+  /**
+   * Settles when `done` settles. Never rejects. The dry-run report for a
+   * dry-run session (`StartSessionParams.dryRun`, or a resume that runs as
+   * one), `null` for a real run. Held in memory only, per handle: it covers
+   * this `startSession`/`resumeSession` call's attempts, so a resume's report
+   * starts empty. Always set by `SessionManager`; optional in the type only
+   * so a stand-in handle need not carry it.
+   */
+  readonly dryRun?: Promise<DryRunReport | null>;
+}
+
+/**
+ * One call a dry-run session would have made, recorded instead of run
+ * (`sessions/dry-run.ts` `classifyDryRunCall`). Untrusted data throughout.
+ *
+ * - `tool`: the tool name.
+ * - `input_summary`: the Bash command, or the tool input as JSON, truncated to
+ *   `DRY_RUN_INPUT_SUMMARY_CHARS` (500). Data only: never executed or interpolated.
+ * - `would`: `held` when a real run would have held it for the owner's
+ *   approval (the rail's outward set), `run` when it would have run.
+ * - `reason`: always `dry_run`, the reason its `tool_decision` event records.
+ * - `action`: for `held`, the rail's approval action (for example `gh pr comment`).
+ */
+export interface WouldDoEntry {
+  readonly tool: string;
+  readonly input_summary: string;
+  readonly would: "run" | "held";
+  readonly reason: "dry_run";
+  readonly action?: string;
+}
+
+/**
+ * What a dry-run session reports when it ends (`SessionHandle.dryRun`).
+ *
+ * - `wouldDo`: every would-do entry, in call order, from every launch attempt
+ *   of this `startSession`/`resumeSession` call. A resume's report starts
+ *   empty: entries from before a kernel restart survive only as
+ *   `tool_decision` events with reason `dry_run`.
+ * - `finalText`: the same text `SessionHandle.result` resolves to.
+ * - `usage`: the LAST `result` message's `modelUsage`, normalised per model
+ *   as the budget meter reads it (`UsageTotals`). It is the SDK session's
+ *   cumulative total, so results are never added together; empty when no
+ *   result came. Advisory: the budget meter observes a dry-run session's
+ *   messages like any session's and stays the accounting source.
+ */
+export interface DryRunReport {
+  readonly wouldDo: readonly WouldDoEntry[];
+  readonly finalText: string | null;
+  readonly usage: Readonly<Record<string, UsageTotals>>;
 }
 
 export type SessionErrorCode =
