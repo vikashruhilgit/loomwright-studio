@@ -1,7 +1,8 @@
 // The playbooks feature's foundation (phase 3): one `playbooks` contribution
-// built from four empty sub-file parts (`drafts`, `dry-run`, `enable`,
-// `runs`), registered sixth in `SHIPPED_CONTRIBUTIONS`, registering nothing
-// but the verb-less `studio playbooks` subcommand; the part merge refuses a
+// built from four sub-file parts (`drafts`, `dry-run`, `enable`, `runs`),
+// registered sixth in `SHIPPED_CONTRIBUTIONS`; only `drafts` is filled in
+// (item 02: four tools, four routes, four `studio playbooks` verbs and one
+// due-work function), the other three are still empty; the part merge refuses a
 // verb or handler kind two parts claim; the closed value sets migration 13's
 // TEXT columns hold. A temp data dir with a hand-written `api.json`, a stub
 // Keychain and a stub fetch that fails the test if called: never a daemon.
@@ -93,33 +94,57 @@ const noClient: CliApiClient = {
 };
 
 describe("the playbooks contribution (AC4)", () => {
-  it("is the sixth shipped contribution and registers no tool, route, handler or due work: only the playbooks subcommand", () => {
+  it("is the sixth shipped contribution: the drafts part's four tools, four routes and one due-work function, and the playbooks subcommand; no handler", () => {
     expect(SHIPPED_CONTRIBUTIONS).toHaveLength(6);
     expect(SHIPPED_CONTRIBUTIONS[5]).toBe(playbooksContribution);
     expect(playbooksContribution.name).toBe("playbooks");
     expect(Object.isFrozen(playbooksContribution)).toBe(true);
-    expect(Object.keys(playbooksContribution)).toEqual(["name", "subcommands"]);
+    expect(Object.keys(playbooksContribution)).toEqual(["name", "tools", "routes", "subcommands", "dueWork"]);
     const merged = mergeContributions([playbooksContribution], PHASE1_RESERVED);
-    expect(merged.tools).toEqual([]);
-    expect(merged.routes).toEqual([]);
+    expect(merged.tools.map((t) => t.name)).toEqual(["kernel_playbook_create", "kernel_playbook_update", "kernel_playbook_list", "kernel_playbook_disable"]);
+    expect(merged.routes.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /playbooks", "GET /playbooks/:ref", "POST /playbooks/:id/set", "POST /playbooks/:id/off"]);
     expect(merged.subcommands.map((s) => [s.name, s.help])).toEqual([["playbooks", PLAYBOOKS_HELP]]);
     expect(merged.handlers).toEqual({});
-    expect(merged.dueWork).toEqual([]);
+    expect(merged.dueWork.map((d) => d.owner)).toEqual(["playbooks"]);
+    expect(merged.dueWork.map((d) => d.run)).toEqual([...(draftsPart.dueWork ?? [])]);
   });
 
-  it("the subcommand has zero verbs: its help line is exactly `studio playbooks <verb>` (one line, at most 200 characters)", () => {
-    expect(PLAYBOOKS_HELP).toBe("studio playbooks <verb>");
-    expect(mergePlaybookParts(PLAYBOOK_PARTS).verbs).toEqual([]);
+  it("the subcommand has the drafts part's four verbs on one help line (at most 200 characters)", () => {
+    expect(PLAYBOOKS_HELP).toBe(
+      "studio playbooks <verb> | studio playbooks list [--all] [--json] | studio playbooks show <id|slug> [--json] | studio playbooks set <id> <field> <value> | studio playbooks off <id>",
+    );
+    expect(PLAYBOOKS_HELP.length).toBeLessThanOrEqual(200);
+    expect(mergePlaybookParts(PLAYBOOK_PARTS).verbs.map((v) => v.name)).toEqual(["list", "show", "set", "off"]);
   });
 
-  it("is built from four empty frozen parts, in order: drafts, dry-run, enable, runs", () => {
+  it("is built from four frozen parts, in order: drafts (filled by item 02), then dry-run, enable and runs, still empty", () => {
     expect(PLAYBOOK_PARTS).toEqual([draftsPart, dryRunPart, enablePart, runsPart]);
     expect(PLAYBOOK_PARTS.map((p) => p.name)).toEqual(["drafts", "dry-run", "enable", "runs"]);
     expect(Object.isFrozen(PLAYBOOK_PARTS)).toBe(true);
-    for (const part of PLAYBOOK_PARTS) {
-      expect(Object.isFrozen(part), part.name).toBe(true);
-      expect({ tools: part.tools, routes: part.routes, verbs: part.verbs, handlers: part.handlers }, part.name).toEqual({ tools: [], routes: [], verbs: [], handlers: {} });
+    for (const part of PLAYBOOK_PARTS) expect(Object.isFrozen(part), part.name).toBe(true);
+    expect({
+      tools: draftsPart.tools.map((t) => t.name),
+      routes: draftsPart.routes.map((r) => `${r.method} ${r.path}`),
+      verbs: draftsPart.verbs.map((v) => v.name),
+      handlers: draftsPart.handlers,
+      dueWork: draftsPart.dueWork?.length,
+    }).toEqual({
+      tools: ["kernel_playbook_create", "kernel_playbook_update", "kernel_playbook_list", "kernel_playbook_disable"],
+      routes: ["GET /playbooks", "GET /playbooks/:ref", "POST /playbooks/:id/set", "POST /playbooks/:id/off"],
+      verbs: ["list", "show", "set", "off"],
+      handlers: {},
+      dueWork: 1,
+    });
+    for (const part of [dryRunPart, enablePart, runsPart]) {
+      expect({ tools: part.tools, routes: part.routes, verbs: part.verbs, handlers: part.handlers, dueWork: part.dueWork ?? [] }, part.name).toEqual({
+        tools: [],
+        routes: [],
+        verbs: [],
+        handlers: {},
+        dueWork: [],
+      });
     }
+    expect(mergePlaybookParts(PLAYBOOK_PARTS).dueWork).toEqual([...(draftsPart.dueWork ?? [])]);
   });
 
   it("pins the closed value sets migration 13's TEXT columns hold", () => {
@@ -133,10 +158,10 @@ describe("the playbooks contribution (AC4)", () => {
 });
 
 describe("studio playbooks (AC4)", () => {
-  it("with no verb, or help: the help on stdout, then `no verbs yet`, 0; no Keychain read, no API call", async () => {
+  it("with no verb, or help: the help on stdout, 0; no Keychain read, no API call", async () => {
     for (const argv of [["playbooks"], ["playbooks", "help"]]) {
       const r = await studio(argv);
-      expect(r, argv.join(" ")).toMatchObject({ code: 0, stdout: "studio playbooks <verb>\nno verbs yet\n", stderr: "" });
+      expect(r, argv.join(" ")).toMatchObject({ code: 0, stdout: `${PLAYBOOKS_HELP}\n`, stderr: "" });
       expect(r.reads).toEqual([]);
       expect(r.fetches).toEqual([]);
     }
@@ -144,7 +169,7 @@ describe("studio playbooks (AC4)", () => {
 
   it("an unknown verb: one line naming it, then the help, on stderr; 2", async () => {
     const r = await studio(["playbooks", "nope", "1"]);
-    expect(r).toMatchObject({ code: 2, stdout: "", stderr: 'studio playbooks: unknown verb "nope"\nstudio playbooks <verb>\n' });
+    expect(r).toMatchObject({ code: 2, stdout: "", stderr: `studio playbooks: unknown verb "nope"\n${PLAYBOOKS_HELP}\n` });
     expect(r.reads).toEqual([]);
     expect(r.fetches).toEqual([]);
   });
@@ -209,6 +234,20 @@ describe("mergePlaybookParts", () => {
     expect((err as ContributionConflictError).part).toBe("handler");
     expect((err as ContributionConflictError).conflictName).toBe("message");
     expect((err as ContributionConflictError).owners).toEqual(["enable", "runs"]);
+  });
+
+  it("joins the parts' due work in part order; the contribution carries dueWork only when some part has due work", () => {
+    const one = () => {};
+    const two = () => {};
+    expect(mergePlaybookParts([emptyPart("a", { dueWork: [one] }), emptyPart("b"), emptyPart("c", { dueWork: [two] })]).dueWork).toEqual([one, two]);
+    const c = playbooksContributionOf([emptyPart("a", { dueWork: [one] }), emptyPart("b"), emptyPart("c", { dueWork: [two] })]);
+    expect(Object.keys(c)).toEqual(["name", "subcommands", "dueWork"]);
+    expect(c.dueWork).toEqual([one, two]);
+    expect(mergeContributions([c], PHASE1_RESERVED).dueWork.map((d) => [d.owner, d.run])).toEqual([
+      ["playbooks", one],
+      ["playbooks", two],
+    ]);
+    expect(Object.keys(playbooksContributionOf([emptyPart("a"), emptyPart("b", { dueWork: [] })]))).toEqual(["name", "subcommands"]);
   });
 
   it("a verb named help is refused: it is the built-in help", () => {
