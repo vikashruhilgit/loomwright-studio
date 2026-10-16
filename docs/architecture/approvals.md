@@ -128,7 +128,7 @@ Any other `always` is refused with `409 always_not_supported`, whose message nam
 **What it matches.** A held call from the outward set runs on a standing grant (`approval_granted`) when no unused one-shot grant matched first and all of these hold:
 
 - **The exact call:** the same `action` and the same canonical payload, exactly as for a [one-shot grant](#one-shot-grants), so a different command, a trailing space or another `cwd` is held.
-- **The same requester:** the same named agent, by the one-shot rule (the agent name, and a requesting session that ran that agent). A calling session with no agent never matches, and nor does an agent literally named `unknown`.
+- **The same requester:** the same named agent, by the one-shot rule (the agent name, and a requesting session that ran that agent). A calling session with no agent never matches, and an agent literally named `unknown` matches only its own grants, never an agent-less session's (agent-less `always` is refused).
 - **The same playbook and version:** the calling session's `sessions.playbook` is the grant's playbook, and its `sessions.playbook_version` equals the grant's version, which must also be the playbook's current `playbooks.version`. A chat session (no playbook), a session of another playbook, a session of an older version, and every session once the playbook has a new version (any edit, phase 3 item 02) are held. The grant stays listed with `current: false`.
 - **Not revoked:** no `approval_grant_revoked` event names it.
 - **Not an always-held tool:** a call to a tool in `ALWAYS_HELD_TOOLS` is held even if a grant row with its exact payload exists. That is the second guard after the decide-time refusal.
