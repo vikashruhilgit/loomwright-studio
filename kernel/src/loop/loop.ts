@@ -39,7 +39,8 @@ type Outcome = "done" | "unhandled" | "parked" | "failed";
  * the wake-ups that are due into the queue, runs the injected due work (each
  * function in its own try/catch: a throw ⇒ one `due_work_failed` row naming
  * its contributor, and the tick goes on), then processes `pending` queue
- * rows in id order, calling the injected handler for each row's kind:
+ * rows by priority (`high`, `normal`, `low`) and by id within a level (see
+ * `nextPendingRow`), calling the injected handler for each row's kind:
  *
  * - the handler resolves ⇒ `done` + `event_done`, committed together, only
  *   after the handler's own effects were committed;
@@ -69,9 +70,11 @@ type Outcome = "done" | "unhandled" | "parked" | "failed";
  * still current. So a tick still running across `stop()` → `start()` (the
  * stop not awaited) does not leave a second chain beside the new one.
  *
- * There is no ordering other than the row id, and no dedupe policy beyond a
- * derived row's `source_ref`. A row left `pending` by a crash is processed
- * again after the restart (see `EventHandler` for what that asks of handlers).
+ * The order is the row's priority, set by whoever enqueued it, then its id:
+ * the loop sets no priority itself, has no starvation guard (a stream of
+ * `high` rows delays `low` ones) and no dedupe policy beyond a derived row's
+ * `source_ref`. A row left `pending` by a crash is processed again after the
+ * restart (see `EventHandler` for what that asks of handlers).
  */
 export class EventLoop {
   readonly #store: Store;
@@ -152,15 +155,16 @@ export class EventLoop {
     const wakeupsFired = fireDueWakeups(this.#store, this.#now()).length;
     await this.#runDueWork();
     const counts: Record<Outcome, number> = { done: 0, unhandled: 0, parked: 0, failed: 0 };
-    // Strictly increasing id: a row parked this tick is not seen again in it,
-    // while a row a handler enqueues (a higher id) is processed in it.
-    let lastId = 0;
+    // The ids handled this tick: a row parked or left pending in it is not
+    // seen again in it, while a row a handler enqueues is processed in it, at
+    // its priority.
+    const seen: number[] = [];
     for (;;) {
       // `stop()` during a tick: finish the current event, start no other.
       if (this.#abortTick) break;
-      const row = nextPendingRow(this.#store, lastId, this.#now().toISOString());
+      const row = nextPendingRow(this.#store, this.#now().toISOString(), seen);
       if (row === undefined) break;
-      lastId = row.id;
+      seen.push(row.id);
       counts[await this.#process(row)]++;
     }
     return { wakeupsFired, ...counts };
