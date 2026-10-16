@@ -160,10 +160,14 @@ function isObject(value: unknown): value is Raw {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Collapse text to one line; empty ⇒ `null`. */
+/**
+ * Collapse text to one line, each run of white space and control characters
+ * (C0 and DEL) to one space; empty ⇒ `null`. A NUL must not reach the note's
+ * notification: `recordNotification` refuses one, which would roll the check back.
+ */
 function oneLine(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const line = value.replace(/\s+/g, " ").trim();
+  const line = value.replace(/[\s\u0000-\u001f\u007f]+/gu, " ").trim();
   return line === "" ? null : line;
 }
 

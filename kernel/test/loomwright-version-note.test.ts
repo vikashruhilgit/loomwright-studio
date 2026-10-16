@@ -867,6 +867,29 @@ describe("an unsafe plugin version (AC10)", () => {
     expect(safeVersionComponent("9".repeat(100))).toHaveLength(64);
   });
 
+  it.each([
+    ["a NUL", "17.3.0\u0000evil", "Loomwright 17.2.0 → 17.3.0 evil"],
+    ["C0 controls and DEL", "17.3.0\u0007\u001b[31m\u007fevil", "Loomwright 17.2.0 → 17.3.0 [31m evil"],
+  ])("a version holding %s still notes the change: the title shows it without control characters", async (_, version, title) => {
+    await transition(contract(version), version);
+    noFailures();
+    expect(seenRows()).toHaveLength(2);
+    expect(notifications().map((row) => row.title)).toEqual([title]);
+    expect(noteFiles()).toHaveLength(1);
+  });
+
+  it("a stored version holding a NUL is shown without it when the next version is noted", async () => {
+    const loop = watchLoop();
+    activate(contract("17.2.0\u0000x"), "17.2.0");
+    await loop.tick();
+    activate(contract("17.3.0"), "17.3.0");
+    env.advance(MINUTE);
+    await loop.tick();
+    noFailures();
+    expect(seenRows()).toHaveLength(2);
+    expect(notifications().map((row) => row.title)).toEqual(["Loomwright 17.2.0 x → 17.3.0"]);
+  });
+
   it("containedNotePath refuses a name that would leave the directory", () => {
     const dir = join(root, "notes");
     expect(containedNotePath(dir, "a.md")).toBe(join(dir, "a.md"));
