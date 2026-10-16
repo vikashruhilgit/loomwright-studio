@@ -1,10 +1,13 @@
 // Public surface of the budget layer (item 06): the token meter, the
-// subscription-cap tracker and the admission gate.
+// subscription-cap tracker and the admission gate; and (phase 3) the playbook
+// gate and the per-playbook usage read.
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AdmissionDecision, AdmissionRequest } from "../sessions/types.js";
 import { BudgetAdmission } from "./admission.js";
 import { CapTracker } from "./cap.js";
 import { BudgetMeter } from "./meter.js";
+import { PlaybookAdmission } from "./playbook.js";
+import type { PlaybookAdmissionDecision, PlaybookAdmissionRequest } from "./playbook.js";
 import { DEFAULT_BUDGET_CONFIG, validateBudgetConfig } from "./types.js";
 import type { BudgetConfig, BudgetDeps, BudgetOptions } from "./types.js";
 
@@ -21,7 +24,20 @@ export {
 export type { CapTextSource } from "./cap.js";
 export { localDay, startOfNextLocalDay } from "./internal.js";
 export { BudgetMeter } from "./meter.js";
-export { BudgetConfigError, DEFAULT_BUDGET_CONFIG, agentDailyTokenLimit, validateBudgetConfig } from "./types.js";
+export { PlaybookAdmission, parseApiKeyFallbackPolicy, playbookApiKeySpendUsd, playbookTokensToday } from "./playbook.js";
+export type {
+  PlaybookAdmissionDecision,
+  PlaybookAdmissionRequest,
+  PlaybookRefusalReason,
+  PlaybookTokensToday,
+} from "./playbook.js";
+export {
+  BudgetConfigError,
+  DEFAULT_BUDGET_CONFIG,
+  agentDailyTokenLimit,
+  validateApiKeyFallbackPolicy,
+  validateBudgetConfig,
+} from "./types.js";
 export type {
   ApiKeyFallbackPolicy,
   BudgetAuth,
@@ -35,12 +51,14 @@ export type {
  * One meter, cap tracker and admission gate sharing a store, a config and a
  * clock. Wire it into the session manager as
  * `{ onMessage: budget.observe, admission: budget.check }`; both are bound.
+ * `checkPlaybook` (bound too) is the playbook gate; nothing calls it yet.
  */
 export class Budget {
   readonly config: BudgetConfig;
   readonly meter: BudgetMeter;
   readonly cap: CapTracker;
   readonly admission: BudgetAdmission;
+  readonly playbookAdmission: PlaybookAdmission;
 
   constructor(options: BudgetOptions, deps: BudgetDeps = {}) {
     this.config = validateBudgetConfig(options.config ?? DEFAULT_BUDGET_CONFIG);
@@ -48,6 +66,7 @@ export class Budget {
     this.meter = new BudgetMeter(shared, deps);
     this.cap = new CapTracker(shared, deps);
     this.admission = new BudgetAdmission(shared, deps);
+    this.playbookAdmission = new PlaybookAdmission(shared, deps, this.admission);
   }
 
   /** Meter and cap-track one SDK message. Both always run; the first error is rethrown after. */
@@ -64,4 +83,7 @@ export class Budget {
   };
 
   readonly check = (request: AdmissionRequest): AdmissionDecision => this.admission.check(request);
+
+  readonly checkPlaybook = (request: PlaybookAdmissionRequest): PlaybookAdmissionDecision =>
+    this.playbookAdmission.check(request);
 }
