@@ -64,3 +64,9 @@ kernel/src/loop/queue.ts
 kernel/src/loop/loop.ts
 kernel/test/loop-queue-priority.test.ts
 docs/architecture/queue.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-16T12:12:17Z
+- **Brief:** .supervisor/jobs/done/2026-10-16-pending-work-runs-by-priority.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/67
