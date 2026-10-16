@@ -57,12 +57,13 @@ One trigger's failure never stops the others. A trigger whose stored spec the ke
 - **Kill switch.** Nothing fires while it is engaged: the loop doesn't run, and the due work checks the switch too. After `studio resume`, a due instant that fell inside an engagement window is recorded and not fired. Engagement windows are read from `kill_switch_engaged` / `kill_switch_released` in the append-only `events` log, from the first engagement to the next release.
   - If every due instant fell inside a window, the trigger gets `last_result = missed_kill_switch` and one `trigger_missed` event. A `once` trigger is then spent.
   - If some fell outside, it fires once, and `trigger_fired` also carries `missed_kill_switch` (the count left unfired).
+- **Playbook not enabled.** A trigger linked to a playbook (`triggers.playbook`, the slug) whose playbook is not `enabled` (`draft`, `disabled`, or missing) when it comes due starts no work. Inside the same per-instant work step a fire would use, it records one `trigger_missed` (`reason: playbook_not_enabled`) and schedules its next fire as after a fire: a `cron` moves to its next future instant, and a `once` is spent. `last_result` stays as it was. Because the step is done, that instant is never fired later, even if the playbook is enabled afterwards. This check comes before the kill-switch one. The playbook-side rules are in [playbooks](playbooks.md#the-linked-trigger).
 
 ## Owner control
 
 `studio triggers` (one help line: `studio triggers [--all] [--json] | studio triggers on|off <id> [--yes]`) calls the loopback API. Like every contributed subcommand, it runs after the `api.json` pid check and before the Keychain read.
 
-- **`studio triggers [--all] [--json]`** lists enabled triggers. `--all` adds disabled ones, and `--json` prints the API's answer. Each entry shows the id, owning agent, kind and spec, action and its text, on or off, next fire in the owner's local time (`2026-10-14 17:00 +05:30`), last fired and its result, who created it and when, and who last toggled it and when. Stored text is data, never terminal control: it is printed JSON-quoted, with control and bidi characters escaped or replaced.
+- **`studio triggers [--all] [--json]`** lists enabled triggers. `--all` adds disabled ones, and `--json` prints the API's answer. Each entry shows the id, owning agent, kind and spec, action and its text, on or off, next fire in the owner's local time (`2026-10-14 17:00 +05:30`), last fired and its result, who created it and when, and who last toggled it and when. A trigger linked to a playbook ends its first line with `; playbook <slug>`. Stored text is data, never terminal control: it is printed JSON-quoted, with control and bidi characters escaped or replaced.
 - **`studio triggers on|off <id>`** turns a trigger on or off. The toggle sets `enabled_changed_by = owner` and `enabled_changed_at` and appends `trigger_toggled` with `by: owner`. A repeat is no change: nothing is written and no event is added. Turning a trigger off clears its next fire. Turning one on computes the next fire from now: a `cron` trigger does not fire the instants it missed while off, and a future `once` gets its own instant back.
 - **A past-due `once`.** Turning on a `once` whose time has passed would fire it now, so it needs confirmation, like `studio session abandon`. The command asks on a terminal: `y`/`yes` proceeds, and anything else, or stdin ending, is a no (exit 1). With no terminal and no `--yes` it refuses with exit 2 instead of waiting. `--yes` skips the question. Once confirmed, the trigger fires on the next tick, under a new instant (now), so it gets a new work-step key.
 
@@ -75,13 +76,14 @@ The routes, reached only with the bearer token, are what the CLI calls and what 
 
 ## Audit events
 
-Every register, remove, fire, miss and toggle appends exactly one event of its own kind (actor `kernel`) in the same transaction as the change, so the change and its record commit or roll back together:
+Every register, remove, fire, miss, toggle and re-schedule appends exactly one event of its own kind (actor `kernel`) in the same transaction as the change, so the change and its record commit or roll back together:
 
-- `trigger_registered`: `trigger_id`, `owning_agent`, `kind`, `spec`, `action`, `text`, `created_by`, `next_fire_at`. The row's `session_id` is the calling session.
+- `trigger_registered`: `trigger_id`, `owning_agent`, `kind`, `spec`, `action`, `text`, `created_by`, `next_fire_at`, and `playbook` when the trigger is linked to one. The row's `session_id` is the calling session.
 - `trigger_removed`: `trigger_id`, `owning_agent`, `kind`, `spec`, `action`, `enabled`, `by: agent`.
 - `trigger_fired`: `trigger_id`, `action`, `scheduled_at` (the first due instant, the step's key), `latest_due_at`, `missed`, `missed_kill_switch` (only when non-zero), `missed_at_least` (only when counting stopped), `enabled` (false for a spent `once`), `next_fire_at`, and `notification_id` or `queue_id`.
-- `trigger_missed`: `trigger_id`, `reason`, `scheduled_at`, `enabled`, `next_fire_at`. With `reason: kill_switch` it also has `latest_due_at` and `missed_kill_switch`. `reason: already_done` means the instant's work step was already done and the trigger was moved past it.
+- `trigger_missed`: `trigger_id`, `reason`, `scheduled_at`, `enabled`, `next_fire_at`. With `reason: kill_switch` it also has `latest_due_at` and `missed_kill_switch`. `reason: already_done` means the instant's work step was already done and the trigger was moved past it. With `reason: playbook_not_enabled` it also has `playbook` (the slug), `playbook_status` (the status read, or null when the playbook is missing) and `latest_due_at`, plus `missed_at_least` when counting stopped.
 - `trigger_toggled`: `trigger_id`, `enabled`, `was_enabled`, `by` (`owner`), `next_fire_at`.
+- `trigger_updated`: appended when an agent's own trigger is re-scheduled in place (`updateTriggerSpec`, same id; today only through a playbook's trigger change, see [playbooks](playbooks.md#the-linked-trigger)). `trigger_id`, `playbook` (only when linked), `kind`, `spec`, `previous_kind`, `previous_spec`, `enabled`, `rearmed: true` (only when a spent `once` was turned back on by the new schedule), `next_fire_at`, `by: agent`. The row's `session_id` is the calling session. A re-schedule to the stored kind and spec is no change: nothing is written and no event is added.
 
 ## Values
 
