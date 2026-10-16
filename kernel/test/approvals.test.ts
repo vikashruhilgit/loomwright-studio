@@ -700,6 +700,7 @@ describe("the rail: an outward call is held as a pending approval", () => {
         decision: null,
         decided_by: null,
         decided_at: null,
+        playbook: null,
       },
     ]);
     expect(count(t.store, "SELECT count(*) FROM notifications WHERE source = 'kernel:approval'")).toBe(1);
