@@ -77,3 +77,9 @@ docs/evidence/agent-sdk-tool-loading-probe.md
 docs/evidence/phase-2-exit-runbook.md
 docs/OPEN_QUESTIONS.md
 docs/ARCHITECTURE.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-16T01:38:53Z
+- **Brief:** .supervisor/jobs/done/2026-10-15-wright-kernel-tool-loading.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/61
