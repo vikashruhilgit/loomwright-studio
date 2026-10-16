@@ -87,6 +87,16 @@ export interface StartSessionParams {
    * (default `true`). A caller that keeps the session open passes `false`.
    */
   readonly closeInputOnResult?: boolean;
+  /**
+   * The playbook this session runs for (`playbooks.id`, migration 13), recorded
+   * on its row as `sessions.playbook`. A positive integer naming an existing
+   * playbook; absent for a session that is not a playbook's (the row reads null).
+   */
+  readonly playbook?: number;
+  /** The playbook version it runs, recorded as `sessions.playbook_version`. A positive integer; absent ⇒ null. */
+  readonly playbookVersion?: number;
+  /** A dry run. Accepted and ignored until item 03 (phase 3 dry runs) gives it a meaning. */
+  readonly dryRun?: boolean;
 }
 
 export interface ResumeSessionParams {
@@ -97,6 +107,15 @@ export interface ResumeSessionParams {
   /** The policy is not persisted in phase 1, so the caller passes it again. */
   readonly policy: ToolPolicy;
   readonly closeInputOnResult?: boolean;
+  /**
+   * Written to the row's `sessions.playbook` / `sessions.playbook_version` when
+   * given (same rules as `StartSessionParams`), once the resume goes ahead; an
+   * absent one leaves the row's value unchanged.
+   */
+  readonly playbook?: number;
+  readonly playbookVersion?: number;
+  /** A dry run. Accepted and ignored until item 03 (phase 3 dry runs) gives it a meaning. */
+  readonly dryRun?: boolean;
 }
 
 /** Resume is retryable, up to this many attempts in total (AC6). */
@@ -234,6 +253,10 @@ export interface SessionRow {
    * or proven foreign, and whenever a new group is recorded.
    */
   readonly kill_incomplete_at: string | null;
+  /** The playbook the session runs for (`playbooks.id`, migration 13), or `null` for a session that is not a playbook's. */
+  readonly playbook: number | null;
+  /** The playbook version it runs, or `null`. */
+  readonly playbook_version: number | null;
   readonly started_at: string | null;
   readonly ended_at: string | null;
   readonly updated_at: string;
