@@ -75,11 +75,11 @@ The model sees `permissionDecision: "deny"` with a fixed text that starts with `
 
 `SessionHandle.dryRun` is a `Promise<DryRunReport | null>`. It settles when `done` settles, never rejects, and is `null` for a real run. A dry-run session's report is:
 
-- `wouldDo`: every would-do entry, in call order, across every attempt of the session;
+- `wouldDo`: every would-do entry, in call order, from every launch attempt of this `startSession`/`resumeSession` call. A resume's report starts empty: entries from before a kernel restart survive only as `tool_decision` events with reason `dry_run`;
 - `finalText`: the same text `SessionHandle.result` resolves to (`null` unless the session ended `completed` with a successful result);
 - `usage`: the **last** `result` message's `modelUsage`, normalised per model the way the budget meter reads it (`UsageTotals`: input, output, cache-write, cache-read and thinking tokens, and the SDK's cost estimate). It is the SDK session's cumulative total, so successive results are never added together. Empty when no result came.
 
-The report is held in memory only; nothing is persisted. Storing a playbook's dry-run result is the playbook half's job (`playbook_runs.result`, [playbook runs](playbook-runs.md)).
+The report is held in memory only, per handle; nothing is persisted, so it never spans a kernel restart. Storing a playbook's dry-run result is the playbook half's job (`playbook_runs.result`, [playbook runs](playbook-runs.md)).
 
 ## Tokens count against limits
 

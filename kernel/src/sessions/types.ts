@@ -164,9 +164,10 @@ export interface SessionHandle {
   /**
    * Settles when `done` settles. Never rejects. The dry-run report for a
    * dry-run session (`StartSessionParams.dryRun`, or a resume that runs as
-   * one), `null` for a real run. Held in memory only: nothing is persisted.
-   * Always set by `SessionManager`; optional in the type only so a stand-in
-   * handle need not carry it.
+   * one), `null` for a real run. Held in memory only, per handle: it covers
+   * this `startSession`/`resumeSession` call's attempts, so a resume's report
+   * starts empty. Always set by `SessionManager`; optional in the type only
+   * so a stand-in handle need not carry it.
    */
   readonly dryRun?: Promise<DryRunReport | null>;
 }
@@ -194,7 +195,10 @@ export interface WouldDoEntry {
 /**
  * What a dry-run session reports when it ends (`SessionHandle.dryRun`).
  *
- * - `wouldDo`: every would-do entry, in call order, from every attempt.
+ * - `wouldDo`: every would-do entry, in call order, from every launch attempt
+ *   of this `startSession`/`resumeSession` call. A resume's report starts
+ *   empty: entries from before a kernel restart survive only as
+ *   `tool_decision` events with reason `dry_run`.
  * - `finalText`: the same text `SessionHandle.result` resolves to.
  * - `usage`: the LAST `result` message's `modelUsage`, normalised per model
  *   as the budget meter reads it (`UsageTotals`). It is the SDK session's

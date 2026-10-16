@@ -319,7 +319,11 @@ interface LiveSession {
   readonly dryRunReport: Promise<DryRunReport | null>;
 }
 
-/** A dry-run session's in-memory record (`DryRunReport`), across its attempts. */
+/**
+ * A dry-run session's in-memory record (`DryRunReport`), across the launch
+ * attempts of one `startSession`/`resumeSession` call. A resume starts a fresh
+ * one; earlier entries survive only as `tool_decision` events (`dry_run`).
+ */
 interface DryRunState {
   /** Every would-do entry whose deny was recorded, in call order. */
   readonly wouldDo: WouldDoEntry[];
