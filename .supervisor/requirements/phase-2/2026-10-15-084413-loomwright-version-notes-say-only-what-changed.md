@@ -47,3 +47,9 @@ none
 kernel/src/loomwright/
 kernel/test/loomwright-version-note.test.ts
 docs/architecture/loomwright.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-16T01:39:49Z
+- **Brief:** .supervisor/jobs/done/2026-10-15-loomwright-version-notes-only-what-changed.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/59
