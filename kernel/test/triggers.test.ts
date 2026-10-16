@@ -1124,4 +1124,31 @@ describe("playbook-linked triggers (phase 3 item 02)", () => {
     expect(row(id)).toMatchObject({ kind: "cron", enabled: 1 });
     expect(count(env.store, "SELECT count(*) FROM triggers")).toBe(1);
   });
+
+  it("re-arming a spent once onto the instant it already fired (the clock stepped back) is refused before any write", () => {
+    const { id } = registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T10:30:00Z", action: "notify", text: "t" }, env.now());
+    setClock("2026-10-14T10:31:00.000Z");
+    expect(fireDueTriggers(env.store, env.now())).toMatchObject([{ trigger_id: id, result: "fired" }]);
+    setClock("2026-10-14T10:00:00.000Z");
+    // The same instant written differently: past the unchanged-spec early return, so the taken-instant guard decides.
+    let thrown: unknown;
+    try {
+      updateTriggerSpec(env.store, { id, agent: "wright", kind: "once", spec: "2026-10-14T12:30:00+02:00" }, env.now());
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(TriggerError);
+    expect(thrown).toMatchObject({ code: "invalid_spec", message: expect.stringMatching(/already fired or recorded that instant/) });
+    expect(row(id)).toMatchObject({ enabled: 0, next_fire_at: null, spec_json: JSON.stringify({ at: "2026-10-14T10:30:00Z" }) });
+    expect(events(env.store, "trigger_updated")).toEqual([]);
+  });
+
+  it("re-arming a spent once as a cron skips the instant it already fired (the clock stepped back)", () => {
+    const { id } = registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T10:30:00Z", action: "notify", text: "t" }, env.now());
+    setClock("2026-10-14T10:31:00.000Z");
+    expect(fireDueTriggers(env.store, env.now())).toMatchObject([{ trigger_id: id, result: "fired" }]);
+    setClock("2026-10-14T10:00:00.000Z");
+    expect(updateTriggerSpec(env.store, { id, agent: "wright", kind: "cron", spec: "30 * * * *", tz: "UTC" }, env.now())).toEqual({ id, next_fire_at: "2026-10-14T11:30:00.000Z", changed: true });
+    expect(row(id)).toMatchObject({ kind: "cron", enabled: 1, next_fire_at: "2026-10-14T11:30:00.000Z" });
+  });
 });
