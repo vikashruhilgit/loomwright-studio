@@ -162,7 +162,7 @@ The note's first line is a provenance marker: `<!-- loomwright-version-note from
 One notification per version change, created with the row:
 
 - source `kernel:loomwright_version`;
-- title `Loomwright <old> → <new>`;
+- title `Loomwright <old> → <new>`, each version collapsed to one line: every run of white space and control characters (C0 and DEL) becomes one space, so a NUL in a contract's `plugin_version` never reaches `recordNotification` (which refuses one and would roll the check back, row and all, on every interval);
 - body `<b> breaking, <n> added, <m> removed, <c> changed. Note: <path>`. The breaking count comes first and only when it is not zero. The added and removed counts are the note's Added and Removed sections only. The changed count is the number of lines in the note's Changed section (hook changes, result-schema versions, the contract schema version), and it appears only when that section is not empty, so a hook-only change still shows in the notification. Description changes are never counted; the note has them.
 
 ### Downgrade
