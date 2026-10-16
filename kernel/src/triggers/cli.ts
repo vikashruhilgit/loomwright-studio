@@ -90,6 +90,8 @@ function bare(value: unknown): string {
 interface TriggerLike {
   readonly id?: unknown;
   readonly owning_agent?: unknown;
+  /** The linked playbook's slug, or null. */
+  readonly playbook?: unknown;
   readonly kind?: unknown;
   readonly spec?: unknown;
   readonly action?: unknown;
@@ -111,7 +113,7 @@ function specText(t: TriggerLike): string {
   return `${bare(t.kind)} ${quoted(JSON.stringify(t.spec ?? null))}`;
 }
 
-/** The trigger list, one block per trigger, times in zone `tz`. */
+/** The trigger list, one block per trigger, times in zone `tz`; a playbook's trigger names it (`; playbook <slug>`) on its first line. */
 export function formatTriggers(triggers: readonly TriggerLike[], tz: string, all: boolean): string {
   if (triggers.length === 0) return all ? "no triggers\n" : "no enabled triggers (studio triggers --all lists disabled ones too)\n";
   const time = (value: unknown): string => {
@@ -122,7 +124,8 @@ export function formatTriggers(triggers: readonly TriggerLike[], tz: string, all
   const lines: string[] = [];
   for (const t of triggers) {
     const toggled = t.enabled_changed_by == null ? "never toggled" : `last toggled by ${bare(t.enabled_changed_by)} at ${time(t.enabled_changed_at)}`;
-    lines.push(`#${bare(t.id)} ${bare(t.owning_agent)}: ${specText(t)}, ${bare(t.action)} ${quoted(t.text)}`);
+    const linked = t.playbook == null ? "" : `; playbook ${bare(t.playbook)}`;
+    lines.push(`#${bare(t.id)} ${bare(t.owning_agent)}: ${specText(t)}, ${bare(t.action)} ${quoted(t.text)}${linked}`);
     lines.push(`  ${t.enabled === true ? "on" : "off"}; next fire ${time(t.next_fire_at)}; last fired ${time(t.last_fired_at)} (${t.last_result == null ? "-" : bare(t.last_result)})`);
     lines.push(`  created by ${bare(t.created_by)} at ${time(t.created_at)}; ${toggled}`);
   }

@@ -7,7 +7,7 @@
 // Types only, plus the lists: the `studio` CLI loads this module (through
 // `./index.ts` and `../features/index.ts`), so it never imports the Agent SDK,
 // the session manager or `kernel.ts`.
-import type { CliApiClient, CliSubcommandOutput, ContributedRoute, ContributedTool } from "../features/contribution.js";
+import type { CliApiClient, CliSubcommandOutput, ContributedRoute, ContributedTool, DueWorkFn } from "../features/contribution.js";
 import type { EventHandler, EventKind } from "../loop/types.js";
 
 /** `playbooks.status`: a playbook is a draft until the owner enables it. */
@@ -42,10 +42,10 @@ export interface PlaybookVerb {
 
 /**
  * One sub-file's share of the playbooks contribution (`drafts`, `dry-run`,
- * `enable`, `runs`): its tools and routes, its `studio playbooks` verbs and
- * its event handlers. `mergePlaybookParts` (`./index.ts`) joins the parts in
- * `PLAYBOOK_PARTS` order; a verb or handler kind claimed by two parts is
- * refused at module load.
+ * `enable`, `runs`): its tools and routes, its `studio playbooks` verbs, its
+ * event handlers and its due work (optional). `mergePlaybookParts`
+ * (`./index.ts`) joins the parts in `PLAYBOOK_PARTS` order; a verb or handler
+ * kind claimed by two parts is refused at module load.
  */
 export interface PlaybookPart {
   readonly name: string;
@@ -53,4 +53,6 @@ export interface PlaybookPart {
   readonly routes: readonly ContributedRoute[];
   readonly verbs: readonly PlaybookVerb[];
   readonly handlers: Readonly<Partial<Record<EventKind, EventHandler>>>;
+  /** Run once per loop tick, in part order (the contribution's `dueWork`). Absent: none. */
+  readonly dueWork?: readonly DueWorkFn[];
 }
