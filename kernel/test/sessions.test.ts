@@ -2716,3 +2716,122 @@ describe("a cwd in a macOS-protected folder (D31, protected_cwd)", () => {
     expect(s.buildEnv).not.toHaveBeenCalled();
   });
 });
+
+// ---- phase 3: sessions carry their playbook (migration 13) -----------------------
+
+describe("sessions carry their playbook (phase 3 foundation)", () => {
+  const SID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const resumeParams = { permissionMode: "default" as const, cwd: "/tmp", policy: { allowedTools: [], allowedBashPrefixes: [] } };
+  const complete = ({ stream }: QueryCall): void => {
+    stream.push(msg.init(SID));
+    stream.push(msg.assistant());
+    stream.push(msg.success());
+  };
+
+  /** A store with playbooks 1, 2 and 3. */
+  function storeWithPlaybooks(): Store {
+    const store = openStore();
+    const add = store.prepare("INSERT INTO playbooks (slug, name, owning_agent, intent) VALUES (?, ?, 'wright', 'test')");
+    for (const slug of ["one", "two", "three"]) add.run(slug, slug);
+    return store;
+  }
+
+  function interrupted(store: Store, playbook: number | null = null, version: number | null = null): number {
+    return Number(
+      store
+        .prepare(
+          "INSERT INTO sessions (agent, status, sdk_session_id, model, loomwright_path, pgid, playbook, playbook_version) VALUES ('wright', 'interrupted', ?, 'claude-haiku-4-5', ?, 4242, ?, ?)",
+        )
+        .run(SID, pluginDir, playbook, version).lastInsertRowid,
+    );
+  }
+
+  it("startSession records playbook and playbookVersion on the row (getSession reads both); without them both are null; dryRun is accepted and ignored", async () => {
+    const store = storeWithPlaybooks();
+    const { manager } = harness({ store, script: complete });
+    const withPlaybook = await manager.startSession(startParams({ playbook: 3, playbookVersion: 2 }));
+    expect(await withPlaybook.done).toBe("completed");
+    expect(manager.getSession(withPlaybook.id)).toMatchObject({ playbook: 3, playbook_version: 2 });
+
+    const plain = await manager.startSession(startParams());
+    expect(await plain.done).toBe("completed");
+    expect(manager.getSession(plain.id)).toMatchObject({ playbook: null, playbook_version: null });
+
+    const dry = await manager.startSession(startParams({ playbook: 1, playbookVersion: 1, dryRun: true }));
+    expect(await dry.done).toBe("completed");
+    expect(manager.getSession(dry.id)).toMatchObject({ status: "completed", playbook: 1, playbook_version: 1 });
+  });
+
+  it("refuses a playbook or playbookVersion that is not a positive integer, or an unknown playbook, with invalid_params before any row or spawn", async () => {
+    const store = storeWithPlaybooks();
+    const { manager, calls } = harness({ store, script: complete });
+    const bad: Partial<StartSessionParams>[] = [
+      { playbook: 0 },
+      { playbook: -1 },
+      { playbook: 1.5 },
+      { playbook: Number.NaN },
+      { playbook: "3" as unknown as number },
+      { playbook: 99 },
+      { playbook: 1, playbookVersion: 0 },
+      { playbookVersion: 2.5 },
+      { playbookVersion: "2" as unknown as number },
+    ];
+    for (const overrides of bad) {
+      const err = await manager.startSession(startParams(overrides)).catch((e: unknown) => e);
+      expect(err, JSON.stringify(overrides)).toBeInstanceOf(SessionError);
+      expect((err as SessionError).code, JSON.stringify(overrides)).toBe("invalid_params");
+    }
+    expect(calls).toHaveLength(0);
+    expect(sessionCount(store)).toBe(0);
+  });
+
+  it("resumeSession writes a given playbook / playbookVersion, and leaves the row's values unchanged without them", async () => {
+    const store = storeWithPlaybooks();
+    const { manager, calls } = harness({ store, script: complete });
+
+    const kept = interrupted(store, 1, 4);
+    expect(await (await manager.resumeSession(kept, resumeParams)).done).toBe("completed");
+    expect(manager.getSession(kept)).toMatchObject({ playbook: 1, playbook_version: 4 });
+
+    const set = interrupted(store);
+    expect(await (await manager.resumeSession(set, { ...resumeParams, playbook: 3, playbookVersion: 2, dryRun: false })).done).toBe("completed");
+    expect(manager.getSession(set)).toMatchObject({ playbook: 3, playbook_version: 2 });
+
+    // Each one is written only when given.
+    const versionOnly = interrupted(store, 2, 1);
+    expect(await (await manager.resumeSession(versionOnly, { ...resumeParams, playbookVersion: 5 })).done).toBe("completed");
+    expect(manager.getSession(versionOnly)).toMatchObject({ playbook: 2, playbook_version: 5 });
+    expect(calls).toHaveLength(3);
+
+    // A bad value is refused before the row is touched or anything launches.
+    const refused = interrupted(store, 1, 1);
+    const err = await manager.resumeSession(refused, { ...resumeParams, playbook: 99 }).catch((e: unknown) => e);
+    expect((err as SessionError).code).toBe("invalid_params");
+    expect(manager.getSession(refused)).toMatchObject({ status: "interrupted", playbook: 1, playbook_version: 1 });
+    expect(calls).toHaveLength(3);
+  });
+
+  it("kernel_playbook_enable is always held: an allowing policy only gets a pending approval (action kernel_playbook_enable, payload {tool, input, cwd}), and the call does not run", async () => {
+    const ENABLE = "mcp__kernel__kernel_playbook_enable";
+    const { manager, calls, store } = harness();
+    const handle = await manager.startSession(
+      startParams({ policy: { allowedTools: [ENABLE, "mcp__kernel__kernel_playbook_list"], allowedBashPrefixes: [] } }),
+    );
+    const call = calls[0] as QueryCall;
+    const held = await decide(call, preToolUse(ENABLE, { playbook: 3 }));
+    expect(held.permissionDecision).toBe("deny");
+    expect(held.permissionDecisionReason).toMatch(/^approval_required: held as approval 1; it did not run\. /);
+    const approval = store.prepare("SELECT status, action, payload_json, requesting_session FROM approvals").all() as Record<string, unknown>[];
+    expect(approval).toHaveLength(1);
+    expect(approval[0]).toMatchObject({ status: "pending", action: "kernel_playbook_enable", requesting_session: handle.id });
+    expect(JSON.parse(approval[0]?.payload_json as string)).toEqual({ tool: ENABLE, input: { playbook: 3 }, cwd: "/tmp" });
+    // Another allowed kernel playbook tool is ordinary: allowed by the policy, nothing held.
+    expect(await decide(call, preToolUse("mcp__kernel__kernel_playbook_list", {}))).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      permissionDecisionReason: "tool_allowed",
+    });
+    expect(store.prepare("SELECT count(*) FROM approvals").pluck().get()).toBe(1);
+    await manager.stopSession(handle.id);
+  });
+});

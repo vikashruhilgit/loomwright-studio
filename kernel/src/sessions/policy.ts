@@ -146,6 +146,22 @@ export const PROTECTED_DATA_FILES: readonly string[] = [
 /** The data dir's directories the kernel owns, protected with everything inside: agent settings and the install copy (`service/launchd.ts` `APP_DIRNAME`). */
 export const PROTECTED_DATA_DIRS: readonly string[] = ["config", "app"];
 
+/**
+ * The tools in the fixed outward set by name: every call is held for the
+ * owner as a pending approval (`classifyToolCall` answers `outward`, whatever
+ * the input), so an allowing policy only lets the session ask. An "always"
+ * grant may NEVER cover a name in this list: the item that adds "always"
+ * grants (phase 3 item 05) must check it. Closed: a name is added only by a
+ * kernel change, never by a policy or a playbook.
+ *
+ * - `mcp__kernel__kernel_playbook_enable`: enabling a playbook lets it run on
+ *   its own (persistent), so the owner sees each enable.
+ */
+export const ALWAYS_HELD_TOOLS: readonly string[] = Object.freeze(["mcp__kernel__kernel_playbook_enable"]);
+
+/** The kernel MCP server's tool-name prefix, dropped from an always-held tool's approval action. */
+const KERNEL_TOOL_PREFIX = "mcp__kernel__";
+
 /** The tools whose path argument is a write. */
 const WRITE_TOOLS: Readonly<Record<string, string>> = { Write: "file_path", Edit: "file_path", NotebookEdit: "notebook_path" };
 
@@ -245,7 +261,10 @@ const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge|enqueueP
  *    `--raw-field`/`--input` without an explicit method, which gh sends as
  *    POST); a write to, or a Bash command naming or globbing, anything under
  *    `~/.claude/`, any `settings*.json`, any `hooks.json`, or anything under a
- *    `.git/hooks` or `.claude/…/hooks` dir.
+ *    `.git/hooks` or `.claude/…/hooks` dir; and every call to a tool in
+ *    `ALWAYS_HELD_TOOLS`, whatever its input (action: the name without its
+ *    `mcp__kernel__` prefix, e.g. `kernel_playbook_enable`; payload
+ *    `{tool, input, cwd}`).
  *
  * Bash recognition is argv-shaped: the command is split into shell words
  * (`shellWords`), and only the program's basename (case-folded) and the words
@@ -297,6 +316,11 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
     const label = outwardLabel(read, targets);
     if (label !== undefined) return { kind: "outward", action: `Bash naming ${label}`, payload };
     return { kind: "ordinary" };
+  }
+
+  if (ALWAYS_HELD_TOOLS.includes(toolName)) {
+    const action = toolName.startsWith(KERNEL_TOOL_PREFIX) ? toolName.slice(KERNEL_TOOL_PREFIX.length) : toolName;
+    return { kind: "outward", action, payload: { tool: toolName, input: toolInput, cwd: payloadCwd } };
   }
 
   const field = Object.prototype.hasOwnProperty.call(WRITE_TOOLS, toolName) ? WRITE_TOOLS[toolName] : undefined;

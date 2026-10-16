@@ -59,6 +59,15 @@ import type { FakeCall } from "./session-fakes.js";
 import { fakeMsg, fakeSessions, makePluginDir, stubProvider } from "./session-fakes.js";
 
 const MODEL = "claude-haiku-4-5";
+/** Phase 3's playbook tools, reserved in Wright's proposed policy before they exist. */
+const PLAYBOOK_TOOL_NAMES = [
+  "kernel_playbook_create",
+  "kernel_playbook_update",
+  "kernel_playbook_list",
+  "kernel_playbook_disable",
+  "kernel_playbook_dry_run",
+  "kernel_playbook_enable",
+] as const;
 const DOC = new URL("../../docs/architecture/brain.md", import.meta.url);
 
 let tmp: string;
@@ -288,8 +297,22 @@ describe("the brain contribution", () => {
     expect(merged.tools).toEqual([]);
     expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(["brain POST /ask", "brain GET /messages/:id"]);
     expect(merged.subcommands.map((s) => [s.name, s.help])).toEqual([["ask", ASK_HELP]]);
+    expect(ASK_HELP).toBe('studio ask "<text>" [--json] [--timeout <s>]');
     expect(Object.keys(merged.handlers)).toEqual(["message"]);
+    expect(merged.handlers.message).toBe(brainContribution.handlers?.message);
     expect(merged.dueWork).toEqual([]);
+  });
+
+  it("the shipped kernel's message handler is the brain's: a message for no agent (not Wright) ends done, with no effect and no brain_messages row", async () => {
+    const store = new Store({ dataDir });
+    const { id } = enqueueMessage(store, { text: "hello" });
+    store.close();
+    const { kernel } = await startBrainKernel();
+    expect(kernel.contributions.handlers.message).toBe(brainContribution.handlers?.message);
+    await vi.waitFor(() => expect(getQueueRow(kernel.store, id)?.status).toBe("done"));
+    expect(events(kernel.store, "event_unhandled")).toHaveLength(0);
+    expect(events(kernel.store, "event_done")).toHaveLength(1);
+    expect(count(kernel.store, "SELECT count(*) FROM brain_messages")).toBe(0);
   });
 
   it("names its source from the payload: trigger:<id>, approval:<id>, else message", () => {
@@ -315,6 +338,13 @@ describe("docs/architecture/brain.md (AC9)", () => {
     expect(open).toBeGreaterThan(-1);
     expect(close).toBeGreaterThan(open);
     expect(`${block.slice(open + 1, close).join("\n")}\n`).toBe(ROLE_TEMPLATE);
+  });
+
+  it("the role template and both doc blocks list the six playbook tool names (AC6)", () => {
+    const doc = readFileSync(DOC, "utf8");
+    expect(ROLE_TEMPLATE).toContain(`\n- playbooks: ${PLAYBOOK_TOOL_NAMES.join(", ")}\n`);
+    for (const name of PLAYBOOK_TOOL_NAMES) expect(doc, name).toContain(`"mcp__kernel__${name}",`);
+    expect(doc).toContain("create-if-absent");
   });
 
   it("documents the files, the settings file, the context, routing, the API and CLI, and the honest limits", () => {
@@ -399,6 +429,10 @@ describe("settings: no model, no message (AC2)", () => {
       tool_policy: { status: "proposed", allowedTools: [...PROPOSED_ALLOWED_TOOLS], allowedBashPrefixes: [] },
     });
     expect(PROPOSED_ALLOWED_TOOLS).toContain("mcp__kernel__kernel_trigger_register");
+    // The six phase 3 playbook tool names, reserved after the Loomwright tool and before Wright's own lifecycle tools.
+    const allowed = (written.tool_policy as { allowedTools: string[] }).allowedTools;
+    const after = allowed.indexOf("mcp__kernel__kernel_loomwright_capabilities") + 1;
+    expect(allowed.slice(after, after + 7)).toEqual([...PLAYBOOK_TOOL_NAMES.map((n) => `mcp__kernel__${n}`), "mcp__kernel__kernel_schedule_wakeup"]);
     expect(PROPOSED_ALLOWED_TOOLS.filter((t) => !t.startsWith("mcp__kernel__"))).toEqual(["Read", "Glob", "Grep"]);
   });
 

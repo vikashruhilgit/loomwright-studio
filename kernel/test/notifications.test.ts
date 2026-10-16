@@ -14,15 +14,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API_TOKEN_KEYCHAIN_SERVICE, startApiServer } from "../src/api/index.js";
 import type { ApiServer } from "../src/api/index.js";
 import { runCli } from "../src/cli/index.js";
-import { mergeContributions } from "../src/features/index.js";
+import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
+import { startKernel } from "../src/kernel.js";
 import { EventLoop } from "../src/loop/loop.js";
 import {
   InvalidNotificationError,
+  NOTIFICATIONS_HELP,
   OSASCRIPT_PATH,
   TERMINAL_NOTIFIER_PATHS,
   clickShellCommand,
   createDeliveryDueWork,
   deliverPendingNotifications,
+  deliveryDueWork,
   getNotification,
   notificationsContribution,
   notifyTool,
@@ -43,7 +46,7 @@ import { contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolContext } from "../src/tools/server.js";
 import { count, events, loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
-import { stubProvider, unexpectedAbandon } from "./session-fakes.js";
+import { fakeSessions, makePluginDir, stubProvider, unexpectedAbandon } from "./session-fakes.js";
 
 const TITLE = 'Build "done" $(rm -rf ~) `id`; |& -execute';
 const BODY = "line 1; echo $HOME\n'single' \"double\" \\ back\n$(touch /tmp/studio-never) && rm -rf / (a, b)";
@@ -762,5 +765,44 @@ describe("the API routes and studio notifications", () => {
       });
     }
     expect(printable("a\tb\u0085c")).toBe("a\\x09b\\x85c");
+  });
+});
+
+describe("the notifications contribution", () => {
+  it("registers kernel_notify, the two /notifications routes, studio notifications and the delivery due work, and nothing else", () => {
+    expect(SHIPPED_CONTRIBUTIONS).toContain(notificationsContribution);
+    const merged = mergeContributions([notificationsContribution], PHASE1_RESERVED);
+    expect(merged.tools.map((t) => t.name)).toEqual(["kernel_notify"]);
+    expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(["notifications GET /notifications", "notifications GET /notifications/:id"]);
+    expect(merged.subcommands.map((s) => [s.name, s.help])).toEqual([["notifications", NOTIFICATIONS_HELP]]);
+    expect(NOTIFICATIONS_HELP).toBe("studio notifications [--limit N] [--json] | studio notifications show <id>");
+    expect(merged.handlers).toEqual({});
+    expect(merged.dueWork.map((d) => d.owner)).toEqual(["notifications"]);
+    expect(merged.dueWork[0]?.run).toBe(deliveryDueWork);
+    expect(Object.keys(notificationsContribution)).toEqual(["name", "tools", "routes", "subcommands", "dueWork"]);
+  });
+
+  it("the shipped kernel answers GET /notifications on a fresh data dir: 200, no notifications", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "studio-notifications-kernel-"));
+    const items = new Map<string, string>();
+    const kernel = await startKernel(
+      { dataDir: join(tmp, "data"), env: { PATH: "/usr/bin" }, sessions: { loomwrightPath: makePluginDir(tmp), stopGraceMs: 10 } },
+      {
+        keychain: { read: (service) => items.get(service) },
+        keychainWriter: { add: (service, _account, secret) => void items.set(service, secret) },
+        sessionDeps: fakeSessions().deps,
+        selectAuthProvider: async () => stubProvider(),
+        availableProviderIds: async () => ["api-key"],
+      },
+    );
+    try {
+      const token = items.get(API_TOKEN_KEYCHAIN_SERVICE) ?? "";
+      const listed = await fetch(`http://127.0.0.1:${kernel.api.port}/notifications`, { headers: { Authorization: `Bearer ${token}` } });
+      expect(listed.status).toBe(200);
+      expect(await listed.json()).toEqual({ notifications: [] });
+    } finally {
+      await kernel.stop();
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
-import { SHIPPED_CONTRIBUTIONS } from "../src/features/index.js";
+import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { ContributedToolContext } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
 import type { Kernel } from "../src/kernel.js";
@@ -29,6 +29,7 @@ import {
   readLoomwrightContract,
   requireHostSwitch,
   resolveLoomwrightInstall,
+  versionWatchDueWork,
 } from "../src/loomwright/index.js";
 import type { LoomwrightContract } from "../src/loomwright/index.js";
 import { hostSwitchNameProblem } from "../src/loomwright/contract.js";
@@ -653,6 +654,17 @@ describe("loomwrightCapabilities and kernel_loomwright_capabilities (AC8)", () =
     expect(capabilitiesTool.shape).toEqual({});
     expect(capabilitiesTool.description).not.toMatch(/\n/);
     expect(SHIPPED_CONTRIBUTIONS[0]).toBe(loomwrightContribution);
+  });
+
+  it("the loomwright contribution registers its one tool and the version watcher's due work, and nothing else (no route, subcommand or handler)", () => {
+    const merged = mergeContributions([loomwrightContribution], PHASE1_RESERVED);
+    expect(merged.tools.map((t) => t.name)).toEqual(["kernel_loomwright_capabilities"]);
+    expect(merged.routes).toEqual([]);
+    expect(merged.subcommands).toEqual([]);
+    expect(merged.handlers).toEqual({});
+    expect(merged.dueWork.map((d) => d.owner)).toEqual(["loomwright"]);
+    expect(merged.dueWork[0]?.run).toBe(versionWatchDueWork);
+    expect(Object.keys(loomwrightContribution)).toEqual(["name", "tools", "dueWork"]);
   });
 
   it("reads the calling session's own install; no row or no recorded install, or a contract gone since, is an isError result", async () => {

@@ -11,10 +11,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API_TOKEN_KEYCHAIN_SERVICE, engageKillSwitch, releaseKillSwitch, startApiServer } from "../src/api/index.js";
 import type { ApiServer } from "../src/api/index.js";
-import { APPROVALS_HELP, APPROVE_HELP, DENY_HELP } from "../src/approvals/index.js";
-import { USAGE, runCli } from "../src/cli/index.js";
-import { MAX_NOTIFICATION_TITLE, NOTIFICATIONS_HELP } from "../src/notifications/index.js";
-import { ASK_HELP } from "../src/brain/index.js";
+import { USAGE, runCli, usageText } from "../src/cli/index.js";
+import { MAX_NOTIFICATION_TITLE } from "../src/notifications/index.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { ContributedTool, FeatureContribution } from "../src/features/index.js";
 import { EventLoop } from "../src/loop/loop.js";
@@ -140,15 +138,18 @@ describe("the triggers contribution", () => {
       "POST /triggers/:id/off triggers",
     ]);
     expect(merged.subcommands.map((s) => [s.name, s.help])).toEqual([["triggers", "studio triggers [--all] [--json] | studio triggers on|off <id> [--yes]"]]);
+    expect(TRIGGERS_HELP).toBe("studio triggers [--all] [--json] | studio triggers on|off <id> [--yes]");
     expect(merged.dueWork.map((d) => d.owner)).toEqual(["triggers"]);
     expect(merged.handlers).toEqual({});
-    expect(Object.keys(triggersContribution).sort()).toEqual(["dueWork", "name", "routes", "subcommands", "tools"]);
+    expect(Object.keys(triggersContribution)).toEqual(["name", "tools", "routes", "subcommands", "dueWork"]);
   });
 
-  it("studio's usage text is phase 1's plus each shipped help line (notifications, then triggers, then approvals, then the brain's ask), with the shipped contributions", async () => {
+  it("studio's usage text is phase 1's plus each shipped help line, triggers' among them, with the shipped contributions", async () => {
     const stderr: string[] = [];
     expect(await runCli(["nope"], { dataDir: env.dataDir, stderr: { write: (c: string) => stderr.push(c) }, stdout: { write: () => true } })).toBe(2);
-    expect(stderr.join("")).toBe(`${USAGE} | ${NOTIFICATIONS_HELP} | ${TRIGGERS_HELP} | ${APPROVALS_HELP} | ${APPROVE_HELP} | ${DENY_HELP} | ${ASK_HELP}\n`);
+    expect(stderr.join("")).toBe(`${usageText(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).subcommands)}\n`);
+    expect(stderr.join("")).toContain(` | ${TRIGGERS_HELP}`);
+    expect(stderr.join("").startsWith(`${USAGE} | `)).toBe(true);
   });
 
   it("nothing is preinstalled: a fresh store has no trigger, and ticking creates none", async () => {
