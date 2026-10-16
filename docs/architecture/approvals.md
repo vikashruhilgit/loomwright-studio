@@ -136,7 +136,7 @@ Any other `always` is refused with `409 always_not_supported`, whose message nam
 
 A match writes one `approval_grant_used` event (`{id, tool}`, linked to the calling session) in the same transaction as the allow and its `tool_decision` event. A standing grant is not consumed. The fixed rail runs before any grant, so no grant ever covers a protected kernel path or the merge block: those are denied, never held.
 
-**Dry runs.** A dry-run session (phase 3 item 03) is denied every outward or persistent call by its own gate before the rail, so it never reaches a grant and never uses one.
+**Dry runs.** The dry-run gate belongs to phase 3 item 03 and is not on this branch yet: until it lands, `dryRun` is accepted and ignored, and nothing starts a dry-run session. Once item 03 lands, a dry-run session is denied every outward or persistent call by its own gate before the rail, so it never reaches a grant and never uses one. Running a playbook's dry run is item 07.
 
 ## Audit events
 
