@@ -1,6 +1,6 @@
 # Approvals
 
-The approval gate (phase 2, D5, D7, invariant 3): an outward or persistent action an agent attempts waits for the owner's decision, which the owner gives from the terminal. The session is never kept running while it waits. Code: `kernel/src/approvals/` (the tool, the record, the routes, the CLI) and the kernel's `PreToolUse` rail in `kernel/src/sessions/policy.ts` (`classifyToolCall`, pure) and `kernel/src/sessions/manager.ts` (the gate). Table: `approvals` (migration 11, see the [data model](../ARCHITECTURE.md#data-model)).
+The approval gate (phase 2, D5, D7, invariant 3): an outward or persistent action an agent attempts waits for the owner's decision, which the owner gives from the terminal. The session is never kept running while it waits. Code: `kernel/src/approvals/` (the tool, the record, the routes, the CLI) and the kernel's `PreToolUse` rail in `kernel/src/sessions/policy.ts` (`classifyToolCall`, pure) and `kernel/src/sessions/manager.ts` (the gate). Table: `approvals` (migration 11, plus `approvals.playbook` from migration 13, see the [data model](../ARCHITECTURE.md#data-model)). Phase 3 adds [standing grants](#standing-grants-always-per-playbook-version): "always", for one playbook version and one exact call, revocable by the owner.
 
 It is a mechanism (invariant 1): no approval, grant or rule is preinstalled. The outward set and the deny sets below are part of the fixed safety kernel: they are code, not settings, and no agent can edit them (invariant 3). A payload is untrusted data: stored exactly as given, shown as data, never executed or interpolated.
 
@@ -11,7 +11,7 @@ It is a mechanism (invariant 1): no approval, grant or rule is preinstalled. The
 | The rail | A tool call the session's policy **allows** that falls in the fixed outward set (below). It does not run: the hook denies it with `approval_required`, and the reason it gives the model names the approval id, says the decision arrives as a new message, and says to end the turn and, if approved, run exactly the same call again once. |
 | `kernel_approval_request(action, payload, idempotency_key)` | An agent asks before acting. `action` is 1-200 characters with no NUL (refused at argument validation, since it goes into the approval's notification, which refuses one); `payload` is a JSON object (at most 64,000 characters as JSON). It returns at once with `{id, status: "pending", action, message}`, where the message tells the agent the decision arrives as a new message and to end its turn. It runs as one work step keyed `kernel_approval_request:session-<id>:<idempotency_key>`, so a repeat with the same key in that session returns the same approval (with its current status) and records nothing new. |
 
-Either way, one transaction writes the `pending` row (`requesting_agent` is the session's agent, or `unknown` for a session with none; `requesting_session`; `action`; `payload_json`, the payload as canonical JSON with object keys sorted), one `approval_requested` event (`{id, action, source: "rail" | "tool", agent}`) and one notification with source `kernel:approval` ([notifications](notifications.md)). Before any of it, `requestApproval` refuses an action that is empty, longer than 200 characters or holds a NUL, or an agent name that holds a NUL, as `invalid_approval`, and writes nothing (on the rail, that throw denies the call with `kernel_gate_error`).
+Either way, one transaction writes the `pending` row (`requesting_agent` is the session's agent, or `unknown` for a session with none; `requesting_session`; `action`; `payload_json`, the payload as canonical JSON with object keys sorted; `playbook`, the requesting session's `sessions.playbook`, null for a session with none), one `approval_requested` event (`{id, action, source: "rail" | "tool", agent}`, plus `playbook` and `playbook_version`, the session's, when the session has a playbook) and one notification with source `kernel:approval` ([notifications](notifications.md)). Before any of it, `requestApproval` refuses an action that is empty, longer than 200 characters or holds a NUL, or an agent name that holds a NUL, as `invalid_approval`, and writes nothing (on the rail, that throw denies the call with `kernel_gate_error`).
 
 An approval an agent requested through the tool never lets a tool call through the rail, even if its payload looks like one. Only an approval the rail itself held is a grant.
 
@@ -31,7 +31,7 @@ The kernel's one `PreToolUse` hook decides every call in order:
    - reaching a pull request's `…/pulls/<n>/merge` with a non-GET method (or a flag the rail cannot account for that could be one). The endpoint is compared with its `?query` and `#fragment` cut off, percent-decoded, with empty, `.` and `..` segments normalised, and as a glob (`merg*`, `{merge,x}`);
    - naming the GraphQL `mergePullRequest`, `enablePullRequestAutoMerge` or `enqueuePullRequest` mutation;
    - sending a GraphQL query whose text the rail cannot read: `gh api graphql` (or any `…/graphql` endpoint) with a field read from a file (`-F query=@file`, `--field=…=@…`), `--input`, a globbed word, or a flag the rail cannot account for.
-5. **The outward set: held as a pending approval** (`approval_required`), unless an unused one-shot grant matches exactly (`approval_granted`, see below):
+5. **The outward set: held as a pending approval** (`approval_required`), unless an unused one-shot grant or a standing grant matches exactly (`approval_granted`, see below):
    - git with any word after `git` that is (or could expand to) `push` (`git push`, `git --attr-source X push`, `git subtree push`, `git lfs push`), `send-pack`, `http-push`, `dcommit` or `set-tree` (git svn), `send-email`, `imap-send` or `cvsexportcommit`, or `submit` after `p4`. Over-holding (`git commit -m push`) is the safe direction;
    - an alias definition that could make a later allowed call push or merge under another name: `gh alias set|import`, and git with any word holding `alias.`, `include.path` or `includeIf.` (`git -c alias.p=push p`, `git config alias.p push`), `help.autocorrect` (`git -c help.autocorrect=immediate psuh` runs as a push), or `--config-env`;
    - `gh pr create|comment|review|edit|close …` and `gh issue create|comment|edit|close …`, with gh's built-in `new` alias read as `create` (`gh pr new`, `gh issue new`);
@@ -78,14 +78,25 @@ The owner decides over the loopback API (bearer token, like every route), which 
 
 | CLI | API | Effect |
 |---|---|---|
-| `studio approvals [--all] [--json]` | `GET /approvals[?all=1]` | Pending approvals first (oldest first): id, status, time, agent, session, action and the exact payload pretty-printed as JSON data. `--all` adds the decided ones (newest first, at most 500). `--json` prints the API's JSON. |
+| `studio approvals [--all] [--json]` | `GET /approvals[?all=1]` | Pending approvals first (oldest first): id, status, time, agent, session, action, `from playbook <slug> v<n>` for an approval that has a playbook, and the exact payload pretty-printed as JSON data. `--all` adds the decided ones (newest first, at most 500). `--json` prints the API's JSON, where each approval has `playbook: {id, slug, version}` (null for none; `version` is the one the requesting session ran). |
 | `studio approve <id> once` | `POST /approvals/<id>/approve` `{"decision": "once"}` | `approved` / `once`. |
+| `studio approve <id> always` | `POST /approvals/<id>/approve` `{"decision": "always"}` | `approved` / `always`: a [standing grant](#standing-grants-always-per-playbook-version) for that playbook version. Only for a rail approval from a playbook session (below); the CLI's line names the playbook's slug and version. |
 | `studio deny <id>` | `POST /approvals/<id>/deny` | `denied` / `deny`. |
-| `studio approve <id> always` | `POST /approvals/<id>/approve` `{"decision": "always"}` | Refused: `409 {"error": "always_not_supported", "message": "always-allow is stored per playbook; playbooks arrive in phase 3"}`; the CLI prints that message and exits 1. Nothing is written and the approval stays `pending`. "Always allow" is stored per playbook, never globally (ARCHITECTURE, main loop). |
+| `studio approvals grants [--json]` | `GET /approvals/grants` | `{grants: [...]}`: every standing grant the owner has not revoked (oldest first), each `{id, playbook: {id, slug, version}, action, payload, requesting_agent, granted_at, current}`. `current` is false once the playbook has a newer version: that grant no longer matches. |
+| `studio approvals revoke <grant id>` | `POST /approvals/grants/<id>/revoke` | `200 {grant}`: one `approval_grant_revoked` event; the grant never matches again and is no longer listed. |
 
-A decision is the owner's (`decided_by: owner`). In one transaction it writes the row (`status`, `decision`, `decided_by`, `decided_at`), one `approval_decided` event (`{id, decision, by: "owner", action}`) and one queued `message` event. Refusals write nothing: `400 invalid_id` / `invalid_body`, `404 no_such_approval`, `409 approval_not_pending` (with the current `status`). The CLI reports each as one stderr line and exits 1; bad usage prints the subcommand's usage and exits 2.
+The `approvals` subcommand's usage is `studio approvals [--all] [--json] | grants [--json] | revoke <grant id>`.
 
-The list shows every control character in an action, agent name or payload escaped as `\xNN` (C0, C1 and DEL; a newline inside a JSON string stays `\n`) and every bidi control as `\uNNNN`, so a stored payload can never move the cursor, recolour the terminal or fake a line of output.
+A decision is the owner's (`decided_by: owner`), and so is a revoke (`by: "owner"`). In one transaction a decision writes the row (`status`, `decision`, `decided_by`, `decided_at`), one `approval_decided` event (`{id, decision, by: "owner", action}`) and one queued `message` event. Refusals write nothing:
+
+- `400 invalid_id` / `invalid_body`;
+- `404 no_such_approval`, then `409 approval_not_pending` (with the current `status`), checked first for `always` too;
+- `409 always_not_supported`, for `always` on a pending approval that is not eligible (below), with a `message` saying which condition failed (for an approval with no playbook: `always needs a playbook: approval <id> did not come from a playbook session; approve it once`);
+- `404 no_such_grant` (no standing grant has that id: an unknown id, or an approval that is not approved / `always`) and `409 grant_revoked` (already revoked), for a revoke.
+
+The CLI reports each as one stderr line and exits 1 (for `always_not_supported`, the API's `message`, escaped like any stored text); bad usage prints the subcommand's usage and exits 2.
+
+The list shows every control character in an action, agent name, playbook slug or payload escaped as `\xNN` (C0, C1 and DEL; a newline inside a JSON string stays `\n`) and every bidi control as `\uNNNN`, so a stored payload can never move the cursor, recolour the terminal or fake a line of output.
 
 ## Delivering the decision
 
@@ -101,15 +112,42 @@ An approved rail approval lets **exactly** that call through **once**:
 
 A denied approval grants nothing: the held call never runs, and an identical later call is held as a new approval.
 
+## Standing grants ("always", per playbook version)
+
+"Always allow" is stored per playbook, never globally (ARCHITECTURE, main loop step 6). The approved / `always` row **is** the standing grant: the grant's id is the approval's, and there is no separate store, column or migration.
+
+**When `always` is accepted.** Only for a pending approval that:
+
+1. the rail held (`approval_requested.source = "rail"`). An approval an agent asked for with `kernel_approval_request` is refused;
+2. came from a playbook session (`approvals.playbook` is set) that recorded its version (the event's `playbook_version`);
+3. came from a session that ran a named agent (`sessions.agent`), so a grant always belongs to a named agent;
+4. is not for a tool in `ALWAYS_HELD_TOOLS` (`kernel/src/sessions/policy.ts`: `mcp__kernel__kernel_playbook_enable`). The owner decides every enable.
+
+Any other `always` is refused with `409 always_not_supported`, whose message names the failing condition, and nothing is written. Answer such an approval `once`.
+
+**What it matches.** A held call from the outward set runs on a standing grant (`approval_granted`) when no unused one-shot grant matched first and all of these hold:
+
+- **The exact call:** the same `action` and the same canonical payload, exactly as for a [one-shot grant](#one-shot-grants), so a different command, a trailing space or another `cwd` is held.
+- **The same requester:** the same named agent, by the one-shot rule (the agent name, and a requesting session that ran that agent). A calling session with no agent never matches, and nor does an agent literally named `unknown`.
+- **The same playbook and version:** the calling session's `sessions.playbook` is the grant's playbook, and its `sessions.playbook_version` equals the grant's version, which must also be the playbook's current `playbooks.version`. A chat session (no playbook), a session of another playbook, a session of an older version, and every session once the playbook has a new version (any edit, phase 3 item 02) are held. The grant stays listed with `current: false`.
+- **Not revoked:** no `approval_grant_revoked` event names it.
+- **Not an always-held tool:** a call to a tool in `ALWAYS_HELD_TOOLS` is held even if a grant row with its exact payload exists. That is the second guard after the decide-time refusal.
+
+A match writes one `approval_grant_used` event (`{id, tool}`, linked to the calling session) in the same transaction as the allow and its `tool_decision` event. A standing grant is not consumed. The fixed rail runs before any grant, so no grant ever covers a protected kernel path or the merge block: those are denied, never held.
+
+**Dry runs.** A dry-run session (phase 3 item 03) is denied every outward or persistent call by its own gate before the rail, so it never reaches a grant and never uses one.
+
 ## Audit events
 
 | Kind | Payload | When |
 |---|---|---|
-| `approval_requested` | `{id, action, source, agent}` | An approval is created (by the rail or the tool). |
-| `approval_decided` | `{id, decision, by, action}` | The owner decides. |
+| `approval_requested` | `{id, action, source, agent}`, plus `playbook` and `playbook_version` from a playbook session | An approval is created (by the rail or the tool). |
+| `approval_decided` | `{id, decision, by, action}` | The owner decides (`decision` is `once`, `always` or `deny`). |
 | `approval_used` | `{id, tool}` | The rail lets a call through on a one-shot grant. |
+| `approval_grant_used` | `{id, tool}` | The rail lets a call through on a standing grant. |
+| `approval_grant_revoked` | `{id, by}` | The owner revokes a standing grant. |
 | `tool_decision` | `{tool, decision, reason, command?, approval_id?}` | Every gated call (phase 1), with the new reasons `approval_required`, `approval_granted`, `protected_kernel_path`, `merge_blocked` and `bash_command_too_large` (and `bash_shell_metacharacter` now also for a command the rail will not read). |
 
 ## Values
 
-`approvals.status` is `pending`, `approved` or `denied`; `approvals.decision` is `once`, `always` or `deny`. Both sets are closed in code (migration 11 has no SQL CHECK). Phase 2 never writes `always`. No approval expires (timeouts are policy, later).
+`approvals.status` is `pending`, `approved` or `denied`; `approvals.decision` is `once`, `always` or `deny`. Both sets are closed in code (migration 11 has no SQL CHECK). `always` is written only for an eligible playbook approval (above). No approval or grant expires (timeouts are policy, later); a grant ends when the playbook gets a new version or the owner revokes it.
