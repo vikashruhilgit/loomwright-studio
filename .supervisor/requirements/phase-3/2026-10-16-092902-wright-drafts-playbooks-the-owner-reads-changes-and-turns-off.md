@@ -70,3 +70,9 @@ kernel/src/triggers/store.ts
 kernel/test/triggers.test.ts
 kernel/test/playbooks-drafts.test.ts
 docs/architecture/playbooks.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-16T12:11:37Z
+- **Brief:** .supervisor/jobs/done/2026-10-16-playbook-drafts-owner-edits-and-off.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/71
