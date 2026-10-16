@@ -36,7 +36,7 @@ D28: when the subscription cap is hit, a playbook may continue on the user's own
 - **Eligible** means all of: the policy is enabled with a positive ceiling, the `Budget` was given an API-key provider identity (`BudgetOptions.apiKeyProvider`, which must not share the subscription provider's id), and the playbook's spend is below the ceiling. A playbook whose recorded spend equals or passes the ceiling is not admitted on the API key and waits for the reset; sessions admitted before that are not affected.
 - **How spend is measured:** the sum of `budget.cost_usd` (the SDK's list-price estimate) over **all** of the playbook's budget rows, **all time**. The schema has no per-session record of which provider a session ran on (`sessions.auth_account` is a display label, never read by the budget), so subscription sessions' estimates are counted too. That can only overcount, so the ceiling is reached early, never late (invariant 3). An exact figure needs a stable provider key on the session or budget row, which is a migration and a follow-up.
 
-**Owner decisions (open).** Two choices above are assumptions D28 does not settle, and both are reversible:
+**Owner decisions (open).** Three choices above are assumptions D28 does not settle, and all three are reversible:
 
 - What counts as spend: all of the playbook's `cost_usd`, subscription sessions included (the safe overcount), rather than API-key sessions only.
 - The period: all time, never reset. D28 names no period, so a daily or monthly ceiling would need the owner to choose one.
