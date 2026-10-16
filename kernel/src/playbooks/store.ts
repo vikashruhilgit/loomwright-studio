@@ -353,7 +353,12 @@ export function refuseIfOwnerTurnedOff(store: Store, id: number): void {
 
 // ---- Writes ----------------------------------------------------------------
 
-/** The slug `name` derives: lowercase, runs of non-`[a-z0-9]` as `-`, trimmed of `-`, cut to `MAX_SLUG_BASE`; `playbook` when empty. */
+/**
+ * The slug `name` derives: lowercase, runs of non-`[a-z0-9]` as `-`, trimmed
+ * of `-`, cut to `MAX_SLUG_BASE`; `playbook` when empty, and `playbook-<digits>`
+ * when it is all digits (a ref of only digits is read as an id, so a slug must
+ * never be one: `getPlaybook`).
+ */
 export function slugBase(name: string): string {
   const base = name
     .toLowerCase()
@@ -361,7 +366,8 @@ export function slugBase(name: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, MAX_SLUG_BASE)
     .replace(/-+$/, "");
-  return base === "" ? "playbook" : base;
+  if (base === "") return "playbook";
+  return /^\d+$/.test(base) ? `playbook-${base}` : base;
 }
 
 /** `slugBase(name)`, or the first of `-2`, `-3`, … appended to it that no playbook has. */

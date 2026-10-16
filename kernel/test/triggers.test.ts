@@ -1108,4 +1108,20 @@ describe("playbook-linked triggers (phase 3 item 02)", () => {
     expect(updateTriggerSpec(env.store, { id, agent: "wright", kind: "cron", spec: "0 * * * *", tz: "UTC" }, env.now())).toEqual({ id, next_fire_at: null, changed: true });
     expect(row(id)).toMatchObject({ enabled: 0, next_fire_at: null, spec_json: JSON.stringify({ cron: "0 * * * *", tz: "UTC" }) });
   });
+
+  it("a spent once is re-armed in place by a new schedule (same id); its spent instant is never given back", () => {
+    const { id } = registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T10:30:00Z", action: "notify", text: "t" }, env.now());
+    setClock("2026-10-14T10:31:00.000Z");
+    expect(fireDueTriggers(env.store, env.now())).toMatchObject([{ trigger_id: id, result: "fired" }]);
+    expect(row(id)).toMatchObject({ enabled: 0, next_fire_at: null });
+    expect(updateTriggerSpec(env.store, { id, agent: "wright", kind: "once", spec: "2026-10-14T11:00:00Z" }, env.now())).toEqual({ id, next_fire_at: "2026-10-14T11:00:00.000Z", changed: true });
+    expect(row(id)).toMatchObject({ enabled: 1, next_fire_at: "2026-10-14T11:00:00.000Z" });
+    setClock("2026-10-14T11:00:30.000Z");
+    expect(fireDueTriggers(env.store, env.now())).toMatchObject([{ trigger_id: id, result: "fired" }]);
+    expect(count(env.store, "SELECT count(*) FROM notifications")).toBe(2);
+    // Spent again, re-armed as a cron: same id, on, from now.
+    expect(updateTriggerSpec(env.store, { id, agent: "wright", kind: "cron", spec: "0 * * * *", tz: "UTC" }, env.now())).toEqual({ id, next_fire_at: "2026-10-14T12:00:00.000Z", changed: true });
+    expect(row(id)).toMatchObject({ kind: "cron", enabled: 1 });
+    expect(count(env.store, "SELECT count(*) FROM triggers")).toBe(1);
+  });
 });

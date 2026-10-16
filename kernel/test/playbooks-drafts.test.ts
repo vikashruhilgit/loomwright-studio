@@ -294,6 +294,10 @@ describe("kernel_playbook_create (AC1, AC2, AC5)", () => {
     expect(slugBase("日本語")).toBe("playbook");
     expect(slugBase(`${"a".repeat(47)} b`)).toBe("a".repeat(47));
     expect(slugBase("x".repeat(80))).toHaveLength(48);
+    // A slug is never all digits (a ref of only digits is read as an id).
+    expect(slugBase("2026")).toBe("playbook-2026");
+    expect(slugBase(" 007 ")).toBe("playbook-007");
+    expect(slugBase("2026 plan")).toBe("2026-plan");
     const slugs: string[] = [];
     for (let i = 0; i < 3; i++) slugs.push(value<Created>(await create({ name: "Daily repo summary" })).slug);
     expect(slugs).toEqual(["daily-repo-summary", "daily-repo-summary-2", "daily-repo-summary-3"]);
@@ -390,6 +394,49 @@ describe("kernel_playbook_update / _list / _disable (AC4, AC6, AC9)", () => {
     // The owner turned the trigger itself off: re-scheduling it is refused too.
     setTriggerEnabled(env.store, { id: created.trigger_id, enabled: false, by: "owner" }, env.now());
     expect(errorText(await update(created.id, { trigger: { kind: "cron", spec: "0 7 * * *", tz: "UTC" } }))).toMatch(/trigger: trigger \d+ was turned off by the owner/);
+  });
+
+  it("re-scheduling a once spent while the playbook was not enabled re-arms the SAME trigger; it fires once the playbook is enabled (AC9)", async () => {
+    const created = value<Created>(await create({ trigger: { kind: "once", spec: "2026-10-14T10:30:00Z" } }));
+    setClock("2026-10-14T10:31:00.000Z");
+    expect(fireDueTriggers(env.store, env.now())).toMatchObject([{ trigger_id: created.trigger_id, result: "skipped" }]);
+    expect(env.store.prepare("SELECT enabled, next_fire_at FROM triggers").get()).toEqual({ enabled: 0, next_fire_at: null });
+
+    // The same (spent) instant again changes nothing; a new one re-arms the row.
+    expect(value(await update(created.id, { trigger: { kind: "once", spec: "2026-10-14T10:30:00Z" } }))).toMatchObject({ version: 1, changed: false });
+    const result = value<Created>(await update(created.id, { trigger: { kind: "once", spec: "2026-10-14T11:00:00Z" } }));
+    expect(result).toMatchObject({ version: 2, trigger_id: created.trigger_id, next_fire_at: "2026-10-14T11:00:00.000Z", changed: true });
+    expect(count(env.store, "SELECT count(*) FROM triggers")).toBe(1);
+    expect(env.store.prepare("SELECT id, enabled, next_fire_at FROM triggers").get()).toEqual({ id: created.trigger_id, enabled: 1, next_fire_at: "2026-10-14T11:00:00.000Z" });
+    expect(events(env.store, "trigger_updated")[0]?.payload).toMatchObject({ trigger_id: created.trigger_id, enabled: true, rearmed: true, next_fire_at: "2026-10-14T11:00:00.000Z" });
+
+    env.store.prepare("UPDATE playbooks SET status = 'enabled' WHERE id = ?").run(created.id);
+    setClock("2026-10-14T11:00:30.000Z");
+    expect(fireDueTriggers(env.store, env.now())).toMatchObject([{ trigger_id: created.trigger_id, result: "fired" }]);
+    expect(count(env.store, "SELECT count(*) FROM event_queue WHERE kind = 'message'")).toBe(1);
+    expect(fireDueTriggers(env.store, env.now())).toEqual([]);
+  });
+
+  it("a spent once is re-armed even after the owner had turned it on; an off the owner or the agent chose stays as it was", async () => {
+    // Owner turned it off then on, then it was spent while a draft: still a spend, so re-scheduling re-arms it.
+    const a = value<Created>(await create({ trigger: { kind: "once", spec: "2026-10-14T10:30:00Z" } }));
+    setTriggerEnabled(env.store, { id: a.trigger_id, enabled: false, by: "owner" }, env.now());
+    setTriggerEnabled(env.store, { id: a.trigger_id, enabled: true, by: "owner" }, env.now());
+    setClock("2026-10-14T10:31:00.000Z");
+    fireDueTriggers(env.store, env.now());
+    expect(value(await update(a.id, { trigger: { kind: "once", spec: "2026-10-14T12:00:00Z" } }))).toMatchObject({ next_fire_at: "2026-10-14T12:00:00.000Z", changed: true });
+
+    // The agent turned it off: re-scheduled, still off with no next fire.
+    const b = value<Created>(await create({ name: "B", trigger: { kind: "once", spec: "2026-10-14T13:00:00Z" } }));
+    setTriggerEnabled(env.store, { id: b.trigger_id, enabled: false, by: "agent" }, env.now());
+    expect(value(await update(b.id, { trigger: { kind: "once", spec: "2026-10-14T14:00:00Z" } }))).toMatchObject({ next_fire_at: null, changed: true });
+    expect(env.store.prepare("SELECT enabled FROM triggers WHERE id = ?").get(b.trigger_id)).toEqual({ enabled: 0 });
+
+    // The owner turned it off: refused, nothing changes.
+    const c = value<Created>(await create({ name: "C", trigger: { kind: "once", spec: "2026-10-14T13:00:00Z" } }));
+    setTriggerEnabled(env.store, { id: c.trigger_id, enabled: false, by: "owner" }, env.now());
+    expect(errorText(await update(c.id, { trigger: { kind: "once", spec: "2026-10-14T14:00:00Z" } }))).toMatch(/trigger: trigger \d+ was turned off by the owner/);
+    expect(env.store.prepare("SELECT enabled, next_fire_at FROM triggers WHERE id = ?").get(c.trigger_id)).toEqual({ enabled: 0, next_fire_at: null });
   });
 
   it("when the agent removed the linked trigger, the next trigger change links a new one: still exactly one", async () => {
@@ -794,6 +841,17 @@ describe("the owner: studio playbooks list | show | set | off and the /playbooks
     const showJson = studio();
     expect(await showJson.run("playbooks", "show", String(a.id), "--json")).toBe(0);
     expect(JSON.parse(showJson.stdout())).toEqual(byId);
+
+    // An all-digit name gets a slug that is not one, so show <slug> finds that playbook (not an id).
+    const year = value<Created>(await create({ name: "2026" }));
+    expect(year.slug).toBe("playbook-2026");
+    const one = value<Created>(await create({ name: "1" }));
+    expect(one.slug).toBe("playbook-1");
+    const showYear = studio();
+    expect(await showYear.run("playbooks", "show", year.slug, "--json")).toBe(0);
+    expect(JSON.parse(showYear.stdout()).playbook).toMatchObject({ id: year.id, slug: "playbook-2026" });
+    expect(getPlaybook(env.store, "playbook-1")?.id).toBe(one.id);
+    expect(getPlaybook(env.store, "1")?.id).toBe(1);
 
     const missing = studio();
     expect(await missing.run("playbooks", "show", "nope")).toBe(1);

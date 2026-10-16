@@ -205,8 +205,22 @@ function lastToggleTurnedOn(store: Store, id: number): boolean {
  */
 function turnedOffBy(store: Store, row: TriggerRow): string | null {
   if (row.enabled !== 0 || row.enabled_changed_by === null) return null;
-  if (row.kind === "once" && row.last_result !== null && lastToggleTurnedOn(store, row.id)) return null;
+  if (spentOnce(store, row)) return null;
   return row.enabled_changed_by;
+}
+
+/**
+ * Whether this trigger is a `once` that is off only because it was spent
+ * (fired, or its instant recorded as a miss: kill switch, `already_done`,
+ * `playbook_not_enabled`), not because someone turned it off. Only a toggle
+ * turns a trigger off with a `trigger_toggled` event, and a spend never
+ * writes one, so an off `once` that nobody toggled, or whose newest toggle
+ * turned it on, was spent. (`last_result` cannot tell: a
+ * `playbook_not_enabled` or `already_done` miss leaves it as it was.)
+ */
+function spentOnce(store: Store, row: TriggerRow): boolean {
+  if (row.kind !== "once" || row.enabled !== 0) return false;
+  return row.enabled_changed_by === null || lastToggleTurnedOn(store, row.id);
 }
 
 /** Whether the owner turned this trigger off (the state no agent may undo). */
@@ -440,8 +454,10 @@ export interface SpecUpdated {
  * Re-schedule an agent's own trigger in place (same id): rewrite `kind`,
  * `spec_json` and, when it is on, `next_fire_at`, and append one
  * `trigger_updated`, in one transaction (a savepoint inside the caller's). A
- * trigger that is off stays off with no next fire (turning it on computes
- * it). The spec is validated like a registration's (`checkSpec`). Throws
+ * `once` that is off only because it was spent (`spentOnce`) is re-armed:
+ * turned back on with the new schedule's next fire (an instant it already
+ * fired or recorded is refused). A trigger that someone turned off stays off
+ * with no next fire (turning it on computes it). The spec is validated like a registration's (`checkSpec`). Throws
  * `TriggerError` before any write: `invalid_input` for an unknown kind;
  * `invalid_spec`; `not_found`; `not_owner` (another agent's); `owner_off`
  * when the owner turned this trigger off, or turned off another trigger of
@@ -470,8 +486,10 @@ export function updateTriggerSpec(store: Store, params: UpdateSpecParams, now: D
       .all(row.owning_agent, params.kind, row.action, row.action_payload, row.id)
       .find((other) => storedIdentity(other) === checked.identity && ownerTurnedOff(store, other));
     if (offByOwner !== undefined) throw ownerOff(offByOwner.id);
+    // A spent `once` is re-armed by its new schedule (same id); an off that someone chose stays off.
+    const armed = row.enabled === 1 || spentOnce(store, row);
     let next: string | null = null;
-    if (row.enabled === 1) {
+    if (armed) {
       if ("at" in checked.spec) {
         // An instant this trigger already fired or recorded (the clock stepped back) would only replay its step.
         if (instantTaken(store, row.id, checked.nextFireAt)) {
@@ -482,7 +500,11 @@ export function updateTriggerSpec(store: Store, params: UpdateSpecParams, now: D
         next = nextFreeCronFire(store, row.id, parseCron(checked.spec.cron), checked.spec.tz, now);
       }
     }
-    store.prepare("UPDATE triggers SET kind = ?, spec_json = ?, next_fire_at = ? WHERE id = ?").run(params.kind, specJson, next, row.id);
+    // A re-armed cron with no instant left stays off, as a spent trigger.
+    const enabled = armed && next !== null ? 1 : row.enabled;
+    store
+      .prepare("UPDATE triggers SET kind = ?, spec_json = ?, enabled = ?, next_fire_at = ? WHERE id = ?")
+      .run(params.kind, specJson, enabled, next, row.id);
     appendEvent(
       store,
       "trigger_updated",
@@ -494,7 +516,8 @@ export function updateTriggerSpec(store: Store, params: UpdateSpecParams, now: D
         spec: checked.spec,
         previous_kind: row.kind,
         previous_spec: parseSpec(row.spec_json),
-        enabled: row.enabled === 1,
+        enabled: enabled === 1,
+        ...(enabled === 1 && row.enabled === 0 ? { rearmed: true } : {}),
         next_fire_at: next,
         by: "agent",
       },
