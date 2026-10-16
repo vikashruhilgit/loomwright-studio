@@ -564,7 +564,7 @@ export class SessionManager {
     return this.#store
       .prepare<[number], SessionRow>(
         `SELECT id, agent, task_id, sdk_session_id, status, model, pgid, auth_account, loomwright_path,
-                leader_started_at, kill_incomplete_at, started_at, ended_at, updated_at
+                leader_started_at, kill_incomplete_at, playbook, playbook_version, started_at, ended_at, updated_at
            FROM sessions WHERE id = ?`,
       )
       .get(id);
@@ -605,6 +605,7 @@ export class SessionManager {
     this.#refuseProtectedCwd(params.cwd, null);
     if (!isNonEmptyString(params.prompt)) throw new SessionError("invalid_params", "prompt is required");
     if (params.task !== undefined && !Number.isInteger(params.task)) throw new SessionError("invalid_params", "task must be an integer id");
+    this.#checkPlaybookParams(params);
     const policy = checkPolicy(params.policy);
 
     const loomwright = this.#refusingLoomwright(null, () =>
@@ -624,7 +625,7 @@ export class SessionManager {
     } catch (err) {
       const at = this.#nowIso();
       this.#store.transaction(() => {
-        const id = this.#insertRow(params.agent, params.task, params.model, loomwrightPath, null, "failed:auth", at);
+        const id = this.#insertRow(params, loomwrightPath, null, "failed:auth", at);
         this.#appendStatusEvent(id, null, "failed:auth", { reason: "auth_failed", code: authErrorCode(err) }, at);
         this.#appendNotify(id, { reason: "auth_failed", code: authErrorCode(err) }, at);
       });
@@ -637,7 +638,7 @@ export class SessionManager {
     const sdkSessionId = this.#randomUUID();
     const at = this.#nowIso();
     const id = this.#store.transaction(() => {
-      const rowId = this.#insertRow(params.agent, params.task, params.model, loomwrightPath, sdkSessionId, "starting", at);
+      const rowId = this.#insertRow(params, loomwrightPath, sdkSessionId, "starting", at);
       this.#appendStatusEvent(rowId, null, "starting", {}, at);
       return rowId;
     });
@@ -824,6 +825,7 @@ export class SessionManager {
     // Before admission and the group check: the row is not touched, only the refusal is logged.
     this.#refuseProtectedCwd(params.cwd, this.getSession(id) === undefined ? null : id);
     if (params.prompt !== undefined && !isNonEmptyString(params.prompt)) throw new SessionError("invalid_params", "prompt must be non-empty");
+    this.#checkPlaybookParams(params);
     const policy = checkPolicy(params.policy);
 
     if (this.#live.has(id)) throw new SessionError("not_resumable", `session ${id} is already running`);
@@ -863,6 +865,8 @@ export class SessionManager {
     if (row.status === "orphaned" && !this.#markRow(id, "orphaned", "interrupted", { reason: check, pgid: row.pgid, by: "resume" })) {
       throw new SessionError("not_resumable", `session ${id} changed status while being resumed`);
     }
+    // The resume goes ahead: record the playbook it runs for, when given (an absent one keeps the row's value).
+    this.#writePlaybook(id, params);
 
     const ctx: ResumeContext = {
       prompt: params.prompt ?? DEFAULT_RESUME_PROMPT,
@@ -2281,9 +2285,7 @@ export class SessionManager {
   }
 
   #insertRow(
-    agent: string,
-    task: number | undefined,
-    model: string,
+    params: StartSessionParams,
     loomwrightPath: string,
     sdkSessionId: string | null,
     status: SessionStatus,
@@ -2291,22 +2293,66 @@ export class SessionManager {
   ): number {
     const info = this.#store
       .prepare(
-        `INSERT INTO sessions (agent, task_id, sdk_session_id, status, model, auth_account, loomwright_path, started_at, ended_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (agent, task_id, sdk_session_id, status, model, auth_account, loomwright_path, playbook, playbook_version, started_at, ended_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        agent,
-        task ?? null,
+        params.agent,
+        params.task ?? null,
         sdkSessionId,
         status,
-        model,
+        params.model,
         this.#auth.account,
         loomwrightPath,
+        params.playbook ?? null,
+        params.playbookVersion ?? null,
         at,
         isTerminalStatus(status) ? at : null,
         at,
       );
     return Number(info.lastInsertRowid);
+  }
+
+  /**
+   * Refuse a bad `playbook` / `playbookVersion` with `invalid_params`, before
+   * any row or spawn: a given value must be a positive integer, and a given
+   * `playbook` must name an existing `playbooks` row (`sessions.playbook`
+   * references it, so an unknown id would otherwise fail the insert untyped).
+   * `dryRun` is accepted and ignored until item 03.
+   */
+  #checkPlaybookParams(params: { readonly playbook?: unknown; readonly playbookVersion?: unknown }): void {
+    for (const [name, value] of [
+      ["playbook", params.playbook],
+      ["playbookVersion", params.playbookVersion],
+    ] as const) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || (value as number) < 1)) {
+        throw new SessionError("invalid_params", `${name} must be a positive integer`);
+      }
+    }
+    if (params.playbook !== undefined) {
+      const found = this.#store.prepare<[number], number>("SELECT 1 FROM playbooks WHERE id = ?").pluck().get(params.playbook as number);
+      if (found === undefined) throw new SessionError("invalid_params", `no playbook ${String(params.playbook)}`);
+    }
+  }
+
+  /** A resume's `playbook` / `playbookVersion`, each written only when given. */
+  #writePlaybook(id: number, params: ResumeSessionParams): void {
+    if (params.playbook === undefined && params.playbookVersion === undefined) return;
+    this.#store
+      .prepare(
+        `UPDATE sessions SET playbook = CASE WHEN ? THEN ? ELSE playbook END,
+                             playbook_version = CASE WHEN ? THEN ? ELSE playbook_version END,
+                             updated_at = ?
+          WHERE id = ?`,
+      )
+      .run(
+        params.playbook === undefined ? 0 : 1,
+        params.playbook ?? null,
+        params.playbookVersion === undefined ? 0 : 1,
+        params.playbookVersion ?? null,
+        this.#nowIso(),
+        id,
+      );
   }
 
   #updateStatus(id: number, to: SessionStatus, at: string): void {

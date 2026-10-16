@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PROPOSED_ALLOWED_TOOLS } from "../src/brain/index.js";
 import { decideToolUse, freezePolicy } from "../src/sessions/index.js";
-import { classifyToolCall } from "../src/sessions/policy.js";
+import { ALWAYS_HELD_TOOLS, classifyToolCall } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
 
 const policy: ToolPolicy = {
@@ -143,5 +143,50 @@ describe("decideToolUse and the fixed rail (approvals)", () => {
     expect(classifyToolCall("Write", { file_path: "/data/studio.db", content: "" }, rail)).toEqual({ kind: "deny", reason: "protected_kernel_path" });
     // The metacharacter refusal still comes first: a chained push never reaches the rail.
     expect(decideToolUse(gh, "Bash", { command: "echo hi; git push" })).toEqual({ decision: "deny", reason: "bash_shell_metacharacter" });
+  });
+});
+
+describe("ALWAYS_HELD_TOOLS (phase 3 foundation)", () => {
+  const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work" };
+
+  it("is the closed list of tools every call to which is held: today only kernel_playbook_enable", () => {
+    expect(ALWAYS_HELD_TOOLS).toEqual(["mcp__kernel__kernel_playbook_enable"]);
+    expect(Object.isFrozen(ALWAYS_HELD_TOOLS)).toBe(true);
+  });
+
+  it("classifies kernel_playbook_enable as outward whatever its input: action without the mcp__kernel__ prefix, payload {tool, input, cwd}", () => {
+    for (const input of [{ playbook: 3 }, {}, null, "x"]) {
+      expect(classifyToolCall("mcp__kernel__kernel_playbook_enable", input, rail)).toEqual({
+        kind: "outward",
+        action: "kernel_playbook_enable",
+        payload: { tool: "mcp__kernel__kernel_playbook_enable", input, cwd: "/work" },
+      });
+    }
+    // A relative or absent cwd records "/", as every other outward payload does.
+    expect(classifyToolCall("mcp__kernel__kernel_playbook_enable", {}, { dataDir: "/data", homeDir: "/home/o" })).toMatchObject({
+      payload: { cwd: "/" },
+    });
+  });
+
+  it("holds only the exact name: the other playbook tools and near-miss names stay ordinary", () => {
+    for (const name of [
+      "mcp__kernel__kernel_playbook_create",
+      "mcp__kernel__kernel_playbook_update",
+      "mcp__kernel__kernel_playbook_list",
+      "mcp__kernel__kernel_playbook_disable",
+      "mcp__kernel__kernel_playbook_dry_run",
+      "kernel_playbook_enable",
+      "mcp__kernel__kernel_playbook_enablex",
+      "mcp__other__kernel_playbook_enable",
+    ]) {
+      expect(classifyToolCall(name, {}, rail), name).toEqual({ kind: "ordinary" });
+    }
+  });
+
+  it("every proposed Wright tool outside ALWAYS_HELD_TOOLS stays ordinary, and every one in it is outward", () => {
+    for (const name of PROPOSED_ALLOWED_TOOLS) {
+      const expected = ALWAYS_HELD_TOOLS.includes(name) ? "outward" : "ordinary";
+      expect(classifyToolCall(name, {}, rail).kind, name).toBe(expected);
+    }
   });
 });
