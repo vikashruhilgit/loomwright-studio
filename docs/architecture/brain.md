@@ -40,6 +40,7 @@ You change things only through the kernel tools this session allows:
 - notifications: kernel_notify
 - approvals: kernel_approval_request
 - Loomwright: kernel_loomwright_capabilities
+- playbooks: kernel_playbook_create, kernel_playbook_update, kernel_playbook_list, kernel_playbook_disable, kernel_playbook_dry_run, kernel_playbook_enable
 - your own lifecycle: kernel_schedule_wakeup, kernel_request_stop
 
 You may also read files with Read, Glob and Grep. The kernel starts and stops
@@ -89,6 +90,12 @@ win.
       "mcp__kernel__kernel_notify",
       "mcp__kernel__kernel_approval_request",
       "mcp__kernel__kernel_loomwright_capabilities",
+      "mcp__kernel__kernel_playbook_create",
+      "mcp__kernel__kernel_playbook_update",
+      "mcp__kernel__kernel_playbook_list",
+      "mcp__kernel__kernel_playbook_disable",
+      "mcp__kernel__kernel_playbook_dry_run",
+      "mcp__kernel__kernel_playbook_enable",
       "mcp__kernel__kernel_schedule_wakeup",
       "mcp__kernel__kernel_request_stop",
       "Read",
@@ -102,7 +109,7 @@ win.
 
 - **`model`** is the owner's choice. While it is null, empty or not a string, every Wright message is refused with `model_unset`, naming the file and the field `model`. `POST /ask` refuses before anything is queued; a message that reaches the handler some other way (a trigger's `wake_agent`) fails its row with the same reason. No model is ever chosen by the kernel. The one settings reader (`readWrightSettings`, shared by `POST /ask` and the handler) creates the file before it checks the model, so a `model_unset` refusal on a fresh data dir always names a file that exists.
 - **`permission_mode`** is passed to the session manager as is. `bypassPermissions` is refused (D5), like any value the manager does not accept.
-- **`tool_policy`** is the session's `ToolPolicy` (deny by default; the kernel's `PreToolUse` gate enforces it). It applies whatever `status` says: `status` is a label for the owner (`proposed` until the owner changes it). The owner reviews the proposal when they open this file to set the model, which they must do before Wright runs at all. No shell: `allowedBashPrefixes` is empty.
+- **`tool_policy`** is the session's `ToolPolicy` (deny by default; the kernel's `PreToolUse` gate enforces it). It applies whatever `status` says: `status` is a label for the owner (`proposed` until the owner changes it). The owner reviews the proposal when they open this file to set the model, which they must do before Wright runs at all. No shell: `allowedBashPrefixes` is empty. The six `kernel_playbook_*` names are reserved for phase 3's playbook tools (the kernel server has none of them until the items that build them ship), and `wright.json` is create-if-absent, so an existing data dir keeps its old policy until the owner adds the names.
 - **`effort`** is recorded, not applied: the session manager has no effort option yet.
 
 A file that is not JSON, larger than 64 KiB, or not this shape is refused as `settings_invalid` naming the file. It is never rewritten.

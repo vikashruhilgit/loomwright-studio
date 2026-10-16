@@ -1,15 +1,16 @@
-// The phase 2 feature seams (AC3-AC6, AC9): one `FeatureContribution` per
-// feature, merged by `startKernel` and `runCli`. The shipped contributions add
-// only the loomwright feature's one tool (`kernel_loomwright_capabilities`)
-// and one due work (the version watcher), the notifications feature's tool
-// (`kernel_notify`), two routes, one subcommand and one due work, the triggers
-// feature's three tools, three routes, one subcommand and one due work (pinned
-// in triggers.test.ts), the approvals feature's tool (`kernel_approval_request`),
-// three routes and three subcommands (pinned in approvals.test.ts), and the
-// brain's two routes, one subcommand and its `message` handler (pinned in brain.test.ts); a test contribution composed from outside reaches every part
-// through the normal path (the kernel MCP server, the loopback API, `studio`,
-// the event loop). A temp data dir, an in-memory Keychain, the fake
-// spawner/query and stub auth: never the real SDK, a model or the Keychain.
+// The feature seams (phase 2 AC3-AC6, AC9): one `FeatureContribution` per
+// feature, merged by `startKernel` and `runCli`. This file pins the merge
+// mechanics only: the contributor order, the collision, naming and
+// malformed-part rules, the due-work loop, a test contribution composed from
+// outside reaching every part through the normal path (the kernel MCP server,
+// the loopback API, `studio`, the event loop), the refused compositions and
+// the registry's module graph. Every shipped list here is computed from
+// `SHIPPED_CONTRIBUTIONS`; each feature's own tools, routes, subcommands,
+// help lines, handlers and due work are pinned in that feature's own test
+// (loomwright-adapter, notifications, triggers, approvals, brain and
+// playbooks-foundation), so a later feature never edits this file. A temp
+// data dir, an in-memory Keychain, the fake spawner/query and stub auth:
+// never the real SDK, a model or the Keychain.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,13 +35,11 @@ import {
 } from "../src/features/index.js";
 import type { ContributedRoute, ContributedRouteRequest, ContributedSubcommand, FeatureContribution } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
-import { versionWatchDueWork } from "../src/loomwright/index.js";
-import { NOTIFICATIONS_HELP, deliveryDueWork } from "../src/notifications/index.js";
-import { ASK_HELP, brainContribution } from "../src/brain/index.js";
 import type { Kernel, KernelDeps, KernelOptions } from "../src/kernel.js";
 import { EventLoop } from "../src/loop/loop.js";
 import { enqueueMessage, getQueueRow } from "../src/loop/queue.js";
 import { scheduleWakeup } from "../src/loop/wakeups.js";
+import type { DueWork, EventHandlers, EventKind } from "../src/loop/types.js";
 import { Store } from "../src/store/index.js";
 import { KERNEL_TOOL_NAMES, contributedToolHandler, kernelToolNames } from "../src/tools/server.js";
 import type { KernelToolResult } from "../src/tools/server.js";
@@ -79,46 +78,58 @@ const noopSubcommand = (name: string): ContributedSubcommand => ({ name, help: `
 
 const noopTool = (name: string) => defineTool({ name, description: "test tool", shape: {}, handler: () => ({}) });
 
+// The shipped lists, computed from `SHIPPED_CONTRIBUTIONS` in contribution
+// order: this file pins the merge mechanics, never a feature's own list (each
+// feature pins its tools, routes, subcommands, handlers and due work in its
+// own test, so a later feature never edits this file).
+
+/** Every shipped tool name, in contribution order. */
+function shippedToolNames(contributions: readonly FeatureContribution[] = SHIPPED_CONTRIBUTIONS): string[] {
+  return contributions.flatMap((c) => (c.tools ?? []).map((t) => t.name));
+}
+
+/** Every shipped route as `<owner> <METHOD> <path>`, in contribution order. */
+function shippedRoutes(contributions: readonly FeatureContribution[] = SHIPPED_CONTRIBUTIONS): string[] {
+  return contributions.flatMap((c) => (c.routes ?? []).map((r) => `${c.name} ${r.method} ${r.path}`));
+}
+
+/** Every shipped subcommand name, in contribution order. */
+function shippedSubcommandNames(contributions: readonly FeatureContribution[] = SHIPPED_CONTRIBUTIONS): string[] {
+  return contributions.flatMap((c) => (c.subcommands ?? []).map((s) => s.name));
+}
+
+/** The merged handlers are exactly the shipped ones: the same kinds, each the contribution's own function. */
+function expectShippedHandlers(handlers: EventHandlers): void {
+  expect(Object.keys(handlers)).toEqual(SHIPPED_CONTRIBUTIONS.flatMap((c) => Object.keys(c.handlers ?? {})));
+  for (const c of SHIPPED_CONTRIBUTIONS) {
+    for (const [kind, handler] of Object.entries(c.handlers ?? {})) expect(handlers[kind as EventKind], `${c.name} ${kind}`).toBe(handler);
+  }
+}
+
+/** The merged due work is exactly the shipped one: each function, owned by its contribution, in order. */
+function expectShippedDueWork(dueWork: readonly DueWork[]): void {
+  expect(dueWork.map((d) => d.owner)).toEqual(SHIPPED_CONTRIBUTIONS.flatMap((c) => (c.dueWork ?? []).map(() => c.name)));
+  expect(dueWork.map((d) => d.run)).toEqual(SHIPPED_CONTRIBUTIONS.flatMap((c) => c.dueWork ?? []));
+}
+
 describe("mergeContributions", () => {
-  it("the shipped contributions: the five features in a fixed order, registering nothing but loomwright's one tool and one due work, the notifications parts, the triggers parts, the approvals parts and the brain parts (AC3)", () => {
-    expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
+  it("the shipped contributions: the six features in a fixed order, merged part by part in that order (each feature's own lists are pinned in its own test) (AC3)", () => {
+    expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks"]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1);
-    expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
-    expect(merged.tools.map((t) => t.name)).toEqual([
-      "kernel_loomwright_capabilities",
-      "kernel_notify",
-      "kernel_trigger_register",
-      "kernel_trigger_remove",
-      "kernel_trigger_list",
-      "kernel_approval_request",
-    ]);
-    expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual([
-      "notifications GET /notifications",
-      "notifications GET /notifications/:id",
-      "triggers GET /triggers",
-      "triggers POST /triggers/:id/on",
-      "triggers POST /triggers/:id/off",
-      "approvals GET /approvals",
-      "approvals POST /approvals/:id/approve",
-      "approvals POST /approvals/:id/deny",
-      "brain POST /ask",
-      "brain GET /messages/:id",
-    ]);
-    expect(merged.subcommands.map((s) => s.name)).toEqual(["notifications", "triggers", "approvals", "approve", "deny", "ask"]);
-    // The brain's `message` handler is the only shipped handler.
-    expect(Object.keys(merged.handlers)).toEqual(["message"]);
-    expect(merged.handlers.message).toBe(brainContribution.handlers?.message);
-    expect(merged.dueWork.map((d) => d.owner)).toEqual(["loomwright", "notifications", "triggers"]);
-    expect(merged.dueWork[0]?.run).toBe(versionWatchDueWork);
-    expect(merged.dueWork[1]?.run).toBe(deliveryDueWork);
-    const keys: Record<string, string[]> = {
-      loomwright: ["name", "tools", "dueWork"],
-      notifications: ["name", "tools", "routes", "subcommands", "dueWork"],
-      triggers: ["name", "tools", "routes", "subcommands", "dueWork"],
-      approvals: ["name", "tools", "routes", "subcommands"],
-      brain: ["name", "routes", "subcommands", "handlers"],
-    };
-    for (const c of SHIPPED_CONTRIBUTIONS) expect(Object.keys(c), c.name).toEqual(keys[c.name] ?? ["name"]);
+    expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks"]);
+    expect(merged.tools.map((t) => t.name)).toEqual(shippedToolNames());
+    expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(shippedRoutes());
+    expect(merged.subcommands.map((s) => s.name)).toEqual(shippedSubcommandNames());
+    expect(merged.subcommands).toEqual(SHIPPED_CONTRIBUTIONS.flatMap((c) => c.subcommands ?? []));
+    expectShippedHandlers(merged.handlers);
+    expectShippedDueWork(merged.dueWork);
+    // Each shipped contribution carries only the parts it fills in (an empty list is left out, like `handlers: {}`).
+    for (const c of SHIPPED_CONTRIBUTIONS) {
+      for (const [key, value] of Object.entries(c)) {
+        if (key === "name") continue;
+        expect(Array.isArray(value) ? value.length : Object.keys(value as object).length, `${c.name}.${key}`).toBeGreaterThan(0);
+      }
+    }
   });
 
   it("a contributed tool whose name does not start with kernel_ is refused", () => {
@@ -457,65 +468,27 @@ function out() {
 }
 
 describe("the shipped kernel (AC3)", () => {
-  it("registers no kernel tool beyond phase 1's but kernel_loomwright_capabilities, kernel_notify, the three kernel_trigger_ tools and kernel_approval_request, and no API route, CLI subcommand, event handler or due work beyond phase 1's but the loomwright, notifications, triggers, approvals and brain ones", async () => {
-    const store = new Store({ dataDir });
-    const { id } = enqueueMessage(store, { text: "hello" });
-    store.close();
+  it("registers no kernel tool, API route, CLI subcommand, event handler or due work beyond phase 1's and the shipped contributions' (each feature pins its own in its own test)", async () => {
     const { d, fakes, keychain } = deps();
     const kernel = await start(options(), d);
 
-    expect(kernel.contributions.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain"]);
-    const shippedTools = [
-      "kernel_loomwright_capabilities",
-      "kernel_notify",
-      "kernel_trigger_register",
-      "kernel_trigger_remove",
-      "kernel_trigger_list",
-      "kernel_approval_request",
-    ];
-    expect(kernelToolNames(kernel.contributions.tools)).toEqual([...KERNEL_TOOL_NAMES, ...shippedTools]);
-    expect(Object.keys(await launchedTools(kernel, fakes))).toEqual([...KERNEL_TOOL_NAMES, ...shippedTools]);
-    expect(kernel.contributions.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual([
-      "notifications GET /notifications",
-      "notifications GET /notifications/:id",
-      "triggers GET /triggers",
-      "triggers POST /triggers/:id/on",
-      "triggers POST /triggers/:id/off",
-      "approvals GET /approvals",
-      "approvals POST /approvals/:id/approve",
-      "approvals POST /approvals/:id/deny",
-      "brain POST /ask",
-      "brain GET /messages/:id",
-    ]);
-    expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(["notifications", "triggers", "approvals", "approve", "deny", "ask"]);
-    // Was `{}` before the brain: the brain now ships the kernel's only handler, for `message`.
-    expect(Object.keys(kernel.contributions.handlers)).toEqual(["message"]);
-    expect(kernel.contributions.handlers.message).toBe(brainContribution.handlers?.message);
-    expect(kernel.contributions.dueWork.map((w) => w.owner)).toEqual(["loomwright", "notifications", "triggers"]);
-    expect(kernel.contributions.dueWork[0]?.run).toBe(versionWatchDueWork);
-    expect(kernel.contributions.dueWork[1]?.run).toBe(deliveryDueWork);
+    expect(kernel.contributions.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks"]);
+    expect(kernelToolNames(kernel.contributions.tools)).toEqual([...KERNEL_TOOL_NAMES, ...shippedToolNames()]);
+    expect(Object.keys(await launchedTools(kernel, fakes))).toEqual([...KERNEL_TOOL_NAMES, ...shippedToolNames()]);
+    expect(kernel.contributions.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(shippedRoutes());
+    expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(shippedSubcommandNames());
+    expectShippedHandlers(kernel.contributions.handlers);
+    expectShippedDueWork(kernel.contributions.dueWork);
 
-    // The brain handles `message`: a message for no agent (not Wright) ends done, with no effect and no brain_messages row.
-    await vi.waitFor(() => expect(getQueueRow(kernel.store, id)?.status).toBe("done"));
-    expect(events(kernel.store, "event_unhandled")).toHaveLength(0);
-    expect(events(kernel.store, "event_done")).toHaveLength(1);
-    expect(count(kernel.store, "SELECT count(*) FROM brain_messages")).toBe(0);
     // No route beyond phase 1's and the features' ones: an unknown path is 404.
     const token = keychain.items.get(API_TOKEN_KEYCHAIN_SERVICE) ?? "";
     const res = await fetch(`http://127.0.0.1:${kernel.api.port}/probe/items/1`, { headers: { Authorization: `Bearer ${token}` } });
     expect(res.status).toBe(404);
-    const listed = await fetch(`http://127.0.0.1:${kernel.api.port}/notifications`, { headers: { Authorization: `Bearer ${token}` } });
-    expect(listed.status).toBe(200);
-    expect(await listed.json()).toEqual({ notifications: [] });
-    // No subcommand beyond phase 1's but notifications, triggers, the approvals ones and ask: the usage text is phase 1's plus their help lines.
+    // No subcommand beyond phase 1's and the shipped ones: the usage text is phase 1's plus their help lines, in contribution order.
     const stderr = out();
     expect(await runCli(["probe"], { dataDir, stderr, stdout: out() })).toBe(2);
-    expect(stderr.text()).toBe(
-      `${USAGE} | studio notifications [--limit N] [--json] | studio notifications show <id> | studio triggers [--all] [--json] | studio triggers on|off <id> [--yes] | studio approvals [--all] [--json] | studio approve <id> once|always | studio deny <id> | studio ask "<text>" [--json] [--timeout <s>]\n`,
-    );
     expect(stderr.text()).toBe(`${usageText(kernel.contributions.subcommands)}\n`);
-    expect(NOTIFICATIONS_HELP).toBe("studio notifications [--limit N] [--json] | studio notifications show <id>");
-    expect(ASK_HELP).toBe('studio ask "<text>" [--json] [--timeout <s>]');
+    expect(stderr.text()).toBe(`${[USAGE, ...SHIPPED_CONTRIBUTIONS.flatMap((c) => (c.subcommands ?? []).map((s) => s.help))].join(" | ")}\n`);
   });
 });
 
@@ -532,22 +505,13 @@ describe("a contribution composed from outside (AC4)", () => {
     const kernel = await start(options({ contributions: [...shipped, contribution] }), k.d);
     const token = k.keychain.items.get(API_TOKEN_KEYCHAIN_SERVICE) ?? "";
     const url = (path: string): string => `http://127.0.0.1:${kernel.api.port}${path}`;
-    return { kernel, seen, contribution, token, url, ...k };
+    return { kernel, seen, contribution, shipped, token, url, ...k };
   }
 
   it("the tool is on the kernel MCP server (kernel_ prefix) and validates its arguments with zod", async () => {
-    const { kernel, fakes } = await composed();
+    const { kernel, fakes, shipped } = await composed();
     const tools = await launchedTools(kernel, fakes);
-    expect(Object.keys(tools)).toEqual([
-      ...KERNEL_TOOL_NAMES,
-      "kernel_loomwright_capabilities",
-      "kernel_notify",
-      "kernel_trigger_register",
-      "kernel_trigger_remove",
-      "kernel_trigger_list",
-      "kernel_approval_request",
-      "kernel_probe_echo",
-    ]);
+    expect(Object.keys(tools)).toEqual([...KERNEL_TOOL_NAMES, ...shippedToolNames(shipped), "kernel_probe_echo"]);
     const sessionId = Number(kernel.store.prepare<[], number>("SELECT max(id) FROM sessions").pluck().get());
 
     const ok = await tools.kernel_probe_echo?.handler({ text: "hi", idempotency_key: "k1" }, {});
@@ -752,7 +716,7 @@ describe("a contribution composed from outside (AC4)", () => {
   });
 
   it("the subcommand runs through studio after the api.json pid check and before any token read", async () => {
-    const { contribution, keychain, kernel } = await composed();
+    const { contribution, keychain, kernel, shipped } = await composed();
     const cliDeps = (overrides: Partial<CliDeps> = {}) => {
       const stdout = out();
       const stderr = out();
@@ -808,7 +772,7 @@ describe("a contribution composed from outside (AC4)", () => {
     const usage = cliDeps();
     expect(await runCli(["nope"], usage.deps)).toBe(2);
     expect(usage.stderr.text()).toBe(`${USAGE} | studio probe <id>\n`);
-    expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(["notifications", "triggers", "approvals", "approve", "deny", "probe"]);
+    expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual([...shippedSubcommandNames(shipped), "probe"]);
   });
 
   it("the handler runs for its event kind and the due work runs on each tick", async () => {

@@ -21,6 +21,7 @@ You change things only through the kernel tools this session allows:
 - notifications: kernel_notify
 - approvals: kernel_approval_request
 - Loomwright: kernel_loomwright_capabilities
+- playbooks: kernel_playbook_create, kernel_playbook_update, kernel_playbook_list, kernel_playbook_disable, kernel_playbook_dry_run, kernel_playbook_enable
 - your own lifecycle: kernel_schedule_wakeup, kernel_request_stop
 
 You may also read files with Read, Glob and Grep. The kernel starts and stops
