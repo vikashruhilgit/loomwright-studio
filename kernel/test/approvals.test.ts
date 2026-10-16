@@ -1290,9 +1290,10 @@ describe("the approvals contribution", () => {
       ["approve", "studio approve <id> once|always"],
       ["deny", "studio deny <id>"],
     ]);
+    expect([APPROVALS_HELP, APPROVE_HELP, DENY_HELP]).toEqual(["studio approvals [--all] [--json]", "studio approve <id> once|always", "studio deny <id>"]);
     expect(merged.handlers).toEqual({});
     expect(merged.dueWork).toEqual([]);
-    expect(Object.keys(approvalsContribution).sort()).toEqual(["name", "routes", "subcommands", "tools"]);
+    expect(Object.keys(approvalsContribution)).toEqual(["name", "tools", "routes", "subcommands"]);
   });
 
   it("nothing is preinstalled: a fresh store has no approval", () => {
