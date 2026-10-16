@@ -410,6 +410,7 @@ describe("startSession: query options (AC1)", () => {
       ANTHROPIC_API_KEY: SECRET,
       LOOMWRIGHT_HOST_MODE: "1",
       LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(handle.id),
+      ENABLE_TOOL_SEARCH: "false",
     });
     expect(options.model).toBe("claude-haiku-4-5");
     expect(options.permissionMode).toBe("default");
@@ -1577,7 +1578,13 @@ describe("resumeSession (AC6)", () => {
       expect(call.options.model).toBe("claude-haiku-4-5");
       expect(call.options.permissionMode).toBe("default");
       expect(call.options.includeHookEvents).toBe(true);
-      expect(call.options.env).toEqual({ PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, LOOMWRIGHT_HOST_MODE: "1", LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(id) });
+      expect(call.options.env).toEqual({
+        PATH: "/usr/bin",
+        ANTHROPIC_API_KEY: SECRET,
+        LOOMWRIGHT_HOST_MODE: "1",
+        LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(id),
+        ENABLE_TOOL_SEARCH: "false",
+      });
       expect(call.options.hooks?.PreToolUse).toHaveLength(1);
     }
     expect((await firstPrompt(calls[0] as QueryCall)).message).toEqual({ role: "user", content: DEFAULT_RESUME_PROMPT });
@@ -2126,7 +2133,7 @@ describe("Loomwright install, contract and host mode (D32)", () => {
   it("hostSwitchCollision re-checks the names at launch: a refused name is a collision even when the auth env lacks it, and an auth-set name collides (defence in depth)", () => {
     const hostSwitch = (env: string, state_dir_env: string) => ({ env, state_dir_env, effect: "" });
     // Contract validation already refuses these names; the launch check must refuse them on its own too.
-    for (const name of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "BASH_ENV", "PYTHONPATH", "GIT_SSH_COMMAND", "FTP_PROXY"]) {
+    for (const name of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "BASH_ENV", "PYTHONPATH", "GIT_SSH_COMMAND", "FTP_PROXY", "ENABLE_TOOL_SEARCH"]) {
       for (const sw of [hostSwitch(name, "TEST_HOST_STATE"), hostSwitch("TEST_HOST_FLAG", name)]) {
         expect(hostSwitchCollision({}, sw), name).toEqual({ name, why: expect.stringContaining("which a contract may never set") });
       }
@@ -2350,6 +2357,7 @@ describe("Loomwright install, contract and host mode (D32)", () => {
       ANTHROPIC_API_KEY: SECRET,
       LOOMWRIGHT_HOST_MODE: "1",
       LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(handle.id),
+      ENABLE_TOOL_SEARCH: "false",
     });
     expect(atSpawn).toEqual([{ dir: stateDirOf(handle.id), exists: true, mode: 0o700 }]);
   });
@@ -2360,7 +2368,13 @@ describe("Loomwright install, contract and host mode (D32)", () => {
     const { manager, calls } = harness({ options: { loomwrightPath: renamed }, script: ({ stream }) => stream.push(msg.success()) });
     const handle = await manager.startSession(startParams());
     await handle.done;
-    expect(calls[0]?.options.env).toEqual({ PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, TEST_HOST_FLAG: "1", TEST_HOST_STATE: stateDirOf(handle.id) });
+    expect(calls[0]?.options.env).toEqual({
+      PATH: "/usr/bin",
+      ANTHROPIC_API_KEY: SECRET,
+      TEST_HOST_FLAG: "1",
+      TEST_HOST_STATE: stateDirOf(handle.id),
+      ENABLE_TOOL_SEARCH: "false",
+    });
     expect(calls[0]?.options.env).not.toHaveProperty("LOOMWRIGHT_HOST_MODE");
     expect(calls[0]?.options.env).not.toHaveProperty("LOOMWRIGHT_HOST_STATE_DIR");
     expect(existsSync(stateDirOf(handle.id))).toBe(true);
@@ -2392,7 +2406,13 @@ describe("Loomwright install, contract and host mode (D32)", () => {
     expect(calls).toHaveLength(2);
     for (const call of calls) {
       expect(call.options.plugins).toEqual([{ type: "local", path: renamed }]);
-      expect(call.options.env).toEqual({ PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, TEST_HOST_FLAG: "1", TEST_HOST_STATE: stateDirOf(id) });
+      expect(call.options.env).toEqual({
+        PATH: "/usr/bin",
+        ANTHROPIC_API_KEY: SECRET,
+        TEST_HOST_FLAG: "1",
+        TEST_HOST_STATE: stateDirOf(id),
+        ENABLE_TOOL_SEARCH: "false",
+      });
     }
     expect(existedAtSpawn).toEqual([true, true]);
     expect(row(store, id).loomwright_path).toBe(renamed);
@@ -2526,8 +2546,8 @@ describe("Loomwright install, contract and host mode (D32)", () => {
     const resumed = await manager.resumeSession(id, resumeParams);
     expect(await resumed.done).toBe("completed");
     expect(calls.map((c) => c.options.env)).toEqual([
-      { PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, LOOMWRIGHT_HOST_MODE: "1", LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(handle.id) },
-      { PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, LOOMWRIGHT_HOST_MODE: "1", LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(id) },
+      { PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, LOOMWRIGHT_HOST_MODE: "1", LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(handle.id), ENABLE_TOOL_SEARCH: "false" },
+      { PATH: "/usr/bin", ANTHROPIC_API_KEY: SECRET, LOOMWRIGHT_HOST_MODE: "1", LOOMWRIGHT_HOST_STATE_DIR: stateDirOf(id), ENABLE_TOOL_SEARCH: "false" },
     ]);
     expect(seen).toEqual([{ PATH: "/usr/bin" }, { PATH: "/usr/bin" }]);
     expect(refusals(store)).toEqual([]);

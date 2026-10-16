@@ -141,6 +141,19 @@ describe("recordNotification", () => {
     // An empty body and the maximum lengths are fine.
     expect(record({ title: "t".repeat(200), body: "" }).body).toBe("");
   });
+
+  it("refuses a NUL anywhere in the title or the body (no notifier can carry one), before touching the store", () => {
+    const transaction = vi.spyOn(env.store, "transaction");
+    const prepare = vi.spyOn(env.store, "prepare");
+    for (const input of [{ title: "a\u0000b" }, { title: "\u0000" }, { body: "a\u0000" }, { body: "\u0000" }]) {
+      expect(() => record(input), JSON.stringify(input)).toThrow(new InvalidNotificationError("the title and body must not contain a NUL character"));
+    }
+    expect(transaction).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+    expect(count(env.store, "SELECT count(*) FROM notifications")).toBe(0);
+    expect(events(env.store, "notification_created")).toEqual([]);
+  });
 });
 
 describe("delivery (the due work)", () => {
@@ -327,6 +340,27 @@ describe("delivery (the due work)", () => {
     expect(getNotification(env.store, 1)).toMatchObject({ delivery_status: "failed", delivery_detail: expect.stringMatching(/^error: work step notification:1:deliver already failed \(failed:error\)/) });
     expect(getNotification(env.store, 2)).toMatchObject({ delivery_status: "failed", delivery_detail: "error: the delivery step stored no outcome" });
     expect(events(env.store, "notification_delivery_failed").map((e) => e.payload.id)).toEqual([1, 2]);
+  });
+
+  it("a step already failed:interrupted while its row is still pending (a crash between the mark and the row write): the row ends failed (interrupted), nothing posted, one event", async () => {
+    record();
+    env.store
+      .prepare("INSERT INTO work_steps (key, status, result_json, failure_reason, rerunnable, created_at, updated_at) VALUES ('notification:1:deliver', 'failed', NULL, 'interrupted', 0, 'x', 'x')")
+      .run();
+    const { calls, exec } = stubExec();
+    await tick(darwin(exec));
+    await tick(darwin(exec));
+    expect(calls).toEqual([]);
+    expect(getNotification(env.store, 1)).toMatchObject({ delivery_status: "failed", delivery_detail: "interrupted", delivered_at: null });
+    expect(events(env.store, "notification_delivery_failed").map((e) => e.payload)).toEqual([{ id: 1, error: "interrupted" }]);
+  });
+
+  it("an empty body is posted to terminal-notifier as exactly empty stdin and ends delivered (the probe: it exits 0 on one)", async () => {
+    const { calls, exec } = stubExec();
+    record({ body: "" });
+    await tick(darwin(exec));
+    expect(calls.map((c) => [c.file, c.input])).toEqual([["/opt/homebrew/bin/terminal-notifier", ""]]);
+    expect(getNotification(env.store, 1)).toMatchObject({ delivery_status: "delivered", delivered_at: "2026-10-02T10:00:00.000Z" });
   });
 
   it("a notifier exiting non-zero with no output: failed with just the exit status", async () => {
@@ -533,6 +567,20 @@ describe("kernel_notify", () => {
     }
     expect(count(env.store, "SELECT count(*) FROM notifications")).toBe(1);
   });
+
+  it("a NUL in the title or body is refused at argument validation: an isError result naming the field, no row, no work step", async () => {
+    const c = ctx("wright");
+    expect(await call(c, { title: "a\u0000b", body: "b", idempotency_key: "k1" })).toEqual({
+      isError: true,
+      value: "kernel_notify: invalid input: ✖ must not contain a NUL character\n  → at title",
+    });
+    expect(await call(c, { title: "t", body: "b\u0000", idempotency_key: "k2" })).toEqual({
+      isError: true,
+      value: "kernel_notify: invalid input: ✖ must not contain a NUL character\n  → at body",
+    });
+    expect(count(env.store, "SELECT count(*) FROM notifications")).toBe(0);
+    expect(count(env.store, `SELECT count(*) FROM work_steps WHERE key LIKE 'kernel_notify:session-${c.sessionId}:%'`)).toBe(0);
+  });
 });
 
 describe("the API routes and studio notifications", () => {
@@ -655,6 +703,34 @@ describe("the API routes and studio notifications", () => {
     expect(agent.stdout).not.toMatch(/[\u0000-\u0009\u000b-\u001f]/);
     expect((await studio("notifications", "show", "4")).stdout).toContain("  trigger:   999 (no longer exists)\n");
     expect(await studio("notifications", "show", "99")).toEqual({ code: 1, stdout: "", stderr: "studio: no such notification 99\n" });
+  });
+
+  it("studio notifications show and the list escape the bidi controls and U+2028/U+2029 as \\uNNNN; none reaches the terminal raw", async () => {
+    const all = "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u061c\u200e\u200f\u2028\u2029";
+    expect(printable(`a${all}b`)).toBe(
+      "a\\u202a\\u202b\\u202c\\u202d\\u202e\\u2066\\u2067\\u2068\\u2069\\u061c\\u200e\\u200f\\u2028\\u2029b",
+    );
+    // A separator is never taken for the line break `keepNewlines` keeps.
+    expect(printable("x\u2028y\nz", true, "  ")).toBe("x\\u2028y\n  z");
+    record({ source: "kernel:test", title: "evil\u202egpj.exe\u2028fake line\u061c", body: "one\u2029two\u2066" });
+    const raw = /[\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+    const show = await studio("notifications", "show", "1");
+    expect(show.code).toBe(0);
+    expect(show.stdout).toContain("  title:     evil\\u202egpj.exe\\u2028fake line\\u061c\n  body:\n    one\\u2029two\\u2066\n");
+    expect(show.stdout).not.toMatch(raw);
+    const list = await studio("notifications");
+    expect(list.stdout).toBe("#1  2026-10-02T10:00:00.000Z  kernel:test  pending  evil\\u202egpj.exe\\u2028fake line\\u061c  loomwright-studio://notifications/1\n");
+  });
+
+  it("studio notifications show for an agent: notification whose session is null, or whose session row no longer exists, prints it and exits 0", async () => {
+    record({ source: "agent:wright", title: "no session", body: "" });
+    record({ source: "agent:wright", title: "gone session", body: "", sessionId: 999 });
+    const none = await studio("notifications", "show", "1");
+    expect(none).toMatchObject({ code: 0, stderr: "" });
+    expect(none.stdout).toContain("  title:     no session\n  body:\n    \n  session:   unknown\n");
+    const gone = await studio("notifications", "show", "2");
+    expect(gone).toMatchObject({ code: 0, stderr: "" });
+    expect(gone.stdout).toContain("  title:     gone session\n  body:\n    \n  session:   #999, status unknown (no such row)\n");
   });
 
   it("any other answer from the API is one stderr line and 1", async () => {

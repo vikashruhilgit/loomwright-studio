@@ -7,7 +7,7 @@
 // real `~/.claude/plugins/installed_plugins.json`. A fake clock drives the
 // once-a-minute check; no notification is ever posted (no delivery due work
 // runs here, and the one kernel test creates none).
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -452,6 +452,90 @@ describe("breaking signals (AC3, AC4, AC5)", () => {
     // What the note says holds: the adapter reads it.
     expect(loomwrightAdapterStatus({ installedPluginsPath: pluginsFile })).toMatchObject({ status: "ok", plugin_version: "17.3.0", contract_schema_version: 2 });
   });
+
+  /** 17.2.0 (schema 1), then 17.3.0 at schema 2 (the crossing), then 17.4.0 at `schema`: the second note's text. */
+  async function afterSchema2(schema: number): Promise<string> {
+    const { loop } = await transition(contract("17.3.0", (c) => (c.contract_schema_version = 2)), "17.3.0");
+    expect(sectionOf(note("17.2.0-to-17.3.0.md"), "Breaking")).toHaveLength(1);
+    activate(contract("17.4.0", (c) => (c.contract_schema_version = schema)), "17.4.0");
+    env.advance(MINUTE);
+    await loop.tick();
+    noFailures();
+    expect(seenRows()).toHaveLength(3);
+    expect(seenRows().at(-1)).toMatchObject({ plugin_version: "17.4.0", contract_schema_version: schema });
+    return note("17.3.0-to-17.4.0.md");
+  }
+
+  it("schema_above_known is flagged only on the change that crosses it: a later version still at schema 2 has no Breaking line, and its note still states the schema", async () => {
+    const text = await afterSchema2(2);
+    const [, second, third] = seenRows();
+    expect(diffLoomwrightContracts(second?.contract_json ?? "", third?.contract_json ?? "").breaking).toEqual([]);
+    expect(headings(text)).not.toContain("## Breaking");
+    expect(text).not.toContain("is newer than this kernel knows");
+    expect(text.split("\n").filter((l) => l.startsWith("- From: ") || l.startsWith("- To: ")).map((l) => l.includes("(contract 2)"))).toEqual([true, true]);
+    expect(sectionOf(text, "Changed")).toEqual(["- (none)"]);
+    expect(notifications().at(-1)?.body).toMatch(/^0 added, 0 removed\. Note: /);
+  });
+
+  it("schema 2 → 3 (both above KNOWN_CONTRACT_SCHEMA_VERSION) is not flagged again; the Changed section reports it", async () => {
+    const text = await afterSchema2(3);
+    expect(headings(text)).not.toContain("## Breaking");
+    expect(sectionOf(text, "Changed")).toEqual(["- Contract schema version: 2 → 3"]);
+    expect(notifications().at(-1)?.body).toMatch(/^0 added, 0 removed, 1 changed\. Note: /);
+  });
+
+  it("schema 2 → 1 (back down to KNOWN_CONTRACT_SCHEMA_VERSION) is not flagged; the Changed section reports it", async () => {
+    const text = await afterSchema2(1);
+    expect(headings(text)).not.toContain("## Breaking");
+    expect(sectionOf(text, "Changed")).toEqual(["- Contract schema version: 2 → 1"]);
+  });
+
+  /**
+   * Drive the watcher through `steps` ([plugin version, schema version]), each
+   * at a fresh install, a minute apart; the first is the baseline. Returns, per
+   * later step, whether its note has a Breaking heading and its notification body.
+   */
+  async function walk(steps: Array<[string, number]>): Promise<Array<{ breaking: boolean; body: string }>> {
+    const loop = watchLoop();
+    const out: Array<{ breaking: boolean; body: string }> = [];
+    for (const [i, [version, schema]] of steps.entries()) {
+      activate(contract(version, (c) => (c.contract_schema_version = schema)), version);
+      if (i > 0) env.advance(MINUTE);
+      await loop.tick();
+      noFailures();
+      expect(seenRows()).toHaveLength(i + 1);
+      if (i === 0) {
+        expect(noteFiles()).toEqual([]);
+        expect(notifications()).toEqual([]);
+        continue;
+      }
+      const text = note(`${steps[i - 1]?.[0]}-to-${version}.md`);
+      const breaking = headings(text).includes("## Breaking");
+      if (breaking) expect(sectionOf(text, "Breaking")).toEqual([expect.stringContaining("is newer than this kernel knows")]);
+      out.push({ breaking, body: (notifications().at(-1)?.body ?? "").replace(/\. Note: .*$/s, "") });
+    }
+    return out;
+  }
+
+  it("a baseline already above known is silent; it is flagged only after a change down to known and back up (2 → 1 → 2)", async () => {
+    expect(await walk([["17.2.0", 2], ["17.3.0", 1], ["17.4.0", 2]])).toEqual([
+      { breaking: false, body: "0 added, 0 removed, 1 changed" },
+      { breaking: true, body: "1 breaking, 0 added, 0 removed, 1 changed" },
+    ]);
+  });
+
+  it("each crossing is flagged, so a change down to known and back up flags again (1 → 2 → 1 → 2)", async () => {
+    expect(await walk([["17.2.0", 1], ["17.3.0", 2], ["17.4.0", 1], ["17.5.0", 2]])).toEqual([
+      { breaking: true, body: "1 breaking, 0 added, 0 removed, 1 changed" },
+      { breaking: false, body: "0 added, 0 removed, 1 changed" },
+      { breaking: true, body: "1 breaking, 0 added, 0 removed, 1 changed" },
+    ]);
+  });
+
+  it("an old side with no schema version (not a contract) and a new one above known is a crossing", () => {
+    const above = JSON.stringify(contract("17.3.0", (c) => (c.contract_schema_version = 2)));
+    expect(diffLoomwrightContracts("not json", above).breaking.map((b) => b.kind)).toContain("schema_above_known");
+  });
 });
 
 describe("an active install without a usable contract (AC6)", () => {
@@ -484,6 +568,17 @@ describe("an active install without a usable contract (AC6)", () => {
     env.advance(MINUTE);
     await loop.tick();
     expect(notifications().map((r) => r.title)).toEqual([NO_CONTRACT_TITLE, NO_CONTRACT_TITLE]);
+  });
+
+  it("the same install with a different problem (missing, then not JSON) gets its own notification: the dedupe is on the body, which carries the message", async () => {
+    const { loop, to } = await transition(null, "17.3.0");
+    activate({ raw: "{ not json" } as unknown as Contract, "17.3.0", to);
+    env.advance(MINUTE);
+    await loop.tick();
+    const bodies = notifications().map((r) => r.body);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toContain(`Loomwright at ${to}: capabilities.json missing`);
+    expect(bodies[1]).toContain(`Loomwright at ${to}: capabilities.json is not JSON`);
   });
 
   it("a contract that is not JSON is no usable contract either; the body names the adapter's message", async () => {
@@ -595,6 +690,36 @@ describe("the note file (AC7)", () => {
     writeFileSync(join(dir, "a-to-b.md"), `${marker}x\n`);
     expect(writeVersionNote(dir, "a-to-b", `${marker}\n`, marker)).toBe(join(dir, "a-to-b-2.md"));
     expect(writeVersionNote(dir, "a-to-b", `${marker}\nagain\n`, marker)).toBe(join(dir, "a-to-b-2.md"));
+  });
+
+  it("writeVersionNote: the probe of an existing file allocates at most the marker plus one byte, and at most the file's size", () => {
+    const dir = join(root, "notes");
+    const marker = `<!-- ${"m".repeat(20_000)} -->`;
+    const bound = Buffer.byteLength(marker, "utf8") + 1;
+    mkdirSync(dir, { recursive: true });
+    /** `writeVersionNote` over an existing `a-to-b.md` holding `existing`: the path it returns and every `Buffer.alloc` size. */
+    const probe = (existing: string): { path: string; sizes: number[] } => {
+      writeFileSync(join(dir, "a-to-b.md"), existing);
+      rmSync(join(dir, "a-to-b-2.md"), { force: true });
+      const alloc = vi.spyOn(Buffer, "alloc");
+      try {
+        const path = writeVersionNote(dir, "a-to-b", `${marker}\n`, marker);
+        return { path, sizes: alloc.mock.calls.map(([size]) => size) };
+      } finally {
+        alloc.mockRestore();
+      }
+    };
+    // Larger than the marker: this marker's own note, found by reading at most `bound` bytes.
+    const large = probe(`${marker}\n${"x".repeat(100_000)}\n`);
+    expect(large.path).toBe(join(dir, "a-to-b.md"));
+    expect(large.sizes.length).toBeGreaterThan(0);
+    expect(Math.max(...large.sizes)).toBeLessThanOrEqual(bound);
+    // Smaller than the marker: read whole, with no more than its size allocated, and not reused.
+    const owners = "<!-- the owner's -->\n";
+    const small = probe(owners);
+    expect(small.path).toBe(join(dir, "a-to-b-2.md"));
+    expect(small.sizes.length).toBeGreaterThan(0);
+    expect(Math.max(...small.sizes)).toBeLessThanOrEqual(Buffer.byteLength(owners, "utf8"));
   });
 
   it("the note's first line is its provenance marker: the row it diffs from and the new triple", async () => {

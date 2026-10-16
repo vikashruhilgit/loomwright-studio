@@ -175,13 +175,16 @@ const KILL_GRACE_MS = 1_000;
 
 /**
  * The default `NotifierExec`: `spawn` with an argv array (no shell), bounded
- * output, SIGKILL after `timeoutMs`. A hard bound of `timeoutMs` plus
- * `KILL_GRACE_MS`: it settles exactly once, on 'close', or `DRAIN_MS` after
- * 'exit', or `KILL_GRACE_MS` after the kill, whichever is first. Settling
- * destroys the pipes and unrefs the child, so a descendant still holding the
- * pipes neither stretches the wait nor keeps the event loop alive. Once the
- * timeout has fired, an 'exit' inside the grace may settle sooner but never
- * later than the grace.
+ * output, SIGKILL after `timeoutMs`. It settles exactly once, on the first of
+ * three paths: on 'close'; `DRAIN_MS` after 'exit'; or `KILL_GRACE_MS` after
+ * the timeout's kill (armed only by the timeout, and never cleared by an
+ * 'exit'). The worst case follows from them. An 'exit' before the timeout
+ * clears it, so it settles by `timeoutMs + DRAIN_MS`. After the kill it
+ * settles by the earlier of 'exit' + `DRAIN_MS` and `timeoutMs +
+ * KILL_GRACE_MS`. So the hard bound is `timeoutMs + KILL_GRACE_MS`, because
+ * `DRAIN_MS` (250) < `KILL_GRACE_MS` (1 000). Settling destroys the pipes and
+ * unrefs the child, so a descendant still holding the pipes neither stretches
+ * the wait nor keeps the event loop alive.
  *
  * A failed spawn (ENOENT, EACCES, EMFILE …) rejects once, through the child's
  * 'error' event, which is listened for before anything else is touched: on

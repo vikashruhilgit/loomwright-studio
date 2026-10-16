@@ -11,10 +11,14 @@ It is a mechanism (invariant 1). It never decides what is worth notifying, how o
 | Field | Rule |
 |---|---|
 | `source` | `trigger:<id>` (a positive integer), `agent:<name>` or `kernel:<reason>` (one line of text, no control characters), at most 200 characters. Anything else throws `InvalidNotificationError` before anything is written. |
-| `title` | 1-200 characters. |
-| `body` | At most 4000 characters (may be empty). |
+| `title` | 1-200 characters, no NUL. |
+| `body` | At most 4000 characters (may be empty), no NUL. |
 | `deep_link` | Always `loomwright-studio://notifications/<id>`, built from the inserted row's own id in the same transaction. |
 | `delivery_status` | `pending`, then exactly once one of `delivered`, `failed` or `unsupported` (a closed set, checked in code), with `delivery_detail`. `delivered_at` is set when a native notification was handed to macOS. |
+
+A title or body that breaks a rule throws `InvalidNotificationError` before anything is written. A NUL is refused because it cannot be relied on to be posted: an argv item cannot hold a NUL, the title is always an argv item, so a NUL in the title can never be posted, and a NUL in the body cannot be posted by osascript (its body is an argv item). terminal-notifier takes the body on stdin, and how it handles a NUL there is unprobed. Recorded anyway, an argv NUL would make the spawn fail and the row end `failed`. An empty body is fine: run by hand on the owner's Mac, terminal-notifier exited 0 on an empty stdin body and Notification Center held the notification ([evidence](../evidence/phase-2-notifier-probe.md#2a-an-empty-body-spawned-as-the-kernel-spawns-it)).
+
+The refusal covers `recordNotification` and `kernel_notify`. Its callers refuse a NUL first, with their own error: an approval refuses a NUL in its action (or in the agent's name) as `invalid_approval` before writing anything, and `kernel_approval_request` refuses one in `action` at argument validation ([approvals](approvals.md)). The Loomwright version note does not yet: a NUL in a Loomwright contract's `plugin_version` would make the version check's `recordNotification` throw and fail each interval; refusing or stripping it at the contract parser is a follow-up. A trigger's notification is written by the triggers feature's own writer (`kernel/src/triggers/store.ts`), which does not check for a NUL. A trigger's payload is the notification's body, so a trigger whose payload holds one still reaches the notifier: under osascript it ends `failed`, and under terminal-notifier (body on stdin) its outcome is unprobed.
 
 ## The deep-link scheme
 
@@ -68,7 +72,7 @@ The notifier runs with a fixed `PATH` and the user's `HOME`/`USER`/`LOGNAME`/`TM
 
 ## `kernel_notify`
 
-`kernel_notify(title, body, idempotency_key)` is the agents' tool (through the feature seam). It runs as one work step keyed `kernel_notify:session-<id>:<key>`, so a repeat with the same key in the same session (even after a resume or a restart) returns the first notification instead of recording another. The source is `agent:<the session's agent>`, or `agent:unknown` when the session has none, and the `notification_created` event is linked to the session. It returns `{id, deep_link, delivery_status}`.
+`kernel_notify(title, body, idempotency_key)` is the agents' tool (through the feature seam). It runs as one work step keyed `kernel_notify:session-<id>:<key>`, so a repeat with the same key in the same session (even after a resume or a restart) returns the first notification instead of recording another. The source is `agent:<the session's agent>`, or `agent:unknown` when the session has none, and the `notification_created` event is linked to the session. It returns `{id, deep_link, delivery_status}`. A NUL in the title or body is refused at argument validation, before the step runs: the result is an error (`isError`) naming the field, and nothing is recorded.
 
 ## API and CLI
 
@@ -80,7 +84,9 @@ Both routes need the bearer token, like every route:
 The `studio` subcommand:
 
 - `studio notifications [--limit N] [--json]` prints one line per notification, newest first: id, time, source, delivery status, title and deep link. `--json` prints the API's answer.
-- `studio notifications show <id>` prints the full record (with the deep link and the delivery detail), plus the trigger's id, action and next fire, or the session's id and status. An unknown id prints `studio: no such notification <id>` and exits 1.
+- `studio notifications show <id>` prints the full record (with the deep link and the delivery detail), plus the trigger's id, action and next fire, or the session's id and status. A session that is unknown (the event has none) prints `session:   unknown`, and one whose row no longer exists prints `session:   #<id>, status unknown (no such row)`. An unknown id prints `studio: no such notification <id>` and exits 1.
 - Bad usage prints the subcommand's usage and exits 2.
 
-Text is printed as plain text: every control character in a title, body, source or detail is written as `\xNN`, so notification text can never move the cursor, recolour the terminal or fake a line of output. In `show`, line breaks in the body stay line breaks.
+The text views (the list and `show`) print notification text as plain text. In a title, body, source or detail, every control character (C0, DEL and C1) is written as `\xNN`, and a line feed as `\n`, except in `show`'s body, where a line break stays a real line break. The bidi controls (U+202A-U+202E, U+2066-U+2069, U+061C, U+200E, U+200F) and the line and paragraph separators U+2028 and U+2029 are written as `\uNNNN`, lower-case hex, for example `\u202e`. So notification text can never move the cursor, recolour the terminal, reorder what it shows or fake a line of output.
+
+`--json` does none of that escaping. It prints the API's JSON as `JSON.stringify` writes it: C0 control characters become JSON escapes (`\n`, `\u001b`), but DEL, the C1 characters, the bidi controls and U+2028/U+2029 are left raw. It is meant for a program to parse. To show the text in a terminal, use the text views.

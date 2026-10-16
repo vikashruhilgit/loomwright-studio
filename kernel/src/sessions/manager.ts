@@ -25,6 +25,7 @@ import type { LoomwrightHostSwitch } from "../loomwright/contract.js";
 import type { Store } from "../store/store.js";
 import { LoomwrightSessionError, readSessionLoomwright, resolveSessionLoomwright } from "./loomwright-path.js";
 import type { SessionLoomwright } from "./loomwright-path.js";
+import { TOOL_DEFERRAL_OFF } from "./kernel-env.js";
 import { latestOrphanReason } from "./orphans.js";
 import { bashCommandOf, classifyToolCall, decideToolUse, freezePolicy } from "./policy.js";
 import type { ToolCallClass, ToolDecisionReason } from "./policy.js";
@@ -410,7 +411,8 @@ function withoutHostSwitch(base: BaseEnv, hostSwitch: LoomwrightHostSwitch): Bas
  * like any other bad contract (`loomwright_contract`, `contract_invalid`):
  *
  * - a name `hostSwitchNameProblem` refuses (a credential, billing-routing or
- *   process-control variable). Contract validation already refuses it; this is
+ *   process-control variable, or one the kernel sets in every session's
+ *   environment, such as `TOOL_DEFERRAL_OFF`'s). Contract validation already refuses it; this is
  *   defence in depth, since `stripCredentialEnv` has emptied `env` of every
  *   credential name and a presence check alone would let the switch add one back;
  * - a name the auth provider itself put in `env` (D32: a contract may never
@@ -478,7 +480,8 @@ const defaultSchedule = (fn: () => void, ms: number): CancelTimer => {
  * itself in a new process group, with:
  *
  * - isolation: `settingSources: []`, one local Loomwright plugin, the auth
- *   provider's env, explicit `model` and `permissionMode` (never
+ *   provider's env with the SDK's tool deferral off (`TOOL_DEFERRAL_OFF`),
+ *   explicit `model` and `permissionMode` (never
  *   `bypassPermissions`), streaming input, `includeHookEvents: true`;
  * - a kernel `PreToolUse` hook that decides every tool call from the
  *   session's frozen policy and records each decision (invariant 3);
@@ -627,7 +630,7 @@ export class SessionManager {
       });
       throw err;
     }
-    // A credential / process-control name, or one the auth provider sets: refused like any other bad contract, no row.
+    // A credential / process-control / kernel-set name, or one the auth provider sets: refused like any other bad contract, no row.
     const collision = hostSwitchCollision(env, loomwright.hostSwitch);
     if (collision !== undefined) this.#refuseLoomwright(hostSwitchCollisionError(loomwrightPath, collision), null);
 
@@ -1281,7 +1284,8 @@ export class SessionManager {
       cwd: config.cwd,
       settingSources: [],
       plugins: [{ type: "local", path: config.loomwrightPath }],
-      env: config.env,
+      // Start and resume share this line, so they cannot diverge; the kernel's value wins.
+      env: { ...config.env, ...TOOL_DEFERRAL_OFF },
       includeHookEvents: true,
       hooks: { PreToolUse: [{ hooks: [this.#gate(live)] }] },
       ...(mcpServers === undefined ? {} : { mcpServers }),

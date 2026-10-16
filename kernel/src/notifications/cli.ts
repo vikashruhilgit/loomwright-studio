@@ -7,8 +7,11 @@
 //                                               trigger or session it came from
 //
 // Notification text is untrusted (invariant 3): it is printed as plain text
-// with every control character escaped, so a title or body can never move
-// the cursor, recolour the terminal or fake a line of output.
+// with every control character, bidi control and line or paragraph separator
+// escaped, so a title or body can never move the cursor, recolour the
+// terminal, reorder what it shows or fake a line of output. `--json` prints
+// the API's JSON as `JSON.stringify` writes it, which leaves the C1
+// characters, the bidi controls and U+2028/U+2029 raw.
 import type { CliApiClient, CliSubcommandOutput, ContributedSubcommand } from "../features/contribution.js";
 import type { NotificationRow } from "./record.js";
 import type { NotificationDetail } from "./routes.js";
@@ -40,17 +43,25 @@ function parse(args: readonly string[]): Parsed | undefined {
   return { kind: "list", json, ...(limit === undefined ? {} : { limit }) };
 }
 
+// The bidi controls (U+202A-U+202E, U+2066-U+2069, U+061C, U+200E, U+200F),
+// which reorder what a terminal shows, and the line and paragraph separators
+// (U+2028, U+2029), which some terminals and editors break a line on.
+const BIDI_AND_SEPARATORS = /[\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
 /**
- * `text` with every C0/C1 control character (and DEL) written as `\xNN`, so
- * it prints as plain text. With `keepNewlines`, `\n` stays a line break
+ * `text` with every C0/C1 control character (and DEL) written as `\xNN`, and
+ * every bidi control and U+2028/U+2029 as `\uNNNN` (lower-case hex), so it
+ * prints as plain text. With `keepNewlines`, `\n` stays a line break
  * (indented by `indent`); otherwise it is written `\n` too.
  */
 export function printable(text: string, keepNewlines = false, indent = ""): string {
-  const escaped = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => {
-    if (c === "\n" && keepNewlines) return `\n${indent}`;
-    if (c === "\n") return "\\n";
-    return `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`;
-  });
+  const escaped = text
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => {
+      if (c === "\n" && keepNewlines) return `\n${indent}`;
+      if (c === "\n") return "\\n";
+      return `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`;
+    })
+    .replace(BIDI_AND_SEPARATORS, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
   return escaped;
 }
 

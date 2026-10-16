@@ -17,7 +17,7 @@ A session keeps the Loomwright it started with: the row's `loomwright_path` reco
 
 ## The contract
 
-`readLoomwrightContract(installPath)` reads `<installPath>/capabilities.json` (at most 4 MiB) and validates it field by field. Required: `plugin_name` (must be `"loomwright"`), `plugin_version` (a non-empty string), `contract_schema_version` (an integer of at least `MIN_CONTRACT_SCHEMA_VERSION`, 1), and the arrays `agents`, `commands`, `skills`, `result_schemas` (entries with a non-empty `name`) and `hooks` (entries with string `event` and `host_mode`). Read when present: an entry's `description`, a result schema's `schema_version`, and `host_switch` (`env` and `state_dir_env`, two distinct upper-case variable names, and `effect`). Neither name may be a credential or billing-routing variable the kernel strips (`isCredentialEnvVar`: any `ANTHROPIC_*`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CONFIG_DIR`, ...) or a process-control variable: one whose value an interpreter, loader, shell or tool reads as a path, code or a behaviour switch. The kernel sets the switch to the relative value `1` in the repo's `cwd`, so `BASH_ENV=1` would run `./1` and `PYTHONPATH=1` would import from `./1`. The contract is data and may never undo the kernel's credential isolation or turn repo content into code (invariant 3). The refused groups (the `PROCESS_CONTROL_ENV` table in `kernel/src/loomwright/contract.ts`, one comment per group):
+`readLoomwrightContract(installPath)` reads `<installPath>/capabilities.json` (at most 4 MiB) and validates it field by field. Required: `plugin_name` (must be `"loomwright"`), `plugin_version` (a non-empty string), `contract_schema_version` (an integer of at least `MIN_CONTRACT_SCHEMA_VERSION`, 1), and the arrays `agents`, `commands`, `skills`, `result_schemas` (entries with a non-empty `name`) and `hooks` (entries with string `event` and `host_mode`). Read when present: an entry's `description`, a result schema's `schema_version`, and `host_switch` (`env` and `state_dir_env`, two distinct upper-case variable names, and `effect`). Neither name may be a credential or billing-routing variable the kernel strips (`isCredentialEnvVar`: any `ANTHROPIC_*`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CONFIG_DIR`, ...) or a variable the kernel itself sets in every session's environment (`isKernelSessionEnvVar` in `kernel/src/sessions/kernel-env.ts`: `ENABLE_TOOL_SEARCH`, whose kernel value would silently replace the switch's), or a process-control variable: one whose value an interpreter, loader, shell or tool reads as a path, code or a behaviour switch. The kernel sets the switch to the relative value `1` in the repo's `cwd`, so `BASH_ENV=1` would run `./1` and `PYTHONPATH=1` would import from `./1`. The contract is data and may never undo the kernel's credential isolation or turn repo content into code (invariant 3). The refused groups (the `PROCESS_CONTROL_ENV` table in `kernel/src/loomwright/contract.ts`, one comment per group):
 
 - **Exact names.** Paths and identity: `PATH`, `HOME`, `SHELL`, `USER`, `LOGNAME`, `PWD`, `TMPDIR`, `CDPATH`. Shell startup and behaviour: `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`, `IFS`, `PROMPT_COMMAND`, `ZDOTDIR`, `GLOBIGNORE`. Locale, time zone and terminal: `LANG`, `TZ`, `TERM`. The CLI's shell and env-file hooks: `CLAUDE_ENV_FILE`, `CLAUDE_CODE_SHELL`, `CLAUDE_CODE_SHELL_PREFIX`.
 - **Prefixes.** Dynamic loaders: `DYLD_`, `LD_`. Interpreters: `NODE_`, `PYTHON`, `PERL`, `RUBY`, `NPM_CONFIG_`. Exported bash functions: `BASH_FUNC_`. git: `GIT_`. Config dirs, TLS trust stores and locale categories: `XDG_`, `SSL_`, `LC_`. The CLI's and the kernel's own namespaces: `CLAUDE_CODE_`, `ANTHROPIC_`.
@@ -38,7 +38,7 @@ The thrown `SessionError` (a `LoomwrightSessionError`, carrying `detail` and `pa
 | `SessionError` code | When |
 |---|---|
 | `loomwright_not_found` | No install could be found: the reasons `installed_plugins_missing`, `installed_plugins_unreadable`, `not_installed`, `ambiguous_install`, `install_path_invalid`. |
-| `loomwright_contract` | The install's contract is missing or bad: the `contract_*` reasons. Also (detail `contract_invalid`) a host switch naming a credential or process-control variable (see the contract), or a variable the auth provider itself adds to the session's env: a contract may never overwrite an auth variable. A host-switch name inherited from the daemon's own environment is not a refusal: the kernel drops it (see host mode). |
+| `loomwright_contract` | The install's contract is missing or bad: the `contract_*` reasons. Also (detail `contract_invalid`) a host switch naming a credential, process-control or kernel-set session variable (see the contract), or a variable the auth provider itself adds to the session's env: a contract may never overwrite an auth variable. A host-switch name inherited from the daemon's own environment is not a refusal: the kernel drops it (see host mode). |
 | `loomwright_no_host_switch` | The contract is valid but has no `host_switch` (reason `no_host_switch`). Studio runs Loomwright only in host mode. |
 
 The adapter's reasons (`LoomwrightContractErrorReason`, a closed list in `kernel/src/loomwright/contract.ts`):
@@ -48,7 +48,7 @@ The adapter's reasons (`LoomwrightContractErrorReason`, a closed list in `kernel
 | `contract_missing` | The install has no `capabilities.json`. | the install |
 | `contract_unreadable` | The file can't be read, or is over 4 MiB. | the install |
 | `contract_not_json` | The file is not JSON. | the install |
-| `contract_invalid` | Not a JSON object, or a required field is missing or mistyped (the message names it). Also a host-switch name that is a credential or process-control variable, or that the auth provider sets (see above). | the install |
+| `contract_invalid` | Not a JSON object, or a required field is missing or mistyped (the message names it). Also a host-switch name that is a credential, process-control or kernel-set session variable, or that the auth provider sets (see above). | the install |
 | `contract_schema_too_old` | `contract_schema_version` is below `MIN_CONTRACT_SCHEMA_VERSION` (1). | the install |
 | `no_host_switch` | A valid contract without `host_switch`. | the install |
 | `installed_plugins_missing` | `installed_plugins.json` does not exist, and no path is configured. | the file |
@@ -70,7 +70,7 @@ Every session runs with the contract's host switch on, so Loomwright's repo-writ
 - `<host_switch.env>=1`
 - `<host_switch.state_dir_env>=<dataDir>/loomwright-state/session-<sessions.id>`
 
-For Loomwright 17.2.0 these are `LOOMWRIGHT_HOST_MODE` and `LOOMWRIGHT_HOST_STATE_DIR`. The state dir is created (mode 0700) after the row is written and before the spawn; if it can't be created, the start fails the same way a failed spawn does (`failed`, `spawn_failed`). A resume rebuilds both variables from the contract at the row's `loomwright_path` and re-creates the same dir before every launch attempt. If the auth provider sets a host-switch name at resume time (or the name is a credential or process-control variable, checked again at every launch as defence in depth), that attempt fails and is retried like any other failed attempt, and the session ends `failed` (`resume_failed`) without launching. Whether a real session under host mode leaves its repo clean is the owner's p9 rerun: until then it is Loomwright's declaration, not something Studio has observed (see the evidence page).
+For Loomwright 17.2.0 these are `LOOMWRIGHT_HOST_MODE` and `LOOMWRIGHT_HOST_STATE_DIR`. The state dir is created (mode 0700) after the row is written and before the spawn; if it can't be created, the start fails the same way a failed spawn does (`failed`, `spawn_failed`). A resume rebuilds both variables from the contract at the row's `loomwright_path` and re-creates the same dir before every launch attempt. If the auth provider sets a host-switch name at resume time (or the name is a credential, process-control or kernel-set session variable, checked again at every launch as defence in depth), that attempt fails and is retried like any other failed attempt, and the session ends `failed` (`resume_failed`) without launching. Whether a real session under host mode leaves its repo clean is the owner's p9 rerun: until then it is Loomwright's declaration, not something Studio has observed (see the evidence page).
 
 ## The `kernel_loomwright_capabilities` tool
 
@@ -141,9 +141,9 @@ These go first in the note and in the notification:
 - a removed command;
 - a removed agent;
 - any `host_switch` change;
-- a contract schema version above `KNOWN_CONTRACT_SCHEMA_VERSION` (1, the highest this kernel was written against).
+- a contract schema version that crosses `KNOWN_CONTRACT_SCHEMA_VERSION` (1, the highest this kernel was written against): the new version is above it and the old one is not.
 
-D32 says the adapter tolerates a newer contract and reports the change rather than breaking. So a newer schema version is flagged, and the note says that the adapter still reads the contract and does not refuse sessions. The adapter only has a minimum version (`MIN_CONTRACT_SCHEMA_VERSION`).
+D32 says the adapter tolerates a newer contract and reports the change rather than breaking. So a newer schema version is flagged, and the note says that the adapter still reads the contract and does not refuse sessions. It is flagged only on a change that crosses the known version, so when the warning appears it is new. It does not always appear: the baseline is never diffed (see § Its limits). A change back down to the known version and up again crosses again, so it is flagged again. A later change between two versions above it (2 to 3, or a new plugin version still at 2) is not flagged again, and neither is a change back down to it; the Changed section still reports any schema change, and the note's From and To lines always state both schema versions. The adapter only has a minimum version (`MIN_CONTRACT_SCHEMA_VERSION`).
 
 ### The note
 
@@ -155,7 +155,7 @@ The note's first line is a provenance marker: `<!-- loomwright-version-note from
 
 - **The file name.** A plugin version is contract data, never a path. Each version keeps only `[A-Za-z0-9._-]` (any other character becomes `_`), loses its leading dots, and is cut to 64 characters; an empty result is `unknown`. The resolved path must sit directly in `loomwright-updates/`. Directories are created with mode 0700.
 - **Never overwritten.** If the name is taken (an earlier note, or a file the owner wrote), the note goes to the first free `-2`, `-3`, …. It is written to a temp file and hard-linked into place, so a note file is never torn.
-- **A crash between the note and the row.** The next check finds a file whose first line is this transition's marker and reuses it, so there is no duplicate note. It reads as many bytes as the marker has (plus its newline), so a long install path or plugin version still matches.
+- **A crash between the note and the row.** The next check finds a file whose first line is this transition's marker and reuses it, so there is no duplicate note. It reads as many bytes as the marker has (plus its newline), so a long install path or plugin version still matches, and never more than the file holds: a smaller file is read whole, with no more allocated than its size. The whole first line must equal the marker; a line that only starts with it is not this note.
 
 ### The notification
 
@@ -171,7 +171,7 @@ When the new version is numerically lower (`MAJOR.MINOR.PATCH`, compared segment
 
 ### No contract
 
-When the active install has no usable contract (any `contract_*` reason: missing, unreadable, not JSON, invalid, too old), there is no note and no row, and `/status` shows the adapter's error. The watcher creates one notification titled `The active Loomwright has no usable contract`, whose body names the install and the adapter's message. It is created only when no notification with the same source, title and body exists. That makes it once per install path, which for a marketplace install is once per version, and a restart does not repeat it. When no install is found at all (`installed_plugins_missing`, `not_installed` and the other install reasons), the watcher does nothing: reporting that is `/status`'s job.
+When the active install has no usable contract (any `contract_*` reason: missing, unreadable, not JSON, invalid, too old), there is no note and no row, and `/status` shows the adapter's error. The watcher creates one notification titled `The active Loomwright has no usable contract`, whose body names the install and the adapter's message. It is created only when no notification with the same source, title and body exists, and the body carries both the install path and the adapter's message. That makes it once per install path and message, which for a marketplace install is once per version, and a restart does not repeat it. A different problem with the same install (a missing `capabilities.json` that comes back as invalid JSON, say) changes the message, so it gets a new notification. When no install is found at all (`installed_plugins_missing`, `not_installed` and the other install reasons), the watcher does nothing: reporting that is `/status`'s job.
 
 ### Its limits
 
@@ -181,6 +181,7 @@ When the active install has no usable contract (any `contract_*` reason: missing
 - An unexpected error in a check is one `due_work_failed` row, and the next check, a minute later, tries again.
 - A re-activated triple's row is replaced, so its first-seen time is its latest sighting, not its first.
 - If the kernel crashes between the note and the row, and the install changes back before the next check, that note stays without a row or a notification.
+- A kernel whose first observation is already above `KNOWN_CONTRACT_SCHEMA_VERSION` does not flag it, because the baseline is silent. It is flagged only if a later change goes down to the known version and back up. `/status` still shows `contract_schema_version`.
 - The note says only what the contract records. Release notes can join the contract later (a Loomwright change).
 - The requirement said a newer contract schema version makes the adapter refuse sessions. It does not: D32 tolerates newer contracts, so the note says sessions are not refused.
 
