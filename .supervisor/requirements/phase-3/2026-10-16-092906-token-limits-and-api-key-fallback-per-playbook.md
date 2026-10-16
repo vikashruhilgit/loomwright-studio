@@ -65,3 +65,9 @@ The meter counts tokens per session, agent and day; `budget.playbook` exists but
 kernel/src/budget/
 kernel/test/budget-playbook.test.ts
 docs/architecture/budget.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-16T12:12:54Z
+- **Brief:** .supervisor/jobs/done/2026-10-16-playbook-token-limits-api-key-fallback.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/68
