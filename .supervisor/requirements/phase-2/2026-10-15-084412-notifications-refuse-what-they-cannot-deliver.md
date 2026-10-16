@@ -52,3 +52,9 @@ kernel/src/notifications/
 kernel/test/notifications.test.ts
 docs/architecture/notifications.md
 docs/evidence/phase-2-notifier-probe.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-16T01:39:29Z
+- **Brief:** .supervisor/jobs/done/2026-10-15-notifications-refuse-what-they-cannot-deliver.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/60
