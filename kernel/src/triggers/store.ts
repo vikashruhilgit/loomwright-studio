@@ -38,6 +38,7 @@ import { KILL_SWITCH_ENGAGED, KILL_SWITCH_RELEASED, isKillSwitchEngaged } from "
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
 import { getWorkStep, runStep } from "../loop/steps.js";
+import { InvalidNotificationError, MAX_NOTIFICATION_TITLE, recordNotification } from "../notifications/record.js";
 import type { Store } from "../store/store.js";
 import { canonicalZone, checkTimeZone, nextCronFire, parseCron, scheduleIdentity } from "./cron.js";
 import type { CronSchedule } from "./cron.js";
@@ -74,9 +75,6 @@ export const MAX_TRIGGER_TEXT = 2_000;
  * tick. Beyond it the audit event says `missed_at_least: true`.
  */
 export const MAX_COUNTED_INSTANTS = 10_000;
-
-/** The URL scheme of a notification's deep link (migration 11). */
-export const NOTIFICATION_DEEP_LINK_PREFIX = "loomwright-studio://notifications/";
 
 /** Why a trigger operation was refused; `message` names the problem for the agent or the owner. */
 export type TriggerErrorCode = "invalid_spec" | "invalid_input" | "not_found" | "not_owner" | "owner_off" | "needs_confirmation";
@@ -315,6 +313,8 @@ function checkText(text: unknown): string {
   if (typeof text !== "string" || text.trim() === "" || text.length > MAX_TRIGGER_TEXT) {
     throw new TriggerError("invalid_input", `a trigger's text must be 1-${MAX_TRIGGER_TEXT} characters`);
   }
+  // `recordNotification` refuses a NUL (a `notify` body is this text): refused here, before anything is stored.
+  if (text.includes("\u0000")) throw new TriggerError("invalid_input", "a trigger's text must not contain a NUL character");
   return text;
 }
 
@@ -349,6 +349,7 @@ function nextTriggerId(store: Store): number {
  */
 export function registerTrigger(store: Store, params: RegisterParams, now: Date): Registered {
   if (typeof params.agent !== "string" || params.agent === "") throw new TriggerError("invalid_input", "a trigger needs an owning agent");
+  if (params.agent.includes("\u0000")) throw new TriggerError("invalid_input", "a trigger's owning agent must not contain a NUL character");
   if (!isOneOf(TRIGGER_KINDS, params.kind)) throw new TriggerError("invalid_input", `kind must be one of ${TRIGGER_KINDS.join(", ")}`);
   if (!isOneOf(TRIGGER_ACTIONS, params.action)) throw new TriggerError("invalid_input", `action must be one of ${TRIGGER_ACTIONS.join(", ")}`);
   const text = checkText(params.text);
@@ -632,20 +633,9 @@ function planFire(store: Store, row: TriggerRow, first: string, now: Date, windo
   return { toFire, missedKillSwitch, atLeast, latestDue, next: nextFreeCronFire(store, row.id, schedule, spec.tz, now) };
 }
 
-/**
- * Record one notification row with migration 11's column contract (`source`,
- * `title`, `body`, `deep_link` `loomwright-studio://notifications/<id>`,
- * `delivery_status` `pending` by default): the row's id is known only after
- * the insert, so `deep_link` starts as '' (the column is NOT NULL) and is set
- * by the next statement, in the caller's transaction. The one place this
- * feature writes `notifications` (item 03's record function can replace it).
- */
-function recordNotification(store: Store, n: { readonly source: string; readonly title: string; readonly body: string }, at: string): number {
-  const id = Number(
-    store.prepare("INSERT INTO notifications (source, title, body, deep_link, created_at) VALUES (?, ?, ?, '', ?)").run(n.source, n.title, n.body, at).lastInsertRowid,
-  );
-  store.prepare("UPDATE notifications SET deep_link = ? WHERE id = ?").run(`${NOTIFICATION_DEEP_LINK_PREFIX}${id}`, id);
-  return id;
+/** A `notify` fire's title: `Trigger <id> (<agent>)`, clipped to `MAX_NOTIFICATION_TITLE`. */
+function notifyTitle(id: number, agent: string): string {
+  return clip(`Trigger ${id} (${agent})`, MAX_NOTIFICATION_TITLE - 1);
 }
 
 /** What `fireDueTriggers` did for one trigger. */
@@ -693,7 +683,7 @@ function fireOne(store: Store, id: number, scheduledAt: string, plan: FirePlan, 
 
   let effect: { notification_id: number } | { queue_id: number };
   if (row.action === "notify") {
-    effect = { notification_id: recordNotification(store, { source: `trigger:${id}`, title: `Trigger ${id} (${row.owning_agent})`, body: row.action_payload }, at) };
+    effect = { notification_id: recordNotification(store, { source: `trigger:${id}`, title: notifyTitle(id, row.owning_agent), body: row.action_payload }, now).id };
   } else if (row.action === "wake_agent") {
     const queued = enqueueEvent(
       store,
@@ -805,7 +795,14 @@ export function fireDueTriggers(store: Store, now: Date = new Date()): TriggerFi
       const after = readRow(store, row.id);
       outcomes.push(after?.enabled === 1 && after.next_fire_at === scheduledAt ? movePastDone(store, row.id, scheduledAt, plan, now) : outcome);
     } catch (err) {
-      failures.push(`trigger ${row.id}: ${errorMessage(err)}`);
+      // A stored row the notification record refuses (a NUL from before registration
+      // refused one) fails the same way on every tick: parked, like an unreadable spec.
+      if (err instanceof InvalidNotificationError) {
+        parkUnreadable(store, row.id, scheduledAt);
+        failures.push(`trigger ${row.id}: ${errorMessage(err)} (parked: no next fire)`);
+      } else {
+        failures.push(`trigger ${row.id}: ${errorMessage(err)}`);
+      }
     }
   }
   if (failures.length > 0) throw new Error(clip(failures.join("; ")));

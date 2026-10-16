@@ -13,7 +13,7 @@ import { API_TOKEN_KEYCHAIN_SERVICE, engageKillSwitch, releaseKillSwitch, startA
 import type { ApiServer } from "../src/api/index.js";
 import { APPROVALS_HELP, APPROVE_HELP, DENY_HELP } from "../src/approvals/index.js";
 import { USAGE, runCli } from "../src/cli/index.js";
-import { NOTIFICATIONS_HELP } from "../src/notifications/index.js";
+import { MAX_NOTIFICATION_TITLE, NOTIFICATIONS_HELP } from "../src/notifications/index.js";
 import { ASK_HELP } from "../src/brain/index.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { ContributedTool, FeatureContribution } from "../src/features/index.js";
@@ -912,5 +912,47 @@ describe("review fixes: done instants, repeats after an owner's off, spec identi
     const bare = registerTrigger(env.store, { ...hourly, text: "bare" }, env.now());
     env.store.prepare("UPDATE triggers SET kind = 'once', enabled = 0, enabled_changed_by = 'owner', last_result = 'fired' WHERE id = ?").run(bare.id);
     expect(() => removeTrigger(env.store, { id: bare.id, agent: "wright" }, env.now())).toThrow(/turned off by the owner/);
+  });
+});
+
+describe("a NUL in a trigger: refused at registration, never recorded as a notification", () => {
+  it("registerTrigger refuses a NUL in the text or the agent as invalid_input, before any write", () => {
+    const base = { agent: "wright", kind: "once", spec: "2026-10-14T17:00:00+05:30", action: "notify", text: "check X" } as const;
+    for (const params of [{ ...base, text: "check\u0000X" }, { ...base, agent: "wr\u0000ight" }]) {
+      expect(() => registerTrigger(env.store, params, env.now())).toThrow(TriggerError);
+      expect(() => registerTrigger(env.store, params, env.now())).toThrow(/NUL/);
+    }
+    expect(listTriggers(env.store, {})).toEqual([]);
+    expect(triggerEvents()).toEqual([]);
+  });
+
+  it("a notify fire goes through recordNotification: one notification_created event, linked to no session", async () => {
+    const { id } = registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T11:00:00Z", action: "notify", text: "check X" }, env.now());
+    setClock("2026-10-14T11:00:00.000Z");
+    await tick();
+    const [n] = notifications();
+    expect(n).toMatchObject({ source: `trigger:${id}`, title: `Trigger ${id} (wright)`, body: "check X", deep_link: `loomwright-studio://notifications/${n?.id}`, delivery_status: "pending" });
+    expect(events(env.store, "notification_created").map((e) => e.payload)).toEqual([{ id: n?.id, source: `trigger:${id}` }]);
+  });
+
+  it("a stored trigger whose text holds a NUL is parked when it falls due: no notification, no retry each tick", async () => {
+    const { id } = registerTrigger(env.store, { agent: "wright", kind: "cron", spec: "0 * * * *", tz: "UTC", action: "notify", text: "hourly" }, env.now());
+    // A row from before the registration refused a NUL.
+    env.store.prepare("UPDATE triggers SET action_payload = ? WHERE id = ?").run("hour\u0000ly", id);
+    setClock("2026-10-14T11:00:00.000Z");
+    expect(() => fireDueTriggers(env.store, env.now())).toThrow(/NUL.*parked: no next fire/);
+    expect(notifications()).toEqual([]);
+    expect(row(id)).toMatchObject({ enabled: 1, next_fire_at: null });
+    expect(fireDueTriggers(env.store, env.now())).toEqual([]);
+  });
+
+  it("an agent name long enough to overflow the title is clipped to MAX_NOTIFICATION_TITLE", async () => {
+    const agent = "a".repeat(300);
+    registerTrigger(env.store, { agent, kind: "once", spec: "2026-10-14T11:00:00Z", action: "notify", text: "x" }, env.now());
+    setClock("2026-10-14T11:00:00.000Z");
+    fireDueTriggers(env.store, env.now());
+    const [n] = notifications();
+    expect(n?.title).toHaveLength(MAX_NOTIFICATION_TITLE);
+    expect(n?.title.endsWith("…")).toBe(true);
   });
 });
