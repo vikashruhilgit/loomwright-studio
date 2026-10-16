@@ -1,0 +1,422 @@
+{
+  "test": "phase-2-exit-live",
+  "date": "2026-10-16",
+  "result": "steps 1, 3, 4 and 5 passed (harness and owner); step 2's trigger was created correctly (17:00 IST, stored 11:30Z) and its 17:00 fire is pending; phase 2 is not marked done until it is recorded",
+  "run_by": "Claude (Claude Code session) at the owner's request, owner present and watching the screen, under D33 (DECISIONS.md, added with this file)",
+  "commit": "52539afcdb494f340bae1e35b6b1e296bd4fa155",
+  "dirty_worktree": false,
+  "machine": {
+    "macos": "26.6.2",
+    "node": "v24.11.1",
+    "notifier": "terminal-notifier 2.0.0"
+  },
+  "wright_model": "claude-sonnet-5-5",
+  "extra_asks": [],
+  "service": {
+    "installed_at": "2026-10-16T02:48:22Z",
+    "install_pid": 9407,
+    "harness_start": {
+      "launchd_pid": 9407,
+      "api_json_pid": 9407,
+      "status_pid": 9407
+    }
+  },
+  "harness_summary": "/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase-2-exit-live-summary-1792118930251.json",
+  "steps": {
+    "1_reminder_fires": {
+      "outcome": "passed",
+      "harness": {
+        "started_at": "2026-10-16T02:48:50.446Z",
+        "reminder": {
+          "hhmm": "08:22",
+          "expected_fire_at": "2026-10-16T02:52:00.000Z"
+        },
+        "ask": {
+          "text": "remind me at 08:22 to check X phase2-exit-mvadc8jvfa3586-step1",
+          "tag": "phase2-exit-mvadc8jvfa3586-step1",
+          "exit": 0,
+          "reply": "I set the reminder for 08:22 IST today. It will send a notification that says \"Check X phase2-exit-mvadc8jvfa3586-step1\".",
+          "stderr": "",
+          "took_ms": 7668
+        },
+        "triggers_created": [
+          {
+            "id": 2,
+            "owning_agent": "wright",
+            "kind": "once",
+            "action": "notify",
+            "enabled": 1,
+            "next_fire_at": "2026-10-16T02:52:00.000Z",
+            "by_session": 1,
+            "by_tag": 1
+          }
+        ],
+        "other_new_triggers": [],
+        "studio_triggers_entry": {
+          "id": 2,
+          "owning_agent": "wright",
+          "playbook": null,
+          "kind": "once",
+          "spec": {
+            "at": "2026-10-16T08:22:00+05:30"
+          },
+          "action": "notify",
+          "text": "Check X phase2-exit-mvadc8jvfa3586-step1",
+          "enabled": true,
+          "enabled_changed_by": null,
+          "enabled_changed_at": null,
+          "next_fire_at": "2026-10-16T02:52:00.000Z",
+          "last_fired_at": null,
+          "last_result": null,
+          "created_by": "agent",
+          "created_at": "2026-10-16T02:48:55.511Z"
+        },
+        "notifications": [
+          {
+            "id": 2,
+            "source": "trigger:2",
+            "title": "Trigger 2 (wright)",
+            "deep_link": "loomwright-studio://notifications/2",
+            "created_at": "2026-10-16T02:52:00.313Z",
+            "delivery_status": "delivered",
+            "delivery_detail": "posted by /opt/homebrew/bin/terminal-notifier; a click runs studio notifications show 2 in Terminal",
+            "delivered_at": "2026-10-16T02:52:01.502Z"
+          }
+        ],
+        "fired_late_ms": 313,
+        "trigger_events": {
+          "trigger_fired": 1,
+          "trigger_registered": 1
+        },
+        "event_kinds": {
+          "event_done": 1,
+          "event_enqueued": 1,
+          "notification_created": 1,
+          "session_status": 3,
+          "tool_decision": 1,
+          "trigger_fired": 1,
+          "trigger_registered": 1
+        },
+        "took_ms": 191489
+      },
+      "owner": {
+        "notification_appeared": true,
+        "title_and_body": "Trigger 2 (wright) / Check X phase2-exit-mvadc8jvfa3586-step1",
+        "click_opened_terminal": true,
+        "terminal_output": "notification #2\n  created:   2026-10-16T02:52:00.313Z\n  source:    trigger:2\n  delivery:  delivered (posted by /opt/homebrew/bin/terminal-notifier; a click runs studio notifications show 2 in Terminal)\n  delivered: 2026-10-16T02:52:01.502Z\n  deep link: loomwright-studio://notifications/2\n  title:     Trigger 2 (wright)\n  body:\n    Check X phase2-exit-mvadc8jvfa3586-step1\n  trigger:   #2, action notify, next fire none",
+        "terminal_command": "STUDIO_DATA_DIR='~/.loomwright-studio' '~/.nvm/versions/node/v24.11.1/bin/node' '~/.loomwright-studio/app/0.0.0/dist/cli/index.js' notifications show 2 (home directory shown as ~)",
+        "prompts": "none reported"
+      },
+      "findings": []
+    },
+    "2_literal_5pm": {
+      "outcome": "PENDING",
+      "ask": {
+        "text": "remind me at 5pm to check X",
+        "run_by": "Claude, at the owner's request, at 2026-10-16T02:48:31Z (08:18 IST), before the harness",
+        "exit": 0,
+        "reply": "I set a reminder to check X for today, 5:00 PM IST (11:30 UTC). It will arrive as a notification."
+      },
+      "trigger_row": "#1 wright: once at 2026-10-16T17:00:00+05:30, notify \"Reminder: check X\"; on; next fire 2026-10-16 17:00 +05:30 (stored next_fire_at 2026-10-16T11:30:00.000Z); created by agent",
+      "owner": {
+        "notification_appeared_at_17_00": null,
+        "notification_row": null
+      },
+      "findings": []
+    },
+    "3_reminder_off": {
+      "outcome": "passed",
+      "harness": {
+        "started_at": "2026-10-16T02:52:01.937Z",
+        "reminder": {
+          "hhmm": "08:26",
+          "expected_fire_at": "2026-10-16T02:56:00.000Z"
+        },
+        "ask": {
+          "text": "remind me at 08:26 to check X phase2-exit-mvadc8jvfa3586-step3",
+          "tag": "phase2-exit-mvadc8jvfa3586-step3",
+          "exit": 0,
+          "reply": "I've set the reminder. It will notify you at 08:26 today (02:56 UTC) with \"Check X phase2-exit-mvadc8jvfa3586-step3\".",
+          "stderr": "",
+          "took_ms": 7652
+        },
+        "triggers_created": [
+          {
+            "id": 3,
+            "owning_agent": "wright",
+            "kind": "once",
+            "action": "notify",
+            "enabled": 1,
+            "next_fire_at": "2026-10-16T02:56:00.000Z",
+            "by_session": 1,
+            "by_tag": 1
+          }
+        ],
+        "other_new_triggers": [],
+        "studio_triggers_entry": {
+          "id": 3,
+          "owning_agent": "wright",
+          "playbook": null,
+          "kind": "once",
+          "spec": {
+            "at": "2026-10-16T08:26:00+05:30"
+          },
+          "action": "notify",
+          "text": "Check X phase2-exit-mvadc8jvfa3586-step3",
+          "enabled": true,
+          "enabled_changed_by": null,
+          "enabled_changed_at": null,
+          "next_fire_at": "2026-10-16T02:56:00.000Z",
+          "last_fired_at": null,
+          "last_result": null,
+          "created_by": "agent",
+          "created_at": "2026-10-16T02:52:07.057Z"
+        },
+        "enabled_before_off": 1,
+        "off": {
+          "exit": 0,
+          "output": "studio: trigger 3 turned off",
+          "at": "2026-10-16T02:52:09.796Z"
+        },
+        "notifications": [],
+        "trigger_events": {
+          "trigger_registered": 1,
+          "trigger_toggled": 1
+        },
+        "trigger_row": {
+          "id": 3,
+          "enabled": 0,
+          "enabled_changed_by": "owner",
+          "next_fire_at": null,
+          "last_fired_at": null,
+          "last_result": null
+        },
+        "event_kinds": {
+          "event_done": 1,
+          "event_enqueued": 1,
+          "session_group_recorded": 2,
+          "session_group_skipped": 2,
+          "session_status": 3,
+          "tool_decision": 1,
+          "trigger_registered": 1,
+          "trigger_toggled": 1
+        },
+        "took_ms": 328045
+      },
+      "owner": {
+        "nothing_appeared": true,
+        "owner_report": "\"Nothing appeared\" (owner's answer, 2026-10-16)"
+      },
+      "findings": []
+    },
+    "4_version_change": {
+      "outcome": "passed",
+      "mode": "fixture_switch",
+      "owner_consent": "the owner asked Claude to run the harness on 2026-10-16 (\"do that for me\")",
+      "harness": {
+        "started_at": "2026-10-16T03:01:17.214Z",
+        "contract": {
+          "from_version": "17.3.0",
+          "to_version": "17.3.0-phase2-exit-test",
+          "added_command": "phase-2-exit-added",
+          "removed_skill": "agent-output",
+          "real_install_scope": "user"
+        },
+        "baseline_ms": 213,
+        "noted_after_switch_ms": 60641,
+        "note_files": [
+          "17.3.0-to-17.3.0-phase2-exit-test.md"
+        ],
+        "notifications": [
+          {
+            "id": 1,
+            "title": "Loomwright 17.3.0 → 17.3.0-phase2-exit-test",
+            "deep_link": "loomwright-studio://notifications/1",
+            "delivery_status": "delivered",
+            "delivery_detail": "posted by /opt/homebrew/bin/terminal-notifier; a click runs studio notifications show 1 in Terminal"
+          }
+        ],
+        "seen_versions": [
+          "17.3.0",
+          "17.3.0-phase2-exit-test"
+        ],
+        "note_first_lines": [
+          "<!-- loomwright-version-note from:1 to:%2Fvar%2Ffolders%2Fjh%2Fsbkxjbkj7y959rkxq2m61rbw0000gn%2FT%2Fstudio-phase2-exit-live-pDiMO7%2Fcache%2Fb|17.3.0-phase2-exit-test|1 -->",
+          "# Loomwright 17\\.3\\.0 → 17\\.3\\.0\\-phase2\\-exit\\-test",
+          "",
+          "- From: Loomwright `17.3.0` (contract 1) at `/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase2-exit-live-pDiMO7/cache/a`",
+          "- To: Loomwright `17.3.0-phase2-exit-test` (contract 1) at `/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase2-exit-live-pDiMO7/cache/b`",
+          "- Seen: 2026-10-16T03:02:17.310Z",
+          "",
+          "Built only from the two versions' `capabilities.json` contracts.",
+          "",
+          "## Added",
+          "",
+          "- Command `phase-2-exit-added` — `Added by the phase 2 exit harness (a test copy, not a real release).`"
+        ],
+        "took_ms": 130859
+      },
+      "owner": {
+        "notification_appeared": true,
+        "clicked": true,
+        "owner_report": "owner saw \"Loomwright 17.3.0 → 17.3.0-phase2-exit-test\" and clicked it (the runbook says not to). Two Terminal windows opened, \"this one and previous one\" in the owner's words: one blank with no output, the other ran `notifications show 1` against the step's temp data dir and printed: studio: kernel daemon is not running (no <tmp>/studio-phase2-exit-live-pDiMO7/data/api.json)",
+        "note": "expected: the step's temp kernel and data dir are gone once the step ends, which is why the runbook says not to click it. Not a failure of the step."
+      },
+      "findings": [
+        "observation, not a failure: a notification click opened two Terminal windows, one of them blank (owner report 2026-10-16); probably Terminal opening its default window as it launches, unconfirmed"
+      ]
+    },
+    "5_kill_9_restart": {
+      "outcome": "passed",
+      "harness": {
+        "started_at": "2026-10-16T02:57:29.984Z",
+        "reminder": {
+          "hhmm": "08:31",
+          "expected_fire_at": "2026-10-16T03:01:00.000Z"
+        },
+        "ask": {
+          "text": "remind me at 08:31 to check X phase2-exit-mvadc8jvfa3586-step5",
+          "tag": "phase2-exit-mvadc8jvfa3586-step5",
+          "exit": 0,
+          "reply": "I've set the reminder. It will notify you at 08:31 IST today: \"Check X phase2-exit-mvadc8jvfa3586-step5\".",
+          "stderr": "",
+          "took_ms": 6662
+        },
+        "triggers_created": [
+          {
+            "id": 4,
+            "owning_agent": "wright",
+            "kind": "once",
+            "action": "notify",
+            "enabled": 1,
+            "next_fire_at": "2026-10-16T03:01:00.000Z",
+            "by_session": 1,
+            "by_tag": 1
+          }
+        ],
+        "other_new_triggers": [],
+        "studio_triggers_entry": {
+          "id": 4,
+          "owning_agent": "wright",
+          "playbook": null,
+          "kind": "once",
+          "spec": {
+            "at": "2026-10-16T08:31:00+05:30"
+          },
+          "action": "notify",
+          "text": "Check X phase2-exit-mvadc8jvfa3586-step5",
+          "enabled": true,
+          "enabled_changed_by": null,
+          "enabled_changed_at": null,
+          "next_fire_at": "2026-10-16T03:01:00.000Z",
+          "last_fired_at": null,
+          "last_result": null,
+          "created_by": "agent",
+          "created_at": "2026-10-16T02:57:34.148Z"
+        },
+        "before_kill": {
+          "launchd_pid": 9407,
+          "api_json_pid": 9407
+        },
+        "killed": {
+          "pid": 9407,
+          "at": "2026-10-16T02:57:36.765Z"
+        },
+        "restarted": {
+          "pid": 58489,
+          "api_json_pid": 58489,
+          "after_ms": 1142
+        },
+        "notifications": [
+          {
+            "id": 3,
+            "source": "trigger:4",
+            "title": "Trigger 4 (wright)",
+            "deep_link": "loomwright-studio://notifications/3",
+            "created_at": "2026-10-16T03:01:00.411Z",
+            "delivery_status": "delivered",
+            "delivery_detail": "posted by /opt/homebrew/bin/terminal-notifier; a click runs studio notifications show 3 in Terminal",
+            "delivered_at": "2026-10-16T03:01:01.616Z"
+          }
+        ],
+        "trigger_events": {
+          "trigger_fired": 1,
+          "trigger_registered": 1
+        },
+        "event_kinds": {
+          "event_done": 1,
+          "event_enqueued": 1,
+          "notification_created": 1,
+          "session_group_recorded": 2,
+          "session_group_skipped": 2,
+          "session_status": 3,
+          "tool_decision": 1,
+          "trigger_fired": 1,
+          "trigger_registered": 1
+        },
+        "fired_late_ms": 411,
+        "took_ms": 227226
+      },
+      "owner": {
+        "exactly_one_notification_appeared": true,
+        "owner_report": "i see the notification: tigher 4 wright; later: \"also i see trigger 4 wright notification havent cliked on it\" (owner's words, 2026-10-16; the step 5 notification is #3, title \"Trigger 4 (wright)\")",
+        "owner_answer": "\"Exactly one\" (owner's answer, 2026-10-16)"
+      },
+      "findings": []
+    }
+  },
+  "store_evidence": {
+    "tool_decisions_2026_10_16": [
+      {
+        "event": 39,
+        "session": 5
+      },
+      {
+        "event": 48,
+        "session": 6
+      },
+      {
+        "event": 57,
+        "session": 7
+      }
+    ],
+    "payload": {
+      "tool": "mcp__kernel__kernel_trigger_register",
+      "decision": "allow",
+      "reason": "tool_allowed"
+    },
+    "tool_search_denials_2026_10_16": 0,
+    "note": "every Wright session of this run called the kernel tool directly; the store's only ToolSearch denials are the 2026-10-15 run's (events 14, 20, 30)"
+  },
+  "run_tag": "phase2-exit-mvadc8jvfa3586",
+  "cleanup": {
+    "harness": [
+      {
+        "trigger_id": 2,
+        "when": "after_each",
+        "skipped": "already_spent",
+        "last_result": "fired",
+        "enabled_changed_by": null
+      },
+      {
+        "trigger_id": 3,
+        "when": "after_each",
+        "skipped": "already_off",
+        "last_result": null,
+        "enabled_changed_by": "owner"
+      },
+      {
+        "trigger_id": 4,
+        "when": "after_each",
+        "skipped": "already_spent",
+        "last_result": "fired",
+        "enabled_changed_by": null
+      }
+    ],
+    "checks": {
+      "service": "running, pid 58489 (launchd's restart after step 5)",
+      "tagged_triggers": "#2, #3, #4 all off",
+      "harness_processes": "none"
+    }
+  }
+}

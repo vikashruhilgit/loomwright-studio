@@ -7,7 +7,7 @@ Phase 2 is done when two things hold in the running system ([`docs/ROADMAP.md`](
 
 Both are already proven deterministically in CI by `kernel/test/phase-2-exit.test.ts` (a stand-in Wright, a fake clock and a stub notifier). This runbook is the live half: a real Wright model, the kernel installed as a launchd agent, real notifications on this Mac. Phase 1's live run is the precedent ([evidence](phase-1-exit-live-2026-10-06.json)).
 
-Only the owner runs this. It uses his subscription, his launchd service and his screen. No agent runs any part of it, and no agent fills in any result below.
+The owner decides when this runs. It uses the owner's subscription, launchd service and screen. The owner runs it, or has an agent run it while watching the screen ([D33](../DECISIONS.md)). Either way, every `owner` field below holds only what the owner reports seeing, and the evidence file's `run_by` says who ran it.
 
 ## What this run does to the machine
 
