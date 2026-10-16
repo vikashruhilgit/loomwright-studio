@@ -3,7 +3,9 @@ import type { Store } from "../store/store.js";
 
 /**
  * D28's API-key fallback: when the subscription cap is hit, continue on the
- * user's own API key under a hard dollar ceiling the user sets.
+ * user's own API key under a dollar ceiling the user sets. The ceiling is
+ * checked at admission only, so running sessions can pass it (see
+ * docs/architecture/budget.md, "API-key fallback").
  *
  * D28 makes this a per-playbook opt-in, and this is the shape a playbook
  * carries (`playbooks.api_key_fallback_json`, migration 13). The playbook gate
@@ -13,7 +15,7 @@ import type { Store } from "../store/store.js";
  */
 export interface ApiKeyFallbackPolicy {
   readonly enabled: boolean;
-  /** The hard spending ceiling in US dollars; `null` means none set, which keeps the fallback inactive. */
+  /** The spending ceiling in US dollars, checked at admission only (see docs/architecture/budget.md); `null` means none set, which keeps the fallback inactive. */
   readonly dollarCeilingUsd: number | null;
 }
 
