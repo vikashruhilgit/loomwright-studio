@@ -23,7 +23,7 @@ import { triggerTools } from "./tools.js";
 export { TRIGGER_TOOL_NAMES } from "./tools.js";
 export { TRIGGERS_HELP, TRIGGERS_SUBCOMMAND, formatTriggers, triggersSubcommand } from "./cli.js";
 export type { TriggersSubcommandDeps } from "./cli.js";
-export { checkTimeZone, formatZoned, nextCronFire, parseCron } from "./cron.js";
+export { MAX_CRON_LENGTH, checkTimeZone, formatZoned, nextCronFire, parseCron } from "./cron.js";
 export type { CronSchedule } from "./cron.js";
 export {
   MAX_COUNTED_INSTANTS,
@@ -40,6 +40,7 @@ export {
   registerTrigger,
   removeTrigger,
   setTriggerEnabled,
+  updateTriggerSpec,
 } from "./store.js";
 export type { TriggerFireOutcome, TriggerSpec, TriggerView } from "./store.js";
 

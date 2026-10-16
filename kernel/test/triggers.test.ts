@@ -36,6 +36,7 @@ import {
   setTriggerEnabled,
   triggersContribution,
   triggersSubcommand,
+  updateTriggerSpec,
 } from "../src/triggers/index.js";
 import type { TriggersSubcommandDeps } from "../src/triggers/index.js";
 import { count, events, loopEnv } from "./loop-helpers.js";
@@ -498,7 +499,7 @@ describe("the kill switch", () => {
 });
 
 describe("audit: one trigger_* event per change, in the change's transaction", () => {
-  it("register, fire, toggle off, toggle on and remove each append exactly one event of their own kind", async () => {
+  it("register, fire, toggle off, toggle on, re-schedule and remove each append exactly one event of their own kind", async () => {
     const kinds = (): string[] => triggerEvents().map((e) => e.kind);
     const { id } = value<{ id: number }>(await register({ kind: "cron", spec: "0 * * * *", tz: "UTC", action: "notify", text: "hourly" }));
     expect(kinds()).toEqual(["trigger_registered"]);
@@ -511,8 +512,12 @@ describe("audit: one trigger_* event per change, in the change's transaction", (
     expect(kinds()).toEqual(["trigger_registered", "trigger_fired", "trigger_toggled"]);
     setTriggerEnabled(env.store, { id, enabled: true, by: "owner" }, env.now());
     expect(kinds()).toEqual(["trigger_registered", "trigger_fired", "trigger_toggled", "trigger_toggled"]);
+    updateTriggerSpec(env.store, { id, agent: "wright", kind: "cron", spec: "30 * * * *", tz: "UTC" }, env.now());
+    // The same spec again is no change: no event.
+    updateTriggerSpec(env.store, { id, agent: "wright", kind: "cron", spec: "30 * * * *", tz: "UTC" }, env.now());
+    expect(kinds()).toEqual(["trigger_registered", "trigger_fired", "trigger_toggled", "trigger_toggled", "trigger_updated"]);
     removeTrigger(env.store, { id, agent: "wright" }, env.now());
-    expect(kinds()).toEqual(["trigger_registered", "trigger_fired", "trigger_toggled", "trigger_toggled", "trigger_removed"]);
+    expect(kinds()).toEqual(["trigger_registered", "trigger_fired", "trigger_toggled", "trigger_toggled", "trigger_updated", "trigger_removed"]);
     const [registered, , off, on] = triggerEvents();
     expect(registered).toMatchObject({ actor: "kernel", session_id: 1, payload: { trigger_id: id, owning_agent: "wright", kind: "cron", action: "notify", created_by: "agent" } });
     expect(off?.payload).toMatchObject({ trigger_id: id, enabled: false, was_enabled: true, by: "owner", next_fire_at: null });
@@ -955,5 +960,152 @@ describe("a NUL in a trigger: refused at registration, never recorded as a notif
     const [n] = notifications();
     expect(n?.title).toHaveLength(MAX_NOTIFICATION_TITLE);
     expect(n?.title.endsWith("…")).toBe(true);
+  });
+});
+
+describe("playbook-linked triggers (phase 3 item 02)", () => {
+  /** A `playbooks` row written directly (the playbooks feature owns the real writes). */
+  function playbookRow(slug: string, status: string): void {
+    env.store.prepare("INSERT INTO playbooks (slug, name, owning_agent, intent, status) VALUES (?, 'P', 'wright', 'x', ?)").run(slug, status);
+  }
+
+  const queuedMessages = (): number => count(env.store, "SELECT count(*) FROM event_queue WHERE kind = 'message'");
+
+  it("a linked trigger of a playbook that is not enabled starts no work: no notification, no message, one trigger_missed (playbook_not_enabled); a cron moves on, a once is spent (AC8)", async () => {
+    playbookRow("hourly-notes", "draft");
+    playbookRow("wake-me", "disabled");
+    const cron = registerTrigger(env.store, { agent: "wright", kind: "cron", spec: "0 * * * *", tz: "UTC", action: "notify", text: "Playbook hourly-notes", playbook: "hourly-notes" }, env.now());
+    const once = registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T11:00:00Z", action: "wake_agent", text: "Playbook wake-me", playbook: "wake-me" }, env.now());
+    // A link to a playbook that does not exist is not enabled either.
+    const orphan = registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T11:00:00Z", action: "notify", text: "Playbook gone", playbook: "gone" }, env.now());
+
+    expect(fireDueTriggers(env.store, new Date("2026-10-14T11:00:00.000Z"))).toEqual([
+      { trigger_id: cron.id, scheduled_at: "2026-10-14T11:00:00.000Z", result: "skipped" },
+      { trigger_id: once.id, scheduled_at: "2026-10-14T11:00:00.000Z", result: "skipped" },
+      { trigger_id: orphan.id, scheduled_at: "2026-10-14T11:00:00.000Z", result: "skipped" },
+    ]);
+    expect(notifications()).toEqual([]);
+    expect(queuedMessages()).toBe(0);
+    expect(events(env.store, "trigger_fired")).toEqual([]);
+    expect(events(env.store, "trigger_missed").map((e) => e.payload)).toEqual([
+      expect.objectContaining({ trigger_id: cron.id, reason: "playbook_not_enabled", playbook: "hourly-notes", playbook_status: "draft", scheduled_at: "2026-10-14T11:00:00.000Z", enabled: true, next_fire_at: "2026-10-14T12:00:00.000Z" }),
+      expect.objectContaining({ trigger_id: once.id, reason: "playbook_not_enabled", playbook: "wake-me", playbook_status: "disabled", enabled: false, next_fire_at: null }),
+      expect.objectContaining({ trigger_id: orphan.id, reason: "playbook_not_enabled", playbook: "gone", playbook_status: null, enabled: false }),
+    ]);
+    // `last_result` keeps its closed set: this path leaves it as it was.
+    expect(row(cron.id)).toMatchObject({ enabled: 1, next_fire_at: "2026-10-14T12:00:00.000Z", last_fired_at: null, last_result: null });
+    expect(row(once.id)).toMatchObject({ enabled: 0, next_fire_at: null, last_fired_at: null, last_result: null });
+    // The instant is the step's key: recorded once, never fired later.
+    expect(count(env.store, "SELECT count(*) FROM work_steps WHERE key = ? AND status = 'done'", `trigger:${cron.id}:2026-10-14T11:00:00.000Z`)).toBe(1);
+
+    // Enabling the playbook afterwards does not bring the recorded instant back.
+    env.store.prepare("UPDATE playbooks SET status = 'enabled' WHERE slug = 'hourly-notes'").run();
+    expect(fireDueTriggers(env.store, new Date("2026-10-14T11:00:30.000Z"))).toEqual([]);
+    expect(notifications()).toEqual([]);
+    expect(events(env.store, "trigger_missed")).toHaveLength(3);
+  });
+
+  it("a linked trigger of an enabled playbook fires as an unlinked trigger does (what a playbook fire does is item 08's)", async () => {
+    playbookRow("on-now", "enabled");
+    const { id } = registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T11:00:00Z", action: "notify", text: "Playbook on-now", playbook: "on-now" }, env.now());
+    expect(fireDueTriggers(env.store, new Date("2026-10-14T11:00:00.000Z"))).toMatchObject([{ trigger_id: id, result: "fired" }]);
+    expect(notifications()).toHaveLength(1);
+    expect(events(env.store, "trigger_missed")).toEqual([]);
+  });
+
+  it("registerTrigger stores the link and names it in trigger_registered; an unlinked trigger stores null and its event has no playbook key", () => {
+    const linked = registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T11:00:00Z", action: "wake_agent", text: "Playbook x", playbook: "x" }, env.now());
+    const plain = registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T11:00:00Z", action: "notify", text: "y" }, env.now());
+    expect(env.store.prepare<[number], { playbook: string | null }>("SELECT playbook FROM triggers WHERE id = ?").get(linked.id)?.playbook).toBe("x");
+    expect(env.store.prepare<[number], { playbook: string | null }>("SELECT playbook FROM triggers WHERE id = ?").get(plain.id)?.playbook).toBeNull();
+    const [first, second] = events(env.store, "trigger_registered");
+    expect(first?.payload).toMatchObject({ trigger_id: linked.id, playbook: "x" });
+    expect(second?.payload).not.toHaveProperty("playbook");
+    expect(() => registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T11:00:00Z", action: "notify", text: "z", playbook: "a\u001bb" }, env.now())).toThrow(TriggerError);
+  });
+
+  it("formatTriggers names a linked trigger's playbook on its first line (bare, or quoted when odd); an unlinked block is unchanged", () => {
+    const base = {
+      id: 4,
+      owning_agent: "wright",
+      kind: "cron",
+      spec: { cron: "0 9 * * *", tz: "UTC" },
+      action: "wake_agent",
+      text: "Playbook daily-notes",
+      enabled: true,
+      enabled_changed_by: null,
+      next_fire_at: "2026-10-15T09:00:00.000Z",
+      last_fired_at: null,
+      last_result: null,
+      created_by: "agent",
+      created_at: WED_10Z,
+    };
+    const unlinked = formatTriggers([{ ...base, playbook: null }], "UTC", false);
+    expect(unlinked.split("\n")[0]).toBe('#4 wright: cron "0 9 * * *" in UTC, wake_agent "Playbook daily-notes"');
+    expect(formatTriggers([base], "UTC", false)).toBe(unlinked);
+    const linked = formatTriggers([{ ...base, playbook: "daily-notes" }], "UTC", false).split("\n");
+    expect(linked[0]).toBe('#4 wright: cron "0 9 * * *" in UTC, wake_agent "Playbook daily-notes"; playbook daily-notes');
+    expect(linked.slice(1)).toEqual(unlinked.split("\n").slice(1));
+    expect(formatTriggers([{ ...base, playbook: "odd\u001b[2J slug" }], "UTC", false).split("\n")[0]).toContain('; playbook "odd\\u001b[2J slug"');
+  });
+
+  it("updateTriggerSpec keeps the id and rewrites the kind, spec and next fire in place, with one trigger_updated (AC9)", () => {
+    const { id } = registerTrigger(env.store, { agent: "wright", kind: "cron", spec: "0 9 * * 1-5", tz: "Asia/Kolkata", action: "wake_agent", text: "Playbook p", playbook: "p" }, env.now());
+    expect(updateTriggerSpec(env.store, { id, agent: "wright", kind: "cron", spec: "0 * * * *", tz: "UTC", sessionId: 1 }, env.now())).toEqual({
+      id,
+      next_fire_at: "2026-10-14T11:00:00.000Z",
+      changed: true,
+    });
+    expect(count(env.store, "SELECT count(*) FROM triggers")).toBe(1);
+    expect(row(id)).toMatchObject({ id, kind: "cron", spec_json: JSON.stringify({ cron: "0 * * * *", tz: "UTC" }), enabled: 1, next_fire_at: "2026-10-14T11:00:00.000Z" });
+    expect(env.store.prepare<[number], { playbook: string }>("SELECT playbook FROM triggers WHERE id = ?").get(id)?.playbook).toBe("p");
+    const [updated] = events(env.store, "trigger_updated");
+    expect(updated).toMatchObject({
+      actor: "kernel",
+      session_id: 1,
+      payload: { trigger_id: id, playbook: "p", kind: "cron", spec: { cron: "0 * * * *", tz: "UTC" }, previous_kind: "cron", previous_spec: { cron: "0 9 * * 1-5", tz: "Asia/Kolkata" }, enabled: true, next_fire_at: "2026-10-14T11:00:00.000Z", by: "agent" },
+    });
+    // Another kind: same id again.
+    expect(updateTriggerSpec(env.store, { id, agent: "wright", kind: "once", spec: "2026-10-14T12:00:00Z" }, env.now())).toMatchObject({ id, next_fire_at: "2026-10-14T12:00:00.000Z", changed: true });
+    expect(row(id)).toMatchObject({ kind: "once", spec_json: JSON.stringify({ at: "2026-10-14T12:00:00Z" }) });
+    // The same spec: no change, no event.
+    expect(updateTriggerSpec(env.store, { id, agent: "wright", kind: "once", spec: "2026-10-14T12:00:00Z" }, env.now())).toMatchObject({ id, changed: false });
+    expect(events(env.store, "trigger_updated")).toHaveLength(2);
+    expect(count(env.store, "SELECT count(*) FROM triggers")).toBe(1);
+  });
+
+  it("updateTriggerSpec refuses before any write: an invalid spec, another agent's, a missing one, and the owner's off (of this trigger, or of one the new schedule re-registers)", () => {
+    const { id } = registerTrigger(env.store, { agent: "wright", kind: "cron", spec: "0 9 * * *", tz: "UTC", action: "notify", text: "t" }, env.now());
+    const before = row(id);
+    const code = (fn: () => unknown): string | undefined => {
+      try {
+        fn();
+      } catch (err) {
+        return err instanceof TriggerError ? err.code : "other";
+      }
+      return undefined;
+    };
+    expect(code(() => updateTriggerSpec(env.store, { id, agent: "wright", kind: "cron", spec: "61 * * * *", tz: "UTC" }, env.now()))).toBe("invalid_spec");
+    expect(code(() => updateTriggerSpec(env.store, { id, agent: "wright", kind: "once", spec: "2026-10-14T09:00:00Z" }, env.now()))).toBe("invalid_spec");
+    expect(code(() => updateTriggerSpec(env.store, { id, agent: "scout", kind: "cron", spec: "0 8 * * *", tz: "UTC" }, env.now()))).toBe("not_owner");
+    expect(code(() => updateTriggerSpec(env.store, { id: 999, agent: "wright", kind: "cron", spec: "0 8 * * *", tz: "UTC" }, env.now()))).toBe("not_found");
+    expect(row(id)).toEqual(before);
+    expect(events(env.store, "trigger_updated")).toEqual([]);
+
+    // Another trigger with the same text the owner turned off: re-scheduling onto its schedule would re-register it.
+    const other = registerTrigger(env.store, { agent: "wright", kind: "cron", spec: "0 8 * * *", tz: "UTC", action: "notify", text: "t" }, env.now());
+    setTriggerEnabled(env.store, { id: other.id, enabled: false, by: "owner" }, env.now());
+    expect(code(() => updateTriggerSpec(env.store, { id, agent: "wright", kind: "cron", spec: "0 8 * * *", tz: "UTC" }, env.now()))).toBe("owner_off");
+    // This trigger, turned off by the owner: final for agents.
+    setTriggerEnabled(env.store, { id, enabled: false, by: "owner" }, env.now());
+    expect(code(() => updateTriggerSpec(env.store, { id, agent: "wright", kind: "cron", spec: "0 7 * * *", tz: "UTC" }, env.now()))).toBe("owner_off");
+    expect(events(env.store, "trigger_updated")).toEqual([]);
+  });
+
+  it("a trigger an agent turned off stays off when re-scheduled: no next fire until it is turned on", () => {
+    const { id } = registerTrigger(env.store, { agent: "wright", kind: "cron", spec: "0 9 * * *", tz: "UTC", action: "notify", text: "t" }, env.now());
+    setTriggerEnabled(env.store, { id, enabled: false, by: "agent" }, env.now());
+    expect(updateTriggerSpec(env.store, { id, agent: "wright", kind: "cron", spec: "0 * * * *", tz: "UTC" }, env.now())).toEqual({ id, next_fire_at: null, changed: true });
+    expect(row(id)).toMatchObject({ enabled: 0, next_fire_at: null, spec_json: JSON.stringify({ cron: "0 * * * *", tz: "UTC" }) });
   });
 });

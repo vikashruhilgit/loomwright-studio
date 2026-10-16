@@ -31,9 +31,17 @@
 // `already_done`) instead of staying due at it for ever.
 //
 // The owner's off is final for agents: an agent cannot re-enable, re-register
-// (same agent, kind, schedule, action and text) or remove a trigger the owner
-// turned off (`enabled = 0`, `enabled_changed_by = 'owner'`, and not a `once`
-// that was spent after its last turn-on). Trigger ids are never reused.
+// (same agent, kind, schedule, action and text), re-schedule or remove a
+// trigger the owner turned off (`enabled = 0`, `enabled_changed_by = 'owner'`,
+// and not a `once` that was spent after its last turn-on).
+// Trigger ids are never reused.
+//
+// A trigger linked to a playbook (`triggers.playbook`, the playbook's slug)
+// never starts work unless that playbook is `enabled`: its due instant is
+// recorded as a miss (`trigger_missed`, reason `playbook_not_enabled`) in the
+// same per-instant work step a fire would use, so it is never fired later.
+// The status is read with raw SQL: this module never imports the playbooks
+// feature (that one depends on this one).
 import { KILL_SWITCH_ENGAGED, KILL_SWITCH_RELEASED, isKillSwitchEngaged } from "../api/kill-switch.js";
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
@@ -64,7 +72,7 @@ export const TRIGGER_RESULTS = ["fired", "missed_kill_switch"] as const;
 export type TriggerResult = (typeof TRIGGER_RESULTS)[number];
 
 /** The audit event kinds this feature appends (actor `kernel`), one per change. */
-export const TRIGGER_AUDIT_KINDS = ["trigger_registered", "trigger_removed", "trigger_fired", "trigger_missed", "trigger_toggled"] as const;
+export const TRIGGER_AUDIT_KINDS = ["trigger_registered", "trigger_removed", "trigger_fired", "trigger_missed", "trigger_toggled", "trigger_updated"] as const;
 
 /** Longest stored text (a notification body or a message). */
 export const MAX_TRIGGER_TEXT = 2_000;
@@ -301,6 +309,11 @@ export interface RegisterParams {
   readonly text: string;
   /** The session that asked, for the audit row. */
   readonly sessionId?: number | null;
+  /**
+   * The slug of the playbook this trigger belongs to (`triggers.playbook`):
+   * set only by the playbooks feature. Absent: an ordinary trigger (null).
+   */
+  readonly playbook?: string | undefined;
 }
 
 export interface Registered {
@@ -353,6 +366,7 @@ export function registerTrigger(store: Store, params: RegisterParams, now: Date)
   if (!isOneOf(TRIGGER_KINDS, params.kind)) throw new TriggerError("invalid_input", `kind must be one of ${TRIGGER_KINDS.join(", ")}`);
   if (!isOneOf(TRIGGER_ACTIONS, params.action)) throw new TriggerError("invalid_input", `action must be one of ${TRIGGER_ACTIONS.join(", ")}`);
   const text = checkText(params.text);
+  const playbook = checkPlaybook(params.playbook);
   const checked = checkSpec(params.kind, params.spec, params.tz, now);
   const at = now.toISOString();
   return store.transaction((): Registered => {
@@ -368,18 +382,125 @@ export function registerTrigger(store: Store, params: RegisterParams, now: Date)
     const id = nextTriggerId(store);
     store
       .prepare(
-        `INSERT INTO triggers (id, owning_agent, kind, spec_json, action, action_payload, created_by, enabled, next_fire_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'agent', 1, ?, ?)`,
+        `INSERT INTO triggers (id, owning_agent, playbook, kind, spec_json, action, action_payload, created_by, enabled, next_fire_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'agent', 1, ?, ?)`,
       )
-      .run(id, params.agent, params.kind, JSON.stringify(checked.spec), params.action, text, checked.nextFireAt, at);
+      .run(id, params.agent, playbook, params.kind, JSON.stringify(checked.spec), params.action, text, checked.nextFireAt, at);
     appendEvent(
       store,
       "trigger_registered",
       { sessionId: params.sessionId ?? null, taskId: null },
-      { trigger_id: id, owning_agent: params.agent, kind: params.kind, spec: checked.spec, action: params.action, text, created_by: "agent", next_fire_at: checked.nextFireAt },
+      {
+        trigger_id: id,
+        owning_agent: params.agent,
+        ...(playbook === null ? {} : { playbook }),
+        kind: params.kind,
+        spec: checked.spec,
+        action: params.action,
+        text,
+        created_by: "agent",
+        next_fire_at: checked.nextFireAt,
+      },
       at,
     );
     return { id, next_fire_at: checked.nextFireAt };
+  });
+}
+
+/** A playbook link as stored: `null` when absent; otherwise 1-200 characters, no control character. */
+function checkPlaybook(playbook: unknown): string | null {
+  if (playbook === undefined || playbook === null) return null;
+  if (typeof playbook !== "string" || playbook === "" || playbook.length > 200 || /[\u0000-\u001f\u007f]/.test(playbook)) {
+    throw new TriggerError("invalid_input", "a trigger's playbook must be 1-200 characters with no control character");
+  }
+  return playbook;
+}
+
+export interface UpdateSpecParams {
+  readonly id: number;
+  /** The calling agent: only its own triggers can be re-scheduled. */
+  readonly agent: string;
+  readonly kind: TriggerKind;
+  /** `once`: the instant with its offset; `cron`: the 5-field expression. */
+  readonly spec: string;
+  /** `cron` only: the IANA zone. */
+  readonly tz?: string | undefined;
+  readonly sessionId?: number | null;
+}
+
+export interface SpecUpdated {
+  readonly id: number;
+  /** UTC ISO-8601, or `null` when the trigger is off (turning it on computes it). */
+  readonly next_fire_at: string | null;
+  /** `false` when the stored kind and spec already were these (nothing written, no event). */
+  readonly changed: boolean;
+}
+
+/**
+ * Re-schedule an agent's own trigger in place (same id): rewrite `kind`,
+ * `spec_json` and, when it is on, `next_fire_at`, and append one
+ * `trigger_updated`, in one transaction (a savepoint inside the caller's). A
+ * trigger that is off stays off with no next fire (turning it on computes
+ * it). The spec is validated like a registration's (`checkSpec`). Throws
+ * `TriggerError` before any write: `invalid_input` for an unknown kind;
+ * `invalid_spec`; `not_found`; `not_owner` (another agent's); `owner_off`
+ * when the owner turned this trigger off, or turned off another trigger of
+ * this agent with the same action, text and the new schedule (re-scheduling
+ * onto it would re-register it).
+ */
+export function updateTriggerSpec(store: Store, params: UpdateSpecParams, now: Date): SpecUpdated {
+  if (!isOneOf(TRIGGER_KINDS, params.kind)) throw new TriggerError("invalid_input", `kind must be one of ${TRIGGER_KINDS.join(", ")}`);
+  const checked = checkSpec(params.kind, params.spec, params.tz, now);
+  const at = now.toISOString();
+  return store.transaction((): SpecUpdated => {
+    const row = readRow(store, params.id);
+    if (row === undefined) throw new TriggerError("not_found", `no trigger ${params.id}`);
+    if (row.owning_agent !== params.agent) {
+      throw new TriggerError("not_owner", `trigger ${row.id} belongs to agent ${row.owning_agent}; an agent can change only its own triggers`);
+    }
+    if (ownerTurnedOff(store, row)) throw ownerOff(row.id);
+    const specJson = JSON.stringify(checked.spec);
+    if (row.kind === params.kind && row.spec_json === specJson) return { id: row.id, next_fire_at: row.next_fire_at, changed: false };
+    const offByOwner = store
+      .prepare<[string, string, string, string, number], TriggerRow>(
+        `SELECT ${COLUMNS} FROM triggers
+          WHERE owning_agent = ? AND kind = ? AND action = ? AND action_payload = ? AND enabled = 0 AND enabled_changed_by = 'owner' AND id <> ?
+          ORDER BY id`,
+      )
+      .all(row.owning_agent, params.kind, row.action, row.action_payload, row.id)
+      .find((other) => storedIdentity(other) === checked.identity && ownerTurnedOff(store, other));
+    if (offByOwner !== undefined) throw ownerOff(offByOwner.id);
+    let next: string | null = null;
+    if (row.enabled === 1) {
+      if ("at" in checked.spec) {
+        // An instant this trigger already fired or recorded (the clock stepped back) would only replay its step.
+        if (instantTaken(store, row.id, checked.nextFireAt)) {
+          throw new TriggerError("invalid_spec", `once spec ${JSON.stringify(params.spec)}: trigger ${row.id} already fired or recorded that instant`);
+        }
+        next = checked.nextFireAt;
+      } else {
+        next = nextFreeCronFire(store, row.id, parseCron(checked.spec.cron), checked.spec.tz, now);
+      }
+    }
+    store.prepare("UPDATE triggers SET kind = ?, spec_json = ?, next_fire_at = ? WHERE id = ?").run(params.kind, specJson, next, row.id);
+    appendEvent(
+      store,
+      "trigger_updated",
+      { sessionId: params.sessionId ?? null, taskId: null },
+      {
+        trigger_id: row.id,
+        ...(row.playbook === null ? {} : { playbook: row.playbook }),
+        kind: params.kind,
+        spec: checked.spec,
+        previous_kind: row.kind,
+        previous_spec: parseSpec(row.spec_json),
+        enabled: row.enabled === 1,
+        next_fire_at: next,
+        by: "agent",
+      },
+      at,
+    );
+    return { id: row.id, next_fire_at: next, changed: true };
   });
 }
 
@@ -638,12 +759,25 @@ function notifyTitle(id: number, agent: string): string {
   return clip(`Trigger ${id} (${agent})`, MAX_NOTIFICATION_TITLE - 1);
 }
 
+/**
+ * The status of the playbook with slug `slug`, or `null` when there is none.
+ * Raw SQL over `playbooks` (migration 13): this module must not import the
+ * playbooks feature, which depends on it.
+ */
+function playbookStatus(store: Store, slug: string): string | null {
+  const row = store.prepare<[string], { status: string }>("SELECT status FROM playbooks WHERE slug = ?").get(slug);
+  return row === undefined ? null : row.status;
+}
+
 /** What `fireDueTriggers` did for one trigger. */
 export interface TriggerFireOutcome {
   readonly trigger_id: number;
   /** The first due instant: the work step's key (`trigger:<id>:<scheduled_at>`). */
   readonly scheduled_at: string;
-  /** `already_done`: the instant's work step was already done, so the trigger was moved past it (see `movePastDone`). */
+  /**
+   * `already_done`: the instant's work step was already done, so the trigger was moved past it (see `movePastDone`).
+   * `skipped`: it was no longer due there, or its linked playbook is not `enabled` (the instant recorded as a miss).
+   */
   readonly result: TriggerResult | "skipped" | "already_done";
   readonly notification_id?: number;
   readonly queue_id?: number;
@@ -665,6 +799,25 @@ function fireOne(store: Store, id: number, scheduledAt: string, plan: FirePlan, 
     latest_due_at: plan.latestDue,
     next_fire_at: plan.next,
   };
+
+  if (row.playbook !== null) {
+    const status = playbookStatus(store, row.playbook);
+    if (status !== "enabled") {
+      // A linked trigger of a playbook that is not enabled never starts work: the
+      // instant is recorded (this step is its key, so it is never fired later)
+      // and the next one scheduled as after a fire. `last_result` stays.
+      store.prepare("UPDATE triggers SET next_fire_at = ? WHERE id = ?").run(plan.next, id);
+      if (once) store.prepare("UPDATE triggers SET enabled = 0 WHERE id = ?").run(id);
+      appendEvent(
+        store,
+        "trigger_missed",
+        { sessionId: null, taskId: null },
+        { trigger_id: id, reason: "playbook_not_enabled", playbook: row.playbook, playbook_status: status, scheduled_at: scheduledAt, enabled: !once, ...counts },
+        at,
+      );
+      return { trigger_id: id, scheduled_at: scheduledAt, result: "skipped" };
+    }
+  }
 
   if (plan.toFire === 0) {
     // Every due instant fell inside a kill-switch engagement: recorded, not fired.
