@@ -67,3 +67,9 @@
 kernel/src/approvals/
 kernel/test/approvals.test.ts
 docs/architecture/approvals.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-16T12:12:35Z
+- **Brief:** .supervisor/jobs/done/2026-10-16-always-allow-scoped-to-one-playbook.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/70
