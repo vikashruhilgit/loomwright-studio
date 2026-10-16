@@ -5,18 +5,24 @@ import type { Store } from "../store/store.js";
 import { BudgetAdmission } from "./admission.js";
 import {
   activeParks,
-  agentCountedTokens,
+  admissionProvider,
+  agentLimitRefusal,
   appendEvent,
+  capRetryAt,
   clockOf,
-  noteAgentLimitReached,
+  fallbackOptedIn,
+  noteApiKeyCeilingReached,
   notePlaybookLimitReached,
+  parseApiKeyFallbackPolicy,
+  playbookApiKeySpendUsd,
   playbookCountedTokens,
-  playbookKey,
   playbookTokenLimit,
 } from "./internal.js";
 import type { Clock } from "./internal.js";
-import { BudgetConfigError, DEFAULT_BUDGET_CONFIG, agentDailyTokenLimit, validateApiKeyFallbackPolicy, validateBudgetConfig } from "./types.js";
-import type { ApiKeyFallbackPolicy, BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions } from "./types.js";
+import { BudgetConfigError, DEFAULT_BUDGET_CONFIG, validateBudgetConfig } from "./types.js";
+import type { BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions } from "./types.js";
+
+export { parseApiKeyFallbackPolicy, playbookApiKeySpendUsd } from "./internal.js";
 
 /** An admission request that names the playbook it runs for, or `null` for none. */
 export interface PlaybookAdmissionRequest extends AdmissionRequest {
@@ -36,47 +42,6 @@ export type PlaybookRefusalReason = "cap_parked" | "agent_daily_limit" | "playbo
 export type PlaybookAdmissionDecision =
   | { readonly admitted: true; readonly provider: string }
   | { readonly admitted: false; readonly reason: PlaybookRefusalReason; readonly retryAt: string | null };
-
-/** No fallback: what a missing, unparseable or invalid stored policy reads as. */
-const FALLBACK_OFF: ApiKeyFallbackPolicy = Object.freeze({ enabled: false, dollarCeilingUsd: null });
-
-/**
- * A playbook's stored `api_key_fallback_json`, checked with the rules
- * `validateBudgetConfig` applies to the kernel-wide placeholder. NULL,
- * unparseable JSON or an invalid policy read as off: a damaged policy fails
- * toward waiting for the reset, never toward spending.
- */
-export function parseApiKeyFallbackPolicy(json: string | null): ApiKeyFallbackPolicy {
-  if (json === null) return FALLBACK_OFF;
-  try {
-    return validateApiKeyFallbackPolicy(JSON.parse(json));
-  } catch {
-    return FALLBACK_OFF;
-  }
-}
-
-/** Whether a policy opts in: enabled AND a positive dollar ceiling set (D28). */
-function fallbackOptedIn(policy: ApiKeyFallbackPolicy): policy is ApiKeyFallbackPolicy & { dollarCeilingUsd: number } {
-  return policy.enabled && policy.dollarCeilingUsd !== null && policy.dollarCeilingUsd > 0;
-}
-
-/**
- * The dollars the fallback ceiling is compared with: the SDK's `cost_usd`
- * estimate summed over ALL of the playbook's `budget` rows, all time. No row
- * records which provider a session ran on (`sessions.auth_account` is a
- * display label and is never read), so subscription sessions' list-price
- * estimates are counted too. That can only overcount, so the ceiling is
- * reached early, never late. Both choices (what counts, and that it never
- * resets) are open owner decisions, see `docs/architecture/budget.md`.
- */
-export function playbookApiKeySpendUsd(store: Store, id: number): number {
-  return (
-    store
-      .prepare<[string], number>("SELECT COALESCE(SUM(cost_usd), 0) FROM budget WHERE playbook = ?")
-      .pluck()
-      .get(playbookKey(id)) ?? 0
-  );
-}
 
 interface PlaybookRow {
   readonly id: number;
@@ -138,11 +103,22 @@ export function playbookTokensToday(store: Store, day: string): PlaybookTokensTo
  *   the meter); at the cap, the playbook is eligible for the API-key
  *   provider only when its own policy opts in (enabled, positive ceiling), an
  *   API-key provider was given, and its spend (`playbookApiKeySpendUsd`) is
- *   below the ceiling, else it is refused `cap_parked` as `check` refuses;
- *   then the agent limit as `check` applies it (`start` only), so a fallback
- *   never skips it. Only then is it admitted, on the API-key provider if it
- *   was eligible (one `api_key_fallback_admitted` event), else on the
+ *   below the ceiling, else it is refused `cap_parked` as `check` refuses
+ *   (at the ceiling, `api_key_ceiling_reached` and one `notify` are
+ *   recorded once per playbook and ceiling, shared with the meter); then the
+ *   agent limit as `check` applies it (`start` only), so a fallback never
+ *   skips it. Only then is it admitted, on the API-key provider if it was
+ *   eligible (one `api_key_fallback_admitted` event), else on the
  *   subscription provider. The kernel-wide `apiKeyFallback` is never read.
+ *
+ * The dollar ceiling is an ADMISSION check only: it decides whether a new
+ * session may start or resume on the API key, and bounds nothing after that.
+ * An admitted session spends until it ends, so a playbook's spend can pass
+ * its ceiling (by up to every admitted session's spend; a spend of 4.99
+ * under a ceiling of 5 admits every request until a result is metered). The
+ * meter records the crossing (`api_key_ceiling_reached`), but nothing stops
+ * or parks a session that is running when it happens: that is the caller's
+ * job (item 03, see `docs/architecture/budget.md`).
  *
  * Every refusal appends one `admission_refused` event: `check`'s payload plus
  * the playbook id (and, for `cap_parked`, why the fallback did not apply).
@@ -179,12 +155,7 @@ export class PlaybookAdmission {
     const at = now.toISOString();
     return this.#store.transaction((): PlaybookAdmissionDecision => {
       const ref = { sessionId: null, taskId: request.task };
-      const provider = this.#auth.id;
-      if (request.provider !== provider) {
-        throw new Error(
-          `admission asked for provider ${request.provider} but the budget's auth provider is ${provider}: refusing (fail closed)`,
-        );
-      }
+      const provider = admissionProvider(this.#auth, request.provider);
       const row = this.#store
         .prepare<[number], PlaybookRow>(
           "SELECT id, slug, token_limit_per_day, api_key_fallback_json FROM playbooks WHERE id = ?",
@@ -220,16 +191,21 @@ export class PlaybookAdmission {
         let refusal: string | null = null;
         if (!fallbackOptedIn(policy)) refusal = "not_opted_in";
         else if (this.#apiKey === undefined) refusal = "no_api_key_provider";
-        else if (!(spendUsd < policy.dollarCeilingUsd)) refusal = "ceiling_reached";
-        else fallback = { spendUsd, ceilingUsd: policy.dollarCeilingUsd };
+        else if (!(spendUsd < policy.dollarCeilingUsd)) {
+          refusal = "ceiling_reached";
+          // Shared with the meter: once per playbook and ceiling, whichever sees it first.
+          noteApiKeyCeilingReached(
+            this.#store,
+            this.#auth,
+            { playbook, slug: row.slug, spendUsd, ceilingUsd: policy.dollarCeilingUsd, ref },
+            at,
+          );
+        } else fallback = { spendUsd, ceilingUsd: policy.dollarCeilingUsd };
         if (refusal !== null) {
-          const retryAt = parks.some((p) => p.resets_at === null)
-            ? null
-            : parks.map((p) => p.resets_at as string).reduce((a, b) => (b > a ? b : a));
           return this.#refuse(
             request,
             "cap_parked",
-            retryAt,
+            capRetryAt(parks),
             { rate_limit_types: parks.map((p) => p.rate_limit_type), api_key_fallback: refusal },
             at,
           );
@@ -237,21 +213,9 @@ export class PlaybookAdmission {
       }
 
       // The agent limit as `check` applies it: an API-key admit never skips it.
-      if (request.kind === "start" && request.agent !== null) {
-        const agentLimit = agentDailyTokenLimit(this.#config, request.agent);
-        if (agentLimit !== undefined) {
-          const counted = agentCountedTokens(this.#store, request.agent, day);
-          if (counted >= agentLimit) {
-            const retryAt = this.#clock.startOfNextDay(now).toISOString();
-            noteAgentLimitReached(
-              this.#store,
-              this.#auth,
-              { agent: request.agent, day, countedTokens: counted, limit: agentLimit, retryAt, ref },
-              at,
-            );
-            return this.#refuse(request, "agent_daily_limit", retryAt, { day, counted_tokens: counted, limit: agentLimit }, at);
-          }
-        }
+      const agentRefusal = agentLimitRefusal(this.#store, this.#auth, this.#config, this.#clock, request, now, ref, at);
+      if (agentRefusal !== null) {
+        return this.#refuse(request, "agent_daily_limit", agentRefusal.retryAt, agentRefusal.details, at);
       }
 
       if (fallback !== null && this.#apiKey !== undefined) {

@@ -4,9 +4,13 @@ import {
   agentCountedTokens,
   appendEvent,
   clockOf,
+  fallbackOptedIn,
   finiteNonNegative,
   noteAgentLimitReached,
+  noteApiKeyCeilingReached,
   notePlaybookLimitReached,
+  parseApiKeyFallbackPolicy,
+  playbookApiKeySpendUsd,
   playbookCountedTokens,
   playbookKey,
   playbookTokenLimit,
@@ -95,6 +99,7 @@ interface SessionUsageRow {
 interface PlaybookLimitRow {
   readonly slug: string;
   readonly token_limit_per_day: unknown;
+  readonly api_key_fallback_json: string | null;
 }
 
 /**
@@ -137,6 +142,13 @@ interface PlaybookLimitRow {
  * event and one `notify` are appended, once per playbook-day; the playbook
  * gate refuses its next start. A damaged stored limit is skipped here (the
  * gate refuses on it).
+ *
+ * When the playbook opts in to the D28 API-key fallback and its spend
+ * (`playbookApiKeySpendUsd`) reaches the policy's dollar ceiling, one
+ * `api_key_ceiling_reached` event and one `notify` are appended, once per
+ * playbook and ceiling (spend never resets, so the crossing is final). This
+ * is a record only: a session running on the API key is not stopped here,
+ * and the gate admits no new one on it.
  */
 export class BudgetMeter {
   readonly #store: Store;
@@ -254,25 +266,40 @@ export class BudgetMeter {
 
   #checkPlaybookLimit(id: number, day: string, now: Date, ref: EventRef, at: string): void {
     const playbook = this.#store
-      .prepare<[number], PlaybookLimitRow>("SELECT slug, token_limit_per_day FROM playbooks WHERE id = ?")
+      .prepare<[number], PlaybookLimitRow>(
+        "SELECT slug, token_limit_per_day, api_key_fallback_json FROM playbooks WHERE id = ?",
+      )
       .get(id);
     if (playbook === undefined) return;
+    // The two checks are independent: no daily limit (or a damaged one) never skips the ceiling.
     const limit = playbookTokenLimit(playbook.token_limit_per_day);
-    if (limit === null || limit === undefined) return;
-    const counted = playbookCountedTokens(this.#store, id, day);
-    if (counted < limit) return;
-    notePlaybookLimitReached(
+    if (limit !== null && limit !== undefined) {
+      const counted = playbookCountedTokens(this.#store, id, day);
+      if (counted >= limit) {
+        notePlaybookLimitReached(
+          this.#store,
+          this.#auth,
+          {
+            playbook: id,
+            slug: playbook.slug,
+            day,
+            countedTokens: counted,
+            limit,
+            retryAt: this.#clock.startOfNextDay(now).toISOString(),
+            ref,
+          },
+          at,
+        );
+      }
+    }
+    const policy = parseApiKeyFallbackPolicy(playbook.api_key_fallback_json);
+    if (!fallbackOptedIn(policy)) return;
+    const spendUsd = playbookApiKeySpendUsd(this.#store, id);
+    if (spendUsd < policy.dollarCeilingUsd) return;
+    noteApiKeyCeilingReached(
       this.#store,
       this.#auth,
-      {
-        playbook: id,
-        slug: playbook.slug,
-        day,
-        countedTokens: counted,
-        limit,
-        retryAt: this.#clock.startOfNextDay(now).toISOString(),
-        ref,
-      },
+      { playbook: id, slug: playbook.slug, spendUsd, ceilingUsd: policy.dollarCeilingUsd, ref },
       at,
     );
   }

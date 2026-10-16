@@ -135,6 +135,79 @@ describe("per-playbook metering (AC1)", () => {
     expect(b.checkPlaybook(request({ playbook: pb }))).toMatchObject({ admitted: false, reason: "playbook_daily_limit" });
     expect(events(env.store, "notify")).toHaveLength(1);
   });
+
+  it("skips a playbook row that no longer exists, writing only the budget rows", () => {
+    env.store.prepare("PRAGMA foreign_keys = OFF").run();
+    const id = playbookSession(4242);
+    budget().observe(id, result({ haiku: { input: 10_000, cost: 99 } }));
+    expect(env.store.prepare("SELECT playbook FROM budget").pluck().all()).toEqual(["4242"]);
+    expect(events(env.store)).toEqual([]);
+  });
+
+  it("skips a damaged stored limit without throwing, and still checks the ceiling", () => {
+    const pb = insertPlaybook({ fallback: OPTED_IN });
+    env.store.prepare("UPDATE playbooks SET token_limit_per_day = 'lots' WHERE id = ?").run(pb);
+    const id = playbookSession(pb);
+    budget().observe(id, result({ haiku: { input: 10_000, cost: 5 } }));
+    expect(events(env.store, "playbook_limit_reached")).toEqual([]);
+    expect(events(env.store, "api_key_ceiling_reached")).toHaveLength(1);
+    expect(playbookTokensToday(env.store, DAY)).toEqual([
+      { playbook: pb, slug: "pr-review", countedTokens: 10_000, tokenLimitPerDay: null },
+    ]);
+  });
+});
+
+describe("per-playbook metering: the API-key ceiling crossing (D28)", () => {
+  it("records api_key_ceiling_reached and one notify once per playbook when its spend reaches the ceiling", () => {
+    const pb = insertPlaybook({ fallback: OPTED_IN });
+    const id = playbookSession(pb);
+    const b = budget();
+    b.observe(id, result({ haiku: { input: 10, cost: 4 } }));
+    expect(events(env.store, "api_key_ceiling_reached")).toEqual([]);
+    b.observe(id, result({ haiku: { input: 20, cost: 6 } }));
+    b.observe(id, result({ haiku: { input: 30, cost: 7 } }));
+    expect(events(env.store, "api_key_ceiling_reached")).toHaveLength(1);
+    expect(events(env.store, "api_key_ceiling_reached")[0]).toMatchObject({
+      session_id: id,
+      payload: { playbook: pb, slug: "pr-review", spend_usd: 6, ceiling_usd: 5 },
+    });
+    expect(events(env.store, "notify").map((e) => e.payload)).toEqual([
+      expect.objectContaining({ provider: AUTH.id, reason: "api_key_ceiling_reached", playbook: pb, ceiling_usd: 5 }),
+    ]);
+
+    // The gate finds the same crossing at the cap: refused, no second record or notify.
+    park();
+    expect(b.checkPlaybook(request({ playbook: pb }))).toMatchObject({ admitted: false, reason: "cap_parked" });
+    expect(events(env.store, "api_key_ceiling_reached")).toHaveLength(1);
+    expect(events(env.store, "notify")).toHaveLength(1);
+
+    // A raised ceiling is a new one: reaching it is recorded once more.
+    env.store.prepare("UPDATE playbooks SET api_key_fallback_json = ? WHERE id = ?").run('{"enabled":true,"dollarCeilingUsd":8}', pb);
+    b.observe(id, result({ haiku: { input: 40, cost: 8 } }));
+    b.observe(id, result({ haiku: { input: 50, cost: 9 } }));
+    expect(events(env.store, "api_key_ceiling_reached").map((e) => e.payload.ceiling_usd)).toEqual([5, 8]);
+    expect(events(env.store, "notify")).toHaveLength(2);
+  });
+
+  it("records nothing for a playbook that does not opt in, whatever it spends", () => {
+    const pb = insertPlaybook({ fallback: '{"enabled":false,"dollarCeilingUsd":5}' });
+    budget().observe(playbookSession(pb), result({ haiku: { input: 10, cost: 500 } }));
+    expect(events(env.store, "api_key_ceiling_reached")).toEqual([]);
+    expect(events(env.store, "notify")).toEqual([]);
+  });
+
+  it("the gate records the crossing first when it finds the ceiling reached", () => {
+    park();
+    const pb = insertPlaybook({ fallback: OPTED_IN });
+    spend({ playbook: pb, costUsd: 5 });
+    const b = budget();
+    b.checkPlaybook(request({ playbook: pb }));
+    b.checkPlaybook(request({ playbook: pb }));
+    expect(events(env.store, "api_key_ceiling_reached")).toHaveLength(1);
+    expect(events(env.store, "api_key_ceiling_reached")[0]?.payload).toMatchObject({ playbook: pb, spend_usd: 5, ceiling_usd: 5 });
+    expect(events(env.store, "notify")).toHaveLength(1);
+    expect(events(env.store, "admission_refused")).toHaveLength(2);
+  });
 });
 
 describe("playbook gate: daily token limit (AC2)", () => {
@@ -210,6 +283,15 @@ describe("playbook gate: API-key fallback at the cap (AC3)", () => {
       task_id: 3,
       payload: { playbook: pb, provider: API_KEY.id, kind: "start", agent: "wright", task: 3, spend_usd: 4.99, ceiling_usd: 5 },
     });
+  });
+
+  it("admits a resume of an opted-in playbook under its ceiling on the API-key provider", () => {
+    park();
+    const pb = insertPlaybook({ fallback: OPTED_IN });
+    expect(budget().checkPlaybook(request({ playbook: pb, kind: "resume" }))).toEqual({ admitted: true, provider: API_KEY.id });
+    expect(events(env.store, "api_key_fallback_admitted").map((e) => e.payload)).toEqual([
+      expect.objectContaining({ kind: "resume", playbook: pb, provider: API_KEY.id, spend_usd: 0, ceiling_usd: 5 }),
+    ]);
   });
 
   it("admits on the subscription provider when it is not parked, whatever the policy", () => {

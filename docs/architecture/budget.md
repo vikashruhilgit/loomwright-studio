@@ -28,20 +28,24 @@ Every refusal appends one `admission_refused` event: `check`'s payload plus the 
 
 ## API-key fallback
 
-D28: when the subscription cap is hit, a playbook may continue on the user's own API key under a hard dollar ceiling. It is opt-in per playbook, and only the playbooks the user chooses can ever cost money.
+D28: when the subscription cap is hit, a playbook may continue on the user's own API key under a dollar ceiling. It is opt-in per playbook, and only the playbooks the user chooses can ever cost money.
+
+**The ceiling is checked at admission only.** It decides whether a new session may start or resume on the API key; it does not bound what an admitted session spends. Spend grows only when the meter records a `result`, so while it is under the ceiling every request is admitted (a spend of $4.99 under a $5 ceiling admits each start until a result is metered), and each admitted session then spends until it ends. A playbook's total can therefore pass its ceiling by whatever its admitted sessions spend. The meter records the crossing: one `api_key_ceiling_reached` event (`playbook`, `slug`, `spend_usd`, `ceiling_usd`) and one `notify` (`reason: "api_key_ceiling_reached"`), once per playbook and ceiling value (the gate records the same event if it finds the ceiling reached first). Nothing stops a session already running when it happens; see "Not wired yet".
 
 - **The policy** is `playbooks.api_key_fallback_json`, the `ApiKeyFallbackPolicy` shape: `{"enabled": true, "dollarCeilingUsd": 20}`. It is checked with the same rules as the budget config's placeholder (`enabled` a boolean, the ceiling `null` or a positive finite number). NULL, unparseable JSON or an invalid policy reads as off: a damaged policy fails toward waiting, never toward spending.
-- **Eligible** means all of: the policy is enabled with a positive ceiling, the `Budget` was given an API-key provider identity (`BudgetOptions.apiKeyProvider`, which must not share the subscription provider's id), and the playbook's spend is below the ceiling. Spend equal to the ceiling waits.
+- **Eligible** means all of: the policy is enabled with a positive ceiling, the `Budget` was given an API-key provider identity (`BudgetOptions.apiKeyProvider`, which must not share the subscription provider's id), and the playbook's spend is below the ceiling. A playbook whose recorded spend equals or passes the ceiling is not admitted on the API key and waits for the reset; sessions admitted before that are not affected.
 - **How spend is measured:** the sum of `budget.cost_usd` (the SDK's list-price estimate) over **all** of the playbook's budget rows, **all time**. The schema has no per-session record of which provider a session ran on (`sessions.auth_account` is a display label, never read by the budget), so subscription sessions' estimates are counted too. That can only overcount, so the ceiling is reached early, never late (invariant 3). An exact figure needs a stable provider key on the session or budget row, which is a migration and a follow-up.
 
 **Owner decisions (open).** Two choices above are assumptions D28 does not settle, and both are reversible:
 
 - What counts as spend: all of the playbook's `cost_usd`, subscription sessions included (the safe overcount), rather than API-key sessions only.
 - The period: all time, never reset. D28 names no period, so a daily or monthly ceiling would need the owner to choose one.
+- How hard the ceiling is: today it gates admission only, so a playbook can overrun it by its running sessions' spend. Whether a crossing must stop or park running API-key sessions, and whether to cap concurrent API-key admits, is the owner's call (it is wired by item 03, below).
 
 ## Not wired yet
 
 - **The session manager does not call the playbook gate, and never launches on the API-key provider.** It still asks `Budget.check`, whose request carries no playbook, and it launches every session on its one auth provider. So the playbook limit and the fallback are decisions the gate makes and records, not yet enforced on a launch. Wiring them needs the manager's admission contract (`kernel/src/sessions/manager.ts`, `types.ts`, item 03) and the playbook fire path that sets `sessions.playbook` and passes the playbook (item 08). The kernel's own wiring (`onMessage: budget.observe`, `admission: budget.check`) is unchanged.
+- **Nothing enforces the dollar ceiling on a running session.** Item 03 must stop or park a playbook's API-key sessions when its spend crosses the ceiling mid-run (the `api_key_ceiling_reached` event is the signal), and decide what happens to admits already granted and running when it does. Until then the ceiling bounds admission only, and an overrun is recorded but not prevented.
 - **`studio status` shows no per-playbook line.** The budget module has no status hook in the API or CLI. The data is available through `playbookTokensToday(store, day)` for whichever item adds the line.
 
 ## Events
@@ -52,4 +56,5 @@ D28: when the subscription cap is hit, a playbook may continue on the user's own
 |---|---|
 | `playbook_limit_reached` | A playbook's counted tokens reached its daily limit, once per playbook-day (meter or gate). Paired with one `notify`. |
 | `api_key_fallback_admitted` | The gate admitted a playbook's session on the API-key provider at the cap. |
+| `api_key_ceiling_reached` | An opted-in playbook's spend reached its dollar ceiling, once per playbook and ceiling (meter or gate). Paired with one `notify`. A record only: it stops nothing. |
 | `admission_refused` | Every refusal (shared with `check`), with `playbook` set on the playbook path. |

@@ -1,7 +1,8 @@
 // Store helpers shared by the meter, the cap tracker and admission. Not part
 // of the module's public surface.
 import type { Store } from "../store/store.js";
-import type { BudgetAuth, BudgetDeps } from "./types.js";
+import { agentDailyTokenLimit, validateApiKeyFallbackPolicy } from "./types.js";
+import type { ApiKeyFallbackPolicy, BudgetAuth, BudgetConfig, BudgetDeps } from "./types.js";
 
 /** Cap for free text copied into an event (a cap message, for example). */
 export const MAX_EVENT_TEXT = 500;
@@ -189,6 +190,138 @@ export function activeParks(store: Store, key: string, nowIso: string): ActivePa
         ORDER BY rate_limit_type`,
     )
     .all(key, nowIso);
+}
+
+/**
+ * The admission gates' provider check: parks are keyed on the auth
+ * provider's stable id, so a request naming another provider is a wiring
+ * error and throws (fail closed). Returns the id. The label is never compared.
+ */
+export function admissionProvider(auth: BudgetAuth, requested: string): string {
+  const provider = auth.id;
+  if (requested !== provider) {
+    throw new Error(
+      `admission asked for provider ${requested} but the budget's auth provider is ${provider}: refusing (fail closed)`,
+    );
+  }
+  return provider;
+}
+
+/** When a cap refusal may try again: the latest `resets_at` of `parks`, or `null` when one is unknown. */
+export function capRetryAt(parks: readonly ActivePark[]): string | null {
+  return parks.some((p) => p.resets_at === null)
+    ? null
+    : parks.map((p) => p.resets_at as string).reduce((a, b) => (b > a ? b : a));
+}
+
+/** An agent-limit refusal: when to try again and the `admission_refused` details. */
+export interface AgentLimitRefusal {
+  readonly retryAt: string;
+  readonly details: { readonly day: string; readonly counted_tokens: number; readonly limit: number };
+}
+
+/**
+ * The admission gates' agent limit (AC2): a `start` whose agent's counted
+ * tokens for today reached its configured limit is refused until the next
+ * budget day, recorded once per agent-day (`noteAgentLimitReached`). A
+ * resume, a `null` agent or an agent with no configured limit passes
+ * (`null`). Call inside a transaction.
+ */
+export function agentLimitRefusal(
+  store: Store,
+  auth: BudgetAuth,
+  config: BudgetConfig,
+  clock: Clock,
+  request: { readonly kind: string; readonly agent: string | null },
+  now: Date,
+  ref: EventRef,
+  at: string,
+): AgentLimitRefusal | null {
+  if (request.kind !== "start" || request.agent === null) return null;
+  const limit = agentDailyTokenLimit(config, request.agent);
+  if (limit === undefined) return null;
+  const day = clock.dayOf(now);
+  const counted = agentCountedTokens(store, request.agent, day);
+  if (counted < limit) return null;
+  const retryAt = clock.startOfNextDay(now).toISOString();
+  noteAgentLimitReached(store, auth, { agent: request.agent, day, countedTokens: counted, limit, retryAt, ref }, at);
+  return { retryAt, details: { day, counted_tokens: counted, limit } };
+}
+
+/** No fallback: what a missing, unparseable or invalid stored policy reads as. */
+const FALLBACK_OFF: ApiKeyFallbackPolicy = Object.freeze({ enabled: false, dollarCeilingUsd: null });
+
+/**
+ * A playbook's stored `api_key_fallback_json`, checked with the rules
+ * `validateBudgetConfig` applies to the kernel-wide placeholder. NULL,
+ * unparseable JSON or an invalid policy read as off: a damaged policy fails
+ * toward waiting for the reset, never toward spending.
+ */
+export function parseApiKeyFallbackPolicy(json: string | null): ApiKeyFallbackPolicy {
+  if (json === null) return FALLBACK_OFF;
+  try {
+    return validateApiKeyFallbackPolicy(JSON.parse(json));
+  } catch {
+    return FALLBACK_OFF;
+  }
+}
+
+/** Whether a policy opts in: enabled AND a positive dollar ceiling set (D28). */
+export function fallbackOptedIn(
+  policy: ApiKeyFallbackPolicy,
+): policy is ApiKeyFallbackPolicy & { dollarCeilingUsd: number } {
+  return policy.enabled && policy.dollarCeilingUsd !== null && policy.dollarCeilingUsd > 0;
+}
+
+/**
+ * The dollars the fallback ceiling is compared with: the SDK's `cost_usd`
+ * estimate summed over ALL of the playbook's `budget` rows, all time. No row
+ * records which provider a session ran on (`sessions.auth_account` is a
+ * display label and is never read), so subscription sessions' list-price
+ * estimates are counted too. That can only overcount, so the ceiling is
+ * reached early, never late. Both choices (what counts, and that it never
+ * resets) are open owner decisions, see `docs/architecture/budget.md`.
+ */
+export function playbookApiKeySpendUsd(store: Store, id: number): number {
+  return (
+    store
+      .prepare<[string], number>("SELECT COALESCE(SUM(cost_usd), 0) FROM budget WHERE playbook = ?")
+      .pluck()
+      .get(playbookKey(id)) ?? 0
+  );
+}
+
+/**
+ * Record that playbook `id`'s spend reached its API-key fallback ceiling: one
+ * `api_key_ceiling_reached` event and one `notify`, once per playbook and
+ * ceiling (spend never resets, so a crossing is final until the user raises
+ * the ceiling; a new ceiling value can be reached, and recorded, again).
+ * Written whether the meter saw the crossing or the gate found it first.
+ * Call inside a transaction. Returns whether anything was written.
+ */
+export function noteApiKeyCeilingReached(
+  store: Store,
+  auth: BudgetAuth,
+  details: { playbook: number; slug: string; spendUsd: number; ceilingUsd: number; ref: EventRef },
+  at: string,
+): boolean {
+  const seen = store
+    .prepare<[number, number], number>(
+      `SELECT 1 FROM events WHERE kind = 'api_key_ceiling_reached'
+          AND json_extract(payload_json, '$.playbook') = ? AND json_extract(payload_json, '$.ceiling_usd') = ?`,
+    )
+    .pluck()
+    .get(details.playbook, details.ceilingUsd);
+  if (seen !== undefined) return false;
+  const payload = {
+    playbook: details.playbook,
+    slug: details.slug,
+    spend_usd: details.spendUsd,
+    ceiling_usd: details.ceilingUsd,
+  };
+  appendEvent(store, "api_key_ceiling_reached", details.ref, payload, at);
+  appendNotify(store, auth, auth.account, details.ref, { reason: "api_key_ceiling_reached", ...payload }, at);
+  return true;
 }
 
 /** Schedule a `wakeups` row unless a pending one with the same reason and due time exists. */
