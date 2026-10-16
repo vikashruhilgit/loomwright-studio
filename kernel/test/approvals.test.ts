@@ -1031,6 +1031,45 @@ describe("standing grants: always on a rail approval from a playbook session", (
     ]);
   });
 
+  it("always on a v2 approval once the playbook is at v3 is refused, naming both versions; it stays pending with nothing written, and once still lets the retry run", async () => {
+    const t = setup();
+    const p = addPlaybook(t.store, "pr-review", 2);
+    const s = await playbookSession(t, p, 2);
+    expect((await s.comment()).permissionDecisionReason).toMatch(held(1));
+    t.store.prepare("UPDATE playbooks SET version = 3 WHERE id = ?").run(p);
+    const before = [count(t.store, "SELECT count(*) FROM events"), count(t.store, "SELECT count(*) FROM event_queue")];
+    expect(() => decideApproval(t.store, { id: 1, decision: "always", by: "owner" }, new Date())).toThrow(
+      expect.objectContaining({
+        code: "always_not_supported",
+        message: "always needs the playbook's current version: approval 1 came from v2, the playbook is now v3; approve it once",
+      }),
+    );
+    expect(getApproval(t.store, 1)).toMatchObject({ status: "pending", decision: null, decided_by: null });
+    expect([count(t.store, "SELECT count(*) FROM events"), count(t.store, "SELECT count(*) FROM event_queue")]).toEqual(before);
+    expect(t.messages()).toEqual([]);
+    expect(listGrants(t.store)).toEqual([]);
+    decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date());
+    expect((await s.comment()).permissionDecision).toBe("allow");
+    expect(t.approvals()).toHaveLength(1);
+  });
+
+  it("always on an approval whose session's agent is no longer the recorded requester is refused, naming both; nothing written", async () => {
+    const t = setup();
+    const p = addPlaybook(t.store, "pr-review", 2);
+    const s = await playbookSession(t, p, 2);
+    expect((await s.comment()).permissionDecisionReason).toMatch(held(1));
+    t.store.prepare("UPDATE sessions SET agent = 'builder' WHERE id = ?").run(s.id);
+    const before = count(t.store, "SELECT count(*) FROM events");
+    expect(() => decideApproval(t.store, { id: 1, decision: "always", by: "owner" }, new Date())).toThrow(
+      expect.objectContaining({
+        code: "always_not_supported",
+        message: "always needs the agent it was held for: approval 1 was held for wright, its session now runs builder; approve it once",
+      }),
+    );
+    expect(getApproval(t.store, 1)).toMatchObject({ status: "pending", decision: null });
+    expect(count(t.store, "SELECT count(*) FROM events")).toBe(before);
+  });
+
   it("a revoked grant no longer matches and is no longer listed; the revoke is one approval_grant_revoked event", async () => {
     const { t, p } = await granted();
     const s = await playbookSession(t, p, 2);
@@ -1470,6 +1509,17 @@ describe("the /approvals routes and studio approvals / approve / deny", () => {
       { id: 1, by: "owner" },
       { id: second, by: "owner" },
     ]);
+  });
+
+  it("always on an approval from an older playbook version: 409 always_not_supported with the message, and studio approve exits 1 showing it; nothing written", async () => {
+    const id = seedFromPlaybook();
+    env.store.prepare("UPDATE playbooks SET version = 3").run();
+    const before = written();
+    const message = `always needs the playbook's current version: approval ${id} came from v2, the playbook is now v3; approve it once`;
+    expect(await api("POST", `/approvals/${id}/approve`, { decision: "always" })).toEqual({ status: 409, body: { error: "always_not_supported", message } });
+    expect(await studio("approve", String(id), "always")).toEqual({ code: 1, stdout: "", stderr: `studio: approval ${id} not approved: ${message}\n` });
+    expect(getApproval(env.store, id)).toMatchObject({ status: "pending", decision: null });
+    expect(written()).toEqual(before);
   });
 
   it("revoke refusals write nothing: 404 no_such_grant (unknown, or a one-shot approval), 409 grant_revoked, 400 invalid_id / invalid_body", async () => {

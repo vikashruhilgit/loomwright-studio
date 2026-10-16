@@ -120,8 +120,9 @@ A denied approval grants nothing: the held call never runs, and an identical lat
 
 1. the rail held (`approval_requested.source = "rail"`). An approval an agent asked for with `kernel_approval_request` is refused;
 2. came from a playbook session (`approvals.playbook` is set) that recorded its version (the event's `playbook_version`);
-3. came from a session that ran a named agent (`sessions.agent`), so a grant always belongs to a named agent;
-4. is not for a tool in `ALWAYS_HELD_TOOLS` (`kernel/src/sessions/policy.ts`: `mcp__kernel__kernel_playbook_enable`). The owner decides every enable.
+3. that version is still the playbook's current `playbooks.version` (and the playbook still exists). Once the playbook has a new version, such a grant could never match, so it is refused: `always needs the playbook's current version: approval <id> came from v<n>, the playbook is now v<m>; approve it once`;
+4. came from a session that ran a named agent (`sessions.agent`), so a grant always belongs to a named agent, and that agent is still the approval's `requesting_agent` (the requester rule below needs both);
+5. is not for a tool in `ALWAYS_HELD_TOOLS` (`kernel/src/sessions/policy.ts`: `mcp__kernel__kernel_playbook_enable`). The owner decides every enable.
 
 Any other `always` is refused with `409 always_not_supported`, whose message names the failing condition, and nothing is written. Answer such an approval `once`.
 

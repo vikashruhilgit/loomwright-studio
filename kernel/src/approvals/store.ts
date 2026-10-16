@@ -276,8 +276,11 @@ function messageAgent(store: Store, row: ApprovalRow): string | null {
  * Why `always` cannot be given on pending approval `row`, or `undefined` when
  * it can: the rail held it (`approval_requested.source = "rail"`), from a
  * session of a playbook (`approvals.playbook`) at a recorded version (the
- * event's `playbook_version`), that ran a named agent (`sessions.agent`), and
- * its payload's `tool` is not in `ALWAYS_HELD_TOOLS`.
+ * event's `playbook_version`) that is still the playbook's current
+ * `playbooks.version`, that ran a named agent (`sessions.agent`) equal to the
+ * recorded `requesting_agent`, and its payload's `tool` is not in
+ * `ALWAYS_HELD_TOOLS`. Each is a condition `STANDING_GRANT` matches on, so an
+ * accepted `always` is a grant that can match.
  */
 function alwaysRefusal(store: Store, row: ApprovalRow): string | undefined {
   const requested = store
@@ -292,11 +295,22 @@ function alwaysRefusal(store: Store, row: ApprovalRow): string | undefined {
   if (typeof event.playbook_version !== "number") {
     return `always needs a playbook version: approval ${row.id}'s playbook session recorded none; approve it once`;
   }
+  // The match joins the playbook row and needs the recorded version to be its current one (STANDING_GRANT).
+  const current = store.prepare<[number], number>("SELECT version FROM playbooks WHERE id = ?").pluck().get(row.playbook);
+  if (current === undefined) return `always needs the playbook: approval ${row.id}'s playbook no longer exists; approve it once`;
+  if (current !== event.playbook_version) {
+    return `always needs the playbook's current version: approval ${row.id} came from v${event.playbook_version}, the playbook is now v${current}; approve it once`;
+  }
   const agent =
     row.requesting_session === null
       ? undefined
       : store.prepare<[number], string | null>("SELECT agent FROM sessions WHERE id = ?").pluck().get(row.requesting_session);
-  if (namedAgent(agent ?? null) === null) return `always needs a named agent: approval ${row.id}'s session ran none; approve it once`;
+  const named = namedAgent(agent ?? null);
+  if (named === null) return `always needs a named agent: approval ${row.id}'s session ran none; approve it once`;
+  // The match needs the recorded requester and the requesting session's agent to be the same name (STANDING_GRANT).
+  if (named !== row.requesting_agent) {
+    return `always needs the agent it was held for: approval ${row.id} was held for ${row.requesting_agent}, its session now runs ${named}; approve it once`;
+  }
   const tool = (parsed(row.payload_json) as { tool?: unknown } | null)?.tool;
   const held = ALWAYS_HELD_TOOLS.find((t) => t === tool);
   if (held !== undefined) return `always never covers ${held}: the owner decides every call to it; approve it once`;
