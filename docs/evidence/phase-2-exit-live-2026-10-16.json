@@ -120,8 +120,7 @@
       "trigger_row": "#1 wright: once at 2026-10-16T17:00:00+05:30, notify \"Reminder: check X\"; on; next fire 2026-10-16 17:00 +05:30 (stored next_fire_at 2026-10-16T11:30:00.000Z); created by agent",
       "owner": {
         "notification_appeared_at_17_00": true,
-        "owner_report": "\"I saw the 17:00 'Trigger 1 (wright)' notification\" (owner's words, reported 2026-10-17)",
-        "notification_row": "notification #4: source trigger:1, title \"Trigger 1 (wright)\", body \"Reminder: check X\", created 2026-10-16T11:30:00.296Z, delivered 2026-10-16T11:30:01.555Z (posted by terminal-notifier), deep link loomwright-studio://notifications/4 (from `studio notifications show 4`, read 2026-10-17)"
+        "owner_report": "\"I saw the 17:00 'Trigger 1 (wright)' notification\" (owner's words, reported 2026-10-17)"
       },
       "findings": [],
       "harness": {
@@ -132,7 +131,11 @@
           "missed": 0,
           "notification_id": 4
         },
-        "fired_late_ms": 296
+        "fired_late_ms": 296,
+        "notification_row": {
+          "read_by": "Claude, with `studio notifications show 4`, on 2026-10-17 (machine-observed, not an owner report)",
+          "row": "notification #4: source trigger:1, title \"Trigger 1 (wright)\", body \"Reminder: check X\", created 2026-10-16T11:30:00.296Z, delivered 2026-10-16T11:30:01.555Z (posted by terminal-notifier), deep link loomwright-studio://notifications/4"
+        }
       }
     },
     "3_reminder_off": {
