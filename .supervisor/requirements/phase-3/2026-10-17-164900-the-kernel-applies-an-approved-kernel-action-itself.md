@@ -82,3 +82,9 @@ docs/architecture/approvals.md
 docs/architecture/dry-run.md
 docs/evidence/phase-3-exit-runbook.md
 docs/OPEN_QUESTIONS.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-17T14:57:27Z
+- **Brief:** .supervisor/jobs/done/2026-10-17-kernel-applies-approved-enable.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/79
