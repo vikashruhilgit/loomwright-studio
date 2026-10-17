@@ -29,8 +29,12 @@
 //      throws (the loop fails the event, one notify);
 //   g. Wright's memory files and settings (permission mode and policy only);
 //   h. the prompt (`playbookPrompt`);
-//   i. `runStepAsync("start-session")`: the session, with `sessions.playbook`
-//      and `playbook_version` set;
+//   i. `runStepAsync("start-session")`: first the live row again (the stored
+//      `start` may be stale: the event was parked, or the kernel died after
+//      step b-f committed): not enabled or edited since, or a same-key run
+//      ended `done` meanwhile, stores `{session_id: null, skip}` and moves the
+//      row (still `running` with no session) to that skip, no session;
+//      otherwise the session, with `sessions.playbook` and `playbook_version`;
 //   j. the row's `session_id`, and a listener on `handle.done` (never awaited)
 //      that ends the row `done` or `failed` with the session's counted tokens.
 // The kernel owns the session's lifecycle (invariant 2): nothing here awaits
@@ -38,10 +42,11 @@
 //
 // The `studio` CLI loads this module (through `./index.ts`, and through the
 // brain's handler): besides `node:` builtins it imports only
-// `../features/contribution.js` types, `../loop/queue.js`, the triggers
+// `../api/kill-switch.js`, `../features/contribution.js` types, `../loop/queue.js`, the triggers
 // feature's `cron.js`, the brain's `context.js`, `memory.js`, `messages.js`
 // and `settings.js` (never `../brain/index.js` or `handler.js`: no runtime
 // cycle) and this feature's files; never the Agent SDK or the session manager.
+import { isKillSwitchEngaged } from "../api/kill-switch.js";
 import { buildContext, defuseWrapperTags } from "../brain/context.js";
 import type { LoomwrightSummary } from "../brain/context.js";
 import { ensureMemoryFiles, wrightMemoryDir } from "../brain/memory.js";
@@ -277,6 +282,39 @@ interface RunDecision {
   readonly slug?: string;
   readonly intent?: string;
   readonly model?: string;
+  /** The run's dedupe key (set only for `start`; `null` when the playbook has none). */
+  readonly dedupe_key?: string | null;
+}
+
+/** Whether a `fire` or `run_now` of playbook `id` other than run `exceptRun` ended `done` with dedupe key `key`. */
+function doneWithKey(store: Store, id: number, key: string, exceptRun: number | null): boolean {
+  return (
+    store
+      .prepare<[number, string, number], number>("SELECT 1 FROM playbook_runs WHERE playbook = ? AND kind IN ('fire', 'run_now') AND dedupe_key = ? AND status = 'done' AND id != ? LIMIT 1")
+      .pluck()
+      .get(id, key, exceptRun ?? 0) !== undefined
+  );
+}
+
+/** A skip found when the session is about to start: the row's terminal status and its `result_json`. */
+interface LateSkip {
+  readonly status: "skipped_not_enabled" | "skipped_duplicate";
+  readonly result: Record<string, unknown> | null;
+}
+
+/**
+ * Re-check the live state right before the session starts (inside the
+ * `start-session` step): the `start` stored by `playbook-run` may be stale.
+ * The playbook not `enabled`, or at another version, is `skipped_not_enabled`
+ * with the live `{status, version}`; a same-key run that ended `done` since is
+ * `skipped_duplicate`. `undefined` when the session may start.
+ */
+function lateSkip(store: Store, e: PlaybookEvent, runId: number, dedupeKey: string | null): LateSkip | undefined {
+  const live = getPlaybook(store, e.playbook);
+  if (live === undefined) return { status: "skipped_not_enabled", result: { status: null, version: null } };
+  if (live.status !== "enabled" || live.version !== e.version) return { status: "skipped_not_enabled", result: { status: live.status, version: live.version } };
+  if (dedupeKey !== null && doneWithKey(store, e.playbook, dedupeKey, runId)) return { status: "skipped_duplicate", result: null };
+  return undefined;
 }
 
 /**
@@ -309,15 +347,11 @@ function decideRun(store: Store, e: PlaybookEvent, timeZone: string, now: Date):
     const evaluated = evaluateDedupeKey(snapshot.dedupe_key_spec, { playbook: e.playbook, version: e.version, triggerId: e.triggerId, scheduledAt: e.scheduledAt }, timeZone);
     if (!evaluated.ok) return row("failed", { error: evaluated.error });
     dedupeKey = evaluated.key;
-    const done = store
-      .prepare<[number, string], number>("SELECT 1 FROM playbook_runs WHERE playbook = ? AND kind IN ('fire', 'run_now') AND dedupe_key = ? AND status = 'done' LIMIT 1")
-      .pluck()
-      .get(e.playbook, dedupeKey);
-    if (done !== undefined) return row("skipped_duplicate", null, dedupeKey);
+    if (doneWithKey(store, e.playbook, dedupeKey, null)) return row("skipped_duplicate", null, dedupeKey);
   }
   // f. The run.
   const runId = insertRun(store, { playbook: e.playbook, version: e.version, kind: e.kind, status: "running", dedupeKey, result: null }, now);
-  return { run_id: runId, outcome: "start", slug: snapshot.slug, intent: snapshot.intent, model: snapshot.model };
+  return { run_id: runId, outcome: "start", slug: snapshot.slug, intent: snapshot.intent, model: snapshot.model, dedupe_key: dedupeKey };
 }
 
 export interface PlaybookPromptInput {
@@ -421,12 +455,17 @@ export async function handlePlaybookMessage(ctx: EventContext, deps: PlaybookRun
   });
 
   // i. The session: the step's first effect, so an admission refusal leaves nothing to repeat.
+  // The stored `start` may be stale (a parked event, or a crash after step b-f):
+  // the live row is read again first, and a skip is stored so a replay skips too.
   const { permissionMode, policy } = settings.settings;
   const model = decision.model ?? "";
+  const dedupeKey = decision.dedupe_key ?? null;
   let handle: SessionHandle | undefined;
-  let started: { session_id: number };
+  let started: { session_id: number } | { session_id: null; skip: LateSkip };
   try {
-    started = await ctx.runStepAsync("start-session", async () => {
+    started = await ctx.runStepAsync("start-session", async (): Promise<{ session_id: number } | { session_id: null; skip: LateSkip }> => {
+      const skip = lateSkip(store, e, runId, dedupeKey);
+      if (skip !== undefined) return { session_id: null, skip };
       handle = await sessions.startSession({
         agent: e.agent,
         prompt,
@@ -450,6 +489,15 @@ export async function handlePlaybookMessage(ctx: EventContext, deps: PlaybookRun
       fail(`session_refused: ${messageOf(err)}`);
     }
     throw err;
+  }
+
+  if (started.session_id === null) {
+    // No session started: the row (still `running`, no session) ends as the skip.
+    const { status, result } = started.skip;
+    store
+      .prepare("UPDATE playbook_runs SET status = ?, result_json = ?, ended_at = ? WHERE id = ? AND status = 'running' AND session_id IS NULL")
+      .run(checkStatus(status), result === null ? null : JSON.stringify(result), deps.now().toISOString(), runId);
+    return;
   }
 
   // j. The session's id, then its ending (only the delivery that started it holds its handle).
@@ -481,6 +529,7 @@ export const runRoutes: readonly ContributedRoute[] = Object.freeze([
       if (req.body !== undefined && !(isBodyObject(req.body) && Object.keys(req.body).length === 0)) {
         return { status: 400, body: { error: "invalid_body", message: "the body is empty or {}" } };
       }
+      if (isKillSwitchEngaged(req.store)) return { status: 409, body: { error: "kill_switch_engaged" } };
       const now = req.now();
       const scheduledAt = now.toISOString();
       return req.store.transaction(() => {

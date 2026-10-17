@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { brainMessageHandler, defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
 import type { LoomwrightSummary } from "../src/brain/index.js";
+import { engageKillSwitch } from "../src/api/index.js";
 import type { CliApiClient } from "../src/features/index.js";
 import { appendEvent } from "../src/loop/internal.js";
 import { EventLoop } from "../src/loop/loop.js";
@@ -443,6 +444,22 @@ describe("run now (AC4)", () => {
     }
     expect(requests).toBe(0);
   });
+
+  it("an engaged kill switch: the route answers 409 kill_switch_engaged and queues nothing; the CLI prints it on one stderr line and exits 1", async () => {
+    const p = playbook();
+    const post = runRoute();
+    engageKillSwitch(store, now().toISOString());
+    expect(await post(String(p.id))).toEqual({ status: 409, body: { error: "kill_switch_engaged" } });
+    expect(messages()).toEqual([]);
+    const client: CliApiClient = { request: async (_method, path) => post(/^\/playbooks\/([^/]+)\/run$/.exec(path)?.[1] ?? "") };
+    const out: string[] = [];
+    const err: string[] = [];
+    const sub = playbooksContribution.subcommands?.[0];
+    expect(await sub?.run(["run", String(p.id)], client, { stdout: { write: (c: string) => out.push(c) }, stderr: { write: (c: string) => err.push(c) } })).toBe(1);
+    expect(out).toEqual([]);
+    expect(err.join("")).toBe(`studio: playbook ${p.id} not run: kill_switch_engaged\n`);
+    expect(messages()).toEqual([]);
+  });
 });
 
 // ---- AC5 / AC5b: redelivery ------------------------------------------------------------
@@ -518,6 +535,85 @@ describe("crash safety (AC5, AC5b)", () => {
     await deliver(store, message?.id as number, sessions);
     expect(sessions.starts).toHaveLength(1);
     expect(runs()).toEqual([expect.objectContaining({ status: "running", session_id: 1 })]);
+  });
+
+  /** A playbook event refused admission (parked until 12:00): its run row is written and `running` with no session. */
+  async function parkedEvent(o: PlaybookOptions = {}): Promise<{ p: ReturnType<typeof playbook>; id: number }> {
+    setWrightModel();
+    // Its trigger fires at 23:00: not due at any tick below.
+    const p = playbook({ cron: "0 23 * * *", ...o });
+    const id = queuePlaybookEvent({ agent: "wright", playbook: p.id, version: 1, scheduled_at: "2026-10-14T09:30:00.000Z" });
+    const refused = stubSessions({ refuse: new AdmissionRefusedError("cap_parked", "2026-10-14T12:00:00.000Z", "the account cap is parked") });
+    expect((await tick(refused)).parked).toBe(1);
+    expect(runs()).toEqual([expect.objectContaining({ status: "running", session_id: null })]);
+    return { p, id };
+  }
+
+  it("an admission-parked event whose playbook is disabled before its retry starts no session and ends its one row skipped_not_enabled; a further redelivery changes nothing", async () => {
+    const { p, id } = await parkedEvent();
+    disablePlaybook(store, { id: p.id, by: "owner" }, now());
+    setClock("2026-10-14T12:00:00.000Z");
+    const sessions = stubSessions({ ending: "held" });
+    await tick(sessions);
+    expect(sessions.starts).toEqual([]);
+    expect(getQueueRow(store, id)?.status).toBe("done");
+    const ended = [expect.objectContaining({ status: "skipped_not_enabled", session_id: null, result_json: '{"status":"disabled","version":1}', ended_at: "2026-10-14T12:00:00.000Z" })];
+    expect(runs()).toEqual(ended);
+    // The stored skip replays: still no session and no second row.
+    await deliver(store, id, sessions);
+    expect(sessions.starts).toEqual([]);
+    expect(runs()).toEqual(ended);
+  });
+
+  it("an admission-parked event whose playbook is edited to a new version and enabled again before its retry starts no session with the old version's model", async () => {
+    const { p } = await parkedEvent();
+    setPlaybookPolicy(store, { id: p.id, field: "priority", value: "low" }, now());
+    store.prepare("UPDATE playbooks SET status = 'enabled' WHERE id = ?").run(p.id);
+    setClock("2026-10-14T12:00:00.000Z");
+    const sessions = stubSessions({ ending: "held" });
+    await tick(sessions);
+    expect(sessions.starts).toEqual([]);
+    expect(runs()).toEqual([expect.objectContaining({ version: 1, status: "skipped_not_enabled", session_id: null, result_json: '{"status":"enabled","version":2}' })]);
+  });
+
+  it("an admission-parked event whose dedupe key matched a run that ended done meanwhile ends skipped_duplicate on its retry, no session", async () => {
+    const { p } = await parkedEvent({ dedupe: ["date"] });
+    // A run now the same day runs to done while the first is parked.
+    const other = queuePlaybookEvent({ agent: "wright", playbook: p.id, version: 1, scheduled_at: "2026-10-14T09:31:00.000Z" });
+    await deliver(store, other, stubSessions({ ending: "completed" }));
+    await vi.waitFor(() => expect(runs()[1]).toMatchObject({ status: "done" }));
+    setClock("2026-10-14T12:00:00.000Z");
+    const sessions = stubSessions({ ending: "held" });
+    await tick(sessions);
+    expect(sessions.starts).toEqual([]);
+    expect(runs().map((r) => [r.status, r.session_id, r.dedupe_key])).toEqual([
+      ["skipped_duplicate", null, '{"date":"2026-10-14"}'],
+      ["done", 1, '{"date":"2026-10-14"}'],
+    ]);
+  });
+
+  it("a kill -9 after the playbook-run step committed and before start-session was claimed, then the playbook disabled: the redelivery starts no session and ends the one row skipped_not_enabled", async () => {
+    setWrightModel();
+    const p = playbook();
+    fireDueTriggers(store, new Date("2026-10-14T09:00:00.000Z"));
+    const [message] = messages();
+    // The kernel dies inside step h (the prompt), after the run row committed.
+    const dying = brainMessageHandler({
+      now,
+      timeZone: () => "UTC",
+      loomwright: () => {
+        throw new Error("kill -9");
+      },
+    });
+    await expect(dying(eventCtx(store, message?.id as number, stubSessions()))).rejects.toThrow("kill -9");
+    expect(runs()).toEqual([expect.objectContaining({ status: "running", session_id: null })]);
+    store.close();
+    store = new Store({ dataDir });
+    disablePlaybook(store, { id: p.id, by: "owner" }, now());
+    const sessions = stubSessions({ ending: "held" });
+    await deliver(store, message?.id as number, sessions);
+    expect(sessions.starts).toEqual([]);
+    expect(runs()).toEqual([expect.objectContaining({ kind: "fire", status: "skipped_not_enabled", session_id: null, result_json: '{"status":"disabled","version":1}' })]);
   });
 });
 
