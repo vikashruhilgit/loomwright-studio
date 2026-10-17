@@ -438,7 +438,11 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     const input = { id, idempotency_key: "e1" };
 
     const held = await h.enable(input);
-    expect(held.decision.permissionDecisionReason).toMatch(/^approval_required: held as approval 1; it did not run\./);
+    // A kernel-applied action: the hold reason says the kernel applies it, never to repeat the call.
+    expect(held.decision.permissionDecisionReason).toBe(
+      "approval_required: held as approval 1; it did not run. The owner decides (studio approve 1 once, or studio deny 1) and the decision arrives as a new message. " +
+        "End your turn now; if it is approved, the kernel applies it itself and that message says what it did; do not repeat the call.",
+    );
     // The grant matches on the payload alone: the display never enters it.
     const [approval] = h.store.prepare<[], { status: string; payload_json: string }>("SELECT status, payload_json FROM approvals").all();
     expect(approval?.status).toBe("pending");
@@ -976,7 +980,11 @@ describe("the gate's pre-hold check: it can only narrow", () => {
     const check = vi.fn<HeldToolCheck>(() => ({ refuse: "no" }));
     const h = await bootManager({ heldToolCheck: check });
     // An ordinary outward call is held as before, without asking.
-    expect((await h.gate("Bash", { command: COMMENT })).permissionDecisionReason).toMatch(/^approval_required/);
+    // Its hold reason is today's, byte for byte: repeat the exact call once if approved.
+    expect((await h.gate("Bash", { command: COMMENT })).permissionDecisionReason).toBe(
+      "approval_required: held as approval 1; it did not run. The owner decides (studio approve 1 once, or studio deny 1) and the decision arrives as a new message. " +
+        "End your turn now; if it is approved, run exactly the same call again, once.",
+    );
     expect(check).not.toHaveBeenCalled();
     const dry = await h.manager.startSession({ agent: "wright", prompt: "x", model: SETTINGS_MODEL, permissionMode: "default", cwd: tmp, policy: WRIGHT_POLICY, closeInputOnResult: false, dryRun: true });
     const dryGate = gateOf(h.fakes.calls[h.fakes.calls.length - 1] as FakeCall);
