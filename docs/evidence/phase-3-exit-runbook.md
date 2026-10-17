@@ -203,7 +203,7 @@ Commit `docs/evidence/phase-3-exit-live-<YYYY-MM-DD>.json`, in the same commit a
 }
 ```
 
-A failed step keeps `"outcome": "failed"` and its `findings` (what was seen, and the new item's file name).
+A failed step keeps `"outcome": "failed"` and its `findings` (what was seen, and the new item's file name). It may also carry a `store_evidence` block: values read from the store (events, approvals, sessions, queued messages) that the harness summary did not capture, which D33 allows. Each value names where it was read from.
 
 ## Marking phase 3 done
 
