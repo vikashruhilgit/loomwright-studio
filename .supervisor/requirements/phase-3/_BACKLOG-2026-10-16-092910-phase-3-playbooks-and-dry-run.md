@@ -14,6 +14,7 @@ Recorded 2026-10-16 in the product-owner session; each item carries a copy under
 - A fire wakes the owning agent with the playbook, under its model, priority, approvals and limits.
 - Priority is `low` / `normal` / `high`.
 - In scope: priority ordering, always-allow per playbook, per-playbook token limits, per-playbook API-key fallback (D28).
+- 2026-10-17 (from the live run's step 4): for a held action that is a kernel tool with a kernel-side effect (`kernel_playbook_enable`, a closed set in code), the owner's `once` approval makes the kernel apply the held call itself. The owner's approval stays required. Other held actions still run through the agent's retry, and the agent is told the exact held call. Copied into item 10.
 
 ## Order
 | Item | Delivers | Depends on | Can run in parallel with |
@@ -27,6 +28,7 @@ Recorded 2026-10-16 in the product-owner session; each item carries a copy under
 | 07 | `kernel_playbook_dry_run` and `kernel_playbook_enable` (dry run shown in the approval) | 02, 03 | 08 |
 | 08 | Linked triggers fire the playbook; run now; dedupe-key skip; sessions run under the playbook's model and id | 02 | 07 |
 | 09 | Exit check: deterministic test, live harness and runbook, evidence, ROADMAP/ARCHITECTURE/OPEN_QUESTIONS | 02–08 | nothing (it's last) |
+| 10 | Live run 2026-10-17 step 4 finding: the kernel applies an approved kernel action (`kernel_playbook_enable`) itself and tells the agent what it did; exit checks follow | none (01–09 merged) | nothing (one item) |
 
 No two items in a wave share a `Touches` path, with `.agent/companions.json` expansion applied (checked with `plan-waves --max 5 --explain` on 2026-10-16): every item waits only on its dependencies, never on a file conflict. Shared hotspots are owned by 01 alone: migrations + store.test.ts, features/index.ts + feature-seams.test.ts, brain settings/templates/brain.md, sessions/policy.ts, ARCHITECTURE.md. Later items edit only their own module, test and doc page.
 
@@ -37,6 +39,7 @@ Four runs, as in phase 2: a one-item wave still pays the full lane cost, so 01 a
 2. `/automate --backlog .supervisor/requirements/phase-3/_BACKLOG-run-2-features.md --parallel 5`. Items 02–06, one wave of five, one wave PR.
 3. `/automate --backlog .supervisor/requirements/phase-3/_BACKLOG-run-3-runs.md --parallel 2`. Items 07 and 08, one wave of two.
 4. `/automate --backlog .supervisor/requirements/phase-3/_BACKLOG-run-4-exit.md`. Sequential, item 09, with the live run (D33: an agent may run it while the owner watches).
+5. `/automate --backlog .supervisor/requirements/phase-3/_BACKLOG-run-5-enable-fix.md`. Sequential, item 10 (from the 2026-10-17 live run, evidence `docs/evidence/phase-3-exit-live-2026-10-17.json`). Then rerun the live exit (`docs/evidence/phase-3-exit-runbook.md`); the rerun is not a queue item.
 
 Safe mode throughout (no `--auto-merge`). Before a lane can read these items, push them to the metadata branch (`meta-sync.sh push --paths-from`), as for phase 2. If a lane needs a file outside its Touches that another lane in the same wave owns, it stops and says so; it does not edit it. New findings join this plan doc as new items.
 
@@ -63,3 +66,4 @@ Safe mode throughout (no `--auto-merge`). Before a lane can read these items, pu
 - [ ] .supervisor/requirements/phase-3/2026-10-16-092907-wright-dry-runs-a-playbook-and-asks-to-enable-it.md
 - [ ] .supervisor/requirements/phase-3/2026-10-16-092908-enabled-playbooks-fire-on-schedule-or-on-demand-once-per-dedupe-key.md
 - [ ] .supervisor/requirements/phase-3/2026-10-16-092909-phase-3-exit-check.md
+- [ ] .supervisor/requirements/phase-3/2026-10-17-164900-the-kernel-applies-an-approved-kernel-action-itself.md
