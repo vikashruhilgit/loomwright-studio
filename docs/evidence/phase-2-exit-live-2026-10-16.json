@@ -1,7 +1,7 @@
 {
   "test": "phase-2-exit-live",
   "date": "2026-10-16",
-  "result": "passed — all five steps passed (harness and owner); step 2 fired at 17:00:00.296 IST on 2026-10-16 and the owner saw it",
+  "result": "passed — all five steps passed (harness and owner); step 2 fired at 17:00:00.296 IST on 2026-10-16 (from the store) and the owner saw its notification, time unknown to the owner",
   "run_by": "Claude (Claude Code session) at the owner's request, owner present and watching the screen, under D33 (DECISIONS.md, added with this file)",
   "commit": "52539afcdb494f340bae1e35b6b1e296bd4fa155",
   "dirty_worktree": false,
@@ -119,8 +119,10 @@
       },
       "trigger_row": "#1 wright: once at 2026-10-16T17:00:00+05:30, notify \"Reminder: check X\"; on; next fire 2026-10-16 17:00 +05:30 (stored next_fire_at 2026-10-16T11:30:00.000Z); created by agent",
       "owner": {
-        "notification_appeared_at_17_00": true,
-        "owner_report": "\"I saw the 17:00 'Trigger 1 (wright)' notification\" (owner's words, reported 2026-10-17)"
+        "notification_appeared": true,
+        "notification_appeared_at_17_00": null,
+        "owner_report": "\"I saw the 17:00 'Trigger 1 (wright)' notification\" (owner's words, reported 2026-10-17); corrected 2026-10-18: \"I saw it but don't know when; the 17:00 time comes from the store\"",
+        "note": "the owner saw the notification (title \"Trigger 1 (wright)\", body \"Reminder: check X\") but not when it appeared; the 17:00 time is machine-observed: harness.trigger_fired_event and harness.notification_row below"
       },
       "findings": [],
       "harness": {
