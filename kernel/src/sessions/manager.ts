@@ -399,9 +399,21 @@ interface ResumeContext {
   readonly hostSwitch: LoomwrightHostSwitch;
   readonly closeInputOnResult: boolean;
   readonly sdkSessionId: string;
-  /** The row's agent and task, for the admission request of every retry attempt. */
+  /** The row's agent, task and playbook, for the admission request of every retry attempt. */
   readonly agent: string | null;
   readonly taskId: number | null;
+  readonly playbook: number | null;
+}
+
+/**
+ * The `playbook` part of an admission request: the key only for a playbook's
+ * session, else nothing, so a request that is not a playbook's keeps exactly
+ * its five fields. Any stored id is passed on as it is (a start's was checked
+ * positive and existing), so a damaged one reaches the check, which refuses
+ * an unknown playbook (fail closed), instead of reading as no playbook.
+ */
+function playbookOf(playbook: number | null | undefined): { readonly playbook?: number } {
+  return typeof playbook === "number" ? { playbook } : {};
 }
 
 function errorMessage(err: unknown): string {
@@ -655,8 +667,9 @@ export class SessionManager {
    * process-control variable or one the auth provider sets,
    * `loomwright_contract`; a contract without a host switch,
    * `loomwright_no_host_switch`), and `AdmissionRefusedError` when the `admission` check refuses
-   * (budget or cap, item 06). An auth failure while building the env spawns
-   * nothing: the row is inserted as `failed:auth` with one `notify` event, and
+   * (budget or cap, item 06; a playbook's session's request names its
+   * playbook, so the kernel's check can refuse `playbook_daily_limit`). An
+   * auth failure while building the env spawns nothing: the row is inserted as `failed:auth` with one `notify` event, and
    * the error is rethrown. The session runs in Loomwright's host mode: its env
    * gets the contract's `host_switch.env=1` and `host_switch.state_dir_env` set
    * to `<dataDir>/loomwright-state/session-<id>`, created (mode 0700) before
@@ -683,7 +696,7 @@ export class SessionManager {
     );
     const loomwrightPath = loomwright.installPath;
 
-    this.#admit({ kind: "start", agent: params.agent, account: this.#auth.account, provider: this.#auth.id, task: params.task ?? null });
+    this.#admit({ kind: "start", agent: params.agent, account: this.#auth.account, provider: this.#auth.id, task: params.task ?? null, ...playbookOf(params.playbook) });
 
     let env: ChildEnv;
     try {
@@ -915,7 +928,9 @@ export class SessionManager {
     const recordedPath = row.loomwright_path;
     const loomwright = this.#refusingLoomwright(id, () => readSessionLoomwright(recordedPath));
     // Before the group check: a refused resume leaves the row and its events untouched.
-    this.#admit({ kind: "resume", agent: row.agent, account: this.#auth.account, provider: this.#auth.id, task: row.task_id });
+    // The playbook it resumes for: the one this resume records (`#writePlaybook`), else the row's.
+    const playbook = params.playbook ?? row.playbook;
+    this.#admit({ kind: "resume", agent: row.agent, account: this.#auth.account, provider: this.#auth.id, task: row.task_id, ...playbookOf(playbook) });
 
     // Synchronous from here to the launch: no reap or other resume interleaves.
     let check: GroupCheck;
@@ -950,6 +965,7 @@ export class SessionManager {
       sdkSessionId: row.sdk_session_id,
       agent: row.agent,
       taskId: row.task_id,
+      playbook,
     };
     const live = this.#newLive(id, row.sdk_session_id, policy, "interrupted", dryRun);
 
@@ -1601,6 +1617,7 @@ export class SessionManager {
         account: this.#auth.account,
         provider: this.#auth.id,
         task: ctx.taskId,
+        ...playbookOf(ctx.playbook),
       });
       if (decision.admitted) return false;
       payload = { reason: "admission_refused", refusal: decision.reason, retry_at: decision.retryAt, attempt: n };

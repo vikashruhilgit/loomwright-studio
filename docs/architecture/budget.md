@@ -2,7 +2,7 @@
 
 The budget layer (D24, D26, D28) meters every session's tokens, tracks the subscription cap, and decides whether a session may start. Code: `kernel/src/budget/`. It is a mechanism (invariant 1): every limit and every fallback choice is the user's, set per agent in the budget config or per playbook on the playbook row. With none set, nothing is limited and nothing ever spends money. Limits are counted tokens (input + output + cache writes, D26; cache reads are recorded but never count), never dollars. The only dollar figure is a playbook's API-key fallback ceiling.
 
-This page covers the per-playbook part (phase 3): metering a playbook's sessions, its daily token limit, and its API-key fallback decision. The meter, the cap tracker and `Budget.check` (the session manager's `admission` hook) are described in their code docs (`meter.ts`, `cap.ts`, `admission.ts`).
+This page covers the per-playbook part (phase 3): metering a playbook's sessions, its daily token limit, and its API-key fallback decision. The meter, the cap tracker and `Budget.check` (the gate the playbook gate passes a request with no playbook to) are described in their code docs (`meter.ts`, `cap.ts`, `admission.ts`).
 
 ## Per-playbook metering
 
@@ -15,6 +15,8 @@ After recording, when the playbook's `token_limit_per_day` is set and its counte
 ## Admission: the playbook gate
 
 `Budget.checkPlaybook(request)` (`PlaybookAdmission` in `playbook.ts`) takes the session manager's admission request plus `playbook` (a `playbooks.id`, or `null`). Its verdict names the provider the session runs on: `{admitted: true, provider}`, or `{admitted: false, reason, retryAt}` with `reason` one of `cap_parked`, `agent_daily_limit` or `playbook_daily_limit`.
+
+**Wiring.** It is the kernel's session admission: `startKernel` passes the session manager `admission: admissionFor(budget, authProvider.id)` (`kernel/src/kernel.ts`), which asks `checkPlaybook` before every start and resume. The manager's request names the session's `playbook` only when it has one: on a start its `playbook` param, on a resume and every resume retry the playbook it resumes for. A request with no playbook goes to the gate as `playbook: null`, so it gets exactly `Budget.check`'s verdict and events. A refusal throws `AdmissionRefusedError` (`reason` one of the three above) before any row, status change or spawn, so a playbook's fire, run now or dry run at its daily limit starts no session: the fire's or run now's `playbook_runs` row keeps `result_json` `{parked, retry_at}` and the event loop parks the event until `retry_at` (`event_parked`, no second `notify`).
 
 - **`playbook: null`** is exactly `Budget.check`: the same verdict and the same events, byte for byte, and an admit names the subscription provider. The kernel-wide `apiKeyFallback` placeholder in the budget config never switches provider, here or in `check`.
 - **A playbook's request** is checked in one store transaction, in this order:
@@ -44,7 +46,7 @@ D28: when the subscription cap is hit, a playbook may continue on the user's own
 
 ## Not wired yet
 
-- **The session manager does not call the playbook gate, and never launches on the API-key provider.** It still asks `Budget.check`, whose request carries no playbook, and it launches every session on its one auth provider. So the playbook limit and the fallback are decisions the gate makes and records, not yet enforced on a launch. Wiring them needs the manager's admission contract (`kernel/src/sessions/manager.ts`, `types.ts`, item 03) and the playbook fire path that sets `sessions.playbook` and passes the playbook (item 08). The kernel's own wiring (`onMessage: budget.observe`, `admission: budget.check`) is unchanged.
+- **The session manager never launches on the API-key provider.** The playbook gate is wired (see "Wiring" above), so the playbook's daily limit is enforced on a launch, but the manager launches every session on its one auth provider and the kernel gives the `Budget` no API-key provider, so the fallback never admits a session: at the cap a playbook waits for the reset. `admissionFor` fails closed on an admit that names any other provider (the start or resume launches nothing). Switching a launch to the API key needs the manager to take a provider per session (`kernel/src/sessions/manager.ts`, `types.ts`, item 03). The kernel's own wiring is `onMessage: budget.observe` and `admission: admissionFor(budget, authProvider.id)`.
 - **Nothing enforces the dollar ceiling on a running session.** Item 03 must stop or park a playbook's API-key sessions when its spend crosses the ceiling mid-run (the `api_key_ceiling_reached` event is the signal), and decide what happens to admits already granted and running when it does. Until then the ceiling bounds admission only, and an overrun is recorded but not prevented.
 - **`studio status` shows no per-playbook line.** The budget module has no status hook in the API or CLI. The data is available through `playbookTokensToday(store, day)` for whichever item adds the line.
 
