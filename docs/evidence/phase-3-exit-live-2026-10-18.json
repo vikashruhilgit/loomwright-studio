@@ -302,11 +302,16 @@
         "took_ms": 44044
       },
       "owner": {
-        "approved_by": "Claude, on the owner's word (\"Approve once\")",
-        "approved_at": "2026-10-17T18:55:51Z",
-        "studio_approve_output": "studio: approval 2 approved once: kernel_playbook_enable; the requesting agent gets a message\nstudio: the kernel applied it: The kernel enabled playbook phase3-exit-mvcra9jka717d0 (#2) at version 4 on approval 2."
+        "approved_by": "the owner's decision (\"Approve once\", the owner's answer when Claude relayed approval 2); Claude typed `studio approve 2 once` on that word",
+        "note": "the decision time and the command's output are machine-observed: harness.enable_approvals[0].decided_at and store_evidence.studio_approve_output"
       },
-      "findings": []
+      "findings": [],
+      "store_evidence": {
+        "studio_approve_output": {
+          "read_by": "Claude, the output of the `studio approve 2 once` it typed at about 2026-10-17T18:55:51Z (machine-observed, not an owner report)",
+          "output": "studio: approval 2 approved once: kernel_playbook_enable; the requesting agent gets a message\nstudio: the kernel applied it: The kernel enabled playbook phase3-exit-mvcra9jka717d0 (#2) at version 4 on approval 2."
+        }
+      }
     },
     "5_fires_at_its_minute": {
       "outcome": "passed",
