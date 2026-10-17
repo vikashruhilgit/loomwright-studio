@@ -1,7 +1,7 @@
 {
   "test": "phase-2-exit-live",
   "date": "2026-10-16",
-  "result": "steps 1, 3, 4 and 5 passed (harness and owner); step 2's trigger was created correctly (17:00 IST, stored 11:30Z) and its 17:00 fire is pending; phase 2 is not marked done until it is recorded",
+  "result": "passed — all five steps passed (harness and owner); step 2 fired at 17:00:00.296 IST on 2026-10-16 and the owner saw it",
   "run_by": "Claude (Claude Code session) at the owner's request, owner present and watching the screen, under D33 (DECISIONS.md, added with this file)",
   "commit": "52539afcdb494f340bae1e35b6b1e296bd4fa155",
   "dirty_worktree": false,
@@ -110,7 +110,7 @@
       "findings": []
     },
     "2_literal_5pm": {
-      "outcome": "PENDING",
+      "outcome": "passed",
       "ask": {
         "text": "remind me at 5pm to check X",
         "run_by": "Claude, at the owner's request, at 2026-10-16T02:48:31Z (08:18 IST), before the harness",
@@ -119,10 +119,21 @@
       },
       "trigger_row": "#1 wright: once at 2026-10-16T17:00:00+05:30, notify \"Reminder: check X\"; on; next fire 2026-10-16 17:00 +05:30 (stored next_fire_at 2026-10-16T11:30:00.000Z); created by agent",
       "owner": {
-        "notification_appeared_at_17_00": null,
-        "notification_row": null
+        "notification_appeared_at_17_00": true,
+        "owner_report": "\"I saw the 17:00 'Trigger 1 (wright)' notification\" (owner's words, reported 2026-10-17)",
+        "notification_row": "notification #4: source trigger:1, title \"Trigger 1 (wright)\", body \"Reminder: check X\", created 2026-10-16T11:30:00.296Z, delivered 2026-10-16T11:30:01.555Z (posted by terminal-notifier), deep link loomwright-studio://notifications/4 (from `studio notifications show 4`, read 2026-10-17)"
       },
-      "findings": []
+      "findings": [],
+      "harness": {
+        "trigger_fired_event": {
+          "id": 79,
+          "at": "2026-10-16T11:30:00.296Z",
+          "scheduled_at": "2026-10-16T11:30:00.000Z",
+          "missed": 0,
+          "notification_id": 4
+        },
+        "fired_late_ms": 296
+      }
     },
     "3_reminder_off": {
       "outcome": "passed",
