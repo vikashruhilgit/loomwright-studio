@@ -79,7 +79,7 @@ The model sees `permissionDecision: "deny"` with a fixed text that starts with `
 - `finalText`: the same text `SessionHandle.result` resolves to (`null` unless the session ended `completed` with a successful result);
 - `usage`: the **last** `result` message's `modelUsage`, normalised per model the way the budget meter reads it (`UsageTotals`: input, output, cache-write, cache-read and thinking tokens, and the SDK's cost estimate). It is the SDK session's cumulative total, so successive results are never added together. Empty when no result came.
 
-The report is held in memory only, per handle; nothing is persisted, so it never spans a kernel restart. Storing a playbook's dry-run result is the playbook half's job (`playbook_runs.result`, [playbook runs](playbook-runs.md)).
+The report is held in memory only, per handle; nothing is persisted, so it never spans a kernel restart. Storing a playbook's dry-run result is the playbook half's job ([below](#a-playbooks-dry-run)).
 
 ## Tokens count against limits
 
@@ -89,4 +89,44 @@ A dry run is not free: the budget meter observes a dry-run session's messages ex
 
 A dry run only narrows, so a session that **started** as a dry run stays one on every resume, whatever the resume's `dryRun` says. A dry-run start writes one `session_dry_run` event (payload `{}`) in the same transaction as its row, and a resume reads it back. `resumeSession(id, { …, dryRun: true })` of a session that started as a real run makes that resume a dry run; it writes no event, so a later resume without `dryRun` is a real run again.
 
-The playbook half (running a playbook's dry run, storing and showing its result) is added by item 07.
+## A playbook's dry run
+
+The playbook half (phase 3 item 07). Code: `kernel/src/playbooks/dry-run.ts`. Tests: `kernel/test/playbooks-dry-run.test.ts`. Enabling a playbook needs one of these first ([playbooks](playbooks.md#enabling)).
+
+**`kernel_playbook_dry_run(id, idempotency_key)`** runs a draft playbook's current version once, as a fire would, in a dry-run session, and returns what it would do. Its input is untrusted data, and every refusal is an error result naming the cause (`invalid_input` unless said otherwise), never a throw through the SDK. In order:
+
+1. The playbook is not the caller's (`not_found`, `not_owner`), the owner turned it off (`owner_off`), it is already `enabled` (change it to make a new draft version), or it is `disabled`.
+2. **The playbook has no model**: refused, naming the playbook's `model`, before Wright's settings are read and before any session. The kernel never picks a model ([brain](brain.md)), and Wright's own model never stands in for the playbook's.
+3. **Wright's settings** (`readWrightSettings`): a file that cannot start a session (`model_unset`, `settings_invalid`) is its own refusal, naming `wright.json`.
+4. A kernel composition that gives tools no `startSession` is refused, naming it.
+
+Then the session: `startSession({ agent: <the owning agent>, prompt: <the current version's intent, verbatim>, model: <the playbook's model>, permissionMode, policy, cwd: <Wright's memory dir>, dryRun: true, playbook: id, playbookVersion: version })`, with the permission mode and tool policy from Wright's settings, exactly as [the brain](brain.md) starts Wright. The tool waits for the session to end (`done` and the report).
+
+**Exactly once per key.** The session starts inside a work step keyed `kernel_playbook_dry_run:session-<id>:<idempotency_key>`: a repeat in the same session returns the stored result and starts no second session. Starting the session is the step's first effect. A refusal before it, or an admission refusal from `startSession` (budget or cap), releases the step, so it leaves nothing behind and the same key can run once the cause is fixed. Any other failure after that point fails the step (`failed:error`), and a new key is needed.
+
+**The run row.** Only after `startSession` succeeded, one `playbook_runs` row: `kind = 'dry_run'`, `status = 'running'`, `session_id`, `version`, `started_at`. When the session ends, the same row gets `status` `done` (the session ended `completed`) or `failed` (any other ending), `ended_at`, `tokens` and `result_json`, written by this run's own outcome whatever else touched the row meanwhile. The `playbook_runs.status` values a dry run uses are `running`, `done` and `failed`; item 08 owns the closed list for every kind ([playbook runs](playbook-runs.md)). The row's `dedupe_key` column stays null: a preview is never a fire, so nothing that checks fired keys can count it.
+
+```
+result_json = { would_do, next_fires, dedupe_key, final_text, usage }
+```
+
+- `would_do`: the report's would-do entries ([above](#the-would-do-entry)).
+- `next_fires`: the linked trigger's next fires after the end of the run, UTC: a `cron` spec gives three successive `nextCronFire` instants; a `once` spec gives its instant when it is in the future, else none; no trigger, none. It reads the spec only, so a trigger someone turned off still shows its schedule.
+- `dedupe_key`: a **preview** of what the playbook's `dedupe_key_spec` gives for the first next fire: each field as `<field>=<value>`, joined with `|`, in the spec's order, from `playbook.id`, `playbook.version`, `trigger.id`, `trigger.scheduled_at` (that fire's UTC instant) and `date` (that fire's local date: in the cron's zone, or at a `once` spec's own offset). Null with no spec or no next fire. What a fire actually skips is item 08's check, not this.
+- `final_text`, `usage`: the report's.
+
+`tokens` is the input, output, cache-write and cache-read tokens summed over the report's `usage` models (thinking tokens are already inside the output). They count against limits like any session's: the budget meter, not this number, is the accounting source ([above](#tokens-count-against-limits)).
+
+One `playbook_dry_run` audit event `{playbook_id, version, run_id, status, tokens, would_do: <count>}`, linked to the calling session. The tool returns `{run_id, playbook, version, status, would_do, next_fires, dedupe_key, tokens, summary}`, and rewrites the playbook's mirror (a failed write is a `mirror_error` field, the run stays stored).
+
+**The summary** is one paragraph, the same text in the tool result, the mirror and the enable approval's display: the run and version, whether it completed, the tokens, what it would do (at most ten entries, each input cut to 160 characters, then how many more), the next fires (UTC) and the dedupe-key preview. The would-do inputs are the model's text, copied as data: the mirror renders the summary as one inert code span, and `studio approvals` escapes and indents every line of it ([approvals](approvals.md#the-pre-hold-check)).
+
+**Which dry run counts.** `latestDryRun(store, playbook, version)` reads the newest row of that version that ended `done`. A `running` or `failed` row never counts as a dry run.
+
+**Stale rows.** A kernel restart (`kill -9`) in the middle of a dry run leaves its row `running` while its session is no longer live. Every call for that playbook, before its work step (so a repeat with the same key clears them too), first marks `failed` (with `ended_at`) each `running` dry-run row whose session row is gone or not `starting` / `running`. The crashed step itself is left `started` and becomes `failed:interrupted` on a repeat with its key, as for any step ([the event loop](../ARCHITECTURE.md#main-loop)).
+
+**The mirror line.** `Last dry run: <summary>` for the newest `done` dry run of the current version; `Last dry run: No dry run of version <n> yet.` when only earlier versions have one (an edit made a new version); `Last dry run: No dry run yet.` when there is none.
+
+**Recursion.** Inside a dry-run session, `kernel_playbook_dry_run` is itself "would do" (`*_dry_run` above), so a dry run never starts another.
+
+**The honest limit: a tool-call timeout.** The tool blocks Wright's turn for the whole dry-run session. The installed SDK's types say an in-process MCP tool call is bounded by a per-server `timeout` or the `MCP_TOOL_TIMEOUT` variable, "effectively unbounded by default"; the kernel sets neither, and no probe has run (NEEDS VERIFICATION, [open questions](../OPEN_QUESTIONS.md#technical-verify-dont-assume)). If a timeout does fire, Wright sees a tool error while the dry run goes on: its row still lands `done`, and a repeat with the same key returns the stored result (or, while it still runs in this kernel, waits for it).

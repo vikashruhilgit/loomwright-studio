@@ -1,8 +1,10 @@
 # Playbooks
 
-A playbook is recurring work an agent does for the owner ("every weekday at 9, summarise what changed in repo X"), written down where the owner can read it, with every value about how it runs set by the owner. Code: `kernel/src/playbooks/` (this page covers the `drafts` part, `drafts.ts`, `store.ts` and `mirror.ts`). Tables: `playbooks` and `playbook_versions` (migration 13, see the [data model](../ARCHITECTURE.md#data-model)).
+A playbook is recurring work an agent does for the owner ("every weekday at 9, summarise what changed in repo X"), written down where the owner can read it, with every value about how it runs set by the owner. Code: `kernel/src/playbooks/` (this page covers the `drafts` part, `drafts.ts`, `store.ts` and `mirror.ts`, and the `enable` part, `enable.ts`; the dry run, `dry-run.ts`, is on [dry runs](dry-run.md#a-playbooks-dry-run)). Tables: `playbooks` and `playbook_versions` (migration 13, see the [data model](../ARCHITECTURE.md#data-model)).
 
-This is mechanism only (invariant 1). No playbook ships preinstalled. Wright drafts one and every policy value it gives is a proposal; the owner reads it, changes any value and turns it off at any time. A playbook starts as a `draft`. Enabling it after a dry run is item 07's ([dry runs](dry-run.md)); what a fire of an enabled playbook does is item 08's ([playbook runs](playbook-runs.md)). Until then no playbook starts work.
+This is mechanism only (invariant 1). No playbook ships preinstalled. Wright drafts one and every policy value it gives is a proposal; the owner reads it, changes any value and turns it off at any time. A playbook starts as a `draft`; Wright dry-runs it and asks to enable it, and only the owner's approval enables it ([below](#enabling)). What a fire of an enabled playbook does is item 08's ([playbook runs](playbook-runs.md)).
+
+**Statuses** (`PLAYBOOK_STATUSES`): `draft` (every new playbook, and every edited one), `enabled` (only through the owner-approved enable below), `disabled` (turned off by its agent or the owner).
 
 ## Wright's tools
 
@@ -19,6 +21,22 @@ Four kernel tools. Their input is untrusted data, and every refusal is an error 
 - **`kernel_playbook_disable(id, idempotency_key)`** turns the caller's playbook off. It refuses one the owner turned off.
 
 Create, update and disable run as a work step keyed `<tool>:session-<id>:<idempotency_key>`, so a repeat in the same session returns the first result. The exception, as for triggers: a repeat after the owner turned the playbook off returns the `owner_off` error, not the stored success.
+
+Two more tools come from the other parts: `kernel_playbook_dry_run(id, idempotency_key)` ([dry runs](dry-run.md#a-playbooks-dry-run)) and `kernel_playbook_enable(id, idempotency_key)` ([below](#enabling)).
+
+## Enabling
+
+Enabling is Wright's request and the owner's one approval (D3, invariant 3). Code: `kernel/src/playbooks/enable.ts`. `kernel_playbook_enable` is in the fixed `ALWAYS_HELD_TOOLS` set, so the kernel's gate holds every call for the owner; the tool's part only narrows that, in two halves.
+
+**Before the hold** (the tool's `beforeHold`, [the pre-hold check](approvals.md#the-pre-hold-check)). The call is refused, with no approval written, when the playbook is missing, not the caller's, turned off by the owner or not a `draft`, or when its current version has no dry run that ended `done` (the refusal says `a dry run of version <n> is required`). Otherwise it is held with a display that `studio approvals` prints: the playbook's name, slug and id, `version <n>`, its agent and schedule, every policy value (`model`, `priority`, `dedupe_key`, `token_limit`, `effort`, `api_key_fallback`) or `not set`, each marked ` (proposed)` where Wright set it and ` (set by owner)` where the owner did, and the dry run's summary. The version is recorded on the approval as `subject_version`.
+
+**The owner-approved retry** (the handler, run only when the gate let the call through on the owner's one-shot grant). It enables only on its **own** approval: the newest approval consumed (`approval_used`) in this session for this tool, held by the rail, whose held input named this playbook and this idempotency key. Two enables in one session never borrow each other's approval, and with none the call is refused. Then every one of these must hold, or the retry is refused `version changed` and the playbook stays `draft`:
+
+1. the approval's `subject_version` is the playbook's current version;
+2. no `playbook_updated` for the playbook has a higher event id than the approval's `approval_requested` (event ids only grow, so a same-second edit is still seen);
+3. the current version has a `done` dry run.
+
+Then `enablePlaybook` sets `status = 'enabled'`, only while the row is still a `draft` at that version, and appends `playbook_enabled` in one transaction, inside the tool's work step (a repeat with the same key returns `{playbook, version, status: "enabled", approval_id}` again). The owner's off is re-checked after the step and the mirror rewritten, as for the other tools. An edit after the request makes a new version: if it was not dry-run, the retry is refused before the hold and the owner's grant is left unused; if it was, the gate uses the grant and the handler refuses (check 1). Either way the playbook needs a new dry run and a new approval. An edit of an `enabled` playbook makes it a `draft` again (below). The linked trigger is not touched: it already exists, and item 08 makes it fire.
 
 ## The owner's verbs and routes
 
@@ -47,6 +65,8 @@ Audit events (actor `kernel`; `session_id` is the calling session for a tool, nu
 - `playbook_created`: `{playbook_id, slug, owning_agent, version: 1, by: "wright", trigger_id}`
 - `playbook_updated`: `{playbook_id, version, by, fields}`
 - `playbook_disabled`: `{playbook_id, by}`
+- `playbook_dry_run`: `{playbook_id, version, run_id, status, tokens, would_do}` (`would_do` is the count; [dry runs](dry-run.md#a-playbooks-dry-run))
+- `playbook_enabled`: `{playbook_id, version, approval_id, by: "owner"}` (the owner approved it; the agent's retry carried it out)
 
 ## Who set it
 
@@ -56,7 +76,7 @@ Each policy field has a `*_set_by` column. A value an agent gives records `wrigh
 
 `studio playbooks off` sets `status = disabled` and records `playbook_disabled` with `by: owner`. There is no `disabled_by` column: who turned a playbook off is read from the append-only log, the newest `playbook_disabled` for it, as triggers read their toggles.
 
-The owner's off is final for agents. An agent can't change, disable or re-enable a playbook the owner turned off, and `refuseIfOwnerTurnedOff(store, id)` (exported from `kernel/src/playbooks/store.ts`) is the one guard every agent path calls; item 07's `kernel_playbook_enable` must call it too. A `disabled` playbook counts as the owner's off unless the newest `playbook_disabled` for it is an agent's: a gap in the evidence never unlocks it. An agent's own off leaves the playbook the agent's to change. The owner turning off a playbook an agent already turned off records the owner's off (`changed: true`), so it becomes final. The owner may still `set` values on a disabled playbook: a new version, still disabled.
+The owner's off is final for agents. An agent can't change, disable or re-enable a playbook the owner turned off, and `refuseIfOwnerTurnedOff(store, id)` (exported from `kernel/src/playbooks/store.ts`) is the one guard every agent path calls, `kernel_playbook_dry_run` and `kernel_playbook_enable` included. A `disabled` playbook counts as the owner's off unless the newest `playbook_disabled` for it is an agent's: a gap in the evidence never unlocks it. An agent's own off leaves the playbook the agent's to change. The owner turning off a playbook an agent already turned off records the owner's off (`changed: true`), so it becomes final. The owner may still `set` values on a disabled playbook: a new version, still disabled.
 
 ## The linked trigger
 
@@ -76,11 +96,11 @@ The file holds, in order:
 4. The intent.
 5. The trigger (`cron <expr> in <zone>` or `once at <instant>`) and its next fire in the owner's local time, as of when the file was written.
 6. One line per policy field (dedupe key, priority, model, token limit per day, effort, API-key fallback) with its value or `not set`, followed by `(proposed)` when an agent set it.
-7. `Last dry run: No dry run yet.` (item 07 fills it).
+7. The last dry run: `Last dry run: <summary>` (the newest dry run of the current version that ended `done`, as one inert code span), `Last dry run: No dry run of version <n> yet.` when only earlier versions have one, or `Last dry run: No dry run yet.` ([dry runs](dry-run.md#a-playbooks-dry-run)). A resync renders it from the stored runs too, so a restart never wipes it.
 
 **Inert text.** Every stored string is data (invariant 3). A one-line value is a CommonMark code span whose backtick fence is one longer than its longest backtick run, and the intent is a fenced code block whose fence is longer than any backtick run inside it, so nothing an agent wrote becomes a live heading, link or HTML. Control characters (other than the intent's line breaks and tabs) and bidi overrides are written as `?`, so `cat`-ing the file can't drive a terminal.
 
-**Rewritten after every change.** Each create, update, set and off rewrites the file after its transaction commits, for every status, `disabled` included. The write is atomic (a temp file, then a rename), and a file that already holds the same bytes is not rewritten. If the write fails, the change is still stored; the tool result or route answer carries a `mirror_error`.
+**Rewritten after every change.** Each create, update, set, off, dry run and enable rewrites the file after its transaction commits, for every status, `disabled` included. The write is atomic (a temp file, then a rename), and a file that already holds the same bytes is not rewritten. If the write fails, the change is still stored; the tool result or route answer carries a `mirror_error`.
 
 **Resynced after a restart.** A crash between the row's commit and the file write leaves the file missing or stale. The drafts part's due work runs once per `Store` (each kernel start opens a new one): on its first tick it renders every playbook from its row and rewrites each file whose bytes differ. The row is the truth. It appends no event, and one playbook's failure doesn't stop the others; they are reported together as one `due_work_failed`.
 

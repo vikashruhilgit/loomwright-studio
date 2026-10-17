@@ -41,6 +41,24 @@ The kernel's one `PreToolUse` hook decides every call in order:
 
 Every call still records exactly one `tool_decision` event (with `approval_id` when one was held or used). The gate fails closed: if creating the approval, consuming a grant or recording the decision throws, the whole transaction rolls back and the call is denied with `kernel_gate_error`.
 
+### The pre-hold check
+
+A call to a tool in `ALWAYS_HELD_TOOLS` (today only `mcp__kernel__kernel_playbook_enable`) gets one more step, after the policy allowed it and the rail answered outward, and before the hold (`SessionManagerOptions.heldToolCheck`, phase 3 item 07). It never runs in a dry-run session: that session's gate denies the call `dry_run` before the approval path. The kernel builds the check from the shipped contributions: a contributed tool may declare a synchronous `beforeHold(args, ctx)` that reads the store only, and the check parses the call's input with that tool's own zod shape first. Every outcome:
+
+| The check answers | The gate |
+|---|---|
+| nothing (no check configured, or the tool declares no `beforeHold`) | holds the call exactly as before, with no display |
+| a refusal, because the input fails the tool's shape | denies it `held_refused` (below) |
+| `{refuse}` | denies it with reason `held_refused`: one `tool_decision` event, the refusal text as the model's reason. No approval row is written and no grant is used. |
+| `{display, subjectVersion?}` | holds it as before. A new approval's `approval_requested` event gets `display` (cut to 4,000 characters, never refused) and `subject_version`; neither ever enters `payload_json`, so grant matching on the canonical payload is unchanged, and a grant that matches is used exactly as before. |
+| a throw, or any other answer (a promise, an empty refusal, an unknown key, a version that is not a positive integer) | denies it `kernel_gate_error` (fail closed) |
+
+It can only narrow: it never allows a call that would be held, never skips the hold and never uses a grant itself. `held_refused` is a gate-local reason like `dry_run` and `kernel_gate_error`, not yet in the public `ToolDecisionReason` union in `kernel/src/sessions/policy.ts`.
+
+**A refused retry leaves the grant unused.** When the owner approved a held enable and the playbook was then edited without a new dry run, Wright's retry is refused here, so the owner's one-shot grant stays unused. It cannot enable anything later: the enable's own handler checks the approval's `subject_version`, the edit order and a dry run of the current version before it enables ([playbooks: enabling](playbooks.md#enabling)), so any later use of that stale grant is refused there.
+
+**The display is untrusted text.** It carries what Wright wrote (a playbook's name) and would-do summaries of the model's tool inputs. `studio approvals` prints it under a `display:` label before `payload:`, each line escaped like the payload (`\xNN`, `\uNNNN`) and indented under the label, so no line of it can fake another label or drive the terminal. `--json` and the API return it as the approval's `display` field, present only when the event has one: an approval without one prints exactly as before.
+
 ### Which command forms the matcher recognises
 
 The rail reads a Bash command the way the shell splits it into words (`shellWords`: a space or tab separates words, as in bash, single and double quotes and backslash escapes are read as the shell reads them, adjacent parts join into one word). The policy has already refused shell control and substitution characters (`;` `&` `|` `<` `>` `(` `)` `$`, backtick, newline), so a command is one program and its arguments. The expansions the shell can still apply are read failing closed: a word that **could** expand to a protected, merge or outward form counts as that form.
@@ -78,7 +96,7 @@ The owner decides over the loopback API (bearer token, like every route), which 
 
 | CLI | API | Effect |
 |---|---|---|
-| `studio approvals [--all] [--json]` | `GET /approvals[?all=1]` | Pending approvals first (oldest first): id, status, time, agent, session, action, `from playbook <slug> v<n>` for an approval that has a playbook, and the exact payload pretty-printed as JSON data. `--all` adds the decided ones (newest first, at most 500). `--json` prints the API's JSON, where each approval has `playbook: {id, slug, version}` (null for none; `version` is the one the requesting session ran). |
+| `studio approvals [--all] [--json]` | `GET /approvals[?all=1]` | Pending approvals first (oldest first): id, status, time, agent, session, action, `from playbook <slug> v<n>` for an approval that has a playbook, its `display:` text when it has one ([the pre-hold check](#the-pre-hold-check)), and the exact payload pretty-printed as JSON data. `--all` adds the decided ones (newest first, at most 500). `--json` prints the API's JSON, where each approval has `playbook: {id, slug, version}` (null for none; `version` is the one the requesting session ran) and, when it has one, `display`. |
 | `studio approve <id> once` | `POST /approvals/<id>/approve` `{"decision": "once"}` | `approved` / `once`. |
 | `studio approve <id> always` | `POST /approvals/<id>/approve` `{"decision": "always"}` | `approved` / `always`: a [standing grant](#standing-grants-always-per-playbook-version) for that playbook version. Only for a rail approval from a playbook session (below); the CLI's line names the playbook's slug and version. |
 | `studio deny <id>` | `POST /approvals/<id>/deny` | `denied` / `deny`. |
@@ -136,18 +154,18 @@ Any other `always` is refused with `409 always_not_supported`, whose message nam
 
 A match writes one `approval_grant_used` event (`{id, tool}`, linked to the calling session) in the same transaction as the allow and its `tool_decision` event. A standing grant is not consumed. The fixed rail runs before any grant, so no grant ever covers a protected kernel path or the merge block: those are denied, never held.
 
-**Dry runs.** The dry-run gate belongs to phase 3 item 03 and is not on this branch yet: until it lands, `dryRun` is accepted and ignored, and nothing starts a dry-run session. Once item 03 lands, a dry-run session is denied every outward or persistent call by its own gate before the rail, so it never reaches a grant and never uses one. Running a playbook's dry run is item 07.
+**Dry runs.** A dry-run session (phase 3 item 03) is denied every outward or persistent call by its own gate, after the policy and the rail answered and before the approval path, so it never reaches a grant and never uses one ([dry runs](dry-run.md)). A playbook's dry run (`kernel_playbook_dry_run`, item 07) is such a session, and an enable needs one of the playbook's current version before the gate holds it ([the pre-hold check](#the-pre-hold-check)).
 
 ## Audit events
 
 | Kind | Payload | When |
 |---|---|---|
-| `approval_requested` | `{id, action, source, agent}`, plus `playbook` and `playbook_version` from a playbook session | An approval is created (by the rail or the tool). |
+| `approval_requested` | `{id, action, source, agent}`, plus `playbook` and `playbook_version` from a playbook session, and `display` / `subject_version` when the pre-hold check gave them | An approval is created (by the rail or the tool). |
 | `approval_decided` | `{id, decision, by, action}` | The owner decides (`decision` is `once`, `always` or `deny`). |
 | `approval_used` | `{id, tool}` | The rail lets a call through on a one-shot grant. |
 | `approval_grant_used` | `{id, tool}` | The rail lets a call through on a standing grant. |
 | `approval_grant_revoked` | `{id, by}` | The owner revokes a standing grant. |
-| `tool_decision` | `{tool, decision, reason, command?, approval_id?}` | Every gated call (phase 1), with the new reasons `approval_required`, `approval_granted`, `protected_kernel_path`, `merge_blocked` and `bash_command_too_large` (and `bash_shell_metacharacter` now also for a command the rail will not read). |
+| `tool_decision` | `{tool, decision, reason, command?, approval_id?}` | Every gated call (phase 1), with the new reasons `approval_required`, `approval_granted`, `protected_kernel_path`, `merge_blocked` and `bash_command_too_large` (and `bash_shell_metacharacter` now also for a command the rail will not read), plus the gate-local `held_refused` (the pre-hold check refused it), `dry_run` and `kernel_gate_error`. |
 
 ## Values
 
