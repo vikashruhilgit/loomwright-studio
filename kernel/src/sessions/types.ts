@@ -261,10 +261,24 @@ export interface AdmissionRequest {
   /** The auth provider's stable `id`: the key admission checks parks on. */
   readonly provider: string;
   readonly task: number | null;
+  /**
+   * The playbook the session runs for (`sessions.playbook`, a positive id): on
+   * a start its `StartSessionParams.playbook`, on a resume and on every resume
+   * retry the playbook it resumes for. The manager sets the key only for a
+   * playbook's session and leaves it out otherwise, so a request that is not a
+   * playbook's keeps exactly the five fields above. `null` reads as absent; it
+   * is allowed so the playbook gate's request (`PlaybookAdmissionRequest`,
+   * `playbook: number | null`) extends this one.
+   */
+  readonly playbook?: number | null;
 }
 
-/** Why admission refused: the account is parked at its cap, or the agent reached its daily token limit. */
-export type AdmissionRefusalReason = "cap_parked" | "agent_daily_limit";
+/**
+ * Why admission refused: the account is parked at its cap, the agent reached
+ * its daily token limit, or the session's playbook reached its own daily
+ * token limit (`token_limit_per_day`).
+ */
+export type AdmissionRefusalReason = "cap_parked" | "agent_daily_limit" | "playbook_daily_limit";
 
 /**
  * The admission verdict. A refusal carries when to try again (ISO-8601), or
@@ -449,7 +463,9 @@ export interface SessionManagerOptions {
    * A refusal throws `AdmissionRefusedError`; a check that throws fails the
    * request closed with its own error. Asked again (as a `resume`) before each
    * retry attempt of a resume, where a refusal or a throw returns the session
-   * to `interrupted` instead of launching. Absent: every request is admitted.
+   * to `interrupted` instead of launching. A playbook's session's request
+   * names its playbook (`AdmissionRequest.playbook`); any other request
+   * carries no `playbook` key. Absent: every request is admitted.
    */
   readonly admission?: (request: AdmissionRequest) => AdmissionDecision;
   /**

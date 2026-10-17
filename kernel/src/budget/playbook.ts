@@ -87,9 +87,11 @@ export function playbookTokensToday(store: Store, day: string): PlaybookTokensTo
 /**
  * The admission gate for a playbook's sessions (phase 3): the playbook's own
  * daily token limit and its D28 API-key fallback, around `BudgetAdmission`'s
- * cap and agent checks. A budget-module mechanism only: the session manager
- * does not call it yet and launches every session on its one provider, so an
- * API-key admit is a decision its caller must act on.
+ * cap and agent checks. The kernel's session admission calls it for every
+ * start and resume (`admissionFor` in `kernel/src/kernel.ts`, the session's
+ * playbook or `null`), but the manager launches every session on its one
+ * provider: an API-key admit is a decision its caller must act on, and
+ * `admissionFor` fails it closed (the kernel gives no API-key provider).
  *
  * - `playbook: null`: exactly `BudgetAdmission.check`'s verdict and events,
  *   an admit naming the subscription provider. The kernel-wide

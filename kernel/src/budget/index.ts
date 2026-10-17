@@ -49,9 +49,12 @@ export type {
 
 /**
  * One meter, cap tracker and admission gate sharing a store, a config and a
- * clock. Wire it into the session manager as
- * `{ onMessage: budget.observe, admission: budget.check }`; both are bound.
- * `checkPlaybook` (bound too) is the playbook gate; nothing calls it yet.
+ * clock. `observe`, `check` and `checkPlaybook` are bound. `checkPlaybook` is
+ * the playbook gate, and the kernel's session admission: `startKernel` wires
+ * the session manager as `{ onMessage: budget.observe, admission:
+ * admissionFor(budget, authProvider.id) }`, which asks `checkPlaybook` for
+ * every start and resume (a request that is not a playbook's as
+ * `playbook: null`, which is exactly `check`).
  */
 export class Budget {
   readonly config: BudgetConfig;
