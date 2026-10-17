@@ -40,11 +40,19 @@
 // never starts work unless that playbook is `enabled`: its due instant is
 // recorded as a miss (`trigger_missed`, reason `playbook_not_enabled`) in the
 // same per-instant work step a fire would use, so it is never fired later.
+// A fire of an enabled playbook's trigger, whatever its `action`, queues the
+// playbook's message instead of the stored text: one `message` event with
+// payload `{agent, playbook, version, trigger_id, scheduled_at}` (the
+// playbook's owning agent, id and current version) at the playbook's
+// priority, `sourceRef` `playbook:<id>:<scheduled instant>`; no
+// notification. What the message does is the playbooks feature's
+// (`../playbooks/runs.ts`).
 // The status is read with raw SQL: this module never imports the playbooks
 // feature (that one depends on this one).
 import { KILL_SWITCH_ENGAGED, KILL_SWITCH_RELEASED, isKillSwitchEngaged } from "../api/kill-switch.js";
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
+import type { EnqueueParams } from "../loop/queue.js";
 import { getWorkStep, runStep } from "../loop/steps.js";
 import { InvalidNotificationError, MAX_NOTIFICATION_TITLE, recordNotification } from "../notifications/record.js";
 import type { Store } from "../store/store.js";
@@ -782,14 +790,22 @@ function notifyTitle(id: number, agent: string): string {
   return clip(`Trigger ${id} (${agent})`, MAX_NOTIFICATION_TITLE - 1);
 }
 
+/** What a fire reads of a linked playbook. */
+interface LinkedPlaybook {
+  readonly id: number;
+  readonly status: string;
+  readonly version: number;
+  readonly priority: string;
+  readonly owning_agent: string;
+}
+
 /**
- * The status of the playbook with slug `slug`, or `null` when there is none.
- * Raw SQL over `playbooks` (migration 13): this module must not import the
- * playbooks feature, which depends on it.
+ * The playbook with slug `slug`, or `undefined` when there is none. Raw SQL
+ * over `playbooks` (migration 13): this module must not import the playbooks
+ * feature, which depends on it.
  */
-function playbookStatus(store: Store, slug: string): string | null {
-  const row = store.prepare<[string], { status: string }>("SELECT status FROM playbooks WHERE slug = ?").get(slug);
-  return row === undefined ? null : row.status;
+function linkedPlaybook(store: Store, slug: string): LinkedPlaybook | undefined {
+  return store.prepare<[string], LinkedPlaybook>("SELECT id, status, version, priority, owning_agent FROM playbooks WHERE slug = ?").get(slug);
 }
 
 /** What `fireDueTriggers` did for one trigger. */
@@ -823,8 +839,11 @@ function fireOne(store: Store, id: number, scheduledAt: string, plan: FirePlan, 
     next_fire_at: plan.next,
   };
 
+  // Set only for a linked trigger whose playbook is `enabled` (the branch below records every other linked one).
+  let playbook: LinkedPlaybook | undefined;
   if (row.playbook !== null) {
-    const status = playbookStatus(store, row.playbook);
+    const linked = linkedPlaybook(store, row.playbook);
+    const status = linked === undefined ? null : linked.status;
     if (status !== "enabled") {
       // A linked trigger of a playbook that is not enabled never starts work: the
       // instant is recorded (this step is its key, so it is never fired later)
@@ -840,6 +859,7 @@ function fireOne(store: Store, id: number, scheduledAt: string, plan: FirePlan, 
       );
       return { trigger_id: id, scheduled_at: scheduledAt, result: "skipped" };
     }
+    playbook = linked;
   }
 
   if (plan.toFire === 0) {
@@ -858,7 +878,21 @@ function fireOne(store: Store, id: number, scheduledAt: string, plan: FirePlan, 
   }
 
   let effect: { notification_id: number } | { queue_id: number };
-  if (row.action === "notify") {
+  if (playbook !== undefined) {
+    // The playbook's message, whatever the action. A stored priority outside the
+    // closed set makes `enqueueEvent` throw: this step fails, never a guessed priority.
+    const queued = enqueueEvent(
+      store,
+      {
+        kind: "message",
+        payload: { agent: playbook.owning_agent, playbook: playbook.id, version: playbook.version, trigger_id: id, scheduled_at: scheduledAt },
+        priority: playbook.priority as EnqueueParams["priority"],
+        sourceRef: `playbook:${playbook.id}:${scheduledAt}`,
+      },
+      now,
+    );
+    effect = { queue_id: queued.id };
+  } else if (row.action === "notify") {
     effect = { notification_id: recordNotification(store, { source: `trigger:${id}`, title: notifyTitle(id, row.owning_agent), body: row.action_payload }, now).id };
   } else if (row.action === "wake_agent") {
     const queued = enqueueEvent(
@@ -880,6 +914,7 @@ function fireOne(store: Store, id: number, scheduledAt: string, plan: FirePlan, 
     {
       trigger_id: id,
       action: row.action,
+      ...(playbook === undefined ? {} : { playbook: row.playbook, playbook_id: playbook.id }),
       scheduled_at: scheduledAt,
       // How many due instants this one fire coalesces; 0 for a single one (an ordinary fire, however late).
       missed: plan.toFire > 1 ? plan.toFire : 0,

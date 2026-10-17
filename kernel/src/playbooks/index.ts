@@ -3,7 +3,8 @@
 // `drafts.ts`, item 07 `dry-run.ts` and `enable.ts`, item 08 `runs.ts`.
 // A part is empty until its item fills it in; today `drafts` is filled (the
 // playbook tools, the `/playbooks` routes, the `list` / `show` / `set` / `off`
-// verbs and the mirror resync's due work). Mechanism only
+// verbs and the mirror resync's due work) and so is `runs` (the run-now
+// route and the `run` verb). Mechanism only
 // (invariant 1): no playbook ships preinstalled. `startKernel` and `runCli`
 // merge it through `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`).
 //
@@ -89,9 +90,15 @@ export function mergePlaybookParts(parts: readonly PlaybookPart[]): MergedPlaybo
   });
 }
 
-/** `studio playbooks <verb>`, then each verb's help line, joined with ` | ` (one line). */
+/**
+ * `studio playbooks <verb>`, then each verb's help line with a leading
+ * `studio playbooks ` removed (so the joined line stays within the 200
+ * characters a subcommand's help may have), joined with ` | ` (one line).
+ * Each verb's own `help` (its usage line) is unchanged.
+ */
 export function playbooksHelp(verbs: readonly PlaybookVerb[]): string {
-  return [`studio ${PLAYBOOKS_NAME} <verb>`, ...verbs.map((v) => v.help)].join(" | ");
+  const prefix = `studio ${PLAYBOOKS_NAME} `;
+  return [`studio ${PLAYBOOKS_NAME} <verb>`, ...verbs.map((v) => (v.help.startsWith(prefix) ? v.help.slice(prefix.length) : v.help))].join(" | ");
 }
 
 /**
@@ -143,7 +150,7 @@ export function playbooksContributionOf(parts: readonly PlaybookPart[]): Feature
 /** The shipped contribution: `PLAYBOOK_PARTS` merged at module load (the parts claim distinct verbs, so it does not throw). */
 export const playbooksContribution: FeatureContribution = playbooksContributionOf(PLAYBOOK_PARTS);
 
-/** The shipped `studio playbooks` help line: `studio playbooks <verb>`, then each verb's help (one line, at most 200 characters). */
+/** The shipped `studio playbooks` help line: `studio playbooks <verb>`, then each verb's help without its `studio playbooks ` (one line, at most 200 characters). */
 export const PLAYBOOKS_HELP: string = playbooksHelp(mergePlaybookParts(PLAYBOOK_PARTS).verbs);
 
 export { PLAYBOOK_TOOL_NAMES, PLAYBOOK_VERB_HELP, draftsPart, formatPlaybook, formatPlaybooks, playbookRoutes, playbookTools, playbookVerbs, resyncPlaybookMirrors } from "./drafts.js";

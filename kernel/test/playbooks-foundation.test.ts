@@ -1,8 +1,9 @@
 // The playbooks feature's foundation (phase 3): one `playbooks` contribution
 // built from four sub-file parts (`drafts`, `dry-run`, `enable`, `runs`),
-// registered sixth in `SHIPPED_CONTRIBUTIONS`; only `drafts` is filled in
-// (item 02: four tools, four routes, four `studio playbooks` verbs and one
-// due-work function), the other three are still empty; the part merge refuses a
+// registered sixth in `SHIPPED_CONTRIBUTIONS`; `drafts` is filled in (item 02:
+// four tools, four routes, four `studio playbooks` verbs and one due-work
+// function), so are `dry-run` and `enable` (item 07: one tool each) and so is
+// `runs` (item 08: the run-now route and the `run` verb); the part merge refuses a
 // verb or handler kind two parts claim; the closed value sets migration 13's
 // TEXT columns hold. A temp data dir with a hand-written `api.json`, a stub
 // Keychain and a stub fetch that fails the test if called: never a daemon.
@@ -94,7 +95,7 @@ const noClient: CliApiClient = {
 };
 
 describe("the playbooks contribution (AC4)", () => {
-  it("is the sixth shipped contribution: the parts' tools in part order, the drafts part's four routes and one due-work function, and the playbooks subcommand; no handler", () => {
+  it("is the sixth shipped contribution: the parts' tools in part order, the drafts part's four routes and one due-work function, the runs part's route, and the playbooks subcommand; no handler", () => {
     expect(SHIPPED_CONTRIBUTIONS).toHaveLength(6);
     expect(SHIPPED_CONTRIBUTIONS[5]).toBe(playbooksContribution);
     expect(playbooksContribution.name).toBe("playbooks");
@@ -103,22 +104,35 @@ describe("the playbooks contribution (AC4)", () => {
     const merged = mergeContributions([playbooksContribution], PHASE1_RESERVED);
     // Each part's tools, merged in part order (each part's own list is pinned in the next test).
     expect(merged.tools).toEqual(PLAYBOOK_PARTS.flatMap((p) => [...p.tools]));
-    expect(merged.routes.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /playbooks", "GET /playbooks/:ref", "POST /playbooks/:id/set", "POST /playbooks/:id/off"]);
+    expect(merged.tools.map((t) => t.name)).toEqual([
+      "kernel_playbook_create",
+      "kernel_playbook_update",
+      "kernel_playbook_list",
+      "kernel_playbook_disable",
+      "kernel_playbook_dry_run",
+      "kernel_playbook_enable",
+    ]);
+    expect(merged.routes.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /playbooks", "GET /playbooks/:ref", "POST /playbooks/:id/set", "POST /playbooks/:id/off", "POST /playbooks/:id/run"]);
     expect(merged.subcommands.map((s) => [s.name, s.help])).toEqual([["playbooks", PLAYBOOKS_HELP]]);
     expect(merged.handlers).toEqual({});
     expect(merged.dueWork.map((d) => d.owner)).toEqual(["playbooks"]);
     expect(merged.dueWork.map((d) => d.run)).toEqual([...(draftsPart.dueWork ?? [])]);
   });
 
-  it("the subcommand has the drafts part's four verbs on one help line (at most 200 characters)", () => {
-    expect(PLAYBOOKS_HELP).toBe(
-      "studio playbooks <verb> | studio playbooks list [--all] [--json] | studio playbooks show <id|slug> [--json] | studio playbooks set <id> <field> <value> | studio playbooks off <id>",
-    );
+  it("the subcommand has the drafts part's four verbs and the runs part's run on one help line (at most 200 characters), each verb's own help unchanged", () => {
+    expect(PLAYBOOKS_HELP).toBe("studio playbooks <verb> | list [--all] [--json] | show <id|slug> [--json] | set <id> <field> <value> | off <id> | run <id>");
     expect(PLAYBOOKS_HELP.length).toBeLessThanOrEqual(200);
-    expect(mergePlaybookParts(PLAYBOOK_PARTS).verbs.map((v) => v.name)).toEqual(["list", "show", "set", "off"]);
+    expect(mergePlaybookParts(PLAYBOOK_PARTS).verbs.map((v) => v.name)).toEqual(["list", "show", "set", "off", "run"]);
+    expect(mergePlaybookParts(PLAYBOOK_PARTS).verbs.map((v) => v.help)).toEqual([
+      "studio playbooks list [--all] [--json]",
+      "studio playbooks show <id|slug> [--json]",
+      "studio playbooks set <id> <field> <value>",
+      "studio playbooks off <id>",
+      "studio playbooks run <id>",
+    ]);
   });
 
-  it("is built from four frozen parts, in order: drafts (item 02), dry-run and enable (item 07), then runs", () => {
+  it("is built from four frozen parts, in order: drafts (item 02), dry-run and enable (item 07), then runs (item 08)", () => {
     expect(PLAYBOOK_PARTS).toEqual([draftsPart, dryRunPart, enablePart, runsPart]);
     expect(PLAYBOOK_PARTS.map((p) => p.name)).toEqual(["drafts", "dry-run", "enable", "runs"]);
     expect(Object.isFrozen(PLAYBOOK_PARTS)).toBe(true);
@@ -149,15 +163,14 @@ describe("the playbooks contribution (AC4)", () => {
         dueWork: [],
       });
     }
-    for (const part of [runsPart]) {
-      expect({ tools: part.tools, routes: part.routes, verbs: part.verbs, handlers: part.handlers, dueWork: part.dueWork ?? [] }, part.name).toEqual({
-        tools: [],
-        routes: [],
-        verbs: [],
-        handlers: {},
-        dueWork: [],
-      });
-    }
+    // Item 08's runs part: the run-now route and the `run` verb, no tool.
+    expect({
+      tools: runsPart.tools,
+      routes: runsPart.routes.map((r) => `${r.method} ${r.path}`),
+      verbs: runsPart.verbs.map((v) => [v.name, v.help]),
+      handlers: runsPart.handlers,
+      dueWork: runsPart.dueWork ?? [],
+    }).toEqual({ tools: [], routes: ["POST /playbooks/:id/run"], verbs: [["run", "studio playbooks run <id>"]], handlers: {}, dueWork: [] });
     expect(mergePlaybookParts(PLAYBOOK_PARTS).dueWork).toEqual([...(draftsPart.dueWork ?? [])]);
   });
 
@@ -276,14 +289,19 @@ describe("a playbooks contribution with verbs (what a later item's part adds)", 
     const c = playbooksContributionOf([emptyPart("drafts", { verbs: [verb("show", seen)] }), emptyPart("runs", { handlers: { wakeup: handler } })]);
     expect(Object.keys(c)).toEqual(["name", "subcommands", "handlers"]);
     const sub = c.subcommands?.[0];
-    expect(sub?.help).toBe("studio playbooks <verb> | studio playbooks show <id>");
+    expect(sub?.help).toBe("studio playbooks <verb> | show <id>");
     const out: string[] = [];
     const output = { stdout: { write: (s: string) => out.push(s) }, stderr: { write: (s: string) => out.push(s) } };
     expect(await sub?.run(["show", "3", "--json"], noClient, output)).toBe(7);
     expect(seen).toEqual([["show", "3", "--json"]]);
     expect(await sub?.run([], noClient, output)).toBe(0);
-    expect(out.join("")).toBe("studio playbooks <verb> | studio playbooks show <id>\n");
+    expect(out.join("")).toBe("studio playbooks <verb> | show <id>\n");
     // Still merges as a feature: the handler is a contributed handler.
     expect(mergeContributions([c], PHASE1_RESERVED).handlers.wakeup).toBe(handler);
+  });
+
+  it("a verb's help without the leading `studio playbooks ` goes on the help line unchanged", () => {
+    const c = playbooksContributionOf([emptyPart("drafts", { verbs: [verb("show"), { ...verb("odd"), help: "odd <x> (no prefix)" }] })]);
+    expect(c.subcommands?.[0]?.help).toBe("studio playbooks <verb> | show <id> | odd <x> (no prefix)");
   });
 });
