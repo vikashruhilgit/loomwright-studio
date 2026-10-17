@@ -25,11 +25,17 @@
 // reply is kept; a row whose session is gone fails as above. Messages for
 // other agents change nothing (later phases).
 //
+// A message whose payload carries `playbook` is a playbook's run, not a
+// message: it goes to `handlePlaybookMessage` (`../playbooks/runs.ts`) before
+// anything above, and writes no `brain_messages` row (its record is the
+// `playbook_runs` row).
+//
 // Imports only types from the loop and the session manager (never the
 // manager itself or the Agent SDK: the `studio` CLI loads this module).
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
 import type { EventContext, EventHandler, EventSessions } from "../loop/types.js";
 import type { SessionHandle, SessionStatus } from "../sessions/types.js";
+import { handlePlaybookMessage } from "../playbooks/runs.js";
 import type { Store } from "../store/store.js";
 import { buildContext, loomwrightSummaryOf } from "./context.js";
 import type { LoomwrightSummary } from "./context.js";
@@ -128,6 +134,8 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
   const loomwright = deps.loomwright ?? defaultLoomwright;
 
   return async (ctx: EventContext): Promise<void> => {
+    // A playbook's message: its run (no `brain_messages` row).
+    if (ctx.event.payload.playbook !== undefined) return handlePlaybookMessage(ctx, { now, timeZone, loomwright });
     const { event, store } = ctx;
     const agent = event.payload.agent;
     if (typeof agent !== "string" || !BRAIN_AGENTS.includes(agent)) return;

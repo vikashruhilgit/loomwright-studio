@@ -1005,12 +1005,33 @@ describe("playbook-linked triggers (phase 3 item 02)", () => {
     expect(events(env.store, "trigger_missed")).toHaveLength(3);
   });
 
-  it("a linked trigger of an enabled playbook fires as an unlinked trigger does (what a playbook fire does is item 08's)", async () => {
+  it("a linked trigger of an enabled playbook queues the playbook's message whatever its action: no notification, no plain wake text (phase 3 item 08)", async () => {
     playbookRow("on-now", "enabled");
+    const playbookId = env.store.prepare<[], number>("SELECT id FROM playbooks WHERE slug = 'on-now'").pluck().get() as number;
     const { id } = registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T11:00:00Z", action: "notify", text: "Playbook on-now", playbook: "on-now" }, env.now());
-    expect(fireDueTriggers(env.store, new Date("2026-10-14T11:00:00.000Z"))).toMatchObject([{ trigger_id: id, result: "fired" }]);
-    expect(notifications()).toHaveLength(1);
+    const [outcome] = fireDueTriggers(env.store, new Date("2026-10-14T11:00:00.000Z"));
+    expect(outcome).toMatchObject({ trigger_id: id, result: "fired", queue_id: expect.any(Number) });
+    expect(notifications()).toHaveLength(0);
     expect(events(env.store, "trigger_missed")).toEqual([]);
+    const queued = env.store
+      .prepare<[], { payload_json: string; priority: string; source_ref: string }>("SELECT payload_json, priority, source_ref FROM event_queue WHERE kind = 'message'")
+      .all();
+    expect(queued).toHaveLength(1);
+    expect(JSON.parse(queued[0]?.payload_json ?? "null")).toEqual({ agent: "wright", playbook: playbookId, version: 1, trigger_id: id, scheduled_at: "2026-10-14T11:00:00.000Z" });
+    expect(queued[0]).toMatchObject({ priority: "normal", source_ref: `playbook:${playbookId}:2026-10-14T11:00:00.000Z` });
+    expect(events(env.store, "trigger_fired").map((e) => e.payload)).toEqual([
+      expect.objectContaining({ trigger_id: id, action: "notify", playbook: "on-now", playbook_id: playbookId, queue_id: outcome?.queue_id }),
+    ]);
+  });
+
+  it("a stored playbook priority outside the closed set fails that trigger's step: nothing queued at a guessed priority, the trigger stays due", async () => {
+    playbookRow("odd", "enabled");
+    env.store.prepare("UPDATE playbooks SET priority = 'urgent' WHERE slug = 'odd'").run();
+    const { id } = registerTrigger(env.store, { agent: "wright", kind: "once", spec: "2026-10-14T11:00:00Z", action: "wake_agent", text: "Playbook odd", playbook: "odd" }, env.now());
+    expect(() => fireDueTriggers(env.store, new Date("2026-10-14T11:00:00.000Z"))).toThrow(/unknown priority "urgent"/);
+    expect(queuedMessages()).toBe(0);
+    expect(events(env.store, "trigger_fired")).toEqual([]);
+    expect(row(id)).toMatchObject({ enabled: 1, next_fire_at: "2026-10-14T11:00:00.000Z" });
   });
 
   it("registerTrigger stores the link and names it in trigger_registered; an unlinked trigger stores null and its event has no playbook key", () => {
