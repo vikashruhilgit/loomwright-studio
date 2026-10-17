@@ -24,7 +24,7 @@ import { SHIPPED_CONTRIBUTIONS } from "./features/index.js";
 import { EventLoop } from "./loop/loop.js";
 import type { EventHandlers, EventLoopDeps } from "./loop/types.js";
 import { SessionManager } from "./sessions/manager.js";
-import type { SessionManagerDeps, SessionManagerOptions } from "./sessions/types.js";
+import type { AdmissionDecision, AdmissionRequest, SessionManagerDeps, SessionManagerOptions } from "./sessions/types.js";
 import { Store, resolveDataDir } from "./store/store.js";
 import { KERNEL_MCP_SERVER_NAME, createKernelMcpServer, heldToolCheckOf } from "./tools/server.js";
 import { writeFileAtomic } from "./tools/handoff.js";
@@ -134,6 +134,35 @@ function removeApiInfoIfOurs(path: string, pid: number): void {
 }
 
 /**
+ * The session manager's `admission` check, as the kernel wires it: every
+ * request goes to the budget's playbook gate (`Budget.checkPlaybook`), with
+ * its `playbook` (absent ⇒ `null`). A request that is not a playbook's
+ * therefore gets exactly `Budget.check`'s verdict and events; a playbook's
+ * `start` at its `token_limit_per_day` is refused `playbook_daily_limit`
+ * until the next budget day (once-per-playbook-day `playbook_limit_reached`
+ * and `notify` are the gate's).
+ *
+ * The manager launches every session on its one auth provider, so an admit
+ * must name `provider` (the kernel's `authProvider.id`). An admit naming any
+ * other provider (the gate's D28 API-key fallback, never reachable while the
+ * kernel gives the `Budget` no API-key provider) throws: the manager fails
+ * the start or resume closed, launching nothing (invariant 3).
+ */
+export function admissionFor(
+  budget: Pick<Budget, "checkPlaybook">,
+  provider: string,
+): (request: AdmissionRequest) => AdmissionDecision {
+  return (request) => {
+    const verdict = budget.checkPlaybook({ ...request, playbook: request.playbook ?? null });
+    if (!verdict.admitted) return { admitted: false, reason: verdict.reason, retryAt: verdict.retryAt };
+    if (verdict.provider !== provider) {
+      throw new Error(`admission admitted provider ${verdict.provider}, but sessions launch only on ${provider}: refusing (fail closed)`);
+    }
+    return { admitted: true };
+  };
+}
+
+/**
  * Start the kernel, in this order: merge `options.contributions` (default
  * `SHIPPED_CONTRIBUTIONS`; a `ContributionConflictError`,
  * `UnknownEventKindError` or `InvalidContributionError` rejects before any
@@ -204,7 +233,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         baseEnv: env,
         ...options.sessions,
         onMessage: budget.observe,
-        admission: budget.check,
+        admission: admissionFor(budget, authProvider.id),
         mcpServers: ({ sessionId }) => ({
           [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now }, contributions.tools),
         }),
