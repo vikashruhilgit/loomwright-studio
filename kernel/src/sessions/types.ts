@@ -462,7 +462,28 @@ export interface SessionManagerOptions {
    * `ToolPolicy` (which lists e.g. `mcp__kernel__kernel_task_create`).
    */
   readonly mcpServers?: (ctx: McpServersContext) => Record<string, McpServerConfig>;
+  /**
+   * The pre-hold check for a call to a tool in `ALWAYS_HELD_TOOLS` (phase 3
+   * item 07, `docs/architecture/approvals.md`). Asked by the gate only after
+   * the policy allowed the call and the rail answered `outward`, before the
+   * hold, and never in a dry-run session. It can only narrow: `refuse` denies
+   * the call (`held_refused`, no approval, no grant consumed), `display` holds
+   * it as today with that text on the `approval_requested` event, `undefined`
+   * holds it as today. A throw, or any other answer, denies it
+   * `kernel_gate_error`. Absent: every such call is held as today.
+   */
+  readonly heldToolCheck?: HeldToolCheck;
 }
+
+/**
+ * A pre-hold check's answer: refuse the call (the text is what the model
+ * sees), or hold it with `display` for the owner (and the version the held
+ * call is about, when it has one).
+ */
+export type HeldToolVerdict = { readonly refuse: string } | { readonly display: string; readonly subjectVersion?: number };
+
+/** `SessionManagerOptions.heldToolCheck`: synchronous, reads the store only. `undefined`: the tool declares no check. */
+export type HeldToolCheck = (toolName: string, input: unknown, sessionId: number) => HeldToolVerdict | undefined;
 
 /** What the `mcpServers` factory is told about the launch it builds servers for. */
 export interface McpServersContext {
