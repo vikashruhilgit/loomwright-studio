@@ -27,16 +27,21 @@
 //      The one exception is a payload naming no playbook row at all: a run
 //      row references `playbooks(id)`, so nothing can be recorded and it
 //      throws (the loop fails the event, one notify);
-//   g. Wright's memory files and settings (permission mode and policy only);
-//   h. the prompt (`playbookPrompt`);
-//   i. `runStepAsync("start-session")`: first the live row again (the stored
-//      `start` may be stale: the event was parked, or the kernel died after
-//      step b-f committed): not enabled or edited since, or a same-key run
-//      ended `done` meanwhile, stores `{session_id: null, skip}` and moves the
-//      row (still `running` with no session) to that skip, no session;
-//      otherwise the session, with `sessions.playbook` and `playbook_version`;
-//   j. the row's `session_id`, and a listener on `handle.done` (never awaited)
-//      that ends the row `done` or `failed` with the session's counted tokens.
+//   g-i. ONE work step, `runStepAsync("start-session")`: g. Wright's memory
+//      files and settings (permission mode and policy only) and the session
+//      manager, any refusal stored as `{session_id: null, fail}`; then the
+//      live row again (the stored `start` may be stale: the event was parked,
+//      or the kernel died after step b-f committed): not enabled or edited
+//      since, or a same-key run ended `done` meanwhile, stores
+//      `{session_id: null, skip}`; h. the prompt (`playbookPrompt`); i. the
+//      session, with `sessions.playbook` and `playbook_version`, stored as
+//      `{session_id}`. An admission refusal is rethrown from inside the step
+//      (released, not done) so the loop parks the event;
+//   j. after the step, from its STORED result only (a replay never decides
+//      again): the row (still `running` with no session) moves to the stored
+//      skip or `failed`, or gets the `session_id`; the delivery that started
+//      the session adds a listener on `handle.done` (never awaited) that ends
+//      the row `done` or `failed` with the session's counted tokens.
 // The kernel owns the session's lifecycle (invariant 2): nothing here awaits
 // or stops it.
 //
@@ -402,6 +407,34 @@ function messageOf(err: unknown): string {
   return typeof code === "string" && !line.startsWith(code) ? `${code}: ${line}` : line;
 }
 
+/**
+ * What the `start-session` step stored: the session's id, or no session and
+ * why (a `skip`, or a `fail` detail; `fail_event` when the event fails too).
+ */
+type Started =
+  | { readonly session_id: number }
+  | { readonly session_id: null; readonly skip: LateSkip }
+  | { readonly session_id: null; readonly fail: string; readonly fail_event?: true };
+
+/**
+ * The `start-session` step's stored result, read as stored by this code or by
+ * the earlier shape (`{session_id}` or `{session_id: null, skip}`, no `fail`).
+ * Anything else is `undefined`: nothing is written from it.
+ */
+function startedOf(value: unknown): Started | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  if (isPositiveId(v.session_id)) return { session_id: v.session_id };
+  if (v.session_id !== null) return undefined;
+  if (typeof v.fail === "string") return { session_id: null, fail: v.fail, ...(v.fail_event === true ? { fail_event: true as const } : {}) };
+  const skip = v.skip as Record<string, unknown> | null | undefined;
+  if (typeof skip === "object" && skip !== null && (skip.status === "skipped_not_enabled" || skip.status === "skipped_duplicate")) {
+    const result = typeof skip.result === "object" && skip.result !== null ? (skip.result as Record<string, unknown>) : null;
+    return { session_id: null, skip: { status: skip.status, result } };
+  }
+  return undefined;
+}
+
 /** A playbook's `message` event (the payload carries `playbook`): see the module comment. */
 export async function handlePlaybookMessage(ctx: EventContext, deps: PlaybookRunDeps): Promise<void> {
   const { event, store } = ctx;
@@ -411,61 +444,55 @@ export async function handlePlaybookMessage(ctx: EventContext, deps: PlaybookRun
   const decision = ctx.runStep("playbook-run", () => decideRun(store, e, deps.timeZone(), deps.now()));
   if (decision.outcome !== "start") return;
   const runId = decision.run_id;
-  const fail = (error: string): void => {
-    failBeforeSession(store, runId, error, deps.now());
-  };
-
-  // g. Wright's memory files and settings: only the permission mode and policy are used.
   const dataDir = store.dataDir;
-  let settings;
-  try {
-    ensureMemoryFiles(dataDir);
-  } catch (err) {
-    fail(`memory_unwritable: ${messageOf(err)}`);
-    throw err;
-  }
-  try {
-    settings = readWrightSettings(dataDir);
-  } catch (err) {
-    fail(`settings_unwritable: ${messageOf(err)}`);
-    throw err;
-  }
-  if (!settings.ok) {
-    fail(settings.error === "model_unset" ? `model_unset: set "model" in ${settings.file}` : `settings_invalid: ${settings.message}`);
-    return;
-  }
-  const sessions = ctx.sessions;
-  if (sessions === undefined) {
-    fail("no_session_manager");
-    return;
-  }
-
-  // h. The prompt.
-  const prompt = playbookPrompt({
-    dataDir,
-    id: e.playbook,
-    slug: decision.slug ?? "",
-    version: e.version,
-    intent: decision.intent ?? "",
-    kind: e.kind,
-    scheduledAt: e.scheduledAt,
-    loomwright: deps.loomwright(sessions),
-    now: deps.now(),
-    timeZone: deps.timeZone(),
-  });
-
-  // i. The session: the step's first effect, so an admission refusal leaves nothing to repeat.
-  // The stored `start` may be stale (a parked event, or a crash after step b-f):
-  // the live row is read again first, and a skip is stored so a replay skips too.
-  const { permissionMode, policy } = settings.settings;
   const model = decision.model ?? "";
   const dedupeKey = decision.dedupe_key ?? null;
+
+  // g-i. One step: everything that decides whether the session starts (settings,
+  // the live row, the prompt, the start) runs inside it, and the row is written
+  // after it from its stored result only, so a replay of a done step never
+  // decides again (the settings or the live row may have changed since).
+  // The session is the step's last effect, so an admission refusal leaves nothing to repeat.
   let handle: SessionHandle | undefined;
-  let started: { session_id: number } | { session_id: null; skip: LateSkip };
+  let stored: unknown;
   try {
-    started = await ctx.runStepAsync("start-session", async (): Promise<{ session_id: number } | { session_id: null; skip: LateSkip }> => {
+    stored = await ctx.runStepAsync("start-session", async (): Promise<Started> => {
+      // g. Wright's memory files and settings: only the permission mode and policy are used.
+      try {
+        ensureMemoryFiles(dataDir);
+      } catch (err) {
+        return { session_id: null, fail: `memory_unwritable: ${messageOf(err)}`, fail_event: true };
+      }
+      let settings;
+      try {
+        settings = readWrightSettings(dataDir);
+      } catch (err) {
+        return { session_id: null, fail: `settings_unwritable: ${messageOf(err)}`, fail_event: true };
+      }
+      if (!settings.ok) {
+        return { session_id: null, fail: settings.error === "model_unset" ? `model_unset: set "model" in ${settings.file}` : `settings_invalid: ${settings.message}` };
+      }
+      const sessions = ctx.sessions;
+      if (sessions === undefined) return { session_id: null, fail: "no_session_manager" };
+      // The stored `start` may be stale (a parked event, or a crash after step b-f):
+      // the live row is read again, and a skip is stored so a replay skips too.
       const skip = lateSkip(store, e, runId, dedupeKey);
       if (skip !== undefined) return { session_id: null, skip };
+      // h. The prompt.
+      const prompt = playbookPrompt({
+        dataDir,
+        id: e.playbook,
+        slug: decision.slug ?? "",
+        version: e.version,
+        intent: decision.intent ?? "",
+        kind: e.kind,
+        scheduledAt: e.scheduledAt,
+        loomwright: deps.loomwright(sessions),
+        now: deps.now(),
+        timeZone: deps.timeZone(),
+      });
+      // i. The session.
+      const { permissionMode, policy } = settings.settings;
       handle = await sessions.startSession({
         agent: e.agent,
         prompt,
@@ -486,13 +513,21 @@ export async function handlePlaybookMessage(ctx: EventContext, deps: PlaybookRun
         .prepare("UPDATE playbook_runs SET result_json = ? WHERE id = ? AND status = 'running' AND session_id IS NULL")
         .run(JSON.stringify({ parked: refusal.reason, retry_at: refusal.retryAt }), runId);
     } else {
-      fail(`session_refused: ${messageOf(err)}`);
+      failBeforeSession(store, runId, `session_refused: ${messageOf(err)}`, deps.now());
     }
     throw err;
   }
 
+  // Every write below comes from the stored result and is guarded, so a replay repeats it harmlessly.
+  const started = startedOf(stored);
+  if (started === undefined) throw new TypeError(`event ${event.id}: the start-session step stored an unknown result`);
   if (started.session_id === null) {
-    // No session started: the row (still `running`, no session) ends as the skip.
+    // No session started: the row (still `running`, no session) ends as the stored skip or failure.
+    if ("fail" in started) {
+      failBeforeSession(store, runId, started.fail, deps.now());
+      if (started.fail_event === true) throw new Error(`playbook ${e.playbook} run ${runId} failed: ${started.fail}`);
+      return;
+    }
     const { status, result } = started.skip;
     store
       .prepare("UPDATE playbook_runs SET status = ?, result_json = ?, ended_at = ? WHERE id = ? AND status = 'running' AND session_id IS NULL")

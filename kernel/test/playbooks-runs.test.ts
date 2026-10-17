@@ -597,15 +597,14 @@ describe("crash safety (AC5, AC5b)", () => {
     const p = playbook();
     fireDueTriggers(store, new Date("2026-10-14T09:00:00.000Z"));
     const [message] = messages();
-    // The kernel dies inside step h (the prompt), after the run row committed.
-    const dying = brainMessageHandler({
-      now,
-      timeZone: () => "UTC",
-      loomwright: () => {
-        throw new Error("kill -9");
-      },
-    });
-    await expect(dying(eventCtx(store, message?.id as number, stubSessions()))).rejects.toThrow("kill -9");
+    // The kernel dies after the run row committed and before start-session is claimed.
+    // (Its runStepAsync never claims nor settles, so no catch block runs either.)
+    const dying: EventContext = {
+      ...eventCtx(store, message?.id as number, stubSessions()),
+      runStepAsync: () => new Promise<never>(() => {}),
+    };
+    void handler()(dying);
+    await vi.waitFor(() => expect(runs()).toHaveLength(1));
     expect(runs()).toEqual([expect.objectContaining({ status: "running", session_id: null })]);
     store.close();
     store = new Store({ dataDir });
@@ -614,6 +613,57 @@ describe("crash safety (AC5, AC5b)", () => {
     await deliver(store, message?.id as number, sessions);
     expect(sessions.starts).toEqual([]);
     expect(runs()).toEqual([expect.objectContaining({ kind: "fire", status: "skipped_not_enabled", session_id: null, result_json: '{"status":"disabled","version":1}' })]);
+  });
+
+  it("a kill -9 at the session_id write (start-session done, the row still running with no session), then Wright's settings broken: the redelivery records the stored session, never a failed model_unset", async () => {
+    setWrightModel();
+    playbook();
+    fireDueTriggers(store, new Date("2026-10-14T09:00:00.000Z"));
+    const [message] = messages();
+    const sessions = stubSessions({ ending: "held" });
+    await deliver(store, message?.id as number, sessions);
+    expect(runs()).toEqual([expect.objectContaining({ status: "running", session_id: 1 })]);
+    // The kernel died before the session_id write committed: undo it.
+    store.prepare("UPDATE playbook_runs SET session_id = NULL").run();
+    store.close();
+    store = new Store({ dataDir });
+    writeFileSync(wrightSettingsPath(dataDir), defaultWrightSettingsJson());
+    await deliver(store, message?.id as number, sessions);
+    expect(sessions.starts).toHaveLength(1);
+    expect(runs()).toEqual([expect.objectContaining({ kind: "fire", status: "running", session_id: 1, result_json: null, ended_at: null })]);
+  });
+
+  it("a kill -9 at the skip write (start-session stored a skip, the row still running), then Wright's settings broken: the redelivery ends the row as the stored skip, never a failed model_unset", async () => {
+    const { p, id } = await parkedEvent();
+    disablePlaybook(store, { id: p.id, by: "owner" }, now());
+    setClock("2026-10-14T12:00:00.000Z");
+    const sessions = stubSessions({ ending: "held" });
+    await tick(sessions);
+    expect(runs()).toEqual([expect.objectContaining({ status: "skipped_not_enabled", session_id: null })]);
+    // The kernel died before the skip write committed: undo it.
+    store.prepare("UPDATE playbook_runs SET status = 'running', result_json = NULL, ended_at = NULL").run();
+    store.close();
+    store = new Store({ dataDir });
+    writeFileSync(wrightSettingsPath(dataDir), defaultWrightSettingsJson());
+    await deliver(store, id, sessions);
+    expect(sessions.starts).toEqual([]);
+    expect(runs()).toEqual([expect.objectContaining({ status: "skipped_not_enabled", session_id: null, result_json: '{"status":"disabled","version":1}' })]);
+  });
+
+  it("a stored refusal replays: a redelivery after Wright's settings were fixed starts no session and the row stays failed (model_unset)", async () => {
+    const p = playbook();
+    const id = queuePlaybookEvent({ agent: "wright", playbook: p.id, version: 1, scheduled_at: "2026-10-14T09:30:00.000Z" });
+    const sessions = stubSessions({ ending: "held" });
+    await deliver(store, id, sessions);
+    expect(runs()).toEqual([expect.objectContaining({ status: "failed", session_id: null })]);
+    // The kernel died before the failed write committed: undo it, then fix the settings.
+    store.prepare("UPDATE playbook_runs SET status = 'running', result_json = NULL, ended_at = NULL").run();
+    setWrightModel();
+    await deliver(store, id, sessions);
+    expect(sessions.starts).toEqual([]);
+    expect(runs()).toHaveLength(1);
+    expect(runs()[0]).toMatchObject({ status: "failed", session_id: null });
+    expect(JSON.parse(runs()[0]?.result_json ?? "{}").error).toMatch(/^model_unset: /);
   });
 });
 
