@@ -69,3 +69,9 @@ kernel/test/playbooks-runs.test.ts
 docs/architecture/playbook-runs.md
 docs/architecture/triggers.md
 docs/architecture/brain.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-17T05:59:54Z
+- **Brief:** .supervisor/jobs/done/2026-10-17-playbooks-fire-run-now-dedupe.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/73
