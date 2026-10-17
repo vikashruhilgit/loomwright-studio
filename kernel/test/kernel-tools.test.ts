@@ -10,6 +10,7 @@ import type { AppliedApproval } from "../src/approvals/index.js";
 import { InvalidContributionError, PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
 import { getWorkStep } from "../src/loop/index.js";
 import type { SessionRow, SessionStatus } from "../src/sessions/index.js";
+import { ALWAYS_HELD_TOOLS } from "../src/sessions/policy.js";
 import type { Store } from "../src/store/index.js";
 import {
   KERNEL_MCP_SERVER_NAME,
@@ -393,6 +394,19 @@ describe("approvalApplierOf: the kernel-applied actions' applier over the contri
     expect(() => approvalApplierOf([applying("kernel_probe").t])).toThrow(/mcp__kernel__kernel_probe is not in KERNEL_APPLIED_ACTIONS/);
     // A tool with no applier is never checked.
     expect(() => approvalApplierOf([defineTool({ name: "kernel_probe", description: "x", shape: {}, handler: () => null })])).not.toThrow();
+  });
+
+  it("throws InvalidContributionError at build time when a KERNEL_APPLIED_ACTIONS member is not in ALWAYS_HELD_TOOLS; the real sets pass", () => {
+    const sets = { applied: [ENABLE, "mcp__kernel__kernel_probe"], held: [ENABLE] };
+    // Checked whatever the contributed tools: no applier at all still refuses.
+    expect(() => approvalApplierOf([], sets)).toThrow(InvalidContributionError);
+    expect(() => approvalApplierOf([], sets)).toThrow(/mcp__kernel__kernel_probe is in KERNEL_APPLIED_ACTIONS but not in ALWAYS_HELD_TOOLS/);
+    expect(() => approvalApplierOf([applying("kernel_playbook_enable").t], sets)).toThrow(InvalidContributionError);
+    // Every member held: builds.
+    expect(() => approvalApplierOf([applying("kernel_playbook_enable").t], { applied: [ENABLE], held: [ENABLE, "mcp__kernel__other"] })).not.toThrow();
+    // The real, fixed sets (the default) pass.
+    for (const tool of KERNEL_APPLIED_ACTIONS) expect(ALWAYS_HELD_TOOLS).toContain(tool);
+    expect(() => approvalApplierOf([])).not.toThrow();
   });
 
   it("the shipped composition builds: its only applier is the enable's, a member of the set", () => {

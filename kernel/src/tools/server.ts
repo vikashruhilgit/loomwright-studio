@@ -35,6 +35,7 @@ import type { EventRef } from "../loop/internal.js";
 import { runStep, runStepAsync } from "../loop/steps.js";
 import { MAX_WAKEUP_REASON, RESERVED_WAKEUP_REASON_PREFIXES, isReservedWakeupReason, scheduleWakeup } from "../loop/wakeups.js";
 import type { SessionManager } from "../sessions/manager.js";
+import { ALWAYS_HELD_TOOLS } from "../sessions/policy.js";
 import type { HeldToolCheck } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { kernelVersion } from "../version.js";
@@ -440,18 +441,31 @@ export function heldToolCheckOf(contributed: readonly ContributedTool[], context
  * (`mcp__kernel__<name>`). Built once at composition: a tool that declares
  * one but whose full name is not in `KERNEL_APPLIED_ACTIONS` throws
  * `InvalidContributionError`, so a composition that breaks the closed set
- * never starts. The returned function answers `undefined` for a tool with no
- * applier; else it parses the held input with the tool's own zod shape (a
+ * never starts. So does a member of `KERNEL_APPLIED_ACTIONS` that is not in
+ * `ALWAYS_HELD_TOOLS` (checked first, whatever the contributed tools): a
+ * standing `always` grant is excluded only for an always-held tool, so a
+ * kernel-applied action outside that set could be approved once for every
+ * later call (invariant 3). `sets` exists for the tests; the kernel passes
+ * nothing and gets the real, fixed sets. The returned function answers
+ * `undefined` for a tool with no applier; else it parses the held input with the tool's own zod shape (a
  * failure is `{refused: "invalid_input"}`, nothing run) and calls
  * `applyOnApproval` with the store, the decision's instant and the approval.
  * A throw propagates: the decision records it as `apply_error`.
  */
-export function approvalApplierOf(contributed: readonly ContributedTool[]): ApprovalApplier {
+export function approvalApplierOf(
+  contributed: readonly ContributedTool[],
+  sets: { readonly applied: readonly string[]; readonly held: readonly string[] } = { applied: KERNEL_APPLIED_ACTIONS, held: ALWAYS_HELD_TOOLS },
+): ApprovalApplier {
+  for (const action of sets.applied) {
+    if (!sets.held.includes(action)) {
+      throw new InvalidContributionError(action, "tool", `${action} is in KERNEL_APPLIED_ACTIONS but not in ALWAYS_HELD_TOOLS, so an "always" grant could reach it`);
+    }
+  }
   const appliers = new Map<string, ContributedTool>();
   for (const t of contributed) {
     if (t.applyOnApproval === undefined) continue;
     const full = `mcp__${KERNEL_MCP_SERVER_NAME}__${t.name}`;
-    if (!(KERNEL_APPLIED_ACTIONS as readonly string[]).includes(full)) {
+    if (!sets.applied.includes(full)) {
       throw new InvalidContributionError(t.name, "tool", `${t.name} declares applyOnApproval, but ${full} is not in KERNEL_APPLIED_ACTIONS`);
     }
     appliers.set(full, t);

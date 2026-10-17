@@ -53,10 +53,11 @@ export const APPROVAL_AUDIT_KINDS = ["approval_requested", "approval_decided", "
 /**
  * The held actions the kernel applies itself on the owner's `once` approval
  * (full SDK tool names, what a rail payload's `tool` holds). A closed set in
- * code: adding one is a code change with its own review. Every member is also
- * in `ALWAYS_HELD_TOOLS`, so `always` never reaches one, and a tool that
- * registers an applier outside this set refuses the composition
- * (`approvalApplierOf`).
+ * code: adding one is a code change with its own review. Every member must
+ * also be in `ALWAYS_HELD_TOOLS`, so `always` never reaches one; the
+ * composition enforces that at start (`approvalApplierOf` refuses a member
+ * missing from it), not only a test. A tool that registers an applier outside
+ * this set also refuses the composition.
  */
 export const KERNEL_APPLIED_ACTIONS = ["mcp__kernel__kernel_playbook_enable"] as const;
 
