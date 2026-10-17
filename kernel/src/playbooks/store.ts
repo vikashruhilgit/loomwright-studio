@@ -33,8 +33,12 @@ import type { TriggerView } from "../triggers/index.js";
 import { DEDUPE_KEY_FIELDS, PLAYBOOK_PRIORITIES } from "./types.js";
 import type { PlaybookPriority, PolicySetter } from "./types.js";
 
-/** The audit event kinds this store appends (actor `kernel`), one per change. */
-export const PLAYBOOK_AUDIT_KINDS = ["playbook_created", "playbook_updated", "playbook_disabled"] as const;
+/**
+ * The audit event kinds the playbooks feature appends (actor `kernel`), one
+ * per change: this store's, then the dry run's (`./dry-run.ts`) and the
+ * owner-approved enable's (`enablePlaybook`).
+ */
+export const PLAYBOOK_AUDIT_KINDS = ["playbook_created", "playbook_updated", "playbook_disabled", "playbook_dry_run", "playbook_enabled"] as const;
 
 /** The policy fields a playbook change names (`playbook_updated.fields`) and the owner's `set` takes. */
 export const PLAYBOOK_POLICY_FIELDS = ["dedupe_key", "priority", "model", "token_limit"] as const;
@@ -626,6 +630,42 @@ export function setPlaybookPolicy(store: Store, params: SetPlaybookPolicyParams,
       [setBy, OWNER],
     ]);
     return writeVersion(store, row, unchanged ? new Map() : sets, unchanged ? [] : [field], OWNER, null, at);
+  });
+}
+
+export interface EnablePlaybookParams {
+  readonly id: number;
+  /** The version the owner approved: the row must still be at it. */
+  readonly version: number;
+  /** The session whose retry consumed the approval, for the audit row. */
+  readonly sessionId: number | null;
+  /** The owner's approval the enable runs on. */
+  readonly approvalId: number;
+}
+
+/**
+ * Enable playbook `id` at exactly `version` (phase 3 item 07): in one
+ * transaction, `status = 'enabled'` only while the row is a `draft` at that
+ * version, and one `playbook_enabled` event `{playbook_id, version,
+ * approval_id, by: "owner"}` (the owner approved it; the agent's retry only
+ * carried it out). Makes no version. Throws `PlaybookError`: `not_found`;
+ * `invalid_input` naming why otherwise (`version changed` when the row moved
+ * on, or the status it has instead of `draft`). Callers check ownership and
+ * the owner's off before.
+ */
+export function enablePlaybook(store: Store, params: EnablePlaybookParams, now: Date): PlaybookChange {
+  const at = now.toISOString();
+  return store.transaction((): PlaybookChange => {
+    const row = readRow(store, params.id);
+    if (row === undefined) throw new PlaybookError("not_found", `no playbook ${params.id}`);
+    if (row.version !== params.version) {
+      throw invalid(`version changed: playbook ${row.id} is at version ${row.version}, not the approved version ${params.version}`);
+    }
+    if (row.status !== "draft") throw invalid(`playbook ${row.id} is ${row.status}, not draft: only a draft is enabled`);
+    store.prepare("UPDATE playbooks SET status = 'enabled', updated_at = ? WHERE id = ? AND version = ? AND status = 'draft'").run(at, row.id, params.version);
+    appendEvent(store, "playbook_enabled", refOf(params.sessionId), { playbook_id: row.id, version: params.version, approval_id: params.approvalId, by: OWNER }, at);
+    const after = readRow(store, row.id) as PlaybookRow;
+    return { playbook: after, trigger: linkedTriggerOf(store, after), changed: true };
   });
 }
 

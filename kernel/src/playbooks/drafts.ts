@@ -44,6 +44,9 @@ import { runStep } from "../loop/steps.js";
 import type { Store } from "../store/store.js";
 import { MAX_CRON_LENGTH, TRIGGER_KINDS, formatZoned } from "../triggers/index.js";
 import type { TriggerView } from "../triggers/index.js";
+// A cycle by design (`./dry-run.ts` imports this module's shared helpers):
+// both sides use the other's functions only when called, never at module load.
+import { mirrorDryRunOf } from "./dry-run.js";
 import { mirrorRelativePath, writePlaybookMirror } from "./mirror.js";
 import {
   PLAYBOOK_POLICY_FIELDS,
@@ -73,15 +76,17 @@ function hostTimeZone(): string {
 // ---- The mirror after a change ------------------------------------------------
 
 /**
- * Rewrite playbook `id`'s mirror from its current row (idempotent: identical
- * bytes are not rewritten). Returns the error message when the write failed:
- * the change itself is committed, and the due work rewrites the file after a
- * restart.
+ * Rewrite playbook `id`'s mirror from its current row and its last dry run
+ * (`mirrorDryRunOf`; idempotent: identical bytes are not rewritten). Returns
+ * the error message when the write failed: the change itself is committed,
+ * and the due work rewrites the file after a restart. With
+ * `resyncPlaybookMirrors`, the only mirror writer: the dry-run and enable
+ * parts call it too.
  */
-function syncMirror(store: Store, id: number): string | null {
+export function syncMirror(store: Store, id: number): string | null {
   try {
     const row = getPlaybook(store, id);
-    if (row !== undefined) writePlaybookMirror(store.dataDir, row, linkedTriggerOf(store, row), hostTimeZone());
+    if (row !== undefined) writePlaybookMirror(store.dataDir, row, linkedTriggerOf(store, row), hostTimeZone(), mirrorDryRunOf(store, row));
     return null;
   } catch (err) {
     return errorMessage(err);
@@ -99,7 +104,7 @@ export function resyncPlaybookMirrors(store: Store, timeZone: string = hostTimeZ
   const failures: string[] = [];
   for (const row of listPlaybooks(store, { all: true })) {
     try {
-      if (writePlaybookMirror(store.dataDir, row, linkedTriggerOf(store, row), timeZone)) written++;
+      if (writePlaybookMirror(store.dataDir, row, linkedTriggerOf(store, row), timeZone, mirrorDryRunOf(store, row))) written++;
     } catch (err) {
       failures.push(`playbook ${row.id}: ${errorMessage(err)}`);
     }
@@ -142,8 +147,8 @@ const LIMITS =
   "The playbook is a draft the owner reviews: every policy value you give (dedupe_key, priority, model, token_limit) is a proposal the owner can change. " +
   "You cannot change a value the owner set, or a playbook the owner turned off (a repeat of this call then returns that error too). Enabling it is a separate step.";
 
-/** The calling session's agent: the owner of the playbooks it drafts. */
-function owningAgent(ctx: ContributedToolContext): string {
+/** The calling session's agent: the owner of the playbooks it drafts. Shared with the dry-run and enable parts. */
+export function owningAgent(ctx: ContributedToolContext): string {
   const agent = ctx.sessions.getSession(ctx.sessionId)?.agent;
   if (typeof agent !== "string" || agent === "") {
     throw new PlaybookError("invalid_input", `session ${ctx.sessionId} runs no named agent; a playbook needs an owning agent`);
@@ -152,9 +157,18 @@ function owningAgent(ctx: ContributedToolContext): string {
 }
 
 /** Run `body`, prefixing a refusal's message with the tool name. */
-function named<T>(name: string, body: () => T): T {
+export function named<T>(name: string, body: () => T): T {
   try {
     return body();
+  } catch (err) {
+    throw new Error(`${name}: ${errorMessage(err)}`);
+  }
+}
+
+/** `named` for asynchronous work: a rejection's message is prefixed with the tool name. */
+export async function namedAsync<T>(name: string, body: () => Promise<T>): Promise<T> {
+  try {
+    return await body();
   } catch (err) {
     throw new Error(`${name}: ${errorMessage(err)}`);
   }
@@ -187,11 +201,20 @@ function resultOf(change: PlaybookChange): ToolResult {
   };
 }
 
+/**
+ * After a tool's step on playbook `id`: refuse a repeat the owner's off
+ * overtook, rewrite the mirror, and say if that failed (`mirror_error`, never
+ * a throw). Shared with the dry-run and enable parts.
+ */
+export function afterPlaybookStep<T extends object>(ctx: ContributedToolContext, id: number, result: T): T & { readonly mirror_error?: string } {
+  refuseIfOwnerTurnedOff(ctx.store, id);
+  const failed = syncMirror(ctx.store, id);
+  return failed === null ? result : { ...result, mirror_error: `the change is stored; its mirror was not written (${failed}); the kernel rewrites it after a restart` };
+}
+
 /** After the step: refuse a repeat the owner's off overtook, rewrite the mirror, and say if that failed. */
 function afterStep(ctx: ContributedToolContext, result: ToolResult): ToolResult & { readonly mirror_error?: string } {
-  refuseIfOwnerTurnedOff(ctx.store, result.id);
-  const failed = syncMirror(ctx.store, result.id);
-  return failed === null ? result : { ...result, mirror_error: `the change is stored; its mirror was not written (${failed}); the kernel rewrites it after a restart` };
+  return afterPlaybookStep(ctx, result.id, result);
 }
 
 const create = defineTool({

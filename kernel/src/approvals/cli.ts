@@ -1,7 +1,8 @@
 // The owner's approval subcommands, over the routes in `routes.ts`:
 //
 //   studio approvals [--all] [--json]   pending first (id, agent, session, time,
-//                                       action, its playbook, the exact payload);
+//                                       action, its playbook, its display text
+//                                       when it has one, the exact payload);
 //                                       --all adds decided ones; --json prints
 //                                       the API's JSON
 //   studio approvals grants [--json]    the standing grants not revoked
@@ -60,6 +61,18 @@ function field(value: unknown): string {
   return value === null || value === undefined ? "-" : shown(String(value));
 }
 
+/**
+ * A held call's display text for a terminal: one output line per line of the
+ * text, each escaped with `shown` and indented by `indent`, so no line of it
+ * can leave the `display:` block or fake another label (`payload:`).
+ */
+function displayText(text: string, indent: string): string {
+  return text
+    .split("\n")
+    .map((line) => `${indent}${shown(line)}`)
+    .join("\n");
+}
+
 /** `playbook <slug> v<n>` (its id when the slug is unknown; no version when none was recorded). */
 function playbookText(p: ApprovalPlaybook): string {
   const name = p.slug === null || p.slug === undefined ? `#${field(p.id)}` : field(p.slug);
@@ -77,6 +90,7 @@ export function formatApprovals(approvals: readonly ApprovalView[], all: boolean
     ];
     if (a.playbook !== null && a.playbook !== undefined) lines.push(`  from ${playbookText(a.playbook)}`);
     if (a.decided_at !== null || a.decided_by !== null) lines.push(`  decided: by ${field(a.decided_by)} at ${field(a.decided_at)}`);
+    if (typeof a.display === "string") lines.push("  display:", displayText(a.display, "    "));
     lines.push("  payload:", payloadText(a.payload, "    "));
     return lines.join("\n");
   });

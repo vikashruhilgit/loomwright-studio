@@ -120,6 +120,21 @@ function dedupeKeyText(spec: string): string {
   return spec;
 }
 
+/**
+ * What the mirror's last line says about dry runs (phase 3 item 07): the
+ * summary of the newest finished dry run of the CURRENT version, or that the
+ * playbook has dry runs only of earlier versions (an edit made a new one).
+ * Absent: no dry run at all.
+ */
+export type MirrorDryRun = { readonly summary: string } | { readonly onlyEarlierVersions: true };
+
+/** The mirror's last line. With no dry run it is exactly the line item 02 wrote (`No dry run yet.`). */
+function lastDryRunLine(row: PlaybookRow, dryRun: MirrorDryRun | undefined): string {
+  if (dryRun === undefined) return "Last dry run: No dry run yet.";
+  if ("summary" in dryRun) return `Last dry run: ${inline(dryRun.summary)}`;
+  return `Last dry run: No dry run of version ${row.version} yet.`;
+}
+
 /** One policy line: the value as inert code, or `not set`; ` (proposed)` when Wright set it. */
 function policyLine(label: string, value: string | number | null, setBy: string | null): string {
   return `- ${label}: ${value === null ? "not set" : inline(value)}${setBy === "wright" ? " (proposed)" : ""}`;
@@ -129,9 +144,10 @@ function policyLine(label: string, value: string | number | null, setBy: string 
  * The mirror of `row` (pure): its name, a line saying the file is generated
  * and edits are not read, status, version, intent, the linked trigger and its
  * next fire in `timeZone`, one line per policy field (`(proposed)` when
- * Wright set it), and the last dry run.
+ * Wright set it), and the last dry run (`dryRun`; its summary is untrusted
+ * text, shown as one inert code span).
  */
-export function renderPlaybookMirror(row: PlaybookRow, trigger: MirrorTrigger | null, timeZone: string): string {
+export function renderPlaybookMirror(row: PlaybookRow, trigger: MirrorTrigger | null, timeZone: string, dryRun?: MirrorDryRun): string {
   const out = [
     `# ${inline(row.name)}`,
     "",
@@ -165,7 +181,7 @@ export function renderPlaybookMirror(row: PlaybookRow, trigger: MirrorTrigger | 
     policyLine("Effort", row.effort, row.effort_set_by),
     policyLine("API-key fallback", row.api_key_fallback_json, row.api_key_fallback_set_by),
     "",
-    "Last dry run: No dry run yet.",
+    lastDryRunLine(row, dryRun),
     "",
   );
   return out.join("\n");
@@ -177,9 +193,9 @@ export function renderPlaybookMirror(row: PlaybookRow, trigger: MirrorTrigger | 
  * it wrote. Throws `PlaybookMirrorPathError` for a bad slug, or the file
  * system's error.
  */
-export function writePlaybookMirror(dataDir: string, row: PlaybookRow, trigger: MirrorTrigger | null, timeZone: string): boolean {
+export function writePlaybookMirror(dataDir: string, row: PlaybookRow, trigger: MirrorTrigger | null, timeZone: string, dryRun?: MirrorDryRun): boolean {
   const path = mirrorPath(dataDir, row.slug);
-  const content = renderPlaybookMirror(row, trigger, timeZone);
+  const content = renderPlaybookMirror(row, trigger, timeZone, dryRun);
   if (existsSync(path) && readFileSync(path, "utf8") === content) return false;
   writeFileAtomic(path, content);
   return true;

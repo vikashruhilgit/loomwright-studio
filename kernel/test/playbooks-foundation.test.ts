@@ -94,14 +94,15 @@ const noClient: CliApiClient = {
 };
 
 describe("the playbooks contribution (AC4)", () => {
-  it("is the sixth shipped contribution: the drafts part's four tools, four routes and one due-work function, and the playbooks subcommand; no handler", () => {
+  it("is the sixth shipped contribution: the parts' tools in part order, the drafts part's four routes and one due-work function, and the playbooks subcommand; no handler", () => {
     expect(SHIPPED_CONTRIBUTIONS).toHaveLength(6);
     expect(SHIPPED_CONTRIBUTIONS[5]).toBe(playbooksContribution);
     expect(playbooksContribution.name).toBe("playbooks");
     expect(Object.isFrozen(playbooksContribution)).toBe(true);
     expect(Object.keys(playbooksContribution)).toEqual(["name", "tools", "routes", "subcommands", "dueWork"]);
     const merged = mergeContributions([playbooksContribution], PHASE1_RESERVED);
-    expect(merged.tools.map((t) => t.name)).toEqual(["kernel_playbook_create", "kernel_playbook_update", "kernel_playbook_list", "kernel_playbook_disable"]);
+    // Each part's tools, merged in part order (each part's own list is pinned in the next test).
+    expect(merged.tools).toEqual(PLAYBOOK_PARTS.flatMap((p) => [...p.tools]));
     expect(merged.routes.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /playbooks", "GET /playbooks/:ref", "POST /playbooks/:id/set", "POST /playbooks/:id/off"]);
     expect(merged.subcommands.map((s) => [s.name, s.help])).toEqual([["playbooks", PLAYBOOKS_HELP]]);
     expect(merged.handlers).toEqual({});
@@ -117,7 +118,7 @@ describe("the playbooks contribution (AC4)", () => {
     expect(mergePlaybookParts(PLAYBOOK_PARTS).verbs.map((v) => v.name)).toEqual(["list", "show", "set", "off"]);
   });
 
-  it("is built from four frozen parts, in order: drafts (filled by item 02), then dry-run, enable and runs, still empty", () => {
+  it("is built from four frozen parts, in order: drafts (item 02), dry-run and enable (item 07), then runs", () => {
     expect(PLAYBOOK_PARTS).toEqual([draftsPart, dryRunPart, enablePart, runsPart]);
     expect(PLAYBOOK_PARTS.map((p) => p.name)).toEqual(["drafts", "dry-run", "enable", "runs"]);
     expect(Object.isFrozen(PLAYBOOK_PARTS)).toBe(true);
@@ -135,7 +136,20 @@ describe("the playbooks contribution (AC4)", () => {
       handlers: {},
       dueWork: 1,
     });
-    for (const part of [dryRunPart, enablePart, runsPart]) {
+    // Item 07's two parts: one tool each, nothing else.
+    for (const [part, name] of [
+      [dryRunPart, "kernel_playbook_dry_run"],
+      [enablePart, "kernel_playbook_enable"],
+    ] as const) {
+      expect({ tools: part.tools.map((t) => t.name), routes: part.routes, verbs: part.verbs, handlers: part.handlers, dueWork: part.dueWork ?? [] }, part.name).toEqual({
+        tools: [name],
+        routes: [],
+        verbs: [],
+        handlers: {},
+        dueWork: [],
+      });
+    }
+    for (const part of [runsPart]) {
       expect({ tools: part.tools, routes: part.routes, verbs: part.verbs, handlers: part.handlers, dueWork: part.dueWork ?? [] }, part.name).toEqual({
         tools: [],
         routes: [],

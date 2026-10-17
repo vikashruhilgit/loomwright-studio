@@ -33,6 +33,7 @@ import type { EventRef } from "../loop/internal.js";
 import { runStep, runStepAsync } from "../loop/steps.js";
 import { MAX_WAKEUP_REASON, RESERVED_WAKEUP_REASON_PREFIXES, isReservedWakeupReason, scheduleWakeup } from "../loop/wakeups.js";
 import type { SessionManager } from "../sessions/manager.js";
+import type { HeldToolCheck } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { kernelVersion } from "../version.js";
 import { handoffPath, renderHandoff, writeFileAtomic } from "./handoff.js";
@@ -66,7 +67,8 @@ export function kernelStepKey(toolName: string, sessionId: number, idempotencyKe
 
 export interface KernelToolContext {
   readonly store: Store;
-  readonly sessions: Pick<SessionManager, "stopSession" | "getSession">;
+  /** `startSession` is optional: a contributed tool that needs it (a playbook's dry run) refuses without it. */
+  readonly sessions: Pick<SessionManager, "stopSession" | "getSession"> & Partial<Pick<SessionManager, "startSession">>;
   /** The `sessions` row this server instance serves. */
   readonly sessionId: number;
   /** Defaults to `() => new Date()`. */
@@ -393,6 +395,44 @@ export function kernelToolHandlers(ctx: KernelToolContext): Record<KernelToolNam
 }
 
 /**
+ * What a contributed tool's handler (and its `beforeHold`) receives: the
+ * session manager as `ctx.sessions` (its `startSession` included when the
+ * composition has one), and the step key scoped to the tool and session.
+ */
+function contributedToolContext(contributed: ContributedTool, ctx: KernelToolContext): ContributedToolContext {
+  const { store, sessions, sessionId } = ctx;
+  return {
+    store,
+    sessions,
+    sessionId,
+    now: ctx.now ?? (() => new Date()),
+    stepKey: (key) => kernelStepKey(contributed.name, sessionId, key),
+  };
+}
+
+/**
+ * The gate's pre-hold check (`SessionManagerOptions.heldToolCheck`) over the
+ * contributed tools that declare a `beforeHold`, keyed by their full SDK name
+ * (`mcp__kernel__<name>`). For one of them, the input is parsed with the
+ * tool's own zod shape first (a failure is a refusal naming the tool, as its
+ * handler would answer), then `beforeHold` runs with the same context its
+ * handler gets, `contextOf(sessionId)` (built at call time, so a composition
+ * can pass its session manager before it exists). Any other tool: `undefined`
+ * (held as before). A throw propagates: the gate denies `kernel_gate_error`.
+ */
+export function heldToolCheckOf(contributed: readonly ContributedTool[], contextOf: (sessionId: number) => KernelToolContext): HeldToolCheck {
+  const checked = new Map<string, ContributedTool>();
+  for (const t of contributed) if (t.beforeHold !== undefined) checked.set(`mcp__${KERNEL_MCP_SERVER_NAME}__${t.name}`, t);
+  return (toolName, input, sessionId) => {
+    const t = checked.get(toolName);
+    if (t?.beforeHold === undefined) return undefined;
+    const parsed = z.object(t.shape).safeParse(input ?? {});
+    if (!parsed.success) return { refuse: `${t.name}: invalid input: ${z.prettifyError(parsed.error)}` };
+    return t.beforeHold(parsed.data, contributedToolContext(t, contextOf(sessionId)));
+  };
+}
+
+/**
  * A contributed tool's handler over untrusted `args`. The arguments are
  * `safeParse`d before the guard around the handler, so invalid input is an
  * `isError` result without the handler running; the handler's value is the
@@ -401,14 +441,7 @@ export function kernelToolHandlers(ctx: KernelToolContext): Record<KernelToolNam
  * Never rejects.
  */
 export function contributedToolHandler(contributed: ContributedTool, ctx: KernelToolContext): KernelToolHandler {
-  const { store, sessions, sessionId } = ctx;
-  const toolCtx: ContributedToolContext = {
-    store,
-    sessions,
-    sessionId,
-    now: ctx.now ?? (() => new Date()),
-    stepKey: (key) => kernelStepKey(contributed.name, sessionId, key),
-  };
+  const toolCtx = contributedToolContext(contributed, ctx);
   const schema = z.object(contributed.shape);
   return async (args) => {
     const parsed = schema.safeParse(args ?? {});
