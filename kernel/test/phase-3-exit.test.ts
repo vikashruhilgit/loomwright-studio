@@ -4,8 +4,9 @@
 //   studio ask → Wright drafts a playbook (`kernel_playbook_create`, values
 //   proposed, mirror file) → the owner sets priority and model → Wright
 //   dry-runs it (shown in the mirror and in `studio approvals`) → its enable is
-//   held → `studio approve <id> once` → the retried enable enables it → the
-//   linked trigger fires at its instant (the playbook's model and priority) →
+//   held → `studio approve <id> once` → the kernel enables it in that decision
+//   (Wright, woken by the decision's message, makes no call) → the linked
+//   trigger fires at its instant (the playbook's model and priority) →
 //   a second fire with the same dedupe key is skipped → an outward call held
 //   in a fire session and approved `always` passes on the next fire, and is
 //   held again after a new version → at the playbook's token limit the next
@@ -297,6 +298,10 @@ const playbookMessages = (store: Store, id: number): { id: number; priority: str
     .all(id)
     .map((r) => ({ id: r.id, priority: r.priority, status: r.status, payload: JSON.parse(r.payload_json) as Record<string, unknown> }));
 
+/** The text of the message the decision on approval `id` queued (`sourceRef: approval:<id>`). */
+const decisionText = (store: Store, id: number): string | undefined =>
+  store.prepare<[string], string>("SELECT json_extract(payload_json, '$.text') FROM event_queue WHERE kind = 'message' AND source_ref = ?").pluck().get(`approval:${id}`);
+
 const approvalRows = (store: Store): { id: number; action: string; status: string; decision: string | null; playbook: number | null }[] =>
   store.prepare<[], { id: number; action: string; status: string; decision: string | null; playbook: number | null }>("SELECT id, action, status, decision, playbook FROM approvals ORDER BY id").all();
 
@@ -429,16 +434,8 @@ describe("phase 3 exit: a playbook from studio ask to a parked fire, every scope
         await reply(REPLY_ENABLE)(call);
       };
     };
-    /** Wright, woken by the approval's decision message, runs exactly the same enable call again in its new session. */
-    const retryEnable = (enableKey: string, out: { decision?: Decision; result?: Record<string, unknown> }): Driver => {
-      return async (call) => {
-        await flush(1);
-        const input = { id, idempotency_key: enableKey };
-        out.decision = await gateOf(call)(ENABLE, input);
-        if (out.decision.permissionDecision === "allow") out.result = value(await tool(call, "kernel_playbook_enable", input));
-        await reply("Enabled.")(call);
-      };
-    };
+    /** The enable approvals held so far: the kernel applies the owner's approval, so there is never a second one for a version. */
+    const enableApprovals = () => approvalRows(store).filter((a) => a.action === "kernel_playbook_enable");
 
     const v3: { dry?: DryRun; enable?: Decision } = {};
     s.wright.push(dryRunThenAsk("dry-v3", "enable-v3", v3));
@@ -466,17 +463,20 @@ describe("phase 3 exit: a playbook from studio ask to a parked fire, every scope
     expect(shown.stdout).toContain("    dedupe_key: date (proposed)\n");
     expect(shown.stdout).toContain(`    dry run: ${dry3.summary}\n`);
 
-    // ---- 4. studio approve 1 once: the decision wakes Wright, whose retried enable enables version 3 ----
-    const retry3: { decision?: Decision; result?: Record<string, unknown> } = {};
-    s.wright.push(retryEnable("enable-v3", retry3));
-    expect(await studio(["approve", "1", "once"])).toMatchObject({ code: 0 });
-    await vi.waitFor(() => expect(events(store, "playbook_enabled")).toHaveLength(1), WAIT);
-    noFailures();
-    expect(retry3.decision).toEqual({ hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: "approval_granted" });
-    expect(retry3.result).toEqual({ playbook: id, version: 3, status: "enabled", approval_id: 1 });
-    expect(events(store, "playbook_enabled")[0]?.payload).toEqual({ playbook_id: id, version: 3, approval_id: 1, by: "owner" });
+    // ---- 4. studio approve 1 once: the kernel enables version 3 in the decision; Wright, woken by its message, makes no call ----
+    const applied3 = `The kernel enabled playbook ${slug} (#${id}) at version 3 on approval 1.`;
+    s.wright.push(reply("Noted: the playbook is enabled."));
+    const approved3 = await studio(["approve", "1", "once"]);
+    expect(approved3).toMatchObject({ code: 0, stderr: "" });
+    expect(approved3.stdout).toContain(`\nstudio: the kernel applied it: ${applied3}\n`);
+    // When the decision returns, it is enabled: no retry, no wait.
+    expect(events(store, "playbook_enabled").map((e) => e.payload)).toEqual([{ playbook_id: id, version: 3, approval_id: 1, by: "owner" }]);
+    expect(events(store, "approval_used").map((e) => e.payload)).toEqual([{ id: 1, tool: ENABLE, by: "kernel" }]);
     expect(getPlaybook(store, id)).toMatchObject({ status: "enabled", version: 3 });
+    expect(decisionText(store, 1)).toBe(`approved approval 1: kernel_playbook_enable. ${applied3} Nothing to repeat.`);
     await vi.waitFor(() => expect(calls).toHaveLength(4), WAIT);
+    noFailures();
+    expect(enableApprovals().map((a) => a.id)).toEqual([1]);
     // Nothing fires before the instant.
     await twoMoreTicks(stub.state);
     expect(playbookMessages(store, id)).toEqual([]);
@@ -569,14 +569,24 @@ describe("phase 3 exit: a playbook from studio ask to a parked fire, every scope
     expect(v4.dry).toMatchObject({ version: 4, status: "done" });
     expect(v4.enable?.permissionDecisionReason).toMatch(/^approval_required: held as approval 3;/);
     expect((await studio(["approvals"])).stdout).toContain(`    token_limit: ${LIMIT} (set by owner)\n`);
-    const retry4: { decision?: Decision; result?: Record<string, unknown> } = {};
-    s.wright.push(retryEnable("enable-v4", retry4));
-    expect(await studio(["approve", "3", "once"])).toMatchObject({ code: 0 });
-    await vi.waitFor(() => expect(events(store, "playbook_enabled")).toHaveLength(2), WAIT);
-    noFailures();
-    expect(retry4.result).toEqual({ playbook: id, version: 4, status: "enabled", approval_id: 3 });
+    const applied4 = `The kernel enabled playbook ${slug} (#${id}) at version 4 on approval 3.`;
+    s.wright.push(reply("Noted: version 4 is enabled."));
+    const approved4 = await studio(["approve", "3", "once"]);
+    expect(approved4).toMatchObject({ code: 0, stderr: "" });
+    expect(approved4.stdout).toContain(`\nstudio: the kernel applied it: ${applied4}\n`);
+    expect(events(store, "playbook_enabled").map((e) => e.payload)).toEqual([
+      { playbook_id: id, version: 3, approval_id: 1, by: "owner" },
+      { playbook_id: id, version: 4, approval_id: 3, by: "owner" },
+    ]);
+    expect(events(store, "approval_used").map((e) => e.payload)).toEqual([
+      { id: 1, tool: ENABLE, by: "kernel" },
+      { id: 3, tool: ENABLE, by: "kernel" },
+    ]);
     expect(getPlaybook(store, id)).toMatchObject({ status: "enabled", version: 4 });
+    expect(decisionText(store, 3)).toBe(`approved approval 3: kernel_playbook_enable. ${applied4} Nothing to repeat.`);
     await vi.waitFor(() => expect(calls).toHaveLength(11), WAIT);
+    noFailures();
+    expect(enableApprovals().map((a) => a.id)).toEqual([1, 3]);
 
     // ---- 10. Day 4 09:01: version 4's fire session is held again (the grant was for version 3) and spends the limit ----
     let release: () => void = () => {};

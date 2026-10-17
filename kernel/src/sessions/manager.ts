@@ -13,7 +13,7 @@ import type {
   SpawnOptions,
   SpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
-import { holdOrUseGrant } from "../approvals/store.js";
+import { KERNEL_APPLIED_ACTIONS, holdOrUseGrant } from "../approvals/store.js";
 import { KeychainError } from "../auth/keychain.js";
 import { AuthProviderError } from "../auth/types.js";
 import type { AuthProvider, BaseEnv, ChildEnv } from "../auth/types.js";
@@ -2311,11 +2311,16 @@ export class SessionManager {
                 this.#appendEvent("tool_decision", live.id, payload, this.#nowIso());
                 return o;
               });
+              // A kernel-applied action is done by the kernel on approval, so its agent is told not to repeat it;
+              // every other held call keeps the instruction to repeat it once.
+              const ifApproved = (KERNEL_APPLIED_ACTIONS as readonly string[]).includes(tool)
+                ? "the kernel applies it itself and that message says what it did; do not repeat the call."
+                : "run exactly the same call again, once.";
               const permissionDecisionReason =
                 outcome.kind === "granted"
                   ? "approval_granted"
                   : `approval_required: held as approval ${outcome.id}; it did not run. The owner decides (studio approve ${outcome.id} once, ` +
-                    `or studio deny ${outcome.id}) and the decision arrives as a new message. End your turn now; if it is approved, run exactly the same call again, once.`;
+                    `or studio deny ${outcome.id}) and the decision arrives as a new message. End your turn now; if it is approved, ${ifApproved}`;
               return {
                 hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: outcome.kind === "granted" ? "allow" : "deny", permissionDecisionReason },
               };

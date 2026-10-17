@@ -217,6 +217,14 @@ describe("mergeContributions", () => {
     expect(mergeContributions([{ name: "probe", tools: [shaped({ a: z.string(), b: z.number().optional() })] }], PHASE1).tools).toHaveLength(1);
   });
 
+  it("refuses a tool's applyOnApproval that is not a function, as it refuses beforeHold", () => {
+    const bad = { ...noopTool("kernel_probe"), applyOnApproval: "yes" } as unknown as ReturnType<typeof noopTool>;
+    const err = thrown(() => mergeContributions([{ name: "probe", tools: [bad] }], PHASE1));
+    expect(err).toBeInstanceOf(InvalidContributionError);
+    expect((err as Error).message).toContain("kernel_probe's applyOnApproval must be a function");
+    expect(mergeContributions([{ name: "probe", tools: [{ ...noopTool("kernel_probe"), applyOnApproval: () => ({ applied: "x" }) }] }], PHASE1).tools).toHaveLength(1);
+  });
+
   it("refuses a part list that is not a list, or handlers that are not an object, as InvalidContributionError (never a TypeError)", () => {
     for (const bad of [{ tools: {} }, { routes: "GET /x" }, { subcommands: 1 }, { dueWork: () => {} }, { handlers: [] }, { handlers: "message" }]) {
       expect(thrown(() => mergeContributions([{ name: "probe", ...bad } as unknown as FeatureContribution], PHASE1))).toBeInstanceOf(InvalidContributionError);
@@ -573,7 +581,7 @@ describe("a contribution composed from outside (AC4)", () => {
           handler: async (req) => {
             seen.push(req);
             const count = req.store.prepare<[], number>("SELECT count(*) FROM notifications").pluck().get();
-            return { status: 200, body: { keys: Object.keys(req), at: req.now().toISOString(), notifications: count } };
+            return { status: 200, body: { keys: Object.keys(req), applier: typeof req.approvalApplier, at: req.now().toISOString(), notifications: count } };
           },
         },
       ],
@@ -588,7 +596,8 @@ describe("a contribution composed from outside (AC4)", () => {
       body: JSON.stringify({ a: 1 }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ keys: ["params", "query", "body", "store", "now"], at: "2026-10-15T08:00:00.000Z", notifications: 0 });
+    // The kernel passes its kernel-applied actions' applier on every contributed route request (the approvals decision reads it).
+    expect(await res.json()).toEqual({ keys: ["params", "query", "body", "store", "now", "approvalApplier"], applier: "function", at: "2026-10-15T08:00:00.000Z", notifications: 0 });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.store).toBe(kernel.store);
     expect({ ...seen[0]?.params }).toEqual({ id: "7" });
@@ -812,6 +821,16 @@ describe("refused compositions (AC5)", () => {
     expect((routeClash as ContributionConflictError).owners).toEqual(["phase1", "probe"]);
     const unknownKind = await startKernel(options({ contributions: [{ name: "probe", handlers: { cron: () => {} } }] }), d).catch((e: unknown) => e);
     expect(unknownKind).toBeInstanceOf(UnknownEventKindError);
+    expect(openStore).not.toHaveBeenCalled();
+  });
+
+  it("a tool that declares applyOnApproval outside KERNEL_APPLIED_ACTIONS: startKernel rejects with InvalidContributionError before the store opens", async () => {
+    const openStore = vi.fn((dir: string) => new Store({ dataDir: dir }));
+    const { d } = deps({ openStore });
+    const applying = { ...noopTool("kernel_probe"), applyOnApproval: () => ({ applied: "x" }) };
+    const err = await startKernel(options({ contributions: [{ name: "probe", tools: [applying] }] }), d).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InvalidContributionError);
+    expect((err as Error).message).toContain("mcp__kernel__kernel_probe is not in KERNEL_APPLIED_ACTIONS");
     expect(openStore).not.toHaveBeenCalled();
   });
 
@@ -1048,6 +1067,8 @@ describe("the route seam carries the API's store and clock", () => {
       expect(seen[0]?.store).toBe(store);
       expect(seen[0]?.now()).toBe(at);
       expect({ params: { ...seen[0]?.params }, query: { ...seen[0]?.query }, body: seen[0]?.body }).toEqual({ params: { id: "7" }, query: { x: "1" }, body: { a: 1 } });
+      // An API server given no applier adds no key for one.
+      expect(seen[0]).not.toHaveProperty("approvalApplier");
     } finally {
       await api.close();
       store.close();

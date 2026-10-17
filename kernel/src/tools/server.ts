@@ -26,13 +26,16 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { PHASE1_TOOL_NAMES } from "../features/contribution.js";
+import { KERNEL_APPLIED_ACTIONS } from "../approvals/store.js";
+import type { ApprovalApplier } from "../approvals/store.js";
+import { InvalidContributionError, PHASE1_TOOL_NAMES } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import type { EventRef } from "../loop/internal.js";
 import { runStep, runStepAsync } from "../loop/steps.js";
 import { MAX_WAKEUP_REASON, RESERVED_WAKEUP_REASON_PREFIXES, isReservedWakeupReason, scheduleWakeup } from "../loop/wakeups.js";
 import type { SessionManager } from "../sessions/manager.js";
+import { ALWAYS_HELD_TOOLS } from "../sessions/policy.js";
 import type { HeldToolCheck } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { kernelVersion } from "../version.js";
@@ -429,6 +432,50 @@ export function heldToolCheckOf(contributed: readonly ContributedTool[], context
     const parsed = z.object(t.shape).safeParse(input ?? {});
     if (!parsed.success) return { refuse: `${t.name}: invalid input: ${z.prettifyError(parsed.error)}` };
     return t.beforeHold(parsed.data, contributedToolContext(t, contextOf(sessionId)));
+  };
+}
+
+/**
+ * The approvals decision's applier (`decideApproval`) over the contributed
+ * tools that declare an `applyOnApproval`, keyed by their full SDK name
+ * (`mcp__kernel__<name>`). Built once at composition: a tool that declares
+ * one but whose full name is not in `KERNEL_APPLIED_ACTIONS` throws
+ * `InvalidContributionError`, so a composition that breaks the closed set
+ * never starts. So does a member of `KERNEL_APPLIED_ACTIONS` that is not in
+ * `ALWAYS_HELD_TOOLS` (checked first, whatever the contributed tools): a
+ * standing `always` grant is excluded only for an always-held tool, so a
+ * kernel-applied action outside that set could be approved once for every
+ * later call (invariant 3). `sets` exists for the tests; the kernel passes
+ * nothing and gets the real, fixed sets. The returned function answers
+ * `undefined` for a tool with no applier; else it parses the held input with the tool's own zod shape (a
+ * failure is `{refused: "invalid_input"}`, nothing run) and calls
+ * `applyOnApproval` with the store, the decision's instant and the approval.
+ * A throw propagates: the decision records it as `apply_error`.
+ */
+export function approvalApplierOf(
+  contributed: readonly ContributedTool[],
+  sets: { readonly applied: readonly string[]; readonly held: readonly string[] } = { applied: KERNEL_APPLIED_ACTIONS, held: ALWAYS_HELD_TOOLS },
+): ApprovalApplier {
+  for (const action of sets.applied) {
+    if (!sets.held.includes(action)) {
+      throw new InvalidContributionError(action, "tool", `${action} is in KERNEL_APPLIED_ACTIONS but not in ALWAYS_HELD_TOOLS, so an "always" grant could reach it`);
+    }
+  }
+  const appliers = new Map<string, ContributedTool>();
+  for (const t of contributed) {
+    if (t.applyOnApproval === undefined) continue;
+    const full = `mcp__${KERNEL_MCP_SERVER_NAME}__${t.name}`;
+    if (!sets.applied.includes(full)) {
+      throw new InvalidContributionError(t.name, "tool", `${t.name} declares applyOnApproval, but ${full} is not in KERNEL_APPLIED_ACTIONS`);
+    }
+    appliers.set(full, t);
+  }
+  return (tool, input, approval, store, now) => {
+    const t = appliers.get(tool);
+    if (t?.applyOnApproval === undefined) return undefined;
+    const parsed = z.object(t.shape).safeParse(input ?? {});
+    if (!parsed.success) return { refused: "invalid_input", text: `${t.name}: the held input is not valid: ${z.prettifyError(parsed.error)}` };
+    return t.applyOnApproval(parsed.data, { store, now: () => now, approval });
   };
 }
 

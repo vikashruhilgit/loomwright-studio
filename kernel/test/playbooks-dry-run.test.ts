@@ -14,7 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookCallback, HookInput, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { decideApproval, formatApprovals, listApprovals } from "../src/approvals/index.js";
+import { decideApproval, formatApprovals, getApproval, listApprovals } from "../src/approvals/index.js";
+import type { ApprovalApplier } from "../src/approvals/index.js";
 import { KeychainError } from "../src/auth/index.js";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
 import { defaultWrightSettingsJson, wrightMemoryDir, wrightSettingsPath } from "../src/brain/index.js";
@@ -29,7 +30,7 @@ import { enablePlaybook } from "../src/playbooks/store.js";
 import { SessionManager } from "../src/sessions/manager.js";
 import type { DryRunReport, HeldToolCheck, SessionHandle, SessionRow, SessionStatus, StartSessionParams, ToolPolicy, WouldDoEntry } from "../src/sessions/types.js";
 import { Store } from "../src/store/index.js";
-import { contributedToolHandler, heldToolCheckOf, kernelStepKey } from "../src/tools/server.js";
+import { approvalApplierOf, contributedToolHandler, heldToolCheckOf, kernelStepKey } from "../src/tools/server.js";
 import type { KernelToolContext, KernelToolResult } from "../src/tools/server.js";
 import { count, events } from "./loop-helpers.js";
 import { fakeMsg, fakeSessions, flush, makePluginDir, stubProvider } from "./session-fakes.js";
@@ -262,7 +263,11 @@ async function bootKernel() {
   const create = async (args: Record<string, unknown> = {}, key = `c-${Math.random()}`): Promise<{ id: number; slug: string }> =>
     value<{ id: number; slug: string }>(await tool("kernel_playbook_create", { ...DAILY, ...args, idempotency_key: key }));
 
-  return { kernel, store: kernel.store, fakes, wright, gate, tool, dryRun, enable, studio, create, failures };
+  /** The text of the message a decision on approval `id` queued for Wright. */
+  const decisionMessage = (id: number): string | undefined =>
+    kernel.store.prepare<[string], string>("SELECT json_extract(payload_json, '$.text') FROM event_queue WHERE kind = 'message' AND source_ref = ?").pluck().get(`approval:${id}`);
+
+  return { kernel, store: kernel.store, fakes, wright, gate, tool, dryRun, enable, studio, create, failures, decisionMessage };
 }
 
 // ---- The manager harness (stand-in dry-run sessions) --------------------------------------
@@ -426,14 +431,18 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     expect(getPlaybook(h.store, id)?.status).toBe("draft");
   });
 
-  it("AC3 + AC4: after a dry run the call is held; studio approvals shows the playbook, its version, its values marked (proposed) and the dry run; approved and retried, it is enabled at that version", async () => {
+  it("AC3 + AC4: after a dry run the call is held; studio approvals shows the playbook, its version, its values marked (proposed) and the dry run; approved once, the kernel enables it at that version itself, with no agent call", async () => {
     const h = await bootKernel();
     const { id, slug } = await h.create();
     const dry = value<DryRunValue>(await h.dryRun(id, "d1"));
     const input = { id, idempotency_key: "e1" };
 
     const held = await h.enable(input);
-    expect(held.decision.permissionDecisionReason).toMatch(/^approval_required: held as approval 1; it did not run\./);
+    // A kernel-applied action: the hold reason says the kernel applies it, never to repeat the call.
+    expect(held.decision.permissionDecisionReason).toBe(
+      "approval_required: held as approval 1; it did not run. The owner decides (studio approve 1 once, or studio deny 1) and the decision arrives as a new message. " +
+        "End your turn now; if it is approved, the kernel applies it itself and that message says what it did; do not repeat the call.",
+    );
     // The grant matches on the payload alone: the display never enters it.
     const [approval] = h.store.prepare<[], { status: string; payload_json: string }>("SELECT status, payload_json FROM approvals").all();
     expect(approval?.status).toBe("pending");
@@ -456,54 +465,153 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     // The display comes before the payload, which is printed as before.
     expect(out.indexOf("  display:")).toBeLessThan(out.indexOf("  payload:"));
 
-    expect((await h.studio(["approve", "1", "once"])).code).toBe(0);
-    const retried = await h.enable(input);
-    expect(retried.decision).toEqual({ hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: "approval_granted" });
-    expect(value(retried.result)).toEqual({ playbook: id, version: 1, status: "enabled", approval_id: 1 });
+    const applied = `The kernel enabled playbook ${slug} (#${id}) at version 1 on approval 1.`;
+    // The decision applies it: when studio approve returns, it is enabled (no agent call, no wait).
+    expect(await h.studio(["approve", "1", "once"])).toEqual({
+      code: 0,
+      stderr: "",
+      stdout: `studio: approval 1 approved once: kernel_playbook_enable; the requesting agent gets a message\nstudio: the kernel applied it: ${applied}\n`,
+    });
     expect(getPlaybook(h.store, id)).toMatchObject({ status: "enabled", version: 1 });
     expect(events(h.store, "playbook_enabled").map((e) => [e.session_id, e.payload])).toEqual([[h.wright.id, { playbook_id: id, version: 1, approval_id: 1, by: "owner" }]]);
+    expect(events(h.store, "approval_used").map((e) => [e.session_id, e.payload])).toEqual([[h.wright.id, { id: 1, tool: ENABLE, by: "kernel" }]]);
+    expect(events(h.store, "approval_decided").map((e) => e.payload)).toEqual([{ id: 1, decision: "once", by: "owner", action: "kernel_playbook_enable", applied }]);
+    expect(h.decisionMessage(1)).toBe(`approved approval 1: kernel_playbook_enable. ${applied} Nothing to repeat.`);
+    // The mirror is rewritten once the decision committed.
     expect(readFileSync(mirrorPath(dataDir, slug), "utf8")).toContain("- Status: `enabled`");
+    expect((await h.studio(["approvals", "--all"])).stdout).toContain(`  applied: ${applied}\n`);
 
-    // A repeat with the same key returns the first result.
-    expect(value(await h.tool("kernel_playbook_enable", input))).toEqual({ playbook: id, version: 1, status: "enabled", approval_id: 1 });
+    // A retry after the kernel applied it is refused before the hold (no longer a draft): nothing held, nothing enabled twice.
+    const retried = await h.enable(input);
+    expect(retried.decision.permissionDecision).toBe("deny");
+    expect(retried.decision.permissionDecisionReason).toBe(`kernel_playbook_enable: playbook ${id} is enabled, not draft: only a draft is enabled`);
+    expect(retried.result).toBeUndefined();
+    expect(count(h.store, "SELECT count(*) FROM approvals")).toBe(1);
+    expect(events(h.store, "playbook_enabled")).toHaveLength(1);
   });
 
-  it("AC5a: an edit and a new dry run after the request: the retry uses the v1 grant but the handler refuses (version changed) and the playbook stays draft", async () => {
+  it("AC5a: an edit and a new dry run after the request: the kernel refuses version_changed, the playbook stays draft, and the agent's same call is held as a new approval, never let through on the spent grant", async () => {
+    const h = await bootKernel();
+    const { id, slug } = await h.create();
+    value(await h.dryRun(id, "d1"));
+    const input = { id, idempotency_key: "e1" };
+    expect((await h.enable(input)).decision.permissionDecision).toBe("deny");
+    value(await h.tool("kernel_playbook_update", { id, changes: { intent: "Summarise repo Y instead." }, idempotency_key: "u1" }));
+    value(await h.dryRun(id, "d2"));
+
+    const refused = `The kernel did not enable playbook ${slug} (#${id}): version_changed (approval 1 was for version 1, the playbook is at version 2; it stays draft).`;
+    expect(await h.studio(["approve", "1", "once"])).toEqual({
+      code: 0,
+      stderr: "",
+      stdout: `studio: approval 1 approved once: kernel_playbook_enable; the requesting agent gets a message\nstudio: not applied: version_changed: ${refused}\n`,
+    });
+    expect(getApproval(h.store, 1)).toMatchObject({ status: "approved", decision: "once" });
+    expect(listApprovals(h.store, { all: true })[0]).toMatchObject({ id: 1, apply_refused: "version_changed", apply_detail: refused });
+    expect(h.decisionMessage(1)).toBe(`approved approval 1: kernel_playbook_enable. ${refused} Do not repeat the call.`);
+    expect(getPlaybook(h.store, id)).toMatchObject({ status: "draft", version: 2 });
+    expect(events(h.store, "playbook_enabled")).toEqual([]);
+    expect(events(h.store, "approval_used").map((e) => e.payload)).toEqual([{ id: 1, tool: ENABLE, by: "kernel" }]);
+
+    // The owner's v1 grant is spent: the same call is held as a new approval for version 2.
+    const again = await h.enable(input);
+    expect(again.decision.permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
+    expect(again.result).toBeUndefined();
+    expect(events(h.store, "approval_requested")[1]?.payload).toMatchObject({ id: 2, subject_version: 2 });
+  });
+
+  it("AC5b: an edit with no new dry run: the kernel refuses version_changed and spends the grant; the agent's retry is refused before the hold (held_refused)", async () => {
     const h = await bootKernel();
     const { id } = await h.create();
     value(await h.dryRun(id, "d1"));
     const input = { id, idempotency_key: "e1" };
-    expect((await h.enable(input)).decision.permissionDecision).toBe("deny");
-    expect((await h.studio(["approve", "1", "once"])).code).toBe(0);
-    value(await h.tool("kernel_playbook_update", { id, changes: { intent: "Summarise repo Y instead." }, idempotency_key: "u1" }));
-    value(await h.dryRun(id, "d2"));
+    await h.enable(input);
+    value(await h.tool("kernel_playbook_update", { id, changes: { priority: "high" }, idempotency_key: "u1" }));
+    const approved = await h.studio(["approve", "1", "once"]);
+    expect(approved.code).toBe(0);
+    expect(approved.stdout).toContain("\nstudio: not applied: version_changed: ");
+    expect(events(h.store, "approval_used").map((e) => e.payload)).toEqual([{ id: 1, tool: ENABLE, by: "kernel" }]);
 
     const retried = await h.enable(input);
-    // The gate let it through on the owner's v1 grant (the payload is the same)...
-    expect(retried.decision.permissionDecisionReason).toBe("approval_granted");
-    expect(events(h.store, "approval_used").map((e) => e.payload)).toEqual([{ id: 1, tool: ENABLE }]);
-    // ...and the handler refuses: the owner approved version 1, the playbook is at version 2.
-    expect(errorText(retried.result)).toContain("version changed");
+    expect(retried.decision.permissionDecision).toBe("deny");
+    expect(retried.decision.permissionDecisionReason).toContain("a dry run of version 2 is required");
+    expect(events(h.store, "tool_decision").filter((e) => e.payload.tool === ENABLE).map((e) => e.payload.reason)).toEqual(["approval_required", "held_refused"]);
+    expect(h.store.prepare("SELECT id, status FROM approvals").all()).toEqual([{ id: 1, status: "approved" }]);
     expect(getPlaybook(h.store, id)).toMatchObject({ status: "draft", version: 2 });
+  });
+
+  it("AC3 (owner off): the owner turned the playbook off after the request; approved, nothing is enabled and the approval records turned_off_by_owner", async () => {
+    const h = await bootKernel();
+    const { id, slug } = await h.create();
+    value(await h.dryRun(id, "d1"));
+    await h.enable({ id, idempotency_key: "e1" });
+    expect((await h.studio(["playbooks", "off", String(id)])).code).toBe(0);
+    const approved = await h.studio(["approve", "1", "once"]);
+    expect(approved.code).toBe(0);
+    expect(approved.stdout).toContain(`\nstudio: not applied: turned_off_by_owner: The kernel did not enable playbook ${slug} (#${id}): turned_off_by_owner (playbook ${id} was turned off by the owner;`);
+    expect(listApprovals(h.store, { all: true })[0]).toMatchObject({ status: "approved", apply_refused: "turned_off_by_owner" });
+    expect(getPlaybook(h.store, id)?.status).toBe("disabled");
     expect(events(h.store, "playbook_enabled")).toEqual([]);
   });
 
-  it("AC5b: an edit with no new dry run: the retry is refused before the hold (held_refused) and the owner's grant is left unused", async () => {
+  it("a key a kernel-applied enable used is no work step: after an edit and a new dry run the same key is held anew, and the owner's approval enables the new version", async () => {
     const h = await bootKernel();
     const { id } = await h.create();
     value(await h.dryRun(id, "d1"));
     const input = { id, idempotency_key: "e1" };
     await h.enable(input);
     expect((await h.studio(["approve", "1", "once"])).code).toBe(0);
-    value(await h.tool("kernel_playbook_update", { id, changes: { priority: "high" }, idempotency_key: "u1" }));
+    value(await h.tool("kernel_playbook_update", { id, changes: { intent: "Summarise repo Y instead." }, idempotency_key: "u1" }));
+    value(await h.dryRun(id, "d2"));
+    expect((await h.enable(input)).decision.permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
+    expect((await h.studio(["approve", "2", "once"])).code).toBe(0);
+    expect(events(h.store, "playbook_enabled").map((e) => [e.payload.version, e.payload.approval_id])).toEqual([
+      [1, 1],
+      [2, 2],
+    ]);
+    expect(getPlaybook(h.store, id)).toMatchObject({ status: "enabled", version: 2 });
+  });
 
-    const retried = await h.enable(input);
-    expect(retried.decision.permissionDecision).toBe("deny");
-    expect(retried.decision.permissionDecisionReason).toContain("a dry run of version 2 is required");
-    expect(events(h.store, "tool_decision").filter((e) => e.payload.tool === ENABLE).map((e) => e.payload.reason)).toEqual(["approval_required", "held_refused"]);
-    expect(events(h.store, "approval_used")).toEqual([]);
-    expect(h.store.prepare("SELECT id, status FROM approvals").all()).toEqual([{ id: 1, status: "approved" }]);
-    expect(getPlaybook(h.store, id)).toMatchObject({ status: "draft", version: 2 });
+  it("AC1, one transaction: an apply that enables and then throws leaves nothing enabled (the savepoint rolls it back): apply_error, the approval still approved", async () => {
+    const h = await bootManager();
+    const { id } = await h.create();
+    value(await h.tool("kernel_playbook_dry_run", { id, idempotency_key: "d1" }));
+    await h.gate(ENABLE, { id, idempotency_key: "e1" });
+    const real = approvalApplierOf(playbooksContribution.tools ?? []);
+    const applier: ApprovalApplier = (...args) => {
+      expect(real(...args)).toMatchObject({ applied: expect.stringContaining("The kernel enabled playbook") });
+      expect(getPlaybook(h.store, id)?.status).toBe("enabled");
+      throw new Error("after the enable");
+    };
+    decideApproval(h.store, { id: 1, decision: "once", by: "owner" }, clock.at, applier);
+    expect(getPlaybook(h.store, id)?.status).toBe("draft");
+    expect(events(h.store, "playbook_enabled")).toEqual([]);
+    expect(listApprovals(h.store, { all: true })[0]).toMatchObject({ status: "approved", apply_refused: "apply_error", apply_detail: "the kernel could not apply it: after the enable" });
+  });
+
+  it("AC1 with the real applier: enabled at the approved version in the decision, playbook_enabled linked to the requesting session; a second approval after the enable (not_draft) or another agent's playbook (not_owner) is refused, nothing enabled", async () => {
+    const h = await bootManager();
+    const applier = approvalApplierOf(playbooksContribution.tools ?? []);
+    const { id } = await h.create();
+    value(await h.tool("kernel_playbook_dry_run", { id, idempotency_key: "d1" }));
+    await h.gate(ENABLE, { id, idempotency_key: "e1" });
+    // A second request for the same draft, held before the first was decided.
+    expect((await h.gate(ENABLE, { id, idempotency_key: "e1b" })).permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
+    decideApproval(h.store, { id: 1, decision: "once", by: "owner" }, clock.at, applier);
+    expect(getPlaybook(h.store, id)).toMatchObject({ status: "enabled", version: 1 });
+    expect(events(h.store, "playbook_enabled").map((e) => [e.session_id, e.payload])).toEqual([[h.wright.id, { playbook_id: id, version: 1, approval_id: 1, by: "owner" }]]);
+    // The second, approved after the first enabled it: not_draft, nothing enabled twice.
+    decideApproval(h.store, { id: 2, decision: "once", by: "owner" }, clock.at, applier);
+    expect(listApprovals(h.store, { all: true }).find((a) => a.id === 2)).toMatchObject({ apply_refused: "not_draft" });
+    expect(events(h.store, "playbook_enabled")).toHaveLength(1);
+
+    // Another agent's playbook: not_owner (the approval's agent is the request's, never the stored requester).
+    const other = await h.create({ name: "Other" });
+    value(await h.tool("kernel_playbook_dry_run", { id: other.id, idempotency_key: "d2" }));
+    await h.gate(ENABLE, { id: other.id, idempotency_key: "e2" });
+    h.store.prepare("UPDATE playbooks SET owning_agent = 'builder' WHERE id = ?").run(other.id);
+    decideApproval(h.store, { id: 3, decision: "once", by: "owner" }, clock.at, applier);
+    expect(listApprovals(h.store, { all: true }).find((a) => a.id === 3)).toMatchObject({ apply_refused: "not_owner" });
+    expect(getPlaybook(h.store, other.id)?.status).toBe("draft");
   });
 
   it("the handler enables only on its own consumed approval: B's direct call cannot borrow A's approval from the same session (defence behind the gate)", async () => {
@@ -517,9 +625,8 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     expect((await h.enable(inputA)).decision.permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
     expect((await h.enable(inputB)).decision.permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
     expect((await h.studio(["approve", "1", "once"])).code).toBe(0);
-
-    const retriedA = await h.enable(inputA);
-    expect(value(retriedA.result)).toEqual({ playbook: a.id, version: 1, status: "enabled", approval_id: 1 });
+    // The kernel enabled A on its approval.
+    expect(getPlaybook(h.store, a.id)?.status).toBe("enabled");
 
     // B's handler, called directly in the same session (bypassing the gate): its own approval was never approved or consumed.
     expect(errorText(await h.tool("kernel_playbook_enable", inputB))).toContain("no approval of its own");
@@ -527,23 +634,23 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     expect(events(h.store, "playbook_enabled").map((e) => e.payload.playbook_id)).toEqual([a.id]);
   });
 
-  it("a key an earlier enable used: after enable, edit and a new dry run, the same-key enable is refused before the hold (held_refused), no approval written", async () => {
-    const h = await bootKernel();
+  it("a key an earlier enable used (the handler path, decided with no applier): after enable, edit and a new dry run, the same-key enable is refused before the hold (held_refused), no approval written", async () => {
+    const h = await bootManager();
     const { id } = await h.create();
-    value(await h.dryRun(id, "d1"));
+    value(await h.tool("kernel_playbook_dry_run", { id, idempotency_key: "d1" }));
     const input = { id, idempotency_key: "e1" };
-    await h.enable(input);
-    expect((await h.studio(["approve", "1", "once"])).code).toBe(0);
-    expect(value((await h.enable(input)).result)).toEqual({ playbook: id, version: 1, status: "enabled", approval_id: 1 });
+    await h.gate(ENABLE, input);
+    decideApproval(h.store, { id: 1, decision: "once", by: "owner" }, clock.at);
+    expect((await h.gate(ENABLE, input)).permissionDecisionReason).toBe("approval_granted");
+    expect(value(await h.tool("kernel_playbook_enable", input))).toEqual({ playbook: id, version: 1, status: "enabled", approval_id: 1 });
     value(await h.tool("kernel_playbook_update", { id, changes: { intent: "Summarise repo Y instead." }, idempotency_key: "u1" }));
     expect(getPlaybook(h.store, id)).toMatchObject({ status: "draft", version: 2 });
-    value(await h.dryRun(id, "d2"));
+    value(await h.tool("kernel_playbook_dry_run", { id, idempotency_key: "d2" }));
 
-    const again = await h.enable(input);
-    expect(again.decision.permissionDecision).toBe("deny");
-    expect(again.decision.permissionDecisionReason).toContain("idempotency_key already used for an enable in this session; use a new key");
-    expect(again.result).toBeUndefined();
-    expect(h.store.prepare("SELECT id, status FROM approvals").all()).toEqual([{ id: 1, status: "approved" }]);
+    const again = await h.gate(ENABLE, input);
+    expect(again.permissionDecision).toBe("deny");
+    expect(again.permissionDecisionReason).toContain("idempotency_key already used for an enable in this session; use a new key");
+    expect(h.approvals().map((x) => [x.id, x.status])).toEqual([[1, "approved"]]);
     expect(events(h.store, "tool_decision").filter((e) => e.payload.tool === ENABLE).map((e) => e.payload.reason)).toEqual([
       "approval_required",
       "approval_granted",
@@ -552,9 +659,10 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
 
     // A new key asks the owner again, and enables version 2 on that approval.
     const fresh = { id, idempotency_key: "e2" };
-    expect((await h.enable(fresh)).decision.permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
-    expect((await h.studio(["approve", "2", "once"])).code).toBe(0);
-    expect(value((await h.enable(fresh)).result)).toEqual({ playbook: id, version: 2, status: "enabled", approval_id: 2 });
+    expect((await h.gate(ENABLE, fresh)).permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
+    decideApproval(h.store, { id: 2, decision: "once", by: "owner" }, clock.at);
+    expect((await h.gate(ENABLE, fresh)).permissionDecisionReason).toBe("approval_granted");
+    expect(value(await h.tool("kernel_playbook_enable", fresh))).toEqual({ playbook: id, version: 2, status: "enabled", approval_id: 2 });
     expect(events(h.store, "playbook_enabled").map((e) => e.payload.version)).toEqual([1, 2]);
   });
 
@@ -872,7 +980,11 @@ describe("the gate's pre-hold check: it can only narrow", () => {
     const check = vi.fn<HeldToolCheck>(() => ({ refuse: "no" }));
     const h = await bootManager({ heldToolCheck: check });
     // An ordinary outward call is held as before, without asking.
-    expect((await h.gate("Bash", { command: COMMENT })).permissionDecisionReason).toMatch(/^approval_required/);
+    // Its hold reason is today's, byte for byte: repeat the exact call once if approved.
+    expect((await h.gate("Bash", { command: COMMENT })).permissionDecisionReason).toBe(
+      "approval_required: held as approval 1; it did not run. The owner decides (studio approve 1 once, or studio deny 1) and the decision arrives as a new message. " +
+        "End your turn now; if it is approved, run exactly the same call again, once.",
+    );
     expect(check).not.toHaveBeenCalled();
     const dry = await h.manager.startSession({ agent: "wright", prompt: "x", model: SETTINGS_MODEL, permissionMode: "default", cwd: tmp, policy: WRIGHT_POLICY, closeInputOnResult: false, dryRun: true });
     const dryGate = gateOf(h.fakes.calls[h.fakes.calls.length - 1] as FakeCall);

@@ -26,7 +26,7 @@ import type { EventHandlers, EventLoopDeps } from "./loop/types.js";
 import { SessionManager } from "./sessions/manager.js";
 import type { AdmissionDecision, AdmissionRequest, SessionManagerDeps, SessionManagerOptions } from "./sessions/types.js";
 import { Store, resolveDataDir } from "./store/store.js";
-import { KERNEL_MCP_SERVER_NAME, createKernelMcpServer, heldToolCheckOf } from "./tools/server.js";
+import { KERNEL_MCP_SERVER_NAME, approvalApplierOf, createKernelMcpServer, heldToolCheckOf } from "./tools/server.js";
 import { writeFileAtomic } from "./tools/handoff.js";
 
 /** Selects the auth provider when `--auth-provider` is not given. */
@@ -166,14 +166,17 @@ export function admissionFor(
  * Start the kernel, in this order: merge `options.contributions` (default
  * `SHIPPED_CONTRIBUTIONS`; a `ContributionConflictError`,
  * `UnknownEventKindError` or `InvalidContributionError` rejects before any
- * side effect); open the `Store` (taking its lock); select
+ * side effect) and build the kernel-applied actions' applier from the merged
+ * tools (`approvalApplierOf`; it refuses the same way); open the `Store`
+ * (taking its lock); select
  * the auth provider (`--auth-provider`, else `STUDIO_AUTH_PROVIDER`, else the
  * build default); the `Budget`; the `SessionManager` (wired to the budget and
  * given the kernel MCP server per launch); reap orphans left by an earlier
  * kernel; the `EventLoop` with `options.handlers` (none by default) plus the
  * contributed handlers and due work, started only while the kill switch
- * is NOT engaged; the API token (generated on first start); the API server;
- * then `<dataDir>/api.json` (mode 0600, no token).
+ * is NOT engaged; the API token (generated on first start); the API server
+ * (given the applier, which the approvals decision reads); then
+ * `<dataDir>/api.json` (mode 0600, no token).
  *
  * A failure after the store opened undoes what had started, in reverse
  * (API server, loop, sessions in `shutdown` mode, `api.json`, store), then
@@ -194,6 +197,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     ...PHASE1_RESERVED,
     handlerKinds: Object.keys(options.handlers ?? {}),
   });
+  // Built here too: a tool's applier outside KERNEL_APPLIED_ACTIONS refuses the start before the store opens.
+  const approvalApplier = approvalApplierOf(contributions.tools);
 
   const store = (deps.openStore ?? ((dir: string) => new Store({ dataDir: dir })))(dataDir);
   let sessions: SessionManager | undefined;
@@ -272,6 +277,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         authProviders: [authProvider],
         token,
         routes: contributions.routes,
+        approvalApplier,
         ...(options.port === undefined ? {} : { port: options.port }),
       },
       { now, startedAt, pid },

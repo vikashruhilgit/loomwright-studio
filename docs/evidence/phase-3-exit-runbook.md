@@ -121,9 +121,9 @@ In the second terminal, before the first minute:
 studio approve <id> once
 ```
 
-Use the id the harness printed. The decision reaches Wright as a new message, and Wright's retry in that new session enables the playbook. The harness waits until the playbook is `enabled`. It passes when the approval was decided `once` by `owner`, exactly one `playbook_enabled` event names that approval, and the playbook was enabled before the first minute. It records every enable approval for the playbook.
+Use the id the harness printed. The kernel applies the approved enable itself, in the same transaction as your decision ([approvals: kernel-applied actions](../architecture/approvals.md#kernel-applied-actions)), so the playbook is `enabled` when the command returns, with no call from Wright. `studio approve` prints a second line, `studio: the kernel applied it: The kernel enabled playbook <slug> (#<id>) at version <n> on approval <id>.`, or `studio: not applied: <reason>: <detail>` when the kernel refused (for example `version_changed` if the playbook was edited after the request). The harness waits until the playbook is `enabled`. It passes when the approval was decided `once` by `owner`, its `approval_decided` event carries `applied`, exactly one `playbook_enabled` event names that approval, and the playbook was enabled before the first minute. It records every enable approval for the playbook.
 
-The retry must repeat the held call exactly (the same playbook id and idempotency key), because your one-shot approval lets only that call through. The message that starts Wright's new session names only the approval and the action, so whether a real Wright repeats the call exactly has not been tested live ([open questions](../OPEN_QUESTIONS.md)). If a second enable approval for the same playbook appears instead of the playbook being enabled, don't approve it: the step fails, and the second approval is the finding.
+The decision then reaches Wright as a new message that says what the kernel did: `approved approval <id>: kernel_playbook_enable. The kernel enabled playbook … Nothing to repeat.` (or, for a refusal, the reason and `Do not repeat the call.`). Wright doesn't need to call anything. The harness records Wright's reply to that message (`wright_reply`, from its `brain_messages` row) when it comes within two minutes, ending well before the first minute; the step never requires it. If a second enable approval for the same playbook appears, don't approve it: Wright asked again, and the second approval is a finding.
 
 Record: who typed the command (you, or the agent on your word) and when.
 
@@ -181,7 +181,7 @@ Commit `docs/evidence/phase-3-exit-live-<YYYY-MM-DD>.json`, in the same commit a
     },
     "4_owner_approves": {
       "outcome": "passed | failed",
-      "harness": { "approval_id": 0, "enabled_at": "", "row": {}, "enable_approvals": [], "approval_decided": [], "approval_used": [], "playbook_enabled": [] },
+      "harness": { "approval_id": 0, "enabled_at": "", "row": {}, "enable_approvals": [], "approval_decided": [], "approval_used": [], "playbook_enabled": [], "wright_reply": null },
       "owner": { "approved_by": "<the owner | the agent, on the owner's word>", "approved_at": "" },
       "findings": []
     },

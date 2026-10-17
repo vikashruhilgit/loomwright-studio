@@ -8,7 +8,7 @@ It is a mechanism (invariant 1): no approval, grant or rule is preinstalled. The
 
 | Source | What creates the approval |
 |---|---|
-| The rail | A tool call the session's policy **allows** that falls in the fixed outward set (below). It does not run: the hook denies it with `approval_required`, and the reason it gives the model names the approval id, says the decision arrives as a new message, and says to end the turn and, if approved, run exactly the same call again once. |
+| The rail | A tool call the session's policy **allows** that falls in the fixed outward set (below). It does not run: the hook denies it with `approval_required`, and the reason it gives the model names the approval id, says the decision arrives as a new message, and says to end the turn and, if approved, run exactly the same call again once; for a [kernel-applied action](#kernel-applied-actions) it says instead that the kernel applies it and that message says what it did, so the call is not repeated. |
 | `kernel_approval_request(action, payload, idempotency_key)` | An agent asks before acting. `action` is 1-200 characters with no NUL (refused at argument validation, since it goes into the approval's notification, which refuses one); `payload` is a JSON object (at most 64,000 characters as JSON). It returns at once with `{id, status: "pending", action, message}`, where the message tells the agent the decision arrives as a new message and to end its turn. It runs as one work step keyed `kernel_approval_request:session-<id>:<idempotency_key>`, so a repeat with the same key in that session returns the same approval (with its current status) and records nothing new. |
 
 Either way, one transaction writes the `pending` row (`requesting_agent` is the session's agent, or `unknown` for a session with none; `requesting_session`; `action`; `payload_json`, the payload as canonical JSON with object keys sorted; `playbook`, the requesting session's `sessions.playbook`, null for a session with none), one `approval_requested` event (`{id, action, source: "rail" | "tool", agent}`, plus `playbook` and `playbook_version`, the session's, when the session has a playbook) and one notification with source `kernel:approval` ([notifications](notifications.md)). Before any of it, `requestApproval` refuses an action that is empty, longer than 200 characters or holds a NUL, or an agent name that holds a NUL, as `invalid_approval`, and writes nothing (on the rail, that throw denies the call with `kernel_gate_error`).
@@ -55,7 +55,7 @@ A call to a tool in `ALWAYS_HELD_TOOLS` (today only `mcp__kernel__kernel_playboo
 
 It can only narrow: it never allows a call that would be held, never skips the hold and never uses a grant itself. `held_refused` is a gate-local reason like `dry_run` and `kernel_gate_error`, not yet in the public `ToolDecisionReason` union in `kernel/src/sessions/policy.ts`.
 
-**A refused retry leaves the grant unused.** When the owner approved a held enable and the playbook was then edited without a new dry run, Wright's retry is refused here, so the owner's one-shot grant stays unused. It cannot enable anything later: the enable's own handler checks the approval's `subject_version`, the edit order and a dry run of the current version before it enables ([playbooks: enabling](playbooks.md#enabling)), so any later use of that stale grant is refused there.
+**A kernel-applied action's grant is spent by the kernel.** The enable is a [kernel-applied action](#kernel-applied-actions): when the owner approves it `once`, the kernel applies it in the decision and records the grant as used (`approval_used` with `by: "kernel"`) on every apply attempt, applied or refused. So no later call from the agent can use that grant. A retry after the kernel enabled the playbook is refused here (the playbook is no longer a `draft`); a retry after a refused apply (the playbook was edited since) is refused here when the new version has no dry run, and is otherwise held as a new approval. The enable's own handler still checks the approval's `subject_version`, the edit order and a dry run of the current version before it enables ([playbooks: enabling](playbooks.md#enabling)), as a defence for a composition that decides with no applier.
 
 **A used idempotency key is refused before the hold.** An enable's work step stores its result under its idempotency key, so a same-key call after an edit returned the playbook to `draft` could only replay the old result: an approval for it would be spent with no effect. The enable's check refuses such a key (`idempotency_key already used for an enable in this session; use a new key`) with no approval written, and its handler refuses, never replays, a stored result for another playbook or whose `approval_id` is not the approval the call just consumed ([playbooks: enabling](playbooks.md#enabling)).
 
@@ -107,7 +107,7 @@ The owner decides over the loopback API (bearer token, like every route), which 
 
 The `approvals` subcommand's usage is `studio approvals [--all] [--json] | grants [--json] | revoke <grant id>`.
 
-A decision is the owner's (`decided_by: owner`), and so is a revoke (`by: "owner"`). In one transaction a decision writes the row (`status`, `decision`, `decided_by`, `decided_at`), one `approval_decided` event (`{id, decision, by: "owner", action}`) and one queued `message` event. Refusals write nothing:
+A decision is the owner's (`decided_by: owner`), and so is a revoke (`by: "owner"`). In one transaction a decision writes the row (`status`, `decision`, `decided_by`, `decided_at`), one `approval_decided` event (`{id, decision, by: "owner", action}`, plus `applied` or `apply_refused` and `apply_detail` when the kernel applied a [kernel-applied action](#kernel-applied-actions)) and one queued `message` event. Refusals write nothing:
 
 - `400 invalid_id` / `invalid_body`;
 - `404 no_such_approval`, then `409 approval_not_pending` (with the current `status`), checked first for `always` too;
@@ -116,11 +116,25 @@ A decision is the owner's (`decided_by: owner`), and so is a revoke (`by: "owner
 
 The CLI reports each as one stderr line and exits 1 (for `always_not_supported`, the API's `message`, escaped like any stored text); bad usage prints the subcommand's usage and exits 2.
 
+For a kernel-applied action, `studio approve <id> once` prints a second line after its usual one: `studio: the kernel applied it: <sentence>`, or `studio: not applied: <reason>: <detail>`. It exits 0 either way: the decision itself succeeded. `studio approvals --all` prints the same `  applied: …` or `  not applied: …` line after `decided:`, and `--json` and the API return the approval's `applied`, or `apply_refused` and `apply_detail`, present only then. An approval without them prints exactly as before. The sentence names a playbook, so it is escaped like any stored text.
+
 The list shows every control character in an action, agent name, playbook slug or payload escaped as `\xNN` (C0, C1 and DEL; a newline inside a JSON string stays `\n`) and every bidi control as `\uNNNN`, so a stored payload can never move the cursor, recolour the terminal or fake a line of output.
 
 ## Delivering the decision
 
-Deciding queues one `message` event with payload `{text: "<approved|denied> approval <id>: <action>", agent, approval_id}`, where `agent` is the requesting session's agent (`null` for a session with none). Its `sourceRef` is `approval:<id>`, so a retried decision can never queue it twice. Routing a message to its agent is [the brain](brain.md)'s (phase 2 item 06, `studio ask`); nothing here keeps a session open or wakes one.
+Deciding queues one `message` event with payload `{text, agent, approval_id}`, where `agent` is the requesting session's agent (`null` for a session with none). Its `sourceRef` is `approval:<id>`, so a retried decision can never queue it twice. Routing a message to its agent is [the brain](brain.md)'s (phase 2 item 06, `studio ask`); nothing here keeps a session open or wakes one.
+
+The text says what happened and whether the agent repeats the call, so the agent never has to infer it:
+
+| Case | `text` |
+|---|---|
+| a [kernel-applied action](#kernel-applied-actions), applied | `approved approval <id>: <action>. <applied sentence> Nothing to repeat.` |
+| a kernel-applied action, refused | `approved approval <id>: <action>. <refusal sentence> Do not repeat the call.` |
+| any other approved rail approval (`once` or `always`) whose payload is an object with a string `tool` | `approved approval <id>: <action>. Repeat exactly this call once, unchanged: tool <tool>, input <input>.` |
+| approved, asked for with `kernel_approval_request` (`source: "tool"`), or a rail payload with no string `tool` | `approved approval <id>: <action>` |
+| denied | `denied approval <id>: <action>. Nothing was done; do not repeat the call.` |
+
+`<input>` is the held call's input as canonical JSON: the payload's `input` (a Write's whole input, keys sorted), or for a Bash call, whose payload has no `input`, `{"command": …}`, the command the grant matches on. It is never cut here: the brain cuts a message longer than `MAX_MESSAGE_CHARS` (8,000 characters, `kernel/src/brain/context.ts`) and says it did.
 
 ## One-shot grants
 
@@ -128,9 +142,37 @@ An approved rail approval lets **exactly** that call through **once**:
 
 - **Exact payload.** A Bash call's payload is `{tool: "Bash", command, cwd}` (the command string exactly, not the description or timeout); any other tool's is `{tool, input, cwd}` with its whole input. `cwd` is the hook input's working directory (`/` when absent or not absolute; the rail never resolves a path against that `/`), so the owner sees where the call runs (`studio approvals` prints it with the payload) and a grant for a push in one repo never lets the identical push through in another. Matching is on the canonical JSON, so key order does not matter but every character does: `git push --force origin main` does not match a grant for `git push origin main`, and neither does a trailing space or another cwd.
 - **Same requester.** For a named agent: the same agent name, and a requesting session that ran that agent (any session of it, since the decision usually arrives in a new one). For a session with no agent: that same session only, never another agent-less session, and never an agent literally named `unknown`. A grant for one agent never lets another agent's identical call through.
-- **Once.** The grant's use is one `approval_used` event (`{id, tool}`, linked to the session) written in the same transaction as the allow and its `tool_decision` event; a used grant never matches again. A second identical call is held as a new approval.
+- **Once.** The grant's use is one `approval_used` event (`{id, tool}`, linked to the session) written in the same transaction as the allow and its `tool_decision` event; a used grant never matches again. A second identical call is held as a new approval. For a [kernel-applied action](#kernel-applied-actions) the kernel uses the grant itself, in the decision (`{id, tool, by: "kernel"}`, linked to the requesting session), so the agent's call never can.
 
 A denied approval grants nothing: the held call never runs, and an identical later call is held as a new approval.
+
+## Kernel-applied actions
+
+A held call to a kernel tool with a kernel-side effect is applied by the kernel itself when the owner approves it `once`, in the same transaction as the decision. The agent does not repeat the call: completing an approved state change must not depend on a model repeating a call it can no longer see (invariant 2; the 2026-10-17 live run's step 4, where Wright made no call and the playbook stayed a draft). The owner's approval stays required (D3, invariant 3): only the owner's `once` on a call the rail held applies anything.
+
+**The closed set.** `KERNEL_APPLIED_ACTIONS` in `kernel/src/approvals/store.ts`, full SDK tool names: today only `mcp__kernel__kernel_playbook_enable`. It is code, not a setting, and adding a tool is a code change with its own review. Every member is also in `ALWAYS_HELD_TOOLS`, so `always` never reaches one. The composition enforces that at start, not only a test: a member missing from `ALWAYS_HELD_TOOLS` refuses the start (`InvalidContributionError`, from `approvalApplierOf`). A contributed tool registers its apply as `applyOnApproval` beside `beforeHold`; the kernel builds the applier once at start (`approvalApplierOf`, `kernel/src/tools/server.ts`), and a tool that declares one outside the set refuses the start (`InvalidContributionError`). The approvals module never imports the tool: the API server hands the applier to the decision route.
+
+**When it applies.** The decision is `once`, the approval's `approval_requested` event has `source: "rail"`, its payload's `tool` is in the set, and the kernel gave an applier. A deny applies nothing and uses no grant. An approval an agent asked for with `kernel_approval_request` is never applied, even with the same payload. With no applier (a composition without one), the decision is as before apart from the message text, and the grant is left for the agent's retry.
+
+**How it runs.** The applier gets the held input, parsed with the tool's own zod shape, and the approval: its id, the requesting session, the requesting agent from the `approval_requested` event (null when absent, never the stored `unknown`), that event's `subject_version` and its event id. It runs in a nested transaction (a savepoint): a throw rolls back only its own writes, and the decision still commits as `approved`. An applied outcome may name a follow-up (the enable's mirror rewrite), which runs once the decision committed; its failure never fails the decision.
+
+**What it records.** On every apply attempt, applied or refused, one `approval_used` event `{id, tool, by: "kernel"}` linked to the requesting session, so the one-shot grant can never be spent by a later agent call. The `approval_decided` event adds `applied` (one sentence, for example `The kernel enabled playbook <slug> (#<id>) at version <n> on approval <id>.`) or `apply_refused` (a reason token) and `apply_detail` (one sentence). No new column. The reason tokens, a closed list:
+
+| `apply_refused` | Why nothing was applied |
+|---|---|
+| `not_found` | the playbook no longer exists |
+| `not_owner` | the playbook is not the requesting agent's (a request with no agent never matches) |
+| `turned_off_by_owner` | the owner turned the playbook off after the request |
+| `not_draft` | the playbook is no longer a `draft` |
+| `version_changed` | the approval's `subject_version` is not the playbook's current version, or the playbook was edited after the request |
+| `no_dry_run` | the current version has no `done` dry run |
+| `invalid_input` | the held input fails the tool's shape |
+| `no_applier` | no applier is registered for a tool in the set (fail closed: the action is never handed back to the agent) |
+| `apply_error` | the applier threw; its writes were rolled back (`the kernel could not apply it: <message, cut to 300 characters>`) |
+
+The first six are the enable's (`EnableRefused` in `kernel/src/playbooks/enable.ts`, [playbooks: enabling](playbooks.md#enabling)); the last three are the decision's.
+
+**Other actions keep the agent's retry.** A held call to any other tool (a `gh pr comment`, a `git push`, a write under `~/.claude/`) is never run by the kernel: the owner's approval is a grant the agent's own exact repeat uses once, as above. Its message now names the exact call to repeat ([delivering the decision](#delivering-the-decision)). The rail's hold reason says the same: a held call to any other tool is told to repeat itself once if approved, and a kernel-applied action is told that the kernel applies it and not to repeat the call (`kernel/src/sessions/manager.ts`, branching on `KERNEL_APPLIED_ACTIONS`). A repeat of a kernel-applied action anyway is refused or held anew, never let through.
 
 ## Standing grants ("always", per playbook version)
 
@@ -163,8 +205,8 @@ A match writes one `approval_grant_used` event (`{id, tool}`, linked to the call
 | Kind | Payload | When |
 |---|---|---|
 | `approval_requested` | `{id, action, source, agent}`, plus `playbook` and `playbook_version` from a playbook session, and `display` / `subject_version` when the pre-hold check gave them | An approval is created (by the rail or the tool). |
-| `approval_decided` | `{id, decision, by, action}` | The owner decides (`decision` is `once`, `always` or `deny`). |
-| `approval_used` | `{id, tool}` | The rail lets a call through on a one-shot grant. |
+| `approval_decided` | `{id, decision, by, action}`, plus `applied` or `apply_refused` and `apply_detail` when the kernel applied a kernel-applied action | The owner decides (`decision` is `once`, `always` or `deny`). |
+| `approval_used` | `{id, tool}`, or `{id, tool, by: "kernel"}` for the kernel's use | The rail lets a call through on a one-shot grant, or the kernel applies an approved kernel-applied action (on every attempt, applied or refused). |
 | `approval_grant_used` | `{id, tool}` | The rail lets a call through on a standing grant. |
 | `approval_grant_revoked` | `{id, by}` | The owner revokes a standing grant. |
 | `tool_decision` | `{tool, decision, reason, command?, approval_id?}` | Every gated call (phase 1), with the new reasons `approval_required`, `approval_granted`, `protected_kernel_path`, `merge_blocked` and `bash_command_too_large` (and `bash_shell_metacharacter` now also for a command the rail will not read), plus the gate-local `held_refused` (the pre-hold check refused it), `dry_run` and `kernel_gate_error`. |

@@ -7,6 +7,7 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { ApprovalApplier } from "../approvals/store.js";
 import type { AuthHealth, AuthProvider } from "../auth/types.js";
 import { localDay } from "../budget/index.js";
 import { compileRoutePath, matchRoutePath } from "../features/contribution.js";
@@ -78,6 +79,8 @@ export interface ApiServerOptions {
    * phase 1 routes. Default none.
    */
   readonly routes?: readonly OwnedRoute[];
+  /** The kernel-applied actions' applier, passed on every contributed route request (the approvals decision reads it). Default none. */
+  readonly approvalApplier?: ApprovalApplier;
 }
 
 export interface ApiServerDeps {
@@ -458,6 +461,8 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
   const pid = deps.pid ?? process.pid;
   // Bound: `/status` calls it detached from the manager.
   const loomwrightStatus = sessions.loomwrightStatus?.bind(sessions);
+  // Added to every contributed route's request only when the composition built one.
+  const applier = options.approvalApplier === undefined ? {} : { approvalApplier: options.approvalApplier };
 
   let control: Promise<unknown> = Promise.resolve();
   const serialized = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -593,7 +598,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     let status: number;
     let text: string;
     try {
-      const { status: answered, body: answerBody } = await match.route.handler({ params: match.params, query, body, store, now });
+      const { status: answered, body: answerBody } = await match.route.handler({ params: match.params, query, body, store, now, ...applier });
       // The seam's body is JSON: serialized here, so a string answers a JSON
       // string (`send` writes a string as already-serialized text, phase 1's use).
       // Checked before anything is written: an invalid status reaches the 500 path,

@@ -27,7 +27,11 @@
 //      the held enable's `studio approvals` display.
 //   4. The owner approves that enable (`studio approve <id> once`, in another
 //      terminal; the harness prints the id and never decides an approval):
-//      Wright's retry enables the playbook before the first minute.
+//      the kernel applies it in that decision, so the playbook is enabled
+//      before the first minute with no call from Wright. The decision's
+//      `approval_decided` event carries `applied`, and exactly one
+//      `playbook_enabled` names the approval. Wright's reply to the decision's
+//      message is recorded when it comes within the wait, never required.
 //   5. At the first minute the trigger fires: one `fire` run, its queue row at
 //      the playbook's priority, its session on the playbook's model and
 //      version, ended `done` before the second minute.
@@ -89,10 +93,12 @@ const KERNEL_DIR = fileURLToPath(new URL("..", import.meta.url));
 const REPO_DIR = fileURLToPath(new URL("../..", import.meta.url));
 const CLI_PATH = join(KERNEL_DIR, "dist", "cli", "index.js");
 const MINUTE = 60_000;
-/** The first minute is at least this far ahead: two asks, the dry run, the owner's approval and Wright's retry all come before it. */
+/** The first minute is at least this far ahead: two asks, the dry run and the owner's approval all come before it. */
 export const FIRST_FIRE_LEAD_MS = 15 * MINUTE;
 /** Between the two minutes: the first fire's session must end `done` before the second (only a `done` run with the same key makes a duplicate). */
 export const FIRE_GAP_MS = 5 * MINUTE;
+/** At most this long after the enable, the harness waits for Wright's reply to the decision's message (recorded, never required). */
+const WRIGHT_REPLY_WAIT_MS = 2 * MINUTE;
 /** How long after a minute the harness waits for its fire to be queued and recorded. */
 const FIRE_SLACK_MS = 90_000;
 /** How long after the first minute's slack the harness waits for the fire's session to end. */
@@ -578,6 +584,24 @@ describe.skipIf(!LIVE)("live phase 3 exit: a plain-English playbook on the launc
     return readFileSync(path, "utf8").split("\n").find((l) => l.startsWith("Last dry run:")) ?? null;
   }
 
+  /**
+   * Wright's reply to the message the decision on approval `id` queued (its
+   * `brain_messages` row, source `approval:<id>`), polled for up to `ms`: the
+   * row's status and its reply clipped, the status with a null reply when none
+   * came in time, or null when no row exists. Recorded, never checked.
+   */
+  async function wrightReplyTo(id: number, ms: number): Promise<{ status: string; reply: string | null } | null> {
+    const until = Date.now() + ms;
+    for (;;) {
+      const row = tryDb(dataDir, (db) =>
+        db.prepare<[string], { status: string; reply_text: string | null }>("SELECT status, reply_text FROM brain_messages WHERE source = ? ORDER BY id DESC LIMIT 1").get(`approval:${id}`),
+      );
+      if (typeof row?.reply_text === "string") return { status: row.status, reply: clipped(row.reply_text, 2_000) };
+      if (Date.now() >= until) return row === undefined ? null : { status: row.status, reply: null };
+      await sleep(2_000);
+    }
+  }
+
   /** Run one stage, recording its outcome (and the failure, as a finding) in the summary. */
   async function step(name: string, body: (rec: Record<string, unknown>) => Promise<void>): Promise<void> {
     const rec: Record<string, unknown> = { outcome: "running", started_at: new Date().toISOString() };
@@ -805,7 +829,7 @@ describe.skipIf(!LIVE)("live phase 3 exit: a plain-English playbook on the launc
       await step("4_owner_approves", async (rec) => {
         rec.approval_id = approvalId;
         const enabled = await waitFor(
-          "the owner's approval and Wright's retry enabling the playbook",
+          "the owner's approval and the kernel enabling the playbook",
           () => {
             const row = tryDb(dataDir, (db) => playbookRowIn(db, id));
             return row?.status === "enabled" ? row : undefined;
@@ -813,18 +837,25 @@ describe.skipIf(!LIVE)("live phase 3 exit: a plain-English playbook on the launc
           Math.max(0, Date.parse(minutes.first.at) - Date.now() - 30_000),
           2_000,
         );
+        const enabledAt = Date.now();
         enabledVersion = enabled.version;
-        rec.enabled_at = new Date().toISOString();
+        rec.enabled_at = new Date(enabledAt).toISOString();
         rec.row = enabled;
-        // Every enable approval for the playbook: one more after the approved one means Wright asked again instead of repeating the held call.
+        // Every enable approval for the playbook: the kernel applies the approved one, so one more means Wright asked again.
         rec.enable_approvals = enableApprovals(id).map(approvalRecord);
         const decided = eventsWhere("approval_decided", "id", approvalId);
         const used = eventsWhere("approval_used", "id", approvalId);
         const enabledEvents = eventsWhere("playbook_enabled", "playbook_id", id);
         Object.assign(rec, { approval_decided: decided, approval_used: used, playbook_enabled: enabledEvents });
+        // Wright's reply to the decision's message: recorded when it comes in time (ending well before the first minute), never required.
+        rec.wright_reply = await wrightReplyTo(approvalId, Math.min(WRIGHT_REPLY_WAIT_MS, Math.max(0, Date.parse(minutes.first.at) - Date.now() - MINUTE)));
         expect(decided.map((e) => e.payload), "the approval was not decided once by the owner").toMatchObject([{ decision: "once", by: "owner" }]);
-        expect(enabledEvents.map((e) => e.payload)).toMatchObject([{ playbook_id: id, version: enabledVersion, approval_id: approvalId, by: "owner" }]);
-        expect(Date.now(), "enabled after the first minute").toBeLessThan(Date.parse(minutes.first.at));
+        expect((decided[0]?.payload as { applied?: unknown } | undefined)?.applied, "the decision does not record the kernel's enable (applied)").toEqual(expect.any(String));
+        expect(
+          enabledEvents.filter((e) => (e.payload as { approval_id?: unknown }).approval_id === approvalId).map((e) => e.payload),
+          "exactly one playbook_enabled names the approval",
+        ).toMatchObject([{ playbook_id: id, version: enabledVersion, approval_id: approvalId, by: "owner" }]);
+        expect(enabledAt, "enabled after the first minute").toBeLessThan(Date.parse(minutes.first.at));
       });
 
       await step("5_fires_at_its_minute", async (rec) => {
