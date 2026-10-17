@@ -9,7 +9,10 @@
 //   studio approvals revoke <grant id>  revoke one
 //   studio approve <id> once|always     approve once, or (a rail approval from
 //                                       a playbook session only) always for
-//                                       that playbook version
+//                                       that playbook version; for a
+//                                       kernel-applied action, a second line
+//                                       says what the kernel applied, or
+//                                       `not applied: <reason>: <detail>`
 //   studio deny <id>
 //
 // Approval text and payloads are untrusted (invariant 3): the payload is
@@ -79,6 +82,17 @@ function playbookText(p: ApprovalPlaybook): string {
   return `playbook ${name}${p.version === null || p.version === undefined ? "" : ` v${field(p.version)}`}`;
 }
 
+/**
+ * What the kernel did with a kernel-applied approval, escaped (a playbook's
+ * slug is stored text): `applied: <sentence>` or `not applied: <reason>:
+ * <detail>`; `undefined` for an approval without either.
+ */
+function applyLine(a: Partial<ApprovalView>): string | undefined {
+  if (typeof a.applied === "string") return `applied: ${field(a.applied)}`;
+  if (typeof a.apply_refused === "string") return `not applied: ${field(a.apply_refused)}: ${field(a.apply_detail)}`;
+  return undefined;
+}
+
 /** The approval list: one block per approval. */
 export function formatApprovals(approvals: readonly ApprovalView[], all: boolean): string {
   if (approvals.length === 0) return all ? "no approvals\n" : "no pending approvals (studio approvals --all lists decided ones too)\n";
@@ -90,6 +104,8 @@ export function formatApprovals(approvals: readonly ApprovalView[], all: boolean
     ];
     if (a.playbook !== null && a.playbook !== undefined) lines.push(`  from ${playbookText(a.playbook)}`);
     if (a.decided_at !== null || a.decided_by !== null) lines.push(`  decided: by ${field(a.decided_by)} at ${field(a.decided_at)}`);
+    const apply = applyLine(a);
+    if (apply !== undefined) lines.push(`  ${apply}`);
     if (typeof a.display === "string") lines.push("  display:", displayText(a.display, "    "));
     lines.push("  payload:", payloadText(a.payload, "    "));
     return lines.join("\n");
@@ -210,6 +226,11 @@ async function decide(id: number, decision: "once" | "always" | "deny", client: 
           ? " once"
           : "";
     out.stdout.write(`studio: approval ${id} ${verb}${how}: ${field(approval?.action)}; the requesting agent gets a message\n`);
+    // A kernel-applied action: what the kernel did. Exit 0 either way: the decision itself succeeded.
+    if (approval !== undefined) {
+      if (typeof approval.applied === "string") out.stdout.write(`studio: the kernel applied it: ${field(approval.applied)}\n`);
+      else if (typeof approval.apply_refused === "string") out.stdout.write(`studio: not applied: ${field(approval.apply_refused)}: ${field(approval.apply_detail)}\n`);
+    }
     return 0;
   }
   const error = errorOf(res.body);

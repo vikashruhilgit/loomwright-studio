@@ -20,6 +20,7 @@ import {
   APPROVALS_HELP,
   ApprovalError,
   APPROVE_HELP,
+  KERNEL_APPLIED_ACTIONS,
   DENY_HELP,
   approvalRequestTool,
   approvalRoutes,
@@ -35,12 +36,13 @@ import {
   requestApproval,
   revokeGrant,
 } from "../src/approvals/index.js";
-import type { ApprovalRow } from "../src/approvals/index.js";
+import type { AppliedApproval, ApprovalApplier, ApprovalApplyOutcome, ApprovalRow, ApprovalView } from "../src/approvals/index.js";
 import { runCli } from "../src/cli/index.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { APP_DIRNAME } from "../src/service/launchd.js";
 import { SessionManager } from "../src/sessions/index.js";
 import {
+  ALWAYS_HELD_TOOLS,
   MAX_RAIL_COMMAND_LENGTH,
   MAX_RAIL_PATH_TEXT,
   PROTECTED_DATA_DIRS,
@@ -724,7 +726,9 @@ describe("the rail: an outward call is held as a pending approval", () => {
     const decided = decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date("2026-10-14T09:05:00.000Z"));
     expect(decided).toMatchObject({ status: "approved", decision: "once", decided_by: "owner", decided_at: "2026-10-14T09:05:00.000Z" });
     expect(events(t.store, "approval_decided")).toEqual([expect.objectContaining({ payload: { id: 1, decision: "once", by: "owner", action: "git push" } })]);
-    expect(t.messages()).toEqual([{ payload: { text: "approved approval 1: git push", agent: "wright", approval_id: 1 }, source_ref: "approval:1" }]);
+    expect(t.messages()).toEqual([
+      { payload: { text: `approved approval 1: git push. Repeat exactly this call once, unchanged: tool Bash, input {"command":"${PUSH}"}.`, agent: "wright", approval_id: 1 }, source_ref: "approval:1" },
+    ]);
 
     // The re-attempt (a different description: the payload is the command only) runs once.
     expect(await s.gate("Bash", { command: PUSH, description: "retry" })).toEqual({ hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: "approval_granted" });
@@ -792,7 +796,7 @@ describe("the rail: an outward call is held as a pending approval", () => {
     const s = await t.session(GIT);
     await s.push();
     expect(decideApproval(t.store, { id: 1, decision: "deny", by: "owner" }, new Date())).toMatchObject({ status: "denied", decision: "deny", decided_by: "owner" });
-    expect(t.messages()).toEqual([{ payload: { text: "denied approval 1: git push", agent: "wright", approval_id: 1 }, source_ref: "approval:1" }]);
+    expect(t.messages()).toEqual([{ payload: { text: "denied approval 1: git push. Nothing was done; do not repeat the call.", agent: "wright", approval_id: 1 }, source_ref: "approval:1" }]);
     const again = await s.push();
     expect(again.permissionDecision).toBe("deny");
     expect(again.permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
@@ -807,7 +811,7 @@ describe("the rail: an outward call is held as a pending approval", () => {
     await a.push();
     expect(t.approvals()[0]).toMatchObject({ requesting_agent: "unknown", requesting_session: a.id });
     decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date());
-    expect(t.messages()[0]?.payload).toEqual({ text: "approved approval 1: git push", agent: null, approval_id: 1 });
+    expect(t.messages()[0]?.payload).toEqual({ text: `approved approval 1: git push. Repeat exactly this call once, unchanged: tool Bash, input {"command":"${PUSH}"}.`, agent: null, approval_id: 1 });
     // Another null-agent session's identical call is held, never let through on the placeholder name.
     expect((await b.push()).permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
     // An agent literally named "unknown" does not match it either.
@@ -821,6 +825,8 @@ describe("the rail: an outward call is held as a pending approval", () => {
     const s = await t.session(GIT);
     requestApproval(t.store, { agent: "wright", sessionId: s.id, action: "push", payload: { tool: "Bash", command: PUSH }, source: "tool" }, new Date());
     decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date());
+    // Its message never asks for a retry: nothing was held to repeat.
+    expect(t.messages()[0]?.payload).toEqual({ text: "approved approval 1: push", agent: "wright", approval_id: 1 });
     expect((await s.push()).permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
   });
 });
@@ -966,7 +972,12 @@ describe("standing grants: always on a rail approval from a playbook session", (
     const { t, p, first } = await granted();
     expect(getApproval(t.store, 1)).toMatchObject({ status: "approved", decision: "always", decided_by: "owner", decided_at: "2026-10-14T09:05:00.000Z", playbook: p });
     expect(events(t.store, "approval_decided")).toEqual([expect.objectContaining({ payload: { id: 1, decision: "always", by: "owner", action: "gh pr comment" } })]);
-    expect(t.messages()).toEqual([{ payload: { text: "approved approval 1: gh pr comment", agent: "wright", approval_id: 1 }, source_ref: "approval:1" }]);
+    expect(t.messages()).toEqual([
+      {
+        payload: { text: `approved approval 1: gh pr comment. Repeat exactly this call once, unchanged: tool Bash, input {"command":"${COMMENT}"}.`, agent: "wright", approval_id: 1 },
+        source_ref: "approval:1",
+      },
+    ]);
 
     const second = await playbookSession(t, p, 2);
     expect(await second.comment()).toEqual({ hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: "approval_granted" });
@@ -1364,6 +1375,166 @@ describe("kernel_approval_request", () => {
   });
 });
 
+// ---- kernel-applied actions -------------------------------------------------------
+
+describe("kernel-applied actions: the owner's once on a held kernel action is applied by the kernel in the decision", () => {
+  const INPUT = { id: 7, idempotency_key: "e1" };
+  const PROBE = "SELECT count(*) FROM events WHERE kind = 'probe_applied'";
+
+  /** An applier that records each call and answers with `answer` (which may write through the store first). */
+  function stub(answer: (store: Store) => ApprovalApplyOutcome | undefined) {
+    const calls: { tool: string; input: unknown; approval: AppliedApproval }[] = [];
+    const applier: ApprovalApplier = (tool, input, approval, store) => {
+      calls.push({ tool, input, approval });
+      return answer(store);
+    };
+    return { applier, calls };
+  }
+  /** A write the applier makes, so a test can see whether it stayed. */
+  const probeWrite = (store: Store): void => {
+    store.prepare("INSERT INTO events (at, kind, actor, payload_json) VALUES ('2026-10-14T09:05:00.000Z', 'probe_applied', 'kernel', '{}')").run();
+  };
+  /** Wright's session with the enable allowed (the rail holds every call to it), and its call held as approval 1. */
+  async function heldEnable(agent: string | null = "wright") {
+    const t = setup();
+    const s = await t.session(GH, agent);
+    expect((await s.gate(ENABLE, INPUT)).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+    return { t, s };
+  }
+  const decidedPayloads = (t: ReturnType<typeof setup>) => events(t.store, "approval_decided").map((e) => e.payload);
+  const texts = (t: ReturnType<typeof setup>) => t.messages().map((m) => (m.payload as { text: string }).text);
+
+  it("is a closed set in code whose every member is always held, so always never reaches one", () => {
+    expect(KERNEL_APPLIED_ACTIONS).toEqual(["mcp__kernel__kernel_playbook_enable"]);
+    for (const tool of KERNEL_APPLIED_ACTIONS) expect(ALWAYS_HELD_TOOLS).toContain(tool);
+  });
+
+  it("applied: the applier runs once on the held input; one approval_used {id, tool, by: kernel}; approval_decided carries applied; the message says what the kernel did; after runs once", async () => {
+    const { t, s } = await heldEnable();
+    let afterRuns = 0;
+    const { applier, calls } = stub((store) => {
+      probeWrite(store);
+      return { applied: "The kernel did the thing.", after: () => void afterRuns++ };
+    });
+    const decided = decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date("2026-10-14T09:05:00.000Z"), applier);
+    expect(decided).toMatchObject({ status: "approved", decision: "once", decided_by: "owner" });
+    const requestedId = events(t.store, "approval_requested")[0]?.id;
+    expect(calls).toEqual([{ tool: ENABLE, input: INPUT, approval: { id: 1, sessionId: s.id, agent: "wright", subjectVersion: null, requestedEventId: requestedId } }]);
+    expect(count(t.store, PROBE)).toBe(1);
+    expect(events(t.store, "approval_used")).toEqual([expect.objectContaining({ session_id: s.id, payload: { id: 1, tool: ENABLE, by: "kernel" } })]);
+    expect(decidedPayloads(t)).toEqual([{ id: 1, decision: "once", by: "owner", action: "kernel_playbook_enable", applied: "The kernel did the thing." }]);
+    expect(t.messages()).toEqual([
+      { payload: { text: "approved approval 1: kernel_playbook_enable. The kernel did the thing. Nothing to repeat.", agent: "wright", approval_id: 1 }, source_ref: "approval:1" },
+    ]);
+    expect(afterRuns).toBe(1);
+    expect(listApprovals(t.store, { all: true })[0]).toMatchObject({ id: 1, applied: "The kernel did the thing." });
+    expect(listApprovals(t.store, { all: true })[0]).not.toHaveProperty("apply_refused");
+  });
+
+  it("the grant is spent by the kernel: the same held call from the agent is held as a new approval, never let through on it", async () => {
+    const { t, s } = await heldEnable();
+    decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date(), stub(() => ({ refused: "not_draft", text: "The kernel did not do it." })).applier);
+    expect((await s.gate(ENABLE, INPUT)).permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
+    expect(t.decisions().map((p) => p.reason)).toEqual(["approval_required", "approval_required"]);
+    expect(events(t.store, "approval_used").map((e) => e.payload)).toEqual([{ id: 1, tool: ENABLE, by: "kernel" }]);
+  });
+
+  it("refused: approved, nothing applied, apply_refused and apply_detail on the event and the view, and the message says so and not to repeat", async () => {
+    const { t } = await heldEnable();
+    decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date(), stub(() => ({ refused: "version_changed", text: "The kernel did not do it: it changed." })).applier);
+    expect(getApproval(t.store, 1)).toMatchObject({ status: "approved", decision: "once" });
+    expect(decidedPayloads(t)).toEqual([
+      { id: 1, decision: "once", by: "owner", action: "kernel_playbook_enable", apply_refused: "version_changed", apply_detail: "The kernel did not do it: it changed." },
+    ]);
+    expect(texts(t)).toEqual(["approved approval 1: kernel_playbook_enable. The kernel did not do it: it changed. Do not repeat the call."]);
+    expect(listApprovals(t.store, { all: true })[0]).toMatchObject({ apply_refused: "version_changed", apply_detail: "The kernel did not do it: it changed." });
+    expect(listApprovals(t.store, { all: true })[0]).not.toHaveProperty("applied");
+  });
+
+  it("a throw rolls back only the applier's writes (a savepoint): apply_error with the message clipped, the approval still approved, the grant spent; an after that throws never fails a decision", async () => {
+    const { t } = await heldEnable();
+    const long = `boom ${"x".repeat(400)}`;
+    decideApproval(
+      t.store,
+      { id: 1, decision: "once", by: "owner" },
+      new Date(),
+      stub((store) => {
+        probeWrite(store);
+        throw new Error(long);
+      }).applier,
+    );
+    expect(count(t.store, PROBE)).toBe(0);
+    expect(getApproval(t.store, 1)).toMatchObject({ status: "approved", decision: "once" });
+    const detail = `the kernel could not apply it: ${long.slice(0, 300)}…`;
+    expect(decidedPayloads(t)).toEqual([{ id: 1, decision: "once", by: "owner", action: "kernel_playbook_enable", apply_refused: "apply_error", apply_detail: detail }]);
+    expect(texts(t)).toEqual([`approved approval 1: kernel_playbook_enable. ${detail} Do not repeat the call.`]);
+    expect(events(t.store, "approval_used").map((e) => e.payload)).toEqual([{ id: 1, tool: ENABLE, by: "kernel" }]);
+
+    // An answer that is neither outcome is an apply_error too, its writes rolled back; a throwing `after` is ignored.
+    const again = await t.session(GH);
+    await again.gate(ENABLE, INPUT);
+    decideApproval(t.store, { id: 2, decision: "once", by: "owner" }, new Date(), stub((store) => (probeWrite(store), { nonsense: true }) as unknown as ApprovalApplyOutcome).applier);
+    expect(count(t.store, PROBE)).toBe(0);
+    expect(decidedPayloads(t)[1]).toMatchObject({ apply_refused: "apply_error", apply_detail: "the kernel could not apply it: the applier answered neither applied nor refused" });
+    await again.gate(ENABLE, INPUT);
+    const throwing = stub(() => ({
+      applied: "Done.",
+      after: () => {
+        throw new Error("mirror failed");
+      },
+    }));
+    expect(decideApproval(t.store, { id: 3, decision: "once", by: "owner" }, new Date(), throwing.applier)).toMatchObject({ status: "approved" });
+    expect(decidedPayloads(t)[2]).toMatchObject({ id: 3, applied: "Done." });
+  });
+
+  it("no applier for a tool in the set fails closed: no_applier, the grant spent, never handed back to the agent", async () => {
+    const { t, s } = await heldEnable();
+    decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date(), stub(() => undefined).applier);
+    expect(decidedPayloads(t)[0]).toMatchObject({ apply_refused: "no_applier", apply_detail: `the kernel has no applier for ${ENABLE}; nothing was done` });
+    expect(texts(t)).toEqual([`approved approval 1: kernel_playbook_enable. the kernel has no applier for ${ENABLE}; nothing was done Do not repeat the call.`]);
+    expect((await s.gate(ENABLE, INPUT)).permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
+  });
+
+  it("deny: the applier never runs, no grant is spent, nothing applied, and the message says nothing was done", async () => {
+    const { t } = await heldEnable();
+    const { applier, calls } = stub(() => ({ applied: "never" }));
+    decideApproval(t.store, { id: 1, decision: "deny", by: "owner" }, new Date(), applier);
+    expect(calls).toEqual([]);
+    expect(events(t.store, "approval_used")).toEqual([]);
+    expect(decidedPayloads(t)).toEqual([{ id: 1, decision: "deny", by: "owner", action: "kernel_playbook_enable" }]);
+    expect(texts(t)).toEqual(["denied approval 1: kernel_playbook_enable. Nothing was done; do not repeat the call."]);
+  });
+
+  it("with no applier given (a composition without one) nothing is applied: the grant is left for the agent's retry, which the message names exactly, and the retry uses it once", async () => {
+    const { t, s } = await heldEnable();
+    decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date());
+    expect(decidedPayloads(t)).toEqual([{ id: 1, decision: "once", by: "owner", action: "kernel_playbook_enable" }]);
+    expect(texts(t)).toEqual([`approved approval 1: kernel_playbook_enable. Repeat exactly this call once, unchanged: tool ${ENABLE}, input {"id":7,"idempotency_key":"e1"}.`]);
+    expect(events(t.store, "approval_used")).toEqual([]);
+    expect((await s.gate(ENABLE, INPUT)).permissionDecisionReason).toBe("approval_granted");
+    expect(events(t.store, "approval_used").map((e) => e.payload)).toEqual([{ id: 1, tool: ENABLE }]);
+  });
+
+  it("only a rail approval: an agent's own request naming a kernel-applied tool is never applied, and its message stays the bare text", async () => {
+    const t = setup();
+    const s = await t.session(GH);
+    requestApproval(t.store, { agent: "wright", sessionId: s.id, action: "enable it", payload: { tool: ENABLE, input: INPUT }, source: "tool" }, new Date());
+    const { applier, calls } = stub(() => ({ applied: "never" }));
+    decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date(), applier);
+    expect(calls).toEqual([]);
+    expect(events(t.store, "approval_used")).toEqual([]);
+    expect(texts(t)).toEqual(["approved approval 1: enable it"]);
+  });
+
+  it("the approval's agent is the request event's: null for a session with no agent, never the stored unknown", async () => {
+    const { t, s } = await heldEnable(null);
+    expect(getApproval(t.store, 1)?.requesting_agent).toBe("unknown");
+    const { applier, calls } = stub(() => ({ refused: "not_owner", text: "No." }));
+    decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date(), applier);
+    expect(calls[0]?.approval).toMatchObject({ id: 1, sessionId: s.id, agent: null });
+  });
+});
+
 // ---- the routes and the CLI --------------------------------------------------
 
 describe("the /approvals routes and studio approvals / approve / deny", () => {
@@ -1420,13 +1591,39 @@ describe("the /approvals routes and studio approvals / approve / deny", () => {
   }
   const written = () => [count(env.store, "SELECT count(*) FROM events"), count(env.store, "SELECT count(*) FROM event_queue")];
 
-  it("studio approve <id> once: approved/once/owner, one approval_decided event and one queued message", async () => {
-    const id = seed();
+  it("studio approve <id> once: approved/once/owner, one approval_decided event and one queued message naming the exact call to repeat once", async () => {
+    // The rail's real Bash payload: {tool, command, cwd}; the call to repeat is its command.
+    const id = seed("wright", { tool: "Bash", command: PUSH, cwd: "/repo" });
     expect(await studio("approve", String(id), "once")).toEqual({ code: 0, stderr: "", stdout: "studio: approval 1 approved once: git push; the requesting agent gets a message\n" });
     expect(getApproval(env.store, id)).toMatchObject({ status: "approved", decision: "once", decided_by: "owner", decided_at: "2026-10-02T10:00:00.000Z" });
-    expect(events(env.store, "approval_decided")).toHaveLength(1);
+    expect(events(env.store, "approval_decided").map((e) => e.payload)).toEqual([{ id, decision: "once", by: "owner", action: "git push" }]);
     const queued = env.store.prepare<[], { kind: string; payload_json: string; source_ref: string }>("SELECT kind, payload_json, source_ref FROM event_queue").all();
-    expect(queued).toEqual([{ kind: "message", payload_json: JSON.stringify({ text: "approved approval 1: git push", agent: "wright", approval_id: 1 }), source_ref: "approval:1" }]);
+    expect(queued).toEqual([
+      {
+        kind: "message",
+        payload_json: JSON.stringify({ text: `approved approval 1: git push. Repeat exactly this call once, unchanged: tool Bash, input {"command":"${PUSH}"}.`, agent: "wright", approval_id: 1 }),
+        source_ref: "approval:1",
+      },
+    ]);
+    // Not kernel-applied: no grant is spent by the decision, and the answer carries no apply fields.
+    expect(events(env.store, "approval_used")).toEqual([]);
+    const view = (await api("GET", "/approvals?all=1")).body as { approvals: object[] };
+    for (const key of ["applied", "apply_refused", "apply_detail"]) expect(view.approvals[0]).not.toHaveProperty(key);
+  });
+
+  it("the retry text names any other tool's whole input as canonical JSON (keys sorted); a payload with no string tool, or an agent's own request, keeps the bare text", async () => {
+    const write = seed("wright", { tool: "Write", input: { file_path: "/Users/o/.claude/settings.json", content: "{}" }, cwd: "/repo" }, "Write ~/.claude/");
+    const odd = seed("wright", ["not", "an", "object"], "odd");
+    const bare = seed("wright", { tool: "Custom", cwd: "/repo" }, "custom");
+    const sessionId = Number(env.store.prepare("INSERT INTO sessions (agent, status) VALUES ('wright', 'running')").run().lastInsertRowid);
+    const asked = requestApproval(env.store, { agent: "wright", sessionId, action: "push it", payload: { tool: "Bash", command: PUSH }, source: "tool" }, env.now()).id;
+    for (const id of [write, odd, bare, asked]) expect((await studio("approve", String(id), "once")).code).toBe(0);
+    expect(env.store.prepare<[], string>("SELECT json_extract(payload_json, '$.text') FROM event_queue ORDER BY id").pluck().all()).toEqual([
+      `approved approval ${write}: Write ~/.claude/. Repeat exactly this call once, unchanged: tool Write, input {"content":"{}","file_path":"/Users/o/.claude/settings.json"}.`,
+      `approved approval ${odd}: odd`,
+      `approved approval ${bare}: custom. Repeat exactly this call once, unchanged: tool Custom, input null.`,
+      `approved approval ${asked}: push it`,
+    ]);
   });
 
   it("studio approve <id> always on an approval with no playbook is refused (exit 1, the API's message); the API answers 409 always_not_supported; nothing written", async () => {
@@ -1565,12 +1762,12 @@ describe("the /approvals routes and studio approvals / approve / deny", () => {
     expect(await api("GET", "/approvals/grants")).toEqual({ status: 200, body: { grants: [] } });
   });
 
-  it("studio deny <id>: denied/deny and one message saying so", async () => {
-    const id = seed();
+  it("studio deny <id>: denied/deny and one message saying so and that nothing was done", async () => {
+    const id = seed("wright", { tool: "Bash", command: PUSH, cwd: "/repo" });
     expect(await studio("deny", String(id))).toEqual({ code: 0, stderr: "", stdout: "studio: approval 1 denied: git push; the requesting agent gets a message\n" });
     expect(getApproval(env.store, id)).toMatchObject({ status: "denied", decision: "deny", decided_by: "owner" });
     expect(env.store.prepare<[], string>("SELECT payload_json FROM event_queue").pluck().all()).toEqual([
-      JSON.stringify({ text: "denied approval 1: git push", agent: "wright", approval_id: 1 }),
+      JSON.stringify({ text: "denied approval 1: git push. Nothing was done; do not repeat the call.", agent: "wright", approval_id: 1 }),
     ]);
   });
 
@@ -1685,6 +1882,60 @@ describe("the /approvals routes and studio approvals / approve / deny", () => {
       code: 1,
       stderr: "studio: approval 4 not approved: x\\x1b[2J\n",
     });
+  });
+
+  it("studio approve says what the kernel applied, or not applied: <reason>: <detail>, escaped, and exits 0; studio approvals adds the same line after decided:", async () => {
+    const decidedView = (extra: Record<string, unknown>) => ({
+      id: 4,
+      requesting_agent: "wright",
+      requesting_session: 2,
+      action: "kernel_playbook_enable",
+      payload: { tool: ENABLE, input: { id: 1, idempotency_key: "k" }, cwd: "/repo" },
+      requested_at: "2026-10-02T10:00:00.000Z",
+      status: "approved",
+      decision: "once",
+      decided_by: "owner",
+      decided_at: "2026-10-02T10:05:00.000Z",
+      playbook: null,
+      ...extra,
+    });
+    const run = async (body: unknown, ...argv: string[]) => {
+      const out: string[] = [];
+      const err: string[] = [];
+      const code = await runCli(argv, {
+        dataDir: env.dataDir,
+        contributions: [approvalsContribution],
+        keychain: { read: () => TOKEN },
+        isPidAlive: () => true,
+        fetch: (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch,
+        stdout: { write: (c: string) => out.push(c) },
+        stderr: { write: (c: string) => err.push(c) },
+      });
+      return { code, stdout: out.join(""), stderr: err.join("") };
+    };
+    const first = "studio: approval 4 approved once: kernel_playbook_enable; the requesting agent gets a message\n";
+    expect(await run({ approval: decidedView({ applied: "The kernel enabled playbook p\u001b[2J (#1) at version 3 on approval 4." }) }, "approve", "4", "once")).toEqual({
+      code: 0,
+      stderr: "",
+      stdout: `${first}studio: the kernel applied it: The kernel enabled playbook p\\x1b[2J (#1) at version 3 on approval 4.\n`,
+    });
+    expect(await run({ approval: decidedView({ apply_refused: "version_changed", apply_detail: "The kernel did not enable playbook p (#1): version_changed (it moved)." }) }, "approve", "4", "once")).toEqual({
+      code: 0,
+      stderr: "",
+      stdout: `${first}studio: not applied: version_changed: The kernel did not enable playbook p (#1): version_changed (it moved).\n`,
+    });
+    // Without the fields: byte-identical to before.
+    expect(await run({ approval: decidedView({}) }, "approve", "4", "once")).toEqual({ code: 0, stderr: "", stdout: first });
+
+    const listed = formatApprovals(
+      [decidedView({ applied: "Done\n  payload: fake" }), decidedView({ id: 5, apply_refused: "no_dry_run", apply_detail: "No." }), decidedView({ id: 6 })] as ApprovalView[],
+      true,
+    );
+    const blocks = listed.split(/\n(?=#)/);
+    expect(blocks[0]).toContain("  decided: by owner at 2026-10-02T10:05:00.000Z\n  applied: Done\\n  payload: fake\n  payload:\n");
+    expect(blocks[1]).toContain("  decided: by owner at 2026-10-02T10:05:00.000Z\n  not applied: no_dry_run: No.\n  payload:\n");
+    expect(blocks[2]).toContain("  decided: by owner at 2026-10-02T10:05:00.000Z\n  payload:\n");
+    expect(blocks[2]).not.toContain("applied");
   });
 
   it("bad usage prints the subcommand's usage and exits 2, without calling the API", async () => {

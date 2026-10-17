@@ -33,6 +33,7 @@ export {
   APPROVAL_DECISIONS,
   APPROVAL_STATUSES,
   ApprovalError,
+  KERNEL_APPLIED_ACTIONS,
   MAX_APPROVAL_ACTION,
   MAX_DECIDED_LIST,
   MAX_REQUEST_PAYLOAD_JSON,
@@ -49,6 +50,9 @@ export {
   revokeGrant,
 } from "./store.js";
 export type {
+  AppliedApproval,
+  ApprovalApplier,
+  ApprovalApplyOutcome,
   ApprovalDecision,
   ApprovalPlaybook,
   ApprovalRequest,

@@ -4,6 +4,10 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { KERNEL_APPLIED_ACTIONS } from "../src/approvals/index.js";
+import type { AppliedApproval } from "../src/approvals/index.js";
+import { InvalidContributionError, PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
 import { getWorkStep } from "../src/loop/index.js";
 import type { SessionRow, SessionStatus } from "../src/sessions/index.js";
 import type { Store } from "../src/store/index.js";
@@ -16,6 +20,7 @@ import {
   kernelToolHandlers,
 } from "../src/tools/index.js";
 import type { KernelToolContext, KernelToolResult } from "../src/tools/index.js";
+import { approvalApplierOf } from "../src/tools/server.js";
 import { count, events, loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
 
@@ -335,5 +340,65 @@ describe("kernel_request_stop", () => {
     const handlers = kernelToolHandlers({ store: env.store, sessions, sessionId: sid, now: env.now });
     value(await handlers.kernel_request_stop({ handoff: "x", idempotency_key: "s" }));
     await vi.waitFor(() => expect(sessions.stopSession).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("approvalApplierOf: the kernel-applied actions' applier over the contributed tools", () => {
+  const ENABLE = "mcp__kernel__kernel_playbook_enable";
+  const APPROVAL: AppliedApproval = { id: 3, sessionId: 9, agent: "wright", subjectVersion: 2, requestedEventId: 41 };
+  /** A tool named `name` whose applier records what it got. */
+  function applying(name: string) {
+    const seen: { args: unknown; now: Date; approval: AppliedApproval }[] = [];
+    const t = defineTool({
+      name,
+      description: "test tool",
+      shape: { id: z.number().int().positive(), idempotency_key: z.string().min(1) },
+      handler: () => null,
+      applyOnApproval: (args, ctx) => {
+        seen.push({ args, now: ctx.now(), approval: ctx.approval });
+        return { applied: `applied ${args.id}` };
+      },
+    });
+    return { t, seen };
+  }
+
+  it("calls the tool's applyOnApproval by full name with the input parsed against its shape, the decision's instant and the approval", () => {
+    const { t, seen } = applying("kernel_playbook_enable");
+    const at = new Date("2026-10-17T10:00:00.000Z");
+    const applier = approvalApplierOf([t]);
+    expect(applier(ENABLE, { id: 4, idempotency_key: "k" }, APPROVAL, env.store, at)).toEqual({ applied: "applied 4" });
+    expect(seen).toEqual([{ args: { id: 4, idempotency_key: "k" }, now: at, approval: APPROVAL }]);
+  });
+
+  it("answers undefined for a tool with no applier (another tool, or the short name), never running anything", () => {
+    const { t, seen } = applying("kernel_playbook_enable");
+    const applier = approvalApplierOf([t]);
+    expect(applier("Bash", { command: "x" }, APPROVAL, env.store, new Date())).toBeUndefined();
+    expect(applier("kernel_playbook_enable", { id: 1, idempotency_key: "k" }, APPROVAL, env.store, new Date())).toBeUndefined();
+    expect(approvalApplierOf([])(ENABLE, {}, APPROVAL, env.store, new Date())).toBeUndefined();
+    expect(seen).toEqual([]);
+  });
+
+  it("refuses a held input that fails the tool's shape (invalid_input, naming the tool), without calling it", () => {
+    const { t, seen } = applying("kernel_playbook_enable");
+    const refused = approvalApplierOf([t])(ENABLE, { id: "one" }, APPROVAL, env.store, new Date());
+    expect(refused).toMatchObject({ refused: "invalid_input" });
+    expect((refused as { text: string }).text).toMatch(/^kernel_playbook_enable: the held input is not valid: /);
+    expect(approvalApplierOf([t])(ENABLE, undefined, APPROVAL, env.store, new Date())).toMatchObject({ refused: "invalid_input" });
+    expect(seen).toEqual([]);
+  });
+
+  it("throws InvalidContributionError at build time for a tool that declares applyOnApproval outside KERNEL_APPLIED_ACTIONS (the closed set is enforced in code)", () => {
+    expect(() => approvalApplierOf([applying("kernel_probe").t])).toThrow(InvalidContributionError);
+    expect(() => approvalApplierOf([applying("kernel_probe").t])).toThrow(/mcp__kernel__kernel_probe is not in KERNEL_APPLIED_ACTIONS/);
+    // A tool with no applier is never checked.
+    expect(() => approvalApplierOf([defineTool({ name: "kernel_probe", description: "x", shape: {}, handler: () => null })])).not.toThrow();
+  });
+
+  it("the shipped composition builds: its only applier is the enable's, a member of the set", () => {
+    const tools = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools;
+    expect(tools.filter((t) => t.applyOnApproval !== undefined).map((t) => `${KERNEL_MCP_SERVER_NAME}:${t.name}`)).toEqual([`${KERNEL_MCP_SERVER_NAME}:kernel_playbook_enable`]);
+    expect(() => approvalApplierOf(tools)).not.toThrow();
+    expect(KERNEL_APPLIED_ACTIONS).toContain(ENABLE);
   });
 });

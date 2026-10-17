@@ -91,7 +91,7 @@ A dry run only narrows, so a session that **started** as a dry run stays one on 
 
 ## A playbook's dry run
 
-The playbook half (phase 3 item 07). Code: `kernel/src/playbooks/dry-run.ts`. Tests: `kernel/test/playbooks-dry-run.test.ts`. Enabling a playbook needs one of these first ([playbooks](playbooks.md#enabling)).
+The playbook half (phase 3 item 07). Code: `kernel/src/playbooks/dry-run.ts`. Tests: `kernel/test/playbooks-dry-run.test.ts`. Enabling a playbook needs one of these first ([playbooks](playbooks.md#enabling)): the enable is held only when the current version has a `done` dry run, and when the owner approves it, the kernel enables the playbook itself in that decision, re-checking that the dry run is still of the current version. The enable's handler, Wright's retry, is a defence path only: after the kernel enabled the playbook, a retry is refused before the hold, because the playbook is no longer a `draft`.
 
 **`kernel_playbook_dry_run(id, idempotency_key)`** runs a draft playbook's current version once, as a fire would, in a dry-run session, and returns what it would do. Its input is untrusted data, and every refusal is an error result naming the cause (`invalid_input` unless said otherwise), never a throw through the SDK. In order:
 

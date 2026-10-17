@@ -7,7 +7,11 @@
 //   GET  /approvals/grants            {grants: [...]}: every standing grant not revoked (oldest first)
 //   POST /approvals/grants/:id/revoke {grant}: the grant, now revoked
 //
-// A decision or revoke is the owner's (`by: "owner"`). Refusals write nothing:
+// A decision or revoke is the owner's (`by: "owner"`). A decision gets the
+// kernel's applier (`req.approvalApplier`), so an approved kernel-applied
+// action is applied in the decision's transaction (`decideApproval`); its
+// answer's approval then carries `applied` or `apply_refused` / `apply_detail`.
+// Refusals write nothing:
 // `400 invalid_id` / `invalid_body`, `404 no_such_approval`,
 // `409 approval_not_pending` (with the current `status`),
 // `409 always_not_supported` (with a message saying which condition failed),
@@ -45,7 +49,7 @@ function decide(approve: boolean): (req: ContributedRouteRequest) => Promise<Con
     const decision = decisionOf(req, approve);
     if (decision === undefined) return { status: 400, body: { error: "invalid_body", message: 'approve needs {"decision": "once"} or {"decision": "always"}' } };
     try {
-      return { status: 200, body: { approval: approvalView(req.store, decideApproval(req.store, { id, decision, by: OWNER }, req.now())) } };
+      return { status: 200, body: { approval: approvalView(req.store, decideApproval(req.store, { id, decision, by: OWNER }, req.now(), req.approvalApplier)) } };
     } catch (err) {
       if (!(err instanceof ApprovalError)) throw err;
       if (err.code === "no_such_approval") return { status: 404, body: { error: "no_such_approval" } };

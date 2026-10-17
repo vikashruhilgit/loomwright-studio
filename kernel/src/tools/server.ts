@@ -26,7 +26,9 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { PHASE1_TOOL_NAMES } from "../features/contribution.js";
+import { KERNEL_APPLIED_ACTIONS } from "../approvals/store.js";
+import type { ApprovalApplier } from "../approvals/store.js";
+import { InvalidContributionError, PHASE1_TOOL_NAMES } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import type { EventRef } from "../loop/internal.js";
@@ -429,6 +431,37 @@ export function heldToolCheckOf(contributed: readonly ContributedTool[], context
     const parsed = z.object(t.shape).safeParse(input ?? {});
     if (!parsed.success) return { refuse: `${t.name}: invalid input: ${z.prettifyError(parsed.error)}` };
     return t.beforeHold(parsed.data, contributedToolContext(t, contextOf(sessionId)));
+  };
+}
+
+/**
+ * The approvals decision's applier (`decideApproval`) over the contributed
+ * tools that declare an `applyOnApproval`, keyed by their full SDK name
+ * (`mcp__kernel__<name>`). Built once at composition: a tool that declares
+ * one but whose full name is not in `KERNEL_APPLIED_ACTIONS` throws
+ * `InvalidContributionError`, so a composition that breaks the closed set
+ * never starts. The returned function answers `undefined` for a tool with no
+ * applier; else it parses the held input with the tool's own zod shape (a
+ * failure is `{refused: "invalid_input"}`, nothing run) and calls
+ * `applyOnApproval` with the store, the decision's instant and the approval.
+ * A throw propagates: the decision records it as `apply_error`.
+ */
+export function approvalApplierOf(contributed: readonly ContributedTool[]): ApprovalApplier {
+  const appliers = new Map<string, ContributedTool>();
+  for (const t of contributed) {
+    if (t.applyOnApproval === undefined) continue;
+    const full = `mcp__${KERNEL_MCP_SERVER_NAME}__${t.name}`;
+    if (!(KERNEL_APPLIED_ACTIONS as readonly string[]).includes(full)) {
+      throw new InvalidContributionError(t.name, "tool", `${t.name} declares applyOnApproval, but ${full} is not in KERNEL_APPLIED_ACTIONS`);
+    }
+    appliers.set(full, t);
+  }
+  return (tool, input, approval, store, now) => {
+    const t = appliers.get(tool);
+    if (t?.applyOnApproval === undefined) return undefined;
+    const parsed = z.object(t.shape).safeParse(input ?? {});
+    if (!parsed.success) return { refused: "invalid_input", text: `${t.name}: the held input is not valid: ${z.prettifyError(parsed.error)}` };
+    return t.applyOnApproval(parsed.data, { store, now: () => now, approval });
   };
 }
 

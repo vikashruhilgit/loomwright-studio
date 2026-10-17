@@ -16,6 +16,7 @@
 // never the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the module graph).
 import { z } from "zod";
+import type { AppliedApproval, ApprovalApplier, ApprovalApplyOutcome } from "../approvals/store.js";
 import { EVENT_KINDS, isEventKind } from "../loop/types.js";
 import type { DueWork, DueWorkContext, EventHandler, EventHandlers } from "../loop/types.js";
 import type { HeldToolVerdict, SessionHandle, SessionRow, SessionStatus, StartSessionParams } from "../sessions/types.js";
@@ -151,6 +152,16 @@ export interface ContributedToolContext {
  * It can only narrow: `{refuse}` denies the call (`held_refused`), `{display,
  * subjectVersion?}` holds it with that text for the owner. A throw denies the
  * call (`kernel_gate_error`).
+ *
+ * `applyOnApproval` (optional) is allowed only for a tool whose full name is
+ * in the fixed `KERNEL_APPLIED_ACTIONS` set (`approvalApplierOf` refuses the
+ * composition otherwise). When the owner approves a held call to it `once`,
+ * the kernel runs it inside the decision's transaction, with the held input
+ * parsed against `shape` and the approval it runs on, instead of leaving the
+ * call for the agent to repeat. Synchronous. It answers `{applied, after?}`
+ * (a sentence for the agent; `after` runs once the decision committed) or
+ * `{refused, text}`; a throw rolls back its writes and is recorded as
+ * `apply_error`.
  */
 export interface ContributedTool<S extends z.ZodRawShape = z.ZodRawShape> {
   readonly name: string;
@@ -158,6 +169,7 @@ export interface ContributedTool<S extends z.ZodRawShape = z.ZodRawShape> {
   readonly shape: S;
   handler(args: z.infer<z.ZodObject<S>>, ctx: ContributedToolContext): unknown;
   beforeHold?(args: z.infer<z.ZodObject<S>>, ctx: ContributedToolContext): HeldToolVerdict;
+  applyOnApproval?(args: z.infer<z.ZodObject<S>>, ctx: { readonly store: Store; readonly now: () => Date; readonly approval: AppliedApproval }): ApprovalApplyOutcome;
 }
 
 /** Infers a tool's argument type from its shape. */
@@ -184,6 +196,11 @@ export interface ContributedRouteRequest {
   readonly store: Store;
   /** The kernel's clock. */
   readonly now: () => Date;
+  /**
+   * The kernel-applied actions' applier (`approvalApplierOf` over the merged
+   * tools), when the composition built one. Only the approvals decision reads it.
+   */
+  readonly approvalApplier?: ApprovalApplier;
 }
 
 /**
@@ -384,8 +401,8 @@ function isZodRawShape(shape: unknown): boolean {
  * - `InvalidContributionError` for a malformed part (a tool name that does not
  *   start with `kernel_`, a tool shape that is not a zod raw shape, a bad
  *   route path or method, a subcommand name or help that is not one short
- *   line, a part that is not a function (a tool's `beforeHold` included,
- *   when given), a part list that is not a list).
+ *   line, a part that is not a function (a tool's `beforeHold` and
+ *   `applyOnApproval` included, when given), a part list that is not a list).
  */
 export function mergeContributions(contributions: readonly FeatureContribution[], reserved: ReservedNames = {}): MergedContributions {
   const contributorOwners = new Map<string, string>();
@@ -435,6 +452,7 @@ export function mergeContributions(contributions: readonly FeatureContribution[]
       if (!isZodRawShape(t.shape)) throw invalid("tool", `${t.name} needs a zod raw shape (an object whose every value is a zod schema)`);
       if (typeof t.handler !== "function") throw invalid("tool", `${t.name} needs a handler`);
       if (t.beforeHold !== undefined && typeof t.beforeHold !== "function") throw invalid("tool", `${t.name}'s beforeHold must be a function`);
+      if (t.applyOnApproval !== undefined && typeof t.applyOnApproval !== "function") throw invalid("tool", `${t.name}'s applyOnApproval must be a function`);
       claim(toolOwners, "tool", t.name, owner);
       tools.push(t);
     }

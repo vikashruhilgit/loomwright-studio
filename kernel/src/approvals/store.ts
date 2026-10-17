@@ -22,9 +22,15 @@
 // `approval_grant_revoked` event (again no new column, no new migration). It
 // never covers a tool in `ALWAYS_HELD_TOOLS`.
 //
+// A held call to a tool in `KERNEL_APPLIED_ACTIONS` (a kernel tool with a
+// kernel-side effect) is applied by the kernel itself when the owner approves
+// it `once`: the decision runs the tool's registered applier in its own
+// transaction and records the grant as used by the kernel, so the agent never
+// has to repeat the call (invariant 2: the kernel owns that transition).
+//
 // The `studio` CLI loads this feature, so this module imports only kernel
 // modules that never load the Agent SDK.
-import { appendEvent, clip } from "../loop/internal.js";
+import { appendEvent, clip, errorMessage } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
 import { recordNotification } from "../notifications/record.js";
 import { ALWAYS_HELD_TOOLS } from "../sessions/policy.js";
@@ -43,6 +49,44 @@ export type ApprovalSource = "rail" | "tool";
 
 /** The audit `events.kind` values this feature writes. */
 export const APPROVAL_AUDIT_KINDS = ["approval_requested", "approval_decided", "approval_used", "approval_grant_used", "approval_grant_revoked"] as const;
+
+/**
+ * The held actions the kernel applies itself on the owner's `once` approval
+ * (full SDK tool names, what a rail payload's `tool` holds). A closed set in
+ * code: adding one is a code change with its own review. Every member is also
+ * in `ALWAYS_HELD_TOOLS`, so `always` never reaches one, and a tool that
+ * registers an applier outside this set refuses the composition
+ * (`approvalApplierOf`).
+ */
+export const KERNEL_APPLIED_ACTIONS = ["mcp__kernel__kernel_playbook_enable"] as const;
+
+/** The approval a kernel applier runs on. */
+export interface AppliedApproval {
+  readonly id: number;
+  /** The requesting session (`approvals.requesting_session`). */
+  readonly sessionId: number | null;
+  /** The `approval_requested` event's `agent`: null when absent, never the stored `unknown`. */
+  readonly agent: string | null;
+  /** The `approval_requested` event's `subject_version`, null when absent. */
+  readonly subjectVersion: number | null;
+  /** The `approval_requested` event's id. */
+  readonly requestedEventId: number;
+}
+
+/**
+ * `applied`: one sentence for the agent ("The kernel enabled …"); `after` runs
+ * once the decision committed (a throw is ignored). `refused`: a reason token
+ * and one sentence ("The kernel did not enable …: …").
+ */
+export type ApprovalApplyOutcome = { readonly applied: string; readonly after?: () => void } | { readonly refused: string; readonly text: string };
+
+/** By full tool name: `undefined` when no applier is registered for that tool. Synchronous; runs inside the decision's transaction. */
+export type ApprovalApplier = (tool: string, input: unknown, approval: AppliedApproval, store: Store, now: Date) => ApprovalApplyOutcome | undefined;
+
+/** Whether `tool` is one the kernel applies itself. */
+function isKernelApplied(tool: string): boolean {
+  return (KERNEL_APPLIED_ACTIONS as readonly string[]).includes(tool);
+}
 
 /** `requesting_agent` for a session with no agent (migration 11: `NOT NULL`). */
 export const UNKNOWN_AGENT = "unknown";
@@ -123,6 +167,12 @@ export interface ApprovalView {
    * Present only when the event has one.
    */
   readonly display?: string;
+  /** For a kernel-applied approval the kernel applied: its sentence (the `approval_decided` event's `applied`). Present only then. */
+  readonly applied?: string;
+  /** For a kernel-applied approval the kernel refused to apply: the reason token. Present only then, with `apply_detail`. */
+  readonly apply_refused?: string;
+  /** The refusal's sentence. Untrusted text (it names a playbook): the CLI escapes it. */
+  readonly apply_detail?: string;
 }
 
 const COLUMNS = "id, requesting_agent, requesting_session, action, payload_json, requested_at, status, decision, decided_by, decided_at, playbook";
@@ -267,15 +317,31 @@ function approvalDisplay(store: Store, id: number): string | null {
   return typeof display === "string" ? display : null;
 }
 
+/** What the kernel did with decided approval `id`, from its `approval_decided` event: only the fields that event has. */
+function approvalApply(store: Store, id: number): Pick<ApprovalView, "applied" | "apply_refused" | "apply_detail"> {
+  const json = store
+    .prepare<[number], string>("SELECT payload_json FROM events WHERE kind = 'approval_decided' AND json_extract(payload_json, '$.id') = ? ORDER BY id LIMIT 1")
+    .pluck()
+    .get(id);
+  const decided = typeof json === "string" ? (parsed(json) as { applied?: unknown; apply_refused?: unknown; apply_detail?: unknown } | null) : null;
+  if (typeof decided?.applied === "string") return { applied: decided.applied };
+  if (typeof decided?.apply_refused === "string") {
+    return { apply_refused: decided.apply_refused, ...(typeof decided.apply_detail === "string" ? { apply_detail: decided.apply_detail } : {}) };
+  }
+  return {};
+}
+
 /**
  * `row` with its payload parsed, its playbook (`{id, slug, version}`, or
  * null) and, only when its `approval_requested` event has one, its `display`,
- * read from the store.
+ * read from the store; for a decided approval the kernel applied (or refused
+ * to apply), its `applied` or `apply_refused` / `apply_detail`.
  */
 export function approvalView(store: Store, row: ApprovalRow): ApprovalView {
   const { payload_json: raw, playbook: _id, ...rest } = row;
   const display = approvalDisplay(store, row.id);
-  return { ...rest, payload: parsed(raw), playbook: approvalPlaybook(store, row), ...(display === null ? {} : { display }) };
+  const apply = row.status === "pending" ? {} : approvalApply(store, row.id);
+  return { ...rest, payload: parsed(raw), playbook: approvalPlaybook(store, row), ...(display === null ? {} : { display }), ...apply };
 }
 
 /** Every pending approval (oldest first); with `all`, then the decided ones (newest first, at most `MAX_DECIDED_LIST`). */
@@ -349,25 +415,111 @@ function alwaysRefusal(store: Store, row: ApprovalRow): string | undefined {
   return undefined;
 }
 
+/** Approval `id`'s `approval_requested` event: its id and payload (an object), or null when there is none. */
+function requestedEvent(store: Store, id: number): { readonly eventId: number; readonly payload: Record<string, unknown> } | null {
+  const row = store
+    .prepare<[number], { id: number; payload_json: string }>(
+      "SELECT id, payload_json FROM events WHERE kind = 'approval_requested' AND json_extract(payload_json, '$.id') = ? ORDER BY id LIMIT 1",
+    )
+    .get(id);
+  const payload = row === undefined ? null : parsed(row.payload_json);
+  return row !== undefined && typeof payload === "object" && payload !== null ? { eventId: row.id, payload: payload as Record<string, unknown> } : null;
+}
+
+/** A rail payload's `tool` and its parsed object, or `undefined` when the payload is not an object with a string `tool`. */
+function railCallOf(payload: unknown): { readonly tool: string; readonly call: Record<string, unknown> } | undefined {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return undefined;
+  const tool = (payload as { tool?: unknown }).tool;
+  return typeof tool === "string" ? { tool, call: payload as Record<string, unknown> } : undefined;
+}
+
+/**
+ * The input an agent repeats for a held rail call: its `input` (any tool but
+ * Bash), or, for a Bash payload (`{tool, command, cwd}`, which has none), the
+ * `{command}` the rail matched on; null when it has neither.
+ */
+function retryInputOf(call: Record<string, unknown>): unknown {
+  if (Object.prototype.hasOwnProperty.call(call, "input")) return call.input ?? null;
+  return typeof call.command === "string" ? { command: call.command } : null;
+}
+
+/** What the kernel did with a kernel-applied approval, as the `approval_decided` event records it. */
+type ApplyRecord = { readonly applied: string } | { readonly apply_refused: string; readonly apply_detail: string };
+
+/** Whether an applier's answer is one of the two outcomes. */
+function isApplyOutcome(value: unknown): value is ApprovalApplyOutcome {
+  if (typeof value !== "object" || value === null) return false;
+  const o = value as { applied?: unknown; refused?: unknown; text?: unknown; after?: unknown };
+  if (typeof o.applied === "string") return o.after === undefined || typeof o.after === "function";
+  return typeof o.refused === "string" && typeof o.text === "string";
+}
+
+/**
+ * Run `applier` for held call `tool` in a nested transaction (a savepoint): a
+ * throw, or an answer that is neither outcome, rolls back only its writes and
+ * is `apply_error`; no applier for a tool in the set is `no_applier` (fail
+ * closed: the action is never handed back to the agent).
+ */
+function applyHeld(store: Store, applier: ApprovalApplier, tool: string, input: unknown, approval: AppliedApproval, now: Date): ApprovalApplyOutcome {
+  try {
+    const outcome = store.transaction(() => {
+      const answer = applier(tool, input, approval, store, now);
+      if (answer !== undefined && !isApplyOutcome(answer)) throw new Error("the applier answered neither applied nor refused");
+      return answer;
+    });
+    return outcome ?? { refused: "no_applier", text: `the kernel has no applier for ${tool}; nothing was done` };
+  } catch (err) {
+    return { refused: "apply_error", text: `the kernel could not apply it: ${clip(errorMessage(err), 300)}` };
+  }
+}
+
+/** The decision's message text (Design 2's table): what happened, and whether the agent repeats the call. */
+function decisionText(row: ApprovalRow, decision: ApprovalDecision, source: unknown, record: ApplyRecord | undefined): string {
+  const head = `${decision === "deny" ? "denied" : "approved"} approval ${row.id}: ${row.action}`;
+  if (decision === "deny") return `${head}. Nothing was done; do not repeat the call.`;
+  if (record !== undefined) return "applied" in record ? `${head}. ${record.applied} Nothing to repeat.` : `${head}. ${record.apply_detail} Do not repeat the call.`;
+  const rail = source === "rail" ? railCallOf(parsed(row.payload_json)) : undefined;
+  if (rail === undefined) return head;
+  return `${head}. Repeat exactly this call once, unchanged: tool ${rail.tool}, input ${canonicalJson(retryInputOf(rail.call))}.`;
+}
+
 /**
  * The owner's decision on a pending approval: `once` or `always` (approved)
  * or `deny` (denied). In one transaction: the row (`decided_by`,
  * `decided_at`), one `approval_decided` event (`{id, decision, by, action}`)
- * and one queued `message` event `{text: "<approved|denied> approval <id>:
- * <action>", agent, approval_id}` (`sourceRef: approval:<id>`). Returns the
- * decided row. An `always` row is a standing grant (`holdOrUseGrant`).
+ * and one queued `message` event `{text, agent, approval_id}`
+ * (`sourceRef: approval:<id>`). Returns the decided row. An `always` row is a
+ * standing grant (`holdOrUseGrant`).
+ *
+ * A `once` on a rail approval whose payload's `tool` is in
+ * `KERNEL_APPLIED_ACTIONS`, with an `applier` given, is applied by the kernel
+ * in the same transaction (`applyHeld`, a savepoint) and its grant recorded as
+ * used: one `approval_used` event `{id, tool, by: "kernel"}` linked to the
+ * requesting session, whatever the outcome. The `approval_decided` event then
+ * adds `applied` (the applier's sentence) or `apply_refused` and
+ * `apply_detail`. An applied outcome's `after` runs once the transaction
+ * committed; its throw is ignored. With no `applier`, nothing is applied and
+ * the grant is left for the agent's retry.
+ *
+ * The message text: `approved approval <id>: <action>.` then the applied
+ * sentence and `Nothing to repeat.`, the refusal and `Do not repeat the
+ * call.`, or (another approved rail approval) the exact call to repeat once;
+ * an approval an agent asked for (`source: "tool"`) or a payload with no
+ * string `tool` gets `approved approval <id>: <action>` alone; a deny,
+ * `denied approval <id>: <action>. Nothing was done; do not repeat the call.`
  *
  * Throws `ApprovalError`, writing nothing: `no_such_approval`,
  * `approval_not_pending`, then, for `always`, `always_not_supported` (its
  * message says which condition `alwaysRefusal` found failing).
  */
-export function decideApproval(store: Store, input: DecisionInput, now: Date): ApprovalRow {
+export function decideApproval(store: Store, input: DecisionInput, now: Date, applier?: ApprovalApplier): ApprovalRow {
   const { id, decision, by } = input;
   if (decision !== "once" && decision !== "always" && decision !== "deny") {
     throw new ApprovalError("invalid_approval", `decision ${JSON.stringify(decision)} must be once, always or deny`);
   }
   const at = now.toISOString();
-  return store.transaction(() => {
+  let after: (() => void) | undefined;
+  const decided = store.transaction(() => {
     const row = getApproval(store, id);
     if (row === undefined) throw new ApprovalError("no_such_approval", `no approval ${id}`);
     if (row.status !== "pending") throw new ApprovalError("approval_not_pending", `approval ${id} is not pending (it is ${row.status})`);
@@ -380,18 +532,49 @@ export function decideApproval(store: Store, input: DecisionInput, now: Date): A
       .prepare("UPDATE approvals SET status = ?, decision = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'")
       .run(status, decision, by, at, id).changes;
     if (changed !== 1) throw new ApprovalError("approval_not_pending", `approval ${id} is not pending`);
-    appendEvent(store, "approval_decided", { sessionId: row.requesting_session, taskId: null }, { id, decision, by, action: row.action }, at);
+    const requested = requestedEvent(store, id);
+    const source = requested?.payload.source;
+    const rail = source === "rail" ? railCallOf(parsed(row.payload_json)) : undefined;
+    let record: ApplyRecord | undefined;
+    if (decision === "once" && requested !== null && rail !== undefined && isKernelApplied(rail.tool) && applier !== undefined) {
+      const event = requested.payload;
+      const approval: AppliedApproval = {
+        id,
+        sessionId: row.requesting_session,
+        agent: typeof event.agent === "string" ? namedAgent(event.agent) : null,
+        subjectVersion: typeof event.subject_version === "number" ? event.subject_version : null,
+        requestedEventId: requested.eventId,
+      };
+      const outcome = applyHeld(store, applier, rail.tool, rail.call.input, approval, now);
+      // The grant is spent by the kernel on every attempt, so no later agent call can use it.
+      appendEvent(store, "approval_used", { sessionId: row.requesting_session, taskId: null }, { id, tool: rail.tool, by: "kernel" }, at);
+      if ("applied" in outcome) {
+        record = { applied: outcome.applied };
+        after = outcome.after;
+      } else {
+        record = { apply_refused: outcome.refused, apply_detail: outcome.text };
+      }
+    }
+    appendEvent(store, "approval_decided", { sessionId: row.requesting_session, taskId: null }, { id, decision, by, action: row.action, ...record }, at);
     enqueueEvent(
       store,
       {
         kind: "message",
-        payload: { text: `${status} approval ${id}: ${row.action}`, agent: messageAgent(store, row), approval_id: id },
+        payload: { text: decisionText(row, decision, source, record), agent: messageAgent(store, row), approval_id: id },
         sourceRef: `approval:${id}`,
       },
       now,
     );
     return getApproval(store, id) as ApprovalRow;
   });
+  if (after !== undefined) {
+    try {
+      after();
+    } catch {
+      // The decision is committed; a failed follow-up (the mirror rewrite) never fails it.
+    }
+  }
+  return decided;
 }
 
 export interface RailCall {
