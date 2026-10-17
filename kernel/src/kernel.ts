@@ -26,7 +26,7 @@ import type { EventHandlers, EventLoopDeps } from "./loop/types.js";
 import { SessionManager } from "./sessions/manager.js";
 import type { SessionManagerDeps, SessionManagerOptions } from "./sessions/types.js";
 import { Store, resolveDataDir } from "./store/store.js";
-import { KERNEL_MCP_SERVER_NAME, createKernelMcpServer } from "./tools/server.js";
+import { KERNEL_MCP_SERVER_NAME, createKernelMcpServer, heldToolCheckOf } from "./tools/server.js";
 import { writeFileAtomic } from "./tools/handoff.js";
 
 /** Selects the auth provider when `--auth-provider` is not given. */
@@ -208,6 +208,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         mcpServers: ({ sessionId }) => ({
           [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now }, contributions.tools),
         }),
+        // The gate's pre-hold check, from the same contributed tools the server registers (it can only narrow).
+        heldToolCheck: heldToolCheckOf(contributions.tools, (sessionId) => ({ store, sessions: manager, sessionId, now })),
       },
       { now, ...deps.sessionDeps },
     );

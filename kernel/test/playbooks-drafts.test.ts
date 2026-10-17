@@ -153,7 +153,7 @@ async function tickPlaybooks(): Promise<void> {
 describe("kernel_playbook_create (AC1, AC2, AC5)", () => {
   it("stores a draft at version 1, every given policy value proposed by Wright, one version snapshot, playbook_created, and a mirror marking each value (proposed) (AC1)", async () => {
     expect(PLAYBOOK_TOOL_NAMES).toEqual(["kernel_playbook_create", "kernel_playbook_update", "kernel_playbook_list", "kernel_playbook_disable"]);
-    expect(PLAYBOOK_AUDIT_KINDS).toEqual(["playbook_created", "playbook_updated", "playbook_disabled"]);
+    expect(PLAYBOOK_AUDIT_KINDS).toEqual(["playbook_created", "playbook_updated", "playbook_disabled", "playbook_dry_run", "playbook_enabled"]);
     const created = value<Created>(await create());
     expect(created).toEqual({
       id: 1,

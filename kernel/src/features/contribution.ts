@@ -18,7 +18,7 @@
 import { z } from "zod";
 import { EVENT_KINDS, isEventKind } from "../loop/types.js";
 import type { DueWork, DueWorkContext, EventHandler, EventHandlers } from "../loop/types.js";
-import type { SessionRow, SessionStatus } from "../sessions/types.js";
+import type { HeldToolVerdict, SessionHandle, SessionRow, SessionStatus, StartSessionParams } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 
 /** The owner named for what phase 1 registers itself (its tools, routes and subcommands). */
@@ -122,6 +122,13 @@ export interface ContributedToolContext {
   readonly sessions: {
     stopSession(id: number): Promise<SessionStatus>;
     getSession(id: number): SessionRow | undefined;
+    /**
+     * Start a session through the kernel's session manager (phase 3 item 07:
+     * a playbook's dry run). Optional: a composition without a session
+     * manager gives none, and a tool that needs it refuses with an error
+     * result naming that.
+     */
+    startSession?(params: StartSessionParams): Promise<SessionHandle>;
   };
   /** The `sessions` row this server instance serves. */
   readonly sessionId: number;
@@ -136,12 +143,21 @@ export interface ContributedToolContext {
  * arguments are an `isError` result. The handler's value is returned as JSON
  * text; a throw is an `isError` result with its message, never a throw
  * through the SDK. Tool input is untrusted data (invariant 3).
+ *
+ * `beforeHold` (optional) is consulted only for a tool in the fixed
+ * `ALWAYS_HELD_TOOLS` set, by the kernel's gate before it holds the call for
+ * the owner (`SessionManagerOptions.heldToolCheck`), with the arguments
+ * already parsed against `shape`. Synchronous, and it reads the store only.
+ * It can only narrow: `{refuse}` denies the call (`held_refused`), `{display,
+ * subjectVersion?}` holds it with that text for the owner. A throw denies the
+ * call (`kernel_gate_error`).
  */
 export interface ContributedTool<S extends z.ZodRawShape = z.ZodRawShape> {
   readonly name: string;
   readonly description: string;
   readonly shape: S;
   handler(args: z.infer<z.ZodObject<S>>, ctx: ContributedToolContext): unknown;
+  beforeHold?(args: z.infer<z.ZodObject<S>>, ctx: ContributedToolContext): HeldToolVerdict;
 }
 
 /** Infers a tool's argument type from its shape. */
@@ -368,7 +384,8 @@ function isZodRawShape(shape: unknown): boolean {
  * - `InvalidContributionError` for a malformed part (a tool name that does not
  *   start with `kernel_`, a tool shape that is not a zod raw shape, a bad
  *   route path or method, a subcommand name or help that is not one short
- *   line, a part that is not a function, a part list that is not a list).
+ *   line, a part that is not a function (a tool's `beforeHold` included,
+ *   when given), a part list that is not a list).
  */
 export function mergeContributions(contributions: readonly FeatureContribution[], reserved: ReservedNames = {}): MergedContributions {
   const contributorOwners = new Map<string, string>();
@@ -417,6 +434,7 @@ export function mergeContributions(contributions: readonly FeatureContribution[]
       if (typeof t.description !== "string" || t.description.trim() === "") throw invalid("tool", `${t.name} needs a description`);
       if (!isZodRawShape(t.shape)) throw invalid("tool", `${t.name} needs a zod raw shape (an object whose every value is a zod schema)`);
       if (typeof t.handler !== "function") throw invalid("tool", `${t.name} needs a handler`);
+      if (t.beforeHold !== undefined && typeof t.beforeHold !== "function") throw invalid("tool", `${t.name}'s beforeHold must be a function`);
       claim(toolOwners, "tool", t.name, owner);
       tools.push(t);
     }

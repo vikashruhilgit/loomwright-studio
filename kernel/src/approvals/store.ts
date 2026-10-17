@@ -58,6 +58,8 @@ export const OWNER = "owner";
 export const ALWAYS_REFUSED = "always needs an approval the rail held from a playbook session";
 
 export const MAX_APPROVAL_ACTION = 200;
+/** A held call's display text (the pre-hold check's, phase 3 item 07) is cut to this many characters, never refused. */
+export const MAX_APPROVAL_DISPLAY = 4_000;
 /** `kernel_approval_request`'s payload, as JSON, at most this many characters. The rail stores a held call's payload whole. */
 export const MAX_REQUEST_PAYLOAD_JSON = 64_000;
 /** `listApprovals` with `all`: at most this many decided approvals (newest first), after every pending one. */
@@ -114,6 +116,13 @@ export interface ApprovalView {
   readonly decided_by: string | null;
   readonly decided_at: string | null;
   readonly playbook: ApprovalPlaybook | null;
+  /**
+   * What the owner is shown about the held call besides its payload: the
+   * `approval_requested` event's `display` (a pre-hold check's text, e.g. a
+   * playbook enable's values and dry run). Untrusted text: the CLI escapes it.
+   * Present only when the event has one.
+   */
+  readonly display?: string;
 }
 
 const COLUMNS = "id, requesting_agent, requesting_session, action, payload_json, requested_at, status, decision, decided_by, decided_at, playbook";
@@ -148,6 +157,10 @@ export interface ApprovalRequest {
   readonly action: string;
   readonly payload: unknown;
   readonly source: ApprovalSource;
+  /** Shown to the owner beside the payload, on the `approval_requested` event only (never in `payload_json`); cut to `MAX_APPROVAL_DISPLAY`. */
+  readonly display?: string;
+  /** The version of the thing the held call is about (a playbook enable's), on the `approval_requested` event as `subject_version`. */
+  readonly subjectVersion?: number;
 }
 
 /** The session's agent, or `null` when it has none. */
@@ -166,7 +179,10 @@ function agentOf(agent: string | null): string {
  * it joins it). When the requesting session's row has a `playbook`, the row
  * records it (`approvals.playbook`) and the event adds `playbook` and
  * `playbook_version` (the session's, null when it recorded none); a session
- * with no playbook writes neither. Returns the row. Throws `ApprovalError` (`invalid_approval`)
+ * with no playbook writes neither. A given `display` is added to the event
+ * (cut to `MAX_APPROVAL_DISPLAY`) and a given `subjectVersion` as
+ * `subject_version`; neither ever enters `payload_json`, so grant matching on
+ * the canonical payload is unchanged. Returns the row. Throws `ApprovalError` (`invalid_approval`)
  * before writing when the action is empty, longer than 200 characters or
  * holds a NUL, or the agent's name holds a NUL (both go into the
  * notification's text, which `recordNotification` refuses with a NUL).
@@ -198,6 +214,8 @@ export function requestApproval(store: Store, request: ApprovalRequest, now: Dat
       requested.playbook = playbook;
       requested.playbook_version = session?.playbook_version ?? null;
     }
+    if (typeof request.display === "string") requested.display = request.display.slice(0, MAX_APPROVAL_DISPLAY);
+    if (typeof request.subjectVersion === "number") requested.subject_version = request.subjectVersion;
     appendEvent(store, "approval_requested", { sessionId, taskId: null }, requested, at);
     recordNotification(
       store,
@@ -240,10 +258,24 @@ function approvalPlaybook(store: Store, row: ApprovalRow): ApprovalPlaybook | nu
   return { id: row.playbook, slug: found?.slug ?? null, version: typeof found?.version === "number" ? found.version : null };
 }
 
-/** `row` with its payload parsed and its playbook (`{id, slug, version}`, or null) read from the store. */
+/** Approval `id`'s display text: its `approval_requested` event's `display`, or null when it has none. */
+function approvalDisplay(store: Store, id: number): string | null {
+  const display = store
+    .prepare<[number], unknown>(`SELECT json_extract((${REQUESTED_EVENT}), '$.display') FROM approvals a WHERE a.id = ?`)
+    .pluck()
+    .get(id);
+  return typeof display === "string" ? display : null;
+}
+
+/**
+ * `row` with its payload parsed, its playbook (`{id, slug, version}`, or
+ * null) and, only when its `approval_requested` event has one, its `display`,
+ * read from the store.
+ */
 export function approvalView(store: Store, row: ApprovalRow): ApprovalView {
   const { payload_json: raw, playbook: _id, ...rest } = row;
-  return { ...rest, payload: parsed(raw), playbook: approvalPlaybook(store, row) };
+  const display = approvalDisplay(store, row.id);
+  return { ...rest, payload: parsed(raw), playbook: approvalPlaybook(store, row), ...(display === null ? {} : { display }) };
 }
 
 /** Every pending approval (oldest first); with `all`, then the decided ones (newest first, at most `MAX_DECIDED_LIST`). */
@@ -371,6 +403,10 @@ export interface RailCall {
   readonly payload: unknown;
   /** The tool name, for the `approval_used` / `approval_grant_used` event (and the `ALWAYS_HELD_TOOLS` check). */
   readonly tool: string;
+  /** The pre-hold check's text, stored on a NEW approval's `approval_requested` event only (`requestApproval`); never matched on. */
+  readonly display?: string;
+  /** The pre-hold check's subject version, likewise (`subject_version`). */
+  readonly subjectVersion?: number;
 }
 
 /** What the rail does with an outward call: run it on grant `id` (a one-shot one is consumed now), or hold it as new approval `id`. */
@@ -411,7 +447,9 @@ const STANDING_GRANT = `SELECT a.id FROM approvals a
  * calling session with a named agent and a playbook at a version, and never
  * a tool in `ALWAYS_HELD_TOOLS`. Its use is one `approval_grant_used` event
  * (`{id, tool}`, linked to this session); it is not consumed. With no match,
- * the call is held: `requestApproval` with `source: "rail"`.
+ * the call is held: `requestApproval` with `source: "rail"` (and the call's
+ * `display` / `subjectVersion`, when given). Neither of those takes part in
+ * matching a grant.
  */
 export function holdOrUseGrant(store: Store, call: RailCall, now: Date): RailOutcome {
   const payloadJson = canonicalJson(call.payload);
@@ -446,7 +484,19 @@ export function holdOrUseGrant(store: Store, call: RailCall, now: Date): RailOut
         return { kind: "granted", id: standing };
       }
     }
-    const row = requestApproval(store, { agent: call.agent, sessionId: call.sessionId, action: call.action, payload: call.payload, source: "rail" }, now);
+    const row = requestApproval(
+      store,
+      {
+        agent: call.agent,
+        sessionId: call.sessionId,
+        action: call.action,
+        payload: call.payload,
+        source: "rail",
+        ...(call.display === undefined ? {} : { display: call.display }),
+        ...(call.subjectVersion === undefined ? {} : { subjectVersion: call.subjectVersion }),
+      },
+      now,
+    );
     return { kind: "held", id: row.id };
   });
 }

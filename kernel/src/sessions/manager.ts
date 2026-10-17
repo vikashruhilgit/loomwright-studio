@@ -28,7 +28,7 @@ import type { SessionLoomwright } from "./loomwright-path.js";
 import { TOOL_DEFERRAL_OFF } from "./kernel-env.js";
 import { DRY_RUN_DENY_MESSAGE, classifyDryRunCall, dryRunUsage } from "./dry-run.js";
 import { latestOrphanReason } from "./orphans.js";
-import { bashCommandOf, classifyToolCall, decideToolUse, freezePolicy } from "./policy.js";
+import { ALWAYS_HELD_TOOLS, bashCommandOf, classifyToolCall, decideToolUse, freezePolicy } from "./policy.js";
 import type { ToolCallClass, ToolDecisionReason } from "./policy.js";
 import {
   KILL_GROUP_DEADLINE_MS,
@@ -61,6 +61,8 @@ import type {
   CancelTimer,
   DryRunReport,
   GroupLeader,
+  HeldToolCheck,
+  HeldToolVerdict,
   ProcessEntry,
   ProcessTable,
   QueryFn,
@@ -97,6 +99,34 @@ function toolDecisionPayload(
     ...(command === undefined ? {} : { command: command.slice(0, MAX_EVENT_COMMAND_CHARS) }),
     ...(approvalId === undefined ? {} : { approval_id: approvalId }),
   };
+}
+
+/** The gate-local `tool_decision` reasons, beside the public `ToolDecisionReason` (`policy.ts`). */
+type GateReason = ToolDecisionReason | "kernel_gate_error" | "dry_run" | "held_refused";
+
+/**
+ * A pre-hold check's answer, checked for its exact shape (`HeldToolVerdict`):
+ * `undefined`, `{refuse}` with a non-empty text, or `{display}` with an
+ * optional positive-integer `subjectVersion`, and no other key. Anything else
+ * (a promise included: the check is synchronous) throws, so the gate denies
+ * the call `kernel_gate_error` (fail closed).
+ */
+function checkedVerdict(value: unknown): HeldToolVerdict | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const v = value as Record<string, unknown>;
+    const keys = Object.keys(v);
+    if (keys.length === 1 && isNonEmptyString(v.refuse)) return { refuse: v.refuse };
+    const version = v.subjectVersion;
+    if (
+      typeof v.display === "string" &&
+      keys.every((k) => k === "display" || k === "subjectVersion") &&
+      (version === undefined || (typeof version === "number" && Number.isSafeInteger(version) && version > 0))
+    ) {
+      return version === undefined ? { display: v.display } : { display: v.display, subjectVersion: version as number };
+    }
+  }
+  throw new TypeError("the held-tool check gave an answer that is not a verdict");
 }
 /**
  * The event a dry-run start writes with its row (payload `{}`). A resume reads
@@ -537,6 +567,7 @@ export class SessionManager {
   readonly #onMessage: ((sessionId: number, message: SDKMessage) => void) | undefined;
   readonly #admission: ((request: AdmissionRequest) => AdmissionDecision) | undefined;
   readonly #mcpServers: SessionManagerOptions["mcpServers"];
+  readonly #heldToolCheck: HeldToolCheck | undefined;
 
   readonly #query: QueryFn;
   readonly #spawn: SpawnFn;
@@ -573,6 +604,7 @@ export class SessionManager {
     this.#onMessage = options.onMessage;
     this.#admission = options.admission;
     this.#mcpServers = options.mcpServers;
+    this.#heldToolCheck = options.heldToolCheck;
 
     this.#query = deps.query ?? sdkQuery;
     this.#spawn = deps.spawn ?? spawnInNewProcessGroup;
@@ -2201,14 +2233,25 @@ export class SessionManager {
    * rail denies is denied exactly as in a real run, with no entry. The entry
    * is kept only once its deny was recorded; a deny that cannot be recorded
    * becomes `kernel_gate_error`.
+   *
+   * The pre-hold check (`heldToolCheck`, phase 3 item 07) narrows the outward
+   * path for a tool in `ALWAYS_HELD_TOOLS` only, outside dry runs, before the
+   * hold: `refuse` denies the call with reason `held_refused` and its text
+   * (no approval written, no grant consumed); `display` is held as before,
+   * with the text stored on the `approval_requested` event (never in the
+   * payload a grant matches on); `undefined` (or no check) is held as before.
+   * A throw or any other answer is `kernel_gate_error`. It never allows a
+   * call, skips the hold or consumes a grant itself.
    */
   #gate(live: LiveSession): HookCallback {
     return async (input): Promise<HookJSONOutput> => {
       let decision: "allow" | "deny" = "deny";
-      let reason: ToolDecisionReason | "kernel_gate_error" | "dry_run" = "kernel_gate_error";
+      let reason: GateReason = "kernel_gate_error";
       let tool: string | null = null;
       let command: string | undefined;
       let wouldDo: WouldDoEntry | undefined;
+      /** The pre-hold check's refusal text, for a `held_refused` deny. */
+      let refusal: string | undefined;
       const record = (): void =>
         this.#appendEvent("tool_decision", live.id, toolDecisionPayload(tool, decision, reason, command, undefined), this.#nowIso());
       try {
@@ -2228,24 +2271,38 @@ export class SessionManager {
             wouldDo = dry.entry;
             reason = "dry_run";
           } else if (rail.kind === "outward") {
-            const call = { agent: this.getSession(live.id)?.agent ?? null, sessionId: live.id, action: rail.action, payload: rail.payload, tool };
-            // One transaction: the grant's use (or the new approval) and this call's one decision event.
-            // A throw rolls all of it back and falls through to the fail-closed deny below.
-            const outcome = this.#store.transaction(() => {
-              const o = holdOrUseGrant(this.#store, call, this.#now());
-              const granted = o.kind === "granted";
-              const payload = toolDecisionPayload(tool, granted ? "allow" : "deny", granted ? "approval_granted" : "approval_required", command, o.id);
-              this.#appendEvent("tool_decision", live.id, payload, this.#nowIso());
-              return o;
-            });
-            const permissionDecisionReason =
-              outcome.kind === "granted"
-                ? "approval_granted"
-                : `approval_required: held as approval ${outcome.id}; it did not run. The owner decides (studio approve ${outcome.id} once, ` +
-                  `or studio deny ${outcome.id}) and the decision arrives as a new message. End your turn now; if it is approved, run exactly the same call again, once.`;
-            return {
-              hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: outcome.kind === "granted" ? "allow" : "deny", permissionDecisionReason },
-            };
+            // The pre-hold check: an always-held tool only, never in a dry run (that branch is above), before the hold.
+            // A throw, or an answer that is not a verdict, falls through to the fail-closed deny below.
+            const verdict =
+              this.#heldToolCheck !== undefined && ALWAYS_HELD_TOOLS.includes(tool)
+                ? checkedVerdict(this.#heldToolCheck(tool, input.tool_input, live.id))
+                : undefined;
+            if (verdict !== undefined && "refuse" in verdict) {
+              // Denied and recorded below: no approval written, no grant consumed.
+              reason = "held_refused";
+              refusal = verdict.refuse;
+            } else {
+              const hold =
+                verdict === undefined ? {} : { display: verdict.display, ...(verdict.subjectVersion === undefined ? {} : { subjectVersion: verdict.subjectVersion }) };
+              const call = { agent: this.getSession(live.id)?.agent ?? null, sessionId: live.id, action: rail.action, payload: rail.payload, tool, ...hold };
+              // One transaction: the grant's use (or the new approval) and this call's one decision event.
+              // A throw rolls all of it back and falls through to the fail-closed deny below.
+              const outcome = this.#store.transaction(() => {
+                const o = holdOrUseGrant(this.#store, call, this.#now());
+                const granted = o.kind === "granted";
+                const payload = toolDecisionPayload(tool, granted ? "allow" : "deny", granted ? "approval_granted" : "approval_required", command, o.id);
+                this.#appendEvent("tool_decision", live.id, payload, this.#nowIso());
+                return o;
+              });
+              const permissionDecisionReason =
+                outcome.kind === "granted"
+                  ? "approval_granted"
+                  : `approval_required: held as approval ${outcome.id}; it did not run. The owner decides (studio approve ${outcome.id} once, ` +
+                    `or studio deny ${outcome.id}) and the decision arrives as a new message. End your turn now; if it is approved, run exactly the same call again, once.`;
+              return {
+                hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: outcome.kind === "granted" ? "allow" : "deny", permissionDecisionReason },
+              };
+            }
           } else {
             decision = rail.kind === "deny" ? "deny" : d.decision;
             reason = rail.kind === "deny" ? rail.reason : d.reason;
@@ -2255,6 +2312,7 @@ export class SessionManager {
         decision = "deny";
         reason = "kernel_gate_error";
         wouldDo = undefined;
+        refusal = undefined;
       }
       try {
         record();
@@ -2278,7 +2336,7 @@ export class SessionManager {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: decision,
-          permissionDecisionReason: reason === "dry_run" ? DRY_RUN_DENY_MESSAGE : reason,
+          permissionDecisionReason: reason === "dry_run" ? DRY_RUN_DENY_MESSAGE : reason === "held_refused" ? (refusal ?? reason) : reason,
         },
       };
     };
