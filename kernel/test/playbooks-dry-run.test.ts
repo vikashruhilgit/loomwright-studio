@@ -526,6 +526,62 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     expect(getPlaybook(h.store, b.id)?.status).toBe("draft");
     expect(events(h.store, "playbook_enabled").map((e) => e.payload.playbook_id)).toEqual([a.id]);
   });
+
+  it("a key an earlier enable used: after enable, edit and a new dry run, the same-key enable is refused before the hold (held_refused), no approval written", async () => {
+    const h = await bootKernel();
+    const { id } = await h.create();
+    value(await h.dryRun(id, "d1"));
+    const input = { id, idempotency_key: "e1" };
+    await h.enable(input);
+    expect((await h.studio(["approve", "1", "once"])).code).toBe(0);
+    expect(value((await h.enable(input)).result)).toEqual({ playbook: id, version: 1, status: "enabled", approval_id: 1 });
+    value(await h.tool("kernel_playbook_update", { id, changes: { intent: "Summarise repo Y instead." }, idempotency_key: "u1" }));
+    expect(getPlaybook(h.store, id)).toMatchObject({ status: "draft", version: 2 });
+    value(await h.dryRun(id, "d2"));
+
+    const again = await h.enable(input);
+    expect(again.decision.permissionDecision).toBe("deny");
+    expect(again.decision.permissionDecisionReason).toContain("idempotency_key already used for an enable in this session; use a new key");
+    expect(again.result).toBeUndefined();
+    expect(h.store.prepare("SELECT id, status FROM approvals").all()).toEqual([{ id: 1, status: "approved" }]);
+    expect(events(h.store, "tool_decision").filter((e) => e.payload.tool === ENABLE).map((e) => e.payload.reason)).toEqual([
+      "approval_required",
+      "approval_granted",
+      "held_refused",
+    ]);
+
+    // A new key asks the owner again, and enables version 2 on that approval.
+    const fresh = { id, idempotency_key: "e2" };
+    expect((await h.enable(fresh)).decision.permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
+    expect((await h.studio(["approve", "2", "once"])).code).toBe(0);
+    expect(value((await h.enable(fresh)).result)).toEqual({ playbook: id, version: 2, status: "enabled", approval_id: 2 });
+    expect(events(h.store, "playbook_enabled").map((e) => e.payload.version)).toEqual([1, 2]);
+  });
+
+  it("defence behind the gate: when a newer approval was consumed for a used key, the handler refuses and never replays the old result as success", async () => {
+    // A check that holds every call (as if the pre-hold check let the used key through).
+    let h!: Awaited<ReturnType<typeof bootManager>>;
+    h = await bootManager({ heldToolCheck: () => ({ display: "d", subjectVersion: getPlaybook(h.store, 1)?.version ?? 1 }) });
+    const { id } = await h.create();
+    expect(id).toBe(1);
+    const input = { id, idempotency_key: "e1" };
+    value(await h.tool("kernel_playbook_dry_run", { id, idempotency_key: "d1" }));
+    await h.gate(ENABLE, input);
+    decideApproval(h.store, { id: 1, decision: "once", by: "owner" }, clock.at);
+    expect((await h.gate(ENABLE, input)).permissionDecisionReason).toBe("approval_granted");
+    expect(value(await h.tool("kernel_playbook_enable", input))).toEqual({ playbook: id, version: 1, status: "enabled", approval_id: 1 });
+    value(await h.tool("kernel_playbook_update", { id, changes: { intent: "Summarise repo Y instead." }, idempotency_key: "u1" }));
+    value(await h.tool("kernel_playbook_dry_run", { id, idempotency_key: "d2" }));
+
+    expect((await h.gate(ENABLE, input)).permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
+    decideApproval(h.store, { id: 2, decision: "once", by: "owner" }, clock.at);
+    expect((await h.gate(ENABLE, input)).permissionDecisionReason).toBe("approval_granted");
+    const text = errorText(await h.tool("kernel_playbook_enable", input));
+    expect(text).toContain("idempotency_key already used for an enable in this session");
+    expect(text).toContain("its stored result is for approval 1, not approval 2; nothing was enabled");
+    expect(getPlaybook(h.store, id)).toMatchObject({ status: "draft", version: 2 });
+    expect(events(h.store, "playbook_enabled").map((e) => e.payload.approval_id)).toEqual([1]);
+  });
 });
 
 // ---- AC6 and the dry run's refusals ------------------------------------------------------
@@ -576,6 +632,20 @@ describe("kernel_playbook_dry_run refusals (AC6)", () => {
     expect(h.started).toHaveLength(1);
     expect(runRows(h.store)).toHaveLength(1);
     expect(h.started[0]).toMatchObject({ agent: "wright", prompt: DAILY.intent, model: PLAYBOOK_MODEL, dryRun: true, playbook: id, playbookVersion: 1, cwd: wrightMemoryDir(dataDir) });
+  });
+
+  it("a same-key repeat after an edit is refused naming both versions (the old version's summary is never replayed as the new one's); a new key dry-runs the new version", async () => {
+    const h = await bootManager();
+    const { id } = await h.create();
+    value(await h.tool("kernel_playbook_dry_run", { id, idempotency_key: "d1" }));
+    value(await h.tool("kernel_playbook_update", { id, changes: { intent: "Summarise repo Y instead." }, idempotency_key: "u1" }));
+    const text = errorText(await h.tool("kernel_playbook_dry_run", { id, idempotency_key: "d1" }));
+    expect(text).toContain(`kernel_playbook_dry_run: idempotency_key already used in this session for the dry run of version 1; playbook ${id} is now at version 2: use a new key`);
+    expect(h.started).toHaveLength(1);
+    expect(runRows(h.store)).toHaveLength(1);
+    expect(latestDryRun(h.store, id, 2)).toBeNull();
+    expect(value<DryRunValue>(await h.tool("kernel_playbook_dry_run", { id, idempotency_key: "d2" }))).toMatchObject({ version: 2, status: "done" });
+    expect(h.started).toHaveLength(2);
   });
 
   it("a session that does not complete is a failed run, never a dry run of the version", async () => {

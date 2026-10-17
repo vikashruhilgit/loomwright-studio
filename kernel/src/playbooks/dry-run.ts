@@ -16,7 +16,10 @@
 // summary. The session is started inside a work step keyed
 // `ctx.stepKey(idempotency_key)`, so a repeat returns the stored result and
 // starts no second session; an admission refusal (or a refusal before the
-// session) releases the step, so nothing is left to repeat.
+// session) releases the step, so nothing is left to repeat. A repeat replays
+// only while the playbook is still at the version the stored run dry-ran: a
+// same-key call after an edit (a new version) is refused naming both
+// versions, so an old version's summary is never returned as the new one's.
 //
 // `latestDryRun` (the newest `done` dry run of one version) is what the
 // enable part (`./enable.ts`) requires and what the mirror shows. The dedupe
@@ -37,7 +40,7 @@ import type { UsageTotals } from "../budget/types.js";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { appendEvent } from "../loop/internal.js";
-import { runStepAsync } from "../loop/steps.js";
+import { getWorkStep, runStepAsync } from "../loop/steps.js";
 import type { SessionHandle, WouldDoEntry } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { nextCronFire } from "../triggers/index.js";
@@ -320,6 +323,24 @@ function ownDraft(store: Store, id: number, agent: string): PlaybookRow {
   return row;
 }
 
+/**
+ * A step already `done` for this key replays its stored result only while
+ * playbook `id` is still at the version that result dry-ran; after an edit
+ * the same key is refused (use a new key to dry-run the new version).
+ */
+function refuseStaleReplay(store: Store, key: string, id: number): void {
+  const step = getWorkStep(store, key);
+  if (step?.status !== "done") return;
+  const stored = (step.result as { version?: unknown } | null | undefined)?.version;
+  const current = getPlaybook(store, id)?.version;
+  if (current === undefined || stored !== current) {
+    throw invalid(
+      `idempotency_key already used in this session for the dry run of version ${String(stored ?? "unknown")}; ` +
+        `playbook ${id} is now at version ${String(current ?? "unknown")}: use a new key to dry-run it`,
+    );
+  }
+}
+
 /** Where a run's work is, for the step's no-effect rule: nothing started yet, the session being asked for, or started. */
 type Phase = "checks" | "starting" | "started";
 
@@ -368,13 +389,15 @@ const dryRunTool = defineTool({
     "The playbook must have a model (the kernel never picks one). The run's tokens count against your limits. " +
     "Returns {run_id, playbook, version, status: done|failed, would_do, next_fires (UTC), dedupe_key (a preview for the next fire), tokens, summary}; " +
     "the summary is also written to the playbook's mirror. kernel_playbook_enable needs a done dry run of the current version. " +
-    "Repeating a call with the same idempotency_key in this session returns the first result and starts no second run.",
+    "Repeating a call with the same idempotency_key in this session returns the first result and starts no second run, while the playbook is at that version; after an edit, use a new key.",
   shape: { id: z.number().int().positive(), idempotency_key: z.string().min(1).max(200) },
   handler: (a, ctx) =>
     namedAsync(DRY_RUN_TOOL_NAME, async () => {
       const agent = owningAgent(ctx);
       // Before the step, so a same-key repeat clears what a crash left too.
       failStaleDryRuns(ctx.store, a.id, ctx.now());
+      // Synchronous up to the step's claim: no call interleaves between this read and it.
+      refuseStaleReplay(ctx.store, ctx.stepKey(a.idempotency_key), a.id);
       let phase: Phase = "checks";
       const result = await runStepAsync(
         ctx.store,

@@ -11,8 +11,11 @@
 //
 // - `beforeHold`, which the gate asks before it holds the call (it can only
 //   narrow): a playbook that is missing, not the caller's, turned off by the
-//   owner or not a draft, or whose current version has no `done` dry run
-//   (`latestDryRun`), is refused, so no approval is written; otherwise the call
+//   owner or not a draft, an idempotency key whose work step already exists
+//   in this session (an earlier enable used it: its stored result would be
+//   replayed, so a new approval could only be spent with no effect), or a
+//   playbook whose current version has no `done` dry run (`latestDryRun`), is
+//   refused, so no approval is written; otherwise the call
 //   is held with a display for `studio approvals` (the name, slug, version,
 //   every policy value with `(proposed)` where Wright set it, and the dry
 //   run's summary) and the version as the approval's `subject_version`.
@@ -24,7 +27,10 @@
 //   version, no `playbook_updated` came after the request, and the current
 //   version still has a `done` dry run, then enables the playbook at that
 //   version (`enablePlaybook`) in a work step keyed
-//   `ctx.stepKey(idempotency_key)`.
+//   `ctx.stepKey(idempotency_key)`. A step already `done` for the key is
+//   replayed only when its stored `approval_id` is this call's own approval;
+//   otherwise (a newer approval was consumed for the same key) it refuses and
+//   enables nothing, never returning the old result as this call's success.
 //
 // It never edits the triggers module: the linked trigger already exists
 // (item 02), and item 08 makes it fire. The `studio` CLI loads this module:
@@ -32,7 +38,7 @@
 import { z } from "zod";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
-import { runStep } from "../loop/steps.js";
+import { getWorkStep, runStep } from "../loop/steps.js";
 import type { HeldToolVerdict } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { afterPlaybookStep, named, owningAgent } from "./drafts.js";
@@ -119,15 +125,25 @@ export function enableDisplay(store: Store, row: PlaybookRow, dryRun: DryRunReco
   ].join("\n");
 }
 
+/** The refusal for an idempotency key an earlier enable of this session already used. */
+function usedKeyMessage(id: number): string {
+  return `idempotency_key already used for an enable in this session; use a new key to ask again for playbook ${id}`;
+}
+
 /**
  * The gate's pre-hold check: refuse (no approval) unless the caller's draft's
- * current version has a `done` dry run; else hold with the display and the
+ * current version has a `done` dry run and the idempotency key has no work
+ * step yet in this session (a used key would replay the old result, spending
+ * the owner's new approval on nothing); else hold with the display and the
  * version. A refusal of the playbook (`PlaybookError`) is a `refuse`; any
  * other throw propagates (the gate denies `kernel_gate_error`).
  */
 function beforeHold(a: { id: number; idempotency_key: string }, ctx: ContributedToolContext): HeldToolVerdict {
   try {
     const row = ownDraft(ctx.store, a.id, owningAgent(ctx));
+    if (getWorkStep(ctx.store, ctx.stepKey(a.idempotency_key)) !== undefined) {
+      return { refuse: `${ENABLE_TOOL_NAME}: ${usedKeyMessage(row.id)} (nothing was held for the owner)` };
+    }
     const dryRun = latestDryRun(ctx.store, row.id, row.version);
     if (dryRun === null) {
       return {
@@ -235,18 +251,41 @@ function enableOnApproval(ctx: ContributedToolContext, a: { id: number; idempote
   return { playbook: row.id, version: row.version, status: "enabled", approval_id: approval.id };
 }
 
+/**
+ * Defence behind `beforeHold`: a step already `done` for this key is replayed
+ * only when its stored `approval_id` is this call's own consumed approval.
+ * When a newer approval was consumed for the same key (the gate let a stale
+ * key through), refuse: nothing is enabled and the old result is never
+ * returned as this call's success. Synchronous with the `runStep` that
+ * follows: no call interleaves between this read and the step's claim.
+ */
+function refuseStaleReplay(ctx: ContributedToolContext, a: { id: number; idempotency_key: string }): void {
+  const step = getWorkStep(ctx.store, ctx.stepKey(a.idempotency_key));
+  if (step?.status !== "done") return;
+  const stored = (step.result as { approval_id?: unknown } | null | undefined)?.approval_id;
+  const playbookId = getPlaybook(ctx.store, a.id)?.id;
+  const approval = playbookId === undefined ? undefined : ownApproval(ctx.store, ctx.sessionId, playbookId, a.idempotency_key);
+  if (approval === undefined || approval.id !== stored) {
+    throw invalid(
+      `${usedKeyMessage(a.id)}: its stored result is for approval ${String(stored ?? "unknown")}, ` +
+        `not approval ${approval === undefined ? "unknown" : String(approval.id)}; nothing was enabled`,
+    );
+  }
+}
+
 const enableTool = defineTool({
   name: ENABLE_TOOL_NAME,
   description:
     "Ask the owner to enable a draft playbook you own, at its current version. Its current version needs a done kernel_playbook_dry_run first; otherwise this is refused. " +
     "The kernel always holds this call for the owner, showing the playbook, its values and the dry run; end your turn. If the owner approves, run exactly the same call again, once: " +
     "the playbook is then enabled at the version the owner saw. If it was changed since (a new version), the retry is refused and it stays a draft: dry-run it again and ask again. " +
-    "Returns {playbook, version, status: enabled, approval_id}. Repeating a call with the same idempotency_key in this session returns the first result.",
+    "Returns {playbook, version, status: enabled, approval_id}. Use a new idempotency_key for each request to the owner: a key an earlier enable in this session used is refused, nothing held.",
   shape: { id: z.number().int().positive(), idempotency_key: z.string().min(1).max(200) },
   beforeHold,
   handler: (a, ctx) =>
     named(ENABLE_TOOL_NAME, () => {
       const agent = owningAgent(ctx);
+      refuseStaleReplay(ctx, a);
       const first = runStep(ctx.store, ctx.stepKey(a.idempotency_key), () => enableOnApproval(ctx, a, agent), { now: ctx.now });
       return afterPlaybookStep(ctx, first.playbook, first);
     }),
