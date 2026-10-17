@@ -460,6 +460,28 @@ describe("run now (AC4)", () => {
     expect(err.join("")).toBe(`studio: playbook ${p.id} not run: kill_switch_engaged\n`);
     expect(messages()).toEqual([]);
   });
+
+  it("the CLI: a 400 prints the refusal's error code on one stderr line (an unsafe code prints unknown) and exits 1", async () => {
+    const sub = playbooksContribution.subcommands?.[0];
+    for (const [error, shown] of [
+      ["invalid_id", "invalid_id"],
+      ["Bad\nCode", "unknown"],
+    ]) {
+      const client: CliApiClient = { request: async () => ({ status: 400, body: { error } }) };
+      const out: string[] = [];
+      const err: string[] = [];
+      expect(await sub?.run(["run", "3"], client, { stdout: { write: (c: string) => out.push(c) }, stderr: { write: (c: string) => err.push(c) } })).toBe(1);
+      expect(out).toEqual([]);
+      expect(err.join("")).toBe(`studio: playbook 3 not run: ${shown}\n`);
+    }
+  });
+
+  it("a stored playbook priority outside the closed set: the route throws and queues nothing (never a guessed priority)", async () => {
+    const p = playbook();
+    store.prepare("UPDATE playbooks SET priority = 'urgent' WHERE id = ?").run(p.id);
+    await expect(runRoute()(String(p.id))).rejects.toThrow(/unknown priority "urgent"/);
+    expect(messages()).toEqual([]);
+  });
 });
 
 // ---- AC5 / AC5b: redelivery ------------------------------------------------------------
@@ -665,6 +687,35 @@ describe("crash safety (AC5, AC5b)", () => {
     expect(runs()[0]).toMatchObject({ status: "failed", session_id: null });
     expect(JSON.parse(runs()[0]?.result_json ?? "{}").error).toMatch(/^model_unset: /);
   });
+
+  /** Store `result` as event `id`'s done `start-session` step, as an earlier delivery (or earlier code) left it. */
+  function storedStartSession(id: number, result: unknown): void {
+    store.prepare("INSERT INTO work_steps (key, status, result_json) VALUES (?, 'done', ?)").run(`event:${id}:start-session`, JSON.stringify(result));
+  }
+
+  it("a start-session step stored in the earlier shape ({session_id: null, skip}, no fail) replays: the row ends as the stored skip, no session", async () => {
+    setWrightModel();
+    const p = playbook({ cron: "0 23 * * *" });
+    const id = queuePlaybookEvent({ agent: "wright", playbook: p.id, version: 1, scheduled_at: "2026-10-14T09:30:00.000Z" });
+    // The live playbook is enabled at version 1: only the stored skip can end the row skipped.
+    storedStartSession(id, { session_id: null, skip: { status: "skipped_not_enabled", result: { status: "disabled", version: 1 } } });
+    const sessions = stubSessions({ ending: "held" });
+    expect((await tick(sessions)).failed).toBe(0);
+    expect(sessions.starts).toEqual([]);
+    expect(getQueueRow(store, id)?.status).toBe("done");
+    expect(runs()).toEqual([expect.objectContaining({ status: "skipped_not_enabled", session_id: null, result_json: '{"status":"disabled","version":1}', ended_at: now().toISOString() })]);
+  });
+
+  it("a start-session step stored in an unknown shape ({session_id: null} alone) fails the event and writes nothing from it: the row is untouched", async () => {
+    setWrightModel();
+    const p = playbook({ cron: "0 23 * * *" });
+    const id = queuePlaybookEvent({ agent: "wright", playbook: p.id, version: 1, scheduled_at: "2026-10-14T09:30:00.000Z" });
+    storedStartSession(id, { session_id: null });
+    const sessions = stubSessions({ ending: "held" });
+    await expect(deliver(store, id, sessions)).rejects.toThrow(new TypeError(`event ${id}: the start-session step stored an unknown result`));
+    expect(sessions.starts).toEqual([]);
+    expect(runs()).toEqual([expect.objectContaining({ status: "running", session_id: null, result_json: null, ended_at: null })]);
+  });
 });
 
 // ---- AC6: unlinked triggers and plain messages are unchanged ----------------------------
@@ -843,6 +894,41 @@ describe("refusals: each records one run row (or fails the event when none can b
     expect(sessions.starts).toEqual([]);
     expect(runs()[0]?.status).toBe("failed");
     expect(JSON.parse(runs()[0]?.result_json ?? "{}").error).toMatch(/^memory_unwritable: /);
+  });
+
+  it("settings that cannot be read or created fail the run row (settings_unwritable) and the event, with one notify; no session", async () => {
+    const p = playbook();
+    // A file where Wright's settings directory should be: readWrightSettings throws (it cannot create it).
+    rmSync(join(dataDir, "config"), { recursive: true, force: true });
+    writeFileSync(join(dataDir, "config"), "a file where the config dir should be");
+    const id = queuePlaybookEvent({ agent: "wright", playbook: p.id, version: 1, scheduled_at: "2026-10-14T09:30:00.000Z" });
+    const notifies = events(store, "notify").length;
+    const sessions = stubSessions();
+    const result = await tick(sessions);
+    expect(result.failed).toBe(1);
+    expect(getQueueRow(store, id)?.status).toBe("failed");
+    expect(events(store, "notify").length - notifies).toBe(1);
+    expect(sessions.starts).toEqual([]);
+    expect(runs()).toEqual([expect.objectContaining({ status: "failed", session_id: null })]);
+    expect(JSON.parse(runs()[0]?.result_json ?? "{}").error).toMatch(/^settings_unwritable: /);
+  });
+
+  it("a version snapshot that is not JSON, or lacks its slug, is a missing snapshot: one failed (not_found) run row each, no session", async () => {
+    setWrightModel();
+    const notJson = playbook();
+    store.prepare("UPDATE playbook_versions SET snapshot_json = 'not json' WHERE playbook = ?").run(notJson.id);
+    const noSlug = playbook();
+    store.prepare("UPDATE playbook_versions SET snapshot_json = json_remove(snapshot_json, '$.slug') WHERE playbook = ?").run(noSlug.id);
+    const at = "2026-10-14T09:30:00.000Z";
+    queuePlaybookEvent({ agent: "wright", playbook: notJson.id, version: 1, scheduled_at: at });
+    queuePlaybookEvent({ agent: "wright", playbook: noSlug.id, version: 1, scheduled_at: at });
+    const sessions = stubSessions();
+    expect((await tick(sessions)).failed).toBe(0);
+    expect(sessions.starts).toEqual([]);
+    expect(runs().map((r) => [r.playbook, r.status, r.result_json])).toEqual([
+      [notJson.id, "failed", '{"error":"not_found"}'],
+      [noSlug.id, "failed", '{"error":"not_found"}'],
+    ]);
   });
 
   it("an admission refusal keeps the run row running with why and when, parks the event, and its redelivery starts the session on the same row", async () => {

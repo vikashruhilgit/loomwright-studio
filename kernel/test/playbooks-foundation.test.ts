@@ -285,4 +285,9 @@ describe("a playbooks contribution with verbs (what a later item's part adds)", 
     // Still merges as a feature: the handler is a contributed handler.
     expect(mergeContributions([c], PHASE1_RESERVED).handlers.wakeup).toBe(handler);
   });
+
+  it("a verb's help without the leading `studio playbooks ` goes on the help line unchanged", () => {
+    const c = playbooksContributionOf([emptyPart("drafts", { verbs: [verb("show"), { ...verb("odd"), help: "odd <x> (no prefix)" }] })]);
+    expect(c.subcommands?.[0]?.help).toBe("studio playbooks <verb> | show <id> | odd <x> (no prefix)");
+  });
 });
