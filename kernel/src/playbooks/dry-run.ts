@@ -324,19 +324,33 @@ function ownDraft(store: Store, id: number, agent: string): PlaybookRow {
 }
 
 /**
- * A step already `done` for this key replays its stored result only while
- * playbook `id` is still at the version that result dry-ran; after an edit
- * the same key is refused (use a new key to dry-run the new version).
+ * A step already `done` for this key replays its stored result only when that
+ * result is a dry run of playbook `id` (a key is scoped to the session, not to
+ * a playbook) and the playbook is still at the version it dry-ran. Otherwise
+ * the same key is refused (use a new key): a stored result is never returned
+ * for another playbook or an older version, and a refusal names a version
+ * only of the playbook its result dry-ran.
  */
 function refuseStaleReplay(store: Store, key: string, id: number): void {
   const step = getWorkStep(store, key);
   if (step?.status !== "done") return;
-  const stored = (step.result as { version?: unknown } | null | undefined)?.version;
+  const result = step.result as { playbook?: unknown; version?: unknown } | null | undefined;
+  const storedPlaybook = result?.playbook;
+  if (storedPlaybook !== id) {
+    throw invalid(
+      `idempotency_key already used in this session for the dry run of playbook ${String(storedPlaybook ?? "unknown")}; ` +
+        `use a new key to dry-run playbook ${id}`,
+    );
+  }
+  const stored = result?.version;
   const current = getPlaybook(store, id)?.version;
-  if (current === undefined || stored !== current) {
+  if (current === undefined) {
+    throw invalid(`idempotency_key already used in this session for the dry run of playbook ${id}, which no longer exists; nothing was run`);
+  }
+  if (stored !== current) {
     throw invalid(
       `idempotency_key already used in this session for the dry run of version ${String(stored ?? "unknown")}; ` +
-        `playbook ${id} is now at version ${String(current ?? "unknown")}: use a new key to dry-run it`,
+        `playbook ${id} is now at version ${current}: use a new key to dry-run it`,
     );
   }
 }

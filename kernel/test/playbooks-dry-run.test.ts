@@ -29,7 +29,7 @@ import { enablePlaybook } from "../src/playbooks/store.js";
 import { SessionManager } from "../src/sessions/manager.js";
 import type { DryRunReport, HeldToolCheck, SessionHandle, SessionRow, SessionStatus, StartSessionParams, ToolPolicy, WouldDoEntry } from "../src/sessions/types.js";
 import { Store } from "../src/store/index.js";
-import { contributedToolHandler, heldToolCheckOf } from "../src/tools/server.js";
+import { contributedToolHandler, heldToolCheckOf, kernelStepKey } from "../src/tools/server.js";
 import type { KernelToolContext, KernelToolResult } from "../src/tools/server.js";
 import { count, events } from "./loop-helpers.js";
 import { fakeMsg, fakeSessions, flush, makePluginDir, stubProvider } from "./session-fakes.js";
@@ -582,6 +582,72 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     expect(getPlaybook(h.store, id)).toMatchObject({ status: "draft", version: 2 });
     expect(events(h.store, "playbook_enabled").map((e) => e.payload.approval_id)).toEqual([1]);
   });
+
+  it("a key A's enable used: B's same-key enable is refused before the hold naming B, and its handler never replays A's result (defence behind the gate)", async () => {
+    // The real pre-hold check refuses B's call, naming B, with nothing held.
+    const real = await bootManager();
+    const a = await real.create({ name: "Playbook A" });
+    const b = await real.create({ name: "Playbook B" });
+    value(await real.tool("kernel_playbook_dry_run", { id: a.id, idempotency_key: "da" }));
+    value(await real.tool("kernel_playbook_dry_run", { id: b.id, idempotency_key: "db" }));
+    await real.gate(ENABLE, { id: a.id, idempotency_key: "k" });
+    decideApproval(real.store, { id: 1, decision: "once", by: "owner" }, clock.at);
+    expect((await real.gate(ENABLE, { id: a.id, idempotency_key: "k" })).permissionDecisionReason).toBe("approval_granted");
+    value(await real.tool("kernel_playbook_enable", { id: a.id, idempotency_key: "k" }));
+    const refused = await real.gate(ENABLE, { id: b.id, idempotency_key: "k" });
+    expect(refused.permissionDecision).toBe("deny");
+    expect(refused.permissionDecisionReason).toBe(
+      `kernel_playbook_enable: idempotency_key already used for an enable in this session; use a new key to ask again for playbook ${b.id} (nothing was held for the owner)`,
+    );
+    expect(real.approvals().map((x) => x.id)).toEqual([1]);
+  });
+
+  it("defence behind the gate: B's own consumed approval on a key A's enable used is refused naming A, never returned as B's success", async () => {
+    // A check that holds every call (as if the pre-hold check let the used key through).
+    let h!: Awaited<ReturnType<typeof bootManager>>;
+    h = await bootManager({ heldToolCheck: (_tool, input) => ({ display: "d", subjectVersion: getPlaybook(h.store, (input as { id: number }).id)?.version ?? 1 }) });
+    const a = await h.create({ name: "Playbook A" });
+    const b = await h.create({ name: "Playbook B" });
+    value(await h.tool("kernel_playbook_dry_run", { id: a.id, idempotency_key: "da" }));
+    value(await h.tool("kernel_playbook_dry_run", { id: b.id, idempotency_key: "db" }));
+    const inputA = { id: a.id, idempotency_key: "k" };
+    const inputB = { id: b.id, idempotency_key: "k" };
+    await h.gate(ENABLE, inputA);
+    decideApproval(h.store, { id: 1, decision: "once", by: "owner" }, clock.at);
+    expect((await h.gate(ENABLE, inputA)).permissionDecisionReason).toBe("approval_granted");
+    expect(value(await h.tool("kernel_playbook_enable", inputA))).toEqual({ playbook: a.id, version: 1, status: "enabled", approval_id: 1 });
+
+    expect((await h.gate(ENABLE, inputB)).permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
+    decideApproval(h.store, { id: 2, decision: "once", by: "owner" }, clock.at);
+    expect((await h.gate(ENABLE, inputB)).permissionDecisionReason).toBe("approval_granted");
+    const text = errorText(await h.tool("kernel_playbook_enable", inputB));
+    expect(text).toContain(`idempotency_key already used in this session for the enable of playbook ${a.id}; use a new key to ask again for playbook ${b.id}; nothing was enabled`);
+    expect(getPlaybook(h.store, b.id)?.status).toBe("draft");
+    expect(events(h.store, "playbook_enabled").map((e) => e.payload.playbook_id)).toEqual([a.id]);
+  });
+
+  it("the handler's replay: its own consumed approval replays the stored result (no second enable); a stored result with no approval of its own is refused", async () => {
+    let h!: Awaited<ReturnType<typeof bootManager>>;
+    h = await bootManager({ heldToolCheck: () => ({ display: "d", subjectVersion: getPlaybook(h.store, 1)?.version ?? 1 }) });
+    const { id } = await h.create();
+    value(await h.tool("kernel_playbook_dry_run", { id, idempotency_key: "d1" }));
+    const input = { id, idempotency_key: "e1" };
+    await h.gate(ENABLE, input);
+    decideApproval(h.store, { id: 1, decision: "once", by: "owner" }, clock.at);
+    await h.gate(ENABLE, input);
+    const first = value(await h.tool("kernel_playbook_enable", input));
+    expect(value(await h.tool("kernel_playbook_enable", input))).toEqual(first);
+    expect(events(h.store, "playbook_enabled")).toHaveLength(1);
+
+    // A done step whose stored result has no consumed approval of this call's behind it.
+    h.store
+      .prepare("INSERT INTO work_steps (key, status, result_json) VALUES (?, 'done', ?)")
+      .run(kernelStepKey("kernel_playbook_enable", h.wright.id, "e9"), JSON.stringify({ playbook: id, version: 1, status: "enabled", approval_id: 7 }));
+    const text = errorText(await h.tool("kernel_playbook_enable", { id, idempotency_key: "e9" }));
+    expect(text).toContain("idempotency_key already used for an enable in this session");
+    expect(text).toContain("its stored result is for approval 7, not approval unknown; nothing was enabled");
+    expect(events(h.store, "playbook_enabled")).toHaveLength(1);
+  });
 });
 
 // ---- AC6 and the dry run's refusals ------------------------------------------------------
@@ -646,6 +712,30 @@ describe("kernel_playbook_dry_run refusals (AC6)", () => {
     expect(latestDryRun(h.store, id, 2)).toBeNull();
     expect(value<DryRunValue>(await h.tool("kernel_playbook_dry_run", { id, idempotency_key: "d2" }))).toMatchObject({ version: 2, status: "done" });
     expect(h.started).toHaveLength(2);
+  });
+
+  it("a key A's dry run used is refused for B naming A, never B's version (A's result is never returned as B's); a new key dry-runs B", async () => {
+    const h = await bootManager();
+    const a = await h.create({ name: "Playbook A" });
+    const b = await h.create({ name: "Playbook B" });
+    value(await h.tool("kernel_playbook_dry_run", { id: a.id, idempotency_key: "k" }));
+    const text = errorText(await h.tool("kernel_playbook_dry_run", { id: b.id, idempotency_key: "k" }));
+    expect(text).toContain(`kernel_playbook_dry_run: idempotency_key already used in this session for the dry run of playbook ${a.id}; use a new key to dry-run playbook ${b.id}`);
+    expect(text).not.toContain("version");
+    expect(h.started).toHaveLength(1);
+    expect(latestDryRun(h.store, b.id, 1)).toBeNull();
+    expect(value<DryRunValue>(await h.tool("kernel_playbook_dry_run", { id: b.id, idempotency_key: "k2" }))).toMatchObject({ playbook: b.id, version: 1, status: "done" });
+    expect(h.started.map((s) => s.playbook)).toEqual([a.id, b.id]);
+  });
+
+  it("a stored dry run whose playbook no longer exists is refused, nothing run", async () => {
+    const h = await bootManager();
+    h.store
+      .prepare("INSERT INTO work_steps (key, status, result_json) VALUES (?, 'done', ?)")
+      .run(kernelStepKey("kernel_playbook_dry_run", h.wright.id, "k"), JSON.stringify({ run_id: 1, playbook: 99, version: 1, status: "done" }));
+    const text = errorText(await h.tool("kernel_playbook_dry_run", { id: 99, idempotency_key: "k" }));
+    expect(text).toContain("idempotency_key already used in this session for the dry run of playbook 99, which no longer exists; nothing was run");
+    expect(h.started).toEqual([]);
   });
 
   it("a session that does not complete is a failed run, never a dry run of the version", async () => {

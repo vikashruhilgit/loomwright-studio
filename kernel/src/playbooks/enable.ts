@@ -253,7 +253,8 @@ function enableOnApproval(ctx: ContributedToolContext, a: { id: number; idempote
 
 /**
  * Defence behind `beforeHold`: a step already `done` for this key is replayed
- * only when its stored `approval_id` is this call's own consumed approval.
+ * only when its stored result is for playbook `a.id` and its stored
+ * `approval_id` is this call's own consumed approval.
  * When a newer approval was consumed for the same key (the gate let a stale
  * key through), refuse: nothing is enabled and the old result is never
  * returned as this call's success. Synchronous with the `runStep` that
@@ -262,7 +263,15 @@ function enableOnApproval(ctx: ContributedToolContext, a: { id: number; idempote
 function refuseStaleReplay(ctx: ContributedToolContext, a: { id: number; idempotency_key: string }): void {
   const step = getWorkStep(ctx.store, ctx.stepKey(a.idempotency_key));
   if (step?.status !== "done") return;
-  const stored = (step.result as { approval_id?: unknown } | null | undefined)?.approval_id;
+  const result = step.result as { playbook?: unknown; approval_id?: unknown } | null | undefined;
+  // A key is scoped to the session, not to a playbook: another playbook's stored result is never this call's.
+  if (result?.playbook !== a.id) {
+    throw invalid(
+      `idempotency_key already used in this session for the enable of playbook ${String(result?.playbook ?? "unknown")}; ` +
+        `use a new key to ask again for playbook ${a.id}; nothing was enabled`,
+    );
+  }
+  const stored = result.approval_id;
   const playbookId = getPlaybook(ctx.store, a.id)?.id;
   const approval = playbookId === undefined ? undefined : ownApproval(ctx.store, ctx.sessionId, playbookId, a.idempotency_key);
   if (approval === undefined || approval.id !== stored) {
