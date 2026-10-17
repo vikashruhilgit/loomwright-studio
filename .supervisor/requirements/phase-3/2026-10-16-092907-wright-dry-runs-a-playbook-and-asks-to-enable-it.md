@@ -65,3 +65,9 @@ kernel/src/playbooks/dry-run.ts
 kernel/src/playbooks/enable.ts
 kernel/test/playbooks-dry-run.test.ts
 docs/architecture/dry-run.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-17T05:59:35Z
+- **Brief:** .supervisor/jobs/done/2026-10-17-playbook-dry-run-and-enable.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/74
