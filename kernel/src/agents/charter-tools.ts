@@ -27,7 +27,9 @@
 //   never copied from its prose, and come first; a call whose enforced lines
 //   (create) or whose whole display (update: the field lines and the enforced
 //   line) would not fit in `MAX_APPROVAL_DISPLAY` is refused `invalid_input`,
-//   so the 4,000-character cut never hides them.
+//   so the 4,000-character cut never hides them. An update whose overflow is
+//   the member's current state (no smaller request would fit) says so: the
+//   owner changes the settings file, not Wright.
 // - `applyOnApproval`, which the approvals decision runs when the owner
 //   approves the held call `once`: the same checks again on the approval's own
 //   agent, then the create (`createAgent` with `by: "wright"` and the
@@ -503,14 +505,57 @@ function changedText(file: string, sha256: string | null): string {
   return `${file} changed since it was read (its sha256 is ${sha256 === null ? "unreadable" : sha256.slice(0, 12)}…); call kernel_agent_list for the current hash`;
 }
 
+/** An update display's first line: who, and the hash of the settings file it was drafted against. */
+function updateHead(m: Merged): string {
+  return `Update crew member ${m.row.id} (${JSON.stringify(m.row.display_name)}), settings sha256 ${m.sha256.slice(0, 12)}, proposed by Wright`;
+}
+
 /** What `studio approvals` shows for an update: who and which file, one line per changed field, then the result's enforced line. */
 export function updateDisplay(m: Merged): string {
   const tp = m.charter.tool_policy;
   return [
-    `Update crew member ${m.row.id} (${JSON.stringify(m.row.display_name)}), settings sha256 ${m.sha256.slice(0, 12)}, proposed by Wright`,
+    updateHead(m),
     ...m.changes.map((c) => `${c.field}: ${shownValue(c.old)} → ${shownValue(c.new)}`),
     enforcedLine(tp.never, tp.allowedTools, tp.allowedBashPrefixes),
   ].join("\n");
+}
+
+/**
+ * The shortest display any change to the same fields of this member could
+ * have: what the change cannot shrink. Each field line's old value (shown
+ * whatever the new one is), with no new value; the enforced line with empty
+ * lists for what the change sets (`never`, `tool_policy`) and the member's
+ * current values for the rest (a field the change leaves alone is shown as
+ * it is).
+ */
+function updateFloor(m: Merged): string {
+  const tp = m.charter.tool_policy;
+  const sets = new Set(m.changes.map((c) => c.field));
+  return [
+    updateHead(m),
+    ...m.changes.map((c) => `${c.field}: ${shownValue(c.old)} → `),
+    enforcedLine(sets.has("never") ? [] : tp.never, sets.has("tool_policy") ? [] : tp.allowedTools, sets.has("tool_policy") ? [] : tp.allowedBashPrefixes),
+  ].join("\n");
+}
+
+/**
+ * `invalid_input` when the update's display would not fit `MAX_APPROVAL_DISPLAY`
+ * (the hold refuses rather than show a cut field or enforced line). When even
+ * the floor (`updateFloor`: the member's current state, which no smaller
+ * request shrinks) would not fit, the remedy is the owner's, not Wright's:
+ * the owner changes the member's settings file, and Wright can change the
+ * member once they fit. Otherwise the change itself is too large: ask for less.
+ */
+function updateFitRefusal(m: Merged, display: string): Refused | undefined {
+  if (display.length <= MAX_APPROVAL_DISPLAY) return undefined;
+  const floor = updateFloor(m).length;
+  if (floor <= MAX_APPROVAL_DISPLAY) return displayFitRefusal("the display (its field lines and enforced line)", display);
+  return refused(
+    "invalid_input",
+    `the display (its field lines and enforced line) would be ${display.length} characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown, ` +
+      `and the member's current settings alone (the changed fields' old values and the enforced line) would be ${floor}, so no smaller request fits; ` +
+      `the owner changes config/agents/${m.row.id}.json by hand (or with \`studio agents set\` for a scalar field, \`studio agents rename\` for the display name), and Wright can change the member once its settings fit`,
+  );
 }
 
 function updateBeforeHold(a: UpdateArgs, ctx: ContributedToolContext): HeldToolVerdict {
@@ -520,7 +565,7 @@ function updateBeforeHold(a: UpdateArgs, ctx: ContributedToolContext): HeldToolV
   if (isRefused(update)) return holdRefusal(AGENT_UPDATE_TOOL_NAME, update);
   const display = updateDisplay(update);
   // The field lines and the enforced line are all the owner must see: the whole display fits, or nothing is held.
-  const tooLong = displayFitRefusal("the display (its field lines and enforced line)", display);
+  const tooLong = updateFitRefusal(update, display);
   return tooLong === undefined ? { display } : holdRefusal(AGENT_UPDATE_TOOL_NAME, tooLong);
 }
 

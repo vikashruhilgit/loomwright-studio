@@ -632,6 +632,38 @@ describe("kernel_agent_update (AC5, AC6)", () => {
     );
     expect(h.approvals()).toEqual([]);
     expect(readFileSync(file, "utf8")).toBe(original);
+    // The current state fits (narrowing to no tools would): the remedy is Wright's, a smaller request.
+    expect(d.permissionDecisionReason).toContain("; ask for less at once");
+    expect(d.permissionDecisionReason).not.toContain("no smaller request fits");
+  });
+
+  it("a display_name-only update of an owner-created member whose current policy alone is over the cut is refused invalid_input with the owner's remedy; nothing is held", async () => {
+    const h = await bootManager();
+    // The owner's create has no display check: 30 tools of ~150 characters is a valid charter.
+    expect(h.ownerCreate(charter({ tool_policy: { allowedTools: longTools(30, "a"), allowedBashPrefixes: [], never: ["git_push"] } })).ok).toBe(true);
+    const file = agentSettingsPath(dataDir, "mason");
+    const original = readFileSync(file, "utf8");
+    const d = await h.wright.gate(UPDATE, { id: "mason", changes: { display_name: "Mason II" }, expected_sha256: await h.shaOf("mason"), idempotency_key: "u1" });
+    expect(d.permissionDecision).toBe("deny");
+    expect(d.permissionDecisionReason).toMatch(
+      new RegExp(
+        `^kernel_agent_update: invalid_input: the display \\(its field lines and enforced line\\) would be \\d+ characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown, and the member's current settings alone \\(the changed fields' old values and the enforced line\\) would be \\d+, so no smaller request fits; ` +
+          "the owner changes config/agents/mason\\.json by hand \\(or with `studio agents set` for a scalar field, `studio agents rename` for the display name\\), and Wright can change the member once its settings fit \\(nothing was held for the owner\\)$",
+      ),
+    );
+    expect(d.permissionDecisionReason).not.toContain("ask for less");
+    expect(h.approvals()).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(original);
+    expect(getAgent(h.store, "mason")?.display_name).toBe("Mason");
+  });
+
+  it("narrowing a member whose old tool list alone is over the cut is refused with the owner's remedy; nothing is held", async () => {
+    const h = await bootManager();
+    expect(h.ownerCreate(charter({ tool_policy: { allowedTools: longTools(30, "a"), allowedBashPrefixes: [], never: ["git_push"] } })).ok).toBe(true);
+    const d = await h.wright.gate(UPDATE, { id: "mason", changes: { tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] } }, expected_sha256: await h.shaOf("mason"), idempotency_key: "u1" });
+    expect(d.permissionDecision).toBe("deny");
+    expect(d.permissionDecisionReason).toContain("so no smaller request fits; the owner changes config/agents/mason.json by hand");
+    expect(h.approvals()).toEqual([]);
   });
 
   it("an owner's edit between the apply's hash read and the in-transaction re-read: apply_refused config_changed, the owner's bytes kept, no agent_updated, no temporary file left", async () => {
