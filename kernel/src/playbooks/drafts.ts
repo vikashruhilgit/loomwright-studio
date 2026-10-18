@@ -3,7 +3,7 @@
 // policy value and turns a playbook off. `./index.ts` merges this part with
 // the others in `PLAYBOOK_PARTS` into the one `playbooks` contribution.
 //
-//   tools   kernel_playbook_create, _update, _list, _disable  (Wright: its own playbooks)
+//   tools   kernel_playbook_create, _update, _list, _disable  (Wright: its own playbooks and its crew's)
 //   routes  GET  /playbooks[?all=1]        {playbooks}: draft and enabled; all=1 adds disabled
 //           GET  /playbooks/:ref           {playbook, versions, trigger}: by id or slug
 //           POST /playbooks/:id/set        body {field, value}: the owner sets one policy value
@@ -23,11 +23,22 @@
 // work step keyed `ctx.stepKey(idempotency_key)`, so a repeat returns the
 // first result, except after the owner's off, which a repeat re-checks.
 //
+// Crew-owned playbooks (phase 4 item 08), one rule every part uses: a
+// registered crew member's session never drafts (`refuseCrewDrafting`:
+// create, update, disable, dry run and enable refuse `crew_cannot_draft`
+// before anything is written); Wright drafts a playbook for an `active` crew
+// member (create's `agent`), and manages any registered crew member's
+// playbooks as well as its own (`mayManage`, `actingAgentFor`). An
+// unregistered agent id is never crew: its own playbooks stay its own, and
+// Wright's checks against them stay `not_owner`.
+//
 // The `studio` CLI loads this module: besides zod and `node:` builtins it
 // imports only `../features/contribution.js`, `../loop/*`, `../tools/handoff.js`,
+// the leaf `../agents/registry.js` (types and `Store` reads only),
 // the triggers feature's public index and this feature's files, never the
 // Agent SDK, the session manager or `kernel.ts`.
 import { z } from "zod";
+import { getAgent, isRoutable } from "../agents/registry.js";
 import { defineTool } from "../features/contribution.js";
 import type {
   CliApiClient,
@@ -156,6 +167,60 @@ export function owningAgent(ctx: ContributedToolContext): string {
   return agent;
 }
 
+/** Why a crew member's session is refused a drafting tool (the `crew_cannot_draft` detail; the enable's apply records it too). */
+export const CREW_CANNOT_DRAFT_DETAIL = "crew members don't draft playbooks; Wright drafts a crew member's playbooks";
+
+/**
+ * The calling session's agent (`owningAgent`), unless it is a registered
+ * crew member: then `PlaybookError("crew_cannot_draft")`. Keyed on the
+ * `agents` row, never on `agent !== "wright"`: an unregistered agent id is
+ * not crew and keeps its own playbooks. Every drafting tool (create, update,
+ * disable, dry run, enable) calls it first, before anything is written.
+ */
+export function refuseCrewDrafting(ctx: ContributedToolContext): string {
+  const agent = owningAgent(ctx);
+  if (getAgent(ctx.store, agent) !== undefined) throw new PlaybookError("crew_cannot_draft", `crew_cannot_draft: ${CREW_CANNOT_DRAFT_DETAIL}`);
+  return agent;
+}
+
+/**
+ * Whether agent `caller` may act on a playbook `owner` owns: its own, or
+ * Wright on a registered crew member's (`active` or `off`: Wright may list,
+ * update or disable an off member's playbook; its dry run and fires refuse
+ * `agent_off`). An unregistered owner is never Wright's to manage.
+ */
+export function mayManage(store: Store, caller: string, owner: string): boolean {
+  return caller === owner || (caller === "wright" && getAgent(store, owner) !== undefined);
+}
+
+/**
+ * The agent the store's owner check is run as for playbook `id`: its
+ * `owning_agent` when the caller may manage it (`mayManage`), else the caller,
+ * so the store refuses `not_owner` with its usual text (a missing playbook is
+ * the store's `not_found`).
+ */
+export function actingAgentFor(ctx: ContributedToolContext, id: number): string {
+  const caller = owningAgent(ctx);
+  const owner = getPlaybook(ctx.store, id)?.owning_agent;
+  return owner !== undefined && mayManage(ctx.store, caller, owner) ? owner : caller;
+}
+
+/**
+ * The agent a create drafts for: the caller when `requested` is absent (or is
+ * the caller, Wright); otherwise only Wright may name one, and it must be an
+ * `active` registered crew member (`agent_off` for an `off` one,
+ * `invalid_input` naming `agent` otherwise). Checked before the work step, so
+ * a refusal writes nothing.
+ */
+function draftOwner(store: Store, caller: string, requested: string | undefined): string {
+  if (requested === undefined) return caller;
+  if (caller !== "wright") throw new PlaybookError("invalid_input", "agent: only Wright drafts a playbook for another agent");
+  if (requested === "wright") return caller;
+  if (getAgent(store, requested)?.status === "off") throw new PlaybookError("agent_off", `agent_off: ${requested} is off; turn it on before drafting its playbooks`);
+  if (!isRoutable(store, requested)) throw new PlaybookError("invalid_input", `agent: ${JSON.stringify(requested)} is not an active registered crew member`);
+  return requested;
+}
+
 /** Run `body`, prefixing a refusal's message with the tool name. */
 export function named<T>(name: string, body: () => T): T {
   try {
@@ -224,6 +289,8 @@ const create = defineTool({
     "intent: what to do, in plain words. trigger: {kind: once, spec: an ISO-8601 instant WITH a time zone} or {kind: cron, spec: a 5-field cron expression, tz: an IANA zone}; " +
     `it becomes the playbook's one linked trigger, which starts no work until the playbook is enabled. dedupe_key: fields from playbook.id, playbook.version, trigger.id, trigger.scheduled_at, date. ` +
     `priority: low, normal or high. model: a model id. token_limit: tokens per day. ${LIMITS} ` +
+    "agent (optional): the id of an active crew member to draft it for; it then belongs to that member, and its dry run and every fire run as that member " +
+    "(its settings, policy and never list, its memory folder and its limits). Omitted: the playbook is yours. " +
     "Returns {id, slug, status: draft, version: 1, trigger_id, next_fire_at (UTC), mirror}: mirror is the markdown file (under the Studio data dir) the owner reads. " +
     REPEAT,
   shape: {
@@ -231,11 +298,12 @@ const create = defineTool({
     intent: z.string().max(4_000),
     trigger: triggerShape,
     ...policyShape,
+    agent: z.string().max(64).optional(),
     idempotency_key: idempotencyKey,
   },
   handler: (a, ctx) =>
     named("kernel_playbook_create", () => {
-      const agent = owningAgent(ctx);
+      const agent = draftOwner(ctx.store, refuseCrewDrafting(ctx), a.agent);
       const first = runStep(
         ctx.store,
         ctx.stepKey(a.idempotency_key),
@@ -266,7 +334,7 @@ const create = defineTool({
 const update = defineTool({
   name: "kernel_playbook_update",
   description:
-    "Change a playbook you own: changes gives any of name, intent, trigger, dedupe_key, priority, model, token_limit (same forms as kernel_playbook_create; at least one). " +
+    "Change a playbook you own, or (Wright) one of a registered crew member's: changes gives any of name, intent, trigger, dedupe_key, priority, model, token_limit (same forms as kernel_playbook_create; at least one). " +
     "A change makes a new version, and an enabled playbook goes back to draft for the owner to review. A trigger change re-schedules the same linked trigger. " +
     `${LIMITS} Returns {id, slug, status, version, trigger_id, next_fire_at, changed, mirror}. ${REPEAT}`,
   shape: {
@@ -276,7 +344,8 @@ const update = defineTool({
   },
   handler: (a, ctx) =>
     named("kernel_playbook_update", () => {
-      const agent = owningAgent(ctx);
+      refuseCrewDrafting(ctx);
+      const agent = actingAgentFor(ctx, a.id);
       const first = runStep(
         ctx.store,
         ctx.stepKey(a.idempotency_key),
@@ -290,19 +359,29 @@ const update = defineTool({
 const list = defineTool({
   name: "kernel_playbook_list",
   description:
-    "List the playbooks you own, every status (draft, enabled, disabled), in id order, each with its policy values (and who set each: wright = proposed, owner = the owner's), " +
-    "its linked trigger_id and next_fire_at (UTC).",
+    "List the playbooks you own (Wright: and every registered crew member's), every status (draft, enabled, disabled), in id order, each with its owning_agent, " +
+    "its policy values (and who set each: wright = proposed, owner = the owner's), its linked trigger_id and next_fire_at (UTC).",
   shape: {},
-  handler: (_a, ctx) => named("kernel_playbook_list", () => ({ playbooks: listPlaybooks(ctx.store, { all: true, agent: owningAgent(ctx) }) })),
+  handler: (_a, ctx) => named("kernel_playbook_list", () => ({ playbooks: listFor(ctx) })),
 });
+
+/** The caller's own playbooks; for Wright, also every registered crew member's (never an unregistered agent's). */
+function listFor(ctx: ContributedToolContext): ReturnType<typeof listPlaybooks> {
+  const caller = owningAgent(ctx);
+  if (caller !== "wright") return listPlaybooks(ctx.store, { all: true, agent: caller });
+  return listPlaybooks(ctx.store, { all: true }).filter((p) => p.owning_agent === "wright" || getAgent(ctx.store, p.owning_agent) !== undefined);
+}
 
 const disable = defineTool({
   name: "kernel_playbook_disable",
-  description: `Turn off a playbook you own (not one the owner turned off). Its trigger then starts no work. Returns {id, slug, status: disabled, version, changed, mirror}. ${REPEAT}`,
+  description:
+    "Turn off a playbook you own, or (Wright) one of a registered crew member's (not one the owner turned off). Its trigger then starts no work. " +
+    `Returns {id, slug, status: disabled, version, changed, mirror}. ${REPEAT}`,
   shape: { id: z.number().int().positive(), idempotency_key: idempotencyKey },
   handler: (a, ctx) =>
     named("kernel_playbook_disable", () => {
-      const agent = owningAgent(ctx);
+      refuseCrewDrafting(ctx);
+      const agent = actingAgentFor(ctx, a.id);
       const first = runStep(
         ctx.store,
         ctx.stepKey(a.idempotency_key),

@@ -157,14 +157,10 @@ export function renderPlaybookMirror(row: PlaybookRow, trigger: MirrorTrigger | 
     "",
     `- Status: ${inline(row.status)}`,
     `- Version: ${row.version}`,
-    "",
-    "## Intent",
-    "",
-    fenced(row.intent),
-    "",
-    "## Trigger",
-    "",
   ];
+  // A crew member's playbook names its agent; Wright's mirror is byte-identical to before crew ownership.
+  if (row.owning_agent !== "wright") out.push(`- Agent: ${inline(row.owning_agent)}`);
+  out.push("", "## Intent", "", fenced(row.intent), "", "## Trigger", "");
   if (trigger === null) out.push("- Schedule: no linked trigger");
   else {
     out.push(`- Schedule: ${schedule(trigger)} (trigger ${trigger.id})`);

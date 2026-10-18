@@ -3,14 +3,18 @@
 // it can read but never act) and gets back what it would do. `./index.ts`
 // merges this part with the others in `PLAYBOOK_PARTS`.
 //
-//   tool  kernel_playbook_dry_run(id, idempotency_key)  (Wright: its own draft playbooks)
+//   tool  kernel_playbook_dry_run(id, idempotency_key)  (Wright: its own draft playbooks and its crew's)
 //
-// The call refuses before any session: a playbook that is not the caller's,
-// the owner's off, one that is not a draft, one with no model (the kernel
-// never picks a model), then Wright's settings (`wright.json`) that cannot
-// start a session. Otherwise it starts the owning agent's dry-run session
-// (the intent verbatim as its prompt, the playbook's model, Wright's
-// permission mode and policy, cwd Wright's memory dir, `sessions.playbook` /
+// The call refuses before any session: a crew member's session
+// (`crew_cannot_draft`), a playbook the caller may not manage (`mayManage`,
+// `./drafts.ts`), the owner's off, one that is not a draft, one with no model
+// (the kernel never picks a model), then the owning agent's settings that
+// cannot start a session: Wright's (`wright.json`) for Wright's playbook, the
+// member's own (`config/agents/<id>.json`) for a crew member's, which first
+// refuses an `off` member (`agent_off`). Otherwise it starts the owning
+// agent's dry-run session (the intent verbatim as its prompt, the playbook's
+// model, that agent's permission mode and policy, its `never` list for a
+// crew member, cwd that agent's memory dir, `sessions.playbook` /
 // `playbook_version` set), stores one `playbook_runs` row of kind `dry_run`,
 // appends one `playbook_dry_run` event, rewrites the mirror and returns the
 // summary. The session is started inside a work step keyed
@@ -28,12 +32,17 @@
 //
 // The `studio` CLI loads this module: besides zod and `node:` builtins it
 // imports only the feature seam, `../loop/*`, the brain's settings and memory
-// paths (`node:` and zod only), the triggers feature's public index, type-only
-// session and budget modules and this feature's files, never the Agent SDK,
-// the session manager or `kernel.ts`. It and `./drafts.ts` import each other's
-// functions (a cycle used only at call time, never at module load).
+// paths (`node:` and zod only), the agents feature's leaf modules
+// (`../agents/registry.js`, `settings.js`, `memory.js`: never its index), the
+// triggers feature's public index, type-only session and budget modules and
+// this feature's files, never the Agent SDK, the session manager or
+// `kernel.ts`. It and `./drafts.ts` import each other's functions (a cycle
+// used only at call time, never at module load).
 import { mkdirSync } from "node:fs";
 import { z } from "zod";
+import { agentMemoryDir, ensureAgentMemoryFiles } from "../agents/memory.js";
+import { getAgent } from "../agents/registry.js";
+import { readAgentSettings } from "../agents/settings.js";
 import { wrightMemoryDir } from "../brain/memory.js";
 import { readWrightSettings } from "../brain/settings.js";
 import type { UsageTotals } from "../budget/types.js";
@@ -41,11 +50,11 @@ import { defineTool } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { appendEvent } from "../loop/internal.js";
 import { getWorkStep, runStepAsync } from "../loop/steps.js";
-import type { SessionHandle, WouldDoEntry } from "../sessions/types.js";
+import type { AllowedPermissionMode, SessionHandle, ToolPolicy, WouldDoEntry } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { nextCronFire } from "../triggers/index.js";
 import type { TriggerView } from "../triggers/index.js";
-import { afterPlaybookStep, namedAsync, owningAgent } from "./drafts.js";
+import { afterPlaybookStep, mayManage, namedAsync, refuseCrewDrafting } from "./drafts.js";
 import type { MirrorDryRun } from "./mirror.js";
 import { PlaybookError, getPlaybook, linkedTriggerOf, refuseIfOwnerTurnedOff } from "./store.js";
 import type { PlaybookRow } from "./store.js";
@@ -312,11 +321,11 @@ function isAdmissionRefusal(err: unknown): boolean {
   return err instanceof Error && (err as { code?: unknown }).code === "admission_refused";
 }
 
-/** Playbook `id` if the caller may dry-run it: its own, not turned off by the owner, a draft. */
+/** Playbook `id` if the caller may dry-run it: one it may manage (`mayManage`), not turned off by the owner, a draft. */
 function ownDraft(store: Store, id: number, agent: string): PlaybookRow {
   const row = getPlaybook(store, id);
   if (row === undefined) throw new PlaybookError("not_found", `no playbook ${id}`);
-  if (row.owning_agent !== agent) throw new PlaybookError("not_owner", `playbook ${row.id} belongs to agent ${row.owning_agent}; an agent can dry-run only its own playbooks`);
+  if (!mayManage(store, agent, row.owning_agent)) throw new PlaybookError("not_owner", `playbook ${row.id} belongs to agent ${row.owning_agent}; an agent can dry-run only its own playbooks`);
   refuseIfOwnerTurnedOff(store, row.id);
   if (row.status === "enabled") throw invalid(`playbook ${row.id} is already enabled at version ${row.version}; change it to make a new draft version to dry-run`);
   if (row.status !== "draft") throw invalid(`playbook ${row.id} is ${row.status}; only a draft is dry-run`);
@@ -358,6 +367,31 @@ function refuseStaleReplay(store: Store, key: string, id: number): void {
 /** Where a run's work is, for the step's no-effect rule: nothing started yet, the session being asked for, or started. */
 type Phase = "checks" | "starting" | "started";
 
+/** What the owning agent's dry-run session starts as: its agent, permission mode, policy and cwd. */
+interface DryRunAs {
+  readonly agent: string;
+  readonly permissionMode: AllowedPermissionMode;
+  readonly policy: ToolPolicy;
+  readonly cwd: string;
+}
+
+/**
+ * A registered crew member's playbook runs as that member: refused
+ * `agent_off` unless it is `active`; its memory files made (a missing
+ * `role.md` is refused naming it); its own settings (a refusal names its
+ * file); its permission mode, its policy with its `never` list, cwd its
+ * memory folder. Every refusal is before any session (the `checks` phase).
+ */
+function crewDryRunAs(store: Store, owner: string, status: string): DryRunAs {
+  if (status !== "active") throw new PlaybookError("agent_off", `agent_off: ${owner} is off; its playbooks do not run`);
+  const memory = ensureAgentMemoryFiles(store.dataDir, owner);
+  if (!memory.ok) throw invalid(memory.error === "charter_missing" ? `charter_missing: ${memory.file} is missing (the crew member's charter)` : memory.message);
+  const read = readAgentSettings(store.dataDir, owner);
+  if (!read.ok) throw invalid(read.error === "model_unset" ? `model_unset: set "model" in ${read.file}` : read.message);
+  const s = read.settings;
+  return { agent: owner, permissionMode: s.permissionMode, policy: { ...s.policy, ...(s.never !== undefined ? { never: s.never } : {}) }, cwd: agentMemoryDir(store.dataDir, owner) };
+}
+
 /** Wait for the dry-run session, then store its run's ending and its audit event. */
 async function finishRun(ctx: ContributedToolContext, row: PlaybookRow, trigger: TriggerView | null, handle: SessionHandle): Promise<DryRunToolResult> {
   const { store } = ctx;
@@ -398,16 +432,18 @@ async function finishRun(ctx: ContributedToolContext, row: PlaybookRow, trigger:
 const dryRunTool = defineTool({
   name: DRY_RUN_TOOL_NAME,
   description:
-    "Dry-run a draft playbook you own: run its current version once, as you would when it fires, in a session that can read but never act. " +
+    "Dry-run a draft playbook you own, or (Wright) one of a registered crew member's: run its current version once, as its agent would when it fires, in a session that can read but never act. " +
+    "A crew member's playbook runs as that member (its settings, policy and never list, its memory folder); an off member's is refused. " +
     "Every call that would act (a comment, a push, a write, a kernel change) is recorded as something it would do and does not run. " +
-    "The playbook must have a model (the kernel never picks one). The run's tokens count against your limits. " +
+    "The playbook must have a model (the kernel never picks one). The run's tokens count against the owning agent's limits. " +
     "Returns {run_id, playbook, version, status: done|failed, would_do, next_fires (UTC), dedupe_key (a preview for the next fire), tokens, summary}; " +
     "the summary is also written to the playbook's mirror. kernel_playbook_enable needs a done dry run of the current version. " +
     "Repeating a call with the same idempotency_key in this session returns the first result and starts no second run, while the playbook is at that version; after an edit, use a new key.",
   shape: { id: z.number().int().positive(), idempotency_key: z.string().min(1).max(200) },
   handler: (a, ctx) =>
     namedAsync(DRY_RUN_TOOL_NAME, async () => {
-      const agent = owningAgent(ctx);
+      // A crew member's session is refused first: nothing below runs or writes.
+      const agent = refuseCrewDrafting(ctx);
       // Before the step, so a same-key repeat clears what a crash left too.
       failStaleDryRuns(ctx.store, a.id, ctx.now());
       // Synchronous up to the step's claim: no call interleaves between this read and it.
@@ -418,24 +454,31 @@ const dryRunTool = defineTool({
         ctx.stepKey(a.idempotency_key),
         async (): Promise<DryRunToolResult> => {
           const row = ownDraft(ctx.store, a.id, agent);
-          // The playbook's own model first: before Wright's settings are read and before any session.
+          // The playbook's own model first: before the owning agent's settings are read and before any session.
           if (row.model === null) throw invalid(`model: playbook ${row.id} has no model; the kernel never picks one (the owner sets it with studio playbooks set ${row.id} model <id>)`);
-          const settings = readWrightSettings(ctx.store.dataDir);
-          if (!settings.ok) throw invalid(`wright.json: ${settings.message}`);
+          // A registered crew member's playbook runs as that member; any other (Wright's, or an unregistered agent's own) as before.
+          const crew = row.owning_agent === "wright" ? undefined : getAgent(ctx.store, row.owning_agent);
+          let as: DryRunAs;
+          if (crew === undefined) {
+            const settings = readWrightSettings(ctx.store.dataDir);
+            if (!settings.ok) throw invalid(`wright.json: ${settings.message}`);
+            as = { agent, permissionMode: settings.settings.permissionMode, policy: settings.settings.policy, cwd: wrightMemoryDir(ctx.store.dataDir) };
+          } else {
+            as = crewDryRunAs(ctx.store, row.owning_agent, crew.status);
+          }
           const sessions = ctx.sessions;
           if (sessions.startSession === undefined) throw invalid("this kernel composition gives tools no session manager, so no dry-run session can start");
-          const cwd = wrightMemoryDir(ctx.store.dataDir);
-          mkdirSync(cwd, { recursive: true, mode: 0o700 });
+          mkdirSync(as.cwd, { recursive: true, mode: 0o700 });
           const trigger = linkedTriggerOf(ctx.store, row);
           phase = "starting";
           // The step's first effect: an admission refusal releases the step (nothing to repeat).
           const handle = await sessions.startSession({
-            agent,
+            agent: as.agent,
             prompt: row.intent,
             model: row.model,
-            permissionMode: settings.settings.permissionMode,
-            cwd,
-            policy: settings.settings.policy,
+            permissionMode: as.permissionMode,
+            cwd: as.cwd,
+            policy: as.policy,
             dryRun: true,
             playbook: row.id,
             playbookVersion: row.version,
