@@ -1,7 +1,8 @@
 // The agents feature's foundation (phase 4 item 01): one `agents`
-// contribution built from three empty sub-file parts (`roster`, `delegate`,
-// `charter-tools`), registered seventh in `SHIPPED_CONTRIBUTIONS`, whose only
-// part is the verb-less `studio agents` subcommand; the part merge's refusals;
+// contribution built from three sub-file parts (`roster`, filled by item 02
+// with the `/agents` routes and the `studio agents` verbs; `delegate` and
+// `charter-tools`, still empty), registered seventh in `SHIPPED_CONTRIBUTIONS`;
+// the part merge's refusals;
 // the one settings reader every agent shares (`readAgentSettings`, with
 // `readWrightSettings` a thin call keeping its own shapes); the one memory
 // reader (`ensureAgentMemoryFiles`); the read-only registry lookups; and the
@@ -96,6 +97,17 @@ async function studio(argv: string[], overrides: Partial<CliDeps> = {}) {
   return { code, stdout: out.join(""), stderr: err.join(""), reads, fetches };
 }
 
+/** The roster part's routes (phase 4 item 02), in order. */
+const ROSTER_ROUTES = [
+  ["GET", "/agents"],
+  ["GET", "/agents/:id"],
+  ["POST", "/agents"],
+  ["POST", "/agents/:id/rename"],
+  ["POST", "/agents/:id/set"],
+  ["POST", "/agents/:id/off"],
+  ["POST", "/agents/:id/on"],
+];
+
 const emptyPart = (name: string, extra: Partial<AgentPart> = {}): AgentPart => ({ name, tools: [], routes: [], verbs: [], handlers: {}, ...extra });
 
 const verb = (name: string): AgentVerb => ({ name, help: `studio agents ${name} <id>`, run: async () => 7 });
@@ -122,28 +134,38 @@ function writeSettings(id: string, extra: Record<string, unknown> = {}, model: u
 // ---- AC3: the contribution, its parts and `studio agents` -------------------------------
 
 describe("the agents contribution (AC3)", () => {
-  it("is the seventh shipped contribution, after playbooks: one verb-less agents subcommand, no tool, route, handler or due work", () => {
+  it("is the seventh shipped contribution, after playbooks: one agents subcommand with the roster's verbs, the roster's routes, no tool, handler or due work", () => {
     expect(SHIPPED_CONTRIBUTIONS[6]).toBe(agentsContribution);
     expect(SHIPPED_CONTRIBUTIONS[5]?.name).toBe("playbooks");
     expect(agentsContribution.name).toBe("agents");
     expect(Object.isFrozen(agentsContribution)).toBe(true);
-    expect(Object.keys(agentsContribution)).toEqual(["name", "subcommands"]);
+    expect(Object.keys(agentsContribution)).toEqual(["name", "routes", "subcommands"]);
     const merged = mergeContributions([agentsContribution], PHASE1_RESERVED);
     expect(merged.tools).toEqual([]);
-    expect(merged.routes).toEqual([]);
+    expect(merged.routes.map((r) => [r.owner, r.method, r.path])).toEqual(ROSTER_ROUTES.map(([method, path]) => ["agents", method, path]));
     expect(merged.handlers).toEqual({});
     expect(merged.dueWork).toEqual([]);
-    expect(merged.subcommands.map((s) => [s.name, s.help])).toEqual([["agents", "studio agents <verb>"]]);
-    expect(AGENTS_HELP).toBe("studio agents <verb>");
-    expect(mergeAgentParts(AGENT_PARTS).verbs).toEqual([]);
+    expect(merged.subcommands.map((s) => [s.name, s.help])).toEqual([["agents", AGENTS_HELP]]);
+    expect(AGENTS_HELP).toBe(
+      "studio agents <verb> | list [--json] | show <id> [--json] | create --from <file> | rename <id> <display name> | set <id> <field> <value> | off <id> | on <id>",
+    );
+    expect(AGENTS_HELP.length).toBeLessThanOrEqual(200);
+    expect(mergeAgentParts(AGENT_PARTS).verbs.map((v) => v.name)).toEqual(["list", "show", "create", "rename", "set", "off", "on"]);
   });
 
-  it("is built from three frozen, empty parts, in order: roster (item 02), delegate (item 06), charter-tools (item 07)", () => {
+  it("is built from three frozen parts, in order: roster (item 02, filled), delegate (item 06) and charter-tools (item 07), both still empty", () => {
     expect(AGENT_PARTS).toEqual([rosterPart, delegatePart, charterToolsPart]);
     expect(AGENT_PARTS.map((p) => p.name)).toEqual(["roster", "delegate", "charter-tools"]);
     expect(Object.isFrozen(AGENT_PARTS)).toBe(true);
-    for (const part of AGENT_PARTS) {
-      expect(Object.isFrozen(part), part.name).toBe(true);
+    for (const part of AGENT_PARTS) expect(Object.isFrozen(part), part.name).toBe(true);
+    expect({
+      tools: rosterPart.tools,
+      routes: rosterPart.routes.map((r) => [r.method, r.path]),
+      verbs: rosterPart.verbs.map((v) => v.name),
+      handlers: rosterPart.handlers,
+      dueWork: rosterPart.dueWork ?? [],
+    }).toEqual({ tools: [], routes: ROSTER_ROUTES, verbs: ["list", "show", "create", "rename", "set", "off", "on"], handlers: {}, dueWork: [] });
+    for (const part of [delegatePart, charterToolsPart]) {
       expect({ tools: part.tools, routes: part.routes, verbs: part.verbs, handlers: part.handlers, dueWork: part.dueWork ?? [] }, part.name).toEqual({
         tools: [],
         routes: [],
@@ -156,10 +178,10 @@ describe("the agents contribution (AC3)", () => {
 });
 
 describe("studio agents (AC3)", () => {
-  it("with no verb, or help: the help then `no verbs yet` on stdout, 0; no Keychain read, no API call", async () => {
+  it("with no verb, or help: the help (the roster's verbs on it) on stdout, 0; no Keychain read, no API call", async () => {
     for (const argv of [["agents"], ["agents", "help"]]) {
       const r = await studio(argv);
-      expect(r, argv.join(" ")).toMatchObject({ code: 0, stdout: `${AGENTS_HELP}\nno verbs yet\n`, stderr: "" });
+      expect(r, argv.join(" ")).toMatchObject({ code: 0, stdout: `${AGENTS_HELP}\n`, stderr: "" });
       expect(r.reads).toEqual([]);
       expect(r.fetches).toEqual([]);
     }
