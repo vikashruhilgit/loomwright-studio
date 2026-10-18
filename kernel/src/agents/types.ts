@@ -8,7 +8,9 @@
 //
 // Types only, plus the lists: the `studio` CLI loads this module (through
 // `./index.ts` and `../features/index.ts`), so it never imports the Agent SDK,
-// the session manager or `kernel.ts`.
+// the session manager or `kernel.ts`; its one runtime import is
+// `../brain/memory.js` (`node:*` only), for the reserved ids.
+import { KERNEL_MEMORY_DIRS } from "../brain/memory.js";
 import type { CliApiClient, CliSubcommandOutput, ContributedRoute, ContributedTool, DueWorkFn } from "../features/contribution.js";
 import type { EventHandler, EventKind } from "../loop/types.js";
 
@@ -21,11 +23,15 @@ export const AGENT_CREATED_BY = Object.freeze(["owner", "wright"] as const);
 export type AgentCreatedBy = (typeof AGENT_CREATED_BY)[number];
 
 /**
- * Ids no crew member may take: `wright` (the lead agent, reachable only
- * through its own explicit paths), `shared` (the `memory/shared/` folder) and
- * `_unassigned`.
+ * Ids no crew member may take: exactly the kernel-owned `memory/` folders
+ * (`KERNEL_MEMORY_DIRS`, `../brain/memory.ts`), since a crew member's memory
+ * folder is `memory/<id>`: `wright` (the lead agent, reachable only through
+ * its own explicit paths; also the one kernel-owned `config/agents/` file),
+ * `shared` (`memory/shared/`), `_unassigned` (the handoff folder of a session
+ * with no agent) and `playbooks` (the playbook mirrors, `memory/playbooks/`).
+ * Derived, never hand-written, so a new kernel-owned folder is reserved too.
  */
-export const RESERVED_AGENT_IDS = Object.freeze(["wright", "shared", "_unassigned"] as const);
+export const RESERVED_AGENT_IDS = KERNEL_MEMORY_DIRS;
 export type ReservedAgentId = (typeof RESERVED_AGENT_IDS)[number];
 
 /** The id grammar: a lowercase letter, then up to 31 lowercase letters, digits or hyphens. */

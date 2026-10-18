@@ -11,7 +11,7 @@
 // daemon, the real home or the real Keychain.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   AGENTS_HELP,
@@ -39,13 +39,15 @@ import {
   rosterPart,
 } from "../src/agents/index.js";
 import type { AgentPart, AgentVerb } from "../src/agents/index.js";
-import { MEMORY_FILES, ensureMemoryFiles } from "../src/brain/memory.js";
+import { KERNEL_MEMORY_DIRS, MEMORY_FILES, ensureMemoryFiles } from "../src/brain/memory.js";
 import { PROPOSED_ALLOWED_TOOLS, readWrightSettings, wrightSettingsPath } from "../src/brain/settings.js";
 import { USAGE, runCli } from "../src/cli/index.js";
 import type { CliDeps } from "../src/cli/index.js";
 import { ContributionConflictError, InvalidContributionError, PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
+import { mirrorPath, mirrorRelativePath } from "../src/playbooks/mirror.js";
 import { NEVER_CATEGORIES } from "../src/sessions/policy.js";
 import { Store } from "../src/store/index.js";
+import { handoffPath } from "../src/tools/handoff.js";
 
 let tmp: string;
 let dataDir: string;
@@ -233,7 +235,7 @@ describe("the closed value sets", () => {
   it("pins the lists migration 14's TEXT columns hold, each frozen", () => {
     expect(AGENT_STATUSES).toEqual(["active", "off"]);
     expect(AGENT_CREATED_BY).toEqual(["owner", "wright"]);
-    expect(RESERVED_AGENT_IDS).toEqual(["wright", "shared", "_unassigned"]);
+    expect(RESERVED_AGENT_IDS).toEqual(["wright", "shared", "_unassigned", "playbooks"]);
     expect(AVATAR_SHAPES).toEqual(["shark", "seahorse", "octopus", "turtle", "jellyfish", "fish", "crab"]);
     expect(AVATAR_SHAPES).not.toContain("whale");
     expect(AVATAR_HUES).toEqual(["crew-teal", "crew-sky", "crew-berry", "crew-olive", "crew-slate"]);
@@ -249,10 +251,28 @@ describe("the closed value sets", () => {
 
   it("isValidAgentId: the grammar, and never a reserved id", () => {
     for (const ok of ["mason", "a", "reviewer-2", `a${"b".repeat(31)}`]) expect(isValidAgentId(ok), ok).toBe(true);
-    for (const bad of ["", "Mason", "2nd", "-a", "a_b", "a.b", "../x", "a/b", `a${"b".repeat(32)}`, "wright", "shared", "_unassigned", 7, null]) {
+    for (const bad of ["", "Mason", "2nd", "-a", "a_b", "a.b", "../x", "a/b", `a${"b".repeat(32)}`, "wright", "shared", "_unassigned", "playbooks", 7, null]) {
       expect(isValidAgentId(bad), String(bad)).toBe(false);
     }
     expect(AGENT_ID_PATTERN.test("wright")).toBe(true);
+  });
+
+  it("the reserved ids are the kernel-owned memory/ folders, read from the paths the kernel actually writes", () => {
+    expect(RESERVED_AGENT_IDS).toBe(KERNEL_MEMORY_DIRS);
+    const underMemory = (path: string): string => {
+      const parts = relative(join(dataDir, "memory"), path).split(sep);
+      return parts[0] ?? "";
+    };
+    const owned = [
+      ...MEMORY_FILES.map((f) => f.relativePath.split("/")[0] ?? ""),
+      mirrorRelativePath("x").split("/")[1] ?? "",
+      underMemory(mirrorPath(dataDir, "x")),
+      underMemory(handoffPath(dataDir, { agent: null, taskId: null, sessionId: 1 })),
+    ];
+    for (const folder of owned) expect(RESERVED_AGENT_IDS, folder).toContain(folder);
+    // The one kernel-owned file under config/agents/ is Wright's.
+    expect(wrightSettingsPath(dataDir)).toBe(join(dataDir, "config", "agents", "wright.json"));
+    expect(RESERVED_AGENT_IDS).toContain("wright");
   });
 });
 
@@ -391,7 +411,7 @@ describe("readAgentSettings (AC4)", () => {
   });
 
   it("an id that breaks the grammar, or is reserved, is agent_id_invalid and reads nothing (even a valid file at that path)", () => {
-    for (const bad of ["Mason", "shared", "_unassigned", "../config/agents/wright", ""]) {
+    for (const bad of ["Mason", "shared", "_unassigned", "playbooks", "../config/agents/wright", ""]) {
       if (bad !== "" && !bad.includes("/")) writeSettings(bad);
       const r = readAgentSettings(dataDir, bad, { homeDir });
       expect(r, bad).toEqual({ ok: false, error: "agent_id_invalid", message: expect.any(String) });
@@ -487,10 +507,20 @@ describe("ensureAgentMemoryFiles (AC6)", () => {
   });
 
   it("an invalid or reserved id is agent_id_invalid and creates nothing", () => {
-    for (const bad of ["shared", "Mason", "../wright", ""]) {
+    for (const bad of ["shared", "playbooks", "_unassigned", "Mason", "../wright", ""]) {
       expect(ensureAgentMemoryFiles(dataDir, bad), bad).toMatchObject({ ok: false, error: "agent_id_invalid" });
     }
     expect(existsSync(dataDir)).toBe(false);
+  });
+
+  it("playbooks is refused even when a playbook mirror named role.md exists: a mirror is never a charter, and no crew file lands among the mirrors", () => {
+    const mirror = mirrorPath(dataDir, "role");
+    mkdirSync(join(mirror, ".."), { recursive: true });
+    writeFileSync(mirror, "# a playbook mirror\n");
+    expect(ensureAgentMemoryFiles(dataDir, "playbooks")).toMatchObject({ ok: false, error: "agent_id_invalid" });
+    expect(readAgentSettings(dataDir, "playbooks", { homeDir })).toMatchObject({ ok: false, error: "agent_id_invalid" });
+    expect(readdirSync(join(dataDir, "memory", "playbooks"))).toEqual(["role.md"]);
+    expect(existsSync(join(dataDir, "config"))).toBe(false);
   });
 });
 

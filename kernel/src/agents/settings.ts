@@ -26,7 +26,7 @@ import { isInsidePath, isProtectedPath, protectedLocationsText } from "../protec
 import { NEVER_CATEGORIES } from "../sessions/policy.js";
 import type { NeverCategory } from "../sessions/policy.js";
 import type { AllowedPermissionMode, ToolPolicy } from "../sessions/types.js";
-import { isValidAgentId } from "./types.js";
+import { RESERVED_AGENT_IDS, isValidAgentId } from "./types.js";
 
 /** The lead agent's id: the only one whose settings file the kernel creates. */
 const WRIGHT_ID = "wright";
@@ -158,7 +158,7 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
     return {
       ok: false,
       error: "agent_id_invalid",
-      message: `agent id ${JSON.stringify(id)} is not a crew member's id (a lowercase letter, then up to 31 lowercase letters, digits or hyphens; not wright, shared or _unassigned)`,
+      message: `agent id ${JSON.stringify(id)} is not a crew member's id (a lowercase letter, then up to 31 lowercase letters, digits or hyphens; not ${RESERVED_AGENT_IDS.join(", ")})`,
     };
   }
   const file = agentSettingsPath(dataDir, id);

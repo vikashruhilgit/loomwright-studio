@@ -3,11 +3,25 @@
 // file only when it is absent, with exclusive create (`flag: "wx"`), so an
 // existing file (the owner's edit included) is never overwritten, even by a
 // second kernel racing the first. Reads are bounded: a huge file never loads
-// whole into memory. Imports only `node:*` and its siblings (the `studio` CLI
-// loads this module).
+// whole into memory. Imports only `node:*`, its siblings and
+// `../tools/handoff.ts` (itself `node:*` only): the `studio` CLI loads this
+// module.
 import { closeSync, mkdirSync, openSync, readSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { UNASSIGNED_AGENT_DIR } from "../tools/handoff.js";
 import { LESSONS_TEMPLATE, PEOPLE_TEMPLATE, PREFERENCES_TEMPLATE, ROLE_TEMPLATE, SHARED_README_TEMPLATE } from "./templates.js";
+
+/** `memory/playbooks/`: the playbook mirrors' folder (`../playbooks/mirror.ts`). */
+export const PLAYBOOK_MIRROR_DIR = "playbooks";
+
+/**
+ * The `memory/` folders the kernel owns, the one list: Wright's, the shared
+ * one, the handoff folder of a session with no agent (`../tools/handoff.ts`)
+ * and the playbook mirrors'. A crew member's memory folder is `memory/<id>`,
+ * so no crew id may be one of these (`RESERVED_AGENT_IDS`,
+ * `../agents/types.ts`, is this list).
+ */
+export const KERNEL_MEMORY_DIRS = Object.freeze(["wright", "shared", UNASSIGNED_AGENT_DIR, PLAYBOOK_MIRROR_DIR] as const);
 
 /** `<dataDir>/memory`. */
 export function memoryDir(dataDir: string): string {

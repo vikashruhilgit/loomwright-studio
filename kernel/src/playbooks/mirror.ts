@@ -14,10 +14,12 @@
 // owner's terminal.
 //
 // The `studio` CLI loads this module (through `./drafts.ts`): it imports only
-// `node:` builtins, `../tools/handoff.js` (itself `node:` builtins only) and
-// the triggers feature's public index.
+// `node:` builtins, `../tools/handoff.js` (itself `node:` builtins only),
+// `../brain/memory.js` (for the folder name, which no crew id may take: the
+// kernel-owned `KERNEL_MEMORY_DIRS`) and the triggers feature's public index.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { PLAYBOOK_MIRROR_DIR } from "../brain/memory.js";
 import { writeFileAtomic } from "../tools/handoff.js";
 import { formatZoned } from "../triggers/index.js";
 import type { TriggerView } from "../triggers/index.js";
@@ -41,13 +43,13 @@ export function mirrorRelativePath(slug: string): string {
   if (typeof slug !== "string" || !PLAYBOOK_SLUG_PATTERN.test(slug)) {
     throw new PlaybookMirrorPathError(`playbook slug ${JSON.stringify(slug)} cannot be used as a file name`);
   }
-  return `memory/playbooks/${slug}.md`;
+  return `memory/${PLAYBOOK_MIRROR_DIR}/${slug}.md`;
 }
 
 /** `<dataDir>/memory/playbooks/<slug>.md`. Throws `PlaybookMirrorPathError` for a slug that could escape the directory. */
 export function mirrorPath(dataDir: string, slug: string): string {
   mirrorRelativePath(slug);
-  return join(dataDir, "memory", "playbooks", `${slug}.md`);
+  return join(dataDir, "memory", PLAYBOOK_MIRROR_DIR, `${slug}.md`);
 }
 
 /** C0/C1 controls and bidi overrides: never written as themselves. */
