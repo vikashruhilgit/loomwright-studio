@@ -230,11 +230,26 @@ function settingsRefusalDetail(r: AgentSettingsRefusal): string {
 }
 
 /**
+ * Whether `ensureAgentFiles` threw because the member's `role.md` is absent
+ * (it never creates one when something, such as a dangling symlink, is at the
+ * path, and `ensureAgentMemoryFiles` then reports `charter_missing`, which
+ * `writeCharterFiles` throws as a plain Error). Told by that exact message
+ * (no filesystem `code`) and `role.md` still absent, so a real write error
+ * (which carries a `code`) stays `memory_unwritable`. `ensureAgentFiles`
+ * returning `ok` means `role.md` was present at its own check, so this is the
+ * one place `charter_missing` is decided.
+ */
+function isCharterMissing(err: unknown, agent: string, role: string): boolean {
+  if (!(err instanceof Error) || (err as { code?: unknown }).code !== undefined) return false;
+  return err.message === `memory files for ${agent}: charter_missing (${role})` && !existsSync(role);
+}
+
+/**
  * A crew member's session settings, or undefined once `fail` has failed the
  * row with the refusal: `no_such_agent`, `agent_off`, the files' own refusal
- * (`charter_invalid`), `charter_missing`, or a settings refusal. A write
- * error fails the row (`memory_unwritable`, `settings_unwritable`) and is
- * rethrown.
+ * (`charter_invalid`), `charter_missing` (`role.md` absent: a refusal, the
+ * event done), or a settings refusal. A write error fails the row
+ * (`memory_unwritable`, `settings_unwritable`) and is rethrown.
  */
 function crewSession(store: Store, agent: string, fail: (detail: string) => void): AgentSession | undefined {
   const dataDir = store.dataDir;
@@ -247,20 +262,20 @@ function crewSession(store: Store, agent: string, fail: (detail: string) => void
     fail(`agent_off: ${agent} is off: it takes no messages`);
     return undefined;
   }
+  const role = join(agentMemoryDir(dataDir, agent), "role.md");
   let files;
   try {
     files = ensureAgentFiles(store, dataDir, agent);
   } catch (err) {
+    if (isCharterMissing(err, agent, role)) {
+      fail(`charter_missing: ${role}`);
+      return undefined;
+    }
     fail(`memory_unwritable: ${messageOf(err)}`);
     throw err;
   }
   if (!files.ok) {
     fail(files.error === "charter_invalid" ? `charter_invalid: ${files.message}` : `no_such_agent: ${files.message}`);
-    return undefined;
-  }
-  const role = join(agentMemoryDir(dataDir, agent), "role.md");
-  if (!existsSync(role)) {
-    fail(`charter_missing: ${role}`);
     return undefined;
   }
   let settings;

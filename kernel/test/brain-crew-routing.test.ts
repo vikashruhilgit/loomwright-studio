@@ -12,7 +12,7 @@
 // composed with the shipped features over the fake spawner/query
 // (session-fakes.ts) and drive it through `runCli`. Never the real SDK, a
 // model or a real process.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -603,6 +603,67 @@ describe("a failed delegation replies back once with the reason (AC6)", () => {
     await expect(handler()(eventCtx(store, broken, stubSessions(store)))).rejects.toThrow();
     expect(getBrainMessageByQueueId(store, broken)?.detail).toMatch(/^memory_unwritable: /);
     expect(failureReply(store, broken).text).toMatch(/^Delegation to mason failed: memory_unwritable: /);
+  });
+
+  it("a role.md or settings file that is a dangling symlink (never re-created over): charter_missing / settings_missing, event done, one failure message each", async () => {
+    const store = openStore();
+    addMason(store);
+    const sessions = stubSessions(store);
+    const role = join(dataDir, "memory", "mason", "role.md");
+    rmSync(role);
+    symlinkSync(join(tmp, "nowhere.md"), role);
+    const missing = await deliver(store, delegation({ depth: 2 }), sessions);
+    expect(getBrainMessageByQueueId(store, missing)).toMatchObject({ status: "failed", detail: `charter_missing: ${role}` });
+    expect(failureReply(store, missing).text).toBe(`Delegation to mason failed: charter_missing: ${role}`);
+    await handler()(eventCtx(store, missing, sessions));
+    failureReply(store, missing);
+    // (A real write error stays memory_unwritable, rethrown: the rethrown-fault test below.)
+    rmSync(role);
+    writeFileSync(role, "# Mason\n");
+    const settings = agentSettingsPath(dataDir, "mason");
+    rmSync(settings);
+    symlinkSync(join(tmp, "nowhere.json"), settings);
+    const noSettings = await deliver(store, delegation({ depth: 2 }), sessions);
+    expect(getBrainMessageByQueueId(store, noSettings)?.detail).toMatch(new RegExp(`^settings_missing: ${settings}: `));
+    expect(failureReply(store, noSettings).text).toMatch(/^Delegation to mason failed: settings_missing: /);
+    expect(sessions.starts).toEqual([]);
+    expect(queuedFor(store, "wright")).toHaveLength(2);
+  });
+
+  it("the failed row and its reply-back commit together: a reply-back that can't be queued leaves the row as it was; the redelivery queues exactly one", async () => {
+    const store = openStore();
+    addMason(store, "off");
+    // Installed after the store opened (its integrity check would refuse it on open) and dropped before close.
+    store.prepare(`CREATE TRIGGER test_block_reply BEFORE INSERT ON event_queue WHEN NEW.payload_json LIKE '%"reply_to"%' BEGIN SELECT RAISE(ABORT, 'x'); END`).run();
+    const { id } = enqueueEvent(store, { kind: "message", payload: delegation({ depth: 2 }) });
+    await expect(handler()(eventCtx(store, id, stubSessions(store)))).rejects.toThrow("x");
+    expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "queued", detail: null });
+    expect(queuedFor(store, "wright")).toEqual([]);
+    store.prepare("DROP TRIGGER test_block_reply").run();
+    await handler()(eventCtx(store, id, stubSessions(store)));
+    expect(getBrainMessageByQueueId(store, id)?.detail).toMatch(/^agent_off: /);
+    expect(failureReply(store, id).text).toMatch(/^Delegation to mason failed: agent_off: /);
+  });
+
+  it("a session ending after a redelivery already failed its row writes nothing: the failure is the one reply-back", async () => {
+    const store = openStore();
+    addMason(store);
+    const { id } = enqueueEvent(store, { kind: "message", payload: delegation({ depth: 2 }) });
+    const held = heldSessions(store);
+    await handler()(eventCtx(store, id, held.sessions));
+    const sessionId = getBrainMessageByQueueId(store, id)?.session_id as number;
+    // The session manager no longer reports it live, so the redelivery's refusal fails the row (and replies back).
+    store.prepare("UPDATE sessions SET status = 'interrupted' WHERE id = ?").run(sessionId);
+    store.prepare("UPDATE agents SET status = 'off' WHERE id = 'mason'").run();
+    await handler()(eventCtx(store, id, held.sessions));
+    expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "failed" });
+    expect(failureReply(store, id).text).toMatch(/^Delegation to mason failed: agent_off: /);
+    // The first delivery's listener now sees the late reply: the row stays failed, no second message.
+    held.settle("completed", "Late reply.");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(getBrainMessageByQueueId(store, id)).toMatchObject({ status: "failed", reply_text: null });
+    expect(failureReply(store, id).text).toMatch(/^Delegation to mason failed: agent_off: /);
+    expect(queuedFor(store, "wright")).toHaveLength(1);
   });
 
   it("an admission refusal parks the row and queues nothing (parked is not final)", async () => {
