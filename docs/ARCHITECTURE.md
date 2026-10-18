@@ -159,7 +159,7 @@ Each part is documented on its own page: [playbooks](architecture/playbooks.md),
 
 ## Phase 4 features
 
-Phase 4 adds one feature, agents, in `kernel/src/agents/`, registered as the seventh contribution (`agentsContribution`, after playbooks). As with playbooks, each phase 4 item builds only in the sub-file it owns, and each sub-file exports one part listed in `AGENT_PARTS` (its tools, routes, handlers, and verbs of the one `studio agents` subcommand), merged in that order with the same collision rules. Until an item adds a verb, `studio agents` prints its help.
+Phase 4 adds one feature, agents, in `kernel/src/agents/`, registered as the seventh contribution (`agentsContribution`, after playbooks). As with playbooks, each phase 4 item builds only in the sub-file it owns, and each sub-file exports one part listed in `AGENT_PARTS` (its tools, routes, handlers, and verbs of the one `studio agents` subcommand), merged in that order with the same collision rules. With no verb, `studio agents` prints its help; the roster's verbs (item 02: `list`, `show`, `create`, `rename`, `set`, `off`, `on`) are on [agents](architecture/agents.md).
 
 Migration 14 creates the `agents` table and adds `brain_messages.from_agent` / `depth` / `reply_to` / `workspace` (see the data model). Every value set is checked in code, not by SQL, and no crew member ships preinstalled (invariant 1).
 
