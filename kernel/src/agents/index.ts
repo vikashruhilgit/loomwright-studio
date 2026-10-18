@@ -4,8 +4,9 @@
 // empty until its item fills it in; today `roster` is filled (the `/agents`
 // routes and the `list` / `show` / `create` / `rename` / `set` / `off` / `on`
 // verbs), the delegate part has the one tool `kernel_agent_message`, and
-// `charter-tools` is empty. The shared readers every item uses live beside
-// them: the closed value sets (`types.ts`), the one settings reader
+// `charter-tools` has Wright's three charter tools (`kernel_agent_create`,
+// `kernel_agent_update`, `kernel_agent_list`). The shared readers every item
+// uses live beside them: the closed value sets (`types.ts`), the one settings reader
 // (`settings.ts`), the one memory reader (`memory.ts`), the read-only registry
 // lookups (`registry.ts`) and the one charter validator, create and self-heal
 // (`charter-files.ts`).

@@ -1429,7 +1429,7 @@ describe("kernel-applied actions: the owner's once on a held kernel action is ap
   });
 
   it.each(["kernel_agent_create", "kernel_agent_update"])(
-    "%s: once with the shipped composition's applier (none registered for it yet) is recorded no_applier, the grant spent, never handed back",
+    "%s: once with the shipped composition's applier on an input its shape refuses is recorded invalid_input, the grant spent, never handed back",
     async (name) => {
       const applier = approvalApplierOf(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools);
       const tool = `mcp__kernel__${name}`;
@@ -1439,10 +1439,10 @@ describe("kernel-applied actions: the owner's once on a held kernel action is ap
       expect(getApproval(t.store, 1)).toMatchObject({ status: "pending", action: name });
       decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date(), applier);
       expect(getApproval(t.store, 1)).toMatchObject({ status: "approved", decision: "once" });
-      expect(decidedPayloads(t)).toEqual([
-        { id: 1, decision: "once", by: "owner", action: name, apply_refused: "no_applier", apply_detail: `the kernel has no applier for ${tool}; nothing was done` },
-      ]);
-      expect(texts(t)).toEqual([`approved approval 1: ${name}. the kernel has no applier for ${tool}; nothing was done Do not repeat the call.`]);
+      const [decided] = decidedPayloads(t) as { apply_detail?: string }[];
+      expect(decidedPayloads(t)).toEqual([{ id: 1, decision: "once", by: "owner", action: name, apply_refused: "invalid_input", apply_detail: decided?.apply_detail }]);
+      expect(decided?.apply_detail).toMatch(new RegExp(`^${name}: the held input is not valid: `));
+      expect(texts(t)).toEqual([`approved approval 1: ${name}. ${decided?.apply_detail} Do not repeat the call.`]);
       expect(events(t.store, "approval_used").map((e) => e.payload)).toEqual([{ id: 1, tool, by: "kernel" }]);
       expect((await s.gate(tool, INPUT)).permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
     },

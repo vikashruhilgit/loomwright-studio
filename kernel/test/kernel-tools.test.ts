@@ -409,12 +409,15 @@ describe("approvalApplierOf: the kernel-applied actions' applier over the contri
     expect(() => approvalApplierOf([])).not.toThrow();
   });
 
-  it("the shipped composition builds: its only applier is the enable's, a member of the set", () => {
+  it("the shipped composition builds: its appliers are the enable's and the two charter tools', each a member of the set", () => {
     const tools = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools;
-    expect(tools.filter((t) => t.applyOnApproval !== undefined).map((t) => `${KERNEL_MCP_SERVER_NAME}:${t.name}`)).toEqual([`${KERNEL_MCP_SERVER_NAME}:kernel_playbook_enable`]);
+    expect(tools.filter((t) => t.applyOnApproval !== undefined).map((t) => `${KERNEL_MCP_SERVER_NAME}:${t.name}`)).toEqual([
+      `${KERNEL_MCP_SERVER_NAME}:kernel_playbook_enable`,
+      `${KERNEL_MCP_SERVER_NAME}:kernel_agent_create`,
+      `${KERNEL_MCP_SERVER_NAME}:kernel_agent_update`,
+    ]);
     expect(() => approvalApplierOf(tools)).not.toThrow();
     expect(KERNEL_APPLIED_ACTIONS).toContain(ENABLE);
-    // The two charter tools are in the set (and always held) before item 07 registers their applier: none is registered here.
     expect(KERNEL_APPLIED_ACTIONS).toContain("mcp__kernel__kernel_agent_create");
     expect(KERNEL_APPLIED_ACTIONS).toContain("mcp__kernel__kernel_agent_update");
   });

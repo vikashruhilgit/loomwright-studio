@@ -1,8 +1,8 @@
 // The agents feature's foundation (phase 4 item 01): one `agents`
 // contribution built from three sub-file parts (`roster`, filled by item 02
 // with the `/agents` routes and the `studio agents` verbs; `delegate` and
-// `charter-tools`, still empty), registered seventh in `SHIPPED_CONTRIBUTIONS`;
-// the part merge's refusals;
+// `charter-tools`, filled by items 06 and 07 with their tools), registered
+// seventh in `SHIPPED_CONTRIBUTIONS`; the part merge's refusals;
 // the one settings reader every agent shares (`readAgentSettings`, with
 // `readWrightSettings` a thin call keeping its own shapes); the one memory
 // reader (`ensureAgentMemoryFiles`); the read-only registry lookups; and the
@@ -154,7 +154,7 @@ describe("the agents contribution (AC3)", () => {
     expect(mergeAgentParts(AGENT_PARTS).verbs.map((v) => v.name)).toEqual(["list", "show", "create", "rename", "set", "off", "on"]);
   });
 
-  it("is built from three frozen parts, in order: roster (item 02, filled), delegate (item 06, filled) and charter-tools (item 07, still empty)", () => {
+  it("is built from three frozen parts, in order: roster (item 02, filled), delegate (item 06, filled) and charter-tools (item 07, filled)", () => {
     expect(AGENT_PARTS).toEqual([rosterPart, delegatePart, charterToolsPart]);
     expect(AGENT_PARTS.map((p) => p.name)).toEqual(["roster", "delegate", "charter-tools"]);
     expect(Object.isFrozen(AGENT_PARTS)).toBe(true);
@@ -176,15 +176,15 @@ describe("the agents contribution (AC3)", () => {
       handlers: {},
       dueWork: [],
     });
-    // Item 07's charter-tools part: still empty here.
+    // Item 07's charter-tools part: the three charter tools.
     expect({
-      tools: charterToolsPart.tools,
+      tools: charterToolsPart.tools.map((t) => t.name),
       routes: charterToolsPart.routes,
       verbs: charterToolsPart.verbs,
       handlers: charterToolsPart.handlers,
       dueWork: charterToolsPart.dueWork ?? [],
     }).toEqual({
-      tools: [],
+      tools: ["kernel_agent_create", "kernel_agent_update", "kernel_agent_list"],
       routes: [],
       verbs: [],
       handlers: {},

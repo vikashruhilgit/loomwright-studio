@@ -150,8 +150,8 @@ const mode = (path: string): number => statSync(path).mode & 0o777;
 // ---- The audit kinds -------------------------------------------------------------------
 
 describe("AGENT_AUDIT_KINDS", () => {
-  it("pins the roster's four audit kinds", () => {
-    expect(AGENT_AUDIT_KINDS).toEqual(["agent_created", "agent_renamed", "agent_settings_set", "agent_status_changed"]);
+  it("pins the roster's five audit kinds", () => {
+    expect(AGENT_AUDIT_KINDS).toEqual(["agent_created", "agent_renamed", "agent_settings_set", "agent_status_changed", "agent_updated"]);
   });
 });
 
