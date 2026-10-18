@@ -6,6 +6,9 @@
     { "when": "docs/architecture/brain.md", "add": ["kernel/src/brain/templates.ts", "kernel/test/brain.test.ts"] },
     { "when": "kernel/src/store/migrations/*", "add": ["kernel/test/store.test.ts"] },
     { "when": "kernel/src/features/index.ts", "add": ["kernel/test/feature-seams.test.ts"] },
-    { "when": "kernel/src/sessions/policy.ts", "add": ["kernel/test/sessions-policy.test.ts"] }
+    { "when": "kernel/src/sessions/policy.ts", "add": ["kernel/test/sessions-policy.test.ts"] },
+    { "when": "kernel/src/agents/charter-files.ts", "add": ["docs/architecture/agents.md", "kernel/test/agents-roster.test.ts"] },
+    { "when": "docs/architecture/agents.md", "add": ["kernel/src/agents/charter-files.ts", "kernel/test/agents-roster.test.ts"] },
+    { "when": "kernel/src/agents/index.ts", "add": ["kernel/test/agents-foundation.test.ts"] }
   ]
 }
