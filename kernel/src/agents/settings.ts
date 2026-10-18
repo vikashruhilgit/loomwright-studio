@@ -1,9 +1,9 @@
 // Every agent's settings file, `<dataDir>/config/agents/<id>.json`: the model,
 // the permission mode, the tool policy and, for a crew member, (optional) the
 // enforced `never` categories, limits and workspaces. Wright's file refuses
-// `never`, `workspaces` and `limits.delegation_depth` until an item applies
-// them to Wright's sessions; its `limits.tokens_per_day` and
-// `limits.sessions_at_once` are read (the budget applies them at admission).
+// `never` and `workspaces` until an item applies them to Wright's sessions;
+// its `limits` are read (the budget applies `tokens_per_day` and
+// `sessions_at_once` at admission, `./delegate.ts` applies `delegation_depth`).
 // `readAgentSettings` is the ONE reader:
 // Wright's (`readWrightSettings` in `../brain/settings.ts` is a thin call to
 // it) and every crew member's, so every file is refused the same way.
@@ -71,8 +71,7 @@ const shape = {
 
 /**
  * Wright's file: unknown keys are dropped, as they were before the crew
- * existed (its `never`, `workspaces` and `limits.delegation_depth` are
- * refused by name below).
+ * existed (its `never` and `workspaces` are refused by name below).
  */
 const wrightSchema = z.object(shape);
 
@@ -218,17 +217,14 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
     return invalid(where, `${where}: ${what}`);
   }
   const s = parsed.data;
-  // Fail closed: nothing applies Wright's never, workspaces or delegation
-  // depth yet, so a file that sets one is refused rather than read and
-  // silently unenforced. Its tokens_per_day and sessions_at_once are read:
-  // the budget applies them at admission.
+  // Fail closed: nothing applies Wright's never or workspaces yet, so a file
+  // that sets one is refused rather than read and silently unenforced. Its
+  // limits are read: the budget applies tokens_per_day and sessions_at_once
+  // at admission, and the delegate part (`./delegate.ts`) applies
+  // delegation_depth to Wright's delegations.
   if (isWright) {
     for (const field of ["never", "workspaces"] as const) {
       if (s[field] !== undefined) return invalid(field, `${field}: not supported for Wright yet (the kernel does not apply it to Wright's sessions); remove it`);
-    }
-    if (s.limits?.delegation_depth !== undefined) {
-      const field = "limits.delegation_depth";
-      return invalid(field, `${field}: not supported for Wright yet (the kernel does not apply it to Wright's sessions); remove it`);
     }
   }
   if (s.workspaces !== undefined) {

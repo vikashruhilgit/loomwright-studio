@@ -3,8 +3,9 @@
 // `roster.ts`, item 06 `delegate.ts`, item 07 `charter-tools.ts`. A part is
 // empty until its item fills it in; today `roster` is filled (the `/agents`
 // routes and the `list` / `show` / `create` / `rename` / `set` / `off` / `on`
-// verbs) and the other two are empty. The shared readers every item uses live
-// beside them: the closed value sets (`types.ts`), the one settings reader
+// verbs), the delegate part has the one tool `kernel_agent_message`, and
+// `charter-tools` is empty. The shared readers every item uses live beside
+// them: the closed value sets (`types.ts`), the one settings reader
 // (`settings.ts`), the one memory reader (`memory.ts`), the read-only registry
 // lookups (`registry.ts`) and the one charter validator, create and self-heal
 // (`charter-files.ts`).
