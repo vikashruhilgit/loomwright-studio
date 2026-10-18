@@ -72,7 +72,9 @@ Phase 1 ships the first six: `kernel_task_create / kernel_task_update / kernel_t
 
 Phase 2 ships six more, each through its feature's contribution: the trigger tools `kernel_trigger_register / kernel_trigger_remove / kernel_trigger_list` ([triggers](architecture/triggers.md)), `kernel_approval_request` ([approvals](architecture/approvals.md)), `kernel_notify` ([notifications](architecture/notifications.md)) and `kernel_loomwright_capabilities` ([Loomwright](architecture/loomwright.md)).
 
-Phase 3 ships six more, all through the playbooks feature's contribution: `kernel_playbook_create / kernel_playbook_update / kernel_playbook_list / kernel_playbook_disable` ([playbooks](architecture/playbooks.md)), `kernel_playbook_dry_run`, which runs a draft once in a dry-run session ([dry runs](architecture/dry-run.md#a-playbooks-dry-run)), and `kernel_playbook_enable`, which the rail always holds for the owner ([playbooks: enabling](architecture/playbooks.md#enabling)). A fresh `wright.json` proposes all six; an existing one keeps the tool policy it has, so the owner adds them ([phase 3 exit runbook](evidence/phase-3-exit-runbook.md#setup)). The rest of the list above is still planned.
+Phase 3 ships six more, all through the playbooks feature's contribution: `kernel_playbook_create / kernel_playbook_update / kernel_playbook_list / kernel_playbook_disable` ([playbooks](architecture/playbooks.md)), `kernel_playbook_dry_run`, which runs a draft once in a dry-run session ([dry runs](architecture/dry-run.md#a-playbooks-dry-run)), and `kernel_playbook_enable`, which the rail always holds for the owner ([playbooks: enabling](architecture/playbooks.md#enabling)). A fresh `wright.json` proposes all six; an existing one keeps the tool policy it has, so the owner adds them ([phase 3 exit runbook](evidence/phase-3-exit-runbook.md#setup)).
+
+Phase 4 item 06 ships `kernel_agent_message` ([delegation](architecture/delegation.md)), through the agents feature's delegate part. The rest of the list above is still planned.
 
 Later items add their tools through a feature contribution (see [Phase 2 features](#phase-2-features)), never by editing the tool server.
 
