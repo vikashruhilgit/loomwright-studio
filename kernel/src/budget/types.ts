@@ -31,7 +31,9 @@ export interface BudgetConfig {
    * limit; the subscription cap still applies to it. Read only through
    * own keys (`agentDailyTokenLimit`): an agent named like an
    * `Object.prototype` member (`constructor`, `toString`) has no limit unless
-   * one is configured for it.
+   * one is configured for it. Consulted only when the budget is given no
+   * `agentLimits` lookup (`BudgetOptions`); with one, each agent's limits are
+   * read from it instead.
    */
   readonly agentDailyTokenLimits: Readonly<Record<string, number>>;
   readonly apiKeyFallback: ApiKeyFallbackPolicy;
@@ -113,6 +115,21 @@ export function agentDailyTokenLimit(config: BudgetConfig, agent: string): numbe
 /** The auth provider's non-secret identity, as the budget module records it. */
 export type BudgetAuth = Pick<AuthProvider, "id" | "account">;
 
+/** Why an agent's limits could not be read: its settings file is invalid, or a crew member has none. */
+export type AgentSettingsRefusalReason = "settings_invalid" | "settings_missing";
+
+/**
+ * One agent's limits, as the `agentLimits` lookup answers for it. `ok` with a
+ * key absent means that limit is unset (the kernel picks none, invariant 1);
+ * `ok` with both absent means the agent has no per-agent limit. A refusal
+ * means its limits cannot be read: admission refuses the agent's starts and
+ * resumes with `reason` (fail closed, never read as "no limit"), and the
+ * meter records nothing for it. `file` names the settings file when known.
+ */
+export type AgentLimitsLookup =
+  | { readonly ok: true; readonly tokensPerDay?: number; readonly sessionsAtOnce?: number }
+  | { readonly ok: false; readonly reason: AgentSettingsRefusalReason; readonly file?: string; readonly message: string };
+
 export interface BudgetOptions {
   readonly store: Store;
   /**
@@ -133,6 +150,18 @@ export interface BudgetOptions {
   readonly apiKeyProvider?: BudgetAuth;
   /** Defaults to `DEFAULT_BUDGET_CONFIG`. Validated at construction. */
   readonly config?: BudgetConfig;
+  /**
+   * Each agent's limits (`tokens_per_day`, `sessions_at_once`), read at every
+   * admission check, inside its transaction, and at every metered result, so
+   * an edit to the agent's settings takes effect at its next start. The
+   * kernel passes one reading `<dataDir>/config/agents/<id>.json`
+   * (`readAgentSettings`). Never asked for a `null` agent. Absent: today's
+   * behaviour, the config's static `agentDailyTokenLimits` and no
+   * sessions-at-once check. A value that is not a positive safe integer is
+   * refused as `settings_invalid` (fail closed). A throw fails the admission
+   * check closed; the meter skips the agent's limit on one.
+   */
+  readonly agentLimits?: (agent: string) => AgentLimitsLookup;
 }
 
 /** The clock, injectable for tests. */

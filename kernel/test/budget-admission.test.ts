@@ -416,7 +416,7 @@ describe("SessionManager admission hook", () => {
       expect(manager.getSession(id)).toEqual(before.row);
       expect(sessionEvents(id)).toEqual(before.events);
       expect(counts).toEqual({ query: 0, spawn: 0, buildEnv: 0, groupProbe: 0 });
-      expect(requests).toEqual([{ kind: "resume", agent: "wright", account: AUTH.account, provider: AUTH.id, task: null }]);
+      expect(requests).toEqual([{ kind: "resume", agent: "wright", account: AUTH.account, provider: AUTH.id, task: null, session: id }]);
     });
   }
 
@@ -510,8 +510,8 @@ describe("SessionManager admission hook", () => {
     expect(counts.query).toBe(1);
     expect(counts.spawn).toBe(1);
     expect(requests).toEqual([
-      { kind: "resume", agent: "wright", account: AUTH.account, provider: AUTH.id, task: null },
-      { kind: "resume", agent: "wright", account: AUTH.account, provider: AUTH.id, task: null },
+      { kind: "resume", agent: "wright", account: AUTH.account, provider: AUTH.id, task: null, session: id },
+      { kind: "resume", agent: "wright", account: AUTH.account, provider: AUTH.id, task: null, session: id },
     ]);
     const recheck = new Date(env.clock.at.getTime() + CAP_RECHECK_MS).toISOString();
     expect(manager.getSession(id)?.status).toBe("interrupted");

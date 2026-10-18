@@ -6,7 +6,7 @@ import { BudgetAdmission } from "./admission.js";
 import {
   activeParks,
   admissionProvider,
-  agentLimitRefusal,
+  agentRefusal,
   appendEvent,
   capRetryAt,
   clockOf,
@@ -20,7 +20,7 @@ import {
 } from "./internal.js";
 import type { Clock } from "./internal.js";
 import { BudgetConfigError, DEFAULT_BUDGET_CONFIG, validateBudgetConfig } from "./types.js";
-import type { BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions } from "./types.js";
+import type { AgentLimitsLookup, BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions } from "./types.js";
 
 export { parseApiKeyFallbackPolicy, playbookApiKeySpendUsd } from "./internal.js";
 
@@ -30,8 +30,14 @@ export interface PlaybookAdmissionRequest extends AdmissionRequest {
   readonly playbook: number | null;
 }
 
-/** Why the playbook gate refused: `BudgetAdmission`'s two reasons, or the playbook's own daily limit. */
-export type PlaybookRefusalReason = "cap_parked" | "agent_daily_limit" | "playbook_daily_limit";
+/** Why the playbook gate refused: `BudgetAdmission`'s reasons (the cap and the three agent checks), or the playbook's own daily limit. */
+export type PlaybookRefusalReason =
+  | "cap_parked"
+  | "agent_daily_limit"
+  | "agent_sessions_at_once"
+  | "settings_invalid"
+  | "settings_missing"
+  | "playbook_daily_limit";
 
 /**
  * The playbook gate's verdict. An admit names the provider the session runs
@@ -108,8 +114,9 @@ export function playbookTokensToday(store: Store, day: string): PlaybookTokensTo
  *   below the ceiling, else it is refused `cap_parked` as `check` refuses
  *   (at the ceiling, `api_key_ceiling_reached` and one `notify` are
  *   recorded once per playbook and ceiling, shared with the meter); then the
- *   agent limit as `check` applies it (`start` only), so a fallback never
- *   skips it. Only then is it admitted, on the API-key provider if it was
+ *   agent checks as `check` applies them (settings, the token limit on a
+ *   `start` only, sessions at once), so a fallback never skips them. Only
+ *   then is it admitted, on the API-key provider if it was
  *   eligible (one `api_key_fallback_admitted` event), else on the
  *   subscription provider. The kernel-wide `apiKeyFallback` is never read.
  *
@@ -130,6 +137,7 @@ export class PlaybookAdmission {
   readonly #auth: BudgetAuth;
   readonly #apiKey: BudgetAuth | undefined;
   readonly #config: BudgetConfig;
+  readonly #agentLimits: ((agent: string) => AgentLimitsLookup) | undefined;
   readonly #clock: Clock;
   readonly #admission: BudgetAdmission;
 
@@ -142,6 +150,7 @@ export class PlaybookAdmission {
       throw new BudgetConfigError("apiKeyProvider must not share the auth provider's id");
     }
     this.#config = validateBudgetConfig(options.config ?? DEFAULT_BUDGET_CONFIG);
+    this.#agentLimits = options.agentLimits;
     this.#clock = clockOf(deps);
     this.#admission = admission ?? new BudgetAdmission(options, deps);
   }
@@ -215,10 +224,9 @@ export class PlaybookAdmission {
       }
 
       // The agent limit as `check` applies it: an API-key admit never skips it.
-      const agentRefusal = agentLimitRefusal(this.#store, this.#auth, this.#config, this.#clock, request, now, ref, at);
-      if (agentRefusal !== null) {
-        return this.#refuse(request, "agent_daily_limit", agentRefusal.retryAt, agentRefusal.details, at);
-      }
+      // The same slot holds the settings and sessions-at-once checks, in `check`'s order.
+      const refusal = agentRefusal(this.#store, this.#auth, this.#config, this.#agentLimits, this.#clock, request, now, ref, at);
+      if (refusal !== null) return this.#refuse(request, refusal.reason, refusal.retryAt, refusal.details, at);
 
       if (fallback !== null && this.#apiKey !== undefined) {
         appendEvent(

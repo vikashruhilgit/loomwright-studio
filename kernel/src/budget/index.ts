@@ -22,7 +22,7 @@ export {
   transientBackoffMs,
 } from "./cap.js";
 export type { CapTextSource } from "./cap.js";
-export { localDay, startOfNextLocalDay } from "./internal.js";
+export { AGENT_REFUSAL_NOTIFY_MS, SESSIONS_AT_ONCE_RECHECK_MS, localDay, startOfNextLocalDay } from "./internal.js";
 export { BudgetMeter } from "./meter.js";
 export { PlaybookAdmission, parseApiKeyFallbackPolicy, playbookApiKeySpendUsd, playbookTokensToday } from "./playbook.js";
 export type {
@@ -39,6 +39,8 @@ export {
   validateBudgetConfig,
 } from "./types.js";
 export type {
+  AgentLimitsLookup,
+  AgentSettingsRefusalReason,
   ApiKeyFallbackPolicy,
   BudgetAuth,
   BudgetConfig,

@@ -1,7 +1,9 @@
 // Every agent's settings file, `<dataDir>/config/agents/<id>.json`: the model,
 // the permission mode, the tool policy and, for a crew member, (optional) the
-// enforced `never` categories, limits and workspaces (Wright's file refuses
-// those three until an item applies them to Wright's sessions).
+// enforced `never` categories, limits and workspaces. Wright's file refuses
+// `never`, `workspaces` and `limits.delegation_depth` until an item applies
+// them to Wright's sessions; its `limits.tokens_per_day` and
+// `limits.sessions_at_once` are read (the budget applies them at admission).
 // `readAgentSettings` is the ONE reader:
 // Wright's (`readWrightSettings` in `../brain/settings.ts` is a thin call to
 // it) and every crew member's, so every file is refused the same way.
@@ -69,7 +71,8 @@ const shape = {
 
 /**
  * Wright's file: unknown keys are dropped, as they were before the crew
- * existed (its `never`, `limits` and `workspaces` are refused by name below).
+ * existed (its `never`, `workspaces` and `limits.delegation_depth` are
+ * refused by name below).
  */
 const wrightSchema = z.object(shape);
 
@@ -103,8 +106,20 @@ export interface AgentSettings {
 }
 
 export type AgentSettingsRefusal =
-  /** The file has no usable `model` (null, empty or not a string): the owner must set one. */
-  | { readonly ok: false; readonly error: "model_unset"; readonly file: string; readonly field: "model"; readonly message: string }
+  /**
+   * The file has no usable `model` (null, empty or not a string): the owner
+   * must set one. Everything else in it parsed and validated, so `limits` is
+   * present when the file sets them: the budget applies an agent's limits
+   * whether or not a model is set (a missing model is the session's refusal).
+   */
+  | {
+      readonly ok: false;
+      readonly error: "model_unset";
+      readonly file: string;
+      readonly field: "model";
+      readonly message: string;
+      readonly limits?: AgentLimits;
+    }
   /** The file is not JSON, too large, unreadable, or not the expected shape. `field` is the offending path, or `the file`. Never rewritten. */
   | { readonly ok: false; readonly error: "settings_invalid"; readonly file: string; readonly field: string; readonly message: string }
   /** A crew member has no settings file. Nothing is created: the owner (or an approved charter) writes it. */
@@ -203,11 +218,17 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
     return invalid(where, `${where}: ${what}`);
   }
   const s = parsed.data;
-  // Fail closed: nothing applies Wright's never, limits or workspaces yet, so
-  // a file that sets one is refused rather than read and silently unenforced.
+  // Fail closed: nothing applies Wright's never, workspaces or delegation
+  // depth yet, so a file that sets one is refused rather than read and
+  // silently unenforced. Its tokens_per_day and sessions_at_once are read:
+  // the budget applies them at admission.
   if (isWright) {
-    for (const field of ["never", "limits", "workspaces"] as const) {
+    for (const field of ["never", "workspaces"] as const) {
       if (s[field] !== undefined) return invalid(field, `${field}: not supported for Wright yet (the kernel does not apply it to Wright's sessions); remove it`);
+    }
+    if (s.limits?.delegation_depth !== undefined) {
+      const field = "limits.delegation_depth";
+      return invalid(field, `${field}: not supported for Wright yet (the kernel does not apply it to Wright's sessions); remove it`);
     }
   }
   if (s.workspaces !== undefined) {
@@ -224,6 +245,7 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
       file,
       field: "model",
       message: `${isWright ? "Wright" : `Agent ${id}`} has no model: set "model" in ${file} (the kernel never picks one)`,
+      ...(s.limits !== undefined ? { limits: Object.freeze({ ...s.limits }) } : {}),
     };
   }
   return {

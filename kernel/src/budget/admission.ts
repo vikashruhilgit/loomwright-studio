@@ -1,9 +1,9 @@
 import type { AdmissionDecision, AdmissionRequest } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
-import { activeParks, admissionProvider, agentLimitRefusal, appendEvent, capRetryAt, clockOf } from "./internal.js";
-import type { Clock } from "./internal.js";
+import { activeParks, admissionProvider, agentRefusal, appendEvent, capRetryAt, clockOf } from "./internal.js";
+import type { AgentRefusalReason, Clock } from "./internal.js";
 import { DEFAULT_BUDGET_CONFIG, validateBudgetConfig } from "./types.js";
-import type { BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions } from "./types.js";
+import type { AgentLimitsLookup, BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions } from "./types.js";
 
 /**
  * Whether D28's API-key fallback would be in force: enabled AND a positive
@@ -31,18 +31,30 @@ export function apiKeyFallbackActive(config: BudgetConfig): boolean {
  *   different providers (a wiring error): the check throws, so the request
  *   fails closed. The park ends only when this check admits; a `cap_*`
  *   wake-up firing is never a release.
+ * - Agent settings: with an `agentLimits` lookup (`BudgetOptions`), an agent
+ *   whose limits cannot be read is refused `settings_invalid` or
+ *   `settings_missing`, starts and resumes alike, `retryAt` `null` (the event
+ *   loop's default recheck): a broken file is never read as "no limit".
  * - Agent limit (AC2): an agent whose counted tokens for today reached its
- *   configured limit is refused new sessions (`start` only: a resume
+ *   limit (`tokens_per_day` from the lookup, else the config's static
+ *   `agentDailyTokenLimits`) is refused new sessions (`start` only: a resume
  *   continues existing work); `retryAt` is the start of the next budget day.
- *   A `null` agent, or one with no configured limit, skips this check.
  *   Policy carve-out: a resume of an interrupted session is never refused by
  *   the agent limit (the cap above still refuses it), so the limit does not
  *   bound the tokens a resumed session spends the same day.
+ * - Sessions at once: an agent whose live sessions (`starting`, `running`,
+ *   `orphaned`) reached its `sessions_at_once` (lookup only) is refused
+ *   `agent_sessions_at_once`, starts and resumes alike (a resume adds a live
+ *   session; its own row is not counted, see `AdmissionRequest.session`), with
+ *   `retryAt` now + `SESSIONS_AT_ONCE_RECHECK_MS`.
+ *
+ * A `null` agent, or one with no limit set, skips the three agent checks.
  *
  * Every refusal appends one `admission_refused` event (agent, account label,
  * provider id, task, reason, retryAt): the durable "parked" record the event loop (item 07)
  * re-dispatches from. Its `notify` is shared with the meter's and the cap
- * tracker's: once per agent-day, once per cap window. There is one auth
+ * tracker's: once per agent-day, once per cap window; once per agent per hour
+ * for the settings and sessions-at-once refusals. There is one auth
  * provider, so a refusal never selects another (no rotation, AC8) and never
  * switches to an API key (AC7).
  */
@@ -50,12 +62,14 @@ export class BudgetAdmission {
   readonly #store: Store;
   readonly #auth: BudgetAuth;
   readonly #config: BudgetConfig;
+  readonly #agentLimits: ((agent: string) => AgentLimitsLookup) | undefined;
   readonly #clock: Clock;
 
   constructor(options: BudgetOptions, deps: BudgetDeps = {}) {
     this.#store = options.store;
     this.#auth = options.authProvider;
     this.#config = validateBudgetConfig(options.config ?? DEFAULT_BUDGET_CONFIG);
+    this.#agentLimits = options.agentLimits;
     this.#clock = clockOf(deps);
   }
 
@@ -73,18 +87,16 @@ export class BudgetAdmission {
         return this.#refuse(request, "cap_parked", capRetryAt(parks), { rate_limit_types: parks.map((p) => p.rate_limit_type) }, at);
       }
 
-      // Agent limit gates starts only; a resume is admitted past it (see the class doc).
-      const agentRefusal = agentLimitRefusal(this.#store, this.#auth, this.#config, this.#clock, request, now, ref, at);
-      if (agentRefusal !== null) {
-        return this.#refuse(request, "agent_daily_limit", agentRefusal.retryAt, agentRefusal.details, at);
-      }
+      // Settings, then the token limit (starts only; a resume is admitted past it), then sessions at once (see the class doc).
+      const refusal = agentRefusal(this.#store, this.#auth, this.#config, this.#agentLimits, this.#clock, request, now, ref, at);
+      if (refusal !== null) return this.#refuse(request, refusal.reason, refusal.retryAt, refusal.details, at);
       return { admitted: true };
     });
   }
 
   #refuse(
     request: AdmissionRequest,
-    reason: "cap_parked" | "agent_daily_limit",
+    reason: "cap_parked" | AgentRefusalReason,
     retryAt: string | null,
     details: Record<string, unknown>,
     at: string,

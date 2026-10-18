@@ -481,19 +481,50 @@ describe("Wright's settings through the one reader (AC5)", () => {
     expect(readWrightSettings(dataDir)).toMatchObject({ ok: true, settings: { model: "m", policy: { allowedTools: [], allowedBashPrefixes: [] } } });
   });
 
-  it("a wright.json that sets a valid never, limits or workspaces is settings_invalid (refused, never silently dropped)", () => {
+  it("a wright.json that sets a valid never, workspaces or limits.delegation_depth is settings_invalid (refused, never silently dropped)", () => {
     const file = wrightSettingsPath(dataDir);
     readWrightSettings(dataDir);
     const base = { model: "m", permission_mode: "default", tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] } };
-    for (const [field, value] of [
-      ["never", ["git_push"]],
-      ["limits", { tokens_per_day: 5 }],
-      ["workspaces", [join(tmp, "work")]],
+    for (const [key, value, field] of [
+      ["never", ["git_push"], "never"],
+      ["workspaces", [join(tmp, "work")], "workspaces"],
+      // Item 06 applies delegation depth: until then it stays refused for Wright, even beside the two applied limits.
+      ["limits", { delegation_depth: 1 }, "limits.delegation_depth"],
+      ["limits", { tokens_per_day: 5, sessions_at_once: 1, delegation_depth: 1 }, "limits.delegation_depth"],
     ] as const) {
-      writeFileSync(file, JSON.stringify({ ...base, [field]: value }));
+      writeFileSync(file, JSON.stringify({ ...base, [key]: value }));
       expect(readWrightSettings(dataDir), field).toStrictEqual({ ok: false, error: "settings_invalid", file, message: `${file}: ${field}: not supported for Wright yet (the kernel does not apply it to Wright's sessions); remove it` });
       expect(readAgentSettings(dataDir, "wright", { homeDir }), field).toMatchObject({ ok: false, error: "settings_invalid", file, field });
     }
+  });
+
+  it("a wright.json's limits.tokens_per_day and limits.sessions_at_once are read (the budget applies them); readWrightSettings' shapes stay unchanged", () => {
+    const file = wrightSettingsPath(dataDir);
+    readWrightSettings(dataDir);
+    const base = { model: "m", permission_mode: "default", tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] } };
+    writeFileSync(file, JSON.stringify({ ...base, limits: { tokens_per_day: 5, sessions_at_once: 1 } }));
+    const r = readAgentSettings(dataDir, "wright", { homeDir });
+    expect(r).toMatchObject({ ok: true, file, settings: { model: "m", limits: { tokens_per_day: 5, sessions_at_once: 1 } } });
+    expect(readWrightSettings(dataDir)).toStrictEqual({
+      ok: true,
+      file,
+      settings: { model: "m", effort: null, permissionMode: "default", policy: { allowedTools: ["Read"], allowedBashPrefixes: [] }, policyStatus: null },
+    });
+
+    // No model: the one reader's model_unset carries the limits (the budget applies them whatever the model); Wright's reader keeps its five keys.
+    writeFileSync(file, JSON.stringify({ ...base, model: null, limits: { sessions_at_once: 1 } }));
+    expect(readAgentSettings(dataDir, "wright", { homeDir })).toStrictEqual({
+      ok: false,
+      error: "model_unset",
+      file,
+      field: "model",
+      message: `Wright has no model: set "model" in ${file} (the kernel never picks one)`,
+      limits: { sessions_at_once: 1 },
+    });
+    expect(readWrightSettings(dataDir)).toStrictEqual({ ok: false, error: "model_unset", file, field: "model", message: `Wright has no model: set "model" in ${file} (the kernel never picks one)` });
+    // A model_unset file with no limits carries no limits key.
+    writeFileSync(file, JSON.stringify({ ...base, model: null }));
+    expect(readAgentSettings(dataDir, "wright", { homeDir })).not.toHaveProperty("limits");
   });
 });
 

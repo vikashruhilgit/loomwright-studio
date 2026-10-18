@@ -14,10 +14,11 @@ import {
   playbookCountedTokens,
   playbookKey,
   playbookTokenLimit,
+  resolveAgentLimits,
 } from "./internal.js";
 import type { Clock, EventRef } from "./internal.js";
-import { DEFAULT_BUDGET_CONFIG, agentDailyTokenLimit, validateBudgetConfig } from "./types.js";
-import type { BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions, UsageTotals } from "./types.js";
+import { DEFAULT_BUDGET_CONFIG, validateBudgetConfig } from "./types.js";
+import type { AgentLimitsLookup, BudgetAuth, BudgetConfig, BudgetDeps, BudgetOptions, UsageTotals } from "./types.js";
 
 /** The token components compared to tell a running total from a fresh baseline. */
 const MONOTONIC_KEYS = ["inputTokens", "outputTokens", "cacheCreationInputTokens", "cacheReadInputTokens"] as const;
@@ -129,11 +130,15 @@ interface PlaybookLimitRow {
  * reports them inside its first result's cumulative total, so the delta
  * catches up then (p7); a session that is never resumed loses them.
  *
- * After recording, when the session's agent has a configured daily limit and
- * its counted tokens for the day reach it, one `budget_limit_reached` event
- * and one `notify` are appended, once per agent-day. The running session is
- * not touched: it finishes its current turn, and admission refuses the
- * agent's next start (AC2).
+ * After recording, when the session's agent has a daily limit and its counted
+ * tokens for the day reach it, one `budget_limit_reached` event and one
+ * `notify` are appended, once per agent-day. The limit is read the way
+ * admission reads it (`resolveAgentLimits`: the `agentLimits` lookup, else
+ * the static config), at every result; an agent whose limits cannot be read
+ * (a lookup refusal or throw) records nothing here, because a broken settings
+ * file must never fail a metered result (admission refuses the agent's next
+ * start on it). The running session is not touched: it finishes its current
+ * turn, and admission refuses the agent's next start (AC2).
  *
  * A playbook's session (`sessions.playbook` set) writes that playbook's id to
  * every `budget` row it records, so its usage counts toward its agent, its
@@ -154,12 +159,14 @@ export class BudgetMeter {
   readonly #store: Store;
   readonly #auth: BudgetAuth;
   readonly #config: BudgetConfig;
+  readonly #agentLimits: ((agent: string) => AgentLimitsLookup) | undefined;
   readonly #clock: Clock;
 
   constructor(options: BudgetOptions, deps: BudgetDeps = {}) {
     this.#store = options.store;
     this.#auth = options.authProvider;
     this.#config = validateBudgetConfig(options.config ?? DEFAULT_BUDGET_CONFIG);
+    this.#agentLimits = options.agentLimits;
     this.#clock = clockOf(deps);
   }
 
@@ -252,7 +259,14 @@ export class BudgetMeter {
   }
 
   #checkLimit(agent: string, day: string, now: Date, ref: EventRef, at: string): void {
-    const limit = agentDailyTokenLimit(this.#config, agent);
+    let limit: number | undefined;
+    try {
+      const limits = resolveAgentLimits(this.#config, this.#agentLimits, agent);
+      // A settings refusal is admission's to act on: skipped here, never thrown (see the class doc).
+      limit = limits.ok ? limits.tokensPerDay : undefined;
+    } catch {
+      limit = undefined;
+    }
     if (limit === undefined) return;
     const counted = agentCountedTokens(this.#store, agent, day);
     if (counted < limit) return;
