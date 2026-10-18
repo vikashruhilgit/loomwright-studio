@@ -20,6 +20,7 @@ import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/i
 import {
   ASK_HELP,
   MAX_CONTEXT_CHARS,
+  MESSAGES_HELP,
   MAX_MEMORY_FILE_CHARS,
   MEMORY_FILES,
   PROPOSED_ALLOWED_TOOLS,
@@ -291,15 +292,19 @@ async function tickBrain(store: Store, sessions: EventSessions | undefined, now 
 // ---- The contribution --------------------------------------------------------------
 
 describe("the brain contribution", () => {
-  it("ships the message handler, POST /ask, GET /messages/:id and studio ask, and nothing else", () => {
+  it("ships the message handler, POST /ask, GET /messages/:id, GET /messages, studio ask and studio messages, and nothing else", () => {
     expect(SHIPPED_CONTRIBUTIONS).toContain(brainContribution);
     expect(Object.isFrozen(brainContribution)).toBe(true);
     expect(Object.keys(brainContribution)).toEqual(["name", "routes", "subcommands", "handlers"]);
     const merged = mergeContributions([brainContribution], PHASE1_RESERVED);
     expect(merged.tools).toEqual([]);
-    expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(["brain POST /ask", "brain GET /messages/:id"]);
-    expect(merged.subcommands.map((s) => [s.name, s.help])).toEqual([["ask", ASK_HELP]]);
-    expect(ASK_HELP).toBe('studio ask "<text>" [--json] [--timeout <s>]');
+    expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(["brain POST /ask", "brain GET /messages/:id", "brain GET /messages"]);
+    expect(merged.subcommands.map((s) => [s.name, s.help])).toEqual([
+      ["ask", ASK_HELP],
+      ["messages", MESSAGES_HELP],
+    ]);
+    expect(ASK_HELP).toBe('studio ask [--agent <id>] [--workspace <path>] "<text>" [--json] [--timeout <s>]');
+    expect(MESSAGES_HELP).toBe("studio messages [--agent <id>] [--all] [--json]");
     expect(Object.keys(merged.handlers)).toEqual(["message"]);
     expect(merged.handlers.message).toBe(brainContribution.handlers?.message);
     expect(merged.dueWork).toEqual([]);
@@ -708,7 +713,7 @@ describe("the context a session gets (AC4, AC7)", () => {
 // ---- Routing -----------------------------------------------------------------------------------
 
 describe("routing a message (the handler)", () => {
-  it("a message for another agent, or for no agent: no row, no session, the event done", async () => {
+  it("a message for an unknown agent: one failed row (no_such_agent), no session, the event done; for no agent: no row", async () => {
     setModel();
     const store = openStore();
     const a = enqueueMessage(store, { text: "hi", agent: "scout" });
@@ -716,7 +721,8 @@ describe("routing a message (the handler)", () => {
     const sessions = stubSessions(store);
     await tickBrain(store, sessions);
     expect(sessions.starts).toEqual([]);
-    expect(rows(store)).toEqual([]);
+    expect(rows(store)).toEqual([expect.objectContaining({ queue_id: a.id, agent: "scout", status: "failed", session_id: null })]);
+    expect(rows(store)[0]?.detail).toMatch(/^no_such_agent: /);
     expect(getQueueRow(store, a.id)?.status).toBe("done");
     expect(getQueueRow(store, b.id)?.status).toBe("done");
     expect(existsSync(join(dataDir, "memory"))).toBe(false);

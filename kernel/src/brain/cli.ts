@@ -1,16 +1,25 @@
-// `studio ask "<text>" [--json] [--timeout <s>]`: send Wright a message and
-// print the reply, over the routes in `routes.ts`. It POSTs the text, then
-// polls `GET /messages/:id` until the message is answered or the wait ends.
+// `studio ask [--agent <id>] [--workspace <path>] "<text>" [--json]
+// [--timeout <s>]`: send Wright (or, with `--agent`, a crew member) a message
+// and print the reply, over the routes in `routes.ts`. It POSTs the text,
+// then polls `GET /messages/:id` until the message is answered or the wait
+// ends. `--workspace` names one of the agent's settings workspaces as its
+// session's cwd.
 //
 // Exit codes:
 //   0  replied: the reply on stdout
 //   1  failed (the reason on stderr), or the kernel API answered unexpectedly
 //   2  refused, nothing queued (model_unset, kill_switch_engaged,
-//      settings_invalid), or parked by admission (the reason and retry time),
-//      or a usage error
+//      settings_invalid, settings_missing, no_such_agent, agent_off,
+//      workspace_not_listed), or parked by admission (the reason and retry
+//      time), or a usage error
 //   3  no answer within --timeout (default 120 s): prints the session id, if
 //      one started, and "follow up with `studio status`". The session keeps
 //      running: the CLI never stops it (invariant 2).
+//
+// `studio messages [--agent <id>] [--all] [--json]`: the message rows
+// (`GET /messages`), newest last, one block per row: its id, agent, status,
+// source, depth and `reply_to`, then its text and its reply or reason.
+// Exit 0; 1 when the kernel API answers unexpectedly; 2 on bad usage.
 //
 // Text from the store (a reply, a reason) is data, never terminal control: in
 // the plain output (`terminalText`), control characters other than newline
@@ -25,7 +34,10 @@ import type { CliApiClient, CliSubcommandOutput, ContributedSubcommand } from ".
 import { askTextProblem } from "./routes.js";
 
 export const ASK_SUBCOMMAND = "ask";
-export const ASK_HELP = 'studio ask "<text>" [--json] [--timeout <s>]';
+export const ASK_HELP = 'studio ask [--agent <id>] [--workspace <path>] "<text>" [--json] [--timeout <s>]';
+
+export const MESSAGES_SUBCOMMAND = "messages";
+export const MESSAGES_HELP = "studio messages [--agent <id>] [--all] [--json]";
 
 /** How long `studio ask` waits for the reply, in seconds, without `--timeout`. */
 export const DEFAULT_ASK_TIMEOUT_S = 120;
@@ -47,17 +59,30 @@ interface AskCommand {
   readonly text: string;
   readonly json: boolean;
   readonly timeoutS: number;
+  /** Absent: Wright (the POST names no agent). */
+  readonly agent?: string;
+  readonly workspace?: string;
 }
 
 function parse(args: readonly string[]): AskCommand | undefined {
   let text: string | undefined;
   let json = false;
   let timeoutS: number | undefined;
+  let agent: string | undefined;
+  let workspace: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const a = args[i] as string;
     if (a === "--json") {
       if (json) return undefined;
       json = true;
+    } else if (a === "--agent") {
+      const v = args[++i];
+      if (agent !== undefined || v === undefined || v === "") return undefined;
+      agent = v;
+    } else if (a === "--workspace") {
+      const v = args[++i];
+      if (workspace !== undefined || v === undefined || v === "") return undefined;
+      workspace = v;
     } else if (a === "--timeout") {
       const v = args[++i];
       if (timeoutS !== undefined || v === undefined || !/^\d+(\.\d+)?$/.test(v)) return undefined;
@@ -69,7 +94,8 @@ function parse(args: readonly string[]): AskCommand | undefined {
       text = a;
     }
   }
-  return text === undefined ? undefined : { text, json, timeoutS: timeoutS ?? DEFAULT_ASK_TIMEOUT_S };
+  if (text === undefined) return undefined;
+  return { text, json, timeoutS: timeoutS ?? DEFAULT_ASK_TIMEOUT_S, ...(agent === undefined ? {} : { agent }), ...(workspace === undefined ? {} : { workspace }) };
 }
 
 /**
@@ -98,11 +124,22 @@ function positiveId(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
+/** The agent a message went to, as the CLI names it: `Wright`, or the crew id (escaped). */
+function agentName(c: AskCommand): string {
+  return c.agent === undefined || c.agent === "wright" ? "Wright" : oneLine(c.agent);
+}
+
 /** The POST refusals: one line, exit 2 (nothing was queued); anything else, exit 1. */
-function refused(res: { status: number; body: unknown }, out: CliSubcommandOutput): number {
+function refused(c: AskCommand, res: { status: number; body: unknown }, out: CliSubcommandOutput): number {
   const error = errorOf(res.body);
+  const name = agentName(c);
   if (res.status === 409 && error === "model_unset") {
-    out.stderr.write(`studio: Wright has no model: set "${oneLine(field(res.body, "field") ?? "model")}" in ${oneLine(field(res.body, "file"))}; nothing was queued\n`);
+    const [set, file] = [oneLine(field(res.body, "field") ?? "model"), oneLine(field(res.body, "file"))];
+    out.stderr.write(
+      name === "Wright"
+        ? `studio: Wright has no model: set "${set}" in ${file}; nothing was queued\n`
+        : `studio: ${name} has no model: set "${set}" in ${file}; nothing was queued\n`,
+    );
     return 2;
   }
   if (res.status === 409 && error === "kill_switch_engaged") {
@@ -110,7 +147,24 @@ function refused(res: { status: number; body: unknown }, out: CliSubcommandOutpu
     return 2;
   }
   if (res.status === 409 && error === "settings_invalid") {
-    out.stderr.write(`studio: Wright's settings file is invalid: ${oneLine(field(res.body, "message"))}; nothing was queued\n`);
+    const why = `${oneLine(field(res.body, "message"))}; nothing was queued`;
+    out.stderr.write(name === "Wright" ? `studio: Wright's settings file is invalid: ${why}\n` : `studio: ${name}'s settings file is invalid: ${why}\n`);
+    return 2;
+  }
+  if (res.status === 409 && error === "settings_missing") {
+    out.stderr.write(`studio: ${name} has no settings file: ${oneLine(field(res.body, "file"))}; nothing was queued\n`);
+    return 2;
+  }
+  if (res.status === 404 && error === "no_such_agent") {
+    out.stderr.write(`studio: no agent ${name} (neither wright nor a registered crew member); nothing was queued\n`);
+    return 2;
+  }
+  if (res.status === 409 && error === "agent_off") {
+    out.stderr.write(`studio: ${name} is off: it takes no messages; nothing was queued\n`);
+    return 2;
+  }
+  if (res.status === 409 && error === "workspace_not_listed") {
+    out.stderr.write(`studio: ${oneLine(c.workspace ?? "")} is not one of ${name}'s settings workspaces; nothing was queued\n`);
     return 2;
   }
   if (res.status === 400 || res.status === 409) {
@@ -128,8 +182,9 @@ export function askSubcommand(deps: AskSubcommandDeps = {}): ContributedSubcomma
   const pollMs = deps.pollMs ?? ASK_POLL_MS;
 
   async function run(c: AskCommand, client: CliApiClient, out: CliSubcommandOutput): Promise<number> {
-    const posted = await client.request("POST", "/ask", { text: c.text });
-    if (posted.status !== 202) return refused(posted, out);
+    const body = { text: c.text, ...(c.agent === undefined ? {} : { agent: c.agent }), ...(c.workspace === undefined ? {} : { workspace: c.workspace }) };
+    const posted = await client.request("POST", "/ask", body);
+    if (posted.status !== 202) return refused(c, posted, out);
     const id = positiveId(field(posted.body, "message_id"));
     if (id === undefined) {
       out.stderr.write("studio: kernel API sent an unreadable answer to POST /ask\n");
@@ -156,7 +211,7 @@ export function askSubcommand(deps: AskSubcommandDeps = {}): ContributedSubcomma
         const detail = oneLine(field(res.body, "detail") ?? "no reason recorded");
         out.stderr.write(
           status === "failed"
-            ? `studio: Wright could not answer message ${id}: ${detail}\n`
+            ? `studio: ${agentName(c)} could not answer message ${id}: ${detail}\n`
             : `studio: message ${id} is parked: ${detail}; it stays queued and runs when admission allows\n`,
         );
         return status === "failed" ? 1 : 2;
@@ -165,7 +220,7 @@ export function askSubcommand(deps: AskSubcommandDeps = {}): ContributedSubcomma
       if (left <= 0) {
         if (c.json) json();
         const session = positiveId(field(res.body, "session_id"));
-        const where = session === undefined ? `message ${id} is still queued` : `Wright's session ${session} is still running`;
+        const where = session === undefined ? `message ${id} is still queued` : `${agentName(c)}'s session ${session} is still running`;
         out.stderr.write(`studio: no reply within ${c.timeoutS} s; ${where}: follow up with studio status\n`);
         return 3;
       }
@@ -188,6 +243,73 @@ export function askSubcommand(deps: AskSubcommandDeps = {}): ContributedSubcomma
         return 2;
       }
       return run(c, client, out);
+    },
+  };
+}
+
+// ---- studio messages ----------------------------------------------------------------
+
+interface MessagesCommand {
+  readonly agent?: string;
+  readonly all: boolean;
+  readonly json: boolean;
+}
+
+function parseMessages(args: readonly string[]): MessagesCommand | undefined {
+  let agent: string | undefined;
+  let all = false;
+  let json = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] as string;
+    if (a === "--json" && !json) json = true;
+    else if (a === "--all" && !all) all = true;
+    else if (a === "--agent" && agent === undefined) {
+      const v = args[++i];
+      if (v === undefined || v === "") return undefined;
+      agent = v;
+    } else return undefined;
+  }
+  return { ...(agent === undefined ? {} : { agent }), all, json };
+}
+
+/** One row as a block: `#<id> <agent> <status> from <source> depth <n>[ reply_to #<id>]`, then its text and its reply or reason, every stored value escaped. */
+function formatMessage(m: Record<string, unknown>): string {
+  const replyTo = positiveId(m.reply_to);
+  const lines = [
+    `#${oneLine(m.id)} ${oneLine(m.agent)} ${oneLine(m.status)} from ${oneLine(m.source)} depth ${oneLine(m.depth)}${replyTo === undefined ? "" : ` reply_to #${replyTo}`}`,
+    `  text: ${oneLine(m.text)}`,
+  ];
+  if (m.reply_text !== null && m.reply_text !== undefined) lines.push(`  reply: ${oneLine(m.reply_text)}`);
+  if (m.detail !== null && m.detail !== undefined) lines.push(`  detail: ${oneLine(m.detail)}`);
+  return `${lines.join("\n")}\n`;
+}
+
+/** The `studio messages` subcommand. */
+export function messagesSubcommand(): ContributedSubcommand {
+  return {
+    name: MESSAGES_SUBCOMMAND,
+    help: MESSAGES_HELP,
+    async run(args, client, out) {
+      const c = parseMessages(args);
+      if (c === undefined) {
+        out.stderr.write(`usage: ${MESSAGES_HELP}\n`);
+        return 2;
+      }
+      const query = [...(c.agent === undefined ? [] : [`agent=${encodeURIComponent(c.agent)}`]), ...(c.all ? ["all=1"] : [])];
+      const path = query.length === 0 ? "/messages" : `/messages?${query.join("&")}`;
+      const res = await client.request("GET", path);
+      const list = field(res.body, "messages");
+      if (res.status !== 200) {
+        out.stderr.write(`studio: kernel API answered ${res.status} to GET ${path}\n`);
+        return 1;
+      }
+      if (!Array.isArray(list) || !list.every((m) => typeof m === "object" && m !== null)) {
+        out.stderr.write(`studio: kernel API sent an unreadable answer to GET ${path}\n`);
+        return 1;
+      }
+      if (c.json) out.stdout.write(`${JSON.stringify(res.body, null, 2)}\n`);
+      else out.stdout.write(list.length === 0 ? "no messages\n" : (list as Record<string, unknown>[]).map(formatMessage).join(""));
+      return 0;
     },
   };
 }
