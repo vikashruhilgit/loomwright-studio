@@ -58,8 +58,17 @@ export const APPROVAL_AUDIT_KINDS = ["approval_requested", "approval_decided", "
  * composition enforces that at start (`approvalApplierOf` refuses a member
  * missing from it), not only a test. A tool that registers an applier outside
  * this set also refuses the composition.
+ *
+ * The two charter tools (`kernel_agent_create`, `kernel_agent_update`) are
+ * members before their applier exists (phase 4 item 07 registers it): until
+ * then an owner's `once` on one is recorded `apply_refused: no_applier` and
+ * nothing is done.
  */
-export const KERNEL_APPLIED_ACTIONS = ["mcp__kernel__kernel_playbook_enable"] as const;
+export const KERNEL_APPLIED_ACTIONS = [
+  "mcp__kernel__kernel_playbook_enable",
+  "mcp__kernel__kernel_agent_create",
+  "mcp__kernel__kernel_agent_update",
+] as const;
 
 /** The approval a kernel applier runs on. */
 export interface AppliedApproval {

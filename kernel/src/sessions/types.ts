@@ -10,6 +10,7 @@ import type {
 import type { AuthProvider, BaseEnv } from "../auth/types.js";
 import type { UsageTotals } from "../budget/types.js";
 import type { Store } from "../store/store.js";
+import type { NeverCategory } from "./policy.js";
 
 /**
  * A session row's `status`. `failed:auth` is its own status so an auth failure
@@ -68,6 +69,13 @@ export function isTerminalStatus(status: string): boolean {
 export interface ToolPolicy {
   readonly allowedTools: readonly string[];
   readonly allowedBashPrefixes: readonly string[];
+  /**
+   * The outward categories this session never takes (`NEVER_CATEGORIES` in
+   * `policy.ts`), set by the owner per crew member (invariant 1). Optional:
+   * absent means no boundary. A call in one is denied (`agent_boundary`),
+   * never held; the matching is phase 4 item 03's `boundaryDecision`.
+   */
+  readonly never?: readonly NeverCategory[];
 }
 
 /** Every permission mode except `bypassPermissions`, which the kernel never sets (D5). */

@@ -244,7 +244,7 @@ describe("migrations", () => {
     expect(store.appliedMigrations().map((m) => [m.version, m.name])).toEqual([[1, "initial"]]);
   });
 
-  it("the default list adds auth_providers (migration 2), sessions.loomwright_path (migration 3), sessions.leader_started_at (migration 4), sessions.kill_incomplete_at (migration 5), the budget/cap_state details (migration 6), event_queue and the work_steps details (migration 7), the events explicit-id guard (migration 8), the cap keys on the provider id (migration 9), session_groups (migration 10), the phase 2 tables triggers, notifications, approvals and loomwright_contract_seen (migration 11), brain_messages (migration 12) and the playbooks tables playbooks, playbook_versions, playbook_runs with sessions.playbook / playbook_version, approvals.playbook and event_queue.priority (migration 13)", () => {
+  it("the default list adds auth_providers (migration 2), sessions.loomwright_path (migration 3), sessions.leader_started_at (migration 4), sessions.kill_incomplete_at (migration 5), the budget/cap_state details (migration 6), event_queue and the work_steps details (migration 7), the events explicit-id guard (migration 8), the cap keys on the provider id (migration 9), session_groups (migration 10), the phase 2 tables triggers, notifications, approvals and loomwright_contract_seen (migration 11), brain_messages (migration 12), the playbooks tables playbooks, playbook_versions, playbook_runs with sessions.playbook / playbook_version, approvals.playbook and event_queue.priority (migration 13) and the agents table with brain_messages.from_agent / depth / reply_to / workspace (migration 14)", () => {
     const store = open();
     expect(tableNames(store)).toEqual(
       [
@@ -260,9 +260,10 @@ describe("migrations", () => {
         "playbooks",
         "playbook_versions",
         "playbook_runs",
+        "agents",
       ].sort(),
     );
-    for (const later of ["agents", "hooks_installed", "connectors"]) {
+    for (const later of ["hooks_installed", "connectors"]) {
       expect(tableNames(store)).not.toContain(later);
     }
     expect(store.appliedMigrations().map((m) => [m.version, m.name])).toEqual([
@@ -279,6 +280,7 @@ describe("migrations", () => {
       [11, "phase_2_tables"],
       [12, "brain_messages"],
       [13, "playbooks"],
+      [14, "agents"],
     ]);
     expect(columns(store, "auth_providers")).toEqual(["id", "account", "token_created_at", "updated_at"]);
     expect(columns(store, "session_groups")).toEqual([
@@ -610,7 +612,7 @@ describe("events (append-only audit log)", () => {
     v7.close();
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     expect(store.prepare(ROWS).raw().all()).toEqual(before);
   });
 });
@@ -658,7 +660,7 @@ describe("migration 9: cap keys on the provider id", () => {
     const before = inspect(tmp, (db) => db.prepare(EVENTS).raw().all());
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     expect(store.prepare(CAP_ROWS).all()).toEqual([
       { account: "subscription-token", rate_limit_type: "five_hour", status: "rejected", resets_at: RESET, reset_source: "event", notified_resets_at: RESET, warned_resets_at: null },
       { account: "subscription-token", rate_limit_type: "seven_day", status: "allowed", resets_at: null, reset_source: "event", notified_resets_at: null, warned_resets_at: null },
@@ -837,7 +839,7 @@ describe("migration 9: cap keys on the provider id", () => {
     cap(first, "subscription-token", "five_hour", "rejected", "2026-10-02T16:20:00.000Z");
     first.close();
     const store = open();
-    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     expect(store.prepare("SELECT account, status FROM cap_state").all()).toEqual([{ account: "subscription-token", status: "rejected" }]);
   });
 });
@@ -949,7 +951,7 @@ describe("migration 11: the phase 2 tables", () => {
     expect(store.prepare("SELECT name FROM pragma_index_info('approvals_status_id') ORDER BY seqno").pluck().all()).toEqual(["status", "id"]);
   });
 
-  it("a database already at the latest version reopens unchanged, and a re-run of migrations 11 to 13 (their records deleted) keeps every row", () => {
+  it("a database already at the latest version reopens unchanged, and a re-run of migrations 11 to 14 (their records deleted) keeps every row", () => {
     const first = open();
     first.prepare("INSERT INTO notifications (source, title, body, deep_link) VALUES ('kernel:test', 't', 'b', 'loomwright-studio://notifications/1')").run();
     first.close();
@@ -960,7 +962,7 @@ describe("migration 11: the phase 2 tables", () => {
       });
     const before = snap();
     const reopened = open();
-    expect(reopened.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    expect(reopened.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     reopened.close();
     expect(snap()).toEqual(before);
 
@@ -968,7 +970,7 @@ describe("migration 11: the phase 2 tables", () => {
     db.exec("DELETE FROM schema_migrations WHERE version >= 11");
     db.close();
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    expect(rerun.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     rerun.close();
     expect(snap()).toEqual(before);
   });
@@ -982,7 +984,7 @@ describe("migration 12: brain_messages", () => {
     v11.close();
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([13, "playbooks"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([14, "agents"]);
     expect(store.prepare("SELECT count(*) FROM event_queue").pluck().get()).toBe(1);
     expect(store.prepare("SELECT count(*) FROM notifications").pluck().get()).toBe(1);
     expect(columns(store, "brain_messages")).toEqual([
@@ -997,6 +999,10 @@ describe("migration 12: brain_messages", () => {
       "detail",
       "created_at",
       "updated_at",
+      "from_agent",
+      "depth",
+      "reply_to",
+      "workspace",
     ]);
     const insert = store.prepare("INSERT INTO brain_messages (queue_id, agent, source, text) VALUES (1, 'wright', 'ask', 'hi')");
     insert.run();
@@ -1015,6 +1021,10 @@ describe("migration 12: brain_messages", () => {
 
 describe("migration 13: playbooks", () => {
   const V12 = migrations.slice(0, 12);
+  // The upgrade this describe pins is to 13: migration 14 ALTERs
+  // brain_messages (stored text and row shape), and its own upgrade test
+  // below covers that step.
+  const V13 = migrations.slice(0, 13);
   /** The tables migration 13 ALTERs, and the columns it adds to each, in order. */
   const ALTERED: Record<string, string[]> = {
     sessions: ["playbook", "playbook_version"],
@@ -1085,12 +1095,12 @@ describe("migration 13: playbooks", () => {
     for (const t of NEW_TABLES) expect(before.tables).not.toContain(t);
     expect(before.rows.event_queue).toHaveLength(2);
 
-    const store = open();
+    const store = open({ migrations: V13 });
     expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([13, "playbooks"]);
     store.close();
 
     inspect(tmp, (db) => {
-      expect(() => checkAfterMigrating(db, tmp, migrations)).not.toThrow();
+      expect(() => checkAfterMigrating(db, tmp, V13)).not.toThrow();
       // Every pre-existing row keeps its values, read over the columns it had.
       for (const t of before.tables) expect(rowsOver(db, t, before.cols[t] ?? []), t).toEqual(before.rows[t]);
       // The three altered tables gain exactly the listed columns, after the ones they had.
@@ -1205,10 +1215,203 @@ describe("migration 13: playbooks", () => {
     const before = snap();
 
     const db = new Database(join(tmp, DB_FILENAME));
-    db.exec("DELETE FROM schema_migrations WHERE version = 13");
+    // Deleting 13 alone would leave 14 above a gap: 13 and 14 re-run together.
+    db.exec("DELETE FROM schema_migrations WHERE version >= 13");
     db.close();
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([13, "playbooks"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([14, "agents"]);
+    rerun.close();
+    expect(snap()).toEqual(before);
+  });
+});
+
+describe("migration 14: agents", () => {
+  const V13 = migrations.slice(0, 13);
+  /** The table migration 14 ALTERs, and the columns it adds to it, in order. */
+  const ALTERED: Record<string, string[]> = {
+    brain_messages: ["from_agent", "depth", "reply_to", "workspace"],
+  };
+  const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+  /** `table`'s rows over `cols` only, each value rendered with its storage class by quote(). */
+  function rowsOver(db: Database.Database, table: string, cols: readonly string[]): unknown[] {
+    return db.prepare(`SELECT ${cols.map((c) => `quote(${c})`).join(", ")} FROM ${table} ORDER BY rowid`).raw().all();
+  }
+
+  /** `table`'s column names on a raw connection. */
+  function columnsOf(db: Database.Database, table: string): string[] {
+    return db.prepare<[], string>(`SELECT name FROM pragma_table_info('${table}')`).pluck().all();
+  }
+
+  /** A v13 store with a row in every table, and two `brain_messages` rows. */
+  function seedV13(): void {
+    const store = open({ migrations: V13 });
+    store.prepare("INSERT INTO tasks (title, state, dedupe_key) VALUES ('t', 'open', 'd')").run();
+    store.prepare("INSERT INTO playbooks (slug, name, owning_agent, intent) VALUES ('review', 'Review', 'wright', 'review PRs')").run();
+    store.prepare("INSERT INTO playbook_versions (playbook, version, snapshot_json) VALUES (1, 1, '{}')").run();
+    store
+      .prepare(
+        "INSERT INTO sessions (agent, task_id, status, pgid, auth_account, loomwright_path, leader_started_at, playbook, playbook_version) VALUES ('wright', 1, 'completed', 4242, 'subscription-token', '/lw', '2026-10-01T00:00:00.000Z', 1, 1)",
+      )
+      .run();
+    store.prepare("INSERT INTO playbook_runs (playbook, version, kind, session_id) VALUES (1, 1, 'dry_run', 1)").run();
+    store.prepare("INSERT INTO events (kind, actor, task_id, session_id, payload_json) VALUES ('task.created', 'wright', 1, 1, '{\"x\":\"é\"}')").run();
+    store.prepare("INSERT INTO budget (day, session_id, model, input_tokens, output_tokens) VALUES ('2026-10-01', 1, 'm', 10, 20)").run();
+    store.prepare("INSERT INTO work_steps (key, status, result_json) VALUES ('kernel_x:session-1:k', 'done', '{}')").run();
+    store.prepare("INSERT INTO wakeups (due_at, reason, task_id) VALUES ('2026-10-02T00:00:00.000Z', 'r', 1)").run();
+    store.prepare("INSERT INTO cap_state (account, rate_limit_type, status) VALUES ('subscription-token', 'five_hour', 'allowed')").run();
+    store.prepare("INSERT INTO auth_providers (id, account) VALUES ('subscription-token', 'owner@example.test')").run();
+    store.prepare("INSERT INTO event_queue (kind, payload_json, source_ref) VALUES ('message', '{\"text\":\"hi\"}', 'message:1')").run();
+    store.prepare("INSERT INTO event_queue (kind, payload_json, priority) VALUES ('message', '{\"text\":\"again\"}', 'high')").run();
+    store
+      .prepare(
+        "INSERT INTO session_groups (session_id, pgid, leader_command, leader_started_at, first_seen) VALUES (1, 5151, 'bash', '2026-10-01T00:00:01.000Z', '2026-10-01T00:00:02.000Z')",
+      )
+      .run();
+    store
+      .prepare(
+        "INSERT INTO triggers (owning_agent, kind, spec_json, action, action_payload, created_by) VALUES ('wright', 'once', '{\"at\":\"2026-10-15T09:00:00+01:00\"}', 'notify', 'hello', 'agent')",
+      )
+      .run();
+    store.prepare("INSERT INTO notifications (source, title, body, deep_link) VALUES ('trigger:1', 't', 'b', 'loomwright-studio://notifications/1')").run();
+    store.prepare("INSERT INTO approvals (requesting_agent, requesting_session, action, payload_json, playbook) VALUES ('wright', 1, 'git push', '{}', 1)").run();
+    store
+      .prepare(
+        "INSERT INTO loomwright_contract_seen (install_path, plugin_version, contract_schema_version, contract_json) VALUES ('/lw', '17.2.0', 1, '{}')",
+      )
+      .run();
+    store.prepare("INSERT INTO brain_messages (queue_id, agent, source, text, session_id) VALUES (1, 'wright', 'ask', 'hi', 1)").run();
+    store
+      .prepare("INSERT INTO brain_messages (queue_id, agent, source, text, status, reply_text, detail) VALUES (2, 'wright', 'message', 'again', 'failed', NULL, 'boom')")
+      .run();
+    store.close();
+  }
+
+  it("migrates a v13 store with brain_messages rows to 14: every brain_messages row reads from_agent null, depth 0, reply_to null, workspace null, every other object keeps its text, every row keeps its values, and the integrity check passes before and after", () => {
+    seedV13();
+    const before = inspect(tmp, (db) => {
+      expect(() => checkBeforeMigrating(db, tmp, migrations, V13.map((m) => m.version))).not.toThrow();
+      const tables = tableNames(db).filter((t) => t !== "schema_migrations");
+      for (const t of tables) expect(db.prepare(`SELECT count(*) FROM ${t}`).pluck().get(), t).toBeGreaterThan(0);
+      const cols: Record<string, string[]> = {};
+      for (const t of tables) cols[t] = columnsOf(db, t);
+      return { tables, cols, rows: rows(db, tables), schema: schema(db) };
+    });
+    expect(before.tables).not.toContain("agents");
+    expect(before.rows.brain_messages).toHaveLength(2);
+
+    const store = open();
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([14, "agents"]);
+    store.close();
+
+    inspect(tmp, (db) => {
+      expect(() => checkAfterMigrating(db, tmp, migrations)).not.toThrow();
+      // Every pre-existing row keeps its values, read over the columns it had.
+      for (const t of before.tables) expect(rowsOver(db, t, before.cols[t] ?? []), t).toEqual(before.rows[t]);
+      // brain_messages gains exactly the listed columns, after the ones it had; no other table changes shape.
+      for (const t of before.tables) {
+        expect(columnsOf(db, t), t).toEqual([...(before.cols[t] ?? []), ...(ALTERED[t] ?? [])]);
+      }
+      // The new columns read null, or 0 for depth, on every existing row.
+      expect(rowsOver(db, "brain_messages", ALTERED.brain_messages ?? [])).toEqual([
+        ["NULL", "0", "NULL", "NULL"],
+        ["NULL", "0", "NULL", "NULL"],
+      ]);
+      // Every object other than brain_messages keeps its stored text.
+      const after = schema(db);
+      const altered = (o: unknown): boolean => Object.keys(ALTERED).includes((o as { name: string }).name);
+      const named = (o: unknown): boolean => before.schema.objects.some((b) => (b as { name: string }).name === (o as { name: string }).name);
+      expect(after.objects.filter((o) => named(o) && !altered(o))).toEqual(before.schema.objects.filter((o) => !altered(o)));
+      expect(after.versions.slice(0, 13)).toEqual(before.schema.versions);
+      expect(db.prepare("SELECT count(*) FROM agents").pluck().get()).toBe(0);
+      // No trigger beyond the kernel's own events guards.
+      expect(db.prepare("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name <> 'events'").pluck().get()).toBe(0);
+    });
+  });
+
+  it("creates agents with exactly its columns, defaults and keys; the brain_messages columns are nullable (depth NOT NULL DEFAULT 0); no value CHECK and no SQL trigger", () => {
+    const store = open();
+    expect(columns(store, "agents")).toEqual([
+      "id",
+      "display_name",
+      "avatar_shape",
+      "avatar_hue",
+      "status",
+      "created_by",
+      "approval_id",
+      "charter_json",
+      "created_at",
+      "updated_at",
+    ]);
+    const info = (table: string, column: string): unknown =>
+      store.prepare(`SELECT type, "notnull", dflt_value, pk FROM pragma_table_info('${table}') WHERE name = ?`).get(column);
+    expect(info("agents", "id")).toEqual({ type: "TEXT", notnull: 0, dflt_value: null, pk: 1 });
+    expect(info("agents", "status")).toEqual({ type: "TEXT", notnull: 1, dflt_value: "'active'", pk: 0 });
+    expect(info("agents", "approval_id")).toEqual({ type: "INTEGER", notnull: 0, dflt_value: null, pk: 0 });
+    expect(info("brain_messages", "from_agent")).toEqual({ type: "TEXT", notnull: 0, dflt_value: null, pk: 0 });
+    expect(info("brain_messages", "depth")).toEqual({ type: "INTEGER", notnull: 1, dflt_value: "0", pk: 0 });
+    expect(info("brain_messages", "reply_to")).toEqual({ type: "INTEGER", notnull: 0, dflt_value: null, pk: 0 });
+    expect(info("brain_messages", "workspace")).toEqual({ type: "TEXT", notnull: 0, dflt_value: null, pk: 0 });
+    const fks = (table: string): unknown =>
+      store.prepare(`SELECT "from", "table", "to" FROM pragma_foreign_key_list('${table}') ORDER BY "from"`).all();
+    expect(fks("agents")).toEqual([{ from: "approval_id", table: "approvals", to: "id" }]);
+    expect(fks("brain_messages")).toEqual(expect.arrayContaining([{ from: "reply_to", table: "brain_messages", to: "id" }]));
+
+    const add = store.prepare(
+      "INSERT INTO agents (id, display_name, avatar_shape, avatar_hue, created_by, charter_json) VALUES (?, 'Mason', 'shark', 'crew-teal', 'owner', '{}')",
+    );
+    add.run("mason");
+    expect(() => add.run("mason")).toThrow(/UNIQUE|PRIMARY KEY/);
+    const agent = store.prepare("SELECT * FROM agents").get() as Record<string, unknown>;
+    expect(agent).toMatchObject({ id: "mason", status: "active", approval_id: null });
+    expect(agent.created_at).toMatch(ISO);
+    expect(agent.updated_at).toMatch(ISO);
+    expect(() =>
+      store
+        .prepare("INSERT INTO agents (id, display_name, avatar_shape, avatar_hue, created_by, charter_json, approval_id) VALUES ('ada', 'Ada', 'crab', 'crew-sky', 'wright', '{}', 99)")
+        .run(),
+    ).toThrow(/FOREIGN KEY/);
+
+    store.prepare("INSERT INTO event_queue (kind, payload_json) VALUES ('message', '{}')").run();
+    store.prepare("INSERT INTO brain_messages (queue_id, agent, source, text) VALUES (1, 'wright', 'ask', 'hi')").run();
+    expect(store.prepare("SELECT from_agent, depth, reply_to, workspace FROM brain_messages").get()).toEqual({
+      from_agent: null,
+      depth: 0,
+      reply_to: null,
+      workspace: null,
+    });
+    store.prepare("INSERT INTO event_queue (kind, payload_json) VALUES ('message', '{}')").run();
+    expect(() => store.prepare("INSERT INTO brain_messages (queue_id, agent, source, text, reply_to) VALUES (2, 'mason', 'message', 'x', 99)").run()).toThrow(
+      /FOREIGN KEY/,
+    );
+    expect(() => store.prepare("INSERT INTO brain_messages (queue_id, agent, source, text, depth) VALUES (2, 'mason', 'message', 'x', NULL)").run()).toThrow(
+      /NOT NULL/,
+    );
+    store.prepare("INSERT INTO brain_messages (queue_id, agent, source, text, from_agent, depth, reply_to, workspace) VALUES (2, 'mason', 'message', 'x', 'wright', 1, 1, '/w')").run();
+
+    // Value sets are closed in code: a value a later item adds needs no rebuild.
+    store.prepare("UPDATE agents SET status = 'later_status', created_by = 'later', avatar_shape = 'later_shape', avatar_hue = 'later_hue'").run();
+    expect(store.prepare("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name <> 'events'").pluck().get()).toBe(0);
+  });
+
+  it("is safe to re-run: with its record deleted, migration 14 runs again as a no-op and every row and object stays", () => {
+    const first = open();
+    first.prepare("INSERT INTO agents (id, display_name, avatar_shape, avatar_hue, created_by, charter_json) VALUES ('mason', 'Mason', 'shark', 'crew-teal', 'owner', '{}')").run();
+    first.prepare("INSERT INTO event_queue (kind, payload_json) VALUES ('message', '{}')").run();
+    first.prepare("INSERT INTO brain_messages (queue_id, agent, source, text, from_agent, depth, workspace) VALUES (1, 'mason', 'message', 'x', 'wright', 1, '/w')").run();
+    first.close();
+    const snap = (): unknown =>
+      inspect(tmp, (db) => {
+        const tables = tableNames(db).filter((t) => t !== "schema_migrations");
+        return { rows: rows(db, tables), objects: schema(db).objects };
+      });
+    const before = snap();
+
+    const db = new Database(join(tmp, DB_FILENAME));
+    db.exec("DELETE FROM schema_migrations WHERE version = 14");
+    db.close();
+    const rerun = open();
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([14, "agents"]);
     rerun.close();
     expect(snap()).toEqual(before);
   });
@@ -1352,7 +1555,7 @@ describe("Store: integrity check at open", () => {
       open().close();
       tamper("DELETE FROM schema_migrations WHERE version = 1; DROP TRIGGER events_no_update;");
       expect(refusal(StoreIntegrityError).problems).toEqual([
-        "schema_migrations records versions 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, not a contiguous run from 1",
+        "schema_migrations records versions 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, not a contiguous run from 1",
         "trigger events_no_update is missing",
       ]);
     });
@@ -1361,13 +1564,13 @@ describe("Store: integrity check at open", () => {
       open().close();
       tamper("DELETE FROM schema_migrations WHERE version = 3");
       expect(refusal(StoreIntegrityError).problems).toEqual([
-        "schema_migrations records versions 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, not a contiguous run from 1",
+        "schema_migrations records versions 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, not a contiguous run from 1",
       ]);
     });
 
     it("refuses a deleted top row whose append-only object is still there", () => {
       open().close();
-      // The top rows: 8 (with its trigger) and 9 to 13 (no append-only object) together stay a contiguous top.
+      // The top rows: 8 (with its trigger) and 9 to 14 (no append-only object) together stay a contiguous top.
       tamper("DELETE FROM schema_migrations WHERE version >= 8");
       expect(refusal(StoreIntegrityError).problems).toEqual([
         "events_no_explicit_id exists but migration 8 is not recorded",
@@ -1384,13 +1587,13 @@ describe("Store: integrity check at open", () => {
       expect(problem).toMatch(/^schema_migrations records no migration, but the database already has .*events/);
     });
 
-    // Honest limit: indistinguishable from a v7 database awaiting migrations 8 to 13.
-    // The pending migrations restore the guard (9 to 13 are no-op re-runs): fail-safe, nothing lost.
+    // Honest limit: indistinguishable from a v7 database awaiting migrations 8 to 14.
+    // The pending migrations restore the guard (9 to 14 are no-op re-runs): fail-safe, nothing lost.
     it("opens after a deleted top row together with its object, and restores the guard", () => {
       open().close();
       tamper("DELETE FROM schema_migrations WHERE version >= 8; DROP TRIGGER events_no_explicit_id;");
       const store = open();
-      expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+      expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
       expect(() => store.prepare("INSERT INTO events (id, kind) VALUES (5, 'x')").run()).toThrow(/append-only/);
     });
   });
@@ -1401,7 +1604,7 @@ describe("Store: integrity check at open", () => {
     const err = refusal(StoreSchemaTooNewError);
     expect(err.code).toBe("STORE_SCHEMA_TOO_NEW");
     expect(err.unknownVersions).toEqual([99]);
-    expect(err.knownVersion).toBe(13);
+    expect(err.knownVersion).toBe(14);
     expect(err.message).toContain("99");
     inspect(tmp, (db) =>
       expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").pluck().all()).toEqual([
