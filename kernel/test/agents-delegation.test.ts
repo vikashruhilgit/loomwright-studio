@@ -103,6 +103,8 @@ describe("the delegate part", () => {
     const err = new DelegationRefused("agent_off", "mason is off");
     expect(err).toMatchObject({ name: "DelegationRefused", reason: "agent_off", message: "agent_off: mason is off; nothing was queued" });
     expect(TOOL?.description).toContain("end your turn");
+    // The model-facing text names every reason, from the one list (no restated copy to drift).
+    expect(TOOL?.description).toContain(`Refused (nothing queued) with one of: ${DELEGATION_REFUSALS.join(", ")} `);
   });
 });
 

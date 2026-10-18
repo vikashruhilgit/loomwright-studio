@@ -217,7 +217,8 @@ const agentMessageTool = defineTool({
     "Hand work to another agent (a crew member, or wright): queues your text as a new message for it and returns at once with {queue_id, agent, depth}. " +
     "Its reply arrives later as a new message to you; do not wait or poll for it: end your turn. " +
     "workspace (optional) must be one of the target's settings workspaces; it becomes the folder its session works in. " +
-    "Refused (nothing queued) with no_agent, self_delegation, no_such_agent, agent_off, workspace_not_listed or delegation_depth (past your own limits.delegation_depth). " +
+    // Built from DELEGATION_REFUSALS, the one list of reasons, so a new reason cannot leave this text stale.
+    `Refused (nothing queued) with one of: ${DELEGATION_REFUSALS.join(", ")} (delegation_depth: past your own limits.delegation_depth). ` +
     "Repeating a call with the same idempotency_key in this session returns the first result, even if other arguments differ.",
   shape,
   handler: (a, ctx): AgentMessageResult => {

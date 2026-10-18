@@ -32,7 +32,7 @@ They run in this order. The first one that fails refuses the call:
 | `workspace_not_listed` | A `workspace` was given and it is not exactly one of the target's settings `workspaces`. Unreadable target settings, or none listed, also refuse it. Wright's file never lists workspaces, so a delegation to Wright with a workspace is always refused. |
 | `delegation_depth` | The caller's own `limits.delegation_depth` is set and the new depth exceeds it. |
 
-The six reasons are one frozen list, `DELEGATION_REFUSALS` in `delegate.ts`, and nowhere else.
+In code the six reasons are one frozen list, `DELEGATION_REFUSALS` in `delegate.ts`. The tool description is built from it, and `agents-delegation.test.ts` pins both the list and the description, so the table above is the only restated copy.
 
 A refusal is an error result whose text starts with the reason (`delegation_depth: wright may delegate to depth 1; this delegation would be depth 2; nothing was queued`). Nothing is queued. The handler throws `DelegationRefused` (its `reason` is the code) and the tool server turns that into the error result. Before the throw, one `agent_message_refused` event is committed in its own transaction, so the audit row survives the refusal.
 
@@ -45,7 +45,7 @@ Every delegation carries its chain depth.
 - The caller's depth is that of the message its session is handling: the `depth` of the newest `brain_messages` row with this `session_id`. An owner's message is 0. A session with no message row (a playbook fire, a dry run) counts 0.
 - The new delegation's depth is the caller's depth plus 1.
 - The limit is the CALLER's own `limits.delegation_depth`, read through the one settings reader (`readAgentSettings`). The target's limit plays no part. The delegation is refused when its depth is greater than the limit, so a limit of 1 allows a depth 1 delegation and refuses depth 2.
-- Unset means no limit. Caller settings that do not read `ok` (a missing or invalid file, or no model) also mean no limit. The kernel never guesses a value. A caller whose settings do not read `ok` cannot have a session started from them anyway.
+- Unset means no limit. Caller settings that do not read `ok` (a missing or invalid file, or no model) also mean no limit. The kernel never guesses a value. A caller whose settings do not read `ok` cannot have a session started from them, but a session already running when its caller's settings become invalid (the owner edits the file mid-session) delegates without a limit until it ends. That gap closes at the caller's next message: the brain refuses to start a session from an invalid settings file (`settings_invalid`), so the caller does not run, or delegate, again until the owner fixes the file. Targets it already delegated to run under their own settings and limits.
 - A reply (item 05) keeps the delegation's depth, so a reply-handling session that delegates again goes one level deeper.
 
 A worked chain, with Wright's `limits.delegation_depth` unset:
@@ -80,6 +80,7 @@ Each event is linked to the calling session.
 ## Honest limits
 
 - **The receiving side is item 05's.** Until it lands, only Wright's sessions run (`BRAIN_AGENTS` is `["wright"]`), so the only caller today is Wright. The brain handler takes a `message` for a crew member off the queue and changes nothing ("messages for other agents change nothing"): the delegation is queued and audited, but no session runs for it yet. Wrapping the text as untrusted data from `agent:<sender>` happens on the receiving side too.
+- **The depth guard depends on item 05 storing the depth.** The caller's depth is read from its `brain_messages` row, and today `ensureBrainMessage` (`kernel/src/brain/messages.ts`) writes no `depth` (the column defaults to 0) and no `from_agent`. So until item 05 copies the queued `payload.depth` and `from_agent` onto the row, a delegation to `wright` is handled at depth 0 and the chain restarts at every Wright hop. Item 05 must write them, or the loop guard does not hold across Wright hops.
 - **A crew member may delegate too** once its sessions run and its policy lists the tool. The depth check applies to it in the same way, against its own `limits.delegation_depth`.
 - **Depth bounds a chain, not the total work.** Many delegations at the same depth are all allowed. Only the token limits (`limits.tokens_per_day`, and the shared weekly cap) bound total work.
 - **The text is not checked beyond its length and the NUL.** It is stored as given and is never instructions to the kernel.
