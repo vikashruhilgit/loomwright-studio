@@ -2880,6 +2880,10 @@ describe("the never boundary (phase 4 foundation)", () => {
   const SID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
   const GIT: ToolPolicy = { allowedTools: [], allowedBashPrefixes: ["git"] };
   const PUSH = { command: "git push origin main" };
+  /** The hook's reason for a `git_push` boundary deny, pinned exactly. */
+  const GIT_PUSH_BOUNDARY =
+    "agent_boundary: git_push is in this agent's never list. The owner's settings forbid it for this agent; it did not run. " +
+    "Do not ask for an approval and do not retry it.";
   const boundary = vi.mocked(boundaryDecision);
 
   function interrupted(store: Store): number {
@@ -2897,15 +2901,15 @@ describe("the never boundary (phase 4 foundation)", () => {
     boundary.mockClear();
   });
 
-  it("startSession and resumeSession accept never: [git_push]; the frozen policy keeps it (the policy the gate hands boundaryDecision), and the outward call is still held", async () => {
+  it("startSession and resumeSession accept a never list; the frozen policy keeps it (the policy the gate hands boundaryDecision), and an outward call outside it is still held", async () => {
     const { manager, calls, store } = harness();
-    const never: NeverCategory[] = ["git_push"];
+    const never: NeverCategory[] = ["gh_pr_comment"];
     const handle = await manager.startSession(startParams({ policy: { ...GIT, never } }));
-    never.push("gh_api_write");
+    never.push("git_push");
     const held = await decide(calls[0] as QueryCall, preToolUse("Bash", PUSH));
     expect(held.permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
     expect(boundary).toHaveBeenCalledTimes(1);
-    expect(lastBoundaryPolicy()?.never).toEqual(["git_push"]);
+    expect(lastBoundaryPolicy()?.never).toEqual(["gh_pr_comment"]);
     expect(Object.isFrozen(lastBoundaryPolicy()?.never)).toBe(true);
     expect(boundary.mock.calls[0]?.[1]).toMatchObject({ kind: "outward", action: "git push" });
     await manager.stopSession(handle.id);
@@ -2950,9 +2954,9 @@ describe("the never boundary (phase 4 foundation)", () => {
     await manager.stopSession(b.id);
   });
 
-  it("the gate asks boundaryDecision for outward calls only; a boundary answer denies with the bare reason agent_boundary, writes no approval and uses no grant", async () => {
+  it("the gate asks boundaryDecision for outward calls only; a boundary answer denies agent_boundary with the pinned reason and the category on the event, writes no approval and uses no grant", async () => {
     const { manager, calls, store } = harness();
-    const handle = await manager.startSession(startParams({ policy: { allowedTools: ["Read"], allowedBashPrefixes: ["git", "echo"], never: ["git_push"] } }));
+    const handle = await manager.startSession(startParams({ policy: { allowedTools: ["Read"], allowedBashPrefixes: ["git", "echo"], never: ["gh_pr_comment"] } }));
     const call = calls[0] as QueryCall;
     // Ordinary and denied calls never reach it.
     await decide(call, preToolUse("Read", { file_path: "/tmp/x" }));
@@ -2965,13 +2969,13 @@ describe("the never boundary (phase 4 foundation)", () => {
     store.prepare("UPDATE approvals SET status = 'approved', decision = 'once', decided_by = 'owner' WHERE id = 1").run();
     boundary.mockImplementation(() => ({ kind: "boundary", category: "git_push" }));
     try {
-      expect(await decide(call, preToolUse("Bash", PUSH))).toEqual({ hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "agent_boundary" });
+      expect(await decide(call, preToolUse("Bash", PUSH))).toEqual({ hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: GIT_PUSH_BOUNDARY });
     } finally {
       boundary.mockImplementation(actualBoundaryDecision);
     }
     expect(store.prepare("SELECT count(*) FROM approvals").pluck().get()).toBe(1);
     expect(events(store, "approval_used")).toEqual([]);
-    expect(events(store, "tool_decision").at(-1)?.payload).toMatchObject({ tool: "Bash", decision: "deny", reason: "agent_boundary", command: PUSH.command });
+    expect(events(store, "tool_decision").at(-1)?.payload).toEqual({ tool: "Bash", decision: "deny", reason: "agent_boundary", command: PUSH.command, category: "git_push" });
     // With no boundary, the grant is used as before.
     expect((await decide(call, preToolUse("Bash", PUSH))).permissionDecisionReason).toBe("approval_granted");
     await manager.stopSession(handle.id);
@@ -2979,16 +2983,16 @@ describe("the never boundary (phase 4 foundation)", () => {
 
   it("in a dry run, a boundary answer denies agent_boundary before the dry-run branch: no would-do entry, no approval", async () => {
     const { manager, calls, store } = harness();
-    const handle = await manager.startSession(startParams({ dryRun: true, policy: { ...GIT, never: ["git_push"] } }));
+    const handle = await manager.startSession(startParams({ dryRun: true, policy: { ...GIT, never: ["gh_pr_comment"] } }));
     const call = calls[0] as QueryCall;
     boundary.mockImplementation(() => ({ kind: "boundary", category: "git_push" }));
     try {
-      expect((await decide(call, preToolUse("Bash", PUSH))).permissionDecisionReason).toBe("agent_boundary");
+      expect((await decide(call, preToolUse("Bash", PUSH))).permissionDecisionReason).toBe(GIT_PUSH_BOUNDARY);
     } finally {
       boundary.mockImplementation(actualBoundaryDecision);
     }
     // Without a boundary, the same call is a would-do entry, as before.
-    expect((await decide(call, preToolUse("Bash", PUSH))).permissionDecisionReason).not.toBe("agent_boundary");
+    expect((await decide(call, preToolUse("Bash", PUSH))).permissionDecisionReason).not.toMatch(/^agent_boundary/);
     call.stream.push(msg.init(SID));
     call.stream.push(msg.success());
     expect(await handle.done).toBe("completed");

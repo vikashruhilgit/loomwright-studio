@@ -31,15 +31,52 @@ The kernel's one `PreToolUse` hook decides every call in order:
    - reaching a pull request's `…/pulls/<n>/merge` with a non-GET method (or a flag the rail cannot account for that could be one). The endpoint is compared with its `?query` and `#fragment` cut off, percent-decoded, with empty, `.` and `..` segments normalised, and as a glob (`merg*`, `{merge,x}`);
    - naming the GraphQL `mergePullRequest`, `enablePullRequestAutoMerge` or `enqueuePullRequest` mutation;
    - sending a GraphQL query whose text the rail cannot read: `gh api graphql` (or any `…/graphql` endpoint) with a field read from a file (`-F query=@file`, `--field=…=@…`), `--input`, a globbed word, or a flag the rail cannot account for.
-5. **The outward set: held as a pending approval** (`approval_required`), unless an unused one-shot grant or a standing grant matches exactly (`approval_granted`, see below):
+5. **The agent's boundary: denied, whatever any grant says, never an approval** (`agent_boundary`, phase 4, invariant 3). A call the rail reads as an outward form (step 6) in one of the session policy's `never` categories is denied outright, before any grant is looked up or any hold is written: see [the never boundary](#the-never-boundary). The merge block and protected paths come first, so `gh pr merge` is `merge_blocked` whatever `never` names.
+6. **The outward set: held as a pending approval** (`approval_required`), unless an unused one-shot grant or a standing grant matches exactly (`approval_granted`, see below):
    - git with any word after `git` that is (or could expand to) `push` (`git push`, `git --attr-source X push`, `git subtree push`, `git lfs push`), `send-pack`, `http-push`, `dcommit` or `set-tree` (git svn), `send-email`, `imap-send` or `cvsexportcommit`, or `submit` after `p4`. Over-holding (`git commit -m push`) is the safe direction;
    - an alias definition that could make a later allowed call push or merge under another name: `gh alias set|import`, and git with any word holding `alias.`, `include.path` or `includeIf.` (`git -c alias.p=push p`, `git config alias.p push`), `help.autocorrect` (`git -c help.autocorrect=immediate psuh` runs as a push), or `--config-env`;
    - `gh pr create|comment|review|edit|close …` and `gh issue create|comment|edit|close …`, with gh's built-in `new` alias read as `create` (`gh pr new`, `gh issue new`);
    - `gh api …` with a non-GET method: `-X`/`--method` (also `-XPOST`, `--method=POST`) other than GET, or, with no explicit method, any `-f`, `-F`, `--field`, `--raw-field` or `--input` (gh sends those as POST), or a flag the rail cannot account for (`gh api (flag unread)`). A single-dash word is read as pflag reads it, a group of short flags: `-i` is a bool, and the first of `X`/`f`/`F`/`H`/`p`/`q`/`t` takes the rest of the word (after an optional `=`) or, for `X`/`f`/`F`, the next word, so `-iX PUT`, `-iXPUT`, `-X=PUT`, `-if body=x` and `-iF query=@f` are all read. A group holding any other character (a glob, an unknown letter) is unread;
    - a Write, Edit or NotebookEdit to, or a Bash command naming or globbing, anything under `~/.claude/`, any `settings*.json`, any `hooks.json`, or anything under a `.git/hooks/` dir or a `hooks` dir inside a `.claude` dir. A `*` could expand to a `settings.json` in the cwd, so `ls sub/*` is held too (`*.ts` is not), and a bare `ls *` is denied (see [relative paths](#relative-paths-fail-closed)).
-6. Anything else runs as the policy says.
+7. Anything else runs as the policy says.
 
-Every call still records exactly one `tool_decision` event (with `approval_id` when one was held or used). The gate fails closed: if creating the approval, consuming a grant or recording the decision throws, the whole transaction rolls back and the call is denied with `kernel_gate_error`.
+Every call still records exactly one `tool_decision` event (with `approval_id` when one was held or used, and `category` on an `agent_boundary` deny). The gate fails closed: if creating the approval, consuming a grant or recording the decision throws, the whole transaction rolls back and the call is denied with `kernel_gate_error`.
+
+### The never boundary
+
+A session policy may carry `never`: categories from the closed `NEVER_CATEGORIES` list in `kernel/src/sessions/policy.ts`. Which categories a crew member never takes is the owner's setting (invariant 1); the kernel ships none as a default, and with no `never` (or an empty one) the rail decides exactly as before. The gate asks `boundaryDecision` (pure) about every call the rail answered outward, before the dry-run branch, the pre-hold check and any grant or hold. A call in a `never` category:
+
+- is denied `agent_boundary`, with one `tool_decision` event whose payload carries `category`;
+- writes no approval row and uses no grant: a one-shot or standing grant whose exact payload matches (one can exist when the owner added the category after granting) never lets it through, and no `approval_used` or `approval_grant_used` event is written;
+- in a dry run, is denied the same way, with no would-do entry;
+- gets this hook reason, which names the category, says the owner's settings forbid it for this agent, and tells the model not to ask for an approval or retry (`boundaryDenyReason`): `agent_boundary: <category> is in this agent's never list. The owner's settings forbid it for this agent; it did not run. Do not ask for an approval and do not retry it.`
+
+A call the rail reads as several outward forms is denied when any of them is in `never`: a gh flag read both ways (`gh pr -b create comment 3` is a comment or a create), an inline alias beside a push (`git -c alias.x=y push`), a push naming a path under `~/.claude/`, or a Write to `~/.claude/hooks/x.sh` (both `~/.claude/` and a hooks file). The event names the first matching category in the table's order. The approval and its action are unchanged: the extra forms are only read by the boundary.
+
+The categories use the rail's own matchers (step 6 and [the forms below](#which-command-forms-the-matcher-recognises)); no new matcher is written:
+
+| Category | The rail forms it covers |
+|---|---|
+| `git_push` | every form step 6 reads as `git push` (`git push`, `git --attr-source X push`, `git subtree push`, `git lfs push`, `git-push`, a globbed `git pu*`), `git send-pack`, `git http-push`, `git svn dcommit`, `git svn set-tree`, `git send-email`, `git imap-send`, `git cvsexportcommit`, `git p4 submit`; and a git alias or autocorrect definition (`git -c alias.p=push p`, `git config alias.p push`), which can run a push |
+| `alias_define` | a git alias or autocorrect definition (the forms above), `gh alias set`, `gh alias import` |
+| `gh_pr_create` | `gh pr create`, `gh pr new` |
+| `gh_pr_comment` | `gh pr comment` |
+| `gh_pr_review` | `gh pr review` |
+| `gh_pr_edit` | `gh pr edit` |
+| `gh_pr_close` | `gh pr close` |
+| `gh_issue_create` | `gh issue create`, `gh issue new` |
+| `gh_issue_comment` | `gh issue comment` |
+| `gh_issue_edit` | `gh issue edit` |
+| `gh_issue_close` | `gh issue close` |
+| `gh_api_write` | `gh api` with a non-GET method (`gh api POST`, `PUT`, `DELETE`, …), and `gh api (flag unread)` |
+| `settings_write` | a Write, Edit or NotebookEdit to, or a Bash command naming or globbing, anything under `~/.claude/` or any `settings*.json` |
+| `hooks_write` | the same for any `hooks.json`, or anything under a `.git/hooks/` dir or a `hooks` dir inside a `.claude` dir |
+
+A merge and a protected kernel path are denied for every session already, so neither is a category. `ALWAYS_HELD_TOOLS` (`kernel_playbook_enable`, `kernel_agent_create`, `kernel_agent_update`) are in no category: they are held as before, whatever `never` names.
+
+**Over-deny, in the safe direction.** Within a `never` category, whatever the rail over-holds is denied: under `git_push`, `git commit -m push` and any git alias definition (a harmless one too) are denied.
+
+**Not covered.** Only the forms the rail recognises are covered. A program that runs other programs (`env git push`, `xargs git push`, `sh -c "…"`, a script or Makefile target, a git or gh alias defined before the session) is not recognised by the rail (see **Not recognised** at the end of [relative paths](#relative-paths-fail-closed), below), so `never` does not cover it either: listing such a prefix grants whatever it can run, exactly as the [safety kernel](../ARCHITECTURE.md#safety-kernel-fixed-d5) says for the Bash allowlist. gh writes outside the outward set (`gh pr ready`, `gh release create`, …) are in no category.
 
 ### The pre-hold check
 
@@ -209,7 +246,7 @@ A match writes one `approval_grant_used` event (`{id, tool}`, linked to the call
 | `approval_used` | `{id, tool}`, or `{id, tool, by: "kernel"}` for the kernel's use | The rail lets a call through on a one-shot grant, or the kernel applies an approved kernel-applied action (on every attempt, applied or refused). |
 | `approval_grant_used` | `{id, tool}` | The rail lets a call through on a standing grant. |
 | `approval_grant_revoked` | `{id, by}` | The owner revokes a standing grant. |
-| `tool_decision` | `{tool, decision, reason, command?, approval_id?}` | Every gated call (phase 1), with the new reasons `approval_required`, `approval_granted`, `protected_kernel_path`, `merge_blocked` and `bash_command_too_large` (and `bash_shell_metacharacter` now also for a command the rail will not read), plus the gate-local `held_refused` (the pre-hold check refused it), `dry_run` and `kernel_gate_error`. |
+| `tool_decision` | `{tool, decision, reason, command?, approval_id?, category?}` | Every gated call (phase 1), with the new reasons `approval_required`, `approval_granted`, `protected_kernel_path`, `merge_blocked` and `bash_command_too_large` (and `bash_shell_metacharacter` now also for a command the rail will not read), `agent_boundary` (phase 4, with the `category`; [the never boundary](#the-never-boundary)), plus the gate-local `held_refused` (the pre-hold check refused it), `dry_run` and `kernel_gate_error`. |
 
 ## Values
 
