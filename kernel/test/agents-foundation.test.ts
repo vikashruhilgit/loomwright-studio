@@ -122,14 +122,15 @@ function writeSettings(id: string, extra: Record<string, unknown> = {}, model: u
 // ---- AC3: the contribution, its parts and `studio agents` -------------------------------
 
 describe("the agents contribution (AC3)", () => {
-  it("is the seventh shipped contribution, after playbooks: one verb-less agents subcommand, no tool, route, handler or due work", () => {
+  it("is the seventh shipped contribution, after playbooks: the parts' tools, one verb-less agents subcommand, no route, handler or due work", () => {
     expect(SHIPPED_CONTRIBUTIONS[6]).toBe(agentsContribution);
     expect(SHIPPED_CONTRIBUTIONS[5]?.name).toBe("playbooks");
     expect(agentsContribution.name).toBe("agents");
     expect(Object.isFrozen(agentsContribution)).toBe(true);
-    expect(Object.keys(agentsContribution)).toEqual(["name", "subcommands"]);
+    expect(Object.keys(agentsContribution)).toEqual(["name", "tools", "subcommands"]);
     const merged = mergeContributions([agentsContribution], PHASE1_RESERVED);
-    expect(merged.tools).toEqual([]);
+    // Each part's tools, merged in part order (each part's own list is pinned in the next test).
+    expect(merged.tools).toEqual(AGENT_PARTS.flatMap((p) => [...p.tools]));
     expect(merged.routes).toEqual([]);
     expect(merged.handlers).toEqual({});
     expect(merged.dueWork).toEqual([]);
@@ -138,20 +139,42 @@ describe("the agents contribution (AC3)", () => {
     expect(mergeAgentParts(AGENT_PARTS).verbs).toEqual([]);
   });
 
-  it("is built from three frozen, empty parts, in order: roster (item 02), delegate (item 06), charter-tools (item 07)", () => {
+  it("is built from three frozen parts, in order: roster (item 02), delegate (item 06), charter-tools (item 07)", () => {
     expect(AGENT_PARTS).toEqual([rosterPart, delegatePart, charterToolsPart]);
     expect(AGENT_PARTS.map((p) => p.name)).toEqual(["roster", "delegate", "charter-tools"]);
     expect(Object.isFrozen(AGENT_PARTS)).toBe(true);
-    for (const part of AGENT_PARTS) {
-      expect(Object.isFrozen(part), part.name).toBe(true);
-      expect({ tools: part.tools, routes: part.routes, verbs: part.verbs, handlers: part.handlers, dueWork: part.dueWork ?? [] }, part.name).toEqual({
-        tools: [],
-        routes: [],
-        verbs: [],
-        handlers: {},
-        dueWork: [],
-      });
-    }
+    for (const part of AGENT_PARTS) expect(Object.isFrozen(part), part.name).toBe(true);
+    // Item 02's roster part: still empty here.
+    expect({ tools: rosterPart.tools, routes: rosterPart.routes, verbs: rosterPart.verbs, handlers: rosterPart.handlers, dueWork: rosterPart.dueWork ?? [] }).toEqual({
+      tools: [],
+      routes: [],
+      verbs: [],
+      handlers: {},
+      dueWork: [],
+    });
+    // Item 06's delegate part: exactly the tool kernel_agent_message, nothing else.
+    expect(Object.isFrozen(delegatePart.tools)).toBe(true);
+    expect({ tools: delegatePart.tools.map((t) => t.name), routes: delegatePart.routes, verbs: delegatePart.verbs, handlers: delegatePart.handlers, dueWork: delegatePart.dueWork ?? [] }).toEqual({
+      tools: ["kernel_agent_message"],
+      routes: [],
+      verbs: [],
+      handlers: {},
+      dueWork: [],
+    });
+    // Item 07's charter-tools part: still empty here.
+    expect({
+      tools: charterToolsPart.tools,
+      routes: charterToolsPart.routes,
+      verbs: charterToolsPart.verbs,
+      handlers: charterToolsPart.handlers,
+      dueWork: charterToolsPart.dueWork ?? [],
+    }).toEqual({
+      tools: [],
+      routes: [],
+      verbs: [],
+      handlers: {},
+      dueWork: [],
+    });
   });
 });
 

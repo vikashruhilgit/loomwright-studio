@@ -1,8 +1,9 @@
 // The `agents` feature (phase 4): one contribution built from one part per
 // sub-file, so each phase 4 item edits only the sub-file(s) it owns: item 02
 // `roster.ts`, item 06 `delegate.ts`, item 07 `charter-tools.ts`. A part is
-// empty until its item fills it in; today all three are empty, so the
-// contribution is only the `studio agents` subcommand, with no verbs. The
+// empty until its item fills it in; today the delegate part has the one tool
+// `kernel_agent_message` and the other two are empty, so the contribution is
+// that tool and the `studio agents` subcommand, with no verbs. The
 // shared readers every item uses live beside them: the closed value sets
 // (`types.ts`), the one settings reader (`settings.ts`), the one memory
 // reader (`memory.ts`) and the read-only registry lookups (`registry.ts`).

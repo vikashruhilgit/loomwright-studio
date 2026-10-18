@@ -1,7 +1,8 @@
 // Every agent's settings file, `<dataDir>/config/agents/<id>.json`: the model,
 // the permission mode, the tool policy and, for a crew member, (optional) the
 // enforced `never` categories, limits and workspaces (Wright's file refuses
-// those three until an item applies them to Wright's sessions).
+// those three until an item applies them to Wright's sessions, except a
+// `limits` holding only `delegation_depth`, which `./delegate.ts` applies).
 // `readAgentSettings` is the ONE reader:
 // Wright's (`readWrightSettings` in `../brain/settings.ts` is a thin call to
 // it) and every crew member's, so every file is refused the same way.
@@ -205,8 +206,11 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
   const s = parsed.data;
   // Fail closed: nothing applies Wright's never, limits or workspaces yet, so
   // a file that sets one is refused rather than read and silently unenforced.
+  // The one exception is a `limits` whose ONLY key is `delegation_depth`: the
+  // delegate part (`./delegate.ts`) applies it to Wright's delegations.
   if (isWright) {
     for (const field of ["never", "limits", "workspaces"] as const) {
+      if (field === "limits" && s.limits !== undefined && Object.keys(s.limits).length === 1 && s.limits.delegation_depth !== undefined) continue;
       if (s[field] !== undefined) return invalid(field, `${field}: not supported for Wright yet (the kernel does not apply it to Wright's sessions); remove it`);
     }
   }
