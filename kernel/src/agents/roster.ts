@@ -356,7 +356,9 @@ async function set(req: ContributedRouteRequest): Promise<ContributedRouteRespon
   if (Buffer.byteLength(text) > MAX_SETTINGS_BYTES) return refusal(409, "settings_invalid", `${file}: the change would make it over ${MAX_SETTINGS_BYTES} bytes`, { file, field: "the file" });
 
   // A temporary sibling, then a rename over the file (atomic on one file system): a reader
-  // sees the old file or the new one, never half of it. The event commits with the rename.
+  // sees the old file or the new one, never half of it. The rename runs inside the
+  // transaction, just before its COMMIT, but a rename is not part of it: a kill -9 between
+  // the two keeps the new file with no event (docs/architecture/agents.md, Honest limits).
   const temp = join(dirname(file), `.${basename(file)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
   writeFileSync(temp, text, { flag: "wx", mode: 0o600 });
   try {
