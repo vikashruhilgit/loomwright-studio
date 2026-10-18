@@ -1,8 +1,39 @@
 # Budget
 
-The budget layer (D24, D26, D28) meters every session's tokens, tracks the subscription cap, and decides whether a session may start. Code: `kernel/src/budget/`. It is a mechanism (invariant 1): every limit and every fallback choice is the user's, set per agent in the budget config or per playbook on the playbook row. With none set, nothing is limited and nothing ever spends money. Limits are counted tokens (input + output + cache writes, D26; cache reads are recorded but never count), never dollars. The only dollar figure is a playbook's API-key fallback ceiling.
+The budget layer (D24, D26, D28) meters every session's tokens, tracks the subscription cap, and decides whether a session may start. Code: `kernel/src/budget/`. It is a mechanism (invariant 1): every limit and every fallback choice is the user's, set per agent in the agent's own settings file or per playbook on the playbook row. With none set, nothing is limited and nothing ever spends money. Limits are counted tokens (input + output + cache writes, D26; cache reads are recorded but never count), never dollars. The only dollar figure is a playbook's API-key fallback ceiling.
 
-This page covers the per-playbook part (phase 3): metering a playbook's sessions, its daily token limit, and its API-key fallback decision. The meter, the cap tracker and `Budget.check` (the gate the playbook gate passes a request with no playbook to) are described in their code docs (`meter.ts`, `cap.ts`, `admission.ts`).
+This page covers the per-agent limits (phase 4) and the per-playbook part (phase 3): metering a playbook's sessions, its daily token limit, and its API-key fallback decision. The meter, the cap tracker and `Budget.check` (the gate the playbook gate passes a request with no playbook to) are described in their code docs (`meter.ts`, `cap.ts`, `admission.ts`).
+
+## Per-agent limits
+
+**Source.** Each agent's limits live in its own settings file, `<dataDir>/config/agents/<id>.json` (`wright.json` for Wright): `limits.tokens_per_day` and `limits.sessions_at_once`, each a positive integer, each unset when absent (the kernel picks none). The kernel gives the `Budget` an `agentLimits` lookup (`agentLimitsFor` in `kernel/src/kernel.ts`) that reads the file through the one settings reader, `readAgentSettings` (`kernel/src/agents/settings.ts`), at every admission check (inside its store transaction) and at every metered `result`. Nothing is cached, so an edit to the file takes effect at the agent's next start. A file with no `model` (`model_unset`) still has its limits applied: a missing model is the session's refusal, not the budget's. `limits.delegation_depth` is not the budget's and is not read here. With no lookup (a `Budget` built without one, as in unit tests), the budget config's static `agentDailyTokenLimits` applies instead and there is no sessions-at-once check.
+
+**Wright.** `wright.json` may set `limits.tokens_per_day` and `limits.sessions_at_once`, and both apply to Wright's sessions exactly as to a crew member's. `limits.delegation_depth` is read too and applied by `kernel_agent_message` ([delegation](delegation.md#wrights-delegation_depth)); `never` and `workspaces` are still refused for Wright (`settings_invalid`, "not supported for Wright yet").
+
+**Order.** `Budget.check` runs, in one store transaction: the cap (`cap_parked`), then the agent's settings, then its token limit, then its sessions at once. The first refusal wins. The playbook gate runs the same three agent checks in its agent slot (step 4 below). A `null` agent skips all three.
+
+- **`settings_invalid` / `settings_missing`.** An agent whose settings file is invalid (not JSON, over the size limit, the wrong shape, a misspelt or non-positive limit) or, for a crew member, missing is refused, starts and resumes alike, with `retryAt` `null` (the event loop's default one-hour recheck). The `admission_refused` event names the `file` and the reader's `message`. A broken or deleted file is never read as "no limit" (fail closed).
+- **`agent_daily_limit`.** A `start` whose agent's counted tokens today are at or over its `tokens_per_day` is refused until the start of the next budget day. The first crossing of the day records `budget_limit_reached` and one `notify`, shared with the meter's crossing. A resume is never refused by `tokens_per_day`.
+- **`agent_sessions_at_once`.** A `start` or `resume` whose agent's live sessions number `sessions_at_once` or more is refused, with `retryAt` now + `SESSIONS_AT_ONCE_RECHECK_MS` (60 seconds, `kernel/src/budget/internal.ts`), so the event loop parks the work one minute rather than its one-hour default and starts it once a live session has ended. A resume counts because it adds a live session. The `admission_refused` event carries `live`, `limit` and `live_sessions` (the live ids), plus `orphaned_sessions` and a `hint` naming `studio session abandon <id>` when an orphan is among them.
+
+**Live sessions** are the agent's `sessions` rows with status `starting`, `running` or `orphaned` (an orphan's process group may still be alive). They are counted in the same transaction the admit is decided in, and the session manager inserts an admitted start's `starting` row with no `await` after the admit, so two starts issued in the same tick admit at most the limit. A resume request carries the id of the session it resumes (`AdmissionRequest.session`, on the resume and every resume retry), and that row is left out of the count: a session's own retry (its row is `starting` or `running`) and the resume of its own `orphaned` row never refuse themselves. A `resume` request without `session` counts every live row (fail closed).
+
+**Notifications.** The token limit notifies once per agent-day (above). `settings_invalid`, `settings_missing` and `agent_sessions_at_once` notify once per agent and reason per hour: the first refusal appends one `notify` (`reason` the refusal's, with `agent`), later ones within the hour append only their `admission_refused` event. A parked event's redelivery is a new refusal, so a start waiting on `sessions_at_once` appends one `admission_refused` and one `event_parked` per minute while it waits.
+
+**Labels that are not crew ids.** An agent label that fails the crew-id grammar (`isValidAgentId` false and not `wright`, for example `exit-test:event-1` or a reserved folder name) cannot name a settings file, so it has no limit the owner could have set: no per-agent check applies, as for a `null` agent (owner decision, 2026-10-18). The cap and a playbook's own limit still apply.
+
+**The meter** reads `tokens_per_day` through the same lookup, to record `budget_limit_reached` when a result crosses it. A settings refusal, or a lookup that throws, is skipped there and never fails the metered result: the usage is still recorded, and admission refuses the agent's next start on the broken file.
+
+**Honest limits.**
+
+- Limits apply at admission only. A running session is never stopped when its agent passes `tokens_per_day` or when the owner lowers a limit; the new value applies to the next start.
+- A resume is never refused by `tokens_per_day`, so a resumed session can spend past the limit the same day (as before).
+- An `orphaned` row counts as live until it is resumed, re-examined back to `interrupted` by the kernel's orphan reaper, or abandoned. `studio session abandon` releases only an orphan whose orphaning reason was `leader_unverified`; the hint names the command for every orphan, and for the others the reaper or a resume is the way out.
+- Reading Wright's limits creates `wright.json` when it is absent (the one reader's rule, as the brain already does); a failure to create it fails the admission closed.
+- A settings refusal waits for the loop's hourly recheck: fixing the file does not wake a parked event sooner.
+- A dry run is a `start` that takes one of the calling agent's `sessions_at_once` slots. `kernel_playbook_dry_run` (`kernel/src/playbooks/dry-run.ts`) starts its session as the agent whose session called it and waits for it to end, so the caller's own session is live the whole time. With `sessions_at_once` 1, every dry run from the agent's own session is refused `agent_sessions_at_once`. The refusal fails the tool call and nothing parks it, so a retry from the same session cannot succeed. `kernel_playbook_enable` (`kernel/src/playbooks/enable.ts`) needs a `done` dry run of the current version, so such an agent can never get a playbook enabled. A dry run needs a limit of at least 2.
+- Wright's messages, its playbooks' fires and the owner's run nows all start (or resume) sessions as `wright`, so they share Wright's `sessions_at_once`. With a limit of 1, each one waits, parked a minute at a time, while any Wright session is live, including the one the owner is talking to.
+- Crew playbooks are not routed yet (a fire for an agent other than Wright fails `agent_not_routed` before admission), so `agent_sessions_at_once` in the playbook gate is reached today only by Wright's playbooks or by a caller that starts a crew session with a `playbook` itself.
 
 ## Per-playbook metering
 
@@ -14,16 +45,16 @@ After recording, when the playbook's `token_limit_per_day` is set and its counte
 
 ## Admission: the playbook gate
 
-`Budget.checkPlaybook(request)` (`PlaybookAdmission` in `playbook.ts`) takes the session manager's admission request plus `playbook` (a `playbooks.id`, or `null`). Its verdict names the provider the session runs on: `{admitted: true, provider}`, or `{admitted: false, reason, retryAt}` with `reason` one of `cap_parked`, `agent_daily_limit` or `playbook_daily_limit`.
+`Budget.checkPlaybook(request)` (`PlaybookAdmission` in `playbook.ts`) takes the session manager's admission request plus `playbook` (a `playbooks.id`, or `null`). Its verdict names the provider the session runs on: `{admitted: true, provider}`, or `{admitted: false, reason, retryAt}` with `reason` one of `cap_parked`, `settings_invalid`, `settings_missing`, `agent_daily_limit`, `agent_sessions_at_once` or `playbook_daily_limit`.
 
-**Wiring.** It is the kernel's session admission: `startKernel` passes the session manager `admission: admissionFor(budget, authProvider.id)` (`kernel/src/kernel.ts`), which asks `checkPlaybook` before every start and resume. The manager's request names the session's `playbook` only when it has one: on a start its `playbook` param, on a resume and every resume retry the playbook it resumes for. A request with no playbook goes to the gate as `playbook: null`, so it gets exactly `Budget.check`'s verdict and events. A refusal throws `AdmissionRefusedError` (`reason` one of the three above) before any row, status change or spawn, so a playbook's fire, run now or dry run at its daily limit starts no session: the fire's or run now's `playbook_runs` row keeps `result_json` `{parked, retry_at}` and the event loop parks the event until `retry_at` (`event_parked`, no second `notify`).
+**Wiring.** It is the kernel's session admission: `startKernel` passes the session manager `admission: admissionFor(budget, authProvider.id)` (`kernel/src/kernel.ts`), which asks `checkPlaybook` before every start and resume. The manager's request names the session's `playbook` only when it has one: on a start its `playbook` param, on a resume and every resume retry the playbook it resumes for. A request with no playbook goes to the gate as `playbook: null`, so it gets exactly `Budget.check`'s verdict and events. A refusal throws `AdmissionRefusedError` (`reason` one of the six above) before any row, status change or spawn, so a playbook's fire, run now or dry run at its daily limit starts no session: the fire's or run now's `playbook_runs` row keeps `result_json` `{parked, retry_at}` and the event loop parks the event until `retry_at` (`event_parked`, no second `notify`).
 
 - **`playbook: null`** is exactly `Budget.check`: the same verdict and the same events, byte for byte, and an admit names the subscription provider. The kernel-wide `apiKeyFallback` placeholder in the budget config never switches provider, here or in `check`.
 - **A playbook's request** is checked in one store transaction, in this order:
   1. The provider check, as `check` does: a request naming another provider throws (fail closed). An unknown playbook id, or a stored `token_limit_per_day` that is not a positive integer, throws too.
   2. **Daily limit.** A `start` whose playbook's counted tokens today are at or over its `token_limit_per_day` is refused `playbook_daily_limit`, with `retryAt` the start of the next budget day (the host's next local midnight). The first refusal of the day records `playbook_limit_reached` and one `notify`, shared with the meter's crossing, so the owner hears once per playbook per day. A resume is not refused by the limit (as with the agent limit).
   3. **The cap.** When the subscription provider is parked, the playbook is eligible for the API-key fallback (below). If it is not, it is refused `cap_parked` with the park's retry time, as `check` refuses: it waits for the reset.
-  4. **The agent limit**, as `check` applies it (`start` only). A fallback never skips it: an eligible playbook whose agent is at its limit is refused `agent_daily_limit`.
+  4. **The agent checks**, as `check` applies them (see "Per-agent limits"): the agent's settings (`settings_invalid` / `settings_missing`), its token limit (`start` only, `agent_daily_limit`), then its sessions at once (`agent_sessions_at_once`). A fallback never skips them: an eligible playbook whose agent is at a limit is refused.
   5. Admitted: on the API-key provider when step 3 found it eligible (one `api_key_fallback_admitted` event with the spend and the ceiling), else on the subscription provider.
 
 Every refusal appends one `admission_refused` event: `check`'s payload plus the `playbook` id, and for `cap_parked` an `api_key_fallback` field saying why the fallback did not apply (`not_opted_in`, `no_api_key_provider` or `ceiling_reached`).
@@ -52,11 +83,13 @@ D28: when the subscription cap is hit, a playbook may continue on the user's own
 
 ## Events
 
-`events.kind` is free text. This page is the list of the kinds the playbook part writes:
+`events.kind` is free text. This page is the list of the kinds the per-agent and playbook parts write:
 
 | Kind | When |
 |---|---|
 | `playbook_limit_reached` | A playbook's counted tokens reached its daily limit, once per playbook-day (meter or gate). Paired with one `notify`. |
 | `api_key_fallback_admitted` | The gate admitted a playbook's session on the API-key provider at the cap. |
 | `api_key_ceiling_reached` | An opted-in playbook's spend reached its dollar ceiling, once per playbook and ceiling (meter or gate). Paired with one `notify`. A record only: it stops nothing. |
-| `admission_refused` | Every refusal (shared with `check`), with `playbook` set on the playbook path. |
+| `admission_refused` | Every refusal (shared with `check`), with `playbook` set on the playbook path. `reason` is `cap_parked`, `settings_invalid`, `settings_missing`, `agent_daily_limit`, `agent_sessions_at_once` or `playbook_daily_limit`. |
+| `budget_limit_reached` | An agent's counted tokens reached its `tokens_per_day`, once per agent-day (meter or gate). Paired with one `notify` (`reason: "agent_daily_limit"`). |
+| `notify` | Also written for `settings_invalid`, `settings_missing` and `agent_sessions_at_once` refusals: once per agent and reason per hour, with `agent` and the refusal's details. |

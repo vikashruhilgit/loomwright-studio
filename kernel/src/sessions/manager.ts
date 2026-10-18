@@ -28,8 +28,8 @@ import type { SessionLoomwright } from "./loomwright-path.js";
 import { TOOL_DEFERRAL_OFF } from "./kernel-env.js";
 import { DRY_RUN_DENY_MESSAGE, classifyDryRunCall, dryRunUsage } from "./dry-run.js";
 import { latestOrphanReason } from "./orphans.js";
-import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, classifyToolCall, decideToolUse, freezePolicy, NEVER_CATEGORIES } from "./policy.js";
-import type { ToolCallClass, ToolDecisionReason } from "./policy.js";
+import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, boundaryDenyReason, classifyToolCall, decideToolUse, freezePolicy, NEVER_CATEGORIES } from "./policy.js";
+import type { NeverCategory, ToolCallClass, ToolDecisionReason } from "./policy.js";
 import {
   KILL_GROUP_DEADLINE_MS,
   LEADER_EXIT_WAIT_MS,
@@ -941,7 +941,7 @@ export class SessionManager {
     // Before the group check: a refused resume leaves the row and its events untouched.
     // The playbook it resumes for: the one this resume records (`#writePlaybook`), else the row's.
     const playbook = params.playbook ?? row.playbook;
-    this.#admit({ kind: "resume", agent: row.agent, account: this.#auth.account, provider: this.#auth.id, task: row.task_id, ...playbookOf(playbook) });
+    this.#admit({ kind: "resume", agent: row.agent, account: this.#auth.account, provider: this.#auth.id, task: row.task_id, ...playbookOf(playbook), session: id });
 
     // Synchronous from here to the launch: no reap or other resume interleaves.
     let check: GroupCheck;
@@ -1629,6 +1629,7 @@ export class SessionManager {
         provider: this.#auth.id,
         task: ctx.taskId,
         ...playbookOf(ctx.playbook),
+        session: live.id,
       });
       if (decision.admitted) return false;
       payload = { reason: "admission_refused", refusal: decision.reason, retry_at: decision.retryAt, attempt: n };
@@ -2273,10 +2274,10 @@ export class SessionManager {
    *
    * The never boundary (`boundaryDecision`, phase 4) is read first for every
    * outward call, before the dry-run branch and the pre-hold check: a
-   * `boundary` answer denies the call with the bare reason `agent_boundary`
-   * through the same deny path a rail deny takes (no approval written, no
-   * grant looked up, in a dry run no would-do entry). Today it answers `none`
-   * for every call, which changes nothing.
+   * `boundary` answer denies the call `agent_boundary` through the same deny
+   * path a rail deny takes (no approval written, no grant looked up, in a dry
+   * run no would-do entry). Its one `tool_decision` event carries the
+   * `category`, and the hook's reason is `boundaryDenyReason`'s text naming it.
    */
   #gate(live: LiveSession): HookCallback {
     return async (input): Promise<HookJSONOutput> => {
@@ -2287,8 +2288,15 @@ export class SessionManager {
       let wouldDo: WouldDoEntry | undefined;
       /** The pre-hold check's refusal text, for a `held_refused` deny. */
       let refusal: string | undefined;
+      /** The matched never category, for an `agent_boundary` deny. */
+      let category: NeverCategory | undefined;
       const record = (): void =>
-        this.#appendEvent("tool_decision", live.id, toolDecisionPayload(tool, decision, reason, command, undefined), this.#nowIso());
+        this.#appendEvent(
+          "tool_decision",
+          live.id,
+          { ...toolDecisionPayload(tool, decision, reason, command, undefined), ...(category === undefined ? {} : { category }) },
+          this.#nowIso(),
+        );
       try {
         if (input.hook_event_name === "PreToolUse") {
           tool = input.tool_name;
@@ -2307,6 +2315,7 @@ export class SessionManager {
             // Denied and recorded below like a rail deny: no approval written, no grant looked up, no would-do entry.
             decision = "deny";
             reason = "agent_boundary";
+            category = boundary.category;
           } else if (dry?.kind === "would_do") {
             // Denied and recorded below; an outward call never reaches the approval path.
             wouldDo = dry.entry;
@@ -2359,6 +2368,7 @@ export class SessionManager {
         reason = "kernel_gate_error";
         wouldDo = undefined;
         refusal = undefined;
+        category = undefined;
       }
       try {
         record();
@@ -2382,7 +2392,14 @@ export class SessionManager {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: decision,
-          permissionDecisionReason: reason === "dry_run" ? DRY_RUN_DENY_MESSAGE : reason === "held_refused" ? (refusal ?? reason) : reason,
+          permissionDecisionReason:
+            reason === "dry_run"
+              ? DRY_RUN_DENY_MESSAGE
+              : reason === "held_refused"
+                ? (refusal ?? reason)
+                : reason === "agent_boundary" && category !== undefined
+                  ? boundaryDenyReason(category)
+                  : reason,
         },
       };
     };

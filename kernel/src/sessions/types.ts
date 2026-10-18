@@ -279,14 +279,31 @@ export interface AdmissionRequest {
    * `playbook: number | null`) extends this one.
    */
   readonly playbook?: number | null;
+  /**
+   * The id of the session a `resume` request resumes (on the resume and on
+   * every resume retry); absent on a `start`. Admission leaves that session's
+   * own row out of the agent's live-session count, so a session's own retry
+   * (its row `starting`) or the resume of its own `orphaned` row never
+   * refuses itself on `sessions_at_once`. A `resume` without it counts every
+   * live row (fail closed).
+   */
+  readonly session?: number;
 }
 
 /**
  * Why admission refused: the account is parked at its cap, the agent reached
- * its daily token limit, or the session's playbook reached its own daily
- * token limit (`token_limit_per_day`).
+ * its daily token limit or its sessions-at-once limit, the agent's settings
+ * file is invalid or missing (its limits cannot be read, so it is refused
+ * rather than read as unlimited), or the session's playbook reached its own
+ * daily token limit (`token_limit_per_day`).
  */
-export type AdmissionRefusalReason = "cap_parked" | "agent_daily_limit" | "playbook_daily_limit";
+export type AdmissionRefusalReason =
+  | "cap_parked"
+  | "agent_daily_limit"
+  | "agent_sessions_at_once"
+  | "settings_invalid"
+  | "settings_missing"
+  | "playbook_daily_limit";
 
 /**
  * The admission verdict. A refusal carries when to try again (ISO-8601), or

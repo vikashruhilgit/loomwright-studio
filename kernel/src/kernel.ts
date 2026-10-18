@@ -7,6 +7,8 @@
 // are merged once, before the store opens.
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { readAgentSettings } from "./agents/settings.js";
+import type { AgentLimits } from "./agents/settings.js";
 import { ensureApiToken } from "./api/token.js";
 import { isKillSwitchEngaged } from "./api/kill-switch.js";
 import { API_HOST, startApiServer } from "./api/server.js";
@@ -18,6 +20,7 @@ import type { KeychainReader, KeychainWriter } from "./auth/keychain.js";
 import { SUBSCRIPTION_TOKEN_ID, availableProviderIds, selectAuthProvider } from "./auth/registry.js";
 import type { AuthProvider, AuthProviderDeps, BaseEnv } from "./auth/types.js";
 import { Budget } from "./budget/index.js";
+import type { AgentLimitsLookup } from "./budget/index.js";
 import { PHASE1_RESERVED, mergeContributions } from "./features/contribution.js";
 import type { FeatureContribution, MergedContributions } from "./features/contribution.js";
 import { SHIPPED_CONTRIBUTIONS } from "./features/index.js";
@@ -162,6 +165,53 @@ export function admissionFor(
   };
 }
 
+/** The two limits the budget applies, from a parsed `limits` (`delegation_depth` is not the budget's). */
+function budgetLimitsOf(limits: AgentLimits | undefined): AgentLimitsLookup {
+  return {
+    ok: true,
+    ...(limits?.tokens_per_day === undefined ? {} : { tokensPerDay: limits.tokens_per_day }),
+    ...(limits?.sessions_at_once === undefined ? {} : { sessionsAtOnce: limits.sessions_at_once }),
+  };
+}
+
+/**
+ * The budget's `agentLimits` lookup, as the kernel wires it: each agent's
+ * `limits.tokens_per_day` and `limits.sessions_at_once` from its own settings
+ * file, `<dataDir>/config/agents/<id>.json`, through the one reader
+ * (`readAgentSettings`), read afresh at every admission check and metered
+ * result, so an edit applies at the agent's next start.
+ *
+ * - `ok`, or `model_unset` (the file parsed and validated; a missing model is
+ *   the session's refusal, never the budget's): the limits the file sets,
+ *   each absent one unset.
+ * - `settings_missing` / `settings_invalid`: a refusal with that reason
+ *   (fail closed: a deleted or broken file is never read as "no limit").
+ * - `agent_id_invalid` (a label that fails the crew-id grammar and is not
+ *   `wright`): no limits, so no per-agent check applies, as for a `null`
+ *   agent. Such a label cannot name a settings file, so it has no limit the
+ *   owner could have set (owner decision, 2026-10-18); the cap and a
+ *   playbook's own limit still apply.
+ *
+ * Reading `wright` creates `wright.json` when it is absent (the one reader's
+ * rule); a failure to create it throws, which fails the admission closed.
+ */
+export function agentLimitsFor(dataDir: string): (agent: string) => AgentLimitsLookup {
+  return (agent) => {
+    const r = readAgentSettings(dataDir, agent);
+    if (r.ok) return budgetLimitsOf(r.settings.limits);
+    switch (r.error) {
+      case "model_unset":
+        return budgetLimitsOf(r.limits);
+      case "agent_id_invalid":
+        return { ok: true };
+      case "settings_missing":
+        return { ok: false, reason: "settings_missing", file: r.file, message: r.message };
+      case "settings_invalid":
+        return { ok: false, reason: "settings_invalid", file: r.file, message: r.message };
+    }
+  };
+}
+
 /**
  * Start the kernel, in this order: merge `options.contributions` (default
  * `SHIPPED_CONTRIBUTIONS`; a `ContributionConflictError`,
@@ -170,7 +220,8 @@ export function admissionFor(
  * tools (`approvalApplierOf`; it refuses the same way); open the `Store`
  * (taking its lock); select
  * the auth provider (`--auth-provider`, else `STUDIO_AUTH_PROVIDER`, else the
- * build default); the `Budget`; the `SessionManager` (wired to the budget and
+ * build default); the `Budget` (each agent's limits read from its settings
+ * file, `agentLimitsFor`); the `SessionManager` (wired to the budget and
  * given the kernel MCP server per launch); reap orphans left by an earlier
  * kernel; the `EventLoop` with `options.handlers` (none by default) plus the
  * contributed handlers and due work, started only while the kill switch
@@ -230,7 +281,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
       (await defaultAuthProviderId(deps.availableProviderIds ?? availableProviderIds));
     const authProvider = await (deps.selectAuthProvider ?? selectAuthProvider)(providerId, { keychain, store, now });
 
-    const budget = new Budget({ store, authProvider }, { now });
+    const budget = new Budget({ store, authProvider, agentLimits: agentLimitsFor(dataDir) }, { now });
     const manager = new SessionManager(
       {
         store,

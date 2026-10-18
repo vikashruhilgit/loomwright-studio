@@ -1,11 +1,14 @@
 // The `agents` feature (phase 4): one contribution built from one part per
 // sub-file, so each phase 4 item edits only the sub-file(s) it owns: item 02
 // `roster.ts`, item 06 `delegate.ts`, item 07 `charter-tools.ts`. A part is
-// empty until its item fills it in; today all three are empty, so the
-// contribution is only the `studio agents` subcommand, with no verbs. The
-// shared readers every item uses live beside them: the closed value sets
-// (`types.ts`), the one settings reader (`settings.ts`), the one memory
-// reader (`memory.ts`) and the read-only registry lookups (`registry.ts`).
+// empty until its item fills it in; today `roster` is filled (the `/agents`
+// routes and the `list` / `show` / `create` / `rename` / `set` / `off` / `on`
+// verbs), the delegate part has the one tool `kernel_agent_message`, and
+// `charter-tools` is empty. The shared readers every item uses live beside
+// them: the closed value sets (`types.ts`), the one settings reader
+// (`settings.ts`), the one memory reader (`memory.ts`), the read-only registry
+// lookups (`registry.ts`) and the one charter validator, create and self-heal
+// (`charter-files.ts`).
 // Mechanism only (invariants 1 and 9): no crew member ships preinstalled, and
 // there are no role presets. `startKernel` and `runCli` merge it through
 // `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`), seventh, after `playbooks`.
@@ -157,7 +160,34 @@ export const AGENTS_HELP: string = agentsHelp(mergeAgentParts(AGENT_PARTS).verbs
 
 export { charterToolsPart } from "./charter-tools.js";
 export { delegatePart } from "./delegate.js";
-export { rosterPart } from "./roster.js";
+export { AGENT_SET_FIELDS, ROSTER_VERB_HELP, formatAgent, formatRoster, rosterOf, rosterPart, rosterRoutes, rosterVerbs } from "./roster.js";
+export type { AgentSetField, RosterEntry } from "./roster.js";
+export {
+  AGENT_AUDIT_KINDS,
+  CHARTER_LIMIT_KEYS,
+  CHARTER_PERMISSION_MODES,
+  CREW_MEMORY_FILES,
+  MAX_CHARTER_BYTES,
+  agentFilePaths,
+  createAgent,
+  ensureAgentFiles,
+  renderAgentSettingsJson,
+  renderRoleMd,
+  validateCharter,
+} from "./charter-files.js";
+export type {
+  AgentAuditKind,
+  AgentFilePaths,
+  Charter,
+  CharterLimits,
+  CharterRefusal,
+  CharterResult,
+  CreateAgentOptions,
+  CreateAgentRefusal,
+  CreateAgentResult,
+  EnsureAgentFilesResult,
+  ValidateCharterOptions,
+} from "./charter-files.js";
 export { agentMemoryDir, ensureAgentMemoryFiles } from "./memory.js";
 export type { EnsureAgentMemoryResult } from "./memory.js";
 export { getAgent, isRoutable, listAgents } from "./registry.js";

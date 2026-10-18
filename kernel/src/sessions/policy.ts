@@ -22,7 +22,7 @@ export type ToolDecisionReason =
   /**
    * An outward call in one of the session policy's `never` categories
    * (`boundaryDecision`): denied whatever the policy, never held, never
-   * covered by a grant. Unreachable until phase 4 item 03 fills `boundaryDecision`.
+   * covered by a grant. The hook's reason is `boundaryDenyReason`'s text.
    */
   | "agent_boundary";
 
@@ -115,7 +115,19 @@ export type RailDenyReason = "protected_kernel_path" | "merge_blocked" | "bash_s
 export type ToolCallClass =
   | { readonly kind: "ordinary" }
   | { readonly kind: "deny"; readonly reason: RailDenyReason }
-  | { readonly kind: "outward"; readonly action: string; readonly payload: ApprovalPayload };
+  | {
+      readonly kind: "outward";
+      readonly action: string;
+      readonly payload: ApprovalPayload;
+      /**
+       * The other outward forms the rail read in the same call (another gh
+       * reading, `git alias` beside `git push`, a path label), present only
+       * when one of them is in a `NeverCategory` that `action`'s own mapping
+       * lacks (`neverCategoriesOf`). `boundaryDecision` reads it; the
+       * approval stores `action` and `payload` only.
+       */
+      readonly alsoReads?: readonly string[];
+    };
 
 export interface RailContext {
   /** The Studio data dir (`Store.dataDir`). */
@@ -175,13 +187,15 @@ export const ALWAYS_HELD_TOOLS: readonly string[] = Object.freeze([
 /**
  * The closed categories a session policy's `never` list may name: one per
  * outward form the rail already emits (`classifyToolCall` step 3). Each maps
- * to the rail's own labels (the `outward` action), which phase 4 item 03's
+ * to the rail's own labels (the `outward` action, `neverCategoriesOf`), which
  * `boundaryDecision` matches:
  *
  * - `git_push`: every `GIT_OUTWARD` label and `git p4 submit` (`git push`,
  *   `git send-pack`, `git http-push`, `git svn dcommit`, `git svn set-tree`,
  *   `git send-email`, `git imap-send`, `git cvsexportcommit`,
- *   `git p4 submit`): every git form that sends commits or patches off the machine.
+ *   `git p4 submit`): every git form that sends commits or patches off the
+ *   machine. Also `git alias`: the rail holds an inline alias or autocorrect
+ *   because it can run a push (`git -c alias.p=push p`).
  * - `alias_define`: `git alias`, and `gh alias set` / `gh alias import`.
  * - `gh_pr_create`, `gh_pr_comment`, `gh_pr_review`, `gh_pr_edit`,
  *   `gh_pr_close`: `gh pr create` (also its `new` alias), `comment`,
@@ -227,18 +241,62 @@ export type NeverCategory = (typeof NEVER_CATEGORIES)[number];
  * (`agent_boundary`), never held as an approval, never covered by a grant,
  * and denied in a dry run too. Pure: no I/O.
  *
- * Today it answers `none` for every call: phase 4 item 03 fills it with the
- * rail's own labels (`NEVER_CATEGORIES`' mapping) matched against
- * `policy.never`.
+ * It answers `boundary` when any outward form the rail read in the call (its
+ * `action`, and every form in `alsoReads`) maps (`neverCategoriesOf`) to a
+ * category in `policy.never`, naming the first such category in
+ * `NEVER_CATEGORIES` order; otherwise, and always with no `never` (or an empty
+ * one), `none`. No new matcher: the forms are the rail's own labels, so a
+ * form the rail does not recognise (`env git push`, `sh -c`, a script) is not
+ * covered either.
  */
 export function boundaryDecision(
   policy: ToolPolicy,
   rail: Extract<ToolCallClass, { kind: "outward" }>,
 ): { readonly kind: "none" } | { readonly kind: "boundary"; readonly category: NeverCategory } {
-  void policy;
-  void rail;
-  return { kind: "none" };
+  const never = policy.never ?? [];
+  const read = new Set([rail.action, ...(rail.alsoReads ?? [])].flatMap(neverCategoriesOf));
+  const category = NEVER_CATEGORIES.find((c) => read.has(c) && never.includes(c));
+  return category === undefined ? { kind: "none" } : { kind: "boundary", category };
 }
+
+/**
+ * The hook's reason for an `agent_boundary` deny: it names the category and
+ * tells the model that the owner's settings forbid it for this agent, so it
+ * neither asks for an approval nor retries.
+ */
+export function boundaryDenyReason(category: NeverCategory): string {
+  return (
+    `agent_boundary: ${category} is in this agent's never list. The owner's settings forbid it for this agent; it did not run. ` +
+    "Do not ask for an approval and do not retry it."
+  );
+}
+
+/**
+ * The `NeverCategory` values an outward action label (`classifyToolCall`'s
+ * `action`, or a form in `alsoReads`) is in, from the rail's own label
+ * tables; none for an `ALWAYS_HELD_TOOLS` action or any other text. Pure.
+ */
+export function neverCategoriesOf(action: string): readonly NeverCategory[] {
+  if (action === "git p4 submit" || GIT_OUTWARD.some(([, label]) => label === action)) return ["git_push"];
+  // An inline alias or autocorrect can run a push (`git -c alias.p=push p`): that is why the rail holds it.
+  if (action === "git alias") return ["git_push", "alias_define"];
+  if (GH_ALIAS_OUTWARD.some((sub) => action === `gh alias ${sub}`)) return ["alias_define"];
+  for (const [, sub] of GH_PR_OUTWARD) if (action === `gh pr ${sub}`) return NEVER_CATEGORIES.filter((c) => c === `gh_pr_${sub}`);
+  for (const [, sub] of GH_ISSUE_OUTWARD) if (action === `gh issue ${sub}`) return NEVER_CATEGORIES.filter((c) => c === `gh_issue_${sub}`);
+  // `gh api <METHOD>` (any non-GET method) and `gh api (flag unread)`.
+  if (action.startsWith("gh api ")) return ["gh_api_write"];
+  for (const [label, category] of OUTWARD_PATH_CATEGORIES) {
+    if (action === `Bash naming ${label}` || Object.keys(WRITE_TOOLS).some((tool) => action === `${tool} ${label}`)) return [category];
+  }
+  return [];
+}
+
+/** The rail's outward path labels (`railTargets`), each with the category its Bash and Write/Edit/NotebookEdit forms are in. */
+const OUTWARD_PATH_CATEGORIES: readonly (readonly [string, NeverCategory])[] = [
+  ["~/.claude/", "settings_write"],
+  ["a settings*.json file", "settings_write"],
+  ["a hooks file", "hooks_write"],
+];
 
 /** The kernel MCP server's tool-name prefix, dropped from an always-held tool's approval action. */
 const KERNEL_TOOL_PREFIX = "mcp__kernel__";
@@ -391,12 +449,11 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
     const protectedRel = cwd === undefined || changesDirectory(words) ? targets.protectedRelAny : targets.protectedRelReachable;
     if (namesAny(read, targets.protectedPaths, protectedRel)) return { kind: "deny", reason: "protected_kernel_path" };
     const payload: ApprovalPayload = { tool: "Bash", command, cwd: payloadCwd };
-    const form = commandForm(words);
-    if (form === "merge") return { kind: "deny", reason: "merge_blocked" };
-    if (form !== undefined) return { kind: "outward", action: form, payload };
-    const label = outwardLabel(read, targets);
-    if (label !== undefined) return { kind: "outward", action: `Bash naming ${label}`, payload };
-    return { kind: "ordinary" };
+    const forms = commandForms(words);
+    if (forms[0] === "merge") return { kind: "deny", reason: "merge_blocked" };
+    // The action is the command's first form, else its first path label; the rest only feed `alsoReads`.
+    const [action, ...others] = [...forms, ...outwardLabels(read, targets).map((label) => `Bash naming ${label}`)];
+    return action === undefined ? { kind: "ordinary" } : outwardClass(action, others, payload);
   }
 
   if (ALWAYS_HELD_TOOLS.includes(toolName)) {
@@ -413,10 +470,15 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
   if (namesAny(read, targets.protectedPaths, cwd === undefined ? targets.protectedRelAny : targets.protectedRelReachable)) {
     return { kind: "deny", reason: "protected_kernel_path" };
   }
-  const label = outwardLabel(read, targets);
-  return label === undefined
-    ? { kind: "ordinary" }
-    : { kind: "outward", action: `${toolName} ${label}`, payload: { tool: toolName, input: toolInput, cwd: payloadCwd } };
+  const [action, ...others] = outwardLabels(read, targets).map((label) => `${toolName} ${label}`);
+  return action === undefined ? { kind: "ordinary" } : outwardClass(action, others, { tool: toolName, input: toolInput, cwd: payloadCwd });
+}
+
+/** An `outward` class, with `alsoReads` only for the `others` that add a `NeverCategory` `action` is not in. */
+function outwardClass(action: string, others: readonly string[], payload: ApprovalPayload): ToolCallClass {
+  const own = neverCategoriesOf(action);
+  const alsoReads = [...new Set(others)].filter((form) => neverCategoriesOf(form).some((c) => !own.includes(c)));
+  return alsoReads.length === 0 ? { kind: "outward", action, payload } : { kind: "outward", action, payload, alsoReads };
 }
 
 /**
@@ -804,11 +866,16 @@ function railTargets(dataDir: string, homeDir: string): RailTargets {
   return { protectedPaths, protectedRelReachable, protectedRelAny, outward, outwardRel };
 }
 
-/** Why the paths `read` names are in the outward set (a short label for the approval's action), or `undefined`. */
-function outwardLabel(read: PathRead, targets: RailTargets): string | undefined {
-  for (const [label, target] of targets.outward) if (read.abs.some((p) => couldMatch(p, target))) return label;
-  for (const [label, target] of targets.outwardRel) if (read.rel.some((p) => couldMatch(p, target))) return label;
-  return undefined;
+/**
+ * Every reason the paths `read` names are in the outward set (the short labels
+ * an approval's action shows), each once, absolute matches first: the first
+ * is the call's label, the rest feed `alsoReads`. Empty when none.
+ */
+function outwardLabels(read: PathRead, targets: RailTargets): string[] {
+  const labels: string[] = [];
+  for (const [label, target] of targets.outward) if (!labels.includes(label) && read.abs.some((p) => couldMatch(p, target))) labels.push(label);
+  for (const [label, target] of targets.outwardRel) if (!labels.includes(label) && read.rel.some((p) => couldMatch(p, target))) labels.push(label);
+  return labels;
 }
 
 /** Whether a shell word could be `literal` (case-folded), after brace expansion and as a glob. */
@@ -829,28 +896,32 @@ const MAX_GH_READINGS = 64;
 /** Whether a shell word (a glob) and `glob` could match the same text, case-folded. */
 const globsMeet = (word: string, glob: string): boolean => tokensIntersect(segment(word, true), segment(glob, true));
 
-/** The recognised outward form of a Bash command's words (`git push`, `gh pr create`, `gh api POST`), `"merge"`, or `undefined`. */
-function commandForm(words: readonly string[]): string | undefined {
+/**
+ * Every recognised outward form of a Bash command's words (`git push`, `gh pr
+ * create`, `gh api POST`), each once, the call's action first; `["merge"]` when
+ * any reading is a merge; empty when none.
+ */
+function commandForms(words: readonly string[]): string[] {
   // Brace expansion can turn one word into several argv words (`gh {pr,merge} 12` is `gh pr merge 12`).
   // An empty word is dropped: bash removes an unquoted empty one (`{,} gh pr merge`, `gh api -X {,} PUT …`),
   // cobra skips a quoted one when it looks up a subcommand, and reading one away only over-holds.
   const [program, ...rest] = words.flatMap(braceExpand).filter((w) => w !== "");
-  if (program === undefined) return undefined;
+  if (program === undefined) return [];
   const name = basename(program).toLowerCase();
   // `git-push` (git's libexec spelling) is `git push`.
-  if (name === "git") return gitForm(rest);
-  if (name.startsWith("git-")) return gitForm([name.slice(4), ...rest]);
-  if (name !== "gh") return undefined;
+  if (name === "git") return gitForms(rest);
+  if (name.startsWith("git-")) return gitForms([name.slice(4), ...rest]);
+  if (name !== "gh") return [];
   // A flag word could take the next word as its value or not: every reading is checked, a merge in any wins.
   const readings = ghPositionals(rest);
-  if (readings === undefined) return "merge";
-  let form: string | undefined;
+  if (readings === undefined) return ["merge"];
+  const forms: string[] = [];
   for (const reading of readings) {
     const f = ghForm(rest, reading);
-    if (f === "merge") return f;
-    form ??= f;
+    if (f === "merge") return [f];
+    if (f !== undefined && !forms.includes(f)) forms.push(f);
   }
-  return form;
+  return forms;
 }
 
 /** `gh`'s outward form for one reading of its command words. */
@@ -866,19 +937,24 @@ function ghForm(args: readonly string[], [group, sub]: readonly { word: string; 
 }
 
 /**
- * git's outward form: any word after `git` that could be one of `GIT_OUTWARD`
- * (so no option spelling before the subcommand can hide a push), `submit`
- * after `p4`, or an alias definition (`GIT_ALIAS_CONFIG`, `--config-env`).
+ * git's outward forms, each once, in the order the words give them: any word
+ * after `git` that could be one of `GIT_OUTWARD` (so no option spelling before
+ * the subcommand can hide a push), `submit` after `p4`, then an alias
+ * definition (`GIT_ALIAS_CONFIG`, `--config-env`).
  */
-function gitForm(args: readonly string[]): string | undefined {
+function gitForms(args: readonly string[]): string[] {
+  const forms: string[] = [];
+  const add = (form: string): void => {
+    if (!forms.includes(form)) forms.push(form);
+  };
   let p4 = false;
   for (const word of args) {
-    for (const [sub, label] of GIT_OUTWARD) if (wordCouldBe(word, sub)) return label;
-    if (p4 && wordCouldBe(word, "submit")) return "git p4 submit";
+    for (const [sub, label] of GIT_OUTWARD) if (wordCouldBe(word, sub)) add(label);
+    if (p4 && wordCouldBe(word, "submit")) add("git p4 submit");
     p4 ||= wordCouldBe(word, "p4");
   }
-  if (args.some((w) => GIT_ALIAS_CONFIG.some((g) => globsMeet(w, g)))) return "git alias";
-  return undefined;
+  if (args.some((w) => GIT_ALIAS_CONFIG.some((g) => globsMeet(w, g)))) add("git alias");
+  return forms;
 }
 
 /**
