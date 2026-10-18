@@ -198,7 +198,8 @@ A held call to a kernel tool with a kernel-side effect is applied by the kernel 
 | `apply_refused` | Why nothing was applied |
 |---|---|
 | `not_found` | the playbook no longer exists |
-| `not_owner` | the playbook is not the requesting agent's (a request with no agent never matches) |
+| `crew_cannot_draft` | the requesting agent is a registered crew member: crew members don't draft or enable playbooks (a defence: the pre-hold check never holds such a call) |
+| `not_owner` | the playbook is not the requesting agent's, nor a registered crew member's with Wright requesting (a request with no agent never matches) |
 | `turned_off_by_owner` | the owner turned the playbook off after the request |
 | `not_draft` | the playbook is no longer a `draft` |
 | `version_changed` | the approval's `subject_version` is not the playbook's current version, or the playbook was edited after the request |
@@ -207,7 +208,7 @@ A held call to a kernel tool with a kernel-side effect is applied by the kernel 
 | `no_applier` | no applier is registered for a tool in the set (fail closed: the action is never handed back to the agent) |
 | `apply_error` | the applier threw; its writes were rolled back (`the kernel could not apply it: <message, cut to 300 characters>`) |
 
-The first six are the enable's (`EnableRefused` in `kernel/src/playbooks/enable.ts`, [playbooks: enabling](playbooks.md#enabling)); the last three are the decision's.
+The first seven are the enable's (`EnableRefused` in `kernel/src/playbooks/enable.ts`, [playbooks: enabling](playbooks.md#enabling)); the last three are the decision's.
 
 **Other actions keep the agent's retry.** A held call to any other tool (a `gh pr comment`, a `git push`, a write under `~/.claude/`) is never run by the kernel: the owner's approval is a grant the agent's own exact repeat uses once, as above. Its message now names the exact call to repeat ([delivering the decision](#delivering-the-decision)). The rail's hold reason says the same: a held call to any other tool is told to repeat itself once if approved, and a kernel-applied action is told that the kernel applies it and not to repeat the call (`kernel/src/sessions/manager.ts`, branching on `KERNEL_APPLIED_ACTIONS`). A repeat of a kernel-applied action anyway is refused or held anew, never let through.
 
