@@ -84,3 +84,9 @@ kernel/src/budget/
 kernel/src/kernel.ts
 kernel/test/budget-agent-limits.test.ts
 docs/architecture/budget.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-18T18:37:39Z
+- **Brief:** .supervisor/jobs/done/2026-10-18-token-limits-sessions-at-once-per-agent.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/86
