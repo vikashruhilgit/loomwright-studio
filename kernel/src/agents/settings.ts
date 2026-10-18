@@ -50,20 +50,35 @@ const permissionMode = z.enum(Object.keys(PERMISSION_MODES) as [AllowedPermissio
 /** A limit: a positive safe integer. */
 const limit = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 
-const schema = z.object({
+const toolPolicyShape = {
+  status: z.string().optional(),
+  allowedTools: z.array(z.string()),
+  allowedBashPrefixes: z.array(z.string()),
+};
+
+const shape = {
   model: z.unknown().optional(),
   effort: z.string().nullable().optional(),
   permission_mode: permissionMode,
-  tool_policy: z.object({
-    status: z.string().optional(),
-    allowedTools: z.array(z.string()),
-    allowedBashPrefixes: z.array(z.string()),
-  }),
+  tool_policy: z.object(toolPolicyShape),
   never: z.array(z.enum(NEVER_CATEGORIES)).optional(),
   // Strict: a misspelt limit is refused, never silently unenforced.
   limits: z.object({ tokens_per_day: limit.optional(), sessions_at_once: limit.optional(), delegation_depth: limit.optional() }).strict().optional(),
   workspaces: z.array(z.string()).optional(),
-});
+};
+
+/**
+ * Wright's file: unknown keys are dropped, as they were before the crew
+ * existed (its `never`, `limits` and `workspaces` are refused by name below).
+ */
+const wrightSchema = z.object(shape);
+
+/**
+ * A crew member's file: strict at the top level and in `tool_policy`, so a
+ * misspelt enforced setting (`nevr`, `Never`, `workspace`, `limit`, a
+ * `tool_policy.never`) is refused, never read as ok and silently not applied.
+ */
+const crewSchema = z.object({ ...shape, tool_policy: z.object(toolPolicyShape).strict() }).strict();
 
 /** The enforced limits an agent's file may set; each absent key is unset (the kernel picks none). */
 export interface AgentLimits {
@@ -176,11 +191,16 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
   } catch {
     return invalid("the file", "not JSON");
   }
-  const parsed = schema.safeParse(json);
+  const parsed = (isWright ? wrightSchema : crewSchema).safeParse(json);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     const where = issue === undefined || issue.path.length === 0 ? "the file" : issue.path.join(".");
-    return invalid(where, `${where}: ${issue?.message ?? "invalid"}`);
+    // An unknown key names itself (zod's issue path stops at the object holding it).
+    const what =
+      issue?.code === "unrecognized_keys"
+        ? `unknown key${issue.keys.length === 1 ? "" : "s"} ${issue.keys.map((k) => JSON.stringify(k)).join(", ")} (a misspelt setting is refused, never silently not applied)`
+        : (issue?.message ?? "invalid");
+    return invalid(where, `${where}: ${what}`);
   }
   const s = parsed.data;
   // Fail closed: nothing applies Wright's never, limits or workspaces yet, so

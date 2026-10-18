@@ -88,13 +88,19 @@ function isInside(path: string, root: string): boolean {
  * Whether `path` is `root` or inside it (each absolute, or resolved against
  * the cwd), the ONE containment check: both are compared as written and with
  * symlinks resolved as far as they exist (`resolveExisting`), so a symlink on
- * either side can't hide it, even to a folder not created yet; and each also
- * without a `/System/Volumes/Data` firmlink prefix (`withAliases`), so that
- * alias of the same folder can't hide it either. Case-insensitive, on a
- * path-segment boundary (`isInside`).
+ * either side can't hide it, even to a folder not created yet; the path also
+ * with and without a `/System/Volumes/Data` firmlink prefix (`firmlinkForms`)
+ * and the root also without it (`withAliases`), so that alias of the same
+ * folder can't hide it either, on either side (`/System/Volumes` holds
+ * `/Users`). Case-insensitive, on a path-segment boundary (`isInside`). Every
+ * caller refuses on `true`, so where the firmlink view over-approximates (`/`
+ * reads as inside `/System`) it fails closed.
  */
 export function isInsidePath(path: string, root: string): boolean {
-  const candidates = withAliases([resolve(path), resolveExisting(path)]);
+  // The candidate in BOTH firmlink forms (`firmlinkForms`), so a root that is
+  // an ancestor of the prefix itself (`/System`, `/System/Volumes`) still holds
+  // a `/Users/…` path; the root's own prefix is stripped (`withAliases`).
+  const candidates = new Set([resolve(path), resolveExisting(path)].flatMap(firmlinkForms));
   for (const r of withAliases([resolve(root), resolveExisting(root)])) {
     for (const candidate of candidates) if (isInside(candidate, r)) return true;
   }

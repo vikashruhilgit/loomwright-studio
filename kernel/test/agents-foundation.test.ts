@@ -343,14 +343,41 @@ describe("readAgentSettings (AC4)", () => {
     }
   });
 
-  it("a workspace that contains the data dir ('/', its parent) is settings_invalid naming the field", () => {
+  it("a workspace that contains the data dir ('/', its parent, or an ancestor of the /System/Volumes/Data firmlink) is settings_invalid naming the field", () => {
     mkdirSync(dataDir, { recursive: true });
-    for (const workspace of ["/", tmp, realpathSync(tmp)]) {
+    // `/System/Volumes` and `/System` hold the data dir through the firmlink
+    // (lexically, so on any platform); a symlink to `/System/Volumes` only
+    // resolves where that folder exists (macOS).
+    const viaFirmlink = ["/System/Volumes", "/System", "/system/volumes"];
+    if (existsSync("/System/Volumes")) {
+      symlinkSync("/System/Volumes", join(tmp, "sysvol"));
+      viaFirmlink.push(join(tmp, "sysvol"));
+    }
+    for (const workspace of ["/", tmp, realpathSync(tmp), ...viaFirmlink]) {
       const file = writeSettings("mason", { workspaces: [workspace] });
       const r = readAgentSettings(dataDir, "mason", { homeDir });
       expect(r, workspace).toMatchObject({ ok: false, error: "settings_invalid", file, field: "workspaces.0" });
       expect(r.ok === false && "message" in r ? r.message : "", workspace).toMatch(/contains the data dir/);
     }
+  });
+
+  it("a crew file with an unknown key (a misspelt never, limits, workspaces or tool_policy field) is settings_invalid naming the key, never ok without it", () => {
+    for (const [extra, field, key] of [
+      [{ nevr: ["git_push"] }, "the file", "nevr"],
+      [{ Never: ["git_push"] }, "the file", "Never"],
+      [{ workspace: ["/"] }, "the file", "workspace"],
+      [{ limit: { sessions_at_once: 1 } }, "the file", "limit"],
+      [{ tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [], never: ["git_push"] } }, "tool_policy", "never"],
+    ] as const) {
+      const file = writeSettings("mason", extra);
+      const r = readAgentSettings(dataDir, "mason", { homeDir });
+      expect(r, key).toMatchObject({ ok: false, error: "settings_invalid", file, field });
+      expect(r.ok === false && "message" in r ? r.message : "", key).toBe(`${file}: ${field}: unknown key ${JSON.stringify(key)} (a misspelt setting is refused, never silently not applied)`);
+    }
+    // Two unknown keys are both named.
+    const file = writeSettings("mason", { nevr: [], workspace: [] });
+    const r = readAgentSettings(dataDir, "mason", { homeDir });
+    expect(r.ok === false && "message" in r ? r.message : "").toBe(`${file}: the file: unknown keys "nevr", "workspace" (a misspelt setting is refused, never silently not applied)`);
   });
 
   it("no file for a crew member is settings_missing naming the file, and nothing is created", () => {
@@ -407,6 +434,9 @@ describe("Wright's settings through the one reader (AC5)", () => {
       file,
       settings: { model: "m", effort: "high", permissionMode: "plan", policy: { allowedTools: ["Read"], allowedBashPrefixes: [] }, policyStatus: null },
     });
+    // Unknown keys in wright.json are still dropped, as before the crew existed (only crew files are strict).
+    writeFileSync(file, JSON.stringify({ model: "m", permission_mode: "default", note: "x", tool_policy: { allowedTools: [], allowedBashPrefixes: [], note: "y" } }));
+    expect(readWrightSettings(dataDir)).toMatchObject({ ok: true, settings: { model: "m", policy: { allowedTools: [], allowedBashPrefixes: [] } } });
   });
 
   it("a wright.json that sets a valid never, limits or workspaces is settings_invalid (refused, never silently dropped)", () => {
