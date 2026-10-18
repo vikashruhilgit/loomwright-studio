@@ -6,11 +6,12 @@
 // the verbs run through `runCli` against a real loopback API server; a temp
 // home dir for the protected-folder check where a test calls the validator
 // directly. Never a daemon, a session, the real Keychain or a model.
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AGENT_AUDIT_KINDS,
+  MAX_CHARTER_BYTES,
   agentFilePaths,
   agentSettingsPath,
   agentsContribution,
@@ -25,6 +26,7 @@ import {
 import type { Charter } from "../src/agents/index.js";
 import { API_TOKEN_KEYCHAIN_SERVICE, startApiServer } from "../src/api/index.js";
 import type { ApiServer } from "../src/api/index.js";
+import { MAX_SETTINGS_BYTES } from "../src/brain/settings.js";
 import { agentCountedTokens, localDay } from "../src/budget/internal.js";
 import { runCli } from "../src/cli/index.js";
 import { PHASE1_RESERVED, mergeContributions } from "../src/features/index.js";
@@ -60,6 +62,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await server.close();
   env.cleanup();
 });
@@ -76,6 +79,16 @@ async function studio(...argv: string[]): Promise<{ code: number; stdout: string
     stderr: { write: (c: string) => err.push(c) },
   });
   return { code, stdout: out.join(""), stderr: err.join("") };
+}
+
+/** A raw request to the live API server (for bodies the verbs never send). */
+async function api(method: string, path: string, body?: unknown): Promise<{ status: number; body: Record<string, unknown> }> {
+  const res = await fetch(`http://127.0.0.1:${server.port}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${TOKEN}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  return { status: res.status, body: (await res.json()) as Record<string, unknown> };
 }
 
 /** A valid charter for `id`, with `extra` laid over it. */
@@ -200,6 +213,18 @@ describe("validateCharter (AC3)", () => {
     }
     expect(validateCharter([], { dataDir: env.dataDir })).toMatchObject({ ok: false, error: "charter_invalid", field: "the charter" });
     expect(validateCharter(null, { dataDir: env.dataDir })).toMatchObject({ ok: false, error: "charter_invalid", field: "the charter" });
+  });
+
+  it("a charter whose settings file would be over MAX_SETTINGS_BYTES is charter_invalid naming the charter", () => {
+    // Every list within its own bounds (64 entries of 200 characters), but 3-byte characters push the file over.
+    const wide = Array.from({ length: 64 }, () => "\u20ac".repeat(200));
+    const big = charter("mason", { tool_policy: { allowedTools: wide, allowedBashPrefixes: wide, never: [] } });
+    const r = validateCharter(big, { dataDir: env.dataDir, homeDir });
+    expect(r).toMatchObject({ ok: false, error: "charter_invalid", field: "the charter" });
+    expect(r.ok === false ? r.message : "").toBe(`the charter: its settings file would be over ${MAX_SETTINGS_BYTES} bytes (fewer or shorter tools, prefixes or workspaces)`);
+    expect(create(big)).toMatchObject({ ok: false, error: "charter_invalid", field: "the charter" });
+    expect(count(env.store, "SELECT COUNT(*) FROM agents")).toBe(0);
+    expect(existsSync(join(env.dataDir, "config"))).toBe(false);
   });
 
   it("refuses exactly the workspaces the settings reader refuses, with the reader's message", () => {
@@ -393,6 +418,53 @@ describe("create refuses a taken or invalid id (AC3)", () => {
   });
 });
 
+describe("create refuses what is not a charter", () => {
+  it("a charter file over MAX_CHARTER_BYTES is one stderr line, exit 1, and never sent", async () => {
+    const file = join(root, "huge.json");
+    writeFileSync(file, `${JSON.stringify(charter())}${" ".repeat(MAX_CHARTER_BYTES)}`);
+    expect(await studio("agents", "create", "--from", file)).toEqual({ code: 1, stdout: "", stderr: `studio: ${file} is over ${MAX_CHARTER_BYTES} bytes: not a charter\n` });
+    expect(count(env.store, "SELECT COUNT(*) FROM agents")).toBe(0);
+    expect(events(env.store)).toEqual([]);
+    expect(existsSync(join(env.dataDir, "config"))).toBe(false);
+  });
+
+  it("POST /agents with a body that is not a JSON object is 400 invalid_body; nothing is written", async () => {
+    for (const body of [[charter()], "mason", 7, null]) {
+      const r = await api("POST", "/agents", body);
+      expect(r, JSON.stringify(body)).toEqual({ status: 400, body: { error: "invalid_body", message: "the body must be a charter (a JSON object)" } });
+    }
+    expect(count(env.store, "SELECT COUNT(*) FROM agents")).toBe(0);
+    expect(events(env.store)).toEqual([]);
+    expect(existsSync(join(env.dataDir, "memory"))).toBe(false);
+  });
+});
+
+describe("a file write that fails after the row commits (filesError)", () => {
+  it("create still succeeds (exit 0, an active row, one event) with a stderr warning; ensureAgentFiles re-creates every file", async () => {
+    const paths = agentFilePaths(env.dataDir, "mason");
+    const settingsDir = dirname(paths.settings);
+    mkdirSync(settingsDir, { recursive: true });
+    chmodSync(settingsDir, 0o500);
+    try {
+      const r = await studio("agents", "create", "--from", charterFile(charter()));
+      expect(r.code).toBe(0);
+      expect(r.stdout).toBe(`studio: agent mason created (active, created by owner): ${paths.all.join(", ")}\n`);
+      expect(r.stderr).toMatch(/^studio: warning: a file was not written \(EACCES: [^\n]*\); it is re-created from the charter before the agent's next message\n$/);
+      expect(getAgent(env.store, "mason")?.status).toBe("active");
+      expect(events(env.store).map((e) => e.kind)).toEqual(["agent_created"]);
+      expect(paths.all.filter((p) => existsSync(p))).toEqual([]);
+      // The heal's own write error is thrown while the folder is still unwritable.
+      expect(() => ensureAgentFiles(env.store, env.dataDir, "mason", { homeDir })).toThrow(/EACCES/);
+    } finally {
+      chmodSync(settingsDir, 0o700);
+    }
+    expect(ensureAgentFiles(env.store, env.dataDir, "mason", { homeDir })).toEqual({ ok: true, created: paths.all });
+    expect(readFileSync(paths.settings, "utf8")).toBe(renderAgentSettingsJson(validated(charter())));
+    expect(readFileSync(paths.memory[0] as string, "utf8")).toBe(renderRoleMd(validated(charter())));
+    for (const p of paths.all) expect(mode(p), p).toBe(0o600);
+  });
+});
+
 // ---- AC4: ensureAgentFiles -----------------------------------------------------------------
 
 describe("ensureAgentFiles (AC4)", () => {
@@ -536,6 +608,74 @@ describe("studio agents set (AC5)", () => {
     expect(events(env.store, "agent_settings_set")).toEqual([]);
   });
 
+  it("POST /agents/:id/set with a body that is not {field, value} strings is 400 invalid_body; the file byte-unchanged", async () => {
+    expect(create().ok).toBe(true);
+    const file = agentSettingsPath(env.dataDir, "mason");
+    const bytes = readFileSync(file);
+    for (const body of [undefined, [1], { field: "model" }, { field: "limits.sessions_at_once", value: 2 }, { field: 1, value: "x" }]) {
+      const r = await api("POST", "/agents/mason/set", body);
+      expect(r.status, JSON.stringify(body)).toBe(400);
+      expect(r.body.error, JSON.stringify(body)).toBe("invalid_body");
+    }
+    expect(readFileSync(file).equals(bytes)).toBe(true);
+    expect(events(env.store, "agent_settings_set")).toEqual([]);
+  });
+
+  it("an owner's hand edit between the read and the rename wins: 409 settings_changed, nothing written, no event, no temporary sibling", async () => {
+    expect(create().ok).toBe(true);
+    const file = agentSettingsPath(env.dataDir, "mason");
+    const edited = readFileSync(file, "utf8").replace('"claude-sonnet-5"', '"claude-opus-5"');
+    // The owner saves the file just as set's transaction (the re-read, the event, the rename) begins.
+    const transaction = env.store.transaction.bind(env.store);
+    let edits = 0;
+    vi.spyOn(env.store, "transaction").mockImplementation(((fn: () => unknown) => {
+      edits += 1;
+      writeFileSync(file, edited);
+      return transaction(fn);
+    }) as typeof env.store.transaction);
+    const r = await api("POST", "/agents/mason/set", { field: "limits.sessions_at_once", value: "2" });
+    expect(edits).toBe(1);
+    expect(r).toEqual({ status: 409, body: { error: "settings_changed", file, message: `${file} changed while it was being set; nothing was written; try again` } });
+    expect(readFileSync(file, "utf8")).toBe(edited);
+    expect(readdirSync(dirname(file))).toEqual(["mason.json"]);
+    expect(events(env.store, "agent_settings_set")).toEqual([]);
+  });
+
+  it("a settings file over MAX_SETTINGS_BYTES, one that is unreadable, or a change that would make it too large is settings_invalid; nothing is written", async () => {
+    expect(create().ok).toBe(true);
+    const file = agentSettingsPath(env.dataDir, "mason");
+    const settings = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+
+    writeFileSync(file, `${JSON.stringify(settings)}${" ".repeat(MAX_SETTINGS_BYTES)}`);
+    const huge = readFileSync(file);
+    expect(await api("POST", "/agents/mason/set", { field: "model", value: "m" })).toEqual({
+      status: 409,
+      body: { error: "settings_invalid", file, field: "the file", message: `${file}: over ${MAX_SETTINGS_BYTES} bytes` },
+    });
+    expect(readFileSync(file).equals(huge)).toBe(true);
+
+    rmSync(file);
+    mkdirSync(file);
+    expect(await api("POST", "/agents/mason/set", { field: "model", value: "m" })).toEqual({
+      status: 409,
+      body: { error: "settings_invalid", file, field: "the file", message: `${file}: unreadable (EISDIR)` },
+    });
+    rmSync(file, { recursive: true });
+
+    // A compact file the reader accepts, which set's two-space rewrite would push over the limit.
+    const workspaces: string[] = [];
+    const compact = () => JSON.stringify({ ...settings, workspaces });
+    while (Buffer.byteLength(compact()) < MAX_SETTINGS_BYTES - 200) workspaces.push(join(root, "work", `${"w".repeat(80)}${workspaces.length}`));
+    writeFileSync(file, compact());
+    expect(readAgentSettings(env.dataDir, "mason", { homeDir }).ok).toBe(true);
+    const full = readFileSync(file);
+    const r = await studio("agents", "set", "mason", "model", "claude-haiku-4-5");
+    expect(r).toEqual({ code: 1, stdout: "", stderr: `studio: agent mason not changed: settings_invalid: ${file}: the change would make it over ${MAX_SETTINGS_BYTES} bytes\n` });
+    expect(readFileSync(file).equals(full)).toBe(true);
+    expect(readdirSync(dirname(file))).toEqual(["mason.json"]);
+    expect(events(env.store, "agent_settings_set")).toEqual([]);
+  });
+
   it("a file with no model may still get one", async () => {
     expect(create().ok).toBe(true);
     const file = agentSettingsPath(env.dataDir, "mason");
@@ -582,6 +722,15 @@ describe("studio agents rename | off | on (AC6)", () => {
       { id: "mason", old: "active", new: "off", by: "owner" },
       { id: "mason", old: "off", new: "active", by: "owner" },
     ]);
+  });
+
+  it("POST /agents/:id/off or /on with a body that is not a JSON object is 400 invalid_body; the status unchanged", async () => {
+    expect(create().ok).toBe(true);
+    for (const path of ["/agents/mason/off", "/agents/mason/on"]) {
+      expect(await api("POST", path, [1]), path).toEqual({ status: 400, body: { error: "invalid_body", message: "the body must be empty or a JSON object" } });
+    }
+    expect(getAgent(env.store, "mason")?.status).toBe("active");
+    expect(events(env.store, "agent_status_changed")).toEqual([]);
   });
 
   it("off, rename, set (and show) on wright are refused reserved; an unknown or invalid id is refused; nothing is written", async () => {
