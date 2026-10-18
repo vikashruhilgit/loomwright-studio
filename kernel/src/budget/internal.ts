@@ -2,7 +2,14 @@
 // of the module's public surface.
 import type { Store } from "../store/store.js";
 import { agentDailyTokenLimit, validateApiKeyFallbackPolicy } from "./types.js";
-import type { ApiKeyFallbackPolicy, BudgetAuth, BudgetConfig, BudgetDeps } from "./types.js";
+import type {
+  AgentLimitsLookup,
+  AgentSettingsRefusalReason,
+  ApiKeyFallbackPolicy,
+  BudgetAuth,
+  BudgetConfig,
+  BudgetDeps,
+} from "./types.js";
 
 /** Cap for free text copied into an event (a cap message, for example). */
 export const MAX_EVENT_TEXT = 500;
@@ -214,6 +221,89 @@ export function capRetryAt(parks: readonly ActivePark[]): string | null {
     : parks.map((p) => p.resets_at as string).reduce((a, b) => (b > a ? b : a));
 }
 
+/**
+ * How long an `agent_sessions_at_once` refusal waits before admission is
+ * asked again (its `retryAt` is now + this): a live session can end at any
+ * moment, so the event loop parks the work this long rather than its
+ * one-hour default. A recheck interval, not a limit (invariant 1).
+ */
+export const SESSIONS_AT_ONCE_RECHECK_MS = 60 * 1_000;
+
+/**
+ * The window of the hourly `notify` for an `agent_sessions_at_once`,
+ * `settings_invalid` or `settings_missing` refusal: the first refusal of an
+ * agent for a reason notifies, the next ones within this window do not (each
+ * still appends its `admission_refused` event).
+ */
+export const AGENT_REFUSAL_NOTIFY_MS = 60 * 60 * 1_000;
+
+/** One agent's limits for one check, or why they cannot be read. */
+export type ResolvedAgentLimits =
+  | { readonly ok: true; readonly tokensPerDay: number | undefined; readonly sessionsAtOnce: number | undefined }
+  | { readonly ok: false; readonly reason: AgentSettingsRefusalReason; readonly file: string | null; readonly message: string };
+
+function isLimit(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+/**
+ * `agent`'s limits: from the `agentLimits` lookup when one is given (read
+ * now, so an edit to the agent's settings applies at its next check), else
+ * the config's static `agentDailyTokenLimits` and no sessions-at-once limit.
+ * A lookup answer that is not `ok: true`, or a limit that is not a positive
+ * safe integer, is a refusal (fail closed): only `settings_missing` keeps its
+ * reason, anything else reads as `settings_invalid`. A lookup that throws
+ * throws.
+ */
+export function resolveAgentLimits(
+  config: BudgetConfig,
+  lookup: ((agent: string) => AgentLimitsLookup) | undefined,
+  agent: string,
+): ResolvedAgentLimits {
+  if (lookup === undefined) return { ok: true, tokensPerDay: agentDailyTokenLimit(config, agent), sessionsAtOnce: undefined };
+  const answer = lookup(agent);
+  if (answer.ok !== true) {
+    return {
+      ok: false,
+      reason: answer.reason === "settings_missing" ? "settings_missing" : "settings_invalid",
+      file: typeof answer.file === "string" ? answer.file : null,
+      message: String(answer.message).slice(0, MAX_EVENT_TEXT),
+    };
+  }
+  for (const key of ["tokensPerDay", "sessionsAtOnce"] as const) {
+    const value = answer[key];
+    if (value !== undefined && !isLimit(value)) {
+      return { ok: false, reason: "settings_invalid", file: null, message: `agent ${agent}'s ${key} limit ${String(value)} is not a positive integer` };
+    }
+  }
+  return { ok: true, tokensPerDay: answer.tokensPerDay, sessionsAtOnce: answer.sessionsAtOnce };
+}
+
+/**
+ * One `notify` for `agent` refused for `reason`, unless one was appended for
+ * the same agent and reason within the last `AGENT_REFUSAL_NOTIFY_MS`. Call
+ * inside a transaction. Returns whether it notified.
+ */
+function notifyAgentRefusalHourly(
+  store: Store,
+  auth: BudgetAuth,
+  details: { agent: string; reason: string; payload: Record<string, unknown>; ref: EventRef },
+  now: Date,
+  at: string,
+): boolean {
+  const since = new Date(now.getTime() - AGENT_REFUSAL_NOTIFY_MS).toISOString();
+  const seen = store
+    .prepare<[string, string, string], number>(
+      `SELECT 1 FROM events WHERE kind = 'notify' AND at > ?
+          AND json_extract(payload_json, '$.reason') = ? AND json_extract(payload_json, '$.agent') = ?`,
+    )
+    .pluck()
+    .get(since, details.reason, details.agent);
+  if (seen !== undefined) return false;
+  appendNotify(store, auth, auth.account, details.ref, { reason: details.reason, agent: details.agent, ...details.payload }, at);
+  return true;
+}
+
 /** An agent-limit refusal: when to try again and the `admission_refused` details. */
 export interface AgentLimitRefusal {
   readonly retryAt: string;
@@ -221,16 +311,16 @@ export interface AgentLimitRefusal {
 }
 
 /**
- * The admission gates' agent limit (AC2): a `start` whose agent's counted
- * tokens for today reached its configured limit is refused until the next
- * budget day, recorded once per agent-day (`noteAgentLimitReached`). A
- * resume, a `null` agent or an agent with no configured limit passes
- * (`null`). Call inside a transaction.
+ * The admission gates' agent token limit (AC2): a `start` whose agent's
+ * counted tokens for today reached `limit` (its `tokens_per_day`, see
+ * `resolveAgentLimits`) is refused until the next budget day, recorded once
+ * per agent-day (`noteAgentLimitReached`). A resume, a `null` agent or an
+ * agent with no limit passes (`null`). Call inside a transaction.
  */
 export function agentLimitRefusal(
   store: Store,
   auth: BudgetAuth,
-  config: BudgetConfig,
+  limit: number | undefined,
   clock: Clock,
   request: { readonly kind: string; readonly agent: string | null },
   now: Date,
@@ -238,7 +328,6 @@ export function agentLimitRefusal(
   at: string,
 ): AgentLimitRefusal | null {
   if (request.kind !== "start" || request.agent === null) return null;
-  const limit = agentDailyTokenLimit(config, request.agent);
   if (limit === undefined) return null;
   const day = clock.dayOf(now);
   const counted = agentCountedTokens(store, request.agent, day);
@@ -246,6 +335,117 @@ export function agentLimitRefusal(
   const retryAt = clock.startOfNextDay(now).toISOString();
   noteAgentLimitReached(store, auth, { agent: request.agent, day, countedTokens: counted, limit, retryAt, ref }, at);
   return { retryAt, details: { day, counted_tokens: counted, limit } };
+}
+
+/** One live session of an agent, as the sessions-at-once count reads it. */
+interface LiveSessionRow {
+  readonly id: number;
+  readonly status: string;
+}
+
+/**
+ * The admission gates' sessions-at-once limit: a `start` or `resume` of an
+ * agent whose live sessions (`sessions` rows of that agent with status
+ * `starting`, `running` or `orphaned`) number `limit` or more is refused
+ * `agent_sessions_at_once`, with `retryAt` now + `SESSIONS_AT_ONCE_RECHECK_MS`.
+ * Counted in the caller's transaction, the one the admit is decided in; the
+ * session manager inserts the admitted start's `starting` row with no await
+ * after the admit, so the count includes every session this kernel admitted.
+ * An `orphaned` row counts (its process group may still be alive), and the
+ * refusal names it with the `studio session abandon <id>` hint. A `resume`
+ * that names its own session (`AdmissionRequest.session`, a safe integer)
+ * leaves that row out, so a session's own retry or the resume of its own
+ * orphan never refuses itself. The first refusal per agent per hour appends
+ * one `notify`. A `null` agent or an agent with no limit passes (`null`).
+ * Call inside a transaction.
+ */
+export function sessionsAtOnceRefusal(
+  store: Store,
+  auth: BudgetAuth,
+  limit: number | undefined,
+  request: { readonly kind: string; readonly agent: string | null; readonly session?: number },
+  now: Date,
+  ref: EventRef,
+  at: string,
+): AgentRefusalOf<"agent_sessions_at_once"> | null {
+  if (request.agent === null || limit === undefined) return null;
+  const own = request.kind === "resume" && Number.isSafeInteger(request.session) ? (request.session as number) : null;
+  const live = store
+    .prepare<[string, number | null, number | null], LiveSessionRow>(
+      `SELECT id, status FROM sessions
+        WHERE agent = ? AND status IN ('starting', 'running', 'orphaned') AND (? IS NULL OR id <> ?)
+        ORDER BY id`,
+    )
+    .all(request.agent, own, own);
+  if (live.length < limit) return null;
+  const retryAt = new Date(now.getTime() + SESSIONS_AT_ONCE_RECHECK_MS).toISOString();
+  const orphaned = live.filter((r) => r.status === "orphaned").map((r) => r.id);
+  const details = {
+    live: live.length,
+    limit,
+    live_sessions: live.map((r) => r.id),
+    ...(orphaned.length === 0
+      ? {}
+      : {
+          orphaned_sessions: orphaned,
+          hint: `an orphaned session counts as live until it is resumed or abandoned: ${orphaned.map((id) => `studio session abandon ${id}`).join(", ")}`,
+        }),
+  };
+  notifyAgentRefusalHourly(
+    store,
+    auth,
+    { agent: request.agent, reason: "agent_sessions_at_once", payload: { ...details, retry_at: retryAt }, ref },
+    now,
+    at,
+  );
+  return { reason: "agent_sessions_at_once", retryAt, details };
+}
+
+/** Why the per-agent checks refused. */
+export type AgentRefusalReason = AgentSettingsRefusalReason | "agent_daily_limit" | "agent_sessions_at_once";
+
+/** A per-agent refusal: its reason, when to try again (`null`: the loop's default recheck) and the `admission_refused` details. */
+export interface AgentRefusalOf<R extends AgentRefusalReason> {
+  readonly reason: R;
+  readonly retryAt: string | null;
+  readonly details: Readonly<Record<string, unknown>>;
+}
+
+export type AgentRefusal = AgentRefusalOf<AgentRefusalReason>;
+
+/**
+ * The admission gates' per-agent checks, in order, the first refusal winning:
+ *
+ * 1. Settings: an agent whose limits cannot be read (`resolveAgentLimits`
+ *    refused) is refused `settings_invalid` / `settings_missing`, start and
+ *    resume alike, with `retryAt` `null` (the event loop's default recheck)
+ *    and one `notify` per agent per hour. Never read as "no limit".
+ * 2. Token limit (`agentLimitRefusal`): `start` only.
+ * 3. Sessions at once (`sessionsAtOnceRefusal`): start and resume.
+ *
+ * A `null` agent skips all three. Call inside a transaction.
+ */
+export function agentRefusal(
+  store: Store,
+  auth: BudgetAuth,
+  config: BudgetConfig,
+  lookup: ((agent: string) => AgentLimitsLookup) | undefined,
+  clock: Clock,
+  request: { readonly kind: string; readonly agent: string | null; readonly session?: number },
+  now: Date,
+  ref: EventRef,
+  at: string,
+): AgentRefusal | null {
+  if (request.agent === null) return null;
+  const limits = resolveAgentLimits(config, lookup, request.agent);
+  if (!limits.ok) {
+    const details = { file: limits.file, message: limits.message };
+    notifyAgentRefusalHourly(store, auth, { agent: request.agent, reason: limits.reason, payload: details, ref }, now, at);
+    return { reason: limits.reason, retryAt: null, details };
+  }
+  const tokens = agentLimitRefusal(store, auth, limits.tokensPerDay, clock, request, now, ref, at);
+  if (tokens !== null) return { reason: "agent_daily_limit", retryAt: tokens.retryAt, details: tokens.details };
+  return sessionsAtOnceRefusal(store, auth, limits.sessionsAtOnce, request, now, ref, at);
 }
 
 /** No fallback: what a missing, unparseable or invalid stored policy reads as. */

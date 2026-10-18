@@ -941,7 +941,7 @@ export class SessionManager {
     // Before the group check: a refused resume leaves the row and its events untouched.
     // The playbook it resumes for: the one this resume records (`#writePlaybook`), else the row's.
     const playbook = params.playbook ?? row.playbook;
-    this.#admit({ kind: "resume", agent: row.agent, account: this.#auth.account, provider: this.#auth.id, task: row.task_id, ...playbookOf(playbook) });
+    this.#admit({ kind: "resume", agent: row.agent, account: this.#auth.account, provider: this.#auth.id, task: row.task_id, ...playbookOf(playbook), session: id });
 
     // Synchronous from here to the launch: no reap or other resume interleaves.
     let check: GroupCheck;
@@ -1629,6 +1629,7 @@ export class SessionManager {
         provider: this.#auth.id,
         task: ctx.taskId,
         ...playbookOf(ctx.playbook),
+        session: live.id,
       });
       if (decision.admitted) return false;
       payload = { reason: "admission_refused", refusal: decision.reason, retry_at: decision.retryAt, attempt: n };
