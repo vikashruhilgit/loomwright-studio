@@ -96,3 +96,9 @@ kernel/src/agents/roster.ts
 kernel/src/agents/charter-files.ts
 kernel/test/agents-roster.test.ts
 docs/architecture/agents.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-18T18:36:47Z
+- **Brief:** .supervisor/jobs/done/2026-10-18-crew-roster-create-list-rename-set-off.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/87
