@@ -332,6 +332,27 @@ describe("readAgentSettings (AC4)", () => {
     expect(readAgentSettings(dataDir, "mason", { homeDir }).ok).toBe(true);
   });
 
+  it("a workspace inside the data dir through the /System/Volumes/Data firmlink (any case) is settings_invalid naming the field", () => {
+    mkdirSync(dataDir, { recursive: true });
+    for (const data of ["/System/Volumes/Data", "/system/volumes/data"]) {
+      const workspace = `${data}${join(realpathSync(dataDir), "x")}`;
+      const file = writeSettings("mason", { workspaces: [workspace] });
+      const r = readAgentSettings(dataDir, "mason", { homeDir });
+      expect(r, workspace).toMatchObject({ ok: false, error: "settings_invalid", file, field: "workspaces.0" });
+      expect(r.ok === false && "message" in r ? r.message : "", workspace).toMatch(/the data dir or inside it/);
+    }
+  });
+
+  it("a workspace that contains the data dir ('/', its parent) is settings_invalid naming the field", () => {
+    mkdirSync(dataDir, { recursive: true });
+    for (const workspace of ["/", tmp, realpathSync(tmp)]) {
+      const file = writeSettings("mason", { workspaces: [workspace] });
+      const r = readAgentSettings(dataDir, "mason", { homeDir });
+      expect(r, workspace).toMatchObject({ ok: false, error: "settings_invalid", file, field: "workspaces.0" });
+      expect(r.ok === false && "message" in r ? r.message : "", workspace).toMatch(/contains the data dir/);
+    }
+  });
+
   it("no file for a crew member is settings_missing naming the file, and nothing is created", () => {
     const r = readAgentSettings(dataDir, "mason", { homeDir });
     expect(r).toEqual({ ok: false, error: "settings_missing", file: agentSettingsPath(dataDir, "mason"), message: expect.stringContaining("mason") });
@@ -380,12 +401,27 @@ describe("Wright's settings through the one reader (AC5)", () => {
     expect(readWrightSettings(dataDir)).toStrictEqual({ ok: false, error: "settings_invalid", file, message: expect.stringMatching(new RegExp(`^${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: tool_policy\\.allowedBashPrefixes: `)) });
     // The one reader names the field; the Wright reader drops it.
     expect(readAgentSettings(dataDir, "wright")).toMatchObject({ error: "settings_invalid", field: "tool_policy.allowedBashPrefixes" });
-    writeFileSync(file, JSON.stringify({ model: " m ", effort: "high", permission_mode: "plan", tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] }, never: ["git_push"], limits: { tokens_per_day: 5 } }));
+    writeFileSync(file, JSON.stringify({ model: " m ", effort: "high", permission_mode: "plan", tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] } }));
     expect(readWrightSettings(dataDir)).toStrictEqual({
       ok: true,
       file,
       settings: { model: "m", effort: "high", permissionMode: "plan", policy: { allowedTools: ["Read"], allowedBashPrefixes: [] }, policyStatus: null },
     });
+  });
+
+  it("a wright.json that sets a valid never, limits or workspaces is settings_invalid (refused, never silently dropped)", () => {
+    const file = wrightSettingsPath(dataDir);
+    readWrightSettings(dataDir);
+    const base = { model: "m", permission_mode: "default", tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] } };
+    for (const [field, value] of [
+      ["never", ["git_push"]],
+      ["limits", { tokens_per_day: 5 }],
+      ["workspaces", [join(tmp, "work")]],
+    ] as const) {
+      writeFileSync(file, JSON.stringify({ ...base, [field]: value }));
+      expect(readWrightSettings(dataDir), field).toStrictEqual({ ok: false, error: "settings_invalid", file, message: `${file}: ${field}: not supported for Wright yet (the kernel does not apply it to Wright's sessions); remove it` });
+      expect(readAgentSettings(dataDir, "wright", { homeDir }), field).toMatchObject({ ok: false, error: "settings_invalid", file, field });
+    }
   });
 });
 

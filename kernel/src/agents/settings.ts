@@ -1,6 +1,8 @@
 // Every agent's settings file, `<dataDir>/config/agents/<id>.json`: the model,
-// the permission mode, the tool policy and (optional) the enforced `never`
-// categories, limits and workspaces. `readAgentSettings` is the ONE reader:
+// the permission mode, the tool policy and, for a crew member, (optional) the
+// enforced `never` categories, limits and workspaces (Wright's file refuses
+// those three until an item applies them to Wright's sessions).
+// `readAgentSettings` is the ONE reader:
 // Wright's (`readWrightSettings` in `../brain/settings.ts` is a thin call to
 // it) and every crew member's, so every file is refused the same way.
 //
@@ -15,12 +17,12 @@
 // for Wright's first-run text and the size limit (a cycle used only at call
 // time: neither module reads the other's bindings at load). Never the Agent SDK, the session
 // manager or `kernel.ts` (the `studio` CLI loads this module).
-import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { MAX_SETTINGS_BYTES, defaultWrightSettingsJson } from "../brain/settings.js";
-import { isProtectedPath, protectedLocationsText } from "../protected-paths.js";
+import { isInsidePath, isProtectedPath, protectedLocationsText } from "../protected-paths.js";
 import { NEVER_CATEGORIES } from "../sessions/policy.js";
 import type { NeverCategory } from "../sessions/policy.js";
 import type { AllowedPermissionMode, ToolPolicy } from "../sessions/types.js";
@@ -81,7 +83,7 @@ export interface AgentSettings {
   readonly policyStatus: string | null;
   readonly never?: readonly NeverCategory[];
   readonly limits?: AgentLimits;
-  /** Absolute folders, none inside a macOS-protected folder or the data dir. */
+  /** Absolute folders, none inside a macOS-protected folder, the data dir or inside it, or containing it. */
   readonly workspaces?: readonly string[];
 }
 
@@ -107,43 +109,17 @@ function hasCode(err: unknown, code: string): boolean {
 }
 
 /**
- * `path` resolved, and with symlinks resolved as far as it exists (the
- * longest ancestor `realpathSync.native` resolves, then the rest as written),
- * so a symlink to the data dir can't hide a folder inside it, even one not
- * created yet.
+ * Why `workspace` may not be one, or undefined when it may. Containment is
+ * `isInsidePath` (`../protected-paths.ts`), the one check, so every spelling
+ * it maps onto the same folder (a symlink, case, the `/System/Volumes/Data`
+ * firmlink) is refused here too. A workspace that holds the data dir (`/`, the
+ * home dir) is refused as well: it would scope a crew member's work over it.
  */
-function spellings(path: string): string[] {
-  const lexical = resolve(path);
-  const tail: string[] = [];
-  let current = lexical;
-  for (;;) {
-    try {
-      const real = join(realpathSync.native(current), ...tail.reverse());
-      return real === lexical ? [lexical] : [lexical, real];
-    } catch {
-      const parent = dirname(current);
-      if (parent === current) return [lexical];
-      tail.push(basename(current));
-      current = parent;
-    }
-  }
-}
-
-/** Case-insensitive (APFS is by default), on a path-segment boundary. */
-function isInside(path: string, root: string): boolean {
-  const p = path.toLowerCase();
-  const r = root.toLowerCase().replace(/[\\/]+$/, "");
-  return p === r || p.startsWith(`${r}${sep}`);
-}
-
-/** Why `workspace` may not be one, or undefined when it may. */
 function workspaceProblem(workspace: string, dataDir: string, homeDir: string): string | undefined {
   if (!isAbsolute(workspace)) return `${JSON.stringify(workspace)} is not an absolute path`;
   if (isProtectedPath(workspace, homeDir)) return `${workspace} is inside a macOS-protected folder (${protectedLocationsText()})`;
-  const roots = spellings(dataDir);
-  for (const candidate of spellings(workspace)) {
-    for (const root of roots) if (isInside(candidate, root)) return `${workspace} is the data dir or inside it`;
-  }
+  if (isInsidePath(workspace, dataDir)) return `${workspace} is the data dir or inside it`;
+  if (isInsidePath(dataDir, workspace)) return `${workspace} contains the data dir`;
   return undefined;
 }
 
@@ -207,6 +183,13 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
     return invalid(where, `${where}: ${issue?.message ?? "invalid"}`);
   }
   const s = parsed.data;
+  // Fail closed: nothing applies Wright's never, limits or workspaces yet, so
+  // a file that sets one is refused rather than read and silently unenforced.
+  if (isWright) {
+    for (const field of ["never", "limits", "workspaces"] as const) {
+      if (s[field] !== undefined) return invalid(field, `${field}: not supported for Wright yet (the kernel does not apply it to Wright's sessions); remove it`);
+    }
+  }
   if (s.workspaces !== undefined) {
     const homeDir = options.homeDir ?? homedir();
     for (const [i, workspace] of s.workspaces.entries()) {

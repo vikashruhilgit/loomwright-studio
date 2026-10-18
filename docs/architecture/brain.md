@@ -127,7 +127,7 @@ win.
 - **`tool_policy`** is the session's `ToolPolicy` (deny by default; the kernel's `PreToolUse` gate enforces it). It applies whatever `status` says: `status` is a label for the owner (`proposed` until the owner changes it). The owner reviews the proposal when they open this file to set the model, which they must do before Wright runs at all. No shell: `allowedBashPrefixes` is empty. The four `kernel_agent_*` names (`kernel_agent_create`, `kernel_agent_update`, `kernel_agent_list`, `kernel_agent_message`) are reserved for phase 4's crew tools (the kernel server has none of them until the items that build them ship; every call to `kernel_agent_create` or `kernel_agent_update` is held for the owner's approval), and `wright.json` is create-if-absent, so an existing data dir keeps its old policy until the owner adds the names.
 - **`effort`** is recorded, not applied: the session manager has no effort option yet.
 
-A file that is not JSON, larger than 64 KiB, or not this shape is refused as `settings_invalid` naming the file. It is never rewritten.
+A file that is not JSON, larger than 64 KiB, or not this shape is refused as `settings_invalid` naming the file. It is never rewritten. A `wright.json` that sets `never`, `limits` or `workspaces` (fields a crew member's file may carry) is refused as `settings_invalid` too: nothing applies them to Wright's sessions yet, so they are refused rather than silently ignored.
 
 ## The context a session gets
 

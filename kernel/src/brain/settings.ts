@@ -105,8 +105,10 @@ export type WrightSettingsResult = { readonly ok: true; readonly file: string; r
  * refusal on a fresh data dir always names a file that exists. The result
  * keeps this reader's own shapes: a `settings_invalid` refusal carries no
  * `field` key, and the settings carry only the five `WrightSettings` fields.
- * Never throws for the file's content: a refusal names the file (and, for
- * `model_unset`, the field). A failure to create the directory or file is
+ * A file that sets `never`, `limits` or `workspaces` is `settings_invalid`
+ * (nothing applies them to Wright's sessions yet, so they are refused, never
+ * silently dropped). Never throws for the file's content: a refusal names the
+ * file (and, for `model_unset`, the field). A failure to create the directory or file is
  * thrown (the data dir itself is broken).
  */
 export function readWrightSettings(dataDir: string): WrightSettingsResult {

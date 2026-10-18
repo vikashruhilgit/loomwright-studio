@@ -85,20 +85,30 @@ function isInside(path: string, root: string): boolean {
 }
 
 /**
- * Whether `path` (absolute, or resolved against the cwd) is one of
- * `PROTECTED_LOCATIONS` under `homeDir` or inside one, after symlink
- * resolution where it exists. Each location is compared both as written and
- * resolved, so a symlinked home or folder can't hide it, and both the path and
- * the location also without a `/System/Volumes/Data` firmlink prefix, so that
- * alias of the same folder can't hide it either.
+ * Whether `path` is `root` or inside it (each absolute, or resolved against
+ * the cwd), the ONE containment check: both are compared as written and with
+ * symlinks resolved as far as they exist (`resolveExisting`), so a symlink on
+ * either side can't hide it, even to a folder not created yet; and each also
+ * without a `/System/Volumes/Data` firmlink prefix (`withAliases`), so that
+ * alias of the same folder can't hide it either. Case-insensitive, on a
+ * path-segment boundary (`isInside`).
  */
-export function isProtectedPath(path: string, homeDir: string): boolean {
+export function isInsidePath(path: string, root: string): boolean {
   const candidates = withAliases([resolve(path), resolveExisting(path)]);
-  for (const location of PROTECTED_LOCATIONS) {
-    const lexical = join(resolve(homeDir), location);
-    for (const root of withAliases([lexical, resolveExisting(lexical)])) {
-      for (const candidate of candidates) if (isInside(candidate, root)) return true;
-    }
+  for (const r of withAliases([resolve(root), resolveExisting(root)])) {
+    for (const candidate of candidates) if (isInside(candidate, r)) return true;
   }
   return false;
+}
+
+/**
+ * Whether `path` (absolute, or resolved against the cwd) is one of
+ * `PROTECTED_LOCATIONS` under `homeDir` or inside one (`isInsidePath`, so
+ * after symlink resolution where it exists). Each location is compared both as
+ * written and resolved, so a symlinked home or folder can't hide it, and both
+ * the path and the location also without a `/System/Volumes/Data` firmlink
+ * prefix, so that alias of the same folder can't hide it either.
+ */
+export function isProtectedPath(path: string, homeDir: string): boolean {
+  return PROTECTED_LOCATIONS.some((location) => isInsidePath(path, join(resolve(homeDir), location)));
 }
