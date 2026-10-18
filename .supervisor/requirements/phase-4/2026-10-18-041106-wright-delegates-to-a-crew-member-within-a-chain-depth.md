@@ -78,3 +78,9 @@ Recorded 2026-10-18 in the product-owner session (every option the owner chose w
 kernel/src/agents/delegate.ts
 kernel/test/agents-delegation.test.ts
 docs/architecture/delegation.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-18T18:38:03Z
+- **Brief:** .supervisor/jobs/done/2026-10-18-wright-delegates-kernel-agent-message.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/85
