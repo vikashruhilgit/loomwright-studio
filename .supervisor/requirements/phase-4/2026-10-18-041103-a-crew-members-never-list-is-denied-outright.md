@@ -83,3 +83,9 @@ kernel/src/sessions/policy.ts
 kernel/test/sessions-policy.test.ts
 kernel/test/sessions-boundary.test.ts
 docs/architecture/approvals.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-18T18:37:14Z
+- **Brief:** .supervisor/jobs/done/2026-10-18-never-list-denied-outright.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/84
