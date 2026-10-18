@@ -34,6 +34,7 @@ import { KeychainError } from "../src/auth/index.js";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
 import { defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
 import { runCli } from "../src/cli/index.js";
+import { NO_REF, appendEvent } from "../src/loop/internal.js";
 import { startKernel } from "../src/kernel.js";
 import type { Kernel, KernelDeps } from "../src/kernel.js";
 import { SessionManager } from "../src/sessions/manager.js";
@@ -737,6 +738,66 @@ describe("kernel_agent_update (AC5, AC6)", () => {
     expect(existsSync(file)).toBe(false);
     expect(events(h.store, "agent_updated")).toEqual([]);
     expect(readdirSync(dirname(file))).toEqual(["wright.json"]);
+  });
+
+  /** The owner's `studio agents rename` (the roster route's row write and its event, in one transaction). */
+  const ownerRename = (store: Store, id: string, name: string) =>
+    store.transaction(() => {
+      const old = getAgent(store, id)?.display_name;
+      store.prepare("UPDATE agents SET display_name = ?, updated_at = ? WHERE id = ?").run(name, clock.at.toISOString(), id);
+      appendEvent(store, "agent_renamed", NO_REF, { id, old, new: name }, clock.at.toISOString());
+    });
+
+  it("the owner renames the member between the hold and the approval: an update naming display_name is apply_refused config_changed, the owner's name and the file's bytes kept, nothing written", async () => {
+    const h = await bootManager();
+    expect(h.ownerCreate().ok).toBe(true);
+    const file = agentSettingsPath(dataDir, "mason");
+    const original = readFileSync(file, "utf8");
+    const changes = { display_name: "Mason", model: "claude-opus-5" };
+    // Wright drafts a rename-and-model change against "Mason" first: the member is "Mason" at the owner's rename too.
+    ownerRename(h.store, "mason", "Mace");
+    await h.wright.gate(UPDATE, { id: "mason", changes, expected_sha256: await h.shaOf("mason"), idempotency_key: "u1" });
+    ownerRename(h.store, "mason", "Mason the Reviewer");
+    h.decide(1);
+    expect(h.decided(1)).toMatchObject({
+      status: "approved",
+      apply_refused: "config_changed",
+      apply_detail: "The kernel did not update crew member mason: config_changed (crew member mason's display name or avatar changed since the hold; call kernel_agent_list for the current values).",
+    });
+    expect(getAgent(h.store, "mason")?.display_name).toBe("Mason the Reviewer");
+    expect(readFileSync(file, "utf8")).toBe(original);
+    expect(events(h.store, "agent_updated")).toEqual([]);
+    expect(readdirSync(dirname(file))).toEqual(["mason.json", "wright.json"]);
+  });
+
+  it("an update naming display_name with no owner edit since the hold is applied (a rename before the hold does not count)", async () => {
+    const h = await bootManager();
+    expect(h.ownerCreate().ok).toBe(true);
+    ownerRename(h.store, "mason", "Mace");
+    await h.wright.gate(UPDATE, { id: "mason", changes: { display_name: "Mason the Reviewer" }, expected_sha256: await h.shaOf("mason"), idempotency_key: "u1" });
+    h.decide(1);
+    expect(h.decided(1)).toMatchObject({ status: "approved", applied: "The kernel updated crew member mason on approval 1: display_name." });
+    expect(getAgent(h.store, "mason")?.display_name).toBe("Mason the Reviewer");
+    expect(events(h.store, "agent_updated").map((e) => e.payload)).toEqual([{ id: "mason", fields: ["display_name"], approval_id: 1, by: "kernel" }]);
+  });
+
+  it("an earlier approved update that changed the avatar refuses a later-held update naming avatar; one naming only a settings field is still applied after an owner rename", async () => {
+    const h = await bootManager();
+    expect(h.ownerCreate().ok).toBe(true);
+    const sha = await h.shaOf("mason");
+    await h.wright.gate(UPDATE, { id: "mason", changes: { avatar: { shape: "octopus", hue: "crew-sky" } }, expected_sha256: sha, idempotency_key: "u1" });
+    await h.wright.gate(UPDATE, { id: "mason", changes: { avatar: { shape: "crab", hue: "crew-sky" } }, expected_sha256: sha, idempotency_key: "u2" });
+    await h.wright.gate(UPDATE, { id: "mason", changes: { limits: { tokens_per_day: 300000 } }, expected_sha256: sha, idempotency_key: "u3" });
+    h.decide(1);
+    expect(h.decided(1)?.applied).toBe("The kernel updated crew member mason on approval 1: avatar.");
+    h.decide(2);
+    expect(h.decided(2)).toMatchObject({ apply_refused: "config_changed" });
+    expect(getAgent(h.store, "mason")).toMatchObject({ avatar_shape: "octopus", avatar_hue: "crew-sky" });
+    ownerRename(h.store, "mason", "Mason the Reviewer");
+    h.decide(3);
+    expect(h.decided(3)?.applied).toBe("The kernel updated crew member mason on approval 3: limits.tokens_per_day.");
+    expect(getAgent(h.store, "mason")?.display_name).toBe("Mason the Reviewer");
+    expect(readAgentSettings(dataDir, "mason")).toMatchObject({ ok: true, settings: { limits: { tokens_per_day: 300000 } } });
   });
 
   it("the apply re-checks the member: turned off after the hold is apply_refused agent_off, the file unchanged", async () => {

@@ -601,6 +601,31 @@ function updateBeforeHold(a: UpdateArgs, ctx: ContributedToolContext): HeldToolV
   return tooLong === undefined ? { display } : holdRefusal(AGENT_UPDATE_TOOL_NAME, tooLong);
 }
 
+/**
+ * Whether member `id`'s display name or avatar (its `agents` row, which
+ * `expected_sha256` does not cover) was written after the hold's
+ * `approval_requested` event `eventId`. Every kernel writer of those columns
+ * appends its audit event in the same transaction as the row write: the
+ * owner's rename (`agent_renamed`) and this applier (`agent_updated` whose
+ * `fields` name `display_name` or `avatar`). Event ids only grow, so the check
+ * is exact even when the clock does not move (an `updated_at` against the
+ * event's `at` would miss a same-millisecond rename), and it ignores the
+ * row's other writes (`studio agents off`/`on`, a settings-only update): it
+ * refuses only this hold, never a later one (a new hold has a newer event).
+ */
+function rowEditedSince(store: Store, id: string, eventId: number): boolean {
+  return (
+    store
+      .prepare<[number, string], number>(
+        "SELECT 1 FROM events WHERE id > ? AND json_valid(payload_json) AND json_extract(payload_json, '$.id') = ? AND (" +
+          "kind = 'agent_renamed' OR (kind = 'agent_updated' AND EXISTS (SELECT 1 FROM json_each(payload_json, '$.fields') WHERE value IN ('display_name', 'avatar')))" +
+          ") LIMIT 1",
+      )
+      .pluck()
+      .get(eventId, id) !== undefined
+  );
+}
+
 /** The settings file changed between the apply's hash and its rename: nothing is written. */
 class ConcurrentEditError extends Error {}
 
@@ -618,7 +643,9 @@ function unchangedSince(file: string, bytes: Buffer): boolean {
  * The kernel's apply of an approved held update, inside the decision's
  * transaction: `not_lead`, `reserved`, `not_found`, `agent_off` as at hold;
  * the file read and hashed again (`config_changed` unless it is still
- * `expected_sha256`); the merge and its validation (`invalid_input`). Then
+ * `expected_sha256`); when the changes name `display_name` or `avatar`, the
+ * row's (`config_changed` when either was written since the hold:
+ * `rowEditedSince`); the merge and its validation (`invalid_input`). Then
  * the `set` write: a temporary sibling, and in one transaction a re-read of
  * the file (`config_changed` when its bytes differ from the hashed ones), the
  * row's display name and avatar when changed, one `agent_updated` event and,
@@ -640,6 +667,12 @@ function updateOnApproval(a: UpdateArgs, ctx: { store: Store; now: () => Date; a
   if (isRefused(bytes)) return notUpdated(refused("config_changed", `${file} changed since the hold (${bytes.message})`));
   const sha256 = sha256Of(bytes);
   if (sha256 !== a.expected_sha256) return notUpdated(refused("config_changed", changedText(file, sha256)));
+  // The row's display name and avatar are outside the hash: an update naming either is refused if the owner (or another
+  // approved update) changed them since the hold, so the approval never reverts that change. An update naming only
+  // settings fields writes neither column and is not checked.
+  if ((a.changes.display_name !== undefined || a.changes.avatar !== undefined) && rowEditedSince(store, row.id, approval.requestedEventId)) {
+    return notUpdated(refused("config_changed", `crew member ${row.id}'s display name or avatar changed since the hold; call kernel_agent_list for the current values`));
+  }
   const merged = mergeUpdate(store, row, file, bytes, a.changes);
   if (isRefused(merged)) return notUpdated(merged);
   if (merged.changes.length === 0) return notUpdated(refused("invalid_input", "changes changes nothing: every named value equals the current one"));
