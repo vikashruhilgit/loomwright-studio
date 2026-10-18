@@ -28,6 +28,7 @@ import {
 import { agentFilePaths, agentSettingsPath, createAgent, ensureAgentFiles, getAgent, readAgentSettings, renderAgentSettingsJson, renderRoleMd, validateCharter } from "../src/agents/index.js";
 import type { Charter } from "../src/agents/index.js";
 import { decideApproval, listApprovals } from "../src/approvals/index.js";
+import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
 import type { AppliedApproval } from "../src/approvals/index.js";
 import { KeychainError } from "../src/auth/index.js";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
@@ -103,6 +104,11 @@ function validated(c: unknown): Charter {
   const r = validateCharter(c, { dataDir });
   if (!r.ok) throw new Error(`not valid: ${r.message}`);
   return r.charter;
+}
+
+/** `n` distinct tool names of about 150 characters each (a valid charter's tools may be up to 64 of 200). */
+function longTools(n: number, tag = "t"): string[] {
+  return Array.from({ length: n }, (_, i) => `mcp__wide__${tag.repeat(135)}_${String(i).padStart(2, "0")}`);
 }
 
 const ENFORCED = 'enforced: never: git_push, gh_pr_create; tools: Read, Grep, Bash; bash prefixes: "gh pr view", "gh pr comment"';
@@ -453,6 +459,30 @@ describe("kernel_agent_create: refusals and the apply's edges (AC3)", () => {
     expect(readFileSync(paths.settings, "utf8")).toBe(renderAgentSettingsJson(validated(charter())));
   });
 
+  it("the display's head (who, enforced, limits, workspaces) always fits the 4,000-character cut: a charter whose head would not is refused invalid_input at the hold; one whose files run past the cut is held with the head whole", async () => {
+    const h = await bootManager();
+    // 64 tools of ~150 characters: valid, but the enforced line alone is ~9,800 characters.
+    const wide = charter({ tool_policy: { allowedTools: longTools(64), allowedBashPrefixes: ["gh pr view"], never: ["git_push"] } });
+    validated(wide);
+    const refusedHold = await h.wright.gate(CREATE, { charter: wide, idempotency_key: "c1" });
+    expect(refusedHold.permissionDecision).toBe("deny");
+    expect(refusedHold.permissionDecisionReason).toMatch(
+      new RegExp(`^kernel_agent_create: invalid_input: the display's enforced, limits and workspaces lines would be \\d+ characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown; .*\\(nothing was held for the owner\\)$`),
+    );
+    expect(h.approvals()).toEqual([]);
+
+    // 20 such tools: the head fits, the whole display (with the settings file and role.md) does not.
+    const fits = charter({ tool_policy: { allowedTools: longTools(20), allowedBashPrefixes: ["gh pr view"], never: ["git_push"] } });
+    expect((await h.wright.gate(CREATE, { charter: fits, idempotency_key: "c2" })).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+    const shown = String(events(h.store, "approval_requested")[0]?.payload.display);
+    expect(shown.length).toBe(MAX_APPROVAL_DISPLAY);
+    const head = shown.split("\n").slice(0, 4);
+    expect(head[1]).toBe(`enforced: never: git_push; tools: ${longTools(20).join(", ")}; bash prefixes: "gh pr view"`);
+    expect(head[2]).toBe("limits: tokens_per_day 200000 (proposed); sessions_at_once 1 (proposed); delegation_depth not set (no limit)");
+    expect(head[3]).toBe(`workspaces: ${join(tmp, "work", "payments")}`);
+    expect(shown).toContain("\nconfig/agents/mason.json:\n");
+  });
+
   it("the apply reads the caller from the approval, never the input: an approval whose agent is not Wright is refused not_lead, nothing written", () => {
     const store = new Store({ dataDir });
     stores.push(store);
@@ -586,6 +616,59 @@ describe("kernel_agent_update (AC5, AC6)", () => {
     // charter_json stays the creation snapshot.
     expect((JSON.parse(getAgent(h.store, "mason")?.charter_json ?? "{}") as { display_name?: string }).display_name).toBe("Mason");
     expect(readAgentSettings(dataDir, "mason")).toMatchObject({ ok: true, settings: { effort: null, policyStatus: "owner", limits: { tokens_per_day: 200000, delegation_depth: 2 } } });
+  });
+
+  it("a display whose field lines and enforced line would not fit the 4,000-character cut is refused invalid_input at the hold; nothing is held", async () => {
+    const h = await bootManager();
+    expect(h.ownerCreate(charter({ tool_policy: { allowedTools: longTools(20, "a"), allowedBashPrefixes: [], never: ["git_push"] } })).ok).toBe(true);
+    const file = agentSettingsPath(dataDir, "mason");
+    const original = readFileSync(file, "utf8");
+    // Old and new tool lists on one field line, then the enforced line: ~9,000 characters.
+    const changes = { tool_policy: { allowedTools: longTools(20, "b"), allowedBashPrefixes: [] }, never: [] };
+    const d = await h.wright.gate(UPDATE, { id: "mason", changes, expected_sha256: await h.shaOf("mason"), idempotency_key: "u1" });
+    expect(d.permissionDecision).toBe("deny");
+    expect(d.permissionDecisionReason).toMatch(
+      new RegExp(`^kernel_agent_update: invalid_input: the display \\(its field lines and enforced line\\) would be \\d+ characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown; `),
+    );
+    expect(h.approvals()).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(original);
+  });
+
+  it("an owner's edit between the apply's hash read and the in-transaction re-read: apply_refused config_changed, the owner's bytes kept, no agent_updated, no temporary file left", async () => {
+    const h = await bootManager();
+    expect(h.ownerCreate().ok).toBe(true);
+    const file = agentSettingsPath(dataDir, "mason");
+    const expected = await h.shaOf("mason");
+    const edited = readFileSync(file, "utf8").replace('"model": "claude-sonnet-5"', '"model": "claude-opus-5"');
+    // The owner saves the file just as the applier opens its transaction: after the hash check, before the re-read.
+    const transaction = h.store.transaction.bind(h.store);
+    let opened = 0;
+    h.store.transaction = <T,>(fn: () => T): T => {
+      opened += 1;
+      writeFileSync(file, edited);
+      return transaction(fn);
+    };
+    const approval: AppliedApproval = { id: 9, sessionId: null, agent: "wright", subjectVersion: null, requestedEventId: 1 };
+    const outcome = h.applier(UPDATE, { id: "mason", changes: { limits: { tokens_per_day: 300000 } }, expected_sha256: expected, idempotency_key: "u1" }, approval, h.store, clock.at);
+    expect(opened).toBe(1);
+    expect(outcome).toEqual({ refused: "config_changed", text: `The kernel did not update crew member mason: config_changed (${file} changed while it was being updated; nothing was written).` });
+    expect(readFileSync(file, "utf8")).toBe(edited);
+    expect(events(h.store, "agent_updated")).toEqual([]);
+    expect(readdirSync(dirname(file))).toEqual(["mason.json", "wright.json"]);
+  });
+
+  it("the settings file removed after the hold: apply_refused config_changed naming the hold, nothing written (no file, no agent_updated)", async () => {
+    const h = await bootManager();
+    expect(h.ownerCreate().ok).toBe(true);
+    const file = agentSettingsPath(dataDir, "mason");
+    await h.wright.gate(UPDATE, { id: "mason", changes: { model: "claude-opus-5" }, expected_sha256: await h.shaOf("mason"), idempotency_key: "u1" });
+    rmSync(file);
+    h.decide(1);
+    expect(h.decided(1)).toMatchObject({ status: "approved", apply_refused: "config_changed" });
+    expect(h.decided(1)?.apply_detail).toMatch(/^The kernel did not update crew member mason: config_changed \(.*mason\.json changed since the hold \(the settings file .*mason\.json is missing\)\)\.$/);
+    expect(existsSync(file)).toBe(false);
+    expect(events(h.store, "agent_updated")).toEqual([]);
+    expect(readdirSync(dirname(file))).toEqual(["wright.json"]);
   });
 
   it("the apply re-checks the member: turned off after the hold is apply_refused agent_off, the file unchanged", async () => {

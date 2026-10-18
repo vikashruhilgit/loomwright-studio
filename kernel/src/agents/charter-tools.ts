@@ -24,8 +24,10 @@
 //   approval is written; otherwise the call is held with a display for
 //   `studio approvals`. The display's enforced lines (`never`, tools, Bash
 //   prefixes, limits, workspaces) are generated here from the PARSED charter,
-//   never copied from its prose, and come first, so the 4,000-character cut
-//   never hides them.
+//   never copied from its prose, and come first; a call whose enforced lines
+//   (create) or whose whole display (update: the field lines and the enforced
+//   line) would not fit in `MAX_APPROVAL_DISPLAY` is refused `invalid_input`,
+//   so the 4,000-character cut never hides them.
 // - `applyOnApproval`, which the approvals decision runs when the owner
 //   approves the held call `once`: the same checks again on the approval's own
 //   agent, then the create (`createAgent` with `by: "wright"` and the
@@ -45,12 +47,14 @@
 //
 // The `studio` CLI loads this module through `./index.ts`, so it imports only
 // types, zod, `node:*`, the feature seam, `../loop/internal.js`,
-// `../brain/settings.js` and this feature's own modules: never the Agent SDK,
+// `../brain/settings.js`, `../approvals/store.js` (a constant) and this
+// feature's own modules: never the Agent SDK,
 // the session manager or `kernel.ts` (`kernel/test/feature-seams.test.ts`).
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
+import { MAX_APPROVAL_DISPLAY } from "../approvals/store.js";
 import type { AppliedApproval, ApprovalApplyOutcome } from "../approvals/store.js";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
 import { defineTool } from "../features/contribution.js";
@@ -181,18 +185,36 @@ function asLines(text: string): string {
   return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
-/**
- * What `studio approvals` shows for a create, in this order: who, the
- * enforced line, the limits, the workspaces, then the settings file and
- * `role.md` exactly as the kernel would write them.
- */
-export function createDisplay(charter: Charter): string {
+/** A create display's head: who, the enforced line, the limits and the workspaces (what the cut must never hide). */
+function createHead(charter: Charter): string {
   const tp = charter.tool_policy;
   return [
     `Create crew member ${charter.id} (${JSON.stringify(charter.display_name)}, ${charter.avatar.shape} ${charter.avatar.hue}), proposed by Wright`,
     enforcedLine(tp.never, tp.allowedTools, tp.allowedBashPrefixes),
     limitsLine(charter.limits),
     `workspaces: ${listText(charter.workspaces)}`,
+  ].join("\n");
+}
+
+/**
+ * `invalid_input` when `text` (the part of a display the owner must see
+ * whole) is longer than `MAX_APPROVAL_DISPLAY`, the cut `studio approvals`
+ * shows: the hold refuses rather than show a cut enforced line.
+ */
+function displayFitRefusal(what: string, text: string): Refused | undefined {
+  if (text.length <= MAX_APPROVAL_DISPLAY) return undefined;
+  return refused("invalid_input", `${what} would be ${text.length} characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown; ask for less at once (fewer or shorter tools, prefixes or workspaces)`);
+}
+
+/**
+ * What `studio approvals` shows for a create, in this order: who, the
+ * enforced line, the limits, the workspaces, then the settings file and
+ * `role.md` exactly as the kernel would write them (the cut may hide the
+ * files' tail, never the head: the hold refuses a head that does not fit).
+ */
+export function createDisplay(charter: Charter): string {
+  return [
+    createHead(charter),
     `config/agents/${charter.id}.json:`,
     asLines(renderAgentSettingsJson(charter)),
     `memory/${charter.id}/role.md:`,
@@ -218,6 +240,8 @@ function createBeforeHold(a: CreateArgs, ctx: ContributedToolContext): HeldToolV
   if (getAgent(ctx.store, checked.charter.id) !== undefined) {
     return holdRefusal(AGENT_CREATE_TOOL_NAME, refused("id_taken", `a crew member with id ${checked.charter.id} exists, active or off (an id is never reused)`));
   }
+  const tooLong = displayFitRefusal("the display's enforced, limits and workspaces lines", createHead(checked.charter));
+  if (tooLong !== undefined) return holdRefusal(AGENT_CREATE_TOOL_NAME, tooLong);
   return { display: createDisplay(checked.charter) };
 }
 
@@ -493,7 +517,11 @@ function updateBeforeHold(a: UpdateArgs, ctx: ContributedToolContext): HeldToolV
   const refusal = leadRefusal(callerOf(ctx)) ?? usedKeyRefusal(ctx, UPDATE_FULL_NAME, a.idempotency_key);
   if (refusal !== undefined) return holdRefusal(AGENT_UPDATE_TOOL_NAME, refusal);
   const update = updateOf(ctx.store, a);
-  return isRefused(update) ? holdRefusal(AGENT_UPDATE_TOOL_NAME, update) : { display: updateDisplay(update) };
+  if (isRefused(update)) return holdRefusal(AGENT_UPDATE_TOOL_NAME, update);
+  const display = updateDisplay(update);
+  // The field lines and the enforced line are all the owner must see: the whole display fits, or nothing is held.
+  const tooLong = displayFitRefusal("the display (its field lines and enforced line)", display);
+  return tooLong === undefined ? { display } : holdRefusal(AGENT_UPDATE_TOOL_NAME, tooLong);
 }
 
 /** The settings file changed between the apply's hash and its rename: nothing is written. */
