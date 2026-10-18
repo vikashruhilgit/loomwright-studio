@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PROPOSED_ALLOWED_TOOLS } from "../src/brain/index.js";
 import { decideToolUse, freezePolicy } from "../src/sessions/index.js";
-import { ALWAYS_HELD_TOOLS, NEVER_CATEGORIES, boundaryDecision, classifyToolCall } from "../src/sessions/policy.js";
+import { ALWAYS_HELD_TOOLS, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf } from "../src/sessions/policy.js";
 import type { NeverCategory } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
 
@@ -156,27 +156,131 @@ describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
     expect(Object.isFrozen(NEVER_CATEGORIES)).toBe(true);
   });
 
-  it("answers no boundary for every outward call today, whatever the policy's never list", () => {
-    const calls: [string, unknown][] = [
-      ["Bash", { command: "git push origin main" }],
-      ["Bash", { command: "gh pr create --fill" }],
-      ["Bash", { command: "gh issue comment 3 --body x" }],
-      ["Bash", { command: "gh api -X POST repos/o/r/issues" }],
-      ["Bash", { command: "gh alias set co 'pr checkout'" }],
-      ["Write", { file_path: "/home/o/.claude/settings.json", content: "" }],
-      ["Write", { file_path: "/work/.git/hooks/pre-commit", content: "" }],
-      ["mcp__kernel__kernel_agent_create", {}],
-    ];
-    const policies: ToolPolicy[] = [
-      { allowedTools: [], allowedBashPrefixes: [] },
-      { allowedTools: [], allowedBashPrefixes: [], never: [...NEVER_CATEGORIES] },
-    ];
-    for (const [tool, input] of calls) {
+  /** One call per outward action label the rail can emit, with the categories that label is in. */
+  const LABELS: [string, unknown, string, NeverCategory[]][] = [
+    ["Bash", { command: "git push origin main" }, "git push", ["git_push"]],
+    ["Bash", { command: "git send-pack remote" }, "git send-pack", ["git_push"]],
+    ["Bash", { command: "git http-push url" }, "git http-push", ["git_push"]],
+    ["Bash", { command: "git svn dcommit" }, "git svn dcommit", ["git_push"]],
+    ["Bash", { command: "git svn set-tree x" }, "git svn set-tree", ["git_push"]],
+    ["Bash", { command: "git send-email x.patch" }, "git send-email", ["git_push"]],
+    ["Bash", { command: "git imap-send" }, "git imap-send", ["git_push"]],
+    ["Bash", { command: "git cvsexportcommit x" }, "git cvsexportcommit", ["git_push"]],
+    ["Bash", { command: "git p4 submit" }, "git p4 submit", ["git_push"]],
+    ["Bash", { command: "git -c alias.p=push p" }, "git alias", ["git_push", "alias_define"]],
+    ["Bash", { command: "gh alias set co 'pr checkout'" }, "gh alias set", ["alias_define"]],
+    ["Bash", { command: "gh alias import aliases.yml" }, "gh alias import", ["alias_define"]],
+    ["Bash", { command: "gh pr create --fill" }, "gh pr create", ["gh_pr_create"]],
+    ["Bash", { command: "gh pr new --fill" }, "gh pr create", ["gh_pr_create"]],
+    ["Bash", { command: "gh pr comment 3 -b x" }, "gh pr comment", ["gh_pr_comment"]],
+    ["Bash", { command: "gh pr review 3 --approve" }, "gh pr review", ["gh_pr_review"]],
+    ["Bash", { command: "gh pr edit 3 --title t" }, "gh pr edit", ["gh_pr_edit"]],
+    ["Bash", { command: "gh pr close 3" }, "gh pr close", ["gh_pr_close"]],
+    ["Bash", { command: "gh issue create --title t" }, "gh issue create", ["gh_issue_create"]],
+    ["Bash", { command: "gh issue new --title t" }, "gh issue create", ["gh_issue_create"]],
+    ["Bash", { command: "gh issue comment 3 --body x" }, "gh issue comment", ["gh_issue_comment"]],
+    ["Bash", { command: "gh issue edit 3" }, "gh issue edit", ["gh_issue_edit"]],
+    ["Bash", { command: "gh issue close 3" }, "gh issue close", ["gh_issue_close"]],
+    ["Bash", { command: "gh api -X POST repos/o/r/issues" }, "gh api POST", ["gh_api_write"]],
+    ["Bash", { command: "gh api -X DELETE repos/o/r/x" }, "gh api DELETE", ["gh_api_write"]],
+    ["Bash", { command: "gh api -Z repos/o/r" }, "gh api (flag unread)", ["gh_api_write"]],
+    ["Bash", { command: "cat /home/o/.claude/CLAUDE.md" }, "Bash naming ~/.claude/", ["settings_write"]],
+    ["Bash", { command: "cat settings.local.json" }, "Bash naming a settings*.json file", ["settings_write"]],
+    ["Bash", { command: "chmod +x .git/hooks/pre-push" }, "Bash naming a hooks file", ["hooks_write"]],
+    ["Write", { file_path: "/home/o/.claude/CLAUDE.md", content: "" }, "Write ~/.claude/", ["settings_write"]],
+    ["Write", { file_path: "/work/settings.json", content: "" }, "Write a settings*.json file", ["settings_write"]],
+    ["Write", { file_path: "/work/.git/hooks/pre-commit", content: "" }, "Write a hooks file", ["hooks_write"]],
+    ["Edit", { file_path: "/home/o/.claude/CLAUDE.md" }, "Edit ~/.claude/", ["settings_write"]],
+    ["Edit", { file_path: "/work/settings.json" }, "Edit a settings*.json file", ["settings_write"]],
+    ["Edit", { file_path: "/work/hooks.json" }, "Edit a hooks file", ["hooks_write"]],
+    ["NotebookEdit", { notebook_path: "/home/o/.claude/x.ipynb" }, "NotebookEdit ~/.claude/", ["settings_write"]],
+    ["NotebookEdit", { notebook_path: "/work/settings.json" }, "NotebookEdit a settings*.json file", ["settings_write"]],
+    ["NotebookEdit", { notebook_path: "/work/.git/hooks/x.ipynb" }, "NotebookEdit a hooks file", ["hooks_write"]],
+  ];
+
+  it("maps every outward label the rail emits for Bash, Write, Edit and NotebookEdit to its categories, and every category is reachable", () => {
+    for (const [tool, input, action, categories] of LABELS) {
       const c = classifyToolCall(tool, input, rail);
-      expect(c.kind, tool).toBe("outward");
-      if (c.kind !== "outward") continue;
-      for (const policy of policies) expect(boundaryDecision(policy, c)).toEqual({ kind: "none" });
+      expect(c, JSON.stringify(input)).toMatchObject({ kind: "outward", action });
+      expect(neverCategoriesOf(action), action).toEqual(categories);
     }
+    const reached = new Set(LABELS.flatMap(([, , action]) => neverCategoriesOf(action)));
+    expect(NEVER_CATEGORIES.filter((c) => !reached.has(c))).toEqual([]);
+  });
+
+  it("maps the ALWAYS_HELD_TOOLS actions, a merge and any other text to no category", () => {
+    for (const tool of ALWAYS_HELD_TOOLS) {
+      const c = classifyToolCall(tool, {}, rail);
+      expect(c.kind, tool).toBe("outward");
+      if (c.kind === "outward") expect(neverCategoriesOf(c.action), tool).toEqual([]);
+    }
+    for (const text of ["kernel_playbook_enable", "kernel_agent_create", "kernel_agent_update", "gh pr merge", "git", "gh api", "Read ~/.claude/", ""]) {
+      expect(neverCategoriesOf(text), text).toEqual([]);
+    }
+  });
+
+  it("answers no boundary for every outward call when the policy has no never, or an empty one", () => {
+    for (const [tool, input] of LABELS) {
+      const c = classifyToolCall(tool, input, rail);
+      if (c.kind !== "outward") throw new Error(`not outward: ${JSON.stringify(input)}`);
+      for (const policy of [{ allowedTools: [], allowedBashPrefixes: [] }, { allowedTools: [], allowedBashPrefixes: [], never: [] }] as ToolPolicy[]) {
+        expect(boundaryDecision(policy, c)).toEqual({ kind: "none" });
+      }
+    }
+  });
+
+  it("answers a boundary with the call's category when never names it, and none when never names only other categories", () => {
+    for (const [tool, input, , categories] of LABELS) {
+      const c = classifyToolCall(tool, input, rail);
+      if (c.kind !== "outward") throw new Error(`not outward: ${JSON.stringify(input)}`);
+      for (const category of categories) {
+        expect(boundaryDecision({ allowedTools: [], allowedBashPrefixes: [], never: [category] }, c), `${c.action} ${category}`).toEqual({ kind: "boundary", category });
+      }
+      const others = NEVER_CATEGORIES.filter((n) => !categories.includes(n));
+      expect(boundaryDecision({ allowedTools: [], allowedBashPrefixes: [], never: others }, c), c.action).toEqual({ kind: "none" });
+    }
+    // The reported category is the first match in NEVER_CATEGORIES order, whatever order never lists them in.
+    const alias = classifyToolCall("Bash", { command: "git -c alias.p=push p" }, rail);
+    if (alias.kind !== "outward") throw new Error("not outward");
+    expect(boundaryDecision({ allowedTools: [], allowedBashPrefixes: [], never: ["alias_define", "git_push"] }, alias)).toEqual({ kind: "boundary", category: "git_push" });
+    // ALWAYS_HELD_TOOLS are never inside a boundary, whatever never names.
+    const create = classifyToolCall("mcp__kernel__kernel_agent_create", {}, rail);
+    if (create.kind !== "outward") throw new Error("not outward");
+    expect(boundaryDecision({ allowedTools: [], allowedBashPrefixes: [], never: [...NEVER_CATEGORIES] }, create)).toEqual({ kind: "none" });
+  });
+
+  it("records the other forms a call reads only when they add a category (alsoReads), and the boundary checks every one", () => {
+    const at = (tool: string, input: unknown) => classifyToolCall(tool, input, rail);
+    // Two labels in one category: no alsoReads, so the class is exactly what it was.
+    const settings = { file_path: "/home/o/.claude/settings.json", content: "" };
+    expect(at("Write", settings)).toEqual({ kind: "outward", action: "Write ~/.claude/", payload: { tool: "Write", input: settings, cwd: "/work" } });
+    // A hooks file under ~/.claude/: settings_write by its action, hooks_write by its other label.
+    const hooks = { file_path: "/home/o/.claude/hooks/x.sh", content: "" };
+    const multi = at("Write", hooks);
+    expect(multi).toEqual({ kind: "outward", action: "Write ~/.claude/", payload: { tool: "Write", input: hooks, cwd: "/work" }, alsoReads: ["Write a hooks file"] });
+    // gh reads a flag both ways: `-b` taking `create` (a comment) or not (a create).
+    expect(at("Bash", { command: "gh pr -b create comment 3" })).toMatchObject({ action: "gh pr comment", alsoReads: ["gh pr create"] });
+    // An inline alias beside a push adds alias_define; a path naming ~/.claude/ adds settings_write.
+    expect(at("Bash", { command: "git -c alias.x=y push" })).toMatchObject({ action: "git push", alsoReads: ["git alias"] });
+    expect(at("Bash", { command: "git push /home/o/.claude/x" })).toMatchObject({ action: "git push", alsoReads: ["Bash naming ~/.claude/"] });
+    // Several git push forms (a glob could be any of them) add nothing beyond git_push.
+    expect(at("Bash", { command: "git *" })).not.toHaveProperty("alsoReads");
+    const cases: [ReturnType<typeof at>, NeverCategory][] = [
+      [multi, "hooks_write"],
+      [at("Bash", { command: "gh pr -b create comment 3" }), "gh_pr_create"],
+      [at("Bash", { command: "git -c alias.x=y push" }), "alias_define"],
+      [at("Bash", { command: "git push /home/o/.claude/x" }), "settings_write"],
+    ];
+    for (const [c, category] of cases) {
+      if (c.kind !== "outward") throw new Error("not outward");
+      expect(boundaryDecision({ allowedTools: [], allowedBashPrefixes: [], never: [category] }, c), c.action).toEqual({ kind: "boundary", category });
+    }
+  });
+
+  it("names the category in the deny reason and tells the model not to ask for an approval or retry", () => {
+    expect(boundaryDenyReason("git_push")).toBe(
+      "agent_boundary: git_push is in this agent's never list. The owner's settings forbid it for this agent; it did not run. Do not ask for an approval and do not retry it.",
+    );
   });
 });
 
