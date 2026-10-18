@@ -105,12 +105,12 @@ export type WrightSettingsResult = { readonly ok: true; readonly file: string; r
  * refusal on a fresh data dir always names a file that exists. The result
  * keeps this reader's own shapes: a `settings_invalid` refusal carries no
  * `field` key, and the settings carry only the five `WrightSettings` fields.
- * A file that sets `never`, `workspaces` or `limits.delegation_depth` is
- * `settings_invalid` (nothing applies them to Wright's sessions yet, so they
- * are refused, never silently dropped); its `limits.tokens_per_day` and
- * `limits.sessions_at_once` are accepted (the budget reads them through the
- * one reader at admission) and are not part of this reader's result, so the
- * `model_unset` refusal keeps exactly its five keys. Never throws for the
+ * A file that sets `never` or `workspaces` is `settings_invalid` (nothing
+ * applies them to Wright's sessions yet, so they are refused, never silently
+ * dropped); its `limits` are accepted (the budget reads `tokens_per_day` and
+ * `sessions_at_once` through the one reader at admission, and
+ * `kernel_agent_message` reads `delegation_depth`) and are not part of this
+ * reader's result, so the `model_unset` refusal keeps exactly its five keys. Never throws for the
  * file's content: a refusal names the file (and, for `model_unset`, the
  * field). A failure to create the directory or file is thrown (the data dir
  * itself is broken).
