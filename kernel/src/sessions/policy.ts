@@ -18,7 +18,13 @@ export type ToolDecisionReason =
   /** `gh pr merge` (or a merge through `gh api`): denied whatever the policy, never an approval. */
   | "merge_blocked"
   /** A Bash command longer than `MAX_RAIL_COMMAND_LENGTH`, or naming more path text than `MAX_RAIL_PATH_TEXT`: the rail does not read it, so it is denied. */
-  | "bash_command_too_large";
+  | "bash_command_too_large"
+  /**
+   * An outward call in one of the session policy's `never` categories
+   * (`boundaryDecision`): denied whatever the policy, never held, never
+   * covered by a grant. Unreachable until phase 4 item 03 fills `boundaryDecision`.
+   */
+  | "agent_boundary";
 
 export interface ToolDecision {
   readonly decision: "allow" | "deny";
@@ -156,8 +162,83 @@ export const PROTECTED_DATA_DIRS: readonly string[] = ["config", "app"];
  *
  * - `mcp__kernel__kernel_playbook_enable`: enabling a playbook lets it run on
  *   its own (persistent), so the owner sees each enable.
+ * - `mcp__kernel__kernel_agent_create` / `mcp__kernel__kernel_agent_update`:
+ *   a crew member's charter and enforced settings persist and shape every
+ *   later session it runs, so the owner sees each one (phase 4).
  */
-export const ALWAYS_HELD_TOOLS: readonly string[] = Object.freeze(["mcp__kernel__kernel_playbook_enable"]);
+export const ALWAYS_HELD_TOOLS: readonly string[] = Object.freeze([
+  "mcp__kernel__kernel_playbook_enable",
+  "mcp__kernel__kernel_agent_create",
+  "mcp__kernel__kernel_agent_update",
+]);
+
+/**
+ * The closed categories a session policy's `never` list may name: one per
+ * outward form the rail already emits (`classifyToolCall` step 3). Each maps
+ * to the rail's own labels (the `outward` action), which phase 4 item 03's
+ * `boundaryDecision` matches:
+ *
+ * - `git_push`: every `GIT_OUTWARD` label and `git p4 submit` (`git push`,
+ *   `git send-pack`, `git http-push`, `git svn dcommit`, `git svn set-tree`,
+ *   `git send-email`, `git imap-send`, `git cvsexportcommit`,
+ *   `git p4 submit`): every git form that sends commits or patches off the machine.
+ * - `alias_define`: `git alias`, and `gh alias set` / `gh alias import`.
+ * - `gh_pr_create`, `gh_pr_comment`, `gh_pr_review`, `gh_pr_edit`,
+ *   `gh_pr_close`: `gh pr create` (also its `new` alias), `comment`,
+ *   `review`, `edit`, `close`.
+ * - `gh_issue_create`, `gh_issue_comment`, `gh_issue_edit`,
+ *   `gh_issue_close`: `gh issue create` (also `new`), `comment`, `edit`,
+ *   `close`. The rail has no `gh issue review` form, so there is no
+ *   `gh_issue_review` category.
+ * - `gh_api_write`: `gh api <VERB>` for a method other than GET, and
+ *   `gh api (flag unread)`.
+ * - `settings_write`: the `~/.claude/` and `a settings*.json file` targets,
+ *   both the Bash form (`Bash naming …`) and the Write/Edit/NotebookEdit form.
+ * - `hooks_write`: the `a hooks file` target, both forms.
+ *
+ * A merge (`merge_blocked`) and a protected kernel path are denied for every
+ * session already, so neither is a category. Closed: a category is added only
+ * by a kernel change. Which categories a crew member never takes is the
+ * owner's policy (invariant 1); the kernel ships none as a default.
+ */
+export const NEVER_CATEGORIES = Object.freeze([
+  "git_push",
+  "alias_define",
+  "gh_pr_create",
+  "gh_pr_comment",
+  "gh_pr_review",
+  "gh_pr_edit",
+  "gh_pr_close",
+  "gh_issue_create",
+  "gh_issue_comment",
+  "gh_issue_edit",
+  "gh_issue_close",
+  "gh_api_write",
+  "settings_write",
+  "hooks_write",
+] as const);
+
+export type NeverCategory = (typeof NEVER_CATEGORIES)[number];
+
+/**
+ * Whether an outward call crosses the session policy's `never` boundary. The
+ * gate calls it for every `outward` call BEFORE the dry-run branch and before
+ * any hold or grant lookup: a `boundary` answer is denied outright
+ * (`agent_boundary`), never held as an approval, never covered by a grant,
+ * and denied in a dry run too. Pure: no I/O.
+ *
+ * Today it answers `none` for every call: phase 4 item 03 fills it with the
+ * rail's own labels (`NEVER_CATEGORIES`' mapping) matched against
+ * `policy.never`.
+ */
+export function boundaryDecision(
+  policy: ToolPolicy,
+  rail: Extract<ToolCallClass, { kind: "outward" }>,
+): { readonly kind: "none" } | { readonly kind: "boundary"; readonly category: NeverCategory } {
+  void policy;
+  void rail;
+  return { kind: "none" };
+}
 
 /** The kernel MCP server's tool-name prefix, dropped from an always-held tool's approval action. */
 const KERNEL_TOOL_PREFIX = "mcp__kernel__";
@@ -927,10 +1008,11 @@ function ghApiForm(args: readonly string[]): string | undefined {
   return verb === "GET" ? "gh api (flag unread)" : `gh api ${verb}`;
 }
 
-/** A defensive, frozen copy: later changes to the caller's arrays cannot reach the gate. */
+/** A defensive, frozen copy: later changes to the caller's arrays cannot reach the gate. `never` is copied only when present. */
 export function freezePolicy(policy: ToolPolicy): ToolPolicy {
   return Object.freeze({
     allowedTools: Object.freeze([...policy.allowedTools]),
     allowedBashPrefixes: Object.freeze([...policy.allowedBashPrefixes]),
+    ...(policy.never === undefined ? {} : { never: Object.freeze([...policy.never]) }),
   });
 }

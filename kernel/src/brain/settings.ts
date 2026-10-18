@@ -14,12 +14,17 @@
 // refusal naming it, never a rewrite. `effort` is recorded for the owner but
 // not applied (the session manager has no effort option).
 //
-// `readWrightSettings` is the ONE reader, shared by `POST /ask` and the
-// message handler, so both refuse the same files the same way. Imports only
-// zod, `node:*` and types (the `studio` CLI loads this module).
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+// `readWrightSettings` is the reader shared by `POST /ask`, the message
+// handler and the playbook dry runs and fires, so all refuse the same files
+// the same way. It is a thin call to the one reader every agent shares,
+// `readAgentSettings` (`../agents/settings.ts`), which holds the schema, the
+// size limit's check and the create-if-absent. Imports only `node:*`, types
+// and `../agents/settings.js` (which imports zod, `node:*`, the leaf
+// `../protected-paths.ts` and the leaf `../sessions/policy.ts`), never the
+// Agent SDK, the session manager or `kernel.ts` (the `studio` CLI loads this
+// module).
 import { join } from "node:path";
-import { z } from "zod";
+import { readAgentSettings } from "../agents/settings.js";
 import type { AllowedPermissionMode, ToolPolicy } from "../sessions/types.js";
 
 /** `config/agents/wright.json`, relative to the data dir (named in every refusal). */
@@ -53,6 +58,10 @@ export const PROPOSED_ALLOWED_TOOLS: readonly string[] = Object.freeze([
   "mcp__kernel__kernel_playbook_enable",
   "mcp__kernel__kernel_schedule_wakeup",
   "mcp__kernel__kernel_request_stop",
+  "mcp__kernel__kernel_agent_create",
+  "mcp__kernel__kernel_agent_update",
+  "mcp__kernel__kernel_agent_list",
+  "mcp__kernel__kernel_agent_message",
   "Read",
   "Glob",
   "Grep",
@@ -68,28 +77,6 @@ export function defaultWrightSettingsJson(): string {
   };
   return `${JSON.stringify(settings, null, 2)}\n`;
 }
-
-/** The session manager's permission modes (it refuses `bypassPermissions`, and so does this file). */
-const PERMISSION_MODES = {
-  default: true,
-  acceptEdits: true,
-  plan: true,
-  dontAsk: true,
-  auto: true,
-} as const satisfies Record<AllowedPermissionMode, true>;
-
-const permissionMode = z.enum(Object.keys(PERMISSION_MODES) as [AllowedPermissionMode, ...AllowedPermissionMode[]]);
-
-const schema = z.object({
-  model: z.unknown().optional(),
-  effort: z.string().nullable().optional(),
-  permission_mode: permissionMode,
-  tool_policy: z.object({
-    status: z.string().optional(),
-    allowedTools: z.array(z.string()),
-    allowedBashPrefixes: z.array(z.string()),
-  }),
-});
 
 /** Settings a session can start with. */
 export interface WrightSettings {
@@ -110,69 +97,35 @@ export type WrightSettingsRefusal =
 
 export type WrightSettingsResult = { readonly ok: true; readonly file: string; readonly settings: WrightSettings } | WrightSettingsRefusal;
 
-function hasCode(err: unknown, code: string): boolean {
-  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === code;
-}
-
 /**
- * Wright's settings, from `<dataDir>/config/agents/wright.json`. Creates the
- * file (exclusive create, mode 0600) when it is absent BEFORE checking the
- * model, so a `model_unset` refusal on a fresh data dir always names a file
- * that exists. Never throws for the file's content: a refusal names the file
- * (and, for `model_unset`, the field). A failure to create the directory or
- * file is thrown (the data dir itself is broken).
+ * Wright's settings, from `<dataDir>/config/agents/wright.json`: a thin call
+ * to the one reader, `readAgentSettings(dataDir, "wright")`
+ * (`../agents/settings.ts`), which creates the file (exclusive create, mode
+ * 0600) when it is absent BEFORE checking the model, so a `model_unset`
+ * refusal on a fresh data dir always names a file that exists. The result
+ * keeps this reader's own shapes: a `settings_invalid` refusal carries no
+ * `field` key, and the settings carry only the five `WrightSettings` fields.
+ * A file that sets `never`, `limits` or `workspaces` is `settings_invalid`
+ * (nothing applies them to Wright's sessions yet, so they are refused, never
+ * silently dropped). Never throws for the file's content: a refusal names the
+ * file (and, for `model_unset`, the field). A failure to create the directory or file is
+ * thrown (the data dir itself is broken).
  */
 export function readWrightSettings(dataDir: string): WrightSettingsResult {
-  const file = wrightSettingsPath(dataDir);
-  mkdirSync(join(file, ".."), { recursive: true, mode: 0o700 });
-  try {
-    writeFileSync(file, defaultWrightSettingsJson(), { flag: "wx", mode: 0o600 });
-  } catch (err) {
-    if (!hasCode(err, "EEXIST")) throw err;
+  const r = readAgentSettings(dataDir, "wright");
+  if (r.ok) {
+    const { model, effort, permissionMode, policy, policyStatus } = r.settings;
+    return { ok: true, file: r.file, settings: { model, effort, permissionMode, policy, policyStatus } };
   }
-  const invalid = (what: string): WrightSettingsRefusal => ({ ok: false, error: "settings_invalid", file, message: `${file}: ${what}` });
-
-  let raw: string;
-  try {
-    // Checked before reading, so a huge file is never loaded whole; and after, for one that grew meanwhile.
-    if (statSync(file).size > MAX_SETTINGS_BYTES) return invalid(`over ${MAX_SETTINGS_BYTES} bytes`);
-    const buf = readFileSync(file);
-    if (buf.length > MAX_SETTINGS_BYTES) return invalid(`over ${MAX_SETTINGS_BYTES} bytes`);
-    raw = buf.toString("utf8");
-  } catch (err) {
-    return invalid(`unreadable (${String((err as { code?: unknown }).code ?? "error")})`);
+  switch (r.error) {
+    case "model_unset":
+      return r;
+    case "settings_invalid":
+      return { ok: false, error: "settings_invalid", file: r.file, message: r.message };
+    // Unreachable for `wright` (its file is created, and its id is the explicit Wright path); kept total.
+    case "settings_missing":
+      return { ok: false, error: "settings_invalid", file: r.file, message: r.message };
+    case "agent_id_invalid":
+      return { ok: false, error: "settings_invalid", file: wrightSettingsPath(dataDir), message: r.message };
   }
-  let json: unknown;
-  try {
-    json = JSON.parse(raw);
-  } catch {
-    return invalid("not JSON");
-  }
-  const parsed = schema.safeParse(json);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const where = issue === undefined || issue.path.length === 0 ? "the file" : issue.path.join(".");
-    return invalid(`${where}: ${issue?.message ?? "invalid"}`);
-  }
-  const s = parsed.data;
-  if (typeof s.model !== "string" || s.model.trim() === "") {
-    return {
-      ok: false,
-      error: "model_unset",
-      file,
-      field: "model",
-      message: `Wright has no model: set "model" in ${file} (the kernel never picks one)`,
-    };
-  }
-  return {
-    ok: true,
-    file,
-    settings: {
-      model: s.model.trim(),
-      effort: s.effort ?? null,
-      permissionMode: s.permission_mode,
-      policy: { allowedTools: [...s.tool_policy.allowedTools], allowedBashPrefixes: [...s.tool_policy.allowedBashPrefixes] },
-      policyStatus: s.tool_policy.status ?? null,
-    },
-  };
 }

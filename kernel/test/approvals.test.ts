@@ -54,7 +54,7 @@ import type { ToolCallClass } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/types.js";
 import { LOCK_DB_FILENAME, LOCK_PID_FILENAME } from "../src/store/lock.js";
 import { DB_FILENAME, Store } from "../src/store/store.js";
-import { contributedToolHandler } from "../src/tools/server.js";
+import { approvalApplierOf, contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolContext } from "../src/tools/server.js";
 import { count, events, loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
@@ -1115,6 +1115,25 @@ describe("standing grants: always on a rail approval from a playbook session", (
     expect(grantUses(t).map((e) => e.payload)).toEqual([{ id: 1, tool: "Bash" }]);
   });
 
+  it.each(["kernel_agent_create", "kernel_agent_update"])(
+    "%s is held from a playbook session with standing grants in place; always on it is refused always_not_supported, writing nothing",
+    async (name) => {
+      const tool = `mcp__kernel__${name}`;
+      const { t, p } = await granted();
+      const s = await t.session({ allowedTools: [tool], allowedBashPrefixes: [] });
+      t.store.prepare("UPDATE sessions SET playbook = ?, playbook_version = 2 WHERE id = ?").run(p, s.id);
+      expect((await s.gate(tool, { id: "mason" })).permissionDecisionReason).toMatch(held(2));
+      expect(getApproval(t.store, 2)).toMatchObject({ status: "pending", action: name, playbook: p });
+      const before = count(t.store, "SELECT count(*) FROM events");
+      expect(() => decideApproval(t.store, { id: 2, decision: "always", by: "owner" }, new Date())).toThrow(
+        expect.objectContaining({ code: "always_not_supported", message: `always never covers ${tool}: the owner decides every call to it; approve it once` }),
+      );
+      expect(getApproval(t.store, 2)).toMatchObject({ status: "pending", decision: null });
+      expect(count(t.store, "SELECT count(*) FROM events")).toBe(before);
+      expect(grantUses(t)).toEqual([]);
+    },
+  );
+
   it("a different cwd, a different command, or another agent (one literally named unknown, or none) in the same playbook version is held, with no approval_grant_used", async () => {
     const { t, p, first } = await granted();
     expect((await first.comment(COMMENT, join(tmp, "other-repo"))).permissionDecisionReason).toMatch(held(2));
@@ -1405,9 +1424,29 @@ describe("kernel-applied actions: the owner's once on a held kernel action is ap
   const texts = (t: ReturnType<typeof setup>) => t.messages().map((m) => (m.payload as { text: string }).text);
 
   it("is a closed set in code whose every member is always held, so always never reaches one", () => {
-    expect(KERNEL_APPLIED_ACTIONS).toEqual(["mcp__kernel__kernel_playbook_enable"]);
+    expect(KERNEL_APPLIED_ACTIONS).toEqual(["mcp__kernel__kernel_playbook_enable", "mcp__kernel__kernel_agent_create", "mcp__kernel__kernel_agent_update"]);
     for (const tool of KERNEL_APPLIED_ACTIONS) expect(ALWAYS_HELD_TOOLS).toContain(tool);
   });
+
+  it.each(["kernel_agent_create", "kernel_agent_update"])(
+    "%s: once with the shipped composition's applier (none registered for it yet) is recorded no_applier, the grant spent, never handed back",
+    async (name) => {
+      const applier = approvalApplierOf(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools);
+      const tool = `mcp__kernel__${name}`;
+      const t = setup();
+      const s = await t.session({ allowedTools: [tool], allowedBashPrefixes: [] });
+      expect((await s.gate(tool, INPUT)).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+      expect(getApproval(t.store, 1)).toMatchObject({ status: "pending", action: name });
+      decideApproval(t.store, { id: 1, decision: "once", by: "owner" }, new Date(), applier);
+      expect(getApproval(t.store, 1)).toMatchObject({ status: "approved", decision: "once" });
+      expect(decidedPayloads(t)).toEqual([
+        { id: 1, decision: "once", by: "owner", action: name, apply_refused: "no_applier", apply_detail: `the kernel has no applier for ${tool}; nothing was done` },
+      ]);
+      expect(texts(t)).toEqual([`approved approval 1: ${name}. the kernel has no applier for ${tool}; nothing was done Do not repeat the call.`]);
+      expect(events(t.store, "approval_used").map((e) => e.payload)).toEqual([{ id: 1, tool, by: "kernel" }]);
+      expect((await s.gate(tool, INPUT)).permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
+    },
+  );
 
   it("applied: the applier runs once on the held input; one approval_used {id, tool, by: kernel}; approval_decided carries applied; the message says what the kernel did; after runs once", async () => {
     const { t, s } = await heldEnable();

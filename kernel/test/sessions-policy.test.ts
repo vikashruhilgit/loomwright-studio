@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { PROPOSED_ALLOWED_TOOLS } from "../src/brain/index.js";
 import { decideToolUse, freezePolicy } from "../src/sessions/index.js";
-import { ALWAYS_HELD_TOOLS, classifyToolCall } from "../src/sessions/policy.js";
+import { ALWAYS_HELD_TOOLS, NEVER_CATEGORIES, boundaryDecision, classifyToolCall } from "../src/sessions/policy.js";
+import type { NeverCategory } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
 
 const policy: ToolPolicy = {
@@ -121,6 +122,62 @@ describe("freezePolicy", () => {
     expect(Object.isFrozen(frozen.allowedTools)).toBe(true);
     expect(() => (frozen.allowedTools as string[]).push("Write")).toThrow();
   });
+
+  it("copies never (frozen) when present, and adds no never key when absent", () => {
+    const never: NeverCategory[] = ["git_push"];
+    const frozen = freezePolicy({ allowedTools: [], allowedBashPrefixes: [], never });
+    never.push("gh_api_write");
+    expect(frozen.never).toEqual(["git_push"]);
+    expect(Object.isFrozen(frozen.never)).toBe(true);
+    expect(Object.keys(freezePolicy({ allowedTools: [], allowedBashPrefixes: [] }))).toEqual(["allowedTools", "allowedBashPrefixes"]);
+  });
+});
+
+describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
+  const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work" };
+
+  it("is the closed, frozen list of never categories, one per outward form the rail emits", () => {
+    expect(NEVER_CATEGORIES).toEqual([
+      "git_push",
+      "alias_define",
+      "gh_pr_create",
+      "gh_pr_comment",
+      "gh_pr_review",
+      "gh_pr_edit",
+      "gh_pr_close",
+      "gh_issue_create",
+      "gh_issue_comment",
+      "gh_issue_edit",
+      "gh_issue_close",
+      "gh_api_write",
+      "settings_write",
+      "hooks_write",
+    ]);
+    expect(Object.isFrozen(NEVER_CATEGORIES)).toBe(true);
+  });
+
+  it("answers no boundary for every outward call today, whatever the policy's never list", () => {
+    const calls: [string, unknown][] = [
+      ["Bash", { command: "git push origin main" }],
+      ["Bash", { command: "gh pr create --fill" }],
+      ["Bash", { command: "gh issue comment 3 --body x" }],
+      ["Bash", { command: "gh api -X POST repos/o/r/issues" }],
+      ["Bash", { command: "gh alias set co 'pr checkout'" }],
+      ["Write", { file_path: "/home/o/.claude/settings.json", content: "" }],
+      ["Write", { file_path: "/work/.git/hooks/pre-commit", content: "" }],
+      ["mcp__kernel__kernel_agent_create", {}],
+    ];
+    const policies: ToolPolicy[] = [
+      { allowedTools: [], allowedBashPrefixes: [] },
+      { allowedTools: [], allowedBashPrefixes: [], never: [...NEVER_CATEGORIES] },
+    ];
+    for (const [tool, input] of calls) {
+      const c = classifyToolCall(tool, input, rail);
+      expect(c.kind, tool).toBe("outward");
+      if (c.kind !== "outward") continue;
+      for (const policy of policies) expect(boundaryDecision(policy, c)).toEqual({ kind: "none" });
+    }
+  });
 });
 
 describe("decideToolUse and the fixed rail (approvals)", () => {
@@ -149,9 +206,24 @@ describe("decideToolUse and the fixed rail (approvals)", () => {
 describe("ALWAYS_HELD_TOOLS (phase 3 foundation)", () => {
   const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work" };
 
-  it("is the closed list of tools every call to which is held: today only kernel_playbook_enable", () => {
-    expect(ALWAYS_HELD_TOOLS).toEqual(["mcp__kernel__kernel_playbook_enable"]);
+  it("is the closed list of tools every call to which is held: kernel_playbook_enable, then the two charter tools", () => {
+    expect(ALWAYS_HELD_TOOLS).toEqual(["mcp__kernel__kernel_playbook_enable", "mcp__kernel__kernel_agent_create", "mcp__kernel__kernel_agent_update"]);
     expect(Object.isFrozen(ALWAYS_HELD_TOOLS)).toBe(true);
+  });
+
+  it("classifies kernel_agent_create and kernel_agent_update as outward whatever their input; kernel_agent_list and kernel_agent_message stay ordinary", () => {
+    for (const name of ["kernel_agent_create", "kernel_agent_update"]) {
+      for (const input of [{ id: "mason" }, {}, null]) {
+        expect(classifyToolCall(`mcp__kernel__${name}`, input, rail)).toEqual({
+          kind: "outward",
+          action: name,
+          payload: { tool: `mcp__kernel__${name}`, input, cwd: "/work" },
+        });
+      }
+    }
+    for (const name of ["mcp__kernel__kernel_agent_list", "mcp__kernel__kernel_agent_message", "mcp__kernel__kernel_agent_createx"]) {
+      expect(classifyToolCall(name, {}, rail), name).toEqual({ kind: "ordinary" });
+    }
   });
 
   it("classifies kernel_playbook_enable as outward whatever its input: action without the mcp__kernel__ prefix, payload {tool, input, cwd}", () => {

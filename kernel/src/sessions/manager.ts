@@ -28,7 +28,7 @@ import type { SessionLoomwright } from "./loomwright-path.js";
 import { TOOL_DEFERRAL_OFF } from "./kernel-env.js";
 import { DRY_RUN_DENY_MESSAGE, classifyDryRunCall, dryRunUsage } from "./dry-run.js";
 import { latestOrphanReason } from "./orphans.js";
-import { ALWAYS_HELD_TOOLS, bashCommandOf, classifyToolCall, decideToolUse, freezePolicy } from "./policy.js";
+import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, classifyToolCall, decideToolUse, freezePolicy, NEVER_CATEGORIES } from "./policy.js";
 import type { ToolCallClass, ToolDecisionReason } from "./policy.js";
 import {
   KILL_GROUP_DEADLINE_MS,
@@ -456,6 +456,17 @@ function checkPolicy(policy: unknown): ToolPolicy {
   const p = policy as Partial<ToolPolicy> | undefined;
   if (typeof p !== "object" || p === null || !isStringArray(p.allowedTools) || !isStringArray(p.allowedBashPrefixes)) {
     throw new SessionError("invalid_params", "policy must have string arrays allowedTools and allowedBashPrefixes");
+  }
+  if (p.never !== undefined) {
+    const never: unknown = p.never;
+    if (!Array.isArray(never)) throw new SessionError("invalid_params", "policy never must be an array of never categories");
+    const at = never.findIndex((v: unknown) => !(NEVER_CATEGORIES as readonly unknown[]).includes(v));
+    if (at !== -1) {
+      const bad = never[at] as unknown;
+      // The value is untrusted data: a string is quoted (and cut), anything else is named by its type only.
+      const shown = typeof bad === "string" ? JSON.stringify(bad.slice(0, 64)) : bad === null || bad === undefined ? String(bad) : Array.isArray(bad) ? "an array" : typeof bad === "object" ? "an object" : `a ${typeof bad}`;
+      throw new SessionError("invalid_params", `policy never[${at}] is ${shown}, not one of ${NEVER_CATEGORIES.join(", ")}`);
+    }
   }
   return freezePolicy(p as ToolPolicy);
 }
@@ -2259,6 +2270,13 @@ export class SessionManager {
    * payload a grant matches on); `undefined` (or no check) is held as before.
    * A throw or any other answer is `kernel_gate_error`. It never allows a
    * call, skips the hold or consumes a grant itself.
+   *
+   * The never boundary (`boundaryDecision`, phase 4) is read first for every
+   * outward call, before the dry-run branch and the pre-hold check: a
+   * `boundary` answer denies the call with the bare reason `agent_boundary`
+   * through the same deny path a rail deny takes (no approval written, no
+   * grant looked up, in a dry run no would-do entry). Today it answers `none`
+   * for every call, which changes nothing.
    */
   #gate(live: LiveSession): HookCallback {
     return async (input): Promise<HookJSONOutput> => {
@@ -2281,9 +2299,15 @@ export class SessionManager {
             d.decision === "allow"
               ? classifyToolCall(input.tool_name, input.tool_input, { dataDir: this.#store.dataDir, homeDir: this.#homeDir, cwd: input.cwd })
               : { kind: "ordinary" };
+          // The never boundary is read first for an outward call: before the dry-run branch and any hold or grant.
+          const boundary = rail.kind === "outward" ? boundaryDecision(live.policy, rail) : undefined;
           // A dry run narrows the policy and the rail: it is read only after both answered.
           const dry = live.dryRun === undefined ? undefined : classifyDryRunCall(input.tool_name, input.tool_input, d, rail);
-          if (dry?.kind === "would_do") {
+          if (boundary?.kind === "boundary") {
+            // Denied and recorded below like a rail deny: no approval written, no grant looked up, no would-do entry.
+            decision = "deny";
+            reason = "agent_boundary";
+          } else if (dry?.kind === "would_do") {
             // Denied and recorded below; an outward call never reaches the approval path.
             wouldDo = dry.entry;
             reason = "dry_run";

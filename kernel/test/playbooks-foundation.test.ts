@@ -95,8 +95,7 @@ const noClient: CliApiClient = {
 };
 
 describe("the playbooks contribution (AC4)", () => {
-  it("is the sixth shipped contribution: the parts' tools in part order, the drafts part's four routes and one due-work function, the runs part's route, and the playbooks subcommand; no handler", () => {
-    expect(SHIPPED_CONTRIBUTIONS).toHaveLength(6);
+  it("is the sixth shipped contribution (the full order is pinned in feature-seams.test.ts): the parts' tools in part order, the drafts part's four routes and one due-work function, the runs part's route, and the playbooks subcommand; no handler", () => {
     expect(SHIPPED_CONTRIBUTIONS[5]).toBe(playbooksContribution);
     expect(playbooksContribution.name).toBe("playbooks");
     expect(Object.isFrozen(playbooksContribution)).toBe(true);
@@ -213,11 +212,12 @@ describe("studio playbooks (AC4)", () => {
     expect(missing.reads).toEqual([]);
   });
 
-  it("the help line is the last line of studio's usage text", async () => {
+  it("the help line is one whole entry of studio's usage text (wherever a later feature puts its own after it)", async () => {
     const r = await studio(["nope"]);
     expect(r.code).toBe(2);
     expect(r.stderr.startsWith(`${USAGE} | `)).toBe(true);
-    expect(r.stderr.endsWith(` | ${PLAYBOOKS_HELP}\n`)).toBe(true);
+    expect(r.stderr.endsWith("\n")).toBe(true);
+    expect(` | ${r.stderr.slice(0, -1)} | `).toContain(` | ${PLAYBOOKS_HELP} | `);
   });
 });
 

@@ -414,5 +414,8 @@ describe("approvalApplierOf: the kernel-applied actions' applier over the contri
     expect(tools.filter((t) => t.applyOnApproval !== undefined).map((t) => `${KERNEL_MCP_SERVER_NAME}:${t.name}`)).toEqual([`${KERNEL_MCP_SERVER_NAME}:kernel_playbook_enable`]);
     expect(() => approvalApplierOf(tools)).not.toThrow();
     expect(KERNEL_APPLIED_ACTIONS).toContain(ENABLE);
+    // The two charter tools are in the set (and always held) before item 07 registers their applier: none is registered here.
+    expect(KERNEL_APPLIED_ACTIONS).toContain("mcp__kernel__kernel_agent_create");
+    expect(KERNEL_APPLIED_ACTIONS).toContain("mcp__kernel__kernel_agent_update");
   });
 });
