@@ -68,6 +68,8 @@ const PLAYBOOK_TOOL_NAMES = [
   "kernel_playbook_dry_run",
   "kernel_playbook_enable",
 ] as const;
+/** Phase 4's crew tools, reserved in Wright's proposed policy before they exist. */
+const AGENT_TOOL_NAMES = ["kernel_agent_create", "kernel_agent_update", "kernel_agent_list", "kernel_agent_message"] as const;
 const DOC = new URL("../../docs/architecture/brain.md", import.meta.url);
 
 let tmp: string;
@@ -345,6 +347,16 @@ describe("docs/architecture/brain.md (AC9)", () => {
     expect(ROLE_TEMPLATE).toContain(`\n- playbooks: ${PLAYBOOK_TOOL_NAMES.join(", ")}\n`);
     for (const name of PLAYBOOK_TOOL_NAMES) expect(doc, name).toContain(`"mcp__kernel__${name}",`);
     expect(doc).toContain("create-if-absent");
+  });
+
+  it("the role template and both doc blocks list the four crew tool names, and the template says how Wright treats a crew", () => {
+    const doc = readFileSync(DOC, "utf8");
+    expect(ROLE_TEMPLATE).toContain(`\n- crew: ${AGENT_TOOL_NAMES.join(", ")}\n`);
+    expect(ROLE_TEMPLATE).toContain("\n## Your crew\n");
+    for (const name of AGENT_TOOL_NAMES) expect(doc, name).toContain(`"mcp__kernel__${name}",`);
+    // Reserved after Wright's own lifecycle tools and before the read-only built-ins.
+    const after = PROPOSED_ALLOWED_TOOLS.indexOf("mcp__kernel__kernel_request_stop") + 1;
+    expect(PROPOSED_ALLOWED_TOOLS.slice(after, after + 5)).toEqual([...AGENT_TOOL_NAMES.map((n) => `mcp__kernel__${n}`), "Read"]);
   });
 
   it("documents the files, the settings file, the context, routing, the API and CLI, and the honest limits", () => {

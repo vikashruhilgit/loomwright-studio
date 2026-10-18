@@ -7,8 +7,8 @@
 // the registry's module graph. Every shipped list here is computed from
 // `SHIPPED_CONTRIBUTIONS`; each feature's own tools, routes, subcommands,
 // help lines, handlers and due work are pinned in that feature's own test
-// (loomwright-adapter, notifications, triggers, approvals, brain and
-// playbooks-foundation), so a later feature never edits this file. A temp
+// (loomwright-adapter, notifications, triggers, approvals, brain,
+// playbooks-foundation and agents-foundation), so a later feature never edits this file. A temp
 // data dir, an in-memory Keychain, the fake spawner/query and stub auth:
 // never the real SDK, a model or the Keychain.
 import { spawnSync } from "node:child_process";
@@ -113,10 +113,10 @@ function expectShippedDueWork(dueWork: readonly DueWork[]): void {
 }
 
 describe("mergeContributions", () => {
-  it("the shipped contributions: the six features in a fixed order, merged part by part in that order (each feature's own lists are pinned in its own test) (AC3)", () => {
-    expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks"]);
+  it("the shipped contributions: the seven features in a fixed order, merged part by part in that order (each feature's own lists are pinned in its own test) (AC3)", () => {
+    expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents"]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1);
-    expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks"]);
+    expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents"]);
     expect(merged.tools.map((t) => t.name)).toEqual(shippedToolNames());
     expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(shippedRoutes());
     expect(merged.subcommands.map((s) => s.name)).toEqual(shippedSubcommandNames());
@@ -480,7 +480,7 @@ describe("the shipped kernel (AC3)", () => {
     const { d, fakes, keychain } = deps();
     const kernel = await start(options(), d);
 
-    expect(kernel.contributions.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks"]);
+    expect(kernel.contributions.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents"]);
     expect(kernelToolNames(kernel.contributions.tools)).toEqual([...KERNEL_TOOL_NAMES, ...shippedToolNames()]);
     expect(Object.keys(await launchedTools(kernel, fakes))).toEqual([...KERNEL_TOOL_NAMES, ...shippedToolNames()]);
     expect(kernel.contributions.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(shippedRoutes());
