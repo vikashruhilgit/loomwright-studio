@@ -634,7 +634,7 @@ describe("kernel_agent_update (AC5, AC6)", () => {
     expect(readFileSync(file, "utf8")).toBe(original);
     // The current state fits (narrowing to no tools would): the remedy is Wright's, a smaller request.
     expect(d.permissionDecisionReason).toContain("; ask for less at once");
-    expect(d.permissionDecisionReason).not.toContain("no smaller request fits");
+    expect(d.permissionDecisionReason).not.toContain("no request to these fields fits");
   });
 
   it("a display_name-only update of an owner-created member whose current policy alone is over the cut is refused invalid_input with the owner's remedy; nothing is held", async () => {
@@ -647,7 +647,7 @@ describe("kernel_agent_update (AC5, AC6)", () => {
     expect(d.permissionDecision).toBe("deny");
     expect(d.permissionDecisionReason).toMatch(
       new RegExp(
-        `^kernel_agent_update: invalid_input: the display \\(its field lines and enforced line\\) would be \\d+ characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown, and the member's current settings alone \\(the changed fields' old values and the enforced line\\) would be \\d+, so no smaller request fits; ` +
+        `^kernel_agent_update: invalid_input: the display \\(its field lines and enforced line\\) would be \\d+ characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown, and the member's current settings alone \\(the changed fields' old values, their shortest new values and the enforced line\\) would be \\d+, so no request to these fields fits; ` +
           "the owner changes config/agents/mason\\.json by hand \\(or with `studio agents set` for a scalar field, `studio agents rename` for the display name\\), and Wright can change the member once its settings fit \\(nothing was held for the owner\\)$",
       ),
     );
@@ -662,8 +662,44 @@ describe("kernel_agent_update (AC5, AC6)", () => {
     expect(h.ownerCreate(charter({ tool_policy: { allowedTools: longTools(30, "a"), allowedBashPrefixes: [], never: ["git_push"] } })).ok).toBe(true);
     const d = await h.wright.gate(UPDATE, { id: "mason", changes: { tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] } }, expected_sha256: await h.shaOf("mason"), idempotency_key: "u1" });
     expect(d.permissionDecision).toBe("deny");
-    expect(d.permissionDecisionReason).toContain("so no smaller request fits; the owner changes config/agents/mason.json by hand");
+    expect(d.permissionDecisionReason).toContain("so no request to these fields fits; the owner changes config/agents/mason.json by hand");
     expect(h.approvals()).toEqual([]);
+  });
+
+  it("the floor counts each changed field's shortest new value: a member whose smallest real request is 4,001 characters gets the owner's remedy; at 4,000 it is held, and a larger request is ask-for-less", async () => {
+    const h = await bootManager();
+    const EMPTY = { allowedTools: [], allowedBashPrefixes: [] };
+    // 24 tools of ~150 characters and one padded tool: its padding moves the display one character at a time.
+    const member = (id: string, pad: number) =>
+      h.ownerCreate(charter({ id, tool_policy: { allowedTools: [...longTools(24, "a"), `mcp__pad__${"x".repeat(pad)}`], allowedBashPrefixes: [], never: ["git_push"] } }));
+    const narrow = async (id: string, key: string, allowedTools: string[] = []) =>
+      h.wright.gate(UPDATE, { id, changes: { tool_policy: { ...EMPTY, allowedTools } }, expected_sha256: await h.shaOf(id), idempotency_key: key });
+    const heldDisplays = () => events(h.store, "approval_requested").map((e) => String(e.payload.display));
+
+    // Probe: the smallest request on this member (narrow to no tools) is held; its display length gives the padding for any target.
+    expect(member("pina", 10).ok).toBe(true);
+    expect((await narrow("pina", "k1")).permissionDecisionReason).toMatch(/^approval_required: held as approval /);
+    const probe = heldDisplays()[0]?.length ?? 0;
+    const padFor = (length: number) => 10 + length - probe;
+    expect(padFor(MAX_APPROVAL_DISPLAY + 1)).toBeLessThan(180);
+
+    // 4,001: the old floor (no new value: 44 characters shorter) would have fit and said "ask for less", which no request can.
+    expect(member("pinb", padFor(MAX_APPROVAL_DISPLAY + 1)).ok).toBe(true);
+    const over = await narrow("pinb", "k2");
+    expect(over.permissionDecision).toBe("deny");
+    expect(over.permissionDecisionReason).toContain(`would be ${MAX_APPROVAL_DISPLAY + 1} characters`);
+    expect(over.permissionDecisionReason).toContain(`would be ${MAX_APPROVAL_DISPLAY + 1}, so no request to these fields fits; the owner changes config/agents/pinb.json by hand`);
+    expect(over.permissionDecisionReason).not.toContain("ask for less");
+
+    // 4,000: the smallest request fits and is held; a request with a longer new value is Wright's to shrink.
+    expect(member("pinc", padFor(MAX_APPROVAL_DISPLAY)).ok).toBe(true);
+    expect((await narrow("pinc", "k3")).permissionDecisionReason).toMatch(/^approval_required: held as approval /);
+    expect(heldDisplays().at(-1)?.length).toBe(MAX_APPROVAL_DISPLAY);
+    const longer = await narrow("pinc", "k4", ["Read"]);
+    expect(longer.permissionDecision).toBe("deny");
+    expect(longer.permissionDecisionReason).toContain("; ask for less at once");
+    expect(longer.permissionDecisionReason).not.toContain("no request to these fields fits");
+    expect(h.approvals().map((a) => a.id)).toEqual([1, 2]);
   });
 
   it("an owner's edit between the apply's hash read and the in-transaction re-read: apply_refused config_changed, the owner's bytes kept, no agent_updated, no temporary file left", async () => {

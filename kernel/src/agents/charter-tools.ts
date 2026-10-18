@@ -28,8 +28,9 @@
 //   (create) or whose whole display (update: the field lines and the enforced
 //   line) would not fit in `MAX_APPROVAL_DISPLAY` is refused `invalid_input`,
 //   so the 4,000-character cut never hides them. An update whose overflow is
-//   the member's current state (no smaller request would fit) says so: the
-//   owner changes the settings file, not Wright.
+//   the member's current state (no request changing the same fields would
+//   fit, whatever their new values) says so: the owner changes the settings
+//   file, not Wright.
 // - `applyOnApproval`, which the approvals decision runs when the owner
 //   approves the held call `once`: the same checks again on the approval's own
 //   agent, then the create (`createAgent` with `by: "wright"` and the
@@ -64,11 +65,12 @@ import type { ContributedToolContext } from "../features/contribution.js";
 import { NO_REF, appendEvent } from "../loop/internal.js";
 import type { HeldToolVerdict } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
-import { CHARTER_LIMIT_KEYS, createAgent, ensureAgentFiles, renderAgentSettingsJson, renderRoleMd, validateCharter } from "./charter-files.js";
+import { CHARTER_LIMIT_KEYS, CHARTER_PERMISSION_MODES, createAgent, ensureAgentFiles, renderAgentSettingsJson, renderRoleMd, validateCharter } from "./charter-files.js";
 import type { AgentAuditKind, Charter } from "./charter-files.js";
 import { getAgent, listAgents } from "./registry.js";
 import type { AgentRow } from "./registry.js";
 import { agentSettingsPath, readAgentSettings } from "./settings.js";
+import { AVATAR_HUES, AVATAR_SHAPES } from "./types.js";
 import type { AgentPart } from "./types.js";
 
 export const AGENT_CREATE_TOOL_NAME = "kernel_agent_create";
@@ -520,20 +522,49 @@ export function updateDisplay(m: Merged): string {
   ].join("\n");
 }
 
+/** The member of `values` whose `shownValue` is shortest (the first of the shortest). */
+function shortestShown<T>(values: readonly T[]): T {
+  return values.reduce((a, b) => (shownValue(b).length < shownValue(a).length ? b : a));
+}
+
+/** The shortest valid new value of each changed field (`FieldChange.field`), as the charter's rules allow it. */
+const SHORTEST_NEW: Readonly<Record<string, unknown>> = Object.freeze({
+  // A 1-character token or line; effort's clear (shown "not set") is longer, and taken only if it were not.
+  model: "x",
+  effort: shortestShown(["x", null]),
+  display_name: "x",
+  permission_mode: shortestShown(CHARTER_PERMISSION_MODES),
+  tool_policy: { allowedTools: [], allowedBashPrefixes: [] },
+  never: [],
+  workspaces: [],
+  avatar: { shape: shortestShown(AVATAR_SHAPES), hue: shortestShown(AVATAR_HUES) },
+  // A positive integer (shown with at least one digit), or a clear (shown "not set").
+  ...Object.fromEntries(CHARTER_LIMIT_KEYS.map((key) => [`limits.${key}`, shortestShown([1, null])])),
+});
+
+/** The shortest a changed field's new value can be shown (an unknown field counts as empty: the floor stays a lower bound). */
+function shortestNewShown(field: string): string {
+  return Object.hasOwn(SHORTEST_NEW, field) ? shownValue(SHORTEST_NEW[field]) : "";
+}
+
 /**
- * The shortest display any change to the same fields of this member could
- * have: what the change cannot shrink. Each field line's old value (shown
- * whatever the new one is), with no new value; the enforced line with empty
- * lists for what the change sets (`never`, `tool_policy`) and the member's
+ * A lower bound on the display of any change to the same fields of this
+ * member: no such change has a shorter display. The head; each field line
+ * with its old value (shown whatever the new one is) and the field's shortest
+ * valid new value (`SHORTEST_NEW`, rendered by `shownValue` as the display
+ * renders it); the enforced line with those same shortest values (empty
+ * lists) for what the change sets (`never`, `tool_policy`) and the member's
  * current values for the rest (a field the change leaves alone is shown as
- * it is).
+ * it is). For each field the bound is a real request's display (the field
+ * set to its shortest value), unless that value is the current one (the
+ * request would change nothing) or the result fails `validateCharter`.
  */
 function updateFloor(m: Merged): string {
   const tp = m.charter.tool_policy;
   const sets = new Set(m.changes.map((c) => c.field));
   return [
     updateHead(m),
-    ...m.changes.map((c) => `${c.field}: ${shownValue(c.old)} → `),
+    ...m.changes.map((c) => `${c.field}: ${shownValue(c.old)} → ${shortestNewShown(c.field)}`),
     enforcedLine(sets.has("never") ? [] : tp.never, sets.has("tool_policy") ? [] : tp.allowedTools, sets.has("tool_policy") ? [] : tp.allowedBashPrefixes),
   ].join("\n");
 }
@@ -541,10 +572,11 @@ function updateFloor(m: Merged): string {
 /**
  * `invalid_input` when the update's display would not fit `MAX_APPROVAL_DISPLAY`
  * (the hold refuses rather than show a cut field or enforced line). When even
- * the floor (`updateFloor`: the member's current state, which no smaller
- * request shrinks) would not fit, the remedy is the owner's, not Wright's:
- * the owner changes the member's settings file, and Wright can change the
- * member once they fit. Otherwise the change itself is too large: ask for less.
+ * the floor (`updateFloor`: a lower bound on any request changing the same
+ * fields) would not fit, no request to those fields fits and the remedy is
+ * the owner's, not Wright's: the owner changes the member's settings file,
+ * and Wright can change the member once they fit. Otherwise a request to the
+ * same fields with shorter new values may fit: ask for less.
  */
 function updateFitRefusal(m: Merged, display: string): Refused | undefined {
   if (display.length <= MAX_APPROVAL_DISPLAY) return undefined;
@@ -553,7 +585,7 @@ function updateFitRefusal(m: Merged, display: string): Refused | undefined {
   return refused(
     "invalid_input",
     `the display (its field lines and enforced line) would be ${display.length} characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown, ` +
-      `and the member's current settings alone (the changed fields' old values and the enforced line) would be ${floor}, so no smaller request fits; ` +
+      `and the member's current settings alone (the changed fields' old values, their shortest new values and the enforced line) would be ${floor}, so no request to these fields fits; ` +
       `the owner changes config/agents/${m.row.id}.json by hand (or with \`studio agents set\` for a scalar field, \`studio agents rename\` for the display name), and Wright can change the member once its settings fit`,
   );
 }
