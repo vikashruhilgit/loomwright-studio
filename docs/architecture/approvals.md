@@ -187,7 +187,7 @@ A denied approval grants nothing: the held call never runs, and an identical lat
 
 A held call to a kernel tool with a kernel-side effect is applied by the kernel itself when the owner approves it `once`, in the same transaction as the decision. The agent does not repeat the call: completing an approved state change must not depend on a model repeating a call it can no longer see (invariant 2; the 2026-10-17 live run's step 4, where Wright made no call and the playbook stayed a draft). The owner's approval stays required (D3, invariant 3): only the owner's `once` on a call the rail held applies anything.
 
-**The closed set.** `KERNEL_APPLIED_ACTIONS` in `kernel/src/approvals/store.ts`, full SDK tool names: `mcp__kernel__kernel_playbook_enable`, `mcp__kernel__kernel_agent_create` and `mcp__kernel__kernel_agent_update`. The two charter tools are members before their applier exists: phase 4 item 07 registers it, and until then an owner's `once` on one is recorded `apply_refused: no_applier` and nothing is done. It is code, not a setting, and adding a tool is a code change with its own review. Every member is also in `ALWAYS_HELD_TOOLS`, so `always` never reaches one. The composition enforces that at start, not only a test: a member missing from `ALWAYS_HELD_TOOLS` refuses the start (`InvalidContributionError`, from `approvalApplierOf`). A contributed tool registers its apply as `applyOnApproval` beside `beforeHold`; the kernel builds the applier once at start (`approvalApplierOf`, `kernel/src/tools/server.ts`), and a tool that declares one outside the set refuses the start (`InvalidContributionError`). The approvals module never imports the tool: the API server hands the applier to the decision route.
+**The closed set.** `KERNEL_APPLIED_ACTIONS` in `kernel/src/approvals/store.ts`, full SDK tool names: `mcp__kernel__kernel_playbook_enable`, `mcp__kernel__kernel_agent_create` and `mcp__kernel__kernel_agent_update`. The two charter tools are applied by the agents feature's `charter-tools` part (phase 4 item 07): the kernel creates or changes the crew member itself ([agents: Wright's charter tools](agents.md#wrights-charter-tools)). It is code, not a setting, and adding a tool is a code change with its own review. Every member is also in `ALWAYS_HELD_TOOLS`, so `always` never reaches one. The composition enforces that at start, not only a test: a member missing from `ALWAYS_HELD_TOOLS` refuses the start (`InvalidContributionError`, from `approvalApplierOf`). A contributed tool registers its apply as `applyOnApproval` beside `beforeHold`; the kernel builds the applier once at start (`approvalApplierOf`, `kernel/src/tools/server.ts`), and a tool that declares one outside the set refuses the start (`InvalidContributionError`). The approvals module never imports the tool: the API server hands the applier to the decision route.
 
 **When it applies.** The decision is `once`, the approval's `approval_requested` event has `source: "rail"`, its payload's `tool` is in the set, and the kernel gave an applier. A deny applies nothing and uses no grant. An approval an agent asked for with `kernel_approval_request` is never applied, even with the same payload. With no applier (a composition without one), the decision is as before apart from the message text, and the grant is left for the agent's retry.
 
@@ -197,17 +197,24 @@ A held call to a kernel tool with a kernel-side effect is applied by the kernel 
 
 | `apply_refused` | Why nothing was applied |
 |---|---|
-| `not_found` | the playbook no longer exists |
-| `not_owner` | the playbook is not the requesting agent's (a request with no agent never matches) |
+| `not_lead` | a charter tool's approval was requested by an agent other than Wright (or by a session with none) |
+| `not_found` | the playbook no longer exists; for an update, no crew member has the id |
+| `crew_cannot_draft` | the requesting agent is a registered crew member: crew members don't draft or enable playbooks (a defence: the pre-hold check never holds such a call) |
+| `not_owner` | the playbook is not the requesting agent's, nor a registered crew member's with Wright requesting (a request with no agent never matches) |
 | `turned_off_by_owner` | the owner turned the playbook off after the request |
 | `not_draft` | the playbook is no longer a `draft` |
 | `version_changed` | the approval's `subject_version` is not the playbook's current version, or the playbook was edited after the request |
 | `no_dry_run` | the current version has no `done` dry run |
-| `invalid_input` | the held input fails the tool's shape |
+| `reserved` | an update names `wright`, which is not a crew member (the owner edits `wright.json`) |
+| `agent_off` | the crew member an update names is `off` |
+| `id_taken` | a crew member with the create's id exists, `active` or `off` (the owner made one since the request) |
+| `files_exist` | something is already at one of the create's target paths |
+| `config_changed` | the crew member's settings file changed since the update was requested (its sha256 is not `expected_sha256`) |
+| `invalid_input` | the held input fails the tool's shape; for a charter tool, also a charter (or an update's result) `validateCharter` refuses, or an update that changes nothing |
 | `no_applier` | no applier is registered for a tool in the set (fail closed: the action is never handed back to the agent) |
 | `apply_error` | the applier threw; its writes were rolled back (`the kernel could not apply it: <message, cut to 300 characters>`) |
 
-The first six are the enable's (`EnableRefused` in `kernel/src/playbooks/enable.ts`, [playbooks: enabling](playbooks.md#enabling)); the last three are the decision's.
+`not_owner`, `crew_cannot_draft`, `turned_off_by_owner`, `not_draft`, `version_changed`, `no_dry_run` and the playbook case of `not_found` are the enable's (`EnableRefused` in `kernel/src/playbooks/enable.ts`, [playbooks: enabling](playbooks.md#enabling)). `not_lead`, `reserved`, `agent_off`, `id_taken`, `files_exist`, `config_changed` and the crew-member cases of `not_found` and `invalid_input` are the charter tools' (`CHARTER_TOOL_REFUSALS` in `kernel/src/agents/charter-tools.ts`, [agents: Wright's charter tools](agents.md#wrights-charter-tools)). `invalid_input` (the shape), `no_applier` and `apply_error` are the decision's.
 
 **Other actions keep the agent's retry.** A held call to any other tool (a `gh pr comment`, a `git push`, a write under `~/.claude/`) is never run by the kernel: the owner's approval is a grant the agent's own exact repeat uses once, as above. Its message now names the exact call to repeat ([delivering the decision](#delivering-the-decision)). The rail's hold reason says the same: a held call to any other tool is told to repeat itself once if approved, and a kernel-applied action is told that the kernel applies it and not to repeat the call (`kernel/src/sessions/manager.ts`, branching on `KERNEL_APPLIED_ACTIONS`). A repeat of a kernel-applied action anyway is refused or held anew, never let through.
 
