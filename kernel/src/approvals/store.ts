@@ -60,9 +60,10 @@ export const APPROVAL_AUDIT_KINDS = ["approval_requested", "approval_decided", "
  * this set also refuses the composition.
  *
  * The two charter tools (`kernel_agent_create`, `kernel_agent_update`) are
- * members before their applier exists (phase 4 item 07 registers it): until
- * then an owner's `once` on one is recorded `apply_refused: no_applier` and
- * nothing is done.
+ * applied by the agents feature's `charter-tools` part (phase 4 item 07): the
+ * kernel creates or changes the crew member on the owner's `once`. A
+ * composition without their applier records `apply_refused: no_applier` and
+ * does nothing.
  */
 export const KERNEL_APPLIED_ACTIONS = [
   "mcp__kernel__kernel_playbook_enable",

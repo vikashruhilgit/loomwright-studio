@@ -38,7 +38,7 @@ import { AGENT_CREATED_BY, AVATAR_HUES, AVATAR_SHAPES, RESERVED_AGENT_IDS, isVal
 import type { AgentCreatedBy, AvatarHue, AvatarShape } from "./types.js";
 
 /** The roster's audit kinds (`events.kind`), the per-feature list every roster `appendEvent` uses a member of. */
-export const AGENT_AUDIT_KINDS = ["agent_created", "agent_renamed", "agent_settings_set", "agent_status_changed"] as const;
+export const AGENT_AUDIT_KINDS = ["agent_created", "agent_renamed", "agent_settings_set", "agent_status_changed", "agent_updated"] as const;
 export type AgentAuditKind = (typeof AGENT_AUDIT_KINDS)[number];
 
 /** The largest charter file `studio agents create --from` reads. */
@@ -397,6 +397,13 @@ export interface CreateAgentOptions {
   readonly approvalId?: number | null;
   /** The home dir the protected folders are under (default `os.homedir()`); a seam for tests. */
   readonly homeDir?: string;
+  /**
+   * Leave the files to the caller (item 07's apply, whose transaction is the
+   * decision's): every check and the one transaction run unchanged, no file
+   * is written and `filesError` is null; the caller writes them with
+   * `ensureAgentFiles` after its own transaction commits.
+   */
+  readonly deferFiles?: boolean;
 }
 
 export type CreateAgentRefusal =
@@ -425,7 +432,9 @@ export type CreateAgentResult =
  * transaction, then write the files (exclusive create, mode 0600). A refusal
  * writes nothing. A crash or write error after the commit leaves the row with
  * missing files, which `ensureAgentFiles` re-creates; the write error is
- * returned as `filesError`. Throws `RangeError` for a `by` outside
+ * returned as `filesError`. With `deferFiles`, no file is written here (the
+ * caller's `ensureAgentFiles` writes them once its own enclosing transaction
+ * committed) and `filesError` is null. Throws `RangeError` for a `by` outside
  * `AGENT_CREATED_BY` or an approval id that is not a positive integer (a
  * wiring error).
  */
@@ -456,6 +465,7 @@ export function createAgent(store: Store, dataDir: string, input: unknown, optio
     return getAgent(store, charter.id) as AgentRow;
   });
   if ("ok" in outcome) return outcome;
+  if (options.deferFiles === true) return { ok: true, agent: outcome, files: paths.all, filesError: null };
   let filesError: string | null = null;
   try {
     writeCharterFiles(dataDir, charter);
