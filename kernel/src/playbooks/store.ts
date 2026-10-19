@@ -57,8 +57,13 @@ export const MAX_SLUG_BASE = 48;
 /** The owner's word, on the CLI and the `set` route, for clearing a nullable policy field. */
 export const CLEAR_VALUE = "none";
 
-/** Why a playbook operation was refused; `message` starts with the field it is about, or names the problem. */
-export type PlaybookErrorCode = "invalid_input" | "not_found" | "not_owner" | "owner_off";
+/**
+ * Why a playbook operation was refused; `message` starts with the field it is
+ * about, or names the problem. `crew_cannot_draft`: a registered crew
+ * member's session called a drafting tool (Wright drafts a crew member's
+ * playbooks). `agent_off`: the crew member a playbook is for is `off`.
+ */
+export type PlaybookErrorCode = "invalid_input" | "not_found" | "not_owner" | "owner_off" | "crew_cannot_draft" | "agent_off";
 
 export class PlaybookError extends Error {
   readonly code: PlaybookErrorCode;

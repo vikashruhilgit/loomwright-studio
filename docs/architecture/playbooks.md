@@ -8,36 +8,48 @@ This is mechanism only (invariant 1). No playbook ships preinstalled. Wright dra
 
 ## Wright's tools
 
-Four kernel tools. Their input is untrusted data, and every refusal is an error result whose text names the field or the problem, never a throw through the SDK. A refused call stores nothing: no row, no version, no trigger, no event, no work step, no mirror file. The owning agent is the calling session's agent; a session that runs no named agent is refused. Each tool acts only on the caller's own playbooks (`not_owner` otherwise).
+Four kernel tools. Their input is untrusted data, and every refusal is an error result whose text names the field or the problem, never a throw through the SDK. A refused call stores nothing: no row, no version, no trigger, no event, no work step, no mirror file. The owning agent is the calling session's agent, unless Wright drafts for a crew member ([below](#crew-owned-playbooks)); a session that runs no named agent is refused. Each tool acts only on the caller's own playbooks, and Wright's also on a registered crew member's (`not_owner` otherwise).
 
-- **`kernel_playbook_create(name, intent, trigger, dedupe_key?, priority?, model?, token_limit?, idempotency_key)`** stores a `draft` at version 1 and its linked trigger, and returns `{id, slug, status, version, trigger_id, next_fire_at, changed, mirror}` (`next_fire_at` in UTC, `mirror` the file's path under the data dir). It refuses, naming the field:
+- **`kernel_playbook_create(name, intent, trigger, dedupe_key?, priority?, model?, token_limit?, agent?, idempotency_key)`** stores a `draft` at version 1 and its linked trigger, and returns `{id, slug, status, version, trigger_id, next_fire_at, changed, mirror}` (`next_fire_at` in UTC, `mirror` the file's path under the data dir). It refuses, naming the field:
   - `name`: 1-200 characters, not blank, one line with no control character.
   - `intent`: not empty after trimming, at most 2000 characters, no NUL.
   - `trigger`: `{kind: once, spec}` or `{kind: cron, spec, tz}`, validated only by the triggers feature ([triggers](triggers.md)); its refusal comes back as `trigger: <message>`.
   - `dedupe_key`: a non-empty list of distinct fields from `playbook.id`, `playbook.version`, `trigger.id`, `trigger.scheduled_at`, `date` (stored as a JSON array in `dedupe_key_spec`).
   - `priority`: `low`, `normal` or `high`. `model`: 1-200 characters with no whitespace or control character. `token_limit`: a positive whole number of tokens per day (`token_limit_per_day`).
+  - `agent` (optional, at most 64 characters): omitted, the playbook is the caller's. Only a Wright session may give it (any other caller: `agent: only Wright drafts a playbook for another agent`); `wright` is Wright itself; otherwise it must be an `active` registered crew member: an `off` one is `agent_off: <id> is off; turn it on before drafting its playbooks`, anything else `agent: "<id>" is not an active registered crew member`.
 - **`kernel_playbook_update(id, changes, idempotency_key)`** changes any of `name`, `intent`, `trigger`, `dedupe_key`, `priority`, `model`, `token_limit` (at least one). It refuses the same values as create, a policy field the owner set (the message names the field and says the owner set it), and a playbook the owner turned off.
-- **`kernel_playbook_list()`** lists the caller's playbooks, every status, in id order, each with its linked `trigger_id` and `next_fire_at`.
+- **`kernel_playbook_list()`** lists the caller's playbooks, every status, in id order, each with its `owning_agent`, its linked `trigger_id` and `next_fire_at`. For Wright it also lists every registered crew member's (`active` or `off`), never an unregistered agent id's.
 - **`kernel_playbook_disable(id, idempotency_key)`** turns the caller's playbook off. It refuses one the owner turned off.
 
-Create, update and disable run as a work step keyed `<tool>:session-<id>:<idempotency_key>`, so a repeat in the same session returns the first result. The exception, as for triggers: a repeat after the owner turned the playbook off returns the `owner_off` error, not the stored success.
+Create, update and disable run as a work step keyed `<tool>:session-<id>:<idempotency_key>`, so a repeat in the same session returns the first result. The exception, as for triggers: a repeat after the owner turned the playbook off returns the `owner_off` error, not the stored success. Likewise the crew checks run before the step on every call: a repeat from a crew session is `crew_cannot_draft`, and a repeat of a create for a crew member that has been turned off since is `agent_off`, not the stored success.
 
 Two more tools come from the other parts: `kernel_playbook_dry_run(id, idempotency_key)` ([dry runs](dry-run.md#a-playbooks-dry-run)) and `kernel_playbook_enable(id, idempotency_key)` ([below](#enabling)).
+
+## Crew-owned playbooks
+
+A crew member's scheduled duty is a playbook the member owns (`owning_agent` is its id), bounded by the member's own policy, `never` list and limits rather than Wright's (phase 4 item 08). Code: one rule in `kernel/src/playbooks/drafts.ts` that every part uses. "Crew member" here always means a row in the `agents` table ([agents](agents.md)): an agent id with no row is not crew, its own playbooks stay its own, and Wright's checks against them stay `not_owner`.
+
+- **Wright drafts, the member runs.** Wright drafts a playbook for an `active` crew member with create's `agent`; its linked trigger is owned by the member too, and `playbook_created` names it as `owning_agent`. The playbook's dry run and every fire and run now run as the member ([dry runs](dry-run.md#a-playbooks-dry-run), [playbook runs](playbook-runs.md#the-run)).
+- **A crew member never drafts.** A session whose agent is a registered crew member is refused `crew_cannot_draft` by `kernel_playbook_create`, `kernel_playbook_update`, `kernel_playbook_disable`, `kernel_playbook_dry_run` and `kernel_playbook_enable` (the text is `<tool>: crew_cannot_draft: crew members don't draft playbooks; Wright drafts a crew member's playbooks`), before anything is written; for the enable, the gate's pre-hold check refuses it, so nothing is held. `kernel_playbook_list` still answers a member with its own playbooks.
+- **Wright manages its crew's playbooks.** `kernel_playbook_update`, `kernel_playbook_disable`, `kernel_playbook_dry_run` and `kernel_playbook_enable` from Wright act on any registered crew member's playbook as on its own, `active` or `off` member alike (an `off` member's playbook can still be listed, updated or disabled; its dry run and fires refuse `agent_off`). Every value Wright gives is still a proposal (`*_set_by = 'wright'`), and the owner's off is still final.
+
+The refusals this adds, beside `not_owner` and `owner_off`: `crew_cannot_draft` (a crew session called a drafting tool) and `agent_off` (the member a playbook is for is `off`: at create, at the dry run, and as a fire's run-row error).
 
 ## Enabling
 
 Enabling is Wright's request and the owner's one approval (D3, invariant 3). Code: `kernel/src/playbooks/enable.ts`. `kernel_playbook_enable` is in the fixed `ALWAYS_HELD_TOOLS` set, so the kernel's gate holds every call for the owner, and in `KERNEL_APPLIED_ACTIONS`, so the owner's approval enables it: the kernel applies the held call itself ([approvals: kernel-applied actions](approvals.md#kernel-applied-actions)). Wright never repeats the call. The tool's part only narrows the hold, and gives the kernel the checks and the enable.
 
-**Before the hold** (the tool's `beforeHold`, [the pre-hold check](approvals.md#the-pre-hold-check)). The call is refused, with no approval written, when the playbook is missing, not the caller's, turned off by the owner or not a `draft`, when its idempotency key already has a work step in this session (an earlier enable used it; the refusal says `idempotency_key already used for an enable in this session; use a new key`), or when its current version has no dry run that ended `done` (the refusal says `a dry run of version <n> is required`). Otherwise it is held with a display that `studio approvals` prints: the playbook's name, slug and id, `version <n>`, its agent and schedule, every policy value (`model`, `priority`, `dedupe_key`, `token_limit`, `effort`, `api_key_fallback`) or `not set`, each marked ` (proposed)` where Wright set it and ` (set by owner)` where the owner did, and the dry run's summary. The version is recorded on the approval as `subject_version`.
+**Before the hold** (the tool's `beforeHold`, [the pre-hold check](approvals.md#the-pre-hold-check)). The call is refused, with no approval written, when the caller is a crew member (`crew_cannot_draft`), when the playbook is missing, not one the caller may manage (its own, or for Wright a registered crew member's), turned off by the owner or not a `draft`, when its idempotency key already has a work step in this session (an earlier enable used it; the refusal says `idempotency_key already used for an enable in this session; use a new key`), or when its current version has no dry run that ended `done` (the refusal says `a dry run of version <n> is required`). Otherwise it is held with a display that `studio approvals` prints: the playbook's name, slug and id, `version <n>`, its agent and schedule, every policy value (`model`, `priority`, `dedupe_key`, `token_limit`, `effort`, `api_key_fallback`) or `not set`, each marked ` (proposed)` where Wright set it and ` (set by owner)` where the owner did, and the dry run's summary. The version is recorded on the approval as `subject_version`.
 
 **On the owner's approval** (the tool's `applyOnApproval`, run by the approvals decision when the owner answers `once`, inside the decision's transaction). `enableApproved` checks, in this order, and enables nothing on the first that fails:
 
 1. the playbook exists (`not_found`);
-2. it is the requesting agent's, as the approval's `approval_requested` event names it (`not_owner`);
-3. the owner did not turn it off (`turned_off_by_owner`);
-4. it is a `draft` (`not_draft`);
-5. the approval's `subject_version` is the playbook's current version, and no `playbook_updated` for the playbook has a higher event id than the approval's `approval_requested` (event ids only grow, so a same-second edit is still seen) (`version_changed`);
-6. the current version has a `done` dry run (`no_dry_run`).
+2. the requesting agent, as the approval's `approval_requested` event names it, is not a registered crew member (`crew_cannot_draft`: a defence, since the pre-hold check never holds a crew session's call);
+3. the playbook is the requesting agent's, or the requesting agent is Wright and the playbook is a registered crew member's (`not_owner`);
+4. the owner did not turn it off (`turned_off_by_owner`);
+5. it is a `draft` (`not_draft`);
+6. the approval's `subject_version` is the playbook's current version, and no `playbook_updated` for the playbook has a higher event id than the approval's `approval_requested` (event ids only grow, so a same-second edit is still seen) (`version_changed`);
+7. the current version has a `done` dry run (`no_dry_run`).
 
 Then `enablePlaybook` sets `status = 'enabled'`, only while the row is still a `draft` at that version, and appends `playbook_enabled`, linked to the requesting session. The approval records `applied: The kernel enabled playbook <slug> (#<id>) at version <n> on approval <id>.`, Wright's message says so and `Nothing to repeat.`, and the mirror is rewritten once the decision committed. A refusal is recorded on the approval (`apply_refused` with the reason above, and `apply_detail: The kernel did not enable playbook <slug> (#<id>): <reason> (<detail>).`) and said in Wright's message with `Do not repeat the call.`; the playbook stays as it was. Either way the kernel records the owner's grant as used, so no later call spends it.
 
@@ -98,7 +110,7 @@ The file holds, in order:
 
 1. An H1 with the name.
 2. A line saying the file is generated by the Studio kernel from its `playbooks` table and that edits here are not read.
-3. Status and version.
+3. Status and version, then `- Agent: <id>` for a crew member's playbook (a Wright playbook's file has no agent line, byte for byte as before).
 4. The intent.
 5. The trigger (`cron <expr> in <zone>` or `once at <instant>`) and its next fire in the owner's local time, as of when the file was written.
 6. One line per policy field (dedupe key, priority, model, token limit per day, effort, API-key fallback) with its value or `not set`, followed by `(proposed)` when an agent set it.

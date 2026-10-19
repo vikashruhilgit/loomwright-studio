@@ -4,14 +4,16 @@
 // transaction (`applyOnApproval`; `KERNEL_APPLIED_ACTIONS`). `./index.ts`
 // merges this part with the others in `PLAYBOOK_PARTS`.
 //
-//   tool  kernel_playbook_enable(id, idempotency_key)  (Wright: its own draft playbooks)
+//   tool  kernel_playbook_enable(id, idempotency_key)  (Wright: its own draft playbooks and its crew's)
 //
 // Every call to the tool is held for the owner by the kernel's PreToolUse
 // rail (`ALWAYS_HELD_TOOLS` in `../sessions/policy.ts`), never by this part.
 // Three parts:
 //
 // - `beforeHold`, which the gate asks before it holds the call (it can only
-//   narrow): a playbook that is missing, not the caller's, turned off by the
+//   narrow): a crew member's session (`crew_cannot_draft`: Wright drafts and
+//   enables a crew member's playbooks), a playbook that is missing, not one
+//   the caller may manage (`mayManage`, `./drafts.ts`), turned off by the
 //   owner or not a draft, an idempotency key whose work step already exists
 //   in this session (an earlier enable used it: its stored result would be
 //   replayed, so a new approval could only be spent with no effect), or a
@@ -42,15 +44,17 @@
 //
 // It never edits the triggers module: the linked trigger already exists
 // (item 02), and item 08 makes it fire. The `studio` CLI loads this module:
-// zod, the feature seam, `../loop/*` and this feature's files only.
+// zod, the feature seam, `../loop/*`, the leaf `../agents/registry.js` and
+// this feature's files only.
 import { z } from "zod";
+import { getAgent } from "../agents/registry.js";
 import type { AppliedApproval, ApprovalApplyOutcome } from "../approvals/store.js";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { getWorkStep, runStep } from "../loop/steps.js";
 import type { HeldToolVerdict } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
-import { afterPlaybookStep, named, owningAgent, syncMirror } from "./drafts.js";
+import { CREW_CANNOT_DRAFT_DETAIL, afterPlaybookStep, mayManage, named, refuseCrewDrafting, syncMirror } from "./drafts.js";
 import { DRY_RUN_TOOL_NAME, latestDryRun } from "./dry-run.js";
 import type { DryRunRecord } from "./dry-run.js";
 import { PlaybookError, enablePlaybook, getPlaybook, linkedTriggerOf, refuseIfOwnerTurnedOff } from "./store.js";
@@ -81,7 +85,7 @@ function invalid(message: string): PlaybookError {
  * one-line detail.
  */
 export class EnableRefused extends Error {
-  readonly reason: "not_found" | "not_owner" | "turned_off_by_owner" | "not_draft" | "version_changed" | "no_dry_run";
+  readonly reason: "not_found" | "crew_cannot_draft" | "not_owner" | "turned_off_by_owner" | "not_draft" | "version_changed" | "no_dry_run";
 
   constructor(reason: EnableRefused["reason"], message: string) {
     super(message);
@@ -93,6 +97,7 @@ export class EnableRefused extends Error {
 /** The `PlaybookError` the tool's own paths answer for a refusal, with the text they always gave. */
 function playbookErrorOf(err: EnableRefused): PlaybookError {
   if (err.reason === "not_found" || err.reason === "not_owner") return new PlaybookError(err.reason, err.message);
+  if (err.reason === "crew_cannot_draft") return new PlaybookError("crew_cannot_draft", `crew_cannot_draft: ${err.message}`);
   if (err.reason === "turned_off_by_owner") return new PlaybookError("owner_off", err.message);
   if (err.reason === "version_changed" || err.reason === "no_dry_run") return invalid(`version changed: ${err.message}`);
   return invalid(err.message);
@@ -109,14 +114,18 @@ function asPlaybookError<T>(body: () => T): T {
 
 /**
  * Playbook `id` if `agent` may enable it, in this order: it exists
- * (`not_found`), it is `agent`'s (`not_owner`; a null agent never matches),
- * the owner did not turn it off (`turned_off_by_owner`), and it is a draft
- * (`not_draft`). Throws `EnableRefused`.
+ * (`not_found`), `agent` is not a registered crew member
+ * (`crew_cannot_draft`: a defence, since `beforeHold` never holds a crew
+ * session's call), `agent` may manage it (`not_owner` unless it is its own,
+ * or Wright's request for a registered crew member's; a null agent never
+ * matches), the owner did not turn it off (`turned_off_by_owner`), and it is
+ * a draft (`not_draft`). Throws `EnableRefused`.
  */
 function draftOf(store: Store, id: number, agent: string | null): PlaybookRow {
   const row = getPlaybook(store, id);
   if (row === undefined) throw new EnableRefused("not_found", `no playbook ${id}`);
-  if (agent === null || row.owning_agent !== agent) {
+  if (agent !== null && getAgent(store, agent) !== undefined) throw new EnableRefused("crew_cannot_draft", CREW_CANNOT_DRAFT_DETAIL);
+  if (agent === null || !mayManage(store, agent, row.owning_agent)) {
     throw new EnableRefused("not_owner", `playbook ${row.id} belongs to agent ${row.owning_agent}; an agent can enable only its own playbooks`);
   }
   try {
@@ -129,7 +138,7 @@ function draftOf(store: Store, id: number, agent: string | null): PlaybookRow {
   return row;
 }
 
-/** Playbook `id` if the caller may enable it: it exists, is its own, is not turned off by the owner, and is a draft. */
+/** Playbook `id` if the caller may enable it: it exists, it may manage it, it is not turned off by the owner, and it is a draft. */
 function ownDraft(store: Store, id: number, agent: string): PlaybookRow {
   return asPlaybookError(() => draftOf(store, id, agent));
 }
@@ -198,7 +207,8 @@ function usedKeyMessage(id: number): string {
  */
 function beforeHold(a: { id: number; idempotency_key: string }, ctx: ContributedToolContext): HeldToolVerdict {
   try {
-    const row = ownDraft(ctx.store, a.id, owningAgent(ctx));
+    // A crew member's session is refused before anything else: nothing is held.
+    const row = ownDraft(ctx.store, a.id, refuseCrewDrafting(ctx));
     if (getWorkStep(ctx.store, ctx.stepKey(a.idempotency_key)) !== undefined) {
       return { refuse: `${ENABLE_TOOL_NAME}: ${usedKeyMessage(row.id)} (nothing was held for the owner)` };
     }
@@ -291,7 +301,7 @@ function editedSince(store: Store, id: number, eventId: number): boolean {
 /** What `enableApproved` runs on. */
 export interface EnableApprovedParams {
   readonly playbookId: number;
-  /** The agent the enable is for: the playbook's owning agent must be it (null never matches). */
+  /** The agent that asked for the enable: it must be the playbook's owner, or Wright for a registered crew member's (null never matches). */
   readonly agent: string | null;
   /** The owner's approval: its id, its `approval_requested` event's id and that event's `subject_version`. */
   readonly approval: { readonly id: number; readonly requestedEventId: number; readonly subjectVersion: unknown };
@@ -303,8 +313,8 @@ export interface EnableApprovedParams {
 /**
  * Enable playbook `p.playbookId` on the owner's approval, the one enable both
  * paths use (the kernel's `applyOnApproval` and the tool's handler). Checks,
- * in order: `draftOf` (`not_found`, `not_owner`, `turned_off_by_owner`,
- * `not_draft`); the approval's `subject_version` is the current version and
+ * in order: `draftOf` (`not_found`, `crew_cannot_draft`, `not_owner`,
+ * `turned_off_by_owner`, `not_draft`); the approval's `subject_version` is the current version and
  * no `playbook_updated` came after its request (`version_changed`); the
  * current version has a `done` dry run (`no_dry_run`). Then `enablePlaybook`
  * (which re-checks the version and `draft` in its own transaction; nested in
@@ -402,7 +412,7 @@ function refuseStaleReplay(ctx: ContributedToolContext, a: { id: number; idempot
 const enableTool = defineTool({
   name: ENABLE_TOOL_NAME,
   description:
-    "Ask the owner to enable a draft playbook you own, at its current version. Its current version needs a done kernel_playbook_dry_run first; otherwise this is refused. " +
+    "Ask the owner to enable a draft playbook you own, or (Wright) one of a registered crew member's, at its current version. Its current version needs a done kernel_playbook_dry_run first; otherwise this is refused. " +
     "The kernel always holds this call for the owner, showing the playbook, its values and the dry run; end your turn. " +
     "The owner's approval enables it: the kernel applies it itself, at the version the owner saw, and tells you what it did in a new message; do not repeat the call. " +
     "If it was changed since (a new version), the kernel does not enable it and it stays a draft: dry-run it again and ask again. " +
@@ -412,7 +422,7 @@ const enableTool = defineTool({
   applyOnApproval,
   handler: (a, ctx) =>
     named(ENABLE_TOOL_NAME, () => {
-      const agent = owningAgent(ctx);
+      const agent = refuseCrewDrafting(ctx);
       refuseStaleReplay(ctx, a);
       const first = runStep(ctx.store, ctx.stepKey(a.idempotency_key), () => enableOnApproval(ctx, a, agent), { now: ctx.now });
       return afterPlaybookStep(ctx, first.playbook, first);

@@ -18,8 +18,11 @@
 // Steps, keyed on the event id (delivery is at least once):
 //   a. the payload (a malformed one is a `TypeError`: the loop fails the event);
 //   b-f. ONE work step, `playbook-run`: read the live row and the version's
-//      snapshot, refuse (not found, not enabled or edited since, agent not
-//      routed, model unset, dedupe spec invalid), skip a duplicate, and insert
+//      snapshot, refuse (not found, not enabled or edited since, agent off
+//      (a registered crew member that is `off`: one notification, recorded in
+//      the step so a redelivery records none more), agent not routed (neither
+//      `wright` nor a registered crew member), model unset, dedupe spec
+//      invalid), skip a duplicate, and insert
 //      exactly one run row (the refusal or skip, or `running`). Every refusal
 //      is a return that writes its row inside the step, never a throw (a throw
 //      rolls the step back). A redelivery replays the stored `{run_id,
@@ -27,14 +30,18 @@
 //      The one exception is a payload naming no playbook row at all: a run
 //      row references `playbooks(id)`, so nothing can be recorded and it
 //      throws (the loop fails the event, one notify);
-//   g-i. ONE work step, `runStepAsync("start-session")`: g. Wright's memory
-//      files and settings (permission mode and policy only) and the session
-//      manager, any refusal stored as `{session_id: null, fail}`; then the
+//   g-i. ONE work step, `runStepAsync("start-session")`: g. the agent's
+//      memory files and settings (permission mode and policy only; a crew
+//      member's own, with its `never` list, after re-checking it is not
+//      `off`) and the session manager, any refusal stored as
+//      `{session_id: null, fail}`; then the
 //      live row again (the stored `start` may be stale: the event was parked,
 //      or the kernel died after step b-f committed): not enabled or edited
 //      since, or a same-key run ended `done` meanwhile, stores
-//      `{session_id: null, skip}`; h. the prompt (`playbookPrompt`); i. the
-//      session, with `sessions.playbook` and `playbook_version`, stored as
+//      `{session_id: null, skip}`; h. the prompt (`playbookPrompt` for
+//      Wright, `crewPlaybookPrompt` for a crew member: its own memory files,
+//      never Wright's); i. the session, as the owning agent, cwd its memory
+//      folder, with `sessions.playbook` and `playbook_version`, stored as
 //      `{session_id}`. An admission refusal is rethrown from inside the step
 //      (released, not done) so the loop parks the event;
 //   j. after the step, from its STORED result only (a replay never decides
@@ -48,18 +55,24 @@
 // The `studio` CLI loads this module (through `./index.ts`, and through the
 // brain's handler): besides `node:` builtins it imports only
 // `../api/kill-switch.js`, `../features/contribution.js` types, `../loop/queue.js`, the triggers
-// feature's `cron.js`, the brain's `context.js`, `memory.js`, `messages.js`
-// and `settings.js` (never `../brain/index.js` or `handler.js`: no runtime
-// cycle) and this feature's files; never the Agent SDK or the session manager.
+// feature's `cron.js`, the brain's `context.js`, `memory.js` and `settings.js`
+// (never `../brain/index.js` or `handler.js`: no runtime cycle), the agents
+// feature's leaf modules (`../agents/registry.js`, `settings.js`,
+// `memory.js`, `types.js`: never its index), `../notifications/record.js`
+// and this feature's files; never the Agent SDK or the session manager.
+import { agentMemoryDir, ensureAgentMemoryFiles } from "../agents/memory.js";
+import { getAgent, isRoutable } from "../agents/registry.js";
+import { readAgentSettings } from "../agents/settings.js";
+import { isValidAgentId } from "../agents/types.js";
 import { isKillSwitchEngaged } from "../api/kill-switch.js";
-import { buildContext, defuseWrapperTags } from "../brain/context.js";
+import { MAX_CONTEXT_CHARS, MAX_MEMORY_FILE_CHARS, buildContext, defuseWrapperTags, localTimeLine } from "../brain/context.js";
 import type { LoomwrightSummary } from "../brain/context.js";
-import { ensureMemoryFiles, wrightMemoryDir } from "../brain/memory.js";
-import { BRAIN_AGENTS } from "../brain/messages.js";
+import { cutChars, ensureMemoryFiles, readMemoryFile, wrightMemoryDir } from "../brain/memory.js";
 import { readWrightSettings } from "../brain/settings.js";
 import type { CliApiClient, CliSubcommandOutput, ContributedRoute, ContributedRouteRequest } from "../features/contribution.js";
 import { enqueueEvent } from "../loop/queue.js";
 import type { EventContext, EventSessions } from "../loop/types.js";
+import { recordNotification } from "../notifications/record.js";
 import type { SessionHandle, SessionStatus } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { wallClock } from "../triggers/cron.js";
@@ -322,6 +335,27 @@ function lateSkip(store: Store, e: PlaybookEvent, runId: number, dedupeKey: stri
   return undefined;
 }
 
+/** The notification source of a playbook whose crew member is off. */
+export const AGENT_OFF_SOURCE = "kernel:agent_off";
+
+/**
+ * Tell the owner a playbook did not run because its crew member is `off`:
+ * one notification. Called inside a work step only (the `playbook-run` step,
+ * or the `start-session` step), so a redelivery replays the step's stored
+ * result and records none more.
+ */
+function notifyAgentOff(store: Store, e: PlaybookEvent, slug: string, now: Date): void {
+  recordNotification(
+    store,
+    {
+      source: AGENT_OFF_SOURCE,
+      title: `Playbook not run: ${e.agent} is off`,
+      body: `Playbook ${slug} (#${e.playbook}) fired for ${e.scheduledAt} but its agent ${e.agent} is off; nothing ran. Turn it on with studio agents on ${e.agent}.`,
+    },
+    now,
+  );
+}
+
 /**
  * Steps b-f, inside the `playbook-run` work step: evaluate, then insert
  * exactly one run row. Never throws for a refusal (each is a return that
@@ -343,8 +377,14 @@ function decideRun(store: Store, e: PlaybookEvent, timeZone: string, now: Date):
   if (snapshot === undefined) return row("failed", { error: "not_found" });
   // c. Turned off, or edited (a new version), after the event was queued.
   if (live.status !== "enabled" || live.version !== e.version) return row("skipped_not_enabled", { status: live.status, version: live.version });
-  // d. Only the brain's agents run today (crew is phase 4); the kernel never picks a model.
-  if (!BRAIN_AGENTS.includes(e.agent)) return row("failed", { error: "agent_not_routed" });
+  // d. The owning agent: a registered crew member that is off runs nothing (one notification, in this
+  // step so a redelivery records none more); an id that is neither Wright nor registered is not routed.
+  if (e.agent !== "wright" && getAgent(store, e.agent)?.status === "off") {
+    notifyAgentOff(store, e, snapshot.slug, now);
+    return row("failed", { error: "agent_off" });
+  }
+  if (!isRoutable(store, e.agent)) return row("failed", { error: "agent_not_routed" });
+  // The kernel never picks a model.
   if (snapshot.model === null) return row("failed", { error: "model_unset" });
   // e. The owner's dedupe key: only a fire or run-now that ended `done` counts.
   let dedupeKey: string | null = null;
@@ -383,6 +423,76 @@ export function playbookPrompt(input: PlaybookPromptInput): string {
   const instruction = `Run this playbook. Its intent is your instruction for this session:\n\n${defuseWrapperTags(input.intent)}\n\n`;
   const text = `Playbook ${input.slug} ${input.kind === "fire" ? `fired for ${input.scheduledAt}` : "run now by the owner"}.`;
   return `${heading}${instruction}${buildContext({ dataDir: input.dataDir, source: `playbook:${input.id}`, text, loomwright: input.loomwright, now: input.now, timeZone: input.timeZone })}`;
+}
+
+/** A crew member's own memory files, in the order its playbook prompt shows them. */
+const CREW_PROMPT_FILES = Object.freeze(["role.md", "preferences.md", "people.md", "lessons.md"] as const);
+
+/** Kept free for the cut notes when `MAX_CONTEXT_CHARS` cuts the memory sections (`buildContext`'s reserve). */
+const CREW_NOTE_RESERVE = 1_000;
+
+/** What a crew member's playbook prompt is built from: `PlaybookPromptInput` without Loomwright, plus the member. */
+export type CrewPlaybookPromptInput = Omit<PlaybookPromptInput, "loomwright"> & { readonly agent: string };
+
+function crewCutNote(name: string, n: number, atLeast: boolean, why: string): string {
+  return `… truncated: ${name}, ${atLeast ? "at least " : ""}${n} chars cut (${why})`;
+}
+
+/**
+ * The prompt a crew member's playbook session starts with: the same heading
+ * and instruction as `playbookPrompt` (the intent, wrapper tags defused), then
+ * the member's OWN memory files (`memory/<agent>/role.md`, `preferences.md`,
+ * `people.md`, `lessons.md`, each cut at `MAX_MEMORY_FILE_CHARS`; a missing or
+ * unreadable one is noted), then `## Now` with the local time and the
+ * kernel-built line (`Playbook <slug> fired for <scheduled_at>.` or `… run now
+ * by the owner.`: kernel text, so not wrapped). It never calls `buildContext`
+ * and never reads `memory/wright`: Wright's memory is not the member's. At most
+ * `MAX_CONTEXT_CHARS` characters: the heading, instruction, time and line are
+ * always kept; the memory sections fill the rest in order, and the first one
+ * that does not fit is cut (the ones after it dropped), each with a note.
+ * Throws `TypeError` for an id that is not a crew member's (never reached:
+ * the run checks the agent is registered first).
+ */
+export function crewPlaybookPrompt(input: CrewPlaybookPromptInput): string {
+  if (!isValidAgentId(input.agent)) throw new TypeError(`agent ${JSON.stringify(input.agent)} is not a crew member's id; a crew playbook prompt reads only a crew member's memory`);
+  const heading = `## Playbook ${input.slug} (#${input.id}, version ${input.version}, enabled by the owner)\n\n`;
+  const instruction = `Run this playbook. Its intent is your instruction for this session:\n\n${defuseWrapperTags(input.intent)}\n\n`;
+  const line = `Playbook ${input.slug} ${input.kind === "fire" ? `fired for ${input.scheduledAt}` : "run now by the owner"}.`;
+  const tail = `## Now\n\n${localTimeLine(input.now, input.timeZone)}\n\n${line}\n`;
+  const sections = CREW_PROMPT_FILES.map((file) => {
+    const name = `memory/${input.agent}/${file}`;
+    const read = readMemoryFile(input.dataDir, `${input.agent}/${file}`, MAX_MEMORY_FILE_CHARS);
+    let body = read.problem === null ? read.text.trimEnd() : `(${name} is ${read.problem === "missing" ? "missing" : `unreadable: ${read.problem}`})`;
+    if (read.cut > 0) body += `\n${crewCutNote(name, read.cut, read.atLeast, `file limit ${MAX_MEMORY_FILE_CHARS}`)}`;
+    if (body === "") body = "(empty)";
+    return { name, body };
+  });
+  const render = (name: string, body: string): string => `## ${name}\n\n${body}\n`;
+  const budget = MAX_CONTEXT_CHARS - heading.length - instruction.length - tail.length - CREW_NOTE_RESERVE;
+  const kept: string[] = [];
+  const notes: string[] = [];
+  let used = 0;
+  for (const section of sections) {
+    const full = render(section.name, section.body);
+    const sep = kept.length === 0 ? 0 : 1;
+    if (notes.length === 0 && used + sep + full.length <= budget) {
+      kept.push(full);
+      used += sep + full.length;
+      continue;
+    }
+    // The first section that does not fit is cut to what is left; the rest are dropped. Each is noted.
+    const room = notes.length === 0 ? budget - used - sep - render(section.name, "").length : 0;
+    if (room > 0) {
+      const cut = cutChars(section.body, room);
+      kept.push(render(section.name, cut));
+      used += sep + render(section.name, "").length + cut.length;
+      notes.push(crewCutNote(section.name, section.body.length - cut.length, false, `context limit ${MAX_CONTEXT_CHARS}`));
+    } else {
+      notes.push(crewCutNote(section.name, section.body.length, false, `context limit ${MAX_CONTEXT_CHARS}`));
+    }
+  }
+  const noteText = notes.length === 0 ? "" : `${notes.join("\n")}\n`;
+  return `${heading}${instruction}${[kept.join("\n"), noteText, tail].filter((p) => p !== "").join("\n")}`;
 }
 
 /** What the brain's handler passes through: its clock, zone and Loomwright reader. */
@@ -435,6 +545,80 @@ function startedOf(value: unknown): Started | undefined {
   return undefined;
 }
 
+/** What a crew member's playbook needs to start its session: the run so far. */
+interface CrewStart {
+  readonly e: PlaybookEvent;
+  readonly runId: number;
+  readonly slug: string;
+  readonly intent: string;
+  readonly model: string;
+  readonly dedupeKey: string | null;
+}
+
+/**
+ * Steps g-i for a crew member's playbook, inside the `start-session` step
+ * (the same shape as Wright's): the member is still `active` (else a stored
+ * `agent_off` fail and one notification, in the step so a replay records
+ * none more), its memory files (a write error fails the event too; a missing
+ * `role.md` is `charter_missing`), its own settings (a refusal stored as
+ * Wright's are: `model_unset: set "model" in <file>`, `settings_invalid: …`,
+ * `settings_missing: …`), the session manager, the live row, the crew prompt
+ * and the session as the member: its permission mode, its policy with its
+ * `never` list, cwd `memory/<id>`. Admission applies the member's limits
+ * (the session carries its agent); a refusal is rethrown as for Wright's.
+ */
+async function startCrewSession(ctx: EventContext, deps: PlaybookRunDeps, c: CrewStart): Promise<{ readonly started: Started; readonly handle?: SessionHandle }> {
+  const { store } = ctx;
+  const { e } = c;
+  const dataDir = store.dataDir;
+  // g. The member, still on: it may have been turned off since the run row was written (a parked event).
+  if (getAgent(store, e.agent)?.status !== "active") {
+    notifyAgentOff(store, e, c.slug, deps.now());
+    return { started: { session_id: null, fail: "agent_off" } };
+  }
+  let memory;
+  try {
+    memory = ensureAgentMemoryFiles(dataDir, e.agent);
+  } catch (err) {
+    return { started: { session_id: null, fail: `memory_unwritable: ${messageOf(err)}`, fail_event: true } };
+  }
+  if (!memory.ok) return { started: { session_id: null, fail: memory.error === "charter_missing" ? `charter_missing: ${memory.file}` : `${memory.error}: ${memory.message}` } };
+  const settings = readAgentSettings(dataDir, e.agent);
+  if (!settings.ok) {
+    return { started: { session_id: null, fail: settings.error === "model_unset" ? `model_unset: set "model" in ${settings.file}` : `${settings.error}: ${settings.message}` } };
+  }
+  const sessions = ctx.sessions;
+  if (sessions === undefined) return { started: { session_id: null, fail: "no_session_manager" } };
+  const skip = lateSkip(store, e, c.runId, c.dedupeKey);
+  if (skip !== undefined) return { started: { session_id: null, skip } };
+  // h. The prompt: the member's own memory, never Wright's.
+  const prompt = crewPlaybookPrompt({
+    dataDir,
+    agent: e.agent,
+    id: e.playbook,
+    slug: c.slug,
+    version: e.version,
+    intent: c.intent,
+    kind: e.kind,
+    scheduledAt: e.scheduledAt,
+    now: deps.now(),
+    timeZone: deps.timeZone(),
+  });
+  // i. The session, as the member.
+  const s = settings.settings;
+  const handle = await sessions.startSession({
+    agent: e.agent,
+    prompt,
+    model: c.model,
+    permissionMode: s.permissionMode,
+    cwd: agentMemoryDir(dataDir, e.agent),
+    policy: { ...s.policy, ...(s.never !== undefined ? { never: s.never } : {}) },
+    playbook: e.playbook,
+    playbookVersion: e.version,
+  });
+  return { started: { session_id: handle.id }, handle };
+}
+
 /** A playbook's `message` event (the payload carries `playbook`): see the module comment. */
 export async function handlePlaybookMessage(ctx: EventContext, deps: PlaybookRunDeps): Promise<void> {
   const { event, store } = ctx;
@@ -457,6 +641,12 @@ export async function handlePlaybookMessage(ctx: EventContext, deps: PlaybookRun
   let stored: unknown;
   try {
     stored = await ctx.runStepAsync("start-session", async (): Promise<Started> => {
+      // A crew member's playbook runs as that member (step d let through only Wright or a registered member).
+      if (e.agent !== "wright") {
+        const crew = await startCrewSession(ctx, deps, { e, runId, slug: decision.slug ?? "", intent: decision.intent ?? "", model, dedupeKey });
+        handle = crew.handle;
+        return crew.started;
+      }
       // g. Wright's memory files and settings: only the permission mode and policy are used.
       try {
         ensureMemoryFiles(dataDir);
