@@ -96,3 +96,9 @@ kernel/src/brain/cli.ts
 kernel/src/brain/index.ts
 kernel/test/brain-crew-routing.test.ts
 docs/architecture/brain.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-19T06:30:00Z
+- **Brief:** .supervisor/jobs/done/2026-10-19-crew-message-routing.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/89
