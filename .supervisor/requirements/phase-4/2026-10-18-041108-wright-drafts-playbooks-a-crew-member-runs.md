@@ -88,3 +88,9 @@ kernel/test/playbooks-crew.test.ts
 docs/architecture/playbooks.md
 docs/architecture/dry-run.md
 docs/architecture/playbook-runs.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-19T06:30:38Z
+- **Brief:** .supervisor/jobs/done/2026-10-19-crew-playbooks-drafted-by-wright-run-as-member.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/90
