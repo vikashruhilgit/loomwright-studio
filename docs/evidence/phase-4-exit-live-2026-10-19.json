@@ -1,0 +1,262 @@
+{
+  "test": "phase-4-exit-live",
+  "date": "2026-10-19",
+  "result": "failed — step 1 passed; step 2 failed (Wright's session was offered no kernel tool at all, so no kernel_agent_create was held); steps 3–5 did not run; phase 4 stays not done",
+  "run_by": "Claude (Claude Code session) at the owner's request, owner present and watching the screen (D33); no approval was held, so neither decision was typed",
+  "commit": "9f69a0f1a0c03647459be11d43509dac224eddbb",
+  "dirty_worktree": false,
+  "machine": {
+    "macos": "26.6.2",
+    "node": "v24.11.1",
+    "gh": "gh version 2.102.0 (2026-09-30)"
+  },
+  "wright_model": "claude-sonnet-5-5",
+  "wright_settings": {
+    "added_agent_tools": true,
+    "role_md_lists_crew_tools": false,
+    "note": "the four mcp__kernel__kernel_agent_* names were added to the existing wright.json before the run (backup kept outside the repo); role.md left unchanged"
+  },
+  "service": {
+    "launchd_pid": 15352,
+    "api_json_pid": 15352,
+    "status_pid": 15352
+  },
+  "harness_summary": "/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase-4-exit-live-summary-1792425372739.json",
+  "reviewer_model_requested": null,
+  "steps": {
+    "1_throwaway_repo": {
+      "outcome": "passed",
+      "harness": {
+        "root": "/private/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase4-exit-mvffsd37285098-Ajf3wU",
+        "repo": "/private/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase4-exit-mvffsd37285098-Ajf3wU/repo",
+        "remote": "/private/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase4-exit-mvffsd37285098-Ajf3wU/remote.git",
+        "pushedHead": "f7ad9910d0b9dcbaf7ba41c8d6f119d824fbb535",
+        "localHead": "586c85bf5873f79c43694c2e1f4c07f3a86a6abd",
+        "protected": false
+      },
+      "findings": []
+    },
+    "2_ask_for_reviewer": {
+      "outcome": "failed",
+      "harness": {
+        "ask": {
+          "text": "Create a crew member for me with the id \"phase4-exit-mvffsd37285098\" (exactly that id): a comment-only code reviewer for the git repository at /private/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase4-exit-mvffsd37285098-Ajf3wU/repo. It reads the code and may leave review comments on pull requests with gh pr comment, and takes no other outward action: it must never push, never create, review, edit or close a pull request, never create, comment on, edit or close an issue, never write through gh api, never define an alias and never write settings or hooks files. Give it /private/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase4-exit-mvffsd37285098-Ajf3wU/repo as its one workspace, the Bash prefixes \"git\", \"gh pr view\", \"gh pr diff\" and \"gh pr comment\", and at most one session at once; leave tokens_per_day unset for this test. Propose its model. Draft the charter and ask me to approve it.",
+          "exit": 0,
+          "reply": "I haven't created the crew member. The kernel tools I'm meant to use (task, trigger, notify, approval, and the rest) aren't available in this session, so I can't register a crew member or send a formal approval request. Here is the draft for you to approve or change. Nothing is agreed until you say so.\n\n**Crew member**\n- id: `phase4-exit-mvffsd37285098`\n- role: comment-only code reviewer\n- workspace (the only one): `/private/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase4-exit-mvffsd37285098-Ajf3wU/repo`\n- concurrency: at most 1 session at once\n- tokens_per_day: unset\n- proposed model: `claude-sonnet-5-5`. Reading diffs and writing comments doesn't need the largest model, and you can change this.\n\n**Draft charter**\n1. Read the code in the workspace and review pull requests there.\n2. Its only outward action is leaving review comments with `gh pr comment`.\n3. It must never:\n   - push\n   - create, review, edit or close a pull request\n   - create, comment on, edit or close an…",
+          "stderr": "",
+          "took_ms": 18778
+        },
+        "ask_exit_note": "replied",
+        "create_approvals": [],
+        "reviewer_id": null,
+        "finding": "timed out after 300000 ms waiting for a held kernel_agent_create from the ask"
+      },
+      "owner": {
+        "approval_notification_appeared": null,
+        "studio_approvals_output": null,
+        "never_line_checked": null,
+        "note": "nothing was held, so there was nothing to read or decide"
+      },
+      "store_evidence": {
+        "brain_messages_15 (studio.db, brain_messages)": {
+          "id": 15,
+          "queue_id": 17,
+          "agent": "wright",
+          "source": "ask",
+          "status": "replied",
+          "session_id": 18,
+          "created_at": "2026-10-19T15:56:13.835Z",
+          "updated_at": "2026-10-19T15:56:32.026Z",
+          "detail": null
+        },
+        "sessions_18 (studio.db, sessions)": {
+          "id": 18,
+          "agent": "wright",
+          "status": "completed",
+          "model": "claude-sonnet-5-5",
+          "started_at": "2026-10-19T15:56:14.637Z",
+          "ended_at": "2026-10-19T15:56:32.026Z",
+          "loomwright_path": "~/.claude/plugins/cache/atelier/loomwright/17.10.0"
+        },
+        "events_of_session_18 (studio.db, events where session_id=18)": [
+          {
+            "id": 175,
+            "kind": "session_status",
+            "payload": {
+              "from": null,
+              "to": "starting"
+            }
+          },
+          {
+            "id": 177,
+            "kind": "session_status",
+            "payload": {
+              "from": "starting",
+              "to": "running"
+            }
+          },
+          {
+            "id": 178,
+            "kind": "session_status",
+            "payload": {
+              "from": "running",
+              "to": "completed",
+              "reason": "result_success"
+            }
+          }
+        ],
+        "tool_decision_events_of_session_18": 0,
+        "approvals_requested_on_2026-10-19 (studio.db, approvals)": 0,
+        "agents_rows (studio.db, agents)": 0
+      },
+      "probe": {
+        "what": "After the run, a throwaway vitest probe (scratch dir, not committed; the recipe of docs/evidence/agent-sdk-tool-loading-probe.md) ran three one-turn claude-haiku-4-5 sessions through the kernel's own launch path (SessionManager + createKernelMcpServer, subscription token, fresh data dir, Wright's proposed policy) and recorded each session's system/init tool list; then, with no model, it called the kernel MCP server's own tools/list handler with each agents tool added alone.",
+        "sessions": [
+          {
+            "variant": "A",
+            "label": "active Loomwright (17.10.0), all shipped tools",
+            "contributed_tool_count": 16,
+            "loomwright_path": "~/.claude/plugins/cache/atelier/loomwright/17.10.0",
+            "session_status": "completed",
+            "init_tool_count": 31,
+            "init_kernel_tool_count": 0,
+            "init_kernel_tools": [],
+            "has_ToolSearch": false,
+            "mcp_servers": [
+              {
+                "name": "kernel",
+                "status": "connected",
+                "source": "sdk"
+              }
+            ],
+            "claude_code_version": "2.1.284",
+            "reply": "NONE"
+          },
+          {
+            "variant": "B",
+            "label": "Loomwright 17.6.1 by path, all shipped tools",
+            "contributed_tool_count": 16,
+            "loomwright_path": "~/.claude/plugins/cache/atelier/loomwright/17.6.1",
+            "session_status": "completed",
+            "init_tool_count": 31,
+            "init_kernel_tool_count": 0,
+            "init_kernel_tools": [],
+            "has_ToolSearch": false,
+            "mcp_servers": [
+              {
+                "name": "kernel",
+                "status": "connected",
+                "source": "sdk"
+              }
+            ],
+            "claude_code_version": "2.1.284",
+            "reply": "NONE"
+          },
+          {
+            "variant": "C",
+            "label": "active Loomwright (17.10.0), without the agents contribution",
+            "contributed_tool_count": 12,
+            "loomwright_path": "~/.claude/plugins/cache/atelier/loomwright/17.10.0",
+            "session_status": "completed",
+            "init_tool_count": 49,
+            "init_kernel_tool_count": 18,
+            "init_kernel_tools": [
+              "mcp__kernel__kernel_approval_request",
+              "mcp__kernel__kernel_loomwright_capabilities",
+              "mcp__kernel__kernel_notify",
+              "mcp__kernel__kernel_playbook_create",
+              "mcp__kernel__kernel_playbook_disable",
+              "mcp__kernel__kernel_playbook_dry_run",
+              "mcp__kernel__kernel_playbook_enable",
+              "mcp__kernel__kernel_playbook_list",
+              "mcp__kernel__kernel_playbook_update",
+              "mcp__kernel__kernel_request_stop",
+              "mcp__kernel__kernel_schedule_wakeup",
+              "mcp__kernel__kernel_task_create",
+              "mcp__kernel__kernel_task_get",
+              "mcp__kernel__kernel_task_list",
+              "mcp__kernel__kernel_task_update",
+              "mcp__kernel__kernel_trigger_list",
+              "mcp__kernel__kernel_trigger_register",
+              "mcp__kernel__kernel_trigger_remove"
+            ],
+            "has_ToolSearch": false,
+            "mcp_servers": [
+              {
+                "name": "kernel",
+                "status": "connected",
+                "source": "sdk"
+              }
+            ],
+            "claude_code_version": "2.1.284",
+            "reply": "mcp__kernel__kernel_approval_request, mcp__kernel__kernel_loomwright_capabilities, mcp__kernel__kernel_notify, mcp__kernel__kernel_playbook_create, mcp__kernel__kernel_playbook_disable, mcp__kernel__k"
+          }
+        ],
+        "tools_list_without_model": {
+          "all 16 contributed tools": "FAIL: TypeError: Cannot read properties of undefined (reading 'push')",
+          "no agents tools": "OK, 18 tools",
+          "only kernel_agent_message added": "OK, 19 tools",
+          "only kernel_agent_update added": "OK, 19 tools",
+          "only kernel_agent_list added": "OK, 19 tools",
+          "only kernel_agent_create added": "FAIL: TypeError: Cannot read properties of undefined (reading 'push')"
+        },
+        "stack_top": [
+          "recordProcessor (kernel/node_modules/zod/v4/core/json-schema-processors.js:640:30)",
+          "inst._zod.processJSONSchema (kernel/node_modules/zod/v4/classic/schemas.js:1019:69)",
+          "(bundled zod JSON Schema walker in @anthropic-ai/claude-agent-sdk/sdk.mjs:116 and :118)"
+        ],
+        "versions": {
+          "@anthropic-ai/claude-agent-sdk": "0.3.284",
+          "zod (kernel)": "4.6.5",
+          "claude_code": "2.1.284"
+        },
+        "control_check": "z.toJSONSchema from the kernel's own zod converts all 16 contributed shapes without error, so a same-zod conversion does not reproduce it; only the SDK's mixed path does"
+      },
+      "findings": [
+        "Root cause: kernel_agent_create's input shape is charter: z.record(z.string(), z.unknown()) (kernel/src/agents/charter-tools.ts:298), the only z.record among shipped tools. The Agent SDK builds each tool's JSON Schema with a zod walker bundled in sdk.mjs that hands a record to the kernel's zod 4.6.5 recordProcessor, which throws. One throwing schema fails the whole tools/list, so the CLI shows the kernel server as connected while offering none of its tools. Every Wright session since item 07 (PR #91) merged is affected, not only crew creation.",
+        "Ruled out: Loomwright 17.10.0 (17.6.1 by path fails the same way) and Node (v24.11.1 also in phase 3's passing run).",
+        "Why CI missed it: no test lists tools through the SDK's createSdkMcpServer; the kernel-tool tests call handlers directly, and the deterministic exit test uses a stand-in Wright.",
+        "Wright's reply correctly said its kernel tools were unavailable and did not claim to have created anything.",
+        "New item: .supervisor/requirements/phase-4/2026-10-20-004500-every-kernel-tool-schema-serialises-through-the-sdk-and-the-kernel-checks-it-at-start.md"
+      ]
+    },
+    "3_owner_approves_create": {
+      "outcome": "not run",
+      "findings": [
+        "Not reached: no create approval was held."
+      ]
+    },
+    "4_push_denied": {
+      "outcome": "not run",
+      "findings": [
+        "Not reached."
+      ]
+    },
+    "5_comment_held_and_denied": {
+      "outcome": "not run",
+      "findings": [
+        "Not reached."
+      ]
+    }
+  },
+  "run_tag": "phase4-exit-mvffsd37285098",
+  "cleanup": {
+    "harness": [
+      {
+        "pending_approvals_left_as_is": {
+          "creates": [],
+          "member_approvals": []
+        }
+      },
+      {
+        "sessions_still_running": []
+      },
+      {
+        "throwaway_repo": "/private/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase4-exit-mvffsd37285098-Ajf3wU",
+        "remote_ref_at_cleanup": "f7ad9910d0b9dcbaf7ba41c8d6f119d824fbb535",
+        "removed": true
+      }
+    ],
+    "left_in_place": "nothing from the harness: no member was created (agents table empty), no approval was held, the throwaway repo was removed with the remote's main unchanged (f7ad991). Outside the harness: wright.json keeps the four added crew tool names, which the rerun needs."
+  }
+}
