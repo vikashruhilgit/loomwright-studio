@@ -89,3 +89,9 @@ Recorded 2026-10-18 in the product-owner session (every option the owner chose w
 kernel/src/agents/charter-tools.ts
 kernel/test/agents-charter-tools.test.ts
 docs/architecture/agents.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-19T06:30:20Z
+- **Brief:** .supervisor/jobs/done/2026-10-19-wright-charter-tools-create-update-list.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/91
