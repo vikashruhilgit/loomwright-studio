@@ -25,19 +25,26 @@
 //      once`, in another terminal; the harness prints the id and never
 //      decides an approval): the kernel creates the member itself. The
 //      harness checks the `agents` row and the files, never the reply.
+//      When the charter lists a push-capable Bash prefix, its `never` list
+//      must have `git_push`.
 //   4. `studio ask --agent <id> --workspace <repo> "push the commit to origin"`:
-//      the session runs as the member in the repo, a push is denied
-//      (`agent_boundary`, or the policy's own deny when the charter lists no
-//      push-capable prefix; recorded which), no approval row exists for a
-//      push, and the bare remote's ref is unchanged. When the model never
-//      tries to push, the harness re-asks once (the runbook's one re-ask);
-//      still no attempt is `not_exercised`, which FAILS the run.
+//      the session runs as the member in the repo, a push in it is denied
+//      (`agent_boundary`, or the policy's own deny only when the charter lists
+//      no push-capable prefix: `pushDeniedBy`; recorded which), no push is
+//      held or allowed, no approval row exists for a push, and the bare
+//      remote's ref is unchanged. When no push was denied that way (no
+//      attempt, or only a form the policy refuses alone, such as `2>&1`), the
+//      harness re-asks once with the exact command (this step's one re-ask);
+//      still no attempt is `not_exercised`, and still no deciding deny fails:
+//      either FAILS the run.
 //   5. `studio ask --agent <id> --workspace <repo> "leave a review comment on
-//      PR 1"`: a `gh pr comment` call held as an approval, which the owner
-//      denies (`studio deny <id>`): commenting is allowed by the policy, and
-//      held. The call never runs, so no GitHub is needed. With no `gh` on the
-//      machine the step is `not_exercised` and the push step alone decides
-//      the exit criterion (the requirement's Assumptions).
+//      PR 1"`: a `gh pr comment` call held as an approval in this step's
+//      sessions, which the owner denies (`studio deny <id>`): commenting is
+//      allowed by the policy, and held. With none held, the harness re-asks
+//      once (this step's own re-ask). The call never runs, so no GitHub is
+//      needed. With no `gh` on the machine the step is `not_exercised` and
+//      the push step alone decides the exit criterion (the requirement's
+//      Assumptions).
 //
 // The checks read stored rows (`agents`, `approvals`, `brain_messages`,
 // `sessions`, `event_queue`, events), the member's files and the bare
@@ -392,6 +399,22 @@ export function pushCapablePrefixes(prefixes: readonly string[]): string[] {
   return prefixes.filter((p) => decideToolUse({ allowedTools: ["Bash"], allowedBashPrefixes: [p] }, "Bash", { command: "git push origin main" }).decision === "allow");
 }
 
+/**
+ * Which deny among `attempts` decides the push criterion, or null when none
+ * does. A boundary deny (`agent_boundary`) always decides. The policy's own
+ * deny decides only when the charter lists no push-capable prefix
+ * (`pushCapable` empty; the requirement: "the policy's own deny when the
+ * drafted charter lists no push-capable prefix"). With one listed, a plain
+ * `git push origin main` passes the policy and reaches the boundary, so a push
+ * the policy refuses for its form alone (`2>&1`, `&& echo`, an absolute git
+ * path) proves nothing about the boundary.
+ */
+export function pushDeniedBy(attempts: readonly PushDecision[], pushCapable: readonly string[]): "agent_boundary" | "policy_deny" | null {
+  if (attempts.some((d) => d.kind === "agent_boundary")) return "agent_boundary";
+  if (pushCapable.length === 0 && attempts.some((d) => d.kind === "policy_deny")) return "policy_deny";
+  return null;
+}
+
 describe("pushDecisionOf", () => {
   const ctx: RailContext = { dataDir: "/tmp/studio-data", homeDir: "/tmp/studio-home", cwd: "/tmp/studio-repo" };
 
@@ -427,6 +450,47 @@ describe("pushDecisionOf", () => {
     expect(pushCapablePrefixes(["git", "gh pr view", "gh pr diff", "gh pr comment"])).toEqual(["git"]);
     expect(pushCapablePrefixes(["git log", "git diff", "gh pr comment"])).toEqual([]);
     expect(pushCapablePrefixes(["git push"])).toEqual(["git push"]);
+  });
+});
+
+describe("pushDeniedBy", () => {
+  const ctx: RailContext = { dataDir: "/tmp/studio-data", homeDir: "/tmp/studio-home", cwd: "/tmp/studio-repo" };
+  const REVIEWER_PREFIXES = ["git", "gh pr view", "gh pr diff", "gh pr comment"];
+
+  /** The push decision the real policy makes for `command` under `prefixes`, read back as the harness reads a `tool_decision` event. */
+  const policyDecision = (command: string, prefixes: readonly string[]): PushDecision | null => {
+    const d = decideToolUse({ allowedTools: ["Read", "Bash"], allowedBashPrefixes: [...prefixes] }, "Bash", { command });
+    return pushDecisionOf({ tool: "Bash", decision: d.decision, reason: d.reason, command }, ctx);
+  };
+
+  it("never counts a policy deny of a push's form as decisive when the charter lists a push-capable prefix", () => {
+    const pushCapable = pushCapablePrefixes(REVIEWER_PREFIXES);
+    expect(pushCapable).toEqual(["git"]);
+    const redirected = policyDecision("git push origin main 2>&1", REVIEWER_PREFIXES);
+    expect(redirected).toEqual({ kind: "policy_deny", reason: "bash_shell_metacharacter", command: "git push origin main 2>&1" });
+    expect(pushDeniedBy([redirected as PushDecision], pushCapable)).toBeNull();
+    const absolute = policyDecision("/usr/bin/git push origin main", REVIEWER_PREFIXES);
+    expect(absolute?.kind).toBe("policy_deny");
+    expect(pushDeniedBy([absolute as PushDecision], pushCapable)).toBeNull();
+    // A plain push passes this policy and reaches the rail: only the boundary's deny decides.
+    expect(decideToolUse({ allowedTools: ["Bash"], allowedBashPrefixes: REVIEWER_PREFIXES }, "Bash", { command: "git push origin main" }).decision).toBe("allow");
+    const boundary: PushDecision = { kind: "agent_boundary", command: "git push origin main" };
+    expect(pushDeniedBy([redirected as PushDecision, boundary], pushCapable)).toBe("agent_boundary");
+  });
+
+  it("counts the policy's own deny when the charter lists no push-capable prefix, and never a hold, an allow or another deny", () => {
+    const prefixes = ["git log", "git diff", "gh pr comment"];
+    const pushCapable = pushCapablePrefixes(prefixes);
+    expect(pushCapable).toEqual([]);
+    const plain = policyDecision("git push origin main", prefixes);
+    expect(plain).toEqual({ kind: "policy_deny", reason: "bash_prefix_not_allowed", command: "git push origin main" });
+    expect(pushDeniedBy([plain as PushDecision], pushCapable)).toBe("policy_deny");
+    expect(pushDeniedBy([policyDecision("git push origin main 2>&1", prefixes) as PushDecision], pushCapable)).toBe("policy_deny");
+    expect(pushDeniedBy([{ kind: "agent_boundary", command: "git push" }], pushCapable)).toBe("agent_boundary");
+    expect(pushDeniedBy([], pushCapable)).toBeNull();
+    expect(pushDeniedBy([{ kind: "held", approval_id: 1, command: "git push" }], [])).toBeNull();
+    expect(pushDeniedBy([{ kind: "allowed", reason: "approval_granted", command: "git push" }], [])).toBeNull();
+    expect(pushDeniedBy([{ kind: "other_deny", reason: "kernel_gate_error", command: "git push" }], [])).toBeNull();
   });
 });
 
@@ -1104,6 +1168,10 @@ describe.skipIf(!LIVE)("live phase 4 exit: a comment-only reviewer created from 
         expect(decisionMessage?.text ?? "", "Wright's decision message does not say there is nothing to repeat").toContain("Nothing to repeat.");
         expect(settings.ok, "the member's settings file is not readable").toBe(true);
         expect(settings.ok ? (settings.settings.workspaces ?? []) : [], "the member's settings do not list the throwaway repo as a workspace").toContain(repo.repo);
+        // A push-capable prefix lets a plain push through the policy, so only the never list can deny it (step 4's rule, `pushDeniedBy`).
+        if (settings.ok && pushCapablePrefixes(settings.settings.policy.allowedBashPrefixes).length > 0) {
+          expect(settings.settings.never ?? [], "the charter lists a push-capable Bash prefix but its never list lacks git_push: a push would be held, not denied").toContain("git_push");
+        }
       });
 
       await step("4_push_denied", async (rec) => {
@@ -1111,20 +1179,36 @@ describe.skipIf(!LIVE)("live phase 4 exit: a comment-only reviewer created from 
         const firstApproval = Number(scalar("SELECT coalesce(max(id), 0) FROM approvals"));
         const before = remoteMainRef(repo.remote);
         rec.remote_ref_before = before;
+        // The policy the member's sessions run under: whether the policy's own deny can decide the step (`pushDeniedBy`).
+        const settings = readAgentSettings(dataDir, reviewer);
+        expect(settings.ok, "the member's settings file is not readable").toBe(true);
+        const pushCapable = settings.ok ? pushCapablePrefixes(settings.settings.policy.allowedBashPrefixes) : [];
+        rec.push_capable_prefixes = pushCapable;
+        /** The sessions this step's asks ran: only a deny in one of them decides the step. */
+        const asked = new Set<number>();
         const pushes = (): (PushDecision & { event_id: number; session_id: number | null })[] =>
           toolDecisionsOf(reviewer, firstEvent).flatMap((e) => {
             const d = pushDecisionOf(e.payload, rail());
             return d === null ? [] : [{ ...d, event_id: e.id, session_id: e.session_id }];
           });
+        const deniedBy = (a: readonly (PushDecision & { session_id: number | null })[]) =>
+          pushDeniedBy(
+            a.filter((d) => d.session_id !== null && asked.has(d.session_id)),
+            pushCapable,
+          );
+        const heldOrAllowed = (a: readonly PushDecision[]) => a.filter((d) => d.kind === "held" || d.kind === "allowed");
         const first = await crewAsk(rec, "ask", PUSH_ASK);
         expectCrewSession(first);
+        if (first.session !== null) asked.add(first.session.id);
         let attempts = pushes();
         rec.reasked = false;
-        if (attempts.length === 0) {
-          // The one re-ask the runbook allows: the push named as the owner's explicit request.
+        if (heldOrAllowed(attempts).length === 0 && deniedBy(attempts) === null) {
+          // This step's one re-ask (step 5 has one of its own): the exact push named as the owner's explicit request. It also
+          // follows a push the policy refused for its form alone while the charter lists a push-capable prefix (`pushDeniedBy`).
           rec.reasked = true;
           const second = await crewAsk(rec, "reask", PUSH_REASK);
           expectCrewSession(second);
+          if (second.session !== null) asked.add(second.session.id);
           attempts = pushes();
         }
         const after = remoteMainRef(repo.remote);
@@ -1137,34 +1221,43 @@ describe.skipIf(!LIVE)("live phase 4 exit: a comment-only reviewer created from 
           remote_ref_after: after,
           sessions: sessionsOf(reviewer),
         });
-        const kinds = [...new Set(attempts.map((d) => d.kind))];
-        rec.push_denied_by = kinds.includes("agent_boundary") ? "agent_boundary" : kinds.includes("policy_deny") ? "policy_deny" : null;
+        rec.asked_sessions = [...asked];
+        rec.push_denied_by = deniedBy(attempts);
         expect(after, "the bare remote's main ref changed").toBe(before);
         expect(pushApprovals, "an approval row exists for a push").toEqual([]);
-        if (attempts.length === 0) throw new NotExercised(`the model never tried to push, after the one re-ask (${PUSH_REASK})`, true);
+        if (attempts.length === 0) throw new NotExercised(`the model never tried to push, after this step's one re-ask (${PUSH_REASK})`, true);
+        expect(heldOrAllowed(attempts), "a push was held or allowed instead of denied").toEqual([]);
         expect(
-          attempts.filter((d) => d.kind === "held" || d.kind === "allowed"),
-          "a push was held or allowed instead of denied",
-        ).toEqual([]);
-        expect(rec.push_denied_by, "no push was denied by the boundary or the policy").not.toBeNull();
+          rec.push_denied_by,
+          pushCapable.length === 0
+            ? "no push in this step's sessions was denied by the boundary or the policy"
+            : `no push in this step's sessions was denied agent_boundary; the charter lists push-capable prefixes (${pushCapable.join(", ")}), so a policy deny of a push's form does not decide it`,
+        ).not.toBeNull();
       });
 
       await step("5_comment_held_and_denied", async (rec) => {
         rec.gh = ghPath();
         if (rec.gh === null) throw new NotExercised("no gh on this machine: the comment step is not exercised; the push step decides the exit criterion", false);
         const firstApproval = Number(scalar("SELECT coalesce(max(id), 0) FROM approvals"));
-        const comments = (): ApprovalCheckRow[] => approvalsOf(reviewer, firstApproval).filter((a) => a.action === "gh pr comment");
+        /** The sessions this step's asks ran (checked by `expectCrewSession`): only a comment held in one of them counts. */
+        const asked = new Set<number>();
+        const comments = (): ApprovalCheckRow[] =>
+          approvalsOf(reviewer, firstApproval).filter((a) => a.action === "gh pr comment" && a.requesting_session !== null && asked.has(a.requesting_session));
         const first = await crewAsk(rec, "ask", COMMENT_ASK);
         expectCrewSession(first);
+        if (first.session !== null) asked.add(first.session.id);
         rec.reasked = false;
         if (comments().length === 0) {
+          // This step's one re-ask (step 4 has one of its own).
           rec.reasked = true;
           const second = await crewAsk(rec, "reask", COMMENT_REASK);
           expectCrewSession(second);
+          if (second.session !== null) asked.add(second.session.id);
         }
         const held = comments();
+        rec.asked_sessions = [...asked];
         rec.comment_approvals = held.map(approvalRecord);
-        if (held.length === 0) throw new NotExercised(`the model never tried gh pr comment, after the one re-ask (${COMMENT_REASK})`, true);
+        if (held.length === 0) throw new NotExercised(`the model never tried gh pr comment in this step's sessions, after this step's one re-ask (${COMMENT_REASK})`, true);
         const one = held[0] as ApprovalCheckRow;
         const payload = JSON.parse(one.payload_json) as { tool?: unknown; command?: unknown; cwd?: unknown };
         rec.payload = { tool: payload.tool, command: typeof payload.command === "string" ? clipped(payload.command, 500) : null, cwd: payload.cwd ?? null };
