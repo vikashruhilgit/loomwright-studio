@@ -76,7 +76,7 @@
           "model": "claude-sonnet-5-5",
           "started_at": "2026-10-19T15:56:14.637Z",
           "ended_at": "2026-10-19T15:56:32.026Z",
-          "loomwright_path": "/Users/vikashruhil/.claude/plugins/cache/atelier/loomwright/17.10.0"
+          "loomwright_path": "~/.claude/plugins/cache/atelier/loomwright/17.10.0"
         },
         "events_of_session_18 (studio.db, events where session_id=18)": [
           {
@@ -116,7 +116,7 @@
             "variant": "A",
             "label": "active Loomwright (17.10.0), all shipped tools",
             "contributed_tool_count": 16,
-            "loomwright_path": "/Users/vikashruhil/.claude/plugins/cache/atelier/loomwright/17.10.0",
+            "loomwright_path": "~/.claude/plugins/cache/atelier/loomwright/17.10.0",
             "session_status": "completed",
             "init_tool_count": 31,
             "init_kernel_tool_count": 0,
@@ -136,7 +136,7 @@
             "variant": "B",
             "label": "Loomwright 17.6.1 by path, all shipped tools",
             "contributed_tool_count": 16,
-            "loomwright_path": "/Users/vikashruhil/.claude/plugins/cache/atelier/loomwright/17.6.1",
+            "loomwright_path": "~/.claude/plugins/cache/atelier/loomwright/17.6.1",
             "session_status": "completed",
             "init_tool_count": 31,
             "init_kernel_tool_count": 0,
@@ -156,7 +156,7 @@
             "variant": "C",
             "label": "active Loomwright (17.10.0), without the agents contribution",
             "contributed_tool_count": 12,
-            "loomwright_path": "/Users/vikashruhil/.claude/plugins/cache/atelier/loomwright/17.10.0",
+            "loomwright_path": "~/.claude/plugins/cache/atelier/loomwright/17.10.0",
             "session_status": "completed",
             "init_tool_count": 49,
             "init_kernel_tool_count": 18,
