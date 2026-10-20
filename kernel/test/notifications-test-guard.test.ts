@@ -75,8 +75,9 @@ describe.skipIf(!notifierGuardInstalled())("the notifier guard (STUDIO_LIVE unse
   });
 
   it("(a) judges a shell: true by-file call by the command's first word, refusing a notifier and running anything else", () => {
-    expect(() => childProcess.spawn("osascript -e x", { shell: true })).toThrow(`${REFUSED}osascript (`);
-    expect(() => childProcess.spawnSync("terminal-notifier -message x", { shell: true })).toThrow(`${REFUSED}terminal-notifier (`);
+    // Non-posting commands on an empty PATH: if the guard regresses, sh fails to find them (127) instead of posting.
+    expect(() => childProcess.spawn("osascript -e 'return 1'", { shell: true, env: { PATH: "/nonexistent" } })).toThrow(`${REFUSED}osascript (`);
+    expect(() => childProcess.spawnSync("terminal-notifier -help", { shell: true, env: { PATH: "/nonexistent" } })).toThrow(`${REFUSED}terminal-notifier (`);
     expect(takeNotifierRefusals()).toEqual([{ file: "osascript" }, { file: "terminal-notifier" }]);
 
     const r = childProcess.spawnSync("/bin/echo osascript", { shell: true, encoding: "utf8" });
