@@ -662,11 +662,24 @@ describe("studio agents set (AC5)", () => {
     });
     rmSync(file, { recursive: true });
 
-    // A compact file the reader accepts, which set's two-space rewrite would push over the limit.
-    const workspaces: string[] = [];
-    const compact = () => JSON.stringify({ ...settings, workspaces });
-    while (Buffer.byteLength(compact()) < MAX_SETTINGS_BYTES - 200) workspaces.push(join(root, "work", `${"w".repeat(80)}${workspaces.length}`));
-    writeFileSync(file, compact());
+    // A compact file exactly MAX_SETTINGS_BYTES long, which the reader accepts and set's two-space
+    // rewrite would push over the limit. Filled in one pass with a few long workspace paths, the
+    // last one sized to land on the limit: every read checks each workspace against the protected
+    // folders and the data dir (several realpath walks each), so hundreds of short paths made this
+    // test's reads take seconds on a loaded machine.
+    const PATH_BYTES = 1000;
+    const workspace = (i: number, bytes: number) => {
+      const head = join(root, "work", `${i}-`);
+      return `${head}${"w".repeat(bytes - head.length)}`;
+    };
+    const compactSize = (paths: readonly string[]) => Buffer.byteLength(JSON.stringify({ ...settings, workspaces: paths }));
+    // Each path adds its length plus two quotes and a comma; one fewer than fits leaves room for the last.
+    const whole = Math.floor((MAX_SETTINGS_BYTES - compactSize([])) / (PATH_BYTES + 3)) - 1;
+    const workspaces = Array.from({ length: whole }, (_, i) => workspace(i, PATH_BYTES));
+    workspaces.push(workspace(whole, PATH_BYTES + MAX_SETTINGS_BYTES - compactSize([...workspaces, workspace(whole, PATH_BYTES)])));
+    const compact = JSON.stringify({ ...settings, workspaces });
+    expect(Buffer.byteLength(compact)).toBe(MAX_SETTINGS_BYTES);
+    writeFileSync(file, compact);
     expect(readAgentSettings(env.dataDir, "mason", { homeDir }).ok).toBe(true);
     const full = readFileSync(file);
     const r = await studio("agents", "set", "mason", "model", "claude-haiku-4-5");
