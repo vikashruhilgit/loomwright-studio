@@ -12,6 +12,7 @@ import { phase2Tables } from "./011_phase_2_tables.js";
 import { brainMessages } from "./012_brain_messages.js";
 import { playbooks } from "./013_playbooks.js";
 import { agentRegistry } from "./014_agents.js";
+import { sessionCwd } from "./015_session_cwd.js";
 import type { Migration } from "./types.js";
 
 export type { Migration } from "./types.js";
@@ -32,4 +33,5 @@ export const migrations: readonly Migration[] = [
   brainMessages,
   playbooks,
   agentRegistry,
+  sessionCwd,
 ];

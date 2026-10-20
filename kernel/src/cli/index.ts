@@ -30,6 +30,7 @@ import type { Readable, Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import type { StatusBody } from "../api/server.js";
 import { API_TOKEN_KEYCHAIN_SERVICE } from "../api/token.js";
+import { shown } from "../approvals/cli.js";
 import { securityCliKeychain } from "../auth/keychain.js";
 import { PHASE1_RESERVED, PHASE1_SUBCOMMANDS, mergeContributions } from "../features/contribution.js";
 import type { CliApiClient, ContributedSubcommand, FeatureContribution, RouteMethod } from "../features/contribution.js";
@@ -304,7 +305,9 @@ export function formatStatus(status: StatusBody): string {
   }
   lines.push(`sessions: ${status.sessions.length} running`);
   for (const s of status.sessions) {
-    lines.push(`  #${s.id} ${s.agent ?? "-"} ${s.model ?? "-"} ${s.status}, pgid ${s.pgid ?? "-"}, started ${s.started_at ?? "-"}`);
+    // The cwd is stored text a folder name chose: escaped (`shown`). `?? null`: a daemon older than this CLI does not send the field.
+    const cwd = s.cwd ?? null;
+    lines.push(`  #${s.id} ${s.agent ?? "-"} ${s.model ?? "-"} ${s.status}, pgid ${s.pgid ?? "-"}, started ${s.started_at ?? "-"}, cwd ${cwd === null ? "-" : shown(cwd)}`);
   }
   // `?? []`: a daemon older than this CLI does not send the field.
   const unconfirmed = status.kill_unconfirmed ?? [];

@@ -1801,7 +1801,8 @@ describe("resumeSession (AC6)", () => {
     });
     expect(await b.manager.reapOrphans()).toEqual([{ sessionId: handle.id, pgid, status: "orphaned", reason: "leader_unverified" }]);
     expect(b.killed).toEqual([]);
-    const err = await b.manager.resumeSession(handle.id, resumeParams).catch((e: unknown) => e);
+    // Resumed in the folder it started in (`startParams`' tmp): another one is refused `cwd_changed` before the group check.
+    const err = await b.manager.resumeSession(handle.id, { ...resumeParams, cwd: tmp }).catch((e: unknown) => e);
     expect((err as SessionError).code).toBe("not_resumable");
     expect(b.calls).toHaveLength(0);
     expect(b.spawnCalls).toHaveLength(0);

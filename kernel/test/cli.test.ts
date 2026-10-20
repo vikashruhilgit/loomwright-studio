@@ -113,6 +113,24 @@ describe("studio CLI", () => {
     expect(c.fetchSpy.mock.calls[0]?.[0]).toBe(`http://127.0.0.1:${server.port}/status`);
   });
 
+  it("status prints each running session's recorded cwd after its line, escaped (shown), `-` when none or from an older daemon", async () => {
+    store.prepare("INSERT INTO sessions (agent, status, model, pgid, started_at, cwd) VALUES ('mason', 'running', 'claude-haiku-4-5', 78, '2026-10-02T09:00:00.000Z', ?)").run("/repos/\u001b[31mdemo\u202e");
+    store.prepare("INSERT INTO sessions (agent, status, model, pgid, started_at) VALUES ('wright', 'starting', 'claude-haiku-4-5', 79, '2026-10-02T09:01:00.000Z')").run();
+    const c = cli();
+    expect(await c.run("status")).toBe(0);
+    const text = c.stdout.text();
+    // A stored escape or bidi character never reaches the terminal raw.
+    expect(text).toContain("  #1 mason claude-haiku-4-5 running, pgid 78, started 2026-10-02T09:00:00.000Z, cwd /repos/\\x1b[31mdemo\\u202e\n");
+    expect(text).not.toContain("\u001b");
+    expect(text).not.toContain("\u202e");
+    expect(text).toContain("  #2 wright claude-haiku-4-5 starting, pgid 79, started 2026-10-02T09:01:00.000Z, cwd -\n");
+
+    // A daemon older than this CLI sends no `cwd`.
+    const body = (await (await fetch(`http://127.0.0.1:${server.port}/status`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json()) as StatusBody;
+    const older = { ...body, sessions: body.sessions.map(({ cwd: _dropped, ...rest }) => rest) } as unknown as StatusBody;
+    expect(formatStatus(older)).toContain("  #1 mason claude-haiku-4-5 running, pgid 78, started 2026-10-02T09:00:00.000Z, cwd -\n");
+  });
+
   it("status --json prints parseable JSON equal to /status", async () => {
     const c = cli();
     expect(await c.run("status", "--json")).toBe(0);

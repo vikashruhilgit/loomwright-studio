@@ -123,6 +123,8 @@ export interface StatusBody {
     readonly pgid: number | null;
     readonly started_at: string | null;
     readonly status: string;
+    /** The session's recorded working directory (`sessions.cwd`, a realpath), or `null` for a row from before migration 15. */
+    readonly cwd: string | null;
   }[];
   /**
    * Every session whose group a kill could not confirm gone, whatever its
@@ -369,7 +371,7 @@ export function readStatus(
     auth: authProviders.map((p) => ({ id: p.id, account: safeAccount(p), health: healthOf(p, at) })),
     sessions: store
       .prepare<[], StatusBody["sessions"][number]>(
-        "SELECT id, agent, model, pgid, started_at, status FROM sessions WHERE status IN ('starting', 'running') ORDER BY id",
+        "SELECT id, agent, model, pgid, started_at, status, cwd FROM sessions WHERE status IN ('starting', 'running') ORDER BY id",
       )
       .all(),
     kill_unconfirmed: killUnconfirmed(store),

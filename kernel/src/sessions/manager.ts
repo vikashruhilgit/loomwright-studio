@@ -17,7 +17,7 @@ import { KERNEL_APPLIED_ACTIONS, holdOrUseGrant } from "../approvals/store.js";
 import { KeychainError } from "../auth/keychain.js";
 import { AuthProviderError } from "../auth/types.js";
 import type { AuthProvider, BaseEnv, ChildEnv } from "../auth/types.js";
-import { isProtectedPath, protectedLocationsText } from "../protected-paths.js";
+import { isProtectedPath, protectedLocationsText, resolvedPath } from "../protected-paths.js";
 import { loomwrightAdapterStatus } from "../loomwright/active-install.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
 import { hostSwitchNameProblem } from "../loomwright/contract.js";
@@ -652,7 +652,7 @@ export class SessionManager {
     return this.#store
       .prepare<[number], SessionRow>(
         `SELECT id, agent, task_id, sdk_session_id, status, model, pgid, auth_account, loomwright_path,
-                leader_started_at, kill_incomplete_at, playbook, playbook_version, started_at, ended_at, updated_at
+                leader_started_at, kill_incomplete_at, playbook, playbook_version, cwd, started_at, ended_at, updated_at
            FROM sessions WHERE id = ?`,
       )
       .get(id);
@@ -685,7 +685,9 @@ export class SessionManager {
    * gets the contract's `host_switch.env=1` and `host_switch.state_dir_env` set
    * to `<dataDir>/loomwright-state/session-<id>`, created (mode 0700) before
    * the spawn. A `dryRun: true` start writes one `session_dry_run` event with
-   * its row and runs as a dry run (`#gate`, `SessionHandle.dryRun`).
+   * its row and runs as a dry run (`#gate`, `SessionHandle.dryRun`). The row
+   * (the `failed:auth` one too) records the cwd's realpath (`resolvedPath`) in
+   * `sessions.cwd`, in the insert that creates it; the SDK gets `cwd` as given.
    */
   async startSession(params: StartSessionParams): Promise<SessionHandle> {
     const permissionMode = checkPermissionMode(params.permissionMode);
@@ -874,6 +876,14 @@ export class SessionManager {
    * the caller passes the policy, `permissionMode` and `cwd` again (the policy
    * is not persisted in phase 1).
    *
+   * A session resumes only in the folder it started in: after the row checks
+   * and before the Loomwright read, a `cwd` whose realpath (`resolvedPath`)
+   * differs from the row's recorded `sessions.cwd` is refused `cwd_changed`
+   * naming both paths (one `session_refused` event
+   * `{reason: "cwd_changed", cwd, recorded_cwd}` with the session's id, the
+   * row unchanged). A row with no recorded cwd (from before migration 15) is
+   * not compared.
+   *
    * A session keeps the Loomwright it started with: the contract at the row's
    * `loomwright_path` is read again (never re-resolved) after the row checks
    * and before admission. A missing or bad contract, or one without a host
@@ -933,6 +943,8 @@ export class SessionManager {
     if (!isNonEmptyString(row.model) || !isNonEmptyString(row.loomwright_path)) {
       throw new SessionError("not_resumable", `session ${id} has no recorded model or Loomwright path`);
     }
+    // Before Loomwright, admission and the group check: the row is not touched, only the refusal is logged.
+    this.#refuseChangedCwd(params.cwd, row);
     // A dry run only narrows: a session that started as one resumes as one, whatever `params.dryRun` says.
     const dryRun = params.dryRun === true || this.#startedAsDryRun(id);
     // The Loomwright the session started with, never re-resolved; before admission, the row untouched.
@@ -2151,6 +2163,28 @@ export class SessionManager {
   }
 
   /**
+   * A resume runs only in the folder its session started in: `cwd`, resolved
+   * as the start resolved it (`resolvedPath`), must equal the row's recorded
+   * `sessions.cwd`. Otherwise appends one `session_refused` event
+   * `{reason: "cwd_changed", cwd, recorded_cwd}` with the session's id and
+   * throws `SessionError("cwd_changed")` naming both paths, before Loomwright,
+   * admission, auth or any spawn, the row unchanged. A row with no recorded
+   * cwd (from before migration 15) is not compared: it resumes as before. The
+   * SDK still gets `cwd` as given.
+   */
+  #refuseChangedCwd(cwd: string, row: SessionRow): void {
+    const recorded = row.cwd;
+    if (recorded === null) return;
+    const resolved = resolvedPath(cwd);
+    if (resolved === recorded) return;
+    this.#recordSafely("session_refused", row.id, { reason: "cwd_changed", cwd, recorded_cwd: recorded });
+    throw new SessionError(
+      "cwd_changed",
+      `session ${row.id} ran in ${recorded} and resumes only there; cwd ${cwd} resolves to ${resolved}`,
+    );
+  }
+
+  /**
    * D32: a Loomwright the session cannot run with is refused before any row
    * or spawn, like `protected_cwd` (before admission and auth too, except the
    * host-switch check against the auth-built env): one `session_refused` event
@@ -2496,8 +2530,8 @@ export class SessionManager {
   ): number {
     const info = this.#store
       .prepare(
-        `INSERT INTO sessions (agent, task_id, sdk_session_id, status, model, auth_account, loomwright_path, playbook, playbook_version, started_at, ended_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (agent, task_id, sdk_session_id, status, model, auth_account, loomwright_path, playbook, playbook_version, cwd, started_at, ended_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         params.agent,
@@ -2509,6 +2543,8 @@ export class SessionManager {
         loomwrightPath,
         params.playbook ?? null,
         params.playbookVersion ?? null,
+        // The realpath, in the insert that creates the row (never a later UPDATE): a kill right after it still finds it.
+        resolvedPath(params.cwd),
         at,
         isTerminalStatus(status) ? at : null,
         at,
