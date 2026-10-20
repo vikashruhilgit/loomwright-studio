@@ -1,9 +1,10 @@
 // The test run's notifier guard: while `STUDIO_LIVE` is not "1", no test can
 // spawn `terminal-notifier` or `osascript`. `installNotifierGuard()` wraps
-// `spawn`, `spawnSync`, `execFile`, `execFileSync` (the file argument) and
-// `exec`, `execSync` (the command string's first word) on `node:child_process`
-// and syncs the patch into the ESM namespace, so `notifier.ts`'s own named
-// `spawn` import is wrapped too. A refused call throws synchronously (no
+// `spawn`, `spawnSync`, `execFile`, `execFileSync` (the file argument, or the
+// command's first word when the options say `shell: true`) and `exec`,
+// `execSync` (the command string's first word) on `node:child_process` and
+// syncs the patch into the ESM namespace, so `notifier.ts`'s own named `spawn`
+// import is wrapped too. A refused call throws synchronously (no
 // process exists) and is recorded; `assertNoNotifierRefusals()` turns the
 // record into a failing test. Only the executable is looked at, never the
 // arguments: a `/bin/sh -c` whose script mentions osascript still runs.
@@ -83,10 +84,31 @@ function firstWord(command: unknown): unknown {
 }
 
 type AnyFn = (...args: unknown[]) => unknown;
+/** Picks the executable a call would run from its arguments. */
+type Executable = (args: readonly unknown[]) => unknown;
 
-function guarded(original: AnyFn, executable: (first: unknown) => unknown): AnyFn {
+function isOptions(value: unknown): value is { shell?: unknown } {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The executable of a by-file call (`spawn(file, args?, options?)` and kin):
+ * the file, or the command's first word when `options.shell` is truthy (node
+ * then joins the file and any array args into one shell command string).
+ */
+function byFile(args: readonly unknown[]): unknown {
+  const options = isOptions(args[1]) ? args[1] : isOptions(args[2]) ? args[2] : undefined;
+  return options?.shell ? firstWord(args[0]) : args[0];
+}
+
+/** The executable of a by-command call (`exec(command, …)`): the command's first word. */
+function byCommand(args: readonly unknown[]): unknown {
+  return firstWord(args[0]);
+}
+
+function guarded(original: AnyFn, executable: Executable): AnyFn {
   const wrapper = function (this: unknown, ...args: unknown[]): unknown {
-    check(executable(args[0]));
+    check(executable(args));
     return original.apply(this, args);
   };
   Object.defineProperty(wrapper, "name", { value: original.name });
@@ -111,11 +133,11 @@ export function installNotifierGuard(): void {
   const cp = createRequire(import.meta.url)("node:child_process") as Record<string, AnyFn>;
   for (const name of BY_FILE) {
     const original = cp[name];
-    if (typeof original === "function" && !(WRAPPED in original)) cp[name] = guarded(original, (first) => first);
+    if (typeof original === "function" && !(WRAPPED in original)) cp[name] = guarded(original, byFile);
   }
   for (const name of BY_COMMAND) {
     const original = cp[name];
-    if (typeof original === "function" && !(WRAPPED in original)) cp[name] = guarded(original, firstWord);
+    if (typeof original === "function" && !(WRAPPED in original)) cp[name] = guarded(original, byCommand);
   }
   syncBuiltinESMExports();
   r.installed = true;

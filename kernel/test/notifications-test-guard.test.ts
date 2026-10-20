@@ -74,6 +74,17 @@ describe.skipIf(!notifierGuardInstalled())("the notifier guard (STUDIO_LIVE unse
     expect(takeNotifierRefusals()).toEqual([]);
   });
 
+  it("(a) judges a shell: true by-file call by the command's first word, refusing a notifier and running anything else", () => {
+    expect(() => childProcess.spawn("osascript -e x", { shell: true })).toThrow(`${REFUSED}osascript (`);
+    expect(() => childProcess.spawnSync("terminal-notifier -message x", { shell: true })).toThrow(`${REFUSED}terminal-notifier (`);
+    expect(takeNotifierRefusals()).toEqual([{ file: "osascript" }, { file: "terminal-notifier" }]);
+
+    const r = childProcess.spawnSync("/bin/echo osascript", { shell: true, encoding: "utf8" });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe("osascript\n");
+    expect(takeNotifierRefusals()).toEqual([]);
+  });
+
   it.runIf(process.platform === "darwin")("(b) a kernel on the shipped contributions settles a notification failed with the guard's error, and nothing is posted", async () => {
     const items = new Map<string, string>();
     const keychain: KeychainReader = { read: (service) => items.get(service) };
