@@ -219,7 +219,8 @@ export function agentLimitsFor(dataDir: string): (agent: string) => AgentLimitsL
  * side effect) and build the kernel-applied actions' applier from the merged
  * tools (`approvalApplierOf`; it refuses the same way); list the merged
  * tools through the Agent SDK's MCP server (`assertKernelToolsList`; a tool
- * whose input schema does not serialise refuses the same way, named); open
+ * whose input schema does not serialise, or that the listing omits, refuses
+ * the same way, named); open
  * the `Store` (taking its lock); select
  * the auth provider (`--auth-provider`, else `STUDIO_AUTH_PROVIDER`, else the
  * build default); the `Budget` (each agent's limits read from its settings

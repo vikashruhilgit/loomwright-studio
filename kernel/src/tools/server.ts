@@ -580,36 +580,41 @@ export async function listKernelTools(contributed: readonly ContributedTool[]): 
  * failure, each contributed tool is listed alone to name the ones that fail
  * (all of them when none fails alone: the combination does), and the check
  * throws `InvalidContributionError` naming them with the listing error's
- * first line. A listing that succeeds but omits a tool throws the same way,
- * naming the missing ones.
+ * first line. A listing that succeeds but omits a tool throws
+ * `InvalidContributionError` too, naming the missing ones with its own
+ * reason. `list` is `listKernelTools` (`startKernel` passes nothing); a test
+ * injects a stub to reach the combination and omission branches.
  */
-export async function assertKernelToolsList(contributed: readonly ContributedTool[]): Promise<void> {
-  const refuse = (names: readonly string[], detail: string): never => {
-    throw new InvalidContributionError(
-      names.join(", "),
-      "tool",
-      `its input schema does not serialise through the Agent SDK, so tools/list would offer sessions no kernel tool: ${detail}`,
-    );
+export async function assertKernelToolsList(
+  contributed: readonly ContributedTool[],
+  list: (contributed: readonly ContributedTool[]) => Promise<readonly { name: string }[]> = listKernelTools,
+): Promise<void> {
+  const refuse = (names: readonly string[], reason: string): never => {
+    throw new InvalidContributionError(names.join(", "), "tool", reason);
   };
-  let listed: { name: string }[];
+  const unserialisable = (detail: string): string =>
+    `its input schema does not serialise through the Agent SDK, so tools/list would offer sessions no kernel tool: ${detail}`;
+  let listed: readonly { name: string }[];
   try {
-    listed = await listKernelTools(contributed);
+    listed = await list(contributed);
   } catch (err) {
     const failing: string[] = [];
     for (const t of contributed) {
       try {
-        await listKernelTools([t]);
+        await list([t]);
       } catch {
         failing.push(t.name);
       }
     }
-    if (failing.length > 0) return refuse(failing, firstLine(err));
+    if (failing.length > 0) return refuse(failing, unserialisable(firstLine(err)));
     return refuse(
       contributed.map((t) => t.name),
-      `no tool fails alone, the combination fails: ${firstLine(err)}`,
+      unserialisable(`no tool fails alone, the combination fails: ${firstLine(err)}`),
     );
   }
   const names = new Set(listed.map((t) => t.name));
   const missing = kernelToolNames(contributed).filter((name) => !names.has(name));
-  if (missing.length > 0) refuse(missing, `tools/list omitted ${missing.join(", ")}`);
+  if (missing.length > 0) {
+    refuse(missing, `tools/list succeeded but omitted ${missing.join(", ")}, so sessions would not be offered them`);
+  }
 }

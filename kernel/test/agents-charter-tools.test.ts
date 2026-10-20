@@ -420,6 +420,16 @@ describe("kernel_agent_create: refusals and the apply's edges (AC3)", () => {
     expect(h.approvals()).toEqual([]);
   });
 
+  it("a charter that is not a JSON object (an array, null, a string) is refused at the shape check; nothing is held", async () => {
+    const h = await bootManager();
+    for (const [i, bad] of [[], null, "mason"].entries()) {
+      const r = await h.wright.gate(CREATE, { charter: bad, idempotency_key: `n${i}` });
+      expect(r.permissionDecisionReason, JSON.stringify(bad)).toMatch(/^kernel_agent_create: invalid input: /);
+      expect(r.permissionDecisionReason, JSON.stringify(bad)).toContain("charter must be a JSON object");
+    }
+    expect(h.approvals()).toEqual([]);
+  });
+
   it("the owner made mason by hand between the hold and the approval: apply_refused id_taken, nothing more written (one row, the owner's)", async () => {
     const h = await bootManager();
     await h.wright.gate(CREATE, { charter: charter({ display_name: "Wright's Mason" }), idempotency_key: "c1" });

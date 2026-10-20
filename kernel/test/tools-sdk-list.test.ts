@@ -42,6 +42,11 @@ function recordTool(name: string): ContributedTool {
 
 const FIXTURE = recordTool("kernel_probe_record");
 
+/** A tool with a plain shape, for the stubbed-lister cases. */
+function defineToolNamed(name: string): ContributedTool {
+  return defineTool({ name, description: "A plain fixture.", shape: { x: z.string() }, handler: () => null });
+}
+
 let tmp: string;
 
 beforeEach(() => {
@@ -95,6 +100,36 @@ describe("a tool whose shape the SDK cannot serialise", () => {
     const two = await assertKernelToolsList([...SHIPPED, FIXTURE, recordTool("kernel_probe_record_two")]).catch((e: unknown) => e);
     expect(two).toBeInstanceOf(InvalidContributionError);
     expect((two as InvalidContributionError).contributor).toBe("kernel_probe_record, kernel_probe_record_two");
+  });
+
+  it("no tool fails alone but the combination does: every contributed tool is named, with the combination's error", async () => {
+    const two = [defineToolNamed("kernel_probe_a"), defineToolNamed("kernel_probe_b")];
+    const seen: string[][] = [];
+    const list = (tools: readonly ContributedTool[]): Promise<{ name: string }[]> => {
+      seen.push(tools.map((t) => t.name));
+      if (tools.length > 1) return Promise.reject(new Error("the combination fails\nsecond line"));
+      return Promise.resolve(kernelToolNames(tools).map((name) => ({ name })));
+    };
+    const err = await assertKernelToolsList(two, list).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InvalidContributionError);
+    expect((err as InvalidContributionError).contributor).toBe("kernel_probe_a, kernel_probe_b");
+    expect((err as Error).message).toBe(
+      "contribution kernel_probe_a, kernel_probe_b: invalid tool: its input schema does not serialise through the Agent SDK, " +
+        "so tools/list would offer sessions no kernel tool: no tool fails alone, the combination fails: the combination fails",
+    );
+    expect(seen).toEqual([["kernel_probe_a", "kernel_probe_b"], ["kernel_probe_a"], ["kernel_probe_b"]]);
+  });
+
+  it("a listing that succeeds but omits a tool names the omitted one with its own reason (not a schema failure)", async () => {
+    const list = (tools: readonly ContributedTool[]): Promise<{ name: string }[]> =>
+      Promise.resolve(kernelToolNames(tools).filter((name) => name !== "kernel_agent_list").map((name) => ({ name })));
+    const err = await assertKernelToolsList(SHIPPED, list).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InvalidContributionError);
+    expect((err as InvalidContributionError).contributor).toBe("kernel_agent_list");
+    expect((err as Error).message).toBe(
+      "contribution kernel_agent_list: invalid tool: tools/list succeeded but omitted kernel_agent_list, so sessions would not be offered them",
+    );
+    expect((err as Error).message).not.toContain("does not serialise");
   });
 
   it("the shipped tools pass the check", async () => {
