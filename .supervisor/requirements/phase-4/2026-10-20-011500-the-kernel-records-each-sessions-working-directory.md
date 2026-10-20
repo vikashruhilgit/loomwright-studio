@@ -21,33 +21,17 @@ The phase 4 live harness (`kernel/test/phase-4-exit-live.test.ts`, item 09) can 
 
 Found during item 09's exit-check work (PR #93), and confirmed against `main` at `9f69a0f` and the live store on 2026-10-20.
 
-## Owner decisions
+## Owner decisions (2026-10-20, binding)
 
 - The phase 4 owner decisions in [the plan doc](_BACKLOG-2026-10-18-041110-phase-4-agent-roster.md) are unchanged. This item adds a record only: mechanism, no policy (invariant 1). It never changes which cwd a session gets, or the D31 refusal.
-
-## Open questions (the owner's; answer here before this item is queued)
-
-The lane must not choose these. If any is still open when the lane starts, it stops and says so, and it implements nothing.
-
-1. **A column or an event?**
-   - (a) A nullable `sessions.cwd` column (a migration, plus the `store.test.ts` pins), written in the same insert as the row and returned by `getSession` and `/status`.
-   - (b) A `cwd` field on the session's first `session_status` event (`to: "starting"`), or on a new `session_cwd` event. That needs no migration, but a reader has to join events.
-   - (c) Both.
-2. **What a resume records.** A resume may pass another cwd.
-   - (a) Each launch attempt, start and every resume, records its own cwd, and a column, if chosen, holds the latest.
-   - (b) Only the start is recorded, and a resume with a different cwd is refused.
-   - (c) Only the start is recorded, and a resume's differing cwd is recorded as an event.
-3. **Which form of the path.**
-   - (a) The path as the caller gave it.
-   - (b) Its realpath, resolved the way the D31 check resolves it (through symlinks, with the `/System/Volumes/Data` firmlink removed).
-   - (c) Both.
+- **Where: a `sessions.cwd` column.** It is nullable, written in the same insert as the row, and returned by `getSession` and by `studio status` / `GET /status` for running sessions. That needs migration 015, which is append-only and contiguous, with the `store.test.ts` pins updated.
+- **Resume: refuse a different cwd.** Only the start's cwd is recorded, so the column never changes after the insert. A resume whose `cwd`, resolved the same way, is not the recorded one is refused before admission, auth or any spawn, with `SessionError("cwd_changed")` naming both paths. The refusal appends one `session_refused` event (`{reason: "cwd_changed", cwd, recorded_cwd}`), and the row's status is unchanged, so a resume with the right cwd still works. A row recorded before migration 015 has a null cwd and is resumed as today: there is nothing to compare against. Unverified, and the reason the owner chose this: the CLI keeps transcripts per project dir, so a resume in another folder probably could not find its transcript anyway. The lane records what it observes, if anything, without probing a live session.
+- **Path form: the realpath.** The stored value is the cwd resolved the way the D31 check resolves it (`kernel/src/protected-paths.ts`: through symlinks as far as the path exists, with the `/System/Volumes/Data` firmlink prefix removed), so it shows where the session actually ran. The path as given is not stored.
 
 ## Scope
 
-Once the questions are answered:
-
-1. **Record it.** The session manager records the cwd of every launch, start and resume as the owner chose, in the same transaction as the row or event it belongs to, so a `kill -9` can never leave a session row without its cwd (invariant 2). A refused launch (`protected_cwd`, `invalid_params`, an admission refusal) records nothing new; `protected_cwd` keeps its existing `session_refused` event. The value is read from the params the manager already validated, never from the model or from the hook input.
-2. **Show it.** `getSession` (and `/status`'s running sessions, if a column is chosen) returns it. Stored paths are owner-visible text: printed escaped, as every stored text is.
+1. **Record it.** `startSession` writes the resolved cwd into `sessions.cwd` in the same insert as the row, so a `kill -9` can never leave a session row without its cwd (invariant 2). `resumeSession` compares its resolved cwd with the recorded one and refuses `cwd_changed` as the owner decided. A refused launch (`protected_cwd`, `invalid_params`, an admission refusal) records nothing new; `protected_cwd` keeps its existing `session_refused` event. The value is read from the params the manager already validated, never from the model or from the hook input.
+2. **Show it.** `getSession` and `/status`'s running sessions return it. Stored paths are owner-visible text: printed escaped, as every stored text is.
 3. **Use it in the live harness.** `kernel/test/phase-4-exit-live.test.ts` steps 4 and 5 assert the reviewer's session ran in step 1's repo from the recorded cwd, and keep `brain_messages.workspace` as a second check. `docs/evidence/phase-4-exit-runbook.md` replaces "the kernel records no cwd on the session row" with what is recorded.
 4. **Docs.** `docs/ARCHITECTURE.md` gets the `sessions` data-model row (or the event) and the session-manager bullet on cwd.
 
@@ -59,9 +43,11 @@ Once the questions are answered:
 
 ## Acceptance criteria
 
-- [ ] Given a crew member asked with `--workspace /repos/demo`, when its session starts, then the store records `/repos/demo` (in the form chosen in question 3) for that session, and `getSession` returns it.
-- [ ] Given a message naming no workspace, when the session starts, then the store records the agent's memory folder.
-- [ ] Given a resume, then the store reflects the answer to question 2: a second cwd recorded, a refusal, or an event.
+- [ ] Given a crew member asked with `--workspace /repos/demo`, when its session starts, then the store records `/repos/demo` (its realpath) for that session, and `getSession` returns it.
+- [ ] Given a message naming no workspace, when the session starts, then `sessions.cwd` holds the agent's memory folder (resolved).
+- [ ] Given an interrupted session started in `/repos/demo`, when it is resumed with cwd `/repos/other`, then the resume is refused `cwd_changed` naming both paths, with one `session_refused` event, nothing spawned, and the row unchanged. Resumed with `/repos/demo`, or through a symlink that resolves to it, then it resumes as today.
+- [ ] Given a session row from before migration 015 (cwd null), when it is resumed, then it resumes as today.
+- [ ] Given a cwd reached through a symlink, or written with the `/System/Volumes/Data` prefix, when the session starts, then `sessions.cwd` holds the resolved path.
 - [ ] Given a `protected_cwd` refusal, then no session cwd is recorded beyond the existing `session_refused` event.
 - [ ] Given the kernel killed between the row's insert and the session's first message, then the recorded cwd is already in the store (one transaction).
 - [ ] Given every existing sessions, brain, playbook and phase 4 exit test, then each passes unchanged apart from the new field.
@@ -78,8 +64,8 @@ Once the questions are answered:
 
 ## Risks
 
-- A migration (question 1a) is the next one after 014: append-only and contiguous, with the store's integrity checks unchanged.
-- Recording on every resume attempt, including the retries of a failed resume, must not double-write: key it on the launch attempt.
+- Migration 015 is the next after 014. The store's integrity checks (contiguous versions, no foreign triggers) are unchanged.
+- The resume check must use the same resolution as the stored value, or a symlinked workspace would refuse its own resume. The AC covers it.
 
 ## Depends on
 none
@@ -89,6 +75,7 @@ kernel/src/store/migrations/
 kernel/test/store.test.ts
 kernel/src/sessions/manager.ts
 kernel/src/sessions/types.ts
+kernel/src/protected-paths.ts
 kernel/src/api/server.ts
 kernel/test/sessions-cwd.test.ts
 kernel/test/phase-4-exit-live.test.ts
