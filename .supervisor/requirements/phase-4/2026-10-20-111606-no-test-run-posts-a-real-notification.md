@@ -78,3 +78,8 @@ kernel/test/loomwright-version-note.test.ts
 kernel/test/playbooks-dry-run.test.ts
 kernel/src/notifications/notifier.ts
 docs/architecture/notifications.md
+
+## Status: done (PR #99, merge 3a20ac8)
+- **Completed:** 2026-10-20T13:17:29Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/99
