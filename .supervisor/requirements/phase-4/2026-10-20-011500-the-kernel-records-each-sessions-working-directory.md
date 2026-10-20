@@ -81,3 +81,9 @@ kernel/test/sessions-cwd.test.ts
 kernel/test/phase-4-exit-live.test.ts
 docs/evidence/phase-4-exit-runbook.md
 docs/ARCHITECTURE.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-20T12:09:31Z
+- **Brief:** .supervisor/jobs/done/2026-10-20-kernel-records-session-cwd.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/97
