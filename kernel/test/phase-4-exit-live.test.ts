@@ -880,6 +880,8 @@ interface SessionRow {
   readonly agent: string | null;
   readonly status: string;
   readonly model: string | null;
+  /** The session's recorded working directory (`sessions.cwd`, a realpath; migration 15). */
+  readonly cwd: string | null;
   readonly started_at: string | null;
   readonly ended_at: string | null;
 }
@@ -976,7 +978,7 @@ describe.skipIf(!LIVE)("live phase 4 exit: a comment-only reviewer created from 
   const rail = (): RailContext => ({ dataDir, homeDir: homedir(), cwd: throwaway?.repo ?? "/" });
 
   const sessionIn = (db: Database.Database, id: number): SessionRow | undefined =>
-    db.prepare<[number], SessionRow>("SELECT id, agent, status, model, started_at, ended_at FROM sessions WHERE id = ?").get(id);
+    db.prepare<[number], SessionRow>("SELECT id, agent, status, model, cwd, started_at, ended_at FROM sessions WHERE id = ?").get(id);
 
   /** `agent`'s first `ask` message after message `afterId`. */
   const askMessageIn = (db: Database.Database, agent: string, afterId: number): MessageRow | undefined =>
@@ -991,7 +993,7 @@ describe.skipIf(!LIVE)("live phase 4 exit: a comment-only reviewer created from 
 
   /** Every session `agent` ran, oldest first. */
   const sessionsOf = (agent: string): SessionRow[] =>
-    withDb(dataDir, (db) => db.prepare<[string], SessionRow>("SELECT id, agent, status, model, started_at, ended_at FROM sessions WHERE agent = ? ORDER BY id").all(agent));
+    withDb(dataDir, (db) => db.prepare<[string], SessionRow>("SELECT id, agent, status, model, cwd, started_at, ended_at FROM sessions WHERE agent = ? ORDER BY id").all(agent));
 
   /** `tool_decision` events after event `afterId` in `agent`'s sessions. */
   const toolDecisionsOf = (agent: string, afterId: number): { id: number; session_id: number | null; payload: unknown }[] =>
@@ -1110,7 +1112,9 @@ describe.skipIf(!LIVE)("live phase 4 exit: a comment-only reviewer created from 
     expect(m.message.status, `the message was ${m.message.status}: ${m.message.detail ?? ""}`).not.toMatch(/^(failed|parked)$/);
     expect(m.session, "no session ran the message").not.toBeNull();
     expect(m.session?.agent, "the session did not run as the member").toBe(reviewer);
-    // The kernel records no session cwd: the handler runs the session in the message's workspace (`listedWorkspace`), so that column is the cwd's record.
+    // The kernel records the session's cwd (its realpath, `sessions.cwd`); the repo is already a realpath, so the two compare equal.
+    expect(m.session?.cwd, "the session's recorded cwd is not the throwaway repo").toBe(throwaway?.repo);
+    // The second check: the handler runs the session in the message's workspace (`listedWorkspace`).
     expect(m.message.workspace, "the message's workspace (the session's cwd) is not the throwaway repo").toBe(throwaway?.repo);
   }
 
@@ -1214,7 +1218,7 @@ describe.skipIf(!LIVE)("live phase 4 exit: a comment-only reviewer created from 
     const ids = (rows ?? []).map((row) => row.id);
     const running = async (): Promise<SessionRow[]> =>
       tryDb(dataDir, (db) =>
-        ids.flatMap((id) => db.prepare<[string], SessionRow>("SELECT id, agent, status, model, started_at, ended_at FROM sessions WHERE agent = ? ORDER BY id").all(id)).filter((s) => !isTerminalStatus(s.status)),
+        ids.flatMap((id) => db.prepare<[string], SessionRow>("SELECT id, agent, status, model, cwd, started_at, ended_at FROM sessions WHERE agent = ? ORDER BY id").all(id)).filter((s) => !isTerminalStatus(s.status)),
       ) ?? [];
     const until = Date.now() + CLEANUP_SESSION_WAIT_MS;
     let still = await running();

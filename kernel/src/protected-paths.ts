@@ -63,6 +63,18 @@ export function withoutFirmlink(path: string): string {
 }
 
 /**
+ * `path` (absolute, or resolved against the cwd) resolved the way the D31
+ * check resolves it: symlinks as far as it exists (`resolveExisting`, the rest
+ * kept as written), then a leading `/System/Volumes/Data` removed
+ * (`withoutFirmlink`). The ONE resolution for a session's recorded `cwd`
+ * (`sessions.cwd`, migration 15) and the resume's comparison against it, so a
+ * symlinked or firmlinked spelling of the same folder reads as that folder.
+ */
+export function resolvedPath(path: string): string {
+  return withoutFirmlink(resolveExisting(path));
+}
+
+/**
  * Both spellings of `path` (absolute, normalised): without the firmlink prefix
  * (`withoutFirmlink`) and with it, so a pattern that globs the prefix itself
  * (`/Sys*` …) is still compared against the form it could expand to. Pure.

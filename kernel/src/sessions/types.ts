@@ -238,7 +238,15 @@ export type SessionErrorCode =
   | "not_abandonable"
   | "admission_refused"
   /** `cwd` is inside a macOS-protected folder (D31, `PROTECTED_LOCATIONS`): refused before anything starts. */
-  | "protected_cwd";
+  | "protected_cwd"
+  /**
+   * A resume's `cwd` resolves (`resolvedPath`) to another folder than the one
+   * recorded on the session's row (`sessions.cwd`, migration 15): refused
+   * before admission, auth or any spawn, one `session_refused` event, the row
+   * unchanged. A row with no recorded cwd (from before migration 15) is never
+   * compared.
+   */
+  | "cwd_changed";
 
 /** A session request the kernel refused. `code` is stable; the message is for humans. */
 export class SessionError extends Error {
@@ -359,6 +367,14 @@ export interface SessionRow {
   readonly playbook: number | null;
   /** The playbook version it runs, or `null`. */
   readonly playbook_version: number | null;
+  /**
+   * The session's working directory as a realpath (`resolvedPath`: symlinks
+   * resolved as far as it exists, a `/System/Volumes/Data` prefix removed),
+   * written by the insert that creates the row (migration 15); `null` for a
+   * row from before migration 15. The SDK gets the cwd as given; only this
+   * record is resolved.
+   */
+  readonly cwd: string | null;
   readonly started_at: string | null;
   readonly ended_at: string | null;
   readonly updated_at: string;

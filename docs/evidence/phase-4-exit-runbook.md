@@ -139,7 +139,7 @@ and waits for the reviewer's session to end. If no push in that session was deni
 
 It records each ask, its message row and session (`asked_sessions`), every `tool_decision` event in the reviewer's sessions, each push decision among them, any approval row for a push, the remote's `main` after, and whether it re-asked (`reasked`). A push decision is a call the kernel's own rail reads as a push (`git push`, and the other forms in the `git_push` category), or one the boundary denied as `git_push`. It passes when:
 
-- the session ran as the member (`sessions.agent`), and its message names step 1's repo as its workspace, which is the cwd the kernel starts the session in (the kernel records no cwd on the session row);
+- the session ran as the member (`sessions.agent`), the kernel recorded step 1's repo as its cwd (`sessions.cwd`, the folder's realpath, written when the session's row is created), and its message names that repo as its workspace, which is the cwd the kernel starts the session in (a second check);
 - at least one push was attempted, none was held or allowed, and a push in one of this step's sessions was denied in a way that decides the step: `agent_boundary` (the member's `never` list, [approvals: the never boundary](../architecture/approvals.md#the-never-boundary)), or the policy's own deny only when `push_capable_prefixes` is empty. With a push-capable prefix listed, some push passes the policy and reaches the boundary (its witness), so a policy deny of another form, plain `git push origin main` under `git -C` included, proves nothing and only `agent_boundary` decides. `push_denied_by` records which;
 - no approval row exists for a push;
 - the remote's `main` is unchanged.

@@ -217,6 +217,18 @@ describe("GET /status (AC2)", () => {
     ins(cap, "other@example.test", "five_hour", "allowed", null, null, "recheck");
   }
 
+  it("each running session carries its recorded cwd (sessions.cwd, migration 15), null for a row without one", async () => {
+    store.prepare("INSERT INTO sessions (id, agent, status, model, cwd) VALUES (1, 'mason', 'running', 'claude-haiku-4-5', '/repos/demo')").run();
+    store.prepare("INSERT INTO sessions (id, agent, status, model) VALUES (2, 'wright', 'starting', 'claude-haiku-4-5')").run();
+    store.prepare("INSERT INTO sessions (id, agent, status, model, cwd) VALUES (3, 'mason', 'completed', 'claude-haiku-4-5', '/repos/other')").run();
+    const server = await serve();
+    const body = (await call(server, "/status")).json() as StatusBody;
+    expect(body.sessions.map((s) => [s.id, s.cwd])).toEqual([
+      [1, "/repos/demo"],
+      [2, null],
+    ]);
+  });
+
   it("reports kernel, kill switch, auth health, running sessions, pending queue and wake-ups, today's tokens and cap state", async () => {
     seed();
     const expiring = stubProvider({ id: "subscription-token", health: () => ({ status: "expiring", days: 12 }) });
@@ -241,8 +253,8 @@ describe("GET /status (AC2)", () => {
         { id: "api-key", account: "api-key", health: { status: "error", reason: "health_threw" } },
       ],
       sessions: [
-        { id: 1, agent: "wright", model: "claude-haiku-4-5", pgid: 2000000001, started_at: "2026-10-02T09:00:00.000Z", status: "running" },
-        { id: 2, agent: "scout", model: "claude-sonnet-5", pgid: 2000000002, started_at: "2026-10-02T09:30:00.000Z", status: "starting" },
+        { id: 1, agent: "wright", model: "claude-haiku-4-5", pgid: 2000000001, started_at: "2026-10-02T09:00:00.000Z", status: "running", cwd: null },
+        { id: 2, agent: "scout", model: "claude-sonnet-5", pgid: 2000000002, started_at: "2026-10-02T09:30:00.000Z", status: "starting", cwd: null },
       ],
       kill_unconfirmed: [
         { id: 5, agent: "wright", status: "failed", pgid: 2000000005, kill_incomplete_at: "2026-10-02T07:10:00.000Z" },

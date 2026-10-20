@@ -1,10 +1,10 @@
 // The protected-folder list and check (D31): pure path logic against a temp
 // home dir, with real symlinks in the temp dir only.
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PROTECTED_LOCATIONS, isProtectedPath, protectedLocationsText } from "../src/protected-paths.js";
+import { PROTECTED_LOCATIONS, isProtectedPath, protectedLocationsText, resolvedPath } from "../src/protected-paths.js";
 
 let tmp: string;
 let home: string;
@@ -91,5 +91,28 @@ describe("isProtectedPath", () => {
 
   it("a relative path resolves against the cwd", () => {
     expect(isProtectedPath("relative/dir", home)).toBe(isProtectedPath(join(process.cwd(), "relative", "dir"), home));
+  });
+});
+
+describe("resolvedPath (the recorded session cwd, migration 15)", () => {
+  // Expectations come from realpathSync(tmp), never a hard-coded /private/tmp: on macOS tmpdir()
+  // is itself behind a symlink, on Linux it is not.
+  it("follows a symlink to the folder it names, and keeps a not-yet-existing tail as written", () => {
+    const real = join(tmp, "repo");
+    mkdirSync(real);
+    symlinkSync(real, join(tmp, "repo-link"));
+    expect(resolvedPath(join(tmp, "repo-link"))).toBe(realpathSync(real));
+    expect(resolvedPath(join(tmp, "repo-link", "not", "yet"))).toBe(join(realpathSync(real), "not", "yet"));
+    expect(resolvedPath(real)).toBe(realpathSync(real));
+  });
+
+  it("removes a /System/Volumes/Data prefix, whether the folder exists or not", () => {
+    const real = join(tmp, "repo");
+    mkdirSync(real);
+    // The firmlink form of the same folder: realpath leaves it as is, so only the prefix strip maps it.
+    expect(resolvedPath(join("/System/Volumes/Data", realpathSync(real)))).toBe(realpathSync(real));
+    expect(resolvedPath(join("/System/Volumes/Data", realpathSync(tmp), "missing", "dir"))).toBe(join(realpathSync(tmp), "missing", "dir"));
+    // Only on a path-segment boundary.
+    expect(resolvedPath("/System/Volumes/DataX/repo")).toBe("/System/Volumes/DataX/repo");
   });
 });
