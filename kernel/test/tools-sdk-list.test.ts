@@ -26,7 +26,7 @@ import { InvalidContributionError, PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, defin
 import type { ContributedTool } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
 import { Store } from "../src/store/index.js";
-import { LISTING_CTX, assertKernelToolsList, kernelToolDefinitions, kernelToolNames, listKernelTools } from "../src/tools/server.js";
+import { KERNEL_TOOL_NAMES, LISTING_CTX, assertKernelToolsList, kernelToolDefinitions, kernelToolNames, listKernelTools } from "../src/tools/server.js";
 
 const SHIPPED = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools;
 
@@ -117,7 +117,42 @@ describe("a tool whose shape the SDK cannot serialise", () => {
       "contribution kernel_probe_a, kernel_probe_b: invalid tool: its input schema does not serialise through the Agent SDK, " +
         "so tools/list would offer sessions no kernel tool: no tool fails alone, the combination fails: the combination fails",
     );
-    expect(seen).toEqual([["kernel_probe_a", "kernel_probe_b"], ["kernel_probe_a"], ["kernel_probe_b"]]);
+    expect(seen).toEqual([["kernel_probe_a", "kernel_probe_b"], [], ["kernel_probe_a"], ["kernel_probe_b"]]);
+  });
+
+  it("a phase 1 tool that fails to list: the phase 1 tools are named, no contributed tool is, and no contributed tool is listed alone", async () => {
+    const seen: string[][] = [];
+    const list = (tools: readonly ContributedTool[]): Promise<{ name: string }[]> => {
+      seen.push(tools.map((t) => t.name));
+      return Promise.reject(new Error("a phase 1 shape fails\nsecond line"));
+    };
+    const err = await assertKernelToolsList(SHIPPED, list).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InvalidContributionError);
+    expect((err as InvalidContributionError).contributor).toBe(KERNEL_TOOL_NAMES.join(", "));
+    for (const t of SHIPPED) expect((err as Error).message, t.name).not.toContain(t.name);
+    expect((err as Error).message).toBe(
+      `contribution ${KERNEL_TOOL_NAMES.join(", ")}: invalid tool: its input schema does not serialise through the Agent SDK, ` +
+        "so tools/list would offer sessions no kernel tool: a phase 1 shape fails",
+    );
+    expect(seen).toEqual([SHIPPED.map((t) => t.name), []]);
+  });
+
+  it("no contributed tool and a failing phase 1 listing: the phase 1 tools are named (never an empty contributor)", async () => {
+    const list = (): Promise<{ name: string }[]> => Promise.reject(new Error("a phase 1 shape fails"));
+    const err = await assertKernelToolsList([], list).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InvalidContributionError);
+    expect((err as InvalidContributionError).contributor).toBe(KERNEL_TOOL_NAMES.join(", "));
+    expect(KERNEL_TOOL_NAMES.length).toBeGreaterThan(0);
+  });
+
+  it("a listing that succeeds makes exactly one listing call", async () => {
+    const seen: string[][] = [];
+    const list = (tools: readonly ContributedTool[]): Promise<{ name: string }[]> => {
+      seen.push(tools.map((t) => t.name));
+      return Promise.resolve(kernelToolNames(tools).map((name) => ({ name })));
+    };
+    await expect(assertKernelToolsList(SHIPPED, list)).resolves.toBeUndefined();
+    expect(seen).toHaveLength(1);
   });
 
   it("a listing that succeeds but omits a tool names the omitted one with its own reason (not a schema failure)", async () => {
@@ -127,9 +162,18 @@ describe("a tool whose shape the SDK cannot serialise", () => {
     expect(err).toBeInstanceOf(InvalidContributionError);
     expect((err as InvalidContributionError).contributor).toBe("kernel_agent_list");
     expect((err as Error).message).toBe(
-      "contribution kernel_agent_list: invalid tool: tools/list succeeded but omitted kernel_agent_list, so sessions would not be offered them",
+      "contribution kernel_agent_list: invalid tool: tools/list succeeded but omitted kernel_agent_list, so sessions would not be offered it",
     );
     expect((err as Error).message).not.toContain("does not serialise");
+
+    const omitTwo = (tools: readonly ContributedTool[]): Promise<{ name: string }[]> =>
+      Promise.resolve(
+        kernelToolNames(tools)
+          .filter((name) => name !== "kernel_agent_list" && name !== "kernel_agent_create")
+          .map((name) => ({ name })),
+      );
+    const two = await assertKernelToolsList(SHIPPED, omitTwo).catch((e: unknown) => e);
+    expect((two as Error).message).toMatch(/, so sessions would not be offered them$/);
   });
 
   it("the shipped tools pass the check", async () => {

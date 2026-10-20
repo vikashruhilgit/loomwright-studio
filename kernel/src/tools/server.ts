@@ -577,13 +577,17 @@ export async function listKernelTools(contributed: readonly ContributedTool[]): 
 /**
  * The start-time self-check (`startKernel`, before the store opens): list
  * `contributed` with the phase 1 six as a session would get them. On a
- * failure, each contributed tool is listed alone to name the ones that fail
- * (all of them when none fails alone: the combination does), and the check
- * throws `InvalidContributionError` naming them with the listing error's
- * first line. A listing that succeeds but omits a tool throws
+ * failure, the phase 1 six are listed alone first: every listing includes
+ * them, so when they fail alone the check names the phase 1 six (and no
+ * contributed tool). Otherwise each contributed tool is listed alone (beside
+ * the phase 1 six) to name the ones that fail (all of them when none fails
+ * alone: the combination does). Either way the check throws
+ * `InvalidContributionError` naming them with the full listing error's first
+ * line. A listing that succeeds but omits a tool throws
  * `InvalidContributionError` too, naming the missing ones with its own
- * reason. `list` is `listKernelTools` (`startKernel` passes nothing); a test
- * injects a stub to reach the combination and omission branches.
+ * reason. A listing that succeeds makes exactly one `list` call. `list` is
+ * `listKernelTools` (`startKernel` passes nothing); a test injects a stub to
+ * reach the phase 1, combination and omission branches.
  */
 export async function assertKernelToolsList(
   contributed: readonly ContributedTool[],
@@ -598,6 +602,12 @@ export async function assertKernelToolsList(
   try {
     listed = await list(contributed);
   } catch (err) {
+    // Every listing below includes the phase 1 six: if they fail alone, they are the culprit, not a contributed tool.
+    const phase1Fails = await list([]).then(
+      () => false,
+      () => true,
+    );
+    if (phase1Fails) return refuse(KERNEL_TOOL_NAMES, unserialisable(firstLine(err)));
     const failing: string[] = [];
     for (const t of contributed) {
       try {
@@ -615,6 +625,6 @@ export async function assertKernelToolsList(
   const names = new Set(listed.map((t) => t.name));
   const missing = kernelToolNames(contributed).filter((name) => !names.has(name));
   if (missing.length > 0) {
-    refuse(missing, `tools/list succeeded but omitted ${missing.join(", ")}, so sessions would not be offered them`);
+    refuse(missing, `tools/list succeeded but omitted ${missing.join(", ")}, so sessions would not be offered ${missing.length === 1 ? "it" : "them"}`);
   }
 }
