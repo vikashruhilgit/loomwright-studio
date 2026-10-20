@@ -56,6 +56,7 @@ import { Store } from "../src/store/index.js";
 import type { KernelToolResult } from "../src/tools/server.js";
 import { fireDueTriggers, registerTrigger } from "../src/triggers/index.js";
 import { count, events } from "./loop-helpers.js";
+import { stubNotifierContributions } from "./notifier-stub.js";
 import type { FakeCall } from "./session-fakes.js";
 import { fakeMsg, fakeSessions, makePluginDir, stubProvider } from "./session-fakes.js";
 
@@ -139,7 +140,7 @@ async function startBrainKernel(script?: (call: FakeCall, n: number) => void, ex
     availableProviderIds: async () => ["api-key"],
     loopDeps: { tickMs: 10 },
   };
-  const kernel = await startKernel({ dataDir, env: { PATH: "/usr/bin" }, sessions: { loomwrightPath: pluginDir, stopGraceMs: 10 }, ...extra }, d);
+  const kernel = await startKernel({ dataDir, env: { PATH: "/usr/bin" }, sessions: { loomwrightPath: pluginDir, stopGraceMs: 10 }, contributions: stubNotifierContributions(), ...extra }, d);
   kernels.push(kernel);
   return { kernel, fakes, keychain };
 }

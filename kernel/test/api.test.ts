@@ -17,6 +17,7 @@ import type { AbandonVia, SessionHandle, SessionRow } from "../src/sessions/inde
 import { Store } from "../src/store/index.js";
 import { kernelVersion } from "../src/version.js";
 import { userEntry, writeInstalledPlugins, writeLoomwrightInstall } from "./fixtures/loomwright/helpers.js";
+import { stubNotifierContributions } from "./notifier-stub.js";
 import { fakeSessions, flush, makePluginDir, startParams, stubProvider, unexpectedAbandon } from "./session-fakes.js";
 
 const TOKEN = "0123456789abcdef".repeat(4);
@@ -419,7 +420,7 @@ describe("GET /status: the loomwright field (D32)", () => {
     const items = new Map<string, string>();
     const file = join(tmp, "claude", "plugins", "installed_plugins.json"); // never written
     const kernel = await startKernel(
-      { dataDir: join(tmp, "kernel-data"), env: { PATH: "/usr/bin" }, sessions: { installedPluginsPath: file, stopGraceMs: 10 } },
+      { dataDir: join(tmp, "kernel-data"), env: { PATH: "/usr/bin" }, sessions: { installedPluginsPath: file, stopGraceMs: 10 }, contributions: stubNotifierContributions() },
       {
         keychain: { read: (service) => items.get(service) },
         keychainWriter: {
