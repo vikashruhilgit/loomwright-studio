@@ -3,7 +3,11 @@
 // notifications`. The notifier is always a stub (`NotifierDeps.exec`)
 // asserting the exact argv and stdin; the only real processes spawned are
 // `/bin/sh`, `/bin/echo`, `/bin/cat`, `/bin/sleep` and `/usr/bin/env`, to pin
-// the quoting and the no-shell spawn. Never a real notification.
+// the quoting and the no-shell spawn. Never a real notification. The one
+// osascript quoting probe (a real `/usr/bin/osascript` with `display
+// notification` swapped for `return`) runs only on macOS under
+// `STUDIO_LIVE=1`: otherwise the run-wide notifier guard refuses osascript
+// (`docs/architecture/notifications.md#testing`).
 import { spawnSync } from "node:child_process";
 import type { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -412,7 +416,7 @@ describe("the quoting and the spawn (no shell ever sees notification text)", () 
     expect(shellQuote("a'b")).toBe("'a'\\''b'");
   });
 
-  it.skipIf(process.platform !== "darwin")("a real osascript, given osascriptInvocation's argv, reads a title of -e and an AppleScript body as argv items; nothing in them runs", () => {
+  it.runIf(process.platform === "darwin" && process.env.STUDIO_LIVE === "1")("a real osascript, given osascriptInvocation's argv, reads a title of -e and an AppleScript body as argv items; nothing in them runs", () => {
     const marker = join(dir, "pwned");
     const title = "-e";
     const body = `property p : (do shell script "touch ${marker}")`;

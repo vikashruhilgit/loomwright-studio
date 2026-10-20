@@ -5,8 +5,9 @@
 // notification, breaking signals first. Every install and every
 // `installed_plugins.json` is a fixture under a temp dir: no test reads the
 // real `~/.claude/plugins/installed_plugins.json`. A fake clock drives the
-// once-a-minute check; no notification is ever posted (no delivery due work
-// runs here, and the one kernel test creates none).
+// once-a-minute check; no notification is ever posted (the one kernel test
+// delivers through a stub, `stubNotifierContributions`, and creates none; no
+// other test runs delivery due work).
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +37,7 @@ import type { Store } from "../src/store/index.js";
 import { fixtureContract, userEntry, writeInstalledPlugins, writeLoomwrightInstall } from "./fixtures/loomwright/helpers.js";
 import { events, loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
+import { stubNotifierContributions } from "./notifier-stub.js";
 import { fakeSessions, stubProvider } from "./session-fakes.js";
 
 const MINUTE = 60_000;
@@ -195,7 +197,7 @@ describe("the first observation (AC1)", () => {
     let kernel: Kernel | undefined;
     try {
       kernel = await startKernel(
-        { dataDir, env: { PATH: "/usr/bin" }, sessions: { installedPluginsPath: pluginsFile, stopGraceMs: 10 } },
+        { dataDir, env: { PATH: "/usr/bin" }, sessions: { installedPluginsPath: pluginsFile, stopGraceMs: 10 }, contributions: stubNotifierContributions() },
         {
           keychain,
           keychainWriter: writer,

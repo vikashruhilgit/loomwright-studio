@@ -38,6 +38,7 @@ import { contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolResult } from "../src/tools/server.js";
 import { fixtureContract, userEntry, writeInstalledPlugins, writeLoomwrightInstall } from "./fixtures/loomwright/helpers.js";
 import type { InstalledPluginEntry } from "./fixtures/loomwright/helpers.js";
+import { stubNotifierContributions } from "./notifier-stub.js";
 import { fakeSessions, startParams, stubProvider } from "./session-fakes.js";
 
 let tmp: string;
@@ -706,7 +707,7 @@ describe("loomwrightCapabilities and kernel_loomwright_capabilities (AC8)", () =
     let kernel: Kernel | undefined;
     try {
       kernel = await startKernel(
-        { dataDir: join(tmp, "data"), env: { PATH: "/usr/bin" }, sessions: { loomwrightPath: pluginDir, stopGraceMs: 10 } },
+        { dataDir: join(tmp, "data"), env: { PATH: "/usr/bin" }, sessions: { loomwrightPath: pluginDir, stopGraceMs: 10 }, contributions: stubNotifierContributions() },
         {
           keychain,
           keychainWriter: writer,

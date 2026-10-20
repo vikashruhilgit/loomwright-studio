@@ -49,6 +49,7 @@ import type { ResumeSessionParams, SessionHandle, SessionRow, SessionStatus, Sta
 import { AdmissionRefusedError } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import { count } from "./loop-helpers.js";
+import { stubNotifierContributions } from "./notifier-stub.js";
 import type { FakeCall } from "./session-fakes.js";
 import { fakeMsg, fakeSessions, makePluginDir, stubProvider } from "./session-fakes.js";
 
@@ -239,7 +240,7 @@ async function startCrewKernel(reply: string) {
     availableProviderIds: async () => ["api-key"],
     loopDeps: { tickMs: 10 },
   };
-  const kernel = await startKernel({ dataDir, env: { PATH: "/usr/bin" }, sessions: { loomwrightPath: pluginDir, stopGraceMs: 10 } }, d);
+  const kernel = await startKernel({ dataDir, env: { PATH: "/usr/bin" }, sessions: { loomwrightPath: pluginDir, stopGraceMs: 10 }, contributions: stubNotifierContributions() }, d);
   kernels.push(kernel);
   return { kernel, fakes, keychain };
 }

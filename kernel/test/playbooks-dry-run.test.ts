@@ -33,6 +33,7 @@ import { Store } from "../src/store/index.js";
 import { approvalApplierOf, contributedToolHandler, heldToolCheckOf, kernelStepKey } from "../src/tools/server.js";
 import type { KernelToolContext, KernelToolResult } from "../src/tools/server.js";
 import { count, events } from "./loop-helpers.js";
+import { stubNotifierContributions } from "./notifier-stub.js";
 import { fakeMsg, fakeSessions, flush, makePluginDir, stubProvider } from "./session-fakes.js";
 import type { FakeCall } from "./session-fakes.js";
 
@@ -220,7 +221,7 @@ async function bootKernel() {
     loopDeps: { tickMs: 3_600_000 },
     now: () => clock.at,
   };
-  const kernel = await startKernel({ dataDir, env: { PATH: "/usr/bin" }, sessions: { loomwrightPath: pluginDir, stopGraceMs: 10 } }, d);
+  const kernel = await startKernel({ dataDir, env: { PATH: "/usr/bin" }, sessions: { loomwrightPath: pluginDir, stopGraceMs: 10 }, contributions: stubNotifierContributions() }, d);
   kernels.push(kernel);
   const wright = await kernel.sessions.startSession({
     agent: "wright",
