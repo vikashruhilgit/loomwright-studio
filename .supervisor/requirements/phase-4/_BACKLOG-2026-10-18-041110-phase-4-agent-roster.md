@@ -47,6 +47,7 @@ Recorded 2026-10-18 in the product-owner session, over four rounds of AskUserQue
 | 09 | Exit check: deterministic test, live harness and runbook (comment-only reviewer can't push), evidence, ROADMAP/ARCHITECTURE/OPEN_QUESTIONS | 01–08 | nothing (it's last) |
 | 10 | Live run 2026-10-19 step 2 finding: every kernel tool's schema serialises through the SDK (`kernel_agent_create` loses its `z.record`), a CI test lists every shipped tool the SDK's way, and the kernel refuses to start when a tool can't list; then the live exit is rerun | none (01–09 merged) | nothing (one item) |
 | 11 | Item 09's finding (PR #93): the kernel records each session's working directory, so the store shows where a session ran; three open questions for the owner (column or event, what a resume records, path as given or realpath) | none | nothing: it shares `docs/ARCHITECTURE.md` with 10, so it runs in its own run |
+| 12 | Found during the 2026-10-20 live rerun: `npm test` posts real macOS notifications (`agents-charter-tools.test.ts` boots a kernel with the shipped notifications delivery); a run-wide vitest guard refuses the real notifier outside `STUDIO_LIVE=1`, and the seven exposed tests inject a stub | none | 11 (disjoint Touches) |
 
 ## Run
 Checked with `automate-helpers.sh plan-waves .supervisor/requirements/phase-4 --max 9 --explain` on 2026-10-18 (Loomwright 17.6.1, resolved from `installed_plugins.json`), with the companions rules below applied:
@@ -71,6 +72,7 @@ N is each wave's width: wave 2 runs at `--parallel 4` and wave 3 at `--parallel 
 4. `/automate --backlog .supervisor/requirements/phase-4/_BACKLOG-run-4-exit.md`: sequential, item 09, with the live run (D33: an agent may run it while the owner watches; the owner decides every approval).
 5. `/automate --backlog .supervisor/requirements/phase-4/_BACKLOG-run-5-tools-list-fix.md`: sequential, item 10, from the 2026-10-19 live run (evidence `docs/evidence/phase-4-exit-live-2026-10-19.json`). Then rerun the live exit (`docs/evidence/phase-4-exit-runbook.md`); the rerun is not a queue item.
 6. `/automate --backlog .supervisor/requirements/phase-4/_BACKLOG-run-6-session-cwd.md`: sequential, item 11, only after the owner has answered its three open questions in the item file (a lane that finds one open stops and implements nothing). It does not block the live rerun; run it before the rerun only if you want the rerun's evidence to read the recorded cwd directly.
+7. `/automate --backlog .supervisor/requirements/phase-4/_BACKLOG-run-7-test-notifier-guard.md`: sequential, item 12. Its Touches are disjoint from item 11's, so the two can share a run once item 11's questions are answered.
 
 Safe mode throughout (no `--auto-merge`). Push these items to the metadata branch (`meta-sync.sh push --paths-from`) before a lane can read them. If a lane needs a file outside its Touches that another lane in the same wave owns, it stops and says so; it doesn't edit the file. New findings join this plan doc as new items.
 
@@ -122,3 +124,4 @@ Later items edit only their own module, test and doc page. Within a wave:
 - [ ] .supervisor/requirements/phase-4/2026-10-18-041109-phase-4-exit-check.md
 - [ ] .supervisor/requirements/phase-4/2026-10-20-004500-every-kernel-tool-schema-serialises-through-the-sdk-and-the-kernel-checks-it-at-start.md
 - [ ] .supervisor/requirements/phase-4/2026-10-20-011500-the-kernel-records-each-sessions-working-directory.md
+- [ ] .supervisor/requirements/phase-4/2026-10-20-111606-no-test-run-posts-a-real-notification.md
