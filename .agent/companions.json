@@ -9,6 +9,10 @@
     { "when": "kernel/src/sessions/policy.ts", "add": ["kernel/test/sessions-policy.test.ts"] },
     { "when": "kernel/src/agents/charter-files.ts", "add": ["docs/architecture/agents.md", "kernel/test/agents-roster.test.ts"] },
     { "when": "docs/architecture/agents.md", "add": ["kernel/src/agents/charter-files.ts", "kernel/test/agents-roster.test.ts"] },
-    { "when": "kernel/src/agents/index.ts", "add": ["kernel/test/agents-foundation.test.ts"] }
+    { "when": "kernel/src/agents/index.ts", "add": ["kernel/test/agents-foundation.test.ts"] },
+    { "when": "docs/design/tokens.json", "add": ["app/scripts/tokens.mjs", "app/src/styles/tokens.css"] },
+    { "when": "app/scripts/tokens.mjs", "add": ["app/src/styles/tokens.css"] },
+    { "when": "kernel/src/console/index.ts", "add": ["kernel/test/console-foundation.test.ts"] },
+    { "when": "app/src/api/contract.ts", "add": ["kernel/test/console-contract.test.ts"] }
   ]
 }
