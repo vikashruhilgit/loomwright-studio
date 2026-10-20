@@ -181,11 +181,22 @@ describe("the built daemon (end to end, no Keychain)", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
+  /** One daemon run's process timeout. */
+  const DAEMON_TIMEOUT_MS = 30_000;
+  /**
+   * A test's timeout for `runs` daemon runs: above their process timeouts, so a
+   * hung daemon is reported by its own `spawnSync` timeout, never vitest's. Each
+   * run is a fresh `node` loading the built daemon and better-sqlite3; ~0.2 s
+   * idle, but over 1.5 s each at a load average near 20, so two of them overran
+   * vitest's default 5 s on a loaded machine.
+   */
+  const daemonTestTimeout = (runs: number): number => runs * DAEMON_TIMEOUT_MS + 10_000;
+
   function daemon(args: readonly string[]): { status: number | null; stderr: string } {
     const r = spawnSync(process.execPath, [join(build.outDir, "daemon.js"), ...args], {
       env: { STUDIO_DATA_DIR: dataDir, PATH: process.env.PATH ?? "/usr/bin:/bin" },
       encoding: "utf8",
-      timeout: 30_000,
+      timeout: DAEMON_TIMEOUT_MS,
     });
     return { status: r.status, stderr: r.stderr };
   }
@@ -203,7 +214,7 @@ describe("the built daemon (end to end, no Keychain)", () => {
     } finally {
       holder.close();
     }
-  });
+  }, daemonTestTimeout(2));
 
   /** Runs `sql` against the data dir's database, as another writer would. */
   function tamper(sql: string): void {
@@ -236,11 +247,11 @@ describe("the built daemon (end to end, no Keychain)", () => {
     expect(byHand.stderr.startsWith(`${DAEMON_NAME}: failed to start: `)).toBe(true);
     expect(byHand.stderr).toMatch(cause);
     expect(byHand.stderr.split("\n")).toHaveLength(2);
-  });
+  }, daemonTestTimeout(2));
 
   it("a bad argument with --launchd: exit 0 and one stderr line", () => {
     const r = daemon([LAUNCHD_ARGUMENT, "--bogus"]);
     expect(r.status).toBe(0);
     expect(r.stderr).toBe(`${DAEMON_NAME}: failed to start (not restarting: bad argument): unknown argument: --bogus\n`);
-  });
+  }, daemonTestTimeout(1));
 });
