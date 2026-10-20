@@ -89,3 +89,9 @@ kernel/src/kernel.ts
 kernel/test/kernel-daemon.test.ts
 docs/ARCHITECTURE.md
 docs/architecture/agents.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-20T03:13:51Z
+- **Brief:** .supervisor/jobs/done/2026-10-20-kernel-tools-list-sdk-schema-check.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/95
