@@ -220,7 +220,7 @@ The `charter-tools` part (`charter-tools.ts`, phase 4 item 07) gives Wright thre
 
 | Tool | Held | What it does |
 |---|---|---|
-| `kernel_agent_create(charter, idempotency_key)` | always | asks the owner to create a crew member from `charter` (the charter above: `validateCharter` is its only rule) |
+| `kernel_agent_create(charter, idempotency_key)` | always | asks the owner to create a crew member from `charter` (the charter above: `validateCharter` is its only rule). The tool declares `charter` as a JSON object, not a record, and passes it to `validateCharter` as sent, so an own `__proto__` key is refused `invalid_input` as an unknown key |
 | `kernel_agent_update(id, changes, expected_sha256, idempotency_key)` | always | asks the owner to change a member's settings file, display name or avatar |
 | `kernel_agent_list()` | no | reads the roster: Wright, then every member with its settings and its settings file's `sha256` |
 

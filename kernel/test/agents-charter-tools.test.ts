@@ -408,6 +408,18 @@ describe("kernel_agent_create: refusals and the apply's edges (AC3)", () => {
     expect(h.reasons(CREATE)).toEqual(["approval_required", "held_refused", "approval_required", "held_refused", "held_refused", "held_refused"]);
   });
 
+  it("a charter with an own __proto__ key (parsed from JSON, every other field valid) is refused invalid_input naming it as an unknown key; no approval row", async () => {
+    const h = await bootManager();
+    const sent = JSON.stringify(charter()).replace(/^\{/, '{"__proto__": {"x": 1}, ');
+    const withProto = JSON.parse(sent) as Record<string, unknown>;
+    expect(Object.hasOwn(withProto, "__proto__")).toBe(true);
+    const r = await h.wright.gate(CREATE, { charter: withProto, idempotency_key: "k" });
+    expect(r.permissionDecisionReason).toMatch(/^kernel_agent_create: invalid_input: /);
+    expect(r.permissionDecisionReason).toContain('unknown key "__proto__"');
+    expect(h.reasons(CREATE)).toEqual(["held_refused"]);
+    expect(h.approvals()).toEqual([]);
+  });
+
   it("the owner made mason by hand between the hold and the approval: apply_refused id_taken, nothing more written (one row, the owner's)", async () => {
     const h = await bootManager();
     await h.wright.gate(CREATE, { charter: charter({ display_name: "Wright's Mason" }), idempotency_key: "c1" });
