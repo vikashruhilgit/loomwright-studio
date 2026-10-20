@@ -295,7 +295,15 @@ const createTool = defineTool({
     "The kernel always holds this call for the owner, showing the role.md and settings file it would write and what it enforces; end your turn. " +
     "The owner's approval creates the member: the kernel applies it itself and tells you what it did in a new message; do not repeat the call. " +
     `Refused (nothing held) with one of: ${CHARTER_TOOL_REFUSALS.join(", ")}. Use a new idempotency_key for each request to the owner.`,
-  shape: { charter: z.record(z.string(), z.unknown()), idempotency_key: z.string().min(1).max(200) },
+  shape: {
+    // Not `z.record`: the Agent SDK's bundled serialiser throws on a record, which empties `tools/list`; and a record rebuilds
+    // the object in a plain `{}`, dropping an own `__proto__` key. `validateCharter` sees the charter as sent (and refuses `__proto__`).
+    charter: z
+      .unknown()
+      .refine((v) => typeof v === "object" && v !== null && !Array.isArray(v), { message: "charter must be a JSON object" })
+      .meta({ type: "object" }),
+    idempotency_key: z.string().min(1).max(200),
+  },
   beforeHold: createBeforeHold,
   applyOnApproval: createOnApproval,
   handler: () => appliedByKernel(AGENT_CREATE_TOOL_NAME),

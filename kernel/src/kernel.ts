@@ -29,7 +29,7 @@ import type { EventHandlers, EventLoopDeps } from "./loop/types.js";
 import { SessionManager } from "./sessions/manager.js";
 import type { AdmissionDecision, AdmissionRequest, SessionManagerDeps, SessionManagerOptions } from "./sessions/types.js";
 import { Store, resolveDataDir } from "./store/store.js";
-import { KERNEL_MCP_SERVER_NAME, approvalApplierOf, createKernelMcpServer, heldToolCheckOf } from "./tools/server.js";
+import { KERNEL_MCP_SERVER_NAME, approvalApplierOf, assertKernelToolsList, createKernelMcpServer, heldToolCheckOf } from "./tools/server.js";
 import { writeFileAtomic } from "./tools/handoff.js";
 
 /** Selects the auth provider when `--auth-provider` is not given. */
@@ -217,8 +217,12 @@ export function agentLimitsFor(dataDir: string): (agent: string) => AgentLimitsL
  * `SHIPPED_CONTRIBUTIONS`; a `ContributionConflictError`,
  * `UnknownEventKindError` or `InvalidContributionError` rejects before any
  * side effect) and build the kernel-applied actions' applier from the merged
- * tools (`approvalApplierOf`; it refuses the same way); open the `Store`
- * (taking its lock); select
+ * tools (`approvalApplierOf`; it refuses the same way); list the merged
+ * tools through the Agent SDK's MCP server (`assertKernelToolsList`; a tool
+ * whose input schema does not serialise, or that the listing omits, refuses
+ * the same way, named: the phase 1 tools when they fail to list alone,
+ * else the failing contributed ones); open
+ * the `Store` (taking its lock); select
  * the auth provider (`--auth-provider`, else `STUDIO_AUTH_PROVIDER`, else the
  * build default); the `Budget` (each agent's limits read from its settings
  * file, `agentLimitsFor`); the `SessionManager` (wired to the budget and
@@ -250,6 +254,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
   });
   // Built here too: a tool's applier outside KERNEL_APPLIED_ACTIONS refuses the start before the store opens.
   const approvalApplier = approvalApplierOf(contributions.tools);
+  // Every tool's shape must list through the Agent SDK: one that cannot empties every session's tools/list.
+  await assertKernelToolsList(contributions.tools);
 
   const store = (deps.openStore ?? ((dir: string) => new Store({ dataDir: dir })))(dataDir);
   let sessions: SessionManager | undefined;

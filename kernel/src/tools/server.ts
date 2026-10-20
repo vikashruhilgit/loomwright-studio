@@ -25,6 +25,8 @@
 // `kernelToolNames(contributed)` lists both.
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { KERNEL_APPLIED_ACTIONS } from "../approvals/store.js";
 import type { ApprovalApplier } from "../approvals/store.js";
@@ -523,4 +525,106 @@ export function kernelToolDefinitions(ctx: KernelToolContext, contributed: reado
  */
 export function createKernelMcpServer(ctx: KernelToolContext, contributed: readonly ContributedTool[] = []): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({ name: KERNEL_MCP_SERVER_NAME, version: kernelVersion(), tools: kernelToolDefinitions(ctx, contributed) });
+}
+
+const LISTING_ONLY = "tool listing only";
+
+function listingOnly(): never {
+  throw new Error(LISTING_ONLY);
+}
+
+/**
+ * The context `listKernelTools` builds the server with. The tool definitions
+ * read `store`, `sessions` and `sessionId` eagerly (`kernelToolHandlers`,
+ * `contributedToolContext`), so reading a member succeeds; using one (any
+ * property of `store`, either `sessions` method) throws. `now` and `schedule`
+ * are absent: their defaults are lazy closures.
+ */
+// A stand-in, not a real Store or SessionManager: the cast is safe because listing never calls a handler.
+export const LISTING_CTX = {
+  store: new Proxy({}, { get: listingOnly }),
+  sessions: { stopSession: listingOnly, getSession: listingOnly },
+  sessionId: 0,
+} as unknown as KernelToolContext;
+
+/** The first line of a thrown value's message. */
+function firstLine(err: unknown): string {
+  return errorMessage(err).split("\n", 1)[0] ?? "";
+}
+
+/**
+ * The tools a session would be offered: the `kernel` server for `contributed`
+ * (built over `LISTING_CTX`), listed through the Agent SDK's own MCP server
+ * by a real MCP client over an in-memory transport, as `tools/list` would be.
+ * Rejects when the listing does: one tool whose shape the SDK cannot
+ * serialise fails the whole list.
+ */
+export async function listKernelTools(contributed: readonly ContributedTool[]): Promise<{ name: string; inputSchema: unknown }[]> {
+  const { instance } = createKernelMcpServer(LISTING_CTX, contributed);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "kernel-self-check", version: kernelVersion() });
+  try {
+    await instance.connect(serverTransport);
+    await client.connect(clientTransport);
+    const { tools } = await client.listTools();
+    return tools.map((t) => ({ name: t.name, inputSchema: t.inputSchema }));
+  } finally {
+    // Closing an in-memory pair has nothing to report; never mask the listing's own error.
+    await Promise.allSettled([client.close(), instance.close()]);
+  }
+}
+
+/**
+ * The start-time self-check (`startKernel`, before the store opens): list
+ * `contributed` with the phase 1 six as a session would get them. On a
+ * failure, the phase 1 six are listed alone first: every listing includes
+ * them, so when they fail alone the check names the phase 1 six (and no
+ * contributed tool). Otherwise each contributed tool is listed alone (beside
+ * the phase 1 six) to name the ones that fail (all of them when none fails
+ * alone: the combination does). Either way the check throws
+ * `InvalidContributionError` naming them with the full listing error's first
+ * line. A listing that succeeds but omits a tool throws
+ * `InvalidContributionError` too, naming the missing ones with its own
+ * reason. A listing that succeeds makes exactly one `list` call. `list` is
+ * `listKernelTools` (`startKernel` passes nothing); a test injects a stub to
+ * reach the phase 1, combination and omission branches.
+ */
+export async function assertKernelToolsList(
+  contributed: readonly ContributedTool[],
+  list: (contributed: readonly ContributedTool[]) => Promise<readonly { name: string }[]> = listKernelTools,
+): Promise<void> {
+  const refuse = (names: readonly string[], reason: string): never => {
+    throw new InvalidContributionError(names.join(", "), "tool", reason);
+  };
+  const unserialisable = (detail: string): string =>
+    `its input schema does not serialise through the Agent SDK, so tools/list would offer sessions no kernel tool: ${detail}`;
+  let listed: readonly { name: string }[];
+  try {
+    listed = await list(contributed);
+  } catch (err) {
+    // Every listing below includes the phase 1 six: if they fail alone, they are the culprit, not a contributed tool.
+    const phase1Fails = await list([]).then(
+      () => false,
+      () => true,
+    );
+    if (phase1Fails) return refuse(KERNEL_TOOL_NAMES, unserialisable(firstLine(err)));
+    const failing: string[] = [];
+    for (const t of contributed) {
+      try {
+        await list([t]);
+      } catch {
+        failing.push(t.name);
+      }
+    }
+    if (failing.length > 0) return refuse(failing, unserialisable(firstLine(err)));
+    return refuse(
+      contributed.map((t) => t.name),
+      unserialisable(`no tool fails alone, the combination fails: ${firstLine(err)}`),
+    );
+  }
+  const names = new Set(listed.map((t) => t.name));
+  const missing = kernelToolNames(contributed).filter((name) => !names.has(name));
+  if (missing.length > 0) {
+    refuse(missing, `tools/list succeeded but omitted ${missing.join(", ")}, so sessions would not be offered ${missing.length === 1 ? "it" : "them"}`);
+  }
 }
