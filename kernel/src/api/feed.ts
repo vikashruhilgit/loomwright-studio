@@ -45,6 +45,13 @@ export const FEED_HEARTBEAT_MS = 15_000;
 /** A serialized event frame over this many bytes (1 MiB) is sent in its truncated form. */
 export const FEED_MAX_FRAME_BYTES = 1_048_576;
 
+/**
+ * A client frame over this many bytes (4 KiB) is refused by `ws` itself, before the feed reads it: the socket is
+ * closed with 1009 (message too big). A subscribe frame is under 100 bytes; without the bound `ws` would buffer
+ * up to its 100 MiB default.
+ */
+export const FEED_MAX_INBOUND_BYTES = 4096;
+
 /** The default slow-client bound: 8 MiB of unsent data (`socket.bufferedAmount`), above the 1 MiB frame cap. */
 export const DEFAULT_FEED_MAX_BUFFERED_BYTES = 8 * 1_048_576;
 

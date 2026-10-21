@@ -14,6 +14,7 @@ import {
   DEFAULT_FEED_MAX_BUFFERED_BYTES,
   FEED_CLOSE_CODES,
   FEED_MAX_FRAME_BYTES,
+  FEED_MAX_INBOUND_BYTES,
   feedMaxBufferedBytes,
   feedTimersActive,
   setFeedMaxBufferedBytesForTesting,
@@ -448,6 +449,21 @@ describe("refusals (AC3)", () => {
       expect((await get(server, "/events?limit=1")).status).toBe(200);
     });
   }
+
+  it("a client frame over FEED_MAX_INBOUND_BYTES (4 KiB) is refused before the feed reads it: closed 1009, no event sent", async () => {
+    expect(FEED_MAX_INBOUND_BYTES).toBe(4096);
+    insert();
+    const server = await serve();
+    const conn = await open(server);
+    // A valid subscribe padded past the bound: refused for its size, never parsed.
+    conn.ws.send(JSON.stringify({ type: "subscribe", after: 0, pad: "x".repeat(FEED_MAX_INBOUND_BYTES) }));
+    expect((await conn.closed).code).toBe(1009);
+    expect(conn.frames).toEqual([]);
+    // The daemon is unharmed: REST still answers and a new client subscribes.
+    expect((await get(server, "/events?limit=1")).status).toBe(200);
+    const next = await subscribed(server, 0);
+    await waitForIds(next, [1]);
+  });
 
   it("a malformed frame (a second frame after the subscribe) closes the socket with 1003", async () => {
     insert();

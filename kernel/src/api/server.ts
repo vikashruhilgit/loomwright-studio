@@ -23,7 +23,7 @@ import type { OrphanedSession } from "../sessions/orphans.js";
 import { SessionError } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { kernelVersion } from "../version.js";
-import { EVENT_FEED_PATH, handleEventFeed } from "./feed.js";
+import { EVENT_FEED_PATH, FEED_MAX_INBOUND_BYTES, handleEventFeed } from "./feed.js";
 import { engageKillSwitch, killSwitchState, releaseKillSwitch } from "./kill-switch.js";
 
 /** The only address the API ever binds. Not configurable: never `0.0.0.0` or `::`. */
@@ -706,7 +706,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
 
   // The live feed. `noServer`: the upgrade is authenticated and its path
   // checked below before `ws` ever sees the request.
-  const feed = new WebSocketServer({ noServer: true });
+  const feed = new WebSocketServer({ noServer: true, maxPayload: FEED_MAX_INBOUND_BYTES });
   const feedContext = { store, now };
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     // A client gone mid-answer must not throw out of the server (an unhandled 'error').

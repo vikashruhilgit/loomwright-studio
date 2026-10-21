@@ -30,6 +30,7 @@ A connected client that has not subscribed yet gets no events and no heartbeats.
 | Clients | 4 per store, counted from the socket's open (subscribed or not) | A fifth is closed with 1013. A closed client frees its slot at once. |
 | Slow client | `socket.bufferedAmount` over 8 MiB (`DEFAULT_FEED_MAX_BUFFERED_BYTES`) | Checked before every send. Over the bound, the client is closed with 1011 and dropped. Frames already queued still reach it before the close frame. Tests lower the bound through `setFeedMaxBufferedBytesForTesting` in `feed.ts`, never through `EventFeedContext`. |
 | Frame size | 1 MiB (1,048,576 bytes) of serialized frame | A bigger event is sent as `{"type":"event","id","kind","truncated":true}`. Read it in full with `GET /events?after=<id - 1>&limit=1`. |
+| Client frame size | 4 KiB (`FEED_MAX_INBOUND_BYTES`), set as the `WebSocketServer`'s `maxPayload` | A bigger client frame is refused by `ws` before the feed reads it: the socket is closed with 1009. A subscribe frame is under 100 bytes. |
 | Poll | One shared 250 ms poll per store, plus one 15 s heartbeat timer | Both start on the first connect and stop when the last client closes, or when `api.close()` terminates it. No timer runs while no client is connected. |
 
 A backlog that fills the slow-client bound within one catch-up (several MiB unsent) is closed with 1011 partway through. The client reconnects from the last id it received and gets the rest. Each reconnect makes progress, because the bound is above the frame cap.
@@ -42,8 +43,9 @@ A backlog that fills the slow-client bound within one catch-up (several MiB unse
 | 1011 | Too slow: its unsent data passed the bound | Resubscribe with `after` = the last id it received. |
 | 1003 | A malformed client frame: not JSON; not an object; a `type` other than `subscribe`; an `after` that is not a non-negative safe integer; a binary frame; or any frame after the subscribe | Fix the frame. Nothing is sent before the close. |
 | 1001 | The feed stopped because its store failed, for example the store closed during a kernel shutdown | Reconnect and resubscribe from its last id once the kernel is back. |
+| 1009 | A client frame over 4 KiB | Fix the frame. Nothing is sent before the close. |
 
-`FEED_CLOSE_CODES` in `feed.ts` equals the contract's (1013, 1011, 1003). 1001 is the standard "going away" code, used only for the store failure above.
+`FEED_CLOSE_CODES` in `feed.ts` equals the contract's (1013, 1011, 1003). 1001 is the standard "going away" code, used only for the store failure above, and 1009 the standard "message too big" code, sent by `ws` itself.
 
 ## Resume
 
