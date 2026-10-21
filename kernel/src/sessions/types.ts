@@ -302,8 +302,9 @@ export interface AdmissionRequest {
  * Why admission refused: the account is parked at its cap, the agent reached
  * its daily token limit or its sessions-at-once limit, the agent's settings
  * file is invalid or missing (its limits cannot be read, so it is refused
- * rather than read as unlimited), or the session's playbook reached its own
- * daily token limit (`token_limit_per_day`).
+ * rather than read as unlimited), the session's playbook reached its own
+ * daily token limit (`token_limit_per_day`), or the owner paused new work
+ * (`paused`, the kernel's check before the budget's; `retryAt` is `null`).
  */
 export type AdmissionRefusalReason =
   | "cap_parked"
@@ -311,7 +312,8 @@ export type AdmissionRefusalReason =
   | "agent_sessions_at_once"
   | "settings_invalid"
   | "settings_missing"
-  | "playbook_daily_limit";
+  | "playbook_daily_limit"
+  | "paused";
 
 /**
  * The admission verdict. A refusal carries when to try again (ISO-8601), or

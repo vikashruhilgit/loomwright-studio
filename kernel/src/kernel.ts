@@ -22,6 +22,7 @@ import type { AuthProvider, AuthProviderDeps, BaseEnv } from "./auth/types.js";
 import { Budget } from "./budget/index.js";
 import type { AgentLimitsLookup } from "./budget/index.js";
 import { recordSessionOutput } from "./console/output.js";
+import { isPaused } from "./console/pause.js";
 import { PHASE1_RESERVED, mergeContributions } from "./features/contribution.js";
 import type { FeatureContribution, MergedContributions } from "./features/contribution.js";
 import { SHIPPED_CONTRIBUTIONS } from "./features/index.js";
@@ -151,12 +152,20 @@ function removeApiInfoIfOurs(path: string, pid: number): void {
  * other provider (the gate's D28 API-key fallback, never reachable while the
  * kernel gives the `Budget` no API-key provider) throws: the manager fails
  * the start or resume closed, launching nothing (invariant 3).
+ *
+ * With `paused` (the kernel wires `isPaused` over its store, read on every
+ * request), a request made while it returns true is refused with reason
+ * `paused` and a `null` retryAt before the budget is asked, so the
+ * budget writes no `admission_refused` event and no `notify` for it; the
+ * loop parks the event under its usual rule (one `event_parked`, no notify).
  */
 export function admissionFor(
   budget: Pick<Budget, "checkPlaybook">,
   provider: string,
+  paused?: () => boolean,
 ): (request: AdmissionRequest) => AdmissionDecision {
   return (request) => {
+    if (paused?.() === true) return { admitted: false, reason: "paused", retryAt: null };
     const verdict = budget.checkPlaybook({ ...request, playbook: request.playbook ?? null });
     if (!verdict.admitted) return { admitted: false, reason: verdict.reason, retryAt: verdict.retryAt };
     if (verdict.provider !== provider) {
@@ -298,7 +307,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         onMessage: budget.observe,
         // The console's session output log (a no-op until phase 5 item 03 fills it in).
         onOutput: (sessionId, message) => recordSessionOutput(store, sessionId, message),
-        admission: admissionFor(budget, authProvider.id),
+        // The owner's pause refuses every start and resume first (it never stops a running session).
+        admission: admissionFor(budget, authProvider.id, () => isPaused(store)),
         mcpServers: ({ sessionId }) => ({
           [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now }, contributions.tools),
         }),
