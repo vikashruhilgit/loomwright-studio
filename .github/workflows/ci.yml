@@ -90,3 +90,59 @@ jobs:
             echo "daemon --version printed '$actual', expected '$expected'" >&2
             exit 1
           fi
+
+  # The desktop app (app/): install, typecheck, unit tests, build, then the
+  # Playwright Electron smoke under xvfb. A sibling of `ci`, not a step in it,
+  # so the required check keeps its name. Tests use the fixture kernel: no
+  # token, no Keychain, no real kernel.
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node (app)
+        if: hashFiles('app/package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install (app)
+        if: hashFiles('app/package.json') != ''
+        working-directory: app
+        run: npm ci
+
+      - name: Typecheck (app)
+        if: hashFiles('app/package.json') != ''
+        working-directory: app
+        run: npm run typecheck
+
+      - name: Test (app)
+        if: hashFiles('app/package.json') != ''
+        working-directory: app
+        run: npm test
+
+      - name: Build (app)
+        if: hashFiles('app/package.json') != ''
+        working-directory: app
+        run: npm run build
+
+      # Electron 44 downloads its binary on first use; fetch it up front so a
+      # download failure reads as one, not as a failed smoke.
+      - name: Download Electron (app)
+        if: hashFiles('app/package.json') != ''
+        working-directory: app
+        run: node node_modules/electron/install.js
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces, which Chromium's
+      # sandbox needs; the window keeps `sandbox: true`, so allow them rather
+      # than run Electron with --no-sandbox.
+      - name: Smoke (app, Playwright Electron under xvfb)
+        if: hashFiles('app/package.json') != ''
+        working-directory: app
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          if ! command -v xvfb-run >/dev/null; then sudo apt-get update && sudo apt-get install -y xvfb; fi
+          xvfb-run --auto-servernum npm run e2e

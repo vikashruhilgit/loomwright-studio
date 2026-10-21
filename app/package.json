@@ -1,0 +1,78 @@
+{
+  "name": "loomwright-studio-app",
+  "productName": "Loomwright Studio",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Loomwright Studio desktop app: a thin Electron shell over the kernel's loopback API. Wright, powered by Claude.",
+  "author": "Vikash Ruhil",
+  "license": "SEE LICENSE IN ../LICENSE.md",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "tokens": "node scripts/tokens.mjs --write",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
+    "test": "vitest run src electron scripts",
+    "build": "vite build && node scripts/build-electron.mjs",
+    "start": "electron .",
+    "e2e": "playwright test e2e --workers=1",
+    "package": "npm run build && electron-builder --mac dir --publish never"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@react-spring/web": "^10.1.2",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^22.20.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^44.9.2",
+    "electron-builder": "^26.15.3",
+    "jsdom": "^30.1.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  },
+  "build": {
+    "appId": "dev.loomwright.studio",
+    "productName": "Loomwright Studio",
+    "copyright": "Vikash Ruhil",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "protocols": [
+      {
+        "name": "Loomwright Studio link",
+        "schemes": [
+          "loomwright-studio"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dir"
+      ],
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "notarize": false
+    },
+    "publish": null
+  }
+}
