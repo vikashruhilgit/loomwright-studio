@@ -76,16 +76,16 @@ describe("the console contribution", () => {
     expect(consoleContribution.name).toBe("console");
   });
 
-  it("is its name alone: no tools, routes, subcommands, handlers or due work", () => {
-    expect(Object.keys(consoleContribution)).toEqual(["name"]);
+  it("is its name and the events part's one route: no tools, subcommands, handlers or due work", () => {
+    expect(Object.keys(consoleContribution)).toEqual(["name", "routes"]);
     expect(Object.isFrozen(consoleContribution)).toBe(true);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     expect(merged.contributors.at(-1)).toBe("console");
-    expect(merged.routes.filter((r) => r.owner === "console")).toEqual([]);
+    expect(merged.routes.filter((r) => r.owner === "console").map((r) => `${r.method} ${r.path}`)).toEqual(["GET /events"]);
     expect(merged.dueWork.filter((d) => d.owner === "console")).toEqual([]);
   });
 
-  it("merges one part per sub-file, in order: events, output, control, pause, threads, each empty", () => {
+  it("merges one part per sub-file, in order: events, output, control, pause, threads; events carries GET /events, the others are empty", () => {
     expect(CONSOLE_PARTS).toEqual([eventsPart, outputPart, controlPart, pausePart, threadsPart]);
     expect(CONSOLE_PARTS[0]).toBe(eventsPart);
     expect(CONSOLE_PARTS[1]).toBe(outputPart);
@@ -94,9 +94,11 @@ describe("the console contribution", () => {
     expect(CONSOLE_PARTS[4]).toBe(threadsPart);
     expect(CONSOLE_PARTS.map((p) => p.name)).toEqual(["events", "output", "control", "pause", "threads"]);
     for (const part of CONSOLE_PARTS) {
+      if (part === eventsPart) continue;
       expect(part, part.name).toEqual({ name: part.name, tools: [], routes: [], handlers: {} });
     }
-    expect(mergeConsoleParts(CONSOLE_PARTS)).toEqual({ tools: [], routes: [], handlers: {}, dueWork: [] });
+    expect(eventsPart).toEqual({ name: "events", tools: [], routes: [{ method: "GET", path: "/events", handler: expect.any(Function) }], handlers: {} });
+    expect(mergeConsoleParts(CONSOLE_PARTS)).toEqual({ tools: [], routes: [{ method: "GET", path: "/events", handler: expect.any(Function) }], handlers: {}, dueWork: [] });
   });
 
   it("a filled part's routes, handlers and due work reach the contribution in part order; it never gets a subcommands key", () => {
