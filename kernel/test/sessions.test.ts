@@ -574,6 +574,42 @@ describe("startSession: query options (AC1)", () => {
     expect(errs[0]?.payload.error).toBe("observer bug");
   });
 
+  it("calls the onOutput observer for every message, beside onMessage, and survives one that throws (observer_error naming onOutput)", async () => {
+    const output: [number, string][] = [];
+    const messages: string[] = [];
+    const { manager, store } = harness({
+      options: {
+        onMessage: (_id, m) => {
+          messages.push(m.type);
+          // One observer's throw never skips the other.
+          if (m.type === "system") throw new Error("message observer bug");
+        },
+        onOutput: (id, m) => {
+          output.push([id, m.type]);
+          if (m.type === "assistant") throw new Error("output observer bug");
+        },
+      },
+      script: ({ stream }) => {
+        stream.push(msg.init(UUID));
+        stream.push(msg.assistant());
+        stream.push(msg.success());
+      },
+    });
+    const handle = await manager.startSession(startParams());
+    expect(await handle.done).toBe("completed");
+    expect(messages).toEqual(["system", "assistant", "result"]);
+    expect(output).toEqual([
+      [handle.id, "system"],
+      [handle.id, "assistant"],
+      [handle.id, "result"],
+    ]);
+    expect(events(store, "observer_error").map((e) => e.payload)).toEqual([
+      { error: "message observer bug" },
+      { error: "output observer bug", observer: "onOutput" },
+    ]);
+    expect(row(store, handle.id).status).toBe("completed");
+  });
+
   it("records a changed SDK session id from system/init instead of keeping the wrong one", async () => {
     const other = "99999999-8888-4777-8666-555555555555";
     const { manager, store } = harness({

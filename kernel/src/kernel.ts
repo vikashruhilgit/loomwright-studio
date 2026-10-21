@@ -21,6 +21,7 @@ import { SUBSCRIPTION_TOKEN_ID, availableProviderIds, selectAuthProvider } from 
 import type { AuthProvider, AuthProviderDeps, BaseEnv } from "./auth/types.js";
 import { Budget } from "./budget/index.js";
 import type { AgentLimitsLookup } from "./budget/index.js";
+import { recordSessionOutput } from "./console/output.js";
 import { PHASE1_RESERVED, mergeContributions } from "./features/contribution.js";
 import type { FeatureContribution, MergedContributions } from "./features/contribution.js";
 import { SHIPPED_CONTRIBUTIONS } from "./features/index.js";
@@ -295,6 +296,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         baseEnv: env,
         ...options.sessions,
         onMessage: budget.observe,
+        // The console's session output log (a no-op until phase 5 item 03 fills it in).
+        onOutput: (sessionId, message) => recordSessionOutput(store, sessionId, message),
         admission: admissionFor(budget, authProvider.id),
         mcpServers: ({ sessionId }) => ({
           [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now }, contributions.tools),
@@ -330,6 +333,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
       {
         store,
         sessions: manager,
+        // The whole manager, for contributed routes (`ContributedRouteRequest.sessions`).
+        sessionManager: manager,
         loop: eventLoop,
         authProviders: [authProvider],
         token,

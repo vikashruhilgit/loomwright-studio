@@ -13,6 +13,7 @@ import { brainMessages } from "./012_brain_messages.js";
 import { playbooks } from "./013_playbooks.js";
 import { agentRegistry } from "./014_agents.js";
 import { sessionCwd } from "./015_session_cwd.js";
+import { sessionOutput } from "./016_session_output.js";
 import type { Migration } from "./types.js";
 
 export type { Migration } from "./types.js";
@@ -34,4 +35,5 @@ export const migrations: readonly Migration[] = [
   playbooks,
   agentRegistry,
   sessionCwd,
+  sessionOutput,
 ];
