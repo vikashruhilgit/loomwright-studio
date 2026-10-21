@@ -61,9 +61,9 @@ function isContributedRouteStatus(status: unknown): boolean {
 }
 
 /**
- * The header the `studio` CLI sends with `POST /sessions/<id>/abandon`
- * (value `cli`), recorded as the abandon's `via` (and as the `via` of a pause
- * that `POST /resume` releases); anything else is `api`.
+ * The header the `studio` CLI sends with `POST /sessions/<id>/abandon` and
+ * `POST /resume` (value `cli`), recorded as the abandon's `via` (and as the
+ * `via` of a pause that `POST /resume` releases); anything else is `api`.
  * The request is authenticated either way: this only labels the caller.
  */
 export const CLIENT_HEADER = "x-studio-client";

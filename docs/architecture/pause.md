@@ -17,7 +17,7 @@ Two events in the append-only `events` log, each with payload `{by: "owner", via
 
 The kernel is paused exactly when the latest of the two is `pause_engaged` (`pauseState` / `isPaused`, read the same way as `killSwitchState`). `since` is the first `pause_engaged` after the last release. Nothing holds it in memory, so a restart (launchd's KeepAlive, a crash, `kill -9`) never releases it: a new kernel over the same data dir is still paused.
 
-`via` is `cli` when the request body is `{"via": "cli"}`, which `studio pause` and `studio unpause` send, and `api` otherwise. The app sends no body (the contract declares none), so its pauses record `api`. A release by `POST /resume` takes `via` from the `x-studio-client` header, as `POST /sessions/:id/abandon` does. Today's `studio resume` doesn't send that header, so its releases also record `api`.
+`via` is `cli` when the request body is `{"via": "cli"}`, which `studio pause` and `studio unpause` send, and `api` otherwise. The app sends no body (the contract declares none), so its pauses record `api`. A release by `POST /resume` takes `via` from the `x-studio-client` header, as `POST /sessions/:id/abandon` does. `studio resume` sends it (`cli`), as `studio session abandon` does, so its releases record `cli`; the app's record `api`.
 
 ## The routes
 
@@ -32,7 +32,11 @@ Both answer the contract's `PauseResponse`. Both run their change through the re
 
 ## The CLI
 
-`studio pause` and `studio unpause` are the part's contributed subcommands. Each sends one `POST` with `{via: "cli"}`. On `200` it prints the state and exits 0. On any other answer it prints `studio: kernel API answered <status> to POST <path>: <error>` on stderr and exits 1, and with arguments it prints its usage and exits 2. `studio status` doesn't show the pause yet; `studio status --json` and `GET /status` do.
+`studio pause` and `studio unpause` are the part's contributed subcommands. Each sends one `POST` with `{via: "cli"}`. On `200` it prints the state and exits 0. On any other answer it prints `studio: kernel API answered <status> to POST <path>: <error>` on stderr and exits 1, and with arguments it prints its usage and exits 2.
+
+`studio status` prints a `paused:` line (`paused: no`, or `paused: YES, …` naming `studio unpause` and `studio resume`), and `studio status --json` has the field. A daemon from before item 05 sends no `paused`, so no line is printed.
+
+`studio resume` reads `GET /status` just before its `POST /resume`, because the answer (`{engaged: false}`) doesn't say what was released. With a pause it prints `pause released: new work runs (the kill switch was already off)`, or, with the kill switch engaged too, `kill switch off and pause released: …`. Otherwise it prints `kill switch off: the event loop is running`, as before. The read is best effort: if it fails, the resume goes ahead and its own answer decides the exit code and any error line. A pause sent by another client between the two requests is released but not reported.
 
 ## What a pause does
 

@@ -17,6 +17,7 @@ import { CLI_TIMEOUT_MS, STOP_ALL_TIMEOUT_MS, USAGE, formatStatus, readlineConfi
 import type { CliDeps } from "../src/cli/index.js";
 import { SERVICE_LABEL, plistPath } from "../src/service/index.js";
 import type { ServiceDeps } from "../src/service/index.js";
+import { engagePause, isPaused } from "../src/console/pause.js";
 import { Store } from "../src/store/index.js";
 import { kernelVersion } from "../src/version.js";
 import { DEFAULT_STOP_GRACE_MS, KILL_GROUP_DEADLINE_MS, LEADER_EXIT_WAIT_MS, SessionError, SessionManager } from "../src/sessions/index.js";
@@ -149,11 +150,66 @@ describe("studio CLI", () => {
     expect(loop.stop).toHaveBeenCalledTimes(1);
 
     expect(await c.run("resume")).toBe(0);
-    expect(c.fetchSpy.mock.calls[1]?.[0]).toBe(`http://127.0.0.1:${server.port}/resume`);
+    // First what it will release (GET /status), then the resume itself, labelled `cli`.
+    expect(c.fetchSpy.mock.calls[1]?.[0]).toBe(`http://127.0.0.1:${server.port}/status`);
+    expect(c.fetchSpy.mock.calls[1]?.[1]?.method).toBe("GET");
+    expect(c.fetchSpy.mock.calls[2]?.[0]).toBe(`http://127.0.0.1:${server.port}/resume`);
+    expect(c.fetchSpy.mock.calls[2]?.[1]?.headers).toMatchObject({ "x-studio-client": "cli" });
     expect(loop.start).toHaveBeenCalledTimes(1);
     const kinds = store.prepare<[], string>("SELECT kind FROM events ORDER BY id").pluck().all();
     expect(kinds).toEqual(["kill_switch_engaged", "stop_all_completed", "kill_switch_released"]);
+    expect(c.stdout.text()).toContain("kill switch off: the event loop is running\n");
     expect(c.stdout.text()).not.toContain(TOKEN);
+  });
+
+  it("resume with only a pause engaged says it released the pause, recorded `via: cli`", async () => {
+    engagePause(store, NOW.toISOString(), "api");
+    const c = cli();
+    expect(await c.run("resume")).toBe(0);
+    expect(c.stdout.text()).toBe("pause released: new work runs (the kill switch was already off)\n");
+    expect(c.stderr.text()).toBe("");
+    expect(isPaused(store)).toBe(false);
+    expect(loop.start).not.toHaveBeenCalled();
+    const released = store.prepare<[], string>("SELECT payload_json FROM events WHERE kind = 'pause_released'").pluck().all();
+    expect(released.map((j) => JSON.parse(j) as unknown)).toEqual([{ by: "owner", via: "cli" }]);
+  });
+
+  it("resume with the kill switch and a pause engaged says it released both", async () => {
+    const c = cli();
+    expect(await c.run("stop", "--all")).toBe(0);
+    engagePause(store, NOW.toISOString(), "api");
+    const r = cli();
+    expect(await r.run("resume")).toBe(0);
+    expect(r.stdout.text()).toBe("kill switch off and pause released: the event loop is running and new work runs\n");
+    expect(isPaused(store)).toBe(false);
+    expect(loop.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("resume whose status read fails still resumes, with the plain line and exit 0", async () => {
+    engagePause(store, NOW.toISOString(), "api");
+    const failingStatus = vi.fn(async (input: string | URL | Request, init?: RequestInit) =>
+      String(input).endsWith("/status") ? new Response("{}", { status: 500 }) : fetch(input, init),
+    );
+    const c = cli({ fetch: failingStatus as typeof fetch });
+    expect(await c.run("resume")).toBe(0);
+    expect(c.stdout.text()).toBe("kill switch off: the event loop is running\n");
+    expect(c.stderr.text()).toBe("");
+    expect(isPaused(store)).toBe(false);
+  });
+
+  it("status prints a paused line: `paused: no`, `paused: YES …` while paused, none from a daemon before item 05", async () => {
+    const c = cli();
+    expect(await c.run("status")).toBe(0);
+    expect(c.stdout.text()).toContain("kill switch: off\npaused: no\n");
+    engagePause(store, NOW.toISOString(), "api");
+    const p = cli();
+    expect(await p.run("status")).toBe(0);
+    expect(p.stdout.text()).toContain(
+      "paused: YES, no trigger fires and no session starts or resumes (studio unpause or studio resume releases it)\n",
+    );
+    const body = (await (await fetch(`http://127.0.0.1:${server.port}/status`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json()) as StatusBody;
+    const { paused: _dropped, ...older } = body;
+    expect(formatStatus(older as unknown as StatusBody)).not.toContain("paused:");
   });
 
   it("stop --all with mixed outcomes counts only stopped as stopped and exits 1", async () => {
