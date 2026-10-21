@@ -388,6 +388,22 @@ describe("resume (AC2)", () => {
     await waitForIds(live, [1, 2, 3, 4]);
     await waitForIds(catching, [1, 2, 3, 4]);
   });
+
+  it("a subscribe after an id past the newest stored one (50 of 3) gets no backlog, then the next append", async () => {
+    insertMany(3);
+    const server = await serve();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const conn = await subscribed(server, 50);
+    // A heartbeat reaches only a live client: once it arrives, the subscribe was handled before the append below.
+    await until(() => {
+      vi.advanceTimersByTime(15_000);
+      expect(conn.frames.filter((f) => f.type === HEARTBEAT_TYPE).length).toBeGreaterThan(0);
+    });
+    expect(eventIds(conn)).toEqual([]);
+    insert();
+    vi.advanceTimersByTime(250);
+    await waitForIds(conn, [4]);
+  });
 });
 
 describe("refusals (AC3)", () => {

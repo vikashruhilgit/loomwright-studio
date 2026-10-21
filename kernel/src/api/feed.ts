@@ -217,11 +217,13 @@ function beat(hub: FeedHub): void {
 /**
  * Send `client` every event after `after`, in pages of at most 500, then make
  * it live. One synchronous stretch (the store is synchronous), so no append
- * can fall between the catch-up and the switch to live.
+ * can fall between the catch-up and the switch to live. An `after` past the
+ * newest stored id is clamped to that id: kept as given, it would make the
+ * poll skip every new event until ids passed it, a client starved in silence.
  */
 function catchUp(hub: FeedHub, client: FeedClient, after: number): void {
-  client.last = after;
   try {
+    client.last = Math.min(after, latestEventId(hub.store));
     for (;;) {
       const rows = readEventsAfter(hub.store, client.last, EVENT_PAGE_SIZE);
       for (const row of rows) if (!sendEvent(hub, client, row)) return;

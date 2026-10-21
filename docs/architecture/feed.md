@@ -14,7 +14,7 @@ The API server authenticates the upgrade and checks its path before upgrading, w
 
 | Step | Frame |
 |---|---|
-| The client's first and only frame | `{"type":"subscribe","after":N}`, where `N` is a non-negative safe integer: the last event id the client has (0 for everything). |
+| The client's first and only frame | `{"type":"subscribe","after":N}`, where `N` is a non-negative safe integer: the last event id the client has (0 for everything). An `N` past the newest stored id is clamped to that id, so the client gets the next append rather than nothing until ids pass `N`. |
 | Backlog | Every event with id > `N`, oldest first. The kernel reads and sends it in pages of at most 500 rows until a page comes back short. |
 | Live | Then each new event, as the shared poll finds it: within about 250 ms of its append, and within 500 ms (pinned). |
 | Heartbeat | `{"type":"heartbeat","latest_id":M}` every 15 s to every subscribed client. `M` is the newest event id. The kernel polls just before each heartbeat, so the client has already been sent every event up to `M`. |

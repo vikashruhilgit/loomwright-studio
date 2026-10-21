@@ -2,10 +2,11 @@
 // contribution built from one part per sub-file, so each phase 5 item edits
 // only the sub-file it owns: item 02 `events.ts`, item 03 `output.ts`, item
 // 04 `control.ts`, item 05 `pause.ts`, item 06 `threads.ts`. Every part is
-// empty until its item fills it in, so today the contribution is its name
-// alone: no tools, routes, subcommands, handlers or due work (the app's live
-// feed socket is `handleEventFeed` in `../api/feed.ts`, and the session
-// manager's output observer is `recordSessionOutput` in `./output.ts`, a no-op).
+// empty until its item fills it in: today only `events.ts` contributes, the
+// `GET /events` route, so there are no tools, subcommands, handlers or due
+// work (the app's live feed socket is `handleEventFeed` in `../api/feed.ts`,
+// and the session manager's output observer is `recordSessionOutput` in
+// `./output.ts`, a no-op).
 // Mechanism only (invariant 1). `startKernel` and `runCli` merge it through
 // `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`), eighth, after `agents`.
 //
@@ -83,7 +84,7 @@ export function consoleContributionOf(parts: readonly ConsolePart[]): FeatureCon
   });
 }
 
-/** The shipped contribution: `CONSOLE_PARTS` merged at module load (every part is empty today, so it does not throw). */
+/** The shipped contribution: `CONSOLE_PARTS` merged at module load (only `events.ts`'s one route is non-empty today, so nothing collides and it does not throw). */
 export const consoleContribution: FeatureContribution = consoleContributionOf(CONSOLE_PARTS);
 
 export { controlPart } from "./control.js";
