@@ -16,9 +16,11 @@
 // never the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the module graph).
 import { z } from "zod";
+import type { KillSwitchState } from "../api/kill-switch.js";
 import type { AppliedApproval, ApprovalApplier, ApprovalApplyOutcome } from "../approvals/store.js";
 import { EVENT_KINDS, isEventKind } from "../loop/types.js";
 import type { DueWork, DueWorkContext, EventHandler, EventHandlers } from "../loop/types.js";
+import type { SessionManager } from "../sessions/manager.js";
 import type { HeldToolVerdict, SessionHandle, SessionRow, SessionStatus, StartSessionParams } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 
@@ -197,10 +199,31 @@ export interface ContributedRouteRequest {
   /** The kernel's clock. */
   readonly now: () => Date;
   /**
+   * The kernel's session manager, when the API server was given one
+   * (`ApiServerOptions.sessionManager`; `startKernel` always gives it).
+   * `undefined` in a composition without one: a route that needs it answers
+   * an error naming that, never a throw. Optional in the type so a request
+   * literal built without it (a test calling a handler directly) still typechecks.
+   */
+  readonly sessions?: SessionManager;
+  /**
+   * A read-only view of the kill switch (`killSwitchState` over the API
+   * server's store, read fresh on every call). The API server always sets it;
+   * engaging or releasing the switch stays phase 1's (`POST /stop-all`,
+   * `POST /resume`). Optional in the type for the same reason as `sessions`.
+   */
+  readonly killSwitch?: KillSwitchView;
+  /**
    * The kernel-applied actions' applier (`approvalApplierOf` over the merged
    * tools), when the composition built one. Only the approvals decision reads it.
    */
   readonly approvalApplier?: ApprovalApplier;
+}
+
+/** A contributed route's read-only view of the kill switch: it can read the state, never change it. */
+export interface KillSwitchView {
+  /** The switch's state now, read from the `events` log on every call. */
+  state(): KillSwitchState;
 }
 
 /**

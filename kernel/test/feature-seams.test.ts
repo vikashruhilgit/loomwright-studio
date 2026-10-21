@@ -8,7 +8,7 @@
 // `SHIPPED_CONTRIBUTIONS`; each feature's own tools, routes, subcommands,
 // help lines, handlers and due work are pinned in that feature's own test
 // (loomwright-adapter, notifications, triggers, approvals, brain,
-// playbooks-foundation and agents-foundation), so a later feature never edits this file. A temp
+// playbooks-foundation, agents-foundation and console-foundation), so a later feature never edits this file. A temp
 // data dir, an in-memory Keychain, the fake spawner/query and stub auth:
 // never the real SDK, a model or the Keychain.
 import { spawnSync } from "node:child_process";
@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { API_TOKEN_KEYCHAIN_SERVICE } from "../src/api/index.js";
+import { API_TOKEN_KEYCHAIN_SERVICE, engageKillSwitch } from "../src/api/index.js";
 import { MAX_CONTRIBUTED_BODY_BYTES, PHASE1_ROUTES } from "../src/api/server.js";
 import { KeychainError } from "../src/auth/index.js";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
@@ -40,6 +40,7 @@ import { EventLoop } from "../src/loop/loop.js";
 import { enqueueMessage, getQueueRow } from "../src/loop/queue.js";
 import { scheduleWakeup } from "../src/loop/wakeups.js";
 import type { DueWork, EventHandlers, EventKind } from "../src/loop/types.js";
+import type { SessionManager } from "../src/sessions/manager.js";
 import { Store } from "../src/store/index.js";
 import { KERNEL_TOOL_NAMES, contributedToolHandler, kernelToolNames } from "../src/tools/server.js";
 import type { KernelToolResult } from "../src/tools/server.js";
@@ -113,10 +114,10 @@ function expectShippedDueWork(dueWork: readonly DueWork[]): void {
 }
 
 describe("mergeContributions", () => {
-  it("the shipped contributions: the seven features in a fixed order, merged part by part in that order (each feature's own lists are pinned in its own test) (AC3)", () => {
-    expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents"]);
+  it("the shipped contributions: the eight features in a fixed order, merged part by part in that order (each feature's own lists are pinned in its own test) (AC3)", () => {
+    expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents", "console"]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1);
-    expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents"]);
+    expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents", "console"]);
     expect(merged.tools.map((t) => t.name)).toEqual(shippedToolNames());
     expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(shippedRoutes());
     expect(merged.subcommands.map((s) => s.name)).toEqual(shippedSubcommandNames());
@@ -480,7 +481,7 @@ describe("the shipped kernel (AC3)", () => {
     const { d, fakes, keychain } = deps();
     const kernel = await start(options(), d);
 
-    expect(kernel.contributions.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents"]);
+    expect(kernel.contributions.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents", "console"]);
     expect(kernelToolNames(kernel.contributions.tools)).toEqual([...KERNEL_TOOL_NAMES, ...shippedToolNames()]);
     expect(Object.keys(await launchedTools(kernel, fakes))).toEqual([...KERNEL_TOOL_NAMES, ...shippedToolNames()]);
     expect(kernel.contributions.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(shippedRoutes());
@@ -596,10 +597,17 @@ describe("a contribution composed from outside (AC4)", () => {
       body: JSON.stringify({ a: 1 }),
     });
     expect(res.status).toBe(200);
-    // The kernel passes its kernel-applied actions' applier on every contributed route request (the approvals decision reads it).
-    expect(await res.json()).toEqual({ keys: ["params", "query", "body", "store", "now", "approvalApplier"], applier: "function", at: "2026-10-15T08:00:00.000Z", notifications: 0 });
+    // The kernel passes the kill switch's read-only view, its session manager and its kernel-applied actions' applier on every contributed route request.
+    expect(await res.json()).toEqual({
+      keys: ["params", "query", "body", "store", "now", "killSwitch", "sessions", "approvalApplier"],
+      applier: "function",
+      at: "2026-10-15T08:00:00.000Z",
+      notifications: 0,
+    });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.store).toBe(kernel.store);
+    expect(seen[0]?.sessions).toBe(kernel.sessions);
+    expect(seen[0]?.killSwitch?.state()).toEqual({ engaged: false, since: null });
     expect({ ...seen[0]?.params }).toEqual({ id: "7" });
     expect({ ...seen[0]?.query }).toEqual({ q: "1" });
     expect(seen[0]?.body).toEqual({ a: 1 });
@@ -1069,6 +1077,64 @@ describe("the route seam carries the API's store and clock", () => {
       expect({ params: { ...seen[0]?.params }, query: { ...seen[0]?.query }, body: seen[0]?.body }).toEqual({ params: { id: "7" }, query: { x: "1" }, body: { a: 1 } });
       // An API server given no applier adds no key for one.
       expect(seen[0]).not.toHaveProperty("approvalApplier");
+      // Nor, given no session manager, a `sessions` key (its phase 1 `sessions` Pick is never passed on).
+      expect(seen[0]).not.toHaveProperty("sessions");
+    } finally {
+      await api.close();
+      store.close();
+    }
+  });
+
+  it("a contributed route's request carries the API server's session manager as sessions and a read-only kill switch view as killSwitch", async () => {
+    const store = new Store({ dataDir });
+    const token = "f".repeat(64);
+    // Only its identity matters here: the route must get exactly the manager the server was given.
+    const manager = { marker: "the kernel's session manager" } as unknown as SessionManager;
+    const seen: ContributedRouteRequest[] = [];
+    const states: unknown[] = [];
+    const api = await startApiServer({
+      store,
+      sessions: { stopAll: async () => [], abandonSession: unexpectedAbandon },
+      sessionManager: manager,
+      loop: { start: () => {}, stop: async () => {} },
+      authProviders: [],
+      token,
+      routes: mergeContributions([
+        {
+          name: "probe",
+          routes: [
+            {
+              method: "GET",
+              path: "/probe/controls",
+              handler: async (req) => {
+                seen.push(req);
+                states.push(req.killSwitch?.state());
+                return { status: 200, body: { sessions: req.sessions === manager, killSwitchKeys: Object.keys(req.killSwitch ?? {}) } };
+              },
+            },
+          ],
+        },
+      ]).routes,
+    });
+    try {
+      const get = (): Promise<Response> => fetch(`http://127.0.0.1:${api.port}/probe/controls`, { headers: { Authorization: `Bearer ${token}` } });
+      const first = await get();
+      expect(first.status).toBe(200);
+      // The view can read the switch and nothing else: no engage, no release.
+      expect(await first.json()).toEqual({ sessions: true, killSwitchKeys: ["state"] });
+      expect(seen[0]?.sessions).toBe(manager);
+      expect(Object.isFrozen(seen[0]?.killSwitch)).toBe(true);
+      expect(seen[0]).not.toHaveProperty("approvalApplier");
+
+      // Read fresh on every call: an engagement recorded after the first request shows on the next.
+      engageKillSwitch(store, "2026-10-21T09:00:00.000Z");
+      expect((await get()).status).toBe(200);
+      expect(states).toEqual([
+        { engaged: false, since: null },
+        { engaged: true, since: "2026-10-21T09:00:00.000Z" },
+      ]);
+      // The same view object, read again later, sees the current state too.
+      expect(seen[0]?.killSwitch?.state()).toEqual({ engaged: true, since: "2026-10-21T09:00:00.000Z" });
     } finally {
       await api.close();
       store.close();
