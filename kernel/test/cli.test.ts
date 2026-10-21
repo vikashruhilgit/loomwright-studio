@@ -22,6 +22,7 @@ import { kernelVersion } from "../src/version.js";
 import { DEFAULT_STOP_GRACE_MS, KILL_GROUP_DEADLINE_MS, LEADER_EXIT_WAIT_MS, SessionError, SessionManager } from "../src/sessions/index.js";
 import type { AbandonVia } from "../src/sessions/index.js";
 import { fakeMsg, fakeSessions, immediate, makePluginDir, startParams, stubProvider, unexpectedAbandon } from "./session-fakes.js";
+import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 
 const TOKEN = "0123456789abcdef".repeat(4);
 const NOW = new Date("2026-10-02T10:00:00.000Z");
@@ -886,12 +887,224 @@ describe("studio session abandon (H04, AC4)", () => {
 
   it("refuses a malformed id or extra arguments with usage, exit 2, nothing sent", async () => {
     for (const argv of [["session", "abandon"], ["session", "abandon", "0"], ["session", "abandon", "-3"], ["session", "abandon", "07"],
-      ["session", "abandon", "7x"], ["session", "abandon", "99999999999999999999"], ["session", "abandon", "7", "--force"], ["session", "kill", "7"]]) {
+      ["session", "abandon", "7x"], ["session", "abandon", "99999999999999999999"], ["session", "abandon", "7", "--force"], ["session", "reap", "7"]]) {
       const c = cli({ isInteractive: () => true, confirm: async () => true });
       expect(await c.run(...argv), argv.join(" ")).toBe(2);
       expect(c.stderr.text()).toMatch(/^usage: studio/);
       expect(c.fetchSpy).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe("studio session stop / kill (phase 5 item 04)", () => {
+  /** Every stop/kill request the probe routes got: `<verb> <id>`. */
+  let received: string[];
+  /** The 200 body each id answers (`status`, `reason`); an id not here answers 404, 8 answers 409. */
+  const OUTCOMES: Record<string, { status: string; reason: string | null }> = {
+    "5": { status: "stopped", reason: "owner_kill" },
+    "6": { status: "failed", reason: "kill_incomplete" },
+    "7": { status: "completed", reason: "result_success" },
+  };
+
+  beforeEach(async () => {
+    received = [];
+    await server.close();
+    const handler =
+      (verb: "stop" | "kill") =>
+      async (req: { readonly params: Readonly<Record<string, string>> }): Promise<{ status: number; body: unknown }> => {
+        const id = req.params["id"] ?? "";
+        received.push(`${verb} ${id}`);
+        if (id === "8") return { status: 409, body: { error: "not_running", status: "completed" } };
+        const outcome = OUTCOMES[id];
+        if (outcome === undefined) return { status: 404, body: { error: "not_found" } };
+        return { status: 200, body: { id: Number(id), status: outcome.status, reason: verb === "stop" && id === "5" ? "owner_stop" : outcome.reason } };
+      };
+    server = await startApiServer(
+      {
+        store,
+        sessions: { stopAll: async () => [], abandonSession: unexpectedAbandon },
+        loop,
+        authProviders: [stubProvider()],
+        token: TOKEN,
+        port: 0,
+        routes: [
+          { owner: "probe", method: "POST", path: "/sessions/:id/stop", handler: handler("stop") },
+          { owner: "probe", method: "POST", path: "/sessions/:id/kill", handler: handler("kill") },
+        ],
+      },
+      { now: () => NOW, pid: 4242 },
+    );
+    writeApiInfo(server.port, 4242);
+  });
+
+  it("stop <id> sends POST /sessions/<id>/stop without asking, prints the outcome, exit 0 on stopped", async () => {
+    const confirm = vi.fn(async () => false);
+    const c = cli({ confirm, isInteractive: () => true });
+    expect(await c.run("session", "stop", "5")).toBe(0);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(c.fetchSpy.mock.calls[0]?.[0]).toBe(`http://127.0.0.1:${server.port}/sessions/5/stop`);
+    expect(c.fetchSpy.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(received).toEqual(["stop 5"]);
+    expect(c.stdout.text()).toBe("studio: session 5 stopped (owner_stop)\n");
+    expect(c.stdout.text()).not.toContain(TOKEN);
+    expect(c.stderr.text()).toBe("");
+  });
+
+  it("stop takes no --yes: `stop <id> --yes` is a usage error, exit 2, nothing sent", async () => {
+    const c = cli({ isInteractive: () => true, confirm: async () => true });
+    expect(await c.run("session", "stop", "5", "--yes")).toBe(2);
+    expect(c.stderr.text()).toBe(`${USAGE}\n`);
+    expect(c.fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("kill <id> --yes sends POST /sessions/<id>/kill without asking, exit 0 on stopped", async () => {
+    const confirm = vi.fn(async () => false);
+    const c = cli({ confirm, isInteractive: () => false });
+    expect(await c.run("session", "kill", "5", "--yes")).toBe(0);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(c.fetchSpy.mock.calls[0]?.[0]).toBe(`http://127.0.0.1:${server.port}/sessions/5/kill`);
+    expect(c.fetchSpy.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(received).toEqual(["kill 5"]);
+    expect(c.stdout.text()).toBe("studio: session 5 stopped (owner_kill)\n");
+  });
+
+  it("kill <id> on a terminal asks [y/N]: yes sends it; no sends nothing and exits 1", async () => {
+    const questions: string[] = [];
+    const yes = cli({ isInteractive: () => true, confirm: async (q) => (questions.push(q), true) });
+    expect(await yes.run("session", "kill", "5")).toBe(0);
+    expect(received).toEqual(["kill 5"]);
+    expect(questions).toEqual([
+      "Kill session 5 now? Its process group and every tool group it started are killed at once, with no grace. [y/N] ",
+    ]);
+
+    const no = cli({ isInteractive: () => true, confirm: async () => false });
+    expect(await no.run("session", "kill", "5")).toBe(1);
+    expect(no.fetchSpy).not.toHaveBeenCalled();
+    expect(no.reads).toEqual([]);
+    oneLine(no.stderr.text());
+    expect(no.stderr.text()).toBe("studio: session 5 not killed (not confirmed)\n");
+    expect(received).toEqual(["kill 5"]);
+  });
+
+  it("kill <id> with no terminal and no --yes refuses with usage, exit 2, without asking or sending", async () => {
+    const confirm = vi.fn(async () => true);
+    const c = cli({ isInteractive: () => false, confirm });
+    expect(await c.run("session", "kill", "5")).toBe(2);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(c.fetchSpy).not.toHaveBeenCalled();
+    expect(c.stderr.text()).toBe(`studio: session kill needs a terminal to confirm, or --yes\n${USAGE}\n`);
+  });
+
+  it("a 200 with status failed (kill_incomplete) prints it and exits 1; another ended status (completed) prints as is and exits 0", async () => {
+    for (const verb of ["stop", "kill"]) {
+      const yes = verb === "kill" ? ["--yes"] : [];
+      const failed = cli();
+      expect(await failed.run("session", verb, "6", ...yes), verb).toBe(1);
+      expect(failed.stdout.text(), verb).toBe("studio: session 6 failed (kill_incomplete)\n");
+      const completed = cli();
+      expect(await completed.run("session", verb, "7", ...yes), verb).toBe(0);
+      expect(completed.stdout.text(), verb).toBe("studio: session 7 completed (result_success)\n");
+    }
+  });
+
+  it("a 409 or 404 prints one stderr line naming the API's error code, exit 1", async () => {
+    for (const [argv, line] of [
+      [["stop", "8"], "studio: session 8 not stopped: not_running\n"],
+      [["kill", "8", "--yes"], "studio: session 8 not killed: not_running\n"],
+      [["stop", "9"], "studio: session 9 not stopped: not_found\n"],
+      [["kill", "9", "--yes"], "studio: session 9 not killed: not_found\n"],
+    ] as const) {
+      const c = cli();
+      expect(await c.run("session", ...argv), argv.join(" ")).toBe(1);
+      oneLine(c.stderr.text());
+      expect(c.stderr.text()).toBe(line);
+      expect(c.stdout.text()).toBe("");
+    }
+    const invalid = cli({ fetch: vi.fn(async () => new Response(JSON.stringify({ error: "invalid_id" }), { status: 400 })) as unknown as typeof fetch });
+    expect(await invalid.run("session", "stop", "5")).toBe(1);
+    expect(invalid.stderr.text()).toBe("studio: session 5 not stopped: invalid_id\n");
+  });
+
+  it("both verbs wait the stop-all timeout, not CLI_TIMEOUT_MS; a timeout says the session may or may not be stopped", async () => {
+    for (const argv of [["stop", "5"], ["kill", "5", "--yes"]] as const) {
+      const signals: (AbortSignal | null | undefined)[] = [];
+      const c = cli({
+        timeoutMs: 1,
+        stopAllTimeoutMs: 60_000,
+        fetch: (async (url: string, init?: RequestInit) => {
+          signals.push(init?.signal);
+          return fetch(url, init);
+        }) as typeof fetch,
+      });
+      // With CLI_TIMEOUT_MS (here 1 ms) the request could not answer in time.
+      expect(await c.run("session", ...argv), argv.join(" ")).toBe(0);
+      expect(signals).toHaveLength(1);
+    }
+    const slow = cli({
+      timeoutMs: 60_000,
+      stopAllTimeoutMs: 1,
+      fetch: vi.fn(async (_url: string, init?: RequestInit) => {
+        await new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)));
+        throw new Error("unreachable");
+      }) as unknown as typeof fetch,
+    });
+    expect(await slow.run("session", "kill", "5", "--yes")).toBe(1);
+    oneLine(slow.stderr.text());
+    expect(slow.stderr.text()).toBe(
+      `studio: kernel daemon did not answer POST /sessions/5/kill within 0.001 s (127.0.0.1:${server.port}); ` +
+        "session 5 may or may not be stopped, run studio status\n",
+    );
+  });
+
+  it("a connection lost after connecting says the session may or may not be stopped; a refused one says not running", async () => {
+    const failing = (code: string) =>
+      vi.fn(async () => {
+        throw new TypeError("fetch failed", { cause: Object.assign(new Error(code), { code }) });
+      }) as unknown as typeof fetch;
+    const lost = cli({ fetch: failing("ECONNRESET") });
+    expect(await lost.run("session", "stop", "5")).toBe(1);
+    expect(lost.stderr.text()).toBe(
+      `studio: connection to the kernel daemon failed during POST /sessions/5/stop (127.0.0.1:${server.port}: ECONNRESET); ` +
+        "session 5 may or may not be stopped, run studio status\n",
+    );
+    const refused = cli({ fetch: failing("ECONNREFUSED") });
+    expect(await refused.run("session", "kill", "5", "--yes")).toBe(1);
+    expect(refused.stderr.text()).toBe(`studio: kernel daemon is not running (cannot connect to 127.0.0.1:${server.port}: ECONNREFUSED)\n`);
+  });
+
+  it("refuses a malformed id or extra arguments with usage, exit 2, nothing sent", async () => {
+    for (const argv of [["session", "stop"], ["session", "stop", "0"], ["session", "stop", "-3"], ["session", "stop", "07"], ["session", "stop", "5x"],
+      ["session", "kill"], ["session", "kill", "0"], ["session", "kill", "5", "--force"], ["session", "kill", "5", "--yes", "--yes"]]) {
+      const c = cli({ isInteractive: () => true, confirm: async () => true });
+      expect(await c.run(...argv), argv.join(" ")).toBe(2);
+      expect(c.stderr.text()).toBe(`${USAGE}\n`);
+      expect(c.fetchSpy).not.toHaveBeenCalled();
+    }
+  });
+
+  it("kill --yes through a real SessionManager and the shipped console routes ends the session stopped (owner_kill)", async () => {
+    await server.close();
+    const fakes = fakeSessions();
+    const manager = new SessionManager(
+      // A grace that never runs out: only a kill (no grace) can end this session within the test.
+      { store, authProvider: stubProvider(), loomwrightPath: makePluginDir(tmp), stopGraceMs: 3_600_000, baseEnv: { PATH: "/usr/bin" } },
+      { ...fakes.deps, schedule: (fn, ms) => (ms >= 3_600_000 ? () => {} : immediate(fn, ms)) },
+    );
+    const h = await manager.startSession(startParams(tmp));
+    await vi.waitFor(() => expect(store.prepare<[number], string>("SELECT status FROM sessions WHERE id = ?").pluck().get(h.id)).toBe("running"));
+    server = await startApiServer(
+      { store, sessions: manager, sessionManager: manager, loop, authProviders: [stubProvider()], token: TOKEN, port: 0, routes: mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).routes },
+      { now: () => NOW, pid: 4242 },
+    );
+    writeApiInfo(server.port, 4242);
+    const c = cli();
+    expect(await c.run("session", "kill", String(h.id), "--yes")).toBe(0);
+    expect(c.stdout.text()).toBe(`studio: session ${h.id} stopped (owner_kill)\n`);
+    expect(fakes.allGroupsGone()).toBe(true);
+    // A second kill finds it ended: 409, exit 1.
+    const again = cli();
+    expect(await again.run("session", "kill", String(h.id), "--yes")).toBe(1);
+    expect(again.stderr.text()).toBe(`studio: session ${h.id} not killed: not_running\n`);
   });
 });
 

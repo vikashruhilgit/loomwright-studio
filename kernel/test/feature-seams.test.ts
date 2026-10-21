@@ -597,9 +597,9 @@ describe("a contribution composed from outside (AC4)", () => {
       body: JSON.stringify({ a: 1 }),
     });
     expect(res.status).toBe(200);
-    // The kernel passes the kill switch's read-only view, its session manager and its kernel-applied actions' applier on every contributed route request.
+    // The kernel passes the kill switch's read-only view, the API server's POST queue, its session manager and its kernel-applied actions' applier on every contributed route request.
     expect(await res.json()).toEqual({
-      keys: ["params", "query", "body", "store", "now", "killSwitch", "sessions", "approvalApplier"],
+      keys: ["params", "query", "body", "store", "now", "killSwitch", "serialized", "sessions", "approvalApplier"],
       applier: "function",
       at: "2026-10-15T08:00:00.000Z",
       notifications: 0,
@@ -1075,6 +1075,8 @@ describe("the route seam carries the API's store and clock", () => {
       expect(seen[0]?.store).toBe(store);
       expect(seen[0]?.now()).toBe(at);
       expect({ params: { ...seen[0]?.params }, query: { ...seen[0]?.query }, body: seen[0]?.body }).toEqual({ params: { id: "7" }, query: { x: "1" }, body: { a: 1 } });
+      // The server's one POST queue (phase 1's stop-all, resume and abandon run on it), always passed.
+      expect(typeof seen[0]?.serialized).toBe("function");
       // An API server given no applier adds no key for one.
       expect(seen[0]).not.toHaveProperty("approvalApplier");
       // Nor, given no session manager, a `sessions` key (its phase 1 `sessions` Pick is never passed on).

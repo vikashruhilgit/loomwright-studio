@@ -2,14 +2,15 @@
 // contribution built from one part per sub-file, so each phase 5 item edits
 // only the sub-file it owns: item 02 `events.ts`, item 03 `output.ts`, item
 // 04 `control.ts`, item 05 `pause.ts`, item 06 `threads.ts`. Every part is
-// empty until its item fills it in. Today the events part is filled (the
-// `GET /events` route) and so is the output part (the `GET /sessions` and
-// `GET /sessions/:id/output` routes and the `studio sessions` subcommand), so
-// the contribution is its name, those routes and that subcommand: no tools,
-// handlers or due work (the app's live feed socket is `handleEventFeed` in
-// `../api/feed.ts`, and the session manager's output observer is
-// `recordSessionOutput` in `./output.ts`, which keeps each session's bounded
-// output log).
+// empty until its item fills it in. Today three parts are filled: events (the
+// `GET /events` route), output (the `GET /sessions` and
+// `GET /sessions/:id/output` routes and the `studio sessions` subcommand) and
+// control (the `POST /sessions/:id/stop` and `POST /sessions/:id/kill`
+// routes), so the contribution is its name, those routes and that subcommand:
+// no tools, handlers or due work (the app's live feed socket is
+// `handleEventFeed` in `../api/feed.ts`, and the session manager's output
+// observer is `recordSessionOutput` in `./output.ts`, which keeps each
+// session's bounded output log).
 // Mechanism only (invariant 1). `startKernel` and `runCli` merge it through
 // `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`), eighth, after `agents`.
 //

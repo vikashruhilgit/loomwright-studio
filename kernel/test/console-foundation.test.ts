@@ -1,7 +1,8 @@
 // The console feature's foundation (phase 5 item 01): one `console`
 // contribution built from five sub-file parts (`events`, `output`, `control`,
-// `pause`, `threads`, filled by items 02-06; item 03 filled `output`),
-// registered eighth in `SHIPPED_CONTRIBUTIONS`, after `agents`; the part merge
+// `pause`, `threads`, filled by items 02-06; items 02, 03 and 04 filled
+// `events`, `output` and `control`, the others are still empty), registered
+// eighth in `SHIPPED_CONTRIBUTIONS`, after `agents`; the part merge
 // (subcommands included) and its refusal; the closed `session_output` kind
 // set; and the session output observer the kernel wires
 // (`recordSessionOutput`, item 03's recorder; its behaviour is pinned in
@@ -78,10 +79,10 @@ describe("the console contribution", () => {
     expect(consoleContribution.name).toBe("console");
   });
 
-  it("is its name, the events and output parts' routes and output's sessions subcommand: no tools, handlers or due work", () => {
+  it("is its name, the events, output and control parts' routes and output's sessions subcommand: no tools, handlers or due work", () => {
     expect(Object.keys(consoleContribution)).toEqual(["name", "routes", "subcommands"]);
     expect(Object.isFrozen(consoleContribution)).toBe(true);
-    expect(consoleContribution.routes).toEqual([...eventsPart.routes, ...outputPart.routes]);
+    expect(consoleContribution.routes).toEqual([...eventsPart.routes, ...outputPart.routes, ...controlPart.routes]);
     expect(consoleContribution.subcommands).toEqual(outputPart.subcommands);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     expect(merged.contributors.at(-1)).toBe("console");
@@ -89,12 +90,14 @@ describe("the console contribution", () => {
       "GET /events",
       "GET /sessions",
       "GET /sessions/:id/output",
+      "POST /sessions/:id/stop",
+      "POST /sessions/:id/kill",
     ]);
     expect(merged.subcommands.filter((s) => consoleContribution.subcommands?.includes(s)).map((s) => s.name)).toEqual(["sessions"]);
     expect(merged.dueWork.filter((d) => d.owner === "console")).toEqual([]);
   });
 
-  it("merges one part per sub-file, in order: events, output, control, pause, threads; events carries GET /events, output has routes and subcommands, the rest are empty", () => {
+  it("merges one part per sub-file, in order: events, output, control, pause, threads; events carries GET /events, output has routes and subcommands, control has stop and kill, the rest are empty", () => {
     expect(CONSOLE_PARTS).toEqual([eventsPart, outputPart, controlPart, pausePart, threadsPart]);
     expect(CONSOLE_PARTS[0]).toBe(eventsPart);
     expect(CONSOLE_PARTS[1]).toBe(outputPart);
@@ -111,13 +114,22 @@ describe("the console contribution", () => {
     expect(outputPart.dueWork).toBeUndefined();
     expect(outputPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /sessions", "GET /sessions/:id/output"]);
     expect(outputPart.subcommands?.map((s) => s.name)).toEqual(["sessions"]);
+    // Item 04's part: exactly the two routes, and nothing else: no tools, handlers or due work.
+    expect(Object.keys(controlPart).sort()).toEqual(["handlers", "name", "routes", "tools"]);
+    expect(controlPart.name).toBe("control");
+    expect(controlPart.tools).toEqual([]);
+    expect(controlPart.handlers).toEqual({});
+    expect(controlPart.routes.map((r) => ({ method: r.method, path: r.path }))).toEqual([
+      { method: "POST", path: "/sessions/:id/stop" },
+      { method: "POST", path: "/sessions/:id/kill" },
+    ]);
     // Every other part stays empty until its item fills it in.
-    for (const part of CONSOLE_PARTS.filter((p) => p !== eventsPart && p !== outputPart)) {
+    for (const part of [pausePart, threadsPart]) {
       expect(part, part.name).toEqual({ name: part.name, tools: [], routes: [], handlers: {} });
     }
     expect(mergeConsoleParts(CONSOLE_PARTS)).toEqual({
       tools: [],
-      routes: [...eventsPart.routes, ...outputPart.routes],
+      routes: [...eventsPart.routes, ...outputPart.routes, ...controlPart.routes],
       subcommands: outputPart.subcommands,
       handlers: {},
       dueWork: [],
