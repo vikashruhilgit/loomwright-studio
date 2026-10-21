@@ -138,9 +138,8 @@ function parse(argv: readonly string[], subcommands: readonly ContributedSubcomm
   if (cmd === "resume" && rest.length === 0) return { kind: "resume" };
   if (cmd === "service" && rest.length === 1 && (rest[0] === "install" || rest[0] === "uninstall")) return { kind: "service", action: rest[0] };
   if (cmd === "session" && rest[0] === "abandon" && (rest.length === 2 || (rest.length === 3 && rest[2] === "--yes"))) {
-    const raw = rest[1] as string;
-    const id = Number(raw);
-    if (/^[1-9]\d*$/.test(raw) && Number.isSafeInteger(id)) return { kind: "abandon", id, yes: rest.length === 3 };
+    const id = sessionId(rest[1] as string);
+    if (id !== undefined) return { kind: "abandon", id, yes: rest.length === 3 };
   }
   // `stop` never asks, so it takes no `--yes`.
   if (cmd === "session" && rest[0] === "stop" && rest.length === 2) {
