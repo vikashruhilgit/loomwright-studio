@@ -9,7 +9,7 @@ import { LEADER_EXIT_WAIT_MS, SessionManager } from "../src/sessions/index.js";
 import type { SessionHandle, SessionManagerDeps, SessionManagerOptions, SessionRow } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { CancelTimer } from "../src/sessions/index.js";
+import type { CancelTimer, SessionStatus } from "../src/sessions/index.js";
 import { fakeMsg, fakeSessions, flush, immediate, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
 
 let tmp: string;
@@ -447,6 +447,37 @@ describe("SessionManager.stopSession: the owner's stop and kill modes (phase 5 i
     const notLive = Number(store.prepare("INSERT INTO sessions (agent, status) VALUES ('wright', 'interrupted')").run().lastInsertRowid);
     expect(await manager.stopSession(notLive, { onAccepted: never }).catch((e: unknown) => (e as { code?: string }).code)).toBe("not_live");
     expect(never).not.toHaveBeenCalled();
+  });
+
+  it("killDuringOwnerStop joins only an owner Stop in flight; otherwise it does nothing and returns undefined", async () => {
+    const { store, manager, isGroupAlive } = setup({ options: { stopGraceMs: LONG_GRACE_MS }, deps: { schedule: holdGrace } });
+    const [a, b] = (await startRunning(store, manager, 2)) as [SessionHandle, SessionHandle];
+    const never = vi.fn();
+    // No stop in flight, or an unknown id: no stop is started, nothing is recorded.
+    expect(manager.killDuringOwnerStop(a.id, { onAccepted: never })).toBeUndefined();
+    expect(manager.killDuringOwnerStop(9_999, { onAccepted: never })).toBeUndefined();
+    expect(row(store, a.id).status).toBe("running");
+    expect(isGroupAlive(a.pgid as number)).toBe(true);
+    // A stop the owner did not start (the kill switch's `stopSession(id)`): left alone, its grace kept.
+    const plain = manager.stopSession(b.id);
+    expect(manager.killDuringOwnerStop(b.id, { onAccepted: never })).toBeUndefined();
+    expect(await within(plain, 100)).toBe("timed out");
+    expect(never).not.toHaveBeenCalled();
+    // An owner Stop: joined, its grace cut short, one terminal transition (owner_kill).
+    const stop = manager.stopSession(a.id, { mode: "stop" });
+    const accepted = vi.fn();
+    const kill = manager.killDuringOwnerStop(a.id, { onAccepted: accepted });
+    expect(kill).toBeDefined();
+    expect(accepted).toHaveBeenCalledTimes(1);
+    expect(await within(kill as Promise<SessionStatus>)).toBe("stopped");
+    expect(await within(stop)).toBe("stopped");
+    expect(statusEvents(store, a.id).filter((e) => e["to"] === "stopped" || e["to"] === "failed")).toEqual([{ from: "running", to: "stopped", reason: "owner_kill" }]);
+    // Once it has ended, nothing to join.
+    expect(manager.killDuringOwnerStop(a.id, { onAccepted: never })).toBeUndefined();
+    expect(never).not.toHaveBeenCalled();
+    // Release the kill switch's stop of b.
+    expect(await manager.stopSession(b.id, { mode: "kill" })).toBe("stopped");
+    expect(await plain).toBe("stopped");
   });
 
   it("refuses an unknown mode (invalid_params) without stopping anything", async () => {

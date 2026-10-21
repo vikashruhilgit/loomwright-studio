@@ -71,6 +71,13 @@ function parseId(raw: string | undefined): number | undefined {
  * right before the stop begins (`StopSessionOptions.onAccepted`); a 400, 404,
  * 409 or 503 records none. Any other throw is rethrown: the API answers 500
  * and records `route_failed`.
+ *
+ * Kill is immediate, even behind the owner's own Stop: an owner Stop holds the
+ * queue while it waits out its grace, so a kill of that session is not queued
+ * behind it. It joins that stop (`SessionManager.killDuringOwnerStop`), which
+ * ends the grace at once, and answers with the one shared outcome (`stopped` /
+ * `owner_kill`, or `kill_incomplete`). It starts no stop of its own, so the
+ * kill switch's ordering is untouched: every other kill is queued.
  */
 async function controlSession(req: ContributedRouteRequest, mode: SessionControlMode): Promise<ContributedRouteResponse> {
   const sessions = req.sessions;
@@ -78,16 +85,28 @@ async function controlSession(req: ContributedRouteRequest, mode: SessionControl
   if (sessions === undefined || serialized === undefined) return { status: 503, body: { error: "sessions_unavailable" } };
   const id = parseId(req.params["id"]);
   if (id === undefined) return { status: 400, body: { error: "invalid_id" } };
+  const answer = (status: SessionStatus): ContributedRouteResponse => ({ status: 200, body: { id, status, reason: lastStatusReason(req.store, id) } });
+  const record = (taskId: number | null) => (): void => {
+    appendEvent(req.store, SESSION_STOP_REQUESTED, { sessionId: id, taskId }, { by: "owner", mode }, req.now().toISOString());
+  };
+  if (mode === "kill") {
+    // Out of the queue, but only to join the owner Stop that holds it: the
+    // check and the join are one synchronous step in the manager.
+    const row = sessions.getSession(id);
+    const joined = row === undefined ? undefined : sessions.killDuringOwnerStop(id, { onAccepted: record(row.task_id) });
+    if (joined !== undefined) return answer(await joined);
+  }
   return serialized(async (): Promise<ContributedRouteResponse> => {
     const row = sessions.getSession(id);
     if (row === undefined) return { status: 404, body: { error: "not_found" } };
     let accepted = false;
+    const onAccepted = record(row.task_id);
     let status: SessionStatus;
     try {
       status = await sessions.stopSession(id, {
         mode,
         onAccepted: () => {
-          appendEvent(req.store, SESSION_STOP_REQUESTED, { sessionId: id, taskId: row.task_id }, { by: "owner", mode }, req.now().toISOString());
+          onAccepted();
           accepted = true;
         },
       });
@@ -99,7 +118,7 @@ async function controlSession(req: ContributedRouteRequest, mode: SessionControl
     }
     // Ended before this request: nothing was stopped and nothing recorded.
     if (!accepted) return { status: 409, body: { error: "not_running", status } };
-    return { status: 200, body: { id, status, reason: lastStatusReason(req.store, id) } };
+    return answer(status);
   });
 }
 

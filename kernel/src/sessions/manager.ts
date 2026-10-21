@@ -364,6 +364,8 @@ interface LiveSession {
    * `owner_kill` (a `shutdown` keeps its own).
    */
   stopIntent: StopIntent | undefined;
+  /** The intent that started the stop in flight, never changed by a kill that joins it (`killDuringOwnerStop`). */
+  stopStartedAs: StopIntent | undefined;
   /** Set only while the stop in flight waits out its grace: ends that wait at once (a kill arrived). */
   cutGrace: (() => void) | undefined;
   authFailed: boolean;
@@ -845,6 +847,29 @@ export class SessionManager {
   }
 
   /**
+   * The owner's Kill of a session whose owner Stop (`stopSession(id, {mode:
+   * "stop"})`) is in flight: joins that stop as `stopSession(id, {mode:
+   * "kill"})` would (`onAccepted` runs, a grace still being waited out ends at
+   * once and the session ends `owner_kill`), and returns its promise. Never
+   * starts a stop: returns `undefined`, having done nothing, when no owner
+   * Stop of `id` is in flight (none at all, one the kill switch, a kernel
+   * shutdown or `kernel_request_stop` started, or one that already ended the
+   * session). The check and the join run in one synchronous step, so nothing
+   * can end or start a stop between them.
+   *
+   * Exists for the console's kill route (phase 5 item 04): an owner Stop holds
+   * the API's POST queue for its whole grace, so a Kill queued behind it would
+   * wait the grace out. The route calls this before queueing and queues only
+   * when it returns `undefined`.
+   */
+  killDuringOwnerStop(id: number, options: { readonly onAccepted?: () => void } = {}): Promise<SessionStatus> | undefined {
+    const live = this.#live.get(id);
+    if (live === undefined || live.stopPromise === undefined || isTerminalStatus(live.status)) return undefined;
+    if (live.stopStartedAs !== "owner_stop") return undefined;
+    return this.#stopLive(id, "owner_kill", options.onAccepted);
+  }
+
+  /**
    * Stop every session this manager is running, concurrently, and report each
    * outcome; one stop that rejects never skips another (`stop_failed`).
    *
@@ -940,6 +965,7 @@ export class SessionManager {
     }
     live.stopping = true;
     live.stopIntent = intent;
+    live.stopStartedAs = intent;
     live.stopPromise = this.#stop(live, intent);
     return live.stopPromise;
   }
@@ -1436,6 +1462,7 @@ export class SessionManager {
       stopping: false,
       stopPromise: undefined,
       stopIntent: undefined,
+      stopStartedAs: undefined,
       cutGrace: undefined,
       authFailed: false,
       verdict: undefined,
