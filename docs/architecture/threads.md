@@ -40,7 +40,7 @@ Only the kinds in the closed list `THREAD_EVENT_KINDS` are cards, each tied to a
 | `agent_created`, `agent_renamed`, `agent_settings_set`, `agent_status_changed` | its payload's `id` is the agent | `Agent mason renamed from Mason to Stone` |
 | `trigger_fired` | its payload's `trigger_id` names a trigger whose `owning_agent` is the agent | `Trigger 3 fired (notify)` |
 
-`memory_updated` is not in the list: no kernel code writes that kind today, and this item adds no event kind. A new kind becomes a card only by adding it to `THREAD_EVENT_KINDS` with its tie (and its sentence beside the others in `threads.ts`).
+`memory_updated` is not in the list: no kernel code writes that kind today, and this item adds no event kind (the gap with the approved design is logged in [open questions](../OPEN_QUESTIONS.md#deferred-decisions)). A new kind becomes a card only by adding it to `THREAD_EVENT_KINDS` with its tie (and its sentence beside the others in `threads.ts`).
 
 ### Summaries are escaped
 
