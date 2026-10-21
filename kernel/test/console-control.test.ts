@@ -387,14 +387,34 @@ describe("POST /sessions/:id/stop and /kill", () => {
     const sessions = {
       getSession: (id: number) => h.manager.getSession(id),
       stopSession: () => Promise.reject(boom),
-      // No owner Stop in flight: the kill is queued as any other request.
-      killDuringOwnerStop: () => undefined,
     } as unknown as SessionManager;
     const req: ContributedRouteRequest = { params: { id: String(s.id) }, query: {}, body: undefined, store: h.store, now: () => NOW, sessions, serialized: (fn) => fn() };
     await expect(controlPart.routes[1]?.handler(req)).rejects.toBe(boom);
     // A SessionError of another code is rethrown too, never mapped.
     const odd = { ...req, sessions: { ...sessions, getSession: sessions.getSession, stopSession: () => Promise.reject(new SessionError("invalid_params", "x")) } as unknown as SessionManager };
     await expect(controlPart.routes[0]?.handler(odd)).rejects.toMatchObject({ code: "invalid_params" });
+    // An accepted stop that fails later, awaited off the queue: rethrown too, and the queued work had already returned.
+    let queueDone = false;
+    const late: ContributedRouteRequest = {
+      ...req,
+      serialized: async <T,>(fn: () => Promise<T>): Promise<T> => {
+        const r = await fn();
+        queueDone = true;
+        return r;
+      },
+      sessions: {
+        getSession: sessions.getSession,
+        stopSession: (_id: number, o: { onAccepted?: () => void }) => {
+          o.onAccepted?.();
+          return new Promise((_resolve, reject) => setTimeout(() => reject(boom), 20));
+        },
+      } as unknown as SessionManager,
+    };
+    for (const route of controlPart.routes) {
+      queueDone = false;
+      await expect(route.handler(late)).rejects.toBe(boom);
+      expect(queueDone).toBe(true);
+    }
     await h.manager.stopSession(s.id, { mode: "kill" });
   });
 });
@@ -407,9 +427,9 @@ describe("the routes run on the API server's POST queue", () => {
     await vi.waitFor(() => expect(events(h.store, "session_group_recorded", s.id)).toHaveLength(1));
     const { post } = await serve(h);
     const stop = post(`/sessions/${s.id}/stop`);
-    // The Stop holds the POST queue in its grace.
+    // The Stop is accepted and in its grace; only its acceptance ran on the POST queue.
     await vi.waitFor(() => expect(h.graceTimers).toHaveLength(1));
-    // The grace timer is never fired: a kill queued behind the Stop would never answer.
+    // The grace timer is never fired: a kill that waited for it would never answer.
     const kill = await within(post(`/sessions/${s.id}/kill`), 5_000);
     expect(kill).not.toBe("pending");
     expect((kill as Response).status).toBe(200);
@@ -434,23 +454,55 @@ describe("the routes run on the API server's POST queue", () => {
     for (const e of requested) expect(e.id).toBeLessThan(terminal[0]?.id ?? 0);
   });
 
-  it("a second stop sent during the owner's Stop is queued behind it, not joined: after a kill ends both, it is refused 409 not_running", async () => {
+  it("a second stop sent during the owner's Stop joins it: accepted and recorded, it shares the one outcome; one grace, one terminal transition", async () => {
     const h = setup();
     const s = await running(h);
     const { post } = await serve(h);
     const stop = post(`/sessions/${s.id}/stop`);
     await vi.waitFor(() => expect(h.graceTimers).toHaveLength(1));
-    // Queued behind the first Stop, whenever it arrives: that Stop holds the queue until it ends.
     const again = post(`/sessions/${s.id}/stop`);
-    // One kill only: a second one would race the end of the stop it cut short (joined, or queued and refused).
-    expect(await (await post(`/sessions/${s.id}/kill`)).json()).toEqual({ id: s.id, status: "stopped", reason: "owner_kill" });
-    expect(await (await stop).json()).toEqual({ id: s.id, status: "stopped", reason: "owner_kill" });
-    const queued = await again;
-    expect(queued.status).toBe(409);
-    expect(await queued.json()).toEqual({ error: "not_running", status: "stopped" });
+    await vi.waitFor(() => expect(stopRequests(h.store)).toHaveLength(2));
+    // Joined, not a second stop: no second grace, and it does not cut the first one short.
+    expect(await within(again)).toBe("pending");
     expect(h.graceTimers).toHaveLength(1);
-    expect(stopRequests(h.store).map((e) => e.payload["mode"])).toEqual(["stop", "kill"]);
+    h.graceTimers[0]?.();
+    expect(await (await stop).json()).toEqual({ id: s.id, status: "stopped", reason: "owner_stop" });
+    expect(await (await again).json()).toEqual({ id: s.id, status: "stopped", reason: "owner_stop" });
+    expect(stopRequests(h.store).map((e) => e.payload["mode"])).toEqual(["stop", "stop"]);
     expect(events(h.store, "session_status", s.id).filter((e) => e.payload["to"] === "stopped")).toHaveLength(1);
+  });
+
+  it("a kill queued behind the owner's Stops (another session's, then its own) runs once they are accepted, not after their graces: Stop A, Stop B, Kill B", async () => {
+    const h = setup();
+    const a = await running(h);
+    const b = await running(h);
+    const { post } = await serve(h);
+    const stopA = post(`/sessions/${a.id}/stop`);
+    await vi.waitFor(() => expect(h.graceTimers).toHaveLength(1));
+    const stopB = post(`/sessions/${b.id}/stop`);
+    // B's Stop is accepted while A's waits out its grace: no grace holds the queue.
+    await vi.waitFor(() => expect(h.graceTimers).toHaveLength(2));
+    // No grace timer is fired: a kill that waited for either would never answer.
+    const kill = await within(post(`/sessions/${b.id}/kill`), 5_000);
+    expect(kill).not.toBe("pending");
+    expect((kill as Response).status).toBe(200);
+    expect(await (kill as Response).json()).toEqual({ id: b.id, status: "stopped", reason: "owner_kill" });
+    const stoppedB = await within(stopB, 5_000);
+    expect(stoppedB).not.toBe("pending");
+    expect(await (stoppedB as Response).json()).toEqual({ id: b.id, status: "stopped", reason: "owner_kill" });
+    expect(events(h.store, "session_status", b.id).filter((e) => e.payload["to"] === "stopped" || e.payload["to"] === "failed").map((e) => e.payload)).toEqual([
+      { from: "running", to: "stopped", reason: "owner_kill" },
+    ]);
+    // A is untouched by B's kill: still in its grace until it runs out.
+    expect(await within(stopA)).toBe("pending");
+    expect(h.fakes.isGroupAlive(a.pgid as number)).toBe(true);
+    h.graceTimers[0]?.();
+    expect(await (await stopA).json()).toEqual({ id: a.id, status: "stopped", reason: "owner_stop" });
+    expect(stopRequests(h.store).map((e) => [e.session_id, e.payload["mode"]])).toEqual([
+      [a.id, "stop"],
+      [b.id, "stop"],
+      [b.id, "kill"],
+    ]);
   });
 
   it("a kill or stop after a kill has ended the session is refused 409 not_running: one event, one terminal transition", async () => {
@@ -511,19 +563,21 @@ describe("the routes run on the API server's POST queue", () => {
     const h = setup();
     const s = await running(h);
     const { post } = await serve(h);
-    const order: string[] = [];
-    const stop = post(`/sessions/${s.id}/stop`).then(async (r) => (order.push("stop"), r));
+    const stop = post(`/sessions/${s.id}/stop`);
     await vi.waitFor(() => expect(h.graceTimers).toHaveLength(1));
-    const stopAll = post("/stop-all").then(async (r) => (order.push("stop-all"), r));
-    // Queued behind the Stop, still in its grace.
+    const stopAll = post("/stop-all");
+    // Not queued behind the Stop's grace: the kill switch engages at once and joins the Stop in flight.
+    await vi.waitFor(() => expect(events(h.store, "kill_switch_engaged")).toHaveLength(1));
     expect(await within(stopAll, 200)).toBe("pending");
-    expect(events(h.store, "kill_switch_engaged")).toEqual([]);
+    // One stop: the kill switch started no grace of its own.
+    expect(h.graceTimers).toHaveLength(1);
     h.graceTimers[0]?.();
-    expect(await (await stop).json()).toEqual({ id: s.id, status: "stopped", reason: "owner_stop" });
     const all = await stopAll;
+    // It answers only once the Stop has ended.
+    expect(row(h.store, s.id).status).toBe("stopped");
     expect(all.status).toBe(200);
-    // The session had already ended: the kill switch found nothing running.
-    expect(await all.json()).toEqual({ engaged: true, sessions: [] });
-    expect(order).toEqual(["stop", "stop-all"]);
+    expect(await all.json()).toEqual({ engaged: true, sessions: [{ id: s.id, status: "stopped" }] });
+    expect(await (await stop).json()).toEqual({ id: s.id, status: "stopped", reason: "owner_stop" });
+    expect(events(h.store, "session_status", s.id).filter((e) => e.payload["to"] === "stopped")).toHaveLength(1);
   });
 });

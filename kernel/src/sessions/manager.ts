@@ -364,8 +364,6 @@ interface LiveSession {
    * `owner_kill` (a `shutdown` keeps its own).
    */
   stopIntent: StopIntent | undefined;
-  /** The intent that started the stop in flight, never changed by a kill that joins it (`killDuringOwnerStop`). */
-  stopStartedAs: StopIntent | undefined;
   /** Set only while the stop in flight waits out its grace: ends that wait at once (a kill arrived). */
   cutGrace: (() => void) | undefined;
   authFailed: boolean;
@@ -836,6 +834,13 @@ export class SessionManager {
    * status. Rejects `SessionError` `not_found` (no row), `not_live` (a row
    * this manager does not run that has not ended) and `invalid_params` (an
    * unknown mode).
+   *
+   * The acceptance is synchronous: the entry guards, `onAccepted`, and the
+   * start of the stop (its input closed and, for a graceful stop, its grace
+   * wait armed so a later kill can cut it) or the join of the one in flight
+   * all run before this call returns. A caller that saw `onAccepted` run knows
+   * the stop is registered, so any later call joins it (the console's routes
+   * accept on the API's POST queue and await the end off it).
    */
   stopSession(id: number, options: StopSessionOptions = {}): Promise<SessionStatus> {
     const mode = options.mode;
@@ -844,29 +849,6 @@ export class SessionManager {
     }
     const intent: StopIntent = mode === undefined ? "stop" : mode === "stop" ? "owner_stop" : "owner_kill";
     return this.#stopLive(id, intent, options.onAccepted);
-  }
-
-  /**
-   * The owner's Kill of a session whose owner Stop (`stopSession(id, {mode:
-   * "stop"})`) is in flight: joins that stop as `stopSession(id, {mode:
-   * "kill"})` would (`onAccepted` runs, a grace still being waited out ends at
-   * once and the session ends `owner_kill`), and returns its promise. Never
-   * starts a stop: returns `undefined`, having done nothing, when no owner
-   * Stop of `id` is in flight (none at all, one the kill switch, a kernel
-   * shutdown or `kernel_request_stop` started, or one that already ended the
-   * session). The check and the join run in one synchronous step, so nothing
-   * can end or start a stop between them.
-   *
-   * Exists for the console's kill route (phase 5 item 04): an owner Stop holds
-   * the API's POST queue for its whole grace, so a Kill queued behind it would
-   * wait the grace out. The route calls this before queueing and queues only
-   * when it returns `undefined`.
-   */
-  killDuringOwnerStop(id: number, options: { readonly onAccepted?: () => void } = {}): Promise<SessionStatus> | undefined {
-    const live = this.#live.get(id);
-    if (live === undefined || live.stopPromise === undefined || isTerminalStatus(live.status)) return undefined;
-    if (live.stopStartedAs !== "owner_stop") return undefined;
-    return this.#stopLive(id, "owner_kill", options.onAccepted);
   }
 
   /**
@@ -943,7 +925,9 @@ export class SessionManager {
    * `stopSession`'s entry guards, for every intent. `onAccepted` runs once
    * they accept, before anything else (a throw refuses: nothing changes). A
    * stop already in flight is joined, never doubled; an `owner_kill` joining
-   * one that is waiting out its grace cuts that wait short.
+   * one that is waiting out its grace cuts that wait short. Never put an
+   * `await` before `live.stopPromise` is set (nor in `#stop` before
+   * `live.cutGrace` is set): `stopSession`'s acceptance is synchronous.
    */
   async #stopLive(id: number, intent: StopIntent, onAccepted?: () => void): Promise<SessionStatus> {
     const live = this.#live.get(id);
@@ -965,7 +949,6 @@ export class SessionManager {
     }
     live.stopping = true;
     live.stopIntent = intent;
-    live.stopStartedAs = intent;
     live.stopPromise = this.#stop(live, intent);
     return live.stopPromise;
   }
@@ -1462,7 +1445,6 @@ export class SessionManager {
       stopping: false,
       stopPromise: undefined,
       stopIntent: undefined,
-      stopStartedAs: undefined,
       cutGrace: undefined,
       authFailed: false,
       verdict: undefined,

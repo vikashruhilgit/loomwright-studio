@@ -9,7 +9,7 @@ import { LEADER_EXIT_WAIT_MS, SessionManager } from "../src/sessions/index.js";
 import type { SessionHandle, SessionManagerDeps, SessionManagerOptions, SessionRow } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { CancelTimer, SessionStatus } from "../src/sessions/index.js";
+import type { CancelTimer } from "../src/sessions/index.js";
 import { fakeMsg, fakeSessions, flush, immediate, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
 
 let tmp: string;
@@ -449,35 +449,71 @@ describe("SessionManager.stopSession: the owner's stop and kill modes (phase 5 i
     expect(never).not.toHaveBeenCalled();
   });
 
-  it("killDuringOwnerStop joins only an owner Stop in flight; otherwise it does nothing and returns undefined", async () => {
-    const { store, manager, isGroupAlive } = setup({ options: { stopGraceMs: LONG_GRACE_MS }, deps: { schedule: holdGrace } });
-    const [a, b] = (await startRunning(store, manager, 2)) as [SessionHandle, SessionHandle];
-    const never = vi.fn();
-    // No stop in flight, or an unknown id: no stop is started, nothing is recorded.
-    expect(manager.killDuringOwnerStop(a.id, { onAccepted: never })).toBeUndefined();
-    expect(manager.killDuringOwnerStop(9_999, { onAccepted: never })).toBeUndefined();
-    expect(row(store, a.id).status).toBe("running");
-    expect(isGroupAlive(a.pgid as number)).toBe(true);
-    // A stop the owner did not start (the kill switch's `stopSession(id)`): left alone, its grace kept.
-    const plain = manager.stopSession(b.id);
-    expect(manager.killDuringOwnerStop(b.id, { onAccepted: never })).toBeUndefined();
-    expect(await within(plain, 100)).toBe("timed out");
-    expect(never).not.toHaveBeenCalled();
-    // An owner Stop: joined, its grace cut short, one terminal transition (owner_kill).
-    const stop = manager.stopSession(a.id, { mode: "stop" });
-    const accepted = vi.fn();
-    const kill = manager.killDuringOwnerStop(a.id, { onAccepted: accepted });
-    expect(kill).toBeDefined();
-    expect(accepted).toHaveBeenCalledTimes(1);
-    expect(await within(kill as Promise<SessionStatus>)).toBe("stopped");
+  it("a kill that arrives after the grace, while the stop's group kill is still running, only joins it: one terminal transition, owner_stop", async () => {
+    // The CLI's group survives SIGKILL and the kill's retry sleeps are held, so the stop stays in its group kill.
+    const GRACE_MS = 10;
+    let holding = false;
+    const held: (() => void)[] = [];
+    let realKill: (pgid: number, signal: NodeJS.Signals) => boolean = () => false;
+    const killGroup = (pgid: number, signal: NodeJS.Signals): boolean => (holding ? true : realKill(pgid, signal));
+    const schedule = (fn: () => void, ms: number): CancelTimer => {
+      if (holding && ms !== GRACE_MS) {
+        held.push(fn);
+        return () => {};
+      }
+      const t = setTimeout(fn, ms);
+      return () => clearTimeout(t);
+    };
+    const { store, manager, isGroupAlive, deps } = setup({ options: { stopGraceMs: GRACE_MS }, deps: { killGroup, schedule } });
+    realKill = deps.killGroup as (pgid: number, signal: NodeJS.Signals) => boolean;
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    holding = true;
+    const stop = manager.stopSession(h.id, { mode: "stop" });
+    // The grace has run out: the group kill is retrying (held).
+    await vi.waitFor(() => expect(held.length).toBeGreaterThan(0));
+    expect(isGroupAlive(h.pgid as number)).toBe(true);
+    const kill = manager.stopSession(h.id, { mode: "kill" });
+    holding = false;
+    for (const fn of held.splice(0)) fn();
+    expect(await within(kill)).toBe("stopped");
     expect(await within(stop)).toBe("stopped");
-    expect(statusEvents(store, a.id).filter((e) => e["to"] === "stopped" || e["to"] === "failed")).toEqual([{ from: "running", to: "stopped", reason: "owner_kill" }]);
-    // Once it has ended, nothing to join.
-    expect(manager.killDuringOwnerStop(a.id, { onAccepted: never })).toBeUndefined();
+    expect(isGroupAlive(h.pgid as number)).toBe(false);
+    const terminal = statusEvents(store, h.id).filter((e) => e["to"] === "stopped" || e["to"] === "failed");
+    expect(terminal).toEqual([{ from: "running", to: "stopped", reason: "owner_stop" }]);
+  });
+
+  it("a kill that arrives during a kernel shutdown's grace cuts it short but keeps the shutdown's outcome: interrupted (kernel_shutdown)", async () => {
+    const { store, manager, isGroupAlive } = setup({ options: { stopGraceMs: LONG_GRACE_MS }, deps: { schedule: holdGrace } });
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    const all = manager.stopAll({ mode: "shutdown" });
+    await flush();
+    expect(isGroupAlive(h.pgid as number)).toBe(true);
+    expect(await within(manager.stopSession(h.id, { mode: "kill" }))).toBe("interrupted");
+    expect(await within(all)).toEqual([{ id: h.id, status: "interrupted" }]);
+    expect(isGroupAlive(h.pgid as number)).toBe(false);
+    const ended = statusEvents(store, h.id).filter((e) => e["to"] === "stopped" || e["to"] === "failed" || e["to"] === "interrupted");
+    expect(ended).toEqual([{ from: "running", to: "interrupted", reason: "kernel_shutdown" }]);
+  });
+
+  it("onAccepted is never called for a session that ended but is still live (failed:auth, waiting for its auth kill timer)", async () => {
+    const AUTH_TIMEOUT_MS = 3_600_000;
+    const { store, manager } = setup({
+      options: { authTimeoutMs: AUTH_TIMEOUT_MS },
+      deps: { schedule: (fn, ms): CancelTimer => (ms === AUTH_TIMEOUT_MS ? () => {} : immediate(fn, ms)) },
+      fakes: {
+        script: ({ stream, options }) => {
+          stream.push(fakeMsg.init(options.sessionId ?? ""));
+          stream.push(fakeMsg.apiRetry401());
+        },
+      },
+    });
+    const h = await manager.startSession(startParams(tmp));
+    await vi.waitFor(() => expect(row(store, h.id).status).toBe("failed:auth"));
+    const never = vi.fn();
+    for (const mode of ["stop", "kill"] as const) expect(await manager.stopSession(h.id, { mode, onAccepted: never })).toBe("failed:auth");
     expect(never).not.toHaveBeenCalled();
-    // Release the kill switch's stop of b.
-    expect(await manager.stopSession(b.id, { mode: "kill" })).toBe("stopped");
-    expect(await plain).toBe("stopped");
+    // Settle its group (the auth timer is held).
+    expect(await manager.stopAll()).toEqual([{ id: h.id, status: "failed:auth", ended_on_its_own: true }]);
   });
 
   it("refuses an unknown mode (invalid_params) without stopping anything", async () => {

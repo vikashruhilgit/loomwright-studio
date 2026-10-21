@@ -218,10 +218,13 @@ export interface ContributedRouteRequest {
    * /resume` and `POST /sessions/:id/abandon` run on it): `fn` runs once every
    * POST queued before it has finished, and the promise settles with `fn`'s.
    * The API server always sets it. Only a route that makes a short, bounded
-   * change to session or kill-switch state runs its work through it (the
-   * console's stop and kill of one session do), because whatever is queued
-   * delays the kill switch: never queue slow or unbounded work on it, and
+   * change to session or kill-switch state runs that change through it,
+   * because whatever is queued delays the kill switch: never queue slow or
+   * unbounded work on it (a wait for a grace or a deadline included), and
    * never call it from work it is already running (that waits for itself).
+   * The console's stop and kill of one session queue only their acceptance
+   * (the checks, the event, the start of the stop) and await the stop's
+   * grace and kills after the queued work has returned.
    * Optional in the type for the same reason as `sessions`.
    */
   readonly serialized?: <T>(fn: () => Promise<T>) => Promise<T>;

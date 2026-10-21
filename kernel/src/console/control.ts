@@ -1,8 +1,9 @@
 // The console's session-control part (phase 5 item 04): a graceful stop and
 // an immediate kill of one session, through the route request's `sessions`.
 // Two routes, `POST /sessions/:id/stop` and `POST /sessions/:id/kill`, each
-// run on the API server's one POST queue (the request's `serialized`), so
-// they never interleave with the kill switch, resume or abandon. Mechanism
+// accepted on the API server's one POST queue (the request's `serialized`),
+// so their acceptance never interleaves with the kill switch, resume or
+// abandon; the stop's grace and kills are awaited off the queue. Mechanism
 // only (invariant 1): the session manager's `stopSession` does the stopping.
 //
 // The `studio` CLI loads this module through the feature registry, so its only
@@ -51,7 +52,7 @@ function parseId(raw: string | undefined): number | undefined {
 
 /**
  * Stop (`stop`) or kill (`kill`) session `:id` through the session manager,
- * on the server's POST queue. Answers:
+ * accepted on the server's POST queue. Answers:
  *
  * - `503 {error: "sessions_unavailable"}`: the composition gave no session
  *   manager or no queue;
@@ -72,12 +73,14 @@ function parseId(raw: string | undefined): number | undefined {
  * 409 or 503 records none. Any other throw is rethrown: the API answers 500
  * and records `route_failed`.
  *
- * Kill is immediate, even behind the owner's own Stop: an owner Stop holds the
- * queue while it waits out its grace, so a kill of that session is not queued
- * behind it. It joins that stop (`SessionManager.killDuringOwnerStop`), which
- * ends the grace at once, and answers with the one shared outcome (`stopped` /
- * `owner_kill`, or `kill_incomplete`). It starts no stop of its own, so the
- * kill switch's ordering is untouched: every other kill is queued.
+ * Only the acceptance runs on the queue: the checks, the event and the
+ * `stopSession` call, which accepts and starts the stop synchronously (or
+ * joins the stop in flight). The stop itself (the grace, the group kills) is
+ * awaited after the queued work has returned, so no request holds the queue
+ * for a grace. A Kill queued behind the owner's Stop of the same session (even
+ * behind other Stops) therefore runs right after that Stop is accepted, joins
+ * it and cuts its grace short; a `POST /stop-all` behind it starts at once and
+ * joins it too, answering once it has ended.
  */
 async function controlSession(req: ContributedRouteRequest, mode: SessionControlMode): Promise<ContributedRouteResponse> {
   const sessions = req.sessions;
@@ -85,41 +88,39 @@ async function controlSession(req: ContributedRouteRequest, mode: SessionControl
   if (sessions === undefined || serialized === undefined) return { status: 503, body: { error: "sessions_unavailable" } };
   const id = parseId(req.params["id"]);
   if (id === undefined) return { status: 400, body: { error: "invalid_id" } };
-  const answer = (status: SessionStatus): ContributedRouteResponse => ({ status: 200, body: { id, status, reason: lastStatusReason(req.store, id) } });
-  const record = (taskId: number | null) => (): void => {
-    appendEvent(req.store, SESSION_STOP_REQUESTED, { sessionId: id, taskId }, { by: "owner", mode }, req.now().toISOString());
-  };
-  if (mode === "kill") {
-    // Out of the queue, but only to join the owner Stop that holds it: the
-    // check and the join are one synchronous step in the manager.
+  // A refusal (`answer`), or an accepted stop whose end is awaited off the queue.
+  const queued = await serialized(async (): Promise<{ readonly answer: ContributedRouteResponse } | { readonly stopping: Promise<SessionStatus> }> => {
     const row = sessions.getSession(id);
-    const joined = row === undefined ? undefined : sessions.killDuringOwnerStop(id, { onAccepted: record(row.task_id) });
-    if (joined !== undefined) return answer(await joined);
-  }
-  return serialized(async (): Promise<ContributedRouteResponse> => {
-    const row = sessions.getSession(id);
-    if (row === undefined) return { status: 404, body: { error: "not_found" } };
+    if (row === undefined) return { answer: { status: 404, body: { error: "not_found" } } };
     let accepted = false;
-    const onAccepted = record(row.task_id);
-    let status: SessionStatus;
+    const stopping = sessions.stopSession(id, {
+      mode,
+      onAccepted: () => {
+        appendEvent(req.store, SESSION_STOP_REQUESTED, { sessionId: id, taskId: row.task_id }, { by: "owner", mode }, req.now().toISOString());
+        accepted = true;
+      },
+    });
+    // Accepted: the stop is registered (`stopSession` runs its entry guards
+    // and starts or joins the stop synchronously). Its end is awaited by the
+    // caller, after this queued work returns; a rejection is handled there.
+    if (accepted) {
+      stopping.catch(() => undefined);
+      return { stopping };
+    }
+    // Refused or already ended: settled at once, nothing stopped or recorded.
     try {
-      status = await sessions.stopSession(id, {
-        mode,
-        onAccepted: () => {
-          onAccepted();
-          accepted = true;
-        },
-      });
+      const status = await stopping;
+      return { answer: { status: 409, body: { error: "not_running", status } } };
     } catch (err) {
       const code = sessionErrorCode(err);
-      if (code === "not_found") return { status: 404, body: { error: "not_found" } };
-      if (code === "not_live") return { status: 409, body: { error: "not_running", status: sessions.getSession(id)?.status ?? row.status } };
+      if (code === "not_found") return { answer: { status: 404, body: { error: "not_found" } } };
+      if (code === "not_live") return { answer: { status: 409, body: { error: "not_running", status: sessions.getSession(id)?.status ?? row.status } } };
       throw err;
     }
-    // Ended before this request: nothing was stopped and nothing recorded.
-    if (!accepted) return { status: 409, body: { error: "not_running", status } };
-    return answer(status);
   });
+  if ("answer" in queued) return queued.answer;
+  const status = await queued.stopping;
+  return { status: 200, body: { id, status, reason: lastStatusReason(req.store, id) } };
 }
 
 /** `POST /sessions/:id/stop` and `POST /sessions/:id/kill`, in that order; no tools, handlers or due work. */
