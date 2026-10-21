@@ -1,9 +1,62 @@
 # Session output
 
-Part of [Phase 5 features](../ARCHITECTURE.md#phase-5-features). Built and documented by **item 03** (the kernel keeps a bounded output log for every session), in the console's `output.ts` part.
+Part of [Phase 5 features](../ARCHITECTURE.md#phase-5-features). Built and documented by **item 03** (the kernel keeps a bounded output log for every session), in the console's `output.ts` part (`kernel/src/console/output.ts`).
 
 **Routes:** `GET /sessions` and `GET /sessions/:id/output`.
 
 **Contract types it fills** (`app/src/api/contract.ts`): `SessionOutputKind` (mirrors `SESSION_OUTPUT_KINDS`, pinned by `kernel/test/console-contract.test.ts`), `SessionsQuery`, `SessionSummary` and `SessionsResponse`, `SessionOutputQuery`, `SessionOutputRow` and `SessionOutputResponse`.
 
-Today (item 01) migration 16 creates the `session_output` table (see [the data model](../ARCHITECTURE.md#data-model)), and the session manager hands every SDK message to `recordSessionOutput`, which writes nothing yet.
+The kernel keeps every session's output itself, so the Sessions screen can stream and replay what an agent did through the kernel's loopback API (D10), and the app never reads the CLI's own files. Migration 16 creates the `session_output` table (see [the data model](../ARCHITECTURE.md#data-model)). The session manager hands every SDK message to `recordSessionOutput` (its `onOutput` observer, wired in `kernel.ts`), which records it through the default recorder that `createSessionOutputRecorder()` builds. This is mechanism only (invariant 1): the caps below are fixed bounds, and there is no retention policy beyond them.
+
+## Rows
+
+Each SDK message maps to zero or more rows, written in one transaction with consecutive `seq` numbers (unique per session, starting at 1). `payload_json` holds the payload below, and `created_at` is the recorder's clock.
+
+| Kind | Payload | From |
+|---|---|---|
+| `system` | `{subtype: "init", model, tool_count}` | the `system`/`init` message: the model and the number of tools only |
+| `assistant_text` | `{text, cut?}` | one row per text block of an `assistant` message |
+| `tool_call` | `{tool_use_id, name, input_json, cut?}` | one row per `tool_use` block; `input_json` is `JSON.stringify(input)` |
+| `tool_decision` | the kernel's own `tool_decision` event payload, copied whole: `tool`, `decision`, `reason`, plus `command`, `approval_id` and `category` when present | the `events` log, never the SDK message |
+| `tool_result` | `{tool_use_id, is_error, content, cut?}` | one row per `tool_result` block of a `user` message; `content` as text (text blocks joined by a newline, any other block as `[<type>]`) |
+| `result` | `{subtype, counted_tokens}` | the `result` message; `counted_tokens` is input + output + cache-write tokens from its `usage` (the budget meter's counted tokens). Thinking and cache reads are excluded |
+| `system` | `{subtype: "output_cut", reason: "rows" \| "bytes"}` | the one cut note (see the caps) |
+
+Any other message (stream events, status, other `system` subtypes) writes nothing and does not touch the store. Thinking blocks are not recorded.
+
+**Cut strings.** An `assistant_text` row's `text` is cut to `ASSISTANT_TEXT_CUT` = 8,000 characters, and a `tool_call` row's `input_json` and a `tool_result` row's `content` are cut to `TOOL_JSON_CUT` = 4,000 characters. A cut row carries `cut: {original_chars}`, the length before the cut. A cut never splits a surrogate pair.
+
+**Decisions are matched, not written on arrival.** The kernel's gate writes a `tool_decision` event synchronously from the SDK's `PreToolUse` hook callback, while the recorder sees the assistant message carrying the `tool_use` only when the session manager's `for await` loop takes it. **The real SDK's interleaving of the two is unverified**, and either can come first. So, for each message, the recorder drains the session's new `tool_decision` events (`SELECT id, payload_json FROM events WHERE kind = 'tool_decision' AND session_id = ? AND id > ?`, oldest first) into a pending list, both before and after mapping the message. It writes a pending decision only once a `tool_call` row of the same tool name exists without a decision (first in, first out per tool name), directly after that call's rows. A decision whose call is not recorded yet stays pending; one whose call never arrives is written before the next `result` row, so none is lost. Either arrival order yields `tool_call` then its `tool_decision`, so the order of the log does not depend on the SDK's interleaving.
+
+## Caps and the cut note
+
+Each session keeps at most `MAX_SESSION_OUTPUT_ROWS` = 2,000 content rows and `MAX_SESSION_OUTPUT_BYTES` = 2 MiB of content (the sum of the `payload_json` lengths in UTF-8 bytes). When the next row would pass either cap, one `system` row `{subtype: "output_cut", reason}` is written beyond the caps (so 2,000 content rows, then the note as row 2,001), and the session's log is cut. Nothing more is kept for that session, and its later messages return before touching the store.
+
+The recorder's per-session state (next `seq`, row and byte totals, whether the log is cut, the decision cursor, the throttle) is loaded from `session_output` and `events` on a session's first message. So a daemon restart that resumes a session continues its log, with the same caps, and copies no decision twice. The state is dropped once a turn's `result` row is announced and reloaded if the session goes on.
+
+## Untrusted data
+
+Every string in a row (model text, tool input and output, a Bash command) is untrusted data (invariant 3). It is stored as JSON, never interpreted, and never turned into an instruction. The contract marks `SessionOutputRow.payload` the same way. The CLI passes every stored string through `shown` (or `payloadText`) from `kernel/src/approvals/cli.ts` before it reaches a terminal: control characters print as `\xNN` (a newline as `\n`) and bidi controls as `\uNNNN`, so nothing an agent wrote can move the cursor, recolour the terminal or fake a line of output.
+
+## The write-failure rule
+
+A failing log write never fails a session. The whole of `record` is in a try/catch and never rethrows, so the session manager records no `observer_error` for it. The first failure for a session writes one line through the recorder's `warn` (stderr by default): `studio: session <id> output log write failed: <error>`, with the error escaped. Later failures for that session are silent. A failed transaction leaves the recorder's state as it was.
+
+## Routes
+
+Both are `GET`, behind the API's bearer token.
+
+- `GET /sessions?status=<s>&limit=<n>` answers `200 {sessions: SessionSummary[]}`, newest first. Each summary is `id, agent, status, model, started` (`started_at`), `ended` (`ended_at`), `tokens` (the session's summed `budget.counted_tokens`, `null` when it has none), `cwd` and `playbook`. `status` filters on the exact status. `limit` defaults to 50 and is at most 500. A `limit` that is not an integer in 1-500 answers `400 invalid_query`.
+- `GET /sessions/:id/output?after=<seq>&limit=<n>` answers `200 {rows: SessionOutputRow[]}`: the rows with `seq > after` (default 0), in `seq` order, at most `limit` (default 500, at most 500, as `GET /events`). Each row is `id, session_id, seq, kind, payload` (the parsed `payload_json`) and `created_at`. A bad id answers `400 invalid_id`, a bad `after` or `limit` `400 invalid_query`, and an id with no session `404 not_found`. A session with no rows answers an empty list.
+
+## The feed event
+
+After a transaction that appended rows, the recorder writes one `session_output_appended` event (`actor` `kernel`, the session's `session_id`) with payload `{from_seq, to_seq}`. The payload covers every row since the session's last announcement, if at least `OUTPUT_FEED_INTERVAL_MS` = 250 ms have passed since that one. Otherwise it arms one trailing timer for the rest of the interval (unref'd, so it never keeps the daemon alive), which announces the pending range. A `result` message flushes at once only when the interval has passed; otherwise the trailing timer announces it. So a session has at most one event per 250 ms, the events cover every row once, and the last batch is never left unannounced. The event is written in the same transaction as the rows it announces, or in the timer's own one-statement write. The app reads the rows through `GET /sessions/:id/output?after=<seq>`; the event carries no output itself. `events.kind` is free text, so the kind needs no migration, and the app's `EventFrame.kind` is a `string`.
+
+## The CLI
+
+The output part contributes one `studio` subcommand through the console's `ConsolePart.subcommands` seam (see [Phase 5 features](../ARCHITECTURE.md#phase-5-features)):
+
+- `studio sessions [--json]` prints one line per session (`GET /sessions?limit=500`): id, status, agent, model, started, ended, tokens, playbook and cwd, every stored string escaped with `shown`. `--json` prints the API's answer as JSON with every control and bidi character escaped as `\uNNNN`.
+- `studio sessions output <id> [--follow]` prints one line per row, in `seq` order, reading every page. Every stored string goes through `shown` (or `payloadText` for an unknown kind). `--follow` polls `GET /sessions/:id/output?after=<last seq>` once a second. It stops when the session is in neither `GET /sessions?status=starting` nor `GET /sessions?status=running` (the contract has no single-session read) and a final output read returns no rows. The follow loop is `followSessionOutput`, with an injectable interval and sleep.
+- An unknown verb or a bad id prints the usage on stderr and exits 2. An API refusal prints one escaped stderr line naming the status and error code and exits 1.
