@@ -272,7 +272,7 @@ describe("a session's output log through the kernel (AC1)", () => {
       // Copied whole from the kernel's own tool_decision event, never re-derived.
       const [event] = eventsOf(kernel.store, "tool_decision", handle.id);
       expect(body.rows[3]?.payload).toEqual(event?.payload);
-      expect(body.rows[3]?.payload).toEqual({ tool: "Bash", decision: "deny", reason: "bash_prefix_not_allowed", command: "ls /tmp" });
+      expect(body.rows[3]?.payload).toEqual({ tool: "Bash", decision: "deny", reason: "bash_prefix_not_allowed", command: "ls /tmp", tool_use_id: "toolu_1" });
       expect(body.rows[4]?.payload).toEqual({ subtype: "success", counted_tokens: 18 });
       expect(kernel.store.prepare("SELECT count(*) FROM events WHERE kind = 'observer_error'").pluck().get()).toBe(0);
     });
@@ -309,6 +309,53 @@ describe("decision matching (the recorder, both arrival orders)", () => {
     ]);
     expect(all.map((r) => r.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(h.warn).not.toHaveBeenCalled();
+  });
+
+  it("two calls to one tool, decisions first in the reverse order: each decision follows its own call (by tool_use_id)", () => {
+    const h = recorderHarness();
+    // The hook decided t2 before t1; FIFO by name alone would give t1 the pwd decision.
+    addDecision(h.store, h.id, { tool: "Bash", decision: "deny", reason: "bash_prefix_not_allowed", command: "pwd", tool_use_id: "t2" });
+    addDecision(h.store, h.id, { tool: "Bash", decision: "allow", reason: "bash_prefix_allowed", command: "ls", tool_use_id: "t1" });
+    h.record(msg.toolUse("t1", "Bash", { command: "ls" }));
+    h.record(msg.toolUse("t2", "Bash", { command: "pwd" }));
+    h.record(msg.result());
+    expect(rows(h.store, h.id).map((r) => [r.kind, r.payload.tool_use_id ?? null, r.payload.command ?? null])).toEqual([
+      ["tool_call", "t1", null],
+      ["tool_decision", "t1", "ls"],
+      ["tool_call", "t2", null],
+      ["tool_decision", "t2", "pwd"],
+      ["result", null, null],
+    ]);
+  });
+
+  it("two calls to one tool, decisions after both in the reverse order: each decision is its own call's, in call order", () => {
+    const h = recorderHarness();
+    h.record(msg.toolUse("t1", "Bash", { command: "ls" }));
+    h.record(msg.toolUse("t2", "Bash", { command: "pwd" }));
+    addDecision(h.store, h.id, { tool: "Bash", decision: "deny", reason: "bash_prefix_not_allowed", command: "pwd", tool_use_id: "t2" });
+    addDecision(h.store, h.id, { tool: "Bash", decision: "allow", reason: "bash_prefix_allowed", command: "ls", tool_use_id: "t1" });
+    h.record(msg.toolResult("t1", "a"));
+    h.record(msg.result());
+    expect(rows(h.store, h.id).map((r) => [r.kind, r.payload.tool_use_id ?? null, r.payload.command ?? null])).toEqual([
+      ["tool_call", "t1", null],
+      ["tool_call", "t2", null],
+      ["tool_decision", "t1", "ls"],
+      ["tool_decision", "t2", "pwd"],
+      ["tool_result", "t1", null],
+      ["result", null, null],
+    ]);
+  });
+
+  it("a decision carrying another call's tool_use_id is never taken by a call of its tool: it waits for its own", () => {
+    const h = recorderHarness();
+    addDecision(h.store, h.id, { tool: "Bash", decision: "deny", reason: "bash_prefix_not_allowed", command: "pwd", tool_use_id: "t2" });
+    h.record(msg.toolUse("t1", "Bash", { command: "ls" }));
+    h.record(msg.toolUse("t2", "Bash", { command: "pwd" }));
+    expect(rows(h.store, h.id).map((r) => [r.kind, r.payload.tool_use_id ?? null])).toEqual([
+      ["tool_call", "t1"],
+      ["tool_call", "t2"],
+      ["tool_decision", "t2"],
+    ]);
   });
 
   it("copies each decision once: a second message drains nothing already copied", () => {
@@ -895,7 +942,7 @@ describe("a held decision (AC7)", () => {
     call.stream.end();
     expect(await handle.done).toBe("completed");
     const decisionRow = rows(store, handle.id).find((r) => r.kind === "tool_decision");
-    expect(decisionRow?.payload).toEqual({ tool: "Bash", decision: "deny", reason: "approval_required", command: "git push origin main", approval_id: 1 });
+    expect(decisionRow?.payload).toEqual({ tool: "Bash", decision: "deny", reason: "approval_required", command: "git push origin main", approval_id: 1, tool_use_id: "toolu_1" });
     expect(decisionRow?.payload).toEqual(eventsOf(store, "tool_decision", handle.id)[0]?.payload);
     expect(kinds(rows(store, handle.id))).toEqual(["system", "tool_call", "tool_decision", "result"]);
   });

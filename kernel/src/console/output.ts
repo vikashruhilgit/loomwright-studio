@@ -103,15 +103,23 @@ export interface SessionOutputRecorder {
 /** A `tool_decision` event drained from `events`, waiting for its `tool_call` row. */
 interface PendingDecision {
   readonly tool: string | null;
+  /** The call it decided (the event's `tool_use_id`); `null` on an event written before the kernel recorded it. */
+  readonly toolUseId: string | null;
   readonly payload: unknown;
+}
+
+/** A `tool_call` row written with no decision yet: its tool name and its `tool_use_id`. */
+interface UnmatchedCall {
+  readonly tool: string;
+  readonly id: string | null;
 }
 
 /** One row a message maps to, before the caps and decision matching. */
 interface MappedRow {
   readonly kind: SessionOutputKind;
   readonly payload: Record<string, unknown>;
-  /** A `tool_call` row's tool name (what a decision is matched on). */
-  readonly tool?: string;
+  /** A `tool_call` row's tool name and `tool_use_id` (what a decision is matched on). */
+  readonly call?: UnmatchedCall;
 }
 
 /** Per-session state, loaded from `session_output` and `events` on a session's first message. */
@@ -125,8 +133,8 @@ interface SessionState {
   /** The last `events.id` the `tool_decision` drain has read past. */
   cursor: number;
   pending: PendingDecision[];
-  /** Per tool name: `tool_call` rows written that have no decision yet. */
-  unmatched: Map<string, number>;
+  /** `tool_call` rows written that have no decision yet, in `seq` order. */
+  unmatched: UnmatchedCall[];
   /** The last seq a `session_output_appended` event covered. */
   announcedTo: number;
   /** When that event was written (ms), `undefined` when none was. */
@@ -202,7 +210,7 @@ function mapMessage(message: SDKMessage): MappedRow[] {
         rows.push({
           kind: "tool_call",
           payload: { tool_use_id: typeof block.id === "string" ? block.id : null, name, input_json: text, ...(cut === undefined ? {} : { cut }) },
-          tool: name,
+          call: { tool: name, id: typeof block.id === "string" ? block.id : null },
         });
       } else if (m.type === "user" && block.type === "tool_result") {
         const { text, cut } = cutText(toolResultText(block.content), TOOL_JSON_CUT);
@@ -240,8 +248,31 @@ function decisionOf(payloadJson: string | null): PendingDecision {
   } catch {
     payload = null;
   }
-  const tool = asRecord(payload)?.tool;
-  return { tool: typeof tool === "string" ? tool : null, payload };
+  const record = asRecord(payload);
+  const tool = record?.tool;
+  const toolUseId = record?.tool_use_id;
+  return { tool: typeof tool === "string" ? tool : null, toolUseId: typeof toolUseId === "string" ? toolUseId : null, payload };
+}
+
+/**
+ * The index in `pending` of `call`'s decision: the one carrying the call's
+ * `tool_use_id`, else the oldest of its tool that carries none (an event from
+ * before the kernel recorded the id); -1 when none is pending. A decision
+ * carrying another call's id is never taken, so two calls to one tool are
+ * never swapped.
+ */
+function pendingIndexFor(pending: readonly PendingDecision[], call: UnmatchedCall): number {
+  if (call.id !== null) {
+    const exact = pending.findIndex((d) => d.toolUseId === call.id && d.tool === call.tool);
+    if (exact >= 0) return exact;
+  }
+  return pending.findIndex((d) => d.tool === call.tool && d.toolUseId === null);
+}
+
+/** The index in `calls` of the call a copied decision row matched: by `tool_use_id`, else the oldest of its tool. */
+function unmatchedIndexFor(calls: readonly UnmatchedCall[], tool: string, toolUseId: string | null): number {
+  if (toolUseId !== null) return calls.findIndex((c) => c.tool === tool && c.id === toolUseId);
+  return calls.findIndex((c) => c.tool === tool);
 }
 
 /** The `payload_json` a decision's row is written with: what a copied row is compared on. */
@@ -259,11 +290,12 @@ function decisionJson(decision: PendingDecision): string {
  *   (compared by exact `payload_json`; identical payloads are
  *   interchangeable), is pending in event-id order, and the cursor is past
  *   the session's last decision event. Decisions are copied out of event
- *   order (FIFO per tool name), so the N-th event is not the N-th copy;
+ *   order (each with its own call), so the N-th event is not the N-th copy;
  * - the calls with no decision yet are rebuilt by replaying the copied rows in
- *   `seq` order, the way `record` built them: a `tool_call` adds one for its
- *   tool, a `tool_decision` takes one of its tool when there is one, and a
- *   `result` clears them.
+ *   `seq` order, the way `record` built them: a `tool_call` adds its call, a
+ *   `tool_decision` takes the call with its `tool_use_id` (one without an id,
+ *   from before the kernel recorded it, takes the oldest call of its tool),
+ *   and a `result` clears them.
  */
 function loadState(store: Store, sessionId: number): SessionState {
   const totals = store
@@ -277,7 +309,7 @@ function loadState(store: Store, sessionId: number): SessionState {
     .get(sessionId);
   const cut = (totals?.cuts ?? 0) > 0;
   const pending: PendingDecision[] = [];
-  const unmatched = new Map<string, number>();
+  const unmatched: UnmatchedCall[] = [];
   let cursor = 0;
   // A cut log keeps nothing more: no matching state to rebuild.
   if (!cut) {
@@ -289,7 +321,7 @@ function loadState(store: Store, sessionId: number): SessionState {
       .all(sessionId);
     for (const row of matching) {
       if (row.kind === "result") {
-        unmatched.clear();
+        unmatched.length = 0;
         continue;
       }
       if (row.kind === "tool_decision") copied.set(row.payload_json, (copied.get(row.payload_json) ?? 0) + 1);
@@ -301,11 +333,10 @@ function loadState(store: Store, sessionId: number): SessionState {
       }
       if (row.kind === "tool_call") {
         const name = typeof payload?.name === "string" ? payload.name : "";
-        unmatched.set(name, (unmatched.get(name) ?? 0) + 1);
+        unmatched.push({ tool: name, id: typeof payload?.tool_use_id === "string" ? payload.tool_use_id : null });
       } else if (typeof payload?.tool === "string") {
-        const left = unmatched.get(payload.tool) ?? 0;
-        if (left > 1) unmatched.set(payload.tool, left - 1);
-        else unmatched.delete(payload.tool);
+        const i = unmatchedIndexFor(unmatched, payload.tool, typeof payload.tool_use_id === "string" ? payload.tool_use_id : null);
+        if (i >= 0) unmatched.splice(i, 1);
       }
     }
     const events = store
@@ -356,7 +387,7 @@ function loadState(store: Store, sessionId: number): SessionState {
 
 /** A copy of `state` that a failed transaction can throw away. */
 function draftOf(state: SessionState): SessionState {
-  return { ...state, pending: [...state.pending], unmatched: new Map(state.unmatched) };
+  return { ...state, pending: [...state.pending], unmatched: [...state.unmatched] };
 }
 
 /**
@@ -366,9 +397,10 @@ function draftOf(state: SessionState): SessionState {
  * - its rows (`docs/architecture/session-output.md` lists each kind's payload);
  * - the kernel's own `tool_decision` events for the session, drained before
  *   and after the message is mapped and copied whole. A decision is written
- *   directly after the oldest `tool_call` row of its tool that has no decision
- *   yet (FIFO per tool name), whichever of the two arrived first; a decision
- *   with no call is written before the next `result` row;
+ *   directly after its own `tool_call` row (the one with its `tool_use_id`;
+ *   an older event without one takes the oldest call of its tool that has no
+ *   decision yet), whichever of the two arrived first; a decision with no call
+ *   is written before the next `result` row;
  * - the caps: when the next content row would pass `MAX_SESSION_OUTPUT_ROWS`
  *   or `MAX_SESSION_OUTPUT_BYTES`, one `system` `output_cut` row is written
  *   and nothing more is kept;
@@ -538,21 +570,21 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
             insert.run(sessionId, draft.nextSeq++, "system", JSON.stringify({ subtype: "output_cut", reason: overRows ? "rows" : "bytes" }), atIso);
             draft.cut = true;
             draft.pending = [];
-            draft.unmatched.clear();
+            draft.unmatched = [];
             return false;
           }
           insert.run(sessionId, draft.nextSeq++, kind, json, atIso);
           draft.rows += 1;
           draft.bytes += size;
           // A finished turn's calls take no later decision (a reload rebuilds the same: `loadState`).
-          if (kind === "result") draft.unmatched.clear();
+          if (kind === "result") draft.unmatched = [];
           return true;
         };
         /** Write one decision exactly as `loadState` compares it with its event (`decisionJson`). */
         const putDecision = (decision: PendingDecision): boolean => put("tool_decision", decision.payload);
-        /** Write the oldest pending decision for `tool`; `undefined` when none is pending. */
-        const putDecisionFor = (tool: string): boolean | undefined => {
-          const i = draft.pending.findIndex((d) => d.tool === tool);
+        /** Write `call`'s pending decision (`pendingIndexFor`); `undefined` when none is pending. */
+        const putDecisionFor = (call: UnmatchedCall): boolean | undefined => {
+          const i = pendingIndexFor(draft.pending, call);
           if (i < 0) return undefined;
           const [decision] = draft.pending.splice(i, 1);
           return putDecision(decision as PendingDecision);
@@ -562,11 +594,11 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
         const rows = mapMessage(message);
         drain(store, sessionId, draft);
         // Decisions whose calls an earlier message recorded: directly after those rows, before this message's.
-        for (const [tool, count] of [...draft.unmatched]) {
-          let left = count;
-          while (left > 0 && !draft.cut && putDecisionFor(tool) !== undefined) left -= 1;
-          if (left === 0) draft.unmatched.delete(tool);
-          else draft.unmatched.set(tool, left);
+        for (const call of [...draft.unmatched]) {
+          if (draft.cut) break;
+          if (putDecisionFor(call) === undefined) continue;
+          const i = draft.unmatched.indexOf(call);
+          if (i >= 0) draft.unmatched.splice(i, 1);
         }
         for (const row of rows) {
           if (draft.cut) break;
@@ -575,8 +607,8 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
             while (draft.pending.length > 0 && !draft.cut) putDecision(draft.pending.shift() as PendingDecision);
           }
           if (!put(row.kind, row.payload)) break;
-          if (row.kind === "tool_call" && row.tool !== undefined && putDecisionFor(row.tool) === undefined) {
-            draft.unmatched.set(row.tool, (draft.unmatched.get(row.tool) ?? 0) + 1);
+          if (row.kind === "tool_call" && row.call !== undefined && putDecisionFor(row.call) === undefined) {
+            draft.unmatched.push(row.call);
           }
         }
         if (draft.nextSeq === firstSeq) return { cancel: false, armIn: undefined };

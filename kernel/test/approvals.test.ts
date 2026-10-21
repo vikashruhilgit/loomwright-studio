@@ -716,7 +716,7 @@ describe("the rail: an outward call is held as a pending approval", () => {
     expect(events(t.store, "approval_requested")).toEqual([
       expect.objectContaining({ session_id: s.id, payload: { id: 1, action: "git push", source: "rail", agent: "wright" } }),
     ]);
-    expect(t.decisions()).toEqual([{ tool: "Bash", decision: "deny", reason: "approval_required", command: PUSH, approval_id: 1 }]);
+    expect(t.decisions()).toEqual([{ tool: "Bash", decision: "deny", reason: "approval_required", command: PUSH, approval_id: 1, tool_use_id: "toolu_1" }]);
   });
 
   it("approve once: approved/once/owner, one approval_decided, one message; the next identical push runs once, a second is held again", async () => {
@@ -893,7 +893,7 @@ describe("the rail fails closed", () => {
     vi.restoreAllMocks();
     expect(t.approvals()).toEqual([]);
     expect(count(t.store, "SELECT count(*) FROM notifications")).toBe(0);
-    expect(t.decisions()).toEqual([{ tool: "Bash", decision: "deny", reason: "kernel_gate_error", command: PUSH }]);
+    expect(t.decisions()).toEqual([{ tool: "Bash", decision: "deny", reason: "kernel_gate_error", command: PUSH, tool_use_id: "toolu_1" }]);
   });
 
   it("a failing grant use (its decision event cannot be written) denies and keeps the grant unused", async () => {

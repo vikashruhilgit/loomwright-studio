@@ -75,7 +75,7 @@ describe("the never boundary through the gate", () => {
       const t = setup();
       const s = await t.session(NO_PUSH);
       expect(await s.bash(command), command).toEqual({ hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: boundaryReason("git_push") });
-      expect(t.decisions(), command).toEqual([{ tool: "Bash", decision: "deny", reason: "agent_boundary", command, category: "git_push" }]);
+      expect(t.decisions(), command).toEqual([{ tool: "Bash", decision: "deny", reason: "agent_boundary", command, category: "git_push", tool_use_id: "toolu_1" }]);
       expect(t.approvals(), command).toBe(0);
       expect(t.grantEvents(), command).toEqual([]);
     }
@@ -88,8 +88,8 @@ describe("the never boundary through the gate", () => {
       expect((await s.bash(command)).permissionDecision, command).toBe("allow");
     }
     expect(t.decisions()).toEqual([
-      { tool: "Bash", decision: "allow", reason: "bash_prefix_allowed", command: "git diff" },
-      { tool: "Bash", decision: "allow", reason: "bash_prefix_allowed", command: "git log --oneline" },
+      { tool: "Bash", decision: "allow", reason: "bash_prefix_allowed", command: "git diff", tool_use_id: "toolu_1" },
+      { tool: "Bash", decision: "allow", reason: "bash_prefix_allowed", command: "git log --oneline", tool_use_id: "toolu_1" },
     ]);
     expect(t.approvals()).toBe(0);
   });
@@ -98,7 +98,7 @@ describe("the never boundary through the gate", () => {
     const t = setup();
     const s = await t.session({ allowedTools: [], allowedBashPrefixes: ["git", "gh pr comment"], never: ["git_push"] });
     expect((await s.bash("gh pr comment 3 -b x")).permissionDecisionReason).toMatch(/^approval_required: held as approval 1; it did not run\. /);
-    expect(t.decisions()).toEqual([{ tool: "Bash", decision: "deny", reason: "approval_required", command: "gh pr comment 3 -b x", approval_id: 1 }]);
+    expect(t.decisions()).toEqual([{ tool: "Bash", decision: "deny", reason: "approval_required", command: "gh pr comment 3 -b x", approval_id: 1, tool_use_id: "toolu_1" }]);
     expect(t.approvals()).toBe(1);
   });
 
@@ -107,7 +107,7 @@ describe("the never boundary through the gate", () => {
       const t = setup();
       const s = await t.session(policy);
       expect((await s.bash("git push origin main")).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
-      expect(t.decisions()).toEqual([{ tool: "Bash", decision: "deny", reason: "approval_required", command: "git push origin main", approval_id: 1 }]);
+      expect(t.decisions()).toEqual([{ tool: "Bash", decision: "deny", reason: "approval_required", command: "git push origin main", approval_id: 1, tool_use_id: "toolu_1" }]);
     }
   });
 
@@ -134,7 +134,7 @@ describe("the never boundary through the gate", () => {
     expect(events(t.store, "approval_grant_used")).toHaveLength(1);
     expect(events(t.store, "approval_used")).toEqual([]);
     expect(t.approvals()).toBe(1);
-    expect(t.decisions().at(-1)).toEqual({ tool: "Bash", decision: "deny", reason: "agent_boundary", command: "git push origin main", category: "git_push" });
+    expect(t.decisions().at(-1)).toEqual({ tool: "Bash", decision: "deny", reason: "agent_boundary", command: "git push origin main", category: "git_push", tool_use_id: "toolu_1" });
   });
 
   it("an approved one-shot grant for the exact push is not used under the boundary", async () => {
@@ -152,7 +152,7 @@ describe("the never boundary through the gate", () => {
     const t = setup();
     const s = await t.session({ allowedTools: [], allowedBashPrefixes: ["gh"], never: [...NEVER_CATEGORIES] });
     expect(await s.bash("gh pr merge 3")).toEqual({ hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "merge_blocked" });
-    expect(t.decisions()).toEqual([{ tool: "Bash", decision: "deny", reason: "merge_blocked", command: "gh pr merge 3" }]);
+    expect(t.decisions()).toEqual([{ tool: "Bash", decision: "deny", reason: "merge_blocked", command: "gh pr merge 3", tool_use_id: "toolu_1" }]);
     expect(t.approvals()).toBe(0);
   });
 
@@ -161,7 +161,7 @@ describe("the never boundary through the gate", () => {
     const s = await t.session({ allowedTools: ["Write"], allowedBashPrefixes: [], never: ["hooks_write"] });
     const input = { file_path: join(home, ".claude", "hooks", "x.sh"), content: "" };
     expect(await s.gate("Write", input)).toEqual({ hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: boundaryReason("hooks_write") });
-    expect(t.decisions()).toEqual([{ tool: "Write", decision: "deny", reason: "agent_boundary", category: "hooks_write" }]);
+    expect(t.decisions()).toEqual([{ tool: "Write", decision: "deny", reason: "agent_boundary", category: "hooks_write", tool_use_id: "toolu_1" }]);
     expect(t.approvals()).toBe(0);
     // A settings file under ~/.claude/ is only settings_write: held as before.
     expect((await s.gate("Write", { file_path: join(home, ".claude", "settings.json"), content: "" })).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);

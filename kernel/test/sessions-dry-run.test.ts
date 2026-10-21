@@ -246,8 +246,8 @@ describe("a dry-run session reads, and records every action as would-do", () => 
     const report = await reportOf(s.handle);
     expect(report.wouldDo).toEqual([{ tool: "Bash", input_summary: COMMENT, would: "held", reason: "dry_run", action: "gh pr comment" }]);
     expect(t.decisions()).toEqual([
-      { tool: "Read", decision: "allow", reason: "tool_allowed" },
-      { tool: "Bash", decision: "deny", reason: "dry_run", command: COMMENT },
+      { tool: "Read", decision: "allow", reason: "tool_allowed", tool_use_id: "toolu_1" },
+      { tool: "Bash", decision: "deny", reason: "dry_run", command: COMMENT, tool_use_id: "toolu_1" },
     ]);
     expect(t.approvals()).toEqual([]);
   });
@@ -400,7 +400,7 @@ describe("a dry-run gate fails closed", () => {
       },
     };
     expect(await s.gate("mcp__other__send", hostile)).toEqual({ hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "kernel_gate_error" });
-    expect(t.decisions()).toEqual([{ tool: "mcp__other__send", decision: "deny", reason: "kernel_gate_error" }]);
+    expect(t.decisions()).toEqual([{ tool: "mcp__other__send", decision: "deny", reason: "kernel_gate_error", tool_use_id: "toolu_1" }]);
     s.finish();
     expect((await reportOf(s.handle)).wouldDo).toEqual([]);
   });

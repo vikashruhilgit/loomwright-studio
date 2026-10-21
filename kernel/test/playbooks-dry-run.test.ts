@@ -428,7 +428,7 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     expect(decision.permissionDecision).toBe("deny");
     expect(decision.permissionDecisionReason).toContain("a dry run of version 1 is required");
     expect(count(h.store, "SELECT count(*) FROM approvals")).toBe(0);
-    expect(events(h.store, "tool_decision").filter((e) => e.payload.tool === ENABLE).map((e) => e.payload)).toEqual([{ tool: ENABLE, decision: "deny", reason: "held_refused" }]);
+    expect(events(h.store, "tool_decision").filter((e) => e.payload.tool === ENABLE).map((e) => e.payload)).toEqual([{ tool: ENABLE, decision: "deny", reason: "held_refused", tool_use_id: "toolu_1" }]);
     expect(getPlaybook(h.store, id)?.status).toBe("draft");
   });
 

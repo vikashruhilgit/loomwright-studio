@@ -509,7 +509,7 @@ describe("phase 4 exit: a comment-only reviewer created from chat can't push, ev
     expect(decisions.push?.permissionDecisionReason.startsWith("agent_boundary: git_push")).toBe(true);
     const masonDecisions = events(store, "tool_decision").filter((e) => e.session_id === masonSession?.id);
     expect(masonDecisions.filter((e) => e.payload.command === PUSH).map((e) => e.payload)).toEqual([
-      { tool: "Bash", decision: "deny", reason: "agent_boundary", command: PUSH, category: "git_push" },
+      { tool: "Bash", decision: "deny", reason: "agent_boundary", command: PUSH, category: "git_push", tool_use_id: "toolu_1" },
     ]);
     // No approval for the push: the only one this session holds is the comment's.
     expect(approvalRows(store).filter((a) => a.requesting_session === masonSession?.id).map((a) => a.action)).toEqual(["gh pr comment"]);
@@ -522,7 +522,7 @@ describe("phase 4 exit: a comment-only reviewer created from chat can't push, ev
     expect(decisions.comment?.permissionDecision).toBe("deny");
     expect(decisions.comment?.permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
     expect(masonDecisions.filter((e) => e.payload.command === COMMENT).map((e) => e.payload)).toEqual([
-      { tool: "Bash", decision: "deny", reason: "approval_required", command: COMMENT, approval_id: 2 },
+      { tool: "Bash", decision: "deny", reason: "approval_required", command: COMMENT, approval_id: 2, tool_use_id: "toolu_1" },
     ]);
     expect(approvalRows(store)[1]).toEqual({ id: 2, action: "gh pr comment", status: "pending", decision: null, requesting_session: masonSession?.id });
     s.mason.push(reply("Understood: no comment."));

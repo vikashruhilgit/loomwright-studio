@@ -3012,7 +3012,7 @@ describe("the never boundary (phase 4 foundation)", () => {
     }
     expect(store.prepare("SELECT count(*) FROM approvals").pluck().get()).toBe(1);
     expect(events(store, "approval_used")).toEqual([]);
-    expect(events(store, "tool_decision").at(-1)?.payload).toEqual({ tool: "Bash", decision: "deny", reason: "agent_boundary", command: PUSH.command, category: "git_push" });
+    expect(events(store, "tool_decision").at(-1)?.payload).toEqual({ tool: "Bash", decision: "deny", reason: "agent_boundary", command: PUSH.command, category: "git_push", tool_use_id: "toolu_1" });
     // With no boundary, the grant is used as before.
     expect((await decide(call, preToolUse("Bash", PUSH))).permissionDecisionReason).toBe("approval_granted");
     await manager.stopSession(handle.id);

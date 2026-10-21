@@ -84,13 +84,17 @@ const MAX_RECORDED_TEXT = 64 * 1024;
 /** A Bash command in a `tool_decision` event is truncated to this many characters. */
 const MAX_EVENT_COMMAND_CHARS = 500;
 
-/** One `tool_decision` event's payload: the Bash command (truncated) and the approval id only when present. */
+/**
+ * One `tool_decision` event's payload: the Bash command (truncated), the approval id and the SDK's
+ * `tool_use_id` (which call of the turn it decided, so two calls to one tool are told apart) only when present.
+ */
 function toolDecisionPayload(
   tool: string | null,
   decision: "allow" | "deny",
   reason: string,
   command: string | undefined,
   approvalId: number | undefined,
+  toolUseId: string | undefined,
 ): Record<string, unknown> {
   return {
     tool,
@@ -98,6 +102,7 @@ function toolDecisionPayload(
     reason,
     ...(command === undefined ? {} : { command: command.slice(0, MAX_EVENT_COMMAND_CHARS) }),
     ...(approvalId === undefined ? {} : { approval_id: approvalId }),
+    ...(toolUseId === undefined ? {} : { tool_use_id: toolUseId }),
   };
 }
 
@@ -2423,6 +2428,8 @@ export class SessionManager {
       let reason: GateReason = "kernel_gate_error";
       let tool: string | null = null;
       let command: string | undefined;
+      /** The SDK's id for this call (`PreToolUse`'s `tool_use_id`), recorded on the decision. */
+      let toolUseId: string | undefined;
       let wouldDo: WouldDoEntry | undefined;
       /** The pre-hold check's refusal text, for a `held_refused` deny. */
       let refusal: string | undefined;
@@ -2432,12 +2439,13 @@ export class SessionManager {
         this.#appendEvent(
           "tool_decision",
           live.id,
-          { ...toolDecisionPayload(tool, decision, reason, command, undefined), ...(category === undefined ? {} : { category }) },
+          { ...toolDecisionPayload(tool, decision, reason, command, undefined, toolUseId), ...(category === undefined ? {} : { category }) },
           this.#nowIso(),
         );
       try {
         if (input.hook_event_name === "PreToolUse") {
           tool = input.tool_name;
+          if (typeof input.tool_use_id === "string" && input.tool_use_id !== "") toolUseId = input.tool_use_id;
           if (tool === "Bash") command = bashCommandOf(input.tool_input);
           const d = decideToolUse(live.policy, input.tool_name, input.tool_input);
           // The rail applies only after the policy allowed: it never widens a policy.
@@ -2478,7 +2486,7 @@ export class SessionManager {
               const outcome = this.#store.transaction(() => {
                 const o = holdOrUseGrant(this.#store, call, this.#now());
                 const granted = o.kind === "granted";
-                const payload = toolDecisionPayload(tool, granted ? "allow" : "deny", granted ? "approval_granted" : "approval_required", command, o.id);
+                const payload = toolDecisionPayload(tool, granted ? "allow" : "deny", granted ? "approval_granted" : "approval_required", command, o.id, toolUseId);
                 this.#appendEvent("tool_decision", live.id, payload, this.#nowIso());
                 return o;
               });
