@@ -50,11 +50,21 @@ export const TOOL_JSON_CUT = 4_000;
 /** At most one `session_output_appended` event per session per this many milliseconds. */
 export const OUTPUT_FEED_INTERVAL_MS = 250;
 /**
- * Per-session recorder states kept in memory (least recently used dropped
- * first; a state is rebuilt from disk when its session records again), and
- * per-session warned flags kept.
+ * Per-session recorder states kept in memory, least recently used dropped
+ * first; a state is rebuilt from disk when its session records again. A state
+ * is kept across turns (a reload scans `events`, which has no `session_id`
+ * index), so the bound is sized above any expected number of concurrently
+ * recording sessions: each state is a few numbers and the pending lists.
  */
-export const MAX_RECORDER_SESSIONS = 64;
+export const MAX_RECORDER_SESSIONS = 256;
+/** Warned sessions remembered (least recently failed dropped first): each is one number. */
+export const MAX_WARNED_SESSIONS = 4_096;
+/**
+ * Once `MAX_WARNED_SESSIONS` sessions are remembered, a session not among them
+ * warns only if no such over-the-bound warning was written in this many
+ * milliseconds, so a mass failure cannot flood stderr.
+ */
+export const WARN_OVERFLOW_INTERVAL_MS = 60_000;
 /** The feed event kind announcing new rows: payload `{from_seq, to_seq}`. */
 export const SESSION_OUTPUT_APPENDED = "session_output_appended";
 
@@ -79,7 +89,7 @@ export interface SessionOutputRecorderDeps {
   readonly now?: () => Date;
   /** Arms the trailing announcement. Default: an unref'd `setTimeout`, so it never keeps the process alive. */
   readonly setTimer?: (fn: () => void, ms: number) => OutputTimer;
-  /** One line about a failed write, at most once per session. Default: stderr. */
+  /** One line about a failed write, at most once per session (rate limited past `MAX_WARNED_SESSIONS`). Default: stderr. */
   readonly warn?: (line: string) => void;
 }
 
@@ -119,8 +129,6 @@ interface SessionState {
   announcedTo: number;
   /** When that event was written (ms), `undefined` when none was. */
   lastAnnouncedAt: number | undefined;
-  /** The last row written is a `result`: the state is dropped once it is announced. */
-  ended: boolean;
   timer: OutputTimer | undefined;
 }
 
@@ -310,11 +318,15 @@ function loadState(store: Store, sessionId: number): SessionState {
       else pending.push(decision);
     }
   }
-  const last = store
-    .prepare<[number], { at: string; payload_json: string | null }>(
-      "SELECT at, payload_json FROM events WHERE kind = 'session_output_appended' AND session_id = ? ORDER BY id DESC LIMIT 1",
-    )
-    .get(sessionId);
+  // A session with no rows has never been announced: its first load skips this scan of `events`.
+  const last =
+    totals?.max_seq === null || totals?.max_seq === undefined
+      ? undefined
+      : store
+          .prepare<[number], { at: string; payload_json: string | null }>(
+            "SELECT at, payload_json FROM events WHERE kind = 'session_output_appended' AND session_id = ? ORDER BY id DESC LIMIT 1",
+          )
+          .get(sessionId);
   let announcedTo = 0;
   let lastAnnouncedAt: number | undefined;
   if (last !== undefined) {
@@ -336,7 +348,6 @@ function loadState(store: Store, sessionId: number): SessionState {
     unmatched,
     announcedTo,
     lastAnnouncedAt,
-    ended: false,
     timer: undefined,
   };
 }
@@ -364,14 +375,20 @@ function draftOf(state: SessionState): SessionState {
  *   announces the range when the interval is up.
  *
  * Never throws: the first failure for a session calls `warn` once, later
- * ones are silent, and the session is never failed by its log.
+ * ones are silent, and the session is never failed by its log. Past
+ * `MAX_WARNED_SESSIONS` warned sessions, a newly failing one warns at most once
+ * per `WARN_OVERFLOW_INTERVAL_MS` across all of them.
+ *
+ * A state is kept across turns (not dropped after a `result`), so a turn's
+ * first message does not reload it from disk; only the LRU bound drops one.
  */
 export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}): SessionOutputRecorder {
   const now = deps.now ?? (() => new Date());
   const setTimer = deps.setTimer ?? defaultSetTimer;
   const warn = deps.warn ?? ((line: string) => void process.stderr.write(`${line}\n`));
   const states = new WeakMap<Store, Map<number, SessionState>>();
-  const warned = new WeakMap<Store, Set<number>>();
+  /** Per store: the warned sessions (least recently failed first) and when the last over-the-bound warning was written. */
+  const warned = new WeakMap<Store, { readonly sessions: Set<number>; overflowAt: number | undefined }>();
 
   const sessionsOf = (store: Store): Map<number, SessionState> => {
     let map = states.get(store);
@@ -384,17 +401,31 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
 
   const fail = (store: Store, sessionId: number, err: unknown): void => {
     try {
-      let set = warned.get(store);
-      if (set === undefined) {
-        set = new Set();
-        warned.set(store, set);
+      let w = warned.get(store);
+      if (w === undefined) {
+        w = { sessions: new Set(), overflowAt: undefined };
+        warned.set(store, w);
       }
-      if (set.has(sessionId)) return;
+      const set = w.sessions;
+      if (set.has(sessionId)) {
+        // Most recently failed last: the eviction below drops from the front.
+        set.delete(sessionId);
+        set.add(sessionId);
+        return;
+      }
+      const full = set.size >= MAX_WARNED_SESSIONS;
       set.add(sessionId);
-      // Bounded like the states: the oldest warned session may warn once more after it is forgotten.
-      for (const old of set) {
-        if (set.size <= MAX_RECORDER_SESSIONS) break;
-        set.delete(old);
+      if (full) {
+        for (const old of set) {
+          set.delete(old);
+          break;
+        }
+        // Past the bound a forgotten session would warn again on every failure: one such warning per interval at
+        // most, across all sessions. A clock stepped back counts the interval as passed.
+        const t = now().getTime();
+        const since = w.overflowAt === undefined ? Number.POSITIVE_INFINITY : t - w.overflowAt;
+        if (since >= 0 && since < WARN_OVERFLOW_INTERVAL_MS) return;
+        w.overflowAt = t;
       }
       warn(`studio: session ${sessionId} output log write failed: ${shown(errorText(err))}`);
     } catch {
@@ -450,8 +481,8 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
       try {
         if (!store.isOpen) return;
         if (current.nextSeq - 1 > current.announcedTo) announce(store, sessionId, current, now());
-        // Announced: a finished turn, or a state past the bound, is dropped (`loadState` rebuilds it).
-        if (current.ended || sessions.size > MAX_RECORDER_SESSIONS) sessions.delete(sessionId);
+        // Announced: a state past the bound is dropped (`loadState` rebuilds it); a finished turn's is kept.
+        if (sessions.size > MAX_RECORDER_SESSIONS) sessions.delete(sessionId);
       } catch (err) {
         fail(store, sessionId, err);
       }
@@ -493,13 +524,11 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
             draft.cut = true;
             draft.pending = [];
             draft.unmatched.clear();
-            draft.ended = false;
             return false;
           }
           insert.run(sessionId, draft.nextSeq++, kind, json, atIso);
           draft.rows += 1;
           draft.bytes += size;
-          draft.ended = kind === "result";
           // A finished turn's calls take no later decision (a reload rebuilds the same: `loadState`).
           if (kind === "result") draft.unmatched.clear();
           return true;
@@ -553,8 +582,7 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
         state.timer = undefined;
       }
       if (outcome.armIn !== undefined && state.timer === undefined) arm(store, sessionId, state, outcome.armIn);
-      // A finished turn, fully announced: drop the state (it is reloaded from disk if the session goes on).
-      if (state.ended && state.timer === undefined && state.announcedTo === state.nextSeq - 1) sessions.delete(sessionId);
+      // A finished turn's state is kept: the next turn continues from memory, as from a reload (`loadState`).
     } catch (err) {
       fail(store, sessionId, err);
     }

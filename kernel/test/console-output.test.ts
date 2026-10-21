@@ -18,9 +18,11 @@ import {
   MAX_RECORDER_SESSIONS,
   MAX_SESSION_OUTPUT_BYTES,
   MAX_SESSION_OUTPUT_ROWS,
+  MAX_WARNED_SESSIONS,
   OUTPUT_FEED_INTERVAL_MS,
   SESSIONS_HELP,
   TOOL_JSON_CUT,
+  WARN_OVERFLOW_INTERVAL_MS,
   createSessionOutputRecorder,
   followSessionOutput,
   outputPart,
@@ -148,8 +150,8 @@ function fakeTime(start = "2026-10-21T09:00:00.000Z") {
   return { now: () => new Date(clock.t), setTimer, advance, live, timers };
 }
 
-function recorderHarness() {
-  const store = openStore();
+function recorderHarness(name?: string) {
+  const store = openStore(name);
   const time = fakeTime();
   const warn = vi.fn<(line: string) => void>();
   const recorder = createSessionOutputRecorder({ now: time.now, setTimer: time.setTimer, warn });
@@ -458,6 +460,55 @@ describe("the recorder's state rebuilt from disk", () => {
     });
   }
 
+  it("keeps a finished turn's state once its result is announced: the next turn does not reload from disk", () => {
+    const h = recorderHarness();
+    h.record(msg.toolUse("b", "Bash", { command: "ls" }));
+    h.time.advance(OUTPUT_FEED_INTERVAL_MS);
+    h.record(msg.result()); // announced at once: no timer
+    expect(h.time.live()).toHaveLength(0);
+    const prepare = vi.spyOn(h.store, "prepare");
+    h.record(msg.text("next turn"));
+    expect(loads(prepare)).toBe(0);
+  });
+
+  it("a brand-new session's load skips the session_output_appended lookup (it has no rows to have announced)", () => {
+    const h = recorderHarness();
+    const prepare = vi.spyOn(h.store, "prepare");
+    h.record(msg.text("first"));
+    expect(loads(prepare)).toBe(1);
+    expect(prepare.mock.calls.filter((c) => String(c[0]).includes("ORDER BY id DESC LIMIT 1"))).toHaveLength(0);
+    expect(eventsOf(h.store, "session_output_appended", h.id).map((e) => e.payload)).toEqual([{ from_seq: 1, to_seq: 1 }]);
+  });
+
+  // A state kept across an announced result must continue the log exactly as one rebuilt from disk would.
+  it("a kept state and a rebuilt one continue a finished turn identically: rows, decisions and feed events", () => {
+    const run = (restart: boolean): { rows: unknown[]; events: unknown[] } => {
+      const h = recorderHarness(restart ? "rebuilt" : "kept");
+      h.record(msg.toolUse("b", "Bash", { command: "ls" }));
+      addDecision(h.store, h.id, { tool: "Read", decision: "allow", reason: "tool_allowed" });
+      addDecision(h.store, h.id, { tool: "Bash", decision: "deny", reason: "bash_prefix_not_allowed", command: "ls" });
+      h.time.advance(OUTPUT_FEED_INTERVAL_MS);
+      h.record(msg.result());
+      expect(h.time.live()).toHaveLength(0);
+      const r = restart ? createSessionOutputRecorder({ now: h.time.now, setTimer: h.time.setTimer, warn: h.warn }) : h.recorder;
+      addDecision(h.store, h.id, { tool: "Bash", decision: "allow", reason: "tool_allowed", command: "pwd" });
+      h.time.advance(OUTPUT_FEED_INTERVAL_MS);
+      r.record(h.store, h.id, msg.toolUse("b2", "Bash", { command: "pwd" }));
+      r.record(h.store, h.id, msg.result());
+      h.time.advance(OUTPUT_FEED_INTERVAL_MS);
+      return { rows: rows(h.store, h.id), events: eventsOf(h.store, "session_output_appended", h.id).map((e) => e.payload) };
+    };
+    const kept = run(false);
+    expect(run(true)).toEqual(kept);
+    expect(kept.rows.map((r) => (r as Row).kind)).toEqual(["tool_call", "tool_decision", "tool_decision", "result", "tool_call", "tool_decision", "result"]);
+    expect(kept.events).toEqual([
+      { from_seq: 1, to_seq: 1 },
+      { from_seq: 2, to_seq: 4 },
+      { from_seq: 5, to_seq: 6 },
+      { from_seq: 7, to_seq: 7 },
+    ]);
+  });
+
   it(`keeps at most ${MAX_RECORDER_SESSIONS} idle states: a dropped one is rebuilt with its pending decision and throttle`, () => {
     const h = recorderHarness();
     addDecision(h.store, h.id, { tool: "Read", decision: "allow", reason: "tool_allowed" });
@@ -550,15 +601,34 @@ describe("a failing output log write (AC3)", () => {
     ]);
   });
 
-  it(`keeps at most ${MAX_RECORDER_SESSIONS} warned sessions: the oldest forgotten one warns once more`, () => {
+  it(`a session that keeps failing stays remembered: more than ${MAX_WARNED_SESSIONS} other failing sessions never make it warn again`, () => {
     const h = recorderHarness();
     h.store.prepare("CREATE TRIGGER refuse_output BEFORE INSERT ON session_output BEGIN SELECT RAISE(ABORT, 'no'); END").run();
     h.record(msg.text("a"));
-    for (let i = 0; i < MAX_RECORDER_SESSIONS; i++) h.record(msg.text("b"), addSession(h.store));
-    expect(h.warn).toHaveBeenCalledTimes(MAX_RECORDER_SESSIONS + 1);
-    h.record(msg.text("a again"));
-    expect(h.warn).toHaveBeenCalledTimes(MAX_RECORDER_SESSIONS + 2);
+    for (let i = 0; i < MAX_WARNED_SESSIONS; i++) {
+      h.record(msg.text("b"), addSession(h.store));
+      // The first session fails again in between, so it is never the least recently failed.
+      if (i % 1_000 === 0) h.record(msg.text("a again"));
+    }
+    const before = h.warn.mock.calls.filter((c) => String(c[0]).includes(`session ${h.id} `)).length;
+    h.record(msg.text("a once more"));
+    expect(before).toBe(1);
+    expect(h.warn.mock.calls.filter((c) => String(c[0]).includes(`session ${h.id} `))).toHaveLength(1);
   });
+
+  it(`more than ${MAX_WARNED_SESSIONS} sessions failing at once: warnings stay bounded, one per ${WARN_OVERFLOW_INTERVAL_MS} ms past the bound`, () => {
+    const h = recorderHarness();
+    h.store.prepare("CREATE TRIGGER refuse_output BEFORE INSERT ON session_output BEGIN SELECT RAISE(ABORT, 'no'); END").run();
+    const ids = [h.id];
+    for (let i = 0; i < MAX_WARNED_SESSIONS; i++) ids.push(addSession(h.store));
+    // Every session fails on each of three messages, round robin: the cyclic access an LRU alone cannot bound.
+    for (let round = 0; round < 3; round++) for (const id of ids) h.record(msg.text(`m${round}`), id);
+    // One per session for the first MAX_WARNED_SESSIONS, then one over-the-bound warning for the interval.
+    expect(h.warn).toHaveBeenCalledTimes(MAX_WARNED_SESSIONS + 1);
+    h.time.advance(WARN_OVERFLOW_INTERVAL_MS);
+    for (const id of ids) h.record(msg.text("m3"), id);
+    expect(h.warn).toHaveBeenCalledTimes(MAX_WARNED_SESSIONS + 2);
+  }, 60_000);
 
   it("a warn that throws is swallowed too: record never throws", () => {
     const store = openStore();
