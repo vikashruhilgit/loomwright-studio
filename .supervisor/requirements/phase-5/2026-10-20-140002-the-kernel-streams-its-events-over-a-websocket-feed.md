@@ -82,3 +82,9 @@ kernel/src/api/feed.ts
 kernel/src/console/events.ts
 kernel/test/api-feed.test.ts
 docs/architecture/feed.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-21T15:22:04Z
+- **Brief:** .supervisor/jobs/done/2026-10-21-kernel-event-feed-websocket.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/104
