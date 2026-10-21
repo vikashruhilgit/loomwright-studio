@@ -78,3 +78,9 @@ kernel/src/console/control.ts
 kernel/test/console-control.test.ts
 kernel/test/sessions-stop-all.test.ts
 docs/architecture/session-control.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-21T15:22:59Z
+- **Brief:** .supervisor/jobs/done/2026-10-21-owner-stops-or-kills-one-session.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/103
