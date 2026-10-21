@@ -1,0 +1,186 @@
+/* The shell's layout, from the approved mockup (docs/design/mockups/gui-v1.html) and the tokens. Every width is a token. */
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  color: var(--ink);
+  background: transparent;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.window {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  height: 100%;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--space-2) var(--space-2);
+  background: var(--sidebar);
+  border-right: 1px solid var(--hairline);
+  overflow: auto;
+}
+.sidebar-titlebar {
+  flex: none;
+  height: var(--titlebar-height);
+  -webkit-app-region: drag;
+}
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: var(--row-height);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-secondary);
+  font: inherit;
+  text-align: left;
+}
+.nav-item:hover {
+  color: var(--ink);
+}
+.nav-item.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+.nav-key {
+  margin-left: auto;
+  font-family: var(--type-kbd-family);
+  font-size: var(--type-kbd-size);
+  color: var(--ink-tertiary);
+}
+.nav-group {
+  margin-top: var(--space-4);
+}
+.nav-label {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.nav-empty {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  color: var(--ink-tertiary);
+}
+
+.main {
+  display: grid;
+  grid-template-rows: var(--titlebar-height) 1fr;
+  min-width: 0;
+  background: var(--ground);
+}
+.titlebar {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-5);
+  border-bottom: 1px solid var(--hairline);
+  -webkit-app-region: drag;
+}
+.titlebar-title {
+  margin: 0;
+  font-size: var(--type-title-1-size);
+  line-height: var(--type-title-1-line);
+  font-weight: var(--type-title-1-weight);
+  letter-spacing: var(--type-title-1-tracking);
+}
+.content {
+  min-height: 0;
+  overflow: auto;
+}
+
+.band {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-3) var(--space-5) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+}
+.band-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.band-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: currentColor;
+  flex: none;
+}
+
+.placeholder,
+.setup {
+  padding: var(--space-16) var(--space-6) var(--space-12);
+  max-width: 640px;
+}
+.placeholder-title,
+.setup-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--type-display-size);
+  line-height: var(--type-display-line);
+  font-weight: var(--type-display-weight);
+  letter-spacing: var(--type-display-tracking);
+}
+.placeholder-note,
+.setup-note,
+.setup-meta {
+  margin: 0 0 var(--space-4);
+  color: var(--ink-secondary);
+}
+.setup-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding-left: var(--space-5);
+}
+.setup-what {
+  display: block;
+  margin-bottom: var(--space-1);
+}
+.setup-command,
+.setup-meta code {
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  user-select: text;
+}
+.setup-command {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
