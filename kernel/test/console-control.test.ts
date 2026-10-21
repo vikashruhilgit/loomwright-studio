@@ -191,8 +191,10 @@ describe("the control part against the app contract", () => {
     expect(controlPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual(entries);
   });
 
-  it("the contract's SessionControlResponse is exactly id, status and reason", () => {
+  it("the contract's SessionControlResponse is exactly id, status and reason, its reason nullable like lastStatusReason's", () => {
     expect(contractInterfaceFields("SessionControlResponse")).toEqual(["id", "status", "reason"]);
+    const body = /export interface SessionControlResponse \{([^}]*)\}/.exec(contractText)?.[1] ?? "";
+    expect(body).toMatch(/^\s*readonly reason: string \| null;$/m);
   });
 });
 

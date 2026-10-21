@@ -29,7 +29,7 @@ Each route answers JSON:
 
 | Answer | When |
 |---|---|
-| `200 {id, status, reason}` | The stop ran. `status` is the session's status now, and `reason` is the reason of its last `session_status` event, whatever it is: `owner_stop`, `owner_kill`, or `kill_incomplete` (status `failed`). A session whose stream had already ended before the stop (its group still being cleaned up) keeps its own outcome, for example `completed` / `result_success`, with `stop_requested_after_end: true` in its event, and the route reports that as it is. |
+| `200 {id, status, reason}` | The stop ran. `status` is the session's status now, and `reason` is the reason of its last `session_status` event, whatever it is: `owner_stop`, `owner_kill`, or `kill_incomplete` (status `failed`), or `null` when that event carries no readable reason (every status the kernel writes today carries one; the contract types it `string | null` and the CLI prints `no reason`). A session whose stream had already ended before the stop (its group still being cleaned up) keeps its own outcome, for example `completed` / `result_success`, with `stop_requested_after_end: true` in its event, and the route reports that as it is. |
 | `400 {error: "invalid_id"}` | `:id` is not a positive integer written in digits. |
 | `404 {error: "not_found"}` | No such session. |
 | `409 {error: "not_running", status}` | The session had already ended (`status` is its terminal status), or it hasn't ended but this kernel doesn't run it (`not_live`, for example a row a previous kernel left `interrupted` or `orphaned`; `status` is the row's). Stopping a session this kernel did not start is a non-goal: the reaper and `studio session abandon` own those rows. |

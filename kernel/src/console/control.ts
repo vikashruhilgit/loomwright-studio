@@ -31,14 +31,20 @@ function sessionErrorCode(err: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-/** The reason of session `id`'s last `session_status` event, or `null` when it has none. */
+/** The reason of session `id`'s last `session_status` event, or `null` when it has none or its payload is unreadable. */
 function lastStatusReason(store: Store, id: number): string | null {
   const payload = store
     .prepare<[number], string>("SELECT payload_json FROM events WHERE kind = 'session_status' AND session_id = ? ORDER BY id DESC LIMIT 1")
     .pluck()
     .get(id);
   if (payload === undefined) return null;
-  const reason = (JSON.parse(payload) as { reason?: unknown }).reason;
+  let reason: unknown;
+  try {
+    reason = (JSON.parse(payload) as { reason?: unknown } | null)?.reason;
+  } catch {
+    // An unreadable payload is no reason, never a 500 after the stop already ran.
+    return null;
+  }
   return typeof reason === "string" ? reason : null;
 }
 
