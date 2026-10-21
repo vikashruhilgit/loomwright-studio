@@ -588,6 +588,7 @@ export class SessionManager {
   readonly #authTimeoutMs: number;
   readonly #resumeBackoffMs: readonly number[];
   readonly #onMessage: ((sessionId: number, message: SDKMessage) => void) | undefined;
+  readonly #onOutput: ((sessionId: number, message: SDKMessage) => void) | undefined;
   readonly #admission: ((request: AdmissionRequest) => AdmissionDecision) | undefined;
   readonly #mcpServers: SessionManagerOptions["mcpServers"];
   readonly #heldToolCheck: HeldToolCheck | undefined;
@@ -625,6 +626,7 @@ export class SessionManager {
     this.#authTimeoutMs = options.authTimeoutMs ?? 30_000;
     this.#resumeBackoffMs = options.resumeBackoffMs ?? [1_000, 2_000, 4_000];
     this.#onMessage = options.onMessage;
+    this.#onOutput = options.onOutput;
     this.#admission = options.admission;
     this.#mcpServers = options.mcpServers;
     this.#heldToolCheck = options.heldToolCheck;
@@ -1666,13 +1668,23 @@ export class SessionManager {
     );
   }
 
+  /** Both observers, each guarded on its own: one's throw never skips the other. */
   #observe(live: LiveSession, message: SDKMessage): void {
-    if (this.#onMessage === undefined) return;
+    if (this.#onMessage !== undefined) this.#observeWith(live, message, this.#onMessage, {});
+    if (this.#onOutput !== undefined) this.#observeWith(live, message, this.#onOutput, { observer: "onOutput" });
+  }
+
+  #observeWith(
+    live: LiveSession,
+    message: SDKMessage,
+    observer: (sessionId: number, message: SDKMessage) => void,
+    label: Readonly<Record<string, string>>,
+  ): void {
     try {
-      this.#onMessage(live.id, message);
+      observer(live.id, message);
     } catch (err) {
       try {
-        this.#appendEvent("observer_error", live.id, { error: errorMessage(err) }, this.#nowIso());
+        this.#appendEvent("observer_error", live.id, { error: errorMessage(err), ...label }, this.#nowIso());
       } catch {
         // The store is gone; the session loop must still not break.
       }

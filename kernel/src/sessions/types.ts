@@ -499,6 +499,14 @@ export interface SessionManagerOptions {
    */
   readonly onMessage?: (sessionId: number, message: SDKMessage) => void;
   /**
+   * The session output observer (phase 5: the console's `recordSessionOutput`),
+   * called for every SDK message of every session, right after `onMessage`.
+   * An observer that throws is recorded as an `observer_error` event (its
+   * payload names `observer: "onOutput"`) and never breaks the session; one
+   * observer's throw never skips the other.
+   */
+  readonly onOutput?: (sessionId: number, message: SDKMessage) => void;
+  /**
    * Asked before every start and resume, after the request is validated and
    * before anything else happens (no auth env, row, status change or spawn).
    * A refusal throws `AdmissionRefusedError`; a check that throws fails the

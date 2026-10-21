@@ -1,12 +1,15 @@
 // The loopback API (item 08, AC1-AC3, AC5): a real server on 127.0.0.1 and an
 // OS-assigned port, a temp data dir, and sessions on the fake spawner/query
 // in session-fakes.ts. Never the real SDK, a model or the real Keychain.
+import { randomBytes } from "node:crypto";
 import { subscribe, unsubscribe } from "node:diagnostics_channel";
 import { mkdtempSync, rmSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { connect } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
 import { API_TOKEN_KEYCHAIN_SERVICE, startApiServer } from "../src/api/index.js";
 import type { ApiServer, ApiServerOptions, StatusBody } from "../src/api/index.js";
 import type { AuthProvider } from "../src/auth/index.js";
@@ -773,5 +776,142 @@ describe("POST /sessions/<id>/abandon and /status orphaned (H04, AC4)", () => {
         release();
       }
     });
+  });
+});
+
+describe("the event feed upgrade: GET /events/stream (phase 5)", () => {
+  /** A WebSocket handshake request for `path`: valid key and version, so only the server's own checks can refuse it. */
+  function upgradeRequest(path: string, auth: string | null, method = "GET"): string {
+    const lines = [
+      `${method} ${path} HTTP/1.1`,
+      "Host: 127.0.0.1",
+      "Connection: Upgrade",
+      "Upgrade: websocket",
+      "Sec-WebSocket-Version: 13",
+      `Sec-WebSocket-Key: ${randomBytes(16).toString("base64")}`,
+    ];
+    if (auth !== null) lines.push(`Authorization: ${auth}`);
+    return `${lines.join("\r\n")}\r\n\r\n`;
+  }
+
+  /** Send a raw upgrade request; resolves with everything the server wrote once it closed the socket. */
+  function rawUpgrade(server: ApiServer, path: string, auth: string | null, method = "GET"): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const socket = connect(server.port, "127.0.0.1");
+      const chunks: Buffer[] = [];
+      const timer = setTimeout(() => {
+        socket.destroy();
+        reject(new Error(`the server did not close the socket; it wrote ${JSON.stringify(Buffer.concat(chunks).toString("latin1"))}`));
+      }, 5_000);
+      socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+      socket.on("error", () => {});
+      socket.on("close", () => {
+        clearTimeout(timer);
+        resolve(Buffer.concat(chunks).toString("latin1"));
+      });
+      socket.write(upgradeRequest(path, auth, method));
+    });
+  }
+
+  const refusals: [string, string | null][] = [
+    ["no token", null],
+    ["a wrong token", `Bearer ${WRONG}`],
+    ["a wrong scheme", `Basic ${TOKEN}`],
+    ["an empty bearer", "Bearer "],
+    ["a token prefix", `Bearer ${TOKEN.slice(0, 32)}`],
+  ];
+  for (const [name, auth] of refusals) {
+    it(`refuses an upgrade with ${name}: 401 before any upgrade, then the socket is closed`, async () => {
+      const server = await serve();
+      const answer = await rawUpgrade(server, "/events/stream", auth);
+      const [head = "", body] = answer.split("\r\n\r\n");
+      expect(head.split("\r\n")[0]).toBe("HTTP/1.1 401 Unauthorized");
+      expect(head).toContain("\r\nWWW-Authenticate: Bearer");
+      expect(body).toBe('{"error":"unauthorized"}');
+      // Never upgraded: no 101 and no WebSocket accept header.
+      expect(answer).not.toContain("101 Switching Protocols");
+      expect(answer.toLowerCase()).not.toContain("sec-websocket-accept");
+      expect(answer).not.toContain(TOKEN);
+      expect(answer).not.toContain(WRONG);
+      expect(eventKinds()).toEqual([]);
+    });
+  }
+
+  it("with the token, upgrades it and hands it to the feed, whose stub closes it with 1013 'not yet'", async () => {
+    const server = await serve();
+    const client = new WebSocket(`ws://127.0.0.1:${server.port}/events/stream`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+    let opened = false;
+    client.on("open", () => {
+      opened = true;
+    });
+    const closed = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
+      client.on("error", reject);
+      client.on("close", (code: number, reason: Buffer) => resolve({ code, reason: reason.toString("utf8") }));
+    });
+    expect(opened).toBe(true);
+    expect(closed).toEqual({ code: 1013, reason: "not yet" });
+  });
+
+  for (const path of ["/events", "/events/stream/1", "/events/streamx", "/status", "/stop-all", "/nope"]) {
+    it(`never upgrades ${path}, even with the token: 404 and the socket is closed`, async () => {
+      const loop = fakeLoop();
+      const server = await serve({ loop });
+      const answer = await rawUpgrade(server, path, `Bearer ${TOKEN}`);
+      expect(answer.split("\r\n")[0]).toBe("HTTP/1.1 404 Not Found");
+      expect(answer.split("\r\n\r\n")[1]).toBe('{"error":"not_found"}');
+      expect(answer).not.toContain("101 Switching Protocols");
+      // Nothing behind a phase 1 path ran either.
+      expect(loop.stop).not.toHaveBeenCalled();
+      expect(eventKinds()).toEqual([]);
+    });
+  }
+
+  it("never upgrades a non-GET on the feed path, even with the token: 405 with Allow: GET", async () => {
+    const server = await serve();
+    const answer = await rawUpgrade(server, "/events/stream", `Bearer ${TOKEN}`, "POST");
+    expect(answer.split("\r\n")[0]).toBe("HTTP/1.1 405 Method Not Allowed");
+    expect(answer).toContain("\r\nAllow: GET");
+    expect(answer).not.toContain("101 Switching Protocols");
+  });
+
+  it("a client that sends a malformed frame on the feed socket is dropped; the server keeps answering", async () => {
+    const server = await serve();
+    const socket = connect(server.port, "127.0.0.1");
+    socket.on("error", () => {});
+    const upgraded = new Promise<void>((resolve) => {
+      let seen = "";
+      socket.on("data", (chunk: Buffer) => {
+        seen += chunk.toString("latin1");
+        if (seen.startsWith("HTTP/1.1 101 ")) resolve();
+      });
+    });
+    const gone = new Promise<void>((resolve) => socket.on("close", () => resolve()));
+    socket.write(upgradeRequest("/events/stream", `Bearer ${TOKEN}`));
+    await upgraded;
+    // An unmasked text frame: a client's frames must be masked (RFC 6455 5.1), so the server's parser rejects it.
+    socket.write(Buffer.from([0x81, 0x02, 0x68, 0x69]));
+    await gone;
+    expect((await call(server, "/status")).status).toBe(200);
+  });
+
+  it("close() resolves while a feed socket is still open: a client that never answers the close frame is terminated", async () => {
+    const server = await serve();
+    const socket = connect(server.port, "127.0.0.1");
+    socket.on("error", () => {});
+    const upgraded = new Promise<void>((resolve) => {
+      let seen = "";
+      socket.on("data", (chunk: Buffer) => {
+        seen += chunk.toString("latin1");
+        if (seen.startsWith("HTTP/1.1 101 ")) resolve();
+      });
+    });
+    const gone = new Promise<void>((resolve) => socket.on("close", () => resolve()));
+    socket.write(upgradeRequest("/events/stream", `Bearer ${TOKEN}`));
+    await upgraded;
+    // The client never replies to the stub's close frame, so `ws` alone would keep the socket for its 30 s close timeout.
+    const started = Date.now();
+    await server.close();
+    await gone;
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 });
