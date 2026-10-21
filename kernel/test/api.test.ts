@@ -837,19 +837,28 @@ describe("the event feed upgrade: GET /events/stream (phase 5)", () => {
     });
   }
 
-  it("with the token, upgrades it and hands it to the feed, whose stub closes it with 1013 'not yet'", async () => {
+  it("with the token, upgrades it and hands it to the feed: the socket opens and stays open until the client closes it", async () => {
+    // The feed's own behaviour is pinned in api-feed.test.ts.
     const server = await serve();
     const client = new WebSocket(`ws://127.0.0.1:${server.port}/events/stream`, { headers: { Authorization: `Bearer ${TOKEN}` } });
-    let opened = false;
-    client.on("open", () => {
-      opened = true;
-    });
-    const closed = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
+    let closedEarly = false;
+    const closed = new Promise<{ code: number; reason: string }>((resolve, reject) => {
       client.on("error", reject);
-      client.on("close", (code: number, reason: Buffer) => resolve({ code, reason: reason.toString("utf8") }));
+      client.on("close", (code: number, reason: Buffer) => {
+        closedEarly = true;
+        resolve({ code, reason: reason.toString("utf8") });
+      });
     });
-    expect(opened).toBe(true);
-    expect(closed).toEqual({ code: 1013, reason: "not yet" });
+    await new Promise<void>((resolve, reject) => {
+      client.on("open", () => resolve());
+      void closed.then(() => reject(new Error("the feed closed the socket before it opened")));
+    });
+    // Past more than one 250 ms feed poll: still open.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(closedEarly).toBe(false);
+    expect(client.readyState).toBe(WebSocket.OPEN);
+    client.close(1000, "done");
+    expect(await closed).toEqual({ code: 1000, reason: "done" });
   });
 
   for (const path of ["/events", "/events/stream/1", "/events/streamx", "/status", "/stop-all", "/nope"]) {
