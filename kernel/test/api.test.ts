@@ -252,6 +252,7 @@ describe("GET /status (AC2)", () => {
     expect(res.json()).toEqual({
       kernel: { version: kernelVersion(), uptime_s: 125, pid: 4242 },
       kill_switch: { engaged: false, since: null },
+      paused: false,
       auth: [
         { id: "subscription-token", account: "owner@example.test", health: { status: "expiring", days: 12 } },
         { id: "api-key", account: "api-key", health: { status: "error", reason: "health_threw" } },

@@ -24,6 +24,14 @@
 // inside a kill-switch engagement is recorded `missed_kill_switch` with a
 // `trigger_missed` event after the release and never fired.
 //
+// The owner's pause (`../console/pause.ts`) is read the same way, but the loop
+// keeps running while paused, so due triggers are processed: an instant inside
+// a pause window (from the first `pause_engaged` after a release to the next
+// `pause_released`, open while paused), or any due instant while the kernel is
+// paused, is recorded `missed_paused` with a `trigger_missed` event (reason
+// `paused`) at once and never fired. An instant in both a kill-switch and a
+// pause window counts as the kill switch's.
+//
 // A due instant whose work step is already done (the instant was fired or
 // recorded before, and the clock or a toggle put it back) is never scheduled
 // again: every next fire skips done instants, and a due trigger whose step
@@ -50,6 +58,7 @@
 // The status is read with raw SQL: this module never imports the playbooks
 // feature (that one depends on this one).
 import { KILL_SWITCH_ENGAGED, KILL_SWITCH_RELEASED, isKillSwitchEngaged } from "../api/kill-switch.js";
+import { PAUSE_ENGAGED, PAUSE_RELEASED } from "../console/pause.js";
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
 import type { EnqueueParams } from "../loop/queue.js";
@@ -76,7 +85,7 @@ export const TRIGGER_TOGGLERS = ["owner", "agent"] as const;
 export type TriggerToggler = (typeof TRIGGER_TOGGLERS)[number];
 
 /** `triggers.last_result`: the closed set of what the last due instant came to. */
-export const TRIGGER_RESULTS = ["fired", "missed_kill_switch"] as const;
+export const TRIGGER_RESULTS = ["fired", "missed_kill_switch", "missed_paused"] as const;
 export type TriggerResult = (typeof TRIGGER_RESULTS)[number];
 
 /** The audit event kinds this feature appends (actor `kernel`), one per change. */
@@ -219,7 +228,7 @@ function turnedOffBy(store: Store, row: TriggerRow): string | null {
 
 /**
  * Whether this trigger is a `once` that is off only because it was spent
- * (fired, or its instant recorded as a miss: kill switch, `already_done`,
+ * (fired, or its instant recorded as a miss: kill switch, pause, `already_done`,
  * `playbook_not_enabled`), not because someone turned it off. Only a toggle
  * turns a trigger off with a `trigger_toggled` event, and a spend never
  * writes one, so an off `once` that nobody toggled, or whose newest toggle
@@ -733,12 +742,52 @@ function inKillSwitchWindow(windows: readonly KillSwitchWindow[], iso: string): 
   return windows.some((w) => w.from <= iso && (w.to === null || iso < w.to));
 }
 
+/** A pause: from its first `pause_engaged` to the `pause_released` after it (`null`: still paused). */
+type PauseWindow = KillSwitchWindow;
+
+/** Every pause window, from the append-only `events` log (the pause's only state), read like `killSwitchWindows`. */
+function pauseWindows(store: Store): PauseWindow[] {
+  const rows = store
+    .prepare<[string, string], { kind: string; at: string }>("SELECT kind, at FROM events WHERE kind IN (?, ?) ORDER BY id")
+    .all(PAUSE_ENGAGED, PAUSE_RELEASED);
+  const windows: PauseWindow[] = [];
+  let open: string | null = null;
+  for (const r of rows) {
+    if (r.kind === PAUSE_ENGAGED) open ??= r.at;
+    else if (open !== null) {
+      windows.push({ from: open, to: r.at });
+      open = null;
+    }
+  }
+  if (open !== null) windows.push({ from: open, to: null });
+  return windows;
+}
+
+/**
+ * Whether instant `iso` is paused: inside a pause window, or due at all while
+ * the kernel is paused (the last window is open). The second keeps an instant
+ * that came due just before the pause, and was not yet processed, from firing
+ * during it.
+ */
+function inPauseWindow(windows: readonly PauseWindow[], iso: string): boolean {
+  if (windows.at(-1)?.to === null) return true;
+  return windows.some((w) => w.from <= iso && (w.to === null || iso < w.to));
+}
+
+/** The kill-switch and pause windows a fire is planned against. */
+interface FireWindows {
+  readonly killSwitch: readonly KillSwitchWindow[];
+  readonly pause: readonly PauseWindow[];
+}
+
 /** What one due trigger comes to at `now`: computed from its spec before the work step. */
 interface FirePlan {
-  /** The due instants outside a kill-switch window: fired once, together. */
+  /** The due instants outside every kill-switch and pause window: fired once, together. */
   readonly toFire: number;
-  /** The due instants inside one: recorded, never fired. */
+  /** The due instants inside a kill-switch window: recorded, never fired. */
   readonly missedKillSwitch: number;
+  /** The due instants inside a pause window (and no kill-switch one): recorded, never fired. */
+  readonly missedPaused: number;
   /** Counting stopped at `MAX_COUNTED_INSTANTS`. */
   readonly atLeast: boolean;
   readonly latestDue: string;
@@ -749,21 +798,24 @@ interface FirePlan {
 /**
  * Every due instant from `row.next_fire_at` up to `now` (one for `once`; for
  * `cron`, each scheduled instant, looked up in its zone), split by the
- * kill-switch windows, and the next future instant not already fired or
+ * kill-switch windows first, then the pause windows, and the next future instant not already fired or
  * recorded. Throws when the stored
  * spec cannot be evaluated (`parkUnreadable` handles that).
  */
-function planFire(store: Store, row: TriggerRow, first: string, now: Date, windows: readonly KillSwitchWindow[]): FirePlan {
+function planFire(store: Store, row: TriggerRow, first: string, now: Date, windows: FireWindows): FirePlan {
   const nowMs = now.getTime();
   let toFire = 0;
   let missedKillSwitch = 0;
+  let missedPaused = 0;
   const count = (iso: string): void => {
-    if (inKillSwitchWindow(windows, iso)) missedKillSwitch++;
-    else toFire++;
+    if (inKillSwitchWindow(windows.killSwitch, iso)) missedKillSwitch++;
+    else if (inPauseWindow(windows.pause, iso)) {
+      missedPaused++;
+    } else toFire++;
   };
   if (row.kind === "once") {
     count(first);
-    return { toFire, missedKillSwitch, atLeast: false, latestDue: first, next: null };
+    return { toFire, missedKillSwitch, missedPaused, atLeast: false, latestDue: first, next: null };
   }
   if (row.kind !== "cron") throw new Error(`trigger ${row.id} has unknown kind ${JSON.stringify(row.kind)}`);
   const spec = JSON.parse(row.spec_json) as { cron?: unknown; tz?: unknown };
@@ -782,7 +834,7 @@ function planFire(store: Store, row: TriggerRow, first: string, now: Date, windo
     count(latestDue);
     counted++;
   }
-  return { toFire, missedKillSwitch, atLeast, latestDue, next: nextFreeCronFire(store, row.id, schedule, spec.tz, now) };
+  return { toFire, missedKillSwitch, missedPaused, atLeast, latestDue, next: nextFreeCronFire(store, row.id, schedule, spec.tz, now) };
 }
 
 /** A `notify` fire's title: `Trigger <id> (<agent>)`, clipped to `MAX_NOTIFICATION_TITLE`. */
@@ -862,19 +914,31 @@ function fireOne(store: Store, id: number, scheduledAt: string, plan: FirePlan, 
     playbook = linked;
   }
 
+  const missedPaused = plan.missedPaused > 0 ? { missed_paused: plan.missedPaused } : {};
   if (plan.toFire === 0) {
-    // Every due instant fell inside a kill-switch engagement: recorded, not fired.
-    store.prepare("UPDATE triggers SET last_result = 'missed_kill_switch', next_fire_at = ? WHERE id = ?").run(plan.next, id);
+    // Every due instant fell inside a kill-switch engagement or a pause: recorded, not fired.
+    // Any instant in a kill-switch window makes it the kill switch's miss; otherwise the pause's.
+    const killSwitch = plan.missedKillSwitch > 0;
+    const result: TriggerResult = killSwitch ? "missed_kill_switch" : "missed_paused";
+    store.prepare("UPDATE triggers SET last_result = ?, next_fire_at = ? WHERE id = ?").run(result, plan.next, id);
     // A `once` is spent: off. Who last toggled it stays (`turnedOffBy` tells a spend from an off).
     if (once) store.prepare("UPDATE triggers SET enabled = 0 WHERE id = ?").run(id);
     appendEvent(
       store,
       "trigger_missed",
       { sessionId: null, taskId: null },
-      { trigger_id: id, reason: "kill_switch", scheduled_at: scheduledAt, missed_kill_switch: plan.missedKillSwitch, enabled: !once, ...counts },
+      {
+        trigger_id: id,
+        reason: killSwitch ? "kill_switch" : "paused",
+        scheduled_at: scheduledAt,
+        ...(killSwitch ? { missed_kill_switch: plan.missedKillSwitch } : {}),
+        ...missedPaused,
+        enabled: !once,
+        ...counts,
+      },
       at,
     );
-    return { trigger_id: id, scheduled_at: scheduledAt, result: "missed_kill_switch" };
+    return { trigger_id: id, scheduled_at: scheduledAt, result };
   }
 
   let effect: { notification_id: number } | { queue_id: number };
@@ -919,6 +983,7 @@ function fireOne(store: Store, id: number, scheduledAt: string, plan: FirePlan, 
       // How many due instants this one fire coalesces; 0 for a single one (an ordinary fire, however late).
       missed: plan.toFire > 1 ? plan.toFire : 0,
       ...(plan.missedKillSwitch > 0 ? { missed_kill_switch: plan.missedKillSwitch } : {}),
+      ...missedPaused,
       enabled: !once,
       ...counts,
       ...effect,
@@ -973,7 +1038,8 @@ function parkUnreadable(store: Store, id: number, scheduledAt: string): void {
 /**
  * Fire every enabled trigger whose next fire is at or before `now`, earliest
  * first, each at most once per scheduled instant (see the header). Nothing
- * fires while the kill switch is engaged. Returns what each due trigger came
+ * fires while the kill switch is engaged; while paused, each due instant is
+ * recorded `missed_paused`. Returns what each due trigger came
  * to. One trigger's failure never stops the others: they all run, then the
  * first failure is thrown (one `due_work_failed` from the loop).
  */
@@ -985,7 +1051,7 @@ export function fireDueTriggers(store: Store, now: Date = new Date()): TriggerFi
     )
     .all(now.toISOString());
   if (due.length === 0) return [];
-  const windows = killSwitchWindows(store);
+  const windows: FireWindows = { killSwitch: killSwitchWindows(store), pause: pauseWindows(store) };
   const outcomes: TriggerFireOutcome[] = [];
   const failures: string[] = [];
   for (const row of due) {

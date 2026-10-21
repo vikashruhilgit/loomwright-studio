@@ -14,6 +14,8 @@ import type { AuthHealth, AuthProvider } from "../auth/types.js";
 import { localDay } from "../budget/index.js";
 import { compileRoutePath, matchRoutePath } from "../features/contribution.js";
 import type { KillSwitchView, OwnedRoute } from "../features/contribution.js";
+import { isPaused, releasePause } from "../console/pause.js";
+import type { PauseVia } from "../console/pause.js";
 import { NO_REF, appendEvent, clip, errorMessage } from "../loop/internal.js";
 import type { EventLoop } from "../loop/loop.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
@@ -60,7 +62,8 @@ function isContributedRouteStatus(status: unknown): boolean {
 
 /**
  * The header the `studio` CLI sends with `POST /sessions/<id>/abandon`
- * (value `cli`), recorded as the abandon's `via`; anything else is `api`.
+ * (value `cli`), recorded as the abandon's `via` (and as the `via` of a pause
+ * that `POST /resume` releases); anything else is `api`.
  * The request is authenticated either way: this only labels the caller.
  */
 export const CLIENT_HEADER = "x-studio-client";
@@ -125,6 +128,8 @@ export interface UnconfirmedToolGroup {
 export interface StatusBody {
   readonly kernel: { readonly version: string; readonly uptime_s: number; readonly pid: number };
   readonly kill_switch: { readonly engaged: boolean; readonly since: string | null };
+  /** Whether the owner paused new work (`POST /pause`), read from the `events` log like the kill switch. */
+  readonly paused: boolean;
   readonly auth: readonly { readonly id: string; readonly account: string | null; readonly health: AuthHealth }[];
   readonly sessions: readonly {
     readonly id: number;
@@ -408,6 +413,7 @@ export function readStatus(
       pid: info.pid,
     },
     kill_switch: killSwitchState(store),
+    paused: isPaused(store),
     auth: authProviders.map((p) => ({ id: p.id, account: safeAccount(p), health: healthOf(p, at) })),
     sessions: store
       .prepare<[], StatusBody["sessions"][number]>(
@@ -484,7 +490,10 @@ export function readStatus(
  *   session, append `stop_all_completed` with each outcome; answers
  *   `{engaged: true, sessions: [...]}`. Repeating it re-runs every step.
  * - `POST /resume` ⇒ when engaged, `kill_switch_released` and `loop.start()`;
- *   otherwise nothing is appended. Answers `{engaged: false}`.
+ *   and when paused (`POST /pause`, the console's pause part), the pause's
+ *   release (`pause_released`, with `via` `cli` when the `CLIENT_HEADER` says
+ *   so, else `api`, and the wake of the work it parked); otherwise nothing is
+ *   appended. Answers `{engaged: false}`.
  * - `POST /sessions/<id>/abandon` ⇒ `sessions.abandonSession(id, {via})`, with
  *   `via` `cli` when the `CLIENT_HEADER` says so, else `api`. A path that is
  *   not exactly that shape is an unknown path (404); an id that is not a safe
@@ -542,12 +551,14 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
       return { engaged: true, sessions: outcomes };
     });
 
-  const resume = (): Promise<{ engaged: false }> =>
+  // The owner chose that resume clears a pause too: one request releases both.
+  const resume = (via: PauseVia): Promise<{ engaged: false }> =>
     serialized(async () => {
       if (killSwitchState(store).engaged) {
         releaseKillSwitch(store, now().toISOString());
         loop.start();
       }
+      if (isPaused(store)) releasePause(store, now().toISOString(), via);
       return { engaged: false };
     });
 
@@ -572,13 +583,14 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
       }
     });
 
-  const routes: Record<string, { readonly method: string; readonly run: () => Promise<unknown> }> = {
+  // Each route gets the request; only `/resume` reads it (its `via`, as the abandon's).
+  const routes: Record<string, { readonly method: string; readonly run: (req: IncomingMessage) => Promise<unknown> }> = {
     "/status": {
       method: "GET",
       run: async () => readStatus(store, authProviders, now(), { startedAt, pid, dayOf }, loomwrightStatus),
     },
     "/stop-all": { method: "POST", run: stopAll },
-    "/resume": { method: "POST", run: resume },
+    "/resume": { method: "POST", run: (req) => resume(req.headers[CLIENT_HEADER] === "cli" ? "cli" : "api") },
   };
 
   const contributed = (options.routes ?? []).map((route) => ({ route, segments: compileRoutePath(route.path) }));
@@ -622,7 +634,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
       send(res, 405, { error: "method_not_allowed" }, { Allow: route.method });
       return;
     }
-    send(res, 200, await route.run());
+    send(res, 200, await route.run(req));
   };
 
   /** A contributed route (after the phase 1 routes): 404 / 405 drain the body; only a match reads it. */

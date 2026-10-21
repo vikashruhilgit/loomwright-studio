@@ -1,4 +1,4 @@
-import type { AdmissionDecision, AdmissionRequest } from "../sessions/types.js";
+import type { AdmissionRequest } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { activeParks, admissionProvider, agentRefusal, appendEvent, capRetryAt, clockOf } from "./internal.js";
 import type { AgentRefusalReason, Clock } from "./internal.js";
@@ -15,6 +15,15 @@ export function apiKeyFallbackActive(config: BudgetConfig): boolean {
   const { enabled, dollarCeilingUsd } = config.apiKeyFallback;
   return enabled && dollarCeilingUsd !== null && dollarCeilingUsd > 0;
 }
+
+/**
+ * The budget gate's verdict: the session manager's `AdmissionDecision` with
+ * only the budget's own refusal reasons. Never `paused`: the kernel's
+ * `admissionFor` checks the owner's pause before it asks the budget.
+ */
+export type BudgetAdmissionDecision =
+  | { readonly admitted: true }
+  | { readonly admitted: false; readonly reason: "cap_parked" | AgentRefusalReason; readonly retryAt: string | null };
 
 /**
  * The budget and cap gate the session manager asks before every start and
@@ -73,10 +82,10 @@ export class BudgetAdmission {
     this.#clock = clockOf(deps);
   }
 
-  check(request: AdmissionRequest): AdmissionDecision {
+  check(request: AdmissionRequest): BudgetAdmissionDecision {
     const now = this.#clock.now();
     const at = now.toISOString();
-    return this.#store.transaction((): AdmissionDecision => {
+    return this.#store.transaction((): BudgetAdmissionDecision => {
       const ref = { sessionId: null, taskId: request.task };
 
       // One key: the provider's stable id, as the cap tracker keys parks. The label is never compared.
@@ -100,7 +109,7 @@ export class BudgetAdmission {
     retryAt: string | null,
     details: Record<string, unknown>,
     at: string,
-  ): AdmissionDecision {
+  ): BudgetAdmissionDecision {
     appendEvent(
       this.#store,
       "admission_refused",
