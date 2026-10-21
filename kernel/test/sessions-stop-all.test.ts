@@ -399,6 +399,47 @@ describe("SessionManager.stopSession: the owner's stop and kill modes (phase 5 i
     expect(terminal).toEqual([{ from: "running", to: "stopped", reason: "owner_kill" }]);
   });
 
+  it("the acceptance is synchronous: a kill issued in the same tick as the owner's stop still cuts that stop's grace (owner_kill)", async () => {
+    // No flush between the two calls: the stop must have armed its grace cut
+    // before `stopSession` returned, or the kill joins a stop it cannot cut and
+    // both wait out the held grace forever.
+    const { store, manager, isGroupAlive } = setup({ options: { stopGraceMs: LONG_GRACE_MS }, deps: { schedule: holdGrace } });
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    const stop = manager.stopSession(h.id, { mode: "stop" });
+    const kill = manager.stopSession(h.id, { mode: "kill" });
+    expect(await within(kill)).toBe("stopped");
+    expect(await within(stop)).toBe("stopped");
+    expect(isGroupAlive(h.pgid as number)).toBe(false);
+    const terminal = statusEvents(store, h.id).filter((e) => e["to"] === "stopped" || e["to"] === "failed");
+    expect(terminal).toEqual([{ from: "running", to: "stopped", reason: "owner_kill" }]);
+  });
+
+  it("the acceptance is synchronous: when stopSession returns, onAccepted has run and the stop has begun (the CLI's input is closed)", async () => {
+    // The prompt the manager hands the SDK is the session's input channel; its
+    // `closed` is the stop's first step, so it says whether the stop has begun.
+    const prompts: unknown[] = [];
+    let realQuery: NonNullable<SessionManagerDeps["query"]> = () => {
+      throw new Error("query called before the test wired it");
+    };
+    const query: NonNullable<SessionManagerDeps["query"]> = (args) => {
+      prompts.push(args.prompt);
+      return realQuery(args);
+    };
+    const { store, manager, deps } = setup({ deps: { query } });
+    realQuery = deps.query as NonNullable<SessionManagerDeps["query"]>;
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    expect(prompts).toHaveLength(1);
+    const inputClosed = (): unknown => (prompts[0] as { readonly closed?: unknown }).closed;
+    expect(inputClosed()).toBe(false);
+    const seen: string[] = [];
+    const stopping = manager.stopSession(h.id, { mode: "stop", onAccepted: () => seen.push("accepted") });
+    // Before any await: the guards accepted, onAccepted ran, and the stop started.
+    expect(seen).toEqual(["accepted"]);
+    expect(inputClosed()).toBe(true);
+    expect(await stopping).toBe("stopped");
+    expect(statusEvents(store, h.id).at(-1)).toEqual({ from: "running", to: "stopped", reason: "owner_stop" });
+  });
+
   it("a second stop during a stop's grace joins it and does not cut the grace short", async () => {
     const { store, manager } = setup({ options: { stopGraceMs: LONG_GRACE_MS }, deps: { schedule: holdGrace } });
     const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];

@@ -559,6 +559,69 @@ describe("the routes run on the API server's POST queue", () => {
     }
   });
 
+  it("a kill queued directly behind the owner's Stop of that session (both behind a held stop-all) cuts the grace that Stop's acceptance armed: owner_kill, one grace", async () => {
+    const h = setup();
+    const s = await running(h);
+    let entered!: () => void;
+    const stopAllEntered = new Promise<void>((resolve) => (entered = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    // The shipped routes, each noting when its handler has run up to its queued
+    // work (the handler queues it synchronously), so the order on the queue is
+    // known without sleeping.
+    const queued: string[] = [];
+    const routes = shippedRoutes().map((r) =>
+      r.owner === "console"
+        ? {
+            ...r,
+            handler: (req: ContributedRouteRequest) => {
+              const answer = r.handler(req);
+              queued.push(r.path);
+              return answer;
+            },
+          }
+        : r,
+    );
+    const { post } = await serve(h, {
+      routes,
+      sessions: {
+        // A stop-all that holds the queue until released (it stops nothing itself).
+        stopAll: async () => {
+          entered();
+          await gate;
+          return [];
+        },
+        abandonSession: () => "abandoned",
+      },
+    });
+    const stopAll = post("/stop-all");
+    await stopAllEntered;
+    try {
+      const stop = post(`/sessions/${s.id}/stop`);
+      await vi.waitFor(() => expect(queued).toEqual(["/sessions/:id/stop"]));
+      const kill = post(`/sessions/${s.id}/kill`);
+      await vi.waitFor(() => expect(queued).toEqual(["/sessions/:id/stop", "/sessions/:id/kill"]));
+      expect(stopRequests(h.store)).toEqual([]);
+      release();
+      expect((await stopAll).status).toBe(200);
+      // The Kill's queued work runs right after the Stop's acceptance returns:
+      // that acceptance must already have armed the grace cut. The grace timer
+      // is never fired, so a kill that only joined would never answer.
+      const killed = await within(kill, 5_000);
+      expect(killed).not.toBe("pending");
+      expect((killed as Response).status).toBe(200);
+      expect(await (killed as Response).json()).toEqual({ id: s.id, status: "stopped", reason: "owner_kill" });
+      const stopped = await within(stop, 5_000);
+      expect(stopped).not.toBe("pending");
+      expect(await (stopped as Response).json()).toEqual({ id: s.id, status: "stopped", reason: "owner_kill" });
+      expect(h.graceTimers).toHaveLength(1);
+      expect(stopRequests(h.store).map((e) => e.payload["mode"])).toEqual(["stop", "kill"]);
+      expect(events(h.store, "session_status", s.id).filter((e) => e.payload["to"] === "stopped" || e.payload["to"] === "failed")).toHaveLength(1);
+    } finally {
+      release();
+    }
+  });
+
   it("a stop-all sent during an owner's Stop answers once that Stop has ended", async () => {
     const h = setup();
     const s = await running(h);
