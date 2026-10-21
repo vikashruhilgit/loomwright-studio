@@ -84,13 +84,17 @@ const MAX_RECORDED_TEXT = 64 * 1024;
 /** A Bash command in a `tool_decision` event is truncated to this many characters. */
 const MAX_EVENT_COMMAND_CHARS = 500;
 
-/** One `tool_decision` event's payload: the Bash command (truncated) and the approval id only when present. */
+/**
+ * One `tool_decision` event's payload: the Bash command (truncated), the approval id and the SDK's
+ * `tool_use_id` (which call of the turn it decided, so two calls to one tool are told apart) only when present.
+ */
 function toolDecisionPayload(
   tool: string | null,
   decision: "allow" | "deny",
   reason: string,
   command: string | undefined,
   approvalId: number | undefined,
+  toolUseId: string | undefined,
 ): Record<string, unknown> {
   return {
     tool,
@@ -98,6 +102,7 @@ function toolDecisionPayload(
     reason,
     ...(command === undefined ? {} : { command: command.slice(0, MAX_EVENT_COMMAND_CHARS) }),
     ...(approvalId === undefined ? {} : { approval_id: approvalId }),
+    ...(toolUseId === undefined ? {} : { tool_use_id: toolUseId }),
   };
 }
 
@@ -210,12 +215,43 @@ export type StopAllOutcome =
 export type AbandonVia = "cli" | "api";
 
 /**
- * Why a session is being stopped. `stop` (a `stopSession`, the kill switch)
- * ends it `stopped`. `shutdown` (a graceful kernel stop) runs the same kill
+ * Why a session is being stopped. `stop` (a `stopSession` with no mode: the
+ * kill switch, `kernel_request_stop`) ends it `stopped` (`stop_requested`).
+ * `owner_stop` and `owner_kill` (the owner's `stopSession` modes `stop` and
+ * `kill`, phase 5 item 04) end it `stopped` with that reason; `owner_kill`
+ * skips the grace. `shutdown` (a graceful kernel stop) runs the same kill
  * but ends it `interrupted` (`kernel_shutdown`), so it is resumable after the
  * restart, exactly as a `kill -9` of the kernel would leave it once reaped.
  */
-type StopIntent = "stop" | "shutdown";
+type StopIntent = "stop" | "owner_stop" | "owner_kill" | "shutdown";
+
+/** The `stopped` reason each intent that ends a session `stopped` records. */
+const STOPPED_REASON = {
+  stop: "stop_requested",
+  owner_stop: "owner_stop",
+  owner_kill: "owner_kill",
+} as const satisfies Record<Exclude<StopIntent, "shutdown">, string>;
+
+/** What `stopSession` takes: no mode keeps the kill switch's stop (`stop_requested`). */
+export interface StopSessionOptions {
+  /**
+   * The owner's stop (phase 5 item 04). `stop`: graceful, stdin EOF and the
+   * grace, then the group kill; ends `stopped` (`owner_stop`). `kill`: no
+   * grace, the CLI's group and every recorded tool group killed at once; ends
+   * `stopped` (`owner_kill`). Absent: the kill switch's stop (`stop_requested`).
+   */
+  readonly mode?: "stop" | "kill";
+  /**
+   * Called synchronously once the entry guards accept the stop (the session
+   * runs in this manager and has not ended; a stop already in flight is
+   * joined), before any step of it. Never called for a refusal (`not_found`,
+   * `not_live`) or a session that already ended. A throw refuses the stop:
+   * the promise rejects with it and nothing is stopped or changed. The owner's
+   * routes record their `session_stop_requested` event here, so a refusal
+   * records none.
+   */
+  readonly onAccepted?: () => void;
+}
 
 /**
  * Why a recorded tool group was not signalled. `ps_failed`: its ownership
@@ -327,6 +363,14 @@ interface LiveSession {
   attempt: Attempt | undefined;
   stopping: boolean;
   stopPromise: Promise<SessionStatus> | undefined;
+  /**
+   * The intent of the stop in flight, read when it writes the status: an
+   * owner's kill that arrives while it waits out its grace turns it into
+   * `owner_kill` (a `shutdown` keeps its own).
+   */
+  stopIntent: StopIntent | undefined;
+  /** Set only while the stop in flight waits out its grace: ends that wait at once (a kill arrived). */
+  cutGrace: (() => void) | undefined;
   authFailed: boolean;
   /**
    * Set once the stream has ended and its outcome is computed, before the
@@ -780,9 +824,36 @@ export class SessionManager {
    * is being cleaned up) still kills the group, but the session ends with the
    * outcome its stream produced (`stop_requested_after_end: true` in the
    * event), never `stopped`: it was no longer running.
+   *
+   * With no `options.mode` (the kill switch, `kernel_request_stop`) a running
+   * session ends `stopped` with reason `stop_requested`. The owner's modes
+   * (phase 5 item 04, `StopSessionOptions`): `stop` is the same graceful stop
+   * ending `owner_stop`; `kill` skips the grace (the input is still closed and
+   * every other step runs: the last tool-group walk, the CLI's group and every
+   * recorded tool group killed until gone after their ownership checks, the
+   * wait for the leader's exit) and ends `owner_kill`. A group either cannot
+   * confirm gone ends `failed` (`kill_incomplete`), as any kill does. A kill
+   * that arrives while a stop in flight waits out its grace ends that wait at
+   * once and joins that stop, which then ends `owner_kill` (a kernel
+   * shutdown's keeps `kernel_shutdown`): still one stop and one terminal
+   * status. Rejects `SessionError` `not_found` (no row), `not_live` (a row
+   * this manager does not run that has not ended) and `invalid_params` (an
+   * unknown mode).
+   *
+   * The acceptance is synchronous: the entry guards, `onAccepted`, and the
+   * start of the stop (its input closed and, for a graceful stop, its grace
+   * wait armed so a later kill can cut it) or the join of the one in flight
+   * all run before this call returns. A caller that saw `onAccepted` run knows
+   * the stop is registered, so any later call joins it (the console's routes
+   * accept on the API's POST queue and await the end off it).
    */
-  stopSession(id: number): Promise<SessionStatus> {
-    return this.#stopLive(id, "stop");
+  stopSession(id: number, options: StopSessionOptions = {}): Promise<SessionStatus> {
+    const mode = options.mode;
+    if (mode !== undefined && mode !== "stop" && mode !== "kill") {
+      return Promise.reject(new SessionError("invalid_params", "mode must be stop or kill"));
+    }
+    const intent: StopIntent = mode === undefined ? "stop" : mode === "stop" ? "owner_stop" : "owner_kill";
+    return this.#stopLive(id, intent, options.onAccepted);
   }
 
   /**
@@ -827,7 +898,7 @@ export class SessionManager {
     });
   }
 
-  async #stopForAll(id: number, mode: StopIntent): Promise<{ readonly status: SessionStatus; readonly endedOnItsOwn: boolean }> {
+  async #stopForAll(id: number, mode: "stop" | "shutdown"): Promise<{ readonly status: SessionStatus; readonly endedOnItsOwn: boolean }> {
     const live = this.#live.get(id);
     if (live !== undefined && isTerminalStatus(live.status) && live.stopPromise === undefined) {
       // Ended (e.g. `failed:auth`) but not settled: its group may still be alive.
@@ -855,8 +926,15 @@ export class SessionManager {
     return { status, endedOnItsOwn };
   }
 
-  /** `stopSession`'s entry guards, for either intent. */
-  async #stopLive(id: number, intent: StopIntent): Promise<SessionStatus> {
+  /**
+   * `stopSession`'s entry guards, for every intent. `onAccepted` runs once
+   * they accept, before anything else (a throw refuses: nothing changes). A
+   * stop already in flight is joined, never doubled; an `owner_kill` joining
+   * one that is waiting out its grace cuts that wait short. Never put an
+   * `await` before `live.stopPromise` is set (nor in `#stop` before
+   * `live.cutGrace` is set): `stopSession`'s acceptance is synchronous.
+   */
+  async #stopLive(id: number, intent: StopIntent, onAccepted?: () => void): Promise<SessionStatus> {
     const live = this.#live.get(id);
     if (live === undefined) {
       const row = this.getSession(id);
@@ -865,8 +943,17 @@ export class SessionManager {
       throw new SessionError("not_live", `session ${id} is ${row.status} and not running in this kernel`);
     }
     if (isTerminalStatus(live.status)) return live.status;
-    if (live.stopPromise !== undefined) return live.stopPromise;
+    onAccepted?.();
+    if (live.stopPromise !== undefined) {
+      if (intent === "owner_kill" && live.cutGrace !== undefined) {
+        // Kill is immediate: the stop in flight kills now, and the kill is what ended the session.
+        if (live.stopIntent !== "shutdown") live.stopIntent = "owner_kill";
+        live.cutGrace();
+      }
+      return live.stopPromise;
+    }
     live.stopping = true;
+    live.stopIntent = intent;
     live.stopPromise = this.#stop(live, intent);
     return live.stopPromise;
   }
@@ -1362,6 +1449,8 @@ export class SessionManager {
       attempt: undefined,
       stopping: false,
       stopPromise: undefined,
+      stopIntent: undefined,
+      cutGrace: undefined,
       authFailed: false,
       verdict: undefined,
       settled: false,
@@ -1792,7 +1881,14 @@ export class SessionManager {
     const attempt = live.attempt;
     if (attempt !== undefined) {
       attempt.input.close();
-      await this.#waitFor(attempt.exited, this.#stopGraceMs);
+      // Kill is immediate: no grace. Any other stop waits it out, unless a kill cuts it short.
+      if (intent !== "owner_kill") {
+        const cut = new Promise<void>((resolve) => {
+          live.cutGrace = resolve;
+        });
+        await this.#waitFor(Promise.race([attempt.exited, cut]), this.#stopGraceMs);
+        live.cutGrace = undefined;
+      }
       // One last walk of the CLI's descendants: a tool group started since the
       // last poll tick is recorded, and so killed below with the rest.
       if (this.#snapshot !== undefined) await this.#walkNow([{ live, attempt }]);
@@ -1808,11 +1904,12 @@ export class SessionManager {
     // raced the cleanup of a session that was no longer running. A shutdown
     // ends a running session `interrupted` (non-terminal, resumable): `stopping`
     // is set, so the session's own background path writes nothing after this.
+    // An owner's kill that cut the grace short changed the intent (`#stopLive`).
+    const ended = live.stopIntent ?? intent;
     const verdict = live.verdict;
-    if (verdict === undefined && intent === "shutdown") {
-      this.#finishAfterKill(live, attempt, "interrupted", { reason: "kernel_shutdown" });
-    } else if (verdict === undefined) this.#finishAfterKill(live, attempt, "stopped", { reason: "stop_requested" });
-    else this.#finishAfterKill(live, attempt, verdict.to, { ...verdict.payload, stop_requested_after_end: true });
+    if (verdict !== undefined) this.#finishAfterKill(live, attempt, verdict.to, { ...verdict.payload, stop_requested_after_end: true });
+    else if (ended === "shutdown") this.#finishAfterKill(live, attempt, "interrupted", { reason: "kernel_shutdown" });
+    else this.#finishAfterKill(live, attempt, "stopped", { reason: STOPPED_REASON[ended] });
     this.#settle(live);
     return live.status;
   }
@@ -2331,6 +2428,8 @@ export class SessionManager {
       let reason: GateReason = "kernel_gate_error";
       let tool: string | null = null;
       let command: string | undefined;
+      /** The SDK's id for this call (`PreToolUse`'s `tool_use_id`), recorded on the decision. */
+      let toolUseId: string | undefined;
       let wouldDo: WouldDoEntry | undefined;
       /** The pre-hold check's refusal text, for a `held_refused` deny. */
       let refusal: string | undefined;
@@ -2340,12 +2439,13 @@ export class SessionManager {
         this.#appendEvent(
           "tool_decision",
           live.id,
-          { ...toolDecisionPayload(tool, decision, reason, command, undefined), ...(category === undefined ? {} : { category }) },
+          { ...toolDecisionPayload(tool, decision, reason, command, undefined, toolUseId), ...(category === undefined ? {} : { category }) },
           this.#nowIso(),
         );
       try {
         if (input.hook_event_name === "PreToolUse") {
           tool = input.tool_name;
+          if (typeof input.tool_use_id === "string" && input.tool_use_id !== "") toolUseId = input.tool_use_id;
           if (tool === "Bash") command = bashCommandOf(input.tool_input);
           const d = decideToolUse(live.policy, input.tool_name, input.tool_input);
           // The rail applies only after the policy allowed: it never widens a policy.
@@ -2386,7 +2486,7 @@ export class SessionManager {
               const outcome = this.#store.transaction(() => {
                 const o = holdOrUseGrant(this.#store, call, this.#now());
                 const granted = o.kind === "granted";
-                const payload = toolDecisionPayload(tool, granted ? "allow" : "deny", granted ? "approval_granted" : "approval_required", command, o.id);
+                const payload = toolDecisionPayload(tool, granted ? "allow" : "deny", granted ? "approval_granted" : "approval_required", command, o.id, toolUseId);
                 this.#appendEvent("tool_decision", live.id, payload, this.#nowIso());
                 return o;
               });

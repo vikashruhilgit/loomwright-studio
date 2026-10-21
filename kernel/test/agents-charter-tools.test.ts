@@ -379,7 +379,7 @@ describe("kernel_agent_create (AC1, AC2)", () => {
     expect(d.permissionDecisionReason).toBe(
       'kernel_agent_create: not_lead: agent "scout" called it; only Wright, the lead, drafts or changes a crew member (nothing was held for the owner)',
     );
-    expect(events(h.store, "tool_decision").filter((e) => e.payload.tool === CREATE).map((e) => e.payload)).toEqual([{ tool: CREATE, decision: "deny", reason: "held_refused" }]);
+    expect(events(h.store, "tool_decision").filter((e) => e.payload.tool === CREATE).map((e) => e.payload)).toEqual([{ tool: CREATE, decision: "deny", reason: "held_refused", tool_use_id: "toolu_1" }]);
     expect(count(h.store, "SELECT count(*) FROM approvals")).toBe(0);
     expect(h.store.prepare("SELECT id FROM agents").pluck().all()).toEqual(["scout"]);
   });

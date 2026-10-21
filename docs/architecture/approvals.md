@@ -253,7 +253,7 @@ A match writes one `approval_grant_used` event (`{id, tool}`, linked to the call
 | `approval_used` | `{id, tool}`, or `{id, tool, by: "kernel"}` for the kernel's use | The rail lets a call through on a one-shot grant, or the kernel applies an approved kernel-applied action (on every attempt, applied or refused). |
 | `approval_grant_used` | `{id, tool}` | The rail lets a call through on a standing grant. |
 | `approval_grant_revoked` | `{id, by}` | The owner revokes a standing grant. |
-| `tool_decision` | `{tool, decision, reason, command?, approval_id?, category?}` | Every gated call (phase 1), with the new reasons `approval_required`, `approval_granted`, `protected_kernel_path`, `merge_blocked` and `bash_command_too_large` (and `bash_shell_metacharacter` now also for a command the rail will not read), `agent_boundary` (phase 4, with the `category`; [the never boundary](#the-never-boundary)), plus the gate-local `held_refused` (the pre-hold check refused it), `dry_run` and `kernel_gate_error`. |
+| `tool_decision` | `{tool, decision, reason, command?, approval_id?, category?, tool_use_id?}` | Every gated call (phase 1), with the new reasons `approval_required`, `approval_granted`, `protected_kernel_path`, `merge_blocked` and `bash_command_too_large` (and `bash_shell_metacharacter` now also for a command the rail will not read), `agent_boundary` (phase 4, with the `category`; [the never boundary](#the-never-boundary)), plus the gate-local `held_refused` (the pre-hold check refused it), `dry_run` and `kernel_gate_error`. |
 
 ## Values
 

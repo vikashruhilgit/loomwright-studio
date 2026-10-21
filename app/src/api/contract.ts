@@ -649,8 +649,12 @@ export interface SessionOutputResponse {
 export interface SessionControlResponse {
   readonly id: number;
   readonly status: SessionStatus;
-  /** `owner_stop` or `owner_kill` (or `kill_incomplete` for a kill that could not confirm the group gone). */
-  readonly reason: string;
+  /**
+   * The reason of the session's last `session_status` event, whatever it is: `owner_stop`, `owner_kill`,
+   * `kill_incomplete` (a kill that could not confirm the group gone), or the session's own outcome when its stream
+   * had already ended (for example `result_success`). `null` when that event carries no readable reason.
+   */
+  readonly reason: string | null;
 }
 
 // ---- Item 05: POST /pause and POST /unpause --------------------------------------------

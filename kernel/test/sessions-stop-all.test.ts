@@ -342,3 +342,227 @@ describe("SessionManager.stopAll", () => {
     expect(statusEvents(store, h.id).filter((e) => e["to"] === "stopped" || e["to"] === "interrupted")).toHaveLength(1);
   });
 });
+
+describe("SessionManager.stopSession: the owner's stop and kill modes (phase 5 item 04)", () => {
+  /** A grace long enough that only a kill can end it: its timer is held, never fired. */
+  const LONG_GRACE_MS = 3_600_000;
+  /** Real timers for every wait but the held grace. */
+  const holdGrace = (fn: () => void, ms: number): CancelTimer => {
+    if (ms === LONG_GRACE_MS) return () => {};
+    const t = setTimeout(fn, ms);
+    return () => clearTimeout(t);
+  };
+  /** `p`'s value, or `"timed out"` after `ms` (a stop stuck in a held grace never settles). */
+  const within = <T,>(p: Promise<T>, ms = 2_000): Promise<T | "timed out"> =>
+    Promise.race([p, new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), ms))]);
+
+  it("mode stop is today's graceful stop, ending stopped with reason owner_stop, groups gone", async () => {
+    const { store, manager, isGroupAlive } = setup();
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    expect(await manager.stopSession(h.id, { mode: "stop" })).toBe("stopped");
+    expect(isGroupAlive(h.pgid as number)).toBe(false);
+    expect(statusEvents(store, h.id).at(-1)).toEqual({ from: "running", to: "stopped", reason: "owner_stop" });
+  });
+
+  it("mode stop waits out its grace: with the grace held it never ends", async () => {
+    const { store, manager, isGroupAlive } = setup({ options: { stopGraceMs: LONG_GRACE_MS }, deps: { schedule: holdGrace } });
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    const stopping = manager.stopSession(h.id, { mode: "stop" });
+    expect(await within(stopping, 100)).toBe("timed out");
+    expect(isGroupAlive(h.pgid as number)).toBe(true);
+    // Released by a kill (the next test pins that), so nothing is left running.
+    expect(await manager.stopSession(h.id, { mode: "kill" })).toBe("stopped");
+  });
+
+  it("mode kill skips the grace: the CLI ignores stdin EOF and the grace is held, yet the kill ends it at once (owner_kill)", async () => {
+    const { store, manager, isGroupAlive, killed } = setup({ options: { stopGraceMs: LONG_GRACE_MS }, deps: { schedule: holdGrace } });
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    expect(await within(manager.stopSession(h.id, { mode: "kill" }))).toBe("stopped");
+    expect(killed).toContainEqual([h.pgid, "SIGKILL"]);
+    expect(isGroupAlive(h.pgid as number)).toBe(false);
+    expect(statusEvents(store, h.id).at(-1)).toEqual({ from: "running", to: "stopped", reason: "owner_kill" });
+    expect(await h.done).toBe("stopped");
+  });
+
+  it("a kill that arrives while a graceful stop waits out its grace kills at once and joins that stop: one terminal transition, owner_kill", async () => {
+    const { store, manager, isGroupAlive } = setup({ options: { stopGraceMs: LONG_GRACE_MS }, deps: { schedule: holdGrace } });
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    const stop = manager.stopSession(h.id, { mode: "stop" });
+    await flush();
+    // In its grace: the CLI ignores the closed input, so its group is alive.
+    expect(isGroupAlive(h.pgid as number)).toBe(true);
+    const kill = manager.stopSession(h.id, { mode: "kill" });
+    expect(await within(kill)).toBe("stopped");
+    expect(await within(stop)).toBe("stopped");
+    expect(isGroupAlive(h.pgid as number)).toBe(false);
+    const terminal = statusEvents(store, h.id).filter((e) => e["to"] === "stopped" || e["to"] === "failed");
+    expect(terminal).toEqual([{ from: "running", to: "stopped", reason: "owner_kill" }]);
+  });
+
+  it("the acceptance is synchronous: a kill issued in the same tick as the owner's stop still cuts that stop's grace (owner_kill)", async () => {
+    // No flush between the two calls: the stop must have armed its grace cut
+    // before `stopSession` returned, or the kill joins a stop it cannot cut and
+    // both wait out the held grace forever.
+    const { store, manager, isGroupAlive } = setup({ options: { stopGraceMs: LONG_GRACE_MS }, deps: { schedule: holdGrace } });
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    const stop = manager.stopSession(h.id, { mode: "stop" });
+    const kill = manager.stopSession(h.id, { mode: "kill" });
+    expect(await within(kill)).toBe("stopped");
+    expect(await within(stop)).toBe("stopped");
+    expect(isGroupAlive(h.pgid as number)).toBe(false);
+    const terminal = statusEvents(store, h.id).filter((e) => e["to"] === "stopped" || e["to"] === "failed");
+    expect(terminal).toEqual([{ from: "running", to: "stopped", reason: "owner_kill" }]);
+  });
+
+  it("the acceptance is synchronous: when stopSession returns, onAccepted has run and the stop has begun (the CLI's input is closed)", async () => {
+    // The prompt the manager hands the SDK is the session's input channel; its
+    // `closed` is the stop's first step, so it says whether the stop has begun.
+    const prompts: unknown[] = [];
+    let realQuery: NonNullable<SessionManagerDeps["query"]> = () => {
+      throw new Error("query called before the test wired it");
+    };
+    const query: NonNullable<SessionManagerDeps["query"]> = (args) => {
+      prompts.push(args.prompt);
+      return realQuery(args);
+    };
+    const { store, manager, deps } = setup({ deps: { query } });
+    realQuery = deps.query as NonNullable<SessionManagerDeps["query"]>;
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    expect(prompts).toHaveLength(1);
+    const inputClosed = (): unknown => (prompts[0] as { readonly closed?: unknown }).closed;
+    expect(inputClosed()).toBe(false);
+    const seen: string[] = [];
+    const stopping = manager.stopSession(h.id, { mode: "stop", onAccepted: () => seen.push("accepted") });
+    // Before any await: the guards accepted, onAccepted ran, and the stop started.
+    expect(seen).toEqual(["accepted"]);
+    expect(inputClosed()).toBe(true);
+    expect(await stopping).toBe("stopped");
+    expect(statusEvents(store, h.id).at(-1)).toEqual({ from: "running", to: "stopped", reason: "owner_stop" });
+  });
+
+  it("a second stop during a stop's grace joins it and does not cut the grace short", async () => {
+    const { store, manager } = setup({ options: { stopGraceMs: LONG_GRACE_MS }, deps: { schedule: holdGrace } });
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    const first = manager.stopSession(h.id, { mode: "stop" });
+    await flush();
+    expect(await within(manager.stopSession(h.id, { mode: "stop" }), 100)).toBe("timed out");
+    expect(await within(manager.stopSession(h.id), 100)).toBe("timed out");
+    expect(await manager.stopSession(h.id, { mode: "kill" })).toBe("stopped");
+    expect(await first).toBe("stopped");
+  });
+
+  it("a kill that cannot confirm the group gone ends failed (kill_incomplete), the row flagged for the reaper", async () => {
+    const { store, manager } = setup({ deps: { schedule: immediate, killGroup: () => true, isGroupAlive: () => true } });
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    expect(await manager.stopSession(h.id, { mode: "kill" })).toBe("failed");
+    expect(statusEvents(store, h.id).at(-1)).toEqual({
+      from: "running",
+      to: "failed",
+      reason: "kill_incomplete",
+      cause: { to: "stopped", reason: "owner_kill" },
+      pgid: h.pgid,
+    });
+    expect(row(store, h.id).kill_incomplete_at).not.toBeNull();
+  });
+
+  it("onAccepted runs once, before the stop begins, only when the stop is accepted; a throw refuses the stop and changes nothing", async () => {
+    const { store, manager, isGroupAlive } = setup();
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+
+    // A throw: rejected, nothing stopped.
+    const refused = await manager.stopSession(h.id, { mode: "kill", onAccepted: () => { throw new Error("audit write failed"); } }).catch((e: unknown) => e);
+    expect(refused).toEqual(new Error("audit write failed"));
+    expect(row(store, h.id).status).toBe("running");
+    expect(isGroupAlive(h.pgid as number)).toBe(true);
+
+    const seen: string[] = [];
+    const stopping = manager.stopSession(h.id, { mode: "stop", onAccepted: () => seen.push(row(store, h.id).status) });
+    // Synchronously, while the session is still running.
+    expect(seen).toEqual(["running"]);
+    expect(await stopping).toBe("stopped");
+
+    // Ended, unknown and not-live sessions: never called.
+    const never = vi.fn();
+    expect(await manager.stopSession(h.id, { mode: "kill", onAccepted: never })).toBe("stopped");
+    expect(await manager.stopSession(9_999, { onAccepted: never }).catch((e: unknown) => (e as { code?: string }).code)).toBe("not_found");
+    const notLive = Number(store.prepare("INSERT INTO sessions (agent, status) VALUES ('wright', 'interrupted')").run().lastInsertRowid);
+    expect(await manager.stopSession(notLive, { onAccepted: never }).catch((e: unknown) => (e as { code?: string }).code)).toBe("not_live");
+    expect(never).not.toHaveBeenCalled();
+  });
+
+  it("a kill that arrives after the grace, while the stop's group kill is still running, only joins it: one terminal transition, owner_stop", async () => {
+    // The CLI's group survives SIGKILL and the kill's retry sleeps are held, so the stop stays in its group kill.
+    const GRACE_MS = 10;
+    let holding = false;
+    const held: (() => void)[] = [];
+    let realKill: (pgid: number, signal: NodeJS.Signals) => boolean = () => false;
+    const killGroup = (pgid: number, signal: NodeJS.Signals): boolean => (holding ? true : realKill(pgid, signal));
+    const schedule = (fn: () => void, ms: number): CancelTimer => {
+      if (holding && ms !== GRACE_MS) {
+        held.push(fn);
+        return () => {};
+      }
+      const t = setTimeout(fn, ms);
+      return () => clearTimeout(t);
+    };
+    const { store, manager, isGroupAlive, deps } = setup({ options: { stopGraceMs: GRACE_MS }, deps: { killGroup, schedule } });
+    realKill = deps.killGroup as (pgid: number, signal: NodeJS.Signals) => boolean;
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    holding = true;
+    const stop = manager.stopSession(h.id, { mode: "stop" });
+    // The grace has run out: the group kill is retrying (held).
+    await vi.waitFor(() => expect(held.length).toBeGreaterThan(0));
+    expect(isGroupAlive(h.pgid as number)).toBe(true);
+    const kill = manager.stopSession(h.id, { mode: "kill" });
+    holding = false;
+    for (const fn of held.splice(0)) fn();
+    expect(await within(kill)).toBe("stopped");
+    expect(await within(stop)).toBe("stopped");
+    expect(isGroupAlive(h.pgid as number)).toBe(false);
+    const terminal = statusEvents(store, h.id).filter((e) => e["to"] === "stopped" || e["to"] === "failed");
+    expect(terminal).toEqual([{ from: "running", to: "stopped", reason: "owner_stop" }]);
+  });
+
+  it("a kill that arrives during a kernel shutdown's grace cuts it short but keeps the shutdown's outcome: interrupted (kernel_shutdown)", async () => {
+    const { store, manager, isGroupAlive } = setup({ options: { stopGraceMs: LONG_GRACE_MS }, deps: { schedule: holdGrace } });
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    const all = manager.stopAll({ mode: "shutdown" });
+    await flush();
+    expect(isGroupAlive(h.pgid as number)).toBe(true);
+    expect(await within(manager.stopSession(h.id, { mode: "kill" }))).toBe("interrupted");
+    expect(await within(all)).toEqual([{ id: h.id, status: "interrupted" }]);
+    expect(isGroupAlive(h.pgid as number)).toBe(false);
+    const ended = statusEvents(store, h.id).filter((e) => e["to"] === "stopped" || e["to"] === "failed" || e["to"] === "interrupted");
+    expect(ended).toEqual([{ from: "running", to: "interrupted", reason: "kernel_shutdown" }]);
+  });
+
+  it("onAccepted is never called for a session that ended but is still live (failed:auth, waiting for its auth kill timer)", async () => {
+    const AUTH_TIMEOUT_MS = 3_600_000;
+    const { store, manager } = setup({
+      options: { authTimeoutMs: AUTH_TIMEOUT_MS },
+      deps: { schedule: (fn, ms): CancelTimer => (ms === AUTH_TIMEOUT_MS ? () => {} : immediate(fn, ms)) },
+      fakes: {
+        script: ({ stream, options }) => {
+          stream.push(fakeMsg.init(options.sessionId ?? ""));
+          stream.push(fakeMsg.apiRetry401());
+        },
+      },
+    });
+    const h = await manager.startSession(startParams(tmp));
+    await vi.waitFor(() => expect(row(store, h.id).status).toBe("failed:auth"));
+    const never = vi.fn();
+    for (const mode of ["stop", "kill"] as const) expect(await manager.stopSession(h.id, { mode, onAccepted: never })).toBe("failed:auth");
+    expect(never).not.toHaveBeenCalled();
+    // Settle its group (the auth timer is held).
+    expect(await manager.stopAll()).toEqual([{ id: h.id, status: "failed:auth", ended_on_its_own: true }]);
+  });
+
+  it("refuses an unknown mode (invalid_params) without stopping anything", async () => {
+    const { store, manager } = setup();
+    const [h] = (await startRunning(store, manager, 1)) as [SessionHandle];
+    const err = await manager.stopSession(h.id, { mode: "halt" as unknown as "stop" }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ name: "SessionError", code: "invalid_params" });
+    expect(row(store, h.id).status).toBe("running");
+    expect(await manager.stopSession(h.id)).toBe("stopped");
+  });
+});

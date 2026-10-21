@@ -23,7 +23,7 @@ import type { OrphanedSession } from "../sessions/orphans.js";
 import { SessionError } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { kernelVersion } from "../version.js";
-import { EVENT_FEED_PATH, handleEventFeed } from "./feed.js";
+import { EVENT_FEED_PATH, FEED_MAX_INBOUND_BYTES, handleEventFeed } from "./feed.js";
 import { engageKillSwitch, killSwitchState, releaseKillSwitch } from "./kill-switch.js";
 
 /** The only address the API ever binds. Not configurable: never `0.0.0.0` or `::`. */
@@ -457,8 +457,9 @@ export function readStatus(
  *   contributed route drains the body with `req.resume()`, unread).
  * - Contributed routes (`options.routes`) match after the phase 1 routes; an
  *   exact path or a `:param` pattern. Their handler gets `{params, query,
- *   body, store, now, killSwitch}` (the server's store and clock, and a
- *   read-only view of the kill switch), plus `sessions` when the server was
+ *   body, store, now, killSwitch, serialized}` (the server's store and clock,
+ *   a read-only view of the kill switch, and the server's one POST queue,
+ *   which phase 1's stop-all, resume and abandon also use), plus `sessions` when the server was
  *   given a `sessionManager` and `approvalApplier` when it was given one,
  *   where `body` is the parsed JSON body (`undefined` when empty):
  *   one over `MAX_CONTRIBUTED_BODY_BYTES` ⇒ `413 {"error":"body_too_large"}`,
@@ -502,7 +503,9 @@ export function readStatus(
  *   path ⇒ `405`, both closed, never upgraded. `close()` terminates every
  *   open feed socket.
  *
- * The POSTs run one at a time, in arrival order.
+ * The POSTs run one at a time, in arrival order, on one queue
+ * (`serialized`); a contributed route's work joins it only when the route
+ * runs it through the request's `serialized`.
  */
 export async function startApiServer(options: ApiServerOptions, deps: ApiServerDeps = {}): Promise<ApiServer> {
   if (options.token === "") throw new RangeError("the API token must not be empty");
@@ -655,7 +658,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     let status: number;
     let text: string;
     try {
-      const { status: answered, body: answerBody } = await match.route.handler({ params: match.params, query, body, store, now, killSwitch, ...managed, ...applier });
+      const { status: answered, body: answerBody } = await match.route.handler({ params: match.params, query, body, store, now, killSwitch, serialized, ...managed, ...applier });
       // The seam's body is JSON: serialized here, so a string answers a JSON
       // string (`send` writes a string as already-serialized text, phase 1's use).
       // Checked before anything is written: an invalid status reaches the 500 path,
@@ -703,7 +706,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
 
   // The live feed. `noServer`: the upgrade is authenticated and its path
   // checked below before `ws` ever sees the request.
-  const feed = new WebSocketServer({ noServer: true });
+  const feed = new WebSocketServer({ noServer: true, maxPayload: FEED_MAX_INBOUND_BYTES });
   const feedContext = { store, now };
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     // A client gone mid-answer must not throw out of the server (an unhandled 'error').
