@@ -7,11 +7,13 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { Duplex } from "node:stream";
+import { WebSocketServer } from "ws";
 import type { ApprovalApplier } from "../approvals/store.js";
 import type { AuthHealth, AuthProvider } from "../auth/types.js";
 import { localDay } from "../budget/index.js";
 import { compileRoutePath, matchRoutePath } from "../features/contribution.js";
-import type { OwnedRoute } from "../features/contribution.js";
+import type { KillSwitchView, OwnedRoute } from "../features/contribution.js";
 import { NO_REF, appendEvent, clip, errorMessage } from "../loop/internal.js";
 import type { EventLoop } from "../loop/loop.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
@@ -21,6 +23,7 @@ import type { OrphanedSession } from "../sessions/orphans.js";
 import { SessionError } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { kernelVersion } from "../version.js";
+import { EVENT_FEED_PATH, handleEventFeed } from "./feed.js";
 import { engageKillSwitch, killSwitchState, releaseKillSwitch } from "./kill-switch.js";
 
 /** The only address the API ever binds. Not configurable: never `0.0.0.0` or `::`. */
@@ -81,6 +84,13 @@ export interface ApiServerOptions {
   readonly routes?: readonly OwnedRoute[];
   /** The kernel-applied actions' applier, passed on every contributed route request (the approvals decision reads it). Default none. */
   readonly approvalApplier?: ApprovalApplier;
+  /**
+   * The kernel's whole session manager, passed on every contributed route
+   * request as `sessions` (a route that stops or kills one session reads it).
+   * Separate from `sessions` above, which phase 1's routes need only two
+   * methods of. Default none: the request then carries no `sessions`.
+   */
+  readonly sessionManager?: SessionManager;
 }
 
 export interface ApiServerDeps {
@@ -213,6 +223,36 @@ function send(res: ServerResponse, status: number, body: unknown, headers: Recor
     ...headers,
   });
   res.end(text);
+}
+
+/** The reason phrases a refused upgrade's status line carries. */
+const UPGRADE_REFUSALS = {
+  400: "Bad Request",
+  401: "Unauthorized",
+  404: "Not Found",
+  405: "Method Not Allowed",
+} as const;
+
+/**
+ * Answer an upgrade request on its raw socket (it never reaches a
+ * `ServerResponse`) with `status` and a JSON body, the same headers `send`
+ * writes, then close the socket once the answer is flushed. Never upgraded.
+ */
+function refuseUpgrade(socket: Duplex, status: keyof typeof UPGRADE_REFUSALS, body: string, headers: Record<string, string> = {}): void {
+  const lines = [
+    `HTTP/1.1 ${status} ${UPGRADE_REFUSALS[status]}`,
+    "Content-Type: application/json; charset=utf-8",
+    `Content-Length: ${Buffer.byteLength(body)}`,
+    "Cache-Control: no-store",
+    "Connection: close",
+    ...Object.entries(headers).map(([name, value]) => `${name}: ${value}`),
+  ];
+  if (!socket.writable) {
+    socket.destroy();
+    return;
+  }
+  socket.once("finish", () => socket.destroy());
+  socket.end(`${lines.join("\r\n")}\r\n\r\n${body}`);
 }
 
 /**
@@ -417,8 +457,10 @@ export function readStatus(
  *   contributed route drains the body with `req.resume()`, unread).
  * - Contributed routes (`options.routes`) match after the phase 1 routes; an
  *   exact path or a `:param` pattern. Their handler gets `{params, query,
- *   body, store, now}` (the server's store and clock), where `body` is the
- *   parsed JSON body (`undefined` when empty):
+ *   body, store, now, killSwitch}` (the server's store and clock, and a
+ *   read-only view of the kill switch), plus `sessions` when the server was
+ *   given a `sessionManager` and `approvalApplier` when it was given one,
+ *   where `body` is the parsed JSON body (`undefined` when empty):
  *   one over `MAX_CONTRIBUTED_BODY_BYTES` ⇒ `413 {"error":"body_too_large"}`,
  *   malformed JSON ⇒ `400 {"error":"invalid_json"}`, both without calling
  *   the handler. It answers `{status, body}`: `body` is sent as JSON
@@ -450,6 +492,15 @@ export function readStatus(
  *   stable `SessionError` code); success ⇒ `{id, status: "abandoned"}`. An
  *   abandon whose client has disconnected by the time its turn comes is
  *   skipped: nothing is written, no event is appended, nothing is answered.
+ * - A WebSocket upgrade (Node's `'upgrade'` event, which never reaches the
+ *   request handler) is authenticated the same way first: missing or wrong
+ *   token ⇒ a raw `401 {"error":"unauthorized"}` with `WWW-Authenticate:
+ *   Bearer`, then the socket is closed, never upgraded. Authenticated, only
+ *   `GET /events/stream` (`EVENT_FEED_PATH`) is upgraded and handed to
+ *   `handleEventFeed` (`./feed.ts`) with the server's store and clock; any
+ *   other path ⇒ `404 {"error":"not_found"}` and a wrong method on the feed
+ *   path ⇒ `405`, both closed, never upgraded. `close()` terminates every
+ *   open feed socket.
  *
  * The POSTs run one at a time, in arrival order.
  */
@@ -465,6 +516,10 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
   const loomwrightStatus = sessions.loomwrightStatus?.bind(sessions);
   // Added to every contributed route's request only when the composition built one.
   const applier = options.approvalApplier === undefined ? {} : { approvalApplier: options.approvalApplier };
+  // The same: `sessions` only when the composition gave the whole manager.
+  const managed = options.sessionManager === undefined ? {} : { sessions: options.sessionManager };
+  // Read-only: a route may read the switch, never engage or release it.
+  const killSwitch: KillSwitchView = Object.freeze({ state: () => killSwitchState(store) });
 
   let control: Promise<unknown> = Promise.resolve();
   const serialized = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -600,7 +655,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     let status: number;
     let text: string;
     try {
-      const { status: answered, body: answerBody } = await match.route.handler({ params: match.params, query, body, store, now, ...applier });
+      const { status: answered, body: answerBody } = await match.route.handler({ params: match.params, query, body, store, now, killSwitch, ...managed, ...applier });
       // The seam's body is JSON: serialized here, so a string answers a JSON
       // string (`send` writes a string as already-serialized text, phase 1's use).
       // Checked before anything is written: an invalid status reaches the 500 path,
@@ -646,6 +701,47 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     });
   });
 
+  // The live feed. `noServer`: the upgrade is authenticated and its path
+  // checked below before `ws` ever sees the request.
+  const feed = new WebSocketServer({ noServer: true });
+  const feedContext = { store, now };
+  server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    // A client gone mid-answer must not throw out of the server (an unhandled 'error').
+    socket.on("error", () => socket.destroy());
+    // Headers only, as for every request: nothing is upgraded before the caller is authenticated.
+    if (!isAuthorized(req, expected)) {
+      refuseUpgrade(socket, 401, UNAUTHORIZED_BODY, { "WWW-Authenticate": "Bearer" });
+      return;
+    }
+    let path: string;
+    try {
+      path = new URL(req.url ?? "/", "http://localhost").pathname;
+    } catch {
+      refuseUpgrade(socket, 400, JSON.stringify({ error: "bad_request" }));
+      return;
+    }
+    if (path !== EVENT_FEED_PATH) {
+      refuseUpgrade(socket, 404, JSON.stringify({ error: "not_found" }));
+      return;
+    }
+    if (req.method !== "GET") {
+      refuseUpgrade(socket, 405, JSON.stringify({ error: "method_not_allowed" }), { Allow: "GET" });
+      return;
+    }
+    // `ws` validates the handshake itself (a bad key or version ⇒ 400, closed).
+    feed.handleUpgrade(req, socket, head, (ws) => {
+      // A malformed client frame is an 'error' on the WebSocket; with no
+      // listener it would be thrown and take the daemon down. Drop the client.
+      ws.on("error", () => ws.terminate());
+      try {
+        const served = handleEventFeed(ws, req, feedContext);
+        if (served instanceof Promise) served.catch(() => ws.terminate());
+      } catch {
+        ws.terminate();
+      }
+    });
+  });
+
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error): void => reject(err);
     server.once("error", onError);
@@ -665,6 +761,10 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
       closing ??= new Promise<void>((resolve) => {
         server.close(() => resolve());
         server.closeIdleConnections();
+        // An upgraded socket is no longer an HTTP request: nothing would end
+        // it, so an open feed socket would keep `server.close` from resolving.
+        for (const client of feed.clients) client.terminate();
+        feed.close();
       });
       return closing;
     },
