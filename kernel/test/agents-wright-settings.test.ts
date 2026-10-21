@@ -336,6 +336,17 @@ describe("a fresh data dir (AC7)", () => {
     const read = readAgentSettings(env.dataDir, "wright");
     expect(read.ok && [read.settings.model, read.settings.effort, read.settings.limits]).toEqual(["m1", "high", { tokens_per_day: 5000 }]);
   });
+
+  it("a broken data dir (config/agents a regular file) is 409 settings_invalid naming wright.json, never a 500; nothing written, no event", async () => {
+    const agentsDir = dirname(wrightFile());
+    mkdirSync(dirname(agentsDir), { recursive: true });
+    writeFileSync(agentsDir, "not a directory");
+    const r = await api("POST", "/agents/wright/set", { field: "model", value: "m1" });
+    expect([r.status, r.body.error, r.body.file, r.body.field]).toEqual([409, "settings_invalid", wrightFile(), "the file"]);
+    expect(r.body.message).toMatch(new RegExp(`^${wrightFile().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: unreadable \\(E[A-Z]+\\)$`));
+    expect(readFileSync(agentsDir, "utf8")).toBe("not a directory");
+    expect(events(env.store)).toEqual([]);
+  });
 });
 
 // ---- AC8: Wright's roster entry reports its limits ------------------------------------------------

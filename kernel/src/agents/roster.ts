@@ -363,21 +363,36 @@ async function set(req: ContributedRouteRequest): Promise<ContributedRouteRespon
   /** The answer's `agent`: a member's row, or Wright's roster entry (read after the write). */
   const agentOf = () => (row === undefined ? wrightEntry(req.store, req.now()) : row);
   const file = agentSettingsPath(dataDir, id);
+  /** A filesystem error reading (or, for Wright, creating) the file: a refusal naming it, never a 500. */
+  const unreadable = (err: unknown) => refusal(409, "settings_invalid", `${file}: unreadable (${String((err as { code?: unknown }).code ?? "error")})`, { file, field: "the file" });
   // Wright's file, when absent, is created with its default content by the one reader's
-  // exclusive create (as the brain's first message creates it); a member's never is.
-  if (isWright) readAgentSettings(dataDir, WRIGHT_ID);
+  // exclusive create (as the brain's first message creates it); a member's never is. The
+  // reader throws when it cannot create Wright's directory or file (a broken data dir).
+  if (isWright) {
+    try {
+      readAgentSettings(dataDir, WRIGHT_ID);
+    } catch (err) {
+      return unreadable(err);
+    }
+  }
   let base: Buffer;
   try {
     if (statSync(file).size > MAX_SETTINGS_BYTES) return refusal(409, "settings_invalid", `${file}: over ${MAX_SETTINGS_BYTES} bytes`, { file, field: "the file" });
     base = readFileSync(file);
   } catch (err) {
-    const code = (err as { code?: unknown }).code;
-    if (code === "ENOENT") return refusal(409, "settings_missing", `${file}: no settings file for ${id}`, { file });
-    return refusal(409, "settings_invalid", `${file}: unreadable (${String(code ?? "error")})`, { file, field: "the file" });
+    if ((err as { code?: unknown }).code === "ENOENT") return refusal(409, "settings_missing", `${file}: no settings file for ${id}`, { file });
+    return unreadable(err);
   }
   // The whole file, through the one reader: a file it refuses is never rewritten. A file
   // with no model may still get one (its every other field already passed the reader).
-  const check = readAgentSettings(dataDir, id, { homeDir: homedir() });
+  // For Wright the reader may create the file again (removed since the read above), and
+  // so may throw like the pre-create.
+  let check: ReturnType<typeof readAgentSettings>;
+  try {
+    check = readAgentSettings(dataDir, id, { homeDir: homedir() });
+  } catch (err) {
+    return unreadable(err);
+  }
   if (!check.ok && !(check.error === "model_unset" && field === "model")) {
     return refusal(409, check.error, check.message, { ...("file" in check ? { file: check.file } : {}), ...("field" in check ? { field: check.field } : {}) });
   }
