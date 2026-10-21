@@ -15,6 +15,7 @@ import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/i
 import {
   ASSISTANT_TEXT_CUT,
   MAX_OUTPUT_LIMIT,
+  MAX_RECORDER_SESSIONS,
   MAX_SESSION_OUTPUT_BYTES,
   MAX_SESSION_OUTPUT_ROWS,
   OUTPUT_FEED_INTERVAL_MS,
@@ -399,6 +400,118 @@ describe("the caps (AC2)", () => {
   });
 });
 
+// ---- The recorder's state rebuilt from disk: a restart, or a dropped state ------------------
+
+describe("the recorder's state rebuilt from disk", () => {
+  const LOAD_SQL = "max(seq) AS max_seq";
+  const loads = (spy: { mock: { calls: unknown[][] } }): number => spy.mock.calls.filter((c) => String(c[0]).includes(LOAD_SQL)).length;
+
+  it("a restart mid-turn copies each decision once and loses none, though decisions were copied out of event order", () => {
+    const h = recorderHarness();
+    h.record(msg.toolUse("b", "Bash", { command: "ls" }));
+    // Read's decision (hook before its message) is event r1, then Bash's b1.
+    addDecision(h.store, h.id, { tool: "Read", decision: "allow", reason: "tool_allowed" });
+    addDecision(h.store, h.id, { tool: "Bash", decision: "deny", reason: "bash_prefix_not_allowed", command: "ls" });
+    h.record(msg.text("waiting"));
+    // b1 is copied, r1 waits for its call.
+    expect(kinds(rows(h.store, h.id))).toEqual(["tool_call", "tool_decision", "assistant_text"]);
+    const again = createSessionOutputRecorder({ now: h.time.now, setTimer: h.time.setTimer, warn: h.warn });
+    again.record(h.store, h.id, msg.toolUse("r", "Read", { file_path: "/x" }));
+    again.record(h.store, h.id, msg.toolUse("b2", "Bash", { command: "pwd" }));
+    again.record(h.store, h.id, msg.result());
+    const all = rows(h.store, h.id);
+    expect(all.map((r) => [r.kind, r.payload.name ?? r.payload.tool ?? r.payload.subtype ?? null])).toEqual([
+      ["tool_call", "Bash"],
+      ["tool_decision", "Bash"],
+      ["assistant_text", null],
+      ["tool_call", "Read"],
+      ["tool_decision", "Read"],
+      ["tool_call", "Bash"],
+      ["result", "success"],
+    ]);
+    // Each event copied exactly once.
+    const copied = all.filter((r) => r.kind === "tool_decision").map((r) => r.payload);
+    expect(copied).toHaveLength(2);
+    expect(new Set(copied.map((p) => JSON.stringify(p))).size).toBe(2);
+  });
+
+  it("a restart keeps a recorded call with no decision yet: its decision arriving later is written after it", () => {
+    const h = recorderHarness();
+    h.record(msg.toolUse("b", "Bash", { command: "ls" }));
+    const again = createSessionOutputRecorder({ now: h.time.now, setTimer: h.time.setTimer, warn: h.warn });
+    addDecision(h.store, h.id, { tool: "Bash", decision: "deny", reason: "bash_prefix_not_allowed", command: "ls" });
+    again.record(h.store, h.id, msg.toolResult("b", "denied", true));
+    expect(kinds(rows(h.store, h.id))).toEqual(["tool_call", "tool_decision", "tool_result"]);
+  });
+
+  for (const restart of [false, true]) {
+    it(`a result ends the turn's calls with no decision: state ${restart ? "rebuilt" : "kept"}`, () => {
+      const h = recorderHarness();
+      h.record(msg.toolUse("b", "Bash", { command: "ls" }));
+      // The result is within the interval: the state is kept, its timer armed.
+      h.record(msg.result());
+      const r = restart ? createSessionOutputRecorder({ now: h.time.now, setTimer: h.time.setTimer, warn: h.warn }) : h.recorder;
+      addDecision(h.store, h.id, { tool: "Bash", decision: "allow", reason: "tool_allowed" });
+      r.record(h.store, h.id, msg.toolUse("b2", "Bash", { command: "pwd" }));
+      // The new decision belongs to the new call, not the finished turn's.
+      expect(kinds(rows(h.store, h.id))).toEqual(["tool_call", "result", "tool_call", "tool_decision"]);
+    });
+  }
+
+  it(`keeps at most ${MAX_RECORDER_SESSIONS} idle states: a dropped one is rebuilt with its pending decision and throttle`, () => {
+    const h = recorderHarness();
+    addDecision(h.store, h.id, { tool: "Read", decision: "allow", reason: "tool_allowed" });
+    h.record(msg.text("first")); // drains Read's decision into pending
+    h.time.advance(OUTPUT_FEED_INTERVAL_MS);
+    for (let i = 0; i < MAX_RECORDER_SESSIONS; i++) h.record(msg.text("other"), addSession(h.store));
+    expect(h.time.live()).toHaveLength(0);
+    const prepare = vi.spyOn(h.store, "prepare");
+    h.record(msg.toolUse("r", "Read", { file_path: "/x" }));
+    expect(loads(prepare)).toBe(1);
+    expect(kinds(rows(h.store, h.id))).toEqual(["assistant_text", "tool_call", "tool_decision"]);
+    expect(eventsOf(h.store, "session_output_appended", h.id).map((e) => e.payload)).toEqual([
+      { from_seq: 1, to_seq: 1 },
+      { from_seq: 2, to_seq: 3 },
+    ]);
+    // A kept state is not reloaded.
+    h.record(msg.text("again"));
+    expect(loads(prepare)).toBe(1);
+  });
+
+  it("never drops a state with an armed timer: its range is announced, then a state past the bound is dropped", () => {
+    const h = recorderHarness();
+    h.record(msg.text("one"));
+    h.record(msg.text("two")); // within the interval: the timer is armed
+    // Every other session's timer is armed too, so none can be dropped: the map is one past the bound.
+    for (let i = 0; i < MAX_RECORDER_SESSIONS; i++) {
+      const other = addSession(h.store);
+      h.record(msg.text("other"), other);
+      h.record(msg.text("other again"), other);
+    }
+    expect(h.time.live()).toHaveLength(MAX_RECORDER_SESSIONS + 1);
+    h.time.advance(OUTPUT_FEED_INTERVAL_MS);
+    expect(eventsOf(h.store, "session_output_appended", h.id).map((e) => e.payload)).toEqual([
+      { from_seq: 1, to_seq: 1 },
+      { from_seq: 2, to_seq: 2 },
+    ]);
+    const prepare = vi.spyOn(h.store, "prepare");
+    h.record(msg.text("three"));
+    expect(loads(prepare)).toBe(1);
+    expect(rows(h.store, h.id).map((r) => r.seq)).toEqual([1, 2, 3]);
+  });
+
+  it("a dropped cut state is rebuilt cut: nothing more is written", () => {
+    const h = recorderHarness();
+    for (let i = 0; i < 400; i++) h.record(msg.text("x".repeat(7_000)));
+    const before = rows(h.store, h.id).length;
+    h.time.advance(OUTPUT_FEED_INTERVAL_MS);
+    for (let i = 0; i < MAX_RECORDER_SESSIONS; i++) h.record(msg.text("other"), addSession(h.store));
+    h.record(msg.text("more"));
+    h.record(msg.result());
+    expect(rows(h.store, h.id)).toHaveLength(before);
+  });
+});
+
 // ---- AC3: a failing store never fails a session ------------------------------------------
 
 describe("a failing output log write (AC3)", () => {
@@ -435,6 +548,16 @@ describe("a failing output log write (AC3)", () => {
       `studio: session ${h.id} output log write failed: bad \\x1b[31m end`,
       `studio: session ${other} output log write failed: bad \\x1b[31m end`,
     ]);
+  });
+
+  it(`keeps at most ${MAX_RECORDER_SESSIONS} warned sessions: the oldest forgotten one warns once more`, () => {
+    const h = recorderHarness();
+    h.store.prepare("CREATE TRIGGER refuse_output BEFORE INSERT ON session_output BEGIN SELECT RAISE(ABORT, 'no'); END").run();
+    h.record(msg.text("a"));
+    for (let i = 0; i < MAX_RECORDER_SESSIONS; i++) h.record(msg.text("b"), addSession(h.store));
+    expect(h.warn).toHaveBeenCalledTimes(MAX_RECORDER_SESSIONS + 1);
+    h.record(msg.text("a again"));
+    expect(h.warn).toHaveBeenCalledTimes(MAX_RECORDER_SESSIONS + 2);
   });
 
   it("a warn that throws is swallowed too: record never throws", () => {
@@ -538,6 +661,24 @@ describe("session_output_appended (AC5)", () => {
       { from_seq: 2, to_seq: 2 },
     ]);
     expect(h.time.live()).toHaveLength(0);
+  });
+
+  it("a wall clock stepped back an hour announces at once: the feed never waits longer than one interval", () => {
+    const h = recorderHarness();
+    h.record(msg.init());
+    h.time.advance(-60 * 60 * 1_000);
+    h.record(msg.text("after the step"));
+    expect(eventsOf(h.store, "session_output_appended", h.id).map((e) => e.payload)).toEqual([
+      { from_seq: 1, to_seq: 1 },
+      { from_seq: 2, to_seq: 2 },
+    ]);
+    // Within the interval of the new stamp: the trailing timer is armed for at most one interval.
+    h.record(msg.text("next"));
+    const armed = h.time.live();
+    expect(armed).toHaveLength(1);
+    expect((armed[0] as (typeof armed)[number]).at - h.time.now().getTime()).toBeLessThanOrEqual(OUTPUT_FEED_INTERVAL_MS);
+    h.time.advance(OUTPUT_FEED_INTERVAL_MS);
+    expect(eventsOf(h.store, "session_output_appended", h.id)).toHaveLength(3);
   });
 
   it("a trailing timer that fires after the store closed writes nothing and does not warn", () => {

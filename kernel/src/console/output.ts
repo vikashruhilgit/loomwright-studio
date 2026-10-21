@@ -49,6 +49,12 @@ export const ASSISTANT_TEXT_CUT = 8_000;
 export const TOOL_JSON_CUT = 4_000;
 /** At most one `session_output_appended` event per session per this many milliseconds. */
 export const OUTPUT_FEED_INTERVAL_MS = 250;
+/**
+ * Per-session recorder states kept in memory (least recently used dropped
+ * first; a state is rebuilt from disk when its session records again), and
+ * per-session warned flags kept.
+ */
+export const MAX_RECORDER_SESSIONS = 64;
 /** The feed event kind announcing new rows: payload `{from_seq, to_seq}`. */
 export const SESSION_OUTPUT_APPENDED = "session_output_appended";
 
@@ -216,30 +222,94 @@ const INSERT_ROW = "INSERT INTO session_output (session_id, seq, kind, payload_j
 const INSERT_APPENDED = "INSERT INTO events (at, kind, actor, session_id, payload_json) VALUES (?, 'session_output_appended', 'kernel', ?, ?)";
 const IS_CUT_ROW = "kind = 'system' AND json_extract(payload_json, '$.subtype') = 'output_cut'";
 
-/** A session's state from what is on disk, so a daemon restart that resumes a session continues its log. */
+/** A `tool_decision` event's payload as the recorder holds it: parsed, or `null` when unreadable. */
+function decisionOf(payloadJson: string | null): PendingDecision {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(payloadJson ?? "null");
+  } catch {
+    payload = null;
+  }
+  const tool = asRecord(payload)?.tool;
+  return { tool: typeof tool === "string" ? tool : null, payload };
+}
+
+/** The `payload_json` a decision's row is written with: what a copied row is compared on. */
+function decisionJson(decision: PendingDecision): string {
+  return JSON.stringify(decision.payload) ?? "null";
+}
+
+/**
+ * A session's state from what is on disk, so a daemon restart that resumes a
+ * session (or a recorder that dropped the state) continues its log exactly as
+ * the dropped state would have:
+ *
+ * - the decision matching is rebuilt, not counted: every `tool_decision`
+ *   event of the session, less the `tool_decision` rows already copied
+ *   (compared by exact `payload_json`; identical payloads are
+ *   interchangeable), is pending in event-id order, and the cursor is past
+ *   the session's last decision event. Decisions are copied out of event
+ *   order (FIFO per tool name), so the N-th event is not the N-th copy;
+ * - the calls with no decision yet are rebuilt by replaying the copied rows in
+ *   `seq` order, the way `record` built them: a `tool_call` adds one for its
+ *   tool, a `tool_decision` takes one of its tool when there is one, and a
+ *   `result` clears them.
+ */
 function loadState(store: Store, sessionId: number): SessionState {
   const totals = store
-    .prepare<[number], { max_seq: number | null; rows: number | null; bytes: number | null; cuts: number; decisions: number }>(
+    .prepare<[number], { max_seq: number | null; rows: number | null; bytes: number | null; cuts: number }>(
       `SELECT max(seq) AS max_seq,
               count(CASE WHEN NOT (${IS_CUT_ROW}) THEN 1 END) AS rows,
               sum(CASE WHEN ${IS_CUT_ROW} THEN 0 ELSE length(CAST(payload_json AS BLOB)) END) AS bytes,
-              count(CASE WHEN ${IS_CUT_ROW} THEN 1 END) AS cuts,
-              count(CASE WHEN kind = 'tool_decision' THEN 1 END) AS decisions
+              count(CASE WHEN ${IS_CUT_ROW} THEN 1 END) AS cuts
          FROM session_output WHERE session_id = ?`,
     )
     .get(sessionId);
-  const decisions = totals?.decisions ?? 0;
-  // Each copied decision is one row, so the cursor is the id of the last event copied. A decision drained but never
-  // written (a kill mid-step, a dropped state) is after it, so it is drained again.
-  const cursor =
-    decisions === 0
-      ? 0
-      : (store
-          .prepare<[number, number], number>("SELECT id FROM events WHERE kind = 'tool_decision' AND session_id = ? ORDER BY id LIMIT 1 OFFSET ?")
-          .pluck()
-          .get(sessionId, decisions - 1) ??
-        store.prepare<[], number | null>("SELECT max(id) FROM events").pluck().get() ??
-        0);
+  const cut = (totals?.cuts ?? 0) > 0;
+  const pending: PendingDecision[] = [];
+  const unmatched = new Map<string, number>();
+  let cursor = 0;
+  // A cut log keeps nothing more: no matching state to rebuild.
+  if (!cut) {
+    const copied = new Map<string, number>();
+    const matching = store
+      .prepare<[number], { kind: string; payload_json: string }>(
+        "SELECT kind, payload_json FROM session_output WHERE session_id = ? AND kind IN ('tool_call', 'tool_decision', 'result') ORDER BY seq",
+      )
+      .all(sessionId);
+    for (const row of matching) {
+      if (row.kind === "result") {
+        unmatched.clear();
+        continue;
+      }
+      if (row.kind === "tool_decision") copied.set(row.payload_json, (copied.get(row.payload_json) ?? 0) + 1);
+      let payload: Record<string, unknown> | undefined;
+      try {
+        payload = asRecord(JSON.parse(row.payload_json));
+      } catch {
+        payload = undefined;
+      }
+      if (row.kind === "tool_call") {
+        const name = typeof payload?.name === "string" ? payload.name : "";
+        unmatched.set(name, (unmatched.get(name) ?? 0) + 1);
+      } else if (typeof payload?.tool === "string") {
+        const left = unmatched.get(payload.tool) ?? 0;
+        if (left > 1) unmatched.set(payload.tool, left - 1);
+        else unmatched.delete(payload.tool);
+      }
+    }
+    const events = store
+      .prepare<[number], { id: number; payload_json: string | null }>("SELECT id, payload_json FROM events WHERE kind = 'tool_decision' AND session_id = ? ORDER BY id")
+      .all(sessionId);
+    for (const e of events) {
+      cursor = e.id;
+      const decision = decisionOf(e.payload_json);
+      const key = decisionJson(decision);
+      const left = copied.get(key) ?? 0;
+      if (left > 0) copied.set(key, left - 1);
+      else pending.push(decision);
+    }
+  }
   const last = store
     .prepare<[number], { at: string; payload_json: string | null }>(
       "SELECT at, payload_json FROM events WHERE kind = 'session_output_appended' AND session_id = ? ORDER BY id DESC LIMIT 1",
@@ -260,10 +330,10 @@ function loadState(store: Store, sessionId: number): SessionState {
     nextSeq: (totals?.max_seq ?? 0) + 1,
     rows: totals?.rows ?? 0,
     bytes: totals?.bytes ?? 0,
-    cut: (totals?.cuts ?? 0) > 0,
+    cut,
     cursor,
-    pending: [],
-    unmatched: new Map(),
+    pending,
+    unmatched,
     announcedTo,
     lastAnnouncedAt,
     ended: false,
@@ -321,9 +391,29 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
       }
       if (set.has(sessionId)) return;
       set.add(sessionId);
+      // Bounded like the states: the oldest warned session may warn once more after it is forgotten.
+      for (const old of set) {
+        if (set.size <= MAX_RECORDER_SESSIONS) break;
+        set.delete(old);
+      }
       warn(`studio: session ${sessionId} output log write failed: ${shown(errorText(err))}`);
     } catch {
       // A warn that throws must not break the session either.
+    }
+  };
+
+  /**
+   * Keep at most `MAX_RECORDER_SESSIONS` states, dropping the least recently
+   * used first. A state with an armed trailing timer is never dropped here (its
+   * timer drops it once it has announced), so no feed range is left
+   * unannounced. Nor is `keep`, the session being recorded. Anything else a
+   * dropped state held (pending decisions, calls with no decision, the
+   * throttle, a cut) `loadState` rebuilds from disk.
+   */
+  const evict = (sessions: Map<number, SessionState>, keep: number): void => {
+    for (const [id, s] of sessions) {
+      if (sessions.size <= MAX_RECORDER_SESSIONS) return;
+      if (id !== keep && s.timer === undefined) sessions.delete(id);
     }
   };
 
@@ -338,16 +428,7 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
         "SELECT id, payload_json FROM events WHERE kind = 'tool_decision' AND session_id = ? AND id > ? AND id <= ? ORDER BY id",
       )
       .all(sessionId, state.cursor, top);
-    for (const e of events) {
-      let payload: unknown;
-      try {
-        payload = JSON.parse(e.payload_json ?? "null");
-      } catch {
-        payload = null;
-      }
-      const tool = asRecord(payload)?.tool;
-      state.pending.push({ tool: typeof tool === "string" ? tool : null, payload });
-    }
+    for (const e of events) state.pending.push(decisionOf(e.payload_json));
     state.cursor = top;
   };
 
@@ -369,12 +450,13 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
       try {
         if (!store.isOpen) return;
         if (current.nextSeq - 1 > current.announcedTo) announce(store, sessionId, current, now());
-        if (current.ended) sessions.delete(sessionId);
+        // Announced: a finished turn, or a state past the bound, is dropped (`loadState` rebuilds it).
+        if (current.ended || sessions.size > MAX_RECORDER_SESSIONS) sessions.delete(sessionId);
       } catch (err) {
         fail(store, sessionId, err);
       }
     };
-    handle = setTimer(fire, Math.max(0, ms));
+    handle = setTimer(fire, Math.min(OUTPUT_FEED_INTERVAL_MS, Math.max(0, ms)));
     state.timer = handle;
   };
 
@@ -385,6 +467,11 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
       let state = sessions.get(sessionId);
       if (state === undefined) {
         state = loadState(store, sessionId);
+        sessions.set(sessionId, state);
+        evict(sessions, sessionId);
+      } else {
+        // Most recently used last: `evict` drops from the front.
+        sessions.delete(sessionId);
         sessions.set(sessionId, state);
       }
       // Cut: nothing more is kept, and nothing touches the store.
@@ -413,14 +500,18 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
           draft.rows += 1;
           draft.bytes += size;
           draft.ended = kind === "result";
+          // A finished turn's calls take no later decision (a reload rebuilds the same: `loadState`).
+          if (kind === "result") draft.unmatched.clear();
           return true;
         };
+        /** Write one decision exactly as `loadState` compares it with its event (`decisionJson`). */
+        const putDecision = (decision: PendingDecision): boolean => put("tool_decision", decision.payload);
         /** Write the oldest pending decision for `tool`; `undefined` when none is pending. */
         const putDecisionFor = (tool: string): boolean | undefined => {
           const i = draft.pending.findIndex((d) => d.tool === tool);
           if (i < 0) return undefined;
           const [decision] = draft.pending.splice(i, 1);
-          return put("tool_decision", (decision as PendingDecision).payload);
+          return putDecision(decision as PendingDecision);
         };
 
         drain(store, sessionId, draft);
@@ -437,7 +528,7 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
           if (draft.cut) break;
           if (row.kind === "result") {
             // A decision whose call never arrived is kept, before the result.
-            while (draft.pending.length > 0 && !draft.cut) put("tool_decision", (draft.pending.shift() as PendingDecision).payload);
+            while (draft.pending.length > 0 && !draft.cut) putDecision(draft.pending.shift() as PendingDecision);
           }
           if (!put(row.kind, row.payload)) break;
           if (row.kind === "tool_call" && row.tool !== undefined && putDecisionFor(row.tool) === undefined) {
@@ -446,7 +537,9 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
         }
         if (draft.nextSeq === firstSeq) return { cancel: false, armIn: undefined };
         const elapsed = draft.lastAnnouncedAt === undefined ? Number.POSITIVE_INFINITY : at.getTime() - draft.lastAnnouncedAt;
-        if (elapsed >= OUTPUT_FEED_INTERVAL_MS) {
+        // A wall clock stepped back (or a last announcement stamped in the future) makes `elapsed` negative: the
+        // interval is treated as passed, so the trailing wait is never longer than one interval.
+        if (elapsed < 0 || elapsed >= OUTPUT_FEED_INTERVAL_MS) {
           announce(store, sessionId, draft, at);
           return { cancel: true, armIn: undefined };
         }
