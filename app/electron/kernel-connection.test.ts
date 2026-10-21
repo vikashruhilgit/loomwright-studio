@@ -229,6 +229,43 @@ describe("the CLI's order and the loopback-only rule", () => {
     // Percent-encoded dots are encoded again, so they stay literal text.
     expect(contractPath({ method: "GET", path: "/agents/:id", params: { id: "%2e%2e" } })).toBe("/agents/%252e%252e");
   });
+
+  it("refuses a param URL encoding cannot carry (a lone surrogate) or that cannot be coerced: not_in_contract, never a rejection", async () => {
+    const unencodable = [
+      { method: "GET", path: "/agents/:id", params: { id: "\ud800" } },
+      { method: "POST", path: "/sessions/:id/kill", params: { id: "a\udfffb" } },
+      {
+        method: "GET",
+        path: "/agents/:id",
+        params: {
+          id: {
+            toString: () => {
+              throw new Error("no");
+            },
+          },
+        },
+      },
+    ] as const;
+    for (const req of unencodable) expect(contractPath(req as never)).toBeUndefined();
+    writeApiInfo({ pid: 4242, port: 51_234 });
+    const conn = createKernelConnection(deps());
+    for (const req of unencodable) expect(await conn.request(req as never)).toEqual({ ok: false, status: 400, body: { error: "not_in_contract" } });
+    expect(calls).toEqual([]);
+    // A paired surrogate is a whole character and still goes through.
+    expect(contractPath({ method: "GET", path: "/agents/:id", params: { id: "😀" } })).toBe("/agents/%F0%9F%98%80");
+  });
+
+  it("a body JSON cannot carry (a cycle, a BigInt) answers invalid_json and sends nothing, never a rejection", async () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic["self"] = cyclic;
+    writeApiInfo({ pid: 4242, port: 51_234 });
+    const conn = createKernelConnection(deps());
+    for (const body of [cyclic, { n: 1n }]) {
+      expect(await conn.request({ method: "POST", path: "/stop-all", body })).toEqual({ ok: false, status: 400, body: { error: "invalid_json" } });
+    }
+    expect(calls).toEqual([]);
+    expect(logged.join("\n")).not.toContain(TOKEN);
+  });
 });
 
 describe("the fixture seam lives only in the main process's environment", () => {

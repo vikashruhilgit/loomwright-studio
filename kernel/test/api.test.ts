@@ -874,6 +874,17 @@ describe("the event feed upgrade: GET /events/stream (phase 5)", () => {
     expect(answer).not.toContain("101 Switching Protocols");
   });
 
+  it("never upgrades a request target URL parsing rejects, even with the token: 400 bad_request and the socket is closed", async () => {
+    const server = await serve();
+    // Absolute-form with an unclosed IPv6 host: Node's parser passes it to 'upgrade', `new URL` throws ERR_INVALID_URL.
+    const answer = await rawUpgrade(server, "http://[::1/", `Bearer ${TOKEN}`);
+    expect(answer.split("\r\n")[0]).toBe("HTTP/1.1 400 Bad Request");
+    expect(answer.split("\r\n\r\n")[1]).toBe('{"error":"bad_request"}');
+    expect(answer).not.toContain("101 Switching Protocols");
+    expect(answer.toLowerCase()).not.toContain("sec-websocket-accept");
+    expect((await call(server, "/status")).status).toBe(200);
+  });
+
   it("a client that sends a malformed frame on the feed socket is dropped; the server keeps answering", async () => {
     const server = await serve();
     const socket = connect(server.port, "127.0.0.1");

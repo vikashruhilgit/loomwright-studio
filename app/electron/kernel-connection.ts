@@ -172,9 +172,18 @@ export function contractPath(req: ApiRequest): string | undefined {
     }
     const value = req.params?.[segment.slice(1)];
     if (value === undefined) return undefined;
-    const text = String(value);
+    // Coercing and encoding can both throw (a `toString` that throws; a lone
+    // UTF-16 surrogate is a URIError): either is a param no route can carry.
+    let text: string;
+    let encoded: string;
+    try {
+      text = String(value);
+      encoded = encodeURIComponent(text);
+    } catch {
+      return undefined;
+    }
     if (text === "" || DOT_SEGMENTS.has(text)) return undefined;
-    filled.push(encodeURIComponent(text));
+    filled.push(encoded);
   }
   const path = `/${filled.join("/")}`;
   return resolvesUnchanged(path) ? path : undefined;
@@ -237,6 +246,14 @@ export function createKernelConnection(deps: KernelConnectionDeps): KernelConnec
     // The last check before the token goes out: the URL's path is the path built, never one URL parsing normalised.
     if (url.pathname !== path) return { ok: false, status: 400, body: { error: "not_in_contract" } };
     for (const [key, value] of Object.entries(query ?? {})) url.searchParams.set(key, value);
+    // A body JSON cannot carry (a cycle or a BigInt, both of which cross IPC) throws here:
+    // answered as the kernel answers a body it cannot parse, and nothing is sent.
+    let text: string | undefined;
+    try {
+      text = body === undefined ? undefined : JSON.stringify(body);
+    } catch {
+      return { ok: false, status: 400, body: { error: "invalid_json" } };
+    }
     const headers: Record<string, string> = { Authorization: `Bearer ${where.token}`, Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     let response: Response;
@@ -244,7 +261,7 @@ export function createKernelConnection(deps: KernelConnectionDeps): KernelConnec
       response = await doFetch(url, {
         method,
         headers,
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(text === undefined ? {} : { body: text }),
         signal: AbortSignal.timeout(timeoutMs),
         redirect: "error",
       });
