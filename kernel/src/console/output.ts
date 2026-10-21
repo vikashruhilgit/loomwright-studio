@@ -49,6 +49,8 @@ export const ASSISTANT_TEXT_CUT = 8_000;
 export const TOOL_JSON_CUT = 4_000;
 /** At most one `session_output_appended` event per session per this many milliseconds. */
 export const OUTPUT_FEED_INTERVAL_MS = 250;
+/** A trailing announcement whose write fails is retried this many times, one interval apart, then given up. */
+export const MAX_ANNOUNCE_RETRIES = 3;
 /**
  * Per-session recorder states kept in memory, least recently used dropped
  * first; a state is rebuilt from disk when its session records again. A state
@@ -413,20 +415,20 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
         set.add(sessionId);
         return;
       }
-      const full = set.size >= MAX_WARNED_SESSIONS;
-      set.add(sessionId);
-      if (full) {
-        for (const old of set) {
-          set.delete(old);
-          break;
-        }
+      if (set.size >= MAX_WARNED_SESSIONS) {
         // Past the bound a forgotten session would warn again on every failure: one such warning per interval at
-        // most, across all sessions. A clock stepped back counts the interval as passed.
+        // most, across all sessions. A clock stepped back counts the interval as passed. A suppressed session is
+        // not remembered (only a written warning is), so it warns on a later failure once the interval has passed.
         const t = now().getTime();
         const since = w.overflowAt === undefined ? Number.POSITIVE_INFINITY : t - w.overflowAt;
         if (since >= 0 && since < WARN_OVERFLOW_INTERVAL_MS) return;
         w.overflowAt = t;
+        for (const old of set) {
+          set.delete(old);
+          break;
+        }
       }
+      set.add(sessionId);
       warn(`studio: session ${sessionId} output log write failed: ${shown(errorText(err))}`);
     } catch {
       // A warn that throws must not break the session either.
@@ -470,8 +472,13 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
     state.lastAnnouncedAt = at.getTime();
   };
 
-  /** Arm the session's one trailing timer: it announces what is unannounced when it fires (its own one-statement write). */
-  const arm = (store: Store, sessionId: number, state: SessionState, ms: number): void => {
+  /**
+   * Arm the session's one trailing timer: it announces what is unannounced when it fires (its own one-statement
+   * write). A fire whose write fails re-arms for one more interval, at most `MAX_ANNOUNCE_RETRIES` times in a row
+   * (`attempt` counts them; a timer armed by `record` starts at 0), so a transient fault still announces the last
+   * batch. The retry timer is the state's timer, so the state is not dropped while it is armed.
+   */
+  const arm = (store: Store, sessionId: number, state: SessionState, ms: number, attempt = 0): void => {
     let handle: OutputTimer | undefined;
     const fire = (): void => {
       const sessions = sessionsOf(store);
@@ -485,6 +492,14 @@ export function createSessionOutputRecorder(deps: SessionOutputRecorderDeps = {}
         if (sessions.size > MAX_RECORDER_SESSIONS) sessions.delete(sessionId);
       } catch (err) {
         fail(store, sessionId, err);
+        // The write failed whole (`announcedTo` did not move): the same range is retried, never a second one.
+        try {
+          if (attempt < MAX_ANNOUNCE_RETRIES && store.isOpen && current.timer === undefined && current.nextSeq - 1 > current.announcedTo) {
+            arm(store, sessionId, current, OUTPUT_FEED_INTERVAL_MS, attempt + 1);
+          }
+        } catch {
+          // A timer that cannot be armed leaves the range to the session's next announcement.
+        }
       }
     };
     handle = setTimer(fire, Math.min(OUTPUT_FEED_INTERVAL_MS, Math.max(0, ms)));

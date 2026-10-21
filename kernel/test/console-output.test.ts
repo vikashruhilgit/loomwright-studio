@@ -14,6 +14,7 @@ import { API_TOKEN_KEYCHAIN_SERVICE } from "../src/api/index.js";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
 import {
   ASSISTANT_TEXT_CUT,
+  MAX_ANNOUNCE_RETRIES,
   MAX_OUTPUT_LIMIT,
   MAX_RECORDER_SESSIONS,
   MAX_SESSION_OUTPUT_BYTES,
@@ -630,6 +631,29 @@ describe("a failing output log write (AC3)", () => {
     expect(h.warn).toHaveBeenCalledTimes(MAX_WARNED_SESSIONS + 2);
   }, 60_000);
 
+  it(`past ${MAX_WARNED_SESSIONS} warned sessions, a session suppressed by the rate limit is not remembered: it warns once the interval has passed`, () => {
+    const h = recorderHarness();
+    h.store.prepare("CREATE TRIGGER refuse_output BEFORE INSERT ON session_output BEGIN SELECT RAISE(ABORT, 'no'); END").run();
+    h.record(msg.text("a"));
+    for (let i = 1; i < MAX_WARNED_SESSIONS; i++) h.record(msg.text("b"), addSession(h.store));
+    expect(h.warn).toHaveBeenCalledTimes(MAX_WARNED_SESSIONS);
+    const x = addSession(h.store);
+    const y = addSession(h.store);
+    const warnedFor = (id: number): number => h.warn.mock.calls.filter((c) => String(c[0]).includes(`session ${id} `)).length;
+    h.record(msg.text("x"), x);
+    expect(warnedFor(x)).toBe(1);
+    h.time.advance(1_000);
+    h.record(msg.text("y"), y);
+    expect(warnedFor(y)).toBe(0);
+    h.time.advance(WARN_OVERFLOW_INTERVAL_MS);
+    h.record(msg.text("y again"), y);
+    expect(warnedFor(y)).toBe(1);
+    // Now remembered: silent from here on.
+    h.time.advance(WARN_OVERFLOW_INTERVAL_MS);
+    h.record(msg.text("y once more"), y);
+    expect(warnedFor(y)).toBe(1);
+  }, 60_000);
+
   it("a warn that throws is swallowed too: record never throws", () => {
     const store = openStore();
     const id = addSession(store);
@@ -760,6 +784,46 @@ describe("session_output_appended (AC5)", () => {
     stores.splice(stores.indexOf(h.store), 1);
     expect(() => h.time.advance(OUTPUT_FEED_INTERVAL_MS)).not.toThrow();
     expect(h.warn).not.toHaveBeenCalled();
+  });
+
+  const REFUSE_APPENDED = "CREATE TRIGGER refuse_appended BEFORE INSERT ON events WHEN NEW.kind = 'session_output_appended' BEGIN SELECT RAISE(ABORT, 'refused by test'); END";
+
+  it("a trailing announcement refused once is retried an interval later: the last batch is still announced, once", () => {
+    const h = recorderHarness();
+    h.record(msg.init());
+    h.record(msg.result()); // within the interval: the trailing timer holds row 2
+    h.store.prepare(REFUSE_APPENDED).run();
+    h.time.advance(OUTPUT_FEED_INTERVAL_MS);
+    expect(h.warn).toHaveBeenCalledTimes(1);
+    expect(h.time.live()).toHaveLength(1);
+    h.store.prepare("DROP TRIGGER refuse_appended").run();
+    h.time.advance(OUTPUT_FEED_INTERVAL_MS);
+    const events = eventsOf(h.store, "session_output_appended", h.id);
+    expect(events.map((e) => e.payload)).toEqual([
+      { from_seq: 1, to_seq: 1 },
+      { from_seq: 2, to_seq: 2 },
+    ]);
+    expect(Date.parse((events[1] as (typeof events)[number]).at) - Date.parse((events[0] as (typeof events)[number]).at)).toBeGreaterThanOrEqual(OUTPUT_FEED_INTERVAL_MS);
+    expect(h.time.live()).toHaveLength(0);
+    expect(h.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it(`a trailing announcement that keeps failing gives up after ${MAX_ANNOUNCE_RETRIES} retries with one warning; the next announcement covers the range`, () => {
+    const h = recorderHarness();
+    h.record(msg.init());
+    h.record(msg.result());
+    h.store.prepare(REFUSE_APPENDED).run();
+    h.time.advance(OUTPUT_FEED_INTERVAL_MS * (MAX_ANNOUNCE_RETRIES + 5));
+    expect(h.time.timers.filter((t) => t.fired)).toHaveLength(MAX_ANNOUNCE_RETRIES + 1);
+    expect(h.time.live()).toHaveLength(0);
+    expect(h.warn).toHaveBeenCalledTimes(1);
+    expect(eventsOf(h.store, "session_output_appended", h.id).map((e) => e.payload)).toEqual([{ from_seq: 1, to_seq: 1 }]);
+    h.store.prepare("DROP TRIGGER refuse_appended").run();
+    h.record(msg.text("next turn"));
+    expect(eventsOf(h.store, "session_output_appended", h.id).map((e) => e.payload)).toEqual([
+      { from_seq: 1, to_seq: 1 },
+      { from_seq: 2, to_seq: 3 },
+    ]);
   });
 
   it("a message that writes nothing (a stream event) touches neither the log nor the feed", () => {
