@@ -214,6 +214,18 @@ export interface ContributedRouteRequest {
    */
   readonly killSwitch?: KillSwitchView;
   /**
+   * The API server's one POST queue (phase 1's `POST /stop-all`, `POST
+   * /resume` and `POST /sessions/:id/abandon` run on it): `fn` runs once every
+   * POST queued before it has finished, and the promise settles with `fn`'s.
+   * The API server always sets it. Only a route that makes a short, bounded
+   * change to session or kill-switch state runs its work through it (the
+   * console's stop and kill of one session do), because whatever is queued
+   * delays the kill switch: never queue slow or unbounded work on it, and
+   * never call it from work it is already running (that waits for itself).
+   * Optional in the type for the same reason as `sessions`.
+   */
+  readonly serialized?: <T>(fn: () => Promise<T>) => Promise<T>;
+  /**
    * The kernel-applied actions' applier (`approvalApplierOf` over the merged
    * tools), when the composition built one. Only the approvals decision reads it.
    */
