@@ -3,7 +3,7 @@
 // and `GET /events` through the API. Events are appended with plain inserts
 // (the feed reads `events` and nothing else). Real timers, except the 15 s
 // heartbeat and the catch-up race, which fake only `setInterval`.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -121,7 +121,7 @@ async function subscribed(server: ApiServer, after: number): Promise<Conn> {
 }
 
 function eventIds(conn: Conn): number[] {
-  return conn.frames.filter((f) => f.type === "event").map((f) => f.id as number);
+  return conn.frames.filter((f) => f.type === EVENT_TYPE).map((f) => f.id as number);
 }
 
 /**
@@ -158,6 +158,57 @@ async function get(server: ApiServer, path: string, auth: string | null = `Beare
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+// `app/src/api/contract.ts` is read as TEXT, never imported (as in
+// console-contract.test.ts): the close codes and frame shapes below come from
+// the contract itself, so a change there fails here instead of drifting.
+const CONTRACT = new URL("../../app/src/api/contract.ts", import.meta.url);
+const contractText = readFileSync(CONTRACT, "utf8");
+
+/** `export const FEED_CLOSE_CODES = Object.freeze({ name: code, … } as const);`, refusing any other shape. */
+function contractCloseCodes(text: string): Record<string, number> {
+  const match = /export const FEED_CLOSE_CODES = Object\.freeze\(\{([^}]*)\} as const\);/.exec(text);
+  if (match === null) throw new Error("contract.ts has no `export const FEED_CLOSE_CODES = Object.freeze({ … } as const);`");
+  const codes: Record<string, number> = {};
+  for (const entry of (match[1] ?? "").split(",").map((e) => e.trim()).filter((e) => e !== "")) {
+    const pair = /^([A-Za-z]+): (\d+)$/.exec(entry);
+    if (pair === null) throw new Error(`FEED_CLOSE_CODES entry is not \`name: code\`: ${entry}`);
+    codes[pair[1] ?? ""] = Number(pair[2]);
+  }
+  return codes;
+}
+
+/** The fields of `export interface <name> { readonly field: type; … }`, in order, as [field, type text]; comment lines are skipped. */
+function contractInterface(text: string, name: string): [string, string][] {
+  const match = new RegExp(`export interface ${name} \\{([^}]*)\\}`).exec(text);
+  if (match === null) throw new Error(`contract.ts has no \`export interface ${name} { … }\``);
+  const fields: [string, string][] = [];
+  for (const raw of (match[1] ?? "").split("\n")) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("/**") || line.startsWith("*") || line.startsWith("//")) continue;
+    const field = /^readonly ([a-z_]+): (.+);$/.exec(line);
+    if (field === null) throw new Error(`${name} line is not \`readonly field: type;\`: ${line}`);
+    fields.push([field[1] ?? "", field[2] ?? ""]);
+  }
+  return fields;
+}
+
+const contractKeys = (name: string): string[] => contractInterface(contractText, name).map(([field]) => field);
+
+/** The string literal a frame interface gives its `type` field. */
+function contractTypeLiteral(name: string): string {
+  const type = contractInterface(contractText, name).find(([field]) => field === "type")?.[1] ?? "";
+  const literal = /^"([a-z]+)"$/.exec(type);
+  if (literal === null) throw new Error(`${name}.type is not a string literal: ${type}`);
+  return literal[1] ?? "";
+}
+
+const CLOSE = contractCloseCodes(contractText);
+const EVENT_KEYS = contractKeys("EventFrame");
+const TRUNCATED_KEYS = contractKeys("TruncatedEventFrame");
+const HEARTBEAT_KEYS = contractKeys("HeartbeatFrame");
+const EVENT_TYPE = contractTypeLiteral("EventFrame");
+const HEARTBEAT_TYPE = contractTypeLiteral("HeartbeatFrame");
+
 /**
  * Record every interval set from now on with its period, dropping it when
  * cleared: the feed's poll is the 250 ms one, its heartbeat the 15 s one.
@@ -181,12 +232,31 @@ function trackIntervals(): { live: () => number[] } {
 
 describe("the close codes and bounds", () => {
   it("equal the contract's FEED_CLOSE_CODES; 1 MiB frames; 500-row pages; an 8 MiB slow-client bound by default", () => {
-    expect(FEED_CLOSE_CODES).toEqual({ tryAgainLater: 1013, tooSlow: 1011, malformedFrame: 1003 });
+    expect(FEED_CLOSE_CODES).toEqual(CLOSE);
+    expect(Object.keys(FEED_CLOSE_CODES)).toEqual(Object.keys(CLOSE));
     expect(Object.isFrozen(FEED_CLOSE_CODES)).toBe(true);
     expect(FEED_MAX_FRAME_BYTES).toBe(1_048_576);
     expect(EVENT_PAGE_SIZE).toBe(500);
     expect(DEFAULT_FEED_MAX_BUFFERED_BYTES).toBe(8 * 1_048_576);
     expect(feedMaxBufferedBytes()).toBe(DEFAULT_FEED_MAX_BUFFERED_BYTES);
+  });
+
+  it("the contract's frame shapes, read as text, are the ones these tests hold the kernel to", () => {
+    expect(CLOSE).toEqual({ tryAgainLater: 1013, tooSlow: 1011, malformedFrame: 1003 });
+    expect(EVENT_KEYS).toEqual(["type", "id", "at", "kind", "session_id", "task_id", "payload"]);
+    expect(TRUNCATED_KEYS).toEqual(["type", "id", "kind", "truncated"]);
+    expect(HEARTBEAT_KEYS).toEqual(["type", "latest_id"]);
+    expect(contractKeys("SubscribeFrame")).toEqual(["type", "after"]);
+    expect(contractTypeLiteral("SubscribeFrame")).toBe("subscribe");
+    expect(contractTypeLiteral("TruncatedEventFrame")).toBe(EVENT_TYPE);
+    expect(contractInterface(contractText, "EventsResponse")).toEqual([["events", "readonly (EventFrame | TruncatedEventFrame)[]"]]);
+  });
+
+  it("the contract text readers fail loudly on a contract they can't read", () => {
+    expect(() => contractCloseCodes("export const CODES = {};\n")).toThrow(/no `export const FEED_CLOSE_CODES/);
+    expect(() => contractCloseCodes("export const FEED_CLOSE_CODES = Object.freeze({ tooSlow: \"1011\" } as const);\n")).toThrow(/not `name: code`/);
+    expect(() => contractInterface("export interface Other {}\n", "EventFrame")).toThrow(/no `export interface EventFrame/);
+    expect(() => contractInterface("export interface EventFrame {\n  type: \"event\";\n}\n", "EventFrame")).toThrow(/not `readonly field: type;`/);
   });
 
   it("the test-only bound setter refuses a negative or fractional bound and restores the default on undefined", () => {
@@ -209,11 +279,12 @@ describe("subscribe, backlog and live (AC1)", () => {
     const conn = await subscribed(server, 7);
     await waitForIds(conn, [8, 9, 10]);
     expect(conn.frames).toStrictEqual([
-      { type: "event", id: 8, at: AT, kind: "approval_requested", session_id: 3, task_id: 5, payload: { a: 1, nested: { b: [true, "x"] } } },
-      { type: "event", id: 9, at: AT, kind: "session_started", session_id: 4, task_id: null, payload: null },
-      { type: "event", id: 10, at: AT, kind: "kill_switch_engaged", session_id: null, task_id: 9, payload: [1, "two"] },
+      { type: EVENT_TYPE, id: 8, at: AT, kind: "approval_requested", session_id: 3, task_id: 5, payload: { a: 1, nested: { b: [true, "x"] } } },
+      { type: EVENT_TYPE, id: 9, at: AT, kind: "session_started", session_id: 4, task_id: null, payload: null },
+      { type: EVENT_TYPE, id: 10, at: AT, kind: "kill_switch_engaged", session_id: null, task_id: 9, payload: [1, "two"] },
     ]);
-    for (const frame of conn.frames) expect(Object.keys(frame)).toEqual(["type", "id", "at", "kind", "session_id", "task_id", "payload"]);
+    for (const frame of conn.frames) expect(Object.keys(frame)).toEqual(EVENT_KEYS);
+    for (const frame of conn.frames) expect(frame.type).toBe(EVENT_TYPE);
     // Nothing else came first: a later append is the very next frame.
     insert();
     await waitForIds(conn, [8, 9, 10, 11]);
@@ -324,7 +395,7 @@ describe("refusals (AC3)", () => {
     const server = await serve();
     const four = [await open(server), await open(server), await open(server), await open(server)];
     const fifth = await open(server);
-    expect(await fifth.closed).toEqual({ code: 1013, reason: "too many clients" });
+    expect(await fifth.closed).toEqual({ code: CLOSE.tryAgainLater, reason: "too many clients" });
     for (const conn of four) expect(conn.isClosed()).toBe(false);
     four[0]?.ws.close();
     await four[0]?.closed;
@@ -356,7 +427,7 @@ describe("refusals (AC3)", () => {
       const server = await serve();
       const conn = await open(server);
       send(conn.ws);
-      expect(await conn.closed).toEqual({ code: 1003, reason: "malformed frame" });
+      expect(await conn.closed).toEqual({ code: CLOSE.malformedFrame, reason: "malformed frame" });
       expect(conn.frames).toEqual([]);
       expect((await get(server, "/events?limit=1")).status).toBe(200);
     });
@@ -368,7 +439,7 @@ describe("refusals (AC3)", () => {
     const conn = await subscribed(server, 0);
     await waitForIds(conn, [1]);
     conn.ws.send(JSON.stringify({ type: "subscribe", after: 0 }));
-    expect(await conn.closed).toEqual({ code: 1003, reason: "malformed frame" });
+    expect(await conn.closed).toEqual({ code: CLOSE.malformedFrame, reason: "malformed frame" });
     expect(eventIds(conn)).toEqual([1]);
   });
 });
@@ -377,7 +448,7 @@ describe("1 MiB frames and GET /events (AC4)", () => {
   /** A payload whose event frame (id `id`, kind `probe`, no refs) serializes to exactly `bytes` bytes. */
   function payloadForFrame(id: number, bytes: number): string {
     const frameOf = (blob: string): string =>
-      JSON.stringify({ type: "event", id, at: AT, kind: "probe", session_id: null, task_id: null, payload: { blob } });
+      JSON.stringify({ type: EVENT_TYPE, id, at: AT, kind: "probe", session_id: null, task_id: null, payload: { blob } });
     const blob = "x".repeat(bytes - Buffer.byteLength(frameOf("")));
     expect(Buffer.byteLength(frameOf(blob))).toBe(bytes);
     return JSON.stringify({ blob });
@@ -391,12 +462,13 @@ describe("1 MiB frames and GET /events (AC4)", () => {
     const server = await serve();
     const conn = await subscribed(server, 0);
     await waitForIds(conn, [1, 2, 3]);
-    expect(conn.frames[1]).toStrictEqual({ type: "event", id: 2, kind: "probe", truncated: true });
+    expect(conn.frames[1]).toStrictEqual({ type: EVENT_TYPE, id: 2, kind: "probe", truncated: true });
+    expect(Object.keys(conn.frames[1] ?? {}).sort()).toEqual([...TRUNCATED_KEYS].sort());
     expect(conn.frames[0]).toMatchObject({ id: 1, payload: {} });
     const answer = await get(server, "/events?after=1&limit=1");
     expect(answer.status).toBe(200);
     expect(answer.body).toStrictEqual({
-      events: [{ type: "event", id: 2, at: AT, kind: "probe", session_id: null, task_id: null, payload: JSON.parse(big) as unknown }],
+      events: [{ type: EVENT_TYPE, id: 2, at: AT, kind: "probe", session_id: null, task_id: null, payload: JSON.parse(big) as unknown }],
     });
   });
 
@@ -406,7 +478,7 @@ describe("1 MiB frames and GET /events (AC4)", () => {
     const server = await serve();
     const conn = await subscribed(server, 0);
     await waitForIds(conn, [1]);
-    expect(conn.frames[0]).toStrictEqual({ type: "event", id: 1, at: AT, kind: "probe", session_id: null, task_id: null, payload: JSON.parse(exact) as unknown });
+    expect(conn.frames[0]).toStrictEqual({ type: EVENT_TYPE, id: 1, at: AT, kind: "probe", session_id: null, task_id: null, payload: JSON.parse(exact) as unknown });
   });
 
   it("GET /events returns {events}, the same frames, oldest first; an absent after is 0", async () => {
@@ -416,11 +488,13 @@ describe("1 MiB frames and GET /events (AC4)", () => {
     const server = await serve();
     const answer = await get(server, "/events");
     expect(answer.status).toBe(200);
+    expect(Object.keys(answer.body as object)).toEqual(contractKeys("EventsResponse"));
+    for (const event of (answer.body as { events: Frame[] }).events) expect(Object.keys(event)).toEqual(EVENT_KEYS);
     expect(answer.body).toStrictEqual({
       events: [
-        { type: "event", id: 1, at: AT, kind: "a", session_id: 2, task_id: null, payload: { x: 1 } },
-        { type: "event", id: 2, at: AT, kind: "b", session_id: null, task_id: 7, payload: null },
-        { type: "event", id: 3, at: AT, kind: "c", session_id: null, task_id: null, payload: {} },
+        { type: EVENT_TYPE, id: 1, at: AT, kind: "a", session_id: 2, task_id: null, payload: { x: 1 } },
+        { type: EVENT_TYPE, id: 2, at: AT, kind: "b", session_id: null, task_id: 7, payload: null },
+        { type: EVENT_TYPE, id: 3, at: AT, kind: "c", session_id: null, task_id: null, payload: {} },
       ],
     });
   });
@@ -520,21 +594,22 @@ describe("timers and slow clients (AC5)", () => {
     vi.advanceTimersByTime(14_999);
     await waitForIds(conn, [1, 2, 3]);
     await sleep(50);
-    expect(conn.frames.filter((f) => f.type === "heartbeat")).toEqual([]);
+    expect(conn.frames.filter((f) => f.type === HEARTBEAT_TYPE)).toEqual([]);
     vi.advanceTimersByTime(1);
-    await until(() => expect(conn.frames.filter((f) => f.type === "heartbeat")).toEqual([{ type: "heartbeat", latest_id: 3 }]), 2_000);
+    await until(() => expect(conn.frames.filter((f) => f.type === HEARTBEAT_TYPE)).toEqual([{ type: HEARTBEAT_TYPE, latest_id: 3 }]), 2_000);
     insert();
     vi.advanceTimersByTime(15_000);
     await until(
       () =>
-        expect(conn.frames.filter((f) => f.type === "heartbeat")).toEqual([
-          { type: "heartbeat", latest_id: 3 },
-          { type: "heartbeat", latest_id: 4 },
+        expect(conn.frames.filter((f) => f.type === HEARTBEAT_TYPE)).toEqual([
+          { type: HEARTBEAT_TYPE, latest_id: 3 },
+          { type: HEARTBEAT_TYPE, latest_id: 4 },
         ]),
       2_000,
     );
+    for (const hb of conn.frames.filter((f) => f.type === HEARTBEAT_TYPE)) expect(Object.keys(hb)).toEqual(HEARTBEAT_KEYS);
     // The heartbeat never names an event the client was not sent first.
-    expect(conn.frames.map((f) => (f.type === "event" ? f.id : `hb${String(f.latest_id)}`))).toEqual([1, 2, 3, "hb3", 4, "hb4"]);
+    expect(conn.frames.map((f) => (f.type === EVENT_TYPE ? f.id : `hb${String(f.latest_id)}`))).toEqual([1, 2, 3, "hb3", 4, "hb4"]);
     await sleep(50);
     expect(idle.frames).toEqual([]);
   });
@@ -557,7 +632,7 @@ describe("timers and slow clients (AC5)", () => {
     setFeedMaxBufferedBytesForTesting(1_024);
     inflateServerBufferedAmount(2_048);
     const slow = await subscribed(server, 0);
-    expect(await slow.closed).toEqual({ code: 1011, reason: "too slow" });
+    expect(await slow.closed).toEqual({ code: CLOSE.tooSlow, reason: "too slow" });
     expect(eventIds(slow)).toEqual([]);
     // Under the bound (the default), the same unsent backlog is fine.
     setFeedMaxBufferedBytesForTesting(undefined);
