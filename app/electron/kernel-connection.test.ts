@@ -208,6 +208,27 @@ describe("the CLI's order and the loopback-only rule", () => {
     expect(contractPath({ method: "GET", path: "/threads/:agent", params: { agent: "../stop-all" } })).toBe("/threads/..%2Fstop-all");
     expect(contractPath({ method: "GET", path: "/playbooks/:ref", params: { ref: "pr review" } })).toBe("/playbooks/pr%20review");
   });
+
+  it("refuses a param that is a dot-segment, which URL parsing would remove", async () => {
+    // Each would otherwise be sent as POST /kill, POST /approvals/revoke, GET /agents/.
+    const dotted = [
+      { method: "POST", path: "/sessions/:id/kill", params: { id: ".." } },
+      { method: "POST", path: "/approvals/grants/:id/revoke", params: { id: ".." } },
+      { method: "GET", path: "/agents/:id", params: { id: "." } },
+      { method: "GET", path: "/agents/:id", params: { id: { toString: () => ".." } } },
+    ] as const;
+    for (const req of dotted) expect(contractPath(req as never)).toBeUndefined();
+    writeApiInfo({ pid: 4242, port: 51_234 });
+    const conn = createKernelConnection(deps());
+    for (const req of dotted) expect(await conn.request(req as never)).toEqual({ ok: false, status: 400, body: { error: "not_in_contract" } });
+    expect(calls).toEqual([]);
+    // Only the exact values `.` and `..` are dot-segments: an id with a dot in it still goes through.
+    expect(contractPath({ method: "GET", path: "/agents/:id", params: { id: "v1.2" } })).toBe("/agents/v1.2");
+    expect(contractPath({ method: "GET", path: "/agents/:id", params: { id: "..." } })).toBe("/agents/...");
+    expect(contractPath({ method: "GET", path: "/agents/:id", params: { id: ".hidden" } })).toBe("/agents/.hidden");
+    // Percent-encoded dots are encoded again, so they stay literal text.
+    expect(contractPath({ method: "GET", path: "/agents/:id", params: { id: "%2e%2e" } })).toBe("/agents/%252e%252e");
+  });
 });
 
 describe("the fixture seam lives only in the main process's environment", () => {

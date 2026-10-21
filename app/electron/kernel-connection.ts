@@ -145,7 +145,20 @@ const CALLABLE = CONTRACT_ROUTES.filter((r) => r.path !== "/events/stream").map(
   segments: r.path.split("/").slice(1),
 }));
 
-/** The request's path with its params filled in, or `undefined` when it is not a contract route. */
+/** `.` and `..` are dot-segments: URL parsing removes them, so a param holding one would move the call off the contract route. */
+const DOT_SEGMENTS: ReadonlySet<string> = new Set([".", ".."]);
+
+/** True when URL parsing leaves `path` exactly as built (no dot-segment removed, nothing re-encoded). */
+export function resolvesUnchanged(path: string): boolean {
+  return new URL(path, `http://${API_HOST}`).pathname === path;
+}
+
+/**
+ * The request's path with its params filled in, or `undefined` when it is not a contract route.
+ * A param is URL-encoded, so it can never add a segment; a param that is exactly `.` or `..`
+ * is refused, and so is any filled path that URL parsing would change, so the path sent is
+ * always the contract route the request named.
+ */
 export function contractPath(req: ApiRequest): string | undefined {
   if (typeof req.path !== "string" || !req.path.startsWith("/")) return undefined;
   const segments = req.path.split("/").slice(1);
@@ -158,10 +171,13 @@ export function contractPath(req: ApiRequest): string | undefined {
       continue;
     }
     const value = req.params?.[segment.slice(1)];
-    if (value === undefined || String(value) === "") return undefined;
-    filled.push(encodeURIComponent(String(value)));
+    if (value === undefined) return undefined;
+    const text = String(value);
+    if (text === "" || DOT_SEGMENTS.has(text)) return undefined;
+    filled.push(encodeURIComponent(text));
   }
-  return `/${filled.join("/")}`;
+  const path = `/${filled.join("/")}`;
+  return resolvesUnchanged(path) ? path : undefined;
 }
 
 /** Start a connection over `deps`. Holds no state between calls: every call re-reads api.json and the token. */
@@ -218,6 +234,8 @@ export function createKernelConnection(deps: KernelConnectionDeps): KernelConnec
     body: unknown,
   ): Promise<ApiResult<unknown>> => {
     const url = new URL(`http://${API_HOST}:${where.port}${path}`);
+    // The last check before the token goes out: the URL's path is the path built, never one URL parsing normalised.
+    if (url.pathname !== path) return { ok: false, status: 400, body: { error: "not_in_contract" } };
     for (const [key, value] of Object.entries(query ?? {})) url.searchParams.set(key, value);
     const headers: Record<string, string> = { Authorization: `Bearer ${where.token}`, Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
