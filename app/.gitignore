@@ -1,0 +1,5 @@
+# Build and test output (node_modules/, dist/ and out/ are ignored at the repo root).
+dist-electron/
+release/
+test-results/
+playwright-report/
