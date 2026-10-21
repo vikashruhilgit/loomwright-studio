@@ -8,7 +8,7 @@ Part of [Phase 5 features](../ARCHITECTURE.md#phase-5-features). Built and docum
 
 The feed streams the append-only `events` table by id, so every approval, reply and session change reaches the app as soon as the kernel records it. It is a mechanism (invariant 1) and read-only: it reads `id, at, kind, session_id, task_id, payload_json` and writes nothing. A payload is untrusted data (invariant 3). It is parsed as JSON and passed on, never interpreted. REST stays for reads and actions.
 
-The API server authenticates the upgrade and checks its path before upgrading, with the same bearer token as every route. A missing or wrong token gets `401` and no upgrade; see [ARCHITECTURE.md: Loopback API](../ARCHITECTURE.md#loopback-api). The authenticated socket is handed to `handleEventFeed`. This page supersedes two ARCHITECTURE.md sentences that still describe item 01's stub: the Loopback API's "which today closes it at once with 1013 and the reason `not yet`" and Phase 5 features' "handed to the `handleEventFeed` stub". Updating them is an owner follow-up.
+The API server authenticates the upgrade and checks its path before upgrading, with the same bearer token as every route. A missing or wrong token gets `401` and no upgrade; see [ARCHITECTURE.md: Loopback API](../ARCHITECTURE.md#loopback-api). The authenticated socket is handed to `handleEventFeed`.
 
 ## Protocol
 
