@@ -135,10 +135,42 @@ export function taskLineFor(agentId: string, approvals: readonly Approval[], mes
 /** "no limit" for an unset limit; the words are the honest form of `null`, never a zero. */
 export const NO_LIMIT = "no limit";
 
-/** Sessions in words: "1 of 2 sessions", or "1 session · no limit". */
-export function sessionsText(running: number, atOnce: number | null): string {
-  if (atOnce === null) return `${running} ${running === 1 ? "session" : "sessions"} · ${NO_LIMIT}`;
+/**
+ * "unknown" for a setting whose source was not read (the settings file did not
+ * read ok, the detail was refused or is still loading): never "no limit" or
+ * "not set", which would state a value the kernel may be enforcing otherwise.
+ */
+export const UNKNOWN = "unknown";
+
+/**
+ * Whether the roster's limits and model come from a settings file that read
+ * ok. The kernel sends `null` for both an unset limit and an unread file, so
+ * `settings_error` is what tells them apart.
+ */
+export function settingsRead(agent: { readonly settings_error: string | null }): boolean {
+  return agent.settings_error === null;
+}
+
+/** Sessions in words: "1 of 2 sessions", "1 session · no limit", or "1 session · limit unknown" when the settings file did not read ok. */
+export function sessionsText(running: number, atOnce: number | null, read = true): string {
+  if (atOnce === null) return `${running} ${running === 1 ? "session" : "sessions"} · ${read ? NO_LIMIT : `limit ${UNKNOWN}`}`;
   return `${running} of ${atOnce} ${atOnce === 1 ? "session" : "sessions"}`;
+}
+
+/** A roster entry's sessions against its limit, honest about an unread settings file. */
+export function agentSessionsText(agent: RosterEntry): string {
+  return sessionsText(agent.sessions_running, agent.sessions_at_once, settingsRead(agent));
+}
+
+/** The words after today's tokens when there is no daily number: "no limit", or "limit unknown" when the settings file did not read ok. */
+export function tokensLimitWords(agent: RosterEntry): string {
+  return settingsRead(agent) ? NO_LIMIT : `limit ${UNKNOWN}`;
+}
+
+/** A roster entry's model: the model, "not set" when the file read ok without one, "unknown" when it did not read ok. */
+export function rosterModel(agent: RosterEntry): string {
+  if (agent.model !== null) return agent.model;
+  return settingsRead(agent) ? "not set" : UNKNOWN;
 }
 
 // ---- Details (GET /agents/:id) ------------------------------------------------------------
@@ -150,7 +182,7 @@ export interface CharterProse {
   readonly boundaries: readonly string[];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -202,6 +234,28 @@ export function settingValue(content: unknown, field: AgentSetField): string | u
   if (!isRecord(content)) return undefined;
   const raw = field.startsWith("limits.") ? (isRecord(content.limits) ? content.limits[field.slice("limits.".length)] : undefined) : content[field];
   return typeof raw === "string" || typeof raw === "number" ? String(raw) : undefined;
+}
+
+/**
+ * A setting as the inspector shows it: the value; `absent` only when the
+ * content is a readable record and the field (or its `limits` block) is
+ * missing or null; `UNKNOWN` when the content was not read (null, not an
+ * object) or the field holds something other than a scalar. An unread file is
+ * never shown as "no limit" or "not set".
+ */
+export function settingText(content: unknown, field: AgentSetField, absent: string): string {
+  if (!isRecord(content)) return UNKNOWN;
+  const value = settingValue(content, field);
+  if (value !== undefined) return value;
+  let raw: unknown;
+  if (field.startsWith("limits.")) {
+    if (content.limits === undefined || content.limits === null) return absent;
+    if (!isRecord(content.limits)) return UNKNOWN;
+    raw = content.limits[field.slice("limits.".length)];
+  } else {
+    raw = content[field];
+  }
+  return raw === undefined || raw === null ? absent : UNKNOWN;
 }
 
 // ---- Refusals ------------------------------------------------------------------------------
@@ -285,11 +339,17 @@ export function toolsOf(text: string): string[] {
   return text.split(/[\s,]+/).filter((t) => t !== "");
 }
 
-/** A limit as typed: omitted when blank, a number when it is digits, else the text (the kernel refuses it, naming the field). */
-function limitOf(text: string): number | string | undefined {
+/**
+ * A limit as typed: omitted when blank, a number when it is digits that a
+ * double holds exactly (a safe integer), else the text, so the kernel sees
+ * what was typed and refuses it, naming the field. Digits past 2^53 - 1 stay
+ * text: `Number()` would round them to a different value.
+ */
+export function limitOf(text: string): number | string | undefined {
   const t = text.trim();
   if (t === "") return undefined;
-  return /^\d{1,16}$/.test(t) ? Number(t) : t;
+  const n = Number(t);
+  return /^\d+$/.test(t) && Number.isSafeInteger(n) ? n : t;
 }
 
 /**

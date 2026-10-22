@@ -31,12 +31,15 @@ import {
   NO_LIMIT,
   PERMISSION_MODES,
   WRIGHT_SET_FIELDS,
+  agentSessionsText,
   charterProse,
   enforcedToolPolicy,
+  isRecord,
   isWright,
-  sessionsText,
-  settingValue,
+  rosterModel,
+  settingText,
   threadHash,
+  tokensLimitWords,
 } from "./model";
 
 /** A crew member's `GET /agents/:id`, as the screen holds it. */
@@ -89,7 +92,7 @@ function List({ items, empty, mono = false, testId }: { readonly items: readonly
 }
 
 function tokensLine(agent: RosterEntry): string {
-  if (agent.tokens_per_day === null) return `${formatTokens(agent.tokens_today)} tokens today · ${NO_LIMIT}`;
+  if (agent.tokens_per_day === null) return `${formatTokens(agent.tokens_today)} tokens today · ${tokensLimitWords(agent)}`;
   return `${formatTokens(agent.tokens_today)} of ${formatTokens(agent.tokens_per_day)} tokens today`;
 }
 
@@ -247,8 +250,12 @@ export function Inspector({ api, agent, detail, wrightSet, onWrightSet, onRename
 
   const ok = detail?.status === "ok" ? detail.detail : undefined;
   const prose = ok === undefined ? undefined : charterProse(ok);
+  // A setting reads "unknown" unless the detail answered and its settings content parsed: loading, a
+  // refused detail and an unreadable file never read as "no limit" or "not set". The model falls back to
+  // the roster's own read of the same file, which says itself whether it read ok.
   const content = ok?.settings.content;
-  const value = (field: AgentSetField, fallback: string | null): string => settingValue(content, field) ?? fallback ?? "not set";
+  const value = (field: AgentSetField, absent: string): string => settingText(content, field, absent);
+  const model = isRecord(content) ? value("model", "not set") : rosterModel(agent);
 
   return (
     <aside className="team-insp" aria-labelledby={headingId} data-testid="team-inspector" onKeyDown={onKeyDown}>
@@ -304,17 +311,17 @@ export function Inspector({ api, agent, detail, wrightSet, onWrightSet, onRename
       <Section title="Model and limits" testId="team-insp-limits">
         <dl className="team-insp-kv">
           <dt>Model</dt>
-          <dd>{lead ? (wrightSet.model ?? agent.model ?? "not set") : value("model", agent.model)}</dd>
+          <dd>{lead ? (wrightSet.model ?? rosterModel(agent)) : model}</dd>
           <dt>Effort</dt>
-          <dd>{lead ? (wrightSet.effort ?? "not reported") : value("effort", null)}</dd>
+          <dd>{lead ? (wrightSet.effort ?? "not reported") : value("effort", "not set")}</dd>
           <dt>Today</dt>
           <dd className="team-tabular">{tokensLine(agent)}</dd>
           <dt>Sessions</dt>
-          <dd className="team-tabular">{sessionsText(agent.sessions_running, agent.sessions_at_once)}</dd>
+          <dd className="team-tabular">{agentSessionsText(agent)}</dd>
           <dt>Delegation</dt>
           <dd>{lead ? (wrightSet["limits.delegation_depth"] ?? "not reported") : value("limits.delegation_depth", NO_LIMIT)}</dd>
           <dt>Permission</dt>
-          <dd>{lead ? <span data-testid="team-wright-readonly">read-only · edit <code className="team-code">wright.json</code></span> : value("permission_mode", null)}</dd>
+          <dd>{lead ? <span data-testid="team-wright-readonly">read-only · edit <code className="team-code">wright.json</code></span> : value("permission_mode", "not set")}</dd>
           {lead ? (
             <>
               <dt>Tool policy</dt>

@@ -19,7 +19,7 @@ import { fakeBridge, ok } from "../../store/fake-bridge";
 import type { FakeBridge } from "../../store/fake-bridge";
 import { screen as teamScreen } from "./index";
 import { fetchAgentDetail } from "./actions";
-import { AVATAR_HUES, AVATAR_SHAPES, NEVER_CATEGORIES, PERMISSION_MODES, WRIGHT_SET_FIELDS, enforcedToolPolicy, outcomeOf } from "./model";
+import { AVATAR_HUES, AVATAR_SHAPES, EMPTY_FORM, NEVER_CATEGORIES, PERMISSION_MODES, WRIGHT_SET_FIELDS, charterOf, enforcedToolPolicy, limitOf, outcomeOf, settingText } from "./model";
 import { TeamView } from "./TeamView";
 
 // Sources are read from disk: vitest stubs CSS imports, and the kernel lives outside the app's Vite root.
@@ -405,6 +405,41 @@ describe("a crew member's inspector", () => {
     });
     const inspector = await openInspector("Mason");
     expect((await within(inspector).findByTestId("team-settings-unreadable")).textContent).toBe("settings file unreadable: not JSON");
+    // An unread file states no value: Mason's delegation depth may be enforced, so it is not "no limit".
+    const limits = within(inspector).getByTestId("team-insp-limits");
+    expect(limits.textContent).toContain("Effortunknown");
+    expect(limits.textContent).toContain("Delegationunknown");
+    expect(limits.textContent).toContain("Permissionunknown");
+    expect(limits.textContent).not.toContain("not set");
+    expect(limits.textContent).toContain("Modelclaude-sonnet");
+  });
+
+  it('a refused detail reads its settings as "unknown", never "no limit" or "not set"', async () => {
+    await startTeam({ details: { pim: detail(PIM) } });
+    const inspector = await openInspector("Mason");
+    await within(inspector).findByTestId("team-detail-error");
+    const limits = within(inspector).getByTestId("team-insp-limits");
+    expect(limits.textContent).toContain("Effortunknown");
+    expect(limits.textContent).toContain("Delegationunknown");
+    expect(limits.textContent).toContain("Permissionunknown");
+    expect(limits.textContent).not.toContain("not set");
+    expect(limits.textContent).not.toContain("Delegationno limit");
+  });
+
+  it("an unread settings file reads the roster's limits and model as unknown, on the card and in the inspector", async () => {
+    const unread = { ...MASON, model: null, settings_error: "settings_invalid" };
+    await startTeam({ roster: [WRIGHT, unread, PIM], details: { mason: detail(unread, { settings: { file: "/x.json", content: null, error: { error: "settings_invalid", message: "not JSON" } }, never: null }), pim: detail(PIM) } });
+    const mason = card("Mason");
+    expect(within(mason).getByTestId("team-card-budget").textContent).toBe("9.4k today · limit unknown");
+    expect(within(mason).getByTestId("team-card-sessions").textContent).toBe("0 sessions · limit unknown");
+    expect(mason.textContent).toContain("model unknown");
+    expect(mason.textContent).not.toContain("no limit");
+    const inspector = await openInspector("Mason");
+    const limits = within(inspector).getByTestId("team-insp-limits");
+    expect(limits.textContent).toContain("Modelunknown");
+    expect(limits.textContent).toContain("9.4k tokens today · limit unknown");
+    expect(limits.textContent).toContain("0 sessions · limit unknown");
+    expect(limits.textContent).not.toContain("no limit");
   });
 
   it("renames through POST /agents/:id/rename; the card changes only when the feed reports it", async () => {
@@ -509,6 +544,30 @@ describe("refusals and unreadable answers", () => {
     expect(enforcedToolPolicy({ tool_policy: { allowedTools: ["Read", 3], allowedBashPrefixes: [] } })).toBeNull();
     expect(enforcedToolPolicy({ tool_policy: { allowedTools: ["Read"] } })).toBeNull();
     expect(enforcedToolPolicy({ tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: ["ls"] } })).toEqual({ allowedTools: ["Read"], allowedBashPrefixes: ["ls"] });
+  });
+
+  it('reads an unread setting as "unknown", and "no limit" only when the content parsed without it', () => {
+    expect(settingText(null, "limits.delegation_depth", "no limit")).toBe("unknown");
+    expect(settingText(undefined, "effort", "not set")).toBe("unknown");
+    expect(settingText([], "permission_mode", "not set")).toBe("unknown");
+    expect(settingText({ limits: "x" }, "limits.delegation_depth", "no limit")).toBe("unknown");
+    expect(settingText({ limits: { delegation_depth: { n: 2 } } }, "limits.delegation_depth", "no limit")).toBe("unknown");
+    expect(settingText({}, "limits.delegation_depth", "no limit")).toBe("no limit");
+    expect(settingText({ limits: {} }, "limits.delegation_depth", "no limit")).toBe("no limit");
+    expect(settingText({ limits: { delegation_depth: null } }, "limits.delegation_depth", "no limit")).toBe("no limit");
+    expect(settingText({ limits: { delegation_depth: 2 } }, "limits.delegation_depth", "no limit")).toBe("2");
+    expect(settingText({}, "effort", "not set")).toBe("not set");
+  });
+
+  it("sends a typed limit as a number only when a double holds it exactly; otherwise as the typed text", () => {
+    expect(limitOf("")).toBeUndefined();
+    expect(limitOf(" 250000 ")).toBe(250000);
+    expect(limitOf("9007199254740991")).toBe(9007199254740991);
+    expect(limitOf("9007199254740992")).toBe("9007199254740992");
+    expect(limitOf("9007199254740993")).toBe("9007199254740993");
+    expect(limitOf("1234567890123456789")).toBe("1234567890123456789");
+    expect(limitOf("lots")).toBe("lots");
+    expect(charterOf({ ...EMPTY_FORM, delegationDepth: "9007199254740993" }).limits).toEqual({ delegation_depth: "9007199254740993" });
   });
 });
 

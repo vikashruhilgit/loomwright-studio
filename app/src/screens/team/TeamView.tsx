@@ -34,7 +34,7 @@ import { REFETCH_THROTTLE_MS } from "../../store/store";
 import { fetchAgentDetail, renameAgent, turnAgent } from "./actions";
 import { useTeamCommands } from "./commands";
 import { type DetailState, Inspector, type WrightSetValues } from "./Inspector";
-import { NO_LIMIT, type TaskLine, crewIds, isWright, orderRoster, roleOf, sessionsText, taskLineFor, threadHash } from "./model";
+import { type TaskLine, agentSessionsText, crewIds, isWright, orderRoster, roleOf, rosterModel, taskLineFor, threadHash, tokensLimitWords } from "./model";
 import { NewCrewMember } from "./NewCrewMember";
 import "./team.css";
 
@@ -101,9 +101,9 @@ function useAgentDetails(api: StudioBridge, ids: readonly string[], eventId: num
 const DOT_STATE: Readonly<Record<TaskLine["state"], StatusState>> = { waiting: "waiting", working: "working", idle: "idle" };
 const AVATAR_STATE: Readonly<Record<TaskLine["state"], AvatarState>> = { waiting: "waiting", working: "working", idle: "idle" };
 
-/** Today's tokens against the daily limit, or the words "no limit" when it is unset. */
+/** Today's tokens against the daily limit, "no limit" when it is unset, or "limit unknown" when the settings file did not read ok. */
 function budgetText(agent: RosterEntry): string {
-  if (agent.tokens_per_day === null) return `${formatTokens(agent.tokens_today)} today · ${NO_LIMIT}`;
+  if (agent.tokens_per_day === null) return `${formatTokens(agent.tokens_today)} today · ${tokensLimitWords(agent)}`;
   return `${formatTokens(agent.tokens_today)} of ${formatTokens(agent.tokens_per_day)} today`;
 }
 
@@ -183,11 +183,11 @@ function TeamCard({ agent, role, task, selected, onOpen, cardRef }: TeamCardProp
           <span className="card-meta-label" id={`${id}-budget`} data-testid="team-card-budget">
             {budgetText(agent)}
           </span>
-          <span className="card-meta-model">{agent.model ?? "model not set"}</span>
+          <span className="card-meta-model">{agent.model ?? `model ${rosterModel(agent)}`}</span>
         </div>
         <div className="card-meta">
           <span className="card-meta-label" id={`${id}-sessions`} data-testid="team-card-sessions">
-            {sessionsText(agent.sessions_running, agent.sessions_at_once)}
+            {agentSessionsText(agent)}
           </span>
           <span className="team-card-status" id={`${id}-status`} data-status={agent.status} data-testid="team-card-status">
             {agent.status}
