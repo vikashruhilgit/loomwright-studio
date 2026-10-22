@@ -248,6 +248,40 @@
   flex: 1;
   min-height: 0;
 }
+/* No read has answered yet (in flight, or failed): the log is not known to be empty, so StreamingLog's "No output" is not shown. */
+.sessions-log[data-output="unread"] .streaming-log__empty {
+  display: none;
+}
+/* The kernel has no token count: StreamingLog's figure takes a number, so it (and the separator before it) is hidden rather than saying 0. */
+.sessions-log[data-tokens="unknown"] [data-testid="streaming-log-tokens"],
+.sessions-log[data-tokens="unknown"] .streaming-log__meta > [aria-hidden="true"]:has(+ [data-testid="streaming-log-tokens"]) {
+  display: none;
+}
+/* Abandon while its request is in flight: `aria-disabled` (it keeps focus), drawn as Button's native disabled state. */
+.btn.sessions-abandon[aria-disabled="true"],
+.btn.sessions-abandon[aria-disabled="true"]:hover {
+  color: var(--ink-disabled);
+  background: var(--surface-sunken);
+  border-color: transparent;
+  cursor: default;
+}
+.sessions-output-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* A region that took focus from a control that left the DOM. Programmatic focus draws no ring for a pointer user. */
+.sessions-detail:focus-visible,
+.sessions-empty:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.sessions-detail:focus:not(:focus-visible),
+.sessions-empty:focus:not(:focus-visible) {
+  outline: none;
+}
 
 /* The single-column states: empty, error, no bridge. */
 .sessions-single .sessions-column {

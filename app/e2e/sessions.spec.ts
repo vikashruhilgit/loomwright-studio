@@ -236,6 +236,14 @@ test("AC1: running first and selected; each row's avatar, agent, task, time, tok
   await expect(row(page, 27).getByTestId("session-orphan-reason")).toHaveText("leader_unverified");
   await expect(row(page, 26).getByTestId("session-orphan-reason")).toHaveText("reap_error");
   for (const id of [30, 29, 27, 26]) await expect(row(page, id).getByTestId("session-kill-unconfirmed")).toHaveCount(0);
+
+  // #28 has no token count: the log header hides its figure rather than saying "0 tokens".
+  await selectById(page, 28);
+  await expect(page.getByTestId("session-detail")).toHaveAttribute("data-session-id", "28");
+  await expect(page.getByTestId("session-log")).toHaveAttribute("data-output", "read");
+  await expect(page.getByTestId("streaming-log-tokens")).toBeHidden();
+  await selectById(page, 29);
+  await expect(page.getByTestId("streaming-log-tokens")).toHaveText("22,800 tokens");
 });
 
 test("AC2: new output appears; the next read is after the last seq, never 0 again; scrolled up, the view stays and the pill says Jump to latest", async () => {
@@ -423,6 +431,8 @@ test("AC7: Abandon is offered only for a leader_unverified orphan; Escape and Ca
   await expect(statusOf(page, 27)).toHaveText("abandoned");
   await expect(abandon).toHaveCount(0);
   expect(postsTo(kernel, "/abandon").map((p) => p.path)).toEqual(["/sessions/27/abandon"]);
+  // Abandon left the DOM holding the focus the confirm handed back: the detail has it, never <body>.
+  await expect(page.getByTestId("session-detail")).toBeFocused();
 });
 
 test("AC9: keyboard only reaches J/K, ⌘. Stop, Kill and its confirm, Abandon and its confirm, Jump to latest and Read latest", async () => {

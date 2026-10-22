@@ -182,6 +182,15 @@ function runsNow(session: SessionSummary, control: ControlState | undefined): bo
 const IDLE_OUTPUT: OutputSnapshot = { rows: [], lastSeq: 0, reading: false, loaded: false, error: undefined };
 const NO_SUBSCRIBE = (): (() => void) => () => undefined;
 
+/**
+ * A callback ref that reports an element leaving the DOM while it (or a descendant) holds focus. Stable per
+ * screen: a new identity would detach and re-attach it on every render, which reads as a removal.
+ */
+type FocusWatch = (node: HTMLElement | null) => (() => void) | undefined;
+
+/** Where focus goes once a watched element took it with it: the row it was on, or the region in its place. */
+type FocusLoss = "row" | "region";
+
 /** One reader per session id this screen has shown (an ended session's log is kept), disposed on unmount. */
 function useOutputReaders(api: StudioBridge): (id: number) => SessionOutputReader {
   const readers = useRef(new Map<number, SessionOutputReader>());
@@ -365,6 +374,51 @@ function SessionsView({ api, registry }: { readonly api: StudioBridge; readonly 
   );
 
   const dialogOpen = dialog !== null;
+
+  // ---- focus: never lost to <body> --------------------------------------------------------
+  // A focused control can leave the DOM under the owner: Abandon once the kernel answers, a row that moves to
+  // another group or leaves the list, the log on a session switch, the detail on the gone note, a whole layout
+  // on populated <-> empty / error. Its ref says so as it detaches (before removal, so it still holds focus),
+  // and this view's layout effect, after the commit, hands focus to what took its place. Only a removal that
+  // took focus with it moves focus: focus the owner put anywhere else is never touched.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const focusLost = useRef<FocusLoss | null>(null);
+  const watchFor = useCallback(
+    (loss: FocusLoss): FocusWatch =>
+      (node) => {
+        if (node === null) return undefined;
+        return () => {
+          if (node.contains(document.activeElement)) focusLost.current ??= loss;
+        };
+      },
+    [],
+  );
+  const watchRegion = useMemo(() => watchFor("region"), [watchFor]);
+  const watchRow = useMemo(() => watchFor("row"), [watchFor]);
+  /** Focus the region in the lost element's place (or the selected row, for a row), only if focus is on <body>. */
+  const recoverFocus = useCallback((loss: FocusLoss): void => {
+    const focused = document.activeElement;
+    const root = rootRef.current;
+    if ((focused !== null && focused !== document.body) || root === null) return;
+    const region = root.querySelector<HTMLElement>("[data-focus-region]");
+    const row = root.querySelector<HTMLElement>('[role="option"][aria-selected="true"]');
+    (loss === "row" ? (row ?? region) : (region ?? row))?.focus();
+  }, []);
+  useLayoutEffect(() => {
+    const loss = focusLost.current;
+    if (loss === null) return;
+    focusLost.current = null;
+    recoverFocus(loss);
+  });
+  // The confirm hands focus back to its opener in its own cleanup; an opener removed while it was open
+  // (Abandon after the session left the list) leaves focus on <body>. Passive: runs after that cleanup.
+  const dialogWasOpen = useRef(false);
+  useEffect(() => {
+    const was = dialogWasOpen.current;
+    dialogWasOpen.current = dialogOpen;
+    if (was && !dialogOpen) recoverFocus("region");
+  }, [dialogOpen, recoverFocus]);
+
   const latest = useRef({ selected, ordered, dialogOpen, statusBody, controls });
   useLayoutEffect(() => {
     latest.current = { selected, ordered, dialogOpen, statusBody, controls };
@@ -540,18 +594,18 @@ function SessionsView({ api, registry }: { readonly api: StudioBridge; readonly 
 
   if (state === "error" || state === "empty") {
     return (
-      <div className="sessions sessions-single" data-testid="screen-sessions" data-state={state}>
+      <div className="sessions sessions-single" data-testid="screen-sessions" data-state={state} ref={rootRef}>
         {bar}
         {staleNote}
         <div className="sessions-column">
           {state === "error" ? (
-            <div className="sessions-empty" role="alert" data-testid="sessions-error">
+            <div className="sessions-empty" role="alert" data-testid="sessions-error" data-focus-region="" tabIndex={-1} ref={watchRegion}>
               <h2 className="sessions-empty-title">Couldn't load sessions.</h2>
               <p className="sessions-empty-note">{sessions?.error === undefined ? "" : errorText(sessions.error)}</p>
               <p className="sessions-empty-note">This screen reloads on its own once the kernel answers.</p>
             </div>
           ) : (
-            <div className="sessions-empty" data-testid="sessions-empty">
+            <div className="sessions-empty" data-testid="sessions-empty" data-focus-region="" tabIndex={-1} ref={watchRegion}>
               <h2 className="sessions-empty-title">{EMPTY_TITLE}</h2>
               <p className="sessions-empty-note">
                 Sessions are short-lived by design. When a trigger fires or you ask for something, the kernel starts one here and you can watch it, stop it, or
@@ -573,9 +627,16 @@ function SessionsView({ api, registry }: { readonly api: StudioBridge; readonly 
 
   const selectedRow = selected === undefined ? undefined : rowFor(selected);
   const selectedControl = selected === undefined ? undefined : controls.get(selected.id);
+  // Until `/approvals` answers, nobody is known to be waiting on you: never say "None" for that.
+  const waitingNote =
+    approvals?.data !== undefined
+      ? undefined
+      : approvals?.error === undefined
+        ? "Reading approvals…"
+        : "Couldn't read approvals, so who is waiting on you isn't known.";
 
   return (
-    <div className="sessions" data-testid="screen-sessions" data-state={state}>
+    <div className="sessions" data-testid="screen-sessions" data-state={state} ref={rootRef}>
       {bar}
       {staleNote}
       <div className="sessions-split">
@@ -583,14 +644,30 @@ function SessionsView({ api, registry }: { readonly api: StudioBridge; readonly 
           {state === "loading" ? (
             <List label="Sessions" items={[]} loading />
           ) : (
-            <SessionList groups={groups} rowFor={rowFor} selectedId={selected?.id ?? null} onSelect={setSelectedId} onMove={moveSelection} />
+            <SessionList
+              groups={groups}
+              rowFor={rowFor}
+              selectedId={selected?.id ?? null}
+              waitingNote={waitingNote}
+              watchRow={watchRow}
+              onSelect={setSelectedId}
+              onMove={moveSelection}
+            />
           )}
         </div>
         <div className="sessions-detail-pane">
           {state === "loading" ? (
             <div className="sessions-detail" aria-hidden="true" />
           ) : goneId !== null ? (
-            <section className="sessions-detail" data-testid="session-gone" data-session-id={goneId} role="status">
+            <section
+              className="sessions-detail"
+              data-testid="session-gone"
+              data-session-id={goneId}
+              role="status"
+              data-focus-region=""
+              tabIndex={-1}
+              ref={watchRegion}
+            >
               <p className="sessions-note">
                 Session #{goneId} is no longer in the kernel's list. Pick a session (J / K or a click); nothing here acts until you do.
               </p>
@@ -605,9 +682,11 @@ function SessionsView({ api, registry }: { readonly api: StudioBridge; readonly 
               lines={lines}
               abandonable={canAbandon(selectedRow.session, statusBody, selectedControl)}
               abandonDisabled={dialogOpen || selectedControl?.phase === "pending"}
+              watch={watchRegion}
               onStop={onStop}
               onKillRequest={requestKill}
               onAbandon={requestAbandon}
+              onReadAgain={() => readerFor(selectedRow.session.id).read()}
             />
           )}
         </div>
@@ -623,6 +702,9 @@ interface SessionListProps {
   readonly groups: ReturnType<typeof groupSessions>;
   readonly rowFor: (session: SessionSummary) => Row;
   readonly selectedId: number | null;
+  /** Said in the "Waiting on you" group instead of "None" while `/approvals` has not answered. */
+  readonly waitingNote: string | undefined;
+  readonly watchRow: FocusWatch;
   readonly onSelect: (id: number) => void;
   readonly onMove: (delta: 1 | -1) => boolean;
 }
@@ -631,10 +713,15 @@ interface SessionListProps {
  * One `listbox` over the three groups, so J / K and the arrows walk every row in display order. A roving
  * tabindex: Tab reaches the selected row; focus follows a selection that moves while it is inside.
  */
-function SessionList({ groups, rowFor, selectedId, onSelect, onMove }: SessionListProps) {
+function SessionList({ groups, rowFor, selectedId, waitingNote, watchRow, onSelect, onMove }: SessionListProps) {
   const idBase = useId();
   const listRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef(new Map<number, HTMLDivElement>());
+  /** Stable for the list's life: a row's ref callback must keep its identity (see `FocusWatch`). */
+  const onRowRef = useCallback((id: number, node: HTMLDivElement | null): void => {
+    if (node === null) rowRefs.current.delete(id);
+    else rowRefs.current.set(id, node);
+  }, []);
 
   useLayoutEffect(() => {
     const list = listRef.current;
@@ -661,8 +748,8 @@ function SessionList({ groups, rowFor, selectedId, onSelect, onMove }: SessionLi
               {group.label}
             </div>
             {group.sessions.length === 0 ? (
-              <div className="sessions-none" role="presentation">
-                None
+              <div className="sessions-none" role="presentation" data-testid={`sessions-none-${group.id}`}>
+                {group.id === "waiting" && waitingNote !== undefined ? waitingNote : "None"}
               </div>
             ) : (
               group.sessions.map((session) => (
@@ -670,10 +757,8 @@ function SessionList({ groups, rowFor, selectedId, onSelect, onMove }: SessionLi
                   key={session.id}
                   row={rowFor(session)}
                   selected={session.id === selectedId}
-                  rowRef={(node) => {
-                    if (node === null) rowRefs.current.delete(session.id);
-                    else rowRefs.current.set(session.id, node);
-                  }}
+                  onRowRef={onRowRef}
+                  watchRow={watchRow}
                   onSelect={onSelect}
                 />
               ))
@@ -688,12 +773,27 @@ function SessionList({ groups, rowFor, selectedId, onSelect, onMove }: SessionLi
 interface SessionRowProps {
   readonly row: Row;
   readonly selected: boolean;
-  readonly rowRef: (node: HTMLDivElement | null) => void;
+  readonly onRowRef: (id: number, node: HTMLDivElement | null) => void;
+  readonly watchRow: FocusWatch;
   readonly onSelect: (id: number) => void;
 }
 
-function SessionRow({ row, selected, rowRef, onSelect }: SessionRowProps) {
+function SessionRow({ row, selected, onRowRef, watchRow, onSelect }: SessionRowProps) {
   const { session, status } = row;
+  const id = session.id;
+  // Keyed by session id, so `id` never changes for this row: the ref keeps its identity across renders.
+  const rowRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (node === null) return undefined;
+      onRowRef(id, node);
+      const unwatch = watchRow(node);
+      return () => {
+        unwatch?.();
+        onRowRef(id, null);
+      };
+    },
+    [id, onRowRef, watchRow],
+  );
   return (
     <div
       ref={rowRef}
@@ -765,17 +865,30 @@ interface SessionDetailProps {
   readonly lines: ReturnType<typeof rowToLine>[];
   readonly abandonable: boolean;
   readonly abandonDisabled: boolean;
+  /** Reports a control (or the log) leaving the DOM with focus, so the view can hand focus to this detail. */
+  readonly watch: FocusWatch;
   readonly onStop: () => void;
   readonly onKillRequest: () => void;
   readonly onAbandon: () => void;
+  /** Reads the selected session's output again, after the last seq (the reader's own in-flight guard holds). */
+  readonly onReadAgain: () => void;
 }
 
-function SessionDetail({ row, control, output, lines, abandonable, abandonDisabled, onStop, onKillRequest, onAbandon }: SessionDetailProps) {
+function SessionDetail({ row, control, output, lines, abandonable, abandonDisabled, watch, onStop, onKillRequest, onAbandon, onReadAgain }: SessionDetailProps) {
   const { session, status } = row;
   const notice = control === undefined || control.phase === "pending" ? undefined : control.notice;
   const header = statusLine(status);
+  const live = runsNow(session, control);
   return (
-    <section className="sessions-detail" data-testid="session-detail" data-session-id={session.id} aria-label={`Session #${session.id}`}>
+    <section
+      className="sessions-detail"
+      data-testid="session-detail"
+      data-session-id={session.id}
+      aria-label={`Session #${session.id}`}
+      data-focus-region=""
+      tabIndex={-1}
+      ref={watch}
+    >
       <div className="sessions-detail-meta">
         <span className="sessions-label">cwd</span>
         <code className="sessions-mono" data-testid="session-cwd">
@@ -788,14 +901,23 @@ function SessionDetail({ row, control, output, lines, abandonable, abandonDisabl
         {abandonable ? (
           <>
             <span className="sessions-spacer" />
-            <Button variant="danger" size="row" disabled={abandonDisabled} onClick={onAbandon}>
+            {/* `aria-disabled`, never native `disabled`: the confirm hands focus back here, and a disabled
+                button can't take it. `requestAbandon` refuses while a request or the confirm is open. */}
+            <Button
+              variant="danger"
+              size="row"
+              className="sessions-abandon"
+              aria-disabled={abandonDisabled ? true : undefined}
+              onClick={onAbandon}
+              ref={watch}
+            >
               Abandon
             </Button>
           </>
         ) : null}
       </div>
       {row.waitingOn === undefined || !isLive(session.status) ? null : (
-        <p className="sessions-waiting" data-testid="session-waiting">
+        <p className="sessions-waiting" data-testid="session-waiting" ref={watch}>
           <Badge tone="attention">waiting on you</Badge>
           <span>Approval #{row.waitingOn} is pending: the session asked for it and the kernel holds that call until you decide.</span>
           <Button
@@ -816,21 +938,37 @@ function SessionDetail({ row, control, output, lines, abandonable, abandonDisabl
         </p>
       )}
       {output.error === undefined ? null : (
-        <p className="sessions-note" role="status" data-testid="session-output-error">
-          {output.error} It is read again when more output is announced.
+        <p className="sessions-note sessions-output-error" role="status" data-testid="session-output-error" ref={watch}>
+          <span>
+            {output.error}{" "}
+            {live ? "It is read again when more output is announced." : "This session has ended, so nothing announces more output: it is read again only when you ask."}
+          </span>
+          <Button size="row" variant="secondary" loading={output.reading} onClick={onReadAgain}>
+            Read again
+          </Button>
         </p>
       )}
-      {!output.loaded && output.reading ? (
+      {!output.loaded && output.error === undefined ? (
         <p className="sessions-note" data-testid="session-output-reading">
           Reading this session's output…
         </p>
       ) : null}
-      <div className="sessions-log" data-testid="session-log" data-status={header}>
+      {/* Keyed by session: StreamingLog's follow state is one session's. `data-output="unread"` hides its
+          "No output" until a read has answered (sessions.css), so loading and a failed read never look empty;
+          `data-tokens="unknown"` hides its token figure, which takes a number, so an unknown count never says 0. */}
+      <div
+        key={session.id}
+        className="sessions-log"
+        data-testid="session-log"
+        data-status={header}
+        data-output={output.loaded ? "read" : "unread"}
+        data-tokens={session.tokens === null ? "unknown" : undefined}
+        ref={watch}
+      >
         <StreamingLog
-          key={session.id}
           status={
             <span data-testid="session-log-status">
-              <Badge tone={status.danger ? "danger" : row.pending ? "attention" : runsNow(session, control) ? "accent" : "neutral"}>{header}</Badge>
+              <Badge tone={status.danger ? "danger" : row.pending ? "attention" : live ? "accent" : "neutral"}>{header}</Badge>
             </span>
           }
           statusLabel={header}
@@ -839,7 +977,7 @@ function SessionDetail({ row, control, output, lines, abandonable, abandonDisabl
           elapsed={row.elapsed}
           tokens={session.tokens ?? 0}
           lines={lines}
-          live={runsNow(session, control)}
+          live={live}
           onStop={onStop}
           onKillRequest={onKillRequest}
         />

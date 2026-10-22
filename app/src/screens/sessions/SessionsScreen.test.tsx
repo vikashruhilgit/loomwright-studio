@@ -520,6 +520,219 @@ describe("abandon", () => {
   });
 });
 
+describe("a refused control", () => {
+  it.each([
+    ["a 404 with no status", () => ({ ok: false, status: 404, body: { error: "not_found" } }), "The kernel refused (404 not_found)."],
+    [
+      "a connection failure",
+      () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "daemon_not_running" } }),
+      "Couldn't reach the kernel; nothing was stopped.",
+    ],
+    [
+      "a request that throws",
+      () => {
+        throw new Error("ipc");
+      },
+      "The request failed before it reached the kernel; nothing was stopped.",
+    ],
+  ] as const)("%s: the notice says so and the row keeps the kernel's status", async (_why, responder, notice) => {
+    const { fake } = await mount({ sessions: [running(31)] });
+    fake.route("POST /sessions/:id/stop", responder as () => ApiResult<unknown>);
+    press(".", { metaKey: true });
+    await waitFor(() => expect(screen.getByTestId("session-notice").textContent).toBe(notice));
+    expect(statusOf(31)).toBe("running");
+    expect(screen.getByTestId("session-log-status").textContent).toBe("running");
+    // Refused, not answered: Stop still applies.
+    press(".", { metaKey: true });
+    await waitFor(() => expect(posts(fake, "POST /sessions/:id/stop")).toHaveLength(2));
+  });
+});
+
+describe("the list's other states", () => {
+  it("a list read that fails after one answered keeps the list and says it is stale", async () => {
+    const { fake } = await mount({ sessions: [running(31)] });
+    fake.route("GET /sessions", () => ({ ok: false, status: 500, body: { error: "route_failed" } }));
+    act(() => fake.emit(event("session_status", 31)));
+    await waitFor(() => expect(screen.queryByTestId("sessions-stale")).not.toBeNull());
+    expect(screen.getByTestId("sessions-stale").textContent).toContain("The kernel refused the read (500 route_failed).");
+    expect(rowIds()).toEqual([31]);
+  });
+
+  it("a selected session that leaves the kernel's list shows the gone note, and nothing acts on it", async () => {
+    const { fake, kernel } = await mount({ sessions: [running(31), session(30)] });
+    kernel.sessions = [session(30)];
+    act(() => fake.emit(event("session_status", 31)));
+    await waitFor(() => expect(screen.queryByTestId("session-gone")).not.toBeNull());
+    expect(screen.getByTestId("session-gone").dataset.sessionId).toBe("31");
+    expect(screen.getByTestId("session-gone").textContent).toContain("Session #31 is no longer in the kernel's list.");
+    expect(selectedId()).toBeUndefined();
+    press(".", { metaKey: true });
+    await act(async () => new Promise((done) => setTimeout(done, 20)));
+    expect(posts(fake, "POST /sessions/:id/stop")).toHaveLength(0);
+  });
+
+  it("while /approvals has not answered, the Waiting on you group says so instead of None", async () => {
+    await mount({ sessions: [running(31)] });
+    await waitFor(() => expect(screen.getByTestId("sessions-none-waiting").textContent).toBe("None"));
+    cleanup();
+
+    const kernel: Kernel = { sessions: [running(31)], output: new Map(), killUnconfirmed: [], orphaned: [], approvals: [] };
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(statusBody(kernel)));
+    fake.route("GET /sessions", () => ok({ sessions: [...kernel.sessions] }));
+    fake.route("GET /agents", () => ok({ agents: [] }));
+    fake.route(OUTPUT, () => ok({ rows: [] }));
+    const approvals = held();
+    fake.route("GET /approvals", approvals.responder);
+    setApi(fake.bridge);
+    render(<SessionsScreen registry={createCommandRegistry()} />);
+    await waitFor(() => expect(screen.getByTestId("sessions-none-waiting").textContent).toBe("Reading approvals…"));
+    await act(async () => approvals.answer({ ok: false, status: 500, body: { error: "route_failed" } }));
+    await waitFor(() => expect(screen.getByTestId("sessions-none-waiting").textContent).toBe("Couldn't read approvals, so who is waiting on you isn't known."));
+    expect(screen.getByTestId("sessions-none-recent").textContent).toBe("None");
+  });
+});
+
+describe("the output, before and after a read answers", () => {
+  it("an ended session never says No output while its first read is in flight or failed; Read again reads after the last seq", async () => {
+    const fake = fakeBridge();
+    const kernel: Kernel = { sessions: [session(30, { tokens: null })], output: new Map(), killUnconfirmed: [], orphaned: [], approvals: [] };
+    fake.route("GET /status", () => ok(statusBody(kernel)));
+    fake.route("GET /sessions", () => ok({ sessions: [...kernel.sessions] }));
+    fake.route("GET /approvals", () => ok({ approvals: [] }));
+    fake.route("GET /agents", () => ok({ agents: [] }));
+    const first = held();
+    fake.route(OUTPUT, first.responder);
+    setApi(fake.bridge);
+    render(<SessionsScreen registry={createCommandRegistry()} />);
+    await waitFor(() => expect(screen.queryByTestId("session-detail")).not.toBeNull());
+
+    // In flight: reading, and the log is marked unread (sessions.css hides StreamingLog's "No output").
+    expect(screen.getByTestId("session-output-reading").textContent).toBe("Reading this session's output…");
+    expect(screen.getByTestId("session-log").dataset.output).toBe("unread");
+    // The kernel has no token count: the header's figure is marked unknown (hidden), never "0 tokens".
+    expect(screen.getByTestId("session-log").dataset.tokens).toBe("unknown");
+    expect(within(rowOf(30)).getByTestId("session-tokens").textContent).toBe("—");
+
+    // Failed: an honest note for an ended session, a Read again, and still unread.
+    await act(async () => first.answer({ ok: false, status: 500, body: { error: "route_failed" } }));
+    const failure = await screen.findByTestId("session-output-error");
+    expect(failure.textContent).toContain("The kernel refused the output read (500 route_failed).");
+    expect(failure.textContent).toContain("This session has ended, so nothing announces more output");
+    expect(failure.textContent).not.toContain("when more output is announced");
+    expect(screen.queryByTestId("session-output-reading")).toBeNull();
+    expect(screen.getByTestId("session-log").dataset.output).toBe("unread");
+
+    // Read again: one read, after the last seq (0: none read yet); then the rows, and the log is read.
+    kernel.output.set(30, rows(30, 1, 2));
+    fake.route(OUTPUT, (req) => ok({ rows: (kernel.output.get(Number(req.params?.id)) ?? []).filter((r) => r.seq > Number(req.query?.after ?? "0")) }));
+    const again = within(failure).getByRole("button", { name: "Read again" });
+    again.focus();
+    fireEvent.click(again);
+    await waitFor(() => expect(screen.getByText("line 2")).toBeTruthy());
+    expect(readsOf(fake, 30)).toEqual(["0", "0"]);
+    expect(screen.getByTestId("session-log").dataset.output).toBe("read");
+    expect(screen.queryByTestId("session-output-error")).toBeNull();
+    // The note (and its focused button) left with the failure: focus is on the detail, never <body>.
+    expect(document.activeElement).toBe(screen.getByTestId("session-detail"));
+  });
+
+  it("an event log reset (a wiped event table) reads again after the last seq", async () => {
+    const { fake, kernel } = await mount({ sessions: [running(31)], output: new Map([[31, rows(31, 1, 3)]]) });
+    await waitFor(() => expect(screen.getByText("line 3")).toBeTruthy());
+    // A frame opens the feed; the log now has an id to compare against (the first frame after none may read once).
+    act(() => fake.emit(event("session_status", null)));
+    await act(async () => new Promise((done) => setTimeout(done, 20)));
+    const before = readsOf(fake, 31).length;
+
+    // The kernel restarts with a wiped event table: on reconnect the store empties its event log. No
+    // announcement arrives, so only the reset itself can cause the read.
+    kernel.output.set(31, rows(31, 1, 4));
+    fake.route("GET /status", () => ok({ ...statusBody(kernel), kernel: { version: "0", uptime_s: 1, pid: 2 } }));
+    fake.route("GET /events", () => ok({ events: [] }));
+    act(() => fake.emit({ type: "closed", code: 1006, reason: "" }));
+    await waitFor(() => expect(screen.getByText("line 4")).toBeTruthy(), { timeout: 3_000 });
+    expect(readsOf(fake, 31).slice(before)).toEqual(["3"]);
+  });
+});
+
+describe("focus", () => {
+  const ORPHAN = { id: 27, agent: "ada", pgid: 1, reason: "leader_unverified", updated_at: "2026-10-22T08:00:00.000Z" };
+
+  it("after Abandon's confirm, focus is on Abandon (aria-disabled, not disabled) while pending, then on the detail once it is gone", async () => {
+    const { fake } = await mount({ sessions: [session(27, { status: "orphaned" })], orphaned: [ORPHAN] });
+    const abandon = held();
+    fake.route("POST /sessions/:id/abandon", abandon.responder);
+    const button = await screen.findByRole("button", { name: "Abandon" });
+    button.focus();
+    fireEvent.click(button);
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Abandon" }));
+    await waitFor(() => expect(statusOf(27)).toBe("abandoning…"));
+    await waitFor(() => expect(document.activeElement).toBe(button));
+    expect(button.hasAttribute("disabled")).toBe(false);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    // A click while pending sends nothing more.
+    fireEvent.click(button);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+
+    await act(async () => abandon.answer(ok({ id: 27, status: "abandoned" })));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Abandon" })).toBeNull());
+    expect(document.activeElement).toBe(screen.getByTestId("session-detail"));
+    expect(posts(fake, "POST /sessions/:id/abandon")).toHaveLength(1);
+  });
+
+  it("a confirm whose opener left while it was open hands focus to the region in its place", async () => {
+    const { fake, kernel } = await mount({ sessions: [session(27, { status: "orphaned" }), session(25)], orphaned: [ORPHAN] });
+    const button = await screen.findByRole("button", { name: "Abandon" });
+    button.focus();
+    fireEvent.click(button);
+    kernel.sessions = [session(25)];
+    act(() => fake.emit(event("session_status", 27)));
+    await waitFor(() => expect(screen.queryByTestId("session-gone")).not.toBeNull());
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("session-gone")));
+  });
+
+  it("a focused row that moves to another group (Running to Recent) keeps focus on that row", async () => {
+    const { fake, kernel } = await mount({ sessions: [running(31), session(30)] });
+    fake.route("POST /sessions/:id/stop", () => {
+      kernel.sessions = [session(31, { status: "stopped", ended: "2026-10-22T08:50:00.000Z" }), session(30)];
+      return ok({ id: 31, status: "stopped", reason: "owner_stop" });
+    });
+    const before = rowOf(31);
+    before.focus();
+    press(".", { metaKey: true });
+    await waitFor(() => expect(rowOf(31).closest("[data-group]")?.getAttribute("data-group")).toBe("recent"));
+    expect(rowOf(31)).not.toBe(before);
+    expect(document.activeElement).toBe(rowOf(31));
+  });
+
+  it("a focused row whose session leaves the list hands focus to the gone note; a list gone empty, to the empty state", async () => {
+    const { fake, kernel } = await mount({ sessions: [running(31), session(30)] });
+    rowOf(31).focus();
+    kernel.sessions = [session(30)];
+    act(() => fake.emit(event("session_status", 31)));
+    await waitFor(() => expect(screen.queryByTestId("session-gone")).not.toBeNull());
+    expect(document.activeElement).toBe(screen.getByTestId("session-gone"));
+
+    rowOf(30).focus();
+    kernel.sessions = [];
+    act(() => fake.emit(event("session_status", 30)));
+    await waitFor(() => expect(screen.getByTestId("screen-sessions").dataset.state).toBe("empty"));
+    expect(document.activeElement).toBe(screen.getByTestId("sessions-empty"));
+  });
+
+  it("J with focus in the log (which is remounted for the next session) moves focus to the detail, not <body>", async () => {
+    await mount({ sessions: [running(31), session(30)], output: new Map([[31, rows(31, 1, 2)]]) });
+    await waitFor(() => expect(screen.getByText("line 2")).toBeTruthy());
+    const log = screen.getByRole("log");
+    log.focus();
+    press("j", {}, log);
+    expect(selectedId()).toBe(30);
+    expect(document.activeElement).toBe(screen.getByTestId("session-detail"));
+  });
+});
+
 describe("commands", () => {
   it("stop, kill and abandon are palette commands under sessions.*, enabled with the selection, removed on unmount", async () => {
     const { registry, unmount } = await mount({ sessions: [running(31), session(30)] });
