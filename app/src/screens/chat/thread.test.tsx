@@ -5,7 +5,8 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest";
 import { ALWAYS_INELIGIBLE } from "./cards";
 import { WRIGHT_EMPTY } from "./Thread";
-import { approval, eventItem, kit, message, renderChat, resetChat, thread, go } from "./testkit";
+import { ok } from "../../store/fake-bridge";
+import { approval, eventItem, kit, message, playbook, renderChat, resetChat, thread, go } from "./testkit";
 import type { Kit } from "./testkit";
 
 afterEach(resetChat);
@@ -207,6 +208,70 @@ describe("thread", () => {
     await done(k);
     await screen.findByText("four");
     expect(shown(view.container)).toEqual(["message:1", "message:2", "message:3", "message:4"]);
+  });
+
+  it("an item that slides off the live page while the first Load earlier is in flight stays in view", async () => {
+    const k = kit({ threads: { wright: thread([message(2, { text: "two" }), message(3, { text: "three" })], { next_before: "c1" }) } });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((go) => {
+      release = go;
+    });
+    k.fake.route("GET /threads/:agent", async (req) => {
+      if (req.query?.before === undefined) return ok(k.state.threads.wright);
+      await held;
+      return ok(thread([message(1, { text: "one" })], { next_before: null }));
+    });
+    const view = await renderChat(k);
+    await screen.findByText("three");
+    await click(/^Load earlier/);
+    // The live page moves on while the page is held: 2 leaves it before any older page is loaded.
+    k.state.threads.wright = thread([message(3, { text: "three" }), message(4, { text: "four" })], { next_before: "c2" });
+    await done(k);
+    await screen.findByText("four");
+    await act(async () => release());
+    await screen.findByText("one");
+    expect(shown(view.container)).toEqual(["message:1", "message:2", "message:3", "message:4"]);
+    // The page was the last: nothing else reaches 2, so it must be kept, and kept once.
+    expect(screen.queryByRole("button", { name: /^Load earlier/ })).toBeNull();
+    await done(k);
+    expect(shown(view.container)).toEqual(["message:1", "message:2", "message:3", "message:4"]);
+  });
+
+  it("a card keeps its refusal and its in-flight guard across Load earlier", async () => {
+    const k = kit({
+      threads: { wright: thread([eventItem(10, "playbook_created", "Playbook pb-3 created", { playbook_id: 3 })], { next_before: "c1" }) },
+      pages: { "wright c1": thread([message(1, { text: "older" })], { next_before: null }) },
+      playbooks: [playbook(3)],
+    });
+    k.state.posts["POST /playbooks/:id/off"] = () => ({ ok: false, status: 409, body: { error: "not_enabled", message: "pb-3 is disabled" } });
+    let release: () => void = () => undefined;
+    k.fake.route("POST /playbooks/:id/run", async () => {
+      await new Promise<void>((go) => {
+        release = go;
+      });
+      return { ok: true, status: 200, body: {} };
+    });
+    await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Playbook pb-3" });
+    await act(async () => {
+      fireEvent.click(within(card).getByRole("button", { name: /^Turn off/ }));
+    });
+    expect((await within(card).findByRole("alert")).textContent).toBe("pb-3 is disabled (not_enabled)");
+    // A Run now in flight when the older page lands.
+    await act(async () => {
+      fireEvent.click(within(card).getByRole("button", { name: /^Run now/ }));
+    });
+    expect(k.posted("POST /playbooks/:id/run")).toHaveLength(1);
+    await click(/^Load earlier/);
+    await screen.findByText("older");
+    // The same card, not a remount: its refusal is still there and its guard still holds.
+    expect(screen.getByRole("region", { name: "Playbook pb-3" })).toBe(card);
+    expect(within(card).getByRole("alert").textContent).toBe("pb-3 is disabled (not_enabled)");
+    await act(async () => {
+      fireEvent.click(within(card).getByRole("button", { name: /^Run now/ }));
+    });
+    expect(k.posted("POST /playbooks/:id/run")).toHaveLength(1);
+    await act(async () => release());
   });
 
   it("the last Load earlier moves focus to the thread, not <body>", async () => {

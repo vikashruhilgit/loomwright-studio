@@ -4,7 +4,7 @@
 // bubbles, one-line event cards, the playbook and trigger cards those events
 // name, and the agent's pending approvals inline at the end, then the
 // composer. Every kernel string is a React text child only.
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { Approval, RosterEntry, StudioBridge, ThreadItem, ThreadResponse } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
@@ -192,6 +192,8 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   const lastFocus = useRef<{ readonly el: HTMLElement; readonly zone: "approval" | "earlier" | "other" } | null>(null);
   /** The live first page as last read, to catch items that slide off it. */
   const lastLive = useRef<readonly ThreadItem[]>([]);
+  /** Items that slid off the live page while a Load earlier was in flight, merged in when it answers. */
+  const slid = useRef<readonly ThreadItem[]>([]);
 
   const isWright = agent === WRIGHT;
   const name = nameOf(roster, agent);
@@ -207,7 +209,9 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
 
   // The live store refetches only the newest page. Once older pages are loaded, an item that slides
   // off that page (a newer one pushed it out) would be in neither list: keep it with the older ones.
-  // Before then there is nothing to keep it next to, and the cursor still reaches it.
+  // Before then the cursor still reaches it, unless a Load earlier is in flight: its page ends at the
+  // cursor sent, before the item, and may be the last. So while one is in flight, hold dropped items
+  // until it answers.
   useLayoutEffect(() => {
     const previous = lastLive.current;
     const live = data?.items ?? [];
@@ -215,6 +219,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     const still = new Set(live.map(itemKey));
     const dropped = previous.filter((item) => !still.has(itemKey(item)));
     if (dropped.length === 0) return;
+    if (pagingNow.current) slid.current = mergeItems(slid.current, dropped);
     setOlder((prev) => (prev === null ? prev : { items: mergeItems(prev.items, dropped), next: prev.next }));
   }, [data]);
 
@@ -256,6 +261,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   const loadEarlier = async (): Promise<void> => {
     if (cursor === null || pagingNow.current) return;
     pagingNow.current = true;
+    slid.current = [];
     setPaging(true);
     const el = scrollRef.current;
     const fromBottom = el === null ? 0 : el.scrollHeight - el.scrollTop;
@@ -267,15 +273,20 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     } finally {
       pagingNow.current = false;
     }
+    // Read and cleared in the same tick the guard drops: no refetch's effect runs in between.
+    const held = slid.current;
+    slid.current = [];
     setPaging(false);
     if (result?.ok !== true) {
+      // Nothing was added: the cursor shown is still the live page's, which reaches the held items.
       setPageError(refusalOf(result).text);
       return;
     }
     const page = result.body;
     setPageError("");
     atEnd.current = false;
-    setOlder((prev) => ({ items: mergeItems(page.items, prev?.items ?? []), next: page.next_before }));
+    // Held items are newer than every older page (they left the live page's oldest end).
+    setOlder((prev) => ({ items: mergeItems(mergeItems(page.items, prev?.items ?? []), held), next: page.next_before }));
     // Keep what the owner was reading where it was.
     requestAnimationFrame(() => {
       if (el !== null) el.scrollTop = el.scrollHeight - fromBottom;
@@ -302,18 +313,21 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     const tid = playbookList?.find((p) => p.id === id)?.trigger_id;
     if (tid !== null && tid !== undefined) shownInPlaybook.add(tid);
   }
-  const cardsAfter = (index: number): ReactNode[] => {
-    const out: ReactNode[] = [];
+  // Each card is keyed by what it shows (one playbook, one trigger: both maps hold an id once), never
+  // by its position: Load earlier prepends items, and a positional key would remount every card,
+  // dropping its refusal, its Set form, an open confirm and the in-flight guard of a pending write.
+  const cardsAfter = (index: number): { readonly key: string; readonly node: ReactNode }[] => {
+    const out: { readonly key: string; readonly node: ReactNode }[] = [];
     for (const [id, at] of playbookAt) {
       if (at !== index) continue;
       const playbook = playbookList?.find((p) => p.id === id);
       const trigger = playbook?.trigger_id === null || playbook === undefined ? undefined : triggerList?.find((t) => t.id === playbook.trigger_id);
-      out.push(<PlaybookCard key={`pb:${id}`} api={api} playbookId={id} playbook={playbook} trigger={trigger} agent={agent} />);
+      out.push({ key: `card:pb:${id}`, node: <PlaybookCard api={api} playbookId={id} playbook={playbook} trigger={trigger} agent={agent} /> });
     }
     for (const [id, at] of triggerAt) {
       if (at !== index || shownInPlaybook.has(id)) continue;
       const trigger = triggerList?.find((t) => t.id === id);
-      if (trigger !== undefined) out.push(<TriggerCard key={`tr:${id}`} api={api} trigger={trigger} agent={agent} />);
+      if (trigger !== undefined) out.push({ key: `card:tr:${id}`, node: <TriggerCard api={api} trigger={trigger} agent={agent} /> });
     }
     return out;
   };
@@ -338,18 +352,17 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   } else {
     body = (
       <ol className="chat-items" aria-label={`Thread with ${name}`} ref={listRef} tabIndex={-1}>
-        {items.map((item, index) => (
-          <Fragment key={itemKey(item)}>
-            <li className="chat-item" data-item={itemKey(item)}>
-              {item.type === "message" ? <MessageView item={item} agent={agent} roster={roster} /> : <EventView item={item} />}
+        {/* One flat keyed list (no Fragment per item), so a card whose newest event moves keeps its state. */}
+        {items.flatMap((item, index) => [
+          <li key={itemKey(item)} className="chat-item" data-item={itemKey(item)}>
+            {item.type === "message" ? <MessageView item={item} agent={agent} roster={roster} /> : <EventView item={item} />}
+          </li>,
+          ...cardsAfter(index).map((card) => (
+            <li key={card.key} className="chat-item chat-item-card">
+              {card.node}
             </li>
-            {cardsAfter(index).map((card, i) => (
-              <li key={`card:${index}:${i}`} className="chat-item chat-item-card">
-                {card}
-              </li>
-            ))}
-          </Fragment>
-        ))}
+          )),
+        ])}
         {pending.map((approval) => (
           <li key={`approval:${approval.id}`} className="chat-item chat-item-approval" data-testid="chat-pending-approval">
             {approval.action === "kernel_agent_create" ? (
