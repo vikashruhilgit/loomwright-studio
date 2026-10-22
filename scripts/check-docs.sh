@@ -54,6 +54,21 @@ fi
 if grep -nE "\.bot [^{]*\.(crown|fill|st|ln|knot|stitch|t|thread|frame|stripe)[^{]*\{[^}]*var\(--(ok|attention|danger|parked)\)" docs/design/avatar/avatar.css docs/design/mockups/gui-v1.html docs/design/design-system/components/*/preview.html 2>/dev/null; then
   err "an avatar identity part is painted with a semantic token; use var(--bot) (the agent's identity hue)"
 fi
+# The same rule on the component that ships (app/src/components/Avatar), not only the design source.
+# Found in review of PR #110: the gate above never read the app code. TS and CSS there span lines,
+# so each file is flattened first (CSS: comments stripped, one rule per line).
+av=app/src/components/Avatar
+if [ -d "$av" ]; then
+  # A semantic token in the crew hue type or list, or a semantic CSS token handed out as a hue.
+  if cat "$av/creatures.ts" "$av/Avatar.tsx" | tr '\n' ' ' \
+    | grep -oE "(type CrewHue|const CREW_HUES)[^=;]*=[^;]*[\"'](ok|attention|danger|parked)[\"']|[\"'\`]--(ok|attention|danger|parked)[\"'\`]"; then
+    err "the Avatar component offers a semantic token as an identity hue; identity hues must be crew-* (or accent for Wright)"
+  fi
+  if tr '\n' ' ' < "$av/Avatar.css" | sed -E 's#/\*([^*]|\*+[^*/])*\*+/##g' | tr '}' '\n' \
+    | grep -E "\.bot[^{]*\.(crown|fill|st|ln|knot|stitch|t|thread|frame|stripe)([^a-zA-Z0-9_{-][^{]*)?\{[^}]*var\(--(ok|attention|danger|parked)\)"; then
+    err "an Avatar component identity part is painted with a semantic token; use var(--bot) (the agent's identity hue)"
+  fi
+fi
 
 if [ "$fail" -eq 0 ]; then note "check-docs: OK"; fi
 exit "$fail"

@@ -1,0 +1,199 @@
+/* Toast and Band: docs/design/design-system/components/Toast. Colour comes only from tokens.css custom properties. */
+
+/* Fixed, so toasts arriving or leaving never move the main content. Clicks pass through the empty area. */
+.toast-stack {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+.toast-stack > * {
+  pointer-events: auto;
+}
+/* The stack is focused only as the last-resort landing spot when a focused toast leaves with nowhere else to go. */
+.toast-stack:focus {
+  outline: none;
+}
+/* The polite announcer: read by screen readers, never seen. */
+.toast-announcer {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.toast-collapsed {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-1);
+  color: var(--ink-tertiary);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+  font-variant-numeric: tabular-nums;
+}
+
+.toast {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 360px;
+  max-width: 100%;
+  padding: 10px var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: var(--shadow-2);
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  animation: toast-enter var(--duration-base) var(--ease-enter);
+}
+.toast[data-state="leaving"] {
+  animation: toast-leave var(--duration-fast) var(--ease-exit) forwards;
+}
+.toast-text {
+  flex: 1;
+  min-width: 0;
+}
+.toast-title {
+  font-weight: 600;
+}
+.toast-action,
+.toast-dismiss {
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+.toast-action {
+  color: var(--accent);
+  font-weight: 500;
+}
+.toast-action:hover {
+  color: var(--accent-hover);
+}
+.toast-dismiss {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-xs);
+  color: var(--ink-tertiary);
+  font-size: 16px;
+  line-height: 1;
+}
+.toast-dismiss:hover {
+  color: var(--ink);
+}
+.toast-action:focus-visible,
+.toast-dismiss:focus-visible,
+.toast-band-action:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.toast-band {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+.toast-band[data-tone="danger"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.toast-band[data-tone="parked"] {
+  background: var(--parked-soft);
+  color: var(--parked);
+}
+.toast-band[data-tone="attention"] {
+  background: var(--attention-soft);
+  color: var(--attention);
+}
+.toast-band-icon {
+  display: inline-flex;
+  flex: none;
+}
+.toast-band-icon svg {
+  width: 14px;
+  height: 14px;
+}
+.toast-band-text {
+  flex: 1;
+  min-width: 0;
+}
+.toast-band-action {
+  flex: none;
+  margin: 0 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@keyframes toast-leave {
+  to {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes toast-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes toast-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* Reduced motion: no movement; opacity fades only, capped at duration-instant. */
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation-name: toast-fade-in;
+    animation-duration: var(--duration-instant);
+  }
+  .toast[data-state="leaving"] {
+    animation-name: toast-fade-out;
+    animation-duration: var(--duration-instant);
+  }
+  .toast-action,
+  .toast-dismiss,
+  .toast-band-action {
+    transition-duration: 0s;
+  }
+}
