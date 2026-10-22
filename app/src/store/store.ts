@@ -610,6 +610,14 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
         slot.inFlight = false;
       }
       bridge.feed.unsubscribe().catch(() => undefined);
+      // The feed is no longer followed, so the store is not `live` and every
+      // resource reads `stale`. A store that was live is `reconnecting` (it
+      // still holds that data and `lastEventId`, and a restart resumes from
+      // them); `everLive` is kept for the same reason, so a restarted store's
+      // failed attempt also reads `reconnecting`. One never live goes back to
+      // `connecting`: a `not_installed` / `unreachable` answer from before is
+      // not the kernel's answer now, and a restart asks again.
+      setView(everLive ? { state: "reconnecting", lastUpdated } : { state: "connecting" });
       emit();
     },
 

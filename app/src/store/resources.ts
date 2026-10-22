@@ -105,7 +105,6 @@ export const KIND_ROUTES: readonly { readonly prefix: string; readonly resources
   { prefix: "session_", resources: ["sessions", "status"] },
   { prefix: "stop_", resources: ["sessions", "status"] },
   { prefix: "tool_decision", resources: ["sessions", "status"] },
-  { prefix: "work_step_", resources: ["sessions", "status"] },
   // `event_enqueued` / `event_done` / `event_failed` / `event_parked`: the
   // queue in `GET /status`, and a brain message's status (an ask's reply ends
   // in `event_done`, with no `agent_message_*` event).

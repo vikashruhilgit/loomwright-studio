@@ -248,7 +248,8 @@ describe("refetch by kind, throttled (AC1)", () => {
     expect(resourcesForKind("session_status")).toEqual(["sessions", "status"]);
     expect(resourcesForKind("stop_requested")).toEqual(["sessions", "status"]);
     expect(resourcesForKind("tool_decision")).toEqual(["sessions", "status"]);
-    expect(resourcesForKind("work_step_interrupted")).toEqual(["sessions", "status"]);
+    // Not a kernel kind: `work_step_interrupted` is a `notify` event's payload reason, so a frame of that kind takes the default route.
+    expect(resourcesForKind("work_step_interrupted")).toEqual(["status"]);
     expect(resourcesForKind("event_done")).toEqual(["status", "messages"]);
     expect(resourcesForKind("task_updated")).toEqual(["status"]);
     expect(resourcesForKind("cap_warning")).toEqual(["status"]);
@@ -962,5 +963,60 @@ describe("dispose", () => {
     expect(fake.subscribeCalls.at(-1)?.after).toBe(5);
     expect(store.getSnapshot().status).toEqual(STATUS);
     expect(fake.listenerCount()).toBe(1);
+  });
+
+  it("a live store is not live once disposed, nor after a restart until an attempt succeeds", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(STATUS));
+    fake.route("GET /approvals", () => ok({ approvals: [] as Approval[] }));
+    const store = storeOver(fake);
+    store.load("approvals");
+    await goLive(fake, store);
+    expect(store.resource("approvals")?.stale).toBe(false);
+    const lastUpdated = store.getSnapshot().lastUpdated;
+
+    store.dispose();
+    expect(store.getSnapshot().connection).toEqual({ state: "reconnecting", lastUpdated });
+    expect(store.resource("approvals")?.stale).toBe(true);
+    expect(store.resource("approvals")?.data?.approvals).toEqual([]);
+
+    // The restart's `connection()` has not answered yet.
+    let answer: () => void = () => undefined;
+    vi.spyOn(fake.bridge, "connection").mockImplementationOnce(
+      () => new Promise((done) => (answer = () => done({ state: "connected", port: 1 }))),
+    );
+    store.start();
+    await flush();
+    expect(store.getSnapshot().connection).toEqual({ state: "reconnecting", lastUpdated });
+    expect(store.resource("approvals")?.stale).toBe(true);
+
+    answer();
+    await flush();
+    fake.emit({ type: "heartbeat", latest_id: 0 });
+    expect(store.getSnapshot().connection).toEqual({ state: "live" });
+    expect(store.resource("approvals")?.stale).toBe(false);
+  });
+
+  it("a store never live goes back to connecting on dispose, not the bridge's old answer", async () => {
+    const fake = fakeBridge({ state: "not_installed", dataDir: "/Users/o/.loomwright-studio" });
+    const store = storeOver(fake);
+    store.start();
+    await flush();
+    expect(store.getSnapshot().connection).toEqual({ state: "not_installed", dataDir: "/Users/o/.loomwright-studio" });
+
+    store.dispose();
+    expect(store.getSnapshot().connection).toEqual({ state: "connecting" });
+    expect(store.resource("status")?.stale).toBe(true);
+
+    let answer: () => void = () => undefined;
+    vi.spyOn(fake.bridge, "connection").mockImplementationOnce(
+      () => new Promise((done) => (answer = () => done({ state: "connected", port: 1 }))),
+    );
+    store.start();
+    await flush();
+    expect(store.getSnapshot().connection).toEqual({ state: "connecting" });
+    expect(store.resource("status")?.stale).toBe(true);
+    answer();
+    await flush();
   });
 });
