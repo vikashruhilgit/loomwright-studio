@@ -1,0 +1,176 @@
+/* Card: docs/design/design-system/components/Card. Colour comes only from tokens.css custom properties. */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-auto-rows: 1fr;
+  gap: var(--space-4);
+}
+
+.card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  height: 100%;
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  text-align: left;
+  cursor: pointer;
+  transition: box-shadow var(--duration-instant) var(--ease-standard);
+}
+.card:hover {
+  box-shadow: var(--shadow-1);
+}
+.card:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.card-avatar {
+  display: inline-flex;
+  flex: none;
+  width: 36px;
+  height: 36px;
+}
+.card-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.card-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--type-title-2-family);
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+}
+/* The role wraps to a reserved two-line height (never cut at one line); longer ends in an ellipsis. */
+.card-role {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  height: calc(2 * var(--type-caption-line));
+  color: var(--ink-tertiary);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+}
+
+.card-task-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ink-secondary);
+}
+.card-task-dot {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: var(--type-body-line);
+}
+/* The task line clamps at two lines; the full text is its tooltip. */
+.card-task {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  min-width: 0;
+  color: var(--ink);
+  font-weight: 500;
+}
+.card-task[data-idle="true"] {
+  color: var(--ink-tertiary);
+  font-weight: 400;
+}
+
+/* The budget block is pinned to the bottom; the meter is the only divider (no hairline above the meta row). */
+.card-budget {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: auto;
+}
+.card-meter {
+  display: block;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--surface-sunken);
+}
+.card-meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.card-meter[data-level="high"] .card-meter-fill {
+  background: var(--attention);
+}
+.card-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+  white-space: nowrap;
+  color: var(--ink-tertiary);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+  font-variant-numeric: tabular-nums;
+}
+.card-meta-label,
+.card-meta-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-meta-model {
+  flex: none;
+  max-width: 50%;
+}
+
+/* Task card: subject, chips, a state line of Badges. */
+.card-subject {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  font-family: var(--type-body-strong-family);
+  font-size: var(--type-body-strong-size);
+  line-height: var(--type-body-strong-line);
+  font-weight: var(--type-body-strong-weight);
+}
+.card-chips,
+.card-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.card-facts {
+  margin-top: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    transition-duration: 0s;
+  }
+}
