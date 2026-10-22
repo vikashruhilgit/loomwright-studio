@@ -1,0 +1,213 @@
+/* StreamingLog, from docs/design/design-system/components/StreamingLog/preview.html.
+   Colours come only from tokens.css. Nothing here moves: streaming never animates
+   (brand book, Motion), so there is no transition or animation at all. */
+
+.streaming-log {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  max-width: 720px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  overflow: hidden;
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  color: var(--ink);
+}
+
+.streaming-log__bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: calc(var(--space-2) + var(--space-0-5));
+  min-width: 0;
+  padding: calc(var(--space-1) + var(--space-0-5)) var(--space-3);
+  background: var(--surface);
+  border-bottom: 1px solid var(--hairline);
+  font-size: var(--type-mono-size);
+}
+
+.streaming-log__status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+
+.streaming-log__agent {
+  flex: none;
+  font-weight: var(--type-body-strong-weight);
+}
+
+.streaming-log__meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-tertiary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.streaming-log__num {
+  font-variant-numeric: tabular-nums;
+}
+
+.streaming-log__actions {
+  display: flex;
+  flex: none;
+  gap: calc(var(--space-1) + var(--space-0-5));
+  margin-left: auto;
+}
+
+.streaming-log__btn {
+  height: 24px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--type-mono-size);
+  font-weight: 500;
+  cursor: default;
+}
+.streaming-log__btn:hover {
+  background: var(--surface-raised);
+}
+.streaming-log__btn--danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.streaming-log__btn[aria-disabled="true"] {
+  color: var(--ink-disabled);
+  border-color: var(--hairline);
+}
+
+.streaming-log__kbd {
+  color: var(--ink-tertiary);
+  font-family: var(--type-kbd-family);
+  font-size: var(--type-kbd-size);
+  font-weight: var(--type-kbd-weight);
+}
+
+.streaming-log__viewport {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.streaming-log__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  /* Lines only ever append below; never let the browser shift the reader's position. */
+  overflow-anchor: none;
+  padding: var(--space-2) 0 calc(var(--space-6) + var(--space-1));
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  color: var(--ink-secondary);
+  user-select: text;
+}
+
+.streaming-log__line {
+  display: grid;
+  grid-template-columns: 68px 1fr;
+  padding: 0 var(--space-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.streaming-log__time {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.streaming-log__text--tool {
+  color: var(--accent);
+}
+.streaming-log__prompt {
+  color: var(--accent);
+}
+.streaming-log__text--output {
+  padding-left: 2ch;
+  color: var(--ink);
+}
+.streaming-log__text--prose {
+  color: var(--ink-secondary);
+}
+.streaming-log__text--error {
+  color: var(--danger);
+}
+.streaming-log__text--ok {
+  color: var(--ok);
+}
+
+/* The live end: a static block caret (never animated). */
+.streaming-log__caret {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  background: var(--accent);
+  vertical-align: -2px;
+}
+
+.streaming-log__empty {
+  margin: 0;
+  padding: 0 var(--space-3);
+  color: var(--ink-tertiary);
+}
+
+.streaming-log__pin {
+  position: absolute;
+  right: 0;
+  bottom: var(--space-1);
+  left: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.streaming-log__pill {
+  padding: var(--space-0-5) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-2);
+  color: var(--ink-secondary);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  pointer-events: auto;
+}
+.streaming-log__pill--action {
+  color: var(--ink);
+  cursor: default;
+}
+
+/* The focus ring: 2px `focus` with a 2px offset, never removed (brand book). */
+.streaming-log :focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+/* The log sits flush inside a clipped frame, so its ring is drawn inside it. */
+.streaming-log .streaming-log__body:focus-visible {
+  outline-offset: -2px;
+}
+
+.streaming-log__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

@@ -1,0 +1,218 @@
+/* ChatBubble, from docs/design/design-system/components/ChatBubble/preview.html. Colours come only from tokens.css. */
+.chat-bubble {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  font-family: var(--type-chat-family);
+  font-size: var(--type-chat-size);
+  line-height: var(--type-chat-line);
+  font-weight: var(--type-chat-weight);
+  color: var(--ink);
+}
+.chat-bubble--right {
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: end;
+}
+.chat-bubble__avatar {
+  width: 24px;
+  height: 24px;
+}
+.chat-bubble__column {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.chat-bubble--right .chat-bubble__column {
+  align-items: flex-end;
+}
+
+.chat-bubble__meta {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+  color: var(--ink-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.chat-bubble--right .chat-bubble__meta {
+  justify-content: flex-end;
+}
+
+.chat-bubble__bubble {
+  max-width: 520px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.chat-bubble--left .chat-bubble__bubble {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+}
+.chat-bubble--right .chat-bubble__bubble {
+  background: var(--accent-soft);
+  border: 1px solid transparent;
+  border-color: transparent;
+  color: var(--ink);
+}
+.chat-bubble__bubble p {
+  margin: 0 0 var(--space-2);
+}
+.chat-bubble__bubble p:last-of-type {
+  margin: 0;
+}
+.chat-bubble__bubble code {
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+}
+.chat-bubble__bubble strong {
+  font-weight: 600;
+}
+
+/* The live end of a streaming turn: a static 2px accent caret. It never blinks. */
+.chat-bubble__caret {
+  display: inline-block;
+  width: 2px;
+  height: 16px;
+  margin-left: 1px;
+  vertical-align: -3px;
+  background: var(--accent);
+}
+
+/* The drafted playbook card. */
+.chat-bubble__draft {
+  margin-top: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--ground);
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+.chat-bubble__draft-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.chat-bubble__draft-name {
+  font-weight: 600;
+}
+.chat-bubble__badge {
+  height: 20px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-xs);
+  font-size: var(--type-caption-size);
+  line-height: 20px;
+  font-weight: 500;
+  background: var(--surface-sunken);
+  color: var(--ink-secondary);
+}
+.chat-bubble__kv {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: 10px var(--space-3);
+  color: var(--ink-secondary);
+}
+.chat-bubble__kv dt {
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-mono-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.chat-bubble__kv dd {
+  margin: 0;
+  color: var(--ink);
+}
+.chat-bubble__mono {
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+}
+.chat-bubble__proposed {
+  font-size: var(--type-caption-size);
+  color: var(--ink-tertiary);
+}
+.chat-bubble__dry {
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--hairline);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  color: var(--ink-secondary);
+  background: var(--surface-sunken);
+  font-variant-numeric: tabular-nums;
+}
+.chat-bubble__dry-label {
+  color: var(--ink-tertiary);
+}
+.chat-bubble__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.chat-bubble__btn {
+  height: var(--row-height);
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: default;
+}
+.chat-bubble__btn--primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.chat-bubble__btn--primary:hover {
+  background: var(--accent-hover);
+}
+.chat-bubble__btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.chat-bubble__kbd {
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-xs);
+  font-family: var(--type-kbd-family);
+  font-size: var(--type-kbd-size);
+  line-height: var(--type-kbd-line);
+  background: var(--surface-sunken);
+  color: var(--ink-tertiary);
+}
+/* preview.html uses a literal #ffffff33 here; a 20% mix of on-accent keeps it a token. */
+.chat-bubble__btn--primary .chat-bubble__kbd {
+  background: color-mix(in srgb, var(--on-accent) 20%, transparent);
+  color: inherit;
+}
+
+/* Motion is opt-in: hover feedback at duration-instant, only when the user allows motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .chat-bubble__btn {
+    transition: background-color var(--duration-instant) var(--ease-standard);
+  }
+}
