@@ -20,9 +20,12 @@
 //   overlapping replay from the same kernel is still dropped and counted.
 //   The pid is recorded as the ids' only once that is known: the row matched
 //   (or the ids reset) with no frame moving `lastEventId` meanwhile, or a
-//   `GET /status` asked and answered while one feed stayed open. A refused or
-//   overtaken row read keeps the ids but leaves the pid unverified, so the
-//   next reconnect checks again.
+//   `GET /status` asked and answered while one feed stayed open, before any
+//   reconnect probe has run on those ids. Once a probe runs with
+//   `lastEventId > 0`, only a row check that decided records the pid: a
+//   refused or overtaken row read (or a probe that ends any other way) keeps
+//   the ids but leaves the pid unverified, so the next reconnect checks again,
+//   and a later `GET /status` answer never records it in the row check's place.
 // - Connection state is the kernel's own answer, never a guess. An attempt is
 //   `connection()` (the main process's api.json, pid, token and `GET /status`
 //   check), then `feed.subscribe`, then the feed proving itself: a frame, or
@@ -61,6 +64,9 @@ export const BACKOFF_CAP_MS = 10_000;
 export const REFETCH_THROTTLE_MS = 250;
 /** How many events the store keeps in `eventLog` (oldest dropped first). */
 export const EVENT_LOG_LIMIT = 1_000;
+
+/** `idsPid` when a reconnect probe ran on the ids and no row check decided: never equal to a pid, and not nullish. */
+const UNVERIFIED: unique symbol = Symbol("unverified");
 
 type NotConnected = Exclude<KernelConnectionState, { readonly state: "connected" }>;
 
@@ -190,8 +196,12 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
   let lastEventId = 0;
   let eventLog: (EventFrame | TruncatedEventFrame)[] = [];
   let duplicatesDropped = 0;
-  /** The kernel pid the ids up to `lastEventId` came from, once known. */
-  let idsPid: number | undefined;
+  /**
+   * The kernel pid the ids up to `lastEventId` came from: `undefined` while no
+   * reconnect probe has run on them (an open feed's `GET /status` may name it),
+   * `UNVERIFIED` once one has and no row check decided (only a row check may).
+   */
+  let idsPid: number | typeof UNVERIFIED | undefined;
   /** Bumped when the ids reset: a truncated row fetched before it is not applied. */
   let idSpace = 0;
   let snapshot: LiveSnapshot | undefined;
@@ -477,6 +487,9 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
    */
   const checkIdSpace = async (mine: number): Promise<true | NotConnected | undefined> => {
     if (lastEventId === 0) return true;
+    // These ids now cross a reconnect: from here only a row check that decided
+    // names their kernel, never an opportunistic `GET /status` answer.
+    idsPid ??= UNVERIFIED;
     const status = await read<StatusBody>({ method: "GET", path: "/status" });
     if (mine !== attemptSeq || !running) return true;
     if (status === undefined) return undefined;

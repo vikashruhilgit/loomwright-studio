@@ -441,6 +441,46 @@ describe("dedupe and resume (AC2, fake bridge)", () => {
     expect(store.getSnapshot().duplicatesDropped).toBe(0);
   });
 
+  it("GET /status refused for the whole first session, then a refused row read: the open feed's GET /status never records the pid in the row check's place", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    const store = storeOver(fake);
+    await goLive(fake, store);
+    for (const id of [1, 2, 3]) fake.emit(event(id));
+    await advance(REFETCH_THROTTLE_MS * 4);
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+
+    // pid 8 with a wiped table, but the row read is refused: the ids are kept, unverified.
+    fake.route("GET /status", () => ok(RESTARTED));
+    fake.route("GET /events", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").length).toBe(1);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+    // Going live refetches status inside the open feed: it answers pid 8.
+    fake.emit({ type: "heartbeat", latest_id: 0 });
+    await advance(REFETCH_THROTTLE_MS * 4);
+    expect(store.getSnapshot().status).toEqual(RESTARTED);
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+
+    // Still unverified: the row is read again, it is gone, the ids reset.
+    fake.route("GET /events", () => ok({ events: [] }));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").length).toBe(2);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(0);
+    expect(store.getSnapshot().lastEventId).toBe(0);
+  });
+
+  it("a healthy session records the pid on first live: a same-pid reconnect makes no row read", async () => {
+    const { fake, store } = await liveThenClosed();
+    await advance(BACKOFF_INITIAL_MS);
+    fake.emit({ type: "heartbeat", latest_id: 3 });
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").length).toBe(0);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+    expect(store.getSnapshot().lastEventId).toBe(3);
+  });
+
   it("GET /status throwing during the probe is a failed attempt: no subscribe until a later probe answers", async () => {
     const { fake, store } = await liveThenClosed();
     const request = fake.bridge.request;
