@@ -38,8 +38,8 @@ export interface FixtureAnswer {
   readonly body: unknown;
 }
 
-/** A canned answer, or a function of the request. */
-export type FixtureRoute = FixtureAnswer | ((req: FixtureRequest) => FixtureAnswer);
+/** A canned answer, or a function of the request. A promise answers when it settles; one that never settles holds the request open. */
+export type FixtureRoute = FixtureAnswer | ((req: FixtureRequest) => FixtureAnswer | Promise<FixtureAnswer>);
 
 export interface FixtureKernelOptions {
   /** Keyed `"<METHOD> <path>"` as in `CONTRACT_ROUTES`; merged over the defaults (`GET /status`). */
@@ -173,7 +173,7 @@ export async function startFixtureKernel(options: FixtureKernelOptions = {}): Pr
         if (routeMethod !== method || route === undefined) continue;
         const params = match(pattern, url.pathname);
         if (params === undefined) continue;
-        const answer = typeof route === "function" ? route({ method, path: url.pathname, params, query: Object.fromEntries(url.searchParams), body }) : route;
+        const answer = typeof route === "function" ? await route({ method, path: url.pathname, params, query: Object.fromEntries(url.searchParams), body }) : route;
         send(res, answer.status, answer.body);
         return;
       }
