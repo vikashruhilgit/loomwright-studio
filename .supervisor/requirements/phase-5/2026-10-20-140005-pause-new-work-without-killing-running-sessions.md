@@ -82,3 +82,9 @@ kernel/src/kernel.ts
 kernel/src/api/server.ts
 kernel/test/console-pause.test.ts
 docs/architecture/pause.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-22T02:12:57Z
+- **Brief:** .supervisor/jobs/done/2026-10-21-pause-new-work-without-killing-sessions.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/107
