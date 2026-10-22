@@ -748,7 +748,8 @@ describe("studio agents rename | off | on (AC6)", () => {
 
   it("off, rename, set (and show) on wright are refused reserved; an unknown or invalid id is refused; nothing is written", async () => {
     const wrightFile = agentSettingsPath(env.dataDir, "wright");
-    for (const argv of [["off", "wright"], ["on", "wright"], ["rename", "wright", "Boss"], ["set", "wright", "model", "m"], ["show", "wright"]]) {
+    // item 07: set wright model is now allowed; a reserved field is still refused
+    for (const argv of [["off", "wright"], ["on", "wright"], ["rename", "wright", "Boss"], ["set", "wright", "tool_policy", "x"], ["show", "wright"]]) {
       const r = await studio("agents", ...argv);
       expect(r.code, argv.join(" ")).toBe(1);
       expect(r.stderr, argv.join(" ")).toMatch(new RegExp(`^studio: .*: reserved: Wright is not a crew member: .* ${wrightFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n$`));

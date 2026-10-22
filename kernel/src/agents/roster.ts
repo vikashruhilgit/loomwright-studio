@@ -14,8 +14,11 @@
 //
 // Mechanism only (invariant 1): `set` writes the one value the owner typed and
 // nothing else; the kernel picks no model, limit or workspace. Wright is not a
-// crew member: `off`, `rename` and `set` on it are refused `reserved` (the
-// owner edits `config/agents/wright.json`). Every stored string is untrusted
+// crew member: `show`, `rename`, `off` and `on` on it are refused `reserved`,
+// and `set` takes only `WRIGHT_SET_FIELDS` for it (phase 5 item 07), through
+// the same write path as a crew member's; every other field is `reserved` (the
+// owner edits `config/agents/wright.json`). Only the owner's route changes
+// Wright's settings: no agent tool does. Every stored string is untrusted
 // text (invariant 3): the verbs print it through `shown` / `payloadText`, as
 // `studio approvals` does, so no stored escape sequence reaches the terminal.
 //
@@ -51,7 +54,7 @@ import { agentSettingsPath, readAgentSettings } from "./settings.js";
 import { isValidAgentId } from "./types.js";
 import type { AgentPart, AgentVerb, AgentStatus } from "./types.js";
 
-/** The lead agent: listed first, never a crew member (`reserved` for off, rename and set). */
+/** The lead agent: listed first, never a crew member (`reserved` for show, rename, off, on and every field `set` does not take for it). */
 const WRIGHT_ID = "wright";
 
 /** The fields `studio agents set` changes: the scalar settings. List fields are changed by editing the file. */
@@ -64,6 +67,20 @@ export const AGENT_SET_FIELDS = Object.freeze([
   "limits.delegation_depth",
 ] as const);
 export type AgentSetField = (typeof AGENT_SET_FIELDS)[number];
+
+/**
+ * The fields `set` takes for Wright (phase 5 item 07), in the contract's
+ * `WrightSetField` order. Every other field (`permission_mode`, `tool_policy`,
+ * ...) stays the owner's hand edit of `wright.json`: refused `reserved`.
+ */
+export const WRIGHT_SET_FIELDS = Object.freeze([
+  "model",
+  "effort",
+  "limits.tokens_per_day",
+  "limits.sessions_at_once",
+  "limits.delegation_depth",
+] as const);
+export type WrightSetField = (typeof WRIGHT_SET_FIELDS)[number];
 
 /** The value that clears `effort` or a limit (unset = no limit). */
 export const CLEAR_VALUE = "none";
@@ -106,12 +123,15 @@ function sessionsRunning(store: Store, agent: string): number {
 
 /**
  * Wright's entry. Its settings are read only when `wright.json` exists, so a
- * listing never creates it (the brain's first message or `POST /ask` does).
- * Wright's file refuses limits until an item applies them, so it has none.
+ * listing never creates it (the brain's first message, `POST /ask` or the
+ * first Wright `set` does). Its limits are the ones the budget and the
+ * delegate part apply: the file's, also when it has no model yet (the reader
+ * returns them with `model_unset`); null when unset or the file is absent.
  */
 function wrightEntry(store: Store, now: Date): RosterEntry {
   const dataDir = store.dataDir;
   const read = exists(agentSettingsPath(dataDir, WRIGHT_ID)) ? readAgentSettings(dataDir, WRIGHT_ID) : undefined;
+  const wrightLimits = read === undefined ? undefined : read.ok ? read.settings.limits : read.error === "model_unset" ? read.limits : undefined;
   return {
     id: WRIGHT_ID,
     display_name: "Wright",
@@ -122,9 +142,9 @@ function wrightEntry(store: Store, now: Date): RosterEntry {
     model: read?.ok === true ? read.settings.model : null,
     settings_error: read === undefined || read.ok ? null : read.error,
     tokens_today: agentCountedTokens(store, WRIGHT_ID, localDay(now)),
-    tokens_per_day: null,
+    tokens_per_day: wrightLimits?.tokens_per_day ?? null,
     sessions_running: sessionsRunning(store, WRIGHT_ID),
-    sessions_at_once: null,
+    sessions_at_once: wrightLimits?.sessions_at_once ?? null,
   };
 }
 
@@ -311,34 +331,68 @@ function withValue(json: Body, field: AgentSetField, value: string | number | nu
 /** The settings file changed between the read and the rename: nothing is written. */
 class ConcurrentEditError extends Error {}
 
+/** Wright's `set` refusal for a field it does not take: the reserved form, ending in the file's path. */
+function wrightFieldReserved(dataDir: string): ContributedRouteResponse {
+  const fields = `${WRIGHT_SET_FIELDS.slice(0, -1).join(", ")} or ${WRIGHT_SET_FIELDS[WRIGHT_SET_FIELDS.length - 1]}`;
+  return refusal(409, "reserved", `Wright is not a crew member: set takes only ${fields} for it; edit the rest in ${agentSettingsPath(dataDir, WRIGHT_ID)}`);
+}
+
 async function set(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
-  const row = memberOf(req, "edit its settings in");
-  if (!isRow(row)) return row;
+  // Wright is not a crew member (`memberOf` refuses it), but the owner sets its
+  // `WRIGHT_SET_FIELDS` here through the one write path below (phase 5 item 07).
+  const isWright = req.params.id === WRIGHT_ID;
+  const row = isWright ? undefined : memberOf(req, "edit its settings in");
+  if (row !== undefined && !isRow(row)) return row;
   if (!isBodyObject(req.body) || typeof req.body.field !== "string" || typeof req.body.value !== "string") {
     return refusal(400, "invalid_body", "the body is {field, value}, both strings (value as typed on the CLI; none clears effort or a limit)");
   }
+  const dataDir = req.store.dataDir;
   const { field: rawField, value: raw } = req.body;
-  if (!(AGENT_SET_FIELDS as readonly string[]).includes(rawField)) {
+  // The field and the value are checked before any filesystem call, so a refused Wright
+  // set never creates `wright.json` (the reader below creates it with `wx`).
+  if (isWright) {
+    if (!(WRIGHT_SET_FIELDS as readonly string[]).includes(rawField)) return wrightFieldReserved(dataDir);
+  } else if (!(AGENT_SET_FIELDS as readonly string[]).includes(rawField)) {
     return refusal(400, "invalid_input", `field ${JSON.stringify(rawField.slice(0, 64))} is not one of ${AGENT_SET_FIELDS.join(", ")} (list fields are changed by editing the settings file)`, { field: "field" });
   }
   const field = rawField as AgentSetField;
   const parsed = parseSetValue(field, raw);
   if ("message" in parsed) return refusal(400, "invalid_input", parsed.message, { field });
 
-  const dataDir = req.store.dataDir;
-  const file = agentSettingsPath(dataDir, row.id);
+  const id = row === undefined ? WRIGHT_ID : row.id;
+  /** The answer's `agent`: a member's row, or Wright's roster entry (read after the write). */
+  const agentOf = () => (row === undefined ? wrightEntry(req.store, req.now()) : row);
+  const file = agentSettingsPath(dataDir, id);
+  /** A filesystem error reading (or, for Wright, creating) the file: a refusal naming it, never a 500. */
+  const unreadable = (err: unknown) => refusal(409, "settings_invalid", `${file}: unreadable (${String((err as { code?: unknown }).code ?? "error")})`, { file, field: "the file" });
+  // Wright's file, when absent, is created with its default content by the one reader's
+  // exclusive create (as the brain's first message creates it); a member's never is. The
+  // reader throws when it cannot create Wright's directory or file (a broken data dir).
+  if (isWright) {
+    try {
+      readAgentSettings(dataDir, WRIGHT_ID);
+    } catch (err) {
+      return unreadable(err);
+    }
+  }
   let base: Buffer;
   try {
     if (statSync(file).size > MAX_SETTINGS_BYTES) return refusal(409, "settings_invalid", `${file}: over ${MAX_SETTINGS_BYTES} bytes`, { file, field: "the file" });
     base = readFileSync(file);
   } catch (err) {
-    const code = (err as { code?: unknown }).code;
-    if (code === "ENOENT") return refusal(409, "settings_missing", `${file}: no settings file for ${row.id}`, { file });
-    return refusal(409, "settings_invalid", `${file}: unreadable (${String(code ?? "error")})`, { file, field: "the file" });
+    if ((err as { code?: unknown }).code === "ENOENT") return refusal(409, "settings_missing", `${file}: no settings file for ${id}`, { file });
+    return unreadable(err);
   }
   // The whole file, through the one reader: a file it refuses is never rewritten. A file
   // with no model may still get one (its every other field already passed the reader).
-  const check = readAgentSettings(dataDir, row.id, { homeDir: homedir() });
+  // For Wright the reader may create the file again (removed since the read above), and
+  // so may throw like the pre-create.
+  let check: ReturnType<typeof readAgentSettings>;
+  try {
+    check = readAgentSettings(dataDir, id, { homeDir: homedir() });
+  } catch (err) {
+    return unreadable(err);
+  }
   if (!check.ok && !(check.error === "model_unset" && field === "model")) {
     return refusal(409, check.error, check.message, { ...("file" in check ? { file: check.file } : {}), ...("field" in check ? { field: check.field } : {}) });
   }
@@ -351,7 +405,7 @@ async function set(req: ContributedRouteRequest): Promise<ContributedRouteRespon
     return refusal(409, "settings_changed", `${file} changed while it was read; try again`, { file });
   }
   const old = valueAt(json, field);
-  if (old === parsed.value) return { status: 200, body: { agent: row, field, old, new: parsed.value, changed: false } };
+  if (old === parsed.value) return { status: 200, body: { agent: agentOf(), field, old, new: parsed.value, changed: false } };
   const text = `${JSON.stringify(withValue(json, field, parsed.value), null, 2)}\n`;
   if (Buffer.byteLength(text) > MAX_SETTINGS_BYTES) return refusal(409, "settings_invalid", `${file}: the change would make it over ${MAX_SETTINGS_BYTES} bytes`, { file, field: "the file" });
 
@@ -361,11 +415,13 @@ async function set(req: ContributedRouteRequest): Promise<ContributedRouteRespon
   // the two keeps the new file with no event (docs/architecture/agents.md, Honest limits).
   const temp = join(dirname(file), `.${basename(file)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
   writeFileSync(temp, text, { flag: "wx", mode: 0o600 });
+  // A member's payload is {id, field, old, new}; Wright's names who set it (only the owner's route can).
+  const eventBy = isWright ? { by: "owner" } : {};
   try {
     req.store.transaction(() => {
       // Re-read just before the rename: an owner's hand edit since the first read wins.
       if (!readFileSync(file).equals(base)) throw new ConcurrentEditError();
-      appendEvent(req.store, "agent_settings_set" satisfies AgentAuditKind, NO_REF, { id: row.id, field, old, new: parsed.value }, req.now().toISOString());
+      appendEvent(req.store, "agent_settings_set" satisfies AgentAuditKind, NO_REF, { id, field, old, new: parsed.value, ...eventBy }, req.now().toISOString());
       renameSync(temp, file);
     });
   } catch (err) {
@@ -377,7 +433,7 @@ async function set(req: ContributedRouteRequest): Promise<ContributedRouteRespon
     if (err instanceof ConcurrentEditError) return refusal(409, "settings_changed", `${file} changed while it was being set; nothing was written; try again`, { file });
     throw err;
   }
-  return { status: 200, body: { agent: row, field, old, new: parsed.value, changed: true } };
+  return { status: 200, body: { agent: agentOf(), field, old, new: parsed.value, changed: true } };
 }
 
 export const rosterRoutes: readonly ContributedRoute[] = Object.freeze([
