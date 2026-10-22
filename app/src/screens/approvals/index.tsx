@@ -1,15 +1,8 @@
-// Approvals: a placeholder. Phase 5 item 15 builds it (the 360px list pane,
-// `--list-pane-width`, the decision and the standing grants).
+// Approvals (phase 5 item 15): the inbox, the exact payload, Allow once,
+// Always for this playbook, Deny, and the standing grants. The screen itself
+// is `./ApprovalsScreen.tsx`; the shell discovers this module's `screen`.
 import type { ScreenDefinition } from "../types";
-
-function ApprovalsScreen() {
-  return (
-    <div className="placeholder" data-testid="screen-approvals">
-      <p className="placeholder-title">Approvals</p>
-      <p className="placeholder-note">What waits on you arrives here.</p>
-    </div>
-  );
-}
+import { ApprovalsScreen } from "./ApprovalsScreen";
 
 export const screen: ScreenDefinition = {
   id: "approvals",
