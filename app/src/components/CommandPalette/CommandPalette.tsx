@@ -355,31 +355,37 @@ export function CommandPaletteHost({ registry = commandRegistry, killSwitch, onO
     setOpen(false);
   }, []);
 
-  useEffect(
-    () =>
-      installKeyboardMap({
-        registry,
-        ...(keyTarget === undefined ? {} : { target: keyTarget }),
-        openPalette: () => {
-          // Already open: ⌘K brings focus back to the input instead of doing nothing.
-          if (openRef.current) setFocusRequest((n) => n + 1);
-          openRef.current = true;
-          setOpen(true);
+  useEffect(() => {
+    let disposed = false;
+    const uninstall = installKeyboardMap({
+      registry,
+      ...(keyTarget === undefined ? {} : { target: keyTarget }),
+      openPalette: () => {
+        // Already open: ⌘K brings focus back to the input instead of doing nothing.
+        if (openRef.current) setFocusRequest((n) => n + 1);
+        openRef.current = true;
+        setOpen(true);
+      },
+      isPaletteOpen: () => openRef.current,
+      killSwitch: {
+        // Dialogs never stack: the palette closes before the confirm opens, and
+        // the keyboard map opens no palette while the confirm is pending.
+        // The confirm runs one microtask after the close, as `run()` does, so the
+        // close's focus restore lands first and the confirm keeps the focus it takes.
+        // Uninstalled in between: no confirm, so nothing engages.
+        confirm: () => {
+          close();
+          return new Promise<void>((resolve) => queueMicrotask(resolve)).then(() => (disposed ? false : latest.current.killSwitch.confirm()));
         },
-        isPaletteOpen: () => openRef.current,
-        killSwitch: {
-          // Dialogs never stack: the palette closes before the confirm opens, and
-          // the keyboard map opens no palette while the confirm is pending.
-          confirm: () => {
-            close();
-            return latest.current.killSwitch.confirm();
-          },
-          engage: () => latest.current.killSwitch.engage(),
-        },
-        onCollision: (shortcut, commands) => (latest.current.onCollision ?? reportCollision)(shortcut, commands),
-      }),
-    [registry, keyTarget, close],
-  );
+        engage: () => latest.current.killSwitch.engage(),
+      },
+      onCollision: (shortcut, commands) => (latest.current.onCollision ?? reportCollision)(shortcut, commands),
+    });
+    return () => {
+      disposed = true;
+      uninstall();
+    };
+  }, [registry, keyTarget, close]);
 
   return (
     <CommandPalette

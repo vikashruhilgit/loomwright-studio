@@ -530,6 +530,71 @@ describe("CommandPaletteHost", () => {
     expect(screen.queryByRole("combobox")).toBeNull();
   });
 
+  it("⌘⇧K with the palette open: a confirm that focuses its Cancel keeps the focus (the close restores first)", async () => {
+    const kill = {
+      confirm: vi.fn(() => {
+        const dialog = document.createElement("div");
+        dialog.setAttribute("role", "alertdialog");
+        const cancel = document.createElement("button");
+        cancel.textContent = "Cancel";
+        dialog.append(cancel);
+        document.body.append(dialog);
+        cancel.focus();
+        return new Promise<boolean>(() => undefined);
+      }),
+      engage: vi.fn<() => void>(),
+    } satisfies KillSwitch;
+    render(
+      <>
+        <button type="button">Opener</button>
+        <CommandPaletteHost registry={createCommandRegistry()} killSwitch={kill} />
+      </>,
+    );
+    const opener = screen.getByRole("button", { name: "Opener" });
+    opener.focus();
+    fireEvent.keyDown(opener, { key: "k", metaKey: true });
+    expect(screen.getByRole("combobox")).toBeTruthy();
+    fireEvent.keyDown(document.activeElement as Element, { key: "K", metaKey: true, shiftKey: true });
+    await act(async () => undefined);
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(kill.confirm).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+  });
+
+  it("the confirm's hop: ⌘⇧K again is a no-op, a sync-throwing confirm frees both guards, unmounting confirms nothing", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let throws = true;
+    const kill = {
+      confirm: vi.fn((): Promise<boolean> => {
+        if (throws) throw new Error("confirm broke");
+        return Promise.resolve(true);
+      }),
+      engage: vi.fn<() => void>(),
+    } satisfies KillSwitch;
+    const { unmount } = render(<CommandPaletteHost registry={createCommandRegistry()} killSwitch={kill} />);
+    // Two presses in the same tick: the second lands inside the hop and does nothing.
+    fireEvent.keyDown(document.body, { key: "K", metaKey: true, shiftKey: true });
+    fireEvent.keyDown(document.body, { key: "K", metaKey: true, shiftKey: true });
+    await act(async () => undefined);
+    expect(kill.confirm).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith("kill switch failed", expect.any(Error));
+    // Both guards are free again: ⌘K opens the palette, ⌘⇧K reaches the confirm.
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    expect(screen.getByRole("combobox")).toBeTruthy();
+    throws = false;
+    fireEvent.keyDown(document.body, { key: "K", metaKey: true, shiftKey: true });
+    await act(async () => undefined);
+    expect(kill.confirm).toHaveBeenCalledTimes(2);
+    expect(kill.engage).toHaveBeenCalledTimes(1);
+    // Unmounted inside the hop: the confirm never opens, so nothing engages.
+    fireEvent.keyDown(document.body, { key: "K", metaKey: true, shiftKey: true });
+    unmount();
+    await act(async () => undefined);
+    expect(kill.confirm).toHaveBeenCalledTimes(2);
+    expect(kill.engage).toHaveBeenCalledTimes(1);
+    error.mockRestore();
+  });
+
   it("unmounting uninstalls the keyboard map", () => {
     const registry = createCommandRegistry();
     const approve = command("approvals.approve-once", { shortcut: "A" });

@@ -36,12 +36,12 @@ All of these were run in this worktree on macOS (Darwin 25.6, Electron 44 from `
 |---|---|
 | `cd app && npm ci` | ok |
 | `npm run typecheck` | ok (both tsconfigs) |
-| `npm test` | 9 files, 112 tests passed (palette 47, keyboard 27, plus the existing 38) |
+| `npm test` | 9 files, 120 tests passed (palette 53, keyboard 29, plus the existing 38), counted by the vitest verbose reporter |
 | `npm run build` | ok. `dist/` holds `index.html` and its assets only; the gallery is not built. |
 | `npm run e2e` | 7 passed (4 palette, 3 smoke), no files written |
 | `PALETTE_SCREENSHOTS=1 npx playwright test e2e/components.palette.spec.ts --workers=1` | 4 passed, 13 screenshots written |
 
-Every pin in the brief's pin-mutation table was applied one at a time, and each turned its named test red (33 of 33), then was reverted.
+Every pin in the brief's pin-mutation table was applied one at a time, and each turned its named test red (33 of 33), then was reverted. That run predates the review-iteration-2 restructure (`3ce1ad6`); the kill-switch pins were re-applied after it in review iteration 3 and all went red. The iteration-4 fix has two pins of its own, each reverted alone and each red: calling the confirm in the same tick as the close (the host test whose confirm focuses its Cancel ends with focus back on the opener), and dropping the uninstall guard (the hop test sees a confirm after unmount).
 
 ## Findings for the owner
 
@@ -67,5 +67,5 @@ None of these was patched: each sits outside this item's files or is a design ca
    - Collisions are judged at key time among the currently enabled commands, so a disabled twin is no collision. They are reported through `onCollision` (default `console.error`) when the key is pressed, not when the commands are registered.
    - Matching follows the brief, against `KeyboardEvent.key`. On macOS, `⌥` plus a letter produces a composed character (`⌥A` gives `å`), so a `⌥`-letter shortcut never matches. No such shortcut exists today; matching on `event.code` would fix it but would break non-QWERTY layouts.
    - `⌘,` (Settings, brand book §Keyboard) is unbound until a screen registers a command with that shortcut.
-   - A command runs one microtask after the palette closes. That way, a command that moves focus (for example, to a field on its screen) keeps it instead of losing it to the close's focus restore.
+   - A command runs one microtask after the palette closes, and so do `onOpenInInspector` and the kill-switch `confirm()` when `⌘⇧K` closes the palette. That way, whatever they focus (a field on a screen, the confirm's Cancel) keeps the focus instead of losing it to the close's focus restore. If the host unmounts inside that microtask, the confirm never opens and nothing engages.
 7. **Not observed:** the e2e ran on macOS only. The CI `app` job (Linux, xvfb) runs the same spec but was not observed for this change. VoiceOver output was not checked; the roles and attributes are asserted in the tests.
