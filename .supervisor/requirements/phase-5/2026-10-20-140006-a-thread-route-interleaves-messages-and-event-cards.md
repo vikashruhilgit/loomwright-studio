@@ -76,3 +76,9 @@ Item 01 alone owns the shared files (see its Touches). If this item needs a file
 kernel/src/console/threads.ts
 kernel/test/console-threads.test.ts
 docs/architecture/threads.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-22T02:13:21Z
+- **Brief:** .supervisor/jobs/done/2026-10-21-thread-route-messages-event-cards.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/108
