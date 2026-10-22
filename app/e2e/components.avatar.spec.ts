@@ -14,10 +14,12 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { _electron as electron, expect, test } from "@playwright/test";
-import type { ElectronApplication, Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import react from "@vitejs/plugin-react";
 import { build } from "vite";
+import { launchGallery } from "./electron-harness";
+import type { Gallery } from "./electron-harness";
 
 const APP_DIR = fileURLToPath(new URL("..", import.meta.url));
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-5-polish/components/avatar/", import.meta.url));
@@ -105,18 +107,8 @@ const INDEX_HTML = `<!doctype html>
 </html>
 `;
 
-// A bare window over the built page: sandboxed, no preload, nothing exposed.
-const MAIN_CJS = `
-const { app, BrowserWindow } = require("electron");
-app.whenReady().then(() => {
-  const win = new BrowserWindow({ width: 1400, height: 1000, webPreferences: { sandbox: true, contextIsolation: true } });
-  win.loadFile(process.env.AVATAR_GALLERY_HTML);
-});
-app.on("window-all-closed", () => app.quit());
-`;
-
 let tempDir: string | undefined;
-let app: ElectronApplication | undefined;
+let gallery: Gallery | undefined;
 let page: Page;
 
 async function setTheme(theme: (typeof THEMES)[number]): Promise<void> {
@@ -147,7 +139,6 @@ test.describe.serial("Avatar component page", () => {
     await writeFile(join(tempDir, "entry.jsx"), ENTRY);
     await writeFile(join(tempDir, "gallery.css"), GALLERY_CSS);
     await writeFile(join(tempDir, "index.html"), INDEX_HTML);
-    await writeFile(join(tempDir, "main.cjs"), MAIN_CJS);
     await build({
       configFile: false,
       root: tempDir,
@@ -157,19 +148,15 @@ test.describe.serial("Avatar component page", () => {
       build: { outDir: join(tempDir, "dist"), emptyOutDir: true },
     });
 
-    app = await electron.launch({
-      args: [join(tempDir, "main.cjs")],
-      cwd: APP_DIR,
-      env: { ...process.env, AVATAR_GALLERY_HTML: join(tempDir, "dist", "index.html") } as Record<string, string>,
-    });
-    page = await app.firstWindow();
+    gallery = await launchGallery({ file: join(tempDir, "dist", "index.html") }, { width: 1400, height: 1000 });
+    page = gallery.page;
     await page.emulateMedia({ reducedMotion: "reduce" });
     await expect(page.locator(".bot")).toHaveCount(AVATAR_COUNT);
   });
 
   test.afterAll(async () => {
-    await app?.close();
-    app = undefined;
+    await gallery?.close();
+    gallery = undefined;
     if (tempDir !== undefined) await rm(tempDir, { recursive: true, force: true });
     tempDir = undefined;
   });

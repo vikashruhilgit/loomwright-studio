@@ -3,19 +3,17 @@
 // five entries; with no kernel answering it shows the "kernel unreachable"
 // band; with no api.json at all it shows the setup state. Run `npm run build`
 // first (`npm run e2e` launches dist-electron/main.cjs).
-import { fileURLToPath } from "node:url";
-import { _electron as electron, expect, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import type { ElectronApplication, Page } from "@playwright/test";
 import { appEnv, startFixtureKernel, tempDataDir, unreachableDataDir } from "./fixture-kernel";
+import { launchApp } from "./electron-harness";
 import type { FixtureKernel } from "./fixture-kernel";
-
-const APP_DIR = fileURLToPath(new URL("..", import.meta.url));
 
 let app: ElectronApplication | undefined;
 let fixture: FixtureKernel | undefined;
 
 async function launch(env: Readonly<Record<string, string>>): Promise<Page> {
-  app = await electron.launch({ args: [APP_DIR], cwd: APP_DIR, env: { ...env } });
+  app = await launchApp(env);
   return app.firstWindow();
 }
 

@@ -40,6 +40,14 @@ export function windowOptions(preload: string): BrowserWindowConstructorOptions 
   };
 }
 
+/** Set to "1" by the e2e harness (`e2e/electron-harness.ts`) so a test run never shows the window. */
+export const HIDDEN_WINDOW_ENV = "STUDIO_APP_HIDDEN_WINDOW";
+
+/** Whether the app shows its window: always when packaged; an unpackaged run hides it only under `HIDDEN_WINDOW_ENV`. */
+export function showsWindow(env: Readonly<Record<string, string | undefined>>, isPackaged: boolean): boolean {
+  return isPackaged || env[HIDDEN_WINDOW_ENV] !== "1";
+}
+
 /** Wires the bridge's channels to `kernel`, answering only `owner`'s window. */
 function handleBridge(kernel: KernelConnection, owner: () => WebContents | undefined): void {
   const fromOwner = (event: IpcMainInvokeEvent): boolean => event.sender === owner();
@@ -97,11 +105,14 @@ async function main(): Promise<void> {
     log: (line) => console.warn(`loomwright-studio: ${line}`),
   });
   let window: BrowserWindow | undefined;
+  const shows = showsWindow(process.env, app.isPackaged);
 
   const createWindow = (): BrowserWindow => {
     const created = new BrowserWindow(windowOptions(join(app.getAppPath(), "dist-electron", "preload.cjs")));
     lockDown(created);
-    created.once("ready-to-show", () => created.show());
+    // Hidden, the window still renders and runs as if on screen.
+    if (shows) created.once("ready-to-show", () => created.show());
+    else created.webContents.setBackgroundThrottling(false);
     created.on("closed", () => {
       if (window === created) window = undefined;
     });
@@ -111,7 +122,7 @@ async function main(): Promise<void> {
   };
   const showWindow = (): void => {
     if (window === undefined) createWindow();
-    else window.show();
+    else if (shows) window.show();
   };
 
   handleBridge(kernel, () => window?.webContents);

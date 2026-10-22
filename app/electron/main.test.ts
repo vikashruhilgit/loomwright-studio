@@ -168,3 +168,13 @@ describe("the feed relay", () => {
     expect(kernel.feeds[2]?.closed).toBe(true);
   });
 });
+
+describe("the e2e hidden-window seam", () => {
+  it("hides the window only in an unpackaged run with the env set to 1; a packaged app always shows it", async () => {
+    const { HIDDEN_WINDOW_ENV, showsWindow } = await import("./main");
+    expect(showsWindow({}, false)).toBe(true);
+    expect(showsWindow({ [HIDDEN_WINDOW_ENV]: "1" }, false)).toBe(false);
+    expect(showsWindow({ [HIDDEN_WINDOW_ENV]: "true" }, false)).toBe(true);
+    expect(showsWindow({ [HIDDEN_WINDOW_ENV]: "1" }, true)).toBe(true);
+  });
+});

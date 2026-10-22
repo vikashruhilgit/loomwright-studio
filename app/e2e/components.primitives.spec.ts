@@ -22,10 +22,12 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { _electron as electron, expect, test } from "@playwright/test";
-import type { ElectronApplication, Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import react from "@vitejs/plugin-react";
 import { build } from "vite";
+import { launchGallery } from "./electron-harness";
+import type { Gallery } from "./electron-harness";
 
 const APP_DIR = fileURLToPath(new URL("..", import.meta.url));
 /** Inside the app so bare imports resolve from app/node_modules; ignored by the root `node_modules/` rule. */
@@ -234,7 +236,7 @@ createRoot(root).render(
 `;
 
 let tempRoot: string | undefined;
-let app: ElectronApplication | undefined;
+let gallery: Gallery | undefined;
 let page: Page;
 const pageErrors: string[] = [];
 
@@ -256,23 +258,8 @@ test.beforeAll(async () => {
     build: { outDir, emptyOutDir: true },
   });
 
-  const mainCjs = join(tempRoot, "main.cjs");
-  writeFileSync(
-    mainCjs,
-    `const { app, BrowserWindow } = require("electron");
-app.whenReady().then(() => {
-  const window = new BrowserWindow({
-    width: 1200,
-    height: 900,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
-  });
-  void window.loadFile(${JSON.stringify(join(outDir, "index.html"))});
-});
-app.on("window-all-closed", () => app.quit());
-`,
-  );
-  app = await electron.launch({ args: [mainCjs], cwd: APP_DIR });
-  page = await app.firstWindow();
+  gallery = await launchGallery({ file: join(outDir, "index.html") }, { width: 1200, height: 900 });
+  page = gallery.page;
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
     if (message.type() === "error") pageErrors.push(message.text());
@@ -280,8 +267,8 @@ app.on("window-all-closed", () => app.quit());
 });
 
 test.afterAll(async () => {
-  await app?.close();
-  app = undefined;
+  await gallery?.close();
+  gallery = undefined;
   if (tempRoot) rmSync(tempRoot, { recursive: true, force: true });
   rmSync(GALLERY_SRC, { recursive: true, force: true });
 });
