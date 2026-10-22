@@ -93,6 +93,9 @@ describe("StreamingLog header", () => {
     const { rerender } = render(<StreamingLog {...props({ costEstimate: 0, tokens: 0 })} />);
     expect(screen.getByTestId("streaming-log-cost").textContent).toBe("≈$0.00 at API rates");
     expect(screen.getByTestId("streaming-log-tokens").textContent).toBe("0 tokens");
+    // -0 (JSON.parse("-0") yields it) reads as a plain zero, never "-0.00".
+    rerender(<StreamingLog {...props({ costEstimate: -0 })} />);
+    expect(screen.getByTestId("streaming-log-cost").textContent).toBe("≈$0.00 at API rates");
     rerender(<StreamingLog {...props({ costEstimate: Number.NaN })} />);
     expect(screen.queryByTestId("streaming-log-cost")).toBeNull();
   });

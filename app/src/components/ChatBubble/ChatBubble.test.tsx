@@ -266,6 +266,12 @@ describe("ChatBubble playbook draft", () => {
     renderDraft(draft({ costEstimate: 0 }));
     expect(screen.getByTestId("chat-bubble-dry-run").textContent).toContain("≈$0.00 at API rates");
     cleanup();
+    // -0 (JSON.parse("-0") yields it) reads as a plain zero, never "-0.00".
+    renderDraft(draft({ costEstimate: -0 }));
+    expect(screen.getByTestId("chat-bubble-dry-run").querySelector(".chat-bubble__estimate")?.textContent).toBe(
+      "≈$0.00 at API rates",
+    );
+    cleanup();
     renderDraft(draft({ costEstimate: Number.NaN }));
     expect(screen.getByTestId("chat-bubble-dry-run").textContent).not.toMatch(/\$|API rates/);
     cleanup();

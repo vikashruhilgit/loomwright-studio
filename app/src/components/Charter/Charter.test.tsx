@@ -366,6 +366,18 @@ describe("Charter tools and limits (AC6)", () => {
     const { root } = renderCharter({ limits: { tokensPerDay: 100_000, sessionsAtOnce: 1, costEstimate: 0 } });
     expect(within(root).getByTestId("charter-estimate").textContent).toBe("≈$0.00/day at API rates");
   });
+
+  it("shows a -0 estimate as a plain zero, never '-0.00', on both the limits and dry-run lines", () => {
+    // JSON.parse("-0") yields -0, so a kernel payload can carry it.
+    const { root } = renderCharter({
+      limits: { tokensPerDay: 100_000, sessionsAtOnce: 1, costEstimate: -0 },
+      firstPlaybookDryRun: { text: "Daily digest", costEstimate: -0 },
+    });
+    expect(within(root).getAllByTestId("charter-estimate").map((e) => e.textContent)).toEqual([
+      "≈$0.00/day at API rates",
+      "≈$0.00/run at API rates",
+    ]);
+  });
 });
 
 // ---- AC2: hostile text renders inert --------------------------------------------------------
