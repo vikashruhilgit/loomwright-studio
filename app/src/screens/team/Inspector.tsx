@@ -10,8 +10,12 @@
 // - Wright: only the `WrightSetField` fields are offered (`POST
 //   /agents/wright/set`, item 07). Its permission mode and tool policy are
 //   shown read-only with "edit wright.json". `GET /agents/wright` is never
-//   called (the kernel refuses it `409 reserved`), so its effort and
-//   delegation depth read "not reported" unless set this session.
+//   called (the kernel refuses it `409 reserved`). Its model is the roster's
+//   live read. Its effort and delegation depth read "not reported" unless set
+//   this session, when the value is marked "set this session" (no route reads
+//   it back), and "unknown" while the roster says wright.json does not read ok.
+// - The header avatar carries the card's state (`avatar`, from the task line),
+//   never a fixed one.
 //
 // A refusal's `error: message` is shown as text. A change reaches the card
 // through the feed (`agent_*` events refetch `agents`), never a local edit.
@@ -19,6 +23,7 @@
 import { type FormEvent, type KeyboardEvent, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
 import type { AgentDetailResponse, AgentSetField, RosterEntry, StudioBridge, WrightSetField } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
+import type { AvatarState } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import { formatTokens } from "../../components/Card/Card";
@@ -39,8 +44,10 @@ import {
   isWright,
   rosterModel,
   settingText,
+  settingsRead,
   threadHash,
   tokensLimitWords,
+  UNKNOWN,
 } from "./model";
 
 /** A crew member's `GET /agents/:id`, as the screen holds it. */
@@ -52,9 +59,20 @@ export type DetailState =
 /** Wright's values the owner set this session (`AgentSetResponse.new`): no route reports its effort or delegation depth. */
 export type WrightSetValues = Partial<Record<WrightSetField, string>>;
 
+/** The avatar's state and label action, as the agent's card shows them (TeamView's `avatarFor`). */
+export interface AvatarLook {
+  readonly state: AvatarState;
+  readonly action?: string;
+}
+
+/** The words that mark a value known only from this session's `set` answer: no route reads it back. */
+export const SET_THIS_SESSION = "set this session";
+
 export interface InspectorProps {
   readonly api: StudioBridge;
   readonly agent: RosterEntry;
+  /** The header avatar's state, the same as the agent's card. */
+  readonly avatar: AvatarLook;
   /** A crew member's detail; always undefined for Wright (never fetched). */
   readonly detail: DetailState | undefined;
   readonly wrightSet: WrightSetValues;
@@ -203,7 +221,7 @@ function SetField({
   );
 }
 
-export function Inspector({ api, agent, detail, wrightSet, onWrightSet, onRename, onClose, focusSet = false }: InspectorProps) {
+export function Inspector({ api, agent, avatar, detail, wrightSet, onWrightSet, onRename, onClose, focusSet = false }: InspectorProps) {
   const lead = isWright(agent);
   const headingId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -265,11 +283,18 @@ export function Inspector({ api, agent, detail, wrightSet, onWrightSet, onRename
   const content = ok === undefined ? undefined : acceptedSettings(ok);
   const value = (field: AgentSetField, absent: string): string => settingText(content, field, absent);
   const model = isRecord(content) ? value("model", "not set") : rosterModel(agent);
+  // Wright's effort and delegation depth: no route reports them, so a value is shown only as this
+  // session's set answer, marked so, and only while the roster says wright.json reads ok.
+  const wrightValue = (field: WrightSetField): string => {
+    if (!settingsRead(agent)) return UNKNOWN;
+    const set = wrightSet[field];
+    return set === undefined ? "not reported" : `${set} · ${SET_THIS_SESSION}`;
+  };
 
   return (
     <aside className="team-insp" aria-labelledby={headingId} data-testid="team-inspector" onKeyDown={onKeyDown}>
       <div className="team-insp-head">
-        <Avatar agent={{ id: agent.id, name: agent.display_name, shape: agent.avatar.shape, hue: agent.avatar.hue }} state="idle" size={36} />
+        <Avatar agent={{ id: agent.id, name: agent.display_name, shape: agent.avatar.shape, hue: agent.avatar.hue }} state={avatar.state} size={36} action={avatar.action} />
         <div className="team-insp-title">
           <h2 className="team-insp-name" id={headingId} ref={headingRef} tabIndex={-1}>
             {agent.display_name}
@@ -324,15 +349,15 @@ export function Inspector({ api, agent, detail, wrightSet, onWrightSet, onRename
       <Section title="Model and limits" testId="team-insp-limits">
         <dl className="team-insp-kv">
           <dt>Model</dt>
-          <dd>{lead ? (wrightSet.model ?? rosterModel(agent)) : model}</dd>
+          <dd>{lead ? rosterModel(agent) : model}</dd>
           <dt>Effort</dt>
-          <dd>{lead ? (wrightSet.effort ?? "not reported") : value("effort", "not set")}</dd>
+          <dd>{lead ? wrightValue("effort") : value("effort", "not set")}</dd>
           <dt>Today</dt>
           <dd className="team-tabular">{tokensLine(agent)}</dd>
           <dt>Sessions</dt>
           <dd className="team-tabular">{agentSessionsText(agent)}</dd>
           <dt>Delegation</dt>
-          <dd>{lead ? (wrightSet["limits.delegation_depth"] ?? "not reported") : value("limits.delegation_depth", NO_LIMIT)}</dd>
+          <dd>{lead ? wrightValue("limits.delegation_depth") : value("limits.delegation_depth", NO_LIMIT)}</dd>
           <dt>Permission</dt>
           <dd>{lead ? <span data-testid="team-wright-readonly">read-only · edit <code className="team-code">wright.json</code></span> : value("permission_mode", "not set")}</dd>
           {lead ? (

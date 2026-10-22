@@ -703,6 +703,64 @@ describe("refusals and unreadable answers", () => {
   });
 });
 
+describe("the inspector header avatar", () => {
+  it("carries the card's state: waiting on you for a pending approval, working for a running message", async () => {
+    await startTeam({
+      approvals: [approval({ id: 4, requesting_agent: "mason", display: "Comment on PR #12" })],
+      messages: [message({ id: 1, agent: "wright", text: "Planning the week" })],
+    });
+    expect(within(card("Mason")).getByRole("img", { name: "Mason · waiting on you" })).toBeTruthy();
+    const inspector = await openInspector("Mason");
+    const head = inspector.querySelector(".team-insp-head") as HTMLElement;
+    expect(within(head).getByRole("img").getAttribute("aria-label")).toBe("Mason · waiting on you");
+    expect(within(head).getByRole("img").classList.contains("waiting")).toBe(true);
+    fireEvent.click(card("Wright"));
+    await waitFor(() => expect(within(screen.getByTestId("team-inspector")).getByRole("heading", { name: "Wright" })).toBeTruthy());
+    const wrightHead = screen.getByTestId("team-inspector").querySelector(".team-insp-head") as HTMLElement;
+    expect(within(wrightHead).getByRole("img").getAttribute("aria-label")).toBe("Wright · working");
+  });
+
+  it("follows the feed, and an unread task line carries its words the same as the card", async () => {
+    const kernel = await startTeam();
+    const inspector = await openInspector("Mason");
+    const head = inspector.querySelector(".team-insp-head") as HTMLElement;
+    expect(within(head).getByRole("img").getAttribute("aria-label")).toBe("Mason · idle");
+    kernel.approvals = [approval({ id: 7, requesting_agent: "mason", display: "Push" })];
+    emit(kernel, "approval_requested");
+    await waitFor(() => expect(within(head).getByRole("img").getAttribute("aria-label")).toBe("Mason · waiting on you"));
+  });
+
+  it("an unread task line: the header avatar's label matches the card's, with the task line's words", async () => {
+    await startTeam({}, { approvals: () => refused(500, { error: "internal", message: "approvals down" }) });
+    await waitFor(() => expect(within(card("Mason")).getByTestId("team-card-task").textContent).toBe("status unavailable"));
+    const cardLabel = within(card("Mason")).getByRole("img").getAttribute("aria-label");
+    const inspector = await openInspector("Mason");
+    const head = inspector.querySelector(".team-insp-head") as HTMLElement;
+    expect(within(head).getByRole("img").getAttribute("aria-label")).toBe(cardLabel);
+    expect(cardLabel).toContain("status unavailable");
+  });
+});
+
+describe("the rename dialog", () => {
+  it("reads the live roster entry: a rename from the feed retitles it, and it closes when the agent leaves", async () => {
+    const kernel = await startTeam();
+    const inspector = await openInspector("Mason");
+    fireEvent.click(within(inspector).getByRole("button", { name: "Rename" }));
+    await screen.findByRole("dialog", { name: "Rename Mason" });
+    kernel.roster = kernel.roster.map((a) => (a.id === "mason" ? { ...a, display_name: "Mason R." } : a));
+    emit(kernel, "agent_renamed");
+    await screen.findByRole("dialog", { name: "Rename Mason R." });
+    kernel.roster = kernel.roster.filter((a) => a.id !== "mason");
+    emit(kernel, "agent_deleted");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The id coming back does not reopen it.
+    kernel.roster = [...kernel.roster, MASON];
+    emit(kernel, "agent_created");
+    await waitFor(() => expect(card("Mason")).toBeTruthy());
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
 // ---- AC5: Wright's inspector ------------------------------------------------------------------
 
 describe("Wright's inspector", () => {
@@ -739,7 +797,43 @@ describe("Wright's inspector", () => {
     fireEvent.change(within(inspector).getByLabelText("Value"), { target: { value: "high" } });
     fireEvent.click(within(inspector).getByRole("button", { name: "Set" }));
     await waitFor(() => expect(within(inspector).getAllByText("not reported", { selector: "dd" })).toHaveLength(1));
-    expect(within(inspector).getByText("high", { selector: "dd" })).toBeTruthy();
+    // Known only from this session's set answer, and marked so: no route reads it back.
+    expect(within(inspector).getByText("high · set this session", { selector: "dd" })).toBeTruthy();
+  });
+
+  it("after a set, a roster refetch that says wright.json does not read ok shows the model, effort and delegation as unknown", async () => {
+    const kernel = await startTeam();
+    let answer: ApiResult<unknown> = ok({ agent: WRIGHT, field: "model", old: "claude-opus", new: "claude-sonnet", changed: true });
+    kernel.fake.route("POST /agents/:id/set", () => answer);
+    const inspector = await openInspector("Wright");
+    const limits = within(inspector).getByTestId("team-insp-limits");
+    const set = async (field: string, value: string) => {
+      fireEvent.change(within(inspector).getByLabelText("Field"), { target: { value: field } });
+      fireEvent.change(within(inspector).getByLabelText("Value"), { target: { value } });
+      fireEvent.click(within(inspector).getByRole("button", { name: "Set" }));
+      await waitFor(() => expect(within(inspector).getByTestId("team-insp-notice")).toBeTruthy());
+    };
+    await set("model", "claude-sonnet");
+    answer = ok({ agent: WRIGHT, field: "effort", old: null, new: "high", changed: true });
+    await set("effort", "high");
+    await waitFor(() => expect(limits.textContent).toContain("Efforthigh · set this session"));
+    // The set answer is not the model shown: the roster's own read is, and here it has not been refetched yet.
+    expect(limits.textContent).toContain("Modelclaude-opus");
+
+    kernel.roster = kernel.roster.map((a) => (a.id === "wright" ? { ...a, model: null, settings_error: "settings_invalid" } : a));
+    emit(kernel, "agent_settings_set");
+    await waitFor(() => expect(within(card("Wright")).getByText("model unknown")).toBeTruthy());
+    await waitFor(() => expect(limits.textContent).toContain("Modelunknown"));
+    expect(limits.textContent).toContain("Effortunknown");
+    expect(limits.textContent).toContain("Delegationunknown");
+    expect(limits.textContent).not.toContain("claude-sonnet");
+    expect(limits.textContent).not.toContain("high");
+
+    // Once the file reads ok again, the dropped set answer does not come back: the file may now say otherwise.
+    kernel.roster = kernel.roster.map((a) => (a.id === "wright" ? { ...a, model: "claude-haiku", settings_error: null } : a));
+    emit(kernel, "agent_settings_set");
+    await waitFor(() => expect(limits.textContent).toContain("Modelclaude-haiku"));
+    expect(within(inspector).getAllByText("not reported", { selector: "dd" })).toHaveLength(2);
   });
 
   it("never requests GET /agents/wright, on open or after a roster event", async () => {

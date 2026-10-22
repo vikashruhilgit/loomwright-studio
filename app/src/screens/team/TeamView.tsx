@@ -33,8 +33,22 @@ import type { ResourceError } from "../../store/store";
 import { REFETCH_THROTTLE_MS } from "../../store/store";
 import { fetchAgentDetail, renameAgent, turnAgent } from "./actions";
 import { useTeamCommands } from "./commands";
-import { type DetailState, Inspector, type WrightSetValues } from "./Inspector";
-import { TASK_LOADING, TASK_UNAVAILABLE, type TaskLine, agentSessionsText, crewIds, isWright, orderRoster, roleOf, rosterModel, taskLineFor, threadHash, tokensLimitWords } from "./model";
+import { type AvatarLook, type DetailState, Inspector, type WrightSetValues } from "./Inspector";
+import {
+  TASK_LOADING,
+  TASK_UNAVAILABLE,
+  type TaskLine,
+  agentSessionsText,
+  crewIds,
+  isWright,
+  orderRoster,
+  roleOf,
+  rosterModel,
+  settingsRead,
+  taskLineFor,
+  threadHash,
+  tokensLimitWords,
+} from "./model";
 import { NewCrewMember } from "./NewCrewMember";
 import "./team.css";
 
@@ -99,9 +113,15 @@ function useAgentDetails(api: StudioBridge, ids: readonly string[], eventId: num
 // ---- The card ----------------------------------------------------------------------------
 
 // `unknown` (approvals or messages not read) has no dot: no state is claimed. Its avatar keeps the
-// neutral pose, and the avatar's label carries the task line's words.
+// neutral pose, and the avatar's label carries the task line's words. `AvatarState` has no unknown
+// state, so that label still reads "idle" before them (contract gap 6 in the evidence README).
 const DOT_STATE: Readonly<Record<TaskLine["state"], StatusState | undefined>> = { waiting: "waiting", working: "working", idle: "idle", unknown: undefined };
 const AVATAR_STATE: Readonly<Record<TaskLine["state"], AvatarState>> = { waiting: "waiting", working: "working", idle: "idle", unknown: "idle" };
+
+/** An agent's avatar, from its task line: the card and the inspector header show the same one. */
+function avatarFor(agent: RosterEntry, task: TaskLine): AvatarLook {
+  return { state: agent.status === "off" ? "idle" : AVATAR_STATE[task.state], action: task.state === "unknown" ? task.text : undefined };
+}
 
 /** Today's tokens against the daily limit, "no limit" when it is unset, or "limit unknown" when the settings file did not read ok. */
 function budgetText(agent: RosterEntry): string {
@@ -130,6 +150,7 @@ function TeamCard({ agent, role, task, selected, onOpen, cardRef }: TeamCardProp
   const limited = agent.tokens_per_day !== null;
   const percent = limited ? budgetPercent(agent.tokens_today, agent.tokens_per_day ?? 0) : 0;
   const dot = DOT_STATE[task.state];
+  const avatar = avatarFor(agent, task);
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key === "Enter" || event.key === " ") {
@@ -157,9 +178,9 @@ function TeamCard({ agent, role, task, selected, onOpen, cardRef }: TeamCardProp
         <span className="card-avatar">
           <Avatar
             agent={{ id: agent.id, name: agent.display_name, shape: agent.avatar.shape, hue: agent.avatar.hue }}
-            state={agent.status === "off" ? "idle" : AVATAR_STATE[task.state]}
+            state={avatar.state}
             size={36}
-            action={task.state === "unknown" ? task.text : undefined}
+            action={avatar.action}
           />
         </span>
         <div className="card-heading">
@@ -277,7 +298,8 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [focusSet, setFocusSet] = useState(0);
   const [creating, setCreating] = useState(false);
-  const [renaming, setRenaming] = useState<RosterEntry | undefined>(undefined);
+  // An id, not a roster snapshot: the dialog reads the live roster entry, and closes if it leaves.
+  const [renamingId, setRenamingId] = useState<string | undefined>(undefined);
   const [wrightSet, setWrightSet] = useState<WrightSetValues>({});
   const [notice, setNotice] = useState<Notice>(undefined);
 
@@ -293,6 +315,20 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
   });
 
   const selected = selectedId === undefined ? undefined : roster.find((a) => a.id === selectedId);
+  const renaming = renamingId === undefined ? undefined : roster.find((a) => a.id === renamingId);
+  const renameGone = renamingId !== undefined && renaming === undefined;
+  useEffect(() => {
+    // The agent left the roster: the dialog is gone, and does not come back if the id does.
+    if (renameGone) setRenamingId(undefined);
+  }, [renameGone]);
+
+  // Wright's effort and delegation depth are known only from this session's set answers. Once the
+  // roster says wright.json does not read ok, those answers are dropped: a later file may say otherwise.
+  const wright = roster.find(isWright);
+  const wrightUnread = wright !== undefined && !settingsRead(wright);
+  useEffect(() => {
+    if (wrightUnread) setWrightSet((w) => (Object.keys(w).length === 0 ? w : {}));
+  }, [wrightUnread]);
 
   const open = (agent: RosterEntry) => {
     setCreating(false);
@@ -327,7 +363,7 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
     newCrewMember,
     rename: (agent) => {
       open(agent);
-      setRenaming(agent);
+      setRenamingId(agent.id);
     },
     setField: (agent) => {
       setCreating(false);
@@ -354,6 +390,7 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
     ...(messagesError === undefined ? [] : [`messages: ${errorText(messagesError)}`]),
   ];
   const inspectorOpen = selected !== undefined && !creating;
+  const taskOf = (agent: RosterEntry): TaskLine => taskLineFor(agent.id, approvalList, messageList, taskUnread);
 
   let body;
   if (creating) {
@@ -400,7 +437,7 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
                 key={agent.id}
                 agent={agent}
                 role={role}
-                task={taskLineFor(agent.id, approvalList, messageList, taskUnread)}
+                task={taskOf(agent)}
                 selected={agent.id === selectedId}
                 onOpen={() => open(agent)}
                 cardRef={(el) => {
@@ -441,15 +478,16 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
           key={`${selected.id}:${focusSet}`}
           api={api}
           agent={selected}
+          avatar={avatarFor(selected, taskOf(selected))}
           detail={isWright(selected) ? undefined : details.get(selected.id)}
           wrightSet={wrightSet}
           onWrightSet={(field: WrightSetField, value: string) => setWrightSet((w) => ({ ...w, [field]: value }))}
-          onRename={() => setRenaming(selected)}
+          onRename={() => setRenamingId(selected.id)}
           onClose={closeInspector}
           focusSet={focusSet > 0}
         />
       ) : null}
-      {renaming === undefined ? null : <RenameDialog key={renaming.id} api={api} agent={renaming} onClose={() => setRenaming(undefined)} />}
+      {renaming === undefined ? null : <RenameDialog key={renaming.id} api={api} agent={renaming} onClose={() => setRenamingId(undefined)} />}
     </div>
   );
 }
