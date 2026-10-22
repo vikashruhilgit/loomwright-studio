@@ -22,6 +22,7 @@ const designAvatarJs = read("../../../../docs/design/avatar/avatar.js");
 const avatarCss = read("Avatar.css");
 const avatarTsx = read("Avatar.tsx");
 const creaturesTs = read("creatures.ts");
+const kernelAgentTypes = read("../../../../kernel/src/agents/types.ts");
 
 const WRIGHT: AvatarAgent = { id: "wright", name: "Wright", shape: "whale", hue: "accent" };
 const MASON: AvatarAgent = { id: "mason", name: "Mason", shape: "shark", hue: "teal" };
@@ -190,6 +191,27 @@ describe("Wright and the crew", () => {
       expect(renderAvatar({ ...MASON, hue }, "idle").style.getPropertyValue("--bot")).toBe(`var(--crew-${hue})`);
     }
     for (const hue of ["accent", ...SEMANTIC, "magenta", undefined]) {
+      const bot = renderAvatar({ ...MASON, hue }, "idle").style.getPropertyValue("--bot");
+      expect(bot).toBe("var(--crew-slate)");
+    }
+  });
+
+  it("takes the kernel's avatar_hue values (AVATAR_HUES) as sent, each to its own crew token", () => {
+    // Read as text so a change to the kernel's shipped vocabulary fails here rather than painting the crew slate.
+    const list = /export const AVATAR_HUES = Object\.freeze\(\[([^\]]*)\]/.exec(kernelAgentTypes)?.[1];
+    const kernelHues = [...(list ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1] as string);
+    expect(kernelHues.length).toBeGreaterThan(0);
+    const tokens = kernelHues.map((hue) => renderAvatar({ ...MASON, hue }, "idle").style.getPropertyValue("--bot"));
+    kernelHues.forEach((hue, index) => {
+      expect(tokens[index]).toBe(`var(--${hue})`);
+      if (hue !== "crew-slate") expect(tokens[index]).not.toBe("var(--crew-slate)");
+    });
+    expect(new Set(tokens).size).toBe(kernelHues.length);
+    expect(kernelHues.map((h) => h.replace(/^crew-/, "")).sort()).toEqual([...CREW_HUES].sort());
+  });
+
+  it("a crew-prefixed non-crew name is still not an identity: never accent or a semantic token", () => {
+    for (const hue of ["crew-accent", ...SEMANTIC.map((s) => `crew-${s}`), "crew-", "crew-crew-teal", "--crew-teal", "Crew-teal"]) {
       const bot = renderAvatar({ ...MASON, hue }, "idle").style.getPropertyValue("--bot");
       expect(bot).toBe("var(--crew-slate)");
     }

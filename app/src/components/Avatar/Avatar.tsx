@@ -57,7 +57,12 @@ export interface AvatarAgent {
   readonly name: string;
   /** A crew creature. Ignored for Wright (always the whale); unknown or `whale` falls back to `fish` for anyone else. */
   readonly shape?: string;
-  /** A crew hue (`teal`, `berry`, `sky`, `olive`, `slate`). Ignored for Wright (always `accent`); unknown falls back to `slate`. */
+  /**
+   * A crew hue, canonically the kernel's `AgentRow.avatar_hue` as sent over the wire (`crew-teal`, `crew-berry`,
+   * `crew-sky`, `crew-olive`, `crew-slate`; kernel `AVATAR_HUES`). The design's bare names (`teal` and so on) are
+   * also accepted. Ignored for Wright (always `accent`); anything else, `accent` and `crew-accent` included, falls
+   * back to `slate`.
+   */
   readonly hue?: string;
 }
 
@@ -78,6 +83,12 @@ function isCrewHue(hue: string | undefined): hue is CrewHue {
   return (CREW_HUES as readonly string[]).includes(hue ?? "");
 }
 
+/** The crew hue an input names: the kernel's `crew-teal` or the design's bare `teal`; undefined when it names none. */
+export function crewHueOf(hue: string | undefined): CrewHue | undefined {
+  const bare = hue?.startsWith("crew-") ? hue.slice("crew-".length) : hue;
+  return isCrewHue(bare) ? bare : undefined;
+}
+
 /** Wright is the whale; any other agent is its crew creature, or the fish when the shape is unknown or the whale. */
 export function creatureFor(agent: AvatarAgent): CreatureName {
   if (agent.id === WRIGHT_ID) return "whale";
@@ -87,7 +98,7 @@ export function creatureFor(agent: AvatarAgent): CreatureName {
 /** Wright wears `accent`; any other agent its crew hue, or slate when unknown. Never a semantic token. */
 export function hueTokenFor(agent: AvatarAgent): string {
   if (agent.id === WRIGHT_ID) return "--accent";
-  return CREW_HUE_TOKENS[isCrewHue(agent.hue) ? agent.hue : "slate"];
+  return CREW_HUE_TOKENS[crewHueOf(agent.hue) ?? "slate"];
 }
 
 /** The label read by assistive tech and shown as the tooltip. */
