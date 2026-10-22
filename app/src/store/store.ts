@@ -10,6 +10,14 @@
 // - Event ids are deduped (`id <= lastEventId` is dropped and counted), and
 //   the store resubscribes with `after = lastEventId`, so a kernel restart
 //   loses nothing and replays nothing.
+// - Ids are only comparable within one event table. Before resubscribing with
+//   `lastEventId > 0` the store asks `GET /status` for the kernel's pid; if it
+//   is not the pid the ids came from, it reads the last event's row
+//   (`GET /events?after=<id-1>&limit=1`). A row that is gone or different
+//   (another `at` or `kind`) means the table was wiped: `lastEventId` and
+//   `eventLog` reset and the store resubscribes from 0 (going live refetches
+//   every used resource). Same pid, or the same row, keeps the ids, so an
+//   overlapping replay from the same kernel is still dropped and counted.
 // - Connection state is the kernel's own answer, never a guess. An attempt is
 //   `connection()` (the main process's api.json, pid, token and `GET /status`
 //   check), then `feed.subscribe`, then the feed proving itself: a frame, or
@@ -131,8 +139,7 @@ interface Slot {
   inFlight: boolean;
   /** A refetch is owed (an event, a reconnect, the first load). */
   wanted: boolean;
-  /** When the last read started, for the throttle. */
-  lastStart: number | undefined;
+  /** The throttle window: a read started less than `REFETCH_THROTTLE_MS` ago. */
   timer: unknown;
   hasTimer: boolean;
 }
@@ -149,6 +156,12 @@ function wellFormed(frame: FeedRelayFrame): boolean {
   if (typeof frame !== "object" || frame === null) return false;
   if (frame.type === "event") return Number.isSafeInteger(frame.id) && frame.id > 0 && typeof frame.kind === "string";
   return frame.type === "heartbeat" || frame.type === "closed";
+}
+
+/** `GET /status`'s kernel pid, when the body has one. */
+function pidOf(body: unknown): number | undefined {
+  const pid = (body as { kernel?: { pid?: unknown } } | null | undefined)?.kernel?.pid;
+  return typeof pid === "number" ? pid : undefined;
 }
 
 function isTruncated(frame: EventFrame | TruncatedEventFrame): frame is TruncatedEventFrame {
@@ -172,6 +185,10 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
   let lastEventId = 0;
   let eventLog: (EventFrame | TruncatedEventFrame)[] = [];
   let duplicatesDropped = 0;
+  /** The kernel pid the ids up to `lastEventId` came from, once known. */
+  let idsPid: number | undefined;
+  /** Bumped when the ids reset: a truncated row fetched before it is not applied. */
+  let idSpace = 0;
   let snapshot: LiveSnapshot | undefined;
 
   let running = false;
@@ -250,7 +267,6 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
       updatedAt: null,
       inFlight: false,
       wanted: false,
-      lastStart: undefined,
       timer: undefined,
       hasTimer: false,
     };
@@ -268,28 +284,30 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
       slot.error = undefined;
       slot.updatedAt = now();
       received();
+      if (slot.name === "status") idsPid ??= pidOf(result.body);
       return;
     }
     if ("connection" in result) slot.error = { kind: "not_connected", connection: result.connection };
     else slot.error = { kind: "refused", status: result.status, body: result.body };
   };
 
-  /** Start the owed read now if the throttle and the in-flight rule allow it, else when they will. */
+  /**
+   * Start the owed read now if the throttle and the in-flight rule allow it,
+   * else when they will. The throttle window is a timer started with each read,
+   * never arithmetic on `now()`: that is the wall clock, and a backward step (a
+   * manual change, an NTP step after wake) would stall every refetch for the
+   * size of the jump.
+   */
   const pump = (slot: Slot): void => {
     if (!running || !slot.wanted || slot.inFlight || slot.hasTimer) return;
-    const wait = slot.lastStart === undefined ? 0 : slot.lastStart + REFETCH_THROTTLE_MS - now();
-    if (wait > 0) {
-      slot.hasTimer = true;
-      slot.timer = after(wait, () => {
-        slot.hasTimer = false;
-        slot.timer = undefined;
-        pump(slot);
-      });
-      return;
-    }
     slot.wanted = false;
     slot.inFlight = true;
-    slot.lastStart = now();
+    slot.hasTimer = true;
+    slot.timer = after(REFETCH_THROTTLE_MS, () => {
+      slot.hasTimer = false;
+      slot.timer = undefined;
+      pump(slot);
+    });
     const mine = epoch;
     const req = resourceRequest(slot.name);
     let answer: Promise<ApiResult<unknown>>;
@@ -343,6 +361,7 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
   /** A truncated frame's row, fetched through `GET /events?after=<id-1>&limit=1`, then routed. */
   const fetchTruncated = (frame: TruncatedEventFrame): void => {
     const mine = epoch;
+    const space = idSpace;
     let answer: Promise<ApiResult<EventsResponse>>;
     try {
       answer = bridge.request<EventsResponse>({ method: "GET", path: "/events", query: { after: String(frame.id - 1), limit: "1" } });
@@ -352,7 +371,8 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
     const done = (result: ApiResult<EventsResponse> | undefined): void => {
       if (mine !== epoch) return;
       const row = result?.ok === true ? result.body.events.find((e) => e.id === frame.id && !isTruncated(e)) : undefined;
-      if (row !== undefined) {
+      // After an id-space reset this id names another event: keep the log as it is.
+      if (row !== undefined && space === idSpace) {
         received();
         eventLog = eventLog.map((e) => (e.id === frame.id ? row : e));
       }
@@ -437,6 +457,55 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
     scheduleRetry();
   };
 
+  /**
+   * Whether `lastEventId` still names the same event in the kernel that just
+   * answered; resets the ids when it does not. Resolves `true` to go on
+   * subscribing, or the attempt's failure (a `NotConnected`, or `undefined`
+   * for a failed IPC call). A refusal is not proof of a wipe: the ids are kept.
+   */
+  const checkIdSpace = async (mine: number): Promise<true | NotConnected | undefined> => {
+    if (lastEventId === 0) return true;
+    const status = await read<StatusBody>({ method: "GET", path: "/status" });
+    if (mine !== attemptSeq || !running) return true;
+    if (status === undefined) return undefined;
+    if (!status.ok) return "connection" in status ? status.connection : true;
+    const pid = pidOf(status.body);
+    if (pid === undefined || pid === idsPid) return true;
+    const last = lastEventId;
+    const rows = await read<EventsResponse>({ method: "GET", path: "/events", query: { after: String(last - 1), limit: "1" } });
+    if (mine !== attemptSeq || !running) return true;
+    if (rows === undefined) return undefined;
+    if (!rows.ok) {
+      if ("connection" in rows) return rows.connection;
+      idsPid = pid;
+      return true;
+    }
+    const row = Array.isArray(rows.body.events) ? rows.body.events.find((e) => e.id === last) : undefined;
+    let seen: EventFrame | TruncatedEventFrame | undefined;
+    for (let i = eventLog.length - 1; i >= 0 && seen === undefined; i -= 1) if (eventLog[i]?.id === last) seen = eventLog[i];
+    const same =
+      row !== undefined &&
+      (seen === undefined || (row.kind === seen.kind && (isTruncated(row) || isTruncated(seen) || row.at === seen.at)));
+    idsPid = pid;
+    // `lastEventId` moved while the row was read (a late frame): those ids are this kernel's, keep them.
+    if (!same && lastEventId === last) {
+      lastEventId = 0;
+      eventLog = [];
+      idSpace += 1;
+      emit();
+    }
+    return true;
+  };
+
+  /** One request, `undefined` when the IPC call itself failed. */
+  const read = async <R>(req: Parameters<StudioBridge["request"]>[0]): Promise<ApiResult<R> | undefined> => {
+    try {
+      return await bridge.request<R>(req);
+    } catch {
+      return undefined;
+    }
+  };
+
   const attempt = async (): Promise<void> => {
     if (!running) return;
     attemptSeq += 1;
@@ -457,6 +526,12 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
       // The kernel answered `GET /status`: whatever stopped it before is no longer true.
       setView({ state: "connecting" });
       emit();
+    }
+    const checked = await checkIdSpace(mine);
+    if (mine !== attemptSeq || !running) return;
+    if (checked !== true) {
+      fail(checked);
+      return;
     }
     phase = "subscribing";
     let subscribed: KernelConnectionState;

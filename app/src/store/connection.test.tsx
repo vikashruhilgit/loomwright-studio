@@ -5,11 +5,12 @@
 // kernel answers; a feed that closes after live -> the reconnecting band with
 // the last-updated time, every loaded resource stale until live again (AC4).
 import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import type { Approval, StatusBody } from "../api/contract";
 import { createCommandRegistry } from "../commands/registry";
-import { SETUP_STEPS, formatLastUpdated } from "../shell/KernelStates";
+import { ReconnectingBand, SETUP_STEPS, formatLastUpdated } from "../shell/KernelStates";
 import { fakeBridge, ok } from "./fake-bridge";
 import type { FakeBridge } from "./fake-bridge";
 import { liveStoreFor, useResource } from "./react";
@@ -161,6 +162,43 @@ describe("the shell's kernel states, from the live store", () => {
     expect(screen.queryByTestId("kernel-reconnecting-band")).toBeNull();
     expect(store.resource("approvals")?.stale).toBe(false);
     expect(fake.requestsTo("GET /approvals").length).toBe(approvalsBefore + 1);
+  });
+
+  it("the reconnecting band with no data ever received says no last-updated time", () => {
+    render(<ReconnectingBand lastUpdated={null} />);
+    const band = screen.getByTestId("kernel-reconnecting-band");
+    expect(band.textContent).toBe("Reconnecting to the kernel…");
+    expect(band.querySelector("time")).toBeNull();
+  });
+
+  it("under <StrictMode>, App and a useResource probe share one store: one listener, one subscribe, live; nothing left after unmount", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(STATUS));
+    fake.route("GET /approvals", () => ok({ approvals: [APPROVAL] }));
+    function Probe() {
+      const approvals = useResource("approvals", fake.bridge);
+      return <p data-testid="probe">{approvals?.data?.approvals.length ?? "none"}</p>;
+    }
+    render(
+      <StrictMode>
+        <App api={fake.bridge} registry={createCommandRegistry()} />
+        <Probe />
+      </StrictMode>,
+    );
+    await act(async () => undefined);
+    // The double effect disposed and restarted the store: the first attempt was dropped before it subscribed.
+    expect(fake.listenerCount()).toBe(1);
+    expect(fake.subscribeCalls.length).toBe(1);
+    emit(fake, { type: "heartbeat", latest_id: 0 });
+    await advance(REFETCH_THROTTLE_MS * 4);
+    expect(liveStoreFor(fake.bridge).getSnapshot().connection).toEqual({ state: "live" });
+    expect(screen.getByTestId("probe").textContent).toBe("1");
+
+    cleanup();
+    expect(fake.listenerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    // One unsubscribe for StrictMode's simulated unmount, one for the real one.
+    expect(fake.unsubscribes).toBe(2);
   });
 
   it("useResource loads a resource on its first use and re-renders on its answer", async () => {

@@ -175,6 +175,41 @@ describe("refetch by kind, throttled (AC1)", () => {
     expect(store.resource("approvals")?.data?.approvals.length).toBe(20);
   });
 
+  it("a backward wall-clock step between two events never stalls the throttled refetch", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(STATUS));
+    fake.route("GET /approvals", () => ok({ approvals: [] as Approval[] }));
+    const store = storeOver(fake);
+    store.load("approvals");
+    await goLive(fake, store);
+    fake.emit(event(1, "approval_requested"));
+    await flush();
+    const before = fake.requestsTo("GET /approvals").length;
+    vi.setSystemTime(Date.now() - 3_600_000);
+    fake.emit(event(2, "approval_requested"));
+    await advance(250);
+    expect(fake.requestsTo("GET /approvals").length).toBe(before + 1);
+  });
+
+  it("refetch() reads a used resource again (throttled) and loads an unused one", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(STATUS));
+    fake.route("GET /approvals", () => ok({ approvals: [] as Approval[] }));
+    const store = storeOver(fake);
+    await goLive(fake, store);
+    expect(store.resource("approvals")).toBeUndefined();
+    store.refetch("approvals");
+    expect(fake.requestsTo("GET /approvals").length).toBe(1);
+    store.refetch("approvals");
+    store.refetch("approvals");
+    await advance(250);
+    expect(fake.requestsTo("GET /approvals").length).toBe(2);
+    // load() on a used resource does nothing.
+    store.load("approvals");
+    await advance(1_000);
+    expect(fake.requestsTo("GET /approvals").length).toBe(2);
+  });
+
   it("refetches only resources in use, by kind, plus every loaded thread; payload is never read", async () => {
     const fake = fakeBridge();
     fake.route("GET /status", () => ok(STATUS));
@@ -255,6 +290,134 @@ describe("dedupe and resume (AC2, fake bridge)", () => {
     expect(snap.eventLog.map((e) => e.id)).toEqual([1, 2, 3, 4, 5]);
     expect(snap.lastEventId).toBe(5);
     expect(snap.duplicatesDropped).toBe(1);
+  });
+
+  /** Live on pid 7 with events 1..3 in the log, then the feed closes. */
+  async function liveThenClosed(): Promise<{ fake: FakeBridge; store: LiveStore }> {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(STATUS));
+    const store = storeOver(fake);
+    await goLive(fake, store);
+    for (const id of [1, 2, 3]) fake.emit(event(id));
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+    return { fake, store };
+  }
+
+  const RESTARTED: StatusBody = { ...STATUS, kernel: { ...STATUS.kernel, pid: 8 } };
+
+  it.each([
+    ["the last event's row is gone", [] as EventFrame[]],
+    ["the last id names another event", [event(3, "agent_created")]],
+    ["the last id names an event at another time", [{ ...event(3), at: new Date(1_000).toISOString() }]],
+  ])("a new kernel pid and %s: the ids reset, resubscribe from 0, every used resource refetched", async (_why, rows) => {
+    const { fake, store } = await liveThenClosed();
+    fake.route("GET /status", () => ok(RESTARTED));
+    fake.route("GET /events", () => ok({ events: rows }));
+    const statusBefore = fake.requestsTo("GET /status").length;
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").at(-1)?.req.query).toEqual({ after: "2", limit: "1" });
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(0);
+    expect(store.getSnapshot().lastEventId).toBe(0);
+    expect(store.getSnapshot().eventLog).toEqual([]);
+
+    // The new kernel's ids 1 and 2 are new events, not duplicates.
+    fake.emit(event(1));
+    fake.emit(event(2));
+    const snap = store.getSnapshot();
+    expect(snap.connection).toEqual({ state: "live" });
+    expect(snap.eventLog.map((e) => e.id)).toEqual([1, 2]);
+    expect(snap.duplicatesDropped).toBe(0);
+    await advance(REFETCH_THROTTLE_MS * 4);
+    // One probe, then one refetch on going live (the events route status too, throttled into it).
+    expect(fake.requestsTo("GET /status").length).toBeGreaterThanOrEqual(statusBefore + 2);
+    expect(store.getSnapshot().status).toEqual(RESTARTED);
+
+    // The next reconnect knows pid 8: no row read, the ids are kept.
+    const eventsReads = fake.requestsTo("GET /events").length;
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").length).toBe(eventsReads);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(2);
+  });
+
+  it("a new kernel pid with the same last row (a restart on the same data): the ids are kept and an overlap is still dropped", async () => {
+    const { fake, store } = await liveThenClosed();
+    fake.route("GET /status", () => ok(RESTARTED));
+    fake.route("GET /events", () => ok({ events: [event(3)] }));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").length).toBe(1);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+    for (const id of [3, 4]) fake.emit(event(id));
+    const snap = store.getSnapshot();
+    expect(snap.eventLog.map((e) => e.id)).toEqual([1, 2, 3, 4]);
+    expect(snap.duplicatesDropped).toBe(1);
+  });
+
+  it("the same kernel pid: no row read, the ids are kept", async () => {
+    const { fake } = await liveThenClosed();
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").length).toBe(0);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+  });
+
+  it("a refused probe or row read keeps the ids; an unreachable or failed one is a failed attempt", async () => {
+    const { fake, store } = await liveThenClosed();
+    // GET /status refused: cannot tell, keep the ids.
+    fake.route("GET /status", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+
+    // GET /status unreachable: no subscribe, retried after the backoff.
+    fake.route("GET /status", () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } }));
+    const subscribes = fake.subscribeCalls.length;
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.subscribeCalls.length).toBe(subscribes);
+    expect(store.getSnapshot().connection.state).toBe("reconnecting");
+
+    // The row read unreachable, then throwing: still no subscribe.
+    fake.route("GET /status", () => ok(RESTARTED));
+    fake.route("GET /events", () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "timeout" } }));
+    await advance(1_000);
+    expect(fake.subscribeCalls.length).toBe(subscribes);
+    const request = fake.bridge.request;
+    fake.bridge.request = (req) => {
+      if (req.path === "/events") throw new Error("ipc gone");
+      return request(req);
+    };
+    await advance(2_000);
+    expect(fake.subscribeCalls.length).toBe(subscribes);
+
+    // The row read refused: cannot tell, keep the ids.
+    fake.bridge.request = request;
+    fake.route("GET /events", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    await advance(4_000);
+    expect(fake.subscribeCalls.length).toBe(subscribes + 1);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+    expect(store.getSnapshot().lastEventId).toBe(3);
+  });
+
+  it("a truncated row fetched before an id reset is not applied to the new kernel's event with that id", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(STATUS));
+    const store = storeOver(fake);
+    await goLive(fake, store);
+    let release: () => void = () => undefined;
+    const old = event(1, "approval_requested");
+    fake.route("GET /events", () => new Promise((done) => (release = () => done(ok({ events: [old] })))));
+    fake.emit({ type: "event", id: 1, kind: "approval_requested", truncated: true });
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+    // The new kernel's table does not have the old row.
+    const pending = release;
+    fake.route("GET /status", () => ok(RESTARTED));
+    fake.route("GET /events", () => ok({ events: [] }));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(0);
+    const fresh = event(1, "agent_created");
+    fake.emit(fresh);
+    pending();
+    await flush();
+    expect(store.getSnapshot().eventLog).toEqual([fresh]);
   });
 
   it("keeps the event log bounded, oldest dropped first", async () => {
