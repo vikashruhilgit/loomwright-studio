@@ -25,7 +25,23 @@ The gestures are the CSS keyframes ported from `avatar.css`: `run`, `swirl`, `sw
 
 ## Contrast
 
-The avatar's strokes and fills are non-text graphics painted only with `var(--bot)`. That resolves to `--accent` for Wright and to a `--crew-*` token for everyone else. In [tokens.json](../../../../design/tokens.json), every `crew-*` usage note rates the hue "3:1+ on ground and surface in both themes", and `accent` is rated "6.4:1 on surface in both themes". The avatar adds no colour of its own, so it inherits that contrast from the tokens. `Avatar.test.tsx` fails on any hex, `rgb()` or `hsl()` literal in `Avatar.tsx`, `Avatar.css` or `creatures.ts`. It also fails if an identity part (`.fill`, `.st`, `.ln`, `.knot`, `.stitch`, `.t`, `.crown`) is painted with a semantic token. The only state colour is the waiting ring's `--attention`.
+The avatar's strokes and fills are non-text graphics painted only with `var(--bot)`. That resolves to `--accent` for Wright and to a `--crew-*` token for everyone else. In [tokens.json](../../../../design/tokens.json), every `crew-*` usage note rates the hue "3:1+ on ground and surface in both themes", and `accent` is rated "6.4:1 on surface in both themes". The avatar adds no hue of its own, but the design's opacities lower the contrast of some parts, so the avatar does not inherit the tokens' 3:1+ everywhere.
+
+These figures were computed from `tokens.json` with WCAG relative luminance, with the hue alpha-composited over `--ground` at the opacity the CSS applies. They were not measured from the screenshots.
+
+| Part, opacity | Lowest on `--ground` (light) | Lowest on `--ground` (dark) | Meets 3:1? |
+|---|---|---|---|
+| `.st` outline, `.t` thread, `.knot`, `.crown` at 100% | 4.99 (crew-teal) | 6.90 (accent) | yes |
+| `.ln` inner lines at 85% | 3.81 (crew-teal, crew-olive) | 5.31 (accent) | yes |
+| Full-hue parts while parked (whole avatar at 72%) | **2.99 (crew-olive)**, 3.03 (crew-teal) | 4.16 (accent) | no for light olive |
+| `.ln` while parked (85% × 72%) | 2.47 (crew-olive) | 3.36 (accent) | no in light |
+| `.stitch` ring at 45% (idle, working, waiting) | 1.89 (crew-olive) | 2.39 (accent) | no |
+| `.stitch` while parked (50% × 72%), killed (60%), done (90%) | 1.65, 2.42, 4.17 | 1.96, 3.28, 5.81 | parked and light killed: no |
+| Waiting ring, `--attention` at 70% under reduced motion | 2.97 | 5.30 | no in light |
+
+Dark `accent` on `--surface` computes to 6.34:1, slightly under the 6.4:1 its usage note gives. `.fill` is a 28% tint behind the outline and carries nothing alone. The parked state's own `t-slack` thread is dimmed with the rest, so in light crew-olive the thread that carries "paused at cap" is itself 2.99:1. Owner finding 8 covers this.
+
+`Avatar.test.tsx` fails on any hex literal or CSS colour function (`rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, `color()`, `color-mix()`, `light-dark()`, in any case) in `Avatar.tsx`, `Avatar.css` or `creatures.ts`. It also fails on a named colour in any colour-bearing declaration in `Avatar.css`, and on any `var()` of a semantic token in `Avatar.css`, with or without a fallback, whatever the selector. That includes re-pointing `--bot` by state. The one exception is `--attention` on the ring, which is the only state colour. Finally, it renders every state for Wright and Mason. It fails if `--bot` is anything but `accent` or a crew hue, or if any element carries a colour attribute or an inline colour style.
 
 ## Owner findings (the design is ported as is; these need a decision)
 
@@ -36,3 +52,4 @@ The avatar's strokes and fills are non-text graphics painted only with `var(--bo
 5. **`avatar.js` lets anyone be the whale, or wear accent.** `avatarHTML` accepts any `shape` in `SHAPES` (including `whale`) and any `hue` in `HUES` (including `accent`). The README forbids both. The component follows the README: a crew member asking for the whale gets the fish, and an unknown hue (including `accent` or a semantic name) gets slate.
 6. **Sizes.** `preview.html`'s sizes row uses 16/18/24/36, while the README lists 16/24/36/56. The page shows both sets.
 7. **Thread display.** The source renders all six thread paths and toggles them with `display` rules per state. The component renders only the active state's path(s), so the state is legible from the markup alone, without CSS (Avatar.test.tsx asserts it). The picture is the same.
+8. **The design's opacities take some parts below 3:1.** The tokens' "3:1+" holds for the full-hue parts, but not after the design's dimming (see Contrast). In light, the parked state's 72% opacity puts crew-olive at 2.99:1. The `.stitch` ring at 45% is 1.89 to 2.85:1 across hues and themes, and it partly carries the parked, done and killed states. The waiting ring's `--attention` at 70% is 2.97:1 in light. The port keeps the design's opacities. The owner needs to decide whether the dimmed parts must also meet 3:1.

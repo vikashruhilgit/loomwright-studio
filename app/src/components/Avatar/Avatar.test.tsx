@@ -269,27 +269,91 @@ describe("reduced motion (Avatar.css)", () => {
   });
 });
 
+/** A declaration's value with every `var(...)` (nested fallbacks included) removed. */
+function withoutVars(value: string): string {
+  let rest = value;
+  for (let prev = ""; prev !== rest; ) {
+    prev = rest;
+    rest = rest.replace(/var\([^()]*\)/gi, "");
+  }
+  return rest;
+}
+
 describe("no hard-coded colour (Avatar.tsx, Avatar.css, creatures.ts)", () => {
   // The needles are assembled at runtime so this file never matches itself, and the
   // scan reads only the component's source files, never this test.
   const hex = new RegExp(["#", "[0-9a-fA-F]{3,8}", "\\b"].join(""));
-  const functional = new RegExp(["\\b(rgb", "a?|hsl", "a?)\\("].join(""));
+  // Every CSS colour function, in any case (CSS function names are case-insensitive).
+  const functional = new RegExp(["\\b(rgb", "a?|hsl", "a?|hwb|ok", "lab|ok", "lch|lab|lch|color|color-mix|light-dark)\\s*\\("].join(""), "i");
+  // The semantic tokens in any `var()` form: bare, with a fallback, or with inner whitespace.
+  const semantic = new RegExp(["var\\(\\s*--(", SEMANTIC.join("|"), ")\\b"].join(""), "i");
   const sources: Record<string, string> = { "Avatar.tsx": avatarTsx, "Avatar.css": avatarCss, "creatures.ts": creaturesTs };
 
   for (const [file, text] of Object.entries(sources)) {
-    it(`${file} has no hex, rgb() or hsl() colour literal`, () => {
+    it(`${file} has no hex or colour-function literal`, () => {
       expect(text).not.toMatch(hex);
       expect(text).not.toMatch(functional);
     });
   }
 
-  it("no identity part (.fill, .st, .ln, .knot, .stitch, .t, .crown) is painted with a semantic token", () => {
-    const identity = /\.(fill|st|ln|knot|stitch|t|crown)(?![\w-])|\.t-[\w-]+/;
-    const semantic = new RegExp(`var\\(--(${SEMANTIC.join("|")})\\)`);
-    const offenders = cssRules(avatarCss).filter((r) => r.selectors.some((s) => identity.test(s)) && semantic.test(r.body));
+  it("Avatar.css paints colour only through var(): no named colour in any colour-bearing declaration", () => {
+    const colourProperty = /^(fill|stroke|color|background(-color)?|border(-(top|right|bottom|left))?(-color)?|outline(-color)?|box-shadow|text-shadow|stop-color|flood-color|lighting-color|caret-color|accent-color|column-rule(-color)?|text-decoration(-color)?)$/i;
+    // What may remain once var() is removed: lengths, numbers and non-colour keywords. Anything else
+    // (`red`, `white`, `currentColor`, `transparent`) is a colour the tokens did not choose.
+    const allowed = /^(none|solid|dashed|dotted|double|inherit|initial|unset|revert|inset|-?[\d.]+(px|em|rem|%)?)$/i;
+    const stripped = avatarCss.replace(/\/\*[\s\S]*?\*\//g, "");
+    const offenders = [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)].flatMap((m) =>
+      (m[2] ?? "")
+        .split(";")
+        .map((declaration) => {
+          const colon = declaration.indexOf(":");
+          return colon < 0 ? null : { prop: declaration.slice(0, colon).trim(), value: declaration.slice(colon + 1) };
+        })
+        .filter((d): d is { prop: string; value: string } => d !== null && colourProperty.test(d.prop))
+        .filter(({ value }) =>
+          withoutVars(value)
+            .replace(/!\s*important/gi, " ")
+            .split(/[\s,]+/)
+            .some((word) => word !== "" && !allowed.test(word)),
+        )
+        .map(({ prop, value }) => `${(m[1] ?? "").trim()} { ${prop}:${value.trim()} }`),
+    );
     expect(offenders).toEqual([]);
+  });
+
+  it("no semantic token reaches the avatar except the waiting ring's --attention", () => {
+    // Any rule carrying a semantic var() is an offender, whatever its selector, unless every selector is the
+    // ring and the only semantic token is attention. That covers painting an identity part directly, through a
+    // fallback, through a custom property, or by re-pointing --bot by state (`.bot.danger{--bot:var(--danger)}`).
+    const global = new RegExp(semantic.source, "gi");
+    const offenders = cssRules(avatarCss).filter((r) => {
+      const used = [...r.body.matchAll(global)].map((m) => (m[1] ?? "").toLowerCase());
+      if (used.length === 0) return false;
+      const ringOnly = r.selectors.every((s) => /\.ring$/.test(s));
+      return !(ringOnly && used.every((t) => t === "attention"));
+    });
+    expect(offenders).toEqual([]);
+    expect(cssRules(avatarCss).filter((r) => /--bot:/.test(r.body) && semantic.test(r.body))).toEqual([]);
     expect(avatarTsx).not.toMatch(semantic);
     expect(creaturesTs).not.toMatch(semantic);
+  });
+
+  it("the rendered avatar carries no colour of its own, and --bot is accent or a crew hue in every state", () => {
+    const crewTokens = CREW_HUES.map((h) => `var(--crew-${h})`);
+    const colourAttrs = ["fill", "stroke", "color", "stop-color", "flood-color", "lighting-color"];
+    for (const agent of [WRIGHT, MASON]) {
+      for (const state of AVATAR_STATES) {
+        const root = renderAvatar(agent, state, { action: "x" });
+        const bot = root.style.getPropertyValue("--bot");
+        expect(agent === WRIGHT ? bot === "var(--accent)" : crewTokens.includes(bot)).toBe(true);
+        for (const el of [root, ...root.querySelectorAll("*")]) {
+          for (const attr of colourAttrs) expect(el.getAttribute(attr), `${state} ${el.tagName} ${attr}`).toBeNull();
+          const style = el.getAttribute("style") ?? "";
+          const props = style.split(";").map((d) => (d.split(":")[0] ?? "").trim()).filter(Boolean);
+          expect(props.filter((p) => !["--s", "--bot", "--seed", "transform-origin"].includes(p)), `${state} ${el.tagName}`).toEqual([]);
+        }
+      }
+    }
   });
 });
 
