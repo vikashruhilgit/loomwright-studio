@@ -8,7 +8,7 @@ import { getBridge } from "./api/bridge";
 import { commandRegistry } from "./commands/registry";
 import type { CommandRegistry } from "./commands/registry";
 import type { ScreenDefinition, ScreenModule } from "./screens/types";
-import { NotInstalledState, UnreachableBand } from "./shell/KernelStates";
+import { NotInstalledState, ReconnectingBand, UnreachableBand } from "./shell/KernelStates";
 import { useKernelConnection } from "./store/connection";
 
 const modules = import.meta.glob<ScreenModule>("./screens/*/index.tsx", { eager: true });
@@ -98,6 +98,7 @@ export function App({ api, registry = commandRegistry }: AppProps) {
         </header>
         <div className="content">
           {connection.state === "unreachable" ? <UnreachableBand /> : null}
+          {connection.state === "reconnecting" ? <ReconnectingBand lastUpdated={connection.lastUpdated} /> : null}
           {connection.state === "not_installed" ? <NotInstalledState dataDir={connection.dataDir} /> : <Screen />}
         </div>
       </main>

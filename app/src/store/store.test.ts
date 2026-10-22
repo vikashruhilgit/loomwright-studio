@@ -1,0 +1,575 @@
+// The live store's core over a scriptable bridge, in fake time: the throttled
+// kind-routed refetch (AC1), dedupe and resume from the last id (AC2), the
+// backoff schedule and the honest connection states (AC3), staleness and the
+// never-canned status (AC4), truncated frames, every close code, and dispose.
+// Assertions spell the brief's numbers (250 ms, 500 ms, 10 000 ms) as
+// literals, never the store's constants, so a changed constant fails here.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Approval, EventFrame, StatusBody, TruncatedEventFrame } from "../api/contract";
+import { fakeBridge, ok } from "./fake-bridge";
+import type { FakeBridge } from "./fake-bridge";
+import { KIND_ROUTES, resourcesForKind, threadResource } from "./resources";
+import { BACKOFF_INITIAL_MS, REFETCH_THROTTLE_MS, SETTLE_MS, createLiveStore } from "./store";
+import type { LiveConnection, LiveStore } from "./store";
+
+const STATUS: StatusBody = {
+  kernel: { version: "1.2.3", uptime_s: 1, pid: 7 },
+  kill_switch: { engaged: false, since: null },
+  auth: [],
+  sessions: [],
+  kill_unconfirmed: [],
+  orphaned: [],
+  queue: { pending: 0, events: [] },
+  wakeups: { pending: 0, items: [] },
+  tokens_today: { day: "2026-10-22", agents: [] },
+  cap_state: [],
+};
+
+function event(id: number, kind = "task_updated"): EventFrame {
+  return { type: "event", id, at: new Date(0).toISOString(), kind, session_id: null, task_id: null, payload: { untrusted: "<b>never interpreted</b>" } };
+}
+
+function approval(id: number): Approval {
+  return {
+    id,
+    requesting_agent: "wright",
+    requesting_session: null,
+    action: "comment",
+    payload: {},
+    requested_at: new Date(0).toISOString(),
+    status: "pending",
+    decision: null,
+    decided_by: null,
+    decided_at: null,
+    playbook: null,
+  };
+}
+
+/** Let every resolved promise chain run (fake timers do not touch microtasks). */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
+}
+
+/** Advance fake time, running timers and the promise chains they start. */
+async function advance(ms: number): Promise<void> {
+  await vi.advanceTimersByTimeAsync(ms);
+  await flush();
+}
+
+function diffs(times: readonly number[]): number[] {
+  return times.slice(1).map((t, i) => t - (times[i] as number));
+}
+
+/** Every connection view the store passes through. */
+function watchViews(store: LiveStore): LiveConnection[] {
+  const seen: LiveConnection[] = [store.getSnapshot().connection];
+  store.subscribe(() => {
+    const view = store.getSnapshot().connection;
+    if (seen.at(-1) !== view) seen.push(view);
+  });
+  return seen;
+}
+
+let stores: LiveStore[] = [];
+
+function storeOver(fake: FakeBridge): LiveStore {
+  const store = createLiveStore(fake.bridge);
+  stores.push(store);
+  return store;
+}
+
+/** Start `store` and make it live with a heartbeat, then let the reconnect's refetches settle past the throttle. */
+async function goLive(fake: FakeBridge, store: LiveStore): Promise<void> {
+  store.start();
+  await flush();
+  expect(fake.subscribeCalls.length).toBeGreaterThan(0);
+  fake.emit({ type: "heartbeat", latest_id: 0 });
+  expect(store.getSnapshot().connection).toEqual({ state: "live" });
+  await advance(REFETCH_THROTTLE_MS * 4);
+}
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  vi.setSystemTime(new Date("2026-10-22T09:00:00Z"));
+});
+
+afterEach(() => {
+  for (const store of stores) store.dispose();
+  stores = [];
+  vi.useRealTimers();
+});
+
+describe("refetch by kind, throttled (AC1)", () => {
+  it("issues GET /approvals in the same tick as an approval_requested event and applies the answer within one frame", async () => {
+    const fake = fakeBridge();
+    let approvals: Approval[] = [];
+    fake.route("GET /status", () => ok(STATUS));
+    fake.route("GET /approvals", () => ok({ approvals }));
+    const store = storeOver(fake);
+    store.load("approvals");
+    await goLive(fake, store);
+    expect(store.resource("approvals")?.data?.approvals).toEqual([]);
+
+    let release: () => void = () => undefined;
+    approvals = [approval(7)];
+    fake.route("GET /approvals", () => new Promise((done) => (release = () => done(ok({ approvals })))));
+    const before = fake.requestsTo("GET /approvals").length;
+    fake.emit(event(1, "approval_requested"));
+    // Leading edge: no debounce, no await.
+    expect(fake.requestsTo("GET /approvals").length).toBe(before + 1);
+
+    const applied: number[] = [];
+    store.subscribe(() => {
+      if (store.resource("approvals")?.data?.approvals.some((a) => a.id === 7) === true) applied.push(Date.now());
+    });
+    const answeredAt = Date.now();
+    release();
+    await advance(16);
+    expect(store.resource("approvals")?.data?.approvals.map((a) => a.id)).toEqual([7]);
+    expect(applied.length).toBeGreaterThan(0);
+    expect((applied[0] as number) - answeredAt).toBeLessThanOrEqual(16);
+  });
+
+  it("20 approval_* events within 250 ms: at most one GET /approvals per 250 ms, one in flight, leading and trailing", async () => {
+    const fake = fakeBridge();
+    // The kernel's list grows with each event; an answer is the list when its read arrived.
+    let kernelCount = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const starts: number[] = [];
+    fake.route("GET /status", () => ok(STATUS));
+    fake.route("GET /approvals", () => ok({ approvals: [] as Approval[] }));
+    const store = storeOver(fake);
+    store.load("approvals");
+    await goLive(fake, store);
+
+    fake.route("GET /approvals", () => {
+      starts.push(Date.now());
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      const answer = Array.from({ length: kernelCount }, (_, i) => approval(i + 1));
+      return new Promise((done) =>
+        setTimeout(() => {
+          inFlight -= 1;
+          done(ok({ approvals: answer }));
+        }, 40),
+      );
+    });
+    const burstStart = Date.now();
+    let lastEventAt = burstStart;
+    for (let i = 1; i <= 20; i += 1) {
+      kernelCount = i;
+      lastEventAt = Date.now();
+      fake.emit(event(i, i % 2 === 0 ? "approval_decided" : "approval_requested"));
+      if (i < 20) await advance(12);
+    }
+    expect(lastEventAt - burstStart).toBeLessThan(250);
+    await advance(2_000);
+
+    expect(starts[0]).toBe(burstStart);
+    for (const gap of diffs(starts)) expect(gap).toBeGreaterThanOrEqual(250);
+    expect(maxInFlight).toBe(1);
+    expect(starts.at(-1) as number).toBeGreaterThan(lastEventAt);
+    expect(starts.length).toBeLessThanOrEqual(Math.ceil((Date.now() - burstStart) / 250) + 1);
+    // The resource ends on the answer to a read issued after the last event.
+    expect(store.resource("approvals")?.data?.approvals.length).toBe(20);
+  });
+
+  it("refetches only resources in use, by kind, plus every loaded thread; payload is never read", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(STATUS));
+    const store = storeOver(fake);
+    store.load("agents");
+    store.load("messages");
+    store.load(threadResource("wright"));
+    await goLive(fake, store);
+    const count = (key: string): number => fake.requestsTo(key).length;
+    const base = { agents: count("GET /agents"), messages: count("GET /messages"), threads: count("GET /threads/:agent"), status: count("GET /status") };
+
+    fake.emit(event(1, "agent_message_queued"));
+    expect(count("GET /messages")).toBe(base.messages + 1);
+    expect(count("GET /agents")).toBe(base.agents);
+    expect(count("GET /threads/:agent")).toBe(base.threads + 1);
+    expect(fake.requestsTo("GET /threads/:agent").at(-1)?.req.params).toEqual({ agent: "wright" });
+    expect(fake.requestsTo("GET /messages").at(-1)?.req.query).toEqual({ all: "1" });
+    // approvals is not in use: nothing is fetched for it.
+    fake.emit(event(2, "approval_requested"));
+    expect(count("GET /approvals")).toBe(0);
+    await advance(1_000);
+    const status = count("GET /status");
+    fake.emit(event(3, "something_new"));
+    expect(count("GET /status")).toBe(status + 1);
+  });
+
+  it("routes the kernel's real kinds by prefix, first match wins", () => {
+    expect(resourcesForKind("approval_requested")).toEqual(["approvals", "grants"]);
+    expect(resourcesForKind("agent_message_queued")).toEqual(["messages"]);
+    expect(resourcesForKind("agent_created")).toEqual(["agents"]);
+    expect(resourcesForKind("playbook_updated")).toEqual(["playbooks", "triggers"]);
+    expect(resourcesForKind("trigger_fired")).toEqual(["triggers"]);
+    expect(resourcesForKind("wakeup_scheduled")).toEqual(["triggers", "status"]);
+    expect(resourcesForKind("notification_created")).toEqual(["notifications"]);
+    expect(resourcesForKind("notify")).toEqual(["notifications"]);
+    expect(resourcesForKind("session_status")).toEqual(["sessions", "status"]);
+    expect(resourcesForKind("stop_requested")).toEqual(["sessions", "status"]);
+    expect(resourcesForKind("tool_decision")).toEqual(["sessions", "status"]);
+    expect(resourcesForKind("work_step_interrupted")).toEqual(["sessions", "status"]);
+    expect(resourcesForKind("event_done")).toEqual(["status", "messages"]);
+    expect(resourcesForKind("task_updated")).toEqual(["status"]);
+    expect(resourcesForKind("cap_warning")).toEqual(["status"]);
+    expect(KIND_ROUTES.findIndex((r) => r.prefix === "agent_message_")).toBeLessThan(KIND_ROUTES.findIndex((r) => r.prefix === "agent_"));
+  });
+});
+
+describe("dedupe and resume (AC2, fake bridge)", () => {
+  it("drops duplicate ids and counts them", async () => {
+    const fake = fakeBridge();
+    const store = storeOver(fake);
+    await goLive(fake, store);
+    for (const id of [1, 2, 3, 2, 3, 4]) fake.emit(event(id));
+    const snap = store.getSnapshot();
+    expect(snap.eventLog.map((e) => e.id)).toEqual([1, 2, 3, 4]);
+    expect(snap.duplicatesDropped).toBe(2);
+    expect(snap.lastEventId).toBe(4);
+  });
+
+  it("after a close, resubscribes with after = the last id; an overlapping replay is dropped and counted", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(STATUS));
+    const store = storeOver(fake);
+    store.start();
+    await flush();
+    expect(fake.subscribeCalls).toEqual([{ at: Date.now(), after: 0 }]);
+    for (const id of [1, 2, 3]) fake.emit(event(id));
+    expect(store.getSnapshot().connection).toEqual({ state: "live" });
+
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+    expect(store.getSnapshot().connection.state).toBe("reconnecting");
+    await advance(BACKOFF_INITIAL_MS - 1);
+    expect(fake.subscribeCalls.length).toBe(1);
+    await advance(1);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+    for (const id of [3, 4, 5]) fake.emit(event(id));
+    const snap = store.getSnapshot();
+    expect(snap.connection).toEqual({ state: "live" });
+    expect(snap.eventLog.map((e) => e.id)).toEqual([1, 2, 3, 4, 5]);
+    expect(snap.lastEventId).toBe(5);
+    expect(snap.duplicatesDropped).toBe(1);
+  });
+
+  it("keeps the event log bounded, oldest dropped first", async () => {
+    const fake = fakeBridge();
+    const store = createLiveStore(fake.bridge, { eventLogLimit: 3 });
+    stores.push(store);
+    await goLive(fake, store);
+    for (let id = 1; id <= 5; id += 1) fake.emit(event(id));
+    expect(store.getSnapshot().eventLog.map((e) => e.id)).toEqual([3, 4, 5]);
+    expect(store.getSnapshot().lastEventId).toBe(5);
+  });
+
+  it.each([1013, 1011, 1006, 1001])("a %i close from live: reconnecting, then a retry after 500 ms from the last id", async (code) => {
+    const fake = fakeBridge();
+    const store = storeOver(fake);
+    await goLive(fake, store);
+    fake.emit(event(9));
+    fake.emit({ type: "closed", code, reason: "bye" });
+    expect(store.getSnapshot().connection.state).toBe("reconnecting");
+    const closedAt = Date.now();
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.subscribeCalls.at(-1)).toEqual({ at: closedAt + 500, after: 9 });
+  });
+});
+
+describe("connection states and backoff (AC3)", () => {
+  it("(i) dead port: unreachable, never live, connection() spaced 500, 1 000, 2 000, … capped at 10 000 ms", async () => {
+    const fake = fakeBridge({ state: "unreachable", reason: "connection_failed" });
+    const store = storeOver(fake);
+    const views = watchViews(store);
+    store.start();
+    await flush();
+    expect(store.getSnapshot().connection).toEqual({ state: "unreachable", reason: "connection_failed" });
+    await advance(60_000);
+    expect(diffs(fake.connectionCalls).slice(0, 8)).toEqual([500, 1_000, 2_000, 4_000, 8_000, 10_000, 10_000, 10_000]);
+    expect(views.map((v) => v.state)).not.toContain("live");
+    expect(fake.subscribeCalls).toEqual([]);
+
+    // A kernel answers: the next attempt goes live, and the backoff resets.
+    fake.connectionAnswer = { state: "connected", port: 1 };
+    fake.subscribeAnswer = { state: "connected", port: 1 };
+    while (fake.subscribeCalls.length === 0) await advance(100);
+    expect(store.getSnapshot().connection).toEqual({ state: "connecting" });
+    fake.emit({ type: "heartbeat", latest_id: 0 });
+    expect(store.getSnapshot().connection).toEqual({ state: "live" });
+  });
+
+  it("not installed: the bridge's own dataDir, unchanged", async () => {
+    const fake = fakeBridge({ state: "not_installed", dataDir: "/Users/o/.loomwright-studio" });
+    const store = storeOver(fake);
+    store.start();
+    await flush();
+    expect(store.getSnapshot().connection).toEqual({ state: "not_installed", dataDir: "/Users/o/.loomwright-studio" });
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.connectionCalls.length).toBe(2);
+  });
+
+  it("(ii) REST up, socket dies before SETTLE_MS: never live, the backoff never resets; a subscription open SETTLE_MS goes live", async () => {
+    const fake = fakeBridge();
+    fake.closeAfterSubscribe = 4;
+    const store = storeOver(fake);
+    const views = watchViews(store);
+    store.start();
+    await flush();
+    await advance(500 + 1_000 + 2_000 + 4_000);
+    expect(fake.subscribeCalls.length).toBe(5);
+    expect(diffs(fake.subscribeCalls.map((c) => c.at))).toEqual([500, 1_000, 2_000, 4_000]);
+    expect(views.map((v) => v.state)).toEqual(["connecting"]);
+
+    // The fifth stays open.
+    await advance(SETTLE_MS - 1);
+    expect(store.getSnapshot().connection).toEqual({ state: "connecting" });
+    await advance(1);
+    expect(store.getSnapshot().connection).toEqual({ state: "live" });
+
+    // Success reset the backoff: the next close retries after 500 ms.
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+    const closedAt = Date.now();
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.subscribeCalls.at(-1)?.at).toBe(closedAt + 500);
+  });
+
+  it("a subscribe that answers unreachable is a failed attempt", async () => {
+    const fake = fakeBridge();
+    fake.subscribeAnswer = { state: "unreachable", reason: "daemon_not_running" };
+    const store = storeOver(fake);
+    store.start();
+    await flush();
+    expect(store.getSnapshot().connection).toEqual({ state: "unreachable", reason: "daemon_not_running" });
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.connectionCalls.length).toBe(2);
+  });
+
+  it("a failed REST read never changes the connection state", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } }));
+    const store = storeOver(fake);
+    store.start();
+    await flush();
+    expect(store.resource("status")?.error).toEqual({ kind: "not_connected", connection: { state: "unreachable", reason: "connection_failed" } });
+    expect(store.getSnapshot().connection).toEqual({ state: "connecting" });
+    await advance(SETTLE_MS);
+    expect(store.getSnapshot().connection).toEqual({ state: "live" });
+  });
+});
+
+describe("honest data (AC4)", () => {
+  it("status is undefined until GET /status answers, and a refusal is never data", async () => {
+    const fake = fakeBridge();
+    let release: () => void = () => undefined;
+    fake.route("GET /status", () => new Promise((done) => (release = () => done(ok(STATUS)))));
+    const store = storeOver(fake);
+    expect(store.getSnapshot().status).toBeUndefined();
+    store.start();
+    await flush();
+    expect(store.getSnapshot().status).toBeUndefined();
+    expect(store.resource("status")?.data).toBeUndefined();
+    expect(store.resource("status")?.loading).toBe(true);
+    release();
+    await flush();
+    expect(store.getSnapshot().status).toEqual(STATUS);
+
+    fake.route("GET /approvals", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    store.load("approvals");
+    await flush();
+    expect(store.resource("approvals")?.data).toBeUndefined();
+    expect(store.resource("approvals")?.error).toEqual({ kind: "refused", status: 500, body: { error: "internal" } });
+  });
+
+  it("every loaded resource is stale while reconnecting, refetched once on reconnect, and fresh again when live", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(STATUS));
+    fake.route("GET /approvals", () => ok({ approvals: [approval(1)] }));
+    const store = storeOver(fake);
+    store.load("approvals");
+    await goLive(fake, store);
+    expect(store.resource("approvals")?.stale).toBe(false);
+    const lastUpdated = store.getSnapshot().lastUpdated;
+    expect(lastUpdated).not.toBeNull();
+
+    await advance(5_000);
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+    expect(store.getSnapshot().connection).toEqual({ state: "reconnecting", lastUpdated });
+    expect(store.resource("approvals")).toMatchObject({ stale: true, data: { approvals: [approval(1)] } });
+    expect(store.resource("status")?.stale).toBe(true);
+
+    const before = { approvals: fake.requestsTo("GET /approvals").length, status: fake.requestsTo("GET /status").length };
+    await advance(BACKOFF_INITIAL_MS);
+    fake.emit({ type: "heartbeat", latest_id: 0 });
+    expect(store.getSnapshot().connection).toEqual({ state: "live" });
+    await advance(REFETCH_THROTTLE_MS * 4);
+    expect(fake.requestsTo("GET /approvals").length).toBe(before.approvals + 1);
+    expect(fake.requestsTo("GET /status").length).toBe(before.status + 1);
+    expect(store.resource("approvals")?.stale).toBe(false);
+  });
+
+  it("a heartbeat refreshes lastUpdated only", async () => {
+    const fake = fakeBridge();
+    const store = storeOver(fake);
+    await goLive(fake, store);
+    const requests = fake.requests.length;
+    await advance(3_000);
+    fake.emit({ type: "heartbeat", latest_id: 99 });
+    const snap = store.getSnapshot();
+    expect(snap.lastUpdated).toBe(Date.now());
+    expect(snap.lastEventId).toBe(0);
+    expect(snap.eventLog).toEqual([]);
+    expect(fake.requests.length).toBe(requests);
+  });
+
+  it("a truncated frame is fetched through GET /events?after=<id-1>&limit=1, then routed", async () => {
+    const fake = fakeBridge();
+    const full = event(4, "approval_requested");
+    fake.route("GET /events", () => ok({ events: [full] }));
+    fake.route("GET /approvals", () => ok({ approvals: [] as Approval[] }));
+    const store = storeOver(fake);
+    store.load("approvals");
+    await goLive(fake, store);
+    const approvalsBefore = fake.requestsTo("GET /approvals").length;
+    const truncated: TruncatedEventFrame = { type: "event", id: 4, kind: "approval_requested", truncated: true };
+    fake.emit(truncated);
+    expect(fake.requestsTo("GET /events").at(-1)?.req.query).toEqual({ after: "3", limit: "1" });
+    expect(store.getSnapshot().lastEventId).toBe(4);
+    await flush();
+    expect(store.getSnapshot().eventLog).toEqual([full]);
+    expect(fake.requestsTo("GET /approvals").length).toBe(approvalsBefore + 1);
+  });
+
+  it("drops a malformed event frame", async () => {
+    const fake = fakeBridge();
+    const store = storeOver(fake);
+    await goLive(fake, store);
+    fake.emit({ type: "event", id: -1, kind: "x" } as unknown as EventFrame);
+    fake.emit({ type: "event", id: 2, kind: 5 } as unknown as EventFrame);
+    fake.emit({ type: "event", id: 1.5, kind: "x" } as unknown as EventFrame);
+    fake.emit(null as unknown as EventFrame);
+    expect(store.getSnapshot().eventLog).toEqual([]);
+    expect(store.getSnapshot().lastEventId).toBe(0);
+  });
+});
+
+describe("failure paths", () => {
+  it("connection() or feed.subscribe rejecting (a failed IPC call) is a failed attempt, never live", async () => {
+    const fake = fakeBridge();
+    fake.bridge.connection = () => Promise.reject(new Error("ipc"));
+    const store = storeOver(fake);
+    store.start();
+    await flush();
+    expect(store.getSnapshot().connection).toEqual({ state: "unreachable", reason: "connection_failed" });
+    fake.bridge.connection = async () => ({ state: "connected", port: 1 });
+    fake.bridge.feed.subscribe = () => Promise.reject(new Error("ipc"));
+    await advance(500);
+    expect(store.getSnapshot().connection.state).not.toBe("live");
+    await advance(SETTLE_MS);
+    expect(store.getSnapshot().connection.state).not.toBe("live");
+  });
+
+  it("a request that throws, or a truncated row the kernel refuses: an error, never data; the truncated frame is still routed", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /events", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    const store = storeOver(fake);
+    store.load("notifications");
+    await goLive(fake, store);
+    const before = fake.requestsTo("GET /notifications").length;
+    const truncated: TruncatedEventFrame = { type: "event", id: 3, kind: "notification_created", truncated: true };
+    fake.emit(truncated);
+    await flush();
+    expect(store.getSnapshot().eventLog).toEqual([truncated]);
+    expect(fake.requestsTo("GET /notifications").length).toBe(before + 1);
+
+    fake.bridge.request = () => {
+      throw new Error("ipc gone");
+    };
+    store.load("agents");
+    await flush();
+    expect(store.resource("agents")).toMatchObject({ data: undefined, error: { kind: "bridge_failed" }, loading: false });
+  });
+
+  it("a close while not subscribed (a late frame) changes nothing", async () => {
+    const fake = fakeBridge({ state: "unreachable", reason: "timeout" });
+    const store = storeOver(fake);
+    store.start();
+    await flush();
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+    expect(store.getSnapshot().connection).toEqual({ state: "unreachable", reason: "timeout" });
+    await advance(500);
+    expect(fake.connectionCalls.length).toBe(2);
+  });
+});
+
+describe("dispose", () => {
+  it("unsubscribes the feed, removes the frame listener and leaves no timer", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /approvals", () => ok({ approvals: [] as Approval[] }));
+    const store = createLiveStore(fake.bridge);
+    store.load("approvals");
+    await goLive(fake, store);
+    // A trailing refetch (throttle timer) and a pending retry are both owed.
+    fake.emit(event(1, "approval_requested"));
+    fake.emit(event(2, "approval_requested"));
+    await flush();
+    fake.emit({ type: "closed", code: 1011, reason: "" });
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    expect(fake.listenerCount()).toBe(1);
+
+    store.dispose();
+    await flush();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(fake.listenerCount()).toBe(0);
+    expect(fake.unsubscribes).toBe(1);
+    const requests = fake.requests.length;
+    await advance(60_000);
+    expect(fake.requests.length).toBe(requests);
+    expect(fake.connectionCalls.length).toBe(1);
+  });
+
+  it("clears a pending attempt's settle timer, through the injected timers with opaque handles", async () => {
+    const fake = fakeBridge();
+    const live = new Map<object, ReturnType<typeof setTimeout>>();
+    const store = createLiveStore(fake.bridge, {
+      setTimeout: (callback, ms) => {
+        const handle = {};
+        live.set(
+          handle,
+          setTimeout(() => {
+            live.delete(handle);
+            callback();
+          }, ms),
+        );
+        return handle;
+      },
+      clearTimeout: (handle) => {
+        clearTimeout(live.get(handle as object));
+        live.delete(handle as object);
+      },
+    });
+    store.start();
+    await flush();
+    expect(live.size).toBeGreaterThan(0);
+    store.dispose();
+    expect(live.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("can start again after a dispose (StrictMode's double effect), keeping its data", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(STATUS));
+    const store = storeOver(fake);
+    await goLive(fake, store);
+    fake.emit(event(5));
+    store.dispose();
+    store.start();
+    await flush();
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(5);
+    expect(store.getSnapshot().status).toEqual(STATUS);
+    expect(fake.listenerCount()).toBe(1);
+  });
+});

@@ -24,6 +24,31 @@ export function UnreachableBand() {
   );
 }
 
+/** `lastUpdated` (ms since the epoch) as `HH:MM:SS` in the owner's locale. */
+export function formatLastUpdated(lastUpdated: number): string {
+  return new Date(lastUpdated).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+}
+
+/**
+ * Over the current screen while the store was live and the feed is not: a
+ * restart is not an error yet (the plain band, `role="status"`). The data on
+ * screen is marked stale until the store is live again.
+ */
+export function ReconnectingBand({ lastUpdated }: { readonly lastUpdated: number | null }) {
+  return (
+    <div className="band" role="status" data-testid="kernel-reconnecting-band">
+      <span className="band-dot" aria-hidden="true" />
+      Reconnecting to the kernel…
+      {lastUpdated === null ? null : (
+        <>
+          {" "}
+          Last updated <time dateTime={new Date(lastUpdated).toISOString()}>{formatLastUpdated(lastUpdated)}</time>.
+        </>
+      )}
+    </div>
+  );
+}
+
 /** In place of the screen while there is no `api.json`: the kernel was never started here. */
 export function NotInstalledState({ dataDir }: { readonly dataDir: string }) {
   return (
