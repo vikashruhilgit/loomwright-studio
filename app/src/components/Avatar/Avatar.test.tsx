@@ -352,7 +352,37 @@ describe("no hard-coded colour (Avatar.tsx, Avatar.css, creatures.ts)", () => {
     return word;
   }
 
+  /**
+   * Text cssRulesRaw cannot model, so would skip unchecked: a block nested in a style rule (only an at-rule
+   * such as @media or @keyframes may wrap blocks), unbalanced braces, a quoted string (it can hide a `/*`
+   * from the comment stripper) and @import. The real stylesheet uses none of them.
+   */
+  function cssStructureOffences(css: string): string[] {
+    const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const out: string[] = [];
+    if (/["']/.test(stripped)) out.push("Avatar.css has a quoted string");
+    if (/@import/i.test(stripped)) out.push("Avatar.css has an @import");
+    const open: string[] = [];
+    let start = 0;
+    for (let i = 0; i < stripped.length; i++) {
+      const ch = stripped[i];
+      if (ch === "{") {
+        const header = stripped.slice(start, i).trim();
+        const parent = open[open.length - 1];
+        if (parent !== undefined && !parent.startsWith("@")) out.push(`nested block "${header}" inside "${parent}"`);
+        open.push(header);
+      } else if (ch === "}" && open.pop() === undefined) out.push("unbalanced }");
+      if (ch === "{" || ch === "}" || ch === ";") start = i + 1;
+    }
+    if (open.length > 0) out.push("unclosed {");
+    return out;
+  }
+
   function cssColourOffenders(css: string): string[] {
+    return [...cssStructureOffences(css), ...cssDeclarationOffenders(css)];
+  }
+
+  function cssDeclarationOffenders(css: string): string[] {
     return cssDeclarations(css).flatMap(({ selectors, prop, value }) => {
       const where = `${selectors.join(", ")} { ${prop}: ${value} }`;
       if (prop.startsWith("--")) return [`${where}: Avatar.css declares no custom property`];
@@ -392,6 +422,11 @@ describe("no hard-coded colour (Avatar.tsx, Avatar.css, creatures.ts)", () => {
       ".bot:not(.lead){--bot:var(--accent) !important}",
       ".bot{--x:var(--danger)}",
       "@keyframes k{to{fill:red}}",
+      ".bot .knot { fill: var(--danger); &:hover { opacity: 1; } }",
+      ".bot .knot { @media (min-width: 1px) { opacity: 1; } fill: var(--danger); }",
+      '.bot .st{opacity:1;x:"/*"} .bot .knot{fill:var(--danger)} /* */',
+      "@import url(x.css);",
+      ".bot .knot{fill:var(--danger)",
     ];
     for (const css of bad) expect(cssColourOffenders(css), css).not.toEqual([]);
     const good = [".bot .knot{fill:var(--bot, var(--accent))}", ".bot .ring{border:2px solid var(--attention)}", ".bot .st{fill:none;stroke-width:1.6}"];
