@@ -19,7 +19,8 @@ import { expect, test } from "@playwright/test";
 import type { ElectronApplication, Page, TestInfo } from "@playwright/test";
 import { launchApp } from "./electron-harness";
 import { appEnv, startFixtureKernel, unreachableDataDir } from "./fixture-kernel";
-import type { FixtureKernel } from "./fixture-kernel";
+import type { FixtureKernel, FixtureRoute } from "./fixture-kernel";
+import type { RouteKey } from "../src/api/contract";
 import {
   KERNEL_AGENT_CREATE,
   alwaysHeldMessage,
@@ -56,10 +57,13 @@ test.afterEach(async () => {
   fixture = undefined;
 });
 
-/** A fixture kernel serving `kernel`; every decision and revoke is pushed through the feed. */
-async function startKernel(init: ApprovalsKernelInit): Promise<{ kernel: ApprovalsKernel; fixture: FixtureKernel; push: (kind: string) => void }> {
+/** A fixture kernel serving `kernel` (`overrides` replace its routes); every decision and revoke is pushed through the feed. */
+async function startKernel(
+  init: ApprovalsKernelInit,
+  overrides: Partial<Record<RouteKey, FixtureRoute>> = {},
+): Promise<{ kernel: ApprovalsKernel; fixture: FixtureKernel; push: (kind: string) => void }> {
   const kernel = approvalsKernel(init);
-  const started = await startFixtureKernel({ routes: approvalsRoutes(kernel) });
+  const started = await startFixtureKernel({ routes: { ...approvalsRoutes(kernel), ...overrides } });
   fixture = started;
   let id = 0;
   const push = (kind: string): void => {
@@ -68,12 +72,6 @@ async function startKernel(init: ApprovalsKernelInit): Promise<{ kernel: Approva
   };
   kernel.onChange = push;
   return { kernel, fixture: started, push };
-}
-
-/** The app this test launched. */
-function running(): ElectronApplication {
-  if (app === undefined) throw new Error("no app is running");
-  return app;
 }
 
 /** Close the app (and the fixture, when one is passed) before the next launch in the same test. */
@@ -380,21 +378,27 @@ test("AC6: every designed state, in light and dark", async ({}, testInfo) => {
     await closeAll(started);
   }
 
-  // Loading: GET /approvals never answers. After the shell's first reads, the
-  // main process's request handler is replaced by one that never settles, so the
-  // screen's first read stays in flight (the skeleton rows, never a spinner).
+  // Loading: GET /approvals never answers. The fixture holds every read of it
+  // from launch on, whichever component asks first (the shell's sidebar reads
+  // approvals too), so the screen's first read stays in flight (the skeleton
+  // rows, never a spinner). The main process times a read out after
+  // REQUEST_TIMEOUT_MS (10 s); the asserts below run well inside that.
   {
-    const { fixture: started } = await startKernel({ approvals: [charterApproval(1)] });
+    let held = 0;
+    const { fixture: started } = await startKernel(
+      { approvals: [charterApproval(1)] },
+      {
+        "GET /approvals": () => {
+          held += 1;
+          return new Promise<never>(() => undefined);
+        },
+      },
+    );
     const page = await launch(started.env);
-    await expect.poll(() => started.requests.some((r) => r.path === "/status")).toBe(true);
-    await running().evaluate(({ ipcMain }) => {
-      ipcMain.removeHandler("studio:request");
-      ipcMain.handle("studio:request", () => new Promise(() => undefined));
-    });
     await openApprovals(page);
     await expect(page.getByTestId("screen-approvals")).toHaveAttribute("data-state", "loading");
     await expect(page.locator(".list-skeleton").first()).toBeVisible();
-    expect(started.requests.some((r) => r.path === "/approvals")).toBe(false);
+    expect(held, "the screen's read reached the kernel and is still unanswered").toBeGreaterThan(0);
     await shoot(page, "loading", testInfo);
     await closeAll(started);
   }
