@@ -1,0 +1,158 @@
+/* Input: docs/design/design-system/components/Input. Colour comes only from tokens.css custom properties. */
+.field-group {
+  min-width: 0;
+}
+.field-label {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+/* At rest the sunken fill is the edge: the border stays transparent until focus or error. */
+.field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-height);
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+  transition:
+    background-color var(--duration-instant) var(--ease-standard),
+    border-color var(--duration-instant) var(--ease-standard),
+    box-shadow var(--duration-instant) var(--ease-standard);
+}
+/* The focus ring is drawn on the field around the control. */
+.field:focus-within {
+  background: var(--surface);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.field[data-invalid="true"] {
+  background: var(--surface);
+  border-color: var(--danger);
+}
+.field-control {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  user-select: text;
+}
+.field-control::placeholder {
+  color: var(--ink-tertiary);
+}
+.field-control:disabled {
+  color: var(--ink-disabled);
+  cursor: default;
+}
+.field-control::-webkit-search-decoration,
+.field-control::-webkit-search-cancel-button {
+  appearance: none;
+}
+select.field-control {
+  appearance: none;
+  padding-right: var(--space-5);
+  cursor: pointer;
+}
+.field-icon {
+  display: inline-flex;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--ink-tertiary);
+}
+.field-icon svg {
+  width: 14px;
+  height: 14px;
+}
+.field-chevron {
+  position: absolute;
+  right: 10px;
+  pointer-events: none;
+}
+.field-kbd {
+  flex: none;
+  padding: 1px var(--space-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--ink-tertiary);
+  font-family: var(--type-kbd-family);
+  font-size: var(--type-kbd-size);
+  line-height: var(--type-kbd-line);
+  font-weight: var(--type-kbd-weight);
+}
+.field-hint {
+  margin-top: var(--space-1);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  color: var(--ink-tertiary);
+}
+.field-error {
+  color: var(--danger);
+}
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  transition:
+    border-color var(--duration-instant) var(--ease-standard),
+    box-shadow var(--duration-instant) var(--ease-standard);
+}
+.composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-1), 0 0 0 2px var(--accent-soft);
+}
+/* Grows with its text to six chat lines, then scrolls. */
+.composer-input {
+  flex: 1;
+  min-width: 0;
+  field-sizing: content;
+  min-height: calc(var(--type-chat-line) * 2);
+  max-height: calc(var(--type-chat-line) * 6);
+  overflow-y: auto;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--type-chat-family);
+  font-size: var(--type-chat-size);
+  line-height: var(--type-chat-line);
+  font-weight: var(--type-chat-weight);
+  user-select: text;
+}
+.composer-input::placeholder {
+  color: var(--ink-tertiary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .field,
+  .composer {
+    transition-duration: 0s;
+  }
+}
