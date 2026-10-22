@@ -10,11 +10,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron } from "@playwright/test";
 import type { ElectronApplication, Page } from "@playwright/test";
+import { HIDDEN_WINDOW_ENV } from "../electron/hidden-window";
 
 export const APP_DIR = fileURLToPath(new URL("..", import.meta.url));
-
-/** Keeps the built app's window hidden (`HIDDEN_WINDOW_ENV` in `electron/main.ts`, honoured only in an unpackaged run). */
-const HIDDEN_WINDOW_ENV = "STUDIO_APP_HIDDEN_WINDOW";
 
 /** This process's environment without its unset keys, the shape `electron.launch({ env })` takes. */
 export function processEnv(): Record<string, string> {

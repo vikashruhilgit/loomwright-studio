@@ -10,6 +10,7 @@ import type { BrowserWindowConstructorOptions, IpcMainInvokeEvent, WebContents }
 import type { ApiRequest, FeedRelayFrame } from "../src/api/contract";
 import { CHANNELS } from "./channels";
 import { registerDeepLinks } from "./deeplink";
+import { showsWindow } from "./hidden-window";
 import { createKernelConnection, resolveDataDir, tokenReaderFor } from "./kernel-connection";
 import type { FeedHandle, KernelConnection } from "./kernel-connection";
 import { createTray } from "./tray";
@@ -38,14 +39,6 @@ export function windowOptions(preload: string): BrowserWindowConstructorOptions 
       spellcheck: false,
     },
   };
-}
-
-/** Set to "1" by the e2e harness (`e2e/electron-harness.ts`) so a test run never shows the window. */
-export const HIDDEN_WINDOW_ENV = "STUDIO_APP_HIDDEN_WINDOW";
-
-/** Whether the app shows its window: always when packaged; an unpackaged run hides it only under `HIDDEN_WINDOW_ENV`. */
-export function showsWindow(env: Readonly<Record<string, string | undefined>>, isPackaged: boolean): boolean {
-  return isPackaged || env[HIDDEN_WINDOW_ENV] !== "1";
 }
 
 /** Wires the bridge's channels to `kernel`, answering only `owner`'s window. */
