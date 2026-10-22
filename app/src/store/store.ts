@@ -18,6 +18,11 @@
 //   `eventLog` reset and the store resubscribes from 0 (going live refetches
 //   every used resource). Same pid, or the same row, keeps the ids, so an
 //   overlapping replay from the same kernel is still dropped and counted.
+//   The pid is recorded as the ids' only once that is known: the row matched
+//   (or the ids reset) with no frame moving `lastEventId` meanwhile, or a
+//   `GET /status` asked and answered while one feed stayed open. A refused or
+//   overtaken row read keeps the ids but leaves the pid unverified, so the
+//   next reconnect checks again.
 // - Connection state is the kernel's own answer, never a guess. An attempt is
 //   `connection()` (the main process's api.json, pid, token and `GET /status`
 //   check), then `feed.subscribe`, then the feed proving itself: a frame, or
@@ -274,7 +279,11 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
     return { slot, created: true };
   };
 
-  const apply = (slot: Slot, result: ApiResult<unknown> | undefined): void => {
+  /**
+   * `feedSeq` is the attempt whose feed was open when the read was sent, if
+   * any: only an answer from that same open feed names the ids' kernel.
+   */
+  const apply = (slot: Slot, result: ApiResult<unknown> | undefined, feedSeq: number | undefined): void => {
     if (result === undefined) {
       slot.error = { kind: "bridge_failed" };
       return;
@@ -284,7 +293,7 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
       slot.error = undefined;
       slot.updatedAt = now();
       received();
-      if (slot.name === "status") idsPid ??= pidOf(result.body);
+      if (slot.name === "status" && feedSeq === attemptSeq && phase === "open") idsPid ??= pidOf(result.body);
       return;
     }
     if ("connection" in result) slot.error = { kind: "not_connected", connection: result.connection };
@@ -309,6 +318,7 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
       pump(slot);
     });
     const mine = epoch;
+    const feedSeq = phase === "open" ? attemptSeq : undefined;
     const req = resourceRequest(slot.name);
     let answer: Promise<ApiResult<unknown>>;
     try {
@@ -317,16 +327,16 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
       answer = Promise.reject(new Error("bridge_failed"));
     }
     answer.then(
-      (result) => settle(slot, mine, result),
-      () => settle(slot, mine, undefined),
+      (result) => settle(slot, mine, result, feedSeq),
+      () => settle(slot, mine, undefined, feedSeq),
     );
     emit();
   };
 
-  const settle = (slot: Slot, mine: number, result: ApiResult<unknown> | undefined): void => {
+  const settle = (slot: Slot, mine: number, result: ApiResult<unknown> | undefined, feedSeq: number | undefined): void => {
     if (mine !== epoch) return;
     slot.inFlight = false;
-    apply(slot, result);
+    apply(slot, result, feedSeq);
     emit();
     pump(slot);
   };
@@ -462,6 +472,8 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
    * answered; resets the ids when it does not. Resolves `true` to go on
    * subscribing, or the attempt's failure (a `NotConnected`, or `undefined`
    * for a failed IPC call). A refusal is not proof of a wipe: the ids are kept.
+   * `idsPid` moves only when the row check decided: a refused row read, or a
+   * frame that moved `lastEventId` during it, leaves the pid unverified.
    */
   const checkIdSpace = async (mine: number): Promise<true | NotConnected | undefined> => {
     if (lastEventId === 0) return true;
@@ -477,7 +489,7 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
     if (rows === undefined) return undefined;
     if (!rows.ok) {
       if ("connection" in rows) return rows.connection;
-      idsPid = pid;
+      // Not verified: the next reconnect reads the row again.
       return true;
     }
     const row = Array.isArray(rows.body.events) ? rows.body.events.find((e) => e.id === last) : undefined;
@@ -486,9 +498,11 @@ export function createLiveStore(bridge: StudioBridge, options: LiveStoreOptions 
     const same =
       row !== undefined &&
       (seen === undefined || (row.kind === seen.kind && (isTruncated(row) || isTruncated(seen) || row.at === seen.at)));
+    // `lastEventId` moved while the row was read (a late frame): the check is
+    // overtaken, so the ids are kept and the pid stays unverified.
+    if (lastEventId !== last) return true;
     idsPid = pid;
-    // `lastEventId` moved while the row was read (a late frame): those ids are this kernel's, keep them.
-    if (!same && lastEventId === last) {
+    if (!same) {
       lastEventId = 0;
       eventLog = [];
       idSpace += 1;

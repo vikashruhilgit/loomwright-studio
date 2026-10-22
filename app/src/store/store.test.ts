@@ -5,7 +5,7 @@
 // Assertions spell the brief's numbers (250 ms, 500 ms, 10 000 ms) as
 // literals, never the store's constants, so a changed constant fails here.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Approval, EventFrame, StatusBody, TruncatedEventFrame } from "../api/contract";
+import type { ApiResult, Approval, EventFrame, StatusBody, TruncatedEventFrame } from "../api/contract";
 import { fakeBridge, ok } from "./fake-bridge";
 import type { FakeBridge } from "./fake-bridge";
 import { KIND_ROUTES, resourcesForKind, threadResource } from "./resources";
@@ -418,6 +418,194 @@ describe("dedupe and resume (AC2, fake bridge)", () => {
     pending();
     await flush();
     expect(store.getSnapshot().eventLog).toEqual([fresh]);
+  });
+
+  it("a refused row read leaves the new pid unverified: the next reconnect reads the row again and a wiped table resets to 0", async () => {
+    const { fake, store } = await liveThenClosed();
+    fake.route("GET /status", () => ok(RESTARTED));
+    fake.route("GET /events", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").length).toBe(1);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+    fake.emit({ type: "heartbeat", latest_id: 0 });
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+
+    // Same pid 8, but it was never verified: the row is read, it is gone, the ids reset.
+    fake.route("GET /events", () => ok({ events: [] }));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").length).toBe(2);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(0);
+    expect(store.getSnapshot().lastEventId).toBe(0);
+    fake.emit(event(1));
+    expect(store.getSnapshot().eventLog.map((e) => e.id)).toEqual([1]);
+    expect(store.getSnapshot().duplicatesDropped).toBe(0);
+  });
+
+  it("GET /status throwing during the probe is a failed attempt: no subscribe until a later probe answers", async () => {
+    const { fake, store } = await liveThenClosed();
+    const request = fake.bridge.request;
+    fake.bridge.request = (req) => {
+      if (req.path === "/status") throw new Error("ipc gone");
+      return request(req);
+    };
+    const subscribes = fake.subscribeCalls.length;
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.subscribeCalls.length).toBe(subscribes);
+    expect(store.getSnapshot().connection.state).toBe("reconnecting");
+    fake.bridge.request = request;
+    await advance(1_000);
+    expect(fake.subscribeCalls.length).toBe(subscribes + 1);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+  });
+
+  it("a status body with no kernel pid keeps the ids with no row read", async () => {
+    const { fake, store } = await liveThenClosed();
+    const { pid: _pid, ...kernel } = STATUS.kernel;
+    fake.route("GET /status", () => ok({ ...STATUS, kernel } as unknown as StatusBody));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").length).toBe(0);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+    expect(store.getSnapshot().lastEventId).toBe(3);
+  });
+
+  it("an events body with no events array, after a new pid, is a wiped table: the ids reset", async () => {
+    const { fake, store } = await liveThenClosed();
+    fake.route("GET /status", () => ok(RESTARTED));
+    fake.route("GET /events", () => ok({}));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(0);
+    expect(store.getSnapshot().lastEventId).toBe(0);
+  });
+
+  it("a truncated last frame, or one evicted from the log, matches the new pid's row by id (and kind) alone", async () => {
+    // Truncated in the log: `at` is unknown, the kind still has to match.
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(STATUS));
+    fake.route("GET /events", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    const store = storeOver(fake);
+    await goLive(fake, store);
+    fake.emit({ type: "event", id: 3, kind: "task_updated", truncated: true });
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+    fake.route("GET /status", () => ok(RESTARTED));
+    fake.route("GET /events", () => ok({ events: [{ ...event(3), at: new Date(5_000).toISOString() }] }));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+
+    // Evicted (a log of 0): any row with that id is the same event.
+    const evicted = fakeBridge();
+    evicted.route("GET /status", () => ok(STATUS));
+    const small = createLiveStore(evicted.bridge, { eventLogLimit: 0 });
+    stores.push(small);
+    await goLive(evicted, small);
+    evicted.emit(event(3));
+    evicted.emit({ type: "closed", code: 1006, reason: "" });
+    evicted.route("GET /status", () => ok(RESTARTED));
+    evicted.route("GET /events", () => ok({ events: [event(3, "agent_created")] }));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(evicted.requestsTo("GET /events").length).toBe(1);
+    expect(evicted.subscribeCalls.at(-1)?.after).toBe(3);
+  });
+
+  it("dispose() and start() while the probe is pending: the stale probe changes nothing, one subscribe from the last id", async () => {
+    const { fake, store } = await liveThenClosed();
+    const held: ((answer: ApiResult<unknown>) => void)[] = [];
+    let hold = false;
+    fake.route("GET /status", () => (hold ? new Promise((done) => held.push(done)) : ok(STATUS)));
+    fake.route("GET /events", () => ok({ events: [] }));
+    await advance(BACKOFF_INITIAL_MS - 1);
+    hold = true;
+    await advance(1);
+    expect(held.length).toBe(1);
+    store.dispose();
+    hold = false;
+    const subscribes = fake.subscribeCalls.length;
+    store.start();
+    await flush();
+    // The old attempt's probe answers late, from a "new" kernel: ignored.
+    held[0]?.(ok(RESTARTED));
+    await flush();
+    expect(fake.subscribeCalls.length).toBe(subscribes + 1);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+    expect(fake.requestsTo("GET /events").length).toBe(0);
+    expect(store.getSnapshot().lastEventId).toBe(3);
+  });
+
+  it("dispose() and start() while the row read is pending: the stale row changes nothing, one subscribe from the last id", async () => {
+    const { fake, store } = await liveThenClosed();
+    fake.route("GET /status", () => ok(RESTARTED));
+    const held: ((answer: ApiResult<unknown>) => void)[] = [];
+    fake.route("GET /events", () => new Promise((done) => held.push(done)));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(held.length).toBe(1);
+    store.dispose();
+    fake.route("GET /events", () => ok({ events: [event(3)] }));
+    const subscribes = fake.subscribeCalls.length;
+    store.start();
+    await flush();
+    // The old attempt's row answers late: "gone", which would reset. Ignored.
+    held[0]?.(ok({ events: [] }));
+    await flush();
+    expect(fake.subscribeCalls.length).toBe(subscribes + 1);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(3);
+    expect(store.getSnapshot().lastEventId).toBe(3);
+    expect(store.getSnapshot().eventLog.map((e) => e.id)).toEqual([1, 2, 3]);
+  });
+
+  it("a frame that moves lastEventId during the row read: no reset, and the pid stays unverified until a later row check", async () => {
+    const { fake, store } = await liveThenClosed();
+    fake.route("GET /status", () => ok(RESTARTED));
+    const held: ((answer: ApiResult<unknown>) => void)[] = [];
+    fake.route("GET /events", () => new Promise((done) => held.push(done)));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(held.length).toBe(1);
+    fake.emit(event(4));
+    held[0]?.(ok({ events: [] }));
+    await flush();
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(4);
+    expect(store.getSnapshot().lastEventId).toBe(4);
+    expect(store.getSnapshot().eventLog.map((e) => e.id)).toEqual([1, 2, 3, 4]);
+    fake.emit({ type: "heartbeat", latest_id: 4 });
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+
+    // Unverified: the row is read again; it matches, so pid 8 is recorded.
+    fake.route("GET /events", () => ok({ events: [event(4)] }));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").length).toBe(2);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(4);
+    fake.emit({ type: "heartbeat", latest_id: 4 });
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+
+    // Verified now: no further row read.
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").length).toBe(2);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(4);
+  });
+
+  it("a status answer that arrives after the feed closed never names the ids' kernel", async () => {
+    // No pid known yet: the probes while live are refused.
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    const store = storeOver(fake);
+    await goLive(fake, store);
+    for (const id of [1, 2, 3]) fake.emit(event(id));
+    await advance(REFETCH_THROTTLE_MS * 4);
+    // A status refetch sent while live, answered by a restarted kernel after the close.
+    const held: ((answer: ApiResult<unknown>) => void)[] = [];
+    fake.route("GET /status", () => new Promise((done) => held.push(done)));
+    fake.emit(event(4));
+    expect(held.length).toBe(1);
+    fake.emit({ type: "closed", code: 1006, reason: "" });
+    fake.route("GET /status", () => ok(RESTARTED));
+    held[0]?.(ok(RESTARTED));
+    await flush();
+    expect(store.getSnapshot().status).toEqual(RESTARTED);
+
+    // pid 8 was not recorded as the ids' kernel: the row is read, it is gone, the ids reset.
+    fake.route("GET /events", () => ok({ events: [] }));
+    await advance(BACKOFF_INITIAL_MS);
+    expect(fake.requestsTo("GET /events").length).toBe(1);
+    expect(fake.subscribeCalls.at(-1)?.after).toBe(0);
+    expect(store.getSnapshot().lastEventId).toBe(0);
   });
 
   it("keeps the event log bounded, oldest dropped first", async () => {
