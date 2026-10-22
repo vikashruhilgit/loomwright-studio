@@ -1,7 +1,6 @@
 // The console feature's foundation (phase 5 item 01): one `console`
 // contribution built from five sub-file parts (`events`, `output`, `control`,
-// `pause`, `threads`, filled by items 02-06; items 02, 03, 04 and 05 filled
-// `events`, `output`, `control` and `pause`, `threads` is still empty), registered
+// `pause`, `threads`, filled by items 02-06; all five are filled now), registered
 // eighth in `SHIPPED_CONTRIBUTIONS`, after `agents`; the part merge
 // (subcommands included) and its refusal; the closed `session_output` kind
 // set; and the session output observer the kernel wires
@@ -79,10 +78,10 @@ describe("the console contribution", () => {
     expect(consoleContribution.name).toBe("console");
   });
 
-  it("is its name, the events, output, control and pause parts' routes and the output and pause parts' subcommands: no tools, handlers or due work", () => {
+  it("is its name, the events, output, control, pause and threads parts' routes and the output and pause parts' subcommands: no tools, handlers or due work", () => {
     expect(Object.keys(consoleContribution)).toEqual(["name", "routes", "subcommands"]);
     expect(Object.isFrozen(consoleContribution)).toBe(true);
-    expect(consoleContribution.routes).toEqual([...eventsPart.routes, ...outputPart.routes, ...controlPart.routes, ...pausePart.routes]);
+    expect(consoleContribution.routes).toEqual([...eventsPart.routes, ...outputPart.routes, ...controlPart.routes, ...pausePart.routes, ...threadsPart.routes]);
     expect(consoleContribution.subcommands).toEqual([...(outputPart.subcommands ?? []), ...(pausePart.subcommands ?? [])]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     expect(merged.contributors.at(-1)).toBe("console");
@@ -94,12 +93,13 @@ describe("the console contribution", () => {
       "POST /sessions/:id/kill",
       "POST /pause",
       "POST /unpause",
+      "GET /threads/:agent",
     ]);
     expect(merged.subcommands.filter((s) => consoleContribution.subcommands?.includes(s)).map((s) => s.name)).toEqual(["sessions", "pause", "unpause"]);
     expect(merged.dueWork.filter((d) => d.owner === "console")).toEqual([]);
   });
 
-  it("merges one part per sub-file, in order: events, output, control, pause, threads; events carries GET /events, output has routes and subcommands, control has stop and kill, pause has pause and unpause, threads is empty", () => {
+  it("merges one part per sub-file, in order: events, output, control, pause, threads; events carries GET /events, output has routes and subcommands, control has stop and kill, pause has pause and unpause, threads has GET /threads/:agent", () => {
     expect(CONSOLE_PARTS).toEqual([eventsPart, outputPart, controlPart, pausePart, threadsPart]);
     expect(CONSOLE_PARTS[0]).toBe(eventsPart);
     expect(CONSOLE_PARTS[1]).toBe(outputPart);
@@ -136,13 +136,15 @@ describe("the console contribution", () => {
       { method: "POST", path: "/unpause" },
     ]);
     expect(pausePart.subcommands?.map((s) => s.name)).toEqual(["pause", "unpause"]);
-    // Every other part stays empty until its item fills it in.
-    for (const part of [threadsPart]) {
-      expect(part, part.name).toEqual({ name: part.name, tools: [], routes: [], handlers: {} });
-    }
+    // Item 06's part: exactly the one route, and nothing else: no tools, handlers or due work.
+    expect(Object.keys(threadsPart).sort()).toEqual(["handlers", "name", "routes", "tools"]);
+    expect(threadsPart.name).toBe("threads");
+    expect(threadsPart.tools).toEqual([]);
+    expect(threadsPart.handlers).toEqual({});
+    expect(threadsPart.routes.map((r) => ({ method: r.method, path: r.path }))).toEqual([{ method: "GET", path: "/threads/:agent" }]);
     expect(mergeConsoleParts(CONSOLE_PARTS)).toEqual({
       tools: [],
-      routes: [...eventsPart.routes, ...outputPart.routes, ...controlPart.routes, ...pausePart.routes],
+      routes: [...eventsPart.routes, ...outputPart.routes, ...controlPart.routes, ...pausePart.routes, ...threadsPart.routes],
       subcommands: [...(outputPart.subcommands ?? []), ...(pausePart.subcommands ?? [])],
       handlers: {},
       dueWork: [],
