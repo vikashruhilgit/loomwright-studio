@@ -28,7 +28,12 @@ export interface DiffViewProps {
   /** Where the change applies, e.g. "project" or "global"; shown as "<scope> scope". */
   readonly scope: string;
   readonly hunks: readonly DiffHunk[];
-  /** Fires once per diff (path + hunk content), after its hunk rows are in the DOM (the approval's Allow gate). */
+  /**
+   * Fires once per diff (path + scope + hunk content), after its hunk rows are in the DOM (the
+   * approval's Allow gate). Identical content does not re-fire, even with a new handler, so an
+   * approval consumer must render `<DiffView key={approvalId} …/>`: each approval then mounts its
+   * own instance and re-arms its own gate, even when two approvals carry the same diff.
+   */
   readonly onRendered?: () => void;
 }
 
@@ -69,13 +74,13 @@ function Line({ line }: { readonly line: DiffLine }) {
 
 export function DiffView({ path, scope, hunks, onRendered }: DiffViewProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
-  // The diff the gate last fired for, by content: a different path or different hunk
+  // The diff the gate last fired for, by content: a different path, scope or hunk
   // content is a new diff that must gate its own Allow; the same content (even as a new
   // array) is the same diff and must not fire again.
   const firedForRef = useRef<string | null>(null);
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
-  const diffKey = useMemo(() => JSON.stringify([path, hunks]), [path, hunks]);
+  const diffKey = useMemo(() => JSON.stringify([path, scope, hunks]), [path, scope, hunks]);
 
   // Runs after commit: fire once per diff, and only when at least one hunk row is actually in the DOM.
   useEffect(() => {

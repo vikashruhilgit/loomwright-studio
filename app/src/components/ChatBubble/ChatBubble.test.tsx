@@ -271,6 +271,17 @@ describe("ChatBubble playbook draft", () => {
     cleanup();
     renderDraft();
     expect(screen.getByTestId("chat-bubble-dry-run").textContent).not.toMatch(/\$|API rates/);
+    for (const negative of [-0.5, -0.004]) {
+      cleanup();
+      renderDraft(draft({ costEstimate: negative }));
+      expect(screen.getByTestId("chat-bubble-dry-run").textContent).not.toMatch(/\$|API rates/);
+    }
+    cleanup();
+    renderDraft(draft({ costEstimate: 123_456_789.99 }));
+    expect(screen.getByTestId("chat-bubble-dry-run").textContent).toContain("≈$123,456,789.99 at API rates");
+    cleanup();
+    renderDraft(draft({ costEstimate: 1e21 }));
+    expect(screen.getByTestId("chat-bubble-dry-run").textContent).toContain("≈$1,000,000,000,000,000,000,000.00 at API rates");
   });
 
   it("marks values Wright chose as proposed and leaves user-set values untagged (AC5)", () => {

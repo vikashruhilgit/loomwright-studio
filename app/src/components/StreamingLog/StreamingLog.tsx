@@ -19,6 +19,7 @@
 // with its dialog. The status indicator is a slot (the StatusDot primitive is
 // another lane's).
 import { useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { formatEstimate } from "../formatEstimate";
 import "./StreamingLog.css";
 
 /** The README's line kinds. Mapping kernel `SessionOutputKind` rows onto these is the Sessions screen's job. */
@@ -83,10 +84,6 @@ const KIND_WORD: Readonly<Partial<Record<StreamingLogLineKind, string>>> = {
 
 function formatTokens(tokens: number): string {
   return `${tokens.toLocaleString("en-US")} tokens`;
-}
-
-function formatCost(cost: number): string {
-  return `≈$${cost.toFixed(2)} at API rates`;
 }
 
 /** The words "Read latest" announces for a line. */
@@ -175,6 +172,8 @@ export function StreamingLog({
   );
 
   const lastIndex = lines.length - 1;
+  // The shared D24 shape ("≈$0.11 at API rates"); a missing, non-finite or negative figure shows nothing.
+  const cost = formatEstimate(costEstimate);
 
   return (
     <section className="streaming-log" aria-label={`Session output: ${agent}`} onKeyDown={onKeyDown} data-following={following}>
@@ -196,11 +195,11 @@ export function StreamingLog({
           <span className="streaming-log__num" data-testid="streaming-log-tokens">
             {formatTokens(tokens)}
           </span>
-          {costEstimate !== undefined && Number.isFinite(costEstimate) && (
+          {cost !== null && (
             <>
               <span aria-hidden="true"> · </span>
               <span className="streaming-log__num" data-testid="streaming-log-cost">
-                {formatCost(costEstimate)}
+                {cost}
               </span>
             </>
           )}

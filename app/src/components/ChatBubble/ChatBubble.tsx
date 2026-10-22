@@ -7,6 +7,7 @@
 // subset (`inline code` and **bold**) made of React elements. No element's `href` is ever
 // built from message text, so a `javascript:` link, raw or as markdown, stays text.
 import type { KeyboardEvent, ReactNode } from "react";
+import { formatEstimate } from "../formatEstimate";
 import "./ChatBubble.css";
 
 /** Who is speaking. `wright` and `specialist` sit left; `user` sits right. */
@@ -111,11 +112,6 @@ function renderBody(body: string, streaming: boolean): ReactNode {
   });
 }
 
-/** The one D24 shape: "≈$0.60 at API rates". Two decimals, so the same number always reads the same. */
-function formatEstimate(usd: number): string {
-  return `≈$${usd.toFixed(2)} at API rates`;
-}
-
 function Proposed({ show }: { readonly show: boolean | undefined }) {
   return show ? <span className="chat-bubble__proposed">proposed</span> : null;
 }
@@ -129,6 +125,8 @@ function isControl(target: EventTarget): boolean {
 }
 
 function DraftCard({ draft, onEnable, onEditInEnglish, onEditFields }: Omit<WithDraft, "draft"> & { readonly draft: PlaybookDraft }) {
+  // The shared D24 shape ("≈$0.60 at API rates"); a missing, non-finite or negative figure shows nothing.
+  const estimate = formatEstimate(draft.costEstimate);
   // Shortcuts apply only while focus is inside the card; the global keymap is the shell's.
   // Enter on a focused button is left to the button's own activation.
   function onKeyDown(event: KeyboardEvent<HTMLElement>) {
@@ -175,10 +173,10 @@ function DraftCard({ draft, onEnable, onEditInEnglish, onEditFields }: Omit<With
       <div className="chat-bubble__dry" data-testid="chat-bubble-dry-run">
         <span className="chat-bubble__dry-label">dry run · </span>
         {draft.dryRun}
-        {draft.costEstimate !== undefined && Number.isFinite(draft.costEstimate) ? (
+        {estimate !== null ? (
           <span className="chat-bubble__dry-label">
             {" · "}
-            <span className="chat-bubble__estimate">{formatEstimate(draft.costEstimate)}</span>
+            <span className="chat-bubble__estimate">{estimate}</span>
           </span>
         ) : null}
       </div>

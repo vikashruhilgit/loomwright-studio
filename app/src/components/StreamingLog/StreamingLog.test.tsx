@@ -76,7 +76,7 @@ describe("StreamingLog header", () => {
     expect(css).toMatch(/\.streaming-log__num\s*\{[^}]*font-variant-numeric:\s*tabular-nums/);
   });
 
-  it("labels a passed cost '≈ at API rates' and never as a limit or budget", () => {
+  it("labels a passed cost '≈$x at API rates' and never as a limit or budget", () => {
     render(<StreamingLog {...props({ costEstimate: 0.11 })} />);
     const cost = screen.getByTestId("streaming-log-cost");
     expect(cost.textContent).toBe("≈$0.11 at API rates");
@@ -95,6 +95,18 @@ describe("StreamingLog header", () => {
     expect(screen.getByTestId("streaming-log-tokens").textContent).toBe("0 tokens");
     rerender(<StreamingLog {...props({ costEstimate: Number.NaN })} />);
     expect(screen.queryByTestId("streaming-log-cost")).toBeNull();
+  });
+
+  it("omits a negative cost and formats a large one with thousands separators, never in exponent form", () => {
+    const { rerender } = render(<StreamingLog {...props({ costEstimate: -0.5 })} />);
+    expect(screen.queryByTestId("streaming-log-cost")).toBeNull();
+    rerender(<StreamingLog {...props({ costEstimate: -0.004 })} />);
+    expect(screen.queryByTestId("streaming-log-cost")).toBeNull();
+    expect(headerBar().textContent).not.toContain("$");
+    rerender(<StreamingLog {...props({ costEstimate: 123_456_789.99 })} />);
+    expect(screen.getByTestId("streaming-log-cost").textContent).toBe("≈$123,456,789.99 at API rates");
+    rerender(<StreamingLog {...props({ costEstimate: 1e21 })} />);
+    expect(screen.getByTestId("streaming-log-cost").textContent).toBe("≈$1,000,000,000,000,000,000,000.00 at API rates");
   });
 
   it("renders without a status slot", () => {

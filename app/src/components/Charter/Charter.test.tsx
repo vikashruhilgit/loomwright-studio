@@ -340,6 +340,26 @@ describe("Charter tools and limits (AC6)", () => {
       firstPlaybookDryRun: { text: "Daily digest", costEstimate: Number.POSITIVE_INFINITY },
     });
     expect(nan.root.textContent).not.toMatch(/\$|API rates/);
+    cleanup();
+    for (const negative of [-0.5, -0.004]) {
+      const neg = renderCharter({
+        limits: { tokensPerDay: 100_000, sessionsAtOnce: 1, costEstimate: negative },
+        firstPlaybookDryRun: { text: "Daily digest", costEstimate: negative },
+      });
+      expect(neg.root.textContent).not.toMatch(/\$|API rates/);
+      cleanup();
+    }
+  });
+
+  it("formats a large estimate with thousands separators, never in exponent form", () => {
+    const { root } = renderCharter({
+      limits: { tokensPerDay: 100_000, sessionsAtOnce: 1, costEstimate: 123_456_789.99 },
+      firstPlaybookDryRun: { text: "Daily digest", costEstimate: 1e21 },
+    });
+    expect(within(root).getAllByTestId("charter-estimate").map((e) => e.textContent)).toEqual([
+      "≈$123,456,789.99/day at API rates",
+      "≈$1,000,000,000,000,000,000,000.00/run at API rates",
+    ]);
   });
 
   it("shows a zero estimate rather than swallowing it as falsy", () => {

@@ -183,6 +183,24 @@ describe("onRendered (the approval's Allow gate)", () => {
     expect(onRendered).toHaveBeenCalledTimes(2);
   });
 
+  it("re-gates when only the scope changes", () => {
+    const onRendered = vi.fn();
+    const { rerender } = render(<DiffView path="a.json" scope="project" hunks={hookHunks} onRendered={onRendered} />);
+    rerender(<DiffView path="a.json" scope="global" hunks={hookHunks} onRendered={onRendered} />);
+    expect(onRendered).toHaveBeenCalledTimes(2);
+    rerender(<DiffView path="a.json" scope="global" hunks={[...hookHunks]} onRendered={onRendered} />);
+    expect(onRendered).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-arms per approval when keyed by approval id, even for an identical diff", () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const { rerender } = render(<DiffView key="approval-1" path="f" scope="project" hunks={hookHunks} onRendered={first} />);
+    rerender(<DiffView key="approval-2" path="f" scope="project" hunks={hookHunks} onRendered={second} />);
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
   it("fires once, after the rows render, under StrictMode's double effects", () => {
     const rowsAtCall: number[] = [];
     const onRendered = vi.fn(() => {

@@ -8,6 +8,7 @@
 //
 // Every string can come from a model or the user, so each is rendered as a React text child.
 import type { KeyboardEvent, ReactNode } from "react";
+import { formatEstimate } from "../formatEstimate";
 import "./Charter.css";
 
 /** A charter value. `proposed` marks a value Wright chose rather than the user (D4). */
@@ -80,19 +81,13 @@ function Proposed({ show, label = "proposed" }: { readonly show: boolean | undef
   return show ? <span className="charter__proposed">{label}</span> : null;
 }
 
-/** The one D24 shape: "≈$2.40/day at API rates". Two decimals, so the same number always reads the same. */
-function formatEstimate(usd: number, suffix: string): string {
-  return `≈$${usd.toFixed(2)}${suffix} at API rates`;
-}
-
-function hasEstimate(usd: number | undefined): usd is number {
-  return usd !== undefined && Number.isFinite(usd);
-}
-
-function Estimate({ usd, suffix }: { readonly usd: number; readonly suffix: string }) {
+/** The shared D24 shape ("≈$2.40/day at API rates"); a missing, non-finite or negative figure shows nothing. */
+function Estimate({ usd, suffix }: { readonly usd: number | undefined; readonly suffix: string }) {
+  const text = formatEstimate(usd, suffix);
+  if (text === null) return null;
   return (
     <span className="charter__estimate" data-testid="charter-estimate">
-      {formatEstimate(usd, suffix)}
+      {text}
     </span>
   );
 }
@@ -192,7 +187,7 @@ export function Charter(props: CharterProps) {
             {formatTokens(limits.tokensPerDay)} tokens / day · {sessions}
           </span>
           <Proposed show={limits.proposed} />
-          {hasEstimate(limits.costEstimate) ? (
+          {formatEstimate(limits.costEstimate) !== null ? (
             <span className="charter__meta">
               {" · "}
               <Estimate usd={limits.costEstimate} suffix="/day" />
@@ -205,7 +200,7 @@ export function Charter(props: CharterProps) {
         {firstPlaybookDryRun !== undefined ? (
           <>
             {firstPlaybookDryRun.text}
-            {hasEstimate(firstPlaybookDryRun.costEstimate) ? (
+            {formatEstimate(firstPlaybookDryRun.costEstimate) !== null ? (
               <span className="charter__dry-label">
                 {" · "}
                 <Estimate usd={firstPlaybookDryRun.costEstimate} suffix="/run" />
