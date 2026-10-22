@@ -1,0 +1,121 @@
+/* Button: docs/design/design-system/components/Button. Colour comes only from tokens.css custom properties. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--control-height);
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-instant) var(--ease-standard),
+    border-color var(--duration-instant) var(--ease-standard),
+    color var(--duration-instant) var(--ease-standard);
+}
+.btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.btn[data-size="row"] {
+  height: var(--row-height);
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.btn[data-variant="primary"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.btn[data-variant="primary"]:hover {
+  background: var(--accent-hover);
+}
+.btn[data-variant="secondary"] {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--border);
+}
+.btn[data-variant="secondary"]:hover {
+  background: var(--surface-sunken);
+}
+.btn[data-variant="ghost"] {
+  background: transparent;
+  color: var(--ink-secondary);
+}
+.btn[data-variant="ghost"]:hover {
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+.btn[data-variant="danger"] {
+  background: var(--surface);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.btn[data-variant="danger"]:hover {
+  background: var(--danger-soft);
+}
+.btn:disabled,
+.btn:disabled:hover {
+  color: var(--ink-disabled);
+  background: var(--surface-sunken);
+  border-color: transparent;
+  cursor: default;
+}
+.btn[aria-busy="true"] {
+  cursor: progress;
+}
+
+/* The icon slot is a fixed 14px box, so the 12px loading spinner replaces an icon without changing the width. */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.btn-icon svg {
+  width: 14px;
+  height: 14px;
+}
+.btn-spinner {
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-top-color: currentColor;
+  border-radius: var(--radius-full);
+  animation: btn-spin 800ms linear infinite;
+}
+@keyframes btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.btn-kbd {
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: inherit;
+  opacity: 0.85;
+  font-family: var(--type-kbd-family);
+  font-size: var(--type-kbd-size);
+  line-height: var(--type-kbd-line);
+  font-weight: var(--type-kbd-weight);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition-duration: 0s;
+  }
+  .btn-spinner {
+    animation: none;
+  }
+}
