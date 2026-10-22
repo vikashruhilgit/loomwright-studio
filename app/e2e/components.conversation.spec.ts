@@ -17,16 +17,17 @@
 // the states from the DOM.
 //
 // Run: cd app && npx playwright test e2e/components.conversation.spec.ts
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { _electron as electron, expect, test } from "@playwright/test";
-import type { ElectronApplication, Locator, Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import react from "@vitejs/plugin-react";
 import { createServer } from "vite";
 import type { Plugin, ViteDevServer } from "vite";
+import { launchGallery } from "./electron-harness";
+import type { Gallery } from "./electron-harness";
 
 const APP_DIR = fileURLToPath(new URL("..", import.meta.url));
 const EVIDENCE_DIR = resolve(APP_DIR, "..", "docs/evidence/phase-5-polish/components/conversation");
@@ -118,24 +119,9 @@ function galleryPlugin(): Plugin {
   };
 }
 
-// A minimal window: sandboxed, no preload, no Node, on the dev server's page.
-const MAIN_SOURCE = `
-const { app, BrowserWindow } = require("electron");
-app.whenReady().then(() => {
-  const win = new BrowserWindow({
-    width: 880,
-    height: 900,
-    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
-  });
-  win.loadURL(process.env.GALLERY_URL);
-});
-app.on("window-all-closed", () => app.quit());
-`;
-
 let server: ViteDevServer | undefined;
-let app: ElectronApplication | undefined;
+let gallery: Gallery | undefined;
 let page: Page;
-let tempDir: string | undefined;
 const pageErrors: string[] = [];
 const consoleErrors: string[] = [];
 const dialogs: string[] = [];
@@ -157,16 +143,8 @@ test.beforeAll(async () => {
   await server.listen();
   const { port } = server.httpServer?.address() as AddressInfo;
 
-  tempDir = mkdtempSync(join(tmpdir(), "conversation-gallery-"));
-  const mainPath = join(tempDir, "main.cjs");
-  writeFileSync(mainPath, MAIN_SOURCE);
-
-  app = await electron.launch({
-    args: [mainPath],
-    cwd: APP_DIR,
-    env: { ...process.env, GALLERY_URL: `http://127.0.0.1:${port}${PAGE_PATH}` } as Record<string, string>,
-  });
-  page = await app.firstWindow();
+  gallery = await launchGallery({ url: `http://127.0.0.1:${port}${PAGE_PATH}` }, { width: 880, height: 900 });
+  page = gallery.page;
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
@@ -179,11 +157,10 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await app?.close();
-  app = undefined;
+  await gallery?.close();
+  gallery = undefined;
   await server?.close();
   server = undefined;
-  if (tempDir) rmSync(tempDir, { recursive: true, force: true });
 });
 
 async function setTheme(theme: Theme): Promise<void> {

@@ -9,18 +9,16 @@
 //
 // AC4 is an Electron launch: close the fixture and the reconnecting band
 // appears; restart it in place and the band goes. Run `npm run build` first.
-import { fileURLToPath } from "node:url";
-import { _electron as electron, expect, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import type { ElectronApplication } from "@playwright/test";
 import { createKernelConnection } from "../electron/kernel-connection";
 import type { FeedHandle } from "../electron/kernel-connection";
 import type { ApiRequest, ApiResult, Approval, EventFrame, FeedRelayFrame, StudioBridge } from "../src/api/contract";
 import { BACKOFF_CAP_MS, SETTLE_MS, createLiveStore } from "../src/store/store";
 import type { LiveStore } from "../src/store/store";
+import { launchApp } from "./electron-harness";
 import { FIXTURE_TOKEN, startFixtureKernel, tempDataDir } from "./fixture-kernel";
 import type { FixtureKernel, FixtureKernelOptions } from "./fixture-kernel";
-
-const APP_DIR = fileURLToPath(new URL("..", import.meta.url));
 
 /** Above the backoff cap plus `SETTLE_MS`: every wait for a state change. */
 const STATE_TIMEOUT_MS = BACKOFF_CAP_MS + SETTLE_MS + 3_000;
@@ -199,7 +197,7 @@ test("AC4: the window shows the reconnecting band while the fixture is down, and
   const dataDir = tempDataDir();
   fixture = await startFixture({ dataDir, events: events(1, 3) });
   const port = fixture.port;
-  app = await electron.launch({ args: [APP_DIR], cwd: APP_DIR, env: { ...fixture.env } });
+  app = await launchApp(fixture.env);
   const page = await app.firstWindow();
   await expect(page.getByTestId("sidebar")).toBeVisible();
   const kernel = fixture;

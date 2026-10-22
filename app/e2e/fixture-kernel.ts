@@ -55,7 +55,7 @@ export interface FixtureKernelOptions {
 export interface FixtureKernel {
   readonly port: number;
   readonly dataDir: string;
-  /** The environment for `electron.launch({ env })`. */
+  /** The environment for `launchApp` (`e2e/electron-harness.ts`). */
   readonly env: Readonly<Record<string, string>>;
   /** Every authenticated request, in order. */
   readonly requests: readonly { readonly method: string; readonly path: string }[];

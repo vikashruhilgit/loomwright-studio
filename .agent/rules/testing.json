@@ -1,0 +1,16 @@
+[
+  {
+    "id": "testing-e2e-specs-launch-electron-only-through-app-e2e-electron-harness-ts-launchapp-launchgallery-which-keeps-every-window-hidden-never-electron-launch-or-new-browserwindow-in-a-spec-app-scripts-hidden-windows-test-ts-enforces-it",
+    "category": "testing",
+    "statement": "E2E specs launch Electron only through app/e2e/electron-harness.ts (launchApp, launchGallery), which keeps every window hidden; never electron.launch or new BrowserWindow in a spec (app/scripts/hidden-windows.test.ts enforces it).",
+    "enforcement": "advisory",
+    "check": null,
+    "provenance": {
+      "source": "owner request 2026-10-22: e2e windows took focus on every local run during the phase-5 run-3 wave",
+      "added": "2026-10-22T06:59:38Z"
+    },
+    "applies_to": [
+      "app/e2e/*"
+    ]
+  }
+]

@@ -6,32 +6,22 @@
 // under reduced motion. Screenshots are written to
 // docs/evidence/phase-5-polish/components/palette/ only when
 // PALETTE_SCREENSHOTS=1, so a plain `npm run e2e` never dirties the tree.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { _electron as electron, expect, test } from "@playwright/test";
-import type { ElectronApplication, Locator, Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { createServer } from "vite";
 import type { ViteDevServer } from "vite";
+import { launchGallery } from "./electron-harness";
+import type { Gallery } from "./electron-harness";
 
 const APP_DIR = fileURLToPath(new URL("..", import.meta.url));
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-5-polish/components/palette/", import.meta.url));
 const SCREENSHOTS = process.env.PALETTE_SCREENSHOTS === "1";
 const GALLERY = "src/components/CommandPalette/gallery.html";
 
-// The throwaway main: one sandboxed window on the gallery URL, nothing else.
-const MAIN = `const { app, BrowserWindow } = require("electron");
-app.whenReady().then(() => {
-  const win = new BrowserWindow({ width: 960, height: 720, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
-  void win.loadURL(process.env.PALETTE_GALLERY_URL);
-});
-app.on("window-all-closed", () => app.quit());
-`;
-
-let app: ElectronApplication | undefined;
+let gallery: Gallery | undefined;
 let server: ViteDevServer | undefined;
-let tempDir: string | undefined;
 
 type Theme = "light" | "dark";
 
@@ -47,14 +37,8 @@ async function openGallery(theme: Theme): Promise<Page> {
   await server.listen();
   const base = server.resolvedUrls?.local[0];
   if (base === undefined) throw new Error("the Vite dev server reported no local URL");
-  tempDir = mkdtempSync(join(tmpdir(), "palette-e2e-"));
-  const main = join(tempDir, "main.cjs");
-  writeFileSync(main, MAIN);
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
-  env.PALETTE_GALLERY_URL = `${base}${GALLERY}?theme=${theme}`;
-  app = await electron.launch({ args: [main], cwd: APP_DIR, env });
-  const page = await app.firstWindow();
+  gallery = await launchGallery({ url: `${base}${GALLERY}?theme=${theme}` }, { width: 960, height: 720 });
+  const page = gallery.page;
   await expect(page.getByRole("heading", { name: "CommandPalette gallery" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe(theme);
   return page;
@@ -80,12 +64,10 @@ async function expectActiveDescendant(input: Locator, option: Locator): Promise<
 }
 
 test.afterEach(async () => {
-  await app?.close();
-  app = undefined;
+  await gallery?.close();
+  gallery = undefined;
   await server?.close();
   server = undefined;
-  if (tempDir !== undefined) rmSync(tempDir, { recursive: true, force: true });
-  tempDir = undefined;
 });
 
 for (const theme of ["light", "dark"] as const) {

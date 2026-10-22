@@ -10,6 +10,7 @@ import type { BrowserWindowConstructorOptions, IpcMainInvokeEvent, WebContents }
 import type { ApiRequest, FeedRelayFrame } from "../src/api/contract";
 import { CHANNELS } from "./channels";
 import { registerDeepLinks } from "./deeplink";
+import { showsWindow } from "./hidden-window";
 import { createKernelConnection, resolveDataDir, tokenReaderFor } from "./kernel-connection";
 import type { FeedHandle, KernelConnection } from "./kernel-connection";
 import { createTray } from "./tray";
@@ -97,11 +98,14 @@ async function main(): Promise<void> {
     log: (line) => console.warn(`loomwright-studio: ${line}`),
   });
   let window: BrowserWindow | undefined;
+  const shows = showsWindow(process.env, app.isPackaged);
 
   const createWindow = (): BrowserWindow => {
     const created = new BrowserWindow(windowOptions(join(app.getAppPath(), "dist-electron", "preload.cjs")));
     lockDown(created);
-    created.once("ready-to-show", () => created.show());
+    // Hidden, the window still renders and runs as if on screen.
+    if (shows) created.once("ready-to-show", () => created.show());
+    else created.webContents.setBackgroundThrottling(false);
     created.on("closed", () => {
       if (window === created) window = undefined;
     });
@@ -111,7 +115,7 @@ async function main(): Promise<void> {
   };
   const showWindow = (): void => {
     if (window === undefined) createWindow();
-    else window.show();
+    else if (shows) window.show();
   };
 
   handleBridge(kernel, () => window?.webContents);
