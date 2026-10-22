@@ -1,0 +1,236 @@
+/* The ⌘K palette, from docs/design/design-system/components/CommandPalette (README + preview.html).
+   Every colour is a token from app/src/styles/tokens.css, so dark mode is the dark tokens and nothing else.
+   The list never animates on filter: rows have no transition. */
+
+.cp-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 20vh var(--space-6) var(--space-6);
+  background: var(--overlay);
+  animation: cp-fade-in var(--duration-slow) var(--ease-enter);
+}
+.cp-overlay.is-closing {
+  pointer-events: none;
+  animation: cp-fade-out var(--duration-fast) var(--ease-exit) forwards;
+}
+
+.cp-shell {
+  display: flex;
+  flex-direction: column;
+  width: 560px;
+  max-width: 100%;
+  max-height: 70vh;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-3);
+  color: var(--ink);
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  transform-origin: 50% 0;
+  animation: cp-open var(--duration-slow) var(--ease-palette);
+}
+.cp-overlay.is-closing .cp-shell {
+  animation: none;
+}
+
+/* Visible focus (tokens.json `focus` usage): 2px solid at a 2px offset. */
+.cp-shell :focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* The 44px search row: 16px icon, title-2 size input, Esc chip. */
+.cp-search {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--ink-tertiary);
+}
+.cp-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.cp-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 var(--space-1);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--ink);
+  caret-color: var(--accent);
+  font-family: var(--type-title-2-family);
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-body-weight);
+  user-select: text;
+}
+.cp-input::placeholder {
+  color: var(--ink-tertiary);
+}
+
+/* The kbd chip: shortcuts, Esc and the footer keys. */
+.cp-kbd {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 1px 5px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  color: var(--ink-tertiary);
+  font-family: var(--type-kbd-family);
+  font-size: var(--type-kbd-size);
+  line-height: var(--type-kbd-line);
+  font-weight: var(--type-kbd-weight);
+}
+
+/* The grouped list of 32px rows. */
+.cp-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+.cp-list:empty {
+  display: none;
+}
+.cp-group {
+  padding: var(--space-2) 10px var(--space-1);
+  color: var(--ink-tertiary);
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+}
+.cp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  cursor: default;
+}
+.cp-row.is-selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.cp-row[aria-disabled="true"] {
+  color: var(--ink-disabled);
+}
+.cp-show-all {
+  color: var(--ink-secondary);
+}
+.cp-lead {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.cp-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cp-right {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+.cp-meta {
+  color: var(--ink-tertiary);
+  font-size: var(--type-mono-size);
+}
+.cp-row.is-selected .cp-meta {
+  color: var(--accent);
+}
+
+.cp-empty {
+  margin: 0;
+  padding: var(--space-6) var(--space-4);
+  color: var(--ink-secondary);
+  text-align: center;
+}
+
+/* The footer: navigation keys and the attribution. */
+.cp-footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) 14px;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface);
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.cp-attribution {
+  margin-left: auto;
+}
+
+@keyframes cp-open {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes cp-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes cp-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* Brand book §Motion: under reduced motion every duration is 0 except opacity fades, capped at
+   `--duration-instant` on `--ease-enter`. No scale. */
+@media (prefers-reduced-motion: reduce) {
+  .cp-overlay {
+    animation: cp-fade-in var(--duration-instant) var(--ease-enter);
+  }
+  .cp-overlay.is-closing {
+    animation: cp-fade-out var(--duration-instant) var(--ease-enter) forwards;
+  }
+  .cp-shell {
+    animation: none;
+    transform: none;
+  }
+}
