@@ -717,6 +717,16 @@ describe("focus", () => {
     expect(screen.getByTestId("session-gone").dataset.sessionId).toBe("31");
     await act(async () => new Promise((done) => setTimeout(done, 20)));
     expect(posts(fake, "POST /sessions/:id/kill")).toHaveLength(0);
+
+    // #31 itself comes back running, so a Kill would apply again: the closed confirm stays closed (it was
+    // cleared, not merely hidden), and still nothing is sent.
+    kernel.sessions = [running(31), running(32)];
+    act(() => fake.emit(event("session_status", 31)));
+    await waitFor(() => expect(statusOf(31)).toBe("running"));
+    await act(async () => new Promise((done) => setTimeout(done, 20)));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByText("Kill session #31?")).toBeNull();
+    expect(posts(fake, "POST /sessions/:id/kill")).toHaveLength(0);
   });
 
   it("a Kill confirm whose session ended while it was open closes and sends nothing", async () => {
@@ -739,6 +749,15 @@ describe("focus", () => {
     await waitFor(() => expect(within(rowOf(27)).getByTestId("session-orphan-reason").textContent).toBe("reap_error"));
     expect(screen.queryByRole("alertdialog")).toBeNull();
     await act(async () => new Promise((done) => setTimeout(done, 20)));
+    expect(posts(fake, "POST /sessions/:id/abandon")).toHaveLength(0);
+
+    // The row is a leader_unverified orphan again, so Abandon applies again: the closed confirm stays
+    // closed (it was cleared, not merely hidden), and still nothing is sent.
+    kernel.orphaned = [ORPHAN];
+    act(() => fake.emit(event("session_status", 27)));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Abandon" })).not.toBeNull());
+    await act(async () => new Promise((done) => setTimeout(done, 20)));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(posts(fake, "POST /sessions/:id/abandon")).toHaveLength(0);
   });
 
