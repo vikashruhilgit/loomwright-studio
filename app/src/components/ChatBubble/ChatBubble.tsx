@@ -31,8 +31,8 @@ export interface PlaybookDraft {
   readonly approval: DraftValue;
   /** Exactly what the playbook would have done, shown in `mono` and never behind a disclosure. */
   readonly dryRun: string;
-  /** Optional dollar estimate for the dry run, e.g. "$0.60". Always labelled "≈ at API rates" (D24). */
-  readonly costEstimate?: string;
+  /** Optional dollar estimate for the dry run in USD, e.g. 0.6. Always shown as "≈$0.60 at API rates" (D24). */
+  readonly costEstimate?: number;
 }
 
 interface ChatBubbleBaseProps {
@@ -111,6 +111,11 @@ function renderBody(body: string, streaming: boolean): ReactNode {
   });
 }
 
+/** The one D24 shape: "≈$0.60 at API rates". Two decimals, so the same number always reads the same. */
+function formatEstimate(usd: number): string {
+  return `≈$${usd.toFixed(2)} at API rates`;
+}
+
 function Proposed({ show }: { readonly show: boolean | undefined }) {
   return show ? <span className="chat-bubble__proposed">proposed</span> : null;
 }
@@ -170,10 +175,10 @@ function DraftCard({ draft, onEnable, onEditInEnglish, onEditFields }: Omit<With
       <div className="chat-bubble__dry" data-testid="chat-bubble-dry-run">
         <span className="chat-bubble__dry-label">dry run · </span>
         {draft.dryRun}
-        {draft.costEstimate !== undefined ? (
+        {draft.costEstimate !== undefined && Number.isFinite(draft.costEstimate) ? (
           <span className="chat-bubble__dry-label">
             {" · "}
-            <span className="chat-bubble__estimate">{draft.costEstimate} ≈ at API rates</span>
+            <span className="chat-bubble__estimate">{formatEstimate(draft.costEstimate)}</span>
           </span>
         ) : null}
       </div>

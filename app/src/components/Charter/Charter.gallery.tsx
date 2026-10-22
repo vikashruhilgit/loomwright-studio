@@ -38,7 +38,7 @@ const pim: CharterProps = {
   boundaries: ["Reads only: never sends mail or messages", "Never moves or declines meetings"],
   model: { value: "Haiku 4.5", proposed: true },
   limits: { tokensPerDay: 100_000, sessionsAtOnce: 1, proposed: true },
-  firstPlaybookDryRun: { text: "Daily digest · cron 08:00 Mon–Fri · would summarise 4 meetings, 32 mails, 6 Slack threads", costEstimate: "$0.08/run" },
+  firstPlaybookDryRun: { text: "Daily digest · cron 08:00 Mon–Fri · would summarise 4 meetings, 32 mails, 6 Slack threads", costEstimate: 0.08 },
   onCreate: noop,
   onEditInEnglish: noop,
   onPickShape: noop,
@@ -75,7 +75,7 @@ export const galleryStates: readonly { id: string; title: string; element: React
   {
     id: "estimates",
     title: "Dollar figures appear only as estimates labelled at API rates",
-    element: <Charter {...pim} limits={{ tokensPerDay: 100_000, sessionsAtOnce: 1, proposed: true, costEstimate: "$2.40/day" }} />,
+    element: <Charter {...pim} limits={{ tokensPerDay: 100_000, sessionsAtOnce: 1, proposed: true, costEstimate: 2.4 }} />,
   },
   {
     id: "no-boundaries-no-playbook",

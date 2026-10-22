@@ -92,7 +92,7 @@ export const galleryStates: readonly { id: string; title: string; element: React
         task="review PR #412"
         elapsed="4m 12s"
         tokens={14_208}
-        cost={0.11}
+        costEstimate={0.11}
         lines={PREVIEW_LINES}
         onStop={noop}
         onKillRequest={noop}

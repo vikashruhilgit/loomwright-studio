@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // StreamingLog (docs/design/design-system/components/StreamingLog/README.md): the header
 // (status slot, agent, task, running time, tabular tokens, an optional cost only as
-// "≈ at API rates"), Stop and Kill, the line kinds, the static caret, `role="log"` with
+// "≈$x at API rates"), Stop and Kill, the line kinds, the static caret, `role="log"` with
 // `aria-live="off"`, "Read latest" and polite status announcements (AC1); untrusted text
 // stays inert (AC2); follow / Jump to latest scrolling (AC4); keyboard access (AC9); and
 // the folder's source scans: no raw-HTML injection (AC3), no hard-coded colour (AC8), a
@@ -77,7 +77,7 @@ describe("StreamingLog header", () => {
   });
 
   it("labels a passed cost '≈ at API rates' and never as a limit or budget", () => {
-    render(<StreamingLog {...props({ cost: 0.11 })} />);
+    render(<StreamingLog {...props({ costEstimate: 0.11 })} />);
     const cost = screen.getByTestId("streaming-log-cost");
     expect(cost.textContent).toBe("≈$0.11 at API rates");
     expect(headerBar().textContent).not.toMatch(/budget|limit/i);
@@ -90,10 +90,10 @@ describe("StreamingLog header", () => {
   });
 
   it("shows a zero cost (never swallowed as falsy) and omits a non-finite one", () => {
-    const { rerender } = render(<StreamingLog {...props({ cost: 0, tokens: 0 })} />);
+    const { rerender } = render(<StreamingLog {...props({ costEstimate: 0, tokens: 0 })} />);
     expect(screen.getByTestId("streaming-log-cost").textContent).toBe("≈$0.00 at API rates");
     expect(screen.getByTestId("streaming-log-tokens").textContent).toBe("0 tokens");
-    rerender(<StreamingLog {...props({ cost: Number.NaN })} />);
+    rerender(<StreamingLog {...props({ costEstimate: Number.NaN })} />);
     expect(screen.queryByTestId("streaming-log-cost")).toBeNull();
   });
 

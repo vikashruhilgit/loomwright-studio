@@ -54,7 +54,7 @@ export interface StreamingLogProps {
    * Optional dollar estimate at API rates. Shown only as "≈$x at API rates",
    * never as a limit or a budget (D24); omitted when not passed (or not a finite number).
    */
-  readonly cost?: number;
+  readonly costEstimate?: number;
   readonly lines: readonly StreamingLogLine[];
   /** Whether the session is still running: shows the live-end caret and enables Stop and Kill. Default `true`. */
   readonly live?: boolean;
@@ -106,7 +106,7 @@ export function StreamingLog({
   task,
   elapsed,
   tokens,
-  cost,
+  costEstimate,
   lines,
   live = true,
   onStop,
@@ -196,11 +196,11 @@ export function StreamingLog({
           <span className="streaming-log__num" data-testid="streaming-log-tokens">
             {formatTokens(tokens)}
           </span>
-          {cost !== undefined && Number.isFinite(cost) && (
+          {costEstimate !== undefined && Number.isFinite(costEstimate) && (
             <>
               <span aria-hidden="true"> · </span>
               <span className="streaming-log__num" data-testid="streaming-log-cost">
-                {formatCost(cost)}
+                {formatCost(costEstimate)}
               </span>
             </>
           )}

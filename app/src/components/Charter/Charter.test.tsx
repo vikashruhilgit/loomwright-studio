@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // Charter: the README's sections (Identity, Persona, Duties, Tools, Boundaries, Model, Limits,
 // first playbook's dry run), proposed tags (AC5), not-connected tools and token limits with any
-// dollar figure labelled "≈ at API rates" (AC6), the Create / Edit in English / Shape actions,
+// dollar figure shown as "≈$x at API rates" (AC6), the Create / Edit in English / Shape actions,
 // inert rendering of hostile text (AC2), and the folder's source scans (AC3, AC8, AC9).
 // The scans read exactly Charter.css and Charter.tsx, never the test or the gallery.
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
@@ -313,15 +313,15 @@ describe("Charter tools and limits (AC6)", () => {
     expect(ruleBody(css, ".charter__limits")).toMatch(/font-variant-numeric:\s*tabular-nums/);
   });
 
-  it("labels a passed dollar figure '≈ at API rates' and never as a budget or limit (D24)", () => {
+  it("labels a passed dollar figure '≈$x at API rates' and never as a budget or limit (D24)", () => {
     const { root, section } = renderCharter({
-      limits: { tokensPerDay: 100_000, sessionsAtOnce: 1, costEstimate: "$2.40/day" },
-      firstPlaybookDryRun: { text: "Daily digest", costEstimate: "$0.08/run" },
+      limits: { tokensPerDay: 100_000, sessionsAtOnce: 1, costEstimate: 2.4 },
+      firstPlaybookDryRun: { text: "Daily digest", costEstimate: 0.08 },
     });
     const estimates = within(root).getAllByTestId("charter-estimate");
-    expect(estimates.map((e) => e.textContent)).toEqual(["$2.40/day ≈ at API rates", "$0.08/run ≈ at API rates"]);
-    expect(section("limits").textContent).toContain("$2.40/day ≈ at API rates");
-    expect(section("dry-run").textContent).toContain("$0.08/run ≈ at API rates");
+    expect(estimates.map((e) => e.textContent)).toEqual(["≈$2.40/day at API rates", "≈$0.08/run at API rates"]);
+    expect(section("limits").textContent).toContain("≈$2.40/day at API rates");
+    expect(section("dry-run").textContent).toContain("≈$0.08/run at API rates");
     // Every dollar sign on the charter sits inside an estimate label.
     const dollarsOutsideEstimates = [...root.querySelectorAll("*")].filter(
       (el) => [...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.textContent?.includes("$")) && !el.matches('[data-testid="charter-estimate"]'),
@@ -331,9 +331,20 @@ describe("Charter tools and limits (AC6)", () => {
     expect(root.querySelector("input, [role='spinbutton'], [role='slider']")).toBeNull();
   });
 
-  it("shows no dollar figure when none is passed", () => {
+  it("shows no dollar figure when none is passed, or when it is not a finite number", () => {
     const { root } = renderCharter();
     expect(root.textContent).not.toMatch(/\$|API rates/);
+    cleanup();
+    const nan = renderCharter({
+      limits: { tokensPerDay: 100_000, sessionsAtOnce: 1, costEstimate: Number.NaN },
+      firstPlaybookDryRun: { text: "Daily digest", costEstimate: Number.POSITIVE_INFINITY },
+    });
+    expect(nan.root.textContent).not.toMatch(/\$|API rates/);
+  });
+
+  it("shows a zero estimate rather than swallowing it as falsy", () => {
+    const { root } = renderCharter({ limits: { tokensPerDay: 100_000, sessionsAtOnce: 1, costEstimate: 0 } });
+    expect(within(root).getByTestId("charter-estimate").textContent).toBe("≈$0.00/day at API rates");
   });
 });
 
@@ -350,8 +361,8 @@ describe("Charter renders untrusted text inert (AC2)", () => {
       tools: [{ name: XSS_IMG, connected: false }],
       boundaries: [XSS_IMG],
       model: { value: XSS_IMG },
-      limits: { tokensPerDay: 1, sessionsAtOnce: 1, costEstimate: XSS_IMG },
-      firstPlaybookDryRun: { text: XSS_IMG, costEstimate: XSS_IMG },
+      limits: { tokensPerDay: 1, sessionsAtOnce: 1, costEstimate: 0.5 },
+      firstPlaybookDryRun: { text: XSS_IMG, costEstimate: 0.5 },
     });
     expect(container.querySelector("img")).toBeNull();
     expect(container.querySelector("[href]")).toBeNull();

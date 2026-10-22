@@ -28,7 +28,7 @@ const reviewDraft: PlaybookDraft = {
   model: { value: "Sonnet 5", proposed: true },
   approval: { value: "Ask before posting each review" },
   dryRun: "would review vikashruhilgit/loomwright #412, #409, ntfs-tool #7 · skipped 0",
-  costEstimate: "$0.60",
+  costEstimate: 0.6,
 };
 
 const XSS_IMG = "<img src=x onerror=alert(1)>";

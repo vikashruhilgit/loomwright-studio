@@ -5,9 +5,9 @@
 // line-number gutters and a sign column that are `user-select: none`, every
 // hunk expanded, long lines scrolling horizontally inside the diff only. No
 // syntax highlighting: the add/del colour is the only colour. `onRendered` fires
-// once the hunk rows are in the DOM, so an approval can gate Allow on it.
+// once per diff, after its hunk rows are in the DOM, so an approval can gate Allow on it.
 // Every string (path, header, line text) is a React text child.
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import "./DiffView.css";
 
 /** One parsed diff line. Context lines carry both numbers; added only the new, deleted only the old. */
@@ -28,7 +28,7 @@ export interface DiffViewProps {
   /** Where the change applies, e.g. "project" or "global"; shown as "<scope> scope". */
   readonly scope: string;
   readonly hunks: readonly DiffHunk[];
-  /** Fires once, after the hunk rows are in the DOM (the approval's Allow gate). */
+  /** Fires once per diff (path + hunk content), after its hunk rows are in the DOM (the approval's Allow gate). */
   readonly onRendered?: () => void;
 }
 
@@ -69,17 +69,21 @@ function Line({ line }: { readonly line: DiffLine }) {
 
 export function DiffView({ path, scope, hunks, onRendered }: DiffViewProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
-  const firedRef = useRef(false);
+  // The diff the gate last fired for, by content: a different path or different hunk
+  // content is a new diff that must gate its own Allow; the same content (even as a new
+  // array) is the same diff and must not fire again.
+  const firedForRef = useRef<string | null>(null);
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
+  const diffKey = useMemo(() => JSON.stringify([path, hunks]), [path, hunks]);
 
-  // Runs after commit: fire once, and only when at least one hunk row is actually in the DOM.
+  // Runs after commit: fire once per diff, and only when at least one hunk row is actually in the DOM.
   useEffect(() => {
-    if (firedRef.current) return;
+    if (firedForRef.current === diffKey) return;
     if (!bodyRef.current?.querySelector("[data-line]")) return;
-    firedRef.current = true;
+    firedForRef.current = diffKey;
     onRenderedRef.current?.();
-  }, [hunks]);
+  }, [diffKey]);
 
   const { added, deleted } = countLines(hunks);
   const hasLines = hunks.some((h) => h.lines.length > 0);

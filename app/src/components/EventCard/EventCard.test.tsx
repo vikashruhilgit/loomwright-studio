@@ -1,13 +1,9 @@
 // @vitest-environment jsdom
-/// <reference types="node" />
 // EventCard: the README's rules (event line, one icon per kind, the subject
 // link, the inline approval and its shortcuts), another agent's approval
 // rendering nothing (AC7), untrusted text staying inert (AC2), and the
 // source/CSS scans (AC3, AC8, AC9). jsdom applies no CSS, so visual rules are
 // asserted on EventCard.css itself.
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventCard, type EventCardApprovalProps, type EventKind, type EventLine } from "./EventCard";
@@ -16,9 +12,15 @@ import src from "./EventCard.tsx?raw";
 
 // The stylesheet is read from disk: vitest stubs every `.css` request, `?raw`
 // included, to "" (test.css is off), so `import css from "./EventCard.css?raw"`
-// would make every CSS scan below pass on an empty string. A plain path, not a
-// URL object: jsdom replaces the global URL, which node:fs rejects.
-const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "EventCard.css"), "utf8");
+// would make every CSS scan below pass on an empty string. The file is read
+// through `process.getBuiltinModule`, typed locally so app/tsconfig.json needs
+// no Node types.
+interface NodeFs {
+  readFileSync(path: string, encoding: "utf8"): string;
+}
+const nodeFs = (globalThis as unknown as { process: { getBuiltinModule(id: "node:fs"): NodeFs } }).process.getBuiltinModule("node:fs");
+const here = (import.meta as unknown as { dirname: string }).dirname;
+const css = nodeFs.readFileSync(`${here}/EventCard.css`, "utf8");
 
 const XSS = "<img src=x onerror=alert(1)>";
 const KINDS: readonly EventKind[] = ["session", "playbook", "agent", "memory", "approval", "hook"];

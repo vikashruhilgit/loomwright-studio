@@ -4,7 +4,7 @@
 // Sections map to kernel mechanisms: Identity, Persona, Duties, Tools, Boundaries, Model, Limits
 // and the first playbook's dry run. Values Wright chose carry a `proposed` tag (D4). Tools that are
 // not connected are listed, never hidden. Limits are tokens and sessions; a dollar figure is only
-// ever an estimate labelled "≈ at API rates" (D24). Boundaries are always shown.
+// ever an estimate shown as "≈$x/day at API rates" or "≈$x/run at API rates" (D24). Boundaries are always shown.
 //
 // Every string can come from a model or the user, so each is rendered as a React text child.
 import type { KeyboardEvent, ReactNode } from "react";
@@ -28,15 +28,15 @@ export interface CharterLimits {
   readonly sessionsAtOnce: number;
   /** True when Wright chose these limits. */
   readonly proposed?: boolean;
-  /** Optional dollar estimate, e.g. "$2.40/day". Shown only as "≈ at API rates", never as a limit. */
-  readonly costEstimate?: string;
+  /** Optional dollar estimate per day in USD, e.g. 2.4. Shown only as "≈$2.40/day at API rates", never as a limit. */
+  readonly costEstimate?: number;
 }
 
 /** The first playbook's dry run: exactly what it would have done. */
 export interface CharterDryRun {
   readonly text: string;
-  /** Optional dollar estimate, e.g. "$0.08/run". Shown only as "≈ at API rates". */
-  readonly costEstimate?: string;
+  /** Optional dollar estimate per run in USD, e.g. 0.08. Shown only as "≈$0.08/run at API rates". */
+  readonly costEstimate?: number;
 }
 
 export interface CharterProps {
@@ -80,11 +80,19 @@ function Proposed({ show, label = "proposed" }: { readonly show: boolean | undef
   return show ? <span className="charter__proposed">{label}</span> : null;
 }
 
-function Estimate({ cost }: { readonly cost: string | undefined }) {
-  if (cost === undefined) return null;
+/** The one D24 shape: "≈$2.40/day at API rates". Two decimals, so the same number always reads the same. */
+function formatEstimate(usd: number, suffix: string): string {
+  return `≈$${usd.toFixed(2)}${suffix} at API rates`;
+}
+
+function hasEstimate(usd: number | undefined): usd is number {
+  return usd !== undefined && Number.isFinite(usd);
+}
+
+function Estimate({ usd, suffix }: { readonly usd: number; readonly suffix: string }) {
   return (
     <span className="charter__estimate" data-testid="charter-estimate">
-      {cost} ≈ at API rates
+      {formatEstimate(usd, suffix)}
     </span>
   );
 }
@@ -184,10 +192,10 @@ export function Charter(props: CharterProps) {
             {formatTokens(limits.tokensPerDay)} tokens / day · {sessions}
           </span>
           <Proposed show={limits.proposed} />
-          {limits.costEstimate !== undefined ? (
+          {hasEstimate(limits.costEstimate) ? (
             <span className="charter__meta">
               {" · "}
-              <Estimate cost={limits.costEstimate} />
+              <Estimate usd={limits.costEstimate} suffix="/day" />
             </span>
           ) : null}
         </dd>
@@ -197,10 +205,10 @@ export function Charter(props: CharterProps) {
         {firstPlaybookDryRun !== undefined ? (
           <>
             {firstPlaybookDryRun.text}
-            {firstPlaybookDryRun.costEstimate !== undefined ? (
+            {hasEstimate(firstPlaybookDryRun.costEstimate) ? (
               <span className="charter__dry-label">
                 {" · "}
-                <Estimate cost={firstPlaybookDryRun.costEstimate} />
+                <Estimate usd={firstPlaybookDryRun.costEstimate} suffix="/run" />
               </span>
             ) : null}
           </>

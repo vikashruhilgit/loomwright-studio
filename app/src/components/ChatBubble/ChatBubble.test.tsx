@@ -259,8 +259,15 @@ describe("ChatBubble playbook draft", () => {
   });
 
   it("labels a dry-run dollar figure as an estimate at API rates (D24)", () => {
-    renderDraft(draft({ costEstimate: "$0.60" }));
-    expect(screen.getByTestId("chat-bubble-dry-run").textContent).toContain("$0.60 ≈ at API rates");
+    renderDraft(draft({ costEstimate: 0.6 }));
+    const estimate = screen.getByTestId("chat-bubble-dry-run").querySelector(".chat-bubble__estimate");
+    expect(estimate?.textContent).toBe("≈$0.60 at API rates");
+    cleanup();
+    renderDraft(draft({ costEstimate: 0 }));
+    expect(screen.getByTestId("chat-bubble-dry-run").textContent).toContain("≈$0.00 at API rates");
+    cleanup();
+    renderDraft(draft({ costEstimate: Number.NaN }));
+    expect(screen.getByTestId("chat-bubble-dry-run").textContent).not.toMatch(/\$|API rates/);
     cleanup();
     renderDraft();
     expect(screen.getByTestId("chat-bubble-dry-run").textContent).not.toMatch(/\$|API rates/);
@@ -344,7 +351,7 @@ describe("ChatBubble renders untrusted text inert (AC2)", () => {
         from="wright"
         time={XSS_IMG}
         body="[x](javascript:alert(1))"
-        draft={{ name: hostile, runsAs: XSS_IMG, trigger: hostile, action: hostile, dedupeKey: hostile, model: hostile, approval: hostile, dryRun: XSS_IMG, costEstimate: XSS_IMG }}
+        draft={{ name: hostile, runsAs: XSS_IMG, trigger: hostile, action: hostile, dedupeKey: hostile, model: hostile, approval: hostile, dryRun: XSS_IMG, costEstimate: 0.6 }}
         onEnable={() => undefined}
         onEditInEnglish={() => undefined}
         onEditFields={() => undefined}

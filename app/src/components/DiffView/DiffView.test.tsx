@@ -1,14 +1,11 @@
 // @vitest-environment jsdom
-/// <reference types="node" />
 // DiffView: the README's anatomy (file header with path, scope and counts, hunk
 // headers, two gutters and a sign column out of the copied text, add/del/context
 // lines, nothing collapsed, horizontal scroll inside the diff only), the
 // `onRendered` Allow gate, untrusted text staying inert (AC2), and the
 // source/CSS scans (AC3, AC8, AC9). jsdom applies no CSS, so visual rules are
 // asserted on DiffView.css itself.
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { StrictMode } from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DiffView, type DiffHunk } from "./DiffView";
@@ -17,9 +14,15 @@ import src from "./DiffView.tsx?raw";
 
 // The stylesheet is read from disk: vitest stubs every `.css` request, `?raw`
 // included, to "" (test.css is off), so `import css from "./DiffView.css?raw"`
-// would make every CSS scan below pass on an empty string. A plain path, not a
-// URL object: jsdom replaces the global URL, which node:fs rejects.
-const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "DiffView.css"), "utf8");
+// would make every CSS scan below pass on an empty string. The file is read
+// through `process.getBuiltinModule`, typed locally so app/tsconfig.json needs
+// no Node types.
+interface NodeFs {
+  readFileSync(path: string, encoding: "utf8"): string;
+}
+const nodeFs = (globalThis as unknown as { process: { getBuiltinModule(id: "node:fs"): NodeFs } }).process.getBuiltinModule("node:fs");
+const here = (import.meta as unknown as { dirname: string }).dirname;
+const css = nodeFs.readFileSync(`${here}/DiffView.css`, "utf8");
 
 const XSS = "<img src=x onerror=alert(1)>";
 
@@ -155,6 +158,43 @@ describe("onRendered (the approval's Allow gate)", () => {
     expect(onRendered).not.toHaveBeenCalled();
     rerender(<DiffView path="f" scope="project" hunks={hookHunks} onRendered={onRendered} />);
     expect(onRendered).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-gates when the instance shows a new diff: diff A then diff B each fire exactly once", () => {
+    const bHunks: DiffHunk[] = [{ header: "@@ -1 +1 @@", lines: [{ kind: "add", newNumber: 1, text: "echo b" }] }];
+    const onA = vi.fn();
+    const onB = vi.fn(() => {
+      expect(document.querySelector(".diffview-text")?.textContent).toBe("echo b");
+    });
+    const { rerender } = render(<DiffView path="a.json" scope="project" hunks={hookHunks} onRendered={onA} />);
+    expect(onA).toHaveBeenCalledTimes(1);
+    rerender(<DiffView path="b.sh" scope="project" hunks={bHunks} onRendered={onB} />);
+    expect(onB).toHaveBeenCalledTimes(1);
+    rerender(<DiffView path="b.sh" scope="project" hunks={bHunks} onRendered={onB} />);
+    rerender(<DiffView path="b.sh" scope="project" hunks={[...bHunks]} onRendered={onB} />);
+    expect(onB).toHaveBeenCalledTimes(1);
+    expect(onA).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-gates when only the path changes", () => {
+    const onRendered = vi.fn();
+    const { rerender } = render(<DiffView path="a.json" scope="project" hunks={hookHunks} onRendered={onRendered} />);
+    rerender(<DiffView path="b.json" scope="project" hunks={hookHunks} onRendered={onRendered} />);
+    expect(onRendered).toHaveBeenCalledTimes(2);
+  });
+
+  it("fires once, after the rows render, under StrictMode's double effects", () => {
+    const rowsAtCall: number[] = [];
+    const onRendered = vi.fn(() => {
+      rowsAtCall.push(document.querySelectorAll("[data-line]").length);
+    });
+    render(
+      <StrictMode>
+        <DiffView path="f" scope="project" hunks={hookHunks} onRendered={onRendered} />
+      </StrictMode>,
+    );
+    expect(onRendered).toHaveBeenCalledTimes(1);
+    expect(rowsAtCall).toEqual([11]);
   });
 
   it("calls the latest handler and tolerates none", () => {
