@@ -7,23 +7,46 @@
 //   a control inside it, pauses the countdown and leaving resumes the remaining
 //   time. `duration={null}` turns auto-dismiss off (gallery states). Dismissing
 //   (timer or ×) plays the `duration-fast` leave, then calls `onDismiss`.
-//   A toast that holds focus when it is dismissed or removed hands focus on
-//   first (the adjacent toast's dismiss, else wherever focus came from), so a
-//   keyboard user is never dropped onto <body>.
 //   Never a toast for something that needs a decision: that is an approval.
 // - `ToastStack` places toasts bottom-right with `position: fixed`, so a toast
 //   arriving or leaving never moves the main content. Put it inside a
 //   transformed main column to anchor it there instead of the window. It shows
 //   at most `MAX_VISIBLE_TOASTS` (the newest); older ones collapse into an
-//   "N earlier" line and wait, timer not running, until a slot frees. The
-//   stack itself is the persistent polite live region: a toast inserted into
-//   it is announced as an addition, while each toast keeps `role="status"`
-//   with `aria-live="off"`, so it is not announced twice.
+//   "N earlier" line and wait, timer not running, until a slot frees.
 // - `Band` is persistent, full width at the top of the main column on a
 //   `*-soft` ground: `danger` (kernel unreachable, `role="alert"`), `parked`
 //   (paused at cap) and `attention` (approvals waiting). It has no timer; it
 //   leaves when the caller's condition clears.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type ReactNode } from "react";
+//
+// Announcements. Each stacked toast keeps `role="status"` but with
+// `aria-live="off"`, and the stack itself is not a live region, so a toast
+// mounting (arriving, or resurfacing from the collapsed line) and the
+// "N earlier" line are never announced by insertion. Instead the stack owns one
+// visually hidden polite announcer that receives a toast's text once, the first
+// time its id appears in `toasts`; a collapsed toast that resurfaces later is
+// already announced and stays silent. A standalone `Toast` is its own polite
+// status.
+//
+// Focus. A keyboard user is never dropped onto <body> while somewhere sensible
+// survives. In a stack, the stack owns the hand-off, chosen from the ids that
+// survive (never from the DOM, which during a removal commit still holds
+// siblings that are leaving too): the nearest surviving toast's dismiss (the
+// next newer, else the next older), else where focus was before it entered the
+// stack, else the stack itself (`tabIndex={-1}`, named "Notifications"), so a
+// screen reader lands on the region the toast left rather than on the page.
+// It hands off when a focused toast is dismissed, and after any commit that
+// removed or collapsed the focused toast. A standalone toast hands off to an
+// adjacent open toast, else to where its focus came from, and re-checks after
+// the commit in case that sibling left in the same update.
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FocusEvent,
+  type ReactNode,
+} from "react";
 import { StatusDot, type StatusDotProps } from "../StatusDot/StatusDot";
 import "./Toast.css";
 
@@ -48,23 +71,27 @@ export interface ToastProps {
   readonly dismissLabel?: string;
   /** Auto-dismiss delay in ms; `null` turns auto-dismiss off. */
   readonly duration?: number | null;
-  /**
-   * Set by ToastStack: the stack is the live region, so the toast's own
-   * `role="status"` is silenced (`aria-live="off"`) to avoid a double announcement.
-   */
-  readonly inLiveRegion?: boolean;
+}
+
+/** Set by ToastStack on each toast it renders: the stack owns announcements and focus. */
+interface StackWiring {
+  readonly id: string;
+  /** Called before a focused toast starts to leave, while it still holds focus. */
+  readonly handOff: (id: string) => void;
 }
 
 /**
- * Each focused toast's origin (where focus was before it entered the stack), so
- * a toast that receives focus from a leaving sibling inherits that origin.
+ * Each focused standalone toast's origin (where focus was before it entered),
+ * so a toast that receives focus from a leaving sibling inherits that origin.
  */
 const focusOrigins = new WeakMap<HTMLElement, HTMLElement>();
 
+const isLost = () => document.activeElement === null || document.activeElement === document.body;
+
 /**
- * Moves focus out of `toast` before it leaves the DOM: to the adjacent open
- * toast's dismiss (the next newer, else the next older), else to `returnTo`
- * (where focus was before it entered the toast) when that is still in the page.
+ * Standalone toasts only: moves focus out of `toast` before it leaves the DOM,
+ * to the adjacent open toast's dismiss (the next newer, else the next older),
+ * else to `returnTo` when that is still in the page.
  */
 function handOffFocus(toast: HTMLElement, returnTo: HTMLElement | null): void {
   const isOpenToast = (el: Element | null): el is HTMLElement =>
@@ -81,6 +108,24 @@ function handOffFocus(toast: HTMLElement, returnTo: HTMLElement | null): void {
   if (returnTo?.isConnected && !toast.contains(returnTo)) returnTo.focus();
 }
 
+/**
+ * The id nearest to `from` in `order` that `alive` accepts: the first one
+ * after it (newer), else the last one before it (older).
+ */
+function survivingNeighbour(order: readonly string[], from: string, alive: (id: string) => boolean): string | undefined {
+  const index = order.indexOf(from);
+  if (index < 0) return undefined;
+  for (let i = index + 1; i < order.length; i++) {
+    const id = order[i];
+    if (id !== undefined && alive(id)) return id;
+  }
+  for (let i = index - 1; i >= 0; i--) {
+    const id = order[i];
+    if (id !== undefined && alive(id)) return id;
+  }
+  return undefined;
+}
+
 /** The longest computed animation duration of `el`, in ms (0 when none, as in jsdom). */
 function animationMs(el: HTMLElement | null): number {
   if (!el) return 0;
@@ -94,7 +139,11 @@ function animationMs(el: HTMLElement | null): number {
     }, 0);
 }
 
-export function Toast({
+export function Toast(props: ToastProps) {
+  return <ToastView {...props} />;
+}
+
+function ToastView({
   status,
   title,
   body,
@@ -102,17 +151,19 @@ export function Toast({
   onDismiss,
   dismissLabel = "Dismiss",
   duration = TOAST_DURATION_MS,
-  inLiveRegion = false,
-}: ToastProps) {
+  stack,
+}: ToastProps & { readonly stack?: StackWiring }) {
   const ref = useRef<HTMLDivElement>(null);
   const [leaving, setLeaving] = useState(false);
   // Read by event handlers, which may run before the `leaving` render commits.
   const leavingRef = useRef(false);
-  /** Where focus was before it entered this toast. */
+  /** Standalone only: where focus was before it entered this toast. */
   const returnToRef = useRef<HTMLElement | null>(null);
   const onDismissRef = useRef(onDismiss);
+  const stackRef = useRef(stack);
   useEffect(() => {
     onDismissRef.current = onDismiss;
+    stackRef.current = stack;
   });
 
   const timer = useRef<number | undefined>(undefined);
@@ -128,10 +179,15 @@ export function Toast({
     }
   };
   const leave = useCallback(() => {
+    if (leavingRef.current) return;
     clear();
     leavingRef.current = true;
     const el = ref.current;
-    if (el?.contains(document.activeElement)) handOffFocus(el, returnToRef.current);
+    if (el?.contains(document.activeElement)) {
+      const wiring = stackRef.current;
+      if (wiring) wiring.handOff(wiring.id);
+      else handOffFocus(el, returnToRef.current);
+    }
     setLeaving(true);
   }, []);
   const start = useCallback(() => {
@@ -156,14 +212,20 @@ export function Toast({
     return clear;
   }, [duration, start]);
 
-  // Removed by the caller while holding focus (an action that drops the toast,
-  // or the stack collapsing it): hand focus on. Layout cleanups run during the
-  // commit while the node is still attached; after a hand-off from `leave`
-  // focus is already elsewhere and this is a no-op.
+  // Standalone only (a stack re-homes focus after its own commit): removed by
+  // the caller while holding focus, hand focus on. Layout cleanups run during
+  // the commit while the node is still attached, but a sibling chosen here may
+  // be removed later in the same commit, and React dispatches no focus events
+  // during a commit, so a microtask re-checks and falls back to the origin.
   useLayoutEffect(() => {
     const el = ref.current;
     return () => {
-      if (el?.contains(document.activeElement)) handOffFocus(el, returnToRef.current);
+      if (stackRef.current || !el?.contains(document.activeElement)) return;
+      const returnTo = returnToRef.current;
+      handOffFocus(el, returnTo);
+      queueMicrotask(() => {
+        if (isLost() && returnTo?.isConnected) returnTo.focus();
+      });
     };
   }, []);
 
@@ -184,7 +246,8 @@ export function Toast({
       ref={ref}
       className="toast"
       role="status"
-      aria-live={inLiveRegion ? "off" : undefined}
+      aria-live={stack ? "off" : undefined}
+      data-toast-id={stack?.id}
       data-state={leaving ? "leaving" : "open"}
       data-auto-dismiss={duration === null ? "off" : "on"}
       onMouseEnter={() => {
@@ -197,7 +260,7 @@ export function Toast({
       }}
       onFocus={(event: FocusEvent<HTMLDivElement>) => {
         const from = event.relatedTarget;
-        if (from instanceof HTMLElement && !event.currentTarget.contains(from)) {
+        if (!stack && from instanceof HTMLElement && !event.currentTarget.contains(from)) {
           const fromToast = from.closest(".toast");
           const origin = fromToast instanceof HTMLElement ? (focusOrigins.get(fromToast) ?? null) : from;
           returnToRef.current = origin;
@@ -244,15 +307,118 @@ export interface ToastStackProps {
   readonly label?: string;
 }
 
+interface Announcement {
+  readonly id: string;
+  readonly text: string;
+}
+
 export function ToastStack({ toasts, onDismiss, duration = TOAST_DURATION_MS, label = "Notifications" }: ToastStackProps) {
   const collapsed = Math.max(0, toasts.length - MAX_VISIBLE_TOASTS);
   const visible = toasts.slice(collapsed);
+  const sectionRef = useRef<HTMLElement>(null);
+
+  // Announcements: every id is announced once, the first time it appears.
+  const announcedRef = useRef(new Set<string>());
+  const [announcements, setAnnouncements] = useState<readonly Announcement[]>([]);
+  useEffect(() => {
+    const present = new Set(toasts.map((toast) => toast.id));
+    const announced = announcedRef.current;
+    // Forget ids that left, so a later toast reusing an id is announced as new.
+    for (const id of announced) if (!present.has(id)) announced.delete(id);
+    const fresh: Announcement[] = [];
+    for (const toast of toasts) {
+      if (announced.has(toast.id)) continue;
+      announced.add(toast.id);
+      fresh.push({ id: toast.id, text: toast.body ? `${toast.title} ${toast.body}` : toast.title });
+    }
+    setAnnouncements((prev) => {
+      // Lines for toasts that left are dropped (a removal is not announced).
+      const kept = prev.filter((entry) => present.has(entry.id));
+      return fresh.length === 0 && kept.length === prev.length ? prev : [...kept, ...fresh];
+    });
+  }, [toasts]);
+
+  // Focus: the toast that holds it while focus is inside the stack, where it
+  // came from, the visible ids at the last commit, and the ids playing their leave.
+  const focusedIdRef = useRef<string | null>(null);
+  const originRef = useRef<HTMLElement | null>(null);
+  const prevIdsRef = useRef<readonly string[]>([]);
+  const leavingRef = useRef(new Set<string>());
+
+  const dismissOf = (id: string): HTMLElement | null => {
+    const section = sectionRef.current;
+    if (!section) return null;
+    for (const toast of section.querySelectorAll<HTMLElement>(".toast")) {
+      if (toast.dataset.toastId === id) return toast.querySelector<HTMLElement>(".toast-dismiss");
+    }
+    return null;
+  };
+
+  /** Focuses the nearest toast that `alive` accepts, else the origin, else the stack. */
+  const rehome = (from: string, order: readonly string[], alive: (id: string) => boolean) => {
+    const section = sectionRef.current;
+    const targetId = survivingNeighbour(order, from, (id) => id !== from && !leavingRef.current.has(id) && alive(id));
+    const target = targetId === undefined ? null : dismissOf(targetId);
+    if (target) {
+      target.focus();
+      return;
+    }
+    const origin = originRef.current;
+    if (origin?.isConnected && !section?.contains(origin)) {
+      origin.focus();
+      return;
+    }
+    section?.focus();
+  };
+
+  /** A focused toast is about to leave: mark it, and move focus before it goes. */
+  const handOff = (id: string) => {
+    leavingRef.current.add(id);
+    const ids = prevIdsRef.current;
+    rehome(id, ids, (other) => ids.includes(other));
+  };
+
+  // After every commit: if the focused toast was removed or collapsed, focus
+  // fell to <body>; re-home it from the ids that survive.
+  useLayoutEffect(() => {
+    const ids = visible.map((toast) => toast.id);
+    const focusedId = focusedIdRef.current;
+    if (focusedId !== null && !ids.includes(focusedId)) {
+      focusedIdRef.current = null;
+      if (isLost()) rehome(focusedId, prevIdsRef.current, (id) => ids.includes(id));
+    }
+    for (const id of leavingRef.current) if (!ids.includes(id)) leavingRef.current.delete(id);
+    prevIdsRef.current = ids;
+  });
+
   return (
-    <section className="toast-stack" aria-label={label} aria-live="polite" aria-relevant="additions">
+    <section
+      ref={sectionRef}
+      className="toast-stack"
+      aria-label={label}
+      tabIndex={-1}
+      onFocus={(event) => {
+        const from = event.relatedTarget;
+        if (from instanceof HTMLElement && !event.currentTarget.contains(from)) originRef.current = from;
+        focusedIdRef.current = (event.target as HTMLElement).closest<HTMLElement>("[data-toast-id]")?.dataset.toastId ?? null;
+      }}
+      onBlur={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        // A focused toast that is being removed keeps its id, so the commit can re-home focus.
+        if (!(event.target as Node).isConnected) return;
+        focusedIdRef.current = null;
+        originRef.current = null;
+      }}
+    >
       {collapsed > 0 ? <div className="toast-collapsed">{collapsed} earlier</div> : null}
       {visible.map(({ id, ...toast }) => (
-        <Toast key={id} {...toast} duration={duration} inLiveRegion onDismiss={() => onDismiss(id)} />
+        <ToastView key={id} {...toast} duration={duration} stack={{ id, handOff }} onDismiss={() => onDismiss(id)} />
       ))}
+      <div className="toast-announcer" aria-live="polite">
+        {announcements.map((entry) => (
+          <p key={entry.id}>{entry.text}</p>
+        ))}
+      </div>
     </section>
   );
 }

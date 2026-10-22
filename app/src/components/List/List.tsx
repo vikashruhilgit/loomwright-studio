@@ -24,8 +24,11 @@
 // The first visible row is found by binary search over the rows in DOM order
 // (their tops only grow), so a scroll event costs O(log n) layout reads.
 //
-// Focus never falls to <body>: when the focused row is removed, focus moves to
-// the row now at its index (or the last row), and an uncontrolled List selects it.
+// Focus never falls to <body> while a row it knew survives: when the focused
+// row is removed, focus moves to its nearest surviving neighbour by key (the
+// next row that was below it, else the one above), never to a row inserted in
+// the same update, with `preventScroll` so anchoring holds. An uncontrolled List
+// selects it. If no previous row survives, focus is not moved.
 //
 // `loading` renders skeleton rows at the real row height on `surface-sunken`
 // (never a spinner), so nothing shifts when data lands. `emptyText` is shown
@@ -149,7 +152,7 @@ export function List<T extends ListItem>({
   const prevSelectedRef = useRef<string | null>(null);
   /** The row that holds focus, while focus is inside the listbox. */
   const focusedKeyRef = useRef<string | null>(null);
-  /** The row keys in order at the last commit, to find a removed row's index. */
+  /** The row keys in order at the last commit, to find a removed row's neighbours. */
   const prevKeysRef = useRef<readonly string[]>([]);
 
   const controlled = selectedKey !== undefined;
@@ -218,17 +221,18 @@ export function List<T extends ListItem>({
       const row = current === null ? undefined : rowRefs.current.get(current);
       if (row && listboxRef.current?.contains(document.activeElement) && document.activeElement !== row) row.focus();
     }
-    // 3. Focus never falls to <body>: if the focused row was removed, focus the
-    //    row now at its index (or the last), and select it when uncontrolled.
+    // 3. Focus never falls to <body>: if the focused row was removed, focus its
+    //    nearest surviving neighbour by key, and select it when uncontrolled.
     const focusedKey = focusedKeyRef.current;
     if (focusedKey !== null && !rowRefs.current.has(focusedKey)) {
       focusedKeyRef.current = null;
       const lost = document.activeElement === null || document.activeElement === document.body;
-      const index = prevKeysRef.current.indexOf(focusedKey);
-      const target = lost && index >= 0 && items.length > 0 ? items[Math.min(index, items.length - 1)] : undefined;
-      const row = target ? rowRefs.current.get(target.key) : undefined;
+      const targetKey = lost ? survivingNeighbour(prevKeysRef.current, focusedKey, (key) => rowRefs.current.has(key)) : undefined;
+      const target = targetKey === undefined ? undefined : items.find((item) => item.key === targetKey);
+      const row = targetKey === undefined ? undefined : rowRefs.current.get(targetKey);
       if (target && row) {
-        row.focus();
+        // No scroll: the anchoring above already placed the rows; focusing must not move them.
+        row.focus({ preventScroll: true });
         if (!controlled && target.key !== current) select(target);
       }
     }
@@ -363,6 +367,25 @@ export function List<T extends ListItem>({
       {body}
     </div>
   );
+}
+
+/**
+ * The key nearest to `removed` in the previous order that is still present:
+ * the first one after it, else the last one before it. Chosen by key, never by
+ * index, so rows inserted in the same update are never picked.
+ */
+function survivingNeighbour(previous: readonly string[], removed: string, present: (key: string) => boolean): string | undefined {
+  const index = previous.indexOf(removed);
+  if (index < 0) return undefined;
+  for (let i = index + 1; i < previous.length; i++) {
+    const key = previous[i];
+    if (key !== undefined && present(key)) return key;
+  }
+  for (let i = index - 1; i >= 0; i--) {
+    const key = previous[i];
+    if (key !== undefined && present(key)) return key;
+  }
+  return undefined;
 }
 
 /** A row's children plus the ids that name and describe it. */

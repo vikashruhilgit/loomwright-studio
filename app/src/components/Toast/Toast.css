@@ -15,6 +15,22 @@
 .toast-stack > * {
   pointer-events: auto;
 }
+/* The stack is focused only as the last-resort landing spot when a focused toast leaves with nowhere else to go. */
+.toast-stack:focus {
+  outline: none;
+}
+/* The polite announcer: read by screen readers, never seen. */
+.toast-announcer {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 .toast-collapsed {
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-full);

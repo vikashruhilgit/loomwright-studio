@@ -214,16 +214,55 @@ describe("ToastStack (AC6)", () => {
     expect(screen.getByText("Session 1 stopped.")).toBeTruthy();
   });
 
-  it("is the persistent polite live region; each toast stays role=status but is silenced inside it", () => {
-    const { rerender } = render(<ToastStack duration={null} toasts={[]} onDismiss={() => {}} />);
+  it("each toast stays role=status but is silenced; one persistent polite announcer speaks for the stack", () => {
+    const { container, rerender } = render(<ToastStack duration={null} toasts={[]} onDismiss={() => {}} />);
     const stack = screen.getByRole("region", { name: "Notifications" });
-    expect(stack.getAttribute("aria-live")).toBe("polite");
-    expect(stack.getAttribute("aria-relevant")).toBe("additions");
+    expect(stack.getAttribute("aria-live")).toBeNull();
+    const live = () => Array.from(container.querySelectorAll('[aria-live]:not([aria-live="off"])'));
+    expect(live()).toHaveLength(1);
+    const announcer = live()[0];
     rerender(<ToastStack duration={null} toasts={[item(1)]} onDismiss={() => {}} />);
-    // Same node: the region existed before the toast arrived, so the arrival is announced.
+    // Same nodes: the announcer existed before the toast arrived, so the arrival is announced.
     expect(screen.getByRole("region", { name: "Notifications" })).toBe(stack);
-    const toast = screen.getByRole("status");
-    expect(toast.getAttribute("aria-live")).toBe("off");
+    expect(live()).toEqual([announcer]);
+    expect(announcer?.textContent).toBe("Session 1 stopped. The task stays.");
+    expect(screen.getByRole("status").getAttribute("aria-live")).toBe("off");
+  });
+
+  /** The live context that observes a change under `node`: its nearest aria-live (or implicit live role) ancestor. */
+  function liveContext(node: Node | null): string {
+    for (let el = node instanceof Element ? node : (node?.parentElement ?? null); el; el = el.parentElement) {
+      const live = el.getAttribute("aria-live");
+      if (live) return live;
+      const role = el.getAttribute("role");
+      if (role === "status" || role === "log") return "polite";
+      if (role === "alert") return "assertive";
+    }
+    return "off";
+  }
+
+  /** The text every DOM insertion into a live (polite or assertive) context added, while `change` runs. */
+  function announcedDuring(container: HTMLElement, change: () => void): string[] {
+    const observer = new MutationObserver(() => {});
+    observer.observe(container, { childList: true, subtree: true, characterData: true });
+    change();
+    const records = observer.takeRecords();
+    observer.disconnect();
+    return records
+      .filter((record) => liveContext(record.target) !== "off")
+      .flatMap((record) => (record.type === "characterData" ? [record.target.textContent ?? ""] : Array.from(record.addedNodes, (node) => node.textContent ?? "")));
+  }
+
+  it("a collapsed toast that resurfaces is not announced again, and the 'N earlier' line is never announced", () => {
+    const { container, rerender } = render(<ToastStack duration={null} toasts={[1, 2, 3].map(item)} onDismiss={() => {}} />);
+    // A fourth arrives: only it is announced, not the "1 earlier" line that appears with it.
+    expect(announcedDuring(container, () => rerender(<ToastStack duration={null} toasts={[1, 2, 3, 4].map(item)} onDismiss={() => {}} />))).toEqual([
+      "Session 4 stopped. The task stays.",
+    ]);
+    expect(screen.getByText("1 earlier")).toBeTruthy();
+    // Dismissing t4 frees a slot: t1 resurfaces as a fresh node, silently.
+    expect(announcedDuring(container, () => rerender(<ToastStack duration={null} toasts={[1, 2, 3].map(item)} onDismiss={() => {}} />))).toEqual([]);
+    expect(screen.getByText("Session 1 stopped.")).toBeTruthy();
   });
 
   it("is a named region positioned fixed bottom-right, so toasts never move the main content", () => {
@@ -350,6 +389,66 @@ describe("Toast focus hand-off (AC8)", () => {
     expect(onAction).toHaveBeenCalledWith("t2");
     expect(screen.getAllByRole("status")).toHaveLength(1);
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Dismiss" }));
+  });
+
+  it("the caller removing several toasts in one update, one of them focused, returns focus to the origin", () => {
+    const stack = (toasts: readonly ToastItem[]) => (
+      <>
+        <button type="button">Origin</button>
+        <ToastStack duration={null} toasts={toasts} onDismiss={() => {}} />
+      </>
+    );
+    const { rerender } = render(stack([item(1), item(2)]));
+    const origin = screen.getByRole("button", { name: "Origin" });
+    act(() => origin.focus());
+    const older = screen.getAllByRole("button", { name: "Dismiss" })[0];
+    if (!older) throw new Error("older dismiss");
+    act(() => older.focus());
+    rerender(stack([]));
+    expect(document.activeElement).toBe(origin);
+  });
+
+  it("the caller removing the focused toast and its newer neighbour focuses the toast that survives", () => {
+    const stack = (toasts: readonly ToastItem[]) => <ToastStack duration={null} toasts={toasts} onDismiss={() => {}} />;
+    const { rerender } = render(stack([1, 2, 3].map(item)));
+    const middle = screen.getAllByRole("button", { name: "Dismiss" })[1];
+    if (!middle) throw new Error("middle dismiss");
+    act(() => middle.focus());
+    rerender(stack([item(1)]));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Dismiss" }));
+  });
+
+  it("dismissing the last toast when focus came from nowhere lands on the stack, never <body>", () => {
+    render(<Stack initial={[item(1)]} />);
+    const dismiss = screen.getByRole("button", { name: "Dismiss" });
+    // Focus arrives from <body> (no relatedTarget), so there is no origin to return to.
+    act(() => dismiss.focus());
+    fireEvent.click(dismiss);
+    expect(screen.queryAllByRole("status")).toHaveLength(0);
+    expect(document.activeElement).toBe(screen.getByRole("region", { name: "Notifications" }));
+  });
+
+  it("standalone toasts removed together while one is focused fall back to its origin after the commit", async () => {
+    const pair = (show: boolean) => (
+      <>
+        <button type="button">Origin</button>
+        {show ? (
+          <>
+            <Toast duration={null} status={{ state: "idle" }} title="One." onDismiss={() => {}} />
+            <Toast duration={null} status={{ state: "idle" }} title="Two." onDismiss={() => {}} />
+          </>
+        ) : null}
+      </>
+    );
+    const { rerender } = render(pair(true));
+    const origin = screen.getByRole("button", { name: "Origin" });
+    act(() => origin.focus());
+    const first = screen.getAllByRole("button", { name: "Dismiss" })[0];
+    if (!first) throw new Error("first dismiss");
+    act(() => first.focus());
+    rerender(pair(false));
+    await act(async () => {});
+    expect(document.activeElement).toBe(origin);
   });
 
   it("calls onDismiss exactly once when the hand-off moves focus away mid-leave", () => {

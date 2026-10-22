@@ -301,6 +301,19 @@ describe("List keyboard (AC4, AC8)", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  it("removing the focused row while rows arrive above it focuses its surviving neighbour, not a new row, without scrolling", () => {
+    const items = sessions(4, "s");
+    const { rerender } = render(<List label="Sessions" items={items} defaultSelectedKey="s1" />);
+    act(() => screen.getByRole("option", { name: "Session s1" }).focus());
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    rerender(<List label="Sessions" items={[...sessions(3, "n"), ...items.filter((item) => item.key !== "s1")]} defaultSelectedKey="s1" />);
+    const neighbour = screen.getByRole("option", { name: "Session s2" });
+    expect(document.activeElement).toBe(neighbour);
+    expect(neighbour.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("option", { name: "Session n1" }).getAttribute("aria-selected")).toBe("false");
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+
   it("removing a row never steals focus that is outside the list", () => {
     const items = sessions(3, "s");
     const { rerender } = render(
