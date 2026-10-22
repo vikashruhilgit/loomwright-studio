@@ -187,9 +187,11 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
   const [notices, setNotices] = useState<ReadonlyMap<number, Notice>>(new Map());
   const [busy, setBusy] = useState<number | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<Grant | null>(null);
-  const [revokeBusy, setRevokeBusy] = useState<number | null>(null);
+  /** The grants with a revoke in flight. Each grant's revoke is independent; only a second one for the same grant waits. */
+  const [revokeBusy, setRevokeBusy] = useState<ReadonlySet<number>>(new Set());
   const [grantNotice, setGrantNotice] = useState<string | undefined>(undefined);
   const inFlight = useRef(new Set<number>());
+  const revoking = useRef(new Set<number>());
   const mounted = useRef(true);
   const grantsHeading = useRef<HTMLHeadingElement>(null);
 
@@ -218,11 +220,20 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
   }, [pending, outcomes, showDecided, decided.approvals]);
   const rows = useMemo(() => [...pending, ...decidedRows], [pending, decidedRows]);
 
-  // Selected by id. A missing id (decided elsewhere) falls back to the first row, which then becomes the selection.
-  const selected = rows.find((a) => a.id === selectedId) ?? rows[0];
+  // Selected by id. Before the owner has a selection, the oldest row is it (the screen opens on it). Once
+  // one is selected, its leaving the list (decided elsewhere) never hands the selection, and so A / ⇧A / D,
+  // to another approval: the detail says it left, and nothing is decidable until the owner picks one.
+  const found = rows.find((a) => a.id === selectedId);
+  const selected = found ?? (selectedId === null ? rows[0] : undefined);
+  const goneId = selectedId !== null && found === undefined ? selectedId : null;
   useEffect(() => {
-    if (selected !== undefined && selected.id !== selectedId) setSelectedId(selected.id);
+    if (selectedId === null && selected !== undefined) setSelectedId(selected.id);
   }, [selected, selectedId]);
+  /** The last approval the detail showed, to name one that left the list. */
+  const lastShown = useRef<Approval | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (selected !== undefined) lastShown.current = selected;
+  });
 
   // ---- the decided read (on request) ------------------------------------------------
 
@@ -291,11 +302,17 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
 
   const revoke = useCallback(
     async (grant: Grant): Promise<void> => {
-      if (revokeBusy !== null) return;
-      setRevokeBusy(grant.id);
+      // A confirmed revoke is never dropped without a word: the only one not sent is a second for a grant already on its way.
+      if (revoking.current.has(grant.id)) {
+        setGrantNotice(`Grant #${grant.id} is already being revoked; nothing more was sent.`);
+        return;
+      }
+      revoking.current.add(grant.id);
+      setRevokeBusy(new Set(revoking.current));
       const result = await send<RevokeGrantResponse>(api, { method: "POST", path: "/approvals/grants/:id/revoke", params: { id: grant.id } });
+      revoking.current.delete(grant.id);
       if (!mounted.current) return;
-      setRevokeBusy(null);
+      setRevokeBusy(new Set(revoking.current));
       if (result?.ok === true) {
         setGrantNotice(`Revoked grant #${grant.id}. ${printable(grant.requesting_agent)} asks again next time.`);
         store.refetch("grants");
@@ -304,7 +321,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
       setGrantNotice(refusalText(result, "revoked"));
       store.refetch("grants");
     },
-    [api, store, revokeBusy],
+    [api, store],
   );
 
   const showGrants = useCallback(() => {
@@ -317,15 +334,24 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
 
   const dialogOpen = revokeTarget !== null;
   const canDecide = selected !== undefined && selected.status === "pending" && busy === null && !dialogOpen;
-  const latest = useRef({ selected, canDecide, decide, showGrants, dialogOpen, rows });
+  /** A decision asked for while another approval's decision is in flight: say nothing was sent, never drop it silently. */
+  const refuseWhileBusy = useCallback(
+    (current: Approval | undefined, inFlightId: number | null) => {
+      if (current === undefined || current.status !== "pending" || inFlightId === null || inFlightId === current.id) return;
+      setNotice(current.id, { tone: "attention", text: `Nothing was sent for #${current.id}: the decision on #${inFlightId} was still on its way to the kernel. Decide again.` });
+    },
+    [setNotice],
+  );
+  const latest = useRef({ selected, canDecide, decide, showGrants, dialogOpen, rows, busy, refuseWhileBusy });
   useLayoutEffect(() => {
-    latest.current = { selected, canDecide, decide, showGrants, dialogOpen, rows };
+    latest.current = { selected, canDecide, decide, showGrants, dialogOpen, rows, busy, refuseWhileBusy };
   });
 
   useEffect(() => {
     const run = (decision: Decision) => () => {
-      const { selected: current, canDecide: can, decide: act } = latest.current;
+      const { selected: current, canDecide: can, decide: act, busy: inFlightId, refuseWhileBusy: refuse } = latest.current;
       if (current !== undefined && can) void act(current, decision);
+      else refuse(current, inFlightId);
     };
     return registry.register("approvals", [
       {
@@ -385,10 +411,11 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
       if (isComposingKey(event) || isEditableTarget(event.target)) return;
-      // Nothing runs behind an open dialog (this screen's confirm, the palette, the kill switch).
-      if (document.querySelector('[aria-modal="true"]') !== null) return;
+      // Nothing runs behind an open dialog (this screen's confirm, the kill switch: both `aria-modal`) or the
+      // ⌘K palette, which is a combobox, not `aria-modal`, and whose map hands single keys on.
+      if (document.querySelector('[aria-modal="true"], [data-testid="command-palette"]') !== null) return;
       const key = event.key;
-      const { selected: current, rows: list, canDecide: can, decide: act } = latest.current;
+      const { selected: current, rows: list, canDecide: can, decide: act, busy: inFlightId, refuseWhileBusy: refuse } = latest.current;
       if ((key === "j" || key === "k") && !event.shiftKey) {
         if (list.length === 0) return;
         event.preventDefault();
@@ -401,7 +428,11 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
         key === "a" && !event.shiftKey ? "once" : key === "A" && event.shiftKey ? "always" : (key === "d" || key === "D") && !event.shiftKey ? "deny" : undefined;
       if (decision === undefined || current === undefined) return;
       event.preventDefault();
-      if (event.repeat || !can) return;
+      if (event.repeat) return;
+      if (!can) {
+        refuse(current, inFlightId);
+        return;
+      }
       void act(current, decision);
     };
     window.addEventListener("keydown", onKeyDown);
@@ -436,7 +467,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
       loading={grants === undefined || (grants.data === undefined && grants.error === undefined)}
       headingRef={grantsHeading}
       notice={grantNotice}
-      busyId={revokeBusy}
+      busyIds={revokeBusy}
       onRevoke={(grant) => {
         setGrantNotice(undefined);
         setRevokeTarget(grant);
@@ -535,7 +566,13 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
           {showDecided && decided.loading ? <p className="approvals-note">Reading decided approvals…</p> : null}
         </div>
         <div className="approvals-detail-pane">
-          {selected === undefined ? (
+          {goneId !== null ? (
+            <GoneDetail
+              id={goneId}
+              action={lastShown.current?.id === goneId ? lastShown.current.action : undefined}
+              notice={notices.get(goneId)}
+            />
+          ) : selected === undefined ? (
             <div className="approvals-detail" aria-hidden="true" />
           ) : (
             <ApprovalDetail
@@ -676,6 +713,23 @@ function ApprovalDetail({ approval: a, sessions, message, notice, busy, disabled
   );
 }
 
+/** The selected approval left the list (decided elsewhere): nothing is decidable until the owner picks another. */
+function GoneDetail({ id, action, notice }: { readonly id: number; readonly action: string | undefined; readonly notice: Notice | undefined }) {
+  return (
+    <section className="approvals-detail" data-testid="approval-gone" data-approval-id={id} role="status">
+      <h2 className="approvals-title">{action === undefined ? `#${id}` : printable(action)}</h2>
+      <p className="approvals-note">
+        #{id} is no longer waiting on you: it was decided elsewhere. Pick an approval (J / K or a click) to decide it; nothing here acts until you do.
+      </p>
+      {notice === undefined ? null : (
+        <p className="approvals-notice" data-tone={notice.tone} data-testid="approval-notice">
+          {notice.text}
+        </p>
+      )}
+    </section>
+  );
+}
+
 function Outcome({ approval: a, message }: { readonly approval: Approval; readonly message: BrainMessage | undefined }) {
   return (
     <div className="approvals-outcome" data-testid="approval-outcome" role="status">
@@ -724,11 +778,11 @@ interface GrantsSectionProps {
   readonly loading: boolean;
   readonly headingRef: RefObject<HTMLHeadingElement | null>;
   readonly notice: string | undefined;
-  readonly busyId: number | null;
+  readonly busyIds: ReadonlySet<number>;
   readonly onRevoke: (grant: Grant) => void;
 }
 
-function GrantsSection({ grants, error, loading, headingRef, notice, busyId, onRevoke }: GrantsSectionProps) {
+function GrantsSection({ grants, error, loading, headingRef, notice, busyIds, onRevoke }: GrantsSectionProps) {
   const headingId = useId();
   let body: ReactNode;
   if (grants === undefined && error !== undefined) body = <p className="approvals-note">Couldn't load grants. {errorText(error)}</p>;
@@ -755,7 +809,7 @@ function GrantsSection({ grants, error, loading, headingRef, notice, busyId, onR
               </div>
               <pre className="approvals-pre approvals-pre-small">{payloadText(g.payload)}</pre>
             </div>
-            <Button size="row" variant="secondary" loading={busyId === g.id} onClick={() => onRevoke(g)} aria-label={`Revoke grant #${g.id}`}>
+            <Button size="row" variant="secondary" loading={busyIds.has(g.id)} onClick={() => onRevoke(g)} aria-label={`Revoke grant #${g.id}`}>
               Revoke
             </Button>
           </li>

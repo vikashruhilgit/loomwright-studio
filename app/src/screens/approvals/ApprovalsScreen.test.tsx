@@ -179,6 +179,50 @@ describe("the inbox", () => {
     expect(screen.getByTestId("approval-detail").dataset.approvalId).toBe("2");
   });
 
+  it("the selected approval leaving the list never hands A / ⇧A / D to another; the owner picks one first", async () => {
+    const { fake, kernel, registry } = await mount({ approvals: [approval(1), approval(2)] });
+    fake.route("POST /approvals/:id/approve", (req) => ok({ approval: { ...approval(Number(req.params?.id)), status: "approved", decision: "once" } }));
+    press("j");
+    expect(selectedId()).toBe(2);
+    kernel.approvals = [approval(1)];
+    act(() => fake.emit(event("approval_decided")));
+    await waitFor(() => expect(rowIds()).toEqual([1]));
+    expect(selectedId()).toBeUndefined();
+    expect(screen.getByTestId("approval-gone").textContent).toContain("#2 is no longer waiting on you");
+    expect(screen.queryByTestId("approval-detail")).toBeNull();
+    press("a");
+    press("A", { shiftKey: true });
+    press("d");
+    for (const id of [APPROVAL_COMMANDS.approveOnce, APPROVAL_COMMANDS.approveAlways, APPROVAL_COMMANDS.deny]) {
+      expect(registry.get(id)?.enabled?.()).toBe(false);
+      await act(async () => registry.get(id)?.run());
+    }
+    expect(fake.requests.filter((r) => r.req.method === "POST")).toHaveLength(0);
+    // An explicit move selects again, and only then does A decide.
+    press("j");
+    expect(selectedId()).toBe(1);
+    press("a");
+    await waitFor(() => expect(posts(fake, "POST /approvals/:id/approve")).toHaveLength(1));
+    expect(posts(fake, "POST /approvals/:id/approve")[0]?.params).toEqual({ id: 1 });
+  });
+
+  it("an approval_not_pending notice stays with its approval after it leaves the list", async () => {
+    const { fake, kernel } = await mount({ approvals: [approval(1)] });
+    fake.route("POST /approvals/:id/deny", () => {
+      kernel.approvals = [];
+      return { ok: false, status: 409, body: { error: "approval_not_pending", message: "approval 1 is not pending" } };
+    });
+    press("d");
+    await waitFor(() => expect(screen.getByTestId("screen-approvals").dataset.state).toBe("empty"));
+    kernel.approvals = [approval(2)];
+    act(() => fake.emit(event("approval_requested")));
+    await waitFor(() => expect(rowIds()).toEqual([2]));
+    expect(screen.getByTestId("approval-gone").dataset.approvalId).toBe("1");
+    expect(screen.getByTestId("approval-notice").textContent).toBe("approval 1 is not pending");
+    press("a");
+    expect(fake.requests.filter((r) => r.req.method === "POST" && r.req.path === "/approvals/:id/approve")).toHaveLength(0);
+  });
+
   it("the empty state, with its words, when nothing waits", async () => {
     await mount();
     expect(screen.getByTestId("screen-approvals").dataset.state).toBe("empty");
@@ -346,6 +390,41 @@ describe("decisions", () => {
     expect(screen.queryByTestId("approval-outcome")).toBeNull();
     expect(screen.getByRole("button", { name: /^Allow once/ })).toBeTruthy();
   });
+  it("a decision asked for while another is in flight sends nothing and says so", async () => {
+    const { fake } = await mount({ approvals: [approval(1), approval(2)] });
+    let release: (() => void) | undefined;
+    fake.route(
+      "POST /approvals/:id/approve",
+      (req) =>
+        new Promise((resolve) => {
+          release = () => resolve(ok({ approval: { ...approval(Number(req.params?.id)), status: "approved", decision: "once" } }));
+        }),
+    );
+    press("a");
+    await waitFor(() => expect(posts(fake, "POST /approvals/:id/approve")).toHaveLength(1));
+    press("j");
+    expect(selectedId()).toBe(2);
+    press("a");
+    expect(screen.getByTestId("approval-notice").textContent).toBe("Nothing was sent for #2: the decision on #1 was still on its way to the kernel. Decide again.");
+    expect(posts(fake, "POST /approvals/:id/approve")).toHaveLength(1);
+    await act(async () => release?.());
+  });
+
+  it("no decision key runs behind the open ⌘K palette", async () => {
+    const { fake } = await mount({ approvals: [approval(1)] });
+    const palette = document.createElement("div");
+    palette.setAttribute("data-testid", "command-palette");
+    document.body.appendChild(palette);
+    try {
+      press("a");
+      press("d");
+      press("j");
+      expect(fake.requests.filter((r) => r.req.method === "POST")).toHaveLength(0);
+      expect(selectedId()).toBe(1);
+    } finally {
+      palette.remove();
+    }
+  });
 });
 
 describe("grants", () => {
@@ -370,6 +449,32 @@ describe("grants", () => {
     const revokes = posts(fake, "POST /approvals/grants/:id/revoke");
     expect(revokes).toHaveLength(1);
     expect(revokes[0]?.params).toEqual({ id: 8 });
+  });
+
+  it("a revoke confirmed while another is in flight is sent, not dropped; the in-flight grant's Revoke is busy", async () => {
+    const { fake } = await mount({ grants: [grant(17), grant(21)] });
+    const held: Array<() => void> = [];
+    fake.route(
+      "POST /approvals/grants/:id/revoke",
+      (req) =>
+        new Promise((resolve) => {
+          held.push(() => resolve(ok({ grant: grant(Number(req.params?.id)) })));
+        }),
+    );
+    const section = within(screen.getByTestId("approvals-grants"));
+    fireEvent.click(section.getByRole("button", { name: "Revoke grant #17" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: /^Revoke/ }));
+    await waitFor(() => expect(posts(fake, "POST /approvals/grants/:id/revoke")).toHaveLength(1));
+    await waitFor(() => expect(section.getByRole("button", { name: "Revoke grant #17" }).getAttribute("aria-busy")).toBe("true"));
+
+    fireEvent.click(section.getByRole("button", { name: "Revoke grant #21" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: /^Revoke/ }));
+    await waitFor(() => expect(posts(fake, "POST /approvals/grants/:id/revoke").map((r) => r.params)).toEqual([{ id: 17 }, { id: 21 }]));
+    await act(async () => {
+      for (const release of held) release();
+    });
+    await waitFor(() => expect(screen.getByTestId("grant-notice").textContent).toContain("Revoked grant #"));
+    expect(section.getByRole("button", { name: "Revoke grant #17" }).getAttribute("aria-busy")).toBeNull();
   });
 
   it("no decision key runs behind the open confirm", async () => {
