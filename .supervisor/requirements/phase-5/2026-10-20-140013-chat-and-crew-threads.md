@@ -83,3 +83,9 @@ app/src/screens/chat/
 app/e2e/fixtures/chat.ts
 app/e2e/chat.spec.ts
 docs/evidence/phase-5-polish/chat/
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-22T11:21:33Z
+- **Brief:** .supervisor/jobs/done/2026-10-22-chat-and-crew-threads.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/118
