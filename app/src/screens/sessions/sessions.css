@@ -1,0 +1,282 @@
+/* Sessions: docs/design/mockups/gui-v1.html §Sessions (the .sesswrap, .srow and .log rules). Colour, type, spacing and widths come only from tokens.css custom properties. */
+/*
+ * The shell's `.window` row is `auto`, so `.main` grows with its content and
+ * `.content` never scrolls (app.css, outside this screen; the same gap Chat
+ * records in chat.css, and a finding in the evidence README). While Sessions is
+ * shown, hold the column to the window so the log scrolls inside its pane
+ * (otherwise it grows to its full height and "Jump to latest" never applies).
+ */
+.main:has(.sessions) {
+  min-height: 0;
+  overflow: hidden;
+}
+.content:has(> .sessions) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sessions {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.sessions-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-5);
+  border-bottom: 1px solid var(--hairline);
+}
+.sessions-count {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-variant-numeric: tabular-nums;
+}
+.sessions-spacer {
+  flex: 1;
+}
+/* The last good list is on screen; the latest read failed. */
+.sessions-stale {
+  flex: none;
+  margin: 0;
+  padding: var(--space-2) var(--space-5);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--attention);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  overflow-wrap: anywhere;
+}
+
+/* The 360px list pane and the detail. */
+.sessions-split {
+  display: grid;
+  flex: 1;
+  grid-template-columns: var(--list-pane-width) minmax(0, 1fr);
+  /* One row bounded by the screen: an implicit `auto` row would grow to the log's full height, so it never scrolls. */
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+.sessions-list-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: var(--space-2);
+  border-right: 1px solid var(--hairline);
+  overflow: hidden;
+}
+.sessions-list-pane > .list,
+.sessions-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.sessions-detail-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-4) var(--space-5);
+  overflow: hidden;
+}
+
+/* The list: groups, then rows (the mockup's .srow: dot → avatar, title, meta, model on the right). */
+.sessions-group-label {
+  margin: var(--space-2) 0 var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--ink-tertiary);
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+}
+.sessions-none {
+  padding: var(--space-1) var(--space-2) var(--space-2);
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.sessions-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  cursor: default;
+}
+.sessions-row:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.sessions-row[aria-selected="true"] {
+  background: var(--accent-soft);
+}
+.sessions-row:focus-visible {
+  /* Inset, so the ring is never clipped by the scroll container. */
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.sessions-row-avatar {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+}
+.sessions-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.sessions-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+.sessions-row-agent {
+  font-weight: 600;
+}
+.sessions-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-variant-numeric: tabular-nums;
+}
+.sessions-row-status {
+  color: var(--ink-secondary);
+}
+.sessions-row-status[data-danger="true"] {
+  color: var(--danger);
+}
+.sessions-row-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-0-5);
+}
+.sessions-row-aside {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  text-align: right;
+}
+
+/* The detail: cwd and model, then the log. */
+.sessions-detail {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 0;
+}
+.sessions-detail-meta {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  overflow-wrap: anywhere;
+}
+.sessions-label {
+  flex: none;
+  color: var(--ink-tertiary);
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+}
+.sessions-mono {
+  font-family: var(--type-mono-small-family);
+  font-size: var(--type-mono-small-size);
+  line-height: var(--type-mono-small-line);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.sessions-waiting {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--attention-soft);
+  color: var(--ink);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.sessions-notice,
+.sessions-note {
+  flex: none;
+  margin: 0;
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  overflow-wrap: anywhere;
+}
+.sessions-notice {
+  color: var(--danger);
+}
+.sessions-log {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.sessions-log > .streaming-log {
+  flex: 1;
+  min-height: 0;
+}
+
+/* The single-column states: empty, error, no bridge. */
+.sessions-single .sessions-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-height: 0;
+  padding: var(--space-12) var(--space-6);
+  max-width: 640px;
+  overflow: auto;
+}
+.sessions-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.sessions-single > .sessions-empty {
+  padding: var(--space-12) var(--space-6);
+  max-width: 640px;
+}
+.sessions-empty-title {
+  margin: 0;
+  font-family: var(--type-title-2-family);
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+}
+.sessions-empty-note {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-secondary);
+}
