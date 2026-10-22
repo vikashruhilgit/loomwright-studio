@@ -179,6 +179,32 @@ function runsNow(session: SessionSummary, control: ControlState | undefined): bo
   return isLive(session.status) && !(control?.phase === "answered" && !isLive(control.status));
 }
 
+/** The orphan rule: `orphaned` in the kernel's list, `leader_unverified` in `/status`, and not already answered here. */
+function canAbandon(session: SessionSummary | undefined, body: StatusBody | undefined, done: ControlState | undefined): boolean {
+  if (session === undefined || session.status !== "orphaned" || done?.phase === "answered") return false;
+  const orphan = body?.orphaned?.find((o) => o.id === session.id);
+  return orphan !== undefined && orphan.reason === ABANDONABLE_REASON;
+}
+
+/**
+ * The listed session a confirm still acts on, or `undefined` once it can't: its session left the kernel's
+ * list (or there is no answered list: loading, error), or its action no longer applies (a Kill for a session
+ * that ended, an Abandon for a row no longer a `leader_unverified` orphan). Read against the newest list, so
+ * a refetch that still lists the session with the action applying never closes the confirm.
+ */
+function confirmTarget(
+  dialog: DialogTarget | null,
+  ordered: readonly SessionSummary[],
+  body: StatusBody | undefined,
+  controls: ReadonlyMap<number, ControlState>,
+): SessionSummary | undefined {
+  if (dialog === null) return undefined;
+  const listed = ordered.find((s) => s.id === dialog.session.id);
+  if (listed === undefined) return undefined;
+  const done = controls.get(listed.id);
+  return (dialog.verb === "kill" ? runsNow(listed, done) : canAbandon(listed, body, done)) ? listed : undefined;
+}
+
 const IDLE_OUTPUT: OutputSnapshot = { rows: [], lastSeq: 0, reading: false, loaded: false, error: undefined };
 const NO_SUBSCRIBE = (): (() => void) => () => undefined;
 
@@ -373,7 +399,14 @@ function SessionsView({ api, registry }: { readonly api: StudioBridge; readonly 
     [api, store, setControl],
   );
 
-  const dialogOpen = dialog !== null;
+  // A confirm lives only while its target does: rendered, counted open and confirmable only while
+  // `confirmTarget` still finds it. Otherwise it is cleared, so it never comes back when the list
+  // repopulates, and the close runs the focus recovery below (the layout it was in may be gone too).
+  const dialogApplies = confirmTarget(dialog, ordered, statusBody, controls) !== undefined;
+  const dialogOpen = dialog !== null && dialogApplies;
+  useEffect(() => {
+    if (dialog !== null && !dialogApplies) setDialog(null);
+  }, [dialog, dialogApplies]);
 
   // ---- focus: never lost to <body> --------------------------------------------------------
   // A focused control can leave the DOM under the owner: Abandon once the kernel answers, a row that moves to
@@ -424,13 +457,6 @@ function SessionsView({ api, registry }: { readonly api: StudioBridge; readonly 
     latest.current = { selected, ordered, dialogOpen, statusBody, controls };
   });
 
-  /** The orphan rule: `orphaned` in the kernel's list, `leader_unverified` in `/status`, and not already answered here. */
-  const canAbandon = useCallback((session: SessionSummary | undefined, body: StatusBody | undefined, done: ControlState | undefined): boolean => {
-    if (session === undefined || session.status !== "orphaned" || done?.phase === "answered") return false;
-    const orphan = body?.orphaned?.find((o) => o.id === session.id);
-    return orphan !== undefined && orphan.reason === ABANDONABLE_REASON;
-  }, []);
-
   const canStop = useCallback((): boolean => {
     const { selected: current, dialogOpen: open, controls: known } = latest.current;
     return current !== undefined && runsNow(current, known.get(current.id)) && !inFlight.current.has(current.id) && !open;
@@ -454,13 +480,17 @@ function SessionsView({ api, registry }: { readonly api: StudioBridge; readonly 
     const { selected: current, dialogOpen: open, statusBody: body, controls: known } = latest.current;
     if (current === undefined || open || inFlight.current.has(current.id) || !canAbandon(current, body, known.get(current.id))) return;
     setDialog({ verb: "abandon", session: current });
-  }, [canAbandon]);
+  }, []);
 
   const confirmDialog = useCallback((): void => {
     if (dialog === null) return;
     setDialog(null);
-    if (inFlight.current.has(dialog.session.id)) return;
-    void control(dialog.session, dialog.verb);
+    // Re-checked against the newest list at the moment of the click: never sends for a target the kernel
+    // no longer lists, or whose action no longer applies.
+    const { ordered: rows, statusBody: body, controls: known } = latest.current;
+    const target = confirmTarget(dialog, rows, body, known);
+    if (target === undefined || inFlight.current.has(target.id)) return;
+    void control(target, dialog.verb);
   }, [dialog, control]);
 
   // ---- commands and keys ------------------------------------------------------------------
@@ -563,8 +593,10 @@ function SessionsView({ api, registry }: { readonly api: StudioBridge; readonly 
       </p>
     );
 
+  // Never rendered without a target (`dialogOpen`), so the single-column empty / error layout, where no
+  // session is listed, never has one to render.
   const confirm =
-    dialog === null ? null : dialog.verb === "kill" ? (
+    dialog === null || !dialogOpen ? null : dialog.verb === "kill" ? (
       <Dialog
         kind="confirm"
         title={`Kill session #${dialog.session.id}?`}

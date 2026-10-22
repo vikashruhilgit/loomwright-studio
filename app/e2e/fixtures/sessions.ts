@@ -19,7 +19,7 @@
 //
 // The state is mutable. A spec can replace a control route's answer (`stop`,
 // `kill`, `abandon`) with its own, including one that never settles until the
-// spec releases it. `onChange` is called with the event kind the kernel would
+// spec releases it; `holdOutput` holds an output read the same way. `onChange` is called with the event kind the kernel would
 // append and the session id, so a spec can push it through the feed.
 import type { Approval, EventFrame, RosterEntry, RouteKey, SessionOutputKind, SessionOutputRow, SessionSummary, StatusBody } from "../../src/api/contract";
 import { cannedStatus } from "../fixture-kernel";
@@ -64,6 +64,8 @@ export interface SessionsKernel {
   stop: ControlAnswer | undefined;
   kill: ControlAnswer | undefined;
   abandon: ControlAnswer | undefined;
+  /** Awaited before an output read answers (default: none), so a spec can hold a read in flight. */
+  holdOutput: ((req: FixtureRequest) => Promise<void>) | undefined;
   /** Called with the event kind the kernel appends and its session id. */
   onChange: (kind: string, sessionId: number | null) => void;
 }
@@ -199,6 +201,7 @@ export function sessionsKernel(init: SessionsKernelInit = {}): SessionsKernel {
     stop: undefined,
     kill: undefined,
     abandon: undefined,
+    holdOutput: undefined,
     onChange: () => undefined,
   };
 }
@@ -252,9 +255,10 @@ export function sessionsRoutes(kernel: SessionsKernel): Partial<Record<RouteKey,
   return {
     "GET /status": () => ok(cannedStatus({ kill_unconfirmed: kernel.killUnconfirmed, orphaned: kernel.orphaned })),
     "GET /sessions": () => ok({ sessions: kernel.sessions }),
-    "GET /sessions/:id/output": (req) => {
+    "GET /sessions/:id/output": async (req) => {
       const id = Number(req.params.id);
       kernel.outputReads.push({ id, after: req.query.after, limit: req.query.limit });
+      await kernel.holdOutput?.(req);
       const after = Number(req.query.after ?? "0");
       const limit = Math.min(OUTPUT_LIMIT, Number(req.query.limit ?? String(OUTPUT_LIMIT)));
       if (!kernel.sessions.some((s) => s.id === id)) return refused(404, { error: "not_found" });

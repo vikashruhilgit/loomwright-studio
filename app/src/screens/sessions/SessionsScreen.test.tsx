@@ -681,16 +681,80 @@ describe("focus", () => {
     expect(posts(fake, "POST /sessions/:id/abandon")).toHaveLength(1);
   });
 
-  it("a confirm whose opener left while it was open hands focus to the region in its place", async () => {
+  it("a confirm whose session left the list closes, sends nothing, and hands focus to the region in its place", async () => {
     const { fake, kernel } = await mount({ sessions: [session(27, { status: "orphaned" }), session(25)], orphaned: [ORPHAN] });
     const button = await screen.findByRole("button", { name: "Abandon" });
     button.focus();
     fireEvent.click(button);
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
     kernel.sessions = [session(25)];
     act(() => fake.emit(event("session_status", 27)));
     await waitFor(() => expect(screen.queryByTestId("session-gone")).not.toBeNull());
-    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("session-gone")));
+    expect(posts(fake, "POST /sessions/:id/abandon")).toHaveLength(0);
+  });
+
+  it("a Kill confirm whose list goes empty closes (focus on the empty state) and never comes back when the list repopulates", async () => {
+    const { fake, kernel } = await mount({ sessions: [running(31)] });
+    fake.route("POST /sessions/:id/kill", () => ok({ id: 31, status: "stopped", reason: "owner_kill" }));
+    fireEvent.click(screen.getByRole("button", { name: "Kill" }));
+    within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }).focus();
+
+    kernel.sessions = [];
+    act(() => fake.emit(event("session_status", 31)));
+    await waitFor(() => expect(screen.getByTestId("screen-sessions").dataset.state).toBe("empty"));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("sessions-empty")));
+    expect(document.activeElement).not.toBe(document.body);
+
+    kernel.sessions = [running(32)];
+    act(() => fake.emit(event("session_status", 32)));
+    await waitFor(() => expect(screen.getByTestId("screen-sessions").dataset.state).toBe("populated"));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByText("Kill session #31?")).toBeNull();
+    // #31 is gone: nothing acts on it, and no kill was sent.
+    expect(screen.getByTestId("session-gone").dataset.sessionId).toBe("31");
+    await act(async () => new Promise((done) => setTimeout(done, 20)));
+    expect(posts(fake, "POST /sessions/:id/kill")).toHaveLength(0);
+  });
+
+  it("a Kill confirm whose session ended while it was open closes and sends nothing", async () => {
+    const { fake, kernel } = await mount({ sessions: [running(31)] });
+    fireEvent.click(screen.getByRole("button", { name: "Kill" }));
+    kernel.sessions = [session(31, { status: "stopped" })];
+    act(() => fake.emit(event("session_status", 31)));
+    await waitFor(() => expect(statusOf(31)).toBe("stopped"));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+    await act(async () => new Promise((done) => setTimeout(done, 20)));
+    expect(posts(fake, "POST /sessions/:id/kill")).toHaveLength(0);
+  });
+
+  it("an Abandon confirm whose row is no longer a leader_unverified orphan closes and sends nothing", async () => {
+    const { fake, kernel } = await mount({ sessions: [session(27, { status: "orphaned" })], orphaned: [ORPHAN] });
+    fireEvent.click(await screen.findByRole("button", { name: "Abandon" }));
+    kernel.orphaned = [{ ...ORPHAN, reason: "reap_error" }];
+    act(() => fake.emit(event("session_status", 27)));
+    await waitFor(() => expect(within(rowOf(27)).getByTestId("session-orphan-reason").textContent).toBe("reap_error"));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await act(async () => new Promise((done) => setTimeout(done, 20)));
+    expect(posts(fake, "POST /sessions/:id/abandon")).toHaveLength(0);
+  });
+
+  it("a refetch that still lists the session with its action applying keeps the confirm open, and Confirm sends one", async () => {
+    const { fake } = await mount({ sessions: [running(31), session(30)] });
+    fake.route("POST /sessions/:id/kill", () => ok({ id: 31, status: "stopped", reason: "owner_kill" }));
+    fireEvent.click(screen.getByRole("button", { name: "Kill" }));
+    const confirm = screen.getByRole("alertdialog");
+    const before = posts(fake, "GET /sessions").length;
+    act(() => fake.emit(event("session_status", 30)));
+    await waitFor(() => expect(posts(fake, "GET /sessions").length).toBeGreaterThan(before));
+    await act(async () => new Promise((done) => setTimeout(done, 20)));
+    expect(screen.getByRole("alertdialog")).toBe(confirm);
+    fireEvent.click(within(confirm).getByRole("button", { name: "Kill" }));
+    await waitFor(() => expect(statusOf(31)).toBe("stopped"));
+    expect(posts(fake, "POST /sessions/:id/kill").map((r) => r.params)).toEqual([{ id: 31 }]);
   });
 
   it("a focused row that moves to another group (Running to Recent) keeps focus on that row", async () => {

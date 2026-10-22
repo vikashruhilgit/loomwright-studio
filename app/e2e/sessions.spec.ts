@@ -318,6 +318,33 @@ test("AC3: every kind shows inline, decisions with their reasons; ANSI and bidi 
   await expect(log).toContainText("error_max_turns · 22800 tokens");
 });
 
+test("an ended session's No output stays hidden while its first read is in flight, and shows once an empty read answers (sessions.css, applied)", async () => {
+  const { kernel, fixture: started } = await startKernel({ sessions: [summary(30, { status: "completed", tokens: null })] });
+  const gate = deferred<void>();
+  kernel.holdOutput = () => gate.promise;
+  const page = await openWith(started);
+  const empty = page.locator(".streaming-log__empty");
+  await expect.poll(() => kernel.outputReads.filter((r) => r.id === 30).length).toBe(1);
+  await expect(page.getByTestId("session-output-reading")).toBeVisible();
+  await expect(page.getByTestId("session-log")).toHaveAttribute("data-output", "unread");
+  // In the DOM (StreamingLog renders it for an ended session with no lines), but hidden by the stylesheet.
+  await expect(empty).toHaveCount(1);
+  await expect(empty).toBeHidden();
+  // The token figure (and the separator before it) is hidden too: the kernel has no count, never "0 tokens".
+  await expect(page.getByTestId("streaming-log-tokens")).toBeHidden();
+  const separator = await page.getByTestId("streaming-log-tokens").evaluate((el) => {
+    const before = el.previousElementSibling;
+    return before === null ? null : { text: before.textContent, display: getComputedStyle(before).display };
+  });
+  expect(separator).toEqual({ text: " · ", display: "none" });
+
+  gate.release();
+  await expect(page.getByTestId("session-log")).toHaveAttribute("data-output", "read");
+  await expect(empty).toBeVisible();
+  await expect(empty).toHaveText("No output");
+  await expect(page.getByTestId("session-output-reading")).toHaveCount(0);
+});
+
 test("AC4: ⌘. sends exactly one stop; the row says stopping… while the kernel holds it, stopped only after it answers; a 409 shows the answered status", async () => {
   const { kernel, fixture: started } = await startKernel({
     sessions: [summary(31, { agent: "mason", status: "running", started: ago(4), ended: null }), summary(32, { status: "running", started: ago(30), ended: null })],
