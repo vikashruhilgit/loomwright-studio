@@ -218,6 +218,33 @@ describe("the palette's matcher (AC3)", () => {
     expect(titles()).toEqual(["Approve once", "Snapshot preview"]);
   });
 
+  it("word-start match ranks above a subsequence match", () => {
+    // "Open console" is o-n-c-e in order (a subsequence only) and registered first.
+    const { input } = setup([command("a.console", { title: "Open console" }), command("a.once", { title: "Approve once" })]);
+    type(input, "once");
+    expect(titles()).toEqual(["Approve once", "Open console"]);
+  });
+
+  it("a keyword word-start ranks above a title subsequence", () => {
+    // "Rerun 4 of 12" is 4-1-2 in order (a subsequence only) and registered first.
+    const { input } = setup([command("a.rerun", { title: "Rerun 4 of 12" }), command("a.once", { title: "Approve once", keywords: ["#412"] })]);
+    type(input, "412");
+    expect(titles()).toEqual(["Approve once", "Rerun 4 of 12"]);
+  });
+
+  it("a keyword subsequence still matches (`42` finds `keywords: [\"#412\"]`)", () => {
+    const { input } = setup([command("a.once", { title: "Approve once", keywords: ["#412"] })]);
+    type(input, "42");
+    expect(titles()).toEqual(["Approve once"]);
+  });
+
+  it("group order beats match rank: an Actions subsequence still heads a Screens prefix", () => {
+    const { input } = setup([command("s.appr", { title: "Approvals", group: "Screens" }), command("a.snap", { title: "Snapshot preview" })]);
+    type(input, "appr");
+    expect(groupHeaders()).toEqual(["Actions", "Screens"]);
+    expect(titles()).toEqual(["Snapshot preview", "Approvals"]);
+  });
+
   it("an empty query lists every command in group order, registration order within a group", () => {
     setup([command("s1", { group: "Screens" }), command("a1"), command("s2", { group: "Screens" }), command("a2")]);
     expect(titles()).toEqual(["a1", "a2", "s1", "s2"]);

@@ -211,6 +211,59 @@ describe("the keyboard map", () => {
     error.mockRestore();
   });
 
+  it("a hung engage frees ⌘K and the registry shortcuts once the confirm settles, and ⌘⇧K stays a no-op until it does", async () => {
+    const registry = createCommandRegistry();
+    const approvals = command("screens.approvals", { shortcut: "⌘1" });
+    const approve = command("approvals.approve-once", { shortcut: "A" });
+    registry.register("test", [approvals, approve]);
+    const openPalette = vi.fn();
+    let finishEngage: () => void = () => undefined;
+    const confirm = vi.fn(() => Promise.resolve(true));
+    const engage = vi.fn(() => new Promise<void>((resolve) => (finishEngage = resolve)));
+    uninstall = installKeyboardMap({ registry, openPalette, isPaletteOpen: () => false, killSwitch: { confirm, engage } });
+    press("K", { metaKey: true, shiftKey: true });
+    await settle();
+    expect(engage).toHaveBeenCalledTimes(1);
+
+    // engage() is still running (a wedged kernel): no dialog is up, so nothing else is held off.
+    press("k", { metaKey: true });
+    press("1", { metaKey: true });
+    press("a");
+    expect(openPalette).toHaveBeenCalledTimes(1);
+    expect(approvals.run).toHaveBeenCalledTimes(1);
+    expect(approve.run).toHaveBeenCalledTimes(1);
+
+    // ⌘⇧K during engage opens no second confirm and engages nothing twice.
+    press("K", { metaKey: true, shiftKey: true });
+    await settle();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(engage).toHaveBeenCalledTimes(1);
+
+    // Once engage settles, ⌘⇧K asks again.
+    finishEngage();
+    await settle();
+    press("K", { metaKey: true, shiftKey: true });
+    await settle();
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it("a confirm that throws synchronously frees every guard", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const openPalette = vi.fn();
+    const confirm = vi.fn((): Promise<boolean> => {
+      throw new Error("dialog crashed");
+    });
+    uninstall = installKeyboardMap({ registry: createCommandRegistry(), openPalette, isPaletteOpen: () => false, killSwitch: { confirm, engage: vi.fn() } });
+    press("K", { metaKey: true, shiftKey: true });
+    await settle();
+    press("k", { metaKey: true });
+    expect(openPalette).toHaveBeenCalledTimes(1);
+    press("K", { metaKey: true, shiftKey: true });
+    await settle();
+    expect(confirm).toHaveBeenCalledTimes(2);
+    error.mockRestore();
+  });
+
   it("a registered ⌘⇧K command is not run by the key, whatever the glyph order", async () => {
     const registry = createCommandRegistry();
     const reordered = command("sessions.kill-all-2", { shortcut: "⇧⌘K" });

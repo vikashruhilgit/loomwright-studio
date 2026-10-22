@@ -144,7 +144,11 @@ export interface KillSwitch {
    * pending, ⌘K and every registry shortcut are held off.
    */
   confirm(): Promise<boolean>;
-  /** Stops everything. Called only after `confirm()` resolved `true`. */
+  /**
+   * Stops everything. Called only after `confirm()` resolved `true`. While it
+   * runs, ⌘⇧K does nothing; ⌘K and the registry shortcuts work again as soon
+   * as the confirm settles, however long `engage()` takes.
+   */
   engage(): void | Promise<void>;
 }
 
@@ -213,19 +217,30 @@ export function installKeyboardMap(options: KeyboardMapOptions): () => void {
     bindings = deriveBindings(registry.list());
   });
 
+  // Two guards, each living exactly as long as the state it stands for:
+  // `confirmPending` while the confirm dialog is up (it holds off ⌘K and every
+  // registry binding), and `killSwitchBusy` from the press until `engage()`
+  // settles (it only stops ⌘⇧K re-entering). A slow or hung `engage()` (a
+  // wedged kernel) shows no dialog, so it must not hold any other key off.
   let confirmPending = false;
+  let killSwitchBusy = false;
   const pressKillSwitch = async (): Promise<void> => {
-    // A second press while the confirm is open does nothing (the key handler also
-    // keeps ⌘K and every registry binding off while it is pending).
-    if (confirmPending) return;
+    // A second press while the confirm is open, or while engage runs, does nothing.
+    if (killSwitchBusy) return;
+    killSwitchBusy = true;
     confirmPending = true;
     try {
-      const confirmed = await killSwitch.confirm();
+      let confirmed: boolean;
+      try {
+        confirmed = await killSwitch.confirm();
+      } finally {
+        confirmPending = false;
+      }
       if (confirmed === true) await killSwitch.engage();
     } catch (error) {
       console.error("kill switch failed", error);
     } finally {
-      confirmPending = false;
+      killSwitchBusy = false;
     }
   };
 
