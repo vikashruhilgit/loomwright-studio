@@ -1,0 +1,363 @@
+/* Team (phase 5 item 14): the mockup's Team (docs/design/mockups/gui-v1.html, `renderTeam`) on the tokens.
+   Colour comes only from tokens.css custom properties. Focus keeps the shell's ring (`:focus-visible`
+   in app.css, `.card:focus-visible` in Card.css, `.field:focus-within` in Input.css): nothing here removes it. */
+
+.team {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+.team.with-inspector {
+  grid-template-columns: minmax(0, 1fr) var(--inspector-width);
+}
+.team-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-4) var(--space-5) var(--space-6);
+}
+
+.team-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.team-count {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-variant-numeric: tabular-nums;
+}
+.team-notice {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+.team-notice-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.team-state {
+  padding: var(--space-12) var(--space-6);
+  max-width: 640px;
+}
+.team-state-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--type-display-size);
+  line-height: var(--type-display-line);
+  font-weight: var(--type-display-weight);
+  letter-spacing: var(--type-display-tracking);
+}
+.team-state-note {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.team-empty {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.team-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Cards: Card.css's `card-*` rules, plus a selected edge and the status word. */
+.team-card.selected {
+  border-color: var(--accent);
+}
+.team-card-status {
+  flex: none;
+}
+.team-card-status[data-status="off"] {
+  color: var(--parked);
+}
+
+.team-skeleton {
+  min-height: 170px;
+  cursor: default;
+}
+.team-skel {
+  display: block;
+  height: 10px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+}
+.team-skel-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
+}
+.team-skel-line {
+  width: 80%;
+}
+.team-skel-short {
+  width: 50%;
+}
+
+/* The inspector: 320px, `surface`, a hairline on its left. */
+.team-insp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-5);
+  border-left: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.team-insp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.team-insp-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.team-insp-name {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+}
+.team-insp-kind {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.team-insp-sec,
+.team-insp-sub {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.team-insp-label {
+  margin: 0;
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.team-insp-note {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.team-insp-subhead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.team-insp-prose {
+  margin: 0;
+  color: var(--ink-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.team-insp-list {
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.team-insp-mono,
+.team-code {
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-small-size);
+  line-height: var(--type-mono-small-line);
+}
+.team-insp-mono {
+  list-style: none;
+  padding-left: 0;
+}
+.team-insp-empty {
+  margin: 0;
+  color: var(--ink-tertiary);
+}
+.team-insp-error {
+  margin: 0;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.team-insp-ok {
+  margin: 0;
+  color: var(--ok);
+}
+.team-insp-kv {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 6px var(--space-3);
+  margin: 0;
+  font-size: var(--type-caption-size);
+  line-height: 16px;
+}
+.team-insp-kv dt {
+  color: var(--ink-tertiary);
+}
+.team-insp-kv dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.team-tabular {
+  font-variant-numeric: tabular-nums;
+}
+.team-insp-set {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: stretch;
+}
+.team-insp-set > .btn {
+  align-self: flex-start;
+}
+.team-insp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: auto;
+}
+.team-link {
+  text-decoration: none;
+}
+
+/* New crew member: the charter form in the main column. */
+.team-new {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 720px;
+}
+.team-new-title {
+  margin: 0;
+  font-size: var(--type-title-1-size);
+  line-height: var(--type-title-1-line);
+  font-weight: var(--type-title-1-weight);
+  letter-spacing: var(--type-title-1-tracking);
+}
+.team-new-note,
+.team-new-hint,
+.team-new-summary {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.team-new-hint {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.team-new-ask {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.team-new-or {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+}
+.team-new-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.team-new-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.team-new-legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.team-new-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+.team-new-row-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.team-new-shape {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+}
+.team-new-field {
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-small-size);
+}
+.team-new-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* A multi-line field in the Input primitive's look. */
+.team-textarea .field {
+  height: auto;
+  padding: var(--space-2) 10px;
+}
+.team-textarea textarea.field-control {
+  resize: vertical;
+  min-height: calc(2 * var(--type-body-line));
+}
+
+/* The pickers inside their dialogs. */
+.team-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.team-checks,
+.team-shapes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-1) var(--space-3);
+}
+.team-check,
+.team-shape {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height);
+  cursor: pointer;
+}
+.team-shape-avatar {
+  display: inline-flex;
+}
