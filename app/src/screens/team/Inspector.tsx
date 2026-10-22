@@ -31,6 +31,7 @@ import {
   NO_LIMIT,
   PERMISSION_MODES,
   WRIGHT_SET_FIELDS,
+  acceptedSettings,
   agentSessionsText,
   charterProse,
   enforcedToolPolicy,
@@ -67,6 +68,9 @@ export interface InspectorProps {
 
 type Notice = { readonly kind: "ok" | "error"; readonly text: string } | undefined;
 
+/** A charter section that does not parse: not read, never "None stated". */
+const CHARTER_UNREAD = "Not read: the charter does not parse.";
+
 function Section({ title, note, testId, children }: { readonly title: string; readonly note?: string; readonly testId?: string; readonly children: ReactNode }) {
   const id = useId();
   return (
@@ -98,10 +102,11 @@ function tokensLine(agent: RosterEntry): string {
 
 /** The kernel-enforced block of a crew member: the settings file's tool policy and the `never` list. */
 function Enforced({ detail }: { readonly detail: AgentDetailResponse }) {
-  const policy = enforcedToolPolicy(detail.settings.content);
+  // Only a file the kernel accepted is shown as enforced: a refused one arrives as parsed content too.
+  const policy = enforcedToolPolicy(acceptedSettings(detail));
   return (
     <Section title="Permissions" note="enforced by the kernel" testId="team-enforced">
-      {policy === null ? (
+      {detail.settings.error !== null || policy === null ? (
         <p className="team-insp-error" data-testid="team-settings-unreadable">
           settings file unreadable{detail.settings.error === null ? "" : `: ${detail.settings.error.message}`}
         </p>
@@ -250,10 +255,14 @@ export function Inspector({ api, agent, detail, wrightSet, onWrightSet, onRename
 
   const ok = detail?.status === "ok" ? detail.detail : undefined;
   const prose = ok === undefined ? undefined : charterProse(ok);
-  // A setting reads "unknown" unless the detail answered and its settings content parsed: loading, a
-  // refused detail and an unreadable file never read as "no limit" or "not set". The model falls back to
-  // the roster's own read of the same file, which says itself whether it read ok.
-  const content = ok?.settings.content;
+  // A charter list that does not parse is null: shown as not read, never as "None stated".
+  const duties = prose?.duties ?? null;
+  const boundaries = prose?.boundaries ?? null;
+  // A setting reads "unknown" unless the detail answered and the kernel accepted its settings file:
+  // loading, a refused detail and a file the kernel refused (even one that parses) never read as a
+  // value, "no limit" or "not set". The model falls back to the roster's own read of the same file,
+  // which says itself whether it read ok.
+  const content = ok === undefined ? undefined : acceptedSettings(ok);
   const value = (field: AgentSetField, absent: string): string => settingText(content, field, absent);
   const model = isRecord(content) ? value("model", "not set") : rosterModel(agent);
 
@@ -299,10 +308,14 @@ export function Inspector({ api, agent, detail, wrightSet, onWrightSet, onRename
             </p>
           </Section>
           <Section title="Duties">
-            <List items={prose?.duties ?? []} empty="None stated" />
+            {duties === null ? <p className="team-insp-empty">{CHARTER_UNREAD}</p> : <List items={duties} empty="None stated" />}
           </Section>
           <Section title="Boundaries" note="guidance, not enforced" testId="team-guidance">
-            <List items={prose?.boundaries ?? []} empty="None stated. The kernel's fixed rails still apply." />
+            {boundaries === null ? (
+              <p className="team-insp-empty">{CHARTER_UNREAD}</p>
+            ) : (
+              <List items={boundaries} empty="None stated. The kernel's fixed rails still apply." />
+            )}
           </Section>
           {ok === undefined ? null : <Enforced detail={ok} />}
         </>

@@ -34,7 +34,7 @@ import { REFETCH_THROTTLE_MS } from "../../store/store";
 import { fetchAgentDetail, renameAgent, turnAgent } from "./actions";
 import { useTeamCommands } from "./commands";
 import { type DetailState, Inspector, type WrightSetValues } from "./Inspector";
-import { type TaskLine, agentSessionsText, crewIds, isWright, orderRoster, roleOf, rosterModel, taskLineFor, threadHash, tokensLimitWords } from "./model";
+import { TASK_LOADING, TASK_UNAVAILABLE, type TaskLine, agentSessionsText, crewIds, isWright, orderRoster, roleOf, rosterModel, taskLineFor, threadHash, tokensLimitWords } from "./model";
 import { NewCrewMember } from "./NewCrewMember";
 import "./team.css";
 
@@ -98,8 +98,10 @@ function useAgentDetails(api: StudioBridge, ids: readonly string[], eventId: num
 
 // ---- The card ----------------------------------------------------------------------------
 
-const DOT_STATE: Readonly<Record<TaskLine["state"], StatusState>> = { waiting: "waiting", working: "working", idle: "idle" };
-const AVATAR_STATE: Readonly<Record<TaskLine["state"], AvatarState>> = { waiting: "waiting", working: "working", idle: "idle" };
+// `unknown` (approvals or messages not read) has no dot: no state is claimed. Its avatar keeps the
+// neutral pose, and the avatar's label carries the task line's words.
+const DOT_STATE: Readonly<Record<TaskLine["state"], StatusState | undefined>> = { waiting: "waiting", working: "working", idle: "idle", unknown: undefined };
+const AVATAR_STATE: Readonly<Record<TaskLine["state"], AvatarState>> = { waiting: "waiting", working: "working", idle: "idle", unknown: "idle" };
 
 /** Today's tokens against the daily limit, "no limit" when it is unset, or "limit unknown" when the settings file did not read ok. */
 function budgetText(agent: RosterEntry): string {
@@ -127,6 +129,7 @@ function TeamCard({ agent, role, task, selected, onOpen, cardRef }: TeamCardProp
   const id = useId();
   const limited = agent.tokens_per_day !== null;
   const percent = limited ? budgetPercent(agent.tokens_today, agent.tokens_per_day ?? 0) : 0;
+  const dot = DOT_STATE[task.state];
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key === "Enter" || event.key === " ") {
@@ -156,6 +159,7 @@ function TeamCard({ agent, role, task, selected, onOpen, cardRef }: TeamCardProp
             agent={{ id: agent.id, name: agent.display_name, shape: agent.avatar.shape, hue: agent.avatar.hue }}
             state={agent.status === "off" ? "idle" : AVATAR_STATE[task.state]}
             size={36}
+            action={task.state === "unknown" ? task.text : undefined}
           />
         </span>
         <div className="card-heading">
@@ -168,10 +172,15 @@ function TeamCard({ agent, role, task, selected, onOpen, cardRef }: TeamCardProp
         </div>
       </div>
       <div className="card-task-line">
-        <span className="card-task-dot">
-          <StatusDot state={DOT_STATE[task.state]} hideLabel />
-        </span>
-        <span className="card-task" id={`${id}-task`} data-idle={task.state === "idle" ? "true" : undefined} title={task.text} data-testid="team-card-task">
+        <span className="card-task-dot">{dot === undefined ? null : <StatusDot state={dot} hideLabel />}</span>
+        <span
+          className="card-task"
+          id={`${id}-task`}
+          data-idle={task.state === "idle" ? "true" : undefined}
+          data-unknown={task.state === "unknown" ? "true" : undefined}
+          title={task.text}
+          data-testid="team-card-task"
+        >
           {task.text}
         </span>
       </div>
@@ -333,8 +342,17 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
 
   const loading = agents === undefined || (agents.data === undefined && agents.error === undefined);
   const failed = agents?.data === undefined && agents?.error !== undefined ? agents.error : undefined;
-  const approvalList = approvals?.data?.approvals ?? [];
-  const messageList = messages?.data?.messages ?? [];
+  // Undefined until read: a loading or refused approvals / messages read is never "nothing pending,
+  // nothing running" (every card idle). The task line says so instead, and a refusal is an alert.
+  const approvalList = approvals?.data?.approvals;
+  const messageList = messages?.data?.messages;
+  const approvalsError = approvalList === undefined ? approvals?.error : undefined;
+  const messagesError = messageList === undefined ? messages?.error : undefined;
+  const taskUnread = approvalsError !== undefined || messagesError !== undefined ? TASK_UNAVAILABLE : TASK_LOADING;
+  const tasksFailed = [
+    ...(approvalsError === undefined ? [] : [`approvals: ${errorText(approvalsError)}`]),
+    ...(messagesError === undefined ? [] : [`messages: ${errorText(messagesError)}`]),
+  ];
   const inspectorOpen = selected !== undefined && !creating;
 
   let body;
@@ -367,16 +385,22 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
   } else {
     body = (
       <>
+        {tasksFailed.length === 0 ? null : (
+          <p className="team-notice team-notice-error" role="alert" data-testid="team-tasks-error">
+            Couldn't read what the agents are doing ({tasksFailed.join("; ")})
+          </p>
+        )}
         <CardGrid label="Agents">
           {roster.map((agent) => {
             const detail = details.get(agent.id);
-            const role = roleOf(agent, detail?.status === "ok" ? detail.detail : undefined) ?? (detail?.status === "error" ? "Role unavailable" : undefined);
+            // A detail that answered with no readable persona is unavailable, not blank like one still loading.
+            const role = roleOf(agent, detail?.status === "ok" ? detail.detail : undefined) ?? (detail?.status === "error" || detail?.status === "ok" ? "Role unavailable" : undefined);
             return (
               <TeamCard
                 key={agent.id}
                 agent={agent}
                 role={role}
-                task={taskLineFor(agent.id, approvalList, messageList)}
+                task={taskLineFor(agent.id, approvalList, messageList, taskUnread)}
                 selected={agent.id === selectedId}
                 onOpen={() => open(agent)}
                 cardRef={(el) => {

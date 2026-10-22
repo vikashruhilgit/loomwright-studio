@@ -105,25 +105,44 @@ export function crewIds(agents: readonly RosterEntry[]): string[] {
 
 // ---- The task line ------------------------------------------------------------------
 
-export type TaskState = "waiting" | "working" | "idle";
+/** `unknown`: the approvals or messages it is read from have not answered (loading) or were refused. */
+export type TaskState = "waiting" | "working" | "idle" | "unknown";
 
 export interface TaskLine {
   readonly state: TaskState;
   readonly text: string;
 }
 
+/** The task line's words when its sources have not been read: loading, or refused. */
+export const TASK_LOADING = "checking status…";
+export const TASK_UNAVAILABLE = "status unavailable";
+
 /**
  * The card's current-task line, in the mockup's `renderTeam` order: a pending
  * approval the agent requested ("Waiting on you · <display or action>"), else
  * its running brain message's text, else "idle". The newest of each wins.
+ *
+ * A list is `undefined` when it was not read (loading or refused). A state is
+ * shown only when the lists it depends on were read: waiting needs the
+ * approvals; working and idle need both (a pending approval outranks a running
+ * message). Otherwise the line is `unknown` with `unread` as its words, never
+ * "idle".
  */
-export function taskLineFor(agentId: string, approvals: readonly Approval[], messages: readonly BrainMessage[]): TaskLine {
-  const pending = approvals.filter((a) => a.status === "pending" && a.requesting_agent === agentId);
-  const approval = pending.reduce<Approval | undefined>((newest, a) => (newest === undefined || a.id > newest.id ? a : newest), undefined);
-  if (approval !== undefined) {
-    const what = typeof approval.display === "string" && approval.display.trim() !== "" ? approval.display : approval.action;
-    return { state: "waiting", text: `Waiting on you · ${what}` };
+export function taskLineFor(
+  agentId: string,
+  approvals: readonly Approval[] | undefined,
+  messages: readonly BrainMessage[] | undefined,
+  unread: string = TASK_UNAVAILABLE,
+): TaskLine {
+  if (approvals !== undefined) {
+    const pending = approvals.filter((a) => a.status === "pending" && a.requesting_agent === agentId);
+    const approval = pending.reduce<Approval | undefined>((newest, a) => (newest === undefined || a.id > newest.id ? a : newest), undefined);
+    if (approval !== undefined) {
+      const what = typeof approval.display === "string" && approval.display.trim() !== "" ? approval.display : approval.action;
+      return { state: "waiting", text: `Waiting on you · ${what}` };
+    }
   }
+  if (approvals === undefined || messages === undefined) return { state: "unknown", text: unread };
   const running = messages.filter((m) => m.status === "running" && m.agent === agentId);
   const message = running.reduce<BrainMessage | undefined>((newest, m) => (newest === undefined || m.id > newest.id ? m : newest), undefined);
   if (message !== undefined) return { state: "working", text: message.text };
@@ -143,12 +162,23 @@ export const NO_LIMIT = "no limit";
 export const UNKNOWN = "unknown";
 
 /**
- * Whether the roster's limits and model come from a settings file that read
- * ok. The kernel sends `null` for both an unset limit and an unread file, so
- * `settings_error` is what tells them apart.
+ * The settings reader's refusal when the file parsed and validated and only its
+ * `model` is missing (`kernel/src/agents/settings.ts`): every other value in
+ * the file was read.
  */
-export function settingsRead(agent: { readonly settings_error: string | null }): boolean {
-  return agent.settings_error === null;
+export const MODEL_UNSET = "model_unset";
+
+/**
+ * Whether the roster's limits come from a settings file the kernel read. The
+ * kernel sends `null` for both an unset limit and an unread file, so
+ * `settings_error` is what tells them apart: null (read ok, or Wright with no
+ * `wright.json` yet) reads them. So does Wright's `model_unset`: the kernel's
+ * `wrightEntry` sends that file's limits (`kernel/src/agents/roster.ts`). A
+ * crew member's `model_unset` does not: its `memberEntry` sends null limits
+ * for any refusal, so they are unknown.
+ */
+export function settingsRead(agent: { readonly id: string; readonly settings_error: string | null }): boolean {
+  return agent.settings_error === null || (isWright(agent) && agent.settings_error === MODEL_UNSET);
 }
 
 /** Sessions in words: "1 of 2 sessions", "1 session · no limit", or "1 session · limit unknown" when the settings file did not read ok. */
@@ -167,10 +197,15 @@ export function tokensLimitWords(agent: RosterEntry): string {
   return settingsRead(agent) ? NO_LIMIT : `limit ${UNKNOWN}`;
 }
 
-/** A roster entry's model: the model, "not set" when the file read ok without one, "unknown" when it did not read ok. */
+/**
+ * A roster entry's model: the model; "not set" when the file read ok without
+ * one (or Wright has no file yet) or the reader refused it `model_unset` (the
+ * file has no usable model, for Wright and a crew member alike); "unknown" when
+ * any other refusal left the file unread.
+ */
 export function rosterModel(agent: RosterEntry): string {
   if (agent.model !== null) return agent.model;
-  return settingsRead(agent) ? "not set" : UNKNOWN;
+  return agent.settings_error === null || agent.settings_error === MODEL_UNSET ? "not set" : UNKNOWN;
 }
 
 // ---- Details (GET /agents/:id) ------------------------------------------------------------
@@ -178,8 +213,9 @@ export function rosterModel(agent: RosterEntry): string {
 /** A crew member's charter prose, read defensively (`AgentDetailResponse.charter` is `unknown`). */
 export interface CharterProse {
   readonly persona: string | null;
-  readonly duties: readonly string[];
-  readonly boundaries: readonly string[];
+  /** Null when the charter holds something other than a list of strings: not read, never "none". */
+  readonly duties: readonly string[] | null;
+  readonly boundaries: readonly string[] | null;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -191,14 +227,19 @@ function stringList(value: unknown): string[] | null {
   return value.every((v) => typeof v === "string") ? (value as string[]) : null;
 }
 
+/** A charter list: empty when absent (the kernel sends `null`), null when it holds anything but strings. */
+function proseList(value: unknown): string[] | null {
+  return value === undefined || value === null ? [] : stringList(value);
+}
+
 /** The charter prose from a detail body; null when `charter` is null or not an object. */
 export function charterProse(detail: AgentDetailResponse): CharterProse | null {
   const c = detail.charter;
   if (!isRecord(c)) return null;
   return {
     persona: typeof c.persona === "string" ? c.persona : null,
-    duties: stringList(c.duties) ?? [],
-    boundaries: stringList(c.boundaries) ?? [],
+    duties: proseList(c.duties),
+    boundaries: proseList(c.boundaries),
   };
 }
 
@@ -213,6 +254,18 @@ export function roleOf(agent: RosterEntry, detail: AgentDetailResponse | undefin
 export interface EnforcedToolPolicy {
   readonly allowedTools: readonly string[];
   readonly allowedBashPrefixes: readonly string[];
+}
+
+/**
+ * The settings content the inspector may show values from: `content` only when
+ * the kernel's reader accepted the file (`settings.error === null`). The
+ * kernel sends `content` as the raw `JSON.parse` of the file, apart from its
+ * validation, so a file it refused (an unknown key, a bad workspace,
+ * `model_unset`) still arrives as a record: none of its values is applied, so
+ * none is shown.
+ */
+export function acceptedSettings(detail: AgentDetailResponse): unknown {
+  return detail.settings.error === null ? detail.settings.content : undefined;
 }
 
 /**

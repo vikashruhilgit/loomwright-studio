@@ -16,10 +16,25 @@ import type { AgentDetailResponse, ApiRequest, ApiResult, Approval, BrainMessage
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
-import type { FakeBridge } from "../../store/fake-bridge";
+import type { FakeBridge, Responder } from "../../store/fake-bridge";
 import { screen as teamScreen } from "./index";
 import { fetchAgentDetail } from "./actions";
-import { AVATAR_HUES, AVATAR_SHAPES, EMPTY_FORM, NEVER_CATEGORIES, PERMISSION_MODES, WRIGHT_SET_FIELDS, charterOf, enforcedToolPolicy, limitOf, outcomeOf, settingText } from "./model";
+import {
+  AVATAR_HUES,
+  AVATAR_SHAPES,
+  EMPTY_FORM,
+  NEVER_CATEGORIES,
+  PERMISSION_MODES,
+  WRIGHT_SET_FIELDS,
+  charterOf,
+  enforcedToolPolicy,
+  limitOf,
+  outcomeOf,
+  rosterModel,
+  settingText,
+  settingsRead,
+  taskLineFor,
+} from "./model";
 import { TeamView } from "./TeamView";
 
 // Sources are read from disk: vitest stubs CSS imports, and the kernel lives outside the app's Vite root.
@@ -177,7 +192,13 @@ function feedEvent(kind: string): EventFrame {
   return { type: "event", id, at: new Date(id * 1000).toISOString(), kind, session_id: null, task_id: null, payload: {} };
 }
 
-async function startTeam(setup: Partial<Omit<Kernel, "fake" | "registry">> = {}): Promise<Kernel> {
+/** Answers for `GET /approvals` and `GET /messages` in place of the kernel's lists (a refusal, or one that never comes). */
+interface Answers {
+  readonly approvals?: Responder;
+  readonly messages?: Responder;
+}
+
+async function startTeam(setup: Partial<Omit<Kernel, "fake" | "registry">> = {}, answers: Answers = {}): Promise<Kernel> {
   const fake = fakeBridge();
   const kernel: Kernel = {
     fake,
@@ -190,8 +211,8 @@ async function startTeam(setup: Partial<Omit<Kernel, "fake" | "registry">> = {})
   };
   fake.route("GET /status", () => ok(STATUS));
   fake.route("GET /agents", () => ok({ agents: kernel.roster }));
-  fake.route("GET /approvals", () => ok({ approvals: kernel.approvals }));
-  fake.route("GET /messages", () => ok({ messages: kernel.messages }));
+  fake.route("GET /approvals", answers.approvals ?? (() => ok({ approvals: kernel.approvals })));
+  fake.route("GET /messages", answers.messages ?? (() => ok({ messages: kernel.messages })));
   fake.route("GET /agents/:id", (req) => {
     const id = String(req.params?.id);
     if (id === "wright") return refused(409, { error: "reserved", message: "Wright is not a crew member" });
@@ -323,6 +344,70 @@ describe("the cards", () => {
     await waitFor(() => expect(within(inspector).getByTestId("team-insp-role").textContent).toBe(hostile));
     expect(document.querySelector("img")).toBeNull();
   });
+
+  it('a refused GET /approvals reads every task line "status unavailable" with no dot, and says so in an alert, never "idle"', async () => {
+    await startTeam({ messages: [message({ id: 1, agent: "wright", text: "Planning the week" })] }, { approvals: () => refused(500, { error: "internal", message: "approvals down" }) });
+    await waitFor(() => expect(within(card("Mason")).getByTestId("team-card-task").textContent).toBe("status unavailable"));
+    for (const c of cards()) {
+      expect(within(c).getByTestId("team-card-task").textContent).toBe("status unavailable");
+      expect(within(c).getByTestId("team-card-task").getAttribute("data-unknown")).toBe("true");
+      expect(c.querySelector(".card-task-line .status-dot")).toBeNull();
+    }
+    // A running message is not shown as working: a pending approval would outrank it, and approvals were not read.
+    expect(screen.getByTestId("team-tasks-error").textContent).toBe("Couldn't read what the agents are doing (approvals: internal: approvals down)");
+    expect(screen.getByTestId("team-tasks-error").getAttribute("role")).toBe("alert");
+  });
+
+  it("a refused GET /messages still shows a pending approval as waiting; every other card is unavailable, never idle", async () => {
+    await startTeam({ approvals: [approval({ id: 4, requesting_agent: "mason", display: "Comment on PR #12" })] }, { messages: () => refused(500, { error: "internal", message: "messages down" }) });
+    await waitFor(() => expect(within(card("Wright")).getByTestId("team-card-task").textContent).toBe("status unavailable"));
+    expect(within(card("Mason")).getByTestId("team-card-task").textContent).toBe("Waiting on you · Comment on PR #12");
+    expect(within(card("Pim")).getByTestId("team-card-task").textContent).toBe("status unavailable");
+    expect(screen.getByTestId("team-tasks-error").textContent).toContain("messages: internal: messages down");
+  });
+
+  it('approvals and messages still loading read "checking status…", with no dot and no alert, never "idle"', async () => {
+    const never = () => new Promise<ApiResult<unknown>>(() => undefined);
+    await startTeam({}, { approvals: never, messages: never });
+    for (const c of cards()) {
+      expect(within(c).getByTestId("team-card-task").textContent).toBe("checking status…");
+      expect(c.querySelector(".card-task-line .status-dot")).toBeNull();
+    }
+    expect(screen.queryByTestId("team-tasks-error")).toBeNull();
+  });
+
+  it("taskLineFor claims a state only from the lists it was read from", () => {
+    const pending = [approval({ id: 1, requesting_agent: "mason", display: "Push" })];
+    const running = [message({ id: 2, agent: "mason", text: "Working" })];
+    expect(taskLineFor("mason", pending, undefined)).toEqual({ state: "waiting", text: "Waiting on you · Push" });
+    expect(taskLineFor("mason", undefined, running)).toEqual({ state: "unknown", text: "status unavailable" });
+    expect(taskLineFor("mason", [], undefined, "checking status…")).toEqual({ state: "unknown", text: "checking status…" });
+    expect(taskLineFor("mason", [], running)).toEqual({ state: "working", text: "Working" });
+    expect(taskLineFor("mason", [], [])).toEqual({ state: "idle", text: "idle" });
+  });
+
+  it('Wright\'s model_unset: its limits were read (null is "no limit") and its model is "not set"', async () => {
+    const unset = { ...WRIGHT, model: null, settings_error: "model_unset", tokens_per_day: null, sessions_at_once: null };
+    await startTeam({ roster: [unset, MASON, PIM] });
+    const wright = card("Wright");
+    expect(within(wright).getByTestId("team-card-sessions").textContent).toBe("1 session · no limit");
+    expect(within(wright).getByTestId("team-card-budget").textContent).toBe("142k today · no limit");
+    expect(wright.textContent).toContain("model not set");
+    expect(wright.textContent).not.toContain("unknown");
+    const inspector = await openInspector("Wright");
+    const limits = within(inspector).getByTestId("team-insp-limits");
+    expect(limits.textContent).toContain("Modelnot set");
+    expect(limits.textContent).toContain("1 session · no limit");
+  });
+
+  it("a crew member's model_unset: the roster sends no limits for it, so they stay unknown; its model is \"not set\"", () => {
+    const unset = { ...MASON, model: null, settings_error: "model_unset" };
+    expect(settingsRead(unset)).toBe(false);
+    expect(rosterModel(unset)).toBe("not set");
+    expect(settingsRead({ ...WRIGHT, settings_error: "model_unset" })).toBe(true);
+    expect(settingsRead({ ...WRIGHT, settings_error: "settings_invalid" })).toBe(false);
+    expect(rosterModel({ ...WRIGHT, model: null, settings_error: "settings_invalid" })).toBe("unknown");
+  });
 });
 
 describe("the designed states", () => {
@@ -412,6 +497,53 @@ describe("a crew member's inspector", () => {
     expect(limits.textContent).toContain("Permissionunknown");
     expect(limits.textContent).not.toContain("not set");
     expect(limits.textContent).toContain("Modelclaude-sonnet");
+  });
+
+  it("a settings file the kernel refused shows no enforced policy and no setting, even when its content parses", async () => {
+    const rejected = { ...MASON, model: null, settings_error: "settings_invalid" };
+    const content = {
+      model: "claude-opus",
+      permission_mode: "acceptEdits",
+      tool_policy: { allowedTools: ["Bash", "Write"], allowedBashPrefixes: ["rm"] },
+      limits: {},
+      colour: "red",
+    };
+    await startTeam({
+      roster: [WRIGHT, rejected, PIM],
+      details: {
+        mason: detail(rejected, {
+          settings: { file: "/x.json", content, error: { error: "settings_invalid", field: "the file", message: 'unknown key "colour"' } },
+          never: null,
+          workspaces: null,
+        }),
+        pim: detail(PIM),
+      },
+    });
+    const inspector = await openInspector("Mason");
+    expect((await within(inspector).findByTestId("team-settings-unreadable")).textContent).toBe('settings file unreadable: unknown key "colour"');
+    expect(within(inspector).queryByTestId("team-enforced-tools")).toBeNull();
+    expect(within(inspector).queryByTestId("team-enforced-bash")).toBeNull();
+    expect(inspector.textContent).not.toContain("Bash");
+    const limits = within(inspector).getByTestId("team-insp-limits");
+    expect(limits.textContent).toContain("Modelunknown");
+    expect(limits.textContent).toContain("Effortunknown");
+    expect(limits.textContent).toContain("Delegationunknown");
+    expect(limits.textContent).toContain("Permissionunknown");
+    expect(limits.textContent).not.toContain("claude-opus");
+    expect(limits.textContent).not.toContain("acceptEdits");
+    expect(limits.textContent).not.toContain("no limit");
+  });
+
+  it("a charter whose duties or boundaries do not parse reads them as not read, never \"None stated\"", async () => {
+    await startTeam({ details: { mason: detail(MASON, { charter: { persona: "Plain.", duties: "review", boundaries: [3] } }), pim: detail(PIM, { charter: null }) } });
+    let inspector = await openInspector("Mason");
+    await within(inspector).findByTestId("team-enforced");
+    expect(within(inspector).getAllByText("Not read: the charter does not parse.")).toHaveLength(2);
+    expect(inspector.textContent).not.toContain("None stated");
+    inspector = await openInspector("Pim");
+    await within(inspector).findByTestId("team-enforced");
+    expect(within(inspector).getAllByText("Not read: the charter does not parse.")).toHaveLength(2);
+    expect(within(card("Pim")).getByTestId("team-card-role").textContent).toBe("Role unavailable");
   });
 
   it('a refused detail reads its settings as "unknown", never "no limit" or "not set"', async () => {
