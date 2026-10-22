@@ -1,0 +1,260 @@
+/* List: docs/design/design-system/components/List. Colour comes only from tokens.css custom properties. No zebra stripes. */
+.list {
+  position: relative;
+  overflow-y: auto;
+  /* List.tsx owns scroll anchoring; Chromium's native anchoring would pick its own anchor. */
+  overflow-anchor: none;
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  color: var(--ink);
+}
+.list-heading {
+  margin: var(--space-2) 0 var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--ink-tertiary);
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+}
+.list-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.list-row {
+  box-sizing: border-box;
+  flex: none;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  cursor: default;
+  transition:
+    background-color var(--duration-instant) var(--ease-standard),
+    color var(--duration-instant) var(--ease-standard);
+}
+.list-row:focus-visible {
+  /* Inset, so the ring is never clipped by the scroll container. */
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* Navigation rows: 28px, icon, label, kbd or count pill. */
+.list-row[data-kind="nav"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--row-height);
+  padding: 0 var(--space-2);
+  color: var(--ink-secondary);
+}
+.list-row[data-kind="nav"]:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  color: var(--ink);
+}
+.list-row[data-kind="nav"][aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+.list-icon {
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.list-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.list-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.list-end {
+  flex: none;
+  margin-left: auto;
+}
+.list-kbd {
+  color: var(--ink-tertiary);
+  font-family: var(--type-kbd-family);
+  font-size: var(--type-kbd-size);
+  line-height: var(--type-kbd-line);
+  font-weight: 400;
+}
+
+/* Data rows: 44px, StatusDot, subject over meta, right column. */
+.list-row[data-kind="data"] {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 10px;
+}
+.list-row[data-kind="data"]:hover {
+  background: var(--surface);
+}
+.list-row[data-kind="data"][aria-selected="true"] {
+  background: var(--accent-soft);
+}
+.list-status {
+  display: inline-flex;
+  min-width: 8px;
+}
+/* A verified ok shows StatusDot's "· verified <time>" meta beside the dot, as in every StatusDot consumer (AC5). */
+.list-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.list-subject,
+.list-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-family: var(--type-body-strong-family);
+  font-size: var(--type-body-strong-size);
+  line-height: var(--type-body-strong-line);
+  font-weight: var(--type-body-strong-weight);
+}
+.list-meta,
+.list-aside,
+.list-time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-tertiary);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+  font-variant-numeric: tabular-nums;
+}
+.list-aside {
+  text-align: right;
+}
+
+/* Crew rows: 44px, 24px avatar slot, name with unread dot and time, caption second line. */
+.list-row[data-kind="crew"] {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  height: 44px;
+  padding: 0 var(--space-2);
+}
+.list-row[data-kind="crew"]:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.list-row[data-kind="crew"][aria-selected="true"] {
+  background: var(--accent-soft);
+}
+.list-avatar {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+}
+.list-crew-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.list-name {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.list-unread {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+.list-time {
+  flex: none;
+  margin-left: auto;
+}
+
+/* Loading: skeleton rows at the real row heights on surface-sunken. Static, never a spinner. */
+.list-skeleton {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 10px;
+}
+.list-skeleton[data-kind="nav"] {
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: var(--space-2);
+  height: var(--row-height);
+  padding: 0 var(--space-2);
+}
+.list-skeleton[data-kind="crew"] {
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+}
+.list-skeleton i {
+  display: block;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+}
+.list-skeleton-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+}
+.list-skeleton .list-skeleton-dot,
+.list-skeleton .list-skeleton-avatar {
+  border-radius: var(--radius-full);
+}
+.list-skeleton-avatar {
+  width: 24px;
+  height: 24px;
+}
+.list-skeleton-icon {
+  width: 16px;
+  height: 16px;
+}
+.list-skeleton-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.list-skeleton-bar {
+  width: 60%;
+  height: 10px;
+}
+.list-skeleton-bar-short {
+  width: 35%;
+  height: 8px;
+}
+.list-skeleton-aside {
+  height: 10px;
+}
+
+.list-empty {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  color: var(--ink-tertiary);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .list-row {
+    transition-duration: 0s;
+  }
+}
