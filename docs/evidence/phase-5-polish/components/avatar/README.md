@@ -27,21 +27,33 @@ The gestures are the CSS keyframes ported from `avatar.css`: `run`, `swirl`, `sw
 
 The avatar's strokes and fills are non-text graphics painted only with `var(--bot)`. That resolves to `--accent` for Wright and to a `--crew-*` token for everyone else. In [tokens.json](../../../../design/tokens.json), every `crew-*` usage note rates the hue "3:1+ on ground and surface in both themes", and `accent` is rated "6.4:1 on surface in both themes". The avatar adds no hue of its own, but the design's opacities lower the contrast of some parts, so the avatar does not inherit the tokens' 3:1+ everywhere.
 
-These figures were computed from `tokens.json` with WCAG relative luminance, with the hue alpha-composited over `--ground` at the opacity the CSS applies. They were not measured from the screenshots.
+These figures were computed from `tokens.json` with WCAG relative luminance. They were not measured from the screenshots. Each part is measured against what it is actually drawn on, which is one of two backgrounds:
 
-| Part, opacity | Lowest on `--ground` (light) | Lowest on `--ground` (dark) | Meets 3:1? |
-|---|---|---|---|
-| `.st` outline, `.t` thread, `.knot`, `.crown` at 100% | 4.99 (crew-teal) | 6.90 (accent) | yes |
-| `.ln` inner lines at 85% | 3.81 (crew-teal, crew-olive) | 5.31 (accent) | yes |
-| Full-hue parts while parked (whole avatar at 72%) | **2.99 (crew-olive)**, 3.03 (crew-teal) | 4.16 (accent) | no for light olive |
-| `.ln` while parked (85% × 72%) | 2.47 (crew-olive) | 3.36 (accent) | no in light |
-| `.stitch` ring at 45% (idle, working, waiting) | 1.89 (crew-olive) | 2.39 (accent) | no |
-| `.stitch` while parked (50% × 72%), killed (60%), done (90%) | 1.65, 2.42, 4.17 | 1.96, 3.28, 5.81 | parked and light killed: no |
-| Waiting ring, `--attention` at 70% under reduced motion | 2.97 | 5.30 | no in light |
+- **`--ground`**: outside the silhouette. That covers Wright's crown (above the whale's body), the `.stitch` circle (radius 16.5, clear of every silhouette), the waiting ring (outside the SVG), the outer half of each `.st` outline, the crab's eyes, and the lines and threads that leave the body.
+- **The `.fill` tint**: inside the silhouette, the creature's own hue at 28% over `--ground`. That covers the inner half of each `.st` outline, every eye but the crab's, the inner lines (for example the fish's ribs, the line across the whale's belly, the turtle's shell and the jellyfish's bell line), and the threads that cross the body (for example the fish's `t-idle` and `t-up`, and the crab's `t-up`).
 
-Dark `accent` on `--surface` computes to 6.34:1, slightly under the 6.4:1 its usage note gives. `.fill` is a 28% tint behind the outline and carries nothing alone. The parked state's own `t-slack` thread is dimmed with the rest, so in light crew-olive the thread that carries "paused at cap" is itself 2.99:1. Owner finding 8 covers this.
+For a part over the tint, the tint is composited at 28% over `--ground` first, then the part at its own opacity over that. While parked, the whole avatar is composited as one group at 72%, so the tint and the part are both dimmed against the undimmed `--ground`.
 
-`Avatar.test.tsx` fails on any hex literal or CSS colour function (`rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, `color()`, `color-mix()`, `light-dark()`, in any case) in `Avatar.tsx`, `Avatar.css` or `creatures.ts`. It also fails on a named colour in any colour-bearing declaration in `Avatar.css`, and on any `var()` of a semantic token in `Avatar.css`, with or without a fallback, whatever the selector. That includes re-pointing `--bot` by state. The one exception is `--attention` on the ring, which is the only state colour. Finally, it renders every state for Wright and Mason. It fails if `--bot` is anything but `accent` or a crew hue, or if any element carries a colour attribute or an inline colour style.
+| Part, opacity | Drawn on | Lowest (light) | Lowest (dark) | Meets 3:1? |
+|---|---|---|---|---|
+| `.crown` at 100% (Wright only, accent) | `--ground` | 5.95 | 6.90 | yes |
+| `.st` outline, `.t` thread, `.knot` at 100% | `--ground` | 4.99 (crew-teal) | 6.90 (accent) | yes |
+| `.st` outline, `.t` thread, `.knot` at 100% | `.fill` tint | 3.37 (crew-teal) | 4.17 (accent) | yes |
+| `.ln` inner lines at 85% | `--ground` | 3.81 (crew-teal, crew-olive) | 5.31 (accent) | yes |
+| `.ln` inner lines at 85% | `.fill` tint | **2.78 (crew-teal)**, 2.83 (crew-olive), 2.87 (crew-sky) | 3.46 (accent) | no in light (teal, olive, sky) |
+| Full-hue parts while parked (whole avatar at 72%) | `--ground` | **2.99 (crew-olive)**, 3.03 (crew-teal) | 4.16 (accent) | no for light olive |
+| Full-hue parts while parked | `.fill` tint | 2.29 (crew-olive, crew-teal) | 2.96 (accent) | no in light; no for dark accent |
+| `.ln` while parked (85% × 72%) | `--ground` | 2.47 (crew-olive) | 3.36 (accent) | no in light |
+| `.ln` while parked | `.fill` tint | 1.99 (crew-olive) | 2.54 (accent) | no |
+| `.stitch` ring at 45% (idle, working, waiting) | `--ground` | 1.89 (crew-olive) | 2.39 (accent) | no |
+| `.stitch` while parked (50% × 72%), killed (60%), done (90%) | `--ground` | 1.65, 2.42, 4.17 | 1.96, 3.28, 5.81 | parked and light killed: no |
+| Waiting ring, `--attention` at 70% under reduced motion | `--ground` | 2.97 | 5.30 | no in light |
+
+Where two `.fill` shapes overlap (the shark's fin and body, the whale's body and tail, the turtle's body and head), the tint doubles to about 48%. The `.st` outline crossing that sliver drops to 2.46:1 in light (crew-teal) and 2.70:1 in dark (accent).
+
+Dark `accent` on `--surface` computes to 6.34:1, slightly under the 6.4:1 its usage note gives. `.fill` carries nothing alone. The parked state's own `t-slack` thread hangs below the body on `--ground`, and it is dimmed with the rest, so in light crew-olive the thread that carries "paused at cap" is itself 2.99:1. Owner finding 8 covers this.
+
+`Avatar.test.tsx` fails on any hex literal or CSS colour function (`rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`, `color()`, `color-mix()`, `light-dark()`, in any case) in `Avatar.tsx`, `Avatar.css` or `creatures.ts`, and on any semantic token in `Avatar.tsx` or `creatures.ts`. For `Avatar.css` it uses an allowlist. Every declaration is either a listed non-colour property, which may read only `var(--s)` and `var(--seed)`, or it is treated as colour-bearing. An unlisted property counts as colour-bearing. Each word of a colour-bearing value must be one of these: `var(--bot)`, `var(--bot, var(--accent))`, a `var(--crew-*)` hue, `var(--attention)` on a `.ring` rule only, `var(--ground)` as the crown's stroke only, or a length, number, line style or `none`/`transparent`/CSS-wide keyword. So a named colour, `currentColor`, a fallback such as `var(--nope, red)`, a bare `var(--accent)` and any semantic token all fail. `Avatar.css` may declare no custom property, so no rule can re-point `--bot` by state or role. A second test feeds the guard known bypasses and checks that each one fails. Finally, the test renders every state for Wright and Mason. It fails if any element carries a colour attribute, or if any element carries an inline style other than the root's `--s`, `--bot` and `--seed` and the tail's `transform-origin`, each checked against the only value shape it may take. On the root, `--bot` must be `accent` for Wright and a crew hue for anyone else.
 
 ## Owner findings (the design is ported as is; these need a decision)
 
@@ -52,4 +64,4 @@ Dark `accent` on `--surface` computes to 6.34:1, slightly under the 6.4:1 its us
 5. **`avatar.js` lets anyone be the whale, or wear accent.** `avatarHTML` accepts any `shape` in `SHAPES` (including `whale`) and any `hue` in `HUES` (including `accent`). The README forbids both. The component follows the README: a crew member asking for the whale gets the fish, and an unknown hue (including `accent` or a semantic name) gets slate.
 6. **Sizes.** `preview.html`'s sizes row uses 16/18/24/36, while the README lists 16/24/36/56. The page shows both sets.
 7. **Thread display.** The source renders all six thread paths and toggles them with `display` rules per state. The component renders only the active state's path(s), so the state is legible from the markup alone, without CSS (Avatar.test.tsx asserts it). The picture is the same.
-8. **The design's opacities take some parts below 3:1.** The tokens' "3:1+" holds for the full-hue parts, but not after the design's dimming (see Contrast). In light, the parked state's 72% opacity puts crew-olive at 2.99:1. The `.stitch` ring at 45% is 1.89 to 2.85:1 across hues and themes, and it partly carries the parked, done and killed states. The waiting ring's `--attention` at 70% is 2.97:1 in light. The port keeps the design's opacities. The owner needs to decide whether the dimmed parts must also meet 3:1.
+8. **The design's opacities and its own tint take some parts below 3:1.** The tokens' "3:1+" holds for the full-hue parts, but not after the design's dimming, nor for some parts drawn over the creature's own 28% `.fill` tint (see Contrast). In light, the inner lines (`.ln` at 85%) over the tint are 2.78:1 (crew-teal), 2.83:1 (crew-olive) and 2.87:1 (crew-sky). In light, the parked state's 72% opacity puts crew-olive at 2.99:1 on `--ground`, and every full-hue part drawn over the tint at 2.29 to 2.50:1. Where two fills overlap, the outline over the doubled tint is 2.46:1 in light. The `.stitch` ring at 45% is 1.89 to 2.85:1 across hues and themes, and it partly carries the parked, done and killed states. The waiting ring's `--attention` at 70% is 2.97:1 in light. The port keeps the design's opacities. The owner needs to decide whether the dimmed parts must also meet 3:1.

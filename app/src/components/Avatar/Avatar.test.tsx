@@ -226,10 +226,15 @@ describe("keyboard", () => {
 
 /** The rule blocks of a stylesheet (innermost `selector { body }` pairs), with whitespace collapsed. */
 function cssRules(css: string): { selectors: string[]; body: string }[] {
+  return cssRulesRaw(css).map((r) => ({ ...r, body: r.body.replace(/\s+/g, "") }));
+}
+
+/** Like cssRules, but the body keeps its whitespace, so a value's words stay apart. */
+function cssRulesRaw(css: string): { selectors: string[]; body: string }[] {
   const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
   return [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
     selectors: (m[1] ?? "").split(",").map((s) => s.replace(/@media[^{]*$/, "").replace(/\s+/g, " ").trim()),
-    body: (m[2] ?? "").replace(/\s+/g, ""),
+    body: m[2] ?? "",
   }));
 }
 
@@ -269,14 +274,39 @@ describe("reduced motion (Avatar.css)", () => {
   });
 });
 
-/** A declaration's value with every `var(...)` (nested fallbacks included) removed. */
-function withoutVars(value: string): string {
-  let rest = value;
-  for (let prev = ""; prev !== rest; ) {
-    prev = rest;
-    rest = rest.replace(/var\([^()]*\)/gi, "");
+/** Every declaration in a stylesheet, with its rule's selectors and its value's whitespace collapsed. */
+function cssDeclarations(css: string): { selectors: string[]; prop: string; value: string }[] {
+  return cssRulesRaw(css).flatMap(({ selectors, body }) =>
+    body.split(";").flatMap((declaration) => {
+      const colon = declaration.indexOf(":");
+      if (declaration.trim() === "") return [];
+      if (colon < 0) return [{ selectors, prop: declaration.trim(), value: "" }];
+      return [{ selectors, prop: declaration.slice(0, colon).trim(), value: declaration.slice(colon + 1).replace(/\s+/g, " ").trim() }];
+    }),
+  );
+}
+
+/**
+ * A value's top-level words, with `!important` dropped and whitespace inside parentheses removed, so
+ * `var( --x , var(--y) )` is the single word `var(--x,var(--y))`. Function names are lower-cased (CSS
+ * treats them case-insensitively); custom-property names keep their case, because CSS does too.
+ */
+function valueWords(value: string): string[] {
+  const words: string[] = [];
+  let word = "";
+  let depth = 0;
+  for (const ch of value.replace(/!\s*important/gi, " ")) {
+    if (ch === "(") depth++;
+    if (ch === ")") depth--;
+    if (/\s/.test(ch)) {
+      if (depth === 0 && word !== "") words.push(word);
+      if (depth === 0) word = "";
+      continue;
+    }
+    word += ch;
   }
-  return rest;
+  if (word !== "") words.push(word);
+  return words.map((w) => w.replace(/[a-z-]+\(/gi, (head) => head.toLowerCase()));
 }
 
 describe("no hard-coded colour (Avatar.tsx, Avatar.css, creatures.ts)", () => {
@@ -296,62 +326,107 @@ describe("no hard-coded colour (Avatar.tsx, Avatar.css, creatures.ts)", () => {
     });
   }
 
-  it("Avatar.css paints colour only through var(): no named colour in any colour-bearing declaration", () => {
-    const colourProperty = /^(fill|stroke|color|background(-color)?|border(-(top|right|bottom|left))?(-color)?|outline(-color)?|box-shadow|text-shadow|stop-color|flood-color|lighting-color|caret-color|accent-color|column-rule(-color)?|text-decoration(-color)?)$/i;
-    // What may remain once var() is removed: lengths, numbers and non-colour keywords. Anything else
-    // (`red`, `white`, `currentColor`, `transparent`) is a colour the tokens did not choose.
-    const allowed = /^(none|solid|dashed|dotted|double|inherit|initial|unset|revert|inset|-?[\d.]+(px|em|rem|%)?)$/i;
-    const stripped = avatarCss.replace(/\/\*[\s\S]*?\*\//g, "");
-    const offenders = [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)].flatMap((m) =>
-      (m[2] ?? "")
-        .split(";")
-        .map((declaration) => {
-          const colon = declaration.indexOf(":");
-          return colon < 0 ? null : { prop: declaration.slice(0, colon).trim(), value: declaration.slice(colon + 1) };
-        })
-        .filter((d): d is { prop: string; value: string } => d !== null && colourProperty.test(d.prop))
-        .filter(({ value }) =>
-          withoutVars(value)
-            .replace(/!\s*important/gi, " ")
-            .split(/[\s,]+/)
-            .some((word) => word !== "" && !allowed.test(word)),
-        )
-        .map(({ prop, value }) => `${(m[1] ?? "").trim()} { ${prop}:${value.trim()} }`),
-    );
-    expect(offenders).toEqual([]);
+  // Avatar.css colour is an allowlist, not a list of forbidden forms. Every declaration is either a known
+  // non-colour property, or is treated as colour-bearing and every word of its value must be on the list below.
+  // An unknown property counts as colour-bearing, and Avatar.css declares no custom property at all (the
+  // component sets --s, --bot and --seed inline), so nothing can re-point --bot or smuggle a colour through one.
+  const NON_COLOUR_PROPS = new Set([
+    "display", "place-items", "width", "height", "flex", "position", "overflow", "inset", "border-radius",
+    "pointer-events", "opacity", "transform", "transform-origin", "animation", "animation-delay",
+    "stroke-width", "stroke-dasharray", "stroke-dashoffset", "stroke-linecap", "stroke-linejoin",
+  ]);
+  // The only var()s a non-colour declaration may read: the size and the clock the component sets inline.
+  const LAYOUT_VARS = new Set(["--s", "--seed"]);
+  // Identity paint: the agent's own --bot (accent only as its fallback, which is how the source uses it) or a crew hue.
+  const IDENTITY = new Set(["var(--bot)", "var(--bot,var(--accent))", ...CREW_HUES.map((h) => `var(--crew-${h})`)]);
+  // Words that carry no colour: lengths, numbers, line styles and the non-colour keywords.
+  const NEUTRAL = /^(none|transparent|inherit|initial|unset|revert|solid|dashed|dotted|double|-?(\d+|\d*\.\d+)(px|em|rem|%)?)$/;
+
+  /** Why a colour-bearing word is not allowed in this declaration, or null when it is. */
+  function colourOffence(selectors: string[], prop: string, word: string): string | null {
+    if (IDENTITY.has(word) || NEUTRAL.test(word)) return null;
+    // The one state colour: --attention, on the waiting ring and nowhere else.
+    if (word === "var(--attention)" && selectors.every((s) => /\.ring$/.test(s))) return null;
+    // The crown's cut-out edge is the ground it sits on, not a colour.
+    if (word === "var(--ground)" && prop === "stroke" && selectors.every((s) => s === ".bot .crown")) return null;
+    return word;
+  }
+
+  function cssColourOffenders(css: string): string[] {
+    return cssDeclarations(css).flatMap(({ selectors, prop, value }) => {
+      const where = `${selectors.join(", ")} { ${prop}: ${value} }`;
+      if (prop.startsWith("--")) return [`${where}: Avatar.css declares no custom property`];
+      if (NON_COLOUR_PROPS.has(prop.toLowerCase())) {
+        const vars = [...value.matchAll(/var\(\s*(--[\w-]+)/gi)].map((m) => m[1] ?? "");
+        return vars.filter((v) => !LAYOUT_VARS.has(v)).map((v) => `${where}: reads ${v}`);
+      }
+      return valueWords(value)
+        .map((word) => colourOffence(selectors, prop.toLowerCase(), word))
+        .filter((word): word is string => word !== null)
+        .map((word) => `${where}: ${word}`);
+    });
+  }
+
+  it("Avatar.css takes every colour from --bot, a crew hue, or --attention on the ring, and declares no custom property", () => {
+    expect(cssColourOffenders(avatarCss)).toEqual([]);
+    // The component sets --bot inline only; no rule may re-point it, by state or by role.
+    expect(cssDeclarations(avatarCss).filter((d) => d.prop === "--bot")).toEqual([]);
   });
 
-  it("no semantic token reaches the avatar except the waiting ring's --attention", () => {
-    // Any rule carrying a semantic var() is an offender, whatever its selector, unless every selector is the
-    // ring and the only semantic token is attention. That covers painting an identity part directly, through a
-    // fallback, through a custom property, or by re-pointing --bot by state (`.bot.danger{--bot:var(--danger)}`).
-    const global = new RegExp(semantic.source, "gi");
-    const offenders = cssRules(avatarCss).filter((r) => {
-      const used = [...r.body.matchAll(global)].map((m) => (m[1] ?? "").toLowerCase());
-      if (used.length === 0) return false;
-      const ringOnly = r.selectors.every((s) => /\.ring$/.test(s));
-      return !(ringOnly && used.every((t) => t === "attention"));
-    });
-    expect(offenders).toEqual([]);
-    expect(cssRules(avatarCss).filter((r) => /--bot:/.test(r.body) && semantic.test(r.body))).toEqual([]);
+  it("the CSS colour allowlist rejects what it must and keeps what the real stylesheet uses", () => {
+    // A guard that never fails proves nothing: each of these must be an offender.
+    const bad = [
+      ".bot .knot{fill:var(--nope, red)}",
+      ".bot .knot{fill:var(--danger, var(--bot))}",
+      ".bot .knot{fill:var( --danger )}",
+      ".bot .knot{fill:var(--accent)}",
+      ".bot .knot{fill:red}",
+      ".bot .knot{fill:currentColor}",
+      ".bot .knot{fill:RGB(1,2,3)}",
+      ".bot .knot{fill:var(--attention)}",
+      ".bot .ring{border:2px solid var(--danger)}",
+      ".bot .st{-webkit-text-fill-color:var(--danger)}",
+      ".bot .rig{opacity:var(--danger)}",
+      ".bot.danger{--bot:crimson !important}",
+      ".bot.danger{--bot:var(--danger)}",
+      ".bot:not(.lead){--bot:var(--accent) !important}",
+      ".bot{--x:var(--danger)}",
+      "@keyframes k{to{fill:red}}",
+    ];
+    for (const css of bad) expect(cssColourOffenders(css), css).not.toEqual([]);
+    const good = [".bot .knot{fill:var(--bot, var(--accent))}", ".bot .ring{border:2px solid var(--attention)}", ".bot .st{fill:none;stroke-width:1.6}"];
+    for (const css of good) expect(cssColourOffenders(css), css).toEqual([]);
+  });
+
+  it("no semantic token appears in Avatar.tsx or creatures.ts", () => {
     expect(avatarTsx).not.toMatch(semantic);
     expect(creaturesTs).not.toMatch(semantic);
   });
 
-  it("the rendered avatar carries no colour of its own, and --bot is accent or a crew hue in every state", () => {
+  it("the rendered avatar carries no colour of its own: only the root sets --bot, to accent or a crew hue", () => {
     const crewTokens = CREW_HUES.map((h) => `var(--crew-${h})`);
     const colourAttrs = ["fill", "stroke", "color", "stop-color", "flood-color", "lighting-color"];
     for (const agent of [WRIGHT, MASON]) {
       for (const state of AVATAR_STATES) {
         const root = renderAvatar(agent, state, { action: "x" });
-        const bot = root.style.getPropertyValue("--bot");
-        expect(agent === WRIGHT ? bot === "var(--accent)" : crewTokens.includes(bot)).toBe(true);
+        // The inline styles the component may set, element by element, each with the only value shape it may take.
+        const rootStyle: Record<string, (v: string) => boolean> = {
+          "--s": (v) => /^\d+(\.\d+)?px$/.test(v),
+          "--bot": (v) => (agent === WRIGHT ? v === "var(--accent)" : crewTokens.includes(v)),
+          "--seed": (v) => /^-\d+(\.\d+)?s$/.test(v),
+        };
+        const tailStyle: Record<string, (v: string) => boolean> = { "transform-origin": (v) => /^\d+(\.\d+)?px \d+(\.\d+)?px$/.test(v) };
         for (const el of [root, ...root.querySelectorAll("*")]) {
           for (const attr of colourAttrs) expect(el.getAttribute(attr), `${state} ${el.tagName} ${attr}`).toBeNull();
-          const style = el.getAttribute("style") ?? "";
-          const props = style.split(";").map((d) => (d.split(":")[0] ?? "").trim()).filter(Boolean);
-          expect(props.filter((p) => !["--s", "--bot", "--seed", "transform-origin"].includes(p)), `${state} ${el.tagName}`).toEqual([]);
+          const allowed = el === root ? rootStyle : el.matches("g.tail") ? tailStyle : {};
+          const declarations = (el.getAttribute("style") ?? "")
+            .split(";")
+            .filter((d) => d.trim() !== "")
+            .map((d) => [d.slice(0, d.indexOf(":")).trim(), d.slice(d.indexOf(":") + 1).trim()] as const);
+          const bad = declarations.filter(([prop, value]) => !(allowed[prop]?.(value) ?? false));
+          expect(bad, `${state} ${el.tagName}.${el.getAttribute("class") ?? ""}`).toEqual([]);
         }
+        expect(Object.keys(rootStyle).every((p) => rootStyle[p]?.(root.style.getPropertyValue(p)))).toBe(true);
       }
     }
   });
