@@ -71,3 +71,9 @@ Item 01 alone owns the shared files (see its Touches). If this item needs a file
 kernel/src/agents/roster.ts
 kernel/test/agents-wright-settings.test.ts
 docs/architecture/agents.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-22T02:13:43Z
+- **Brief:** .supervisor/jobs/done/2026-10-21-wright-settings-from-the-app.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/106
