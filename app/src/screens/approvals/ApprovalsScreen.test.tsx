@@ -223,6 +223,27 @@ describe("the inbox", () => {
     expect(fake.requests.filter((r) => r.req.method === "POST" && r.req.path === "/approvals/:id/approve")).toHaveLength(0);
   });
 
+  it("the only approval dropped by a read while A is in flight, then refused: the empty state still shows the refusal", async () => {
+    const { fake, kernel } = await mount({ approvals: [approval(1)] });
+    let release: (() => void) | undefined;
+    fake.route(
+      "POST /approvals/:id/approve",
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: false, status: 409, body: { error: "approval_not_pending", message: "approval 1 is not pending" } });
+        }),
+    );
+    press("a");
+    await waitFor(() => expect(posts(fake, "POST /approvals/:id/approve")).toHaveLength(1));
+    kernel.approvals = [];
+    act(() => fake.emit(event("approval_decided")));
+    await waitFor(() => expect(rowIds()).toEqual([]));
+    expect(screen.getByTestId("approval-detail").dataset.approvalId).toBe("1");
+    await act(async () => release?.());
+    await waitFor(() => expect(screen.getByTestId("screen-approvals").dataset.state).toBe("empty"));
+    expect(screen.getByTestId("approval-notice").textContent).toBe("approval 1 is not pending");
+  });
+
   it("the empty state, with its words, when nothing waits", async () => {
     await mount();
     expect(screen.getByTestId("screen-approvals").dataset.state).toBe("empty");
@@ -242,6 +263,17 @@ describe("the inbox", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     act(() => fake.emit(event("approval_requested")));
     await waitFor(() => expect(screen.queryByTestId("approvals-stale")).toBeNull());
+  });
+
+  it("a refetch that fails because the kernel isn't connected adds no stale note: the shell's band says that", async () => {
+    const { fake } = await mount({ approvals: [approval(1)] });
+    const before = fake.requestsTo("GET /approvals").length;
+    fake.route("GET /approvals", () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "daemon_not_running" } }));
+    act(() => fake.emit(event("approval_requested")));
+    await waitFor(() => expect(fake.requestsTo("GET /approvals").length).toBeGreaterThan(before));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+    expect(screen.queryByTestId("approvals-stale")).toBeNull();
+    expect(rowIds()).toEqual([1]);
   });
 
   it("Hide decided with a decided row selected says it is no longer listed, not that it was waiting", async () => {
@@ -527,6 +559,55 @@ describe("decisions", () => {
     expect(screen.getByTestId("approval-gone").textContent).not.toContain("decided elsewhere");
   });
 
+  it("J from the focused placeholder hands focus to the detail that replaces it, never to <body>", async () => {
+    const { fake, kernel } = await mount({ approvals: [approval(1), approval(2)] });
+    screen.getByRole("button", { name: /^Allow once/ }).focus();
+    kernel.approvals = [approval(2)];
+    act(() => fake.emit(event("approval_decided")));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("approval-gone")));
+    press("j");
+    expect(screen.getByTestId("approval-detail").dataset.approvalId).toBe("2");
+    expect(document.activeElement).toBe(screen.getByTestId("approval-detail"));
+  });
+
+  it("with Show decided on, an approval decided elsewhere going gone and coming back decided keeps focus off <body>", async () => {
+    const one = approval(1);
+    const { fake, kernel } = await mount({ approvals: [one, approval(2)] });
+    fireEvent.click(screen.getByRole("button", { name: "Show decided" }));
+    await waitFor(() => expect(fake.requestsTo("GET /approvals").some((r) => r.req.query?.all === "1")).toBe(true));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+    let releaseAll: (() => void) | undefined;
+    fake.route("GET /approvals", (req) =>
+      req.query?.all === "1"
+        ? new Promise((resolve) => {
+            releaseAll = () => resolve(ok({ approvals: [...kernel.approvals, ...kernel.decided] }));
+          })
+        : ok({ approvals: [...kernel.approvals] }),
+    );
+    screen.getByRole("button", { name: /^Allow once/ }).focus();
+    kernel.approvals = [approval(2)];
+    kernel.decided = [{ ...one, status: "approved", decision: "once", decided_by: "owner", decided_at: "2026-10-22T09:00:00.000Z" }];
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    act(() => fake.emit(event("approval_decided")));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("approval-gone")));
+    await waitFor(() => expect(releaseAll).toBeDefined());
+    await act(async () => releaseAll?.());
+    await waitFor(() => expect(screen.getByTestId("approval-outcome")).toBeTruthy());
+    expect(screen.getByTestId("approval-detail").dataset.approvalId).toBe("1");
+    expect(document.activeElement).toBe(screen.getByTestId("approval-outcome"));
+  });
+
+  it("a messages read that fails after a decision says the agent's message couldn't be read", async () => {
+    const one = approval(1);
+    const { fake } = await mount({ approvals: [one] });
+    fake.route("POST /approvals/:id/approve", () => ok({ approval: { ...one, status: "approved", decision: "once", decided_by: "owner", decided_at: "2026-10-22T09:00:00.000Z" } }));
+    fake.route("GET /messages", () => ({ ok: false, status: 500, body: { error: "internal", message: "db locked" } }));
+    press("a");
+    await waitFor(() => expect(screen.getByTestId("approval-message-error").textContent).toContain("Couldn't read the agent's messages."));
+    expect(screen.getByTestId("approval-message-error").textContent).toContain("The kernel refused the read (500 internal): db locked.");
+    expect(screen.queryByTestId("approval-message-pending")).toBeNull();
+  });
+
   it("no decision key runs behind the open ⌘K palette", async () => {
     const { fake } = await mount({ approvals: [approval(1)] });
     const palette = document.createElement("div");
@@ -604,6 +685,26 @@ describe("grants", () => {
     fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: /^Revoke/ }));
     await waitFor(() => expect(screen.queryByTestId("grant-3")).toBeNull());
     expect(document.activeElement).toBe(screen.getByRole("heading", { name: /^Standing grants/ }));
+  });
+
+  it("a revoke answering after the owner moved focus to another grant's Revoke leaves focus there", async () => {
+    const { fake } = await mount({ approvals: [approval(1)], grants: [grant(3), grant(4)] });
+    let release: (() => void) | undefined;
+    fake.route(
+      "POST /approvals/grants/:id/revoke",
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(ok({ grant: grant(3) }));
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Revoke grant #3" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: /^Revoke/ }));
+    await waitFor(() => expect(posts(fake, "POST /approvals/grants/:id/revoke")).toHaveLength(1));
+    const four = screen.getByRole("button", { name: "Revoke grant #4" });
+    four.focus();
+    await act(async () => release?.());
+    await waitFor(() => expect(screen.getByTestId("grant-notice").textContent).toContain("Revoked grant #3"));
+    expect(document.activeElement).toBe(four);
   });
 
   it("a failed grants refetch after a good read keeps the grants and says they are the older answer", async () => {

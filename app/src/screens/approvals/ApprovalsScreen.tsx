@@ -208,6 +208,11 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
   const revoking = useRef(new Set<number>());
   const mounted = useRef(true);
   const grantsHeading = useRef<HTMLHeadingElement>(null);
+  /** Set when a detail-pane child unmounts holding focus; the child mounted in its place takes it. Reset each commit. */
+  const paneFocusLost = useRef(false);
+  useLayoutEffect(() => {
+    paneFocusLost.current = false;
+  });
 
   useEffect(() => {
     mounted.current = true;
@@ -335,10 +340,12 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
       if (!mounted.current) return;
       setRevokeBusy(new Set(revoking.current));
       // The confirm handed focus back to this grant's Revoke, and the grants refetch below can remove its row:
-      // move focus to the grants heading first, unless the owner has already moved it somewhere else.
+      // move focus to the grants heading first, unless the owner has already moved it somewhere else (another
+      // grant's Revoke included). Only focus on this grant's own row, or already lost to <body>, is moved.
       const heading = grantsHeading.current;
       const focused = document.activeElement;
-      if (heading !== null && (focused === null || focused === document.body || heading.parentElement?.contains(focused) === true)) heading.focus();
+      const onOwnRow = focused instanceof HTMLElement && focused.closest(`[data-testid="grant-${grant.id}"]`) !== null;
+      if (heading !== null && (focused === null || focused === document.body || onOwnRow)) heading.focus();
       if (result?.ok === true) {
         setGrantNotice(`Revoked grant #${grant.id}. ${printable(grant.requesting_agent)} asks again next time.`);
         store.refetch("grants");
@@ -487,6 +494,8 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
   if (approvals?.data === undefined) state = approvals?.error === undefined ? "loading" : "error";
   else state = rows.length === 0 && held === undefined ? "empty" : "populated";
   const approvalsStale = staleError(approvals?.data, approvals?.error);
+  // A refusal for the approval that left the list: the empty layout has no detail to carry it, so it shows here.
+  const goneNotice = goneId === null ? undefined : notices.get(goneId);
 
   // The populated and the empty / error layouts are different trees: whatever had focus in the one leaving
   // (a list row, a decision button) is gone. Hand focus to the new layout's region, never to <body>.
@@ -571,6 +580,11 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
       <div className="approvals approvals-single" data-testid="screen-approvals" data-state={state}>
         {bar}
         {staleNote}
+        {state === "empty" && goneNotice !== undefined ? (
+          <p className="approvals-notice" data-tone={goneNotice.tone} role="status" data-testid="approval-notice" data-approval-id={goneId ?? undefined}>
+            {goneNotice.text}
+          </p>
+        ) : null}
         <div className="approvals-column">
           {state === "error" ? (
             <div className="approvals-empty" role="alert" data-testid="approvals-error" ref={singleRegion} tabIndex={-1}>
@@ -620,6 +634,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
         <div className="approvals-detail-pane">
           {goneId !== null ? (
             <GoneDetail
+              focusLost={paneFocusLost}
               id={goneId}
               reason={goneReason}
               action={lastShown.current?.id === goneId ? lastShown.current.action : undefined}
@@ -630,6 +645,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
           ) : (
             <ApprovalDetail
               key={selected.id}
+              focusLost={paneFocusLost}
               approval={selected}
               sessions={sessions?.data?.sessions}
               message={messageFor(selected.id, messages?.data?.messages)}
@@ -651,6 +667,8 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
 // ---- the detail --------------------------------------------------------------------------
 
 interface ApprovalDetailProps {
+  /** The inbox's flag for focus lost by a detail-pane child that just unmounted. */
+  readonly focusLost: RefObject<boolean>;
   readonly approval: Approval;
   readonly sessions: readonly SessionSummary[] | undefined;
   readonly message: BrainMessage | undefined;
@@ -663,6 +681,27 @@ interface ApprovalDetailProps {
   readonly onDecide: (decision: Decision) => void;
 }
 
+/**
+ * The detail pane swaps its child (one approval for another, the gone placeholder for a detail) under focus:
+ * an unmounting child that holds focus says so, and the one mounted in its place takes focus, never <body>.
+ * Only focus the owner had inside the pane moves; focus anywhere else (the list, a grant) stays.
+ */
+function usePaneFocus(focusLost: RefObject<boolean>, own: RefObject<HTMLElement | null>, target: () => HTMLElement | null): void {
+  useLayoutEffect(() => {
+    if (focusLost.current) {
+      focusLost.current = false;
+      const focused = document.activeElement;
+      if (focused === null || focused === document.body) target()?.focus();
+    }
+    const el = own.current;
+    return () => {
+      // Runs before the node leaves the DOM, so a focused descendant is still `activeElement`.
+      if (el !== null && el.contains(document.activeElement)) focusLost.current = true;
+    };
+    // Mount and unmount only: `target` is read once, when this child takes the pane.
+  }, []);
+}
+
 /** Focus `target` when the element that had focus was just removed (focus is on <body>) or was inside `scope`. */
 function keepFocus(target: HTMLElement | null, scope: HTMLElement | null): void {
   if (target === null) return;
@@ -670,7 +709,7 @@ function keepFocus(target: HTMLElement | null, scope: HTMLElement | null): void 
   if (focused === null || focused === document.body || (scope !== null && scope.contains(focused) && focused !== target)) target.focus();
 }
 
-function ApprovalDetail({ approval: a, sessions, message, messagesError, notice, busyDecision, disabled, onDecide }: ApprovalDetailProps) {
+function ApprovalDetail({ focusLost, approval: a, sessions, message, messagesError, notice, busyDecision, disabled, onDecide }: ApprovalDetailProps) {
   const titleId = useId();
   const reasonId = useId();
   const willLine = kernelWillLine(a);
@@ -678,6 +717,9 @@ function ApprovalDetail({ approval: a, sessions, message, messagesError, notice,
   const pending = a.status === "pending";
   const sectionRef = useRef<HTMLElement>(null);
   const outcomeRef = useRef<HTMLDivElement>(null);
+  // Mounted in place of a pane child that held focus: a decided one focuses its outcome, a pending one itself
+  // (never a decision button, so a stray Enter decides nothing).
+  usePaneFocus(focusLost, sectionRef, () => (pending ? sectionRef.current : outcomeRef.current));
   // The answer replaces the decision buttons, so the focused one is removed: focus the outcome that replaced it.
   const wasPending = useRef(pending);
   useLayoutEffect(() => {
@@ -689,7 +731,7 @@ function ApprovalDetail({ approval: a, sessions, message, messagesError, notice,
   const off = (decision: Decision): boolean => disabled && !busyOn(decision);
 
   return (
-    <section className="approvals-detail" aria-labelledby={titleId} data-testid="approval-detail" data-approval-id={a.id} ref={sectionRef}>
+    <section className="approvals-detail" aria-labelledby={titleId} data-testid="approval-detail" data-approval-id={a.id} ref={sectionRef} tabIndex={-1}>
       <header className="approvals-head">
         <h2 className="approvals-title" id={titleId} data-testid="approval-action">
           {printable(a.action)}
@@ -790,6 +832,7 @@ function ApprovalDetail({ approval: a, sessions, message, messagesError, notice,
 }
 
 interface GoneDetailProps {
+  readonly focusLost: RefObject<boolean>;
   readonly id: number;
   readonly reason: GoneReason;
   readonly action: string | undefined;
@@ -801,10 +844,11 @@ interface GoneDetailProps {
  * only what the screen saw (the kernel's pending list no longer has it; a decided one is no longer listed),
  * never why: it may have been decided in another window, or expired, or the decided list was hidden.
  */
-function GoneDetail({ id, reason, action, notice }: GoneDetailProps) {
+function GoneDetail({ focusLost, id, reason, action, notice }: GoneDetailProps) {
   const ref = useRef<HTMLElement>(null);
   // It replaces the detail, so a focused decision button is removed with it: focus this instead of <body>.
   useLayoutEffect(() => keepFocus(ref.current, null), []);
+  usePaneFocus(focusLost, ref, () => ref.current);
   return (
     <section className="approvals-detail" data-testid="approval-gone" data-approval-id={id} role="status" ref={ref} tabIndex={-1}>
       <h2 className="approvals-title">{action === undefined ? `#${id}` : printable(action)}</h2>
