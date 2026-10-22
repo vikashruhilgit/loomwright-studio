@@ -451,6 +451,42 @@ describe("Toast focus hand-off (AC8)", () => {
     expect(document.activeElement).toBe(origin);
   });
 
+  it("dismissing the focused toast skips a neighbour already playing its timer-driven leave", () => {
+    vi.useFakeTimers();
+    const computed = window.getComputedStyle.bind(window);
+    const spy = vi.spyOn(window, "getComputedStyle").mockImplementation((el) => {
+      const style = computed(el);
+      return { ...style, getPropertyValue: (p: string) => (p === "animation-duration" ? "150ms" : style.getPropertyValue(p)) } as CSSStyleDeclaration;
+    });
+    function Timed() {
+      const [toasts, setToasts] = useState<readonly ToastItem[]>([item(1), item(2)]);
+      return (
+        <>
+          <button type="button">Origin</button>
+          <ToastStack toasts={toasts} onDismiss={(id) => setToasts((prev) => prev.filter((toast) => toast.id !== id))} />
+        </>
+      );
+    }
+    try {
+      render(<Timed />);
+      const origin = screen.getByRole("button", { name: "Origin" });
+      act(() => origin.focus());
+      const [first, second] = screen.getAllByRole("button", { name: "Dismiss" });
+      if (!first || !second) throw new Error("two dismiss buttons");
+      // Focus pauses t1 only; t2's 6 s timer fires and it starts its 150ms leave.
+      act(() => first.focus());
+      advance(6000);
+      expect(second.closest(".toast")?.getAttribute("data-state")).toBe("leaving");
+      fireEvent.click(first);
+      expect(document.activeElement).toBe(origin);
+      advance(150);
+      expect(screen.queryAllByRole("status")).toHaveLength(0);
+      expect(document.activeElement).toBe(origin);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("calls onDismiss exactly once when the hand-off moves focus away mid-leave", () => {
     vi.useFakeTimers();
     const computed = window.getComputedStyle.bind(window);

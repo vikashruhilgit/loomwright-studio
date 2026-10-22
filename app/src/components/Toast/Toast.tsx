@@ -89,13 +89,20 @@ const focusOrigins = new WeakMap<HTMLElement, HTMLElement>();
 const isLost = () => document.activeElement === null || document.activeElement === document.body;
 
 /**
+ * Whether `el` sits in a toast that is playing its leave. Every focus hand-off
+ * skips such a toast: it is about to be removed, so focusing it would only bounce.
+ */
+const isInLeavingToast = (el: Element | null | undefined): boolean =>
+  el?.closest(".toast")?.getAttribute("data-state") === "leaving";
+
+/**
  * Standalone toasts only: moves focus out of `toast` before it leaves the DOM,
  * to the adjacent open toast's dismiss (the next newer, else the next older),
  * else to `returnTo` when that is still in the page.
  */
 function handOffFocus(toast: HTMLElement, returnTo: HTMLElement | null): void {
   const isOpenToast = (el: Element | null): el is HTMLElement =>
-    el instanceof HTMLElement && el.classList.contains("toast") && el.dataset.state !== "leaving";
+    el instanceof HTMLElement && el.classList.contains("toast") && !isInLeavingToast(el);
   let next: Element | null = toast.nextElementSibling;
   while (next && !isOpenToast(next)) next = next.nextElementSibling;
   let prev: Element | null = toast.previousElementSibling;
@@ -357,7 +364,14 @@ export function ToastStack({ toasts, onDismiss, duration = TOAST_DURATION_MS, la
   /** Focuses the nearest toast that `alive` accepts, else the origin, else the stack. */
   const rehome = (from: string, order: readonly string[], alive: (id: string) => boolean) => {
     const section = sectionRef.current;
-    const targetId = survivingNeighbour(order, from, (id) => id !== from && !leavingRef.current.has(id) && alive(id));
+    // `leavingRef` holds toasts that began leaving while focused (before their
+    // `leaving` render commits); the DOM check covers the rest, such as a
+    // neighbour playing its timer-driven leave.
+    const targetId = survivingNeighbour(
+      order,
+      from,
+      (id) => id !== from && !leavingRef.current.has(id) && alive(id) && !isInLeavingToast(dismissOf(id)),
+    );
     const target = targetId === undefined ? null : dismissOf(targetId);
     if (target) {
       target.focus();
