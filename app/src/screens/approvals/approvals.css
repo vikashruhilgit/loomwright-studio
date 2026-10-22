@@ -1,0 +1,286 @@
+/* Approvals: docs/design/mockups/gui-v1.html §Approvals (the .inbox, .list, .row, .detail and .payload rules). Colour, type, spacing and widths come only from tokens.css custom properties. */
+.approvals {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.approvals-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-5);
+  border-bottom: 1px solid var(--hairline);
+}
+.approvals-count {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-variant-numeric: tabular-nums;
+}
+.approvals-spacer {
+  flex: 1;
+}
+
+/* The inbox: the 360px list pane and the detail. */
+.approvals-inbox {
+  display: grid;
+  flex: 1;
+  grid-template-columns: var(--list-pane-width) minmax(0, 1fr);
+  min-height: 0;
+}
+.approvals-list-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: var(--space-2);
+  border-right: 1px solid var(--hairline);
+  overflow: hidden;
+}
+.approvals-list-pane > .list {
+  flex: 1;
+  min-height: 0;
+}
+.approvals-detail-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+  padding: var(--space-5) var(--space-6);
+  overflow: auto;
+}
+
+.approvals-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.approvals-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.approvals-title,
+.approvals-section-title,
+.approvals-empty-title {
+  margin: 0;
+  font-family: var(--type-title-2-family);
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+  overflow-wrap: anywhere;
+}
+.approvals-section-title:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.approvals-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  overflow-wrap: anywhere;
+}
+.approvals-agent {
+  color: var(--ink);
+  font-weight: 600;
+}
+.approvals-cwd {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.approvals-label {
+  flex: none;
+  color: var(--ink-tertiary);
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+}
+.approvals-mono {
+  font-family: var(--type-mono-small-family);
+  font-size: var(--type-mono-small-size);
+  line-height: var(--type-mono-small-line);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.approvals-will {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* The payload well: a header strip over the exact text. */
+.approvals-well {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+.approvals-well-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: var(--surface-sunken);
+  border-bottom: 1px solid var(--hairline);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.approvals-well-note {
+  color: var(--ink-tertiary);
+}
+.approvals-pre {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  max-height: 320px;
+  overflow: auto;
+  font-family: var(--type-mono-small-family);
+  font-size: var(--type-mono-small-size);
+  line-height: var(--type-mono-small-line);
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.approvals-pre-small {
+  max-height: 120px;
+  padding: var(--space-2) 0 0;
+  color: var(--ink-secondary);
+}
+.approvals-pre-inline {
+  padding: var(--space-1) 0 0;
+}
+
+/* Decisions. */
+.approvals-decide {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.approvals-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.approvals-reason,
+.approvals-notice,
+.approvals-note {
+  margin: 0;
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  overflow-wrap: anywhere;
+}
+.approvals-notice[data-tone="attention"] {
+  color: var(--attention);
+}
+.approvals-notice[data-tone="danger"] {
+  color: var(--danger);
+}
+.approvals-list-pane > .approvals-note {
+  padding: var(--space-2);
+}
+
+.approvals-outcome {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.approvals-decision,
+.approvals-applied {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.approvals-outcome .approvals-note {
+  padding: var(--space-3) var(--space-4);
+}
+
+/* Standing grants. */
+.approvals-grants-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--hairline);
+}
+.approvals-grants {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.approvals-grant {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.approvals-grant-main {
+  flex: 1;
+  min-width: 0;
+}
+.approvals-grant-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.approvals-grant-action {
+  font-family: var(--type-body-strong-family);
+  font-weight: var(--type-body-strong-weight);
+  overflow-wrap: anywhere;
+}
+.approvals-grant-meta {
+  margin-top: var(--space-0-5);
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  overflow-wrap: anywhere;
+}
+
+/* The single-column states: empty, error, no bridge. */
+.approvals-single .approvals-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-height: 0;
+  padding: var(--space-12) var(--space-6);
+  max-width: 640px;
+  overflow: auto;
+}
+.approvals-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.approvals-single > .approvals-empty {
+  padding: var(--space-12) var(--space-6);
+  max-width: 640px;
+}
+.approvals-empty-note {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-secondary);
+}
