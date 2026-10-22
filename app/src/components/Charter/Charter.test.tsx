@@ -304,6 +304,12 @@ describe("Charter tools and limits (AC6)", () => {
     cleanup();
     const more = renderCharter({ limits: { tokensPerDay: 1_500_000, sessionsAtOnce: 3 } });
     expect(more.section("limits").textContent).toBe("1.5M tokens / day · 3 sessions at once");
+    cleanup();
+    expect(renderCharter({ limits: { tokensPerDay: 900, sessionsAtOnce: 0 } }).section("limits").textContent).toBe("900 tokens / day · 0 sessions at once");
+    cleanup();
+    expect(renderCharter({ limits: { tokensPerDay: 999_950, sessionsAtOnce: 1 } }).section("limits").textContent).toBe("1M tokens / day · 1 session at once");
+    cleanup();
+    expect(renderCharter({ limits: { tokensPerDay: 999_949, sessionsAtOnce: 1 } }).section("limits").textContent).toBe("999.9k tokens / day · 1 session at once");
     expect(ruleBody(css, ".charter__limits")).toMatch(/font-variant-numeric:\s*tabular-nums/);
   });
 

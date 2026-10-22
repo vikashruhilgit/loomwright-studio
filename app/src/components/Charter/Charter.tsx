@@ -70,7 +70,8 @@ export interface CharterProps {
 /** 100000 → "100k", 1500000 → "1.5M"; plain digits below 1000. */
 function formatTokens(n: number): string {
   const trim = (x: number) => x.toFixed(1).replace(/\.0$/, "");
-  if (n >= 1_000_000) return `${trim(n / 1_000_000)}M`;
+  // 999_950 would round to "1000.0k", so it already reads as millions.
+  if (n >= 999_950) return `${trim(n / 1_000_000)}M`;
   if (n >= 1_000) return `${trim(n / 1_000)}k`;
   return String(n);
 }
