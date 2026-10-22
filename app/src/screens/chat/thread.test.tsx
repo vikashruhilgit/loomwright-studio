@@ -6,11 +6,31 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ALWAYS_INELIGIBLE } from "./cards";
 import { WRIGHT_EMPTY } from "./Thread";
 import { approval, eventItem, kit, message, renderChat, resetChat, thread, go } from "./testkit";
+import type { Kit } from "./testkit";
 
 afterEach(resetChat);
 
 const XSS_IMG = "<img src=x onerror=alert(1)>";
 const XSS_LINK = "[x](javascript:alert(1))";
+
+/** The feed's event_done: the store refetches every loaded thread. */
+async function done(k: Kit): Promise<void> {
+  await act(async () => {
+    k.fake.emit({ type: "event", id: 1, at: new Date().toISOString(), kind: "event_done", session_id: null, task_id: null, payload: {} });
+  });
+}
+
+function shown(container: HTMLElement): (string | null)[] {
+  return [...container.querySelectorAll("[data-item]")].map((el) => el.getAttribute("data-item"));
+}
+
+/** Focus a button the way a keyboard owner does, then press it. */
+async function focusAndClick(button: HTMLElement): Promise<void> {
+  await act(async () => {
+    button.focus();
+    fireEvent.click(button);
+  });
+}
 
 async function click(name: string | RegExp): Promise<void> {
   await act(async () => {
@@ -170,6 +190,88 @@ describe("thread", () => {
     expect(items).toEqual(["message:2", "message:5"]);
     // The older page was the last: the button goes.
     expect(screen.queryByRole("button", { name: /^Load earlier/ })).toBeNull();
+  });
+
+  it("after Load earlier, an item that slides off the live first page stays in view", async () => {
+    const k = kit({
+      threads: { wright: thread([message(2, { text: "two" }), message(3, { text: "three" })], { next_before: "c1" }) },
+      pages: { "wright c1": thread([message(1, { text: "one" })], { next_before: null }) },
+    });
+    const view = await renderChat(k);
+    await screen.findByText("three");
+    await click(/^Load earlier/);
+    await screen.findByText("one");
+    expect(shown(view.container)).toEqual(["message:1", "message:2", "message:3"]);
+    // One new item: the live page (two items) now starts at 3, so 2 is in neither page.
+    k.state.threads.wright = thread([message(3, { text: "three" }), message(4, { text: "four" })], { next_before: "c2" });
+    await done(k);
+    await screen.findByText("four");
+    expect(shown(view.container)).toEqual(["message:1", "message:2", "message:3", "message:4"]);
+  });
+
+  it("the last Load earlier moves focus to the thread, not <body>", async () => {
+    const k = kit({
+      threads: { wright: thread([message(5, { text: "newer" })], { next_before: "cursor-1" }) },
+      pages: { "wright cursor-1": thread([message(2, { text: "older" })], { next_before: null }) },
+    });
+    const view = await renderChat(k);
+    await screen.findByText("newer");
+    await focusAndClick(screen.getByRole("button", { name: /^Load earlier/ }));
+    await screen.findByText("older");
+    expect(screen.queryByRole("button", { name: /^Load earlier/ })).toBeNull();
+    expect(document.activeElement).toBe(view.container.querySelector("ol.chat-items"));
+  });
+
+  it("two Load earlier clicks in one tick send the cursor once", async () => {
+    const k = kit({
+      threads: { wright: thread([message(5, { text: "newer" })], { next_before: "cursor-1" }) },
+      pages: { "wright cursor-1": thread([message(2, { text: "older" })], { next_before: null }) },
+    });
+    await renderChat(k);
+    await screen.findByText("newer");
+    const button = screen.getByRole("button", { name: /^Load earlier/ });
+    await act(async () => {
+      fireEvent.click(button);
+      fireEvent.click(button);
+    });
+    await screen.findByText("older");
+    expect(k.fake.requestsTo("GET /threads/:agent").filter((r) => r.req.query?.before !== undefined)).toHaveLength(1);
+  });
+
+  it("a decided approval's card hands focus to the next pending card, then to the composer", async () => {
+    const k = kit({ threads: { wright: thread([message(1)], { pending_approvals: [approval(7), approval(8)] }) } });
+    k.state.posts["POST /approvals/:id/approve"] = (req) => {
+      const left = (k.state.threads.wright?.pending_approvals ?? []).filter((a) => a.id !== req.params?.id);
+      k.state.threads.wright = thread([message(1)], { pending_approvals: left });
+      return { ok: true, status: 200, body: {} };
+    };
+    const view = await renderChat(k);
+    await screen.findByText("Post a comment (approval 8)");
+    const card = (id: number) => view.container.querySelector(`[data-approval="${id}"]`) as HTMLElement;
+    await focusAndClick(within(card(7)).getByRole("button", { name: /^Allow once/ }));
+    await waitFor(() => expect(screen.queryByText("Post a comment (approval 7)")).toBeNull());
+    expect(document.activeElement).toBe(within(card(8)).getByRole("button", { name: /^Allow once/ }));
+    await focusAndClick(within(card(8)).getByRole("button", { name: /^Allow once/ }));
+    await waitFor(() => expect(screen.queryByTestId("chat-pending-approval")).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Message Wright" }));
+  });
+
+  it("a row turning replied keeps the end in view when the owner was at the end", async () => {
+    const row = message(1, { status: "queued", reply_text: null });
+    const k = kit({ threads: { wright: thread([row]) } });
+    const view = await renderChat(k);
+    await screen.findByText("Wright is working on it");
+    const scroller = view.container.querySelector(".chat-scroll") as HTMLElement;
+    let height = 300;
+    const pins: number[] = [];
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, get: () => 0, set: (v: number) => pins.push(v) });
+    // Same item count: only the row's status (and its height) changes.
+    height = 520;
+    k.state.threads.wright = thread([{ ...row, status: "replied", reply_text: "A long reply." }]);
+    await done(k);
+    await screen.findByText("A long reply.");
+    expect(pins).toContain(520);
   });
 
   it("no Load earlier when next_before is null", async () => {

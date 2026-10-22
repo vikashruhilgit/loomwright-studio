@@ -1,13 +1,14 @@
 // The thread's composer: Enter sends, Shift+Enter is a newline, blank text
 // never sends, at most 8000 characters (`AskBody`). It sends `POST /ask` with
-// the thread's agent; a `202` clears it, a refusal shows the kernel's words
+// the thread's agent; a `202` clears it (unless the owner kept typing while
+// the ask was in flight), a refusal shows the kernel's words
 // and keeps the text. A specialist's composer offers only "No workspace" and
 // the workspaces its `GET /agents/:id` lists; Wright's offers none.
 //
 // It is built on the Composer's own markup and CSS (`.composer`, Input.css)
 // rather than the `Composer` component, so the send guard lives here, in the
 // one handler that calls the kernel.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent, Ref } from "react";
 import type { AgentDetailResponse, AskResponse, StudioBridge } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
@@ -57,6 +58,12 @@ export function ChatComposer({ api, agent, agentName, text, onTextChange, inputR
   const [refusal, setRefusal] = useState("");
   // A ref, not state: two Enters in one tick must not both pass the guard.
   const inFlight = useRef(false);
+  const [sending, setSending] = useState(false);
+  // The text as it is now, read after the ask answers (the closure's `text` is the text sent).
+  const latest = useRef(text);
+  useLayoutEffect(() => {
+    latest.current = text;
+  }, [text]);
 
   const send = async (): Promise<void> => {
     if (inFlight.current) return;
@@ -64,12 +71,20 @@ export function ChatComposer({ api, agent, agentName, text, onTextChange, inputR
     if (text.trim() === "" || text.length > MAX_ASK_LENGTH) return;
     // Only a listed workspace is ever sent.
     const chosen = !isWright && workspace !== "" && workspaces.list.includes(workspace) ? workspace : undefined;
+    const sent = text;
     inFlight.current = true;
-    const outcome = await write<AskResponse>(api, "/ask", undefined, { text, agent, ...(chosen === undefined ? {} : { workspace: chosen }) }, [`thread:${agent}`, "messages"]);
-    inFlight.current = false;
+    setSending(true);
+    let outcome;
+    try {
+      outcome = await write<AskResponse>(api, "/ask", undefined, { text: sent, agent, ...(chosen === undefined ? {} : { workspace: chosen }) }, [`thread:${agent}`, "messages"]);
+    } finally {
+      inFlight.current = false;
+      setSending(false);
+    }
     if (outcome.ok) {
       setRefusal("");
-      onTextChange("");
+      // Clear only what was sent: anything typed meanwhile is the owner's next message.
+      if (latest.current === sent) onTextChange("");
     } else {
       setRefusal(outcome.text);
     }
@@ -108,7 +123,7 @@ export function ChatComposer({ api, agent, agentName, text, onTextChange, inputR
           onChange={(event) => onTextChange(event.target.value)}
           onKeyDown={onKeyDown}
         />
-        <Button variant="primary" size="row" kbd="⏎" onClick={() => void send()}>
+        <Button variant="primary" size="row" kbd="⏎" loading={sending} onClick={() => void send()}>
           Send
         </Button>
       </div>

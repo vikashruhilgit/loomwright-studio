@@ -5,6 +5,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { LAST_DRY_RUN_GAP } from "./cards";
+import { inFlightGuard } from "./model";
 import { approval, eventItem, kit, playbook, renderChat, resetChat, thread, trigger } from "./testkit";
 import type { Kit } from "./testkit";
 
@@ -33,6 +34,24 @@ function priority(card: HTMLElement): string {
 }
 
 describe("cards", () => {
+  it("the in-flight guard drops a call while one is pending and releases on a throw", async () => {
+    const guard = inFlightGuard();
+    let release: () => void = () => undefined;
+    const first = guard.run(
+      () =>
+        new Promise<void>((go) => {
+          release = go;
+        }),
+    );
+    expect(guard.pending()).toBe(true);
+    expect(await guard.run(async () => undefined)).toBe(false);
+    release();
+    expect(await first).toBe(true);
+    await expect(guard.run(async () => Promise.reject(new Error("boom")))).rejects.toThrow("boom");
+    expect(guard.pending()).toBe(false);
+    expect(await guard.run(async () => undefined)).toBe(true);
+  });
+
   it("a playbook card shows once, after its newest event, with every field and the dry-run gap", async () => {
     const k = playbookKit();
     const view = await renderChat(k);
@@ -149,6 +168,85 @@ describe("cards", () => {
     await waitFor(() => expect(k.posted("POST /triggers/:id/on")).toHaveLength(3));
     expect(k.posted("POST /triggers/:id/on").map((r) => r.body)).toEqual([{}, {}, { confirm: true }]);
     await waitFor(() => expect(within(card).queryByRole("group")).toBeNull());
+  });
+
+  it("a double click on Run now posts once while the first run is in flight, and the button shows busy", async () => {
+    const k = playbookKit();
+    let release: () => void = () => undefined;
+    k.fake.route("POST /playbooks/:id/run", async () => {
+      await new Promise<void>((go) => {
+        release = go;
+      });
+      return { ok: true, status: 200, body: {} };
+    });
+    await renderChat(k);
+    const card = await playbookCard();
+    const button = within(card).getByRole("button", { name: "Run now" });
+    await act(async () => {
+      fireEvent.click(button);
+      fireEvent.click(button);
+    });
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    // Another action on the same card waits too.
+    await press(card, "Turn off");
+    await act(async () => release());
+    expect(k.posted("POST /playbooks/:id/run")).toHaveLength(1);
+    expect(k.posted("POST /playbooks/:id/off")).toHaveLength(0);
+    // The guard releases once the run answered.
+    await waitFor(() => expect(button.getAttribute("aria-busy")).toBeNull());
+    await press(card, "Run now");
+    await act(async () => release());
+    await waitFor(() => expect(k.posted("POST /playbooks/:id/run")).toHaveLength(2));
+  });
+
+  it("a double click on an approval or charter action posts once", async () => {
+    const k = kit({ threads: { wright: thread([], { pending_approvals: [approval(7), approval(9, { action: "kernel_agent_create" })] }) } });
+    const held: (() => void)[] = [];
+    k.fake.route("POST /approvals/:id/approve", async () => {
+      await new Promise<void>((go) => held.push(go));
+      return { ok: true, status: 200, body: {} };
+    });
+    const view = await renderChat(k);
+    const charter = await screen.findByRole("region", { name: "Drafted crew member, approval 9" });
+    const approvalCard = view.container.querySelector('[data-approval="7"]') as HTMLElement;
+    await act(async () => {
+      fireEvent.click(within(approvalCard).getByRole("button", { name: /^Allow once/ }));
+      fireEvent.click(within(approvalCard).getByRole("button", { name: /^Allow once/ }));
+      fireEvent.click(within(approvalCard).getByRole("button", { name: /^Deny/ }));
+      fireEvent.click(within(charter).getByRole("button", { name: "Create" }));
+      fireEvent.click(within(charter).getByRole("button", { name: "Create" }));
+    });
+    expect(k.posted("POST /approvals/:id/approve").map((r) => r.params)).toEqual([{ id: 7 }, { id: 9 }]);
+    expect(k.posted("POST /approvals/:id/deny")).toHaveLength(0);
+    await act(async () => {
+      for (const go of held) go();
+    });
+  });
+
+  it("the confirm step never drops focus: On to Cancel, Cancel to On, Turn on and fire to On", async () => {
+    const k = kit({ threads: { wright: thread([eventItem(1, "trigger_fired", "Trigger 5 fired", { trigger_id: 5 })]) }, triggers: [trigger(5, { enabled: false, kind: "once" })] });
+    k.state.posts["POST /triggers/:id/on"] = (req) =>
+      (req.body as { confirm?: boolean } | undefined)?.confirm === true
+        ? { ok: true, status: 200, body: { trigger: trigger(5), changed: true } }
+        : { ok: false, status: 409, body: { error: "needs_confirmation", message: "turning it on fires it now" } };
+    await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Trigger 5" });
+    const focusAndPress = async (scope: HTMLElement, name: string): Promise<void> => {
+      await act(async () => {
+        const button = within(scope).getByRole("button", { name });
+        button.focus();
+        fireEvent.click(button);
+      });
+    };
+    await focusAndPress(card, "On");
+    const group = await within(card).findByRole("group");
+    expect(document.activeElement).toBe(within(group).getByRole("button", { name: "Cancel" }));
+    await focusAndPress(group, "Cancel");
+    expect(document.activeElement).toBe(within(card).getByRole("button", { name: "On" }));
+    await focusAndPress(card, "On");
+    await focusAndPress(await within(card).findByRole("group"), "Turn on and fire");
+    await waitFor(() => expect(within(card).queryByRole("group")).toBeNull());
+    expect(document.activeElement).toBe(within(card).getByRole("button", { name: "On" }));
   });
 
   it("a playbook card's trigger shows inside it, not again on its own", async () => {

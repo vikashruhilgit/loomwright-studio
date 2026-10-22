@@ -6,7 +6,8 @@
 // the palette renders a title as a text child, and nothing here acts on it.
 import type { NotificationRow, PlaybookListing, RosterEntry, StudioBridge, Trigger } from "../../api/contract";
 import type { Command } from "../../commands/registry";
-import { WRIGHT, navigate, requestComposerFocus, specialists, threadHash, write } from "./model";
+import { WRIGHT, inFlightGuard, navigate, requestComposerFocus, specialists, threadHash, write } from "./model";
+import type { InFlightGuard } from "./model";
 
 /** How many recent notifications get a command. */
 export const NOTIFICATION_COMMANDS = 20;
@@ -37,8 +38,26 @@ function ask(id: string, title: string, agent: string): Command {
     group: "Agents",
     run: () => {
       navigate(threadHash(agent));
-      requestComposerFocus();
+      requestComposerFocus(agent);
     },
+  };
+}
+
+/**
+ * One in-flight guard per write command id, kept across rebuilds (the list is
+ * rebuilt on every data change): running "Run pb-3" twice before the first
+ * answers posts once, since the kernel would queue two runs.
+ */
+const commandGuards = new Map<string, InFlightGuard>();
+
+function guarded(id: string, fn: () => Promise<void>): () => Promise<void> {
+  return async () => {
+    let guard = commandGuards.get(id);
+    if (guard === undefined) {
+      guard = inFlightGuard();
+      commandGuards.set(id, guard);
+    }
+    await guard.run(fn);
   };
 }
 
@@ -57,21 +76,22 @@ export function buildChatCommands(sources: ChatCommandSources): Command[] {
       id: `chat.playbook.${playbook.id}.run`,
       title: `Run ${playbook.slug}`,
       group: "Playbooks",
-      run: async () => say(`Run ${playbook.slug}`)(await write(api, "/playbooks/:id/run", params, undefined, changed)),
+      run: guarded(`chat.playbook.${playbook.id}.run`, async () => say(`Run ${playbook.slug}`)(await write(api, "/playbooks/:id/run", params, undefined, changed))),
     });
     commands.push({
       id: `chat.playbook.${playbook.id}.off`,
       title: `Turn off ${playbook.slug}`,
       group: "Playbooks",
-      run: async () => say(`Turn off ${playbook.slug}`)(await write(api, "/playbooks/:id/off", params, undefined, changed)),
+      run: guarded(`chat.playbook.${playbook.id}.off`, async () => say(`Turn off ${playbook.slug}`)(await write(api, "/playbooks/:id/off", params, undefined, changed))),
     });
     for (const priority of PRIORITIES) {
       commands.push({
         id: `chat.playbook.${playbook.id}.priority.${priority}`,
         title: `Set ${playbook.slug} priority ${priority}`,
         group: "Playbooks",
-        run: async () =>
+        run: guarded(`chat.playbook.${playbook.id}.priority.${priority}`, async () =>
           say(`Set ${playbook.slug} priority ${priority}`)(await write(api, "/playbooks/:id/set", params, { field: "priority", value: priority }, changed)),
+        ),
       });
     }
   }
@@ -83,14 +103,15 @@ export function buildChatCommands(sources: ChatCommandSources): Command[] {
       id: `chat.trigger.${trigger.id}.${trigger.enabled ? "off" : "on"}`,
       title,
       group: "Playbooks",
-      run: async () => {
+      // Keyed by the trigger, not the direction: an on and an off in flight together must not race.
+      run: guarded(`chat.trigger.${trigger.id}`, async () => {
         const outcome = trigger.enabled
           ? await write(api, "/triggers/:id/off", params, undefined, ["triggers", "playbooks"])
           : await write(api, "/triggers/:id/on", params, {}, ["triggers", "playbooks"]);
         // A past `once` trigger needs the owner's confirmation, which a palette command cannot ask: its card can.
         if (!outcome.ok && outcome.code === "needs_confirmation") onNotice(`${title}: ${outcome.text} Confirm it from the trigger's card in Chat.`);
         else say(title)(outcome);
-      },
+      }),
     });
   }
 

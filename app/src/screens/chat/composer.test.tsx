@@ -145,6 +145,27 @@ describe("composer", () => {
     expect(k.posted("POST /ask")).toHaveLength(1);
   });
 
+  it("a 202 clears only the text it sent: what the owner typed while it was in flight stays; Send shows busy", async () => {
+    const k = kit({ threads: { wright: thread([]) } });
+    let release: () => void = () => undefined;
+    k.fake.route("POST /ask", async () => {
+      await new Promise<void>((go) => {
+        release = go;
+      });
+      return { ok: true, status: 202, body: { message_id: 1, queue_id: 1 } };
+    });
+    await renderChat(k);
+    await type("first");
+    await send();
+    const button = screen.getByRole("button", { name: /^Send/ });
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    await type("second, typed while the first was in flight");
+    await act(async () => release());
+    await waitFor(() => expect(button.getAttribute("aria-busy")).toBeNull());
+    expect(k.posted("POST /ask").map((r) => r.body)).toEqual([{ text: "first", agent: "wright" }]);
+    expect(composer().value).toBe("second, typed while the first was in flight");
+  });
+
   it("the composer holds at most 8000 characters", async () => {
     const k = kit({ threads: { wright: thread([]) } });
     await renderChat(k);

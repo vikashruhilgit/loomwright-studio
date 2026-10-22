@@ -3,13 +3,13 @@
 // playbook card and the trigger card. Each action is one contract write
 // through the bridge; a refusal shows the kernel's words as text and leaves
 // the card in place. Every kernel string is a React text child only.
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { Approval, PlaybookListing, StudioBridge, Trigger } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
 import { EventCard } from "../../components/EventCard/EventCard";
 import { SelectField, TextField } from "../../components/Input/Input";
 import type { ResourceName } from "../../store/resources";
-import { navigate, when, write } from "./model";
+import { focusLost, inFlightGuard, navigate, when, write } from "./model";
 
 /** What Always says when the approval did not come from a playbook session. */
 export const ALWAYS_INELIGIBLE = "Always needs an approval from a playbook session; approve once";
@@ -22,6 +22,27 @@ function Refusal({ text }: { readonly text: string }) {
       {text}
     </p>
   );
+}
+
+/**
+ * A card's actions share one in-flight guard: while one write is pending, any
+ * second click on the card is dropped (two Run now clicks would queue two
+ * runs). `busy` names the pending action, for its Button's `loading`.
+ */
+function useCardAction(): { readonly busy: string | null; readonly act: (key: string, fn: () => Promise<void>) => void } {
+  const [guard] = useState(inFlightGuard);
+  const [busy, setBusy] = useState<string | null>(null);
+  const act = (key: string, fn: () => Promise<void>): void => {
+    void guard.run(async () => {
+      setBusy(key);
+      try {
+        await fn();
+      } finally {
+        setBusy(null);
+      }
+    });
+  };
+  return { busy, act };
 }
 
 function approvalChanges(agent: string): ResourceName[] {
@@ -38,12 +59,15 @@ export interface ApprovalCardProps {
 /** A pending approval, inline at the end of the thread. */
 export function ApprovalCard({ api, approval, agent }: ApprovalCardProps) {
   const [refusal, setRefusal] = useState("");
+  // EventCard's approval buttons take no `loading`, so the guard only drops repeats here.
+  const { act } = useCardAction();
   const changes = approvalChanges(agent);
   const params = { id: approval.id };
-  const decide = async (decision: "once" | "always"): Promise<void> => {
-    const outcome = await write(api, "/approvals/:id/approve", params, { decision }, changes);
-    setRefusal(outcome.ok ? "" : outcome.text);
-  };
+  const decide = (decision: "once" | "always"): void =>
+    act(decision, async () => {
+      const outcome = await write(api, "/approvals/:id/approve", params, { decision }, changes);
+      setRefusal(outcome.ok ? "" : outcome.text);
+    });
   return (
     <div className="chat-approval" data-approval={approval.id}>
       <EventCard
@@ -56,17 +80,20 @@ export function ApprovalCard({ api, approval, agent }: ApprovalCardProps) {
           summary: approval.display ?? approval.action,
           reason: approval.playbook?.slug ? `From playbook ${approval.playbook.slug}` : "Not from a playbook",
         }}
-        onAllowOnce={() => void decide("once")}
+        onAllowOnce={() => decide("once")}
         onAlways={() => {
           // The app sees only this part of the kernel's `alwaysRefusal`; the kernel's 409 covers the rest.
           if (approval.playbook === null) {
             setRefusal(ALWAYS_INELIGIBLE);
             return;
           }
-          void decide("always");
+          decide("always");
         }}
         onDeny={() =>
-          void write(api, "/approvals/:id/deny", params, undefined, changes).then((outcome) => setRefusal(outcome.ok ? "" : outcome.text))
+          act("deny", async () => {
+            const outcome = await write(api, "/approvals/:id/deny", params, undefined, changes);
+            setRefusal(outcome.ok ? "" : outcome.text);
+          })
         }
         onFullPayload={() => navigate("#/approvals")}
       />
@@ -86,8 +113,14 @@ export interface CharterCardProps {
 /** A pending `kernel_agent_create`: the charter as the kernel displays it, never parsed. */
 export function CharterCard({ api, approval, agent, onEditInEnglish }: CharterCardProps) {
   const [refusal, setRefusal] = useState("");
+  const { busy, act } = useCardAction();
   const changes = approvalChanges(agent);
   const params = { id: approval.id };
+  const decide = (key: "create" | "deny", path: string, body: unknown): void =>
+    act(key, async () => {
+      const outcome = await write(api, path, params, body, changes);
+      setRefusal(outcome.ok ? "" : outcome.text);
+    });
   return (
     <section className="chat-card chat-charter" aria-label={`Drafted crew member, approval ${approval.id}`} data-approval={approval.id}>
       <div className="chat-card-head">
@@ -96,21 +129,13 @@ export function CharterCard({ api, approval, agent, onEditInEnglish }: CharterCa
       </div>
       <pre className="chat-charter-display">{approval.display ?? ""}</pre>
       <div className="chat-card-actions">
-        <Button
-          variant="primary"
-          size="row"
-          onClick={() => void write(api, "/approvals/:id/approve", params, { decision: "once" }, changes).then((o) => setRefusal(o.ok ? "" : o.text))}
-        >
+        <Button variant="primary" size="row" loading={busy === "create"} onClick={() => decide("create", "/approvals/:id/approve", { decision: "once" })}>
           Create
         </Button>
         <Button variant="secondary" size="row" onClick={() => onEditInEnglish(`About the charter in approval ${approval.id}: `)}>
           Edit in English
         </Button>
-        <Button
-          variant="danger"
-          size="row"
-          onClick={() => void write(api, "/approvals/:id/deny", params, undefined, changes).then((o) => setRefusal(o.ok ? "" : o.text))}
-        >
+        <Button variant="danger" size="row" loading={busy === "deny"} onClick={() => decide("deny", "/approvals/:id/deny", undefined)}>
           Deny
         </Button>
       </div>
@@ -160,6 +185,7 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
   const [refusal, setRefusal] = useState("");
   const [field, setField] = useState<SetField>("priority");
   const [value, setValue] = useState("high");
+  const { busy, act } = useCardAction();
   if (playbook === undefined) {
     return (
       <section className="chat-card" aria-label={`Playbook ${playbookId}`}>
@@ -169,9 +195,11 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
   }
   const params = { id: playbook.id };
   const changes = playbookChanges(agent);
-  const run = (path: string, body?: unknown): void => {
-    void write(api, path, params, body, changes).then((o) => setRefusal(o.ok ? "" : o.text));
-  };
+  const run = (path: string, body?: unknown): void =>
+    act(path, async () => {
+      const outcome = await write(api, path, params, body, changes);
+      setRefusal(outcome.ok ? "" : outcome.text);
+    });
   return (
     <section className="chat-card chat-playbook" aria-label={`Playbook ${playbook.slug}`} data-playbook={playbook.id}>
       <div className="chat-card-head">
@@ -203,10 +231,10 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
       </dl>
       <p className="chat-card-dry">{LAST_DRY_RUN_GAP}</p>
       <div className="chat-card-actions">
-        <Button variant="primary" size="row" onClick={() => run("/playbooks/:id/run")}>
+        <Button variant="primary" size="row" loading={busy === "/playbooks/:id/run"} onClick={() => run("/playbooks/:id/run")}>
           Run now
         </Button>
-        <Button variant="secondary" size="row" onClick={() => run("/playbooks/:id/off")}>
+        <Button variant="secondary" size="row" loading={busy === "/playbooks/:id/off"} onClick={() => run("/playbooks/:id/off")}>
           Turn off
         </Button>
       </div>
@@ -215,6 +243,7 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
         aria-label={`Set a field of ${playbook.slug}`}
         onSubmit={(event) => {
           event.preventDefault();
+          // Enter in the Value field submits too, so the guard sits here, not only on the button.
           run("/playbooks/:id/set", { field, value });
         }}
       >
@@ -242,7 +271,7 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
         ) : (
           <TextField label="Value" value={value} onChange={(event) => setValue(event.target.value)} hint="none clears it" />
         )}
-        <Button variant="secondary" size="row" type="submit">
+        <Button variant="secondary" size="row" type="submit" loading={busy === "/playbooks/:id/set"}>
           Set {field}
         </Button>
       </form>
@@ -264,18 +293,33 @@ export interface TriggerCardProps {
 export function TriggerCard({ api, trigger, agent, nested = false }: TriggerCardProps) {
   const [refusal, setRefusal] = useState("");
   const [confirm, setConfirm] = useState<string | null>(null);
+  const { busy, act } = useCardAction();
+  const onRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  // Swapping the actions for the confirm group (and back) unmounts the focused button: say where focus goes.
+  const focusAfterSwap = useRef<"on" | "cancel" | null>(null);
+  useLayoutEffect(() => {
+    const target = focusAfterSwap.current;
+    focusAfterSwap.current = null;
+    if (target === null || !focusLost()) return;
+    (target === "on" ? onRef : cancelRef).current?.focus();
+  }, [confirm]);
   const params = { id: trigger.id };
   const changes: ResourceName[] = ["triggers", "playbooks", `thread:${agent}`];
-  const turnOn = async (confirmed: boolean): Promise<void> => {
-    const outcome = await write(api, "/triggers/:id/on", params, confirmed ? { confirm: true } : {}, changes);
-    if (!outcome.ok && outcome.code === "needs_confirmation" && !confirmed) {
-      setRefusal("");
-      setConfirm(outcome.text);
-      return;
-    }
-    setConfirm(null);
-    setRefusal(outcome.ok ? "" : outcome.text);
-  };
+  const turnOn = (confirmed: boolean): void =>
+    act(confirmed ? "confirm" : "on", async () => {
+      const outcome = await write(api, "/triggers/:id/on", params, confirmed ? { confirm: true } : {}, changes);
+      if (!outcome.ok && outcome.code === "needs_confirmation" && !confirmed) {
+        setRefusal("");
+        // Cancel, not Turn on and fire: a stray Enter must not fire the trigger.
+        focusAfterSwap.current = "cancel";
+        setConfirm(outcome.text);
+        return;
+      }
+      if (confirmed) focusAfterSwap.current = "on";
+      setConfirm(null);
+      setRefusal(outcome.ok ? "" : outcome.text);
+    });
   return (
     <section className={nested ? "chat-card chat-trigger nested" : "chat-card chat-trigger"} aria-label={`Trigger ${trigger.id}`} data-trigger={trigger.id}>
       <div className="chat-card-head">
@@ -286,10 +330,20 @@ export function TriggerCard({ api, trigger, agent, nested = false }: TriggerCard
       <p className="chat-card-text">{trigger.text}</p>
       {confirm === null ? (
         <div className="chat-card-actions">
-          <Button variant="secondary" size="row" onClick={() => void turnOn(false)}>
+          <Button variant="secondary" size="row" ref={onRef} loading={busy === "on"} onClick={() => turnOn(false)}>
             On
           </Button>
-          <Button variant="secondary" size="row" onClick={() => void write(api, "/triggers/:id/off", params, undefined, changes).then((o) => setRefusal(o.ok ? "" : o.text))}>
+          <Button
+            variant="secondary"
+            size="row"
+            loading={busy === "off"}
+            onClick={() =>
+              act("off", async () => {
+                const outcome = await write(api, "/triggers/:id/off", params, undefined, changes);
+                setRefusal(outcome.ok ? "" : outcome.text);
+              })
+            }
+          >
             Off
           </Button>
         </div>
@@ -297,10 +351,18 @@ export function TriggerCard({ api, trigger, agent, nested = false }: TriggerCard
         <div className="chat-confirm" role="group" aria-label={`Confirm turning on trigger ${trigger.id}`}>
           <p className="chat-card-text">{confirm} Turn it on anyway?</p>
           <div className="chat-card-actions">
-            <Button variant="primary" size="row" onClick={() => void turnOn(true)}>
+            <Button variant="primary" size="row" loading={busy === "confirm"} onClick={() => turnOn(true)}>
               Turn on and fire
             </Button>
-            <Button variant="ghost" size="row" onClick={() => setConfirm(null)}>
+            <Button
+              variant="ghost"
+              size="row"
+              ref={cancelRef}
+              onClick={() => {
+                focusAfterSwap.current = "on";
+                setConfirm(null);
+              }}
+            >
               Cancel
             </Button>
           </div>

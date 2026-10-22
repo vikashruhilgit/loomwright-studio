@@ -192,6 +192,34 @@ export async function write<R = unknown>(
   return { ok: false, ...refusalOf(result) };
 }
 
+/**
+ * An in-flight guard: `run(fn)` calls `fn` unless an earlier call is still
+ * pending, in which case it drops the call and resolves `false`. The guard is
+ * synchronous (two clicks in one tick cannot both pass) and is released when
+ * `fn` settles, a throw included.
+ */
+export interface InFlightGuard {
+  readonly pending: () => boolean;
+  readonly run: (fn: () => Promise<void>) => Promise<boolean>;
+}
+
+export function inFlightGuard(): InFlightGuard {
+  let pending = false;
+  return {
+    pending: () => pending,
+    run: async (fn) => {
+      if (pending) return false;
+      pending = true;
+      try {
+        await fn();
+      } finally {
+        pending = false;
+      }
+      return true;
+    },
+  };
+}
+
 /** Why a read failed, in words. */
 export function readErrorText(error: ResourceError | undefined): string {
   if (error === undefined) return "";
@@ -204,24 +232,36 @@ export function readErrorText(error: ResourceError | undefined): string {
 // ---- the composer's focus -----------------------------------------------------------------
 
 const FOCUS_EVENT = "studio-chat-focus-composer";
-let focusOwed = false;
+/** The agent whose composer is owed focus, if any. */
+let focusOwedTo: string | null = null;
 
-/** Ask the Chat composer for focus: now if it is mounted, else as soon as it mounts. */
-export function requestComposerFocus(): void {
-  focusOwed = true;
+/**
+ * Ask `agent`'s Chat composer for focus: now if it is mounted, else as soon as
+ * it mounts. The request names the agent because navigation lands later than
+ * this call (the hashchange is async): the composer still on screen belongs to
+ * the thread being left and must not take a request meant for the next one.
+ */
+export function requestComposerFocus(agent: string): void {
+  focusOwedTo = agent;
   window.dispatchEvent(new Event(FOCUS_EVENT));
 }
 
-/** The composer's side: run `focus` on each request, and once at mount if one is owed. */
-export function onComposerFocusRequest(focus: () => void): () => void {
+/** `agent`'s composer side: run `focus` on each request for `agent`, and once at mount if one is owed to it. */
+export function onComposerFocusRequest(agent: string, focus: () => void): () => void {
   const run = (): void => {
-    if (!focusOwed) return;
-    focusOwed = false;
+    if (focusOwedTo !== agent) return;
+    focusOwedTo = null;
     focus();
   };
   window.addEventListener(FOCUS_EVENT, run);
   run();
   return () => window.removeEventListener(FOCUS_EVENT, run);
+}
+
+/** True when nothing holds focus: the focused control unmounted (focus fell to <body>). */
+export function focusLost(): boolean {
+  const active = document.activeElement;
+  return active === null || active === document.body || !active.isConnected;
 }
 
 // ---- last seen, per agent ------------------------------------------------------------------

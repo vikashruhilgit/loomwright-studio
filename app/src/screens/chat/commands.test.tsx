@@ -127,6 +127,61 @@ describe("commands", () => {
     expect(window.location.hash).toBe("#/chat");
   });
 
+  it("Ask commands from another Chat thread focus the new thread's composer", async () => {
+    const k = commandKit();
+    k.state.threads.pim = thread([]);
+    await renderChat(k);
+    await loaded(k);
+    await act(async () => {
+      await k.registry.get("chat.ask.pim")?.run();
+    });
+    await act(async () => {
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    await screen.findByText("with Pim");
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Message Pim" }));
+    await act(async () => {
+      await k.registry.get("chat.ask.wright")?.run();
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    await screen.findByText("with Wright");
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Message Wright" }));
+  });
+
+  it("a write command run twice before the first answers posts once", async () => {
+    const k = commandKit();
+    let release: () => void = () => undefined;
+    k.fake.route("POST /playbooks/:id/run", async () => {
+      await new Promise<void>((go) => {
+        release = go;
+      });
+      return { ok: true, status: 200, body: {} };
+    });
+    await renderChat(k, "#/team");
+    await loaded(k);
+    const run = k.registry.get("chat.playbook.3.run");
+    let first: Promise<unknown> | undefined;
+    await act(async () => {
+      first = Promise.resolve(run?.run());
+      await run?.run();
+    });
+    await act(async () => {
+      release();
+      await first;
+    });
+    expect(k.posted("POST /playbooks/:id/run")).toHaveLength(1);
+    // Released: the next run posts.
+    let second: Promise<unknown> | undefined;
+    await act(async () => {
+      second = Promise.resolve(run?.run());
+    });
+    await act(async () => {
+      release();
+      await second;
+    });
+    expect(k.posted("POST /playbooks/:id/run")).toHaveLength(2);
+  });
+
   it("unregisters on unmount", async () => {
     const k = commandKit();
     const view = await renderChat(k);

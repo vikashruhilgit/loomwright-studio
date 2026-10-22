@@ -24,6 +24,7 @@ import {
   clock,
   eventKindOf,
   eventTarget,
+  focusLost,
   hashAgent,
   navigate,
   onComposerFocusRequest,
@@ -133,11 +134,18 @@ function EventView({ item }: { readonly item: EventItem }) {
   );
 }
 
-/** Merge pages oldest first, each item once. */
+/** Merge pages oldest first, each item once; an item in both keeps `current`'s copy (it is the fresher read). */
 function mergeItems(older: readonly ThreadItem[], current: readonly ThreadItem[]): ThreadItem[] {
-  const seen = new Set<string>();
+  const seen = new Set<string>(current.map(itemKey));
   const out: ThreadItem[] = [];
-  for (const item of [...older, ...current]) {
+  for (const item of older) {
+    const key = itemKey(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  seen.clear();
+  for (const item of current) {
     const key = itemKey(item);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -173,10 +181,17 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   const [older, setOlder] = useState<{ readonly items: readonly ThreadItem[]; readonly next: string | null } | null>(null);
   const [pageError, setPageError] = useState("");
   const [paging, setPaging] = useState(false);
+  // A ref, not state: two clicks in one tick must not both send the same cursor.
+  const pagingNow = useRef(false);
   const [text, setText] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLOListElement>(null);
   const atEnd = useRef(true);
+  /** The last control focused inside the thread, and which part of it held the control. */
+  const lastFocus = useRef<{ readonly el: HTMLElement; readonly zone: "approval" | "earlier" | "other" } | null>(null);
+  /** The live first page as last read, to catch items that slide off it. */
+  const lastLive = useRef<readonly ThreadItem[]>([]);
 
   const isWright = agent === WRIGHT;
   const name = nameOf(roster, agent);
@@ -188,7 +203,39 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   const pending = (data?.pending_approvals ?? []).filter((a) => a.requesting_agent === agent);
 
   const focusComposer = useCallback(() => inputRef.current?.focus(), []);
-  useEffect(() => onComposerFocusRequest(focusComposer), [focusComposer]);
+  useEffect(() => onComposerFocusRequest(agent, focusComposer), [agent, focusComposer]);
+
+  // The live store refetches only the newest page. Once older pages are loaded, an item that slides
+  // off that page (a newer one pushed it out) would be in neither list: keep it with the older ones.
+  // Before then there is nothing to keep it next to, and the cursor still reaches it.
+  useLayoutEffect(() => {
+    const previous = lastLive.current;
+    const live = data?.items ?? [];
+    lastLive.current = live;
+    const still = new Set(live.map(itemKey));
+    const dropped = previous.filter((item) => !still.has(itemKey(item)));
+    if (dropped.length === 0) return;
+    setOlder((prev) => (prev === null ? prev : { items: mergeItems(prev.items, dropped), next: prev.next }));
+  }, [data]);
+
+  // A focused control that unmounted (a decided approval's card, the last Load earlier) leaves focus
+  // on <body>: move it to the next thing the owner would act on. Runs after every render of the thread.
+  useLayoutEffect(() => {
+    const last = lastFocus.current;
+    if (last === null || last.el.isConnected || !focusLost()) return;
+    lastFocus.current = null;
+    if (last.zone === "approval") {
+      const next = scrollRef.current?.querySelector<HTMLElement>('[data-testid="chat-pending-approval"] button');
+      if (next) {
+        next.focus();
+        return;
+      }
+    } else if (last.zone === "earlier" && listRef.current !== null) {
+      listRef.current.focus({ preventScroll: true });
+      return;
+    }
+    focusComposer();
+  });
 
   // The thread is open: its newest message is seen.
   useEffect(() => {
@@ -197,14 +244,18 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     if (newest > 0) writeSeen(agent, newest);
   }, [agent, items]);
 
-  // Keep the end in view when new items land, only if the owner was already there.
+  // Keep the end in view when new items land or a row changes (a queued row turning into a taller
+  // reply bubble keeps the count), only if the owner was already there.
+  const shape = items.map((item) => (item.type === "message" ? `${item.id}:${item.status}` : `e${item.id}`)).join(",");
+  const pendingShape = pending.map((a) => a.id).join(",");
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el !== null && atEnd.current) el.scrollTop = el.scrollHeight;
-  }, [items.length, pending.length]);
+  }, [shape, pendingShape]);
 
   const loadEarlier = async (): Promise<void> => {
-    if (cursor === null || paging) return;
+    if (cursor === null || pagingNow.current) return;
+    pagingNow.current = true;
     setPaging(true);
     const el = scrollRef.current;
     const fromBottom = el === null ? 0 : el.scrollHeight - el.scrollTop;
@@ -213,6 +264,8 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
       result = await api.request<ThreadResponse>({ method: "GET", path: "/threads/:agent", params: { agent }, query: { before: cursor } });
     } catch {
       result = undefined;
+    } finally {
+      pagingNow.current = false;
     }
     setPaging(false);
     if (result?.ok !== true) {
@@ -284,7 +337,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     );
   } else {
     body = (
-      <ol className="chat-items" aria-label={`Thread with ${name}`}>
+      <ol className="chat-items" aria-label={`Thread with ${name}`} ref={listRef} tabIndex={-1}>
         {items.map((item, index) => (
           <Fragment key={itemKey(item)}>
             <li className="chat-item" data-item={itemKey(item)}>
@@ -319,7 +372,21 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   }
 
   return (
-    <div className="chat" data-testid="screen-chat" data-agent={agent}>
+    <div
+      className="chat"
+      data-testid="screen-chat"
+      data-agent={agent}
+      onFocus={(event) => {
+        const el = event.target;
+        const zone = el.closest('[data-testid="chat-pending-approval"]') !== null ? "approval" : el.closest(".chat-earlier") !== null ? "earlier" : "other";
+        lastFocus.current = { el, zone };
+      }}
+      onBlur={(event) => {
+        // Focus left for somewhere else on purpose: nothing to restore.
+        const to = event.relatedTarget;
+        if (to instanceof Node && !event.currentTarget.contains(to)) lastFocus.current = null;
+      }}
+    >
       <div className="chat-titlerow">
         <span className="chat-with">with {name}</span>
         <StatusDot state={chip.dot} label={chip.word} />

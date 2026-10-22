@@ -2,7 +2,7 @@
 // button opening that agent's thread, with its avatar and state, the time and
 // text of its newest message, and an unread dot. It is always mounted, so it
 // also registers Chat's ⌘K commands (and unregisters them on unmount).
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
 import type { BrainMessage, StudioBridge } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
 import { CREW_EMPTY_TEXT } from "../../components/List/List";
@@ -58,6 +58,7 @@ export function CrewSection({ api: apiProp, registry = commandRegistry }: CrewSe
   const hash = useHash();
   useSyncExternalStore(subscribeSeen, seenSnapshot);
   const [notice, setNotice] = useState("");
+  const rowIds = useId();
 
   const roster = agents?.data?.agents;
   const crew = specialists(roster);
@@ -86,11 +87,15 @@ export function CrewSection({ api: apiProp, registry = commandRegistry }: CrewSe
         <p className="nav-empty">{CREW_EMPTY_TEXT}</p>
       ) : (
         <ul className="chat-crew" aria-label="Crew">
-          {crew.map((agent) => {
+          {crew.map((agent, index) => {
             const newest = newestMessage(messages?.data?.messages, agent.id);
             const selected = current === agent.id;
             const unread = !selected && newest !== undefined && newest.id > readSeen(agent.id);
             const state = agentAvatarState(agent, approvals?.data?.approvals);
+            // The name stays "<display name>[, unread]" (it must never start with a screen's name); the
+            // time and last line, which a label would hide, are the row's description.
+            const timeId = `${rowIds}-${index}-time`;
+            const lastId = `${rowIds}-${index}-last`;
             return (
               <li key={agent.id}>
                 <button
@@ -98,10 +103,11 @@ export function CrewSection({ api: apiProp, registry = commandRegistry }: CrewSe
                   className={selected ? "chat-crew-row selected" : "chat-crew-row"}
                   aria-current={selected ? "page" : undefined}
                   aria-label={`${agent.display_name}${unread ? ", unread" : ""}`}
+                  aria-describedby={newest === undefined ? undefined : `${timeId} ${lastId}`}
                   data-agent={agent.id}
                   onClick={() => {
                     navigate(threadHash(agent.id));
-                    requestComposerFocus();
+                    requestComposerFocus(agent.id);
                   }}
                 >
                   <Avatar agent={{ id: agent.id, name: agent.display_name, shape: agent.avatar.shape, hue: agent.avatar.hue }} state={state} size={24} />
@@ -109,11 +115,13 @@ export function CrewSection({ api: apiProp, registry = commandRegistry }: CrewSe
                     <span className="chat-crew-top">
                       <span className={unread ? "chat-crew-name unread" : "chat-crew-name"}>{agent.display_name}</span>
                       {unread ? <span className="chat-crew-unread" data-testid="crew-unread" aria-hidden="true" /> : null}
-                      <time className="chat-crew-time" dateTime={newest?.created_at}>
+                      <time className="chat-crew-time" id={timeId} dateTime={newest?.created_at}>
                         {clock(newest?.created_at)}
                       </time>
                     </span>
-                    <span className="chat-crew-last">{lastLineOf(newest)}</span>
+                    <span className="chat-crew-last" id={lastId}>
+                      {lastLineOf(newest)}
+                    </span>
                   </span>
                 </button>
               </li>

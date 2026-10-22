@@ -49,6 +49,34 @@ describe("crew", () => {
     expect(within(row).getByTestId("crew-unread")).toBeTruthy();
   });
 
+  it("a row's name is its agent, and its time and last line are its description", async () => {
+    const k = kit({ messages: [PIM_ROW], threads: { wright: thread([]) } });
+    await renderChat(k);
+    const row = await within(crew()).findByRole("button", { name: "Pim, unread" });
+    const described = (row.getAttribute("aria-describedby") ?? "")
+      .split(" ")
+      .map((id) => document.getElementById(id)?.textContent ?? "")
+      .join(" ");
+    expect(described).toContain("Two PRs need you. Second line.");
+    expect(described).toContain(row.querySelector("time")?.textContent ?? "missing");
+    expect(row.querySelector("time")?.textContent).not.toBe("");
+  });
+
+  it("a Crew row opened from another thread focuses the new thread's composer", async () => {
+    const k = kit({ threads: { wright: thread([]), pim: thread([]) } });
+    await renderChat(k);
+    await screen.findByTestId("chat-empty");
+    await act(async () => {
+      // The click's request lands before the hashchange, while Wright's composer is still mounted.
+      fireEvent.click(within(crew()).getByRole("button", { name: "Pim" }));
+    });
+    await act(async () => {
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    await screen.findByText("with Pim");
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Message Pim" }));
+  });
+
   it("avatar states: off reads killed, a pending approval reads waiting", async () => {
     const k = kit({ roster: [agent("wright"), agent("pim", { status: "off" }), agent("mason")], approvals: [approval(1, { requesting_agent: "mason" })], threads: { wright: thread([]) } });
     await renderChat(k);
