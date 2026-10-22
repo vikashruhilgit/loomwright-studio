@@ -3,7 +3,8 @@
 //
 //   studio status [--json]   a short summary of GET /status (or its raw JSON)
 //   studio stop --all        POST /stop-all: the kill switch
-//   studio resume            POST /resume: release the kill switch
+//   studio resume            POST /resume: release the kill switch and an
+//                            owner pause (phase 5 item 05), saying which
 //   studio session abandon <id> [--yes]
 //                            POST /sessions/<id>/abandon: release an orphaned
 //                            leader_unverified row (asks first unless --yes)
@@ -71,7 +72,7 @@ export const USAGE =
   "usage: studio status [--json] | studio stop --all | studio resume | studio session abandon <id> [--yes] | " +
   "studio session stop <id> | studio session kill <id> [--yes] | studio service install|uninstall";
 
-/** Sent with an abandon so the kernel records `via: "cli"` (the API's `CLIENT_HEADER`). */
+/** Sent with an abandon and a resume so the kernel records `via: "cli"` (the API's `CLIENT_HEADER`). */
 const CLIENT_HEADER = "x-studio-client";
 
 /** Where the CLI writes; `process.stdout` / `process.stderr` satisfy it. */
@@ -267,6 +268,34 @@ function duration(totalSeconds: number): string {
   return parts.join(" ");
 }
 
+/**
+ * What a `POST /resume` is about to release, read from `GET /status` just
+ * before it, so its line can say so. Best effort: any failure (no answer, a
+ * non-2xx, an unreadable body) is `undefined`, and the resume's own request
+ * then decides the exit code and error line exactly as without this read. A
+ * pause or stop-all another client sends between the two requests is not seen.
+ */
+async function releasable(
+  port: number,
+  token: string,
+  fetchFn: typeof fetch,
+  timeoutMs: number,
+): Promise<{ readonly killSwitch: boolean; readonly paused: boolean } | undefined> {
+  try {
+    const res = await fetchFn(`http://${HOST}:${port}/status`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return undefined;
+    const body = (await res.json()) as { kill_switch?: { engaged?: unknown }; paused?: unknown } | null;
+    return { killSwitch: body?.kill_switch?.engaged === true, paused: body?.paused === true };
+  } catch {
+    return undefined;
+  }
+}
+
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
@@ -325,6 +354,14 @@ export function formatStatus(status: StatusBody): string {
       ? `kill switch: ENGAGED since ${status.kill_switch.since ?? "unknown"} (studio resume releases it)`
       : "kill switch: off",
   );
+  // A daemon older than item 05 does not send the field: no line.
+  if (typeof status.paused === "boolean") {
+    lines.push(
+      status.paused
+        ? "paused: YES, no trigger fires and no session starts or resumes (studio unpause or studio resume releases it)"
+        : "paused: no",
+    );
+  }
   for (const p of status.auth) {
     const h = p.health;
     const health =
@@ -381,6 +418,9 @@ export function formatStatus(status: StatusBody): string {
  * times out says the kill switch may already be engaged (one stderr line, 1).
  * `stop --all` with any session not confirmed stopped (see
  * `summarizeStopAll`) ⇒ its summary on stdout, 1.
+ * `resume` reads `GET /status` first (best effort, `releasable`) so its
+ * stdout line says whether it released a pause too; that read never changes
+ * the exit code or the error line.
  * `service install` copies the kernel and loads the agent (a version-manager
  * `node` ⇒ one warning line on stderr), then runs the start check
  * (`verifyServiceStart`, 15 s): passing ⇒ older install copies removed and
@@ -549,11 +589,15 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
     // CLI_TIMEOUT_MS, and a stop or kill can queue behind a stop-all.
     const stopping = command.kind === "stop-all" || command.kind === "session-stop" || command.kind === "session-kill";
     const timeoutMs = stopping ? (deps.stopAllTimeoutMs ?? STOP_ALL_TIMEOUT_MS) : (deps.timeoutMs ?? CLI_TIMEOUT_MS);
+    const before = command.kind === "resume" ? await releasable(port, token, deps.fetch ?? fetch, timeoutMs) : undefined;
     let res: Response;
     try {
       res = await (deps.fetch ?? fetch)(`http://${HOST}:${port}${path}`, {
         method,
-        headers: { Authorization: `Bearer ${token}`, ...(command.kind === "abandon" ? { [CLIENT_HEADER]: "cli" } : {}) },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(command.kind === "abandon" || command.kind === "resume" ? { [CLIENT_HEADER]: "cli" } : {}),
+        },
         redirect: "error",
         signal: AbortSignal.timeout(timeoutMs),
       });
@@ -616,6 +660,13 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
       // Stopped, or ended on its own (completed, abandoned): nothing is left running. `failed`
       // (kill_incomplete: a group may still be alive) or anything else is not confirmed.
       return isTerminalStatus(outcome.status) && outcome.status !== "failed" && outcome.status !== "failed:auth" ? 0 : 1;
+    } else if (before?.paused === true) {
+      // `{engaged: false}` says nothing of the pause: the status read before the resume does.
+      stdout.write(
+        before.killSwitch
+          ? "kill switch off and pause released: the event loop is running and new work runs\n"
+          : "pause released: new work runs (the kill switch was already off)\n",
+      );
     } else {
       stdout.write("kill switch off: the event loop is running\n");
     }

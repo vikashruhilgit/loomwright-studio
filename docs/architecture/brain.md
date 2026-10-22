@@ -15,7 +15,7 @@ Everything the brain reads is a file the owner can open (invariant 8).
 | `memory/wright/people.md` | Who the owner works with | first Wright message, a short header |
 | `memory/wright/lessons.md` | What went wrong before and how to avoid it | first Wright message, a short header |
 | `memory/shared/README.md` | Notes every agent may read (in every crew member's context, see [crew members](#crew-members); not in Wright's yet) | first Wright message, a short header |
-| `config/agents/wright.json` | Wright's model, permission mode and tool policy | first Wright message or first `POST /ask` |
+| `config/agents/wright.json` | Wright's model, permission mode and tool policy | first Wright message, first `POST /ask` or first `POST /agents/wright/set` ([agents: Wright's settable fields](agents.md#wrights-settable-fields)) |
 
 All paths are under the data dir (`STUDIO_DATA_DIR`, else `~/.loomwright-studio`). Each file is created only when it is absent, with exclusive create (`flag: "wx"`, mode 0600), so an existing file is never overwritten: not by a restart, not by a second kernel racing the first. The owner's edits always win.
 
