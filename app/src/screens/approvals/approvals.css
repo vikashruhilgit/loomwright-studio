@@ -73,9 +73,29 @@
   font-weight: var(--type-title-2-weight);
   overflow-wrap: anywhere;
 }
-.approvals-section-title:focus-visible {
+.approvals-section-title:focus-visible,
+.approvals-outcome:focus-visible,
+.approvals-detail:focus-visible,
+.approvals-empty:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+/* Programmatic focus (a region that replaced the focused control) draws no ring for a pointer user. */
+.approvals-outcome:focus:not(:focus-visible),
+.approvals-detail:focus:not(:focus-visible),
+.approvals-empty:focus:not(:focus-visible) {
+  outline: none;
+}
+/* The last good list is on screen; the latest read failed. */
+.approvals-stale {
+  flex: none;
+  margin: 0;
+  padding: var(--space-2) var(--space-5);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--attention);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  overflow-wrap: anywhere;
 }
 .approvals-meta {
   display: flex;

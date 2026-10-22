@@ -230,6 +230,43 @@ describe("the inbox", () => {
     expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
   });
 
+  it("a failed refetch after a good read keeps the list and says it is the older answer; the next good read clears it", async () => {
+    const { fake, kernel } = await mount({ approvals: [approval(1)] });
+    expect(screen.queryByTestId("approvals-stale")).toBeNull();
+    fake.route("GET /approvals", () => ({ ok: false, status: 500, body: { error: "internal", message: "db locked" } }));
+    act(() => fake.emit(event("approval_requested")));
+    await waitFor(() => expect(screen.getByTestId("approvals-stale").textContent).toContain("The kernel refused the read (500 internal): db locked."));
+    expect(screen.getByTestId("screen-approvals").dataset.state).toBe("populated");
+    expect(rowIds()).toEqual([1]);
+    fake.route("GET /approvals", () => ok({ approvals: [...kernel.approvals] }));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    act(() => fake.emit(event("approval_requested")));
+    await waitFor(() => expect(screen.queryByTestId("approvals-stale")).toBeNull());
+  });
+
+  it("Hide decided with a decided row selected says it is no longer listed, not that it was waiting", async () => {
+    const decided = approval(5, { status: "approved", decision: "once", decided_by: "owner", decided_at: "2026-10-22T08:20:00.000Z" });
+    await mount({ approvals: [approval(2)], decided: [decided] });
+    fireEvent.click(screen.getByRole("button", { name: "Show decided" }));
+    await waitFor(() => expect(rowIds()).toEqual([2, 5]));
+    press("j");
+    expect(selectedId()).toBe(5);
+    fireEvent.click(screen.getByRole("button", { name: "Hide decided" }));
+    const gone = screen.getByTestId("approval-gone");
+    expect(gone.textContent).toContain("#5 is decided and no longer in the list.");
+    expect(gone.textContent).not.toContain("waiting on you");
+    expect(gone.textContent).not.toContain("decided elsewhere");
+  });
+
+  it("the last pending row leaving moves focus from the removed list to the empty state, never to <body>", async () => {
+    const { fake, kernel } = await mount({ approvals: [approval(1)] });
+    screen.getByRole("button", { name: /^Allow once/ }).focus();
+    kernel.approvals = [];
+    act(() => fake.emit(event("approval_decided")));
+    await waitFor(() => expect(screen.getByTestId("screen-approvals").dataset.state).toBe("empty"));
+    expect(document.activeElement).toBe(screen.getByTestId("approvals-empty"));
+  });
+
   it("the error state names the kernel when it isn't answering", async () => {
     const fake = fakeBridge({ state: "unreachable", reason: "daemon_not_running" });
     for (const key of ["GET /status", "GET /approvals", "GET /approvals/grants", "GET /messages", "GET /sessions"]) {
@@ -410,6 +447,86 @@ describe("decisions", () => {
     await act(async () => release?.());
   });
 
+  it("D in flight marks Deny busy, never Allow once; the others are disabled", async () => {
+    const { fake } = await mount({ approvals: [approval(1)] });
+    fake.route("POST /approvals/:id/deny", () => new Promise(() => undefined));
+    press("d");
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Deny/ }).getAttribute("aria-busy")).toBe("true"));
+    const once = screen.getByRole("button", { name: /^Allow once/ }) as HTMLButtonElement;
+    const always = screen.getByRole("button", { name: /^Always for this playbook/ }) as HTMLButtonElement;
+    const deny = screen.getByRole("button", { name: /^Deny/ }) as HTMLButtonElement;
+    expect(once.getAttribute("aria-busy")).toBeNull();
+    expect(once.disabled).toBe(true);
+    expect(always.getAttribute("aria-busy")).toBeNull();
+    expect(always.disabled).toBe(true);
+    expect(deny.disabled).toBe(false);
+  });
+
+  it("⇧A in flight marks Always busy, never Allow once", async () => {
+    const { fake } = await mount({ approvals: [approval(1)] });
+    fake.route("POST /approvals/:id/approve", () => new Promise(() => undefined));
+    press("A", { shiftKey: true });
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Always for this playbook/ }).getAttribute("aria-busy")).toBe("true"));
+    expect(screen.getByRole("button", { name: /^Allow once/ }).getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("clicking Allow once moves focus to the outcome that replaces the buttons, never to <body>", async () => {
+    const one = approval(1);
+    const { fake } = await mount({ approvals: [one] });
+    fake.route("POST /approvals/:id/approve", () => ok({ approval: { ...one, status: "approved", decision: "once", decided_by: "owner", decided_at: "2026-10-22T09:00:00.000Z" } }));
+    const once = screen.getByRole("button", { name: /^Allow once/ });
+    once.focus();
+    fireEvent.click(once);
+    await waitFor(() => expect(screen.getByTestId("approval-outcome")).toBeTruthy());
+    expect(document.activeElement).toBe(screen.getByTestId("approval-outcome"));
+  });
+
+  it("a decision with focus elsewhere (the list) leaves focus where it is", async () => {
+    const one = approval(1);
+    const { fake } = await mount({ approvals: [one] });
+    fake.route("POST /approvals/:id/approve", () => ok({ approval: { ...one, status: "approved", decision: "once", decided_by: "owner", decided_at: "2026-10-22T09:00:00.000Z" } }));
+    const row = screen.getAllByRole("option")[0] as HTMLElement;
+    row.tabIndex = -1;
+    row.focus();
+    press("a");
+    await waitFor(() => expect(screen.getByTestId("approval-outcome")).toBeTruthy());
+    expect(document.activeElement).toBe(row);
+  });
+
+  it("a read that drops the approval while its decision is in flight keeps the detail, busy, not gone", async () => {
+    const one = approval(1);
+    const { fake, kernel } = await mount({ approvals: [one, approval(2)] });
+    let release: (() => void) | undefined;
+    fake.route(
+      "POST /approvals/:id/approve",
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(ok({ approval: { ...one, status: "approved", decision: "once", decided_by: "owner", decided_at: "2026-10-22T09:00:00.000Z" } }));
+        }),
+    );
+    press("a");
+    await waitFor(() => expect(posts(fake, "POST /approvals/:id/approve")).toHaveLength(1));
+    kernel.approvals = [approval(2)];
+    act(() => fake.emit(event("approval_decided")));
+    await waitFor(() => expect(rowIds()).toEqual([2]));
+    expect(screen.queryByTestId("approval-gone")).toBeNull();
+    expect(screen.getByTestId("approval-detail").dataset.approvalId).toBe("1");
+    expect(screen.getByRole("button", { name: /^Allow once/ }).getAttribute("aria-busy")).toBe("true");
+    await act(async () => release?.());
+    await waitFor(() => expect(screen.getByTestId("approval-outcome")).toBeTruthy());
+    expect(screen.getByTestId("approval-detail").dataset.approvalId).toBe("1");
+  });
+
+  it("the selected approval leaving the list moves focus from a removed decision button to the placeholder", async () => {
+    const { fake, kernel } = await mount({ approvals: [approval(1), approval(2)] });
+    screen.getByRole("button", { name: /^Allow once/ }).focus();
+    kernel.approvals = [approval(2)];
+    act(() => fake.emit(event("approval_decided")));
+    await waitFor(() => expect(screen.getByTestId("approval-gone")).toBeTruthy());
+    expect(document.activeElement).toBe(screen.getByTestId("approval-gone"));
+    expect(screen.getByTestId("approval-gone").textContent).not.toContain("decided elsewhere");
+  });
+
   it("no decision key runs behind the open ⌘K palette", async () => {
     const { fake } = await mount({ approvals: [approval(1)] });
     const palette = document.createElement("div");
@@ -475,6 +592,27 @@ describe("grants", () => {
     });
     await waitFor(() => expect(screen.getByTestId("grant-notice").textContent).toContain("Revoked grant #"));
     expect(section.getByRole("button", { name: "Revoke grant #17" }).getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("a confirmed revoke moves focus to the grants heading, so the refetch removing its row never drops focus to <body>", async () => {
+    const { fake, kernel } = await mount({ approvals: [approval(1)], grants: [grant(3), grant(4)] });
+    fake.route("POST /approvals/grants/:id/revoke", () => {
+      kernel.grants = [grant(4)];
+      return ok({ grant: grant(3) });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Revoke grant #3" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: /^Revoke/ }));
+    await waitFor(() => expect(screen.queryByTestId("grant-3")).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: /^Standing grants/ }));
+  });
+
+  it("a failed grants refetch after a good read keeps the grants and says they are the older answer", async () => {
+    const { fake } = await mount({ approvals: [approval(1)], grants: [grant(3)] });
+    expect(screen.queryByTestId("grants-stale")).toBeNull();
+    fake.route("GET /approvals/grants", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    act(() => fake.emit(event("approval_decided")));
+    await waitFor(() => expect(screen.getByTestId("grants-stale").textContent).toContain("The kernel refused the read (500 internal)"));
+    expect(screen.getByTestId("grant-3")).toBeTruthy();
   });
 
   it("no decision key runs behind the open confirm", async () => {

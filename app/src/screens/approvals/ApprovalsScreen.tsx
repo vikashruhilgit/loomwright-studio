@@ -166,6 +166,19 @@ async function send<R>(api: StudioBridge, req: ApiRequest): Promise<ApiResult<R>
 
 // ---- the inbox -------------------------------------------------------------------------
 
+interface InFlightDecision {
+  readonly id: number;
+  readonly decision: Decision;
+}
+
+/** Why the selected approval is no longer in the list. Only what the screen itself knows; never a guessed cause. */
+type GoneReason = "left" | "hidden";
+
+/** A read that failed after an earlier one answered: the data on screen is the older answer. Not for `not_connected`: the shell's band says that. */
+function staleError(data: unknown, error: ResourceError | undefined): ResourceError | undefined {
+  return data !== undefined && error !== undefined && error.kind !== "not_connected" ? error : undefined;
+}
+
 interface DecidedRead {
   readonly approvals: readonly Approval[];
   readonly loading: boolean;
@@ -185,7 +198,8 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
   /** Approvals decided in this window: the kernel's answer to the decision. */
   const [outcomes, setOutcomes] = useState<ReadonlyMap<number, Approval>>(new Map());
   const [notices, setNotices] = useState<ReadonlyMap<number, Notice>>(new Map());
-  const [busy, setBusy] = useState<number | null>(null);
+  /** The decision in flight: which approval and which of its three buttons, so only that one shows busy. */
+  const [busy, setBusy] = useState<InFlightDecision | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<Grant | null>(null);
   /** The grants with a revoke in flight. Each grant's revoke is independent; only a second one for the same grant waits. */
   const [revokeBusy, setRevokeBusy] = useState<ReadonlySet<number>>(new Set());
@@ -221,16 +235,23 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
   const rows = useMemo(() => [...pending, ...decidedRows], [pending, decidedRows]);
 
   // Selected by id. Before the owner has a selection, the oldest row is it (the screen opens on it). Once
-  // one is selected, its leaving the list (decided elsewhere) never hands the selection, and so A / ⇧A / D,
-  // to another approval: the detail says it left, and nothing is decidable until the owner picks one.
+  // one is selected, its leaving the list never hands the selection, and so A / ⇧A / D, to another
+  // approval: the detail says it left, and nothing is decidable until the owner picks one.
+  /** The last approval the detail showed, to name one that left the list. */
+  const lastShown = useRef<Approval | undefined>(undefined);
   const found = rows.find((a) => a.id === selectedId);
-  const selected = found ?? (selectedId === null ? rows[0] : undefined);
-  const goneId = selectedId !== null && found === undefined ? selectedId : null;
+  // A decision sent from here whose answer has not come back is not gone: a read landing first may drop the
+  // approval, but the detail keeps showing it, busy, until the kernel answers the decision.
+  const held =
+    found === undefined && selectedId !== null && busy?.id === selectedId && lastShown.current?.id === selectedId ? lastShown.current : undefined;
+  const selected = found ?? held ?? (selectedId === null ? rows[0] : undefined);
+  const goneId = selectedId !== null && selected === undefined ? selectedId : null;
+  // A decided row leaves only because the decided list is hidden or re-read; a pending one because the
+  // kernel's pending list no longer has it. Why it left the kernel's list, the screen can't know.
+  const goneReason: GoneReason = goneId !== null && lastShown.current?.id === goneId && lastShown.current.status !== "pending" ? "hidden" : "left";
   useEffect(() => {
     if (selectedId === null && selected !== undefined) setSelectedId(selected.id);
   }, [selected, selectedId]);
-  /** The last approval the detail showed, to name one that left the list. */
-  const lastShown = useRef<Approval | undefined>(undefined);
   useLayoutEffect(() => {
     if (selected !== undefined) lastShown.current = selected;
   });
@@ -275,7 +296,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
         }
       }
       inFlight.current.add(approval.id);
-      setBusy(approval.id);
+      setBusy({ id: approval.id, decision });
       const req: ApiRequest =
         decision === "deny"
           ? { method: "POST", path: "/approvals/:id/deny", params: { id: approval.id } }
@@ -283,7 +304,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
       const result = await send<ApprovalDecisionResponse>(api, req);
       inFlight.current.delete(approval.id);
       if (!mounted.current) return;
-      setBusy((current) => (current === approval.id ? null : current));
+      setBusy((current) => (current?.id === approval.id ? null : current));
       if (result?.ok === true) {
         const answered = result.body.approval;
         setOutcomes((current) => new Map(current).set(answered.id, answered));
@@ -313,6 +334,11 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
       revoking.current.delete(grant.id);
       if (!mounted.current) return;
       setRevokeBusy(new Set(revoking.current));
+      // The confirm handed focus back to this grant's Revoke, and the grants refetch below can remove its row:
+      // move focus to the grants heading first, unless the owner has already moved it somewhere else.
+      const heading = grantsHeading.current;
+      const focused = document.activeElement;
+      if (heading !== null && (focused === null || focused === document.body || heading.parentElement?.contains(focused) === true)) heading.focus();
       if (result?.ok === true) {
         setGrantNotice(`Revoked grant #${grant.id}. ${printable(grant.requesting_agent)} asks again next time.`);
         store.refetch("grants");
@@ -336,7 +362,8 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
   const canDecide = selected !== undefined && selected.status === "pending" && busy === null && !dialogOpen;
   /** A decision asked for while another approval's decision is in flight: say nothing was sent, never drop it silently. */
   const refuseWhileBusy = useCallback(
-    (current: Approval | undefined, inFlightId: number | null) => {
+    (current: Approval | undefined, inFlightDecision: InFlightDecision | null) => {
+      const inFlightId = inFlightDecision?.id ?? null;
       if (current === undefined || current.status !== "pending" || inFlightId === null || inFlightId === current.id) return;
       setNotice(current.id, { tone: "attention", text: `Nothing was sent for #${current.id}: the decision on #${inFlightId} was still on its way to the kernel. Decide again.` });
     },
@@ -458,12 +485,27 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
 
   let state: "loading" | "error" | "empty" | "populated";
   if (approvals?.data === undefined) state = approvals?.error === undefined ? "loading" : "error";
-  else state = rows.length === 0 ? "empty" : "populated";
+  else state = rows.length === 0 && held === undefined ? "empty" : "populated";
+  const approvalsStale = staleError(approvals?.data, approvals?.error);
+
+  // The populated and the empty / error layouts are different trees: whatever had focus in the one leaving
+  // (a list row, a decision button) is gone. Hand focus to the new layout's region, never to <body>.
+  const singleRegion = useRef<HTMLDivElement>(null);
+  const lastState = useRef(state);
+  useLayoutEffect(() => {
+    const was = lastState.current;
+    lastState.current = state;
+    if (was === state || was === "loading") return;
+    if (state !== "empty" && state !== "error") return;
+    const focused = document.activeElement;
+    if (focused === null || focused === document.body) singleRegion.current?.focus();
+  }, [state]);
 
   const grantsSection = (
     <GrantsSection
       grants={grants?.data?.grants}
       error={grants?.error}
+      staleError={staleError(grants?.data, grants?.error)}
       loading={grants === undefined || (grants.data === undefined && grants.error === undefined)}
       headingRef={grantsHeading}
       notice={grantNotice}
@@ -494,6 +536,14 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
     </div>
   );
 
+  // A refetch that failed keeps the last good list on screen; say it is the older answer, never pass it off as fresh.
+  const staleNote =
+    approvalsStale === undefined ? null : (
+      <p className="approvals-stale" role="status" data-testid="approvals-stale">
+        This list is from the last read that answered; the latest one failed. {errorText(approvalsStale)}
+      </p>
+    );
+
   const revokeDialog =
     revokeTarget === null ? null : (
       <Dialog
@@ -520,15 +570,16 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
     return (
       <div className="approvals approvals-single" data-testid="screen-approvals" data-state={state}>
         {bar}
+        {staleNote}
         <div className="approvals-column">
           {state === "error" ? (
-            <div className="approvals-empty" role="alert" data-testid="approvals-error">
+            <div className="approvals-empty" role="alert" data-testid="approvals-error" ref={singleRegion} tabIndex={-1}>
               <h2 className="approvals-empty-title">Couldn't load approvals.</h2>
               <p className="approvals-empty-note">{approvals?.error === undefined ? "" : errorText(approvals.error)}</p>
               <p className="approvals-empty-note">This screen reloads on its own once the kernel answers.</p>
             </div>
           ) : (
-            <div className="approvals-empty" data-testid="approvals-empty">
+            <div className="approvals-empty" data-testid="approvals-empty" ref={singleRegion} tabIndex={-1}>
               <h2 className="approvals-empty-title">{EMPTY_TITLE}</h2>
               <p className="approvals-empty-note">
                 Approvals appear here the moment an agent wants to do something outward or persistent: post, push, message, or change a hook.
@@ -553,6 +604,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
   return (
     <div className="approvals" data-testid="screen-approvals" data-state={state}>
       {bar}
+      {staleNote}
       <div className="approvals-inbox">
         <div className="approvals-list-pane">
           <List
@@ -569,6 +621,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
           {goneId !== null ? (
             <GoneDetail
               id={goneId}
+              reason={goneReason}
               action={lastShown.current?.id === goneId ? lastShown.current.action : undefined}
               notice={notices.get(goneId)}
             />
@@ -580,8 +633,9 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
               approval={selected}
               sessions={sessions?.data?.sessions}
               message={messageFor(selected.id, messages?.data?.messages)}
+              messagesError={messages?.error !== undefined && messages.error.kind !== "not_connected" ? messages.error : undefined}
               notice={notices.get(selected.id)}
-              busy={busy === selected.id}
+              busyDecision={busy?.id === selected.id ? busy.decision : undefined}
               disabled={busy !== null || dialogOpen}
               onDecide={(decision) => void decide(selected, decision)}
             />
@@ -600,21 +654,42 @@ interface ApprovalDetailProps {
   readonly approval: Approval;
   readonly sessions: readonly SessionSummary[] | undefined;
   readonly message: BrainMessage | undefined;
+  /** The messages read's failure, if the last one failed: the agent's message on screen may be missing or older. */
+  readonly messagesError: ResourceError | undefined;
   readonly notice: Notice | undefined;
-  readonly busy: boolean;
+  /** The decision on this approval that is in flight: only its button shows busy. */
+  readonly busyDecision: Decision | undefined;
   readonly disabled: boolean;
   readonly onDecide: (decision: Decision) => void;
 }
 
-function ApprovalDetail({ approval: a, sessions, message, notice, busy, disabled, onDecide }: ApprovalDetailProps) {
+/** Focus `target` when the element that had focus was just removed (focus is on <body>) or was inside `scope`. */
+function keepFocus(target: HTMLElement | null, scope: HTMLElement | null): void {
+  if (target === null) return;
+  const focused = document.activeElement;
+  if (focused === null || focused === document.body || (scope !== null && scope.contains(focused) && focused !== target)) target.focus();
+}
+
+function ApprovalDetail({ approval: a, sessions, message, messagesError, notice, busyDecision, disabled, onDecide }: ApprovalDetailProps) {
   const titleId = useId();
   const reasonId = useId();
   const willLine = kernelWillLine(a);
   const alwaysRefused = alwaysRefusalFor(a);
   const pending = a.status === "pending";
+  const sectionRef = useRef<HTMLElement>(null);
+  const outcomeRef = useRef<HTMLDivElement>(null);
+  // The answer replaces the decision buttons, so the focused one is removed: focus the outcome that replaced it.
+  const wasPending = useRef(pending);
+  useLayoutEffect(() => {
+    if (wasPending.current && !pending) keepFocus(outcomeRef.current, sectionRef.current);
+    wasPending.current = pending;
+  }, [pending]);
+  const busyOn = (decision: Decision): boolean => busyDecision === decision;
+  /** Every button but the busy one is disabled while any decision is in flight; the busy one stays focusable. */
+  const off = (decision: Decision): boolean => disabled && !busyOn(decision);
 
   return (
-    <section className="approvals-detail" aria-labelledby={titleId} data-testid="approval-detail" data-approval-id={a.id}>
+    <section className="approvals-detail" aria-labelledby={titleId} data-testid="approval-detail" data-approval-id={a.id} ref={sectionRef}>
       <header className="approvals-head">
         <h2 className="approvals-title" id={titleId} data-testid="approval-action">
           {printable(a.action)}
@@ -645,7 +720,7 @@ function ApprovalDetail({ approval: a, sessions, message, notice, busy, disabled
       </header>
 
       {/* Once decided, what the kernel did and what the agent was told come first. */}
-      {pending ? null : <Outcome approval={a} message={message} />}
+      {pending ? null : <Outcome approval={a} message={message} messagesError={messagesError} focusRef={outcomeRef} />}
 
       {willLine === undefined || !pending ? null : (
         <p className="approvals-will" data-testid="approval-kernel-will">
@@ -680,20 +755,21 @@ function ApprovalDetail({ approval: a, sessions, message, notice, busy, disabled
       {pending ? (
         <div className="approvals-decide">
           <div className="approvals-actions">
-            <Button variant="primary" kbd="A" aria-keyshortcuts="A" loading={busy} disabled={disabled && !busy} onClick={() => onDecide("once")}>
+            <Button variant="primary" kbd="A" aria-keyshortcuts="A" loading={busyOn("once")} disabled={off("once")} onClick={() => onDecide("once")}>
               Allow once
             </Button>
             <Button
               variant="secondary"
               kbd="⇧A"
               aria-keyshortcuts="Shift+A"
-              disabled={alwaysRefused !== undefined || disabled}
+              loading={busyOn("always")}
+              disabled={alwaysRefused !== undefined || off("always")}
               aria-describedby={alwaysRefused === undefined ? undefined : reasonId}
               onClick={() => onDecide("always")}
             >
               Always for this playbook
             </Button>
-            <Button variant="danger" kbd="D" aria-keyshortcuts="D" disabled={disabled} onClick={() => onDecide("deny")}>
+            <Button variant="danger" kbd="D" aria-keyshortcuts="D" loading={busyOn("deny")} disabled={off("deny")} onClick={() => onDecide("deny")}>
               Deny
             </Button>
           </div>
@@ -713,13 +789,28 @@ function ApprovalDetail({ approval: a, sessions, message, notice, busy, disabled
   );
 }
 
-/** The selected approval left the list (decided elsewhere): nothing is decidable until the owner picks another. */
-function GoneDetail({ id, action, notice }: { readonly id: number; readonly action: string | undefined; readonly notice: Notice | undefined }) {
+interface GoneDetailProps {
+  readonly id: number;
+  readonly reason: GoneReason;
+  readonly action: string | undefined;
+  readonly notice: Notice | undefined;
+}
+
+/**
+ * The selected approval left the list: nothing is decidable until the owner picks another. The words say
+ * only what the screen saw (the kernel's pending list no longer has it; a decided one is no longer listed),
+ * never why: it may have been decided in another window, or expired, or the decided list was hidden.
+ */
+function GoneDetail({ id, reason, action, notice }: GoneDetailProps) {
+  const ref = useRef<HTMLElement>(null);
+  // It replaces the detail, so a focused decision button is removed with it: focus this instead of <body>.
+  useLayoutEffect(() => keepFocus(ref.current, null), []);
   return (
-    <section className="approvals-detail" data-testid="approval-gone" data-approval-id={id} role="status">
+    <section className="approvals-detail" data-testid="approval-gone" data-approval-id={id} role="status" ref={ref} tabIndex={-1}>
       <h2 className="approvals-title">{action === undefined ? `#${id}` : printable(action)}</h2>
       <p className="approvals-note">
-        #{id} is no longer waiting on you: it was decided elsewhere. Pick an approval (J / K or a click) to decide it; nothing here acts until you do.
+        {reason === "hidden" ? `#${id} is decided and no longer in the list.` : `#${id} is no longer waiting on you: the kernel's pending list doesn't have it now.`} Pick an
+        approval (J / K or a click){reason === "hidden" ? "" : " to decide it"}; nothing here acts until you do.
       </p>
       {notice === undefined ? null : (
         <p className="approvals-notice" data-tone={notice.tone} data-testid="approval-notice">
@@ -730,9 +821,16 @@ function GoneDetail({ id, action, notice }: { readonly id: number; readonly acti
   );
 }
 
-function Outcome({ approval: a, message }: { readonly approval: Approval; readonly message: BrainMessage | undefined }) {
+interface OutcomeProps {
+  readonly approval: Approval;
+  readonly message: BrainMessage | undefined;
+  readonly messagesError: ResourceError | undefined;
+  readonly focusRef: RefObject<HTMLDivElement | null>;
+}
+
+function Outcome({ approval: a, message, messagesError, focusRef }: OutcomeProps) {
   return (
-    <div className="approvals-outcome" data-testid="approval-outcome" role="status">
+    <div className="approvals-outcome" data-testid="approval-outcome" role="status" ref={focusRef} tabIndex={-1}>
       <p className="approvals-decision">
         <Badge tone={a.status === "denied" ? "danger" : "ok"}>{decisionWord(a)}</Badge>
         <span>{decisionSentence(a)}</span>
@@ -757,13 +855,20 @@ function Outcome({ approval: a, message }: { readonly approval: Approval; readon
           <span className="approvals-well-note">{message === undefined ? "" : printable(message.status)}</span>
         </div>
         {message === undefined ? (
-          <p className="approvals-note" data-testid="approval-message-pending">
-            The kernel queues it with the decision; it shows here once the kernel has it.
-          </p>
+          messagesError === undefined ? (
+            <p className="approvals-note" data-testid="approval-message-pending">
+              The kernel queues it with the decision; it shows here once the kernel has it.
+            </p>
+          ) : null
         ) : (
           <pre className="approvals-pre" data-testid="approval-message">
             {printable(message.text, true)}
           </pre>
+        )}
+        {messagesError === undefined ? null : (
+          <p className="approvals-note" data-testid="approval-message-error">
+            Couldn't read the agent's messages{message === undefined ? "" : "; this one is from the last read that answered"}. {errorText(messagesError)}
+          </p>
         )}
       </div>
     </div>
@@ -775,6 +880,8 @@ function Outcome({ approval: a, message }: { readonly approval: Approval; readon
 interface GrantsSectionProps {
   readonly grants: readonly Grant[] | undefined;
   readonly error: ResourceError | undefined;
+  /** A refetch that failed after an earlier read answered: the grants on screen are the older answer. */
+  readonly staleError: ResourceError | undefined;
   readonly loading: boolean;
   readonly headingRef: RefObject<HTMLHeadingElement | null>;
   readonly notice: string | undefined;
@@ -782,7 +889,7 @@ interface GrantsSectionProps {
   readonly onRevoke: (grant: Grant) => void;
 }
 
-function GrantsSection({ grants, error, loading, headingRef, notice, busyIds, onRevoke }: GrantsSectionProps) {
+function GrantsSection({ grants, error, staleError: stale, loading, headingRef, notice, busyIds, onRevoke }: GrantsSectionProps) {
   const headingId = useId();
   let body: ReactNode;
   if (grants === undefined && error !== undefined) body = <p className="approvals-note">Couldn't load grants. {errorText(error)}</p>;
@@ -821,6 +928,11 @@ function GrantsSection({ grants, error, loading, headingRef, notice, busyIds, on
       <h2 className="approvals-section-title" id={headingId} ref={headingRef} tabIndex={-1}>
         Standing grants{grants === undefined || grants.length === 0 ? "" : ` (${grants.length})`}
       </h2>
+      {stale === undefined ? null : (
+        <p className="approvals-note" role="status" data-testid="grants-stale">
+          These grants are from the last read that answered; the latest one failed. {errorText(stale)}
+        </p>
+      )}
       {body}
       {notice === undefined ? null : (
         <p className="approvals-note" role="status" data-testid="grant-notice">
