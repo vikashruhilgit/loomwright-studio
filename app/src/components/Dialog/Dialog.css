@@ -1,0 +1,159 @@
+/* Dialog: docs/design/design-system/components/Dialog. Colour comes only from tokens.css custom properties. */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+  background: var(--overlay);
+  animation: dialog-fade-in var(--duration-slow) var(--ease-enter);
+}
+.dialog-overlay[data-state="closing"] {
+  animation: dialog-fade-out var(--duration-fast) var(--ease-exit) forwards;
+}
+
+.dialog-panel {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 360px;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: auto;
+  padding: var(--space-5);
+  background: var(--surface-raised);
+  color: var(--ink);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+  animation: dialog-enter var(--duration-slow) var(--ease-enter);
+}
+.dialog-panel[data-wide="true"] {
+  width: 480px;
+}
+.dialog-overlay[data-state="closing"] .dialog-panel {
+  animation: dialog-exit var(--duration-fast) var(--ease-exit) forwards;
+}
+/* Gallery states: in flow and static. */
+.dialog-panel[data-inline="true"] {
+  animation: none;
+}
+/* Focus lands on the panel only when it has no non-destructive control; the controls carry the ring. */
+.dialog-panel:focus,
+.dialog-panel:focus-visible {
+  outline: none;
+}
+
+.dialog-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.dialog-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.dialog-title {
+  margin: 0;
+  font-family: var(--type-title-2-family);
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+  color: var(--ink);
+}
+.dialog-description {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.dialog-description p {
+  margin: 0;
+}
+
+.dialog-well {
+  margin: 0;
+  padding: var(--space-2) 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.dialog-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-secondary);
+}
+.dialog-checkbox {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.dialog-checkbox:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+@keyframes dialog-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+@keyframes dialog-exit {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+@keyframes dialog-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes dialog-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* Reduced motion: no scale; opacity fades only, capped at duration-instant. */
+@media (prefers-reduced-motion: reduce) {
+  .dialog-overlay,
+  .dialog-panel {
+    animation-name: dialog-fade-in;
+    animation-duration: var(--duration-instant);
+    transition-duration: 0s;
+  }
+  .dialog-overlay[data-state="closing"],
+  .dialog-overlay[data-state="closing"] .dialog-panel {
+    animation-name: dialog-fade-out;
+    animation-duration: var(--duration-instant);
+  }
+  .dialog-panel[data-inline="true"] {
+    animation: none;
+  }
+}
