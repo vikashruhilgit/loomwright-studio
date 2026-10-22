@@ -9,7 +9,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { AVATAR_STATES, Avatar } from "./Avatar";
+import { AVATAR_STATES, Avatar, WRIGHT_ID, creatureFor } from "./Avatar";
 import type { AvatarAgent, AvatarState } from "./Avatar";
 import { CREW_CREATURES, CREW_HUES, SHAPES, seedOf } from "./creatures";
 
@@ -23,6 +23,28 @@ const avatarCss = read("Avatar.css");
 const avatarTsx = read("Avatar.tsx");
 const creaturesTs = read("creatures.ts");
 const kernelAgentTypes = read("../../../../kernel/src/agents/types.ts");
+const kernelRoster = read("../../../../kernel/src/agents/roster.ts");
+const kernelSettings = read("../../../../kernel/src/agents/settings.ts");
+const kernelMemory = read("../../../../kernel/src/brain/memory.ts");
+
+/**
+ * The string literals of a kernel `export const NAME = Object.freeze([...])` list, read as text so the app never
+ * imports kernel code, yet a rename, addition or removal in the kernel's vocabulary fails here. Throws when the
+ * list is gone or empty, so a moved constant cannot pass by matching nothing.
+ */
+function kernelFrozenList(source: string, name: string): string[] {
+  const body = new RegExp(`export const ${name} = Object\\.freeze\\(\\[([^\\]]*)\\]`).exec(source)?.[1];
+  const values = [...(body ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1] as string);
+  if (values.length === 0) throw new Error(`kernel source has no non-empty frozen list ${name}`);
+  return values;
+}
+
+/** The value of a kernel `const NAME = "...";` string constant, read as text; throws when it is gone. */
+function kernelStringConst(source: string, name: string): string {
+  const value = new RegExp(`const ${name} = "([^"]*)";`).exec(source)?.[1];
+  if (value === undefined) throw new Error(`kernel source has no string constant ${name}`);
+  return value;
+}
 
 const WRIGHT: AvatarAgent = { id: "wright", name: "Wright", shape: "whale", hue: "accent" };
 const MASON: AvatarAgent = { id: "mason", name: "Mason", shape: "shark", hue: "teal" };
@@ -198,9 +220,7 @@ describe("Wright and the crew", () => {
 
   it("takes the kernel's avatar_hue values (AVATAR_HUES) as sent, each to its own crew token", () => {
     // Read as text so a change to the kernel's shipped vocabulary fails here rather than painting the crew slate.
-    const list = /export const AVATAR_HUES = Object\.freeze\(\[([^\]]*)\]/.exec(kernelAgentTypes)?.[1];
-    const kernelHues = [...(list ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1] as string);
-    expect(kernelHues.length).toBeGreaterThan(0);
+    const kernelHues = kernelFrozenList(kernelAgentTypes, "AVATAR_HUES");
     const tokens = kernelHues.map((hue) => renderAvatar({ ...MASON, hue }, "idle").style.getPropertyValue("--bot"));
     kernelHues.forEach((hue, index) => {
       expect(tokens[index]).toBe(`var(--${hue})`);
@@ -208,6 +228,29 @@ describe("Wright and the crew", () => {
     });
     expect(new Set(tokens).size).toBe(kernelHues.length);
     expect(kernelHues.map((h) => h.replace(/^crew-/, "")).sort()).toEqual([...CREW_HUES].sort());
+  });
+
+  it("takes the kernel's avatar_shape values (AVATAR_SHAPES) as sent, each to its own creature, never the fish fallback", () => {
+    // Read as text so a renamed or added kernel shape fails here rather than silently drawing a fish.
+    const kernelShapes = kernelFrozenList(kernelAgentTypes, "AVATAR_SHAPES");
+    for (const shape of kernelShapes) {
+      expect(creatureFor({ id: "nemo", name: "Nemo", shape }), shape).toBe(shape);
+      if (shape !== "fish") expect(creatureFor({ id: "nemo", name: "Nemo", shape }), shape).not.toBe("fish");
+    }
+    expect([...new Set(kernelShapes)].sort()).toEqual([...CREW_CREATURES].sort());
+    expect(kernelShapes).toHaveLength(new Set(kernelShapes).size);
+    // The whale is Wright's alone, on both sides of the wire.
+    expect(kernelShapes).not.toContain("whale");
+    expect(CREW_CREATURES).not.toContain("whale");
+  });
+
+  it("WRIGHT_ID is the kernel's own id for Wright, and the kernel reserves it from every crew member", () => {
+    // roster.ts serves Wright's roster entry under its WRIGHT_ID; settings.ts creates Wright's file under its own.
+    expect(kernelStringConst(kernelRoster, "WRIGHT_ID")).toBe(WRIGHT_ID);
+    expect(kernelStringConst(kernelSettings, "WRIGHT_ID")).toBe(WRIGHT_ID);
+    // RESERVED_AGENT_IDS is KERNEL_MEMORY_DIRS, so no crew member can take Wright's id and wear the whale and crown.
+    expect(kernelAgentTypes).toMatch(/export const RESERVED_AGENT_IDS = KERNEL_MEMORY_DIRS;/);
+    expect(kernelFrozenList(kernelMemory, "KERNEL_MEMORY_DIRS")).toContain(WRIGHT_ID);
   });
 
   it("a crew-prefixed non-crew name is still not an identity: never accent or a semantic token", () => {
