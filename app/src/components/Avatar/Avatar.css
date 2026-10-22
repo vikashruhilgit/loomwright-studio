@@ -1,0 +1,333 @@
+/* The stitched sea-creature avatar, ported from the approved design (docs/design/avatar/avatar.css).
+   Layers: drift (whole), rig (body from its base), tail (the loose thread). Every colour is a token:
+   the identity parts paint with --bot (the agent's own hue); only the waiting ring uses a state colour.
+   Avatar.tsx renders only the active state's thread path(s), so no rule here toggles a thread's display. */
+.bot {
+  display: inline-grid;
+  place-items: center;
+  width: var(--s, 32px);
+  height: var(--s, 32px);
+  flex: none;
+  position: relative;
+}
+.bot svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  display: block;
+}
+.bot .drift {
+  transform-origin: 16px 16px;
+}
+.bot .rig {
+  transform-origin: 16px 29px;
+}
+.bot .fill {
+  fill: var(--bot, var(--accent));
+  opacity: 0.28;
+}
+.bot .st {
+  fill: none;
+  stroke: var(--bot, var(--accent));
+  stroke-width: 1.6;
+  stroke-dasharray: 2.6 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.bot .ln {
+  fill: none;
+  stroke: var(--bot, var(--accent));
+  stroke-width: 1.2;
+  stroke-dasharray: 1.8 1.4;
+  stroke-linecap: round;
+  opacity: 0.85;
+}
+.bot .knot {
+  fill: var(--bot, var(--accent));
+}
+.bot.working .st,
+.bot.working .ln {
+  animation: run 1.2s linear infinite;
+}
+.bot .t {
+  stroke: var(--bot, var(--accent));
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  fill: none;
+}
+.bot .ring {
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid var(--attention);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The thread border: a running stitch in the agent's hue around every avatar; it runs while working. */
+.bot .stitch {
+  fill: none;
+  stroke: var(--bot, var(--accent));
+  stroke-width: 1.2;
+  stroke-dasharray: 2.4 2.6;
+  stroke-linecap: round;
+  opacity: 0.45;
+  transform-origin: 16px 16px;
+}
+.bot.working .stitch {
+  animation: run 1.6s linear infinite;
+}
+.bot.parked .stitch {
+  stroke-dasharray: 1 4;
+  opacity: 0.5;
+}
+.bot.danger .stitch {
+  stroke-dasharray: 6 10;
+  opacity: 0.6;
+}
+.bot.done .stitch {
+  stroke-dasharray: none;
+  opacity: 0.9;
+}
+.bot .crown {
+  fill: var(--bot, var(--accent));
+  stroke: var(--ground);
+  stroke-width: 0.8;
+  stroke-linejoin: round;
+}
+@keyframes run {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
+
+/* Hover: a nod. */
+.bot:hover .rig {
+  animation: nod 0.5s cubic-bezier(0.3, 0, 0.2, 1) 1 !important;
+}
+
+/* Idle: calm. Floats in a slow swirl; the loose thread sways, each agent on its own clock. */
+.bot.idle .drift {
+  animation: swirl 7s ease-in-out infinite;
+  animation-delay: var(--seed, 0s);
+}
+.bot.idle .tail {
+  animation: sway 3s ease-in-out infinite alternate;
+  animation-delay: var(--seed, 0s);
+}
+
+/* Working: the creature leans into the work, the loose end flutters, the stitches run. */
+.bot.working .rig {
+  animation: lean 1.2s ease-in-out infinite alternate;
+}
+.bot.working .tail {
+  animation: flutter 0.35s ease-in-out infinite alternate;
+}
+
+/* Waiting on you: the thread rises toward you in a loop; the creature hops; the attention ring when it lands. */
+.bot.waiting .rig {
+  animation: hop 2.6s cubic-bezier(0.3, 0, 0.2, 1) infinite;
+}
+.bot.waiting .tail {
+  animation: beckon 2.6s ease-in-out infinite;
+}
+.bot.waiting .ring {
+  animation: ring 2.6s ease-out infinite;
+}
+
+/* Paused at cap: the thread hangs slack, the creature settles, dimmed. */
+.bot.parked {
+  opacity: 0.72;
+}
+.bot.parked .rig {
+  animation: sink 4.5s ease-in-out infinite;
+}
+
+/* Killed / failed: the thread is cut; the creature tips. */
+.bot.danger .rig {
+  animation: tip 0.6s cubic-bezier(0.36, 0.07, 0.19, 0.97) 1 forwards;
+}
+
+/* Done: the thread ties into a bow; one spin with overshoot and a small orbit. */
+.bot.done .rig {
+  animation: spin 1s cubic-bezier(0.34, 1.4, 0.64, 1) 1;
+}
+.bot.done .drift {
+  animation: orbit 1s cubic-bezier(0.3, 0, 0.2, 1) 1;
+}
+
+@keyframes swirl {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0);
+  }
+  25% {
+    transform: translate(1.4px, -1px) rotate(3deg);
+  }
+  50% {
+    transform: translate(0, -2px) rotate(0);
+  }
+  75% {
+    transform: translate(-1.4px, -1px) rotate(-3deg);
+  }
+}
+@keyframes sway {
+  from {
+    transform: rotate(-14deg);
+  }
+  to {
+    transform: rotate(12deg);
+  }
+}
+@keyframes lean {
+  from {
+    transform: rotate(-3deg) scale(1, 1);
+  }
+  to {
+    transform: rotate(3deg) scale(1.02, 0.98);
+  }
+}
+@keyframes flutter {
+  from {
+    transform: rotate(-6deg);
+  }
+  to {
+    transform: rotate(18deg);
+  }
+}
+@keyframes hop {
+  0%,
+  58%,
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+  64% {
+    transform: translateY(1.5px) scale(1.12, 0.86);
+  }
+  73% {
+    transform: translateY(-7px) scale(0.94, 1.1);
+  }
+  80% {
+    transform: translateY(-3px) scale(0.97, 1.04);
+  }
+  85% {
+    transform: translateY(0) scale(1.08, 0.92);
+  }
+  92% {
+    transform: scale(0.99, 1.01);
+  }
+}
+@keyframes beckon {
+  0%,
+  55%,
+  100% {
+    transform: rotate(0);
+  }
+  70% {
+    transform: rotate(-18deg);
+  }
+  85% {
+    transform: rotate(8deg);
+  }
+}
+@keyframes nod {
+  0% {
+    transform: rotate(0);
+  }
+  30% {
+    transform: rotate(-8deg) translateY(-2px);
+  }
+  70% {
+    transform: rotate(4deg);
+  }
+  100% {
+    transform: rotate(0);
+  }
+}
+@keyframes ring {
+  0%,
+  80% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  83% {
+    opacity: 0.75;
+    transform: scale(0.86);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+@keyframes sink {
+  0%,
+  100% {
+    transform: translateY(1px) scale(1.04, 0.96);
+  }
+  50% {
+    transform: translateY(1.4px) scale(1.05, 0.95);
+  }
+}
+@keyframes tip {
+  0% {
+    transform: rotate(0);
+  }
+  20% {
+    transform: rotate(-6deg) translateX(-2px);
+  }
+  40% {
+    transform: rotate(6deg) translateX(2px);
+  }
+  100% {
+    transform: rotate(22deg) translateY(1px);
+  }
+}
+@keyframes orbit {
+  0% {
+    transform: translate(0, 0);
+  }
+  25% {
+    transform: translate(3px, -3px);
+  }
+  50% {
+    transform: translate(0, -5px);
+  }
+  75% {
+    transform: translate(-3px, -3px);
+  }
+  100% {
+    transform: translate(0, 0);
+  }
+}
+@keyframes spin {
+  0% {
+    transform: rotate(0) scale(1);
+  }
+  45% {
+    transform: rotate(380deg) scale(1.08);
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+
+/* Reduced motion: every avatar animation stops and the thread's shape alone carries the state.
+   The hover nod is stopped explicitly: `.bot:hover .rig` above out-specifies `.bot .rig`, so it needs its own
+   rule here, after it in source order. The waiting ring stays visible, still. */
+@media (prefers-reduced-motion: reduce) {
+  .bot .drift,
+  .bot .rig,
+  .bot .tail,
+  .bot .ring,
+  .bot .st,
+  .bot .ln,
+  .bot .stitch {
+    animation: none !important;
+  }
+  .bot:hover .rig {
+    animation: none !important;
+  }
+  .bot.waiting .ring {
+    opacity: 0.7;
+  }
+}
