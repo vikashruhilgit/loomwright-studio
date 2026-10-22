@@ -258,6 +258,36 @@ test("AC9: the keyboard alone reaches every action with Tab / Shift+Tab and runs
   await expect.poll(() => chat.asks).toEqual([{ text: "From the keyboard.", agent: "pim", workspace: "~/work/a" }]);
 });
 
+// A card follows its newest event, so the event its own action writes (a Set's playbook_updated, a
+// confirmed On's trigger_fired) moves it. The card must move, not remount: React re-focuses a control
+// that is still in the document once the commit that moved it ends, but a remounted card's control is gone.
+test("a card that moves after the event its own action wrote keeps the control's focus", async () => {
+  const { page, chat } = await launchScenario("populated");
+  await resize(SHOT_SIZE);
+  const playbookCard = 'section[aria-label="Playbook pr-review"]';
+  const triggerCard = 'section[aria-label="Trigger 8"]';
+  await expect(page.locator(playbookCard)).toBeVisible();
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+  // Set: the kernel writes playbook_updated, and the playbook's card moves after it.
+  await tabTo(page, "Set priority", playbookCard);
+  await page.keyboard.press("Enter");
+  await expect.poll(() => chat.writes.map((w) => w.path)).toContain("/playbooks/3/set");
+  await expect(page.locator('[data-item="event:501"] + li').locator(playbookCard)).toBeVisible();
+  await expect(page.locator(playbookCard).getByRole("button", { name: /^Set priority/ })).toBeFocused();
+
+  // Turn on and fire: the trigger fires, and its standalone card moves after the firing.
+  await tabTo(page, "On", triggerCard);
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("group", { name: "Confirm turning on trigger 8" })).toBeVisible();
+  await page.keyboard.press("Shift+Tab");
+  expect(await focusedName(page)).toBe("Turn on and fire");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => chat.writes.map((w) => [w.path, w.body])).toContainEqual(["/triggers/8/on", { confirm: true }]);
+  await expect(page.locator('[data-item="event:502"] + li').locator(triggerCard)).toBeVisible();
+  await expect(page.locator(triggerCard).getByRole("button", { name: "On", exact: true })).toBeFocused();
+});
+
 test("AC6: untrusted text in the running app renders inert", async () => {
   const { page } = await launchScenario("populated");
   await expect(page.getByRole("region", { name: "Drafted crew member, approval 9" })).toContainText("<img src=x onerror=alert(1)> stays text");

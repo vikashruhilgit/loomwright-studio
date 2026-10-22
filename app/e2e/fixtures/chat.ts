@@ -211,6 +211,7 @@ export function chatFixture(scenario: ChatScenario = "populated"): ChatFixture {
   };
 
   let nextId = 200;
+  let nextEventId = 500;
   const options: FixtureKernelOptions = {
     routes: {
       "GET /agents": () => ({ status: 200, body: { agents: roster } }),
@@ -258,13 +259,31 @@ export function chatFixture(scenario: ChatScenario = "populated"): ChatFixture {
       },
       "POST /approvals/:id/approve": record,
       "POST /approvals/:id/deny": record,
-      "POST /playbooks/:id/set": record,
+      // As the kernel does (kernel/src/playbooks/store.ts): every Set writes playbook_updated, so the
+      // playbook's card moves after the new event.
+      "POST /playbooks/:id/set": (req) => {
+        writes.push({ path: req.path, params: req.params, body: req.body });
+        nextEventId += 1;
+        threads.wright!.push({ type: "event", id: nextEventId, at: new Date().toISOString(), kind: "playbook_updated", summary: `Playbook ${PLAYBOOK.slug} updated`, ref: { playbook_id: Number(req.params.id) } });
+        return { status: 200, body: {} };
+      },
       "POST /playbooks/:id/off": record,
       "POST /playbooks/:id/run": (req) => {
         writes.push({ path: req.path, params: req.params, body: req.body });
         return { status: 200, body: { queue_id: 300, created: true, playbook: 3, version: 2, scheduled_at: new Date().toISOString() } };
       },
-      "POST /triggers/:id/on": record,
+      // Trigger 8 is a past `once`: turning it on asks first, and confirming fires it (a trigger_fired
+      // event, which moves its card after the new event).
+      "POST /triggers/:id/on": (req) => {
+        writes.push({ path: req.path, params: req.params, body: req.body });
+        if (req.params.id !== "8") return { status: 200, body: {} };
+        if ((req.body as { confirm?: boolean } | undefined)?.confirm !== true) {
+          return { status: 409, body: { error: "needs_confirmation", message: "trigger 8 was due at 08:30; turning it on fires it now" } };
+        }
+        nextEventId += 1;
+        threads.wright!.push({ type: "event", id: nextEventId, at: new Date().toISOString(), kind: "trigger_fired", summary: "Trigger 8 fired (wake)", ref: { trigger_id: 8 } });
+        return { status: 200, body: {} };
+      },
       "POST /triggers/:id/off": record,
     },
   };

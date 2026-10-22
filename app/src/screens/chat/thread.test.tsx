@@ -321,6 +321,23 @@ describe("thread", () => {
     expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Message Wright" }));
   });
 
+  it("a Set's playbook_updated moves the playbook card after it, the same card, with Set still focused", async () => {
+    const created = eventItem(10, "playbook_created", "Playbook pb-3 created", { playbook_id: 3 });
+    const later = message(11, { text: "later" });
+    const k = kit({ threads: { wright: thread([created, later]) }, playbooks: [playbook(3)] });
+    const view = await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Playbook pb-3" });
+    const button = within(card).getByRole("button", { name: /^Set priority/ });
+    await act(async () => button.focus());
+    k.state.threads.wright = thread([created, later, eventItem(12, "playbook_updated", "Playbook pb-3 updated", { playbook_id: 3 })]);
+    await done(k);
+    await screen.findByText("Playbook pb-3 updated");
+    // Moved, not remounted: a remount would drop the focused button and send focus to the composer.
+    expect(view.container.querySelector('[data-item="event:12"] + li')?.contains(card)).toBe(true);
+    expect(screen.getByRole("region", { name: "Playbook pb-3" })).toBe(card);
+    expect(document.activeElement).toBe(button);
+  });
+
   it("a row turning replied keeps the end in view when the owner was at the end", async () => {
     const row = message(1, { status: "queued", reply_text: null });
     const k = kit({ threads: { wright: thread([row]) } });
