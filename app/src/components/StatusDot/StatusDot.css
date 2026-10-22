@@ -1,0 +1,73 @@
+/* StatusDot: docs/design/design-system/components/StatusDot. Colour comes only from tokens.css custom properties. */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.status-dot {
+  box-sizing: border-box;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+}
+.status-dot[data-state="idle"] {
+  border: 2px solid var(--idle);
+}
+.status-dot[data-state="working"] {
+  background: var(--working);
+  animation: status-breathe var(--duration-pulse) ease-in-out infinite;
+}
+.status-dot[data-state="waiting"] {
+  background: var(--attention);
+}
+.status-dot[data-state="paused"] {
+  position: relative;
+  background: var(--parked);
+}
+.status-dot[data-state="paused"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 3px;
+  width: 2px;
+  background: var(--ground);
+}
+.status-dot[data-state="ok"] {
+  background: var(--ok);
+}
+.status-dot[data-state="failed"] {
+  background: var(--danger);
+}
+.status-meta {
+  color: var(--ink-tertiary);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+  font-variant-numeric: tabular-nums;
+}
+/* An unverified "ok" is a guess: ink-tertiary text, no dot. */
+.status-guess {
+  color: var(--ink-tertiary);
+}
+
+@keyframes status-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.85);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot[data-state="working"] {
+    animation: none;
+  }
+}

@@ -1,0 +1,121 @@
+/* Badge, count pill, chip, kbd and mono: docs/design/design-system/components/Badge. Colour comes only from tokens.css custom properties. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 20px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-xs);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.badge[data-tone="ok"] {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.badge[data-tone="attention"] {
+  background: var(--attention-soft);
+  color: var(--attention);
+}
+.badge[data-tone="danger"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.badge[data-tone="parked"] {
+  background: var(--parked-soft);
+  color: var(--parked);
+}
+.badge[data-tone="accent"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.badge[data-tone="neutral"] {
+  background: var(--surface-sunken);
+  color: var(--ink-secondary);
+}
+.badge-icon {
+  display: inline-flex;
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+.badge-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--attention);
+  color: var(--on-accent);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 var(--space-2) 0 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.chip-avatar {
+  display: inline-flex;
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  color: var(--ink-secondary);
+  font-family: var(--type-kbd-family);
+  font-size: var(--type-kbd-size);
+  line-height: var(--type-kbd-line);
+  font-weight: var(--type-kbd-weight);
+}
+
+.mono {
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  color: var(--ink-secondary);
+  font-family: var(--type-mono-small-family);
+  font-size: var(--type-mono-small-size);
+  line-height: var(--type-mono-small-line);
+  user-select: text;
+}
+
+/* Badges never animate; the block keeps the rule explicit for every component. */
+@media (prefers-reduced-motion: reduce) {
+  .badge,
+  .count-pill,
+  .chip,
+  .kbd,
+  .mono {
+    transition-duration: 0s;
+    animation-duration: 0s;
+  }
+}
