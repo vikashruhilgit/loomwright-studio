@@ -30,6 +30,15 @@ export interface KeyLike {
   readonly altKey: boolean;
   readonly ctrlKey: boolean;
   readonly target: EventTarget | null;
+  /** True while an IME composition is in progress (DOM events only). */
+  readonly isComposing?: boolean;
+  /** 229 on the keydown an IME consumes (Safari/Chromium send it with or without `isComposing`). */
+  readonly keyCode?: number;
+}
+
+/** True when the key belongs to an IME composition (picking a candidate, committing it), never to the app. */
+export function isComposingKey(event: KeyLike): boolean {
+  return event.isComposing === true || event.keyCode === 229;
 }
 
 /** `⌘K` opens the palette; `⌘⇧K` is the kill switch. Never bound to a registered command. */
@@ -118,6 +127,8 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  * into a text field) is 0.
  */
 export function listMove(event: KeyLike): -1 | 0 | 1 {
+  // Arrows inside a composition move through the IME's candidates, not the list.
+  if (isComposingKey(event)) return 0;
   if (matches("↓", event)) return 1;
   if (matches("↑", event)) return -1;
   if (isEditableTarget(event.target)) return 0;
@@ -127,7 +138,11 @@ export function listMove(event: KeyLike): -1 | 0 | 1 {
 }
 
 export interface KillSwitch {
-  /** Opens the confirm; resolves `true` only when the user confirms. */
+  /**
+   * Opens the confirm; resolves `true` only when the user confirms. It must
+   * settle (resolve or reject) however the confirm goes away: while it is
+   * pending, ⌘K and every registry shortcut are held off.
+   */
   confirm(): Promise<boolean>;
   /** Stops everything. Called only after `confirm()` resolved `true`. */
   engage(): void | Promise<void>;
@@ -200,7 +215,8 @@ export function installKeyboardMap(options: KeyboardMapOptions): () => void {
 
   let confirmPending = false;
   const pressKillSwitch = async (): Promise<void> => {
-    // Dialogs never stack: a second press while the confirm is open does nothing.
+    // A second press while the confirm is open does nothing (the key handler also
+    // keeps ⌘K and every registry binding off while it is pending).
     if (confirmPending) return;
     confirmPending = true;
     try {
@@ -220,13 +236,21 @@ export function installKeyboardMap(options: KeyboardMapOptions): () => void {
     const reserved = RESERVED_SHORTCUTS.find((shortcut) => matches(shortcut, event));
     if (reserved !== undefined) {
       event.preventDefault();
-      if (reserved === OPEN_PALETTE) openPalette();
+      // Dialogs never stack: while the kill-switch confirm is pending, ⌘K opens nothing over it.
+      if (reserved === OPEN_PALETTE && !confirmPending) openPalette();
       else if (reserved === KILL_SWITCH) void pressKillSwitch();
       return;
     }
 
-    // A single-key shortcut (no modifier, or ⇧ alone) never fires into a text field or past the open palette.
+    // While the confirm is pending, no registry command runs behind it (`A` would
+    // approve, `⌘3` would navigate). The key is left alone, not prevented, so the
+    // confirm's own Tab, Enter, Space and Esc still work.
+    if (confirmPending) return;
+
+    // A single-key shortcut (no modifier, or ⇧ alone) never fires into a text
+    // field, past the open palette, or out of an IME composition.
     const singleKey = !event.metaKey && !event.altKey && !event.ctrlKey;
+    if (singleKey && isComposingKey(event)) return;
     if (singleKey && isEditableTarget(event.target)) return;
     if (singleKey && isPaletteOpen()) return;
 

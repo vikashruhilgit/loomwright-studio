@@ -180,6 +180,14 @@ test("keyboard only: run, open in inspector, registry shortcuts, kill switch", a
   await page.keyboard.press("Meta+3");
   await expect(page.getByTestId("last-run")).toHaveText("Last run: screens.approvals");
 
+  // A click on the footer or a group header leaves focus in the input, so Esc still closes.
+  await page.keyboard.press("Meta+K");
+  await p.shell.locator(".cp-footer").click();
+  await p.headers.first().click();
+  await expect(p.input).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(p.shell).toHaveCount(0);
+
   // ⌘⇧K: the confirm opens and nothing engages; Cancel never engages; confirming engages once.
   await page.keyboard.press("Meta+Shift+K");
   const confirm = page.getByRole("alertdialog", { name: "Stop every session?" });
@@ -187,6 +195,11 @@ test("keyboard only: run, open in inspector, registry shortcuts, kill switch", a
   await expect(page.getByTestId("engaged")).toHaveText("Engaged: 0");
   await page.keyboard.press("Meta+Shift+K");
   await expect(page.getByRole("alertdialog")).toHaveCount(1);
+  // Dialogs never stack: ⌘K opens no palette over the pending confirm, and no registry shortcut runs behind it.
+  await page.keyboard.press("Meta+K");
+  await page.keyboard.press("Meta+1");
+  await expect(p.shell).toHaveCount(0);
+  await expect(page.getByTestId("last-run")).toHaveText("Last run: screens.approvals");
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(confirm).toHaveCount(0);
   await expect(page.getByTestId("engaged")).toHaveText("Engaged: 0");

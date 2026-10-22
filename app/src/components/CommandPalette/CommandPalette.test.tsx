@@ -354,6 +354,56 @@ describe("the palette's keys and focus (AC5)", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("a mouse-down anywhere in the shell but the input never takes focus from the input", () => {
+    const { input, onClose } = setup([command("a1"), command("s1", { group: "Screens" })]);
+    const shell = screen.getByRole("combobox");
+    const regions = [
+      shell,
+      shell.querySelector(".cp-search"),
+      shell.querySelector(".cp-icon"),
+      shell.querySelector(".cp-search > .cp-kbd"),
+      shell.querySelector(".cp-list"),
+      shell.querySelector(".cp-group"),
+      shell.querySelector(".cp-footer"),
+      shell.querySelector(".cp-attribution"),
+    ];
+    for (const region of regions) {
+      expect(region).not.toBeNull();
+      // fireEvent returns false when a handler called preventDefault (so the browser moves no focus).
+      expect(fireEvent.mouseDown(region as Element)).toBe(false);
+    }
+    // The input itself keeps its default, so the caret and text selection still work.
+    expect(fireEvent.mouseDown(input)).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+    key(input, "Escape");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("the empty state never takes focus from the input either", () => {
+    const { input } = setup([command("a1")]);
+    type(input, "zzzz");
+    expect(fireEvent.mouseDown(screen.getByRole("status"))).toBe(false);
+  });
+
+  it("keys inside an IME composition belong to the IME: Enter runs nothing, Esc and arrows do nothing", async () => {
+    const a1 = command("a1");
+    const { input, onClose } = setup([a1, command("a2")]);
+    type(input, "a");
+    for (const ime of [{ isComposing: true }, { keyCode: 229 }]) {
+      for (const k of ["Enter", "Escape", "ArrowDown"]) fireEvent.keyDown(input, { key: k, ...ime });
+    }
+    await flush();
+    expect(a1.run).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(input.value).toBe("a");
+    expect(selected()?.dataset.commandId).toBe("a1");
+
+    // Composition over: Enter runs the selection.
+    key(input, "Enter");
+    await flush();
+    expect(a1.run).toHaveBeenCalledTimes(1);
+  });
+
   it("Tab keeps focus in the input (the palette's one tab stop)", () => {
     const { input } = setup([command("a1")]);
     const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
@@ -428,6 +478,29 @@ describe("CommandPaletteHost", () => {
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(kill.confirm).toHaveBeenCalledTimes(1);
     expect(kill.engage).not.toHaveBeenCalled();
+  });
+
+  it("⌘K while open puts focus back in the input, so Esc closes again", () => {
+    render(<CommandPaletteHost registry={createCommandRegistry()} killSwitch={killDouble()} />);
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    const input = screen.getByRole("textbox", { name: "Command" });
+    input.blur();
+    expect(document.activeElement).not.toBe(input);
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    expect(document.activeElement).toBe(input);
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.queryByRole("combobox")).toBeNull();
+  });
+
+  it("⌘K while the kill-switch confirm is pending opens no palette over it", async () => {
+    const kill = killDouble();
+    render(<CommandPaletteHost registry={createCommandRegistry()} killSwitch={kill} />);
+    fireEvent.keyDown(document.body, { key: "K", metaKey: true, shiftKey: true });
+    await act(async () => undefined);
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    await act(async () => undefined);
+    expect(kill.confirm).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("combobox")).toBeNull();
   });
 
   it("unmounting uninstalls the keyboard map", () => {

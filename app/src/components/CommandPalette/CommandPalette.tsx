@@ -19,6 +19,8 @@ export interface CommandPaletteProps {
   readonly onClose: () => void;
   /** `⌘Enter` on a row; without it, `⌘Enter` acts as `Enter`. */
   readonly onOpenInInspector?: (command: RegisteredCommand) => void;
+  /** Bump it to put focus back in the input of an already open palette (`⌘K` while open). */
+  readonly focusRequest?: number;
 }
 
 type Row =
@@ -57,7 +59,7 @@ export function CommandPalette(props: CommandPaletteProps) {
   return <PaletteBody {...props} closing={!props.open} onClosed={onClosed} />;
 }
 
-function PaletteBody({ registry, closing, onClose, onClosed, onOpenInInspector }: CommandPaletteProps & { closing: boolean; onClosed: () => void }) {
+function PaletteBody({ registry, closing, onClose, onClosed, onOpenInInspector, focusRequest }: CommandPaletteProps & { closing: boolean; onClosed: () => void }) {
   const uid = useId();
   const listId = `${uid}-list`;
   const inputRef = useRef<HTMLInputElement>(null);
@@ -87,6 +89,11 @@ function PaletteBody({ registry, closing, onClose, onClosed, onOpenInInspector }
   }, [closing, restoreFocus]);
   // Unmounted while still open (the parent went away): restore too.
   useLayoutEffect(() => restoreFocus, [restoreFocus]);
+  // `⌘K` while already open: focus back to the input, whatever had it.
+  useLayoutEffect(() => {
+    if (focusRequest !== undefined && !closing) inputRef.current?.focus();
+    // `closing` is read, not watched: only a new request refocuses.
+  }, [focusRequest]);
 
   // Close: fade out on `--duration-fast` (instant under reduced motion), then unmount.
   useLayoutEffect(() => {
@@ -148,6 +155,8 @@ function PaletteBody({ registry, closing, onClose, onClosed, onOpenInInspector }
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>): void => {
     if (closing) return;
+    // Keys inside an IME composition (Enter commits, Esc cancels, arrows pick a candidate) belong to the IME.
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     switch (event.key) {
       case "ArrowDown":
       case "ArrowUp":
@@ -187,6 +196,14 @@ function PaletteBody({ registry, closing, onClose, onClosed, onOpenInInspector }
     if (event.target === event.currentTarget) onClose();
   };
 
+  // The input owns every palette key (Esc, arrows, Enter), so a press anywhere
+  // else in the shell (a header, the footer, the icon, the empty state, list
+  // padding) must not take focus from it. A press on the input itself is left
+  // alone so the caret and text selection still work; clicks still fire.
+  const onShellMouseDown = (event: ReactMouseEvent<HTMLDivElement>): void => {
+    if (event.target !== inputRef.current) event.preventDefault();
+  };
+
   return (
     <div
       ref={overlayRef}
@@ -198,7 +215,7 @@ function PaletteBody({ registry, closing, onClose, onClosed, onOpenInInspector }
         if (closing && event.target === event.currentTarget) onClosed();
       }}
     >
-      <div className="cp-shell" role="combobox" aria-label="Command palette" aria-expanded="true" aria-haspopup="listbox">
+      <div className="cp-shell" role="combobox" aria-label="Command palette" aria-expanded="true" aria-haspopup="listbox" onMouseDown={onShellMouseDown}>
         <div className="cp-search">
           <svg className="cp-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <circle cx="11" cy="11" r="7" />
@@ -325,6 +342,7 @@ export interface CommandPaletteHostProps {
 /** The one element the shell mounts: owns the palette's open state and the global keyboard map. */
 export function CommandPaletteHost({ registry = commandRegistry, killSwitch, onOpenInInspector, keyTarget, onCollision }: CommandPaletteHostProps) {
   const [open, setOpen] = useState(false);
+  const [focusRequest, setFocusRequest] = useState(0);
   // Read by the key listener, so it flips in the same tick as the key, not on the next render.
   const openRef = useRef(false);
   const latest = useRef({ killSwitch, onCollision });
@@ -343,12 +361,15 @@ export function CommandPaletteHost({ registry = commandRegistry, killSwitch, onO
         registry,
         ...(keyTarget === undefined ? {} : { target: keyTarget }),
         openPalette: () => {
+          // Already open: ⌘K brings focus back to the input instead of doing nothing.
+          if (openRef.current) setFocusRequest((n) => n + 1);
           openRef.current = true;
           setOpen(true);
         },
         isPaletteOpen: () => openRef.current,
         killSwitch: {
-          // Dialogs never stack: the palette closes before the confirm opens.
+          // Dialogs never stack: the palette closes before the confirm opens, and
+          // the keyboard map opens no palette while the confirm is pending.
           confirm: () => {
             close();
             return latest.current.killSwitch.confirm();
@@ -360,5 +381,13 @@ export function CommandPaletteHost({ registry = commandRegistry, killSwitch, onO
     [registry, keyTarget, close],
   );
 
-  return <CommandPalette registry={registry} open={open} onClose={close} {...(onOpenInInspector === undefined ? {} : { onOpenInInspector })} />;
+  return (
+    <CommandPalette
+      registry={registry}
+      open={open}
+      onClose={close}
+      focusRequest={focusRequest}
+      {...(onOpenInInspector === undefined ? {} : { onOpenInInspector })}
+    />
+  );
 }

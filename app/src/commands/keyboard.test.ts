@@ -15,6 +15,8 @@ interface Mods {
   readonly altKey?: boolean;
   readonly ctrlKey?: boolean;
   readonly repeat?: boolean;
+  readonly isComposing?: boolean;
+  readonly keyCode?: number;
 }
 
 function press(key: string, mods: Mods = {}, target: EventTarget = document.body): KeyboardEvent {
@@ -139,6 +141,60 @@ describe("the keyboard map", () => {
     expect(confirm).toHaveBeenCalledTimes(2);
   });
 
+  it("while the confirm is pending, ⌘K opens no palette over it and no registry shortcut runs behind it", async () => {
+    const registry = createCommandRegistry();
+    const approve = command("approvals.approve-once", { shortcut: "A" });
+    const approvals = command("screens.approvals", { shortcut: "⌘3" });
+    registry.register("test", [approve, approvals]);
+    const { openPalette } = install(registry);
+    press("K", { metaKey: true, shiftKey: true });
+    await settle();
+    expect(dialogs()).toHaveLength(1);
+
+    // Focus sits on the confirm's button (not a text field), as with the real Dialog.
+    const stop = dialogs()[0]?.querySelector("button") as HTMLButtonElement;
+    stop.focus();
+    expect(press("k", { metaKey: true }, stop).defaultPrevented).toBe(true);
+    expect(openPalette).not.toHaveBeenCalled();
+    // The confirm keeps its own keys: nothing it needs is prevented.
+    expect(press("a", {}, stop).defaultPrevented).toBe(false);
+    press("3", { metaKey: true }, stop);
+    for (const k of ["Enter", " ", "Tab", "Escape"]) expect(press(k, {}, stop).defaultPrevented).toBe(false);
+    expect(approve.run).not.toHaveBeenCalled();
+    expect(approvals.run).not.toHaveBeenCalled();
+
+    // Answered: everything is live again.
+    answer("Cancel");
+    await settle();
+    press("k", { metaKey: true });
+    expect(openPalette).toHaveBeenCalledTimes(1);
+    press("a");
+    press("3", { metaKey: true });
+    expect(approve.run).toHaveBeenCalledTimes(1);
+    expect(approvals.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("a rejected confirm frees ⌘K and the registry shortcuts too", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const registry = createCommandRegistry();
+    const approve = command("approvals.approve-once", { shortcut: "A" });
+    registry.register("test", [approve]);
+    const openPalette = vi.fn();
+    uninstall = installKeyboardMap({
+      registry,
+      openPalette,
+      isPaletteOpen: () => false,
+      killSwitch: { confirm: () => Promise.reject(new Error("dialog crashed")), engage: vi.fn() },
+    });
+    press("K", { metaKey: true, shiftKey: true });
+    await settle();
+    press("k", { metaKey: true });
+    press("a");
+    expect(openPalette).toHaveBeenCalledTimes(1);
+    expect(approve.run).toHaveBeenCalledTimes(1);
+    error.mockRestore();
+  });
+
   it("a confirm that rejects (or resolves anything but true) engages nothing and frees the key", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const engage = vi.fn();
@@ -175,8 +231,11 @@ describe("the keyboard map", () => {
     expect(RESERVED_SHORTCUTS).toEqual(["⌘K", "⌘⇧K"]);
 
     press("K", { metaKey: true, shiftKey: true });
-    press("k", { metaKey: true });
     await settle();
+    // ⌘K opens nothing over a pending confirm, so answer it first.
+    answer("Cancel");
+    await settle();
+    press("k", { metaKey: true });
     expect(sneaky.run).not.toHaveBeenCalled();
     expect(palette.run).not.toHaveBeenCalled();
     expect(confirm).toHaveBeenCalledTimes(1);
@@ -284,6 +343,29 @@ describe("the keyboard map", () => {
     expect(approve.run).toHaveBeenCalledTimes(1);
   });
 
+  it("single-key shortcuts (Enter too) never fire out of an IME composition; modifier chords still do", () => {
+    const registry = createCommandRegistry();
+    const approve = command("approvals.approve-once", { shortcut: "A" });
+    const enter = command("list.open", { shortcut: "⏎" });
+    const approvals = command("screens.approvals", { shortcut: "⌘3" });
+    registry.register("test", [approve, enter, approvals]);
+    install(registry);
+    press("a", { isComposing: true });
+    press("Enter", { isComposing: true });
+    // Safari / Chromium: the keydown an IME consumes carries keyCode 229, sometimes without isComposing.
+    press("a", { keyCode: 229 });
+    press("Enter", { keyCode: 229 });
+    expect(approve.run).not.toHaveBeenCalled();
+    expect(enter.run).not.toHaveBeenCalled();
+    press("3", { metaKey: true, isComposing: true });
+    expect(approvals.run).toHaveBeenCalledTimes(1);
+
+    press("a");
+    press("Enter");
+    expect(approve.run).toHaveBeenCalledTimes(1);
+    expect(enter.run).toHaveBeenCalledTimes(1);
+  });
+
   it("colliding shortcut runs neither and reports", () => {
     const registry = createCommandRegistry();
     const first = command("approvals.deny", { shortcut: "D" });
@@ -374,6 +456,13 @@ describe("listMove", () => {
     expect(listMove(key("x"))).toBe(0);
     expect(listMove(key("J", { shiftKey: true }))).toBe(0);
     expect(listMove(key("j", { metaKey: true }))).toBe(0);
+  });
+
+  it("arrows inside an IME composition pick a candidate, not a row", () => {
+    const key = (k: string, mods: Mods = {}) => new KeyboardEvent("keydown", { key: k, ...mods });
+    expect(listMove(key("ArrowDown", { isComposing: true }))).toBe(0);
+    expect(listMove(key("ArrowUp", { keyCode: 229 }))).toBe(0);
+    expect(listMove(key("j", { isComposing: true }))).toBe(0);
   });
 
   it("J and K typed into a text field are text, not moves; arrows still move", () => {
