@@ -1,10 +1,10 @@
 # Phase 5 polish: app primitives, gallery evidence
 
-This is the evidence for phase 5 item 08, which built eight primitives under `app/src/components/<Name>/`: Button, Badge, Input, StatusDot, Dialog, List, Card and Toast. The 16 screenshots below show every state each component's `<Name>.states.tsx` exports, rendered in the real Electron renderer in light and dark mode. The **Owner findings** section lists every place where the build, a component README and its `preview.html` disagree. The design was not changed to resolve any of them; each one is yours to decide.
+This is the evidence for phase 5 item 08, which built eight primitives under `app/src/components/<Name>/`: Button, Badge, Input, StatusDot, Dialog, List, Card and Toast. The 16 screenshots below show every state each component's `<Name>.states.tsx` exports, rendered in the real Electron renderer in light and dark mode. The **Owner findings** section lists every place where the build, a component README and its `preview.html` disagree. The design was not changed to resolve any of them. Each one is yours to decide, except finding 9, a class-name collision that this item fixed in its own files.
 
 ## How the screenshots were produced
 
-The implementing agent ran these commands on 2026-10-22 at about 05:00 UTC, on macOS 26.6.2 (25G83), Apple Silicon (arm64), with Node v24.11.1, Electron 44.9.2 and Playwright 1.64.1. The branch was based on `ee1dee7` (the three component lanes merged). No human step was involved.
+The implementing agent ran these commands on 2026-10-22 at about 05:00 UTC, on macOS 26.6.2 (25G83), Apple Silicon (arm64), with Node v24.11.1, Electron 44.9.2 and Playwright 1.64.1. The branch was based on `ee1dee7` (the three component lanes merged). No human step was involved. The screenshots were regenerated the same way after the first review round's fixes, which made the List rows' verification time visible and loaded `app.css` in the gallery.
 
 ```
 cd app && npm ci && npm run build && PRIMITIVES_EVIDENCE=1 npm run e2e
@@ -24,6 +24,7 @@ Fonts differ between macOS and the ubuntu CI run, so the spec never pixel-diffs.
   - seven Tabs and seven Shift+Tabs each stay inside the dialog and cycle through all three controls;
   - Escape closes it and returns focus to the opener.
 - **AC3 (destructive confirm).** A destructive `confirm` focuses Cancel, ignores Escape, and returns focus to its opener when cancelled.
+- **Band vs the shell's `.band`.** The gallery loads the shell's `app.css`, as `main.tsx` does in the real app. Each Band state then has `0px` side margins and exactly its frame's width, and the shell's `.band` rule is confirmed to be on the page.
 - **AC9 (reduced motion).** The working dot's computed `animationName` is `status-breathe` normally and `none` under `prefers-reduced-motion: reduce`.
 
 I mutation-checked each behaviour test on a throwaway copy of the app, and each test failed against its mutation:
@@ -69,19 +70,17 @@ Each finding below was checked against the cited source line. None of them was r
 
    AC7 bans hex literals, so the build uses `color-mix(in srgb, <token> N%, transparent)`:
    - Button.css lines 91 and 105;
-   - List.css lines 54 and 162 (the second is the hover wash on Crew rows).
+   - List.css lines 54 and 154 (the second is the hover wash on Crew rows).
 
    The look is close but not identical, and the dark theme inherits the same mix. **Decide:** whether to add tokens for these washes.
 6. **Card meta row hairline.** [Card/README.md](../../../../design/design-system/components/Card/README.md) says "The meter is the only divider: no hairline above the meta row", and the build follows it. The `.meta` rule in [Card/preview.html](../../../../design/design-system/components/Card/preview.html) draws `border-top: 1px solid var(--hairline)`.
 7. **PR references read "PR 412", not "#412".** The previews write `#412`, `#398` and `#405` (for example the Badge chip "vikashruhilgit/loomwright #412", the List data rows and the Toast text). The component states write "PR 412", because AC7's hex-literal check (`/#[0-9a-fA-F]{3,8}\b/`) matches `#412` in a `.states.tsx` source file. Screens that render real PR numbers at run time are unaffected. **Decide:** whether the AC7 check should exempt text content.
-8. **Toast shows the verified time beside its dot (found by this gallery).**
-   - `Toast` renders its `StatusDot` with `hideLabel`. StatusDot still renders its `· verified 14:03` meta for a verified `ok`, so the toast reads "● · verified 14:03 **Playbook enabled.** …" (visible in both toast screenshots).
-   - [Toast/preview.html](../../../../design/design-system/components/Toast/preview.html) shows a bare dot followed by the bold clause.
-   - `List` hides the same meta inside its rows (`.list-status .status-meta` in List.css); `Toast` has no equivalent rule.
-   - **Decide:** either hide `.status-meta` inside `.toast` too, or confirm that a toast should name its verification time.
-9. **The shell's `.band` class collides with Toast's `Band` (found by this gallery).**
-   - `app/src/styles/app.css` (item 01) styles `.band` for the shell's kernel-unreachable band, with `margin: var(--space-3) var(--space-5) 0`.
-   - Toast's `Band` uses the same class name with `width: 100%`.
-   - Once a screen loads both stylesheets (`main.tsx` imports `app.css`), the shell rule cascades into every `Band`. The band then gains side margins on top of its full width and overflows the main column.
-   - The gallery deliberately does not load `app.css`. It mirrors only the shell's `box-sizing` and `:focus-visible` rules, so the Band screenshots show the component as built.
-   - **Decide:** rename one of the two classes, or migrate the shell band onto `Band`. Item 01 owns the shell band, so this item didn't touch it.
+8. **A verified `ok` shows its verification time in every StatusDot consumer (one rule, from AC5).**
+   - AC5 says a verified `ok` shows its verification time in its meta. StatusDot renders `· verified <time>` beside the dot, and List, Card and Toast now all leave it visible. List used to hide it visually inside data rows; that rule is gone.
+   - So a toast reads "● · verified 14:03 **Playbook enabled.** …", and a done List row shows "● · verified 14:02" before its subject (visible in the toast and list screenshots).
+   - [Toast/preview.html](../../../../design/design-system/components/Toast/preview.html) shows a bare dot followed by the bold clause, so the toast differs from its preview here.
+   - **Decide (optional):** whether AC5 should allow a consumer to show the time elsewhere, for example in the row's own meta line. If so, apply that rule to every consumer at once.
+9. **Toast's `Band` collided with the shell's `.band` class. Fixed in this item.**
+   - `app/src/styles/app.css` (item 01) styles `.band` for the shell's kernel-unreachable band, with `margin: var(--space-3) var(--space-5) 0`. `main.tsx` always loads it, so in the real app that rule would have added side margins to every `Band` on top of its `width: 100%`, and Toast.css's `.band` would have leaked into the shell band.
+   - The fix stays inside this item's files. Toast's classes are now `toast-band`, `toast-band-icon`, `toast-band-text` and `toast-band-action`. The shell band is unchanged.
+   - Two checks guard it. The gallery now loads `app.css`, and the e2e asserts the Band's margins and width with the shell rule on the page. A unit test in `Toast.test.tsx` fails if any component stylesheet shares a class name with `app.css`.

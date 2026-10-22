@@ -9,7 +9,7 @@
 // vitest's css-disable plugin turns `*.css?raw` into an empty string.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { List, type ListDataItem } from "./List";
 import { crewItems, dataItems, navItems, states } from "./List.states";
@@ -90,6 +90,14 @@ describe("List rows (AC1)", () => {
     expect(meta).toMatch(/color:\s*var\(--ink-tertiary\)/);
     expect(meta).toMatch(/font-size:\s*var\(--type-caption-size\)/);
     expect(meta).toMatch(/font-variant-numeric:\s*tabular-nums/);
+  });
+
+  it("a verified ok shows its verification time on screen beside the dot, as every StatusDot consumer does (AC5)", () => {
+    render(<List label="Sessions" items={dataItems} />);
+    const done = screen.getByRole("option", { name: "Mason · review PR 401" });
+    expect(done.querySelector(".list-status .status-meta")?.textContent).toBe("· verified 14:02");
+    // No rule in List.css hides StatusDot's meta (one rule for List, Card and Toast).
+    expect(css).not.toMatch(/\.status-meta/);
   });
 
   it("an unverified ok in a data row stays a guess: no dot", () => {
@@ -270,6 +278,49 @@ describe("List keyboard (AC4, AC8)", () => {
     expect(document.activeElement).toBe(team);
   });
 
+  it("removing the focused row moves focus to the row now at its index and selects it (uncontrolled); j keeps working", () => {
+    const items = sessions(4, "s");
+    const { rerender } = render(<List label="Sessions" items={items} defaultSelectedKey="s1" />);
+    act(() => screen.getByRole("option", { name: "Session s1" }).focus());
+    rerender(<List label="Sessions" items={items.filter((item) => item.key !== "s1")} defaultSelectedKey="s1" />);
+    const next = screen.getByRole("option", { name: "Session s2" });
+    expect(document.activeElement).toBe(next);
+    expect(next.getAttribute("aria-selected")).toBe("true");
+    expect(next.tabIndex).toBe(0);
+    fireEvent.keyDown(next, { key: "j" });
+    expect(document.activeElement).toBe(screen.getByRole("option", { name: "Session s3" }));
+  });
+
+  it("removing the focused last row moves focus to the new last row; a controlled List only moves focus", () => {
+    const onSelect = vi.fn();
+    const items = sessions(3, "s");
+    const { rerender } = render(<List label="Sessions" items={items} selectedKey="s2" onSelect={onSelect} />);
+    act(() => screen.getByRole("option", { name: "Session s2" }).focus());
+    rerender(<List label="Sessions" items={items.slice(0, 2)} selectedKey="s2" onSelect={onSelect} />);
+    expect(document.activeElement).toBe(screen.getByRole("option", { name: "Session s1" }));
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("removing a row never steals focus that is outside the list", () => {
+    const items = sessions(3, "s");
+    const { rerender } = render(
+      <>
+        <button type="button">Elsewhere</button>
+        <List label="Sessions" items={items} defaultSelectedKey="s1" />
+      </>,
+    );
+    act(() => screen.getByRole("option", { name: "Session s1" }).focus());
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    act(() => elsewhere.focus());
+    rerender(
+      <>
+        <button type="button">Elsewhere</button>
+        <List label="Sessions" items={items.filter((item) => item.key !== "s1")} defaultSelectedKey="s1" />
+      </>,
+    );
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
   it("shows the focus ring on the row on :focus-visible", () => {
     expect(ruleBody(css, ".list-row:focus-visible")).toMatch(/outline:\s*2px solid var\(--focus\)/);
   });
@@ -354,6 +405,24 @@ describe("List scroll anchoring (AC2, unit part)", () => {
     expect(list.scrollTop).toBe(120);
     rerender(<List label="Sessions" items={[...initial.map((item) => ({ ...item, meta: "running 0m 11s" })), ...sessions(3, "z")]} selectedKey="r5" />);
     expect(list.scrollTop).toBe(120);
+  });
+
+  it("a scroll event measures O(log n) rows, not every row", () => {
+    stubLayout();
+    const initial = sessions(512, "r");
+    const { container, rerender } = render(<List label="Sessions" items={initial} selectedKey="r0" />);
+    const list = container.querySelector<HTMLElement>(".list");
+    if (!list) throw new Error("no list");
+    const spy = vi.mocked(HTMLElement.prototype.getBoundingClientRect);
+    spy.mockClear();
+    list.scrollTop = 200 * ROW + 10;
+    fireEvent.scroll(list);
+    const rowReads = spy.mock.contexts.filter((el) => (el as HTMLElement).classList.contains("list-row")).length;
+    expect(rowReads).toBeGreaterThan(0);
+    expect(rowReads).toBeLessThanOrEqual(16);
+    // The search still found the right anchor: inserting above keeps the first visible row put.
+    rerender(<List label="Sessions" items={[...sessions(3, "n"), ...initial]} selectedKey="r0" />);
+    expect(list.scrollTop).toBe(203 * ROW + 10);
   });
 
   it("native overflow-anchor is off so the List's own anchoring is the only one", () => {

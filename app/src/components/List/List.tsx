@@ -21,6 +21,11 @@
 // removed) and, when rows were inserted or removed above it, adds the
 // anchor's shift to `scrollTop`, so nothing visible moves. Chromium's
 // native `overflow-anchor` is off (List.css) so this effect is the one owner.
+// The first visible row is found by binary search over the rows in DOM order
+// (their tops only grow), so a scroll event costs O(log n) layout reads.
+//
+// Focus never falls to <body>: when the focused row is removed, focus moves to
+// the row now at its index (or the last row), and an uncontrolled List selects it.
 //
 // `loading` renders skeleton rows at the real row height on `surface-sunken`
 // (never a spinner), so nothing shifts when data lands. `emptyText` is shown
@@ -29,6 +34,7 @@
 // change text only: every line is a single ellipsised line at a fixed height.
 import {
   type CSSProperties,
+  type FocusEvent,
   type KeyboardEvent,
   type ReactNode,
   useCallback,
@@ -141,6 +147,10 @@ export function List<T extends ListItem>({
   /** The anchor first, then the first visible row as a fallback if the anchor row is removed. */
   const anchorRef = useRef<readonly Anchor[]>([]);
   const prevSelectedRef = useRef<string | null>(null);
+  /** The row that holds focus, while focus is inside the listbox. */
+  const focusedKeyRef = useRef<string | null>(null);
+  /** The row keys in order at the last commit, to find a removed row's index. */
+  const prevKeysRef = useRef<readonly string[]>([]);
 
   const controlled = selectedKey !== undefined;
   const [innerSelected, setInnerSelected] = useState<string | null>(defaultSelectedKey);
@@ -163,9 +173,22 @@ export function List<T extends ListItem>({
       return rect.bottom > view.top && rect.top < view.bottom;
     };
     const selectedRow = current === null ? undefined : rowRefs.current.get(current);
-    const firstVisible = Array.from(rowRefs.current.values())
-      .filter(visible)
-      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
+    // Rows are stacked in DOM order, so the first whose bottom is below the
+    // viewport's top is found by binary search.
+    const rows = listboxRef.current?.children;
+    let firstVisible: HTMLElement | undefined;
+    if (rows && rows.length > 0) {
+      let lo = 0;
+      let hi = rows.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        const row = rows[mid];
+        if (row && row.getBoundingClientRect().bottom > view.top) hi = mid;
+        else lo = mid + 1;
+      }
+      const row = rows[lo];
+      if (row instanceof HTMLElement && visible(row)) firstVisible = row;
+    }
     const candidates = selectedRow && visible(selectedRow) ? [selectedRow, firstVisible] : [firstVisible];
     const anchors: Anchor[] = [];
     for (const row of candidates) {
@@ -195,9 +218,36 @@ export function List<T extends ListItem>({
       const row = current === null ? undefined : rowRefs.current.get(current);
       if (row && listboxRef.current?.contains(document.activeElement) && document.activeElement !== row) row.focus();
     }
-    // 3. Record the anchor for the next commit.
+    // 3. Focus never falls to <body>: if the focused row was removed, focus the
+    //    row now at its index (or the last), and select it when uncontrolled.
+    const focusedKey = focusedKeyRef.current;
+    if (focusedKey !== null && !rowRefs.current.has(focusedKey)) {
+      focusedKeyRef.current = null;
+      const lost = document.activeElement === null || document.activeElement === document.body;
+      const index = prevKeysRef.current.indexOf(focusedKey);
+      const target = lost && index >= 0 && items.length > 0 ? items[Math.min(index, items.length - 1)] : undefined;
+      const row = target ? rowRefs.current.get(target.key) : undefined;
+      if (target && row) {
+        row.focus();
+        if (!controlled && target.key !== current) select(target);
+      }
+    }
+    prevKeysRef.current = items.map((item) => item.key);
+    // 4. Record the anchor for the next commit.
     anchorRef.current = measureAnchor();
   });
+
+  const onFocus = (event: FocusEvent<HTMLDivElement>) => {
+    focusedKeyRef.current = (event.target as HTMLElement).closest<HTMLElement>("[data-key]")?.dataset.key ?? null;
+  };
+  const onBlur = (event: FocusEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    // A row removed while focused may blur on its way out; keep its key so the
+    // layout effect can re-home focus.
+    const key = focusedKeyRef.current;
+    if (key !== null && !rowRefs.current.has(key)) return;
+    focusedKeyRef.current = null;
+  };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // Cmd/Ctrl/Alt chords belong to the app (Cmd+K is the palette).
@@ -267,7 +317,7 @@ export function List<T extends ListItem>({
     body = <p className="list-empty">{emptyText}</p>;
   } else {
     body = (
-      <div ref={listboxRef} className="list-rows" role="listbox" aria-label={label} onKeyDown={onKeyDown}>
+      <div ref={listboxRef} className="list-rows" role="listbox" aria-label={label} onKeyDown={onKeyDown} onFocus={onFocus} onBlur={onBlur}>
         {items.map((item, index) => {
           const selected = item.key === current;
           const id = `${idBase}-${index}`;

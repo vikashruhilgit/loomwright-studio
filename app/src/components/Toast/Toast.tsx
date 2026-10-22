@@ -7,17 +7,23 @@
 //   a control inside it, pauses the countdown and leaving resumes the remaining
 //   time. `duration={null}` turns auto-dismiss off (gallery states). Dismissing
 //   (timer or ×) plays the `duration-fast` leave, then calls `onDismiss`.
+//   A toast that holds focus when it is dismissed or removed hands focus on
+//   first (the adjacent toast's dismiss, else wherever focus came from), so a
+//   keyboard user is never dropped onto <body>.
 //   Never a toast for something that needs a decision: that is an approval.
 // - `ToastStack` places toasts bottom-right with `position: fixed`, so a toast
 //   arriving or leaving never moves the main content. Put it inside a
 //   transformed main column to anchor it there instead of the window. It shows
 //   at most `MAX_VISIBLE_TOASTS` (the newest); older ones collapse into an
-//   "N earlier" line and wait, timer not running, until a slot frees.
+//   "N earlier" line and wait, timer not running, until a slot frees. The
+//   stack itself is the persistent polite live region: a toast inserted into
+//   it is announced as an addition, while each toast keeps `role="status"`
+//   with `aria-live="off"`, so it is not announced twice.
 // - `Band` is persistent, full width at the top of the main column on a
 //   `*-soft` ground: `danger` (kernel unreachable, `role="alert"`), `parked`
 //   (paused at cap) and `attention` (approvals waiting). It has no timer; it
 //   leaves when the caller's condition clears.
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type ReactNode } from "react";
 import { StatusDot, type StatusDotProps } from "../StatusDot/StatusDot";
 import "./Toast.css";
 
@@ -42,6 +48,37 @@ export interface ToastProps {
   readonly dismissLabel?: string;
   /** Auto-dismiss delay in ms; `null` turns auto-dismiss off. */
   readonly duration?: number | null;
+  /**
+   * Set by ToastStack: the stack is the live region, so the toast's own
+   * `role="status"` is silenced (`aria-live="off"`) to avoid a double announcement.
+   */
+  readonly inLiveRegion?: boolean;
+}
+
+/**
+ * Each focused toast's origin (where focus was before it entered the stack), so
+ * a toast that receives focus from a leaving sibling inherits that origin.
+ */
+const focusOrigins = new WeakMap<HTMLElement, HTMLElement>();
+
+/**
+ * Moves focus out of `toast` before it leaves the DOM: to the adjacent open
+ * toast's dismiss (the next newer, else the next older), else to `returnTo`
+ * (where focus was before it entered the toast) when that is still in the page.
+ */
+function handOffFocus(toast: HTMLElement, returnTo: HTMLElement | null): void {
+  const isOpenToast = (el: Element | null): el is HTMLElement =>
+    el instanceof HTMLElement && el.classList.contains("toast") && el.dataset.state !== "leaving";
+  let next: Element | null = toast.nextElementSibling;
+  while (next && !isOpenToast(next)) next = next.nextElementSibling;
+  let prev: Element | null = toast.previousElementSibling;
+  while (prev && !isOpenToast(prev)) prev = prev.previousElementSibling;
+  const sibling = (next ?? prev)?.querySelector<HTMLElement>(".toast-dismiss");
+  if (sibling) {
+    sibling.focus();
+    return;
+  }
+  if (returnTo?.isConnected && !toast.contains(returnTo)) returnTo.focus();
 }
 
 /** The longest computed animation duration of `el`, in ms (0 when none, as in jsdom). */
@@ -57,9 +94,22 @@ function animationMs(el: HTMLElement | null): number {
     }, 0);
 }
 
-export function Toast({ status, title, body, action, onDismiss, dismissLabel = "Dismiss", duration = TOAST_DURATION_MS }: ToastProps) {
+export function Toast({
+  status,
+  title,
+  body,
+  action,
+  onDismiss,
+  dismissLabel = "Dismiss",
+  duration = TOAST_DURATION_MS,
+  inLiveRegion = false,
+}: ToastProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [leaving, setLeaving] = useState(false);
+  // Read by event handlers, which may run before the `leaving` render commits.
+  const leavingRef = useRef(false);
+  /** Where focus was before it entered this toast. */
+  const returnToRef = useRef<HTMLElement | null>(null);
   const onDismissRef = useRef(onDismiss);
   useEffect(() => {
     onDismissRef.current = onDismiss;
@@ -79,6 +129,9 @@ export function Toast({ status, title, body, action, onDismiss, dismissLabel = "
   };
   const leave = useCallback(() => {
     clear();
+    leavingRef.current = true;
+    const el = ref.current;
+    if (el?.contains(document.activeElement)) handOffFocus(el, returnToRef.current);
     setLeaving(true);
   }, []);
   const start = useCallback(() => {
@@ -92,7 +145,7 @@ export function Toast({ status, title, body, action, onDismiss, dismissLabel = "
     remaining.current -= Date.now() - startedAt.current;
   };
   const resume = () => {
-    if (duration === null || leaving || hovered.current || focused.current) return;
+    if (duration === null || leavingRef.current || hovered.current || focused.current) return;
     start();
   };
 
@@ -102,6 +155,17 @@ export function Toast({ status, title, body, action, onDismiss, dismissLabel = "
     if (!hovered.current && !focused.current) start();
     return clear;
   }, [duration, start]);
+
+  // Removed by the caller while holding focus (an action that drops the toast,
+  // or the stack collapsing it): hand focus on. Layout cleanups run during the
+  // commit while the node is still attached; after a hand-off from `leave`
+  // focus is already elsewhere and this is a no-op.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    return () => {
+      if (el?.contains(document.activeElement)) handOffFocus(el, returnToRef.current);
+    };
+  }, []);
 
   // Leave: play the duration-fast exit, then hand the toast back to the caller.
   useEffect(() => {
@@ -120,6 +184,7 @@ export function Toast({ status, title, body, action, onDismiss, dismissLabel = "
       ref={ref}
       className="toast"
       role="status"
+      aria-live={inLiveRegion ? "off" : undefined}
       data-state={leaving ? "leaving" : "open"}
       data-auto-dismiss={duration === null ? "off" : "on"}
       onMouseEnter={() => {
@@ -130,7 +195,15 @@ export function Toast({ status, title, body, action, onDismiss, dismissLabel = "
         hovered.current = false;
         resume();
       }}
-      onFocus={() => {
+      onFocus={(event: FocusEvent<HTMLDivElement>) => {
+        const from = event.relatedTarget;
+        if (from instanceof HTMLElement && !event.currentTarget.contains(from)) {
+          const fromToast = from.closest(".toast");
+          const origin = fromToast instanceof HTMLElement ? (focusOrigins.get(fromToast) ?? null) : from;
+          returnToRef.current = origin;
+          if (origin) focusOrigins.set(event.currentTarget, origin);
+          else focusOrigins.delete(event.currentTarget);
+        }
         focused.current = true;
         pause();
       }}
@@ -175,10 +248,10 @@ export function ToastStack({ toasts, onDismiss, duration = TOAST_DURATION_MS, la
   const collapsed = Math.max(0, toasts.length - MAX_VISIBLE_TOASTS);
   const visible = toasts.slice(collapsed);
   return (
-    <section className="toast-stack" aria-label={label}>
+    <section className="toast-stack" aria-label={label} aria-live="polite" aria-relevant="additions">
       {collapsed > 0 ? <div className="toast-collapsed">{collapsed} earlier</div> : null}
       {visible.map(({ id, ...toast }) => (
-        <Toast key={id} {...toast} duration={duration} onDismiss={() => onDismiss(id)} />
+        <Toast key={id} {...toast} duration={duration} inLiveRegion onDismiss={() => onDismiss(id)} />
       ))}
     </section>
   );
@@ -219,15 +292,15 @@ const DEFAULT_BAND_ICONS: Readonly<Record<BandTone, (() => ReactNode) | undefine
 export function Band({ tone, children, icon, action }: BandProps) {
   const glyph = icon ?? DEFAULT_BAND_ICONS[tone]?.();
   return (
-    <div className="band" data-tone={tone} role={tone === "danger" ? "alert" : "status"}>
+    <div className="toast-band" data-tone={tone} role={tone === "danger" ? "alert" : "status"}>
       {glyph ? (
-        <span className="band-icon" aria-hidden="true">
+        <span className="toast-band-icon" aria-hidden="true">
           {glyph}
         </span>
       ) : null}
-      <span className="band-text">{children}</span>
+      <span className="toast-band-text">{children}</span>
       {action ? (
-        <button type="button" className="band-action" onClick={action.onAction}>
+        <button type="button" className="toast-band-action" onClick={action.onAction}>
           {action.label}
         </button>
       ) : null}

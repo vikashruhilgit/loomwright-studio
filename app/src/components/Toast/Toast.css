@@ -87,12 +87,12 @@
 }
 .toast-action:focus-visible,
 .toast-dismiss:focus-visible,
-.band-action:focus-visible {
+.toast-band-action:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
-.band {
+.toast-band {
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -104,31 +104,31 @@
   font-size: var(--type-body-size);
   line-height: var(--type-body-line);
 }
-.band[data-tone="danger"] {
+.toast-band[data-tone="danger"] {
   background: var(--danger-soft);
   color: var(--danger);
 }
-.band[data-tone="parked"] {
+.toast-band[data-tone="parked"] {
   background: var(--parked-soft);
   color: var(--parked);
 }
-.band[data-tone="attention"] {
+.toast-band[data-tone="attention"] {
   background: var(--attention-soft);
   color: var(--attention);
 }
-.band-icon {
+.toast-band-icon {
   display: inline-flex;
   flex: none;
 }
-.band-icon svg {
+.toast-band-icon svg {
   width: 14px;
   height: 14px;
 }
-.band-text {
+.toast-band-text {
   flex: 1;
   min-width: 0;
 }
-.band-action {
+.toast-band-action {
   flex: none;
   margin: 0 0 0 auto;
   padding: 0;
@@ -177,7 +177,7 @@
   }
   .toast-action,
   .toast-dismiss,
-  .band-action {
+  .toast-band-action {
     transition-duration: 0s;
   }
 }

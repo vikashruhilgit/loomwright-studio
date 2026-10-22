@@ -107,15 +107,7 @@
   display: inline-flex;
   min-width: 8px;
 }
-/* A verified ok's time stays in the accessibility tree; the row's meta line shows the time on screen. */
-.list-status .status-meta {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
+/* A verified ok shows StatusDot's "· verified <time>" meta beside the dot, as in every StatusDot consumer (AC5). */
 .list-text {
   display: flex;
   flex-direction: column;

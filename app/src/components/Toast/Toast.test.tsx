@@ -8,9 +8,11 @@
 // and reduced-motion rules (AC7, AC9). The limits are asserted as the literals
 // 3 and 6000, never by importing the constants, so changing a constant fails
 // here. CSS is read with readFileSync, never `?raw` (vitest empties `*.css?raw`).
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Band, Toast, ToastStack, type ToastItem } from "./Toast";
 import { states } from "./Toast.states";
@@ -72,6 +74,14 @@ describe("Toast (AC1)", () => {
     const toast = screen.getByRole("status");
     expect(toast.querySelectorAll("button")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeTruthy();
+  });
+
+  it("a verified ok shows its verification time beside the dot, the same rule as List and Card (AC5)", () => {
+    render(<Toast duration={null} status={{ state: "ok", label: "enabled", verified: { at: "14:03" } }} title="Playbook enabled." onDismiss={() => {}} />);
+    const toast = screen.getByRole("status");
+    expect(toast.querySelector(".status-dot[data-state='ok']")).toBeTruthy();
+    expect(toast.querySelector(".status-meta")?.textContent).toBe("· verified 14:03");
+    expect(css).not.toMatch(/\.status-meta/);
   });
 
   it("an unverified ok shows the honest guess form, not an ok dot", () => {
@@ -204,6 +214,18 @@ describe("ToastStack (AC6)", () => {
     expect(screen.getByText("Session 1 stopped.")).toBeTruthy();
   });
 
+  it("is the persistent polite live region; each toast stays role=status but is silenced inside it", () => {
+    const { rerender } = render(<ToastStack duration={null} toasts={[]} onDismiss={() => {}} />);
+    const stack = screen.getByRole("region", { name: "Notifications" });
+    expect(stack.getAttribute("aria-live")).toBe("polite");
+    expect(stack.getAttribute("aria-relevant")).toBe("additions");
+    rerender(<ToastStack duration={null} toasts={[item(1)]} onDismiss={() => {}} />);
+    // Same node: the region existed before the toast arrived, so the arrival is announced.
+    expect(screen.getByRole("region", { name: "Notifications" })).toBe(stack);
+    const toast = screen.getByRole("status");
+    expect(toast.getAttribute("aria-live")).toBe("off");
+  });
+
   it("is a named region positioned fixed bottom-right, so toasts never move the main content", () => {
     render(<ToastStack toasts={[]} onDismiss={() => {}} />);
     expect(screen.getByRole("region", { name: "Notifications" })).toBeTruthy();
@@ -229,11 +251,11 @@ describe("Band (AC1)", () => {
     expect(screen.getByRole("alert").textContent).toContain("Couldn't reach the kernel.");
     expect(screen.getAllByRole("status").map((band) => band.getAttribute("data-tone"))).toEqual(["parked", "attention"]);
     for (const tone of ["danger", "parked", "attention"]) {
-      const body = rule(`.band[data-tone="${tone}"]`);
+      const body = rule(`.toast-band[data-tone="${tone}"]`);
       expect(body).toMatch(new RegExp(`background:\\s*var\\(--${tone}-soft\\)`));
       expect(body).toMatch(new RegExp(`color:\\s*var\\(--${tone}\\)`));
     }
-    expect(rule(".band")).toMatch(/width:\s*100%/);
+    expect(rule(".toast-band")).toMatch(/width:\s*100%/);
     expect(screen.getByRole("button", { name: "Kernel log" })).toBeTruthy();
   });
 
@@ -261,7 +283,97 @@ describe("Toast keyboard (AC8)", () => {
       expect(button.type).toBe("button");
       expect(button.tabIndex).toBe(0);
     }
-    expect(css).toMatch(/\.toast-action:focus-visible,\s*\.toast-dismiss:focus-visible,\s*\.band-action:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus\)/);
+    expect(css).toMatch(/\.toast-action:focus-visible,\s*\.toast-dismiss:focus-visible,\s*\.toast-band-action:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus\)/);
+  });
+});
+
+describe("Toast focus hand-off (AC8)", () => {
+  function Stack({ initial, onAction }: { readonly initial: readonly ToastItem[]; readonly onAction?: (id: string) => void }) {
+    const [toasts, setToasts] = useState<readonly ToastItem[]>(initial);
+    const drop = (id: string) => setToasts((prev) => prev.filter((toast) => toast.id !== id));
+    return (
+      <>
+        <button type="button">Origin</button>
+        <ToastStack
+          duration={null}
+          toasts={toasts.map((toast) =>
+            onAction ? { ...toast, action: { label: `Undo ${toast.id}`, onAction: () => (onAction(toast.id), drop(toast.id)) } } : toast,
+          )}
+          onDismiss={drop}
+        />
+      </>
+    );
+  }
+
+  it("dismissing the focused toast with the keyboard focuses the adjacent toast's dismiss, never <body>", () => {
+    render(<Stack initial={[item(1), item(2)]} />);
+    const [first, second] = screen.getAllByRole("button", { name: "Dismiss" });
+    if (!first || !second) throw new Error("two dismiss buttons");
+    act(() => second.focus());
+    fireEvent.keyDown(second, { key: "Enter" });
+    fireEvent.click(second);
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(document.activeElement).toBe(first);
+  });
+
+  it("dismissing the last focused toast returns focus to where it came from", () => {
+    render(<Stack initial={[item(1)]} />);
+    const origin = screen.getByRole("button", { name: "Origin" });
+    act(() => origin.focus());
+    const dismiss = screen.getByRole("button", { name: "Dismiss" });
+    act(() => dismiss.focus());
+    fireEvent.click(dismiss);
+    expect(screen.queryAllByRole("status")).toHaveLength(0);
+    expect(document.activeElement).toBe(origin);
+  });
+
+  it("the origin survives a chain: dismissing two toasts in turn ends back at the origin", () => {
+    render(<Stack initial={[item(1), item(2)]} />);
+    const origin = screen.getByRole("button", { name: "Origin" });
+    act(() => origin.focus());
+    const second = screen.getAllByRole("button", { name: "Dismiss" })[1];
+    if (!second) throw new Error("second dismiss");
+    act(() => second.focus());
+    fireEvent.click(second);
+    const remaining = screen.getByRole("button", { name: "Dismiss" });
+    expect(document.activeElement).toBe(remaining);
+    fireEvent.click(remaining);
+    expect(document.activeElement).toBe(origin);
+  });
+
+  it("a toast the caller removes while it holds focus (its action) hands focus on too", () => {
+    const onAction = vi.fn();
+    render(<Stack initial={[item(1), item(2)]} onAction={onAction} />);
+    const undo = screen.getByRole("button", { name: "Undo t2" });
+    act(() => undo.focus());
+    fireEvent.click(undo);
+    expect(onAction).toHaveBeenCalledWith("t2");
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Dismiss" }));
+  });
+
+  it("calls onDismiss exactly once when the hand-off moves focus away mid-leave", () => {
+    vi.useFakeTimers();
+    const computed = window.getComputedStyle.bind(window);
+    const spy = vi.spyOn(window, "getComputedStyle").mockImplementation((el) => {
+      const style = computed(el);
+      return { ...style, getPropertyValue: (p: string) => (p === "animation-duration" ? "0.12s" : style.getPropertyValue(p)) } as CSSStyleDeclaration;
+    });
+    const onDismiss = vi.fn();
+    render(
+      <>
+        <Toast status={{ state: "idle" }} title="One." onDismiss={() => {}} />
+        <Toast status={{ state: "idle" }} title="Two." onDismiss={onDismiss} />
+      </>,
+    );
+    const second = screen.getAllByRole("button", { name: "Dismiss" })[1];
+    if (!second) throw new Error("second dismiss");
+    act(() => second.focus());
+    fireEvent.click(second);
+    // Focus left the leaving toast; its blur must not restart the 6 s timer.
+    advance(6000 * 3);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 });
 
@@ -289,6 +401,24 @@ describe("Toast gallery states (containment)", () => {
       }
       unmount();
     }
+  });
+});
+
+describe("component CSS vs the shell's app.css", () => {
+  // Every component's classes carry its own prefix; none may reuse a class the
+  // shell's global stylesheet styles (Toast's Band once used `.band`).
+  const classesOf = (source: string) => new Set(Array.from(source.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/\.([a-zA-Z][\w-]*)/g), (m) => m[1]));
+  const shell = classesOf(read("../../styles/app.css"));
+  const dirs = readdirSync(join(dirname(fileURLToPath(import.meta.url)), ".."), { withFileTypes: true }).filter((entry) => entry.isDirectory());
+
+  it("finds the shell's classes and every component stylesheet", () => {
+    expect(shell.has("band")).toBe(true);
+    expect(dirs.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it.each(dirs.map((entry) => entry.name))("%s.css shares no class with app.css", (name) => {
+    const own = classesOf(read(`../${name}/${name}.css`));
+    expect([...own].filter((cls) => shell.has(cls))).toEqual([]);
   });
 });
 
