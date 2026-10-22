@@ -1,0 +1,165 @@
+/* EventCard, from docs/design/design-system/components/EventCard/{README.md,preview.html}. Colours come only from tokens.css. */
+
+/* Event line: centred, caption-sized, ink-tertiary, subject in ink-secondary 500, tabular timestamp. */
+.eventcard-event {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  max-width: 600px;
+  margin: 0 auto;
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  color: var(--ink-tertiary);
+}
+.eventcard-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.eventcard-subject {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  font: inherit;
+  font-weight: 500;
+  color: var(--ink-secondary);
+  text-align: inherit;
+  cursor: pointer;
+}
+.eventcard-subject:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+.eventcard-mono {
+  font-family: var(--type-mono-small-family);
+  font-size: var(--type-mono-small-size);
+  font-weight: var(--type-mono-small-weight);
+}
+.eventcard-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.eventcard-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Inline approval: attention edge, attention-soft header, summary, reason, the inbox's actions. */
+.eventcard-approval {
+  max-width: 560px;
+  overflow: hidden;
+  border: 1px solid var(--attention);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+.eventcard-approval-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--attention-soft);
+  color: var(--attention);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.eventcard-approval-body {
+  padding: 10px var(--space-3);
+  color: var(--ink-secondary);
+  overflow-wrap: anywhere;
+}
+.eventcard-approval-summary {
+  margin: 0 0 6px;
+  color: var(--ink);
+}
+.eventcard-approval-reason {
+  margin: 0;
+}
+.eventcard-approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--hairline);
+}
+.eventcard-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--type-caption-size);
+  font-weight: 500;
+  cursor: pointer;
+}
+.eventcard-btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.eventcard-btn-primary:hover {
+  background: var(--accent-hover);
+}
+.eventcard-btn-secondary {
+  border-color: var(--border);
+}
+.eventcard-btn-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.eventcard-btn-ghost {
+  margin-left: auto;
+  color: var(--ink-secondary);
+}
+.eventcard-btn-secondary:hover,
+.eventcard-btn-danger:hover,
+.eventcard-btn-ghost:hover {
+  background: var(--surface-sunken);
+}
+.eventcard-kbd {
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--on-accent) 20%, transparent);
+  font-family: var(--type-kbd-family);
+  font-size: var(--type-kbd-size);
+  line-height: var(--type-kbd-line);
+  font-weight: var(--type-kbd-weight);
+}
+.eventcard-btn-secondary .eventcard-kbd,
+.eventcard-btn-danger .eventcard-kbd {
+  background: var(--surface-sunken);
+  color: var(--ink-tertiary);
+}
+
+/* Focus ring: `focus`, 2px solid, 2px offset, never removed (brand book). */
+.eventcard-subject:focus-visible,
+.eventcard-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Hover feedback eases in only when the user allows motion; under reduced motion nothing moves. */
+@media (prefers-reduced-motion: no-preference) {
+  .eventcard-subject,
+  .eventcard-btn {
+    transition:
+      background-color var(--duration-instant) var(--ease-standard),
+      color var(--duration-instant) var(--ease-standard);
+  }
+}
