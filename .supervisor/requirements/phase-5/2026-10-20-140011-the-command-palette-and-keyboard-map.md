@@ -76,3 +76,9 @@ app/src/commands/keyboard.ts
 app/src/commands/keyboard.test.ts
 app/e2e/components.palette.spec.ts
 docs/evidence/phase-5-polish/components/palette/
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-22T06:51:42Z
+- **Brief:** .supervisor/jobs/done/2026-10-22-command-palette-and-keyboard-map.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/111
