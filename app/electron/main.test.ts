@@ -86,6 +86,15 @@ vi.mock("electron", () => {
         },
       },
     },
+    Tray: class {
+      setImage(): void {}
+      setTitle(): void {}
+      setToolTip(): void {}
+      setContextMenu(): void {}
+    },
+    Menu: { buildFromTemplate: (template: unknown) => ({ template }) },
+    nativeImage: { createFromBitmap: () => ({}) },
+    dialog: { showMessageBox: async () => ({ response: 0 }) },
   };
 });
 

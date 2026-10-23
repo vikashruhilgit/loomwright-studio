@@ -60,6 +60,15 @@ export const APPROVAL_COMMANDS = {
 
 export const EMPTY_TITLE = "Nothing waiting on you.";
 
+const APPROVAL_ROUTE = /^#\/approvals\/([1-9][0-9]{0,15})$/;
+
+/** The approval a `#/approvals/<id>` route names (a notification link, item 17), or `undefined`. */
+export function approvalIdFromHash(hash: string): number | undefined {
+  const match = APPROVAL_ROUTE.exec(hash);
+  const id = match === null ? Number.NaN : Number(match[1]);
+  return Number.isSafeInteger(id) ? id : undefined;
+}
+
 type Decision = "once" | "always" | "deny";
 
 /** A line beside the decision buttons: the kernel's refusal, or why nothing was sent. */
@@ -257,6 +266,17 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
   useEffect(() => {
     if (selectedId === null && selected !== undefined) setSelectedId(selected.id);
   }, [selected, selectedId]);
+  // A `#/approvals/<id>` route (a notification link) selects that approval, on mount and on each hashchange.
+  // Selection only: nothing is decided, and an id not in the list takes the gone path above.
+  useEffect(() => {
+    const selectFromHash = (): void => {
+      const id = approvalIdFromHash(window.location.hash);
+      if (id !== undefined) setSelectedId(id);
+    };
+    selectFromHash();
+    window.addEventListener("hashchange", selectFromHash);
+    return () => window.removeEventListener("hashchange", selectFromHash);
+  }, []);
   useLayoutEffect(() => {
     if (selected !== undefined) lastShown.current = selected;
   });

@@ -1,0 +1,149 @@
+/* The menu bar's status panel: docs/design/mockups/gui-v1.html .mbmenu (the menu-bar dropdown), rendered in the window. Colour, type, spacing and widths come only from tokens.css custom properties. */
+.menubar {
+  display: flex;
+  align-items: flex-start;
+  height: 100%;
+  min-height: 0;
+  padding: var(--space-6);
+  overflow: auto;
+}
+
+.menubar-card {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, var(--list-pane-width));
+  padding: var(--space-1);
+  background: var(--surface-raised);
+  color: var(--ink);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+}
+.menubar-card:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.menubar-card:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.menubar-heading {
+  margin: 0;
+  padding: var(--space-2) var(--space-3) 0;
+  color: var(--ink-tertiary);
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+}
+
+.menubar-status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--type-body-strong-size);
+  line-height: var(--type-body-strong-line);
+  font-weight: var(--type-body-strong-weight);
+}
+
+.menubar-meta,
+.menubar-note {
+  margin: 0;
+  color: var(--ink-tertiary);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-weight: var(--type-caption-weight);
+  letter-spacing: var(--type-caption-tracking);
+  font-variant-numeric: tabular-nums;
+}
+.menubar-note {
+  padding: var(--space-1) var(--space-3) var(--space-2);
+}
+
+.menubar-rule {
+  margin: var(--space-1) 0;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+}
+
+/* The mockup's .mbmenu .it rows: full width, left aligned, the row height. */
+.menubar-actions {
+  display: flex;
+  flex-direction: column;
+}
+.btn.menubar-item {
+  justify-content: flex-start;
+  width: 100%;
+  height: var(--row-height);
+  padding: 0 var(--space-3);
+  color: var(--ink);
+  font-weight: var(--type-body-weight);
+}
+.btn.menubar-item:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.btn.menubar-item[data-tone="danger"]:not(:disabled) {
+  color: var(--danger);
+}
+.btn.menubar-item[data-tone="danger"]:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--on-accent);
+}
+.btn.menubar-item:disabled,
+.btn.menubar-item:disabled:hover {
+  background: transparent;
+  color: var(--ink-disabled);
+}
+.btn.menubar-item .btn-label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+}
+.menubar-pill {
+  display: inline-flex;
+  margin-left: auto;
+}
+
+.menubar-loading,
+.menubar-error {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+.menubar-error-title {
+  margin: 0;
+  font-size: var(--type-body-strong-size);
+  line-height: var(--type-body-strong-line);
+  font-weight: var(--type-body-strong-weight);
+}
+
+/* Loading: static bars on surface-sunken, never a spinner (the List skeleton's look). */
+.menubar-skeleton {
+  display: block;
+  height: var(--space-3);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+}
+.menubar-skeleton:nth-of-type(2) {
+  width: 70%;
+}
+.menubar-skeleton:nth-of-type(3) {
+  width: 45%;
+}
+
+/* A refused or unreachable action, kept beside the buttons after its toast closes. */
+.menubar-failure {
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  color: var(--danger);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-weight: var(--type-caption-weight);
+}
