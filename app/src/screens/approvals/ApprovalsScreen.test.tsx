@@ -790,3 +790,47 @@ describe("commands", () => {
     expect(document.activeElement).toBe(heading);
   });
 });
+
+describe("the #/approvals/<id> route (item 17's notification links)", () => {
+  function writes(fake: FakeBridge): ApiRequest[] {
+    return fake.requests.map((r) => r.req).filter((req) => req.method !== "GET");
+  }
+
+  it("on mount, selects the id the route names, not the oldest; nothing is sent", async () => {
+    window.location.hash = "#/approvals/2";
+    const { fake } = await mount({ approvals: [approval(1), approval(2), approval(3)] });
+    await waitFor(() => expect(selectedId()).toBe(2));
+    expect(screen.getByTestId("approval-detail").dataset.approvalId).toBe("2");
+    expect(writes(fake)).toEqual([]);
+  });
+
+  it("on hashchange, selects the new id; nothing is sent", async () => {
+    const { fake } = await mount({ approvals: [approval(1), approval(2), approval(3)] });
+    expect(selectedId()).toBe(1);
+    act(() => {
+      window.location.hash = "#/approvals/3";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(selectedId()).toBe(3);
+    expect(screen.getByTestId("approval-detail").dataset.approvalId).toBe("3");
+    expect(writes(fake)).toEqual([]);
+  });
+
+  it("an id not in the list takes the gone path, and A decides nothing", async () => {
+    window.location.hash = "#/approvals/9";
+    const { fake } = await mount({ approvals: [approval(1), approval(2)] });
+    await waitFor(() => expect(screen.getByTestId("approval-gone").dataset.approvalId).toBe("9"));
+    expect(selectedId()).toBeUndefined();
+    press("a");
+    expect(writes(fake)).toEqual([]);
+  });
+
+  it("#/approvals, or a malformed id, keeps the oldest-row default", async () => {
+    for (const hash of ["#/approvals", "#/approvals/0", "#/approvals/2x", "#/approvals/2/deny"]) {
+      window.location.hash = hash;
+      const { unmount } = await mount({ approvals: [approval(1), approval(2)] });
+      expect(selectedId(), hash).toBe(1);
+      unmount();
+    }
+  });
+});
