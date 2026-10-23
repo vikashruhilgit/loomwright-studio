@@ -83,3 +83,9 @@ app/src/screens/menubar/
 app/e2e/fixtures/menubar.ts
 app/e2e/menubar.spec.ts
 docs/evidence/phase-5-polish/menubar/
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-23T16:27:14Z
+- **Brief:** .supervisor/jobs/done/2026-10-22-menu-bar-deep-links-pause-kill-switch.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/122
