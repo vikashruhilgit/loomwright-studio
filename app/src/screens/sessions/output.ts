@@ -1,6 +1,6 @@
-// One session's output log, read from the kernel (phase 5 item 16): the
-// bounded log the kernel keeps per session (`GET /sessions/:id/output`), never
-// the CLI's own files (D10).
+// One session's output log, read from the kernel over its loopback API (D10)
+// (phase 5 item 16): the bounded log the kernel keeps per session
+// (`GET /sessions/:id/output`), never the CLI's own files.
 //
 // Rows are append-only by `seq`, so the reader keeps the last `seq` it has and
 // every read asks only for what comes after it (`?after=<last seq>`), paging
