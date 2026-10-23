@@ -88,11 +88,11 @@ In the requests below, `<date>` is today's date as `MMDD` (for example `1023`), 
 
 ### Flow 1: a reminder (phase 2)
 
-In Chat, ask Wright: `Remind me in 3 minutes to stretch my legs.` The trigger's card shows in Chat. Wait until past its time: it fires, the notification appears on screen, and its row appears in the app.
+In Chat, ask Wright: `Remind me in 3 minutes to stretch my legs.` Wright answers in its thread; no trigger card shows yet (the app draws nothing for a trigger before it fires). Wait until past its time: it fires, the notification appears on screen, and Wright's thread shows a one-line `Trigger <id> fired (notify)` card. The full trigger card, with On and Off, does not show for it: the app draws that card only for a trigger `GET /triggers` lists, which is enabled triggers only, and a fired one-time reminder is spent. Then click the notification: the app comes forward on Wright's thread, the thread the notification names. The app has no list of notifications, so there is no row of it to look for in the app. Without terminal-notifier (setup step 4) the notification has no click action; record that instead.
 
-The harness passes it when a trigger Wright registered (an agent trigger with no playbook) has a `trigger_fired` event, the instant's work step is recorded `fired`, and the notification row the fire names exists with that trigger as its source. It records the notification's `delivery_status`.
+The harness passes it when a trigger Wright registered (an agent trigger with no playbook) has a `trigger_fired` event, the instant's work step is recorded `fired`, and the notification row the fire names exists in the store with that trigger as its source. It records the notification's `delivery_status`.
 
-What only you can see: did the trigger's card show in Chat, did the notification appear on screen, and did its row appear in the app?
+What only you can see: did the one-line "fired" card show in Wright's thread, did the notification appear on screen, and did clicking it open the app on Wright's thread?
 
 ### Flow 2: a playbook, its priority, its dry run, its enable, and run now (phase 3)
 
@@ -141,14 +141,14 @@ What only you can see: that you pressed Stop and Kill in Sessions, and that Kill
 
 ### Flow 5: Pause all, a missed reminder, Resume, then the kill switch (menu bar)
 
-1. In Chat, ask Wright: `Remind me in 3 minutes to drink some water.` Its card shows.
+1. In Chat, ask Wright: `Remind me in 3 minutes to drink some water.` No card shows for it: the app draws a trigger's card only once it fires, and this one never does.
 2. Before it is due, open the menu-bar icon and choose **Pause all**.
 3. Wait until past its time. It does not fire: the kernel records the instant `missed_paused`.
 4. From the menu bar, choose **Resume** (or **Unpause**, which the tray shows in place of Pause all while paused). The pause clears.
 5. From the menu bar, choose **Kill switch…** and confirm. Every running session stops and nothing new starts.
 6. From the menu bar, choose **Resume** again, which releases the kill switch.
 
-The harness passes it when a pause came from the app (`pause_engaged` with `via: "api"`; a `studio pause` would say `cli`, and fails the flow), a trigger instant inside it was recorded `missed_paused` (a `trigger_missed`, reason `paused`) and never fired, the pause was released from the app, and a `kill_switch_engaged` event was recorded. It records the kill switch's release, which cleanup also lists if it is missing.
+The harness passes it when a pause came from the app (`pause_engaged` with `via: "api"`; a `studio pause` would say `cli`, and fails the flow), a trigger instant inside it was recorded `missed_paused` (a `trigger_missed`, reason `paused`) and never fired, that same pause was released from the app (a miss in one pause and a release of another do not count), and a `kill_switch_engaged` event was recorded. It records the kill switch's release, which cleanup also lists if it is missing.
 
 What only you can see: that each of these was the menu-bar item, that the kill switch asked for confirmation, and that the reminder's notification did not appear.
 
@@ -169,7 +169,7 @@ It ends as soon as all six flows pass, or at its deadline, and prints the summar
 Touch only the run's own playbook, triggers and crew member. The summary's `cleanup.left_for_the_owner` lists what the run left on: its playbooks not off, its triggers still on, its crew member still active, any approval still pending since the run start, and whether a pause or the kill switch is still engaged. All of it is done in the app:
 
 - **The playbook** `phase5 exit <date>`: press **Turn off** on its card.
-- **The triggers:** a spent reminder is already off; turn off any of the run's triggers the list still names with **Off** on its card. The playbook's own trigger never starts work while the playbook is off.
+- **The triggers:** a spent reminder is already off; turn off any of the run's triggers the list still names with **Off** on its card. A trigger has a card in Chat only after it has fired, so a trigger still on that never fired has none; if the list names one, record it in the evidence file's `cleanup` as a finding (the app gap in [OPEN_QUESTIONS](../OPEN_QUESTIONS.md)) rather than turning it off in a terminal. The playbook's own trigger never starts work while the playbook is off.
 - **The crew member** `phase5-exit-<date>`: in Team, select it and press **Turn off**. Turning a member off never deletes its memory, so its row (now off), its settings file and its `memory/<id>/` folder stay, and its id is never reused.
 - **Anything pending** from the run: deny it in Approvals.
 - **A pause or the kill switch still engaged:** **Resume** from the menu bar.
@@ -204,7 +204,7 @@ Commit `docs/evidence/phase-5-exit-live-<YYYY-MM-DD>.json` after a passing run, 
     "1_reminder_fires": {
       "outcome": "pass | fail | not_exercised",
       "harness": { "registered": [], "fires": [], "misses": [], "passing_fire": 0 },
-      "owner": { "asked_in_chat": true, "trigger_card_seen_in_chat": true, "notification_appeared_on_screen": true, "notification_row_seen_in_app": true },
+      "owner": { "asked_in_chat": true, "fired_card_seen_in_chat": true, "notification_appeared_on_screen": true, "notification_click_opened_thread": true },
       "findings": []
     },
     "2_playbook_priority_enable_run": {
@@ -227,7 +227,7 @@ Commit `docs/evidence/phase-5-exit-live-<YYYY-MM-DD>.json` after a passing run, 
     },
     "5_menu_bar_pause_and_kill_switch": {
       "outcome": "pass | fail | not_exercised",
-      "harness": { "pause_events": [], "kill_switch_events": [], "pause_windows": [], "kill_switch_engaged_at": [] },
+      "harness": { "pause_events": [], "kill_switch_events": [], "pause_windows": [], "kill_switch_engaged_at": [], "passing_pause": 0 },
       "owner": { "pause_all_from_tray": true, "resume_from_tray": true, "kill_switch_from_tray": true, "kill_switch_confirm_shown": true, "resumed_after_kill_switch": true },
       "findings": []
     },

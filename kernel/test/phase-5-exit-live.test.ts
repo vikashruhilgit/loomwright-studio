@@ -40,7 +40,7 @@
 //      its `session_stop_requested` `{by: "owner", mode}`.
 //   5. Menu bar: a pause from the app (`pause_engaged`, `via: "api"`), a
 //      trigger instant recorded `missed_paused` while paused (a
-//      `trigger_missed`, reason `paused`, never fired), the pause released
+//      `trigger_missed`, reason `paused`, never fired), that same pause released
 //      from the app, and the kill switch engaged (`kill_switch_engaged`).
 //   6. Team: Wright's model set by the owner (`agent_settings_set` for
 //      `wright`, field `model`), and `wright.json` carrying that model.
@@ -134,7 +134,7 @@ export interface RunStart {
 
 /** What only the owner can see, per flow: the evidence file's `owner` fields, null until he fills them in (D33). */
 export const OWNER_FIELDS: Readonly<Record<FlowName, readonly string[]>> = {
-  "1_reminder_fires": ["asked_in_chat", "trigger_card_seen_in_chat", "notification_appeared_on_screen", "notification_row_seen_in_app"],
+  "1_reminder_fires": ["asked_in_chat", "fired_card_seen_in_chat", "notification_appeared_on_screen", "notification_click_opened_thread"],
   "2_playbook_priority_enable_run": ["draft_card_seen_in_chat", "priority_set_from_card", "dry_run_seen", "approved_in_approvals_by", "approved_at", "run_now_pressed"],
   "3_reviewer_cannot_push": ["charter_card_seen", "create_pressed_by", "push_deny_seen_in_sessions_output", "comment_held_seen_in_approvals", "denied_by", "denied_at"],
   "4_sessions_stop_and_kill": ["stop_pressed_in_sessions", "kill_confirm_shown", "kill_confirmed"],
@@ -441,6 +441,10 @@ export function checkReviewerFlow(db: Database.Database, start: RunStart, dataDi
       .filter((r) => sessionIds.has(r.session_id))
       .map((r) => ({ session_id: r.session_id, seq: r.seq, payload: payloadOf(r.payload_json) }))
       .filter((r) => r.payload.decision === "deny" && r.payload.reason === "agent_boundary" && r.payload.category === "git_push");
+    // The output log copies the decision event itself, so a shown deny must be in that deny's own session (and name its tool call when the event does).
+    const shownFor = (e: EventRow): boolean =>
+      shown.some((r) => r.session_id === e.session_id && (e.payload.tool_use_id === undefined || r.payload.tool_use_id === e.payload.tool_use_id));
+    const boundaryShown = boundary.filter(shownFor);
     const cwdOf = (sessionId: number | null): string => sessions.find((s) => s.id === sessionId)?.cwd ?? "/";
     const allowedPushes = decisions.filter(
       (e) => e.payload.decision === "allow" && e.payload.tool === "Bash" && typeof e.payload.command === "string" && isPushCommand(e.payload.command, { dataDir, homeDir: home, cwd: cwdOf(e.session_id) }),
@@ -457,7 +461,7 @@ export function checkReviewerFlow(db: Database.Database, start: RunStart, dataDi
       if (never === null || !never.includes("git_push")) problems.push(`${id}'s charter never list does not cover git_push (${JSON.stringify(never)})`);
     }
     if (boundary.length === 0) problems.push(`no git push denied agent_boundary in ${id}'s sessions since the run started (ask it, in its thread, to push)`);
-    else if (shown.length === 0) problems.push(`${id}'s agent_boundary deny is not in its session's output log (what the Sessions screen shows)`);
+    else if (boundaryShown.length === 0) problems.push(`${id}'s agent_boundary deny is not in its own session's output log (what the Sessions screen shows)`);
     if (pushApprovals.length > 0) problems.push(`${id} has an approval row for a push (${pushApprovals.map((a) => `#${a.id} ${a.action} ${a.status}`).join(", ")})`);
     if (allowedPushes.length > 0) problems.push(`a push was allowed in ${id}'s sessions (events ${allowedPushes.map((e) => e.id).join(", ")})`);
     if (comments.length === 0) problems.push(`no gh pr comment held for ${id} since the run started (ask it, in its thread, to comment on a PR)`);
@@ -467,7 +471,7 @@ export function checkReviewerFlow(db: Database.Database, start: RunStart, dataDi
       row: row === undefined ? null : { id: row.id, status: row.status, created_by: row.created_by, approval_id: row.approval_id, never },
       create_approval: createApproval ?? null,
       sessions,
-      boundary_denies: boundary.map((e) => ({ event_id: e.id, session_id: e.session_id, payload: e.payload })),
+      boundary_denies: boundary.map((e) => ({ event_id: e.id, session_id: e.session_id, payload: e.payload, in_output: shownFor(e) })),
       output_rows: shown,
       allowed_pushes: allowedPushes.map((e) => ({ event_id: e.id, session_id: e.session_id, command: e.payload.command })),
       push_approvals: pushApprovals,
@@ -547,9 +551,11 @@ export function checkMenuBarFlow(db: Database.Database, start: RunStart): FlowCh
       return { engaged: p.id, released: release === undefined ? null : { event_id: release.id, via: release.payload.via }, missed };
     });
   harness.pause_windows = windows;
+  // One window must hold both: a paused instant recorded missed_paused and that same pause's release from the app.
   const good = windows.find((w) => w.released !== null && w.released.via === "api" && w.missed.some((m) => m.ok));
   if (windows.length === 0) problems.push("no Pause all from the app since the run started");
   else if (good === undefined) {
+    const before = problems.length;
     if (!windows.some((w) => w.missed.some((m) => m.ok))) {
       const near = windows.flatMap((w) => w.missed);
       problems.push(
@@ -559,12 +565,14 @@ export function checkMenuBarFlow(db: Database.Database, start: RunStart): FlowCh
       );
     }
     if (!windows.some((w) => w.released !== null && w.released.via === "api")) problems.push("the pause was not released from the app (Resume in the menu bar)");
+    // Each half happened, but in different pauses: no one pause had both.
+    if (problems.length === before) problems.push("no pause from the app had a paused instant recorded missed_paused and then a release from the app (the miss and the release were in different pauses)");
   }
   const engaged = kills.filter((e) => e.kind === "kill_switch_engaged");
   if (engaged.length === 0) problems.push("the kill switch was not engaged since the run started (Kill switch in the menu bar, then confirm)");
   harness.kill_switch_engaged_at = engaged.map((e) => e.at);
   if (problems.length > 0) return fail(harness, problems);
-  return pass(harness);
+  return pass({ ...harness, passing_pause: good?.engaged });
 }
 
 /** Flow 6 (Team): the owner set Wright's model, and `wright.json` carries it. */
@@ -632,6 +640,7 @@ const OMISSIONS = {
   never_lacks_push: "3_reviewer_cannot_push",
   push_held: "3_reviewer_cannot_push",
   deny_not_in_output: "3_reviewer_cannot_push",
+  deny_shown_in_other_session: "3_reviewer_cannot_push",
   comment_approved: "3_reviewer_cannot_push",
   push_also_allowed: "3_reviewer_cannot_push",
   comment_never_held: "3_reviewer_cannot_push",
@@ -640,6 +649,7 @@ const OMISSIONS = {
   no_kill: "4_sessions_stop_and_kill",
   missed_as_kill_switch: "5_menu_bar_pause_and_kill_switch",
   pause_not_released: "5_menu_bar_pause_and_kill_switch",
+  miss_and_release_in_different_pauses: "5_menu_bar_pause_and_kill_switch",
   paused_from_cli: "5_menu_bar_pause_and_kill_switch",
   no_kill_switch: "5_menu_bar_pause_and_kill_switch",
   wright_json_unchanged: "6_team_sets_wright_model",
@@ -761,7 +771,9 @@ function cannedRun(env: LoopEnv, workspace: string, omit: ReadonlySet<Omission> 
     } else {
       const deny = { tool: "Bash", decision: "deny", reason: "agent_boundary", command: "git push origin main", category: "git_push", tool_use_id: "toolu_1" };
       appendEvent(store, "tool_decision", { sessionId: session, taskId: null }, deny, at());
-      if (!omit.has("deny_not_in_output")) store.prepare("INSERT INTO session_output (session_id, seq, kind, payload_json) VALUES (?, 1, 'tool_decision', ?)").run(session, JSON.stringify(deny));
+      // `deny_shown_in_other_session`: the deny's output row sits in another of the reviewer's sessions, not the one the deny was in.
+      const shownIn = omit.has("deny_shown_in_other_session") ? insertSession(env, { agent: REVIEWER, status: "completed" }) : session;
+      if (!omit.has("deny_not_in_output")) store.prepare("INSERT INTO session_output (session_id, seq, kind, payload_json) VALUES (?, 1, 'tool_decision', ?)").run(shownIn, JSON.stringify(deny));
     }
     // A second push form the boundary missed: the rail reads `git -C . push` as a push, so the checker must too.
     if (omit.has("push_also_allowed")) appendEvent(store, "tool_decision", { sessionId: session, taskId: null }, { tool: "Bash", decision: "allow", reason: "policy_allow", command: "git -C . push origin main" }, at());
@@ -783,7 +795,19 @@ function cannedRun(env: LoopEnv, workspace: string, omit: ReadonlySet<Omission> 
     }
   }
 
-  if (!skip.has("5_menu_bar_pause_and_kill_switch")) {
+  if (!skip.has("5_menu_bar_pause_and_kill_switch") && omit.has("miss_and_release_in_different_pauses")) {
+    // One pause from the app released from the app with no miss in it, then a second pause holding the miss, never released.
+    engagePause(store, at(), "api");
+    env.advance(1_000);
+    releasePause(store, at(), "api");
+    env.advance(1_000);
+    registerTrigger(store, { agent: ASK_AGENT, kind: "once", spec: later(MINUTE), action: "notify", text: "Due while paused." }, env.now());
+    engagePause(store, at(), "api");
+    env.advance(2 * MINUTE);
+    fireDueTriggers(store, env.now());
+    env.advance(1_000);
+    engageKillSwitch(store, at());
+  } else if (!skip.has("5_menu_bar_pause_and_kill_switch")) {
     registerTrigger(store, { agent: ASK_AGENT, kind: "once", spec: later(MINUTE), action: "notify", text: "Due while paused." }, env.now());
     engagePause(store, at(), omit.has("paused_from_cli") ? "cli" : "api");
     if (omit.has("missed_as_kill_switch")) {
@@ -869,6 +893,23 @@ describe("phase 5 live checkers against a canned store", () => {
     expect(outcomes(checks)).toEqual({ ...all("pass"), [target]: "fail" });
     expect(checks[target].findings.length).toBeGreaterThan(0);
     expect(runResult(checks)).toBe("failed");
+  });
+
+  it("fails the menu-bar flow when the miss and the app's release are in different pauses, naming that no one pause had both", () => {
+    const start = startNow();
+    cannedRun(env, workspace, new Set<Omission>(["miss_and_release_in_different_pauses"]));
+    const menu = check(start)["5_menu_bar_pause_and_kill_switch"];
+    expect(menu.outcome).toBe("fail");
+    expect(menu.findings).toEqual([expect.stringMatching(/no pause from the app had a paused instant recorded missed_paused and then a release from the app/)]);
+    expect(withDb(env.dataDir, (db) => cleanupList(db, start))).toMatchObject({ paused: true });
+  });
+
+  it("fails the reviewer flow when its push deny is shown only in another of its sessions' output", () => {
+    const start = startNow();
+    cannedRun(env, workspace, new Set<Omission>(["deny_shown_in_other_session"]));
+    const reviewer = check(start)["3_reviewer_cannot_push"];
+    expect(reviewer.outcome).toBe("fail");
+    expect(reviewer.findings).toEqual([expect.stringMatching(/agent_boundary deny is not in its own session's output log/)]);
   });
 
   it("lists what the run left on for the owner's in-app cleanup, writing nothing", () => {
