@@ -1,15 +1,8 @@
-// Sessions: a placeholder. Phase 5 item 16 builds it (the 360px list pane,
-// `--list-pane-width`, and each session's live output log).
+// Sessions (phase 5 item 16): every session the kernel lists, its output
+// streaming, and Stop (⌘.), Kill and Abandon. The screen itself is
+// `./SessionsScreen.tsx`; the shell discovers this module's `screen`.
 import type { ScreenDefinition } from "../types";
-
-function SessionsScreen() {
-  return (
-    <div className="placeholder" data-testid="screen-sessions">
-      <p className="placeholder-title">Sessions</p>
-      <p className="placeholder-note">Running and finished sessions arrive here.</p>
-    </div>
-  );
-}
+import { SessionsScreen } from "./SessionsScreen";
 
 export const screen: ScreenDefinition = {
   id: "sessions",
