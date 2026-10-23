@@ -82,3 +82,9 @@ app/src/screens/sessions/
 app/e2e/fixtures/sessions.ts
 app/e2e/sessions.spec.ts
 docs/evidence/phase-5-polish/sessions/
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-23T16:26:31Z
+- **Brief:** .supervisor/jobs/done/2026-10-22-the-sessions-screen.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/121
