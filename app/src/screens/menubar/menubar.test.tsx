@@ -12,6 +12,7 @@ import type { ApiRequest, ApiResult, Approval, NotificationRow, StatusBody, Stud
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
+import { liveStoreFor } from "../../store/react";
 import type { FakeBridge } from "../../store/fake-bridge";
 import { screen as menubarScreen } from "./index";
 import { APPROVAL_SOURCE, LINK_NOTHING_TITLE, approvalHash, linkTarget } from "./links";
@@ -569,6 +570,46 @@ describe("the commands", () => {
     expect(panelState()).toBe("idle");
   });
 
+  it("a refused POST /stop-all leaves a persistent alert beside the buttons after its toast closes; the next action that goes through clears it", async () => {
+    const m = await mount();
+    m.fake.route("POST /stop-all", () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } }));
+    fireEvent.click(screen.getByRole("button", { name: "Kill switch…" }));
+    fireEvent.click(within(screen.getByRole("alertdialog", { name: KILL_CONFIRM.title })).getByRole("button", { name: KILL_CONFIRM.action }));
+    await waitFor(() => expect(toasts()).toHaveLength(1));
+    // The toast closes (as ToastStack does after 6 s); the alert line stays.
+    act(() => {
+      for (const t of m.actions.getSnapshot().toasts) m.actions.dismiss(t.id);
+    });
+    await waitFor(() => expect(toasts()).toHaveLength(0));
+    const alert = screen.getByTestId("menubar-failure");
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(alert.textContent).toBe("The kill switch didn't go through. Couldn't reach the kernel; nothing changed.");
+    expect(panelState()).toBe("idle");
+
+    // A later action that goes through clears it.
+    m.fake.route("POST /stop-all", () => (Object.assign(m.kernel, { status: statusBody({ kill_switch: { engaged: true, since: null } }) }), ok({ engaged: true, sessions: [] })));
+    fireEvent.click(screen.getByRole("button", { name: "Kill switch…" }));
+    fireEvent.click(within(screen.getByRole("alertdialog", { name: KILL_CONFIRM.title })).getByRole("button", { name: KILL_CONFIRM.action }));
+    await waitFor(() => expect(panelState()).toBe("killed"));
+    expect(screen.queryByTestId("menubar-failure")).toBeNull();
+  });
+
+  it("a failed action's line clears when a GET /status answer shows its goal reached, and only then", async () => {
+    const m = await mount({ applies: false }, { panel: false });
+    m.fake.route("POST /pause", () => ({ ok: false, status: 409, body: { error: "conflict" } }));
+    const actions = createMenubarActions();
+    {
+      await act(async () => actions.run(m.fake.bridge, "pause-all"));
+      expect(actions.getSnapshot().lastFailure?.action).toBe("pause-all");
+      actions.observeStatus(statusBody({ paused: false }));
+      expect(actions.getSnapshot().lastFailure?.action).toBe("pause-all");
+      actions.observeStatus(undefined);
+      expect(actions.getSnapshot().lastFailure?.action).toBe("pause-all");
+      actions.observeStatus(statusBody({ paused: true }));
+      expect(actions.getSnapshot().lastFailure).toBeUndefined();
+    }
+  });
+
   it("a second press while the request is in flight sends nothing more", async () => {
     const m = await mount();
     let release: ((r: ApiResult<unknown>) => void) | undefined;
@@ -683,5 +724,16 @@ describe("the status panel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Unpause" }));
     await waitFor(() => expect(screen.getByTestId("menubar-stale")).toBeTruthy());
     expect(panelState()).toBe("paused");
+  });
+
+  it("a failed GET /approvals after a good one says the count shown is the last one reported", async () => {
+    const m = await mount({ approvals: [approval(1), approval(2)] });
+    expect(screen.queryByTestId("menubar-stale")).toBeNull();
+    m.fake.route("GET /approvals", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    await act(async () => {
+      liveStoreFor((window as unknown as { api: StudioBridge }).api).refetch("approvals");
+    });
+    await waitFor(() => expect(screen.getByTestId("menubar-stale")).toBeTruthy());
+    expect(screen.getByTestId("menubar-meta").textContent).toContain("2 waiting on you");
   });
 });

@@ -59,7 +59,7 @@ vi.mock("electron", () => {
   };
 });
 
-const { createTray, dotBitmap, KILL_CONFIRM_BUTTONS, TRAY_POLL_MS } = await import("./tray");
+const { createTray, dotBitmap, KILL_CONFIRM_BUTTONS, TRAY_FEED_THROTTLE_MS, TRAY_POLL_MS } = await import("./tray");
 
 // ---- a fake kernel ------------------------------------------------------------------
 
@@ -414,6 +414,35 @@ describe("untrusted answers", () => {
     expect(model()).toMatchObject({ state: "unknown", count: 1 });
   });
 
+  it("a good read, then an unreachable one: the state stays as last read, and the status line and tooltip say it is stale until a read answers", async () => {
+    let down = false;
+    const { kernel } = fakeKernel(
+      { pending: 1 },
+      { override: (method) => (down && method === "GET" ? { ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } } : undefined) },
+    );
+    await start(kernel);
+    expect(model()).toMatchObject({ state: "waiting", stale: false, tooltip: "Loomwright Studio: waiting on you" });
+    down = true;
+    await seam().click("pause-all");
+    expect(model()).toMatchObject({ state: "waiting", count: 1, title: "1", stale: true, tooltip: "Loomwright Studio: kernel not reached (last: waiting on you)" });
+    expect(item("status")?.label).toBe("kernel not reached (last: waiting on you) · 1 waiting on you");
+    expect(lastTray()?.tooltip).toBe("Loomwright Studio: kernel not reached (last: waiting on you)");
+    expect(menuItem("status")?.label).toBe("kernel not reached (last: waiting on you) · 1 waiting on you");
+    // The kernel is back: the next read clears it (the earlier POST /pause did land, so it now reads paused).
+    down = false;
+    await seam().click("pause-all");
+    expect(model()).toMatchObject({ state: "paused", stale: false, tooltip: "Loomwright Studio: paused" });
+  });
+
+  it("a failed /approvals read alone also marks the tray stale", async () => {
+    let malformed = false;
+    const { kernel } = fakeKernel({}, { override: (_m, path) => (malformed && path === "/approvals" ? { ok: true, status: 200, body: {} } : undefined) });
+    await start(kernel);
+    malformed = true;
+    await seam().click("pause-all");
+    expect(model()).toMatchObject({ state: "paused", stale: true, tooltip: "Loomwright Studio: kernel not reached (last: paused)" });
+  });
+
   it("a malformed /approvals body keeps the count as last read", async () => {
     let malformed = false;
     const { kernel } = fakeKernel({ pending: 2 }, { override: (_m, path) => (malformed && path === "/approvals" ? { ok: true, status: 200, body: { approvals: "x" } } : undefined) });
@@ -473,6 +502,60 @@ describe("the feed", () => {
     expect(feeds[1]?.after).toBe(41);
   });
 
+  it("throttles feed-driven reads: a burst of frames reads at most once per window, and the last frame is never lost", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const { kernel, feeds, calls, world } = fakeKernel();
+    await start(kernel);
+    feeds[0]?.open();
+    await settle();
+    calls.length = 0;
+    const frame = (id: number): FeedRelayFrame => ({ type: "event", id, at: "2026-10-23T00:00:00Z", kind: "x", session_id: null, task_id: null, payload: null });
+    for (let id = 1; id <= 500; id += 1) feeds[0]?.onFrame(frame(id));
+    await settle();
+    // The first frame reads at once; the rest fold into one trailing read.
+    expect(calls.filter((c) => c === "GET /status")).toHaveLength(1);
+    world.paused = true;
+    feeds[0]?.onFrame(frame(501));
+    vi.advanceTimersByTime(TRAY_FEED_THROTTLE_MS);
+    await settle();
+    expect(calls.filter((c) => c === "GET /status")).toHaveLength(2);
+    expect(model().state).toBe("paused");
+    vi.advanceTimersByTime(TRAY_FEED_THROTTLE_MS * 4);
+    await settle();
+    expect(calls.filter((c) => c === "GET /status")).toHaveLength(2);
+  });
+
+  it("a heartbeat that does not advance the cursor reads nothing; one that does reads", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const { kernel, feeds, calls } = fakeKernel();
+    await start(kernel);
+    feeds[0]?.open();
+    await settle();
+    calls.length = 0;
+    for (let i = 0; i < 50; i += 1) feeds[0]?.onFrame({ type: "heartbeat", latest_id: 0 } as FeedRelayFrame);
+    vi.advanceTimersByTime(TRAY_FEED_THROTTLE_MS * 2);
+    await settle();
+    expect(calls).toEqual([]);
+    feeds[0]?.onFrame({ type: "heartbeat", latest_id: 3 } as FeedRelayFrame);
+    await settle();
+    expect(calls).toContain("GET /status");
+  });
+
+  it("an action's re-read is immediate, not throttled", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { kernel, feeds, calls } = fakeKernel();
+    await start(kernel);
+    feeds[0]?.open();
+    await settle();
+    const frame: FeedRelayFrame = { type: "event", id: 1, at: "2026-10-23T00:00:00Z", kind: "x", session_id: null, task_id: null, payload: null };
+    feeds[0]?.onFrame(frame);
+    await settle();
+    calls.length = 0;
+    await seam().click("pause-all");
+    expect(calls).toEqual(["POST /pause", "GET /status", "GET /approvals"]);
+    expect(model().state).toBe("paused");
+  });
+
   it("polls while the feed is down", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const { kernel, feeds, calls } = fakeKernel();
@@ -488,17 +571,29 @@ describe("the feed", () => {
 
   it("starts no timer that keeps the process alive", async () => {
     const spy = vi.spyOn(globalThis, "setInterval");
+    const timeouts = vi.spyOn(globalThis, "setTimeout");
     try {
-      const { kernel } = fakeKernel();
+      const { kernel, feeds } = fakeKernel();
       await start(kernel);
+      feeds[0]?.open();
+      await settle();
+      // Two frames inside one throttle window start the trailing timer.
+      feeds[0]?.onFrame({ type: "heartbeat", latest_id: 1 } as FeedRelayFrame);
+      feeds[0]?.onFrame({ type: "heartbeat", latest_id: 2 } as FeedRelayFrame);
       const handles = spy.mock.results.map((r) => r.value as NodeJS.Timeout);
       expect(handles.length).toBeGreaterThan(0);
       for (const handle of handles) {
         expect(handle.hasRef()).toBe(false);
         clearInterval(handle);
       }
+      const throttle = timeouts.mock.calls.findIndex((c) => c[1] !== undefined && c[1] > 0 && c[1] <= TRAY_FEED_THROTTLE_MS);
+      expect(throttle).toBeGreaterThanOrEqual(0);
+      const handle = timeouts.mock.results[throttle]?.value as NodeJS.Timeout;
+      expect(handle.hasRef()).toBe(false);
+      clearTimeout(handle);
     } finally {
       spy.mockRestore();
+      timeouts.mockRestore();
     }
   });
 });

@@ -136,3 +136,14 @@
 .menubar-skeleton:nth-of-type(3) {
   width: 45%;
 }
+
+/* A refused or unreachable action, kept beside the buttons after its toast closes. */
+.menubar-failure {
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  color: var(--danger);
+  font-family: var(--type-caption-family);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-weight: var(--type-caption-weight);
+}

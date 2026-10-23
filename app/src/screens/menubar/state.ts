@@ -134,6 +134,8 @@ export interface TrayModelItem {
 
 export interface TrayModel {
   readonly state: TrayModelState;
+  /** The latest read failed: `state` and `count` are the last read, and the status line and tooltip say so. */
+  readonly stale: boolean;
   /** Pending approvals, as last read. */
   readonly count: number;
   /** The text beside the icon: the count, empty at 0. */

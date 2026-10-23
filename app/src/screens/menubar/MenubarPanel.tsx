@@ -131,7 +131,8 @@ function Panel({ api, actions }: { readonly api: StudioBridge; readonly actions:
   const paused = data?.paused === true;
   const running = data?.sessions.length ?? 0;
   const reset = view === "cap" && data !== undefined ? capReset(data) : undefined;
-  const stale = data !== undefined && status?.error !== undefined;
+  // Either read failing means what is shown is the last state read, not a live one.
+  const stale = data !== undefined && (status?.error !== undefined || approvals?.error !== undefined);
   const pauseAction: KernelAction = paused ? "unpause" : "pause-all";
   const press = (action: Exclude<KernelAction, "kill-switch">) => () => void actions.run(api, action);
 
@@ -202,6 +203,11 @@ function Panel({ api, actions }: { readonly api: StudioBridge; readonly actions:
             Resume
           </Button>
         </div>
+        {snapshot.lastFailure === undefined ? null : (
+          <p className="menubar-failure" role="alert" data-testid="menubar-failure">
+            {snapshot.lastFailure.text}
+          </p>
+        )}
         <hr className="menubar-rule" />
         <p className="menubar-note">{TRAY_ONLY_NOTE}</p>
       </section>

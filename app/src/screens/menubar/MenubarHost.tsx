@@ -138,6 +138,28 @@ export interface MenubarActionsSnapshot {
   readonly confirmingKill: boolean;
   /** Oldest first. */
   readonly toasts: readonly ToastItem[];
+  /**
+   * The last action that did not go through, kept until a later action goes
+   * through or a `GET /status` answer shows its goal reached. The toast closes
+   * on its own; this does not, so a kill switch that did not engage stays said.
+   */
+  readonly lastFailure: { readonly action: KernelAction; readonly text: string } | undefined;
+}
+
+/** Whether `status` already shows what `action` asked for (so its earlier failure no longer applies). */
+export function actionReached(status: StatusBody, action: KernelAction): boolean {
+  const paused = status.paused === true;
+  const killed = status.kill_switch.engaged;
+  switch (action) {
+    case "pause-all":
+      return paused;
+    case "unpause":
+      return !paused;
+    case "resume":
+      return !paused && !killed;
+    case "kill-switch":
+      return killed;
+  }
 }
 
 export interface MenubarActions {
@@ -153,6 +175,8 @@ export interface MenubarActions {
   confirmKill(api: StudioBridge): Promise<void>;
   toast(item: Omit<ToastItem, "id">): void;
   dismiss(id: string): void;
+  /** A new `GET /status` answer: clears `lastFailure` when the answer shows its action's goal reached. */
+  observeStatus(status: StatusBody | undefined): void;
 }
 
 /** A refusal's words, escaped: the kernel's `message` when it gave one, else its code. Never a body otherwise. */
@@ -173,7 +197,7 @@ async function request(api: StudioBridge, req: ApiRequest): Promise<ApiResult<un
 }
 
 export function createMenubarActions(): MenubarActions {
-  let snapshot: MenubarActionsSnapshot = { busy: new Set(), confirmingKill: false, toasts: [] };
+  let snapshot: MenubarActionsSnapshot = { busy: new Set(), confirmingKill: false, toasts: [], lastFailure: undefined };
   const listeners = new Set<() => void>();
   let toastId = 0;
   const set = (next: Partial<MenubarActionsSnapshot>): void => {
@@ -211,6 +235,10 @@ export function createMenubarActions(): MenubarActions {
     dismiss(id) {
       if (snapshot.toasts.some((t) => t.id === id)) set({ toasts: snapshot.toasts.filter((t) => t.id !== id) });
     },
+    observeStatus(status) {
+      const failed = snapshot.lastFailure;
+      if (failed !== undefined && status !== undefined && actionReached(status, failed.action)) set({ lastFailure: undefined });
+    },
   };
 
   /** One request; its answer only asks for `GET /status` again (never an optimistic state). */
@@ -222,7 +250,11 @@ export function createMenubarActions(): MenubarActions {
     busy.delete(action);
     set({ busy });
     if (result?.ok !== true) {
-      actions.toast({ status: { state: "failed", label: "not done" }, title: `${ACTION_NAMES[action]} didn't go through.`, body: failureText(result) });
+      const text = failureText(result);
+      set({ lastFailure: { action, text: `${ACTION_NAMES[action]} didn't go through. ${text}` } });
+      actions.toast({ status: { state: "failed", label: "not done" }, title: `${ACTION_NAMES[action]} didn't go through.`, body: text });
+    } else if (snapshot.lastFailure !== undefined) {
+      set({ lastFailure: undefined });
     }
     liveStoreFor(api).refetch("status");
   }
@@ -330,6 +362,11 @@ function Host({ api, registry, queue, actions }: HostProps) {
   useLayoutEffect(() => {
     latestStatus.current = status?.data;
   });
+  // A new status answer can show a failed action's goal reached (the tray or a terminal did it): its failure line goes.
+  const statusData = status?.data;
+  useEffect(() => {
+    actions.observeStatus(statusData);
+  }, [statusData, actions]);
 
   // ---- links ----
   const mounted = useRef(false);

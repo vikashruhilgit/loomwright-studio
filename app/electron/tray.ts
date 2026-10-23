@@ -15,6 +15,13 @@
 //
 // Every answer is an untrusted shape: a body that fails its check is a failed
 // read (the state stays as last read, the reason is logged, nothing throws).
+// While the latest read has failed, the status line and the tooltip say so
+// ("kernel not reached (last: …)") until a read answers again: a last-read
+// state is never shown as if it were live.
+//
+// Feed frames are throttled: at most one re-read per `TRAY_FEED_THROTTLE_MS`
+// (the first frame reads at once, later ones fold into one trailing read), and
+// a heartbeat that does not advance the cursor reads nothing.
 import { Menu, Tray, app, dialog, nativeImage } from "electron";
 import type { MenuItemConstructorOptions, NativeImage } from "electron";
 import type { ApiResult, FeedRelayFrame, StatusBody } from "../src/api/contract";
@@ -31,6 +38,9 @@ export interface TrayDeps {
 
 /** How often the tray re-reads, and retries its feed, while the feed is down. */
 export const TRAY_POLL_MS = 10_000;
+
+/** At most one re-read per this many ms from feed frames (the window store's `REFETCH_THROTTLE_MS`). */
+export const TRAY_FEED_THROTTLE_MS = 250;
 
 /** The kill confirm's buttons: Cancel is the default and the cancel answer. */
 export const KILL_CONFIRM_BUTTONS = Object.freeze(["Cancel", "Engage kill switch"] as const);
@@ -133,13 +143,15 @@ export function createTray(deps: TrayDeps): void {
 
   let status: StatusBody | undefined;
   let pending = 0;
+  /** The latest `/status` or `/approvals` read failed: what is shown is the last state read, not a live one. */
+  let staleRead = false;
   const busy = new Set<TrayItemId>();
 
   // ---- the model, and the native tray that renders it ----
 
   const model = (): TrayModel => {
     const state: TrayModelState = status === undefined ? "unknown" : menubarState(status, pending);
-    const word = state === "unknown" ? STATE_WORD_UNKNOWN : MENUBAR_WORDS[state];
+    const word = state === "unknown" ? STATE_WORD_UNKNOWN : staleRead ? `${STATE_WORD_UNKNOWN} (last: ${MENUBAR_WORDS[state]})` : MENUBAR_WORDS[state];
     const paused = status?.paused === true;
     const killed = status?.kill_switch.engaged === true;
     const items: TrayModelItem[] = [
@@ -150,7 +162,7 @@ export function createTray(deps: TrayDeps): void {
       { id: "resume", label: "Resume", enabled: killed || paused },
       { id: "quit", label: "Quit Loomwright Studio", enabled: true },
     ];
-    return { state, count: pending, title: pending > 0 ? String(pending) : "", tooltip: `Loomwright Studio: ${word}`, items };
+    return { state, stale: state !== "unknown" && staleRead, count: pending, title: pending > 0 ? String(pending) : "", tooltip: `Loomwright Studio: ${word}`, items };
   };
 
   let rendered = "";
@@ -205,6 +217,7 @@ export function createTray(deps: TrayDeps): void {
     ]);
     if (nextStatus !== undefined) status = nextStatus;
     if (nextPending !== undefined) pending = nextPending;
+    staleRead = nextStatus === undefined || nextPending === undefined;
     render();
   };
 
@@ -234,6 +247,25 @@ export function createTray(deps: TrayDeps): void {
   let feedGeneration = 0;
   let cursor = 0;
 
+  // A trailing-edge throttle for feed-driven reads: never more than one per window, and never a lost last frame.
+  let feedTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastFeedRead = Number.NEGATIVE_INFINITY;
+  const refreshFromFeed = (): void => {
+    if (feedTimer !== undefined) return;
+    const wait = lastFeedRead + TRAY_FEED_THROTTLE_MS - Date.now();
+    const fire = (): void => {
+      feedTimer = undefined;
+      lastFeedRead = Date.now();
+      void refresh();
+    };
+    if (wait <= 0) {
+      fire();
+      return;
+    }
+    feedTimer = setTimeout(fire, wait);
+    feedTimer.unref();
+  };
+
   const openFeed = (): void => {
     if (feedOpening || feed !== undefined) return;
     feedOpening = true;
@@ -247,10 +279,12 @@ export function createTray(deps: TrayDeps): void {
         log("feed", `feed closed (${frame.code})`);
       } else if (frame.type === "event" && Number.isSafeInteger(frame.id) && frame.id > cursor) {
         cursor = frame.id;
-      } else if (frame.type === "heartbeat" && Number.isSafeInteger(frame.latest_id) && frame.latest_id > cursor) {
+      } else if (frame.type === "heartbeat") {
+        // A heartbeat that does not advance the cursor says nothing changed: no read.
+        if (!Number.isSafeInteger(frame.latest_id) || frame.latest_id <= cursor) return;
         cursor = frame.latest_id;
       }
-      void refresh();
+      refreshFromFeed();
     };
     let opening: ReturnType<KernelConnection["openFeed"]>;
     try {
