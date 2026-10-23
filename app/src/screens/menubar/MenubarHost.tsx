@@ -54,7 +54,10 @@ export interface NavigateQueue {
   attach(api: StudioBridge): void;
 }
 
-export function createNavigateQueue(now: () => number = Date.now): NavigateQueue {
+/** A monotonic clock: a wall-clock step back would hold a repeat of the last route for the size of the jump. */
+const monotonicNow = (): number => performance.now();
+
+export function createNavigateQueue(now: () => number = monotonicNow): NavigateQueue {
   const pending: NavigateRoute[] = [];
   const listeners = new Set<() => void>();
   let last: { readonly key: string; readonly at: number } | undefined;
@@ -66,7 +69,9 @@ export function createNavigateQueue(now: () => number = Date.now): NavigateQueue
       const key = parsed.kind === "notification" ? notificationRoute(parsed.id) : INVALID_LINK_ROUTE;
       const at = now();
       // The cold-window delivery (deeplink.ts) can send one route twice: the repeat is dropped here.
-      if (last !== undefined && last.key === key && at - last.at < ROUTE_DEDUPE_MS) return;
+      // A clock that reads earlier than the last route (an injected wall clock stepped back) is never a repeat.
+      const age = last === undefined ? Number.POSITIVE_INFINITY : at - last.at;
+      if (last !== undefined && last.key === key && age >= 0 && age < ROUTE_DEDUPE_MS) return;
       last = { key, at };
       pending.push(parsed);
       for (const listener of [...listeners]) listener();
@@ -139,8 +144,8 @@ export interface MenubarActionsSnapshot {
   /** Oldest first. */
   readonly toasts: readonly ToastItem[];
   /**
-   * The last action that did not go through, kept until a later action goes
-   * through or a `GET /status` answer shows its goal reached. The toast closes
+   * The last action that did not go through, kept until that same action
+   * goes through or a `GET /status` answer shows its goal reached. The toast closes
    * on its own; this does not, so a kill switch that did not engage stays said.
    */
   readonly lastFailure: { readonly action: KernelAction; readonly text: string } | undefined;
@@ -253,7 +258,9 @@ export function createMenubarActions(): MenubarActions {
       const text = failureText(result);
       set({ lastFailure: { action, text: `${ACTION_NAMES[action]} didn't go through. ${text}` } });
       actions.toast({ status: { state: "failed", label: "not done" }, title: `${ACTION_NAMES[action]} didn't go through.`, body: text });
-    } else if (snapshot.lastFailure !== undefined) {
+    } else if (snapshot.lastFailure?.action === action) {
+      // Only this action's own failure: another action's (a refused kill switch while Pause goes through) still
+      // stands, and an older answer landing late must not clear a newer failure. Every other clear is a status read's.
       set({ lastFailure: undefined });
     }
     liveStoreFor(api).refetch("status");

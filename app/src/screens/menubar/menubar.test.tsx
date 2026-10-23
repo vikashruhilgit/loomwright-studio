@@ -24,6 +24,7 @@ import {
   MenubarHost,
   ROUTE_DEDUPE_MS,
   actionEnabled,
+  actionReached,
   createMenubarActions,
   createNavigateQueue,
 } from "./MenubarHost";
@@ -384,6 +385,15 @@ describe("notification links", () => {
     expect(m.fake.requestsTo("GET /notifications/:id")).toHaveLength(3);
   });
 
+  it("a wall clock stepped back never holds a repeat of the last route: it is handled again", async () => {
+    const m = await mount({ notifications: new Map([[7, notification(7, APPROVAL_SOURCE, "Approval 7: Bash")]]) }, { panel: false });
+    m.navigate("notification/7");
+    m.advance(-60 * 60 * 1000);
+    m.navigate("notification/7");
+    await settle();
+    expect(m.fake.requestsTo("GET /notifications/:id")).toHaveLength(2);
+  });
+
   it("a route received before the host mounts is delivered on mount", async () => {
     const queue = createNavigateQueue();
     queue.receive("notification/7");
@@ -608,6 +618,64 @@ describe("the commands", () => {
       actions.observeStatus(statusBody({ paused: true }));
       expect(actions.getSnapshot().lastFailure).toBeUndefined();
     }
+  });
+
+  it("actionReached: each action's goal, reached and not", () => {
+    const killed = statusBody({ kill_switch: { engaged: true, since: null } });
+    const paused = statusBody({ paused: true });
+    const rest = statusBody();
+    expect(actionReached(paused, "pause-all")).toBe(true);
+    expect(actionReached(rest, "pause-all")).toBe(false);
+    expect(actionReached(rest, "unpause")).toBe(true);
+    expect(actionReached(paused, "unpause")).toBe(false);
+    expect(actionReached(rest, "resume")).toBe(true);
+    expect(actionReached(paused, "resume")).toBe(false);
+    expect(actionReached(killed, "resume")).toBe(false);
+    expect(actionReached(killed, "kill-switch")).toBe(true);
+    expect(actionReached(rest, "kill-switch")).toBe(false);
+  });
+
+  it("another action going through leaves a refused kill switch's line standing", async () => {
+    const m = await mount();
+    m.fake.route("POST /stop-all", () => ({ ok: false, status: 409, body: { error: "conflict" } }));
+    fireEvent.click(screen.getByRole("button", { name: "Kill switch…" }));
+    fireEvent.click(within(screen.getByRole("alertdialog", { name: KILL_CONFIRM.title })).getByRole("button", { name: KILL_CONFIRM.action }));
+    await waitFor(() => expect(screen.getByTestId("menubar-failure")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Pause all" }));
+    await waitFor(() => expect(panelState()).toBe("paused"));
+    await settle();
+    expect(m.actions.getSnapshot().lastFailure?.action).toBe("kill-switch");
+    expect(screen.getByTestId("menubar-failure").textContent).toContain("The kill switch didn't go through.");
+  });
+
+  it("an older action answering after a newer failure does not clear it", async () => {
+    const m = await mount({ applies: false });
+    let releasePause: ((r: ApiResult<unknown>) => void) | undefined;
+    m.fake.route("POST /pause", () => new Promise((done) => (releasePause = done)));
+    m.fake.route("POST /stop-all", () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } }));
+    fireEvent.click(screen.getByRole("button", { name: "Pause all" }));
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Kill switch…" }));
+    fireEvent.click(within(screen.getByRole("alertdialog", { name: KILL_CONFIRM.title })).getByRole("button", { name: KILL_CONFIRM.action }));
+    await waitFor(() => expect(m.actions.getSnapshot().lastFailure?.action).toBe("kill-switch"));
+    await act(async () => releasePause?.(ok({ paused: true })));
+    await settle();
+    expect(m.actions.getSnapshot().lastFailure?.action).toBe("kill-switch");
+    expect(screen.getByTestId("menubar-failure")).toBeTruthy();
+  });
+
+  it("a mounted host clears the failure line when a store refetch of GET /status shows its goal reached", async () => {
+    const m = await mount({ applies: false });
+    m.fake.route("POST /stop-all", () => ({ ok: false, status: 409, body: { error: "conflict" } }));
+    fireEvent.click(screen.getByRole("button", { name: "Kill switch…" }));
+    fireEvent.click(within(screen.getByRole("alertdialog", { name: KILL_CONFIRM.title })).getByRole("button", { name: KILL_CONFIRM.action }));
+    await waitFor(() => expect(screen.getByTestId("menubar-failure")).toBeTruthy());
+    // Someone else engages it (the tray, a terminal): the store reads GET /status again on a feed event.
+    m.kernel.status = statusBody({ kill_switch: { engaged: true, since: null } });
+    act(() => m.fake.emit({ type: "event", id: 1, at: "2026-10-23T09:00:00.000Z", kind: "event_done", session_id: null, task_id: null, payload: {} }));
+    await waitFor(() => expect(panelState()).toBe("killed"));
+    await waitFor(() => expect(screen.queryByTestId("menubar-failure")).toBeNull());
+    expect(posts(m.fake)).toEqual(["/stop-all"]);
   });
 
   it("a second press while the request is in flight sends nothing more", async () => {

@@ -247,23 +247,28 @@ export function createTray(deps: TrayDeps): void {
   let feedGeneration = 0;
   let cursor = 0;
 
-  // A trailing-edge throttle for feed-driven reads: never more than one per window, and never a lost last frame.
-  let feedTimer: ReturnType<typeof setTimeout> | undefined;
-  let lastFeedRead = Number.NEGATIVE_INFINITY;
+  // A throttle for feed-driven reads: never more than one per window, and never a lost last frame. The window is a
+  // timer started with each read, never arithmetic on `Date.now()`: that is the wall clock, and a backward step (a
+  // manual change, an NTP step after wake) would hold every read for the size of the jump (the store's `pump` does
+  // the same, `src/store/store.ts`).
+  let feedWindow: ReturnType<typeof setTimeout> | undefined;
+  /** A frame arrived inside the open window: one read is owed when it closes. */
+  let feedOwed = false;
+  const readAndOpenWindow = (): void => {
+    feedOwed = false;
+    feedWindow = setTimeout(() => {
+      feedWindow = undefined;
+      if (feedOwed) readAndOpenWindow();
+    }, TRAY_FEED_THROTTLE_MS);
+    feedWindow.unref();
+    void refresh();
+  };
   const refreshFromFeed = (): void => {
-    if (feedTimer !== undefined) return;
-    const wait = lastFeedRead + TRAY_FEED_THROTTLE_MS - Date.now();
-    const fire = (): void => {
-      feedTimer = undefined;
-      lastFeedRead = Date.now();
-      void refresh();
-    };
-    if (wait <= 0) {
-      fire();
+    if (feedWindow !== undefined) {
+      feedOwed = true;
       return;
     }
-    feedTimer = setTimeout(fire, wait);
-    feedTimer.unref();
+    readAndOpenWindow();
   };
 
   const openFeed = (): void => {

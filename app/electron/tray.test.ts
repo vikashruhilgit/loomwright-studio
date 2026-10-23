@@ -525,6 +525,35 @@ describe("the feed", () => {
     expect(calls.filter((c) => c === "GET /status")).toHaveLength(2);
   });
 
+  it("a backward wall-clock step never holds feed-driven reads: the next frame after the window still reads", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const { kernel, feeds, calls, world } = fakeKernel({ pending: 3 });
+    await start(kernel);
+    feeds[0]?.open();
+    await settle();
+    calls.length = 0;
+    const frame = (id: number): FeedRelayFrame => ({ type: "event", id, at: "2026-10-23T00:00:00Z", kind: "x", session_id: null, task_id: null, payload: null });
+    feeds[0]?.onFrame(frame(1));
+    await settle();
+    expect(calls.filter((c) => c === "GET /status")).toHaveLength(1);
+    vi.advanceTimersByTime(TRAY_FEED_THROTTLE_MS);
+    // The clock steps back an hour (an NTP step after wake).
+    vi.setSystemTime(Date.now() - 60 * 60 * 1000);
+    world.paused = true;
+    feeds[0]?.onFrame(frame(2));
+    await settle();
+    expect(calls.filter((c) => c === "GET /status")).toHaveLength(2);
+    expect(model().state).toBe("paused");
+    expect(model().stale).toBe(false);
+    // A frame inside the window is owed, and read when the window closes, not an hour later.
+    world.paused = false;
+    feeds[0]?.onFrame(frame(3));
+    vi.advanceTimersByTime(TRAY_FEED_THROTTLE_MS);
+    await settle();
+    expect(calls.filter((c) => c === "GET /status")).toHaveLength(3);
+    expect(model().state).toBe("waiting");
+  });
+
   it("a heartbeat that does not advance the cursor reads nothing; one that does reads", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
     const { kernel, feeds, calls } = fakeKernel();
