@@ -60,7 +60,7 @@ export const FIXED_RESOURCES: { readonly [N in FixedResourceName]: ResourceReque
   agents: { method: "GET", path: "/agents" },
   messages: { method: "GET", path: "/messages", query: { all: "1" } },
   sessions: { method: "GET", path: "/sessions" },
-  playbooks: { method: "GET", path: "/playbooks" },
+  playbooks: { method: "GET", path: "/playbooks", query: { all: "1" } },
   triggers: { method: "GET", path: "/triggers", query: { all: "1" } },
   notifications: { method: "GET", path: "/notifications" },
 });

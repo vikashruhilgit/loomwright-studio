@@ -194,14 +194,18 @@ test("AC9: the keyboard alone reaches every action with Tab / Shift+Tab and runs
     await page.keyboard.press("Tab");
     seen.push(await focusedName(page));
   }
+  // The playbook card's own order: each settable row's Edit, then its actions, then its trigger's On / Off.
+  const cardOrder = seen.slice(seen.indexOf("Edit dedupe key"), seen.indexOf("Edit dedupe key") + 8);
+  expect(cardOrder).toEqual(["Edit dedupe key", "Edit priority", "Edit model", "Edit token limit per day", "Run now", "Turn off", "On", "Off"]);
   for (const action of [
     "Pim",
     "Load earlier",
+    "Edit dedupe key",
+    "Edit priority",
+    "Edit model",
+    "Edit token limit per day",
     "Run now",
     "Turn off",
-    "Field",
-    "Value",
-    "Set priority",
     "On",
     "Off",
     "Allow once",
@@ -227,9 +231,27 @@ test("AC9: the keyboard alone reaches every action with Tab / Shift+Tab and runs
   await tabTo(page, "Run now");
   await page.keyboard.press("Space");
   await expect.poll(() => chat.writes.map((w) => w.path)).toContain("/playbooks/3/run");
-  await tabTo(page, "Set priority");
+  // A row's Set from the keyboard: Tab to Edit model, Enter, type, Enter; focus comes back to Edit model.
+  // The write is recorded when it arrives, before it answers; until then the card holds every Edit
+  // (disabled, so out of the Tab order). Wait for the answer, or a slow runner tabs past nothing.
+  const card = page.getByRole("region", { name: "Playbook pr-review" });
+  await expect(card.getByRole("button", { name: "Edit model" })).toBeEnabled();
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await tabTo(page, "Edit model");
   await page.keyboard.press("Enter");
-  await expect.poll(() => chat.writes.map((w) => [w.path, w.body])).toContainEqual(["/playbooks/3/set", { field: "priority", value: "high" }]);
+  expect(await focusedName(page)).toBe("New model");
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.type("opus");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => chat.writes.map((w) => [w.path, w.body])).toContainEqual(["/playbooks/3/set", { field: "model", value: "opus" }]);
+  await expect(card.locator('dd[data-field="Model"] .chat-kv-value')).toHaveText("opusset by owner");
+  await expect(card.getByRole("button", { name: "Edit model" })).toBeFocused();
+  // Escape leaves edit mode and hands focus back to the row's Edit.
+  await page.keyboard.press("Enter");
+  await expect(card.getByRole("textbox", { name: "New model" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(card.getByRole("textbox", { name: "New model" })).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "Edit model" })).toBeFocused();
   await tabTo(page, "Edit in English");
   await page.keyboard.press("Space");
   await expect(page.getByRole("textbox", { name: "Message Wright" })).toBeFocused();
@@ -269,12 +291,21 @@ test("a card that moves after the event its own action wrote keeps the control's
   await expect(page.locator(playbookCard)).toBeVisible();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
-  // Set: the kernel writes playbook_updated, and the playbook's card moves after it.
-  await tabTo(page, "Set priority", playbookCard);
+  // Set: the kernel writes playbook_updated, and the playbook's card moves after it. The row path:
+  // Edit priority, type-ahead to high, Tab to Set priority, Enter; focus lands on Edit priority and stays.
+  await tabTo(page, "Edit priority", playbookCard);
   await page.keyboard.press("Enter");
-  await expect.poll(() => chat.writes.map((w) => w.path)).toContain("/playbooks/3/set");
+  expect(await focusedName(page)).toBe("New priority");
+  // Type-ahead picks an option on every platform (on macOS an arrow key opens the popup instead).
+  await page.keyboard.type("h");
+  await expect(page.locator(playbookCard).getByRole("combobox", { name: "New priority" })).toHaveValue("high");
+  await page.keyboard.press("Tab");
+  expect(await focusedName(page)).toBe("Set priority");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => chat.writes.map((w) => [w.path, w.body])).toContainEqual(["/playbooks/3/set", { field: "priority", value: "high" }]);
   await expect(page.locator('[data-item="event:501"] + li').locator(playbookCard)).toBeVisible();
-  await expect(page.locator(playbookCard).getByRole("button", { name: /^Set priority/ })).toBeFocused();
+  await expect(page.locator(playbookCard).locator('dd[data-field="Priority"] .chat-kv-value')).toHaveText("highset by owner");
+  await expect(page.locator(playbookCard).getByRole("button", { name: "Edit priority" })).toBeFocused();
 
   // Turn on and fire: the trigger fires, and its standalone card moves after the firing.
   await tabTo(page, "On", triggerCard);
@@ -286,6 +317,37 @@ test("a card that moves after the event its own action wrote keeps the control's
   await expect.poll(() => chat.writes.map((w) => [w.path, w.body])).toContainEqual(["/triggers/8/on", { confirm: true }]);
   await expect(page.locator('[data-item="event:502"] + li').locator(triggerCard)).toBeVisible();
   await expect(page.locator(triggerCard).getByRole("button", { name: "On", exact: true })).toBeFocused();
+});
+
+test("Turn off keeps the playbook card: disabled, no Run now or Turn off, the Turn on gap, every row's Edit, and its trigger card", async () => {
+  const { page, chat } = await launchScenario("populated");
+  const card = page.getByRole("region", { name: "Playbook pr-review" });
+  await expect(card).toBeVisible();
+  await card.getByRole("button", { name: "Turn off" }).click();
+  await expect.poll(() => chat.writes.map((w) => w.path)).toContain("/playbooks/3/off");
+  await expect(card.locator(":scope > .chat-card-head")).toContainText("disabled");
+  await expect(card.getByRole("button", { name: "Run now" })).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "Turn off" })).toHaveCount(0);
+  await expect(card.getByText("Turn on: not available from the kernel")).toBeVisible();
+  for (const row of ["dedupe key", "priority", "model", "token limit per day"]) await expect(card.getByRole("button", { name: `Edit ${row}` })).toBeVisible();
+  const nested = card.getByRole("region", { name: "Trigger 5" });
+  await expect(nested.getByRole("button", { name: "On", exact: true })).toBeVisible();
+  await expect(nested.getByRole("button", { name: "Off", exact: true })).toBeVisible();
+  await expect(page.getByText("Playbook pr-review disabled")).toBeVisible();
+  // The kernel still takes a Set on a disabled playbook (it stays disabled).
+  await card.getByRole("button", { name: "Edit priority" }).click();
+  await card.getByRole("combobox", { name: "New priority" }).selectOption("low");
+  await card.getByRole("button", { name: "Set priority" }).click();
+  await expect.poll(() => chat.writes.map((w) => [w.path, w.body])).toContainEqual(["/playbooks/3/set", { field: "priority", value: "low" }]);
+  await expect(card.locator(":scope > .chat-card-head")).toContainText("disabled");
+});
+
+test("a kernel approval decision renders as the kernel's card, not the owner's bubble", async () => {
+  const { page } = await launchScenario("populated");
+  const decision = page.getByRole("region", { name: "Kernel decision, approval 6" });
+  await expect(decision).toContainText("approved approval 6: github_comment.");
+  await expect(page.locator('[data-message="38"] [data-from="user"]')).toHaveCount(0);
+  await expect(page.locator('[data-message="38"]')).toContainText("Posted the review on vikashruhilgit/loomwright#398.");
 });
 
 test("AC6: untrusted text in the running app renders inert", async () => {
@@ -350,6 +412,41 @@ const SHOTS: readonly Shot[] = [
       await expect(page.getByRole("region", { name: "Trigger 8" })).toBeVisible();
       await expect(page.getByRole("region", { name: "Drafted crew member, approval 9" })).toBeVisible();
       await expect(page.getByText("Paused: retries at")).toBeVisible();
+    },
+  },
+  {
+    // The populated card with its Model row in edit mode: the field, Set and Cancel on one line, the hint under them.
+    state: "playbook-edit",
+    setup: async () => {
+      const { page } = await launchScenario("populated");
+      const card = page.getByRole("region", { name: "Playbook pr-review" });
+      await expect(card).toBeVisible();
+      await card.getByRole("button", { name: "Edit model" }).click();
+      return page;
+    },
+    ready: async (page) => {
+      const card = page.getByRole("region", { name: "Playbook pr-review" });
+      await expect(card.getByRole("textbox", { name: "New model" })).toBeVisible();
+      await expect(card.getByText("none clears it")).toBeVisible();
+      await card.scrollIntoViewIfNeeded();
+    },
+  },
+  {
+    // The card after Turn off: disabled, the Turn on gap, each row's Edit, and its trigger card.
+    state: "playbook-off",
+    setup: async () => {
+      const { page } = await launchScenario("populated");
+      const card = page.getByRole("region", { name: "Playbook pr-review" });
+      await expect(card).toBeVisible();
+      await card.getByRole("button", { name: "Turn off" }).click();
+      return page;
+    },
+    ready: async (page) => {
+      const card = page.getByRole("region", { name: "Playbook pr-review" });
+      await expect(card.getByText("Turn on: not available from the kernel")).toBeVisible();
+      await expect(card.locator(":scope > .chat-card-head")).toContainText("disabled");
+      await expect(card.getByRole("region", { name: "Trigger 5" })).toBeVisible();
+      await card.scrollIntoViewIfNeeded();
     },
   },
   {

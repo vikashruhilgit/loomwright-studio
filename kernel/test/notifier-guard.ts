@@ -4,7 +4,10 @@
 // command's first word when the options say `shell: true`) and `exec`,
 // `execSync` (the command string's first word) on `node:child_process` and
 // syncs the patch into the ESM namespace, so `notifier.ts`'s own named `spawn`
-// import is wrapped too. A refused call throws synchronously (no
+// import is wrapped too, and wraps the promisified form of `exec` / `execFile`
+// (skipping one that points at itself, as it does in a Playwright worker).
+// `guardChildProcess(cp)` does the wrapping on any such record, so a test can
+// apply it to a stand-in. A refused call throws synchronously (no
 // process exists) and is recorded; `assertNoNotifierRefusals()` turns the
 // record into a failing test. Only the executable is looked at, never the
 // arguments: a `/bin/sh -c` whose script mentions osascript still runs.
@@ -114,13 +117,34 @@ function guarded(original: AnyFn, executable: Executable): AnyFn {
   Object.defineProperty(wrapper, "name", { value: original.name });
   Object.defineProperty(wrapper, WRAPPED, { value: true });
   // `exec` / `execFile` carry a custom promisified form; guard it too, or `promisify(execFile)` would bypass the guard.
+  // `util.promisify` points that form at itself once anything promisifies it (Playwright's runner does, before any
+  // spec loads): a form that is the function itself is left alone (else this recurses without end), so `promisify`
+  // builds its generic form around this wrapper, and a form already guarded is reused, not wrapped again.
   const custom = (original as { [promisify.custom]?: AnyFn })[promisify.custom];
-  if (typeof custom === "function") Object.defineProperty(wrapper, promisify.custom, { value: guarded(custom, executable), configurable: true });
+  if (typeof custom === "function" && custom !== original)
+    Object.defineProperty(wrapper, promisify.custom, { value: WRAPPED in custom ? custom : guarded(custom, executable), configurable: true });
   return wrapper;
 }
 
 const BY_FILE = ["spawn", "spawnSync", "execFile", "execFileSync"] as const;
 const BY_COMMAND = ["exec", "execSync"] as const;
+
+/**
+ * Wrap the spawning functions of a `node:child_process`-shaped record in
+ * place. A function already wrapped is left as it is, so a second application
+ * is a no-op. `installNotifierGuard()` applies it to the real module; a test
+ * passes a stand-in.
+ */
+export function guardChildProcess(cp: Record<string, unknown>): void {
+  for (const name of BY_FILE) {
+    const original = cp[name];
+    if (typeof original === "function" && !(WRAPPED in original)) cp[name] = guarded(original as AnyFn, byFile);
+  }
+  for (const name of BY_COMMAND) {
+    const original = cp[name];
+    if (typeof original === "function" && !(WRAPPED in original)) cp[name] = guarded(original as AnyFn, byCommand);
+  }
+}
 
 /**
  * Wrap `node:child_process` once per process (a no-op when the record says
@@ -130,15 +154,7 @@ const BY_COMMAND = ["exec", "execSync"] as const;
 export function installNotifierGuard(): void {
   const r = record();
   if (r.installed || !notifierGuardEnabled()) return;
-  const cp = createRequire(import.meta.url)("node:child_process") as Record<string, AnyFn>;
-  for (const name of BY_FILE) {
-    const original = cp[name];
-    if (typeof original === "function" && !(WRAPPED in original)) cp[name] = guarded(original, byFile);
-  }
-  for (const name of BY_COMMAND) {
-    const original = cp[name];
-    if (typeof original === "function" && !(WRAPPED in original)) cp[name] = guarded(original, byCommand);
-  }
+  guardChildProcess(createRequire(import.meta.url)("node:child_process") as Record<string, unknown>);
   syncBuiltinESMExports();
   r.installed = true;
 }

@@ -3,8 +3,9 @@
 // order is read the way a browser builds it: focusable elements in DOM order,
 // minus `tabIndex < 0` and disabled ones). The real Tab / Shift+Tab walk and
 // Enter / Space activation run in Electron in `app/e2e/chat.spec.ts`.
-import { screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { ok } from "../../store/fake-bridge";
 import { approval, eventItem, kit, message, playbook, renderChat, resetChat, thread, trigger } from "./testkit";
 
 afterEach(resetChat);
@@ -50,12 +51,13 @@ describe("keyboard", () => {
       "Load earlier",
       // The event lines' subjects.
       "Playbook pb-3 created",
-      // The playbook card, its form, and its trigger.
+      // The playbook card: each settable row's Edit, its actions, and its trigger.
+      "Edit dedupe key",
+      "Edit priority",
+      "Edit model",
+      "Edit token limit per day",
       "Run now",
       "Turn off",
-      "Field",
-      "Value",
-      "Set priority",
       "On",
       "Off",
       "Trigger 8 fired",
@@ -75,6 +77,34 @@ describe("keyboard", () => {
       "Message Wright",
       "Send",
     ]);
+  });
+
+  it("a row in edit mode: its field, Set and Cancel in order where its Edit was; Enter in the field sets, focus back on Edit", async () => {
+    const k = kit({ threads: { wright: thread([eventItem(5, "playbook_created", "Playbook pb-3 created", { playbook_id: 3 })]) }, playbooks: [playbook(3)] });
+    k.state.posts["POST /playbooks/:id/set"] = () => {
+      k.state.playbooks = [playbook(3, { model: "opus", model_set_by: "owner" })];
+      return ok({});
+    };
+    await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Playbook pb-3" });
+    // Tab reaches Edit model; Enter activates it (a button's Enter is its click).
+    await act(async () => {
+      const edit = within(card).getByRole("button", { name: "Edit model" });
+      edit.focus();
+      fireEvent.click(edit);
+    });
+    const input = within(card).getByRole("textbox", { name: "New model" }) as HTMLInputElement;
+    expect(document.activeElement).toBe(input);
+    expect(tabOrder(card)).toEqual(["Edit dedupe key", "Edit priority", "New model", "Set model", "Cancel", "Edit token limit per day", "Run now", "Turn off"]);
+    // Type, then Enter: the form's implicit submit.
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "opus" } });
+    });
+    await act(async () => {
+      fireEvent.submit(input.form as HTMLFormElement);
+    });
+    await waitFor(() => expect(k.posted("POST /playbooks/:id/set").map((r) => r.body)).toEqual([{ field: "model", value: "opus" }]));
+    await waitFor(() => expect(document.activeElement).toBe(within(card).getByRole("button", { name: "Edit model" })));
   });
 
   it("a specialist's workspace picker sits before its composer and Send", async () => {

@@ -31,6 +31,13 @@
 .chat-with {
   color: var(--ink-secondary);
 }
+/* The thread's agent id, shown only when two agents share its display name. */
+.chat-with-id {
+  color: var(--ink-tertiary);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-small-size);
+  line-height: var(--type-mono-small-line);
+}
 .chat-spacer {
   flex: 1;
 }
@@ -206,6 +213,8 @@
 .chat-kv {
   display: grid;
   grid-template-columns: max-content 1fr;
+  /* A row's term sits on its value's baseline, whether the value is text, has an Edit, or is an editor. */
+  align-items: baseline;
   gap: var(--space-1) var(--space-3);
   margin: 0;
 }
@@ -233,12 +242,71 @@
 .chat-tag.on {
   color: var(--ok);
 }
-.chat-set {
+/* A settable policy row: the value, its tag, and Edit at the row's end. */
+.chat-kv-row {
   display: flex;
-  align-items: flex-end;
+  align-items: baseline;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-top: var(--space-3);
+}
+.chat-kv-value {
+  min-width: 0;
+}
+.chat-kv-edit {
+  margin-left: auto;
+}
+/*
+ * A row in edit mode: the controls on one line, the hint on its own line
+ * under them, so a hint never moves the field, Set or Cancel.
+ */
+.chat-edit {
+  display: grid;
+  grid-template-areas:
+    "controls"
+    "hint";
+  row-gap: var(--space-1);
+  flex: 1;
+  min-width: 0;
+}
+.chat-edit-controls {
+  grid-area: controls;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.chat-edit-controls .field-group {
+  flex: 1;
+}
+/* The row's term labels it on screen; the control's name is its aria-label. */
+.chat-edit .field-label {
+  display: none;
+}
+.chat-edit-hint {
+  grid-area: hint;
+  margin: 0;
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  color: var(--ink-tertiary);
+}
+
+/* A kernel decision message (`source` approval:<id>): the kernel's words, never the owner's bubble. */
+.chat-kernel {
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+.chat-kernel-label {
+  margin: 0 0 var(--space-1);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  color: var(--ink-tertiary);
+}
+.chat-kernel-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink);
 }
 .chat-confirm {
   margin-top: var(--space-1);
@@ -282,6 +350,29 @@
 .chat-crew-row.selected {
   background: var(--accent-soft);
   color: var(--accent);
+}
+/* An off member: its avatar is dimmed like Avatar.css's settled (parked) creature, and it says "off"
+   (never colour alone). Only the avatar dims: the name and the "off" word keep their token colours at
+   full opacity so they stay at AA contrast. It stays a working button: its thread is still open to
+   read (D34). */
+.chat-crew-row.off .bot {
+  opacity: 0.72;
+}
+.chat-crew-off {
+  flex: none;
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  color: var(--ink-tertiary);
+}
+/* The id under the name, shown only when two agents share a display name: muted mono, one line. */
+.chat-crew-id {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-tertiary);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-small-size);
+  line-height: var(--type-mono-small-line);
 }
 .chat-crew-text {
   display: flex;

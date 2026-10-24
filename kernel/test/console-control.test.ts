@@ -18,8 +18,10 @@ import { SESSION_STOP_REQUESTED, controlPart } from "../src/console/control.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { ContributedRouteRequest } from "../src/features/index.js";
 import { SessionError, SessionManager } from "../src/sessions/index.js";
-import type { CancelTimer, GroupLeader, ProcessEntry, SessionHandle, SessionManagerDeps, SessionRow } from "../src/sessions/index.js";
+import type { CancelTimer, GroupLeader, ProcessEntry, SessionHandle, SessionManagerDeps, SessionManagerOptions, SessionRow } from "../src/sessions/index.js";
+import { recordSessionOutput } from "../src/console/output.js";
 import { Store } from "../src/store/index.js";
+import type { FakeCall } from "./session-fakes.js";
 import { fakeMsg, fakeSessions, flush, immediate, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
 
 const TOKEN = "c".repeat(64);
@@ -70,9 +72,21 @@ interface Harness {
  * CLI. `stubbornCli` / `stubbornTool`: that group survives every SIGKILL.
  * `holdLong`: every timer of 1 s or more is held too (the end-of-stream
  * cleanup's wait for the leader, and the tool poll), so a stream that ended
- * stays in its cleanup until a stop arrives.
+ * stays in its cleanup until a stop arrives. `options`: extra manager options
+ * (an observer). `snapshotGate`: while it returns a promise, every process
+ * snapshot (the tool poll's, and a stop's last walk before its kills) waits
+ * for it, so a kill can be held after its acceptance.
  */
-function setup(o: { stubbornCli?: boolean; stubbornTool?: boolean; holdLong?: boolean; script?: Parameters<typeof fakeSessions>[0] } = {}): Harness {
+function setup(
+  o: {
+    stubbornCli?: boolean;
+    stubbornTool?: boolean;
+    holdLong?: boolean;
+    script?: Parameters<typeof fakeSessions>[0];
+    options?: Partial<SessionManagerOptions>;
+    snapshotGate?: () => Promise<void> | undefined;
+  } = {},
+): Harness {
   const store = new Store({ dataDir: join(tmp, "data") });
   stores.push(store);
   const fakes = fakeSessions(o.script);
@@ -95,10 +109,14 @@ function setup(o: { stubbornCli?: boolean; stubbornTool?: boolean; holdLong?: bo
     const p = tools.get(pgid);
     return p === undefined ? { status: "absent" } : { status: "present", command: p.command, startedAtMs: p.startedAtMs };
   };
-  const snapshotProcesses = async (): Promise<ProcessEntry[]> => [
-    ...[...fakes.children.values()].filter((c) => !c.exited).map((c) => ({ pid: c.pid, ppid: 1, pgid: c.pid, startedAtMs: T0, command: CLI_PATH })),
-    ...tools.values(),
-  ];
+  const snapshotProcesses = async (): Promise<ProcessEntry[]> => {
+    const gate = o.snapshotGate?.();
+    if (gate !== undefined) await gate;
+    return [
+      ...[...fakes.children.values()].filter((c) => !c.exited).map((c) => ({ pid: c.pid, ppid: 1, pgid: c.pid, startedAtMs: T0, command: CLI_PATH })),
+      ...tools.values(),
+    ];
+  };
   const schedule = (fn: () => void, ms: number): CancelTimer => {
     if (ms === GRACE_MS) {
       graceTimers.push(fn);
@@ -108,7 +126,10 @@ function setup(o: { stubbornCli?: boolean; stubbornTool?: boolean; holdLong?: bo
     return immediate(fn, ms);
   };
   const deps: SessionManagerDeps = { ...fakes.deps, killGroup, isGroupAlive, readGroupLeader, snapshotProcesses, schedule };
-  const manager = new SessionManager({ store, authProvider: stubProvider(), loomwrightPath: pluginDir, stopGraceMs: GRACE_MS, baseEnv: { PATH: "/usr/bin" } }, deps);
+  const manager = new SessionManager(
+    { store, authProvider: stubProvider(), loomwrightPath: pluginDir, stopGraceMs: GRACE_MS, baseEnv: { PATH: "/usr/bin" }, ...o.options },
+    deps,
+  );
   const startTool = (cliPid: number): void => {
     tools.set(SHELL, { pid: SHELL, ppid: cliPid, pgid: SHELL, startedAtMs: T1, command: "/bin/zsh" });
     tools.set(SLEEP, { pid: SLEEP, ppid: SHELL, pgid: SHELL, startedAtMs: T1, command: "/bin/sleep" });
@@ -251,6 +272,92 @@ describe("POST /sessions/:id/stop and /kill", () => {
     expect(events(h.store, "session_group_killed", s.id).map((e) => e.payload["pgid"])).toEqual([SHELL]);
     expect(h.store.prepare<[number], string>("SELECT resolution FROM session_groups WHERE session_id = ?").pluck().all(s.id)).toEqual(["killed"]);
     expect(stopRequests(h.store).map((e) => e.payload)).toEqual([{ by: "owner", mode: "kill" }]);
+  });
+
+  // ---- a `starting` session (no system/init yet): Stop and Kill take effect ----
+
+  /** The SDK messages a held stand-in sends once the stop was accepted: its init, then a line of output. */
+  const lateInit = (call: FakeCall): SDKMessage => fakeMsg.init(call.options.sessionId ?? "unknown");
+  const lateSaid = (): SDKMessage =>
+    ({ type: "assistant", parent_tool_use_id: null, session_id: "s", message: { role: "assistant", content: [{ type: "text", text: "Once upon a time" }] } }) as unknown as SDKMessage;
+  const outputRows = (store: Store, id: number): number => store.prepare<[number], number>("SELECT count(*) FROM session_output WHERE session_id = ?").pluck().get(id) ?? 0;
+
+  it("stop on a starting session: accepted and recorded once; the init and assistant message its CLI sends in the grace move nothing; it ends stopped (owner_stop) without running a turn", async () => {
+    const held: FakeCall[] = [];
+    const seen: string[] = [];
+    const h = setup({
+      script: { script: (call) => void held.push(call) },
+      options: { onMessage: (_id, m) => void seen.push(m.type), onOutput: (id, m) => recordSessionOutput(h.store, id, m) },
+    });
+    const s = await h.manager.startSession(startParams(tmp));
+    expect(row(h.store, s.id).status).toBe("starting");
+    const { post } = await serve(h);
+
+    const answer = post(`/sessions/${s.id}/stop`);
+    await vi.waitFor(() => expect(h.graceTimers).toHaveLength(1));
+    expect(stopRequests(h.store).map((e) => e.payload)).toEqual([{ by: "owner", mode: "stop" }]);
+    // In the grace, after the stop was accepted: the CLI reports its init and says something.
+    const call = held[0] as FakeCall;
+    call.stream.push(lateInit(call));
+    call.stream.push(lateSaid());
+    await vi.waitFor(() => expect(seen).toEqual(["system", "assistant"]));
+    expect(row(h.store, s.id).status).toBe("starting");
+    h.graceTimers[0]?.();
+
+    const res = await answer;
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: s.id, status: "stopped", reason: "owner_stop" });
+    expect(events(h.store, "session_status", s.id).map((e) => e.payload)).toEqual([
+      { from: null, to: "starting" },
+      { from: "starting", to: "stopped", reason: "owner_stop" },
+    ]);
+    // No turn: nothing it sent is recorded as its output.
+    expect(outputRows(h.store, s.id)).toBe(0);
+    expect(stopRequests(h.store)).toHaveLength(1);
+    expect(h.fakes.allGroupsGone()).toBe(true);
+  });
+
+  it("kill on a starting session: accepted and recorded, no grace; the init and assistant message sent while it kills move nothing; it ends stopped (owner_kill)", async () => {
+    const held: FakeCall[] = [];
+    const seen: string[] = [];
+    let gate: Promise<void> | undefined;
+    let open: () => void = () => {};
+    const h = setup({
+      script: { script: (call) => void held.push(call) },
+      options: { onMessage: (_id, m) => void seen.push(m.type), onOutput: (id, m) => recordSessionOutput(h.store, id, m) },
+      snapshotGate: () => gate,
+    });
+    const s = await h.manager.startSession(startParams(tmp));
+    expect(row(h.store, s.id).status).toBe("starting");
+    const { post } = await serve(h);
+
+    // Hold the kill's last walk (before its group kills), so the CLI can speak after the kill is accepted.
+    gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const answer = post(`/sessions/${s.id}/kill`);
+    await vi.waitFor(() => expect(stopRequests(h.store).map((e) => e.payload)).toEqual([{ by: "owner", mode: "kill" }]));
+    const call = held[0] as FakeCall;
+    call.stream.push(lateInit(call));
+    call.stream.push(lateSaid());
+    await vi.waitFor(() => expect(seen).toEqual(["system", "assistant"]));
+    expect(row(h.store, s.id).status).toBe("starting");
+    expect(h.fakes.isGroupAlive(s.pgid as number)).toBe(true);
+    gate = undefined;
+    open();
+
+    const res = await within(answer, 5_000);
+    expect(res).not.toBe("pending");
+    expect((res as Response).status).toBe(200);
+    expect(await (res as Response).json()).toEqual({ id: s.id, status: "stopped", reason: "owner_kill" });
+    expect(h.graceTimers).toEqual([]);
+    expect(events(h.store, "session_status", s.id).map((e) => e.payload)).toEqual([
+      { from: null, to: "starting" },
+      { from: "starting", to: "stopped", reason: "owner_kill" },
+    ]);
+    expect(outputRows(h.store, s.id)).toBe(0);
+    expect(h.fakes.killed).toContainEqual([s.pgid, "SIGKILL"]);
+    expect(h.fakes.allGroupsGone()).toBe(true);
   });
 
   it("kill: a CLI group that can't be confirmed gone ends failed (kill_incomplete), flagged for the reaper", async () => {

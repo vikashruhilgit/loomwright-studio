@@ -3,8 +3,9 @@
 // with its enforced permissions apart from its guidance (AC3), create and
 // rename driven by the keyboard alone (AC9), the new card arriving from the
 // feed and never from a local insert (AC6), "Ask Wright to draft it" (AC7),
-// and a light and a dark screenshot of every designed state (AC10). Run
-// `npm run build` first.
+// a light and a dark screenshot of every designed state (AC10), and two
+// members of the same name told apart, with the off one last in the Crew
+// sidebar (`told-apart`). Run `npm run build` first.
 //
 // Loading cannot be held open by the fixture (a `FixtureRoute` answers
 // synchronously), so that one state is the real `App` in a gallery window
@@ -28,7 +29,7 @@ import { APP_DIR, launchApp, launchGallery } from "./electron-harness";
 import type { Gallery } from "./electron-harness";
 import { appEnv, cannedStatus, startFixtureKernel, unreachableDataDir } from "./fixture-kernel";
 import type { FixtureKernel } from "./fixture-kernel";
-import { MASON_APPROVAL, MASON_CHARTER, MASON_NEVER, MASON_TOOL_POLICY, TEAM_DATA_DIR, WRIGHT_RUNNING, teamFixture } from "./fixtures/team";
+import { MASON_APPROVAL, MASON_CHARTER, MASON_NEVER, MASON_TOOL_POLICY, REVIEWER_NEW, REVIEWER_OLD, TEAM_DATA_DIR, WRIGHT_RUNNING, teamFixture } from "./fixtures/team";
 import type { TeamFixture } from "./fixtures/team";
 
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-5-polish/team/", import.meta.url));
@@ -200,6 +201,46 @@ test("waiting on you: a crew member's pending approval is its task line", async 
   await expect(card(page, "Wright").getByTestId("team-card-task")).toHaveText(WRIGHT_RUNNING.text);
   await expect(card(page, "Ada").getByTestId("team-card-task")).toHaveText("idle");
   await screenshots(page, "waiting", testInfo);
+});
+
+test("told apart: two members of the same name show their ids on Team and in the Crew sidebar; the off Ada is last, dimmed and says off", async ({}, testInfo) => {
+  const page = await openTeam(teamFixture({ collision: true }));
+  const cards = grid(page).getByTestId("team-card");
+  await expect(cards).toHaveCount(4);
+  // Team keeps the kernel's order (Wright first); only the Crew sidebar moves off members last.
+  expect(await cards.evaluateAll((els) => els.map((el) => el.getAttribute("data-agent-id")))).toEqual(["wright", REVIEWER_OLD.id, "ada", REVIEWER_NEW.id]);
+  for (const reviewer of [REVIEWER_OLD, REVIEWER_NEW]) {
+    const c = grid(page).locator(`[data-agent-id="${reviewer.id}"]`);
+    await expect(c.getByTestId("team-card-id")).toHaveText(reviewer.id);
+    await expect(c.locator(".card-name")).toHaveAttribute("title", reviewer.id);
+  }
+  await expect(card(page, "Ada").getByTestId("team-card-id")).toHaveCount(0);
+  await expect(card(page, "Wright").getByTestId("team-card-id")).toHaveCount(0);
+  // Wright's running message is on its live session 12: still working.
+  await expect(card(page, "Wright").getByTestId("team-card-task")).toHaveText(WRIGHT_RUNNING.text);
+
+  const crew = page.getByRole("region", { name: "Crew" });
+  const rows = crew.getByRole("button");
+  await expect(rows).toHaveCount(3);
+  expect(await rows.evaluateAll((els) => els.map((el) => el.getAttribute("data-agent")))).toEqual([REVIEWER_OLD.id, REVIEWER_NEW.id, "ada"]);
+  for (const reviewer of [REVIEWER_OLD, REVIEWER_NEW]) {
+    const row = crew.locator(`[data-agent="${reviewer.id}"]`);
+    await expect(row.getByTestId("crew-id")).toHaveText(reviewer.id);
+    await expect(row).toHaveAttribute("title", reviewer.id);
+    await expect(row).toHaveAttribute("aria-label", `${reviewer.display_name} (${reviewer.id})`);
+  }
+  const ada = crew.getByRole("button", { name: "Ada, off", exact: true });
+  await expect(ada).toHaveClass(/(^|\s)off(\s|$)/);
+  await expect(ada.getByTestId("crew-off")).toHaveText("off");
+  await expect(ada.getByTestId("crew-id")).toHaveCount(0);
+  // Dimmed, never hidden: the avatar is shown at the dimmed opacity, the row's text stays at full
+  // opacity (AA contrast), and the row is still a working button.
+  expect(Number(await ada.locator(".bot").evaluate((el) => getComputedStyle(el).opacity))).toBeLessThan(1);
+  expect(Number(await ada.evaluate((el) => getComputedStyle(el).opacity))).toBe(1);
+  await expect(ada).toBeVisible();
+  await expect(ada).toBeEnabled();
+
+  await screenshots(page, "told-apart", testInfo);
 });
 
 test("empty: Wright alone is one card and the crew's empty note", async ({}, testInfo) => {

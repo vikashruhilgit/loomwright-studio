@@ -4,7 +4,10 @@
 // typed by `app/src/api/contract.ts`. Writes are recorded, and `POST /ask`
 // appends a `queued` row to the asked agent's thread; `replyAll` turns every
 // queued row `replied` (the spec then appends an `event_done` event, as the
-// kernel does when an ask's reply lands).
+// kernel does when an ask's reply lands). As the kernel does, a Set changes
+// the playbook's value (set by the owner) and writes `playbook_updated`, and
+// Turn off keeps the playbook in the list (read with `all=1`) as `disabled`
+// and writes `playbook_disabled`.
 //
 // Every string here stands in for untrusted kernel text; the charter display
 // and one summary hold markup on purpose, to show it renders inert.
@@ -177,6 +180,8 @@ export function chatFixture(scenario: ChatScenario = "populated"): ChatFixture {
       { type: "event", id: 102, at: AT(20), kind: "playbook_updated", summary: "Playbook pr-review updated (v2)", ref: { playbook_id: 3 } },
       { type: "event", id: 103, at: AT(30), kind: "trigger_fired", summary: "Trigger 8 fired (wake)", ref: { trigger_id: 8 } },
       { type: "message", ...row(32, "wright", "Set up a reviewer for this.", { status: "parked", detail: "admission_refused: cap; retry at 2026-10-22T09:00:00.000Z" }) },
+      // A kernel approval decision, queued to Wright with `source` approval:<id> (kernel/src/approvals/store.ts).
+      { type: "message", ...row(38, "wright", "approved approval 6: github_comment.", { source: "approval:6", reply_text: "Posted the review on vikashruhilgit/loomwright#398." }) },
       { type: "event", id: 104, at: AT(40), kind: "approval_requested", summary: "Approval 9 requested (kernel_agent_create) <b>not bold</b>", ref: { approval_id: 9 } },
     );
     pending.push(
@@ -194,7 +199,17 @@ export function chatFixture(scenario: ChatScenario = "populated"): ChatFixture {
   const threads: Record<string, ThreadItem[]> = { wright: wrightItems, pim: pimItems };
 
   const triggers: Trigger[] = scenario === "populated" ? [triggerOf(5, "cron", "Weekdays 09:00: look for review requests", true), triggerOf(8, "once", "Remind me at 08:30 to check the deploy", false)] : [];
-  const playbooks: PlaybookListing[] = scenario === "populated" ? [PLAYBOOK] : [];
+  // A copy per fixture: Set and Turn off change it.
+  const playbooks: PlaybookListing[] = scenario === "populated" ? [{ ...PLAYBOOK }] : [];
+  /** Replace playbook `id` with `change` applied, as the kernel's row reads next. */
+  const updatePlaybook = (id: number, change: Partial<PlaybookListing>): PlaybookListing | undefined => {
+    const at = playbooks.findIndex((p) => p.id === id);
+    const current = playbooks[at];
+    if (current === undefined) return undefined;
+    const next = { ...current, ...change, updated_at: new Date().toISOString() };
+    playbooks[at] = next;
+    return next;
+  };
   const notifications: NotificationRow[] =
     scenario === "populated"
       ? [
@@ -264,11 +279,28 @@ export function chatFixture(scenario: ChatScenario = "populated"): ChatFixture {
       // playbook's card moves after the new event.
       "POST /playbooks/:id/set": (req) => {
         writes.push({ path: req.path, params: req.params, body: req.body });
+        const { field, value } = (req.body ?? {}) as { readonly field?: unknown; readonly value?: unknown };
+        const raw = typeof value === "string" ? value : "";
+        const cleared = raw === "none";
+        const id = Number(req.params.id);
+        if (field === "priority") updatePlaybook(id, { priority: raw, priority_set_by: "owner" });
+        else if (field === "model") updatePlaybook(id, { model: cleared ? null : raw, model_set_by: "owner" });
+        else if (field === "token_limit") updatePlaybook(id, { token_limit_per_day: cleared ? null : Number(raw), token_limit_set_by: "owner" });
+        else if (field === "dedupe_key") updatePlaybook(id, { dedupe_key_spec: cleared ? null : JSON.stringify(raw.split(",").map((f) => f.trim())), dedupe_key_set_by: "owner" });
         nextEventId += 1;
         threads.wright!.push({ type: "event", id: nextEventId, at: new Date().toISOString(), kind: "playbook_updated", summary: `Playbook ${PLAYBOOK.slug} updated`, ref: { playbook_id: Number(req.params.id) } });
         return { status: 200, body: {} };
       },
-      "POST /playbooks/:id/off": record,
+      // As the kernel does (kernel/src/playbooks/store.ts): off sets `status = 'disabled'`, the playbook
+      // stays in `GET /playbooks?all=1`, and playbook_disabled is written.
+      "POST /playbooks/:id/off": (req) => {
+        writes.push({ path: req.path, params: req.params, body: req.body });
+        const off = updatePlaybook(Number(req.params.id), { status: "disabled" });
+        if (off === undefined) return { status: 404, body: { error: "not_found", message: `no playbook ${req.params.id}` } };
+        nextEventId += 1;
+        threads.wright!.push({ type: "event", id: nextEventId, at: new Date().toISOString(), kind: "playbook_disabled", summary: `Playbook ${off.slug} disabled`, ref: { playbook_id: off.id } });
+        return { status: 200, body: {} };
+      },
       "POST /playbooks/:id/run": (req) => {
         writes.push({ path: req.path, params: req.params, body: req.body });
         return { status: 200, body: { queue_id: 300, created: true, playbook: 3, version: 2, scheduled_at: new Date().toISOString() } };

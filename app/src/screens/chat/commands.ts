@@ -72,18 +72,22 @@ export function buildChatCommands(sources: ChatCommandSources): Command[] {
   for (const playbook of playbooks ?? []) {
     const params = { id: playbook.id };
     const changed = ["playbooks", "triggers", "messages"] as const;
-    commands.push({
-      id: `chat.playbook.${playbook.id}.run`,
-      title: `Run ${playbook.slug}`,
-      group: "Playbooks",
-      run: guarded(`chat.playbook.${playbook.id}.run`, async () => say(`Run ${playbook.slug}`)(await write(api, "/playbooks/:id/run", params, undefined, changed))),
-    });
-    commands.push({
-      id: `chat.playbook.${playbook.id}.off`,
-      title: `Turn off ${playbook.slug}`,
-      group: "Playbooks",
-      run: guarded(`chat.playbook.${playbook.id}.off`, async () => say(`Turn off ${playbook.slug}`)(await write(api, "/playbooks/:id/off", params, undefined, changed))),
-    });
+    // The list holds disabled playbooks too (`all=1`): the kernel runs only an enabled one, and a
+    // disabled one is already off, so it offers neither. Its priority is still settable.
+    if (playbook.status !== "disabled") {
+      commands.push({
+        id: `chat.playbook.${playbook.id}.run`,
+        title: `Run ${playbook.slug}`,
+        group: "Playbooks",
+        run: guarded(`chat.playbook.${playbook.id}.run`, async () => say(`Run ${playbook.slug}`)(await write(api, "/playbooks/:id/run", params, undefined, changed))),
+      });
+      commands.push({
+        id: `chat.playbook.${playbook.id}.off`,
+        title: `Turn off ${playbook.slug}`,
+        group: "Playbooks",
+        run: guarded(`chat.playbook.${playbook.id}.off`, async () => say(`Turn off ${playbook.slug}`)(await write(api, "/playbooks/:id/off", params, undefined, changed))),
+      });
+    }
     for (const priority of PRIORITIES) {
       commands.push({
         id: `chat.playbook.${playbook.id}.priority.${priority}`,
