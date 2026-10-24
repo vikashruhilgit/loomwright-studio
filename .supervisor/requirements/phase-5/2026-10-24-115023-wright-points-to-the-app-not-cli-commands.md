@@ -59,3 +59,9 @@ kernel/test/approvals.test.ts
 kernel/src/brain/templates.ts
 kernel/test/brain.test.ts
 docs/architecture/brain.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-24T14:29:48Z
+- **Brief:** .supervisor/jobs/done/2026-10-24-wright-points-to-the-app-not-cli-commands.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/127
