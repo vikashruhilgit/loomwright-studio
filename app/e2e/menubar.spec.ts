@@ -546,6 +546,26 @@ test("AC4 + AC5 (Recent): of 25 notifications 20 rows show and scroll inside the
   expect(Math.abs((rowAfter?.y ?? -1) - (rowBefore?.y ?? -2)), "row #25 did not move").toBeLessThan(1);
   const cardAfter = await card.boundingBox();
   expect(cardAfter?.height).toBe(cardBefore?.height);
+
+  // So the new row is above the view: the hint says so, floating over the list (the height above already includes it).
+  const newRow = page.getByTestId("menubar-recent").locator('[role="option"][data-key="26"]');
+  const listBox = await list.boundingBox();
+  const hiddenRow = await newRow.boundingBox();
+  expect((hiddenRow?.y ?? 0) + (hiddenRow?.height ?? 0), "row #26 landed above the list's view").toBeLessThanOrEqual((listBox?.y ?? 0) + 1);
+  const hint = page.getByTestId("menubar-recent-new");
+  await expect(hint).toBeVisible();
+  await expect(hint).toHaveText("1 new notification above");
+  expect(await hint.getAttribute("data-action")).toBeNull();
+  await expect(page.getByTestId("screen-menubar")).toHaveAttribute("data-state", "idle");
+  await expect(page.getByTestId("menubar-stale")).toHaveCount(0);
+  // Activating it brings the new row into view, clears the hint, and puts focus on the row.
+  await hint.click();
+  await expect(hint).toHaveCount(0);
+  await expect.poll(() => list.evaluate((el) => el.scrollTop)).toBe(0);
+  const shownRow = await newRow.boundingBox();
+  expect(shownRow?.y ?? -1, "row #26 is in the list's view").toBeGreaterThanOrEqual((listBox?.y ?? 0) - 1);
+  await expect(newRow).toBeFocused();
+  expect((await card.boundingBox())?.height).toBe(cardBefore?.height);
 });
 
 // ---- evidence ------------------------------------------------------------------------------

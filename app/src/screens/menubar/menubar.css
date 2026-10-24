@@ -160,8 +160,26 @@
 .menubar-recent > .menubar-heading {
   padding-bottom: var(--space-1);
 }
+.menubar-recent-body {
+  position: relative;
+  min-height: 0;
+}
 .menubar-recent-list {
   max-height: calc(44px * 5.5);
+}
+/* "N new notifications above": floats over the list's top edge, so it never moves a row or the panel's height. */
+.menubar-recent-new {
+  position: absolute;
+  top: var(--space-1);
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.btn.menubar-recent-new-button {
+  pointer-events: auto;
+  box-shadow: var(--shadow-2);
 }
 .menubar-recent-list .list-empty {
   padding: var(--space-1) var(--space-3) var(--space-2);

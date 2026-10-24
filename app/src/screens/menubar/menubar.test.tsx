@@ -30,7 +30,7 @@ import {
   createNavigateQueue,
 } from "./MenubarHost";
 import type { KernelAction, MenubarActions, NavigateQueue } from "./MenubarHost";
-import { MenubarPanel, RECENT_EMPTY_TEXT, RECENT_LIMIT, TRAY_ONLY_NOTE, ageText, recentItem } from "./MenubarPanel";
+import { MenubarPanel, RECENT_EMPTY_TEXT, RECENT_LIMIT, TRAY_ONLY_NOTE, ageText, newAboveText, recentItem } from "./MenubarPanel";
 
 // ---- fixtures ------------------------------------------------------------------------------
 
@@ -937,6 +937,72 @@ describe("the Recent list", () => {
     await waitFor(() => expect(rowKeys()).toEqual(["4", "3", "2", "1"]));
     // The same nodes: React kept the rows (keyed by id), so the List's scroll anchoring has its anchor.
     expect(recentRows().slice(1)).toEqual(before);
+  });
+
+  /** Makes the store live, then stubs the Recent list's `scrollTop` (jsdom has no layout) at `top`; returns the list. */
+  async function liveWithScroll(m: Mounted, top: number): Promise<{ readonly list: HTMLElement; readonly scroll: { top: number } }> {
+    act(() => m.fake.emit({ type: "event", id: 1, at: "2026-10-23T09:00:00.000Z", kind: "event_done", session_id: null, task_id: null, payload: {} }));
+    await settle();
+    await act(async () => new Promise((done) => setTimeout(done, 300)));
+    const list = screen.getByTestId("menubar-recent").querySelector<HTMLElement>(".menubar-recent-list") as HTMLElement;
+    const scroll = { top };
+    Object.defineProperty(list, "scrollTop", { configurable: true, get: () => scroll.top, set: (value: number) => (scroll.top = value) });
+    return { list, scroll };
+  }
+
+  async function arrive(m: Mounted, id: number, eventId: number): Promise<void> {
+    const reads = m.fake.requestsTo("GET /notifications").length;
+    m.kernel.notifications.set(id, { ...notification(id, APPROVAL_SOURCE, `Approval ${id}: Bash`), created_at: minutesAgo(0) });
+    act(() => m.fake.emit({ type: "event", id: eventId, at: "2026-10-23T09:00:01.000Z", kind: "notification_created", session_id: null, task_id: null, payload: {} }));
+    await waitFor(() => expect(m.fake.requestsTo("GET /notifications").length).toBeGreaterThan(reads));
+    await waitFor(() => expect(rowKeys()[0]).toBe(String(id)));
+  }
+
+  it("AC4: a row that lands above the view (list not at its top) shows the new-above hint; activating it scrolls to the top, clears it and focuses the new row", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { list, scroll } = await liveWithScroll(m, 44);
+    const before = recentRows();
+    await arrive(m, 7, 2);
+    const hint = await screen.findByTestId("menubar-recent-new");
+    expect(hint.textContent).toBe("1 new notification above");
+    expect(newAboveText(2)).toBe("2 new notifications above");
+    // Anchoring is untouched: the same row nodes, and the hint is no action the focus hand-off walks, nor a panel state.
+    expect(recentRows().slice(1)).toEqual(before);
+    expect(hint.hasAttribute("data-action")).toBe(false);
+    expect(hint.closest("[aria-live='polite']")).not.toBeNull();
+    expect(panelState()).toBe("idle");
+    expect(screen.queryByTestId("menubar-stale")).toBeNull();
+    // A second arrival while the hint shows counts up.
+    await arrive(m, 8, 3);
+    await waitFor(() => expect(screen.getByTestId("menubar-recent-new").textContent).toBe("2 new notifications above"));
+    fireEvent.click(screen.getByTestId("menubar-recent-new"));
+    expect(scroll.top).toBe(0);
+    expect(document.activeElement).toBe(recentRows()[0]);
+    // The browser's scroll event (jsdom fires none for a scrollTop write) is what clears the hint.
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    expect(document.activeElement).toBe(recentRows()[0]);
+    expect(recentRows()[0]?.dataset.key).toBe("8");
+  });
+
+  it("AC4: scrolling the list to its top clears the hint; a row arriving while the list is at its top shows no hint", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { list, scroll } = await liveWithScroll(m, 88);
+    await arrive(m, 7, 2);
+    await screen.findByTestId("menubar-recent-new");
+    // Scrolled part way up: the new row is still above the view, the hint stays.
+    scroll.top = 20;
+    fireEvent.scroll(list);
+    expect(screen.queryByTestId("menubar-recent-new")).not.toBeNull();
+    scroll.top = 0;
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    // At the top the new row is in view: no hint.
+    await arrive(m, 8, 3);
+    await settle();
+    expect(screen.queryByTestId("menubar-recent-new")).toBeNull();
   });
 
   it(`AC5: more than ${RECENT_LIMIT} notifications show exactly the newest ${RECENT_LIMIT}`, async () => {

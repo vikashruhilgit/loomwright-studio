@@ -14,7 +14,11 @@
 //   `GET /notifications/:id` and maps it through `./links.ts` exactly as for a
 //   clicked `loomwright-studio://` link. The panel never maps a notification
 //   itself. A failed list read is the section's own line: it never changes
-//   the panel's state or its stale line, which read only status and approvals;
+//   the panel's state or its stale line, which read only status and approvals.
+//   A row that arrives while the list is scrolled away from its top lands above
+//   the view (the List's scroll anchoring keeps the rows on screen where they
+//   were), so a "new above" hint floats over the list's top edge (no layout
+//   shift); activating it, or scrolling to the top, shows the row and clears it;
 // - one line saying Open and Quit live in the menu-bar icon's menu.
 //
 // The state shown is only what the kernel said: an action's answer never
@@ -44,6 +48,11 @@ export type PanelView = "no-bridge" | "loading" | "error" | MenubarState;
 
 /** How many notifications Recent shows. The kernel's list answers up to 50 by default, so the cap is the panel's. */
 export const RECENT_LIMIT = 20;
+
+/** The hint's words for `count` rows that arrived above the view. */
+export function newAboveText(count: number): string {
+  return count === 1 ? "1 new notification above" : `${count} new notifications above`;
+}
 
 /** Recent's words when the kernel has no notification. */
 export const RECENT_EMPTY_TEXT = "No notifications yet";
@@ -158,11 +167,66 @@ function Recent({ api, queue }: { readonly api: StudioBridge; readonly queue: Na
   const notifications = useResource("notifications", api);
   const now = useNow();
   const headingId = useId();
+  const sectionRef = useRef<HTMLElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  /** The row keys at the last commit; `null` before the first. An arrival into an empty list is never hinted (nothing was scrolled). */
+  const prevKeysRef = useRef<readonly string[] | null>(null);
+  /** How many rows arrived above the view since the list was last at its top. */
+  const [unseen, setUnseen] = useState(0);
   const data = notifications?.data;
   const error = notifications?.error;
   const items = useMemo(() => (data?.notifications ?? []).slice(0, RECENT_LIMIT).map((row) => recentItem(row, now)), [data, now]);
+
+  // Runs after the List's own layout effect (children first), so the anchoring has already moved `scrollTop`:
+  // a list not at its top after rows were inserted above the old first row has those rows out of view.
+  useLayoutEffect(() => {
+    const keys = items.map((item) => item.key);
+    const prev = prevKeysRef.current;
+    prevKeysRef.current = keys;
+    if (prev === null || prev.length === 0) return;
+    const seen = new Set(prev);
+    let arrived = 0;
+    for (const key of keys) {
+      if (seen.has(key)) break;
+      arrived += 1;
+    }
+    const list = bodyRef.current?.querySelector<HTMLElement>(".menubar-recent-list");
+    if (arrived > 0 && list !== null && list !== undefined && list.scrollTop > 0) setUnseen((count) => count + arrived);
+  }, [items]);
+
+  // Reaching the top, by the hint or by the owner's own scroll, shows every new row: the hint clears.
+  // Scroll does not bubble, so the section listens in the capture phase.
+  useEffect(() => {
+    const section = sectionRef.current;
+    if (section === null) return;
+    const onScroll = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || !target.classList.contains("menubar-recent-list") || target.scrollTop > 0) return;
+      // A hint that holds focus is about to go: focus the newest row, never <body>.
+      if (document.activeElement?.closest(".menubar-recent-new") != null) target.querySelector<HTMLElement>('[role="option"]')?.focus({ preventScroll: true });
+      setUnseen(0);
+    };
+    section.addEventListener("scroll", onScroll, true);
+    return () => section.removeEventListener("scroll", onScroll, true);
+  }, []);
+
+  const showNewest = () => {
+    const list = bodyRef.current?.querySelector<HTMLElement>(".menubar-recent-list");
+    if (list === null || list === undefined || list.scrollTop <= 0) {
+      setUnseen(0);
+      return;
+    }
+    // No state change here: a commit before the List's own scroll handler re-measures its anchor would scroll
+    // the rows straight back. The scroll this causes reaches the listener above, which clears the hint (and its
+    // render is scheduled after this scroll event's dispatch, so the List's onScroll has measured by then).
+    list.scrollTop = 0;
+    // The hint is about to go under focus: hand focus to the newest row, never to <body>.
+    list.querySelector<HTMLElement>('[role="option"]')?.focus({ preventScroll: true });
+  };
+  const hinted = Math.min(unseen, items.length);
+
   return (
-    <section className="menubar-recent" aria-labelledby={headingId} data-testid="menubar-recent">
+    <section className="menubar-recent" aria-labelledby={headingId} data-testid="menubar-recent" ref={sectionRef}>
       <h3 className="menubar-heading" id={headingId}>
         Recent
       </h3>
@@ -171,16 +235,26 @@ function Recent({ api, queue }: { readonly api: StudioBridge; readonly queue: Na
           Couldn't read the notifications. {errorText(error)}
         </p>
       ) : (
-        <List
-          className="menubar-recent-list"
-          label="Recent notifications, newest first"
-          items={items}
-          loading={data === undefined}
-          emptyText={RECENT_EMPTY_TEXT}
-          // The host's own path for a link: one GET /notifications/:id, then `linkTarget`. The queue drops the same
-          // route again within ROUTE_DEDUPE_MS, so a second open of one row inside 2 s does nothing (the first navigated).
-          onOpen={(item) => queue.receive(notificationRoute(Number(item.key)))}
-        />
+        <div className="menubar-recent-body" ref={bodyRef}>
+          <List
+            className="menubar-recent-list"
+            label="Recent notifications, newest first"
+            items={items}
+            loading={data === undefined}
+            emptyText={RECENT_EMPTY_TEXT}
+            // The host's own path for a link: one GET /notifications/:id, then `linkTarget`. The queue drops the same
+            // route again within ROUTE_DEDUPE_MS, so a second open of one row inside 2 s does nothing (the first navigated).
+            onOpen={(item) => queue.receive(notificationRoute(Number(item.key)))}
+          />
+          {/* Over the list's top edge, so showing it moves no row; the live region is always there, so the arrival is announced. */}
+          <div className="menubar-recent-new" aria-live="polite">
+            {hinted > 0 ? (
+              <Button variant="secondary" size="row" className="menubar-recent-new-button" data-testid="menubar-recent-new" onClick={showNewest}>
+                {newAboveText(hinted)}
+              </Button>
+            ) : null}
+          </div>
+        </div>
       )}
       {data !== undefined && error !== undefined ? (
         <p className="menubar-meta menubar-recent-line" role="status" data-testid="menubar-recent-error">
