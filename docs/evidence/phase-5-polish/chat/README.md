@@ -10,7 +10,7 @@ Screenshots of every designed Chat state, in light and dark, taken from the buil
 | Loading: the thread read has not answered | `chat-loading-light.png` | `chat-loading-dark.png` | `renderChat`, `S.force.loading` branch (three skeleton rows) |
 | Error: the kernel-unreachable band above the screen's error state | `chat-error-light.png` | `chat-error-dark.png` | `bands('chat')` plus `renderChat` with the thread unavailable |
 | Waiting on you: a pending approval inline at the end | `chat-waiting-light.png` | `chat-waiting-dark.png` | `renderChat`, `inlineApprovals(a)` |
-| Populated: messages, event lines, a playbook card (with its trigger), a fired trigger's card, a parked row, an approval and a charter card | `chat-populated-light.png` | `chat-populated-dark.png` | `renderChat` thread with `turnHTML` (`t.ev` lines, `t.draft` and `t.charter` cards) and `inlineApprovals(a)` |
+| Populated: messages, event lines, a playbook card (with its trigger), a trigger's `registered` and `fired` lines with its card (schedule, next fire, `off · spent`) under the newer one, a parked row, an approval and a charter card | `chat-populated-light.png` | `chat-populated-dark.png` | `renderChat` thread with `turnHTML` (`t.ev` lines, `t.draft` and `t.charter` cards) and `inlineApprovals(a)` |
 | Crew thread: Pim's thread, with a quoted delegation from Wright, the workspace picker, and Pim selected under Crew | `chat-crew-thread-light.png` | `chat-crew-thread-dark.png` | `renderChat` with `S.chatWith` a specialist, and `#crewnav` with that row `sel` |
 
 ## How to regenerate

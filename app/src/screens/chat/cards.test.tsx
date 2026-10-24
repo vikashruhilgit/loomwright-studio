@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 // Chat's cards: the playbook card (provenance, Set, Run now, Turn off, no
-// Enable), the trigger card (On / Off, needs_confirmation), and the charter
+// Enable), the trigger card (schedule, next fire, on / off / spent, On / Off,
+// needs_confirmation), and the charter
 // card (Create, Edit in English, Deny).
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { ok } from "../../store/fake-bridge";
 import { LAST_DRY_RUN_GAP } from "./cards";
-import { inFlightGuard } from "./model";
-import { approval, eventItem, kit, playbook, renderChat, resetChat, thread, trigger } from "./testkit";
+import { inFlightGuard, triggerSchedule, triggerState, when } from "./model";
+import { T0, approval, eventItem, kit, playbook, renderChat, resetChat, thread, trigger } from "./testkit";
 import type { Kit } from "./testkit";
 
 afterEach(resetChat);
@@ -247,6 +249,90 @@ describe("cards", () => {
     await focusAndPress(await within(card).findByRole("group"), "Turn on and fire");
     await waitFor(() => expect(within(card).queryByRole("group")).toBeNull());
     expect(document.activeElement).toBe(within(card).getByRole("button", { name: "On" }));
+  });
+
+  it("a trigger card shows its schedule and its next fire", async () => {
+    const at = "2026-10-22T17:00:00.000Z";
+    const k = kit({
+      threads: {
+        wright: thread([
+          eventItem(1, "trigger_registered", "Trigger 5 registered", { trigger_id: 5 }),
+          eventItem(2, "trigger_registered", "Trigger 6 registered", { trigger_id: 6 }),
+          eventItem(3, "trigger_registered", "Trigger 7 registered", { trigger_id: 7 }),
+        ]),
+      },
+      triggers: [
+        trigger(5, { kind: "once", spec: { at }, next_fire_at: at }),
+        trigger(6, { spec: { cron: "0 9 * * 1-5", tz: "Asia/Kolkata" } }),
+        trigger(7, { spec: {}, enabled: false, next_fire_at: null }),
+      ],
+    });
+    await renderChat(k);
+    const once = await screen.findByRole("region", { name: "Trigger 5" });
+    expect(once.querySelector('[data-field="Schedule"]')?.textContent).toBe(`once at ${when(at)}`);
+    expect(once.querySelector('[data-field="Next fire"]')?.textContent).toBe(`next fire ${when(at)}`);
+    expect(once.querySelector('[data-field="Next fire"] time')?.getAttribute("dateTime")).toBe(at);
+    const cron = screen.getByRole("region", { name: "Trigger 6" });
+    expect(cron.querySelector('[data-field="Schedule"]')?.textContent).toBe("cron 0 9 * * 1-5 (Asia/Kolkata)");
+    // An unreadable spec reads as the kind alone; no next fire says so.
+    const off = screen.getByRole("region", { name: "Trigger 7" });
+    expect(off.querySelector('[data-field="Schedule"]')?.textContent).toBe("cron");
+    expect(off.querySelector('[data-field="Next fire"]')?.textContent).toBe("no next fire");
+    expect(off.querySelector("time")).toBeNull();
+  });
+
+  it("the schedule reads the untrusted spec by type only", () => {
+    expect(triggerSchedule(trigger(1, { kind: "once", spec: { at: 42 } }))).toBe("once");
+    expect(triggerSchedule(trigger(1, { spec: { cron: "* * * * *" } }))).toBe("cron");
+    expect(triggerSchedule(trigger(1, { spec: null }))).toBe("cron");
+    expect(triggerSchedule(trigger(1, { spec: "0 9 * * *" }))).toBe("cron");
+    expect(triggerSchedule(trigger(1, { kind: "once", spec: { at: "<b>not a time</b>" } }))).toBe("once at <b>not a time</b>");
+  });
+
+  it("a trigger's state: on, off, or spent as far as the row shows it", () => {
+    const later = "2026-10-22T09:00:00.000Z";
+    expect(triggerState(trigger(1))).toBe("on");
+    expect(triggerState(trigger(1, { kind: "once" }))).toBe("on");
+    // A cron that is off is off, never spent.
+    expect(triggerState(trigger(1, { enabled: false }))).toBe("off");
+    // A once off and never toggled: spent (fired, or its instant recorded as a miss).
+    expect(triggerState(trigger(1, { kind: "once", enabled: false }))).toBe("spent");
+    // A once someone turned off (after its last fire, or before any): off.
+    expect(triggerState(trigger(1, { kind: "once", enabled: false, enabled_changed_by: "owner", enabled_changed_at: later }))).toBe("off");
+    expect(triggerState(trigger(1, { kind: "once", enabled: false, enabled_changed_by: "owner", enabled_changed_at: later, last_fired_at: T0 }))).toBe("off");
+    // A once turned on, then fired: spent.
+    expect(triggerState(trigger(1, { kind: "once", enabled: false, enabled_changed_by: "owner", enabled_changed_at: T0, last_fired_at: later }))).toBe("spent");
+  });
+
+  it("a fired once never toggled shows spent, with On still offered, and its fired line still shows", async () => {
+    const k = kit({
+      threads: { wright: thread([eventItem(1, "trigger_registered", "Trigger 5 registered", { trigger_id: 5 }), eventItem(2, "trigger_fired", "Trigger 5 fired (notify)", { trigger_id: 5 })]) },
+      triggers: [trigger(5, { kind: "once", enabled: false, next_fire_at: null, last_fired_at: T0, last_result: "fired" })],
+    });
+    const view = await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Trigger 5" });
+    expect(card.getAttribute("data-state")).toBe("spent");
+    expect(card.querySelector(".chat-tag")?.textContent).toBe("off · spent");
+    expect(within(card).getAllByRole("button").map((b) => b.textContent)).toEqual(["On", "Off"]);
+    expect(view.container.querySelector('[data-item="event:2"]')?.textContent).toContain("Trigger 5 fired (notify)");
+    expect(card.closest("li")?.previousElementSibling?.getAttribute("data-item")).toBe("event:2");
+  });
+
+  it("Off sends one write and the same card shows off once the triggers list answers it off, with no reload", async () => {
+    const k = kit({ threads: { wright: thread([eventItem(1, "trigger_registered", "Trigger 5 registered", { trigger_id: 5 })]) }, triggers: [trigger(5)] });
+    k.state.posts["POST /triggers/:id/off"] = () => {
+      k.state.triggers = [trigger(5, { enabled: false, enabled_changed_by: "owner", enabled_changed_at: "2026-10-22T08:05:00.000Z" })];
+      return ok({ trigger: k.state.triggers[0], changed: true });
+    };
+    await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Trigger 5" });
+    expect(card.getAttribute("data-state")).toBe("on");
+    await press(card, "Off");
+    await waitFor(() => expect(card.getAttribute("data-state")).toBe("off"));
+    expect(k.posted("POST /triggers/:id/off").map((r) => r.params)).toEqual([{ id: 5 }]);
+    expect(card.querySelector(".chat-tag")?.textContent).toBe("off");
+    // The same element, not a remount.
+    expect(screen.getByRole("region", { name: "Trigger 5" })).toBe(card);
   });
 
   it("a playbook card's trigger shows inside it, not again on its own", async () => {

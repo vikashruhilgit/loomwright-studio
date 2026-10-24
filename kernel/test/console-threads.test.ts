@@ -270,14 +270,34 @@ describe("GET /threads/:agent", () => {
     addApproval(store, "mason", masonSession, 5);
     addEvent(store, "agent_renamed", 6, { id: "mason", old: "Mason", new: "Stone" });
     const masonTrigger = addTrigger(store, "mason");
+    addEvent(store, "trigger_registered", 7, { trigger_id: masonTrigger, owning_agent: "mason", kind: "once", action: "notify" }, wrightSession);
     addEvent(store, "trigger_fired", 7, { trigger_id: masonTrigger, action: "notify" });
 
     const wright = await page(store, "/threads/wright");
     expect(wright.items).toEqual([]);
     expect(wright.pending_approvals).toEqual([]);
     const mason = await page(store, "/threads/mason");
-    expect(mason.items.map((i) => i.kind)).toEqual(["session_status", "playbook_created", "approval_requested", "agent_renamed", "trigger_fired"]);
+    expect(mason.items.map((i) => i.kind)).toEqual(["session_status", "playbook_created", "approval_requested", "agent_renamed", "trigger_registered", "trigger_fired"]);
     expect(mason.pending_approvals).toHaveLength(1);
+  });
+
+  it("a trigger has its card from registration: mason's trigger_registered is in mason's thread as `Trigger <id> registered`, ref {trigger_id}, and not in Wright's", async () => {
+    const store = openStore();
+    addAgent(store, "mason");
+    // Wright's session registers the trigger for mason: the tie is the trigger's owner, not the session's agent.
+    const wrightSession = addSession(store, "wright");
+    const trigger = addTrigger(store, "mason");
+    const registered = addEvent(
+      store,
+      "trigger_registered",
+      1,
+      { trigger_id: trigger, owning_agent: "mason", kind: "once", spec: { at: iso(60) }, action: "notify", text: "hello", created_by: "agent", next_fire_at: iso(60) },
+      wrightSession,
+    );
+
+    const mason = await page(store, "/threads/mason");
+    expect(eventsOf(mason).map((e) => [e.id, e.kind, e.summary, e.ref])).toEqual([[registered, "trigger_registered", `Trigger ${trigger} registered`, { trigger_id: trigger }]]);
+    expect((await page(store, "/threads/wright")).items).toEqual([]);
   });
 
   it("AC5: limit outside 1-200 is 400 invalid_limit; 1 and 200 are served", async () => {
@@ -333,12 +353,15 @@ describe("GET /threads/:agent", () => {
     addEvent(store, "agent_renamed", 8, { id: "mason", old: "Mason", new: "Stone\u202e" });
     addEvent(store, "agent_settings_set", 9, { id: "mason", field: "model", old: null, new: "x" });
     addEvent(store, "agent_status_changed", 10, { id: "mason", old: "active", new: "off", by: "owner" });
+    addEvent(store, "trigger_registered", 11, { trigger_id: trigger, owning_agent: "mason", kind: "once", spec: {}, action: "notify", text: "hello", created_by: "agent" }, session);
     addEvent(store, "trigger_fired", 11, { trigger_id: trigger, action: "notify" });
     // Mistyped: a payload that is not JSON, and one whose fields have the wrong types.
     store.prepare("INSERT INTO events (at, kind, actor, session_id, payload_json) VALUES (?, 'session_status', 'kernel', ?, 'not json')").run(iso(12), session);
     addEvent(store, "session_status", 13, { from: "running", to: "stopped", reason: 7 }, session);
     addEvent(store, "agent_renamed", 14, { id: "mason", new: ["Stone"] });
     addEvent(store, "trigger_fired", 15, { trigger_id: trigger, action: 5 });
+    // A trigger id stored as text: SQLite's tie still finds the row, the summary reads only a typed id.
+    addEvent(store, "trigger_registered", 16, { trigger_id: String(trigger), owning_agent: "mason" }, session);
 
     const body = await page(store, "/threads/mason");
     expect(eventsOf(body).map((e) => [e.kind, e.summary, e.ref])).toEqual([
@@ -353,13 +376,15 @@ describe("GET /threads/:agent", () => {
       ["agent_renamed", "Agent mason renamed from Mason to Stone\\u202e", { agent_id: "mason" }],
       ["agent_settings_set", "Agent mason setting model set", { agent_id: "mason" }],
       ["agent_status_changed", "Agent mason status set to off", { agent_id: "mason" }],
+      ["trigger_registered", `Trigger ${trigger} registered`, { trigger_id: trigger }],
       ["trigger_fired", `Trigger ${trigger} fired (notify)`, { trigger_id: trigger }],
       ["session_status", `Session ${session} ended: stopped`, { session_id: session }],
       ["agent_renamed", "Agent mason renamed", { agent_id: "mason" }],
       ["trigger_fired", `Trigger ${trigger} fired`, { trigger_id: trigger }],
+      ["trigger_registered", "A trigger registered", { trigger_id: null }],
     ]);
     // The non-JSON payload has no `to`, so it is neither a start nor an end: not a card.
-    expect(eventsOf(body)).toHaveLength(15);
+    expect(eventsOf(body)).toHaveLength(17);
     expect(new Set(eventsOf(body).map((e) => e.kind))).toEqual(new Set(Object.keys(THREAD_EVENT_KINDS)));
     // Decided approvals are not pending.
     expect(body.pending_approvals).toEqual([]);
