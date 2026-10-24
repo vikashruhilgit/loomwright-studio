@@ -69,3 +69,9 @@ app/src/screens/chat/chat.css
 app/src/store/resources.ts
 app/e2e/chat.spec.ts
 app/e2e/fixtures/chat.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-24T20:22:16Z
+- **Brief:** .supervisor/jobs/done/2026-10-24-playbook-card-every-field-honestly.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/134
