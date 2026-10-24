@@ -995,6 +995,315 @@ describe("stopSession (AC4, fakes)", () => {
     const err = await manager.stopSession(9_999).catch((e: unknown) => e);
     expect((err as SessionError).code).toBe("not_found");
   });
+
+  // ---- a `starting` session whose spawn has not reported its pgid (both orders, no orphan) ----
+
+  /**
+   * A spawner whose `onSpawn` is held until `release()`: the session stays
+   * `starting` with no pgid, as it would if the SDK spawned after `query()`
+   * returned. Its fake CLI never exits on its own (not on stdin EOF, not when
+   * its stream ends): only a kill of its group ends it, so a group the kernel
+   * never killed is still alive at the end. `survives`: every SIGKILL is
+   * delivered but the group never goes (a kill that can't confirm it gone).
+   */
+  function heldSpawn(o: { survives?: boolean } = {}) {
+    const children = new Map<number, FakeChild>();
+    const held: { readonly child: FakeChild; readonly hooks: SpawnHooks }[] = [];
+    const killed: [number, string][] = [];
+    let nextPid = 2_100_000_000;
+    const spawn: SpawnFn = (_o, hooks) => {
+      const child = new FakeChild(nextPid++);
+      held.push({ child, hooks });
+      return child as unknown as SpawnedProcess;
+    };
+    /** The spawn reports: its pid is its group, and `onSpawn` runs now. */
+    const release = (i = 0): FakeChild => {
+      const h = held[i];
+      if (h === undefined) throw new Error(`no spawn ${i}`);
+      children.set(h.child.pid, h.child);
+      h.hooks.onSpawn?.(h.child.pid);
+      return h.child;
+    };
+    const killGroup = (pgid: number, signal: NodeJS.Signals): boolean => {
+      killed.push([pgid, signal]);
+      const child = children.get(pgid);
+      if (child === undefined || child.exited) return false;
+      if (o.survives !== true) child.exit(null, signal);
+      return true;
+    };
+    const isGroupAlive = (pgid: number): boolean => {
+      const child = children.get(pgid);
+      return child !== undefined && !child.exited;
+    };
+    const anyAlive = (): boolean => held.some((h) => !h.child.exited);
+    /** End every fake CLI still standing (a surviving group's test cleanup). */
+    const exitAll = (): void => {
+      for (const h of held) if (!h.child.exited) h.child.exit(null, "SIGKILL");
+    };
+    return { held, release, killed, anyAlive, exitAll, deps: { spawn, killGroup, isGroupAlive } satisfies Partial<SessionManagerDeps> };
+  }
+
+  /** The fake CLI never exits on its own: its stream ending does not end it. */
+  const immortal = ({ stream }: QueryCall): void => {
+    stream.onEnd = () => {};
+  };
+
+  const STARTING_MODES = [
+    ["stop", "owner_stop"],
+    ["kill", "owner_kill"],
+  ] as const;
+
+  for (const [mode, reason] of STARTING_MODES) {
+    it(`a ${mode} accepted before the spawn reports kills the group in onSpawn, its first live moment, and ends stopped (${reason}), nothing left alive`, async () => {
+      const h = heldSpawn();
+      const { manager, store } = harness({ deps: h.deps, endOnInputEnd: false, script: immortal });
+      const handle = await manager.startSession(startParams());
+      expect(handle.pgid).toBeUndefined();
+      expect(row(store, handle.id)).toMatchObject({ status: "starting", pgid: null });
+
+      const stopping = manager.stopSession(handle.id, { mode });
+      // Past the 30 ms grace (Stop), into the stop's bounded wait for the spawn (LEADER_EXIT_WAIT_MS, 1 s).
+      await new Promise((r) => setTimeout(r, 60));
+      expect(row(store, handle.id).status).toBe("starting");
+      const child = h.release();
+      // Killed inside onSpawn, synchronously: before the stop has finished.
+      expect(h.killed).toContainEqual([child.pid, "SIGKILL"]);
+      expect(child.exited).toBe(true);
+
+      expect(await stopping).toBe("stopped");
+      expect(await handle.done).toBe("stopped");
+      expect(row(store, handle.id)).toMatchObject({ status: "stopped", pgid: child.pid, kill_incomplete_at: null });
+      expect(events(store, "session_status").map((e) => e.payload)).toEqual([
+        { from: null, to: "starting" },
+        { from: "starting", to: "stopped", reason },
+      ]);
+      expect(events(store, "session_spawn_after_stop").map((e) => e.payload)).toEqual([{ pgid: child.pid, attempt: 1, session_ended: false }]);
+      expect(h.anyAlive()).toBe(false);
+    });
+
+    it(`a ${mode} after the spawn reported (the reverse order) kills the group and ends stopped (${reason}), nothing left alive`, async () => {
+      const h = heldSpawn();
+      const { manager, store } = harness({ deps: h.deps, endOnInputEnd: false, script: immortal });
+      const handle = await manager.startSession(startParams());
+      const child = h.release();
+      expect(row(store, handle.id)).toMatchObject({ status: "starting", pgid: child.pid });
+      expect(h.killed).toEqual([]);
+
+      expect(await manager.stopSession(handle.id, { mode })).toBe("stopped");
+      expect(h.killed).toContainEqual([child.pid, "SIGKILL"]);
+      expect(child.exited).toBe(true);
+      expect(events(store, "session_status").map((e) => e.payload)).toEqual([
+        { from: null, to: "starting" },
+        { from: "starting", to: "stopped", reason },
+      ]);
+      // A spawn that reported before the stop is the ordinary kill: no late-spawn record.
+      expect(events(store, "session_spawn_after_stop")).toEqual([]);
+      expect(h.anyAlive()).toBe(false);
+    });
+  }
+
+  it("a kill accepted before a late SDK spawn (spawnClaudeCodeProcess called after query() returned) kills it in onSpawn and ends owner_kill with no leader-exit wait run out", async () => {
+    let lateSpawn: (() => void) | undefined;
+    // An SDK that spawns after `query()` returned: nothing is spawned until the test calls `lateSpawn`.
+    const query: QueryFn = ({ prompt, options }) => {
+      const stream = new FakeStream();
+      streams.push(stream);
+      lateSpawn = () => {
+        options.spawnClaudeCodeProcess?.({ command: "claude", args: [], cwd: options.cwd, env: options.env ?? {}, signal: new AbortController().signal });
+      };
+      void (async () => {
+        for await (const _m of prompt) {
+          // Read and drop the prompt, like the CLI.
+        }
+      })();
+      return stream;
+    };
+    const fired: number[] = [];
+    const { manager, store, children, killed } = harness({
+      deps: {
+        query,
+        schedule: (fn, ms) => {
+          const t = setTimeout(() => {
+            fired.push(ms);
+            fn();
+          }, ms);
+          return () => clearTimeout(t);
+        },
+      },
+    });
+    const handle = await manager.startSession(startParams());
+    expect(children.size).toBe(0);
+    const stopping = manager.stopSession(handle.id, { mode: "kill" });
+    await new Promise((r) => setTimeout(r, 20));
+    // The harness's spawner calls onSpawn inside spawn, and its kill exits the child synchronously:
+    // the child has exited before `#spawnFor` attaches its exit listener.
+    lateSpawn?.();
+    const child = [...children.values()][0] as FakeChild;
+    expect(killed).toContainEqual([child.pid, "SIGKILL"]);
+    expect(child.exited).toBe(true);
+
+    expect(await stopping).toBe("stopped");
+    expect(events(store, "session_status").at(-1)?.payload).toEqual({ from: "starting", to: "stopped", reason: "owner_kill" });
+    expect(events(store, "session_spawn_after_stop").map((e) => e.payload)).toEqual([{ pgid: child.pid, attempt: 1, session_ended: false }]);
+    // Neither the spawn wait nor the leader-exit wait ran out: the exit was seen.
+    expect(fired).not.toContain(1_000);
+  });
+
+  it("a Stop whose held spawn never reports still ends stopped (owner_stop) within its limit; a spawn that reports after the end is killed and recorded", async () => {
+    const h = heldSpawn();
+    const waits: number[] = [];
+    const { manager, store } = harness({
+      deps: {
+        ...h.deps,
+        // Every bounded wait passes at once, so a wait without a limit is the only way this stop hangs.
+        schedule: (fn, ms) => {
+          waits.push(ms);
+          const t = setImmediate(fn);
+          return () => clearImmediate(t);
+        },
+      },
+      endOnInputEnd: false,
+      script: immortal,
+    });
+    const handle = await manager.startSession(startParams());
+    expect(await manager.stopSession(handle.id, { mode: "stop" })).toBe("stopped");
+    // The stop raced the spawn against LEADER_EXIT_WAIT_MS (1 s), never an unbounded wait.
+    expect(waits).toContain(1_000);
+    expect(row(store, handle.id)).toMatchObject({ status: "stopped", pgid: null });
+    expect(events(store, "session_status").at(-1)?.payload).toEqual({ from: "starting", to: "stopped", reason: "owner_stop" });
+    expect(h.killed).toEqual([]);
+
+    // The spawn reports after the session ended: its group is killed all the same, and recorded.
+    const child = h.release();
+    await vi.waitFor(() => expect(child.exited).toBe(true));
+    expect(h.killed).toContainEqual([child.pid, "SIGKILL"]);
+    expect(events(store, "session_spawn_after_stop").map((e) => e.payload)).toEqual([{ pgid: child.pid, attempt: 1, session_ended: true }]);
+    // One terminal status: the late kill never writes another.
+    expect(events(store, "session_status").filter((e) => e.payload.to === "stopped")).toHaveLength(1);
+    expect(row(store, handle.id)).toMatchObject({ status: "stopped", pgid: child.pid, kill_incomplete_at: null });
+    expect(h.anyAlive()).toBe(false);
+  });
+
+  /**
+   * A scheduler whose first `LEADER_EXIT_WAIT_MS` (1 s) timer, the stop's
+   * bounded wait for a spawn with no pgid, never fires: only one of the race's
+   * other arms ends that wait. Every other timer fires at once.
+   */
+  function holdFirstSpawnWait() {
+    let held = 0;
+    const schedule = (fn: () => void, ms: number): CancelTimer => {
+      if (ms === 1_000 && held++ === 0) return () => {};
+      const t = setImmediate(fn);
+      return () => clearImmediate(t);
+    };
+    return { schedule, held: () => held };
+  }
+
+  it("a kill whose late spawn reports during the stop's bounded wait with a group that survives every SIGKILL ends failed (kill_incomplete), flagged for the reaper", async () => {
+    const h = heldSpawn({ survives: true });
+    const w = holdFirstSpawnWait();
+    const { manager, store } = harness({ deps: { ...h.deps, schedule: w.schedule }, endOnInputEnd: false, script: immortal });
+    const handle = await manager.startSession(startParams());
+    const stopping = manager.stopSession(handle.id, { mode: "kill" });
+    // The stop is in its bounded wait for the spawn (its 1 s timer never fires).
+    await vi.waitFor(() => expect(w.held()).toBe(1));
+    const child = h.release();
+    // Killed inside onSpawn, synchronously, not by the stop's own kill after its wait.
+    expect(h.killed).toContainEqual([child.pid, "SIGKILL"]);
+
+    // Only the late-spawn kill finishing (it gave up) ends that wait.
+    expect(await stopping).toBe("failed");
+    expect(await handle.done).toBe("failed");
+    expect(events(store, "session_spawn_after_stop").map((e) => e.payload)).toEqual([{ pgid: child.pid, attempt: 1, session_ended: false }]);
+    expect(events(store, "session_kill_incomplete").map((e) => e.payload)).toContainEqual({ pgid: child.pid, deadline_ms: 2_000 });
+    expect(events(store, "session_status").at(-1)?.payload).toMatchObject({
+      from: "starting",
+      to: "failed",
+      reason: "kill_incomplete",
+      cause: { to: "stopped", reason: "owner_kill" },
+    });
+    expect(row(store, handle.id)).toMatchObject({ status: "failed", pgid: child.pid });
+    expect(row(store, handle.id).kill_incomplete_at).not.toBeNull();
+    h.exitAll();
+  });
+
+  it("a spawn that reports after its session ended with a group that survives every SIGKILL keeps the row stopped and flags it (kill_incomplete_at) for the reaper", async () => {
+    const h = heldSpawn({ survives: true });
+    const { manager, store } = harness({
+      deps: {
+        ...h.deps,
+        // Every bounded wait passes at once: the stop ends before the spawn reports.
+        schedule: (fn) => {
+          const t = setImmediate(fn);
+          return () => clearImmediate(t);
+        },
+      },
+      endOnInputEnd: false,
+      script: immortal,
+    });
+    const handle = await manager.startSession(startParams());
+    expect(await manager.stopSession(handle.id, { mode: "stop" })).toBe("stopped");
+    expect(row(store, handle.id)).toMatchObject({ status: "stopped", pgid: null, kill_incomplete_at: null });
+
+    const child = h.release();
+    // Killed inside onSpawn, synchronously (not by the session's own end-of-stream cleanup later).
+    expect(h.killed).toContainEqual([child.pid, "SIGKILL"]);
+    await vi.waitFor(() => expect(row(store, handle.id).kill_incomplete_at).not.toBeNull());
+    expect(child.exited).toBe(false);
+    expect(events(store, "session_spawn_after_stop").map((e) => e.payload)).toEqual([{ pgid: child.pid, attempt: 1, session_ended: true }]);
+    expect(events(store, "session_kill_incomplete").map((e) => e.payload)).toEqual([{ pgid: child.pid, deadline_ms: 2_000 }]);
+    // The late kill never rewrites the terminal status.
+    expect(row(store, handle.id)).toMatchObject({ status: "stopped", pgid: child.pid });
+    expect(events(store, "session_status").map((e) => e.payload.to)).toEqual(["starting", "stopped"]);
+    h.exitAll();
+  });
+
+  it("a stop whose spawn never reports but whose stream ends is not held for the full LEADER_EXIT_WAIT_MS: the stream's end ends the bounded wait", async () => {
+    const h = heldSpawn();
+    const w = holdFirstSpawnWait();
+    // The stream ends when its input closes (the stop closes it); the never-spawned CLI never exits.
+    const { manager, store } = harness({ deps: { ...h.deps, schedule: w.schedule }, script: immortal });
+    const handle = await manager.startSession(startParams());
+    // A 1 s timer that never fires: only the stream's end can end the stop's bounded wait.
+    expect(await manager.stopSession(handle.id, { mode: "kill" })).toBe("stopped");
+    expect(w.held()).toBeGreaterThanOrEqual(1);
+    expect(row(store, handle.id)).toMatchObject({ status: "stopped", pgid: null });
+    expect(events(store, "session_status").at(-1)?.payload).toEqual({ from: "starting", to: "stopped", reason: "owner_kill" });
+    expect(h.killed).toEqual([]);
+    expect(events(store, "session_spawn_after_stop")).toEqual([]);
+  });
+
+  it("a kill whose late spawn reports after the stop's spawn wait ran out, during its final leader-exit wait, waits for that kill and ends stopped (owner_kill), nothing left alive", async () => {
+    const h = heldSpawn();
+    // The first 1 s timer (the stop's bounded wait for the spawn) fires at once;
+    // the second (its final wait for the leader's exit) never fires: only the
+    // leader's exit, which the late-spawn kill causes, ends that wait.
+    let leaderWaits = 0;
+    const schedule = (fn: () => void, ms: number): CancelTimer => {
+      if (ms === 1_000 && leaderWaits++ === 1) return () => {};
+      const t = setImmediate(fn);
+      return () => clearImmediate(t);
+    };
+    const { manager, store } = harness({ deps: { ...h.deps, schedule }, endOnInputEnd: false, script: immortal });
+    const handle = await manager.startSession(startParams());
+    const stopping = manager.stopSession(handle.id, { mode: "kill" });
+    await vi.waitFor(() => expect(leaderWaits).toBe(2));
+    expect(row(store, handle.id).status).toBe("starting");
+    const child = h.release();
+    expect(h.killed).toContainEqual([child.pid, "SIGKILL"]);
+    expect(child.exited).toBe(true);
+
+    expect(await stopping).toBe("stopped");
+    expect(await handle.done).toBe("stopped");
+    expect(row(store, handle.id)).toMatchObject({ status: "stopped", pgid: child.pid, kill_incomplete_at: null });
+    expect(events(store, "session_status").map((e) => e.payload)).toEqual([
+      { from: null, to: "starting" },
+      { from: "starting", to: "stopped", reason: "owner_kill" },
+    ]);
+    // The stop had not ended when the spawn reported, and it waited for that kill.
+    expect(events(store, "session_spawn_after_stop").map((e) => e.payload)).toEqual([{ pgid: child.pid, attempt: 1, session_ended: false }]);
+    expect(h.anyAlive()).toBe(false);
+  });
 });
 
 // ---- AC5: reaper --------------------------------------------------------------

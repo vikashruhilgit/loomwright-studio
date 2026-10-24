@@ -548,6 +548,73 @@ describe("a refused control", () => {
   });
 });
 
+describe("a starting session (no system/init yet)", () => {
+  const starting = (id: number, overrides: Partial<SessionSummary> = {}): SessionSummary => running(id, { status: "starting", tokens: null, ...overrides });
+
+  it("Stop, ⌘. and Kill are enabled (never aria-disabled), and each sends exactly one request", async () => {
+    const { fake, registry } = await mount({ sessions: [starting(31), starting(32, { started: "2026-10-22T08:00:00.000Z" })] });
+    expect(selectedId()).toBe(31);
+    expect(statusOf(31)).toBe("starting");
+    const stopButton = screen.getByRole("button", { name: /^Stop/ });
+    const killButton = screen.getByRole("button", { name: "Kill" });
+    expect(stopButton.getAttribute("aria-disabled")).toBeNull();
+    expect(killButton.getAttribute("aria-disabled")).toBeNull();
+    expect(registry.get(SESSION_COMMANDS.stop)?.enabled?.()).toBe(true);
+    expect(registry.get(SESSION_COMMANDS.kill)?.enabled?.()).toBe(true);
+
+    // Stop (a click): one request.
+    const stop = held();
+    fake.route("POST /sessions/:id/stop", stop.responder);
+    fireEvent.click(stopButton);
+    await waitFor(() => expect(posts(fake, "POST /sessions/:id/stop")).toHaveLength(1));
+    expect(statusOf(31)).toBe("stopping…");
+    await act(async () => stop.answer(ok({ id: 31, status: "stopped", reason: "owner_stop" })));
+    await waitFor(() => expect(statusOf(31)).toBe("stopped"));
+
+    // ⌘. on the other starting session: one request.
+    fireEvent.click(rowOf(32));
+    expect(selectedId()).toBe(32);
+    fake.route("POST /sessions/:id/stop", () => ok({ id: 32, status: "stopped", reason: "owner_stop" }));
+    press(".", { metaKey: true });
+    await waitFor(() => expect(statusOf(32)).toBe("stopped"));
+    expect(posts(fake, "POST /sessions/:id/stop").map((r) => r.params?.id)).toEqual([31, 32]);
+  });
+
+  it("Kill on a starting session asks first and sends exactly one kill", async () => {
+    const { fake } = await mount({ sessions: [starting(31)] });
+    fake.route("POST /sessions/:id/kill", () => ok({ id: 31, status: "stopped", reason: "owner_kill" }));
+    fireEvent.click(screen.getByRole("button", { name: "Kill" }));
+    const confirm = screen.getByRole("alertdialog");
+    expect(confirm.textContent).toContain("Kill session #31?");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Kill" }));
+    await waitFor(() => expect(statusOf(31)).toBe("stopped"));
+    expect(within(rowOf(31)).getByTestId("session-reason").textContent).toBe(" · owner_kill");
+    expect(posts(fake, "POST /sessions/:id/kill").map((r) => r.params?.id)).toEqual([31]);
+  });
+
+  it.each([
+    ["an ended row (409 with its terminal status)", () => ({ ok: false, status: 409, body: { error: "not_running", status: "completed" } }), "The kernel refused (409 not_running).", "completed"],
+    ["a row this kernel does not run (409 not_live, still starting)", () => ({ ok: false, status: 409, body: { error: "not_running", status: "starting" } }), "The kernel refused (409 not_running).", "starting"],
+    ["a 500", () => ({ ok: false, status: 500, body: { error: "internal_error" } }), "The kernel refused (500 internal_error).", "starting"],
+    [
+      "a bridge failure",
+      () => {
+        throw new Error("ipc");
+      },
+      "The request failed before it reached the kernel; nothing was stopped.",
+      "starting",
+    ],
+  ] as const)("a Stop refused with %s shows the refusal as text in the header, never nothing", async (_why, responder, notice, status) => {
+    const { fake } = await mount({ sessions: [starting(31)] });
+    fake.route("POST /sessions/:id/stop", responder as () => ApiResult<unknown>);
+    fireEvent.click(screen.getByRole("button", { name: /^Stop/ }));
+    await waitFor(() => expect(screen.getByTestId("session-notice").textContent).toBe(notice));
+    expect(within(screen.getByTestId("session-detail")).getByTestId("session-notice")).toBeTruthy();
+    expect(statusOf(31)).toBe(status);
+    expect(posts(fake, "POST /sessions/:id/stop")).toHaveLength(1);
+  });
+});
+
 describe("the list's other states", () => {
   it("a list read that fails after one answered keeps the list and says it is stale", async () => {
     const { fake } = await mount({ sessions: [running(31)] });

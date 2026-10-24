@@ -8,7 +8,9 @@
 //   rows with `seq > after`, at most `limit` (500) of them, oldest first. Every
 //   read is recorded with its `after` and `limit`.
 // - `POST /sessions/:id/stop` and `/kill`: a running session ends `stopped`
-//   with `owner_stop` / `owner_kill`; one not running answers
+//   with `owner_stop` / `owner_kill`, and so does a `starting` one (the kernel
+//   accepts a stop before `system/init`: docs/architecture/session-control.md
+//   §Starting sessions); one not running answers
 //   `409 {error: "not_running", status}`; an unknown id `404 not_found`.
 // - `POST /sessions/:id/abandon`: only an `orphaned` row whose `/status`
 //   orphan reason is `leader_unverified` becomes `abandoned`; any other answers
@@ -79,6 +81,11 @@ export function ago(minutes: number): string {
 
 export function summary(id: number, overrides: Partial<SessionSummary> = {}): SessionSummary {
   return { id, agent: "ada", status: "completed", model: "sonnet", started: ago(60), ended: ago(50), tokens: 9020, cwd: "/Users/owner/src/loomwright", playbook: null, ...overrides };
+}
+
+/** A session still `starting` (no `system/init` yet): no end, no token count, started `minutesAgo`. */
+export function startingSummary(id: number, minutesAgo: number, overrides: Partial<SessionSummary> = {}): SessionSummary {
+  return summary(id, { agent: "wright", status: "starting", started: ago(minutesAgo), ended: null, tokens: null, ...overrides });
 }
 
 export function outputRow(sessionId: number, seq: number, kind: SessionOutputKind, payload: unknown, createdAt = ago(1)): SessionOutputRow {

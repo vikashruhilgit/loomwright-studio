@@ -40,6 +40,7 @@ import {
   sessionEvent,
   sessionsKernel,
   sessionsRoutes,
+  startingSummary,
   summary,
 } from "./fixtures/sessions";
 import type { SessionsKernel, SessionsKernelInit } from "./fixtures/sessions";
@@ -376,6 +377,53 @@ test("AC4: ⌘. sends exactly one stop; the row says stopping… while the kerne
   await page.keyboard.press("Meta+.");
   await expect(statusOf(page, 32)).toHaveText("completed");
   await expect(page.getByTestId("session-notice")).toHaveText("The kernel refused (409 not_running).");
+});
+
+test("a starting session: Stop, ⌘. and Kill are enabled and each sends exactly one request; a 409 or a 500 shows as text in its header", async () => {
+  const { kernel, fixture: started } = await startKernel({
+    sessions: [startingSummary(33, 0.1), startingSummary(34, 0.2), startingSummary(35, 0.3), startingSummary(36, 0.4)],
+  });
+  kernel.stop = (req) => {
+    if (req.params.id === "35") return { status: 409, body: { error: "not_running", status: "completed" } };
+    if (req.params.id === "36") return { status: 500, body: { error: "internal_error" } };
+    return ownerStop(kernel, req, "owner_stop");
+  };
+  const page = await openWith(started);
+  await expect(selectedRow(page)).toHaveAttribute("data-key", "33");
+  for (const id of [33, 34, 35, 36]) await expect(statusOf(page, id)).toHaveText("starting");
+  const detail = page.getByTestId("session-detail");
+  const stop = detail.getByRole("button", { name: "Stop", exact: true });
+  const kill = detail.getByRole("button", { name: "Kill", exact: true });
+  await expect(stop).not.toHaveAttribute("aria-disabled", "true");
+  await expect(kill).not.toHaveAttribute("aria-disabled", "true");
+
+  // Stop (a click) on #33: one request, it ends stopped.
+  await stop.click();
+  await expect(statusOf(page, 33)).toHaveText("stopped");
+  await expect(row(page, 33).getByTestId("session-reason")).toHaveText(" · owner_stop");
+  expect(postsTo(kernel, "/stop").map((p) => p.path)).toEqual(["/sessions/33/stop"]);
+
+  // Kill on #34, after its confirm: one request.
+  await selectById(page, 34);
+  await expect(kill).not.toHaveAttribute("aria-disabled", "true");
+  await kill.click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Kill" }).click();
+  await expect(statusOf(page, 34)).toHaveText("stopped");
+  await expect(row(page, 34).getByTestId("session-reason")).toHaveText(" · owner_kill");
+  expect(postsTo(kernel, "/kill").map((p) => p.path)).toEqual(["/sessions/34/kill"]);
+
+  // ⌘. on #35, refused 409 (it had ended): one request, the refusal shows as text.
+  await selectById(page, 35);
+  await page.keyboard.press("Meta+.");
+  await expect(page.getByTestId("session-notice")).toHaveText("The kernel refused (409 not_running).");
+  await expect(statusOf(page, 35)).toHaveText("completed");
+
+  // Stop on #36, answered 500: one request, the failure shows as text; the row keeps the kernel's word.
+  await selectById(page, 36);
+  await stop.click();
+  await expect(page.getByTestId("session-notice")).toHaveText("The kernel refused (500 internal_error).");
+  await expect(statusOf(page, 36)).toHaveText("starting");
+  expect(postsTo(kernel, "/stop").map((p) => p.path)).toEqual(["/sessions/33/stop", "/sessions/35/stop", "/sessions/36/stop"]);
 });
 
 test("AC5: Kill asks first; Escape keeps the confirm open; Cancel sends nothing; Confirm sends exactly one kill", async () => {

@@ -341,6 +341,16 @@ interface Attempt {
   toolGroupsDone: boolean;
   readonly exited: Promise<void>;
   markExited: () => void;
+  /**
+   * Resolves once the group kill `onSpawn` started (a spawn that reported
+   * after a stop was accepted, `#killLateSpawn`) has finished; never before.
+   * `#stop` races it, with a limit, when it found no pgid.
+   */
+  readonly spawnKilled: Promise<void>;
+  markSpawnKilled: () => void;
+  /** Resolves once this attempt's stream has ended (`#consume` returned). */
+  readonly streamEnded: Promise<void>;
+  markStreamEnded: () => void;
   sawInit: boolean;
   firstResult: SDKResultMessage | undefined;
   lastResult: SDKResultMessage | undefined;
@@ -839,6 +849,13 @@ export class SessionManager {
    * status. Rejects `SessionError` `not_found` (no row), `not_live` (a row
    * this manager does not run that has not ended) and `invalid_params` (an
    * unknown mode).
+   *
+   * A `starting` session this manager runs is accepted like a running one
+   * (its live entry exists from `startSession`'s insert on): it ends
+   * `stopped` with the intent's reason and never moves to `running` (a late
+   * `system/init` is ignored once `stopping` is set). A spawn that reports
+   * after the stop was accepted is killed in `onSpawn` (`#killLateSpawn`),
+   * and a stop that found no pgid waits for that kill only with a limit.
    *
    * The acceptance is synchronous: the entry guards, `onAccepted`, and the
    * start of the stop (its input closed and, for a graceful stop, its grace
@@ -1464,13 +1481,26 @@ export class SessionManager {
     return live;
   }
 
-  /** Build the attempt, call `query()` (which spawns synchronously) and push the prompt. */
+  /**
+   * Build the attempt, call `query()` (which spawns synchronously: probed
+   * against SDK 0.3.284, docs/evidence/stop-kill-starting-session.md) and push
+   * the prompt. A spawn that reports later anyway (a stop accepted before it)
+   * is killed in `onSpawn` (`#killLateSpawn`).
+   */
   #launch(live: LiveSession, config: LaunchConfig): Attempt {
     // Fresh servers for every launch attempt (a server instance cannot reconnect).
     const mcpServers = this.#mcpServers?.({ sessionId: live.id, agent: config.agent, task: config.task });
     let markExited!: () => void;
     const exited = new Promise<void>((resolve) => {
       markExited = resolve;
+    });
+    let markSpawnKilled!: () => void;
+    const spawnKilled = new Promise<void>((resolve) => {
+      markSpawnKilled = resolve;
+    });
+    let markStreamEnded!: () => void;
+    const streamEnded = new Promise<void>((resolve) => {
+      markStreamEnded = resolve;
     });
     const attempt: Attempt = {
       number: config.number,
@@ -1489,6 +1519,10 @@ export class SessionManager {
       toolGroupsDone: false,
       exited,
       markExited,
+      spawnKilled,
+      markSpawnKilled,
+      streamEnded,
+      markStreamEnded,
       sawInit: false,
       firstResult: undefined,
       lastResult: undefined,
@@ -1539,6 +1573,8 @@ export class SessionManager {
         void this.#recordLeaderStart(live.id, pgid);
         // From now on the tool-group poll walks this CLI's descendants (H08).
         this.#ensurePoll();
+        // A stop was accepted before this spawn reported: kill it now, its first live moment.
+        if (live.stopping) this.#killLateSpawn(live, attempt, pgid);
       },
     });
     attempt.child = child;
@@ -1546,7 +1582,29 @@ export class SessionManager {
       attempt.leaderExited = true;
       attempt.markExited();
     });
+    // A spawner that exits the child synchronously (the kill `onSpawn` just
+    // started, in a test fake) emitted `exit` before the listener above.
+    if (child.exitCode !== null || (child.signalCode ?? null) !== null) {
+      attempt.leaderExited = true;
+      attempt.markExited();
+    }
     return child;
+  }
+
+  /**
+   * A spawn that reported after a stop was accepted (`live.stopping`): its
+   * group is killed at once, recorded as `session_spawn_after_stop` `{pgid,
+   * attempt, session_ended}`. It also runs when the session has already
+   * ended (its stop's bounded wait for this spawn ran out): the group is
+   * killed all the same, and a kill that can't confirm it gone flags the row
+   * (`kill_incomplete_at`) for the reaper. `#stop` waits for this kill, with
+   * a limit, when it found no pgid, and joins it before deciding the status
+   * whenever it is still in flight then (so `session_ended: false` always
+   * means the stop's status reflects this kill). Never throws.
+   */
+  #killLateSpawn(live: LiveSession, attempt: Attempt, pgid: number): void {
+    this.#recordSafely("session_spawn_after_stop", live.id, { pgid, attempt: attempt.number, session_ended: isTerminalStatus(live.status) });
+    void this.#killAttemptGroup(live, attempt).then(attempt.markSpawnKilled);
   }
 
   #launchResumeAttempt(live: LiveSession, ctx: ResumeContext, number: number): Attempt {
@@ -1641,13 +1699,24 @@ export class SessionManager {
     this.#settle(live);
   }
 
-  /** Iterate the stream to its end. Never throws. */
+  /** Iterate the stream to its end, then mark it ended (`attempt.streamEnded`). Never throws. */
   async #consume(live: LiveSession, attempt: Attempt): Promise<ConsumeOutcome> {
+    try {
+      return await this.#consumeStream(live, attempt);
+    } finally {
+      attempt.markStreamEnded();
+    }
+  }
+
+  async #consumeStream(live: LiveSession, attempt: Attempt): Promise<ConsumeOutcome> {
     const stream = attempt.query;
     if (stream === undefined) return { kind: "rejected", error: new Error("no query") };
     try {
       for await (const message of stream) {
-        this.#observe(live, message);
+        // A stop accepted while the session was still `starting` (it stays
+        // `starting` until it ends): it never runs a turn, so nothing the CLI
+        // sends during the stop is its output. The budget still sees it.
+        this.#observe(live, message, !(live.stopping && live.status === "starting"));
         const failure = this.#handleMessage(live, attempt, message);
         if (failure !== undefined) return { kind: "attempt_failed", error: failure };
       }
@@ -1757,10 +1826,10 @@ export class SessionManager {
     );
   }
 
-  /** Both observers, each guarded on its own: one's throw never skips the other. */
-  #observe(live: LiveSession, message: SDKMessage): void {
+  /** Both observers, each guarded on its own: one's throw never skips the other. `output: false` skips `onOutput` only. */
+  #observe(live: LiveSession, message: SDKMessage, output: boolean): void {
     if (this.#onMessage !== undefined) this.#observeWith(live, message, this.#onMessage, {});
-    if (this.#onOutput !== undefined) this.#observeWith(live, message, this.#onOutput, { observer: "onOutput" });
+    if (output && this.#onOutput !== undefined) this.#observeWith(live, message, this.#onOutput, { observer: "onOutput" });
   }
 
   #observeWith(
@@ -1889,12 +1958,28 @@ export class SessionManager {
         await this.#waitFor(Promise.race([attempt.exited, cut]), this.#stopGraceMs);
         live.cutGrace = undefined;
       }
+      // Not spawned yet (no pgid: a `starting` session whose spawn has not
+      // reported). `live.stopping` is set, so the spawn's own `onSpawn` kills
+      // its group the moment it reports (`#killLateSpawn`). Wait for that kill
+      // only with a limit: until it is done, the attempt ends (its leader
+      // exits or its stream ends), or `LEADER_EXIT_WAIT_MS`, whichever is
+      // first, so a spawn that never reports never holds the stop.
+      if (attempt.pgid === undefined) {
+        await this.#waitFor(Promise.race([attempt.spawnKilled, attempt.exited, attempt.streamEnded]), LEADER_EXIT_WAIT_MS);
+      }
       // One last walk of the CLI's descendants: a tool group started since the
       // last poll tick is recorded, and so killed below with the rest.
       if (this.#snapshot !== undefined) await this.#walkNow([{ live, attempt }]);
       await this.#killAttemptGroup(live, attempt);
       // Until Node reaps the killed leader it is a zombie holding the pgid.
       await this.#waitFor(attempt.exited, LEADER_EXIT_WAIT_MS);
+      // A spawn that reported during the waits above, after this stop's own
+      // kill found no pgid, is being killed by `onSpawn` (`#killLateSpawn`),
+      // and its kill exiting the leader ends the wait above early. Join that
+      // kill before deciding the status, so `groupGone`/`toolGroupsDone` are
+      // its result, not its starting state. Bounded like the kill above (its
+      // deadline); everything from here to the terminal write is synchronous.
+      if (attempt.killing !== undefined) await attempt.killing;
       this.#closeQuery(attempt);
       attempt.authTimer?.();
     }
