@@ -66,7 +66,9 @@ function parseId(raw: string | undefined): number | undefined {
  * - `404 {error: "not_found"}`: no such session;
  * - `409 {error: "not_running", status}`: the session has ended, or it has not
  *   ended but this kernel does not run it (`not_live`, for example a row left
- *   `interrupted` by a previous kernel); `status` is its current status;
+ *   `interrupted` by a previous kernel); `status` is its current status. A
+ *   `starting` session this kernel started is never refused: it is accepted
+ *   like a running one (docs/architecture/session-control.md §Starting sessions);
  * - `200 {id, status, reason}`: the stop ran. `reason` is that of the
  *   session's last `session_status` event, whatever it is: `owner_stop`,
  *   `owner_kill`, `kill_incomplete` (status `failed`), or the session's own

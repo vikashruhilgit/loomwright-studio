@@ -48,7 +48,7 @@ import { loomwrightManifestSummary } from "../src/loomwright/capabilities.js";
 import type { LoomwrightContract } from "../src/loomwright/contract.js";
 import { EventLoop } from "../src/loop/loop.js";
 import { enqueueEvent, enqueueMessage, getQueueRow, toQueuedEvent } from "../src/loop/queue.js";
-import { runStep, runStepAsync } from "../src/loop/steps.js";
+import { getWorkStep, runStep, runStepAsync } from "../src/loop/steps.js";
 import type { EventContext, EventSessions } from "../src/loop/types.js";
 import type { ResumeSessionParams, SessionHandle, SessionRow, SessionStatus, StartSessionParams } from "../src/sessions/index.js";
 import { AdmissionRefusedError } from "../src/sessions/index.js";
@@ -903,6 +903,47 @@ describe("routing a message (the handler)", () => {
 });
 
 // ---- A redelivery never drops a live session's reply ---------------------------------------------
+
+describe("a Wright message whose session the owner stopped before it ran a turn", () => {
+  it("its queue event is settled once, never retried; the start-session step is not re-run; the message ends with the session's terminal status (stop and kill)", async () => {
+    setModel();
+    // Every stand-in is held before `system/init`: its session stays `starting`.
+    const held: FakeCall[] = [];
+    const { kernel, fakes, keychain } = await startBrainKernel((call) => void held.push(call));
+    const store = kernel.store;
+    const token = keychain.items.get(API_TOKEN_KEYCHAIN_SERVICE) as string;
+    const post = (path: string): Promise<Response> =>
+      fetch(`http://127.0.0.1:${kernel.api.port}${path}`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+
+    for (const [n, mode, reason] of [
+      [1, "stop", "owner_stop"],
+      [2, "kill", "owner_kill"],
+    ] as const) {
+      const { id: queueId } = enqueueMessage(store, { text: "Write me a 1500-word short story about a lighthouse keeper.", agent: "wright" });
+      await vi.waitFor(() => expect(getBrainMessageByQueueId(store, queueId)).toMatchObject({ status: "running", session_id: n }));
+      const sessionId = n;
+      expect(store.prepare<[number], string>("SELECT status FROM sessions WHERE id = ?").pluck().get(sessionId)).toBe("starting");
+      // Its event was settled when the handler returned the session id (before the session ends).
+      expect(getQueueRow(store, queueId)).toMatchObject({ status: "done", attempts: 1 });
+
+      const res = await post(`/sessions/${sessionId}/${mode}`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: sessionId, status: "stopped", reason });
+
+      // The message ends with the session's terminal status, and nothing is retried or started again.
+      await vi.waitFor(() => expect(getBrainMessageByQueueId(store, queueId)).toMatchObject({ status: "failed", session_id: sessionId, reply_text: null }));
+      expect(getBrainMessageByQueueId(store, queueId)?.detail).toBe("session_stopped: the session ended stopped without a reply");
+      await new Promise((r) => setTimeout(r, 50)); // a few loop ticks (tickMs 10)
+      expect(getQueueRow(store, queueId)).toMatchObject({ status: "done", attempts: 1 });
+      expect(events(store, "event_done").filter((e) => e.payload.queue_id === queueId)).toHaveLength(1);
+      expect(events(store).filter((e) => e.payload.queue_id === queueId && e.kind !== "event_enqueued" && e.kind !== "event_done")).toEqual([]);
+      expect(getWorkStep(store, `event:${queueId}:start-session`)?.result).toEqual({ session_id: sessionId });
+      expect(fakes.calls).toHaveLength(n);
+      expect(store.prepare<[], number>("SELECT count(*) FROM sessions").pluck().get()).toBe(n);
+    }
+    expect(fakes.allGroupsGone()).toBe(true);
+  });
+});
 
 describe("a redelivery keeps a running row only while its session is live (redelivery rule)", () => {
   /** Deliver once (the row becomes `running` with a held session), then break `what` and deliver again. */

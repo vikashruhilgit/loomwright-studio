@@ -23,6 +23,20 @@ A kill that arrives while a stop of the same session is waiting out its grace do
 
 `stopSession(id)` with no mode is unchanged: it is the kill switch's and `kernel_request_stop`'s call, and still ends `stopped` with reason `stop_requested`. The `stop_requested` **event kind** is a different thing (the session asked to stop itself, read by playbook runs), and these routes never write it.
 
+## Starting sessions
+
+A Wright session spends its first 20–40 s `starting`, before its CLI reports `system/init`. Stop and Kill work on it, and every press is either accepted and recorded or refused with a reason the app shows. The phase 5 live run reported lost presses on two `starting` sessions; [the evidence file](../evidence/stop-kill-starting-session.md) records what was probed and why they could not be reproduced.
+
+- **Accepted like a running session.** `startSession` inserts the `starting` row and registers the live session in the same synchronous step, so a session this kernel started is never `not_live` while `starting`. The route records one `session_stop_requested` and the session ends `stopped`, reason `owner_stop` or `owner_kill`. A Stop still closes the input and waits out its grace; a Kill doesn't.
+- **It never runs a turn.** Once the stop is accepted the session stays `starting` until it ends: a `system/init` that arrives during the stop doesn't move it to `running`, and nothing its CLI sends during the stop is recorded as its output (`session_output`). The budget still counts any usage the CLI reports, so spend is never hidden.
+- **The spawn race.** The installed SDK calls `spawnClaudeCodeProcess` synchronously inside `query()` (probed against `@anthropic-ai/claude-agent-sdk` 0.3.284, see the evidence file), so a session's pgid is on disk before `startSession` returns and no stop can arrive before it. If a later SDK spawned after `query()` returned, two guards keep a stop from leaving an orphan CLI:
+  - The spawn's `onSpawn` checks whether a stop was already accepted and, if so, kills the new group at once and records `session_spawn_after_stop {pgid, attempt, session_ended}`.
+  - A stop that finds no pgid waits for that kill only with a limit: until the kill is done, the attempt ends (its leader exits or its stream ends), or `LEADER_EXIT_WAIT_MS` (1 s) passes. So a spawn that never reports never holds the stop, and the session still ends `stopped`.
+  - A spawn that reports after the session has ended is killed and recorded all the same (`session_ended: true`). If that kill can't confirm the group gone, it flags the row (`kill_incomplete_at`) for the reaper. The status stays `stopped`, because it was already written. That is an honest limit of this order, and it only arises if a future SDK spawns late.
+- **The message that started it.** A Wright message whose session was stopped before its turn is not retried. Its queue event was settled when the handler returned the session id, so the `start-session` work step is never run again. The message ends `failed` with `session_stopped: the session ended stopped without a reply`.
+- **What still answers 409.** A session that has already ended (its terminal status), and a row this kernel doesn't run (`not_live`: one a previous kernel left, which the reaper and `studio session abandon` own). See [the routes](#the-routes).
+- **In the app.** Sessions treats `starting` as live, so Stop, ⌘. and Kill are enabled on it and each sends one request. A 409, any other refusal, or a failure before the kernel answered shows as text in the session's header (`session-notice`), never nothing.
+
 ## The routes
 
 Each route answers JSON:
