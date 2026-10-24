@@ -45,10 +45,8 @@
 //
 // Run `npm run build` (and `cd ../kernel && npm ci`) first.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
 import type { ElectronApplication, Page } from "@playwright/test";
 import { getAgent } from "../../kernel/src/agents/index.js";
@@ -419,24 +417,6 @@ async function engageOnConfirm(app: ElectronApplication): Promise<void> {
 
 const killAsks = (app: ElectronApplication): Promise<number> => app.evaluate(() => (globalThis as unknown as { __killAsks?: number }).__killAsks ?? 0);
 
-/**
- * `kernel/test/notifier-guard.ts` recurses without end in this worker
- * (RangeError) when `execFile`'s promisified form already points at itself:
- * Node's `util.promisify` sets that self-reference the first time anything
- * promisifies `execFile`, and Playwright's runner does so before any spec
- * loads (vitest installs the guard before that can happen, so the kernel's
- * suite never meets it). The guard's own `guarded()` should skip a
- * self-referencing `promisify.custom`; until it does, the self-reference is
- * removed here first. It is configurable and read only by `promisify` itself,
- * which sets it again on its next call.
- */
-function installGuardInThisWorker(): void {
-  const cp = createRequire(import.meta.url)("node:child_process") as Record<string, Record<symbol, unknown> | undefined>;
-  const custom = cp.execFile?.[promisify.custom] as Record<symbol, unknown> | undefined;
-  if (custom !== undefined && custom[promisify.custom] === custom) delete custom[promisify.custom];
-  installNotifierGuard();
-}
-
 // ---- The test ------------------------------------------------------------------------
 
 let tmp: string | undefined;
@@ -456,7 +436,7 @@ test.afterEach(async () => {
 
 test("phase 5 exit: every phase 2-4 owner verb done in the app against a real kernel, each effect read from its store", async () => {
   test.setTimeout(240_000);
-  installGuardInThisWorker();
+  installNotifierGuard();
 
   tmp = mkdtempSync(join(tmpdir(), "studio-phase5-exit-"));
   const dataDir = join(tmp, "data");

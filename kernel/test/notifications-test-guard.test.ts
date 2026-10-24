@@ -6,12 +6,14 @@
 // (it never is under `STUDIO_LIVE=1`): no run posts from this file. (b) boots a
 // kernel with the shipped contributions and runs only on macOS (elsewhere
 // the shipped notifier is `none` and never spawns; (a) is the proof there).
-// See `docs/architecture/notifications.md#testing`.
+// (f) and (g) guard a stand-in `child_process` through `guardChildProcess`, so
+// they always run. See `docs/architecture/notifications.md#testing`.
 import * as childProcess from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
 import { startKernel } from "../src/kernel.js";
@@ -124,6 +126,104 @@ describe.skipIf(!notifierGuardInstalled())("the notifier guard (STUDIO_LIVE unse
     expect(() => childProcess.spawn("osascript")).toThrow(REFUSED);
     expect(copy.takeNotifierRefusals()).toEqual([{ file: "osascript" }]);
     expect(guard.takeNotifierRefusals()).toEqual([]);
+  });
+});
+
+type Fn = (...args: unknown[]) => unknown;
+const promised = (fn: unknown): Fn => promisify(fn as Fn) as Fn;
+const customOf = (fn: unknown): unknown => (fn as { [promisify.custom]?: unknown })[promisify.custom];
+
+/**
+ * A `child_process`-shaped stand-in whose `execFile` and `exec` only record
+ * their calls (and answer a trailing callback). Their promisified form is the
+ * function itself (`"self"`), or Node's shape once anything promisified it
+ * (`"node"`): a separate form whose own `promisify.custom` is itself.
+ */
+function standIn(shape: "self" | "node"): { record: Record<string, unknown>; calls: string[]; promisedCalls: string[] } {
+  const calls: string[] = [];
+  const promisedCalls: string[] = [];
+  const callable = (name: string): Fn => {
+    const fn = function (...args: unknown[]): void {
+      calls.push(String(args[0]));
+      const callback = args.at(-1);
+      if (typeof callback === "function") (callback as Fn)(null, "out");
+    };
+    Object.defineProperty(fn, "name", { value: name });
+    let custom: Fn = fn;
+    if (shape === "node") {
+      custom = (...args: unknown[]): Promise<string> => {
+        promisedCalls.push(String(args[0]));
+        return Promise.resolve("out");
+      };
+      Object.defineProperty(custom, promisify.custom, { value: custom, configurable: true });
+    }
+    Object.defineProperty(fn, promisify.custom, { value: custom, configurable: true });
+    return fn;
+  };
+  return { record: { execFile: callable("execFile"), exec: callable("exec") }, calls, promisedCalls };
+}
+
+// Stand-ins only: nothing here calls the real `node:child_process` with a notifier, so it runs under STUDIO_LIVE=1 too.
+describe("the notifier guard on a stand-in child_process", () => {
+  it.each(["self", "node"] as const)("(f) guards an execFile whose promisified form points at itself (%s) without recursing, refusing a notifier through both forms", async (shape) => {
+    const cp = standIn(shape);
+    expect(() => guard.guardChildProcess(cp.record)).not.toThrow();
+    const execFile = cp.record.execFile as Fn;
+
+    expect(() => execFile("terminal-notifier", [])).toThrow(`${REFUSED}terminal-notifier (`);
+    expect(takeNotifierRefusals()).toEqual([{ file: "terminal-notifier" }]);
+    // A synchronous throw and a rejection both land here as a rejection.
+    await expect(Promise.resolve().then(() => promised(execFile)("terminal-notifier", []))).rejects.toThrow(`${REFUSED}terminal-notifier (`);
+    expect(takeNotifierRefusals()).toEqual([{ file: "terminal-notifier" }]);
+    expect(cp.calls).toEqual([]);
+    expect(cp.promisedCalls).toEqual([]);
+
+    // Anything else still runs, through the promisified form the stand-in carries.
+    expect(execFile("/bin/echo", [])).toBeUndefined();
+    await expect(promised(execFile)("/bin/echo", [])).resolves.toBe("out");
+    expect([...cp.calls, ...cp.promisedCalls]).toEqual(["/bin/echo", "/bin/echo"]);
+    expect(takeNotifierRefusals()).toEqual([]);
+  });
+
+  it("(g) applied twice (and installed again on the real module) is a no-op: each call is guarded once", async () => {
+    const cp = standIn("node");
+    guard.guardChildProcess(cp.record);
+    const first = { execFile: cp.record.execFile, exec: cp.record.exec };
+    const firstCustom = { execFile: customOf(first.execFile), exec: customOf(first.exec) };
+    guard.guardChildProcess(cp.record);
+    expect(cp.record.execFile).toBe(first.execFile);
+    expect(cp.record.exec).toBe(first.exec);
+    expect(customOf(cp.record.execFile)).toBe(firstCustom.execFile);
+    expect(customOf(cp.record.exec)).toBe(firstCustom.exec);
+
+    // An unwrapped function whose promisified form is already guarded gets that form as-is, not wrapped again.
+    const unwrapped = (): void => {};
+    Object.defineProperty(unwrapped, promisify.custom, { value: firstCustom.execFile, configurable: true });
+    const other: Record<string, unknown> = { execFile: unwrapped };
+    guard.guardChildProcess(other);
+    expect(other.execFile).not.toBe(unwrapped);
+    expect(customOf(other.execFile)).toBe(firstCustom.execFile);
+
+    const real = { execFile: childProcess.execFile, exec: childProcess.exec };
+    const realCustom = { execFile: customOf(real.execFile), exec: customOf(real.exec) };
+    guard.installNotifierGuard();
+    expect(childProcess.execFile).toBe(real.execFile);
+    expect(childProcess.exec).toBe(real.exec);
+    expect(customOf(childProcess.execFile)).toBe(realCustom.execFile);
+    expect(customOf(childProcess.exec)).toBe(realCustom.exec);
+
+    const execFile = cp.record.execFile as Fn;
+    const exec = cp.record.exec as Fn;
+    expect(() => execFile("terminal-notifier")).toThrow(`${REFUSED}terminal-notifier (`);
+    expect(() => exec("osascript -e 'return 1'")).toThrow(`${REFUSED}osascript (`);
+    await expect(Promise.resolve().then(() => promised(exec)("terminal-notifier -help"))).rejects.toThrow(`${REFUSED}terminal-notifier (`);
+    expect(takeNotifierRefusals()).toEqual([{ file: "terminal-notifier" }, { file: "osascript" }, { file: "terminal-notifier" }]);
+
+    expect(execFile("/bin/echo")).toBeUndefined();
+    await expect(promised(exec)("/bin/echo hi")).resolves.toBe("out");
+    expect(cp.calls).toEqual(["/bin/echo"]);
+    expect(cp.promisedCalls).toEqual(["/bin/echo hi"]);
+    expect(takeNotifierRefusals()).toEqual([]);
   });
 });
 
