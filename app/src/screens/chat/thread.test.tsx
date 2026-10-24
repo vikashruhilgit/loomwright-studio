@@ -325,17 +325,165 @@ describe("thread", () => {
     const created = eventItem(10, "playbook_created", "Playbook pb-3 created", { playbook_id: 3 });
     const later = message(11, { text: "later" });
     const k = kit({ threads: { wright: thread([created, later]) }, playbooks: [playbook(3)] });
+    // As the kernel does: every Set writes playbook_updated, so the card moves after the new event.
+    k.state.posts["POST /playbooks/:id/set"] = () => {
+      k.state.playbooks = [playbook(3, { priority: "high", priority_set_by: "owner" })];
+      k.state.threads.wright = thread([created, later, eventItem(12, "playbook_updated", "Playbook pb-3 updated", { playbook_id: 3 })]);
+      return ok({});
+    };
     const view = await renderChat(k);
     const card = await screen.findByRole("region", { name: "Playbook pb-3" });
-    const button = within(card).getByRole("button", { name: /^Set priority/ });
-    await act(async () => button.focus());
-    k.state.threads.wright = thread([created, later, eventItem(12, "playbook_updated", "Playbook pb-3 updated", { playbook_id: 3 })]);
+    // The row path from the keyboard: Edit priority, high, Set priority.
+    await focusAndClick(within(card).getByRole("button", { name: "Edit priority" }));
+    await act(async () => {
+      fireEvent.change(within(card).getByRole("combobox", { name: "New priority" }), { target: { value: "high" } });
+    });
+    await focusAndClick(within(card).getByRole("button", { name: "Set priority" }));
+    await waitFor(() => expect(k.posted("POST /playbooks/:id/set").map((r) => r.body)).toEqual([{ field: "priority", value: "high" }]));
     await done(k);
     await screen.findByText("Playbook pb-3 updated");
     // Moved, not remounted: a remount would drop the focused button and send focus to the composer.
     expect(view.container.querySelector('[data-item="event:12"] + li')?.contains(card)).toBe(true);
     expect(screen.getByRole("region", { name: "Playbook pb-3" })).toBe(card);
-    expect(document.activeElement).toBe(button);
+    expect(document.activeElement).toBe(within(card).getByRole("button", { name: "Edit priority" }));
+  });
+
+  it("Turn off keeps the card: disabled, no Run now or Turn off, the Turn on gap, every row's Edit, and its trigger card", async () => {
+    const k = kit({
+      threads: { wright: thread([eventItem(10, "playbook_created", "Playbook pb-3 created", { playbook_id: 3 })]) },
+      playbooks: [playbook(3, { trigger_id: 5 })],
+      triggers: [trigger(5)],
+    });
+    // As the kernel does: off turns the playbook disabled, and `GET /playbooks?all=1` still lists it.
+    k.state.posts["POST /playbooks/:id/off"] = () => {
+      k.state.playbooks = [playbook(3, { trigger_id: 5, status: "disabled" })];
+      return ok({});
+    };
+    await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Playbook pb-3" });
+    expect(card.textContent).not.toContain("Turn on: not available from the kernel");
+    await focusAndClick(within(card).getByRole("button", { name: /^Turn off/ }));
+    await waitFor(() => expect(card.querySelector(".chat-card-head")?.textContent).toContain("disabled"));
+    // The focused Turn off unmounted: focus stays on the card (its first row's Edit), not the composer.
+    expect(document.activeElement).toBe(within(card).getByRole("button", { name: "Edit dedupe key" }));
+    expect(k.posted("POST /playbooks/:id/off").map((r) => r.params)).toEqual([{ id: 3 }]);
+    expect(screen.getByRole("region", { name: "Playbook pb-3" })).toBe(card);
+    expect(within(card).queryByRole("button", { name: /^Run now/ })).toBeNull();
+    expect(within(card).queryByRole("button", { name: /^Turn off/ })).toBeNull();
+    expect(card.textContent).toContain("Turn on: not available from the kernel");
+    expect(within(card).queryByRole("button", { name: /^Turn on/ })).toBeNull();
+    for (const row of ["dedupe key", "priority", "model", "token limit per day"]) expect(within(card).getByRole("button", { name: `Edit ${row}` })).toBeTruthy();
+    const nested = within(card).getByRole("region", { name: "Trigger 5" });
+    expect(within(nested).getAllByRole("button").map((b) => b.textContent)).toEqual(["On", "Off"]);
+    for (const read of k.fake.requestsTo("GET /playbooks")) expect(read.req.query).toEqual({ all: "1" });
+  });
+
+  it("Turn off with the dedupe key editor open leaves focus in the card, on that editor's field, not the composer", async () => {
+    const k = kit({
+      threads: { wright: thread([eventItem(10, "playbook_created", "Playbook pb-3 created", { playbook_id: 3 })]) },
+      playbooks: [playbook(3, { trigger_id: 5 })],
+      triggers: [trigger(5)],
+    });
+    k.state.posts["POST /playbooks/:id/off"] = () => {
+      k.state.playbooks = [playbook(3, { trigger_id: 5, status: "disabled" })];
+      return ok({});
+    };
+    await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Playbook pb-3" });
+    await focusAndClick(within(card).getByRole("button", { name: "Edit dedupe key" }));
+    await focusAndClick(within(card).getByRole("button", { name: /^Turn off/ }));
+    await waitFor(() => expect(card.querySelector(".chat-card-head")?.textContent).toContain("disabled"));
+    expect(document.activeElement).toBe(within(card).getByRole("textbox", { name: "New dedupe key" }));
+    expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Message Wright" }));
+  });
+
+  /**
+   * Turn off whose answer is held: the kernel has already disabled the playbook, and the feed's
+   * playbook_disabled refetches the list, which lands before the POST answers.
+   */
+  async function offAnsweredAfterTheList(withEditor: boolean): Promise<{ readonly k: Kit; readonly card: HTMLElement; readonly release: () => Promise<void> }> {
+    const k = kit({
+      threads: { wright: thread([eventItem(10, "playbook_created", "Playbook pb-3 created", { playbook_id: 3 })]) },
+      playbooks: [playbook(3, { trigger_id: 5 })],
+      triggers: [trigger(5)],
+    });
+    let answer: () => void = () => undefined;
+    k.fake.route("POST /playbooks/:id/off", async () => {
+      k.state.playbooks = [playbook(3, { trigger_id: 5, status: "disabled" })];
+      await new Promise<void>((go) => {
+        answer = go;
+      });
+      return ok({});
+    });
+    await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Playbook pb-3" });
+    if (withEditor) await focusAndClick(within(card).getByRole("button", { name: "Edit dedupe key" }));
+    await focusAndClick(within(card).getByRole("button", { name: /^Turn off/ }));
+    await act(async () => {
+      k.fake.emit({ type: "event", id: 2, at: new Date().toISOString(), kind: "playbook_disabled", session_id: null, task_id: null, payload: {} });
+    });
+    await waitFor(() => expect(card.querySelector(".chat-card-head")?.textContent).toContain("disabled"));
+    // The list landed first: Turn off is gone while its write is still pending.
+    expect(within(card).queryByRole("button", { name: /^Turn off/ })).toBeNull();
+    return { k, card, release: async () => act(async () => answer()) };
+  }
+
+  it("Turn off whose refetched disabled list lands before the off answer still leaves focus on the card's first Edit", async () => {
+    const { k, card, release } = await offAnsweredAfterTheList(false);
+    const edit = within(card).getByRole("button", { name: "Edit dedupe key" });
+    expect(document.activeElement).toBe(edit);
+    await release();
+    await waitFor(() => expect(k.posted("POST /playbooks/:id/off")).toHaveLength(1));
+    expect(document.activeElement).toBe(within(card).getByRole("button", { name: "Edit dedupe key" }));
+    expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Message Wright" }));
+    expect(within(card).queryByRole("alert")).toBeNull();
+  });
+
+  it("Turn off whose refetched disabled list lands before the off answer, with the dedupe key editor open, leaves focus on its field", async () => {
+    const { card, release } = await offAnsweredAfterTheList(true);
+    expect(document.activeElement).toBe(within(card).getByRole("textbox", { name: "New dedupe key" }));
+    await release();
+    expect(document.activeElement).toBe(within(card).getByRole("textbox", { name: "New dedupe key" }));
+    expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Message Wright" }));
+  });
+
+  it("a disabled playbook's row Set still posts (the kernel keeps it disabled)", async () => {
+    const k = kit({ threads: { wright: thread([eventItem(10, "playbook_created", "created", { playbook_id: 3 })]) }, playbooks: [playbook(3, { status: "disabled" })] });
+    await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Playbook pb-3" });
+    await focusAndClick(within(card).getByRole("button", { name: "Edit priority" }));
+    await focusAndClick(within(card).getByRole("button", { name: "Set priority" }));
+    await waitFor(() => expect(k.posted("POST /playbooks/:id/set").map((r) => r.body)).toEqual([{ field: "priority", value: "normal" }]));
+  });
+
+  it("a kernel approval decision (source approval:<id>) renders as the kernel's card, never the owner's bubble", async () => {
+    const decision = message(1, { source: "approval:6", text: "approved approval 6: github_comment.", reply_text: "Posted the review." });
+    const k = kit({ threads: { wright: thread([decision]) } });
+    const view = await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Kernel decision, approval 6" });
+    expect(card.textContent).toContain("Kernel");
+    expect(within(card).getByText("approved approval 6: github_comment.")).toBeTruthy();
+    expect(view.container.querySelector('[data-message="1"] [data-from="user"]')).toBeNull();
+    expect(within(view.container.querySelector('[data-message="1"]') as HTMLElement).queryByText("You")).toBeNull();
+    // The agent's reply under it renders as today.
+    expect(screen.getByText("Posted the review.")).toBeTruthy();
+  });
+
+  it("an ask stays the owner's bubble, even one whose text reads like a decision", async () => {
+    const k = kit({ threads: { wright: thread([message(1, { source: "ask", text: "Summarise my day" }), message(2, { source: "ask", text: "approved approval 6: looks like the kernel" })]) } });
+    const view = await renderChat(k);
+    await screen.findByText("approved approval 6: looks like the kernel");
+    expect(view.container.querySelectorAll('[data-message] [data-from="user"]')).toHaveLength(2);
+    expect(screen.queryByRole("region", { name: /^Kernel decision/ })).toBeNull();
+    expect(view.container.querySelector(".chat-kernel")).toBeNull();
+  });
+
+  it("a decision's text is inert: markup in it stays text", async () => {
+    const k = kit({ threads: { wright: thread([message(1, { source: "approval:6", text: `denied approval 6: ${XSS_IMG}` })]) } });
+    const view = await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Kernel decision, approval 6" });
+    expect(card.textContent).toContain(XSS_IMG);
+    expect(view.container.querySelector("img")).toBeNull();
   });
 
   it("the triggers resource asks GET /triggers with all=1, so an off or spent trigger still has its card", async () => {

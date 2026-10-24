@@ -48,6 +48,20 @@ describe("commands", () => {
     ]);
   });
 
+  it("a disabled playbook offers no Run or Turn off command, and its priority commands stay", async () => {
+    const k = kit({ threads: { wright: thread([]) }, playbooks: [playbook(3, { slug: "pr-review" }), playbook(4, { slug: "digest", status: "disabled" })] });
+    await renderChat(k);
+    await waitFor(() => expect(k.registry.get("chat.playbook.4.priority.high")).toBeDefined());
+    await waitFor(() => expect(k.registry.get("chat.playbook.3.run")).toBeDefined());
+    const titles = k.registry.list().map((c) => c.title);
+    expect(titles).not.toContain("Run digest");
+    expect(titles).not.toContain("Turn off digest");
+    expect(titles).toContain("Set digest priority high");
+    // The enabled one keeps both.
+    expect(titles).toContain("Run pr-review");
+    expect(titles).toContain("Turn off pr-review");
+  });
+
   it("Set <slug> priority high command posts set", async () => {
     const k = commandKit();
     await renderChat(k);

@@ -3,7 +3,7 @@
 // playbook card and the trigger card. Each action is one contract write
 // through the bridge; a refusal shows the kernel's words as text and leaves
 // the card in place. Every kernel string is a React text child only.
-import { useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useId, useLayoutEffect, useRef, useState } from "react";
 import type { Approval, PlaybookListing, StudioBridge, Trigger } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
 import { EventCard } from "../../components/EventCard/EventCard";
@@ -151,22 +151,189 @@ export function provenance(setBy: string | null): string {
   return "";
 }
 
-function Field({ label, value, setBy, mono = false }: { readonly label: string; readonly value: string; readonly setBy?: string | null; readonly mono?: boolean }) {
+/** A value and its provenance tag, as text. */
+function FieldValue({ value, setBy, mono = false }: { readonly value: string; readonly setBy?: string | null; readonly mono?: boolean }) {
   const tag = setBy === undefined ? "" : provenance(setBy);
+  return (
+    <span className="chat-kv-value">
+      <span className={mono ? "chat-mono" : undefined}>{value}</span>
+      {tag === "" ? null : <span className={tag === "proposed" ? "chat-tag proposed" : "chat-tag owner"}>{tag}</span>}
+    </span>
+  );
+}
+
+function Field({ label, value, setBy, mono = false }: { readonly label: string; readonly value: string; readonly setBy?: string | null; readonly mono?: boolean }) {
   return (
     <>
       <dt>{label}</dt>
       <dd data-field={label}>
-        <span className={mono ? "chat-mono" : undefined}>{value}</span>
-        {tag === "" ? null : <span className={tag === "proposed" ? "chat-tag proposed" : "chat-tag owner"}>{tag}</span>}
+        <FieldValue value={value} setBy={setBy} mono={mono} />
       </dd>
     </>
   );
 }
 
-/** The policy fields the card's Set form offers (the kernel's own names). */
-export const SET_FIELDS = ["dedupe_key", "priority", "model", "token_limit"] as const;
-type SetField = (typeof SET_FIELDS)[number];
+/** The owner-settable policy fields, by the kernel's own names (`PLAYBOOK_POLICY_FIELDS`, kernel/src/playbooks/store.ts). */
+export const POLICY_FIELDS = ["dedupe_key", "priority", "model", "token_limit"] as const;
+export type PolicyField = (typeof POLICY_FIELDS)[number];
+
+/** What the Model row reads with no model: the kernel refuses a dry run without one. */
+export const MODEL_NOT_SET = "not set: needed before a dry run";
+
+/** The kernel has no owner route that turns a disabled playbook back on (only an approved draft is enabled). */
+export const TURN_ON_GAP = "Turn on: not available from the kernel";
+
+/** One settable row of the card: its label, the value as shown, and what its editor starts with. */
+interface PolicyRow {
+  readonly field: PolicyField;
+  readonly label: string;
+  /** The row's name in its controls' accessible names ("Edit model", "Set model"). */
+  readonly name: string;
+  readonly shown: string;
+  readonly setBy: string | null;
+  readonly mono: boolean;
+  /** The editor's first value. */
+  readonly draft: string;
+  /** Text rows only: the line under the controls. */
+  readonly hint: string | null;
+}
+
+/**
+ * The kernel stores a dedupe key as a JSON list of field names; its editor
+ * takes them comma-separated (`parseOwnerPolicyValue`). The spec is untrusted
+ * and read by type only: anything but a list of strings is offered as-is.
+ */
+function dedupeDraft(spec: string | null): string {
+  if (spec === null) return "";
+  try {
+    const parsed: unknown = JSON.parse(spec);
+    if (Array.isArray(parsed) && parsed.every((f) => typeof f === "string")) return parsed.join(", ");
+  } catch {
+    // Not JSON: offer the text as the kernel sent it.
+  }
+  return spec;
+}
+
+function policyRows(playbook: PlaybookListing): readonly PolicyRow[] {
+  return [
+    {
+      field: "dedupe_key",
+      label: "Dedupe key",
+      name: "dedupe key",
+      shown: playbook.dedupe_key_spec ?? "not set",
+      setBy: playbook.dedupe_key_set_by,
+      mono: true,
+      draft: dedupeDraft(playbook.dedupe_key_spec),
+      hint: "comma-separated fields; none clears it",
+    },
+    { field: "priority", label: "Priority", name: "priority", shown: playbook.priority, setBy: playbook.priority_set_by, mono: false, draft: playbook.priority, hint: null },
+    {
+      field: "model",
+      label: "Model",
+      name: "model",
+      shown: playbook.model ?? MODEL_NOT_SET,
+      setBy: playbook.model_set_by,
+      mono: false,
+      draft: playbook.model ?? "",
+      hint: "none clears it",
+    },
+    {
+      field: "token_limit",
+      label: "Token limit per day",
+      name: "token limit per day",
+      shown: playbook.token_limit_per_day === null ? "not set" : String(playbook.token_limit_per_day),
+      setBy: playbook.token_limit_set_by,
+      mono: false,
+      draft: playbook.token_limit_per_day === null ? "" : String(playbook.token_limit_per_day),
+      hint: "none clears it",
+    },
+  ];
+}
+
+interface PolicyEditorProps {
+  readonly row: PolicyRow;
+  /** This editor's Set is pending. */
+  readonly busy: boolean;
+  /** A card write is pending: the editor stays as it is (text, Set, Cancel, Escape) until it answers. */
+  readonly held: boolean;
+  readonly onConfirm: (value: string) => void;
+  readonly onCancel: () => void;
+}
+
+/**
+ * A row's inline editor: Priority a select, the others a text field, then Set
+ * and Cancel on one line, and the hint on its own line under them, so a hint
+ * never moves the controls. Enter submits (the form's submit path carries the
+ * card's guard); Escape cancels. While held, nothing in it changes, so a
+ * pending Set always answers the editor, and the text, that sent it.
+ */
+function PolicyEditor({ row, busy, held, onConfirm, onCancel }: PolicyEditorProps) {
+  const [value, setValue] = useState(row.draft);
+  const hintId = useId();
+  const label = `New ${row.name}`;
+  return (
+    <form
+      className="chat-edit"
+      aria-label={`Set ${row.name}`}
+      onSubmit={(event) => {
+        event.preventDefault();
+        // Enter in the field submits too, so the guard sits on this path, not only on the button.
+        onConfirm(value);
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (!held) onCancel();
+      }}
+    >
+      <div className="chat-edit-controls">
+        {row.hint === null ? (
+          <SelectField
+            label={label}
+            aria-label={label}
+            aria-disabled={held ? "true" : undefined}
+            value={value}
+            onChange={(event) => {
+              if (!held) setValue(event.target.value);
+            }}
+            autoFocus
+          >
+            <option value="low">low</option>
+            <option value="normal">normal</option>
+            <option value="high">high</option>
+          </SelectField>
+        ) : (
+          <TextField
+            label={label}
+            aria-label={label}
+            aria-describedby={hintId}
+            value={value}
+            onChange={(event) => {
+              if (!held) setValue(event.target.value);
+            }}
+            readOnly={held}
+            autoFocus
+          />
+        )}
+        <Button variant="primary" size="standalone" type="submit" aria-label={`Set ${row.name}`} loading={busy} disabled={held && !busy}>
+          Set
+        </Button>
+        <Button variant="ghost" size="standalone" onClick={onCancel} disabled={held}>
+          Cancel
+        </Button>
+      </div>
+      {row.hint === null ? null : (
+        <p className="chat-edit-hint" id={hintId}>
+          {row.hint}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/** The Turn off write's path, which is also its key in the card's in-flight guard. */
+const OFF = "/playbooks/:id/off";
 
 function playbookChanges(agent: string): ResourceName[] {
   return ["playbooks", "triggers", `thread:${agent}`];
@@ -180,12 +347,48 @@ export interface PlaybookCardProps {
   readonly agent: string;
 }
 
-/** A playbook named by a `playbook_created` / `playbook_updated` card: its policy, each value's provenance, and its actions. No Enable: enabling stays an approval. */
+/**
+ * A playbook named by a `playbook_created` / `playbook_updated` card: its
+ * policy, each value's provenance (an unset value reads "not set"), an Edit on
+ * each owner-settable row, and its actions. No Enable: enabling stays an
+ * approval. A disabled playbook keeps its card (the list is read with
+ * `all=1`) with no Run now or Turn off (the kernel runs only an enabled one),
+ * and still offers each row's Set (the kernel keeps it disabled).
+ */
 export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: PlaybookCardProps) {
   const [refusal, setRefusal] = useState("");
-  const [field, setField] = useState<SetField>("priority");
-  const [value, setValue] = useState("high");
+  // While a write is pending, which editor is open never changes (every Edit, and the open
+  // editor's Cancel and Escape, wait for the answer), so a Set's answer is always its own editor's.
+  // The one exception, a Turn off whose list already says disabled, has no Set pending (`editHeld`).
+  const [editing, setEditing] = useState<PolicyField | null>(null);
   const { busy, act } = useCardAction();
+  const editRefs = useRef(new Map<PolicyField, HTMLButtonElement>());
+  const cardRef = useRef<HTMLElement>(null);
+  // Opening or closing a row's editor, or a Turn off swapping the actions for the Turn on gap,
+  // unmounts the focused control: say where focus goes ("card": the first row's control).
+  const focusAfterSwap = useRef<PolicyField | "card" | null>(null);
+  const status = playbook?.status;
+  // Keyed on the status too. A Turn off arms "card" before its write, and the target waits, still
+  // armed, for the render that swaps the actions out, whichever lands first: the write's answer or
+  // the refetched list that disables the playbook (the feed's playbook_disabled can beat the answer).
+  useLayoutEffect(() => {
+    const target = focusAfterSwap.current;
+    if (target === null || (target === "card" && status !== "disabled")) return;
+    focusAfterSwap.current = null;
+    if (!focusLost()) return;
+    if (target !== "card") {
+      editRefs.current.get(target)?.focus();
+      return;
+    }
+    // The first row's Edit, or its editor's field when that row is open: focus stays in the card.
+    for (const field of POLICY_FIELDS) {
+      const control =
+        field === editing ? cardRef.current?.querySelector<HTMLElement>('[data-editing="true"] .field-control') : editRefs.current.get(field);
+      if (control === null || control === undefined || (control instanceof HTMLButtonElement && control.disabled)) continue;
+      control.focus();
+      return;
+    }
+  }, [editing, status]);
   if (playbook === undefined) {
     return (
       <section className="chat-card" aria-label={`Playbook ${playbookId}`}>
@@ -197,11 +400,39 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
   const changes = playbookChanges(agent);
   const run = (path: string, body?: unknown): void =>
     act(path, async () => {
+      // A disabled playbook has no actions row: the focused Turn off unmounts once the list says
+      // disabled, which may be before this write answers. Armed only once the guard let the write
+      // through; a refusal disarms it, so a stale target never moves focus later.
+      if (path === OFF) focusAfterSwap.current = "card";
       const outcome = await write(api, path, params, body, changes);
       setRefusal(outcome.ok ? "" : outcome.text);
+      if (!outcome.ok && focusAfterSwap.current === "card") focusAfterSwap.current = null;
     });
+  const confirm = (field: PolicyField, value: string): void =>
+    act(`set:${field}`, async () => {
+      const outcome = await write(api, "/playbooks/:id/set", params, { field, value }, changes);
+      if (!outcome.ok) {
+        // The row stays in edit mode with the owner's text, under the kernel's words.
+        setRefusal(outcome.text);
+        return;
+      }
+      setRefusal("");
+      focusAfterSwap.current = field;
+      setEditing(null);
+    });
+  const cancel = (field: PolicyField): void => {
+    focusAfterSwap.current = field;
+    setEditing(null);
+  };
+  const disabled = playbook.status === "disabled";
+  // A control that cannot act while another write is pending says so (the guard would drop it).
+  const heldFor = (key: string): boolean => busy !== null && busy !== key;
+  // Once the list says disabled, a pending Turn off has nothing left to change on this card (its
+  // answer sets only the refusal line), so it no longer holds the row Edits: the one Turn off's
+  // focus moves to stays focusable, whether the answer or the list landed first.
+  const editHeld = (field: PolicyField): boolean => heldFor(`set:${field}`) && !(disabled && busy === OFF);
   return (
-    <section className="chat-card chat-playbook" aria-label={`Playbook ${playbook.slug}`} data-playbook={playbook.id}>
+    <section ref={cardRef} className="chat-card chat-playbook" aria-label={`Playbook ${playbook.slug}`} data-playbook={playbook.id}>
       <div className="chat-card-head">
         <span className="chat-card-title">{playbook.name}</span>
         <span className="chat-card-meta chat-mono">{playbook.slug}</span>
@@ -219,62 +450,57 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
               : `${trigger.kind}${trigger.next_fire_at === null ? "" : ` · next ${when(trigger.next_fire_at)}`}`
           }
         />
-        <Field label="Dedupe key" value={playbook.dedupe_key_spec ?? "none"} setBy={playbook.dedupe_key_set_by} mono />
-        <Field label="Priority" value={playbook.priority} setBy={playbook.priority_set_by} />
-        <Field label="Model" value={playbook.model ?? "default"} setBy={playbook.model_set_by} />
-        <Field
-          label="Token limit per day"
-          value={playbook.token_limit_per_day === null ? "none" : String(playbook.token_limit_per_day)}
-          setBy={playbook.token_limit_set_by}
-        />
-        <Field label="API-key fallback" value={playbook.api_key_fallback_json ?? "none"} setBy={playbook.api_key_fallback_set_by} mono />
+        {policyRows(playbook).map((row) => (
+          <Fragment key={row.field}>
+            <dt>{row.label}</dt>
+            <dd className="chat-kv-row" data-field={row.label} data-editing={editing === row.field ? "true" : undefined}>
+              {editing === row.field ? (
+                <PolicyEditor
+                  row={row}
+                  busy={busy === `set:${row.field}`}
+                  held={busy !== null}
+                  onConfirm={(value) => confirm(row.field, value)}
+                  onCancel={() => cancel(row.field)}
+                />
+              ) : (
+                <>
+                  <FieldValue value={row.shown} setBy={row.setBy} mono={row.mono} />
+                  <Button
+                    variant="ghost"
+                    size="row"
+                    className="chat-kv-edit"
+                    aria-label={`Edit ${row.name}`}
+                    // Its own Set's answer may render it before the guard clears: it stays focusable for that.
+                    disabled={editHeld(row.field)}
+                    ref={(el) => {
+                      if (el === null) editRefs.current.delete(row.field);
+                      else editRefs.current.set(row.field, el);
+                    }}
+                    onClick={() => setEditing(row.field)}
+                  >
+                    Edit
+                  </Button>
+                </>
+              )}
+            </dd>
+          </Fragment>
+        ))}
+        {/* Not owner-settable (`PLAYBOOK_POLICY_FIELDS` has no such field): read-only. */}
+        <Field label="API-key fallback" value={playbook.api_key_fallback_json ?? "not set"} setBy={playbook.api_key_fallback_set_by} mono />
       </dl>
       <p className="chat-card-dry">{LAST_DRY_RUN_GAP}</p>
-      <div className="chat-card-actions">
-        <Button variant="primary" size="row" loading={busy === "/playbooks/:id/run"} onClick={() => run("/playbooks/:id/run")}>
-          Run now
-        </Button>
-        <Button variant="secondary" size="row" loading={busy === "/playbooks/:id/off"} onClick={() => run("/playbooks/:id/off")}>
-          Turn off
-        </Button>
-      </div>
-      <form
-        className="chat-set"
-        aria-label={`Set a field of ${playbook.slug}`}
-        onSubmit={(event) => {
-          event.preventDefault();
-          // Enter in the Value field submits too, so the guard sits here, not only on the button.
-          run("/playbooks/:id/set", { field, value });
-        }}
-      >
-        <SelectField
-          label="Field"
-          value={field}
-          onChange={(event) => {
-            const next = event.target.value as SetField;
-            setField(next);
-            setValue(next === "priority" ? "high" : "");
-          }}
-        >
-          {SET_FIELDS.map((f) => (
-            <option key={f} value={f}>
-              {f}
-            </option>
-          ))}
-        </SelectField>
-        {field === "priority" ? (
-          <SelectField label="Value" value={value} onChange={(event) => setValue(event.target.value)}>
-            <option value="low">low</option>
-            <option value="normal">normal</option>
-            <option value="high">high</option>
-          </SelectField>
-        ) : (
-          <TextField label="Value" value={value} onChange={(event) => setValue(event.target.value)} hint="none clears it" />
-        )}
-        <Button variant="secondary" size="row" type="submit" loading={busy === "/playbooks/:id/set"}>
-          Set {field}
-        </Button>
-      </form>
+      {disabled ? (
+        <p className="chat-card-meta">{TURN_ON_GAP}</p>
+      ) : (
+        <div className="chat-card-actions">
+          <Button variant="primary" size="row" loading={busy === "/playbooks/:id/run"} disabled={heldFor("/playbooks/:id/run")} onClick={() => run("/playbooks/:id/run")}>
+            Run now
+          </Button>
+          <Button variant="secondary" size="row" loading={busy === OFF} disabled={heldFor(OFF)} onClick={() => run(OFF)}>
+            Turn off
+          </Button>
+        </div>
+      )}
       {trigger === undefined ? null : <TriggerCard api={api} trigger={trigger} agent={agent} nested />}
       <Refusal text={refusal} />
     </section>
