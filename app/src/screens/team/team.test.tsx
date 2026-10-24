@@ -520,6 +520,29 @@ describe("members of the same name are told apart", () => {
     for (const c of cards()) expect(c.querySelector(".card-name")?.getAttribute("title")).toBe(c.getAttribute("data-agent-id"));
     expect(screen.getByRole("button", { name: "Mason" })).toBe(byId("mason"));
   });
+
+  it("each colliding card's accessible description carries its own id; a unique name's does not", async () => {
+    await startTeam({ roster: [WRIGHT, OLD_REVIEWER, NEW_REVIEWER, MASON], details: { mason: detail(MASON) } });
+    const byId = (id: string): HTMLElement => {
+      const found = cards().find((c) => c.getAttribute("data-agent-id") === id);
+      if (found === undefined) throw new Error(`no card ${id}`);
+      return found;
+    };
+    // The description as assistive tech builds it: the aria-describedby elements' text, in order.
+    const description = (card: HTMLElement): string =>
+      (card.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .filter((ref) => ref !== "")
+        .map((ref) => document.getElementById(ref)?.textContent ?? "")
+        .join(" ");
+    const oldDescription = description(byId("phase4-exit-mvg8wle4cf8f26"));
+    const newDescription = description(byId("phase5-exit-1024"));
+    expect(oldDescription).toContain("phase4-exit-mvg8wle4cf8f26");
+    expect(newDescription).toContain("phase5-exit-1024");
+    expect(oldDescription).not.toBe(newDescription);
+    expect(description(byId("mason"))).not.toContain("mason");
+    expect(byId("mason").getAttribute("aria-describedby")?.includes("agent-id")).toBe(false);
+  });
 });
 
 describe("the designed states", () => {

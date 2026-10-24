@@ -233,8 +233,10 @@ test("told apart: two members of the same name show their ids on Team and in the
   await expect(ada).toHaveClass(/(^|\s)off(\s|$)/);
   await expect(ada.getByTestId("crew-off")).toHaveText("off");
   await expect(ada.getByTestId("crew-id")).toHaveCount(0);
-  // Dimmed, never hidden: the row is shown at the dimmed opacity and is still a working button.
-  expect(Number(await ada.evaluate((el) => getComputedStyle(el).opacity))).toBeLessThan(1);
+  // Dimmed, never hidden: the avatar is shown at the dimmed opacity, the row's text stays at full
+  // opacity (AA contrast), and the row is still a working button.
+  expect(Number(await ada.locator(".bot").evaluate((el) => getComputedStyle(el).opacity))).toBeLessThan(1);
+  expect(Number(await ada.evaluate((el) => getComputedStyle(el).opacity))).toBe(1);
   await expect(ada).toBeVisible();
   await expect(ada).toBeEnabled();
 

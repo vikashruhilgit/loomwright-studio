@@ -290,9 +290,11 @@
   background: var(--accent-soft);
   color: var(--accent);
 }
-/* An off member: dimmed like Avatar.css's settled (parked) creature, and it says "off" (never colour
-   alone). It stays a working button: its thread is still open to read (D34). */
-.chat-crew-row.off {
+/* An off member: its avatar is dimmed like Avatar.css's settled (parked) creature, and it says "off"
+   (never colour alone). Only the avatar dims: the name and the "off" word keep their token colours at
+   full opacity so they stay at AA contrast. It stays a working button: its thread is still open to
+   read (D34). */
+.chat-crew-row.off .bot {
   opacity: 0.72;
 }
 .chat-crew-off {

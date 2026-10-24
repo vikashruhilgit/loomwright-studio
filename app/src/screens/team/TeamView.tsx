@@ -172,7 +172,7 @@ function TeamCard({ agent, role, task, idShown, selected, onOpen, cardRef }: Tea
       tabIndex={0}
       aria-current={selected ? "true" : undefined}
       aria-labelledby={`${id}-name`}
-      aria-describedby={`${id}-role ${id}-task ${id}-budget ${id}-sessions ${id}-status`}
+      aria-describedby={`${idShown ? `${id}-agent-id ` : ""}${id}-role ${id}-task ${id}-budget ${id}-sessions ${id}-status`}
       title={role}
       onClick={onOpen}
       onKeyDown={onKeyDown}
@@ -190,7 +190,7 @@ function TeamCard({ agent, role, task, idShown, selected, onOpen, cardRef }: Tea
           <div className="card-name" id={`${id}-name`} title={agent.id}>
             {agent.display_name}
           </div>
-          {idShown ? <div className="card-id" data-testid="team-card-id">{agent.id}</div> : null}
+          {idShown ? <div className="card-id" id={`${id}-agent-id`} data-testid="team-card-id">{agent.id}</div> : null}
           <div className="card-role" id={`${id}-role`} data-testid="team-card-role">
             {role ?? ""}
           </div>
