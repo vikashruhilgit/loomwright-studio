@@ -695,7 +695,9 @@ describe("the rail: an outward call is held as a pending approval", () => {
     const d = await s.push();
     expect(d.permissionDecision).toBe("deny");
     expect(d.permissionDecisionReason).toMatch(/^approval_required: held as approval 1; it did not run\. /);
-    expect(d.permissionDecisionReason).toContain("studio approve 1 once");
+    expect(d.permissionDecisionReason).toContain("The owner decides in Studio's Approvals (approval 1)");
+    expect(d.permissionDecisionReason).not.toContain("studio approve");
+    expect(d.permissionDecisionReason).not.toContain("studio deny");
     expect(t.approvals()).toEqual([
       {
         id: 1,

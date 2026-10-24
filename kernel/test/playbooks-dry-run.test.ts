@@ -441,7 +441,7 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     const held = await h.enable(input);
     // A kernel-applied action: the hold reason says the kernel applies it, never to repeat the call.
     expect(held.decision.permissionDecisionReason).toBe(
-      "approval_required: held as approval 1; it did not run. The owner decides (studio approve 1 once, or studio deny 1) and the decision arrives as a new message. " +
+      "approval_required: held as approval 1; it did not run. The owner decides in Studio's Approvals (approval 1) and the decision arrives as a new message. " +
         "End your turn now; if it is approved, the kernel applies it itself and that message says what it did; do not repeat the call.",
     );
     // The grant matches on the payload alone: the display never enters it.
@@ -983,7 +983,7 @@ describe("the gate's pre-hold check: it can only narrow", () => {
     // An ordinary outward call is held as before, without asking.
     // Its hold reason is today's, byte for byte: repeat the exact call once if approved.
     expect((await h.gate("Bash", { command: COMMENT })).permissionDecisionReason).toBe(
-      "approval_required: held as approval 1; it did not run. The owner decides (studio approve 1 once, or studio deny 1) and the decision arrives as a new message. " +
+      "approval_required: held as approval 1; it did not run. The owner decides in Studio's Approvals (approval 1) and the decision arrives as a new message. " +
         "End your turn now; if it is approved, run exactly the same call again, once.",
     );
     expect(check).not.toHaveBeenCalled();
