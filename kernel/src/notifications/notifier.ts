@@ -4,8 +4,9 @@
 //
 // - `terminal-notifier` (Homebrew, third-party), from a fixed absolute path
 //   only, never `PATH` and never installed by Studio: the one candidate with a
-//   click action (`-execute`). Its click opens Terminal on
-//   `studio notifications show <id>`.
+//   click action (`-open`). Its click opens the notification's deep link
+//   (`loomwright-studio://notifications/<id>`), which Loomwright Studio.app
+//   handles; no shell and no Terminal.
 // - else `/usr/bin/osascript` `display notification` (ships with macOS): no
 //   click action, so the row is `unsupported` and says why.
 //
@@ -18,11 +19,12 @@
 // terminal-notifier gets the body on stdin
 // and the title as a quoted plist string, because Cocoa parses a `-key value`
 // argument as a property list (p11: an unquoted `(a, b)` title hung it). The
-// click's shell command holds only the kernel's own paths and the integer id.
+// click's `-open` value is built only from the validated integer id
+// (`deepLinkFor`), never from notification text.
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { clip, errorMessage } from "../loop/internal.js";
+import { deepLinkFor } from "./record.js";
 
 /** Where terminal-notifier may be: Homebrew on Apple silicon, then on Intel. Nothing else is looked at. */
 export const TERMINAL_NOTIFIER_PATHS: readonly string[] = ["/opt/homebrew/bin/terminal-notifier", "/usr/local/bin/terminal-notifier"];
@@ -62,10 +64,6 @@ export interface NotifierDeps {
   readonly exec?: NotifierExec;
   /** Default `NOTIFIER_TIMEOUT_MS`. */
   readonly timeoutMs?: number;
-  /** The `node` the click runs the CLI with. Defaults to `process.execPath`. */
-  readonly nodePath?: string;
-  /** The CLI entry the click runs. Defaults to this build's `cli/index.js`. */
-  readonly cliPath?: string;
 }
 
 /** What one delivery attempt came to. `posted`: a native notification was handed to macOS. */
@@ -80,42 +78,19 @@ export function plistQuote(text: string): string {
   return `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-/** One POSIX shell word holding exactly `text`. */
-export function shellQuote(text: string): string {
-  return `'${text.replace(/'/g, "'\\''")}'`;
-}
-
 function checkId(id: number): void {
   if (!Number.isSafeInteger(id) || id < 1) throw new RangeError(`a notification id must be a positive integer, got ${String(id)}`);
 }
 
 /**
- * The command a click runs in Terminal: `studio notifications show <id>` with
- * this kernel's `node` and CLI, against its data dir. Only kernel-owned paths
- * (each one shell word) and the validated integer id.
+ * terminal-notifier at `path`: the title as a plist string, the body on stdin,
+ * the group, and the click: `-open` with the notification's own deep link
+ * (built from the validated id, never from its text or a stored column), which
+ * macOS hands to the app that registered `loomwright-studio://`.
  */
-export function showCommand(id: number, dataDir: string, deps: NotifierDeps = {}): string {
-  checkId(id);
-  const nodePath = deps.nodePath ?? process.execPath;
-  const cliPath = deps.cliPath ?? fileURLToPath(new URL("../cli/index.js", import.meta.url));
-  return `STUDIO_DATA_DIR=${shellQuote(dataDir)} ${shellQuote(nodePath)} ${shellQuote(cliPath)} notifications show ${id}`;
-}
-
-/**
- * terminal-notifier's `-execute` value: a shell command (terminal-notifier
- * runs it with a shell on click) that has Terminal run `command`, passed to
- * osascript as an `on run argv` item after `--`, never in the script source.
- */
-export function clickShellCommand(command: string): string {
-  return [OSASCRIPT_PATH, "-e", "on run argv", "-e", 'tell application "Terminal"', "-e", "activate", "-e", "do script (item 1 of argv)", "-e", "end tell", "-e", "end run", "--", command]
-    .map(shellQuote)
-    .join(" ");
-}
-
-/** terminal-notifier at `path`: the title as a plist string, the body on stdin, the group and the click. */
-export function terminalNotifierInvocation(path: string, n: { readonly id: number; readonly title: string; readonly body: string }, click: string): NotifierInvocation {
+export function terminalNotifierInvocation(path: string, n: { readonly id: number; readonly title: string; readonly body: string }): NotifierInvocation {
   checkId(n.id);
-  return { file: path, args: ["-title", plistQuote(n.title), "-group", plistQuote(notifierGroup(n.id)), "-execute", plistQuote(click)], input: n.body };
+  return { file: path, args: ["-title", plistQuote(n.title), "-group", plistQuote(notifierGroup(n.id)), "-open", plistQuote(deepLinkFor(n.id))], input: n.body };
 }
 
 /** osascript `display notification`: the text as `argv` items 1 (title) and 2 (body), after `--` so a leading `-` is data. No click action. */
@@ -274,20 +249,22 @@ function failureOf(file: string, run: NotifierRun, timeoutMs: number): string | 
  * Post notification `n` once, natively. Never throws for a failed post: not
  * macOS or no notifier ⇒ `unsupported`, not posted; no click-capable notifier
  * ⇒ posted with osascript, `unsupported` with the reason; terminal-notifier ⇒
- * `delivered`, its click running `showCommand(n.id, dataDir)` in Terminal; a
+ * `delivered`, its click opening the notification's deep link in the app; a
  * notifier that cannot be spawned, exits non-zero or times out ⇒ `failed`
  * with the clipped error. Exactly one notifier process per call.
+ *
+ * `_dataDir` is unused: it is kept so the callers' `(n, dataDir, deps)`
+ * signature stays unchanged.
  */
 export async function postNotification(
   n: { readonly id: number; readonly title: string; readonly body: string },
-  dataDir: string,
+  _dataDir: string,
   deps: NotifierDeps = {},
 ): Promise<DeliveryOutcome> {
   checkId(n.id);
   const choice = chooseNotifier(deps);
   if (choice.kind === "none") return { status: "unsupported", detail: `${choice.reason}: not posted`, posted: false };
-  const invocation =
-    choice.kind === "click" ? terminalNotifierInvocation(choice.path, n, clickShellCommand(showCommand(n.id, dataDir, deps))) : osascriptInvocation(n);
+  const invocation = choice.kind === "click" ? terminalNotifierInvocation(choice.path, n) : osascriptInvocation(n);
   const timeoutMs = deps.timeoutMs ?? NOTIFIER_TIMEOUT_MS;
   let run: NotifierRun;
   try {
@@ -298,5 +275,5 @@ export async function postNotification(
   const failure = failureOf(invocation.file, run, timeoutMs);
   if (failure !== undefined) return { status: "failed", detail: clip(failure), posted: false };
   if (choice.kind === "plain") return { status: "unsupported", detail: `${choice.reason}: posted without a click action by ${choice.path}`, posted: true };
-  return { status: "delivered", detail: `posted by ${choice.path}; a click runs studio notifications show ${n.id} in Terminal`, posted: true };
+  return { status: "delivered", detail: `posted by ${choice.path}; a click opens ${deepLinkFor(n.id)} (needs Loomwright Studio.app)`, posted: true };
 }

@@ -35,7 +35,7 @@
 // a credential.
 //
 // What only the owner can see (the notification popping up, the click
-// opening Terminal on `studio notifications show <id>`, the literal
+// opening the notification's deep link in Loomwright Studio.app, the literal
 // `remind me at 5pm` reminder at 17:00, step 2) is not here: the runbook
 // lists it as fields he fills in.
 //
@@ -614,9 +614,9 @@ describe.skipIf(!LIVE)("live phase 2 exit: reminders on the launchd service, a v
         const items = new Map<string, string>();
         const keychain: KeychainReader = { read: (s) => items.get(s) };
         const writer: KeychainWriter = { add: (s, _a, secret) => void items.set(s, secret) };
-        // The real notifier, with the click running this checkout's built CLI.
+        // The real notifier, with the click opening the notification's link in the app.
         const contributions = SHIPPED_CONTRIBUTIONS.map((c) =>
-          c === notificationsContribution ? Object.freeze({ ...c, dueWork: Object.freeze([createDeliveryDueWork({ cliPath: CLI_PATH })]) }) : c,
+          c === notificationsContribution ? Object.freeze({ ...c, dueWork: Object.freeze([createDeliveryDueWork()]) }) : c,
         );
         const t0 = Date.now();
         ownKernel = await startKernel(
