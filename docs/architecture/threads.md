@@ -38,7 +38,7 @@ Only the kinds in the closed list `THREAD_EVENT_KINDS` are cards, each tied to a
 | `playbook_created`, `playbook_updated`, `playbook_enabled`, `playbook_disabled` | its payload's `playbook_id` names a playbook whose `owning_agent` is the agent | `Playbook triage created (version 1)` |
 | `approval_requested`, `approval_decided` | its payload's `id` names an approval whose `requesting_agent` is the agent | `Approval 7 requested: open_pr`, `Approval 7 denied: open_pr` |
 | `agent_created`, `agent_renamed`, `agent_settings_set`, `agent_status_changed` | its payload's `id` is the agent | `Agent mason renamed from Mason to Stone` |
-| `trigger_fired` | its payload's `trigger_id` names a trigger whose `owning_agent` is the agent | `Trigger 3 fired (notify)` |
+| `trigger_registered`, `trigger_fired` | its payload's `trigger_id` names a trigger whose `owning_agent` is the agent | `Trigger 3 registered`, `Trigger 3 fired (notify)` |
 
 `memory_updated` is not in the list: no kernel code writes that kind today, and this item adds no event kind (the gap with the approved design is logged in [open questions](../OPEN_QUESTIONS.md#deferred-decisions)). A new kind becomes a card only by adding it to `THREAD_EVENT_KINDS` with its tie (and its sentence beside the others in `threads.ts`).
 
