@@ -232,6 +232,10 @@ test("AC9: the keyboard alone reaches every action with Tab / Shift+Tab and runs
   await page.keyboard.press("Space");
   await expect.poll(() => chat.writes.map((w) => w.path)).toContain("/playbooks/3/run");
   // A row's Set from the keyboard: Tab to Edit model, Enter, type, Enter; focus comes back to Edit model.
+  // The write is recorded when it arrives, before it answers; until then the card holds every Edit
+  // (disabled, so out of the Tab order). Wait for the answer, or a slow runner tabs past nothing.
+  const card = page.getByRole("region", { name: "Playbook pr-review" });
+  await expect(card.getByRole("button", { name: "Edit model" })).toBeEnabled();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await tabTo(page, "Edit model");
   await page.keyboard.press("Enter");
@@ -240,7 +244,6 @@ test("AC9: the keyboard alone reaches every action with Tab / Shift+Tab and runs
   await page.keyboard.type("opus");
   await page.keyboard.press("Enter");
   await expect.poll(() => chat.writes.map((w) => [w.path, w.body])).toContainEqual(["/playbooks/3/set", { field: "model", value: "opus" }]);
-  const card = page.getByRole("region", { name: "Playbook pr-review" });
   await expect(card.locator('dd[data-field="Model"] .chat-kv-value')).toHaveText("opusset by owner");
   await expect(card.getByRole("button", { name: "Edit model" })).toBeFocused();
   // Escape leaves edit mode and hands focus back to the row's Edit.
