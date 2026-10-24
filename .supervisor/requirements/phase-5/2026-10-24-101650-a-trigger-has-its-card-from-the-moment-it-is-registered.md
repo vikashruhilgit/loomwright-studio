@@ -75,3 +75,9 @@ app/e2e/chat.spec.ts
 app/e2e/fixtures/chat.ts
 app/e2e/phase-5-exit.spec.ts
 docs/evidence/phase-5-exit-runbook.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-24T14:28:32Z
+- **Brief:** .supervisor/jobs/done/2026-10-24-trigger-card-from-registration.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/128
