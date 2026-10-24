@@ -67,6 +67,7 @@ export const THREAD_EVENT_KINDS: Readonly<Record<string, ThreadEventTie>> = Obje
   agent_renamed: "agent",
   agent_settings_set: "agent",
   agent_status_changed: "agent",
+  trigger_registered: "trigger",
   trigger_fired: "trigger",
 });
 
@@ -266,6 +267,7 @@ function eventItemOf(row: ThreadEventRow): ThreadEventItem {
     case "trigger": {
       const id = isId(p.trigger_id) ? p.trigger_id : null;
       const name = id !== null ? `Trigger ${id}` : "A trigger";
+      if (row.kind === "trigger_registered") return card(`${name} registered`, { trigger_id: id });
       return card(isText(p.action) ? `${name} fired (${shown(p.action)})` : `${name} fired`, { trigger_id: id });
     }
     default:

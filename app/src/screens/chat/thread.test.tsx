@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ALWAYS_INELIGIBLE } from "./cards";
 import { WRIGHT_EMPTY } from "./Thread";
 import { ok } from "../../store/fake-bridge";
-import { approval, eventItem, kit, message, playbook, renderChat, resetChat, thread, go } from "./testkit";
+import { approval, eventItem, kit, message, playbook, renderChat, resetChat, thread, trigger, go } from "./testkit";
 import type { Kit } from "./testkit";
 
 afterEach(resetChat);
@@ -336,6 +336,53 @@ describe("thread", () => {
     expect(view.container.querySelector('[data-item="event:12"] + li')?.contains(card)).toBe(true);
     expect(screen.getByRole("region", { name: "Playbook pb-3" })).toBe(card);
     expect(document.activeElement).toBe(button);
+  });
+
+  it("the triggers resource asks GET /triggers with all=1, so an off or spent trigger still has its card", async () => {
+    const k = kit({ threads: { wright: thread([eventItem(1, "trigger_registered", "Trigger 5 registered", { trigger_id: 5 })]) }, triggers: [trigger(5, { kind: "once", enabled: false })] });
+    await renderChat(k);
+    await screen.findByRole("region", { name: "Trigger 5" });
+    const reads = k.fake.requestsTo("GET /triggers");
+    expect(reads.length).toBeGreaterThan(0);
+    for (const read of reads) expect(read.req.query).toEqual({ all: "1" });
+  });
+
+  it("a registered trigger that never fired has its card under the registered line: schedule, next fire, on, On and Off", async () => {
+    const at = "2026-10-22T17:00:00.000Z";
+    const k = kit({
+      threads: { wright: thread([message(1, { text: "Remind me at 17:00" }), eventItem(2, "trigger_registered", "Trigger 5 registered", { trigger_id: 5 }), message(3, { text: "later" })]) },
+      triggers: [trigger(5, { kind: "once", spec: { at }, next_fire_at: at })],
+    });
+    const view = await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Trigger 5" });
+    expect(card.closest("li")?.previousElementSibling?.getAttribute("data-item")).toBe("event:2");
+    // The registered line reads as a playbook line, as a fired one does.
+    expect(view.container.querySelector('[data-item="event:2"] [data-kind]')?.getAttribute("data-kind")).toBe("playbook");
+    expect(view.container.querySelector('[data-item="event:2"]')?.textContent).toContain("Trigger 5 registered");
+    expect(card.getAttribute("data-state")).toBe("on");
+    expect(card.querySelector('[data-field="Schedule"]')?.textContent).toMatch(/^once at /);
+    expect(card.querySelector('[data-field="Next fire"] time')?.getAttribute("dateTime")).toBe(at);
+    expect(within(card).getAllByRole("button").map((b) => b.textContent)).toEqual(["On", "Off"]);
+  });
+
+  it("a cron trigger registered once and fired three times has one card, directly after the third firing", async () => {
+    const k = kit({
+      threads: {
+        wright: thread([
+          eventItem(1, "trigger_registered", "Trigger 5 registered", { trigger_id: 5 }),
+          eventItem(2, "trigger_fired", "Trigger 5 fired (wake)", { trigger_id: 5 }),
+          message(3),
+          eventItem(4, "trigger_fired", "Trigger 5 fired (wake)", { trigger_id: 5 }),
+          eventItem(5, "trigger_fired", "Trigger 5 fired (wake)", { trigger_id: 5 }),
+          message(6),
+        ]),
+      },
+      triggers: [trigger(5)],
+    });
+    const view = await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Trigger 5" });
+    expect(view.container.querySelectorAll('[data-trigger="5"]')).toHaveLength(1);
+    expect(card.closest("li")?.previousElementSibling?.getAttribute("data-item")).toBe("event:5");
   });
 
   it("a row turning replied keeps the end in view when the owner was at the end", async () => {

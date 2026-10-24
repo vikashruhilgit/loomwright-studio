@@ -19,7 +19,7 @@ Built by item 12 in `app/src/store/` (`store.ts`, `resources.ts`, `react.ts`, `c
 
 ### Resources
 
-A resource is one contract `GET` (`FIXED_RESOURCES` in `resources.ts`): `status` (`GET /status`), `approvals`, `grants` (`GET /approvals/grants`), `agents`, `messages` (`GET /messages?all=1`), `sessions`, `playbooks`, `triggers` and `notifications`, plus one `thread:<agent>` per agent (the first page of `GET /threads/:agent`; paging backwards is item 13's). `status` loads when the store starts, every other resource on its first use (`load`), and from then on the feed keeps it current.
+A resource is one contract `GET` (`FIXED_RESOURCES` in `resources.ts`): `status` (`GET /status`), `approvals`, `grants` (`GET /approvals/grants`), `agents`, `messages` (`GET /messages?all=1`), `sessions`, `playbooks`, `triggers` (`GET /triggers?all=1`) and `notifications`, plus one `thread:<agent>` per agent (the first page of `GET /threads/:agent`; paging backwards is item 13's). `status` loads when the store starts, every other resource on its first use (`load`), and from then on the feed keeps it current.
 
 ### Following the feed
 
