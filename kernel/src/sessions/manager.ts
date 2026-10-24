@@ -2498,8 +2498,8 @@ export class SessionManager {
               const permissionDecisionReason =
                 outcome.kind === "granted"
                   ? "approval_granted"
-                  : `approval_required: held as approval ${outcome.id}; it did not run. The owner decides (studio approve ${outcome.id} once, ` +
-                    `or studio deny ${outcome.id}) and the decision arrives as a new message. End your turn now; if it is approved, ${ifApproved}`;
+                  : `approval_required: held as approval ${outcome.id}; it did not run. The owner decides in Studio's Approvals (approval ${outcome.id}) ` +
+                    `and the decision arrives as a new message. End your turn now; if it is approved, ${ifApproved}`;
               return {
                 hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: outcome.kind === "granted" ? "allow" : "deny", permissionDecisionReason },
               };

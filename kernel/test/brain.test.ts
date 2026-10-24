@@ -348,6 +348,23 @@ describe("docs/architecture/brain.md (AC9)", () => {
     expect(`${block.slice(open + 1, close).join("\n")}\n`).toBe(ROLE_TEMPLATE);
   });
 
+  it("the role template sends the owner to the app's controls, not to studio commands", () => {
+    const start = ROLE_TEMPLATE.indexOf("## Where the owner acts");
+    expect(start).toBeGreaterThan(-1);
+    const next = ROLE_TEMPLATE.indexOf("\n## ", start);
+    expect(next).toBeGreaterThan(start);
+    const section = ROLE_TEMPLATE.slice(start, next);
+    // Whitespace collapsed, so the pins do not depend on the line wrap.
+    const flat = section.replace(/\s+/g, " ");
+    expect(flat).toContain("Approvals for a held call");
+    expect(flat).toContain("Set, Run now and Turn off");
+    expect(flat).toContain("Team's inspector");
+    expect(flat).toContain("Mention a `studio` command only when the owner asks for the CLI.");
+    expect(ROLE_TEMPLATE).not.toContain("studio approve");
+    expect(ROLE_TEMPLATE).not.toContain("studio deny");
+    expect(ROLE_TEMPLATE).not.toContain("studio playbooks");
+  });
+
   it("the role template and both doc blocks list the six playbook tool names (AC6)", () => {
     const doc = readFileSync(DOC, "utf8");
     expect(ROLE_TEMPLATE).toContain(`\n- playbooks: ${PLAYBOOK_TOOL_NAMES.join(", ")}\n`);
