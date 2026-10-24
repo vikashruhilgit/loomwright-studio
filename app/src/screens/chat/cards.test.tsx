@@ -202,6 +202,17 @@ describe("cards", () => {
     expect((within(editor(card, "dedupe key")).getByRole("textbox", { name: "New dedupe key" }) as HTMLInputElement).value).toBe("trigger.id, date");
   });
 
+  it("a dedupe key that is not a JSON list of strings opens as the kernel sent it", async () => {
+    for (const spec of ["pr:{number}:{head_sha}", "[1,2]", '{"a":1}']) {
+      resetChat();
+      const k = kit({ threads: { wright: thread([eventItem(1, "playbook_created", "created", { playbook_id: 3 })]) }, playbooks: [playbook(3, { dedupe_key_spec: spec })] });
+      await renderChat(k);
+      const card = await playbookCard();
+      await focusAndPress(card, "Edit dedupe key");
+      expect((within(editor(card, "dedupe key")).getByRole("textbox", { name: "New dedupe key" }) as HTMLInputElement).value).toBe(spec);
+    }
+  });
+
   it("no separate Field dropdown: each settable row has its own Edit", async () => {
     const k = playbookKit();
     await renderChat(k);

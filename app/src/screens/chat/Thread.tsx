@@ -325,7 +325,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   }
   // Each card is keyed by what it shows (one playbook, one trigger: both maps hold an id once), never
   // by its position: Load earlier prepends items, and a positional key would remount every card,
-  // dropping its refusal, its Set form, an open confirm and the in-flight guard of a pending write.
+  // dropping its refusal, a row's open editor, an open confirm and the in-flight guard of a pending write.
   const cardsAfter = (index: number): { readonly key: string; readonly node: ReactNode }[] => {
     const out: { readonly key: string; readonly node: ReactNode }[] = [];
     for (const [id, at] of playbookAt) {
