@@ -5,6 +5,7 @@
 // card (Create, Edit in English, Deny).
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import type { ApiResult } from "../../api/contract";
 import { ok } from "../../store/fake-bridge";
 import { LAST_DRY_RUN_GAP } from "./cards";
 import { inFlightGuard, triggerSchedule, triggerState, when } from "./model";
@@ -240,10 +241,81 @@ describe("cards", () => {
     expect(k.posted("POST /playbooks/:id/set")).toHaveLength(1);
   });
 
-  it("a Set that answers after the owner opened another row leaves that row's editor, its text and its focus alone", async () => {
-    const k = playbookKit();
+  /** Route the set to wait for `release`, answering with `answer`. */
+  function heldSet(k: Kit, answer: ApiResult<unknown>): () => void {
     let release: () => void = () => undefined;
     k.fake.route("POST /playbooks/:id/set", async () => {
+      await new Promise<void>((go) => {
+        release = go;
+      });
+      return answer;
+    });
+    return () => release();
+  }
+
+  /** Try every way out of a pending Set's editor: Cancel, Escape, and typing over its text. */
+  async function tryToLeave(card: HTMLElement, row: string): Promise<void> {
+    const form = editor(card, row);
+    const input = within(form).getByRole("textbox", { name: `New ${row}` });
+    await act(async () => {
+      fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    });
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Escape" });
+    });
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "second-half-typed" } });
+    });
+  }
+
+  function heldButtons(card: HTMLElement): string[] {
+    return within(card)
+      .getAllByRole("button")
+      .filter((b) => (b as HTMLButtonElement).disabled)
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent ?? "");
+  }
+
+  it("while a Set is pending its editor stays the one that sent it, every other playbook control is disabled, and success closes it onto its Edit", async () => {
+    const k = playbookKit();
+    const release = heldSet(k, { ok: true, status: 200, body: {} });
+    await renderChat(k);
+    const card = await playbookCard();
+    await focusAndPress(card, "Edit model");
+    await typeAndEnter(card, "model", "first");
+    const form = editor(card, "model");
+    expect(within(form).getByRole("button", { name: "Set model" }).getAttribute("aria-busy")).toBe("true");
+    expect(heldButtons(card)).toEqual(["Edit dedupe key", "Edit priority", "Cancel", "Edit token limit per day", "Run now", "Turn off"]);
+    await tryToLeave(card, "model");
+    // Nothing moved: the same editor, with the text it sent.
+    expect(editor(card, "model")).toBe(form);
+    expect((within(form).getByRole("textbox", { name: "New model" }) as HTMLInputElement).value).toBe("first");
+    await act(async () => release());
+    await waitFor(() => expect(within(card).queryByRole("form")).toBeNull());
+    expect(document.activeElement).toBe(within(card).getByRole("button", { name: "Edit model" }));
+    expect(heldButtons(card)).toEqual([]);
+    expect(within(card).queryByRole("alert")).toBeNull();
+    expect(k.posted("POST /playbooks/:id/set").map((r) => r.body)).toEqual([{ field: "model", value: "first" }]);
+  });
+
+  it("a Set refused after the owner tried to leave keeps its editor open with the text it sent, under the kernel's own words", async () => {
+    const k = playbookKit();
+    const release = heldSet(k, { ok: false, status: 400, body: { error: "invalid_input", message: "token_limit must be a positive whole number of tokens per day" } });
+    await renderChat(k);
+    const card = await playbookCard();
+    await focusAndPress(card, "Edit token limit per day");
+    await typeAndEnter(card, "token limit per day", "lots");
+    await tryToLeave(card, "token limit per day");
+    await act(async () => release());
+    expect((await within(card).findByRole("alert")).textContent).toBe("token_limit must be a positive whole number of tokens per day (invalid_input)");
+    const form = editor(card, "token limit per day");
+    expect((within(form).getByRole("textbox", { name: "New token limit per day" }) as HTMLInputElement).value).toBe("lots");
+    expect(heldButtons(card)).toEqual([]);
+  });
+
+  it("while Run now is pending an open editor's Set and Cancel and every Edit are disabled, not silently dropped", async () => {
+    const k = playbookKit();
+    let release: () => void = () => undefined;
+    k.fake.route("POST /playbooks/:id/run", async () => {
       await new Promise<void>((go) => {
         release = go;
       });
@@ -252,45 +324,11 @@ describe("cards", () => {
     await renderChat(k);
     const card = await playbookCard();
     await focusAndPress(card, "Edit priority");
-    await focusAndPress(editor(card, "priority"), "Set priority");
-    // While the Set is pending, the owner moves on to another row and starts typing.
-    await focusAndPress(card, "Edit model");
-    const input = within(editor(card, "model")).getByRole("textbox", { name: "New model" }) as HTMLInputElement;
-    await act(async () => {
-      fireEvent.change(input, { target: { value: "half-typed" } });
-    });
+    await focusAndPress(card, /^Run now/);
+    expect(heldButtons(card)).toEqual(["Edit dedupe key", "Set priority", "Cancel", "Edit model", "Edit token limit per day", "Turn off"]);
     await act(async () => release());
-    await waitFor(() => expect(within(card).queryByRole("button", { name: "Set model" })?.getAttribute("aria-busy") ?? null).toBeNull());
-    expect(editor(card, "model")).toBeTruthy();
-    expect(input.isConnected).toBe(true);
-    expect(input.value).toBe("half-typed");
-    expect(document.activeElement).toBe(input);
-    expect(within(card).queryByRole("alert")).toBeNull();
-  });
-
-  it("a Set refused after the owner opened another row names its own row, and the open row keeps its text", async () => {
-    const k = playbookKit();
-    let release: () => void = () => undefined;
-    k.fake.route("POST /playbooks/:id/set", async () => {
-      await new Promise<void>((go) => {
-        release = go;
-      });
-      return { ok: false, status: 400, body: { error: "invalid_input", message: "token_limit must be a positive whole number of tokens per day" } };
-    });
-    await renderChat(k);
-    const card = await playbookCard();
-    await focusAndPress(card, "Edit token limit per day");
-    await typeAndEnter(card, "token limit per day", "lots");
-    await focusAndPress(editor(card, "token limit per day"), "Cancel");
-    await focusAndPress(card, "Edit model");
-    const input = within(editor(card, "model")).getByRole("textbox", { name: "New model" }) as HTMLInputElement;
-    await act(async () => {
-      fireEvent.change(input, { target: { value: "half-typed" } });
-    });
-    await act(async () => release());
-    expect((await within(card).findByRole("alert")).textContent).toBe("Set token limit per day: token_limit must be a positive whole number of tokens per day (invalid_input)");
-    expect(input.value).toBe("half-typed");
-    expect(document.activeElement).toBe(input);
+    await waitFor(() => expect(heldButtons(card)).toEqual([]));
+    expect(k.posted("POST /playbooks/:id/set")).toHaveLength(0);
   });
 
   it("Escape leaves edit mode, sends nothing, and puts focus on the row's Edit", async () => {

@@ -378,6 +378,25 @@ describe("thread", () => {
     for (const read of k.fake.requestsTo("GET /playbooks")) expect(read.req.query).toEqual({ all: "1" });
   });
 
+  it("Turn off with the dedupe key editor open leaves focus in the card, on that editor's field, not the composer", async () => {
+    const k = kit({
+      threads: { wright: thread([eventItem(10, "playbook_created", "Playbook pb-3 created", { playbook_id: 3 })]) },
+      playbooks: [playbook(3, { trigger_id: 5 })],
+      triggers: [trigger(5)],
+    });
+    k.state.posts["POST /playbooks/:id/off"] = () => {
+      k.state.playbooks = [playbook(3, { trigger_id: 5, status: "disabled" })];
+      return ok({});
+    };
+    await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Playbook pb-3" });
+    await focusAndClick(within(card).getByRole("button", { name: "Edit dedupe key" }));
+    await focusAndClick(within(card).getByRole("button", { name: /^Turn off/ }));
+    await waitFor(() => expect(card.querySelector(".chat-card-head")?.textContent).toContain("disabled"));
+    expect(document.activeElement).toBe(within(card).getByRole("textbox", { name: "New dedupe key" }));
+    expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Message Wright" }));
+  });
+
   it("a disabled playbook's row Set still posts (the kernel keeps it disabled)", async () => {
     const k = kit({ threads: { wright: thread([eventItem(10, "playbook_created", "created", { playbook_id: 3 })]) }, playbooks: [playbook(3, { status: "disabled" })] });
     await renderChat(k);
