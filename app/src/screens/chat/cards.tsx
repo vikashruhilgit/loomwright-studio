@@ -332,6 +332,9 @@ function PolicyEditor({ row, busy, held, onConfirm, onCancel }: PolicyEditorProp
   );
 }
 
+/** The Turn off write's path, which is also its key in the card's in-flight guard. */
+const OFF = "/playbooks/:id/off";
+
 function playbookChanges(agent: string): ResourceName[] {
   return ["playbooks", "triggers", `thread:${agent}`];
 }
@@ -356,6 +359,7 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
   const [refusal, setRefusal] = useState("");
   // While a write is pending, which editor is open never changes (every Edit, and the open
   // editor's Cancel and Escape, wait for the answer), so a Set's answer is always its own editor's.
+  // The one exception, a Turn off whose list already says disabled, has no Set pending (`editHeld`).
   const [editing, setEditing] = useState<PolicyField | null>(null);
   const { busy, act } = useCardAction();
   const editRefs = useRef(new Map<PolicyField, HTMLButtonElement>());
@@ -364,12 +368,14 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
   // unmounts the focused control: say where focus goes ("card": the first row's control).
   const focusAfterSwap = useRef<PolicyField | "card" | null>(null);
   const status = playbook?.status;
-  // Keyed on the status too: a Turn off's answer lands before the refetched list that disables it,
-  // so its target waits for the render that swaps the actions out.
+  // Keyed on the status too. A Turn off arms "card" before its write, and the target waits, still
+  // armed, for the render that swaps the actions out, whichever lands first: the write's answer or
+  // the refetched list that disables the playbook (the feed's playbook_disabled can beat the answer).
   useLayoutEffect(() => {
     const target = focusAfterSwap.current;
+    if (target === null || (target === "card" && status !== "disabled")) return;
     focusAfterSwap.current = null;
-    if (target === null || !focusLost()) return;
+    if (!focusLost()) return;
     if (target !== "card") {
       editRefs.current.get(target)?.focus();
       return;
@@ -394,10 +400,13 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
   const changes = playbookChanges(agent);
   const run = (path: string, body?: unknown): void =>
     act(path, async () => {
+      // A disabled playbook has no actions row: the focused Turn off unmounts once the list says
+      // disabled, which may be before this write answers. Armed only once the guard let the write
+      // through; a refusal disarms it, so a stale target never moves focus later.
+      if (path === OFF) focusAfterSwap.current = "card";
       const outcome = await write(api, path, params, body, changes);
       setRefusal(outcome.ok ? "" : outcome.text);
-      // A disabled playbook has no actions row: the focused Turn off unmounts once the list answers.
-      if (outcome.ok && path === "/playbooks/:id/off") focusAfterSwap.current = "card";
+      if (!outcome.ok && focusAfterSwap.current === "card") focusAfterSwap.current = null;
     });
   const confirm = (field: PolicyField, value: string): void =>
     act(`set:${field}`, async () => {
@@ -418,6 +427,10 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
   const disabled = playbook.status === "disabled";
   // A control that cannot act while another write is pending says so (the guard would drop it).
   const heldFor = (key: string): boolean => busy !== null && busy !== key;
+  // Once the list says disabled, a pending Turn off has nothing left to change on this card (its
+  // answer sets only the refusal line), so it no longer holds the row Edits: the one Turn off's
+  // focus moves to stays focusable, whether the answer or the list landed first.
+  const editHeld = (field: PolicyField): boolean => heldFor(`set:${field}`) && !(disabled && busy === OFF);
   return (
     <section ref={cardRef} className="chat-card chat-playbook" aria-label={`Playbook ${playbook.slug}`} data-playbook={playbook.id}>
       <div className="chat-card-head">
@@ -458,7 +471,7 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
                     className="chat-kv-edit"
                     aria-label={`Edit ${row.name}`}
                     // Its own Set's answer may render it before the guard clears: it stays focusable for that.
-                    disabled={heldFor(`set:${row.field}`)}
+                    disabled={editHeld(row.field)}
                     ref={(el) => {
                       if (el === null) editRefs.current.delete(row.field);
                       else editRefs.current.set(row.field, el);
@@ -483,7 +496,7 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
           <Button variant="primary" size="row" loading={busy === "/playbooks/:id/run"} disabled={heldFor("/playbooks/:id/run")} onClick={() => run("/playbooks/:id/run")}>
             Run now
           </Button>
-          <Button variant="secondary" size="row" loading={busy === "/playbooks/:id/off"} disabled={heldFor("/playbooks/:id/off")} onClick={() => run("/playbooks/:id/off")}>
+          <Button variant="secondary" size="row" loading={busy === OFF} disabled={heldFor(OFF)} onClick={() => run(OFF)}>
             Turn off
           </Button>
         </div>

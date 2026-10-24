@@ -397,6 +397,56 @@ describe("thread", () => {
     expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Message Wright" }));
   });
 
+  /**
+   * Turn off whose answer is held: the kernel has already disabled the playbook, and the feed's
+   * playbook_disabled refetches the list, which lands before the POST answers.
+   */
+  async function offAnsweredAfterTheList(withEditor: boolean): Promise<{ readonly k: Kit; readonly card: HTMLElement; readonly release: () => Promise<void> }> {
+    const k = kit({
+      threads: { wright: thread([eventItem(10, "playbook_created", "Playbook pb-3 created", { playbook_id: 3 })]) },
+      playbooks: [playbook(3, { trigger_id: 5 })],
+      triggers: [trigger(5)],
+    });
+    let answer: () => void = () => undefined;
+    k.fake.route("POST /playbooks/:id/off", async () => {
+      k.state.playbooks = [playbook(3, { trigger_id: 5, status: "disabled" })];
+      await new Promise<void>((go) => {
+        answer = go;
+      });
+      return ok({});
+    });
+    await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Playbook pb-3" });
+    if (withEditor) await focusAndClick(within(card).getByRole("button", { name: "Edit dedupe key" }));
+    await focusAndClick(within(card).getByRole("button", { name: /^Turn off/ }));
+    await act(async () => {
+      k.fake.emit({ type: "event", id: 2, at: new Date().toISOString(), kind: "playbook_disabled", session_id: null, task_id: null, payload: {} });
+    });
+    await waitFor(() => expect(card.querySelector(".chat-card-head")?.textContent).toContain("disabled"));
+    // The list landed first: Turn off is gone while its write is still pending.
+    expect(within(card).queryByRole("button", { name: /^Turn off/ })).toBeNull();
+    return { k, card, release: async () => act(async () => answer()) };
+  }
+
+  it("Turn off whose refetched disabled list lands before the off answer still leaves focus on the card's first Edit", async () => {
+    const { k, card, release } = await offAnsweredAfterTheList(false);
+    const edit = within(card).getByRole("button", { name: "Edit dedupe key" });
+    expect(document.activeElement).toBe(edit);
+    await release();
+    await waitFor(() => expect(k.posted("POST /playbooks/:id/off")).toHaveLength(1));
+    expect(document.activeElement).toBe(within(card).getByRole("button", { name: "Edit dedupe key" }));
+    expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Message Wright" }));
+    expect(within(card).queryByRole("alert")).toBeNull();
+  });
+
+  it("Turn off whose refetched disabled list lands before the off answer, with the dedupe key editor open, leaves focus on its field", async () => {
+    const { card, release } = await offAnsweredAfterTheList(true);
+    expect(document.activeElement).toBe(within(card).getByRole("textbox", { name: "New dedupe key" }));
+    await release();
+    expect(document.activeElement).toBe(within(card).getByRole("textbox", { name: "New dedupe key" }));
+    expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Message Wright" }));
+  });
+
   it("a disabled playbook's row Set still posts (the kernel keeps it disabled)", async () => {
     const k = kit({ threads: { wright: thread([eventItem(10, "playbook_created", "created", { playbook_id: 3 })]) }, playbooks: [playbook(3, { status: "disabled" })] });
     await renderChat(k);
