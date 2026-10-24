@@ -31,6 +31,13 @@
 .chat-with {
   color: var(--ink-secondary);
 }
+/* The thread's agent id, shown only when two agents share its display name. */
+.chat-with-id {
+  color: var(--ink-tertiary);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-small-size);
+  line-height: var(--type-mono-small-line);
+}
 .chat-spacer {
   flex: 1;
 }
@@ -343,6 +350,29 @@
 .chat-crew-row.selected {
   background: var(--accent-soft);
   color: var(--accent);
+}
+/* An off member: its avatar is dimmed like Avatar.css's settled (parked) creature, and it says "off"
+   (never colour alone). Only the avatar dims: the name and the "off" word keep their token colours at
+   full opacity so they stay at AA contrast. It stays a working button: its thread is still open to
+   read (D34). */
+.chat-crew-row.off .bot {
+  opacity: 0.72;
+}
+.chat-crew-off {
+  flex: none;
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  color: var(--ink-tertiary);
+}
+/* The id under the name, shown only when two agents share a display name: muted mono, one line. */
+.chat-crew-id {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-tertiary);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-small-size);
+  line-height: var(--type-mono-small-line);
 }
 .chat-crew-text {
   display: flex;

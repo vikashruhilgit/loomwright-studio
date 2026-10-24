@@ -77,11 +77,21 @@
 .team-card.selected {
   border-color: var(--accent);
 }
-/* The task line when approvals or messages were not read: muted like idle, with no dot (no state is claimed). */
+/* The task line when approvals, messages or sessions were not read: muted like idle, with no dot (no state is claimed). */
 .team-card .card-task[data-unknown="true"] {
   color: var(--ink-tertiary);
   font-weight: 400;
   font-style: italic;
+}
+/* The id under the name, shown only when two agents share a display name: muted mono, one line. */
+.team-card .card-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-tertiary);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-small-size);
+  line-height: var(--type-mono-small-line);
 }
 .team-card-status {
   flex: none;

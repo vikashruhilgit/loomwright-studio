@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ALWAYS_INELIGIBLE } from "./cards";
 import { WRIGHT_EMPTY } from "./Thread";
 import { ok } from "../../store/fake-bridge";
-import { approval, eventItem, kit, message, playbook, renderChat, resetChat, thread, trigger, go } from "./testkit";
+import { agent, approval, eventItem, kit, message, playbook, renderChat, resetChat, thread, trigger, go } from "./testkit";
 import type { Kit } from "./testkit";
 
 afterEach(resetChat);
@@ -565,6 +565,24 @@ describe("thread", () => {
     expect(screen.getByText("with Pim")).toBeTruthy();
     await click("Open in Team");
     expect(window.location.hash).toBe("#/team");
+  });
+
+  it("a thread with an agent whose name another shares shows its id in the header; a unique name shows none", async () => {
+    const roster = [
+      agent("wright"),
+      agent("phase4-exit-mvg8wle4cf8f26", { display_name: "Comment-only Reviewer", status: "off" }),
+      agent("phase5-exit-1024", { display_name: "Comment-only Reviewer" }),
+      agent("pim"),
+    ];
+    const k = kit({ roster, threads: { "phase5-exit-1024": thread([]), pim: thread([]) } });
+    await renderChat(k, "#/chat/phase5-exit-1024");
+    const header = (await screen.findByText("with Comment-only Reviewer")).closest(".chat-titlerow") as HTMLElement;
+    expect(within(header).getByTestId("thread-id").textContent).toBe("phase5-exit-1024");
+    expect(within(header).getByText("with Comment-only Reviewer").getAttribute("title")).toBe("phase5-exit-1024");
+    await go("#/chat/pim");
+    const pimHeader = (await screen.findByText("with Pim")).closest(".chat-titlerow") as HTMLElement;
+    expect(within(pimHeader).queryByTestId("thread-id")).toBeNull();
+    expect(within(pimHeader).getByText("with Pim").getAttribute("title")).toBe("pim");
   });
 
   it("unknown #/chat/<id> falls back to Wright", async () => {

@@ -1,7 +1,8 @@
 // Team's canned kernel data (phase 5 item 14) for `startFixtureKernel({ routes, events })`.
 //
 // The roster is Wright plus two crew members (or Wright alone, the empty
-// state). Every body is typed by `app/src/api/contract.ts` and every route key
+// state, or the collision variant: two crew members sharing a display name,
+// with the off Ada between them in the kernel's order). Every body is typed by `app/src/api/contract.ts` and every route key
 // is a `CONTRACT_ROUTES` key. The routes record what the app sent, so the
 // spec asserts the exact call, not just that one happened.
 //
@@ -23,6 +24,8 @@ import type {
   BrainMessage,
   EventFrame,
   RosterEntry,
+  SessionSummary,
+  SessionsResponse,
 } from "../../src/api/contract";
 import type { FixtureAnswer, FixtureKernel, FixtureKernelOptions, FixtureRequest } from "../fixture-kernel";
 
@@ -98,7 +101,7 @@ const ADA_CHARTER = {
   boundaries: ["Never delete a note"],
 } as const;
 
-/** Wright's running brain message: the populated state's working task line. */
+/** Wright's running brain message, on its live session 12 (`WRIGHT_SESSION`): the populated state's working task line. */
 export const WRIGHT_RUNNING: BrainMessage = {
   id: 7,
   queue_id: 31,
@@ -116,6 +119,42 @@ export const WRIGHT_RUNNING: BrainMessage = {
   reply_to: null,
   workspace: null,
 };
+
+/** Wright's live session 12: the session `WRIGHT_RUNNING` runs on, so the populated state's task line is working. */
+export const WRIGHT_SESSION: SessionSummary = {
+  id: 12,
+  agent: "wright",
+  status: "running",
+  model: "claude-opus-5-5",
+  started: AT,
+  ended: null,
+  tokens: 3_100,
+  cwd: "/srv/repos/site",
+  playbook: 3,
+};
+
+/** The collision variant's two reviewers: the same display name (one with other case and spaces), the same turtle and hue. */
+export const REVIEWER_OLD: RosterEntry = {
+  id: "phase4-exit-mvg8wle4cf8f26",
+  display_name: "Comment-only Reviewer",
+  avatar: { shape: "turtle", hue: "crew-olive" },
+  status: "active",
+  created_by: "owner",
+  approval_id: null,
+  model: "claude-sonnet-5",
+  settings_error: null,
+  tokens_today: 0,
+  tokens_per_day: null,
+  sessions_running: 0,
+  sessions_at_once: null,
+};
+export const REVIEWER_NEW: RosterEntry = { ...REVIEWER_OLD, id: "phase5-exit-1024", display_name: "comment-only reviewer ", tokens_today: 2_400 };
+
+const REVIEWER_CHARTER = {
+  persona: "Reviews pull requests and leaves comments only.",
+  duties: ["Review each PR where the owner is the requested reviewer"],
+  boundaries: ["Comment only"],
+} as const;
 
 /** Mason's pending approval: the "waiting on you" state's task line. */
 export const MASON_APPROVAL: Approval = {
@@ -190,6 +229,8 @@ export interface TeamFixtureOptions {
   readonly crew?: boolean;
   /** Mason's pending approval is in `GET /approvals` from the start. */
   readonly waiting?: boolean;
+  /** The collision roster in place of Mason and Ada: the two reviewers with the off Ada between them (`crew` false wins). */
+  readonly collision?: boolean;
 }
 
 export interface TeamFixture {
@@ -210,23 +251,27 @@ export interface TeamFixture {
 }
 
 export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
-  const crew: CrewMember[] =
-    options.crew === false
-      ? []
-      : [
-          {
-            entry: { ...MASON },
-            charter: MASON_CHARTER,
-            settings: settingsOf(MASON, "default", MASON_TOOL_POLICY, MASON_NEVER, ["/srv/repos/site", "/srv/repos/notes-cli"]),
-          },
-          {
-            entry: { ...ADA },
-            charter: ADA_CHARTER,
-            settings: settingsOf(ADA, "acceptEdits", { allowedTools: ["Read", "Edit", "Write"], allowedBashPrefixes: [] }, [], ["/srv/notes"]),
-          },
-        ];
+  const reviewer = (entry: RosterEntry): CrewMember => ({
+    entry: { ...entry },
+    charter: REVIEWER_CHARTER,
+    settings: settingsOf(entry, "default", { allowedTools: ["Read", "Grep"], allowedBashPrefixes: ["gh pr view", "gh pr comment"] }, ["git_push"], ["/srv/repos/site"]),
+  });
+  const ada = (): CrewMember => ({
+    entry: { ...ADA },
+    charter: ADA_CHARTER,
+    settings: settingsOf(ADA, "acceptEdits", { allowedTools: ["Read", "Edit", "Write"], allowedBashPrefixes: [] }, [], ["/srv/notes"]),
+  });
+  const mason = (): CrewMember => ({
+    entry: { ...MASON },
+    charter: MASON_CHARTER,
+    settings: settingsOf(MASON, "default", MASON_TOOL_POLICY, MASON_NEVER, ["/srv/repos/site", "/srv/repos/notes-cli"]),
+  });
+  let crew: CrewMember[] = [mason(), ada()];
+  if (options.collision === true) crew = [reviewer(REVIEWER_OLD), ada(), reviewer(REVIEWER_NEW)];
+  if (options.crew === false) crew = [];
   const approvals: Approval[] = options.waiting === true ? [MASON_APPROVAL] : [];
   const messages: BrainMessage[] = [WRIGHT_RUNNING];
+  const sessions: SessionSummary[] = [WRIGHT_SESSION];
   const creates: unknown[] = [];
   const renames: { id: string; body: unknown }[] = [];
   const asks: unknown[] = [];
@@ -312,6 +357,10 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
         },
         "GET /approvals": () => ({ status: 200, body: { approvals: [...approvals] } }),
         "GET /messages": () => ({ status: 200, body: { messages: [...messages] } }),
+        "GET /sessions": () => {
+          const body: SessionsResponse = { sessions: [...sessions] };
+          return { status: 200, body };
+        },
         "POST /ask": (req) => {
           asks.push(req.body);
           const body: AskResponse = { message_id: 8, queue_id: 32 };

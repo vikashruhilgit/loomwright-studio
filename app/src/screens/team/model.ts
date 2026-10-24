@@ -18,8 +18,10 @@ import type {
   Approval,
   BrainMessage,
   RosterEntry,
+  SessionSummary,
   WrightSetField,
 } from "../../api/contract";
+import { isLive } from "../sessions/model";
 
 /** The lead agent's id: listed first, never a crew member (`GET /agents/wright` answers `409 reserved`). */
 export const WRIGHT_ID = "wright";
@@ -103,9 +105,23 @@ export function crewIds(agents: readonly RosterEntry[]): string[] {
   return agents.filter((a) => !isWright(a)).map((a) => a.id);
 }
 
+/** The key two display names collide on: the same words, ignoring case and surrounding whitespace. */
+const nameKey = (a: { readonly display_name: string }): string => a.display_name.trim().toLowerCase();
+
+/**
+ * The ids of every roster entry (Wright included) whose display name collides
+ * with another entry's (`nameKey`): the agents a screen shows with their id, so
+ * two members of the same name can be told apart.
+ */
+export function sharedNames(agents: readonly { readonly id: string; readonly display_name: string }[]): ReadonlySet<string> {
+  const counts = new Map<string, number>();
+  for (const a of agents) counts.set(nameKey(a), (counts.get(nameKey(a)) ?? 0) + 1);
+  return new Set(agents.filter((a) => (counts.get(nameKey(a)) ?? 0) > 1).map((a) => a.id));
+}
+
 // ---- The task line ------------------------------------------------------------------
 
-/** `unknown`: the approvals or messages it is read from have not answered (loading) or were refused. */
+/** `unknown`: the approvals, messages or sessions it is read from have not answered (loading) or were refused. */
 export type TaskState = "waiting" | "working" | "idle" | "unknown";
 
 export interface TaskLine {
@@ -119,19 +135,32 @@ export const TASK_UNAVAILABLE = "status unavailable";
 
 /**
  * The card's current-task line, in the mockup's `renderTeam` order: a pending
- * approval the agent requested ("Waiting on you · <display or action>"), else
- * its running brain message's text, else "idle". The newest of each wins.
+ * approval the agent requested ("Waiting on you · <display or action>"), else,
+ * when the agent has a live session (`isLive`: starting or running), the text
+ * of its running brain message on one of those sessions ("Session <id>
+ * running" when none names one), else "idle". The newest of each wins.
+ *
+ * Working and idle come from the sessions, never from a message's status
+ * alone: the kernel can leave a brain message `running` after its session
+ * ended (a reply that was never written back), and that row must not read as
+ * work. The sessions list is the default `GET /sessions`, its newest 50 rows,
+ * so a live session older than 50 newer ones reads idle. `GET /status`
+ * already lists every live (`starting`/`running`) session with no limit, and
+ * the app already reads it as the `status` resource on the same events; the
+ * recorded follow-up is to take the live set from `status.sessions` (no
+ * kernel or contract change).
  *
  * A list is `undefined` when it was not read (loading or refused). A state is
  * shown only when the lists it depends on were read: waiting needs the
- * approvals; working and idle need both (a pending approval outranks a running
- * message). Otherwise the line is `unknown` with `unread` as its words, never
- * "idle".
+ * approvals; working and idle need all three (a pending approval outranks a
+ * running message). Otherwise the line is `unknown` with `unread` as its
+ * words, never "idle".
  */
 export function taskLineFor(
   agentId: string,
   approvals: readonly Approval[] | undefined,
   messages: readonly BrainMessage[] | undefined,
+  sessions: readonly SessionSummary[] | undefined,
   unread: string = TASK_UNAVAILABLE,
 ): TaskLine {
   if (approvals !== undefined) {
@@ -142,11 +171,15 @@ export function taskLineFor(
       return { state: "waiting", text: `Waiting on you · ${what}` };
     }
   }
-  if (approvals === undefined || messages === undefined) return { state: "unknown", text: unread };
-  const running = messages.filter((m) => m.status === "running" && m.agent === agentId);
+  if (approvals === undefined || messages === undefined || sessions === undefined) return { state: "unknown", text: unread };
+  const live = sessions.filter((s) => s.agent === agentId && isLive(s.status));
+  const newestLive = live.reduce<SessionSummary | undefined>((newest, s) => (newest === undefined || s.id > newest.id ? s : newest), undefined);
+  if (newestLive === undefined) return { state: "idle", text: "idle" };
+  const liveIds = new Set(live.map((s) => s.id));
+  const running = messages.filter((m) => m.status === "running" && m.agent === agentId && m.session_id !== null && liveIds.has(m.session_id));
   const message = running.reduce<BrainMessage | undefined>((newest, m) => (newest === undefined || m.id > newest.id ? m : newest), undefined);
   if (message !== undefined) return { state: "working", text: message.text };
-  return { state: "idle", text: "idle" };
+  return { state: "working", text: `Session ${newestLive.id} running` };
 }
 
 // ---- Limits -----------------------------------------------------------------------------
