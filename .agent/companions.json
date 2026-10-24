@@ -13,6 +13,7 @@
     { "when": "docs/design/tokens.json", "add": ["app/scripts/tokens.mjs", "app/src/styles/tokens.css"] },
     { "when": "app/scripts/tokens.mjs", "add": ["app/src/styles/tokens.css"] },
     { "when": "kernel/src/console/index.ts", "add": ["kernel/test/console-foundation.test.ts"] },
-    { "when": "app/src/api/contract.ts", "add": ["kernel/test/console-contract.test.ts"] }
+    { "when": "app/src/api/contract.ts", "add": ["kernel/test/console-contract.test.ts"] },
+    { "when": "kernel/src/integrations/index.ts", "add": ["kernel/test/integrations-foundation.test.ts"] }
   ]
 }
