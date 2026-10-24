@@ -77,7 +77,12 @@ What only you can see, at the reminder's minute:
 - Click it. Did Terminal open and run `studio notifications show <id>`? Paste what Terminal printed.
 - Any permission prompt (notifications, Automation for Terminal), and what you chose.
 
-The two Terminal bullets above describe the phase-2-era click, which the 2026-10-16 run recorded. Since PR #126 the click opens the notification's deep link in Loomwright Studio.app (`-open`), runs no shell and asks for no Automation permission; the phase 5 runbook's `notification_click_opened_thread` checks it ([phase 5 exit runbook](phase-5-exit-runbook.md)). On a rerun of this runbook, record whether the click brought the app forward, in `click_opened_terminal` (the field keeps its phase 2 name) with a line in `findings`.
+The two Terminal bullets above describe the phase-2-era click, which the 2026-10-16 run recorded. Since PR #126 the click is `-open loomwright-studio://notifications/<id>`: it is meant to open the notification's deep link in Loomwright Studio.app, runs no shell and should ask for no Automation permission. That is unverified until the phase 5 runbook's `notification_click_opened_thread` is recorded ([phase 5 exit runbook](phase-5-exit-runbook.md)). On a rerun of this runbook, record the click in step 1's `owner` fields as follows, so the run stays comparable with the 2026-10-16 JSON:
+
+- `click_opened_app`: whether the click brought Loomwright Studio forward on the notification (new since PR #126).
+- `click_opened_terminal`: whether Terminal opened. Expected `false` after PR #126; `true` means the click regressed to the phase-2-era Terminal click.
+- `terminal_output`: phase-2-era, expected `""` (there is no Terminal output to paste). Anything else goes in `findings`.
+- One line in `findings` saying what the click did.
 
 ## Step 2: the literal sentence, at 17:00 (owner only)
 
@@ -128,7 +133,7 @@ Commit `docs/evidence/phase-2-exit-live-<YYYY-MM-DD>.json` on this PR's branch, 
     "1_reminder_fires": {
       "outcome": "passed | failed",
       "harness": { "reminder": {}, "ask": {}, "triggers_created": [], "other_new_triggers": [], "studio_triggers_entry": {}, "notifications": [], "fired_late_ms": 0, "trigger_events": {} },
-      "owner": { "notification_appeared": true, "title_and_body": "", "click_opened_terminal": true, "terminal_output": "", "prompts": "" },
+      "owner": { "notification_appeared": true, "title_and_body": "", "click_opened_app": true, "click_opened_terminal": false, "terminal_output": "", "prompts": "" },
       "findings": []
     },
     "2_literal_5pm": {
@@ -164,7 +169,7 @@ Commit `docs/evidence/phase-2-exit-live-<YYYY-MM-DD>.json` on this PR's branch, 
 
 A failed step keeps `"outcome": "failed"` and its `findings` (what was seen, and the new item's file name).
 
-Step 1's `click_opened_terminal` records the phase-2-era Terminal click. The click is now `-open <deep link>` (PR #126), checked by the phase 5 runbook's `notification_click_opened_thread`; see the note under step 1.
+Step 1's `click_opened_app` is new since PR #126 (the click is now `-open <deep link>`, unverified until the phase 5 runbook's `notification_click_opened_thread` is recorded). `click_opened_terminal` and `terminal_output` keep their phase 2 names so a rerun compares with the 2026-10-16 JSON; after PR #126 they are expected `false` and `""`. See the note under step 1.
 
 ## Marking phase 2 done
 
