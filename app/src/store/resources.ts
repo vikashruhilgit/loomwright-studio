@@ -61,7 +61,7 @@ export const FIXED_RESOURCES: { readonly [N in FixedResourceName]: ResourceReque
   messages: { method: "GET", path: "/messages", query: { all: "1" } },
   sessions: { method: "GET", path: "/sessions" },
   playbooks: { method: "GET", path: "/playbooks" },
-  triggers: { method: "GET", path: "/triggers" },
+  triggers: { method: "GET", path: "/triggers", query: { all: "1" } },
   notifications: { method: "GET", path: "/notifications" },
 });
 
