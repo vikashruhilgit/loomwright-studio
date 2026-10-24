@@ -10,9 +10,13 @@
 //   `kernel/src/notifications/record.ts`), which `parseDeepLink` accepts;
 // - that an agent's notification is always an `agent:` source
 //   (`kernel/src/notifications/tool.ts`), so no agent can post a
-//   `kernel:approval` notification whose title the app would trust.
+//   `kernel:approval` notification whose title the app would trust;
+// - the closed set of delivery statuses (`NOTIFICATION_STATUSES` in
+//   `kernel/src/notifications/record.ts`), each of which the panel's Recent
+//   list gives its own dot (`DELIVERY_DOTS`).
 import { describe, expect, it } from "vitest";
 import { APPROVAL_SOURCE, approvalHash, approvalIdFromTitle, linkTarget } from "./links";
+import { DELIVERY_DOTS } from "./MenubarPanel";
 import { DEEP_LINK_PREFIX, parseDeepLink } from "./state";
 
 // The kernel's files are read from disk (`process.getBuiltinModule`: the
@@ -64,6 +68,14 @@ describe("the kernel mirror", () => {
     const kernel = /export const DEEP_LINK_PREFIX = "([^"]+)";/.exec(notificationRecord)?.[1];
     expect(kernel).toBe(DEEP_LINK_PREFIX);
     expect(parseDeepLink(`${kernel ?? ""}7`)).toEqual({ kind: "notification", id: 7 });
+  });
+
+  it("the Recent list's delivery statuses are exactly the kernel's closed set", () => {
+    const list = /export const NOTIFICATION_STATUSES = \[([^\]]*)\] as const;/.exec(notificationRecord)?.[1];
+    expect(list, "kernel/src/notifications/record.ts declares NOTIFICATION_STATUSES").toBeDefined();
+    const kernel = [...(list ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+    expect(kernel.length).toBeGreaterThan(0);
+    expect(Object.keys(DELIVERY_DOTS).sort()).toEqual(kernel);
   });
 
   it("an agent's notification is always an `agent:` source", () => {

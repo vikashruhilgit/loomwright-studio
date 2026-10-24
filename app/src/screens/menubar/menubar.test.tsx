@@ -5,7 +5,8 @@
 // each notification lands (`./links.ts`), the one toast for a link that opens
 // nothing, the four Kernel commands and their `enabled`, the kill confirm
 // (Cancel and Escape send nothing, Confirm sends one `POST /stop-all`), and
-// the status panel's designed states.
+// the status panel's designed states, and its Recent list (the newest
+// notifications, each opened through the host's queue as a link is).
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiRequest, ApiResult, Approval, NotificationRow, StatusBody, StudioBridge } from "../../api/contract";
@@ -29,7 +30,7 @@ import {
   createNavigateQueue,
 } from "./MenubarHost";
 import type { KernelAction, MenubarActions, NavigateQueue } from "./MenubarHost";
-import { MenubarPanel, TRAY_ONLY_NOTE } from "./MenubarPanel";
+import { MenubarPanel, RECENT_EMPTY_TEXT, RECENT_LIMIT, TRAY_ONLY_NOTE, ageText, newAboveText, recentItem } from "./MenubarPanel";
 
 // ---- fixtures ------------------------------------------------------------------------------
 
@@ -78,7 +79,7 @@ function approval(id: number): Approval {
   };
 }
 
-function notification(id: number, source: string, title: string): NotificationRow {
+function notification(id: number, source: string, title: string, delivery_status = "delivered"): NotificationRow {
   return {
     id,
     source,
@@ -86,7 +87,7 @@ function notification(id: number, source: string, title: string): NotificationRo
     body: "",
     deep_link: `loomwright-studio://notifications/${id}`,
     created_at: "2026-10-23T08:00:00.000Z",
-    delivery_status: "delivered",
+    delivery_status,
     delivery_detail: null,
     delivered_at: null,
   };
@@ -125,6 +126,8 @@ async function mount(initial: Partial<Kernel> = {}, options: { readonly panel?: 
   const fake = fakeBridge();
   fake.route("GET /status", () => ok(kernel.status));
   fake.route("GET /approvals", () => ok({ approvals: [...kernel.approvals] }));
+  // The kernel's list: newest first (`ORDER BY id DESC`), at most 50 by default.
+  fake.route("GET /notifications", () => ok({ notifications: [...kernel.notifications.values()].sort((a, b) => b.id - a.id).slice(0, 50) }));
   fake.route("GET /notifications/:id", (req) => {
     const row = kernel.notifications.get(Number(req.params?.id));
     return row === undefined ? { ok: false, status: 404, body: { error: "not_found" } } : ok({ notification: row });
@@ -159,7 +162,7 @@ async function mount(initial: Partial<Kernel> = {}, options: { readonly panel?: 
       </aside>
       {options.panel === false ? null : (
         <main>
-          <MenubarPanel actions={actions} />
+          <MenubarPanel actions={actions} queue={queue} />
         </main>
       )}
     </>,
@@ -803,5 +806,484 @@ describe("the status panel", () => {
     });
     await waitFor(() => expect(screen.getByTestId("menubar-stale")).toBeTruthy());
     expect(screen.getByTestId("menubar-meta").textContent).toContain("2 waiting on you");
+  });
+});
+
+// ---- the Recent list -----------------------------------------------------------------------
+
+/** `minutes` before now, as the kernel writes a time. */
+function minutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000).toISOString();
+}
+
+/** The Recent rows on screen, top to bottom. */
+function recentRows(): HTMLElement[] {
+  return within(screen.getByTestId("menubar-recent")).queryAllByRole("option");
+}
+
+function rowKeys(): (string | undefined)[] {
+  return recentRows().map((row) => row.dataset.key);
+}
+
+/** Notifications #1..#n, each `n - id` minutes old (the newest is #n). */
+function manyNotifications(n: number): Map<number, NotificationRow> {
+  return new Map(Array.from({ length: n }, (_, i) => i + 1).map((id) => [id, { ...notification(id, "agent:pim", `Note ${id}`), created_at: minutesAgo(n - id) }]));
+}
+
+describe("the Recent list", () => {
+  it("AC1: three notifications show newest first, each with its title, its age and its delivery status", async () => {
+    await mount({
+      notifications: new Map([
+        [1, { ...notification(1, "agent:pim", "PR #412 reviewed"), created_at: minutesAgo(90), delivered_at: "2026-10-23T08:00:02.000Z" }],
+        [2, { ...notification(2, "trigger:4", "Playbook fired", "unsupported"), created_at: minutesAgo(5), delivery_detail: "no click-capable notifier: posted without a click action" }],
+        [3, { ...notification(3, APPROVAL_SOURCE, "Approval 3: Bash", "failed"), created_at: minutesAgo(0) }],
+      ]),
+    });
+    await waitFor(() => expect(recentRows()).toHaveLength(3));
+    expect(rowKeys()).toEqual(["3", "2", "1"]);
+    const [failed, unsupported, delivered] = recentRows() as [HTMLElement, HTMLElement, HTMLElement];
+    expect(failed.querySelector(".list-subject")?.textContent).toBe("Approval 3: Bash");
+    expect(failed.querySelector(".list-aside")?.textContent).toBe("just now");
+    expect(within(failed).getByRole("img", { name: "failed" }).dataset.state).toBe("failed");
+    expect(failed.querySelector(".list-meta")?.textContent).toBe("failed");
+    expect(unsupported.querySelector(".list-subject")?.textContent).toBe("Playbook fired");
+    expect(unsupported.querySelector(".list-aside")?.textContent).toBe("5m ago");
+    expect(within(unsupported).getByRole("img", { name: "unsupported" }).dataset.state).toBe("paused");
+    expect(unsupported.querySelector(".list-meta")?.textContent).toBe("unsupported · no click-capable notifier: posted without a click action");
+    expect(delivered.querySelector(".list-subject")?.textContent).toBe("PR #412 reviewed");
+    expect(delivered.querySelector(".list-aside")?.textContent).toBe("1h ago");
+    // Delivered is at rest: the idle dot, its word in the meta line, and no "verified" text beside the dot.
+    expect(within(delivered).getByRole("img", { name: "delivered" }).dataset.state).toBe("idle");
+    expect(delivered.querySelector(".list-meta")?.textContent).toBe("delivered");
+    expect(delivered.querySelector(".status-meta")).toBeNull();
+    // No row is an action button the panel's focus hand-off would walk.
+    for (const row of recentRows()) expect(row.hasAttribute("data-action")).toBe(false);
+  });
+
+  it("AC2: opening an approval's notification by click makes one GET /notifications/7, lands on #/approvals/7, and sends no POST", async () => {
+    const m = await mount({ notifications: new Map([[7, notification(7, APPROVAL_SOURCE, "Approval 7: Bash")]]) });
+    await waitFor(() => expect(recentRows()).toHaveLength(1));
+    const from = m.fake.requests.length;
+    fireEvent.click(recentRows()[0] as HTMLElement);
+    await waitFor(() => expect(window.location.hash).toBe("#/approvals/7"));
+    await settle();
+    expect(requestsAfter(m.fake, from).filter((r) => r.path === "/notifications/:id")).toEqual([{ method: "GET", path: "/notifications/:id", params: { id: 7 } }]);
+    expect(posts(m.fake)).toEqual([]);
+    expect(toasts()).toEqual([]);
+  });
+
+  it("AC2: opening by keyboard (arrow to the row, Enter) lands where the deep link does, with one GET /notifications/7", async () => {
+    const m = await mount({
+      notifications: new Map([
+        [7, notification(7, APPROVAL_SOURCE, "Approval 7: Bash")],
+        [8, notification(8, "agent:pim", "PR #412 reviewed")],
+      ]),
+    });
+    await waitFor(() => expect(rowKeys()).toEqual(["8", "7"]));
+    const from = m.fake.requests.length;
+    const first = recentRows()[0] as HTMLElement;
+    expect(first.tabIndex).toBe(0);
+    act(() => first.focus());
+    // Nothing is selected yet: the List's first ArrowDown selects the first row, the second moves to #7.
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    await waitFor(() => expect(first.getAttribute("aria-selected")).toBe("true"));
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    const seventh = recentRows()[1] as HTMLElement;
+    await waitFor(() => expect(document.activeElement).toBe(seventh));
+    fireEvent.keyDown(seventh, { key: "Enter" });
+    await waitFor(() => expect(window.location.hash).toBe("#/approvals/7"));
+    await settle();
+    expect(requestsAfter(m.fake, from).filter((r) => r.path === "/notifications/:id")).toEqual([{ method: "GET", path: "/notifications/:id", params: { id: 7 } }]);
+    expect(posts(m.fake)).toEqual([]);
+
+    // The same as the link: a fresh mount, the route as the main process sends it.
+    cleanup();
+    window.location.hash = "";
+    const link = await mount({ notifications: new Map([[7, notification(7, APPROVAL_SOURCE, "Approval 7: Bash")]]) }, { panel: false });
+    const linkFrom = link.fake.requests.length;
+    link.navigate("notification/7");
+    await waitFor(() => expect(window.location.hash).toBe("#/approvals/7"));
+    expect(requestsAfter(link.fake, linkFrom)).toEqual([{ method: "GET", path: "/notifications/:id", params: { id: 7 } }]);
+  });
+
+  it("a row opens only through the queue: the panel's queue receives notification/<id>, and nothing else is requested", async () => {
+    const m = await mount({ notifications: new Map([[3, notification(3, "agent:pim", "PR #412 reviewed")]]) });
+    await waitFor(() => expect(recentRows()).toHaveLength(1));
+    const received = vi.spyOn(m.queue, "receive");
+    fireEvent.click(recentRows()[0] as HTMLElement);
+    expect(received.mock.calls).toEqual([["notification/3"]]);
+    await waitFor(() => expect(window.location.hash).toBe("#/chat/pim"));
+  });
+
+  it("AC3: an empty list shows No notifications yet and no row", async () => {
+    await mount({ notifications: new Map() });
+    await waitFor(() => expect(within(screen.getByTestId("menubar-recent")).getByText("No notifications yet")).toBeTruthy());
+    expect(RECENT_EMPTY_TEXT).toBe("No notifications yet");
+    expect(recentRows()).toEqual([]);
+  });
+
+  it("AC4: a notification_created event adds the new row at the top, without a remount of the rows already shown", async () => {
+    const m = await mount({ notifications: manyNotifications(3) });
+    await waitFor(() => expect(rowKeys()).toEqual(["3", "2", "1"]));
+    // The feed's first frame makes the store live, which refetches every resource; only then is a refetch the event's own.
+    act(() => m.fake.emit({ type: "event", id: 1, at: "2026-10-23T09:00:00.000Z", kind: "event_done", session_id: null, task_id: null, payload: {} }));
+    await settle();
+    await act(async () => new Promise((done) => setTimeout(done, 300)));
+    const before = recentRows();
+    const reads = m.fake.requestsTo("GET /notifications").length;
+    m.kernel.notifications.set(4, { ...notification(4, APPROVAL_SOURCE, "Approval 4: Bash"), created_at: minutesAgo(0) });
+    act(() => m.fake.emit({ type: "event", id: 2, at: "2026-10-23T09:00:01.000Z", kind: "notification_created", session_id: null, task_id: null, payload: {} }));
+    await waitFor(() => expect(m.fake.requestsTo("GET /notifications").length).toBeGreaterThan(reads));
+    await waitFor(() => expect(rowKeys()).toEqual(["4", "3", "2", "1"]));
+    // The same nodes: React kept the rows (keyed by id), so the List's scroll anchoring has its anchor.
+    expect(recentRows().slice(1)).toEqual(before);
+  });
+
+  /** Makes the store live, then stubs the Recent list's `scrollTop` (jsdom has no layout) at `top`; returns the list. */
+  async function liveWithScroll(m: Mounted, top: number): Promise<{ readonly list: HTMLElement; readonly scroll: { top: number } }> {
+    act(() => m.fake.emit({ type: "event", id: 1, at: "2026-10-23T09:00:00.000Z", kind: "event_done", session_id: null, task_id: null, payload: {} }));
+    await settle();
+    await act(async () => new Promise((done) => setTimeout(done, 300)));
+    const list = screen.getByTestId("menubar-recent").querySelector<HTMLElement>(".menubar-recent-list") as HTMLElement;
+    const scroll = { top };
+    Object.defineProperty(list, "scrollTop", { configurable: true, get: () => scroll.top, set: (value: number) => (scroll.top = value) });
+    return { list, scroll };
+  }
+
+  async function arrive(m: Mounted, id: number, eventId: number): Promise<void> {
+    const reads = m.fake.requestsTo("GET /notifications").length;
+    m.kernel.notifications.set(id, { ...notification(id, APPROVAL_SOURCE, `Approval ${id}: Bash`), created_at: minutesAgo(0) });
+    act(() => m.fake.emit({ type: "event", id: eventId, at: "2026-10-23T09:00:01.000Z", kind: "notification_created", session_id: null, task_id: null, payload: {} }));
+    await waitFor(() => expect(m.fake.requestsTo("GET /notifications").length).toBeGreaterThan(reads));
+    await waitFor(() => expect(rowKeys()[0]).toBe(String(id)));
+  }
+
+  it("AC4: a row that lands above the view (list not at its top) shows the new-above hint; activating it scrolls to the top, clears it and focuses the new row", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { list, scroll } = await liveWithScroll(m, 44);
+    const before = recentRows();
+    await arrive(m, 7, 2);
+    const hint = await screen.findByTestId("menubar-recent-new");
+    expect(hint.textContent).toBe("1 new notification above");
+    expect(newAboveText(2)).toBe("2 new notifications above");
+    // Anchoring is untouched: the same row nodes, and the hint is no action the focus hand-off walks, nor a panel state.
+    expect(recentRows().slice(1)).toEqual(before);
+    expect(hint.hasAttribute("data-action")).toBe(false);
+    expect(hint.closest("[aria-live='polite']")).not.toBeNull();
+    expect(panelState()).toBe("idle");
+    expect(screen.queryByTestId("menubar-stale")).toBeNull();
+    // A second arrival while the hint shows counts up.
+    await arrive(m, 8, 3);
+    await waitFor(() => expect(screen.getByTestId("menubar-recent-new").textContent).toBe("2 new notifications above"));
+    fireEvent.click(screen.getByTestId("menubar-recent-new"));
+    expect(scroll.top).toBe(0);
+    expect(document.activeElement).toBe(recentRows()[0]);
+    // The browser's scroll event (jsdom fires none for a scrollTop write) is what clears the hint.
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    expect(document.activeElement).toBe(recentRows()[0]);
+    expect(recentRows()[0]?.dataset.key).toBe("8");
+  });
+
+  it("AC4: scrolling the list to its top clears the hint; a row arriving while the list is at its top shows no hint", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { list, scroll } = await liveWithScroll(m, 88);
+    await arrive(m, 7, 2);
+    await screen.findByTestId("menubar-recent-new");
+    // Scrolled part way up: the new row is still above the view, the hint stays.
+    scroll.top = 20;
+    fireEvent.scroll(list);
+    expect(screen.queryByTestId("menubar-recent-new")).not.toBeNull();
+    scroll.top = 0;
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    // At the top the new row is in view: no hint.
+    await arrive(m, 8, 3);
+    await settle();
+    expect(screen.queryByTestId("menubar-recent-new")).toBeNull();
+  });
+
+  it("AC4: only the Recent list's own scroll clears the hint; scrolling to the top with the hint focused moves focus to the newest row, and leaves focus elsewhere alone", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { list, scroll } = await liveWithScroll(m, 44);
+    await arrive(m, 7, 2);
+    // A scroll on another element in the section (here the section itself, at its top) is not the list's: the hint stays.
+    fireEvent.scroll(screen.getByTestId("menubar-recent"));
+    expect(screen.queryByTestId("menubar-recent-new")).not.toBeNull();
+    // The hint holds focus when the owner scrolls to the top: focus goes to the newest row, never <body>.
+    (screen.getByTestId("menubar-recent-new") as HTMLElement).focus();
+    expect(document.activeElement).toBe(screen.getByTestId("menubar-recent-new"));
+    scroll.top = 0;
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    expect(document.activeElement).toBe(recentRows()[0]);
+    expect(recentRows()[0]?.dataset.key).toBe("7");
+    // With focus elsewhere, reaching the top clears the hint and moves no focus.
+    scroll.top = 44;
+    await arrive(m, 8, 3);
+    await screen.findByTestId("menubar-recent-new");
+    const pause = screen.getByRole("button", { name: "Pause all" });
+    pause.focus();
+    scroll.top = 0;
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    expect(document.activeElement).toBe(pause);
+  });
+
+  it("AC4: activating the hint when the list already sits at its top clears it at once and focuses the newest row, never <body>", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { scroll } = await liveWithScroll(m, 44);
+    await arrive(m, 7, 2);
+    // Back at the top with no scroll event seen yet (the hint is still up), then the hint is activated from focus.
+    scroll.top = 0;
+    const hint = screen.getByTestId("menubar-recent-new") as HTMLElement;
+    hint.focus();
+    fireEvent.click(hint);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    expect(scroll.top).toBe(0);
+    expect(document.activeElement).toBe(recentRows()[0]);
+    expect(recentRows()[0]?.dataset.key).toBe("7");
+  });
+
+  /** The Recent row with id `key`. */
+  function row(key: string): HTMLElement {
+    return recentRows().find((r) => r.dataset.key === key) as HTMLElement;
+  }
+
+  /** Focus the first row and arrow down until `key` is selected, as the owner does. */
+  async function arrowTo(key: string): Promise<void> {
+    const first = recentRows()[0] as HTMLElement;
+    act(() => first.focus());
+    for (let i = 0; i < recentRows().length && row(key).getAttribute("aria-selected") !== "true"; i += 1) {
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" });
+      await settle();
+    }
+    expect(document.activeElement).toBe(row(key));
+    expect(row(key).getAttribute("aria-selected")).toBe("true");
+  }
+
+  /** The newest row holds focus, the selection and the only Tab stop, and ArrowDown steps from it, with no row opened. */
+  async function expectNewestSelected(m: Mounted, newest: string, next: string, from: number): Promise<void> {
+    expect(document.activeElement).toBe(row(newest));
+    expect(row(newest).getAttribute("aria-selected")).toBe("true");
+    expect(row(newest).tabIndex).toBe(0);
+    expect(recentRows().filter((r) => r.getAttribute("aria-selected") === "true")).toEqual([row(newest)]);
+    expect(recentRows().filter((r) => r.tabIndex === 0)).toEqual([row(newest)]);
+    fireEvent.keyDown(row(newest), { key: "ArrowDown" });
+    await waitFor(() => expect(document.activeElement).toBe(row(next)));
+    expect(row(next).getAttribute("aria-selected")).toBe("true");
+    // Selecting is not opening: no GET /notifications/:id, no navigation.
+    await settle();
+    expect(requestsAfter(m.fake, from).filter((r) => r.path === "/notifications/:id")).toEqual([]);
+    expect(window.location.hash).not.toMatch(/^#\/(approvals|chat)\//);
+  }
+
+  it("AC4: activating the hint (list scrolled) makes the newest row the List's selection, so ArrowDown continues from it", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { list, scroll } = await liveWithScroll(m, 44);
+    await arrowTo("3");
+    const from = m.fake.requests.length;
+    await arrive(m, 7, 2);
+    // Tab to the hint, Enter: the keyboard path.
+    const hint = (await screen.findByTestId("menubar-recent-new")) as HTMLElement;
+    hint.focus();
+    fireEvent.click(hint);
+    expect(scroll.top).toBe(0);
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    expect(scroll.top).toBe(0);
+    await expectNewestSelected(m, "7", "6", from);
+  });
+
+  it("AC4: activating the hint with the list already at its top makes the newest row the List's selection", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { scroll } = await liveWithScroll(m, 44);
+    await arrowTo("3");
+    const from = m.fake.requests.length;
+    await arrive(m, 7, 2);
+    scroll.top = 0;
+    const hint = (await screen.findByTestId("menubar-recent-new")) as HTMLElement;
+    hint.focus();
+    fireEvent.click(hint);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    await expectNewestSelected(m, "7", "6", from);
+  });
+
+  it("AC4: scrolling to the top with the hint focused makes the newest row the List's selection", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { list, scroll } = await liveWithScroll(m, 44);
+    await arrowTo("3");
+    const from = m.fake.requests.length;
+    await arrive(m, 7, 2);
+    (screen.getByTestId("menubar-recent-new") as HTMLElement).focus();
+    scroll.top = 0;
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    await expectNewestSelected(m, "7", "6", from);
+  });
+
+  it("the owner's own scroll to the top, with focus on a row, leaves the selection where it was", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { list, scroll } = await liveWithScroll(m, 44);
+    await arrowTo("3");
+    await arrive(m, 7, 2);
+    scroll.top = 0;
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    expect(document.activeElement).toBe(row("3"));
+    expect(row("3").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("a selected row that leaves the list leaves one Tab stop: the row focus moved to, else the first row", async () => {
+    const m = await mount({ notifications: manyNotifications(3) });
+    await waitFor(() => expect(recentRows()).toHaveLength(3));
+    await liveWithScroll(m, 0);
+    // Focused and selected #1 leaves: the List moves focus to #2, which becomes the selection.
+    await arrowTo("1");
+    m.kernel.notifications.delete(1);
+    await arrive(m, 4, 2);
+    await waitFor(() => expect(rowKeys()).toEqual(["4", "3", "2"]));
+    await waitFor(() => expect(row("2").getAttribute("aria-selected")).toBe("true"));
+    expect(document.activeElement).toBe(row("2"));
+    expect(recentRows().filter((r) => r.tabIndex === 0)).toEqual([row("2")]);
+    // Selected #2 leaves while focus is elsewhere: nothing is selected, and Tab reaches the first row.
+    screen.getByRole("button", { name: "Pause all" }).focus();
+    m.kernel.notifications.delete(2);
+    await arrive(m, 5, 3);
+    await waitFor(() => expect(rowKeys()).toEqual(["5", "4", "3"]));
+    await settle();
+    expect(recentRows().filter((r) => r.getAttribute("aria-selected") === "true")).toEqual([]);
+    expect(recentRows().filter((r) => r.tabIndex === 0)).toEqual([row("5")]);
+  });
+
+  it("AC4: rows arriving into an empty list show no hint, even with the list scrolled", async () => {
+    const m = await mount({ notifications: new Map() });
+    await waitFor(() => expect(within(screen.getByTestId("menubar-recent")).getByText(RECENT_EMPTY_TEXT)).toBeTruthy());
+    await liveWithScroll(m, 44);
+    await arrive(m, 1, 2);
+    await settle();
+    expect(screen.queryByTestId("menubar-recent-new")).toBeNull();
+  });
+
+  it(`AC4, AC5: the hint counts only the new rows above the old first row, not one that slides in at the bottom of the ${RECENT_LIMIT}`, async () => {
+    const m = await mount({ notifications: manyNotifications(25) });
+    await waitFor(() => expect(recentRows()).toHaveLength(RECENT_LIMIT));
+    const { list } = await liveWithScroll(m, 44);
+    // #10 and #11 leave the kernel's list as #26 arrives: #5 now fits under the cap, below the view, and is no new row above.
+    m.kernel.notifications.delete(10);
+    m.kernel.notifications.delete(11);
+    await arrive(m, 26, 2);
+    await waitFor(() => expect(rowKeys().at(-1)).toBe("5"));
+    expect(screen.getByTestId("menubar-recent-new").textContent).toBe("1 new notification above");
+    expect(list.scrollTop).toBe(44);
+  });
+
+  it(`AC4, AC5: the hint counts at most the ${RECENT_LIMIT} rows Recent shows`, async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    await liveWithScroll(m, 44);
+    // Two batches of 15 land above the view: 30 arrivals, but Recent shows only RECENT_LIMIT rows.
+    for (const [first, eventId] of [
+      [7, 2],
+      [22, 3],
+    ] as const) {
+      const reads = m.fake.requestsTo("GET /notifications").length;
+      for (let id = first; id < first + 15; id += 1) m.kernel.notifications.set(id, { ...notification(id, "agent:pim", `Note ${id}`), created_at: minutesAgo(0) });
+      act(() => m.fake.emit({ type: "event", id: eventId, at: "2026-10-23T09:00:01.000Z", kind: "notification_created", session_id: null, task_id: null, payload: {} }));
+      await waitFor(() => expect(m.fake.requestsTo("GET /notifications").length).toBeGreaterThan(reads));
+      await waitFor(() => expect(rowKeys()[0]).toBe(String(first + 14)));
+    }
+    await waitFor(() => expect(screen.getByTestId("menubar-recent-new").textContent).toBe(`${RECENT_LIMIT} new notifications above`));
+    expect(recentRows()).toHaveLength(RECENT_LIMIT);
+  });
+
+  it(`AC5: more than ${RECENT_LIMIT} notifications show exactly the newest ${RECENT_LIMIT}`, async () => {
+    await mount({ notifications: manyNotifications(25) });
+    await waitFor(() => expect(recentRows()).toHaveLength(RECENT_LIMIT));
+    expect(rowKeys()).toEqual(Array.from({ length: RECENT_LIMIT }, (_, i) => String(25 - i)));
+    // The rows sit in the List's own scroll container, which menubar.css bounds.
+    expect(recentRows()[0]?.closest(".list")?.classList.contains("menubar-recent-list")).toBe(true);
+  });
+
+  it("AC6: while GET /notifications has not answered, skeleton rows show and never a spinner; the panel's state is the status read's", async () => {
+    const m = await mount({}, { panel: false });
+    m.fake.route("GET /notifications", () => new Promise<never>(() => undefined));
+    render(<MenubarPanel actions={m.actions} queue={m.queue} />);
+    await settle();
+    expect(panelState()).toBe("idle");
+    const recent = screen.getByTestId("menubar-recent");
+    await waitFor(() => expect(recent.querySelectorAll(".list-skeleton").length).toBeGreaterThan(0));
+    expect(recent.querySelector('[aria-busy="true"]')).not.toBeNull();
+    expect(recent.querySelector(".btn-spinner, [role='progressbar']")).toBeNull();
+    expect(recentRows()).toEqual([]);
+    expect(within(recent).queryByText(RECENT_EMPTY_TEXT)).toBeNull();
+  });
+
+  it("AC6: with the kernel unreachable the panel shows its error view, and no row is invented", async () => {
+    const fake = fakeBridge({ state: "unreachable", reason: "connection_failed" });
+    fake.route("GET /status", () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } }));
+    fake.route("GET /notifications", () => ok({ notifications: [notification(7, APPROVAL_SOURCE, "Approval 7: Bash")] }));
+    setApi(fake.bridge);
+    render(<MenubarPanel actions={createMenubarActions()} queue={createNavigateQueue()} />);
+    await waitFor(() => expect(panelState()).toBe("error"));
+    await settle();
+    expect(screen.getByTestId("menubar-error")).toBeTruthy();
+    expect(screen.queryByTestId("menubar-recent")).toBeNull();
+    expect(screen.queryAllByRole("option")).toEqual([]);
+  });
+
+  it("AC10: a failed GET /notifications shows Recent's own line; the panel's state is the status read's and it is not stale", async () => {
+    const m = await mount({ approvals: [approval(1)] }, { panel: false });
+    m.fake.route("GET /notifications", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    render(<MenubarPanel actions={m.actions} queue={m.queue} />);
+    await waitFor(() => expect(screen.getByTestId("menubar-recent-error")).toBeTruthy());
+    expect(screen.getByTestId("menubar-recent-error").textContent).toContain("Couldn't read the notifications.");
+    expect(screen.getByTestId("menubar-recent-error").textContent).toContain("500 internal");
+    expect(panelState()).toBe("waiting");
+    expect(screen.queryByTestId("menubar-stale")).toBeNull();
+    expect(recentRows()).toEqual([]);
+  });
+
+  it("AC10: a failed refetch after a good one keeps the rows read, says so, and leaves the panel's stale line alone", async () => {
+    const m = await mount({ notifications: manyNotifications(2) });
+    await waitFor(() => expect(recentRows()).toHaveLength(2));
+    m.fake.route("GET /notifications", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    await act(async () => {
+      liveStoreFor((window as unknown as { api: StudioBridge }).api).refetch("notifications");
+    });
+    await waitFor(() => expect(screen.getByTestId("menubar-recent-error").textContent).toContain("the latest read failed"));
+    expect(recentRows()).toHaveLength(2);
+    expect(panelState()).toBe("idle");
+    expect(screen.queryByTestId("menubar-stale")).toBeNull();
+  });
+
+  it("kernel text in a row is escaped; a status outside the closed set shows its word on an idle dot", () => {
+    const item = recentItem({ ...notification(5, "agent:pim", "bad\u001b[31m title", "bounced\u0007"), delivery_detail: "why\u001b" }, Date.now());
+    expect(item.subject).toBe("bad\\x1b[31m title");
+    expect(item.status).toBe("idle");
+    expect(item.statusLabel).toBe("bounced\\x07");
+    expect(item.meta).toBe("bounced\\x07 · why\\x1b");
+    // No row is an `ok` dot, so none carries StatusDot's "verified" text in the status column.
+    expect(recentItem({ ...notification(6, "agent:pim", "x"), delivered_at: "2026-10-23T08:00:02.000Z" }, Date.now()).verified).toBeUndefined();
+  });
+
+  it("ageText: just now, minutes, hours, days; a clock behind the kernel is just now; not a time is a dash", () => {
+    const now = Date.parse("2026-10-24T12:00:00.000Z");
+    expect(ageText("2026-10-24T11:59:30.000Z", now)).toBe("just now");
+    expect(ageText("2026-10-24T12:05:00.000Z", now)).toBe("just now");
+    expect(ageText("2026-10-24T11:59:00.000Z", now)).toBe("1m ago");
+    expect(ageText("2026-10-24T11:00:01.000Z", now)).toBe("59m ago");
+    expect(ageText("2026-10-24T11:00:00.000Z", now)).toBe("1h ago");
+    expect(ageText("2026-10-23T12:00:01.000Z", now)).toBe("23h ago");
+    expect(ageText("2026-10-23T12:00:00.000Z", now)).toBe("1d ago");
+    expect(ageText("not a time", now)).toBe("—");
   });
 });

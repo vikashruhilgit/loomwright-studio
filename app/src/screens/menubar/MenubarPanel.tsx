@@ -7,22 +7,40 @@
 // - Approvals with the pending count (-> `#/approvals`);
 // - Pause all / Unpause, Kill switch… (the confirm, through the host) and
 //   Resume, enabled by the same rules as the ⌘K commands (`actionEnabled`);
+// - Recent: the newest `RECENT_LIMIT` notifications of `GET /notifications`
+//   (the kernel's order, newest first), each with its title, its age and its
+//   delivery status; opening a row (click, or arrow to it and Enter) hands
+//   `notification/<id>` to the host's navigate queue, so the host makes the one
+//   `GET /notifications/:id` and maps it through `./links.ts` exactly as for a
+//   clicked `loomwright-studio://` link. The panel never maps a notification
+//   itself. A failed list read is the section's own line: it never changes
+//   the panel's state or its stale line, which read only status and approvals.
+//   A row that arrives while the list is scrolled away from its top lands above
+//   the view (the List's scroll anchoring keeps the rows on screen where they
+//   were), so a "new above" hint floats over the list's top edge (no layout
+//   shift); activating it, or scrolling to the top, shows the row and clears it.
+//   Recent holds the List's selection, so the hint's hand-off of focus to the
+//   newest row also selects it (the arrow keys and Tab follow); selecting never
+//   opens a row;
 // - one line saying Open and Quit live in the menu-bar icon's menu.
 //
 // The state shown is only what the kernel said: an action's answer never
 // changes it; the next `GET /status` does. The shell renders the title bar's
 // `<h1>` and, while the kernel is unreachable, its band above this panel.
-import { useId, useLayoutEffect, useRef } from "react";
-import type { StatusBody, StudioBridge } from "../../api/contract";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { NotificationRow, StatusBody, StudioBridge } from "../../api/contract";
 import { CountPill } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
+import { List } from "../../components/List/List";
+import type { ListDataItem } from "../../components/List/List";
 import { StatusDot } from "../../components/StatusDot/StatusDot";
+import type { StatusState } from "../../components/StatusDot/StatusDot";
 import { useResource } from "../../store/react";
 import type { ResourceError } from "../../store/store";
 import { printable } from "../approvals/printable";
-import { actionEnabled, menubarActions, useMenubarActions } from "./MenubarHost";
-import type { KernelAction, MenubarActions } from "./MenubarHost";
-import { CAP_REJECTED_STATUS, MENUBAR_DOTS, MENUBAR_WORDS, menubarState } from "./state";
+import { actionEnabled, menubarActions, navigateQueue, useMenubarActions } from "./MenubarHost";
+import type { KernelAction, MenubarActions, NavigateQueue } from "./MenubarHost";
+import { CAP_REJECTED_STATUS, MENUBAR_DOTS, MENUBAR_WORDS, menubarState, notificationRoute } from "./state";
 import type { MenubarState } from "./state";
 import "./menubar.css";
 
@@ -31,13 +49,75 @@ export const TRAY_ONLY_NOTE = "Open and Quit are in the menu-bar icon's menu; qu
 
 export type PanelView = "no-bridge" | "loading" | "error" | MenubarState;
 
+/** How many notifications Recent shows. The kernel's list answers up to 50 by default, so the cap is the panel's. */
+export const RECENT_LIMIT = 20;
+
+/** The hint's words for `count` rows that arrived above the view. */
+export function newAboveText(count: number): string {
+  return count === 1 ? "1 new notification above" : `${count} new notifications above`;
+}
+
+/** Recent's words when the kernel has no notification. */
+export const RECENT_EMPTY_TEXT = "No notifications yet";
+
+/** The kernel's closed set of delivery statuses (`NOTIFICATION_STATUSES` in `kernel/src/notifications/record.ts`, pinned by `kernel-mirror.test.ts`). */
+export type DeliveryStatus = "pending" | "delivered" | "failed" | "unsupported";
+
+/**
+ * Each delivery status's dot; the status word is always the meta line and the
+ * dot's accessible name. `failed` is a failure; `unsupported` (not posted, or
+ * posted with no click action) is parked, not failed; `delivered` and
+ * `pending` are at rest. Not `ok` for `delivered`: a verified `ok` puts
+ * StatusDot's "· verified <time>" beside the dot, which pushes that row's
+ * title out of line with every other row's in the List's status column.
+ */
+export const DELIVERY_DOTS: Readonly<Record<DeliveryStatus, StatusState>> = Object.freeze({
+  pending: "idle",
+  delivered: "idle",
+  failed: "failed",
+  unsupported: "paused",
+});
+
+function isDeliveryStatus(status: string): status is DeliveryStatus {
+  return Object.hasOwn(DELIVERY_DOTS, status);
+}
+
+/** A notification's age at `now`: `just now`, `5m ago`, `3h ago`, `2d ago`; `—` for a value that is not a time. */
+export function ageText(iso: string, now: number): string {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return "—";
+  // A clock behind the kernel's reads as just now, never as a negative age.
+  const minutes = Math.floor(Math.max(0, now - at) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** One Recent row: the title as subject, the delivery status (and the kernel's detail) as meta, the age aside. Kernel text through `printable`. */
+export function recentItem(row: NotificationRow, now: number): ListDataItem {
+  const word = printable(row.delivery_status);
+  return {
+    kind: "data",
+    key: String(row.id),
+    status: isDeliveryStatus(row.delivery_status) ? DELIVERY_DOTS[row.delivery_status] : "idle",
+    statusLabel: word,
+    subject: printable(row.title),
+    meta: row.delivery_detail === null || row.delivery_detail === "" ? word : `${word} · ${printable(row.delivery_detail)}`,
+    aside: ageText(row.created_at, now),
+  };
+}
+
 export interface MenubarPanelProps {
   /** Defaults to the window's one set of actions (the host renders their confirm and toasts). */
   readonly actions?: MenubarActions;
+  /** Where an opened Recent row goes: defaults to the window's one queue, which the host drains (as for a clicked link). */
+  readonly queue?: NavigateQueue;
 }
 
 /** The screen. Reads `window.api` defensively: the shell does not pass the bridge to screens. */
-export function MenubarPanel({ actions = menubarActions }: MenubarPanelProps) {
+export function MenubarPanel({ actions = menubarActions, queue = navigateQueue }: MenubarPanelProps) {
   const api = (window as unknown as { api?: StudioBridge }).api;
   if (api === undefined) {
     return (
@@ -46,7 +126,7 @@ export function MenubarPanel({ actions = menubarActions }: MenubarPanelProps) {
       </div>
     );
   }
-  return <Panel api={api} actions={actions} />;
+  return <Panel api={api} actions={actions} queue={queue} />;
 }
 
 /** `HH:MM` in the owner's locale, or `undefined` for a value that is not a time. */
@@ -72,7 +152,164 @@ function errorText(error: ResourceError): string {
   return `The kernel refused the read (${error.status} ${printable(String(error.body.error))})${message}.`;
 }
 
-function Panel({ api, actions }: { readonly api: StudioBridge; readonly actions: MenubarActions }) {
+/** A clock that ticks every 30 s, so a row's age moves while the panel is open. */
+function useNow(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return now;
+}
+
+/** Focus the list's newest row without scrolling; its key, or `undefined` when the list has no row. */
+function focusNewest(list: HTMLElement): string | undefined {
+  const row = list.querySelector<HTMLElement>('[role="option"]');
+  row?.focus({ preventScroll: true });
+  return row?.dataset.key;
+}
+
+/**
+ * The Recent section. Its read is its own: loading shows the List's skeleton
+ * rows, a failed read its own line, and neither touches the panel's state.
+ */
+function Recent({ api, queue }: { readonly api: StudioBridge; readonly queue: NavigateQueue }) {
+  const notifications = useResource("notifications", api);
+  const now = useNow();
+  const headingId = useId();
+  const sectionRef = useRef<HTMLElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  /** The row keys at the last commit; `null` before the first. An arrival into an empty list is never hinted (nothing was scrolled). */
+  const prevKeysRef = useRef<readonly string[] | null>(null);
+  /** How many rows arrived above the view since the list was last at its top. */
+  const [unseen, setUnseen] = useState(0);
+  /**
+   * Recent's selection, held here so the hint's hand-off to the newest row moves the List's roving selection
+   * (its arrow keys step from the selection, and Tab reaches the selected row), not focus alone. Selecting never
+   * opens a row: only the List's `onOpen` (click, Enter) does.
+   */
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  /** Set when the hint scrolled the list to its top: the scroll listener selects the newest row, after the List has re-measured. */
+  const handoffRef = useRef(false);
+  const data = notifications?.data;
+  const error = notifications?.error;
+  const items = useMemo(() => (data?.notifications ?? []).slice(0, RECENT_LIMIT).map((row) => recentItem(row, now)), [data, now]);
+
+  // Runs after the List's own layout effect (children first), so the anchoring has already moved `scrollTop`:
+  // a list not at its top after rows were inserted above the old first row has those rows out of view.
+  useLayoutEffect(() => {
+    const keys = items.map((item) => item.key);
+    const prev = prevKeysRef.current;
+    prevKeysRef.current = keys;
+    if (prev === null || prev.length === 0) return;
+    const seen = new Set(prev);
+    let arrived = 0;
+    for (const key of keys) {
+      if (seen.has(key)) break;
+      arrived += 1;
+    }
+    const list = bodyRef.current?.querySelector<HTMLElement>(".menubar-recent-list");
+    if (arrived > 0 && list !== null && list !== undefined && list.scrollTop > 0) setUnseen((count) => count + arrived);
+  }, [items]);
+
+  // A selected row that left the list (past the cap, or gone from the kernel's list) is no selection. When the List
+  // re-homed focus to a neighbour (its effect ran first, as a child's), select that row, as an uncontrolled List
+  // does; else select nothing, so Tab reaches the first row. The selection never names a row that is not shown.
+  useLayoutEffect(() => {
+    if (selectedKey === null || items.some((item) => item.key === selectedKey)) return;
+    const focused = document.activeElement;
+    const list = bodyRef.current?.querySelector<HTMLElement>(".menubar-recent-list");
+    const key = focused instanceof HTMLElement && focused.getAttribute("role") === "option" && list?.contains(focused) === true ? focused.dataset.key : undefined;
+    setSelectedKey(key !== undefined && items.some((item) => item.key === key) ? key : null);
+  }, [items, selectedKey]);
+
+  // Reaching the top, by the hint or by the owner's own scroll, shows every new row: the hint clears.
+  // Scroll does not bubble, so the section listens in the capture phase.
+  useEffect(() => {
+    const section = sectionRef.current;
+    if (section === null) return;
+    const onScroll = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || !target.classList.contains("menubar-recent-list") || target.scrollTop > 0) return;
+      // The hint scrolled here, or a hint that holds focus is about to go: the newest row takes focus (never <body>)
+      // and the selection. This render is scheduled after this scroll event's dispatch, so the List's onScroll has
+      // re-measured its anchor by then and the commit cannot scroll the rows back.
+      // The hint's hand-off counts only while focus is still on the row it focused (the owner may have moved on).
+      const handoff = handoffRef.current && document.activeElement === target.querySelector('[role="option"]');
+      handoffRef.current = false;
+      if (handoff || document.activeElement?.closest(".menubar-recent-new") != null) {
+        const key = focusNewest(target);
+        if (key !== undefined) setSelectedKey(key);
+      }
+      setUnseen(0);
+    };
+    section.addEventListener("scroll", onScroll, true);
+    return () => section.removeEventListener("scroll", onScroll, true);
+  }, []);
+
+  const showNewest = () => {
+    const list = bodyRef.current?.querySelector<HTMLElement>(".menubar-recent-list");
+    if (list === null || list === undefined || list.scrollTop <= 0) {
+      // Already at the top: no scroll follows, so the hint clears here. It goes under focus: hand focus and the
+      // selection to the newest row first, never to <body>. Nothing scrolled, so this commit cannot fight the List's anchoring.
+      const key = list === null || list === undefined ? undefined : focusNewest(list);
+      if (key !== undefined) setSelectedKey(key);
+      setUnseen(0);
+      return;
+    }
+    // No state change here: a commit before the List's own scroll handler re-measures its anchor would scroll
+    // the rows straight back. The scroll this causes reaches the listener above, which clears the hint and selects
+    // the newest row (its render is scheduled after this scroll event's dispatch, so the List's onScroll has measured by then).
+    handoffRef.current = true;
+    list.scrollTop = 0;
+    // The hint is about to go under focus: hand focus to the newest row now, never to <body>; the listener selects it.
+    focusNewest(list);
+  };
+  const hinted = Math.min(unseen, items.length);
+
+  return (
+    <section className="menubar-recent" aria-labelledby={headingId} data-testid="menubar-recent" ref={sectionRef}>
+      <h3 className="menubar-heading" id={headingId}>
+        Recent
+      </h3>
+      {data === undefined && error !== undefined ? (
+        <p className="menubar-meta menubar-recent-line" role="status" data-testid="menubar-recent-error">
+          Couldn't read the notifications. {errorText(error)}
+        </p>
+      ) : (
+        <div className="menubar-recent-body" ref={bodyRef}>
+          <List
+            className="menubar-recent-list"
+            label="Recent notifications, newest first"
+            items={items}
+            loading={data === undefined}
+            emptyText={RECENT_EMPTY_TEXT}
+            selectedKey={selectedKey}
+            onSelect={(item) => setSelectedKey(item.key)}
+            // The host's own path for a link: one GET /notifications/:id, then `linkTarget`. The queue drops the same
+            // route again within ROUTE_DEDUPE_MS, so a second open of one row inside 2 s does nothing (the first navigated).
+            onOpen={(item) => queue.receive(notificationRoute(Number(item.key)))}
+          />
+          {/* Over the list's top edge, so showing it moves no row; the live region is always there, so the arrival is announced. */}
+          <div className="menubar-recent-new" aria-live="polite">
+            {hinted > 0 ? (
+              <Button variant="secondary" size="row" className="menubar-recent-new-button" data-testid="menubar-recent-new" onClick={showNewest}>
+                {newAboveText(hinted)}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      )}
+      {data !== undefined && error !== undefined ? (
+        <p className="menubar-meta menubar-recent-line" role="status" data-testid="menubar-recent-error">
+          These are the last notifications the kernel listed; the latest read failed.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function Panel({ api, actions, queue }: { readonly api: StudioBridge; readonly actions: MenubarActions; readonly queue: NavigateQueue }) {
   const status = useResource("status", api);
   const approvals = useResource("approvals", api);
   const snapshot = useMenubarActions(actions);
@@ -208,6 +445,8 @@ function Panel({ api, actions }: { readonly api: StudioBridge; readonly actions:
             {snapshot.lastFailure.text}
           </p>
         )}
+        <hr className="menubar-rule" />
+        <Recent api={api} queue={queue} />
         <hr className="menubar-rule" />
         <p className="menubar-note">{TRAY_ONLY_NOTE}</p>
       </section>

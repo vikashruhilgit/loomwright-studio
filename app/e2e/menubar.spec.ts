@@ -13,6 +13,11 @@
 // are the kernel's own count. The window-closed steps (AC4b, AC5) run on
 // macOS only: elsewhere `main.ts` quits on `window-all-closed`.
 //
+// The panel's Recent list reads `GET /notifications` (the fixture's map, newest
+// first): its rows, opening one by click and by keyboard (the host's one
+// `GET /notifications/:id`, as for a link), and a new row arriving through the
+// feed without moving the rows on screen or the panel's height.
+//
 // Screenshots (AC6): with `MENUBAR_EVIDENCE=1` every designed state of the
 // status panel, light and dark, is written to the committed
 // `docs/evidence/phase-5-polish/menubar/`; otherwise to Playwright's per-test
@@ -28,7 +33,7 @@ import type { TrayModel } from "../src/screens/menubar/state";
 import { launchApp } from "./electron-harness";
 import { FIXTURE_HOST, FIXTURE_TOKEN, appEnv, startFixtureKernel, unreachableDataDir } from "./fixture-kernel";
 import type { FixtureKernel } from "./fixture-kernel";
-import type { RouteKey } from "../src/api/contract";
+import type { NotificationRow, RouteKey } from "../src/api/contract";
 import type { FixtureRoute } from "./fixture-kernel";
 import {
   cappedStatus,
@@ -36,6 +41,7 @@ import {
   killedStatus,
   menubarKernel,
   menubarRoutes,
+  notification,
   pausedStatus,
   restingStatus,
   workingStatus,
@@ -47,7 +53,7 @@ const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-5-polish/m
 const THEMES = ["light", "dark"] as const;
 type Theme = (typeof THEMES)[number];
 /** Every designed state of the panel, and the kill confirm, in the README's order. */
-const STATES = ["loading", "error", "idle", "working", "waiting", "paused", "cap", "killed", "kill-confirm"] as const;
+const STATES = ["loading", "error", "idle", "recent", "working", "waiting", "paused", "cap", "killed", "kill-confirm"] as const;
 type State = (typeof STATES)[number];
 
 const LINK_NOTHING = "That notification link points to nothing Studio can open";
@@ -69,12 +75,12 @@ test.afterEach(async () => {
 async function startKernel(
   init: MenubarKernelInit = {},
   overrides: Partial<Record<RouteKey, FixtureRoute>> = {},
-): Promise<{ kernel: MenubarKernel; fixture: FixtureKernel; push: (kind?: "event_done" | "approval_requested") => void }> {
+): Promise<{ kernel: MenubarKernel; fixture: FixtureKernel; push: (kind?: "event_done" | "approval_requested" | "notification_created") => void }> {
   const kernel = menubarKernel(init);
   const started = await startFixtureKernel({ routes: { ...menubarRoutes(kernel), ...overrides } });
   fixture = started;
   let id = 0;
-  const push = (kind: "event_done" | "approval_requested" = "event_done"): void => {
+  const push = (kind: "event_done" | "approval_requested" | "notification_created" = "event_done"): void => {
     id += 1;
     started.appendEvent(kernelEvent(id, kind));
   };
@@ -168,6 +174,36 @@ async function tabTo(page: Page, label: RegExp): Promise<void> {
     if (label.test(name)) return;
   }
   throw new Error(`Tab never reached ${String(label)}`);
+}
+
+/** `minutes` before now, as the kernel writes a time. */
+function minutesAgo(minutes: number, seconds = 0): string {
+  return new Date(Date.now() - minutes * 60_000 + seconds * 1000).toISOString();
+}
+
+/** Three notifications, one per settled delivery status, newest first: #9 failed, #8 unsupported, #7 (the approval's) delivered. */
+function threeNotifications(): Map<number, NotificationRow> {
+  return new Map<number, NotificationRow>([
+    [7, { ...notification(7, "kernel:approval", "Approval 7: Bash"), created_at: minutesAgo(42), delivered_at: minutesAgo(42, 2) }],
+    [
+      8,
+      {
+        ...notification(8, "trigger:12", "Playbook review-prs fired", "unsupported"),
+        created_at: minutesAgo(12),
+        delivery_detail: "terminal-notifier not found: posted without a click action by /usr/bin/osascript",
+      },
+    ],
+    [9, { ...notification(9, "agent:pim", "Couldn't post the standup note", "failed"), created_at: minutesAgo(1), delivery_detail: "/usr/bin/osascript exited 1" }],
+  ]);
+}
+
+function recentRows(page: Page) {
+  return page.getByTestId("menubar-recent").getByRole("option");
+}
+
+/** The Recent rows' ids, top to bottom. */
+async function recentKeys(page: Page): Promise<(string | null)[]> {
+  return recentRows(page).evaluateAll((rows) => rows.map((row) => row.getAttribute("data-key")));
 }
 
 // ---- screenshots ---------------------------------------------------------------------------
@@ -429,6 +465,116 @@ test("AC7: keyboard only reaches Approvals, Pause all / Unpause, Kill switch… 
   expect(kernel.posts).toEqual(["/pause", "/resume", "/stop-all", "/resume"]);
 });
 
+// ---- the Recent list -----------------------------------------------------------------------
+
+test("AC1 + AC2 (Recent): three rows newest first with title, age and delivery status; a row opened by click and by Enter makes one GET /notifications/7 and lands on #/approvals/7", async () => {
+  test.setTimeout(60_000);
+  const { fixture: started } = await startKernel({ approvals: menubarKernel().approvals.approvals, notifications: threeNotifications() });
+  const { page } = await launch(started.env);
+  await openPanel(page);
+  await expect(page.getByTestId("screen-menubar")).toHaveAttribute("data-state", "waiting");
+
+  await expect(recentRows(page)).toHaveCount(3);
+  expect(await recentKeys(page)).toEqual(["9", "8", "7"]);
+  const expected = [
+    { title: "Couldn't post the standup note", age: "1m ago", status: "failed" },
+    { title: "Playbook review-prs fired", age: "12m ago", status: "unsupported" },
+    { title: "Approval 7: Bash", age: "42m ago", status: "delivered" },
+  ];
+  for (const [i, row] of expected.entries()) {
+    const option = recentRows(page).nth(i);
+    await expect(option.locator(".list-subject")).toHaveText(row.title);
+    await expect(option.locator(".list-aside")).toHaveText(row.age);
+    await expect(option.getByRole("img", { name: row.status })).toBeVisible();
+    await expect(option.locator(".list-meta")).toContainText(row.status);
+  }
+
+  // Click: the host's one GET /notifications/7, exactly as the deep link (AC4 above), and no POST.
+  const from = started.requests.length;
+  await recentRows(page).nth(2).click();
+  await expect.poll(() => hash(page)).toBe("#/approvals/7");
+  await expect(page.getByTestId("approval-detail")).toHaveAttribute("data-approval-id", "7");
+  await page.waitForTimeout(300);
+  expect(started.requests.slice(from).filter((r) => r.path.startsWith("/notifications/"))).toEqual([expect.objectContaining({ method: "GET", path: "/notifications/7" })]);
+  expect(started.requests.slice(from).filter((r) => r.method === "POST")).toEqual([]);
+  await expect(toasts(page)).toHaveCount(0);
+
+  // Keyboard: Tab to the list, arrow down to #7, Enter. Past the queue's 2 s repeat window first: the same route inside it is dropped.
+  await page.waitForTimeout(2_100);
+  await openPanel(page);
+  await expect(recentRows(page)).toHaveCount(3);
+  const fromKeys = started.requests.length;
+  await tabTo(page, /^Couldn't post the standup note/);
+  for (const key of ["9", "8", "7"]) {
+    await page.keyboard.press("ArrowDown");
+    await expect(page.getByTestId("menubar-recent").locator(`[role="option"][data-key="${key}"]`)).toBeFocused();
+  }
+  await page.keyboard.press("Enter");
+  await expect.poll(() => hash(page)).toBe("#/approvals/7");
+  await page.waitForTimeout(300);
+  expect(started.requests.slice(fromKeys).filter((r) => r.path.startsWith("/notifications/"))).toEqual([expect.objectContaining({ method: "GET", path: "/notifications/7" })]);
+  expect(started.requests.slice(fromKeys).filter((r) => r.method === "POST")).toEqual([]);
+});
+
+test("AC4 + AC5 (Recent): of 25 notifications 20 rows show and scroll inside the panel; a new one arrives at the top through the feed, and the rows on screen and the panel's height do not move", async () => {
+  const many = new Map<number, NotificationRow>(
+    Array.from({ length: 25 }, (_, i) => i + 1).map((id) => [id, { ...notification(id, "agent:pim", `Note ${id}`), created_at: minutesAgo(30 - id) }]),
+  );
+  const { kernel, fixture: started, push } = await startKernel({ approvals: [], notifications: many });
+  const { page } = await launch(started.env);
+  await openPanel(page);
+  await expect(page.getByTestId("screen-menubar")).toHaveAttribute("data-state", "idle");
+  await expect.poll(() => started.requests.some((r) => r.path === "/events/stream")).toBe(true);
+
+  await expect(recentRows(page)).toHaveCount(20);
+  expect(await recentKeys(page)).toEqual(Array.from({ length: 20 }, (_, i) => String(25 - i)));
+  const list = page.getByTestId("menubar-recent").locator(".list");
+  const scroll = await list.evaluate((el) => ({ scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }));
+  expect(scroll.scrollHeight, "the rows scroll inside the list").toBeGreaterThan(scroll.clientHeight);
+  const card = page.locator(".menubar-card");
+  const viewport = await page.evaluate(() => window.innerHeight);
+  const cardBefore = await card.boundingBox();
+  expect((cardBefore?.y ?? 0) + (cardBefore?.height ?? 0), "the panel fits the window").toBeLessThanOrEqual(viewport);
+  const rowBefore = await recentRows(page).first().boundingBox();
+
+  kernel.notifications.set(26, { ...notification(26, "kernel:approval", "Approval 26: Bash"), created_at: minutesAgo(0) });
+  push("notification_created");
+  await expect.poll(() => recentKeys(page).then((keys) => keys[0])).toBe("26");
+  await expect(recentRows(page)).toHaveCount(20);
+  // The row that was on top keeps its place on screen (the List's scroll anchoring), and the panel keeps its height.
+  const rowAfter = await page.getByTestId("menubar-recent").locator('[role="option"][data-key="25"]').boundingBox();
+  expect(Math.abs((rowAfter?.y ?? -1) - (rowBefore?.y ?? -2)), "row #25 did not move").toBeLessThan(1);
+  const cardAfter = await card.boundingBox();
+  expect(cardAfter?.height).toBe(cardBefore?.height);
+
+  // So the new row is above the view: the hint says so, floating over the list (the height above already includes it).
+  const newRow = page.getByTestId("menubar-recent").locator('[role="option"][data-key="26"]');
+  const listBox = await list.boundingBox();
+  const hiddenRow = await newRow.boundingBox();
+  expect((hiddenRow?.y ?? 0) + (hiddenRow?.height ?? 0), "row #26 landed above the list's view").toBeLessThanOrEqual((listBox?.y ?? 0) + 1);
+  const hint = page.getByTestId("menubar-recent-new");
+  await expect(hint).toBeVisible();
+  await expect(hint).toHaveText("1 new notification above");
+  expect(await hint.getAttribute("data-action")).toBeNull();
+  await expect(page.getByTestId("screen-menubar")).toHaveAttribute("data-state", "idle");
+  await expect(page.getByTestId("menubar-stale")).toHaveCount(0);
+  // Activating it brings the new row into view, clears the hint, and puts focus on the row.
+  await hint.click();
+  await expect(hint).toHaveCount(0);
+  await expect.poll(() => list.evaluate((el) => el.scrollTop)).toBe(0);
+  const shownRow = await newRow.boundingBox();
+  expect(shownRow?.y ?? -1, "row #26 is in the list's view").toBeGreaterThanOrEqual((listBox?.y ?? 0) - 1);
+  await expect(newRow).toBeFocused();
+  expect((await card.boundingBox())?.height).toBe(cardBefore?.height);
+  // The row is the List's selection too (its one Tab stop), so the arrow keys continue from it; selecting it scrolled nothing back and opened nothing.
+  await expect(newRow).toHaveAttribute("aria-selected", "true");
+  await expect(newRow).toHaveAttribute("tabindex", "0");
+  expect(await list.evaluate((el) => el.scrollTop)).toBe(0);
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByTestId("menubar-recent").locator('[role="option"][data-key="25"]')).toBeFocused();
+  expect(started.requests.filter((r) => r.path.startsWith("/notifications/"))).toEqual([]);
+});
+
 // ---- evidence ------------------------------------------------------------------------------
 
 test("AC6: every designed state of the status panel, and the kill confirm, in light and dark", async ({}, testInfo) => {
@@ -469,16 +615,24 @@ test("AC6: every designed state of the status panel, and the kill confirm, in li
     await closeAll();
   }
 
-  // Idle, working, waiting on you, paused, paused at cap, killed and the kill confirm: one kernel, re-read through the feed.
+  // Idle (Recent empty), Recent with three rows, working, waiting on you, paused, paused at cap, killed and the kill
+  // confirm: one kernel, re-read through the feed.
   {
-    const { kernel, fixture: started, push } = await startKernel({ approvals: [] });
+    const { kernel, fixture: started, push } = await startKernel({ approvals: [], notifications: new Map() });
     const { page } = await launch(started.env);
     await openPanel(page);
     const panel = page.getByTestId("screen-menubar");
     await expect.poll(() => started.requests.some((r) => r.path === "/events/stream")).toBe(true);
 
     await expect(panel).toHaveAttribute("data-state", "idle");
+    await expect(page.getByTestId("menubar-recent")).toContainText("No notifications yet");
     await shoot(page, "idle", testInfo);
+
+    for (const [id, row] of threeNotifications()) kernel.notifications.set(id, row);
+    push("notification_created");
+    await expect(recentRows(page)).toHaveCount(3);
+    await expect(panel).toHaveAttribute("data-state", "idle");
+    await shoot(page, "recent", testInfo);
 
     kernel.status = workingStatus();
     push();
