@@ -9,7 +9,9 @@
 // - `GET /notifications/:id` answers the canned notifications: #7 is a
 //   `kernel:approval` titled `Approval 7: …` (the kernel's template in
 //   `kernel/src/approvals/store.ts`), #3 an `agent:pim` one; any other id is
-//   the kernel's 404.
+//   the kernel's 404. `GET /notifications` lists the same map newest first
+//   (id descending, as the kernel's `ORDER BY id DESC`), at most `limit`
+//   (default 50), for the panel's Recent list.
 // - The approval routes (two pending approvals, #4 and #7), grants, messages
 //   and sessions come from `./approvals.ts`, so a link that lands on the
 //   Approvals screen shows a real inbox and every decision POST is recorded.
@@ -17,7 +19,7 @@
 //
 // The state is mutable: a spec changes `status` or the approvals, then pushes
 // an event through the feed (`kernelEvent`) so the window and the tray read
-// again.
+// again (`notification_created` re-reads `GET /notifications`).
 import type { Approval, EventFrame, NotificationRow, RosterEntry, RouteKey, StatusBody } from "../../src/api/contract";
 import { cannedStatus } from "../fixture-kernel";
 import type { FixtureAnswer, FixtureRoute } from "../fixture-kernel";
@@ -84,7 +86,8 @@ export function menubarApprovals(): Approval[] {
   ];
 }
 
-export function notification(id: number, source: string, title: string): NotificationRow {
+/** A notification row; `delivery_status` is one of the kernel's `NOTIFICATION_STATUSES` (only `delivered` has a `delivered_at`). */
+export function notification(id: number, source: string, title: string, delivery_status = "delivered"): NotificationRow {
   return {
     id,
     source,
@@ -92,9 +95,9 @@ export function notification(id: number, source: string, title: string): Notific
     body: "",
     deep_link: `loomwright-studio://notifications/${id}`,
     created_at: at(id),
-    delivery_status: "delivered",
+    delivery_status,
     delivery_detail: null,
-    delivered_at: at(id),
+    delivered_at: delivery_status === "delivered" ? at(id) : null,
   };
 }
 
@@ -146,6 +149,9 @@ export function menubarKernel(init: MenubarKernelInit = {}): MenubarKernel {
 
 const ok = (body: unknown): FixtureAnswer => ({ status: 200, body });
 
+/** The kernel's default list length (`DEFAULT_NOTIFICATION_LIST`, `kernel/src/notifications/routes.ts`). */
+const DEFAULT_NOTIFICATION_LIST = 50;
+
 /** The routes, over `kernel`'s live state. */
 export function menubarRoutes(kernel: MenubarKernel): Partial<Record<RouteKey, FixtureRoute>> {
   const act = (path: string, change: () => Partial<StatusBody>, body: () => unknown): FixtureRoute => () => {
@@ -164,6 +170,10 @@ export function menubarRoutes(kernel: MenubarKernel): Partial<Record<RouteKey, F
       () => ({ engaged: true, sessions: [] }),
     ),
     "POST /resume": act("/resume", () => ({ kill_switch: { engaged: false, since: null }, paused: false }), () => ({ engaged: false })),
+    "GET /notifications": (req) => {
+      const limit = req.query.limit === undefined ? DEFAULT_NOTIFICATION_LIST : Number(req.query.limit);
+      return ok({ notifications: [...kernel.notifications.values()].sort((a, b) => b.id - a.id).slice(0, limit) });
+    },
     "GET /notifications/:id": (req) => {
       const row = kernel.notifications.get(Number(req.params.id));
       return row === undefined ? { status: 404, body: { error: "not_found" } } : ok({ notification: row });
@@ -172,7 +182,7 @@ export function menubarRoutes(kernel: MenubarKernel): Partial<Record<RouteKey, F
   };
 }
 
-/** An `events` row the store and the tray route to a re-read (`event_*`: `GET /status`; `approval_*`: `GET /approvals`). */
-export function kernelEvent(id: number, kind: "event_done" | "approval_requested" = "event_done"): EventFrame {
+/** An `events` row the store and the tray route to a re-read (`event_*`: `GET /status`; `approval_*`: `GET /approvals`; `notification_*`: `GET /notifications`). */
+export function kernelEvent(id: number, kind: "event_done" | "approval_requested" | "notification_created" = "event_done"): EventFrame {
   return { type: "event", id, at: new Date().toISOString(), kind, session_id: null, task_id: null, payload: {} };
 }
