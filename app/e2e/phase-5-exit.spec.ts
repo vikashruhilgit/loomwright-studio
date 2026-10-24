@@ -577,10 +577,10 @@ test("phase 5 exit: every phase 2-4 owner verb done in the app against a real ke
   expect(getPlaybook(store, pb.id)).toMatchObject({ owning_agent: "wright", status: "draft", version: 1, priority: "low", priority_set_by: "wright", model: PLAYBOOK_MODEL });
   const card = page.getByRole("region", { name: `Playbook ${pb.slug}` });
   await expect(card).toBeVisible();
-  // Set its priority from the card: the store's row carries it, set by the owner.
-  await card.getByRole("combobox", { name: "Field" }).selectOption("priority");
-  await card.getByRole("combobox", { name: "Value" }).selectOption("high");
-  await card.getByRole("button", { name: /^Set priority/ }).click();
+  // Set its priority from the card's Priority row: the store's row carries it, set by the owner.
+  await card.getByRole("button", { name: "Edit priority" }).click();
+  await card.getByRole("combobox", { name: "New priority" }).selectOption("high");
+  await card.getByRole("button", { name: "Set priority" }).click();
   await expect.poll(() => getPlaybook(store, pb.id)?.priority).toBe("high");
   expect(getPlaybook(store, pb.id)).toMatchObject({ status: "draft", version: 2, priority: "high", priority_set_by: "owner" });
   await expect(page.getByRole("region", { name: `Playbook ${pb.slug}` }).locator('[data-field="Priority"]')).toContainText("high");
