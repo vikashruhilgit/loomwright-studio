@@ -1598,7 +1598,9 @@ export class SessionManager {
    * ended (its stop's bounded wait for this spawn ran out): the group is
    * killed all the same, and a kill that can't confirm it gone flags the row
    * (`kill_incomplete_at`) for the reaper. `#stop` waits for this kill, with
-   * a limit, when it found no pgid. Never throws.
+   * a limit, when it found no pgid, and joins it before deciding the status
+   * whenever it is still in flight then (so `session_ended: false` always
+   * means the stop's status reflects this kill). Never throws.
    */
   #killLateSpawn(live: LiveSession, attempt: Attempt, pgid: number): void {
     this.#recordSafely("session_spawn_after_stop", live.id, { pgid, attempt: attempt.number, session_ended: isTerminalStatus(live.status) });
@@ -1971,6 +1973,13 @@ export class SessionManager {
       await this.#killAttemptGroup(live, attempt);
       // Until Node reaps the killed leader it is a zombie holding the pgid.
       await this.#waitFor(attempt.exited, LEADER_EXIT_WAIT_MS);
+      // A spawn that reported during the waits above, after this stop's own
+      // kill found no pgid, is being killed by `onSpawn` (`#killLateSpawn`),
+      // and its kill exiting the leader ends the wait above early. Join that
+      // kill before deciding the status, so `groupGone`/`toolGroupsDone` are
+      // its result, not its starting state. Bounded like the kill above (its
+      // deadline); everything from here to the terminal write is synchronous.
+      if (attempt.killing !== undefined) await attempt.killing;
       this.#closeQuery(attempt);
       attempt.authTimer?.();
     }

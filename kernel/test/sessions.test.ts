@@ -1272,6 +1272,38 @@ describe("stopSession (AC4, fakes)", () => {
     expect(h.killed).toEqual([]);
     expect(events(store, "session_spawn_after_stop")).toEqual([]);
   });
+
+  it("a kill whose late spawn reports after the stop's spawn wait ran out, during its final leader-exit wait, waits for that kill and ends stopped (owner_kill), nothing left alive", async () => {
+    const h = heldSpawn();
+    // The first 1 s timer (the stop's bounded wait for the spawn) fires at once;
+    // the second (its final wait for the leader's exit) never fires: only the
+    // leader's exit, which the late-spawn kill causes, ends that wait.
+    let leaderWaits = 0;
+    const schedule = (fn: () => void, ms: number): CancelTimer => {
+      if (ms === 1_000 && leaderWaits++ === 1) return () => {};
+      const t = setImmediate(fn);
+      return () => clearImmediate(t);
+    };
+    const { manager, store } = harness({ deps: { ...h.deps, schedule }, endOnInputEnd: false, script: immortal });
+    const handle = await manager.startSession(startParams());
+    const stopping = manager.stopSession(handle.id, { mode: "kill" });
+    await vi.waitFor(() => expect(leaderWaits).toBe(2));
+    expect(row(store, handle.id).status).toBe("starting");
+    const child = h.release();
+    expect(h.killed).toContainEqual([child.pid, "SIGKILL"]);
+    expect(child.exited).toBe(true);
+
+    expect(await stopping).toBe("stopped");
+    expect(await handle.done).toBe("stopped");
+    expect(row(store, handle.id)).toMatchObject({ status: "stopped", pgid: child.pid, kill_incomplete_at: null });
+    expect(events(store, "session_status").map((e) => e.payload)).toEqual([
+      { from: null, to: "starting" },
+      { from: "starting", to: "stopped", reason: "owner_kill" },
+    ]);
+    // The stop had not ended when the spawn reported, and it waited for that kill.
+    expect(events(store, "session_spawn_after_stop").map((e) => e.payload)).toEqual([{ pgid: child.pid, attempt: 1, session_ended: false }]);
+    expect(h.anyAlive()).toBe(false);
+  });
 });
 
 // ---- AC5: reaper --------------------------------------------------------------
