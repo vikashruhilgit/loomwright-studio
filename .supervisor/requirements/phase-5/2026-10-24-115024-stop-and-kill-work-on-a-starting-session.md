@@ -64,3 +64,9 @@ app/src/screens/sessions/
 app/e2e/sessions.spec.ts
 app/e2e/fixtures/sessions.ts
 docs/architecture/session-control.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-24T20:21:54Z
+- **Brief:** .supervisor/jobs/done/2026-10-24-stop-and-kill-work-on-a-starting-session.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/133
