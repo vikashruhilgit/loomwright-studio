@@ -1,6 +1,6 @@
 # Notifications
 
-The notifications feature (phase 2, D11, D17) records a notification for the owner, posts it once as a native macOS notification whose click opens Terminal on its details, and lists every notification in the `studio` CLI. Code: `kernel/src/notifications/`. Evidence for the notifier choice: [`docs/evidence/phase-2-notifier-probe.md`](../evidence/phase-2-notifier-probe.md).
+The notifications feature (phase 2, D11, D17) records a notification for the owner, posts it once as a native macOS notification whose click opens Loomwright Studio on what it names (its deep link), and lists every notification in the `studio` CLI. Code: `kernel/src/notifications/`. Evidence for the notifier choice: [`docs/evidence/phase-2-notifier-probe.md`](../evidence/phase-2-notifier-probe.md).
 
 It is a mechanism (invariant 1). It never decides what is worth notifying, how often, or what counts as urgent: that is the caller's policy (a trigger's, an agent's). Notification text is untrusted data (invariant 3): it is stored as given, posted as plain text, and never reaches a shell or a parser.
 
@@ -22,7 +22,7 @@ The refusal covers `recordNotification` and `kernel_notify`. Its callers refuse 
 
 ## The deep-link scheme
 
-Every notification carries `loomwright-studio://notifications/<id>`, recorded on the row and shown by `studio notifications`. Phase 2 does not register the scheme with macOS (the phase 5 app will, and will open the same links); in phase 2 the notification's click runs `studio notifications show <id>` in Terminal instead.
+Every notification carries `loomwright-studio://notifications/<id>`, recorded on the row and shown by `studio notifications`. The kernel does not register the scheme with macOS: Loomwright Studio.app does (phase 5), and opens these links. A terminal-notifier notification's click opens that same link (`-open`), so macOS brings the app forward on the notification. No shell and no Terminal is involved. Without the app installed, macOS has nothing to open the link with; `studio notifications show <id>` still prints the notification.
 
 ## Delivery
 
@@ -31,7 +31,7 @@ The feature contributes one due-work function. Each loop tick it takes the `pend
 | Situation | Row |
 |---|---|
 | Not macOS | `unsupported`, `not macOS (<platform>): not posted`. Nothing is spawned. |
-| terminal-notifier found | Posted with a click action. `delivered`, `posted by <path>; a click runs studio notifications show <id> in Terminal`. |
+| terminal-notifier found | Posted with a click action that opens the deep link. `delivered`, `posted by <path>; a click opens loomwright-studio://notifications/<id> (needs Loomwright Studio.app)`. |
 | No terminal-notifier, `/usr/bin/osascript` present | Posted without a click action. `unsupported`, `no click-capable notifier (no terminal-notifier at …): posted without a click action by /usr/bin/osascript`. |
 | Neither | `unsupported`, `… and no /usr/bin/osascript: not posted`. |
 | The notifier cannot be spawned, exits non-zero, is killed, or runs over 10 s (then it is killed) | `failed` with the clipped error, plus exactly one `notification_delivery_failed` event (`{id, error}`). |
@@ -51,21 +51,21 @@ The kill switch stops the loop, and with it delivery. Notifications recorded mea
 
 The p11 probe ran each candidate from inside a launchd agent in the owner's GUI session (the way the kernel runs after `studio service install`), on macOS 26.6.2 ([evidence](../evidence/phase-2-notifier-probe.md)). Both exited 0, and terminal-notifier's own `-list` showed the notification held by Notification Center with its text intact:
 
-- **terminal-notifier** (Homebrew, third-party, 2.0.0 on this Mac) is the only candidate with a click action (`-execute`). The kernel uses it when it is at `/opt/homebrew/bin/terminal-notifier` or `/usr/local/bin/terminal-notifier`, and looks nowhere else (never `PATH`). Studio never installs it, and it is not an npm dependency.
+- **terminal-notifier** (Homebrew, third-party, 2.0.0 on this Mac) is the only candidate with a click action (`-open <URL>`). The kernel uses it when it is at `/opt/homebrew/bin/terminal-notifier` or `/usr/local/bin/terminal-notifier`, and looks nowhere else (never `PATH`). Studio never installs it, and it is not an npm dependency.
 - **`/usr/bin/osascript` `display notification`** ships with macOS but has no click action. It is the fallback when terminal-notifier is absent, so the notification still appears and the row says why there is no click.
 
 How the text is passed (every process gets an argv array, never a shell string or `shell: true`):
 
-- **osascript:** the title and body are the `on run argv` items, after a `--` end-of-options marker, never part of the script source. Without the `--`, a title of `-e` is read as an option and the body becomes AppleScript source that runs at compile time. The click's `osascript … do script` passes its command after `--` too.
+- **osascript:** the title and body are the `on run argv` items, after a `--` end-of-options marker, never part of the script source. Without the `--`, a title of `-e` is read as an option and the body becomes AppleScript source that runs at compile time.
 - **terminal-notifier:** the body goes on stdin. The title is passed as a quoted plist string, because Cocoa parses a `-key value` argument as a property list: when this was explored on the owner's Mac (see the evidence), an unquoted `(a, b)` title made terminal-notifier hang, while quoted titles came back exactly as sent.
-- **The click:** `-execute` is a shell command that terminal-notifier runs on click. It has Terminal run, through `osascript … do script` with the command as an `argv` item, `STUDIO_DATA_DIR=<data dir> <node> <the kernel's cli/index.js> notifications show <id>`. It contains only the kernel's own paths (each quoted as one shell word) and the validated integer id, never notification text.
+- **The click:** `-open` with the notification's deep link, `loomwright-studio://notifications/<id>`, which terminal-notifier hands to macOS on click; macOS opens it in the app that registered the scheme (Loomwright Studio.app). The kernel builds the link from the validated integer id (`deepLinkFor`, the same function that writes the row's `deep_link`), never from the title, the body or the stored column, and quotes it as a plist string like `-title` and `-group`. No shell command, no Terminal and no `osascript` run on click.
 
 The notifier runs with a fixed `PATH` and the user's `HOME`/`USER`/`LOGNAME`/`TMPDIR`/`LANG`, none of the daemon's own environment, so no credential reaches it.
 
 ### Limits
 
-- **Whether the banner shows and the click works is not machine-checked.** The probe saw both notifiers exit 0 and Notification Center hold the terminal-notifier post. Whether a banner appeared, whether the click opened Terminal, and which permission prompts macOS showed are the owner's observation in the evidence file. If the click does not work, the row still says `delivered` (the post succeeded), and the deep link and `studio notifications show <id>` still work.
-- **macOS may ask for permissions once** (not yet observed, see the evidence): to allow notifications from the notifier, and, on the first click, Automation for terminal-notifier's `osascript` to control Terminal (`do script`). Studio grants neither and never grants anything to `node` (D31).
+- **Whether the banner shows and the click works is not machine-checked.** The probe saw both notifiers exit 0 and Notification Center hold the terminal-notifier post. Whether a banner appeared, whether a click opens the app on the notification, and which permission prompts macOS showed are the owner's observation (the phase 5 runbook's `notification_click_opened_thread`). The tests pin only the argv. That terminal-notifier 2.0's `-open` hands a custom scheme to LaunchServices as it does an `https` URL is unverified until that run. If the click does not work (or Loomwright Studio.app is not installed, which the kernel does not check), the row still says `delivered` (the post succeeded), and the deep link and `studio notifications show <id>` still work. There is no fallback click.
+- **macOS may ask for permissions once** (not yet observed, see the evidence): to allow notifications from the notifier. The click runs no script, so there is no Automation prompt. Studio grants nothing and never grants anything to `node` (D31).
 - **terminal-notifier is a supply-chain dependency the owner chose to install.** It is used only from the two fixed Homebrew paths, it gets no notification text in argv except the quoted title, and without it delivery falls back to osascript with no click.
 - **terminal-notifier 2.0.0 uses Apple's deprecated `NSUserNotification` API.** A future macOS may stop showing it. Rows would then still be `delivered` (it exits 0), so a probe rerun after a macOS upgrade is the check.
 - **Display:** macOS shows a few lines of the body and may cut it. The full text is in `studio notifications show <id>`.

@@ -26,8 +26,8 @@ import {
   NOTIFICATIONS_HELP,
   OSASCRIPT_PATH,
   TERMINAL_NOTIFIER_PATHS,
-  clickShellCommand,
   createDeliveryDueWork,
+  deepLinkFor,
   deliverPendingNotifications,
   deliveryDueWork,
   getNotification,
@@ -39,8 +39,6 @@ import {
   plistQuote,
   printable,
   recordNotification,
-  shellQuote,
-  showCommand,
   spawnNotifier,
 } from "../src/notifications/index.js";
 import type { NotifierDeps, NotifierExec, NotifierRun } from "../src/notifications/index.js";
@@ -54,8 +52,6 @@ import { fakeSessions, makePluginDir, stubProvider, unexpectedAbandon } from "./
 
 const TITLE = 'Build "done" $(rm -rf ~) `id`; |& -execute';
 const BODY = "line 1; echo $HOME\n'single' \"double\" \\ back\n$(touch /tmp/studio-never) && rm -rf / (a, b)";
-const NODE = "/usr/local/bin/node";
-const CLI = "/opt/studio/dist/cli/index.js";
 const TN = TERMINAL_NOTIFIER_PATHS[0] as string;
 
 let env: LoopEnv;
@@ -89,7 +85,7 @@ function stubExec(result: Partial<NotifierRun> | Error = {}): { calls: Call[]; e
 
 /** macOS with the given notifiers present (default: terminal-notifier and osascript). */
 function darwin(exec: NotifierExec, present: readonly string[] = [TN, OSASCRIPT_PATH]): NotifierDeps {
-  return { platform: "darwin", isExecutable: (p) => present.includes(p), exec, nodePath: NODE, cliPath: CLI };
+  return { platform: "darwin", isExecutable: (p) => present.includes(p), exec };
 }
 
 const tick = (deps: NotifierDeps, store: Store = env.store): Promise<void> => deliverPendingNotifications({ store, now: env.now }, deps);
@@ -164,14 +160,10 @@ describe("recordNotification", () => {
 });
 
 describe("delivery (the due work)", () => {
-  it("posts once with terminal-notifier: argv only, the title a plist string, the body on stdin, the click opening Terminal on studio notifications show <id>", async () => {
+  it("posts once with terminal-notifier: argv only, the title a plist string, the body on stdin, the click opening the notification's deep link (-open), no shell command", async () => {
     const { calls, exec } = stubExec();
     record();
     await tick(darwin(exec));
-    const show = `STUDIO_DATA_DIR='${env.dataDir}' '/usr/local/bin/node' '/opt/studio/dist/cli/index.js' notifications show 1`;
-    const execute =
-      `'/usr/bin/osascript' '-e' 'on run argv' '-e' 'tell application "Terminal"' '-e' 'activate' '-e' 'do script (item 1 of argv)' ` +
-      `'-e' 'end tell' '-e' 'end run' '--' '${show.replace(/'/g, "'\\''")}'`;
     expect(calls).toEqual([
       {
         file: "/opt/homebrew/bin/terminal-notifier",
@@ -180,16 +172,19 @@ describe("delivery (the due work)", () => {
           '"Build \\"done\\" $(rm -rf ~) `id`; |& -execute"',
           "-group",
           '"loomwright-studio-notification-1"',
-          "-execute",
-          `"${execute.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`,
+          "-open",
+          '"loomwright-studio://notifications/1"',
         ],
         input: BODY,
         timeoutMs: 10_000,
       },
     ]);
+    // The hostile title's flag text stays inside its quoted item, never an argv item of its own.
+    expect(calls[0]?.args).not.toContain("-execute");
+    expect(calls[0]?.args[5]).toBe(plistQuote(deepLinkFor(1)));
     expect(getNotification(env.store, 1)).toMatchObject({
       delivery_status: "delivered",
-      delivery_detail: "posted by /opt/homebrew/bin/terminal-notifier; a click runs studio notifications show 1 in Terminal",
+      delivery_detail: "posted by /opt/homebrew/bin/terminal-notifier; a click opens loomwright-studio://notifications/1 (needs Loomwright Studio.app)",
       delivered_at: "2026-10-02T10:00:00.000Z",
     });
     // Later ticks never post it again.
@@ -252,11 +247,39 @@ describe("delivery (the due work)", () => {
       },
       {
         file: "/opt/homebrew/bin/terminal-notifier",
-        args: ["-title", '"--"', "-group", '"loomwright-studio-notification-2"', "-execute", expect.stringMatching(/^"/)],
+        args: ["-title", '"--"', "-group", '"loomwright-studio-notification-2"', "-open", '"loomwright-studio://notifications/2"'],
         input: "-",
         timeoutMs: 10_000,
       },
     ]);
+  });
+
+  it("the -open value is the notification's own link, built from its id: a link and shell metacharacters in the text stay in the quoted title and on stdin", async () => {
+    // Two rows first, settled without a post, so the hostile one is id 3 (neither 9 nor 1).
+    const { calls, exec } = stubExec();
+    record();
+    record();
+    await tick({ ...darwin(exec), platform: "linux" });
+    expect(calls).toEqual([]);
+    const title = `Approve loomwright-studio://approvals/9 $(open 'loomwright-studio://approvals/9') \`id\`; | & "q"`;
+    const body = `loomwright-studio://approvals/9; $(rm -rf ~) | & \`x\` "a" 'b'`;
+    const { id } = record({ title, body });
+    expect(id).toBe(3);
+    await tick(darwin(exec));
+    expect(calls).toEqual([
+      {
+        file: "/opt/homebrew/bin/terminal-notifier",
+        args: ["-title", plistQuote(title), "-group", '"loomwright-studio-notification-3"', "-open", '"loomwright-studio://notifications/3"'],
+        input: body,
+        timeoutMs: 10_000,
+      },
+    ]);
+    const args = calls[0]?.args ?? [];
+    expect(args[5]).toBe(plistQuote(deepLinkFor(id)));
+    expect(args[5]).toBe(plistQuote(getNotification(env.store, id)?.deep_link ?? ""));
+    // The text's link appears in exactly one argv item: the quoted title.
+    expect(args.filter((a) => a.includes("loomwright-studio://approvals/9"))).toEqual([plistQuote(title)]);
+    expect(args).not.toContain("-execute");
   });
 
   it("not macOS: unsupported, nothing spawned; no notifier at all: unsupported, nothing spawned", async () => {
@@ -404,18 +427,6 @@ describe("the quoting and the spawn (no shell ever sees notification text)", () 
     expect(plistQuote("")).toBe('""');
   });
 
-  it("the click's shell command, read by a real /bin/sh, is exactly osascript's argv; nothing in it runs", () => {
-    const marker = join(dir, "ran");
-    const command = `it's "x" $(touch ${marker}) \`touch ${marker}\`; touch ${marker}\nsecond`;
-    const r = spawnSync("/bin/sh", ["-c", `printf '%s\\0' ${clickShellCommand(command)}`], { encoding: "utf8" });
-    expect(r.status).toBe(0);
-    expect(r.stdout.split("\0").slice(0, -1)).toEqual([
-      "/usr/bin/osascript", "-e", "on run argv", "-e", 'tell application "Terminal"', "-e", "activate", "-e", "do script (item 1 of argv)", "-e", "end tell", "-e", "end run", "--", command,
-    ]);
-    expect(existsSync(marker)).toBe(false);
-    expect(shellQuote("a'b")).toBe("'a'\\''b'");
-  });
-
   it.runIf(process.platform === "darwin" && process.env.STUDIO_LIVE === "1")("a real osascript, given osascriptInvocation's argv, reads a title of -e and an AppleScript body as argv items; nothing in them runs", () => {
     const marker = join(dir, "pwned");
     const title = "-e";
@@ -429,16 +440,6 @@ describe("the quoting and the spawn (no shell ever sees notification text)", () 
     expect(r.status).toBe(0);
     expect(r.stdout).toBe(`2|-e|${body}\n`);
     expect(existsSync(marker)).toBe(false);
-  });
-
-  it("the Terminal command runs the kernel's CLI on `notifications show <id>` against its data dir, every path one word", () => {
-    const script = join(dir, "show.sh");
-    writeFileSync(script, 'printf "%s\\n" "dir=$STUDIO_DATA_DIR" "$@"\n');
-    const dataDir = join(dir, "data it's $(x) dir");
-    const command = showCommand(7, dataDir, { nodePath: "/bin/sh", cliPath: script });
-    const r = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
-    expect(r.stdout).toBe(`dir=${dataDir}\nnotifications\nshow\n7\n`);
-    for (const bad of [0, -1, 1.5, Number.NaN, 2 ** 53]) expect(() => showCommand(bad, dataDir)).toThrow(RangeError);
   });
 
   it("spawnNotifier: argv and stdin reach the process literally (no shell), output is captured, a timeout kills it, the env carries no credential", async () => {
@@ -695,7 +696,7 @@ describe("the API routes and studio notifications", () => {
         "notification #1",
         "  created:   2026-10-02T10:00:00.000Z",
         "  source:    trigger:1",
-        "  delivery:  delivered (posted by /opt/homebrew/bin/terminal-notifier; a click runs studio notifications show 1 in Terminal)",
+        "  delivery:  delivered (posted by /opt/homebrew/bin/terminal-notifier; a click opens loomwright-studio://notifications/1 (needs Loomwright Studio.app))",
         "  delivered: 2026-10-02T10:00:00.000Z",
         "  deep link: loomwright-studio://notifications/1",
         "  title:     5pm reminder",

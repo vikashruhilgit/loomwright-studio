@@ -172,6 +172,7 @@ export function chatFixture(scenario: ChatScenario = "populated"): ChatFixture {
     older.push({ type: "message", ...row(1, "wright", "What can you do for me?", { reply_text: "Anything you can describe as a duty. I draft it as a playbook for you to approve." }) });
     wrightItems.push(
       { type: "message", ...row(4, "wright", "Review PRs where I'm the requested reviewer.", { reply_text: "Here's the duty I'd set up. I've proposed a dedupe key, a model and a priority; they're yours to change." }) },
+      { type: "event", id: 100, at: AT(5), kind: "trigger_registered", summary: "Trigger 8 registered", ref: { trigger_id: 8 } },
       { type: "event", id: 101, at: AT(10), kind: "playbook_created", summary: "Playbook pr-review created (v1)", ref: { playbook_id: 3 } },
       { type: "event", id: 102, at: AT(20), kind: "playbook_updated", summary: "Playbook pr-review updated (v2)", ref: { playbook_id: 3 } },
       { type: "event", id: 103, at: AT(30), kind: "trigger_fired", summary: "Trigger 8 fired (wake)", ref: { trigger_id: 8 } },

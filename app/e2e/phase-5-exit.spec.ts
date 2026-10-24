@@ -365,15 +365,23 @@ async function selectSession(page: Page, id: number): Promise<void> {
   await expect(page.getByTestId("session-detail")).toHaveAttribute("data-session-id", String(id));
 }
 
-/**
- * The one-line card a `trigger_fired` event makes in Chat. Chat's full trigger
- * card (`TriggerCard`) is drawn only for a trigger in the app's `GET /triggers`
- * read, which lists enabled triggers only, so a spent `once` reminder never
- * gets one; and no thread event kind marks a trigger's registration, so none
- * shows before it fires either.
- */
+/** The one-line card a `trigger_registered` event makes in Chat. */
+function registeredCard(page: Page, triggerId: number) {
+  return page.getByTestId("screen-chat").getByRole("button", { name: `Trigger ${triggerId} registered`, exact: true });
+}
+
+/** The one-line card a `trigger_fired` event makes in Chat. */
 function firedCard(page: Page, triggerId: number) {
   return page.getByTestId("screen-chat").getByRole("button", { name: `Trigger ${triggerId} fired (notify)` });
+}
+
+/**
+ * Chat's full trigger card (`TriggerCard`): drawn once per trigger, under the
+ * newest of its registered or fired cards, for every trigger the app's
+ * `GET /triggers?all=1` read lists, a spent or off one included.
+ */
+function triggerCard(page: Page, triggerId: number) {
+  return page.getByTestId("screen-chat").getByRole("region", { name: `Trigger ${triggerId}`, exact: true });
 }
 
 /** A link, delivered as macOS delivers a notification's click: `open-url` on `app`. */
@@ -513,6 +521,15 @@ test("phase 5 exit: every phase 2-4 owner verb done in the app against a real ke
   // Registered, not yet fired.
   expect(events(store, "trigger_fired")).toEqual([]);
   expect(notificationRows(store)).toEqual([]);
+  // From its registration, before it fires: its one-line registered card in Wright's thread, and under
+  // it the full trigger card, on, with its next fire, its On and its Off.
+  await expect(registeredCard(page, remindId)).toBeVisible();
+  const remindCard = triggerCard(page, remindId);
+  await expect(remindCard).toHaveAttribute("data-state", "on");
+  await expect(remindCard.locator(`time[datetime="${REMIND_AT}"]`)).toBeVisible();
+  await expect(remindCard.getByRole("button", { name: "On", exact: true })).toBeVisible();
+  await expect(remindCard.getByRole("button", { name: "Off", exact: true })).toBeVisible();
+  expect(events(store, "trigger_fired")).toEqual([]);
 
   clock.set("2026-10-23T03:35:01.000Z");
   await expect.poll(() => instantResult(store, remindId, REMIND_AT)).toBe("fired");
@@ -522,9 +539,12 @@ test("phase 5 exit: every phase 2-4 owner verb done in the app against a real ke
   const [notification, ...moreNotifications] = notificationRows(store);
   expect(moreNotifications).toEqual([]);
   expect(notification).toMatchObject({ source: `trigger:${remindId}`, body: REMIND_TEXT, id: fired[0]?.payload.notification_id });
-  // The trigger's card in Chat: its firing's card, from the kernel's trigger_fired event. (The full
-  // trigger card is not reachable for a spent `once`: see the note on `firedCard`.)
+  // The trigger's card in Chat: its firing's card, from the kernel's trigger_fired event, and its full
+  // trigger card, now spent (a fired `once`), with On still offered.
   await expect(firedCard(page, remindId)).toBeVisible();
+  await expect(remindCard).toHaveAttribute("data-state", "spent");
+  await expect(remindCard.locator(".chat-tag")).toHaveText("off · spent");
+  await expect(remindCard.getByRole("button", { name: "On", exact: true })).toBeVisible();
   // Its notification in the app: its own deep link, delivered as macOS delivers a click (`open-url`),
   // makes the app read the row from the kernel (GET /notifications/:id) and open the thread it names.
   expect(notification?.deep_link).toBe(`loomwright-studio://notifications/${notification?.id}`);
@@ -734,6 +754,11 @@ test("phase 5 exit: every phase 2-4 owner verb done in the app against a real ke
   noFailures();
   const stretch = triggerRows(store).find((t) => t.action_payload === STRETCH_TEXT) as TriggerRow;
   expect(stretch).toMatchObject({ enabled: 1, next_fire_at: STRETCH_AT, last_result: null });
+  // Its registered card and its trigger card (on, with its next fire) show before Pause all.
+  await expect(registeredCard(page, stretch.id)).toBeVisible();
+  const stretchCard = triggerCard(page, stretch.id);
+  await expect(stretchCard).toHaveAttribute("data-state", "on");
+  await expect(stretchCard.locator(`time[datetime="${STRETCH_AT}"]`)).toBeVisible();
 
   await expect.poll(async () => (await trayModel(launched))?.state).not.toBe("unknown");
   await trayClick(launched, "pause-all");
@@ -748,6 +773,9 @@ test("phase 5 exit: every phase 2-4 owner verb done in the app against a real ke
   ]);
   expect(events(store, "trigger_fired").filter((e) => e.payload.trigger_id === stretch.id)).toEqual([]);
   expect(notificationRows(store).filter((n) => n.source === `trigger:${stretch.id}`)).toEqual([]);
+  // Missed, its card says spent (a `once` off with no toggle), with On still offered.
+  await expect(stretchCard).toHaveAttribute("data-state", "spent");
+  await expect(stretchCard.getByRole("button", { name: "On", exact: true })).toBeVisible();
 
   await trayClick(launched, "resume");
   await expect.poll(() => isPaused(store)).toBe(false);

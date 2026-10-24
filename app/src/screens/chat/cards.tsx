@@ -9,7 +9,7 @@ import { Button } from "../../components/Button/Button";
 import { EventCard } from "../../components/EventCard/EventCard";
 import { SelectField, TextField } from "../../components/Input/Input";
 import type { ResourceName } from "../../store/resources";
-import { focusLost, inFlightGuard, navigate, when, write } from "./model";
+import { focusLost, inFlightGuard, navigate, triggerSchedule, triggerState, when, write } from "./model";
 
 /** What Always says when the approval did not come from a playbook session. */
 export const ALWAYS_INELIGIBLE = "Always needs an approval from a playbook session; approve once";
@@ -289,7 +289,10 @@ export interface TriggerCardProps {
   readonly nested?: boolean;
 }
 
-/** A trigger: its kind, text and state, with On and Off. A past `once` asks the owner once before it fires. */
+/**
+ * A trigger: its kind, schedule, next fire, text and state (on, off, or off ·
+ * spent), with On and Off. A past `once` asks the owner once before it fires.
+ */
 export function TriggerCard({ api, trigger, agent, nested = false }: TriggerCardProps) {
   const [refusal, setRefusal] = useState("");
   const [confirm, setConfirm] = useState<string | null>(null);
@@ -320,13 +323,32 @@ export function TriggerCard({ api, trigger, agent, nested = false }: TriggerCard
       setConfirm(null);
       setRefusal(outcome.ok ? "" : outcome.text);
     });
+  const state = triggerState(trigger);
   return (
-    <section className={nested ? "chat-card chat-trigger nested" : "chat-card chat-trigger"} aria-label={`Trigger ${trigger.id}`} data-trigger={trigger.id}>
+    <section
+      className={nested ? "chat-card chat-trigger nested" : "chat-card chat-trigger"}
+      aria-label={`Trigger ${trigger.id}`}
+      data-trigger={trigger.id}
+      data-state={state}
+    >
       <div className="chat-card-head">
         <span className="chat-card-title">Trigger {trigger.id}</span>
         <span className="chat-card-meta">{trigger.kind}</span>
-        <span className={trigger.enabled ? "chat-tag on" : "chat-tag"}>{trigger.enabled ? "on" : "off"}</span>
+        <span className={state === "on" ? "chat-tag on" : "chat-tag"}>{state === "spent" ? "off · spent" : state}</span>
       </div>
+      <p className="chat-card-meta">
+        <span data-field="Schedule">{triggerSchedule(trigger)}</span>
+        {" · "}
+        <span data-field="Next fire">
+          {trigger.next_fire_at === null ? (
+            "no next fire"
+          ) : (
+            <>
+              next fire <time dateTime={trigger.next_fire_at}>{when(trigger.next_fire_at)}</time>
+            </>
+          )}
+        </span>
+      </p>
       <p className="chat-card-text">{trigger.text}</p>
       {confirm === null ? (
         <div className="chat-card-actions">

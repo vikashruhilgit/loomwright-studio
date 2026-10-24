@@ -88,7 +88,7 @@ In the requests below, `<date>` is today's date as `MMDD` (for example `1023`), 
 
 ### Flow 1: a reminder (phase 2)
 
-In Chat, ask Wright: `Remind me in 3 minutes to stretch my legs.` Wright answers in its thread; no trigger card shows yet (the app draws nothing for a trigger before it fires). Wait until past its time: it fires, the notification appears on screen, and Wright's thread shows a one-line `Trigger <id> fired (notify)` card. The full trigger card, with On and Off, does not show for it: the app draws that card only for a trigger `GET /triggers` lists, which is enabled triggers only, and a fired one-time reminder is spent. Then click the notification: the app comes forward on Wright's thread, the thread the notification names. The app has no list of notifications, so there is no row of it to look for in the app. Without terminal-notifier (setup step 4) the notification has no click action; record that instead.
+In Chat, ask Wright: `Remind me in 3 minutes to stretch my legs.` Wright answers in its thread, and the trigger has its card from the moment it is registered: a one-line `Trigger <id> registered` card and, under it, the full trigger card with its schedule, its next fire, its state `on`, and On and Off. Wait until past its time: it fires, the notification appears on screen, and Wright's thread shows a one-line `Trigger <id> fired (notify)` card, with the trigger card now under it saying `off · spent` (a fired one-time reminder is spent). Then click the notification: the app comes forward on Wright's thread, the thread the notification names. The notification's row also shows at the top of the menu-bar panel's Recent list (`#/menubar`) with its delivery status, and opening the row lands on the same thread. Without terminal-notifier (setup step 4) the notification has no click action and its row reads `unsupported`; record that instead, and open it from its Recent row.
 
 The harness passes it when a trigger Wright registered (an agent trigger with no playbook) has a `trigger_fired` event, the instant's work step is recorded `fired`, and the notification row the fire names exists in the store with that trigger as its source. It records the notification's `delivery_status`.
 
@@ -141,9 +141,9 @@ What only you can see: that you pressed Stop and Kill in Sessions, and that Kill
 
 ### Flow 5: Pause all, a missed reminder, Resume, then the kill switch (menu bar)
 
-1. In Chat, ask Wright: `Remind me in 3 minutes to drink some water.` No card shows for it: the app draws a trigger's card only once it fires, and this one never does.
+1. In Chat, ask Wright: `Remind me in 3 minutes to drink some water.` Its one-line `Trigger <id> registered` card and its trigger card (state `on`, with its next fire) show in Wright's thread.
 2. Before it is due, open the menu-bar icon and choose **Pause all**.
-3. Wait until past its time. It does not fire: the kernel records the instant `missed_paused`.
+3. Wait until past its time. It does not fire: the kernel records the instant `missed_paused`, and its trigger card says `off · spent`.
 4. From the menu bar, choose **Resume** (or **Unpause**, which the tray shows in place of Pause all while paused). The pause clears.
 5. From the menu bar, choose **Kill switch…** and confirm. Every running session stops and nothing new starts.
 6. From the menu bar, choose **Resume** again, which releases the kill switch.
@@ -169,7 +169,7 @@ It ends as soon as all six flows pass, or at its deadline, and prints the summar
 Touch only the run's own playbook, triggers and crew member. The summary's `cleanup.left_for_the_owner` lists what the run left on: its playbooks not off, its triggers still on, its crew member still active, any approval still pending since the run start, and whether a pause or the kill switch is still engaged. All of it is done in the app:
 
 - **The playbook** `phase5 exit <date>`: press **Turn off** on its card.
-- **The triggers:** a spent reminder is already off; turn off any of the run's triggers the list still names with **Off** on its card. A trigger has a card in Chat only after it has fired, so a trigger still on that never fired has none; if the list names one, record it in the evidence file's `cleanup` as a finding (the app gap in [OPEN_QUESTIONS](../OPEN_QUESTIONS.md)) rather than turning it off in a terminal. The playbook's own trigger never starts work while the playbook is off.
+- **The triggers:** a spent reminder is already off (its card says `off · spent`); turn off any of the run's triggers the list still names with **Off** on its card. A trigger has its card in its agent's thread from the moment it is registered, so a trigger still on that never fired is turned off there too. The playbook's own trigger never starts work while the playbook is off.
 - **The crew member** `phase5-exit-<date>`: in Team, select it and press **Turn off**. Turning a member off never deletes its memory, so its row (now off), its settings file and its `memory/<id>/` folder stay, and its id is never reused.
 - **Anything pending** from the run: deny it in Approvals.
 - **A pause or the kill switch still engaged:** **Resume** from the menu bar.

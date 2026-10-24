@@ -293,7 +293,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     });
   };
 
-  // Cards: each playbook once, after its newest created/updated event; each fired trigger once, after its newest firing.
+  // Cards: each playbook once, after its newest created/updated event; each trigger once, after its newest registered or fired event.
   const playbookList = playbooks?.data?.playbooks;
   const triggerList = triggers?.data?.triggers;
   const playbookAt = new Map<number, number>();
@@ -303,7 +303,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     if (item.kind === "playbook_created" || item.kind === "playbook_updated") {
       const id = refId(item.ref, "playbook_id");
       if (id !== undefined) playbookAt.set(id, index);
-    } else if (item.kind === "trigger_fired") {
+    } else if (item.kind === "trigger_fired" || item.kind === "trigger_registered") {
       const id = refId(item.ref, "trigger_id");
       if (id !== undefined) triggerAt.set(id, index);
     }
