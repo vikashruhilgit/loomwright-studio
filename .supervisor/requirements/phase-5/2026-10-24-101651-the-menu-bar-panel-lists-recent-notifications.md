@@ -63,3 +63,9 @@ none
 app/src/screens/menubar/
 app/e2e/menubar.spec.ts
 app/e2e/fixtures/menubar.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-24T14:28:56Z
+- **Brief:** .supervisor/jobs/done/2026-10-24-menu-bar-recent-notifications.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/129
