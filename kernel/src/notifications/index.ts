@@ -1,6 +1,6 @@
 // The `notifications` feature (phase 2): `recordNotification` (other features
 // call it), a native macOS post per notification on the next loop tick (its
-// click opens Terminal on `studio notifications show <id>`), the
+// click opens the notification's deep link in the app), the
 // `kernel_notify` tool, the `GET /notifications` routes and the `studio
 // notifications` subcommand. Every notification carries the deep link
 // `loomwright-studio://notifications/<id>`. `startKernel` and `runCli` merge
@@ -29,13 +29,10 @@ export {
   OSASCRIPT_PATH,
   TERMINAL_NOTIFIER_PATHS,
   chooseNotifier,
-  clickShellCommand,
   notifierGroup,
   osascriptInvocation,
   plistQuote,
   postNotification,
-  shellQuote,
-  showCommand,
   spawnNotifier,
   terminalNotifierInvocation,
 } from "./notifier.js";
