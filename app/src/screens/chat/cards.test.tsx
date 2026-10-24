@@ -31,8 +31,40 @@ async function playbookCard(): Promise<HTMLElement> {
   return screen.findByRole("region", { name: "Playbook pb-3" });
 }
 
+/** A row's value and its provenance tag as text (the row's Edit button is not part of it). */
+function shownValue(card: HTMLElement, label: string): string {
+  return card.querySelector(`dd[data-field="${label}"] .chat-kv-value`)?.textContent ?? "";
+}
+
 function priority(card: HTMLElement): string {
-  return card.querySelector('dd[data-field="Priority"]')?.textContent ?? "";
+  return shownValue(card, "Priority");
+}
+
+/** Activate a button the way a keyboard owner does: focus it, then press it. */
+async function focusAndPress(scope: HTMLElement, name: string | RegExp): Promise<void> {
+  await act(async () => {
+    const button = within(scope).getByRole("button", { name });
+    button.focus();
+    fireEvent.click(button);
+  });
+}
+
+/** The row's editor (a form named `Set <row>`), once its Edit was pressed. */
+function editor(card: HTMLElement, row: string): HTMLElement {
+  return within(card).getByRole("form", { name: `Set ${row}` });
+}
+
+/** Type into the row's text field, then press Enter (the form's implicit submit). */
+async function typeAndEnter(card: HTMLElement, row: string, text: string): Promise<void> {
+  const form = editor(card, row);
+  const input = within(form).getByRole("textbox", { name: `New ${row}` });
+  await act(async () => {
+    fireEvent.change(input, { target: { value: text } });
+  });
+  await act(async () => {
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.submit(form);
+  });
 }
 
 describe("cards", () => {
@@ -62,11 +94,42 @@ describe("cards", () => {
     // After event 2, the newest playbook_* event naming it.
     expect(card.closest("li")?.previousElementSibling?.getAttribute("data-item")).toBe("event:2");
     expect(card.textContent).toContain("Review PRs where I am requested");
-    expect(card.querySelector('dd[data-field="Dedupe key"]')?.textContent).toBe("pr:{number}:{head_sha}proposed");
-    expect(card.querySelector('dd[data-field="Model"]')?.textContent).toBe("haikuset by owner");
-    expect(card.querySelector('dd[data-field="Token limit per day"]')?.textContent).toBe("100000proposed");
+    expect(shownValue(card, "Dedupe key")).toBe("pr:{number}:{head_sha}proposed");
+    expect(shownValue(card, "Model")).toBe("haikuset by owner");
+    expect(shownValue(card, "Token limit per day")).toBe("100000proposed");
     expect(card.querySelector('dd[data-field="Trigger"]')?.textContent).toMatch(/^cron · next /);
     expect(card.textContent).toContain(LAST_DRY_RUN_GAP);
+  });
+
+  it("an unset model reads 'not set: needed before a dry run', and no row reads default", async () => {
+    const k = kit({
+      threads: { wright: thread([eventItem(1, "playbook_created", "created", { playbook_id: 3 })]) },
+      playbooks: [playbook(3, { model: null, model_set_by: null })],
+    });
+    await renderChat(k);
+    const card = await playbookCard();
+    expect(shownValue(card, "Model")).toBe("not set: needed before a dry run");
+    for (const dd of card.querySelectorAll("dd")) expect(dd.textContent ?? "").not.toMatch(/\bdefault\b/);
+  });
+
+  it("an unset dedupe key reads 'not set'", async () => {
+    const k = kit({ threads: { wright: thread([eventItem(1, "playbook_created", "created", { playbook_id: 3 })]) }, playbooks: [playbook(3, { dedupe_key_spec: null, dedupe_key_set_by: null })] });
+    await renderChat(k);
+    expect(shownValue(await playbookCard(), "Dedupe key")).toBe("not set");
+  });
+
+  it("an unset token limit per day reads 'not set'", async () => {
+    const k = kit({ threads: { wright: thread([eventItem(1, "playbook_created", "created", { playbook_id: 3 })]) }, playbooks: [playbook(3, { token_limit_per_day: null, token_limit_set_by: null })] });
+    await renderChat(k);
+    expect(shownValue(await playbookCard(), "Token limit per day")).toBe("not set");
+  });
+
+  it("an unset API-key fallback reads 'not set', and its row has no Edit (the owner cannot set it)", async () => {
+    const k = kit({ threads: { wright: thread([eventItem(1, "playbook_created", "created", { playbook_id: 3 })]) }, playbooks: [playbook(3, { api_key_fallback_json: null })] });
+    await renderChat(k);
+    const card = await playbookCard();
+    expect(shownValue(card, "API-key fallback")).toBe("not set");
+    expect(within(card.querySelector('dd[data-field="API-key fallback"]') as HTMLElement).queryByRole("button")).toBeNull();
   });
 
   it("Set priority high posts and shows set by owner", async () => {
@@ -75,30 +138,138 @@ describe("cards", () => {
     const card = await playbookCard();
     expect(priority(card)).toBe("normalproposed");
     k.state.playbooks = [playbook(3, { trigger_id: 5, priority: "high", priority_set_by: "owner" })];
-    const form = within(card).getByRole("form", { name: "Set a field of pb-3" });
+    await focusAndPress(card, "Edit priority");
+    const form = editor(card, "priority");
+    // The editor opens on the row's own value, with focus in it.
+    const select = within(form).getByRole("combobox", { name: "New priority" }) as HTMLSelectElement;
+    expect(select.value).toBe("normal");
+    expect(document.activeElement).toBe(select);
     await act(async () => {
-      fireEvent.change(within(form).getByRole("combobox", { name: "Field" }), { target: { value: "priority" } });
-      fireEvent.change(within(form).getByRole("combobox", { name: "Value" }), { target: { value: "high" } });
+      fireEvent.change(select, { target: { value: "high" } });
     });
-    await press(form, "Set priority");
+    await focusAndPress(form, "Set priority");
     await waitFor(() => expect(k.posted("POST /playbooks/:id/set")).toHaveLength(1));
     expect(k.posted("POST /playbooks/:id/set")[0]?.params).toEqual({ id: 3 });
     expect(k.posted("POST /playbooks/:id/set")[0]?.body).toEqual({ field: "priority", value: "high" });
     await waitFor(() => expect(priority(card)).toBe("highset by owner"));
+    expect(within(card).queryByRole("form")).toBeNull();
+    expect(document.activeElement).toBe(within(card).getByRole("button", { name: "Edit priority" }));
   });
 
-  it("Set a text field sends its typed value as a string", async () => {
+  it("Edit model, type, Enter: one set with the typed model, set by owner, and focus back on Edit model", async () => {
     const k = playbookKit();
     await renderChat(k);
-    const form = within(await playbookCard()).getByRole("form");
+    const card = await playbookCard();
+    k.state.posts["POST /playbooks/:id/set"] = () => {
+      k.state.playbooks = [playbook(3, { trigger_id: 5, model: "opus", model_set_by: "owner" })];
+      return ok({});
+    };
+    await focusAndPress(card, "Edit model");
+    const input = within(editor(card, "model")).getByRole("textbox", { name: "New model" }) as HTMLInputElement;
+    expect(input.value).toBe("haiku");
+    expect(document.activeElement).toBe(input);
+    await typeAndEnter(card, "model", "opus");
+    await waitFor(() => expect(within(card).queryByRole("form")).toBeNull());
+    expect(k.posted("POST /playbooks/:id/set").map((r) => r.body)).toEqual([{ field: "model", value: "opus" }]);
+    await waitFor(() => expect(shownValue(card, "Model")).toBe("opusset by owner"));
+    expect(document.activeElement).toBe(within(card).getByRole("button", { name: "Edit model" }));
+  });
+
+  it("Set a text row sends its typed value as a string: token limit per day and dedupe key", async () => {
+    const k = playbookKit();
+    await renderChat(k);
+    const card = await playbookCard();
+    await focusAndPress(card, "Edit token limit per day");
+    await typeAndEnter(card, "token limit per day", "5000");
+    await waitFor(() => expect(within(card).queryByRole("form")).toBeNull());
+    await focusAndPress(card, "Edit dedupe key");
+    await typeAndEnter(card, "dedupe key", "trigger.id, date");
+    await waitFor(() => expect(within(card).queryByRole("form")).toBeNull());
+    expect(k.posted("POST /playbooks/:id/set").map((r) => r.body)).toEqual([
+      { field: "token_limit", value: "5000" },
+      { field: "dedupe_key", value: "trigger.id, date" },
+    ]);
+  });
+
+  it("a dedupe key stored as a JSON list opens comma-separated in its editor", async () => {
+    const k = kit({
+      threads: { wright: thread([eventItem(1, "playbook_created", "created", { playbook_id: 3 })]) },
+      playbooks: [playbook(3, { dedupe_key_spec: '["trigger.id","date"]' })],
+    });
+    await renderChat(k);
+    const card = await playbookCard();
+    await focusAndPress(card, "Edit dedupe key");
+    expect((within(editor(card, "dedupe key")).getByRole("textbox", { name: "New dedupe key" }) as HTMLInputElement).value).toBe("trigger.id, date");
+  });
+
+  it("no separate Field dropdown: each settable row has its own Edit", async () => {
+    const k = playbookKit();
+    await renderChat(k);
+    const card = await playbookCard();
+    expect(within(card).queryByRole("combobox", { name: "Field" })).toBeNull();
+    expect(within(card).queryByRole("combobox")).toBeNull();
+    expect(within(card).queryByRole("textbox")).toBeNull();
+    expect(within(card).queryByRole("form")).toBeNull();
+    for (const row of ["Dedupe key", "Priority", "Model", "Token limit per day"]) {
+      const dd = card.querySelector(`dd[data-field="${row}"]`) as HTMLElement;
+      expect(within(dd).getByRole("button", { name: `Edit ${row.toLowerCase()}` })).toBeTruthy();
+    }
+  });
+
+  it("a refused Set shows the kernel's words and keeps the row in edit mode with the owner's text", async () => {
+    const k = playbookKit();
+    k.state.posts["POST /playbooks/:id/set"] = () => ({ ok: false, status: 400, body: { error: "invalid_input", message: "token_limit must be a positive whole number of tokens per day" } });
+    await renderChat(k);
+    const card = await playbookCard();
+    await focusAndPress(card, "Edit token limit per day");
+    await typeAndEnter(card, "token limit per day", "lots");
+    expect((await within(card).findByRole("alert")).textContent).toBe("token_limit must be a positive whole number of tokens per day (invalid_input)");
+    const form = editor(card, "token limit per day");
+    expect((within(form).getByRole("textbox", { name: "New token limit per day" }) as HTMLInputElement).value).toBe("lots");
+    expect(k.posted("POST /playbooks/:id/set")).toHaveLength(1);
+  });
+
+  it("Escape leaves edit mode, sends nothing, and puts focus on the row's Edit", async () => {
+    const k = playbookKit();
+    await renderChat(k);
+    const card = await playbookCard();
+    await focusAndPress(card, "Edit model");
+    const input = within(editor(card, "model")).getByRole("textbox", { name: "New model" });
     await act(async () => {
-      fireEvent.change(within(form).getByRole("combobox", { name: "Field" }), { target: { value: "token_limit" } });
+      fireEvent.change(input, { target: { value: "opus" } });
     });
     await act(async () => {
-      fireEvent.change(within(form).getByRole("textbox", { name: "Value" }), { target: { value: "5000" } });
+      fireEvent.keyDown(input, { key: "Escape" });
     });
-    await press(form, "Set token_limit");
-    await waitFor(() => expect(k.posted("POST /playbooks/:id/set")[0]?.body).toEqual({ field: "token_limit", value: "5000" }));
+    expect(within(card).queryByRole("form")).toBeNull();
+    expect(document.activeElement).toBe(within(card).getByRole("button", { name: "Edit model" }));
+    expect(shownValue(card, "Model")).toBe("haikuset by owner");
+    expect(k.posted("POST /playbooks/:id/set")).toHaveLength(0);
+    // Cancel does the same.
+    await focusAndPress(card, "Edit priority");
+    await focusAndPress(editor(card, "priority"), "Cancel");
+    expect(within(card).queryByRole("form")).toBeNull();
+    expect(document.activeElement).toBe(within(card).getByRole("button", { name: "Edit priority" }));
+  });
+
+  it("a text row's hint sits on its own line, outside the row that holds the field, Set and Cancel", async () => {
+    const k = playbookKit();
+    await renderChat(k);
+    const card = await playbookCard();
+    await focusAndPress(card, "Edit model");
+    const form = editor(card, "model");
+    const input = within(form).getByRole("textbox", { name: "New model" });
+    const set = within(form).getByRole("button", { name: "Set model" });
+    const cancel = within(form).getByRole("button", { name: "Cancel" });
+    const hint = within(form).getByText("none clears it");
+    // The smallest element holding the field and both buttons: the controls' row.
+    let controls: HTMLElement | null = input.parentElement;
+    while (controls !== null && !(controls.contains(set) && controls.contains(cancel))) controls = controls.parentElement;
+    expect(controls).not.toBeNull();
+    expect(controls?.contains(hint)).toBe(false);
+    expect(form.contains(hint)).toBe(true);
+    // The field is described by its hint.
+    expect(input.getAttribute("aria-describedby")?.split(" ")).toContain(hint.id);
   });
 
   it("Run now / Turn off routes", async () => {
@@ -128,11 +299,18 @@ describe("cards", () => {
     const k = playbookKit();
     await renderChat(k);
     const card = await playbookCard();
-    const names = within(card)
-      .getAllByRole("button")
-      .map((b) => b.textContent ?? "");
-    expect(names.some((n) => /enable/i.test(n))).toBe(false);
-    expect(names).toEqual(["Run now", "Turn off", "Set priority", "On", "Off"]);
+    const buttons = within(card).getAllByRole("button");
+    expect(buttons.some((b) => /enable/i.test(`${b.textContent ?? ""} ${b.getAttribute("aria-label") ?? ""}`))).toBe(false);
+    expect(buttons.map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
+      "Edit dedupe key",
+      "Edit priority",
+      "Edit model",
+      "Edit token limit per day",
+      "Run now",
+      "Turn off",
+      "On",
+      "Off",
+    ]);
   });
 
   it("trigger On / Off routes", async () => {

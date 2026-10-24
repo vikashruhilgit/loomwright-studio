@@ -105,9 +105,19 @@ function MessageView({ item, agent, roster }: { readonly item: MessageItem; read
     outcome = <p className="chat-state">{String(item.status)}</p>;
   }
 
+  // A kernel approval decision is queued with `source` `approval:<id>` (kernel/src/approvals/store.ts): the
+  // kernel's words, never the owner's. Decided by `source` alone, never by the text.
+  const decision = item.from_agent === null && item.source.startsWith("approval:") ? item.source.slice("approval:".length) : null;
   return (
     <div className="chat-message" data-message={item.id} data-status={item.status}>
-      {item.from_agent === null ? (
+      {decision !== null ? (
+        <section className="chat-kernel" aria-label={`Kernel decision, approval ${decision}`} data-source={item.source}>
+          <p className="chat-kernel-label">
+            Kernel · approval {decision} · <time dateTime={item.created_at}>{clock(item.created_at)}</time>
+          </p>
+          <p className="chat-kernel-text">{item.text}</p>
+        </section>
+      ) : item.from_agent === null ? (
         <ChatBubble speaker="You" from="user" time={clock(item.created_at)} body={item.text} />
       ) : (
         <blockquote className="chat-quote" data-from-agent={item.from_agent}>

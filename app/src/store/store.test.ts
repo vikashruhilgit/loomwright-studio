@@ -236,6 +236,20 @@ describe("refetch by kind, throttled (AC1)", () => {
     expect(count("GET /status")).toBe(status + 1);
   });
 
+  it("reads GET /playbooks with all=1, so a disabled playbook stays in the list (and on its card)", async () => {
+    const fake = fakeBridge();
+    fake.route("GET /status", () => ok(STATUS));
+    fake.route("GET /playbooks", () => ok({ playbooks: [] }));
+    const store = storeOver(fake);
+    store.load("playbooks");
+    await goLive(fake, store);
+    fake.emit(event(1, "playbook_disabled"));
+    await advance(1_000);
+    const reads = fake.requestsTo("GET /playbooks");
+    expect(reads.length).toBeGreaterThan(1);
+    for (const read of reads) expect(read.req.query).toEqual({ all: "1" });
+  });
+
   it("routes the kernel's real kinds by prefix, first match wins", () => {
     expect(resourcesForKind("approval_requested")).toEqual(["approvals", "grants"]);
     expect(resourcesForKind("agent_message_queued")).toEqual(["messages"]);
