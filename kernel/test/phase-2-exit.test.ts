@@ -36,7 +36,7 @@ import { startKernel } from "../src/kernel.js";
 import type { Kernel, KernelDeps, KernelOptions } from "../src/kernel.js";
 import { VERSION_NOTE_SOURCE } from "../src/loomwright/index.js";
 import type { DueWorkContext } from "../src/loop/types.js";
-import { OSASCRIPT_PATH, TERMINAL_NOTIFIER_PATHS, createDeliveryDueWork, deepLinkFor, notificationsContribution } from "../src/notifications/index.js";
+import { OSASCRIPT_PATH, TERMINAL_NOTIFIER_PATHS, createDeliveryDueWork, deepLinkFor, notificationsContribution, plistQuote } from "../src/notifications/index.js";
 import type { NotificationRow, NotifierDeps, NotifierExec } from "../src/notifications/index.js";
 import type { Store } from "../src/store/index.js";
 import type { KernelToolResult } from "../src/tools/server.js";
@@ -57,8 +57,6 @@ const AT_17_00 = "2026-10-15T11:30:00.000Z";
 const ASK = "remind me at 17:00 to check X";
 const REPLY = "I'll remind you at 17:00 today to check X.";
 const MINUTE = 60_000;
-const NODE = "/usr/local/bin/node";
-const CLI = "/opt/studio/dist/cli/index.js";
 const TN = TERMINAL_NOTIFIER_PATHS[0] as string;
 const WAIT = { timeout: 10_000, interval: 10 };
 
@@ -129,7 +127,7 @@ function stubbedContributions() {
     posts.push({ file, args: [...args], input });
     return { status: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
   };
-  const notifier: NotifierDeps = { platform: "darwin", isExecutable: (p) => p === TN || p === OSASCRIPT_PATH, exec, nodePath: NODE, cliPath: CLI };
+  const notifier: NotifierDeps = { platform: "darwin", isExecutable: (p) => p === TN || p === OSASCRIPT_PATH, exec };
   const deliver = createDeliveryDueWork(notifier);
   const state = { ticks: 0 };
   const counted = async (ctx: DueWorkContext): Promise<void> => {
@@ -292,9 +290,10 @@ describe("phase 2 exit: studio ask creates a trigger that fires at 17:00 (AC1, A
     const post = stub.posts[0] as Post;
     expect(post.file).toBe(TN);
     expect(post.input).toBe("check X");
-    const execute = argAfter(post.args, "-execute") ?? "";
-    expect(execute).toContain(`notifications show ${n.id}`);
-    expect(execute).toContain(dataDir);
+    // The click opens the row's own deep link in the app (`-open`), never a shell command.
+    expect(argAfter(post.args, "-open")).toBe(plistQuote(deepLinkFor(n.id)));
+    expect(argAfter(post.args, "-open")).toBe(plistQuote(n.deep_link));
+    expect(post.args).not.toContain("-execute");
 
     // A `once` fires once: later ticks, the clock advanced again each time, add no row and no post.
     for (const by of [MINUTE, 60 * MINUTE, 24 * 60 * MINUTE]) {

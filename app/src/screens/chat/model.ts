@@ -4,7 +4,7 @@
 // Every kernel string is untrusted data (invariant 3): nothing here builds
 // markup or an `href` from one; the parsers only read the kernel's own fixed
 // phrasing (`retry at <ISO>`, `agent:<id>`).
-import type { ApiResult, Approval, KernelConnectionState, RosterEntry, StudioBridge } from "../../api/contract";
+import type { ApiResult, Approval, KernelConnectionState, RosterEntry, StudioBridge, Trigger } from "../../api/contract";
 import { getBridge } from "../../api/bridge";
 import type { AvatarState } from "../../components/Avatar/Avatar";
 import type { EventKind } from "../../components/EventCard/EventCard";
@@ -94,10 +94,10 @@ export function chipFor(state: AvatarState): { readonly dot: StatusState; readon
 
 // ---- thread items -------------------------------------------------------------------------
 
-/** A thread event's kind on EventCard's six (`trigger_fired` reads as a playbook line). */
+/** A thread event's kind on EventCard's six (`trigger_fired` and `trigger_registered` read as a playbook line). */
 export function eventKindOf(kind: string): EventKind {
   if (kind === "session_status" || kind.startsWith("session_")) return "session";
-  if (kind.startsWith("playbook_") || kind === "trigger_fired") return "playbook";
+  if (kind.startsWith("playbook_") || kind === "trigger_fired" || kind === "trigger_registered") return "playbook";
   if (kind.startsWith("agent_")) return "agent";
   if (kind.startsWith("approval_")) return "approval";
   return "hook";
@@ -134,6 +134,42 @@ export function refId(ref: unknown, field: string): number | undefined {
   const value = (ref as Record<string, unknown>)[field];
   const n = typeof value === "string" && /^[1-9][0-9]*$/.test(value) ? Number(value) : value;
   return typeof n === "number" && Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
+
+// ---- triggers ------------------------------------------------------------------------------
+
+/**
+ * A trigger's schedule in words. `spec` is `unknown` and untrusted: it is read
+ * by type checks only. `{at}` reads `once at <when>`, `{cron, tz}` reads
+ * `cron <cron> (<tz>)`, and anything else reads as the trigger's kind alone.
+ */
+export function triggerSchedule(trigger: Trigger): string {
+  const spec = trigger.spec;
+  if (typeof spec === "object" && spec !== null) {
+    const { at, cron, tz } = spec as { readonly at?: unknown; readonly cron?: unknown; readonly tz?: unknown };
+    if (typeof at === "string") return `once at ${when(at)}`;
+    if (typeof cron === "string" && typeof tz === "string") return `cron ${cron} (${tz})`;
+  }
+  return trigger.kind;
+}
+
+export type TriggerState = "on" | "off" | "spent";
+
+/**
+ * A trigger's state: `on`, `off`, or `spent` (a `once` that is off because its
+ * instant came: fired, or recorded as a miss). It mirrors the kernel's
+ * `spentOnce` (kernel/src/triggers/store.ts) as far as `GET /triggers` lets the
+ * app see: an off `once` nobody ever toggled, or one that fired after its
+ * newest toggle, is spent. The kernel also reads the newest `trigger_toggled`
+ * event, which the row does not carry, so a `once` someone turned on that was
+ * then missed (not fired) reads `off` here, though the kernel counts it spent.
+ */
+export function triggerState(trigger: Trigger): TriggerState {
+  if (trigger.enabled) return "on";
+  if (trigger.kind !== "once") return "off";
+  if (trigger.enabled_changed_by === null) return "spent";
+  if (trigger.last_fired_at !== null && trigger.enabled_changed_at !== null && Date.parse(trigger.last_fired_at) > Date.parse(trigger.enabled_changed_at)) return "spent";
+  return "off";
 }
 
 // ---- time --------------------------------------------------------------------------------
