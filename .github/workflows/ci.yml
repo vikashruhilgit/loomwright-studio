@@ -93,8 +93,10 @@ jobs:
 
   # The desktop app (app/): install, typecheck, unit tests, build, then the
   # Playwright Electron smoke under xvfb. A sibling of `ci`, not a step in it,
-  # so the required check keeps its name. Tests use the fixture kernel: no
-  # token, no Keychain, no real kernel.
+  # so the required check keeps its name. Most specs use the fixture kernel;
+  # one (e2e/phase-5-exit.spec.ts) runs a real kernel in-process, in the
+  # Playwright worker, with stand-in sessions, so the job installs kernel/ too.
+  # Still no token, no Keychain and no real SDK.
   app:
     runs-on: ubuntu-latest
     steps:
@@ -107,11 +109,20 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: app/package-lock.json
+          cache-dependency-path: |
+            app/package-lock.json
+            kernel/package-lock.json
 
       - name: Install (app)
         if: hashFiles('app/package.json') != ''
         working-directory: app
+        run: npm ci
+
+      # The real-kernel e2e (and the app typecheck, which covers e2e/) imports
+      # kernel/src and kernel/test, whose packages resolve from kernel/node_modules.
+      - name: Install (kernel, for app e2e)
+        if: hashFiles('app/package.json') != ''
+        working-directory: kernel
         run: npm ci
 
       - name: Typecheck (app)
