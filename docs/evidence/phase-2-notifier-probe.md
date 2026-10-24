@@ -192,3 +192,5 @@ Run `studio service install`, record one notification through an agent's `kernel
 ```
 
 If the click does not open Terminal, the row still says `delivered` (the post succeeded), and `studio notifications show <id>` and the deep link still work. What to change next is the owner's decision.
+
+**Superseded click (2026-10-24, PR #126):** the Terminal click this section asks about was replaced by `-open loomwright-studio://notifications/<id>`: a click now opens Loomwright Studio on the notification's deep link, not Terminal. That click is checked by the phase 5 runbook's `notification_click_opened_thread` ([phase 5 exit runbook](phase-5-exit-runbook.md)), not here.

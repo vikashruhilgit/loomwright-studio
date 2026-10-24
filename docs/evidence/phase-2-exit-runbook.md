@@ -77,6 +77,8 @@ What only you can see, at the reminder's minute:
 - Click it. Did Terminal open and run `studio notifications show <id>`? Paste what Terminal printed.
 - Any permission prompt (notifications, Automation for Terminal), and what you chose.
 
+The two Terminal bullets above describe the phase-2-era click, which the 2026-10-16 run recorded. Since PR #126 the click opens the notification's deep link in Loomwright Studio.app (`-open`), runs no shell and asks for no Automation permission; the phase 5 runbook's `notification_click_opened_thread` checks it ([phase 5 exit runbook](phase-5-exit-runbook.md)). On a rerun of this runbook, record whether the click brought the app forward, in `click_opened_terminal` (the field keeps its phase 2 name) with a line in `findings`.
+
 ## Step 2: the literal sentence, at 17:00 (owner only)
 
 Run this before 16:59 local time on the day of the run:
@@ -161,6 +163,8 @@ Commit `docs/evidence/phase-2-exit-live-<YYYY-MM-DD>.json` on this PR's branch, 
 ```
 
 A failed step keeps `"outcome": "failed"` and its `findings` (what was seen, and the new item's file name).
+
+Step 1's `click_opened_terminal` records the phase-2-era Terminal click. The click is now `-open <deep link>` (PR #126), checked by the phase 5 runbook's `notification_click_opened_thread`; see the note under step 1.
 
 ## Marking phase 2 done
 
