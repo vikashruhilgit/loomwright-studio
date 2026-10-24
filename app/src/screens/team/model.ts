@@ -143,12 +143,12 @@ export const TASK_UNAVAILABLE = "status unavailable";
  * Working and idle come from the sessions, never from a message's status
  * alone: the kernel can leave a brain message `running` after its session
  * ended (a reply that was never written back), and that row must not read as
- * work. The app reads the default `GET /sessions`, which answers its newest
- * rows only (50 by default); a live session is among the newest in practice,
- * so an older one is not looked for. `GET /sessions?status=<one status>`
- * already exists (no kernel change needed) but is not used yet; since it
- * filters a single status, closing the gap means one read per live status
- * (`starting`, `running`), a recorded follow-up.
+ * work. The sessions list is the default `GET /sessions`, its newest 50 rows,
+ * so a live session older than 50 newer ones reads idle. `GET /status`
+ * already lists every live (`starting`/`running`) session with no limit, and
+ * the app already reads it as the `status` resource on the same events; the
+ * recorded follow-up is to take the live set from `status.sessions` (no
+ * kernel or contract change).
  *
  * A list is `undefined` when it was not read (loading or refused). A state is
  * shown only when the lists it depends on were read: waiting needs the
