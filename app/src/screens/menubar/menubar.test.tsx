@@ -5,7 +5,8 @@
 // each notification lands (`./links.ts`), the one toast for a link that opens
 // nothing, the four Kernel commands and their `enabled`, the kill confirm
 // (Cancel and Escape send nothing, Confirm sends one `POST /stop-all`), and
-// the status panel's designed states.
+// the status panel's designed states, and its Recent list (the newest
+// notifications, each opened through the host's queue as a link is).
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiRequest, ApiResult, Approval, NotificationRow, StatusBody, StudioBridge } from "../../api/contract";
@@ -29,7 +30,7 @@ import {
   createNavigateQueue,
 } from "./MenubarHost";
 import type { KernelAction, MenubarActions, NavigateQueue } from "./MenubarHost";
-import { MenubarPanel, TRAY_ONLY_NOTE } from "./MenubarPanel";
+import { MenubarPanel, RECENT_EMPTY_TEXT, RECENT_LIMIT, TRAY_ONLY_NOTE, ageText, recentItem } from "./MenubarPanel";
 
 // ---- fixtures ------------------------------------------------------------------------------
 
@@ -78,7 +79,7 @@ function approval(id: number): Approval {
   };
 }
 
-function notification(id: number, source: string, title: string): NotificationRow {
+function notification(id: number, source: string, title: string, delivery_status = "delivered"): NotificationRow {
   return {
     id,
     source,
@@ -86,7 +87,7 @@ function notification(id: number, source: string, title: string): NotificationRo
     body: "",
     deep_link: `loomwright-studio://notifications/${id}`,
     created_at: "2026-10-23T08:00:00.000Z",
-    delivery_status: "delivered",
+    delivery_status,
     delivery_detail: null,
     delivered_at: null,
   };
@@ -125,6 +126,8 @@ async function mount(initial: Partial<Kernel> = {}, options: { readonly panel?: 
   const fake = fakeBridge();
   fake.route("GET /status", () => ok(kernel.status));
   fake.route("GET /approvals", () => ok({ approvals: [...kernel.approvals] }));
+  // The kernel's list: newest first (`ORDER BY id DESC`), at most 50 by default.
+  fake.route("GET /notifications", () => ok({ notifications: [...kernel.notifications.values()].sort((a, b) => b.id - a.id).slice(0, 50) }));
   fake.route("GET /notifications/:id", (req) => {
     const row = kernel.notifications.get(Number(req.params?.id));
     return row === undefined ? { ok: false, status: 404, body: { error: "not_found" } } : ok({ notification: row });
@@ -159,7 +162,7 @@ async function mount(initial: Partial<Kernel> = {}, options: { readonly panel?: 
       </aside>
       {options.panel === false ? null : (
         <main>
-          <MenubarPanel actions={actions} />
+          <MenubarPanel actions={actions} queue={queue} />
         </main>
       )}
     </>,
@@ -803,5 +806,218 @@ describe("the status panel", () => {
     });
     await waitFor(() => expect(screen.getByTestId("menubar-stale")).toBeTruthy());
     expect(screen.getByTestId("menubar-meta").textContent).toContain("2 waiting on you");
+  });
+});
+
+// ---- the Recent list -----------------------------------------------------------------------
+
+/** `minutes` before now, as the kernel writes a time. */
+function minutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000).toISOString();
+}
+
+/** The Recent rows on screen, top to bottom. */
+function recentRows(): HTMLElement[] {
+  return within(screen.getByTestId("menubar-recent")).queryAllByRole("option");
+}
+
+function rowKeys(): (string | undefined)[] {
+  return recentRows().map((row) => row.dataset.key);
+}
+
+/** Notifications #1..#n, each `n - id` minutes old (the newest is #n). */
+function manyNotifications(n: number): Map<number, NotificationRow> {
+  return new Map(Array.from({ length: n }, (_, i) => i + 1).map((id) => [id, { ...notification(id, "agent:pim", `Note ${id}`), created_at: minutesAgo(n - id) }]));
+}
+
+describe("the Recent list", () => {
+  it("AC1: three notifications show newest first, each with its title, its age and its delivery status", async () => {
+    await mount({
+      notifications: new Map([
+        [1, { ...notification(1, "agent:pim", "PR #412 reviewed"), created_at: minutesAgo(90), delivered_at: "2026-10-23T08:00:02.000Z" }],
+        [2, { ...notification(2, "trigger:4", "Playbook fired", "unsupported"), created_at: minutesAgo(5), delivery_detail: "no click-capable notifier: posted without a click action" }],
+        [3, { ...notification(3, APPROVAL_SOURCE, "Approval 3: Bash", "failed"), created_at: minutesAgo(0) }],
+      ]),
+    });
+    await waitFor(() => expect(recentRows()).toHaveLength(3));
+    expect(rowKeys()).toEqual(["3", "2", "1"]);
+    const [failed, unsupported, delivered] = recentRows() as [HTMLElement, HTMLElement, HTMLElement];
+    expect(failed.querySelector(".list-subject")?.textContent).toBe("Approval 3: Bash");
+    expect(failed.querySelector(".list-aside")?.textContent).toBe("just now");
+    expect(within(failed).getByRole("img", { name: "failed" }).dataset.state).toBe("failed");
+    expect(failed.querySelector(".list-meta")?.textContent).toBe("failed");
+    expect(unsupported.querySelector(".list-subject")?.textContent).toBe("Playbook fired");
+    expect(unsupported.querySelector(".list-aside")?.textContent).toBe("5m ago");
+    expect(within(unsupported).getByRole("img", { name: "unsupported" }).dataset.state).toBe("paused");
+    expect(unsupported.querySelector(".list-meta")?.textContent).toBe("unsupported · no click-capable notifier: posted without a click action");
+    expect(delivered.querySelector(".list-subject")?.textContent).toBe("PR #412 reviewed");
+    expect(delivered.querySelector(".list-aside")?.textContent).toBe("1h ago");
+    // Delivered is at rest: the idle dot, its word in the meta line, and no "verified" text beside the dot.
+    expect(within(delivered).getByRole("img", { name: "delivered" }).dataset.state).toBe("idle");
+    expect(delivered.querySelector(".list-meta")?.textContent).toBe("delivered");
+    expect(delivered.querySelector(".status-meta")).toBeNull();
+    // No row is an action button the panel's focus hand-off would walk.
+    for (const row of recentRows()) expect(row.hasAttribute("data-action")).toBe(false);
+  });
+
+  it("AC2: opening an approval's notification by click makes one GET /notifications/7, lands on #/approvals/7, and sends no POST", async () => {
+    const m = await mount({ notifications: new Map([[7, notification(7, APPROVAL_SOURCE, "Approval 7: Bash")]]) });
+    await waitFor(() => expect(recentRows()).toHaveLength(1));
+    const from = m.fake.requests.length;
+    fireEvent.click(recentRows()[0] as HTMLElement);
+    await waitFor(() => expect(window.location.hash).toBe("#/approvals/7"));
+    await settle();
+    expect(requestsAfter(m.fake, from).filter((r) => r.path === "/notifications/:id")).toEqual([{ method: "GET", path: "/notifications/:id", params: { id: 7 } }]);
+    expect(posts(m.fake)).toEqual([]);
+    expect(toasts()).toEqual([]);
+  });
+
+  it("AC2: opening by keyboard (arrow to the row, Enter) lands where the deep link does, with one GET /notifications/7", async () => {
+    const m = await mount({
+      notifications: new Map([
+        [7, notification(7, APPROVAL_SOURCE, "Approval 7: Bash")],
+        [8, notification(8, "agent:pim", "PR #412 reviewed")],
+      ]),
+    });
+    await waitFor(() => expect(rowKeys()).toEqual(["8", "7"]));
+    const from = m.fake.requests.length;
+    const first = recentRows()[0] as HTMLElement;
+    expect(first.tabIndex).toBe(0);
+    act(() => first.focus());
+    // Nothing is selected yet: the List's first ArrowDown selects the first row, the second moves to #7.
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    await waitFor(() => expect(first.getAttribute("aria-selected")).toBe("true"));
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    const seventh = recentRows()[1] as HTMLElement;
+    await waitFor(() => expect(document.activeElement).toBe(seventh));
+    fireEvent.keyDown(seventh, { key: "Enter" });
+    await waitFor(() => expect(window.location.hash).toBe("#/approvals/7"));
+    await settle();
+    expect(requestsAfter(m.fake, from).filter((r) => r.path === "/notifications/:id")).toEqual([{ method: "GET", path: "/notifications/:id", params: { id: 7 } }]);
+    expect(posts(m.fake)).toEqual([]);
+
+    // The same as the link: a fresh mount, the route as the main process sends it.
+    cleanup();
+    window.location.hash = "";
+    const link = await mount({ notifications: new Map([[7, notification(7, APPROVAL_SOURCE, "Approval 7: Bash")]]) }, { panel: false });
+    const linkFrom = link.fake.requests.length;
+    link.navigate("notification/7");
+    await waitFor(() => expect(window.location.hash).toBe("#/approvals/7"));
+    expect(requestsAfter(link.fake, linkFrom)).toEqual([{ method: "GET", path: "/notifications/:id", params: { id: 7 } }]);
+  });
+
+  it("a row opens only through the queue: the panel's queue receives notification/<id>, and nothing else is requested", async () => {
+    const m = await mount({ notifications: new Map([[3, notification(3, "agent:pim", "PR #412 reviewed")]]) });
+    await waitFor(() => expect(recentRows()).toHaveLength(1));
+    const received = vi.spyOn(m.queue, "receive");
+    fireEvent.click(recentRows()[0] as HTMLElement);
+    expect(received.mock.calls).toEqual([["notification/3"]]);
+    await waitFor(() => expect(window.location.hash).toBe("#/chat/pim"));
+  });
+
+  it("AC3: an empty list shows No notifications yet and no row", async () => {
+    await mount({ notifications: new Map() });
+    await waitFor(() => expect(within(screen.getByTestId("menubar-recent")).getByText("No notifications yet")).toBeTruthy());
+    expect(RECENT_EMPTY_TEXT).toBe("No notifications yet");
+    expect(recentRows()).toEqual([]);
+  });
+
+  it("AC4: a notification_created event adds the new row at the top, without a remount of the rows already shown", async () => {
+    const m = await mount({ notifications: manyNotifications(3) });
+    await waitFor(() => expect(rowKeys()).toEqual(["3", "2", "1"]));
+    // The feed's first frame makes the store live, which refetches every resource; only then is a refetch the event's own.
+    act(() => m.fake.emit({ type: "event", id: 1, at: "2026-10-23T09:00:00.000Z", kind: "event_done", session_id: null, task_id: null, payload: {} }));
+    await settle();
+    await act(async () => new Promise((done) => setTimeout(done, 300)));
+    const before = recentRows();
+    const reads = m.fake.requestsTo("GET /notifications").length;
+    m.kernel.notifications.set(4, { ...notification(4, APPROVAL_SOURCE, "Approval 4: Bash"), created_at: minutesAgo(0) });
+    act(() => m.fake.emit({ type: "event", id: 2, at: "2026-10-23T09:00:01.000Z", kind: "notification_created", session_id: null, task_id: null, payload: {} }));
+    await waitFor(() => expect(m.fake.requestsTo("GET /notifications").length).toBeGreaterThan(reads));
+    await waitFor(() => expect(rowKeys()).toEqual(["4", "3", "2", "1"]));
+    // The same nodes: React kept the rows (keyed by id), so the List's scroll anchoring has its anchor.
+    expect(recentRows().slice(1)).toEqual(before);
+  });
+
+  it(`AC5: more than ${RECENT_LIMIT} notifications show exactly the newest ${RECENT_LIMIT}`, async () => {
+    await mount({ notifications: manyNotifications(25) });
+    await waitFor(() => expect(recentRows()).toHaveLength(RECENT_LIMIT));
+    expect(rowKeys()).toEqual(Array.from({ length: RECENT_LIMIT }, (_, i) => String(25 - i)));
+    // The rows sit in the List's own scroll container, which menubar.css bounds.
+    expect(recentRows()[0]?.closest(".list")?.classList.contains("menubar-recent-list")).toBe(true);
+  });
+
+  it("AC6: while GET /notifications has not answered, skeleton rows show and never a spinner; the panel's state is the status read's", async () => {
+    const m = await mount({}, { panel: false });
+    m.fake.route("GET /notifications", () => new Promise<never>(() => undefined));
+    render(<MenubarPanel actions={m.actions} queue={m.queue} />);
+    await settle();
+    expect(panelState()).toBe("idle");
+    const recent = screen.getByTestId("menubar-recent");
+    await waitFor(() => expect(recent.querySelectorAll(".list-skeleton").length).toBeGreaterThan(0));
+    expect(recent.querySelector('[aria-busy="true"]')).not.toBeNull();
+    expect(recent.querySelector(".btn-spinner, [role='progressbar']")).toBeNull();
+    expect(recentRows()).toEqual([]);
+    expect(within(recent).queryByText(RECENT_EMPTY_TEXT)).toBeNull();
+  });
+
+  it("AC6: with the kernel unreachable the panel shows its error view, and no row is invented", async () => {
+    const fake = fakeBridge({ state: "unreachable", reason: "connection_failed" });
+    fake.route("GET /status", () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } }));
+    fake.route("GET /notifications", () => ok({ notifications: [notification(7, APPROVAL_SOURCE, "Approval 7: Bash")] }));
+    setApi(fake.bridge);
+    render(<MenubarPanel actions={createMenubarActions()} queue={createNavigateQueue()} />);
+    await waitFor(() => expect(panelState()).toBe("error"));
+    await settle();
+    expect(screen.getByTestId("menubar-error")).toBeTruthy();
+    expect(screen.queryByTestId("menubar-recent")).toBeNull();
+    expect(screen.queryAllByRole("option")).toEqual([]);
+  });
+
+  it("AC10: a failed GET /notifications shows Recent's own line; the panel's state is the status read's and it is not stale", async () => {
+    const m = await mount({ approvals: [approval(1)] }, { panel: false });
+    m.fake.route("GET /notifications", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    render(<MenubarPanel actions={m.actions} queue={m.queue} />);
+    await waitFor(() => expect(screen.getByTestId("menubar-recent-error")).toBeTruthy());
+    expect(screen.getByTestId("menubar-recent-error").textContent).toContain("Couldn't read the notifications.");
+    expect(screen.getByTestId("menubar-recent-error").textContent).toContain("500 internal");
+    expect(panelState()).toBe("waiting");
+    expect(screen.queryByTestId("menubar-stale")).toBeNull();
+    expect(recentRows()).toEqual([]);
+  });
+
+  it("AC10: a failed refetch after a good one keeps the rows read, says so, and leaves the panel's stale line alone", async () => {
+    const m = await mount({ notifications: manyNotifications(2) });
+    await waitFor(() => expect(recentRows()).toHaveLength(2));
+    m.fake.route("GET /notifications", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    await act(async () => {
+      liveStoreFor((window as unknown as { api: StudioBridge }).api).refetch("notifications");
+    });
+    await waitFor(() => expect(screen.getByTestId("menubar-recent-error").textContent).toContain("the latest read failed"));
+    expect(recentRows()).toHaveLength(2);
+    expect(panelState()).toBe("idle");
+    expect(screen.queryByTestId("menubar-stale")).toBeNull();
+  });
+
+  it("kernel text in a row is escaped; a status outside the closed set shows its word on an idle dot", () => {
+    const item = recentItem({ ...notification(5, "agent:pim", "bad\u001b[31m title", "bounced\u0007"), delivery_detail: "why\u001b" }, Date.now());
+    expect(item.subject).toBe("bad\\x1b[31m title");
+    expect(item.status).toBe("idle");
+    expect(item.statusLabel).toBe("bounced\\x07");
+    expect(item.meta).toBe("bounced\\x07 · why\\x1b");
+    // No row is an `ok` dot, so none carries StatusDot's "verified" text in the status column.
+    expect(recentItem({ ...notification(6, "agent:pim", "x"), delivered_at: "2026-10-23T08:00:02.000Z" }, Date.now()).verified).toBeUndefined();
+  });
+
+  it("ageText: just now, minutes, hours, days; a clock behind the kernel is just now; not a time is a dash", () => {
+    const now = Date.parse("2026-10-24T12:00:00.000Z");
+    expect(ageText("2026-10-24T11:59:30.000Z", now)).toBe("just now");
+    expect(ageText("2026-10-24T12:05:00.000Z", now)).toBe("just now");
+    expect(ageText("2026-10-24T11:59:00.000Z", now)).toBe("1m ago");
+    expect(ageText("2026-10-24T11:00:01.000Z", now)).toBe("59m ago");
+    expect(ageText("2026-10-24T11:00:00.000Z", now)).toBe("1h ago");
+    expect(ageText("2026-10-23T12:00:01.000Z", now)).toBe("23h ago");
+    expect(ageText("2026-10-23T12:00:00.000Z", now)).toBe("1d ago");
+    expect(ageText("not a time", now)).toBe("—");
   });
 });

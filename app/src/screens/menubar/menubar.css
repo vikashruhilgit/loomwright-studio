@@ -147,3 +147,25 @@
   line-height: var(--type-caption-line);
   font-weight: var(--type-caption-weight);
 }
+
+/* Recent: the newest notifications, newest first. The List is its own scroll container, at most five and a half
+   data rows tall (the half row shows there is more), so up to 20 rows never grow the panel past the window, and once
+   the list fills that height a new row changes nothing else's place (the List's scroll anchoring keeps the rows on
+   screen where they were). 44px is the List's data row height (List.css); no token names it. */
+.menubar-recent {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.menubar-recent > .menubar-heading {
+  padding-bottom: var(--space-1);
+}
+.menubar-recent-list {
+  max-height: calc(44px * 5.5);
+}
+.menubar-recent-list .list-empty {
+  padding: var(--space-1) var(--space-3) var(--space-2);
+}
+.menubar-recent-line {
+  padding: var(--space-1) var(--space-3);
+}

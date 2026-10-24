@@ -7,22 +7,33 @@
 // - Approvals with the pending count (-> `#/approvals`);
 // - Pause all / Unpause, Kill switch… (the confirm, through the host) and
 //   Resume, enabled by the same rules as the ⌘K commands (`actionEnabled`);
+// - Recent: the newest `RECENT_LIMIT` notifications of `GET /notifications`
+//   (the kernel's order, newest first), each with its title, its age and its
+//   delivery status; opening a row (click, or arrow to it and Enter) hands
+//   `notification/<id>` to the host's navigate queue, so the host makes the one
+//   `GET /notifications/:id` and maps it through `./links.ts` exactly as for a
+//   clicked `loomwright-studio://` link. The panel never maps a notification
+//   itself. A failed list read is the section's own line: it never changes
+//   the panel's state or its stale line, which read only status and approvals;
 // - one line saying Open and Quit live in the menu-bar icon's menu.
 //
 // The state shown is only what the kernel said: an action's answer never
 // changes it; the next `GET /status` does. The shell renders the title bar's
 // `<h1>` and, while the kernel is unreachable, its band above this panel.
-import { useId, useLayoutEffect, useRef } from "react";
-import type { StatusBody, StudioBridge } from "../../api/contract";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { NotificationRow, StatusBody, StudioBridge } from "../../api/contract";
 import { CountPill } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
+import { List } from "../../components/List/List";
+import type { ListDataItem } from "../../components/List/List";
 import { StatusDot } from "../../components/StatusDot/StatusDot";
+import type { StatusState } from "../../components/StatusDot/StatusDot";
 import { useResource } from "../../store/react";
 import type { ResourceError } from "../../store/store";
 import { printable } from "../approvals/printable";
-import { actionEnabled, menubarActions, useMenubarActions } from "./MenubarHost";
-import type { KernelAction, MenubarActions } from "./MenubarHost";
-import { CAP_REJECTED_STATUS, MENUBAR_DOTS, MENUBAR_WORDS, menubarState } from "./state";
+import { actionEnabled, menubarActions, navigateQueue, useMenubarActions } from "./MenubarHost";
+import type { KernelAction, MenubarActions, NavigateQueue } from "./MenubarHost";
+import { CAP_REJECTED_STATUS, MENUBAR_DOTS, MENUBAR_WORDS, menubarState, notificationRoute } from "./state";
 import type { MenubarState } from "./state";
 import "./menubar.css";
 
@@ -31,13 +42,70 @@ export const TRAY_ONLY_NOTE = "Open and Quit are in the menu-bar icon's menu; qu
 
 export type PanelView = "no-bridge" | "loading" | "error" | MenubarState;
 
+/** How many notifications Recent shows. The kernel's list answers up to 50 by default, so the cap is the panel's. */
+export const RECENT_LIMIT = 20;
+
+/** Recent's words when the kernel has no notification. */
+export const RECENT_EMPTY_TEXT = "No notifications yet";
+
+/** The kernel's closed set of delivery statuses (`NOTIFICATION_STATUSES` in `kernel/src/notifications/record.ts`, pinned by `kernel-mirror.test.ts`). */
+export type DeliveryStatus = "pending" | "delivered" | "failed" | "unsupported";
+
+/**
+ * Each delivery status's dot; the status word is always the meta line and the
+ * dot's accessible name. `failed` is a failure; `unsupported` (not posted, or
+ * posted with no click action) is parked, not failed; `delivered` and
+ * `pending` are at rest. Not `ok` for `delivered`: a verified `ok` puts
+ * StatusDot's "· verified <time>" beside the dot, which pushes that row's
+ * title out of line with every other row's in the List's status column.
+ */
+export const DELIVERY_DOTS: Readonly<Record<DeliveryStatus, StatusState>> = Object.freeze({
+  pending: "idle",
+  delivered: "idle",
+  failed: "failed",
+  unsupported: "paused",
+});
+
+function isDeliveryStatus(status: string): status is DeliveryStatus {
+  return Object.hasOwn(DELIVERY_DOTS, status);
+}
+
+/** A notification's age at `now`: `just now`, `5m ago`, `3h ago`, `2d ago`; `—` for a value that is not a time. */
+export function ageText(iso: string, now: number): string {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return "—";
+  // A clock behind the kernel's reads as just now, never as a negative age.
+  const minutes = Math.floor(Math.max(0, now - at) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** One Recent row: the title as subject, the delivery status (and the kernel's detail) as meta, the age aside. Kernel text through `printable`. */
+export function recentItem(row: NotificationRow, now: number): ListDataItem {
+  const word = printable(row.delivery_status);
+  return {
+    kind: "data",
+    key: String(row.id),
+    status: isDeliveryStatus(row.delivery_status) ? DELIVERY_DOTS[row.delivery_status] : "idle",
+    statusLabel: word,
+    subject: printable(row.title),
+    meta: row.delivery_detail === null || row.delivery_detail === "" ? word : `${word} · ${printable(row.delivery_detail)}`,
+    aside: ageText(row.created_at, now),
+  };
+}
+
 export interface MenubarPanelProps {
   /** Defaults to the window's one set of actions (the host renders their confirm and toasts). */
   readonly actions?: MenubarActions;
+  /** Where an opened Recent row goes: defaults to the window's one queue, which the host drains (as for a clicked link). */
+  readonly queue?: NavigateQueue;
 }
 
 /** The screen. Reads `window.api` defensively: the shell does not pass the bridge to screens. */
-export function MenubarPanel({ actions = menubarActions }: MenubarPanelProps) {
+export function MenubarPanel({ actions = menubarActions, queue = navigateQueue }: MenubarPanelProps) {
   const api = (window as unknown as { api?: StudioBridge }).api;
   if (api === undefined) {
     return (
@@ -46,7 +114,7 @@ export function MenubarPanel({ actions = menubarActions }: MenubarPanelProps) {
       </div>
     );
   }
-  return <Panel api={api} actions={actions} />;
+  return <Panel api={api} actions={actions} queue={queue} />;
 }
 
 /** `HH:MM` in the owner's locale, or `undefined` for a value that is not a time. */
@@ -72,7 +140,58 @@ function errorText(error: ResourceError): string {
   return `The kernel refused the read (${error.status} ${printable(String(error.body.error))})${message}.`;
 }
 
-function Panel({ api, actions }: { readonly api: StudioBridge; readonly actions: MenubarActions }) {
+/** A clock that ticks every 30 s, so a row's age moves while the panel is open. */
+function useNow(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return now;
+}
+
+/**
+ * The Recent section. Its read is its own: loading shows the List's skeleton
+ * rows, a failed read its own line, and neither touches the panel's state.
+ */
+function Recent({ api, queue }: { readonly api: StudioBridge; readonly queue: NavigateQueue }) {
+  const notifications = useResource("notifications", api);
+  const now = useNow();
+  const headingId = useId();
+  const data = notifications?.data;
+  const error = notifications?.error;
+  const items = useMemo(() => (data?.notifications ?? []).slice(0, RECENT_LIMIT).map((row) => recentItem(row, now)), [data, now]);
+  return (
+    <section className="menubar-recent" aria-labelledby={headingId} data-testid="menubar-recent">
+      <h3 className="menubar-heading" id={headingId}>
+        Recent
+      </h3>
+      {data === undefined && error !== undefined ? (
+        <p className="menubar-meta menubar-recent-line" role="status" data-testid="menubar-recent-error">
+          Couldn't read the notifications. {errorText(error)}
+        </p>
+      ) : (
+        <List
+          className="menubar-recent-list"
+          label="Recent notifications, newest first"
+          items={items}
+          loading={data === undefined}
+          emptyText={RECENT_EMPTY_TEXT}
+          // The host's own path for a link: one GET /notifications/:id, then `linkTarget`. The queue drops the same
+          // route again within ROUTE_DEDUPE_MS, so a second open of one row inside 2 s does nothing (the first navigated).
+          onOpen={(item) => queue.receive(notificationRoute(Number(item.key)))}
+        />
+      )}
+      {data !== undefined && error !== undefined ? (
+        <p className="menubar-meta menubar-recent-line" role="status" data-testid="menubar-recent-error">
+          These are the last notifications the kernel listed; the latest read failed.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function Panel({ api, actions, queue }: { readonly api: StudioBridge; readonly actions: MenubarActions; readonly queue: NavigateQueue }) {
   const status = useResource("status", api);
   const approvals = useResource("approvals", api);
   const snapshot = useMenubarActions(actions);
@@ -208,6 +327,8 @@ function Panel({ api, actions }: { readonly api: StudioBridge; readonly actions:
             {snapshot.lastFailure.text}
           </p>
         )}
+        <hr className="menubar-rule" />
+        <Recent api={api} queue={queue} />
         <hr className="menubar-rule" />
         <p className="menubar-note">{TRAY_ONLY_NOTE}</p>
       </section>
