@@ -566,6 +566,13 @@ test("AC4 + AC5 (Recent): of 25 notifications 20 rows show and scroll inside the
   expect(shownRow?.y ?? -1, "row #26 is in the list's view").toBeGreaterThanOrEqual((listBox?.y ?? 0) - 1);
   await expect(newRow).toBeFocused();
   expect((await card.boundingBox())?.height).toBe(cardBefore?.height);
+  // The row is the List's selection too (its one Tab stop), so the arrow keys continue from it; selecting it scrolled nothing back and opened nothing.
+  await expect(newRow).toHaveAttribute("aria-selected", "true");
+  await expect(newRow).toHaveAttribute("tabindex", "0");
+  expect(await list.evaluate((el) => el.scrollTop)).toBe(0);
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByTestId("menubar-recent").locator('[role="option"][data-key="25"]')).toBeFocused();
+  expect(started.requests.filter((r) => r.path.startsWith("/notifications/"))).toEqual([]);
 });
 
 // ---- evidence ------------------------------------------------------------------------------

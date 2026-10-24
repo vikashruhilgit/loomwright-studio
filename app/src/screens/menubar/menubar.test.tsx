@@ -1049,6 +1049,121 @@ describe("the Recent list", () => {
     expect(recentRows()[0]?.dataset.key).toBe("7");
   });
 
+  /** The Recent row with id `key`. */
+  function row(key: string): HTMLElement {
+    return recentRows().find((r) => r.dataset.key === key) as HTMLElement;
+  }
+
+  /** Focus the first row and arrow down until `key` is selected, as the owner does. */
+  async function arrowTo(key: string): Promise<void> {
+    const first = recentRows()[0] as HTMLElement;
+    act(() => first.focus());
+    for (let i = 0; i < recentRows().length && row(key).getAttribute("aria-selected") !== "true"; i += 1) {
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: "ArrowDown" });
+      await settle();
+    }
+    expect(document.activeElement).toBe(row(key));
+    expect(row(key).getAttribute("aria-selected")).toBe("true");
+  }
+
+  /** The newest row holds focus, the selection and the only Tab stop, and ArrowDown steps from it, with no row opened. */
+  async function expectNewestSelected(m: Mounted, newest: string, next: string, from: number): Promise<void> {
+    expect(document.activeElement).toBe(row(newest));
+    expect(row(newest).getAttribute("aria-selected")).toBe("true");
+    expect(row(newest).tabIndex).toBe(0);
+    expect(recentRows().filter((r) => r.getAttribute("aria-selected") === "true")).toEqual([row(newest)]);
+    expect(recentRows().filter((r) => r.tabIndex === 0)).toEqual([row(newest)]);
+    fireEvent.keyDown(row(newest), { key: "ArrowDown" });
+    await waitFor(() => expect(document.activeElement).toBe(row(next)));
+    expect(row(next).getAttribute("aria-selected")).toBe("true");
+    // Selecting is not opening: no GET /notifications/:id, no navigation.
+    await settle();
+    expect(requestsAfter(m.fake, from).filter((r) => r.path === "/notifications/:id")).toEqual([]);
+    expect(window.location.hash).not.toMatch(/^#\/(approvals|chat)\//);
+  }
+
+  it("AC4: activating the hint (list scrolled) makes the newest row the List's selection, so ArrowDown continues from it", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { list, scroll } = await liveWithScroll(m, 44);
+    await arrowTo("3");
+    const from = m.fake.requests.length;
+    await arrive(m, 7, 2);
+    // Tab to the hint, Enter: the keyboard path.
+    const hint = (await screen.findByTestId("menubar-recent-new")) as HTMLElement;
+    hint.focus();
+    fireEvent.click(hint);
+    expect(scroll.top).toBe(0);
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    expect(scroll.top).toBe(0);
+    await expectNewestSelected(m, "7", "6", from);
+  });
+
+  it("AC4: activating the hint with the list already at its top makes the newest row the List's selection", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { scroll } = await liveWithScroll(m, 44);
+    await arrowTo("3");
+    const from = m.fake.requests.length;
+    await arrive(m, 7, 2);
+    scroll.top = 0;
+    const hint = (await screen.findByTestId("menubar-recent-new")) as HTMLElement;
+    hint.focus();
+    fireEvent.click(hint);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    await expectNewestSelected(m, "7", "6", from);
+  });
+
+  it("AC4: scrolling to the top with the hint focused makes the newest row the List's selection", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { list, scroll } = await liveWithScroll(m, 44);
+    await arrowTo("3");
+    const from = m.fake.requests.length;
+    await arrive(m, 7, 2);
+    (screen.getByTestId("menubar-recent-new") as HTMLElement).focus();
+    scroll.top = 0;
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    await expectNewestSelected(m, "7", "6", from);
+  });
+
+  it("the owner's own scroll to the top, with focus on a row, leaves the selection where it was", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { list, scroll } = await liveWithScroll(m, 44);
+    await arrowTo("3");
+    await arrive(m, 7, 2);
+    scroll.top = 0;
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    expect(document.activeElement).toBe(row("3"));
+    expect(row("3").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("a selected row that leaves the list leaves one Tab stop: the row focus moved to, else the first row", async () => {
+    const m = await mount({ notifications: manyNotifications(3) });
+    await waitFor(() => expect(recentRows()).toHaveLength(3));
+    await liveWithScroll(m, 0);
+    // Focused and selected #1 leaves: the List moves focus to #2, which becomes the selection.
+    await arrowTo("1");
+    m.kernel.notifications.delete(1);
+    await arrive(m, 4, 2);
+    await waitFor(() => expect(rowKeys()).toEqual(["4", "3", "2"]));
+    await waitFor(() => expect(row("2").getAttribute("aria-selected")).toBe("true"));
+    expect(document.activeElement).toBe(row("2"));
+    expect(recentRows().filter((r) => r.tabIndex === 0)).toEqual([row("2")]);
+    // Selected #2 leaves while focus is elsewhere: nothing is selected, and Tab reaches the first row.
+    screen.getByRole("button", { name: "Pause all" }).focus();
+    m.kernel.notifications.delete(2);
+    await arrive(m, 5, 3);
+    await waitFor(() => expect(rowKeys()).toEqual(["5", "4", "3"]));
+    await settle();
+    expect(recentRows().filter((r) => r.getAttribute("aria-selected") === "true")).toEqual([]);
+    expect(recentRows().filter((r) => r.tabIndex === 0)).toEqual([row("5")]);
+  });
+
   it("AC4: rows arriving into an empty list show no hint, even with the list scrolled", async () => {
     const m = await mount({ notifications: new Map() });
     await waitFor(() => expect(within(screen.getByTestId("menubar-recent")).getByText(RECENT_EMPTY_TEXT)).toBeTruthy());

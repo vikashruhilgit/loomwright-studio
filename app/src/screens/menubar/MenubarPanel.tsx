@@ -18,7 +18,10 @@
 //   A row that arrives while the list is scrolled away from its top lands above
 //   the view (the List's scroll anchoring keeps the rows on screen where they
 //   were), so a "new above" hint floats over the list's top edge (no layout
-//   shift); activating it, or scrolling to the top, shows the row and clears it;
+//   shift); activating it, or scrolling to the top, shows the row and clears it.
+//   Recent holds the List's selection, so the hint's hand-off of focus to the
+//   newest row also selects it (the arrow keys and Tab follow); selecting never
+//   opens a row;
 // - one line saying Open and Quit live in the menu-bar icon's menu.
 //
 // The state shown is only what the kernel said: an action's answer never
@@ -159,6 +162,13 @@ function useNow(): number {
   return now;
 }
 
+/** Focus the list's newest row without scrolling; its key, or `undefined` when the list has no row. */
+function focusNewest(list: HTMLElement): string | undefined {
+  const row = list.querySelector<HTMLElement>('[role="option"]');
+  row?.focus({ preventScroll: true });
+  return row?.dataset.key;
+}
+
 /**
  * The Recent section. Its read is its own: loading shows the List's skeleton
  * rows, a failed read its own line, and neither touches the panel's state.
@@ -173,6 +183,14 @@ function Recent({ api, queue }: { readonly api: StudioBridge; readonly queue: Na
   const prevKeysRef = useRef<readonly string[] | null>(null);
   /** How many rows arrived above the view since the list was last at its top. */
   const [unseen, setUnseen] = useState(0);
+  /**
+   * Recent's selection, held here so the hint's hand-off to the newest row moves the List's roving selection
+   * (its arrow keys step from the selection, and Tab reaches the selected row), not focus alone. Selecting never
+   * opens a row: only the List's `onOpen` (click, Enter) does.
+   */
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  /** Set when the hint scrolled the list to its top: the scroll listener selects the newest row, after the List has re-measured. */
+  const handoffRef = useRef(false);
   const data = notifications?.data;
   const error = notifications?.error;
   const items = useMemo(() => (data?.notifications ?? []).slice(0, RECENT_LIMIT).map((row) => recentItem(row, now)), [data, now]);
@@ -194,6 +212,17 @@ function Recent({ api, queue }: { readonly api: StudioBridge; readonly queue: Na
     if (arrived > 0 && list !== null && list !== undefined && list.scrollTop > 0) setUnseen((count) => count + arrived);
   }, [items]);
 
+  // A selected row that left the list (past the cap, or gone from the kernel's list) is no selection. When the List
+  // re-homed focus to a neighbour (its effect ran first, as a child's), select that row, as an uncontrolled List
+  // does; else select nothing, so Tab reaches the first row. The selection never names a row that is not shown.
+  useLayoutEffect(() => {
+    if (selectedKey === null || items.some((item) => item.key === selectedKey)) return;
+    const focused = document.activeElement;
+    const list = bodyRef.current?.querySelector<HTMLElement>(".menubar-recent-list");
+    const key = focused instanceof HTMLElement && focused.getAttribute("role") === "option" && list?.contains(focused) === true ? focused.dataset.key : undefined;
+    setSelectedKey(key !== undefined && items.some((item) => item.key === key) ? key : null);
+  }, [items, selectedKey]);
+
   // Reaching the top, by the hint or by the owner's own scroll, shows every new row: the hint clears.
   // Scroll does not bubble, so the section listens in the capture phase.
   useEffect(() => {
@@ -202,8 +231,16 @@ function Recent({ api, queue }: { readonly api: StudioBridge; readonly queue: Na
     const onScroll = (event: Event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement) || !target.classList.contains("menubar-recent-list") || target.scrollTop > 0) return;
-      // A hint that holds focus is about to go: focus the newest row, never <body>.
-      if (document.activeElement?.closest(".menubar-recent-new") != null) target.querySelector<HTMLElement>('[role="option"]')?.focus({ preventScroll: true });
+      // The hint scrolled here, or a hint that holds focus is about to go: the newest row takes focus (never <body>)
+      // and the selection. This render is scheduled after this scroll event's dispatch, so the List's onScroll has
+      // re-measured its anchor by then and the commit cannot scroll the rows back.
+      // The hint's hand-off counts only while focus is still on the row it focused (the owner may have moved on).
+      const handoff = handoffRef.current && document.activeElement === target.querySelector('[role="option"]');
+      handoffRef.current = false;
+      if (handoff || document.activeElement?.closest(".menubar-recent-new") != null) {
+        const key = focusNewest(target);
+        if (key !== undefined) setSelectedKey(key);
+      }
       setUnseen(0);
     };
     section.addEventListener("scroll", onScroll, true);
@@ -213,18 +250,20 @@ function Recent({ api, queue }: { readonly api: StudioBridge; readonly queue: Na
   const showNewest = () => {
     const list = bodyRef.current?.querySelector<HTMLElement>(".menubar-recent-list");
     if (list === null || list === undefined || list.scrollTop <= 0) {
-      // Already at the top: no scroll follows, so the hint clears here. It goes under focus: hand focus to the
-      // newest row first, never to <body>. Nothing scrolled, so this commit cannot fight the List's anchoring.
-      list?.querySelector<HTMLElement>('[role="option"]')?.focus({ preventScroll: true });
+      // Already at the top: no scroll follows, so the hint clears here. It goes under focus: hand focus and the
+      // selection to the newest row first, never to <body>. Nothing scrolled, so this commit cannot fight the List's anchoring.
+      const key = list === null || list === undefined ? undefined : focusNewest(list);
+      if (key !== undefined) setSelectedKey(key);
       setUnseen(0);
       return;
     }
     // No state change here: a commit before the List's own scroll handler re-measures its anchor would scroll
-    // the rows straight back. The scroll this causes reaches the listener above, which clears the hint (and its
-    // render is scheduled after this scroll event's dispatch, so the List's onScroll has measured by then).
+    // the rows straight back. The scroll this causes reaches the listener above, which clears the hint and selects
+    // the newest row (its render is scheduled after this scroll event's dispatch, so the List's onScroll has measured by then).
+    handoffRef.current = true;
     list.scrollTop = 0;
-    // The hint is about to go under focus: hand focus to the newest row, never to <body>.
-    list.querySelector<HTMLElement>('[role="option"]')?.focus({ preventScroll: true });
+    // The hint is about to go under focus: hand focus to the newest row now, never to <body>; the listener selects it.
+    focusNewest(list);
   };
   const hinted = Math.min(unseen, items.length);
 
@@ -245,6 +284,8 @@ function Recent({ api, queue }: { readonly api: StudioBridge; readonly queue: Na
             items={items}
             loading={data === undefined}
             emptyText={RECENT_EMPTY_TEXT}
+            selectedKey={selectedKey}
+            onSelect={(item) => setSelectedKey(item.key)}
             // The host's own path for a link: one GET /notifications/:id, then `linkTarget`. The queue drops the same
             // route again within ROUTE_DEDUPE_MS, so a second open of one row inside 2 s does nothing (the first navigated).
             onOpen={(item) => queue.receive(notificationRoute(Number(item.key)))}
