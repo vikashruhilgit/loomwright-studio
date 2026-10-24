@@ -62,3 +62,9 @@ app/src/screens/chat/CrewSection.tsx
 app/src/screens/chat/crew.test.tsx
 app/e2e/team.spec.ts
 app/e2e/fixtures/team.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-24T20:22:46Z
+- **Brief:** .supervisor/jobs/done/2026-10-24-crew-members-are-told-apart-on-screen.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/132
