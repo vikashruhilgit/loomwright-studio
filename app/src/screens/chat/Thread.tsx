@@ -14,6 +14,7 @@ import { EventCard } from "../../components/EventCard/EventCard";
 import { StatusDot } from "../../components/StatusDot/StatusDot";
 import { useResource } from "../../store/react";
 import { threadResource } from "../../store/resources";
+import { sharedNames } from "../team/model";
 import { ApprovalCard, CharterCard, PlaybookCard, TriggerCard } from "./cards";
 import { ChatComposer } from "./ChatComposer";
 import { useHash } from "./CrewSection";
@@ -199,6 +200,8 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   const name = nameOf(roster, agent);
   const entry = roster?.find((a) => a.id === agent);
   const chip = chipFor(agentAvatarState(entry, approvals));
+  // Two agents of the same name: the header shows which one this thread is with.
+  const idShown = sharedNames(roster ?? []).has(agent);
   const data: ThreadResponse | undefined = thread?.data;
   const items = useMemo(() => mergeItems(older?.items ?? [], data?.items ?? []), [older, data]);
   const cursor = older === null ? (data?.next_before ?? null) : older.next;
@@ -401,7 +404,10 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
       }}
     >
       <div className="chat-titlerow">
-        <span className="chat-with">with {name}</span>
+        <span className="chat-with" title={agent}>
+          with {name}
+        </span>
+        {idShown ? <span className="chat-with-id" data-testid="thread-id">{agent}</span> : null}
         <StatusDot state={chip.dot} label={chip.word} />
         <span className="chat-spacer" />
         {isWright ? null : (

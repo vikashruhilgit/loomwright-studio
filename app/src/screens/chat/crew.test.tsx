@@ -80,9 +80,65 @@ describe("crew", () => {
   it("avatar states: off reads killed, a pending approval reads waiting", async () => {
     const k = kit({ roster: [agent("wright"), agent("pim", { status: "off" }), agent("mason")], approvals: [approval(1, { requesting_agent: "mason" })], threads: { wright: thread([]) } });
     await renderChat(k);
-    const pim = await within(crew()).findByRole("button", { name: "Pim" });
+    const pim = await within(crew()).findByRole("button", { name: "Pim, off" });
     await waitFor(() => expect(within(pim).getByRole("img").getAttribute("aria-label")).toContain("killed"));
     await waitFor(() => expect(within(within(crew()).getByRole("button", { name: "Mason" })).getByRole("img").getAttribute("aria-label")).toContain("waiting on you"));
+  });
+
+  it("two members of the same name show their ids, have distinct names, and each row's title is its id", async () => {
+    const k = kit({
+      roster: [
+        agent("wright"),
+        agent("phase4-exit-mvg8wle4cf8f26", { display_name: "Comment-only Reviewer" }),
+        agent("phase5-exit-1024", { display_name: " comment-only reviewer " }),
+        agent("pim"),
+      ],
+      threads: { wright: thread([]) },
+    });
+    await renderChat(k);
+    const old = await within(crew()).findByRole("button", { name: "Comment-only Reviewer (phase4-exit-mvg8wle4cf8f26)" });
+    // The label is "<display name> (<id>)" exactly; the accessible name the browser computes trims the name's spaces.
+    const fresh = within(crew()).getByRole("button", { name: /^comment-only reviewer \(phase5-exit-1024\)$/ });
+    expect(fresh.getAttribute("aria-label")).toBe(" comment-only reviewer  (phase5-exit-1024)");
+    expect(old).not.toBe(fresh);
+    for (const [row, id] of [
+      [old, "phase4-exit-mvg8wle4cf8f26"],
+      [fresh, "phase5-exit-1024"],
+    ] as const) {
+      const shown = within(row).getByTestId("crew-id");
+      expect(shown.textContent).toBe(id);
+      expect(row.querySelector(".chat-crew-name")?.contains(shown)).toBe(false);
+      expect(shown.parentElement?.classList.contains("chat-crew-text")).toBe(true);
+    }
+    const pim = within(crew()).getByRole("button", { name: "Pim" });
+    expect(within(pim).queryByTestId("crew-id")).toBeNull();
+    for (const row of within(crew()).getAllByRole("button")) expect(row.getAttribute("title")).toBe(row.getAttribute("data-agent"));
+  });
+
+  it("off members sort last in the kernel's order, dimmed, saying off, and still open their thread", async () => {
+    const k = kit({
+      roster: [agent("wright"), agent("offa", { status: "off" }), agent("b"), agent("offc", { status: "off" }), agent("d")],
+      threads: { wright: thread([]), offa: thread([]) },
+    });
+    await renderChat(k);
+    await waitFor(() => expect(within(crew()).getAllByRole("button").map((b) => b.getAttribute("data-agent"))).toEqual(["b", "d", "offa", "offc"]));
+    for (const id of ["offa", "offc"]) {
+      const row = crew().querySelector(`[data-agent="${id}"]`) as HTMLElement;
+      expect(row.classList.contains("off")).toBe(true);
+      expect(within(row).getByTestId("crew-off").textContent).toBe("off");
+      expect(row.getAttribute("aria-label")?.endsWith(", off")).toBe(true);
+      expect(row.hasAttribute("disabled")).toBe(false);
+    }
+    for (const id of ["b", "d"]) {
+      const row = crew().querySelector(`[data-agent="${id}"]`) as HTMLElement;
+      expect(row.classList.contains("off")).toBe(false);
+      expect(within(row).queryByTestId("crew-off")).toBeNull();
+      expect(row.getAttribute("aria-label")?.endsWith(", off")).toBe(false);
+    }
+    await act(async () => {
+      fireEvent.click(within(crew()).getByRole("button", { name: "Offa, off" }));
+    });
+    expect(window.location.hash).toBe("#/chat/offa");
   });
 
   it("unread dot clears once the thread is opened", async () => {

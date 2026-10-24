@@ -13,7 +13,7 @@
 // Contract gaps (no kernel or contract change here; Subtask 2 records them in
 // the evidence README): `RosterEntry` has no role or current task, so a crew
 // member's role is its charter persona from `GET /agents/:id` and the task is
-// its running brain message; no route reports Wright's effort or delegation
+// its running brain message on a live session (`GET /sessions`); no route reports Wright's effort or delegation
 // depth; and `AgentCard` needs a numeric limit and has no sessions or status
 // slot, so the card is composed here from `CardGrid` and the `card-*` classes.
 import { type KeyboardEvent, type Ref, useCallback, useEffect, useId, useRef, useState } from "react";
@@ -45,6 +45,7 @@ import {
   roleOf,
   rosterModel,
   settingsRead,
+  sharedNames,
   taskLineFor,
   threadHash,
   tokensLimitWords,
@@ -112,7 +113,7 @@ function useAgentDetails(api: StudioBridge, ids: readonly string[], eventId: num
 
 // ---- The card ----------------------------------------------------------------------------
 
-// `unknown` (approvals or messages not read) has no dot: no state is claimed. Its avatar keeps the
+// `unknown` (approvals, messages or sessions not read) has no dot: no state is claimed. Its avatar keeps the
 // neutral pose, and the avatar's label carries the task line's words. `AvatarState` has no unknown
 // state, so that label still reads "idle" before them (contract gap 6 in the evidence README).
 const DOT_STATE: Readonly<Record<TaskLine["state"], StatusState | undefined>> = { waiting: "waiting", working: "working", idle: "idle", unknown: undefined };
@@ -134,6 +135,8 @@ interface TeamCardProps {
   /** Undefined while a crew member's detail loads. */
   readonly role: string | undefined;
   readonly task: TaskLine;
+  /** The agent's name collides with another's: the card shows its id under the name. */
+  readonly idShown: boolean;
   readonly selected: boolean;
   readonly onOpen: () => void;
   readonly cardRef: Ref<HTMLDivElement>;
@@ -145,7 +148,7 @@ interface TeamCardProps {
  * meter is the only divider), sessions against sessions at once, and status.
  * The whole card is the one action: Enter, Space or a click opens it.
  */
-function TeamCard({ agent, role, task, selected, onOpen, cardRef }: TeamCardProps) {
+function TeamCard({ agent, role, task, idShown, selected, onOpen, cardRef }: TeamCardProps) {
   const id = useId();
   const limited = agent.tokens_per_day !== null;
   const percent = limited ? budgetPercent(agent.tokens_today, agent.tokens_per_day ?? 0) : 0;
@@ -184,9 +187,10 @@ function TeamCard({ agent, role, task, selected, onOpen, cardRef }: TeamCardProp
           />
         </span>
         <div className="card-heading">
-          <div className="card-name" id={`${id}-name`}>
+          <div className="card-name" id={`${id}-name`} title={agent.id}>
             {agent.display_name}
           </div>
+          {idShown ? <div className="card-id" data-testid="team-card-id">{agent.id}</div> : null}
           <div className="card-role" id={`${id}-role`} data-testid="team-card-role">
             {role ?? ""}
           </div>
@@ -291,7 +295,9 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
   const agents = useResource("agents", api);
   const approvals = useResource("approvals", api);
   const messages = useResource("messages", api);
+  const sessions = useResource("sessions", api);
   const roster = orderRoster(agents?.data?.agents ?? []);
+  const shared = sharedNames(roster);
   const crew = crewIds(roster);
   const details = useAgentDetails(api, crew, useRosterEventId(api));
 
@@ -378,19 +384,22 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
 
   const loading = agents === undefined || (agents.data === undefined && agents.error === undefined);
   const failed = agents?.data === undefined && agents?.error !== undefined ? agents.error : undefined;
-  // Undefined until read: a loading or refused approvals / messages read is never "nothing pending,
-  // nothing running" (every card idle). The task line says so instead, and a refusal is an alert.
+  // Undefined until read: a loading or refused approvals / messages / sessions read is never "nothing
+  // pending, nothing running" (every card idle). The task line says so instead, and a refusal is an alert.
   const approvalList = approvals?.data?.approvals;
   const messageList = messages?.data?.messages;
+  const sessionList = sessions?.data?.sessions;
   const approvalsError = approvalList === undefined ? approvals?.error : undefined;
   const messagesError = messageList === undefined ? messages?.error : undefined;
-  const taskUnread = approvalsError !== undefined || messagesError !== undefined ? TASK_UNAVAILABLE : TASK_LOADING;
+  const sessionsError = sessionList === undefined ? sessions?.error : undefined;
+  const taskUnread = approvalsError !== undefined || messagesError !== undefined || sessionsError !== undefined ? TASK_UNAVAILABLE : TASK_LOADING;
   const tasksFailed = [
     ...(approvalsError === undefined ? [] : [`approvals: ${errorText(approvalsError)}`]),
     ...(messagesError === undefined ? [] : [`messages: ${errorText(messagesError)}`]),
+    ...(sessionsError === undefined ? [] : [`sessions: ${errorText(sessionsError)}`]),
   ];
   const inspectorOpen = selected !== undefined && !creating;
-  const taskOf = (agent: RosterEntry): TaskLine => taskLineFor(agent.id, approvalList, messageList, taskUnread);
+  const taskOf = (agent: RosterEntry): TaskLine => taskLineFor(agent.id, approvalList, messageList, sessionList, taskUnread);
 
   let body;
   if (creating) {
@@ -438,6 +447,7 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
                 agent={agent}
                 role={role}
                 task={taskOf(agent)}
+                idShown={shared.has(agent.id)}
                 selected={agent.id === selectedId}
                 onOpen={() => open(agent)}
                 cardRef={(el) => {

@@ -12,7 +12,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AgentDetailResponse, ApiRequest, ApiResult, Approval, BrainMessage, EventFrame, RosterEntry, StatusBody } from "../../api/contract";
+import type { AgentDetailResponse, ApiRequest, ApiResult, Approval, BrainMessage, EventFrame, RosterEntry, SessionSummary, StatusBody } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
@@ -33,6 +33,7 @@ import {
   rosterModel,
   settingText,
   settingsRead,
+  sharedNames,
   taskLineFor,
 } from "./model";
 import { TeamView } from "./TeamView";
@@ -171,6 +172,10 @@ function message(overrides: Partial<BrainMessage> & Pick<BrainMessage, "id" | "a
   };
 }
 
+function session(overrides: Partial<SessionSummary> & Pick<SessionSummary, "id" | "agent" | "status">): SessionSummary {
+  return { model: null, started: new Date(0).toISOString(), ended: null, tokens: null, cwd: null, playbook: null, ...overrides };
+}
+
 function refused(status: number, body: Record<string, unknown>): ApiResult<unknown> {
   return { ok: false, status, body: { error: "refused", ...body } };
 }
@@ -181,6 +186,7 @@ interface Kernel {
   roster: RosterEntry[];
   approvals: Approval[];
   messages: BrainMessage[];
+  sessions: SessionSummary[];
   details: Record<string, AgentDetailResponse>;
 }
 
@@ -192,10 +198,11 @@ function feedEvent(kind: string): EventFrame {
   return { type: "event", id, at: new Date(id * 1000).toISOString(), kind, session_id: null, task_id: null, payload: {} };
 }
 
-/** Answers for `GET /approvals` and `GET /messages` in place of the kernel's lists (a refusal, or one that never comes). */
+/** Answers for `GET /approvals`, `GET /messages` and `GET /sessions` in place of the kernel's lists (a refusal, or one that never comes). */
 interface Answers {
   readonly approvals?: Responder;
   readonly messages?: Responder;
+  readonly sessions?: Responder;
 }
 
 async function startTeam(setup: Partial<Omit<Kernel, "fake" | "registry">> = {}, answers: Answers = {}): Promise<Kernel> {
@@ -207,12 +214,14 @@ async function startTeam(setup: Partial<Omit<Kernel, "fake" | "registry">> = {},
     roster: setup.roster ?? [MASON, WRIGHT, PIM],
     approvals: setup.approvals ?? [],
     messages: setup.messages ?? [],
+    sessions: setup.sessions ?? [],
     details: setup.details ?? { mason: detail(MASON), pim: detail(PIM) },
   };
   fake.route("GET /status", () => ok(STATUS));
   fake.route("GET /agents", () => ok({ agents: kernel.roster }));
   fake.route("GET /approvals", answers.approvals ?? (() => ok({ approvals: kernel.approvals })));
   fake.route("GET /messages", answers.messages ?? (() => ok({ messages: kernel.messages })));
+  fake.route("GET /sessions", answers.sessions ?? (() => ok({ sessions: kernel.sessions })));
   fake.route("GET /agents/:id", (req) => {
     const id = String(req.params?.id);
     if (id === "wright") return refused(409, { error: "reserved", message: "Wright is not a crew member" });
@@ -307,7 +316,8 @@ describe("the cards", () => {
   it("an approval with no display reads its action; otherwise the running brain message is the task, with the working dot", async () => {
     await startTeam({
       approvals: [approval({ id: 6, requesting_agent: "pim", action: "gh_issue_comment" })],
-      messages: [message({ id: 1, agent: "wright", text: "Planning the week" }), message({ id: 2, agent: "mason", text: "done", status: "replied" })],
+      messages: [message({ id: 1, agent: "wright", text: "Planning the week", session_id: 7 }), message({ id: 2, agent: "mason", text: "done", status: "replied" })],
+      sessions: [session({ id: 7, agent: "wright", status: "running" })],
     });
     expect(within(card("Pim")).getByTestId("team-card-task").textContent).toBe("Waiting on you · gh_issue_comment");
     const wright = card("Wright");
@@ -334,7 +344,8 @@ describe("the cards", () => {
     const hostile = "<img src=x onerror=alert(1)>";
     await startTeam({
       roster: [WRIGHT, { ...MASON, display_name: hostile }],
-      messages: [message({ id: 3, agent: "mason", text: hostile })],
+      messages: [message({ id: 3, agent: "mason", text: hostile, session_id: 7 })],
+      sessions: [session({ id: 7, agent: "mason", status: "running" })],
       details: { mason: detail(MASON, { charter: { persona: hostile, duties: [hostile], boundaries: [] } }) },
     });
     const mason = card(hostile);
@@ -378,12 +389,79 @@ describe("the cards", () => {
 
   it("taskLineFor claims a state only from the lists it was read from", () => {
     const pending = [approval({ id: 1, requesting_agent: "mason", display: "Push" })];
-    const running = [message({ id: 2, agent: "mason", text: "Working" })];
-    expect(taskLineFor("mason", pending, undefined)).toEqual({ state: "waiting", text: "Waiting on you · Push" });
-    expect(taskLineFor("mason", undefined, running)).toEqual({ state: "unknown", text: "status unavailable" });
-    expect(taskLineFor("mason", [], undefined, "checking status…")).toEqual({ state: "unknown", text: "checking status…" });
-    expect(taskLineFor("mason", [], running)).toEqual({ state: "working", text: "Working" });
-    expect(taskLineFor("mason", [], [])).toEqual({ state: "idle", text: "idle" });
+    const running = [message({ id: 2, agent: "mason", text: "Working", session_id: 7 })];
+    const live = [session({ id: 7, agent: "mason", status: "running" })];
+    expect(taskLineFor("mason", pending, undefined, undefined)).toEqual({ state: "waiting", text: "Waiting on you · Push" });
+    expect(taskLineFor("mason", undefined, running, live)).toEqual({ state: "unknown", text: "status unavailable" });
+    expect(taskLineFor("mason", [], undefined, live, "checking status…")).toEqual({ state: "unknown", text: "checking status…" });
+    expect(taskLineFor("mason", [], running, undefined)).toEqual({ state: "unknown", text: "status unavailable" });
+    expect(taskLineFor("mason", [], running, live)).toEqual({ state: "working", text: "Working" });
+    expect(taskLineFor("mason", [], [], [])).toEqual({ state: "idle", text: "idle" });
+  });
+
+  it("taskLineFor reads work from the live sessions, never from a message's status alone", () => {
+    const running = [message({ id: 2, agent: "mason", text: "Reviewing PR #12", session_id: 7 })];
+    // The message's session was killed: the row still says running, the agent is idle.
+    expect(taskLineFor("mason", [], running, [session({ id: 7, agent: "mason", status: "killed" })])).toEqual({ state: "idle", text: "idle" });
+    // Another agent's live session is not this one's work.
+    expect(taskLineFor("mason", [], running, [session({ id: 7, agent: "pim", status: "running" })])).toEqual({ state: "idle", text: "idle" });
+    // A starting session is live too.
+    expect(taskLineFor("mason", [], running, [session({ id: 7, agent: "mason", status: "starting" })])).toEqual({ state: "working", text: "Reviewing PR #12" });
+    // Live sessions with no running message on them: the newest live session is named.
+    const sessions = [session({ id: 8, agent: "mason", status: "running" }), session({ id: 11, agent: "mason", status: "running" }), session({ id: 12, agent: "mason", status: "stopped" })];
+    expect(taskLineFor("mason", [], running, sessions)).toEqual({ state: "working", text: "Session 11 running" });
+    // The newest running message on a live session wins over an older one and over one on an ended session.
+    const messages = [
+      message({ id: 3, agent: "mason", text: "older", session_id: 8 }),
+      message({ id: 5, agent: "mason", text: "newest live", session_id: 11 }),
+      message({ id: 9, agent: "mason", text: "on an ended session", session_id: 12 }),
+      message({ id: 10, agent: "mason", text: "no session", session_id: null }),
+    ];
+    expect(taskLineFor("mason", [], messages, sessions)).toEqual({ state: "working", text: "newest live" });
+  });
+
+  it("a running message whose session was killed reads idle on the card, never the killed request", async () => {
+    await startTeam({
+      messages: [message({ id: 1, agent: "wright", text: "Write me a 5000-word short story", session_id: 7 })],
+      sessions: [session({ id: 7, agent: "wright", status: "stopped" })],
+    });
+    const task = within(card("Wright")).getByTestId("team-card-task");
+    expect(task.getAttribute("data-idle")).toBe("true");
+    expect(task.textContent).toBe("idle");
+    expect(task.textContent).not.toContain("short story");
+  });
+
+  it("the same running message on a running session reads working with its text", async () => {
+    await startTeam({
+      messages: [message({ id: 1, agent: "wright", text: "Write me a 5000-word short story", session_id: 7 })],
+      sessions: [session({ id: 7, agent: "wright", status: "running" })],
+    });
+    const wright = card("Wright");
+    expect(within(wright).getByTestId("team-card-task").textContent).toBe("Write me a 5000-word short story");
+    expect(wright.querySelector(".card-task-line .status-dot")?.getAttribute("data-state")).toBe("working");
+  });
+
+  it('a live session with no running message on it reads working, "Session <id> running"', async () => {
+    await startTeam({ sessions: [session({ id: 12, agent: "wright", status: "running" })] });
+    const wright = card("Wright");
+    expect(within(wright).getByTestId("team-card-task").textContent).toBe("Session 12 running");
+    expect(wright.querySelector(".card-task-line .status-dot")?.getAttribute("data-state")).toBe("working");
+  });
+
+  it("a refused GET /sessions still shows a pending approval as waiting; every other card is unavailable, never idle", async () => {
+    await startTeam(
+      { approvals: [approval({ id: 4, requesting_agent: "mason", display: "Comment on PR #12" })], messages: [message({ id: 1, agent: "wright", text: "Planning the week", session_id: 7 })] },
+      { sessions: () => refused(500, { error: "internal", message: "sessions down" }) },
+    );
+    await waitFor(() => expect(within(card("Wright")).getByTestId("team-card-task").textContent).toBe("status unavailable"));
+    expect(within(card("Mason")).getByTestId("team-card-task").textContent).toBe("Waiting on you · Comment on PR #12");
+    for (const name of ["Wright", "Pim"]) {
+      const task = within(card(name)).getByTestId("team-card-task");
+      expect(task.textContent).toBe("status unavailable");
+      expect(task.getAttribute("data-unknown")).toBe("true");
+      expect(task.getAttribute("data-idle")).toBeNull();
+    }
+    expect(screen.getByTestId("team-tasks-error").textContent).toBe("Couldn't read what the agents are doing (sessions: internal: sessions down)");
   });
 
   it('Wright\'s model_unset: its limits were read (null is "no limit") and its model is "not set"', async () => {
@@ -407,6 +485,40 @@ describe("the cards", () => {
     expect(settingsRead({ ...WRIGHT, settings_error: "model_unset" })).toBe(true);
     expect(settingsRead({ ...WRIGHT, settings_error: "settings_invalid" })).toBe(false);
     expect(rosterModel({ ...WRIGHT, model: null, settings_error: "settings_invalid" })).toBe("unknown");
+  });
+});
+
+describe("members of the same name are told apart", () => {
+  const OLD_REVIEWER = entry({ id: "phase4-exit-mvg8wle4cf8f26", display_name: "Comment-only Reviewer", avatar: { shape: "turtle", hue: "crew-olive" }, status: "off" });
+  const NEW_REVIEWER = entry({ id: "phase5-exit-1024", display_name: " comment-only reviewer ", avatar: { shape: "turtle", hue: "crew-olive" } });
+
+  it("sharedNames: no collision is an empty set; Wright counts; case and surrounding whitespace are ignored", () => {
+    expect(sharedNames([WRIGHT, MASON, PIM]).size).toBe(0);
+    expect(sharedNames([])).toEqual(new Set());
+    expect(sharedNames([WRIGHT, entry({ id: "lead-two", display_name: "wright" }), MASON])).toEqual(new Set(["wright", "lead-two"]));
+    expect(sharedNames([WRIGHT, OLD_REVIEWER, NEW_REVIEWER, MASON])).toEqual(new Set(["phase4-exit-mvg8wle4cf8f26", "phase5-exit-1024"]));
+    // Words inside the name still count: "Comment only Reviewer" is another name.
+    expect(sharedNames([OLD_REVIEWER, entry({ id: "x", display_name: "Comment only Reviewer" })]).size).toBe(0);
+  });
+
+  it("both colliding cards show their own id under the name; a unique name shows none; every name carries its id as its title", async () => {
+    await startTeam({ roster: [WRIGHT, OLD_REVIEWER, NEW_REVIEWER, MASON], details: { mason: detail(MASON) } });
+    const byId = (id: string): HTMLElement => {
+      const found = cards().find((c) => c.getAttribute("data-agent-id") === id);
+      if (found === undefined) throw new Error(`no card ${id}`);
+      return found;
+    };
+    for (const id of ["phase4-exit-mvg8wle4cf8f26", "phase5-exit-1024"]) {
+      const shown = within(byId(id)).getByTestId("team-card-id");
+      expect(shown.textContent).toBe(id);
+      // A sibling of the name, never inside it: the card's accessible name stays the display name.
+      expect(shown.parentElement?.classList.contains("card-heading")).toBe(true);
+      expect(byId(id).querySelector(".card-name")?.contains(shown)).toBe(false);
+    }
+    expect(within(byId("mason")).queryByTestId("team-card-id")).toBeNull();
+    expect(within(byId("wright")).queryByTestId("team-card-id")).toBeNull();
+    for (const c of cards()) expect(c.querySelector(".card-name")?.getAttribute("title")).toBe(c.getAttribute("data-agent-id"));
+    expect(screen.getByRole("button", { name: "Mason" })).toBe(byId("mason"));
   });
 });
 
@@ -707,7 +819,8 @@ describe("the inspector header avatar", () => {
   it("carries the card's state: waiting on you for a pending approval, working for a running message", async () => {
     await startTeam({
       approvals: [approval({ id: 4, requesting_agent: "mason", display: "Comment on PR #12" })],
-      messages: [message({ id: 1, agent: "wright", text: "Planning the week" })],
+      messages: [message({ id: 1, agent: "wright", text: "Planning the week", session_id: 7 })],
+      sessions: [session({ id: 7, agent: "wright", status: "running" })],
     });
     expect(within(card("Mason")).getByRole("img", { name: "Mason · waiting on you" })).toBeTruthy();
     const inspector = await openInspector("Mason");
