@@ -57,3 +57,9 @@ none
 kernel/src/notifications/notifier.ts
 kernel/test/notifications.test.ts
 docs/architecture/notifications.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-24T14:29:24Z
+- **Brief:** .supervisor/jobs/done/2026-10-24-notification-click-opens-the-app.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/126
