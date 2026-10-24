@@ -240,6 +240,59 @@ describe("cards", () => {
     expect(k.posted("POST /playbooks/:id/set")).toHaveLength(1);
   });
 
+  it("a Set that answers after the owner opened another row leaves that row's editor, its text and its focus alone", async () => {
+    const k = playbookKit();
+    let release: () => void = () => undefined;
+    k.fake.route("POST /playbooks/:id/set", async () => {
+      await new Promise<void>((go) => {
+        release = go;
+      });
+      return { ok: true, status: 200, body: {} };
+    });
+    await renderChat(k);
+    const card = await playbookCard();
+    await focusAndPress(card, "Edit priority");
+    await focusAndPress(editor(card, "priority"), "Set priority");
+    // While the Set is pending, the owner moves on to another row and starts typing.
+    await focusAndPress(card, "Edit model");
+    const input = within(editor(card, "model")).getByRole("textbox", { name: "New model" }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "half-typed" } });
+    });
+    await act(async () => release());
+    await waitFor(() => expect(within(card).queryByRole("button", { name: "Set model" })?.getAttribute("aria-busy") ?? null).toBeNull());
+    expect(editor(card, "model")).toBeTruthy();
+    expect(input.isConnected).toBe(true);
+    expect(input.value).toBe("half-typed");
+    expect(document.activeElement).toBe(input);
+    expect(within(card).queryByRole("alert")).toBeNull();
+  });
+
+  it("a Set refused after the owner opened another row names its own row, and the open row keeps its text", async () => {
+    const k = playbookKit();
+    let release: () => void = () => undefined;
+    k.fake.route("POST /playbooks/:id/set", async () => {
+      await new Promise<void>((go) => {
+        release = go;
+      });
+      return { ok: false, status: 400, body: { error: "invalid_input", message: "token_limit must be a positive whole number of tokens per day" } };
+    });
+    await renderChat(k);
+    const card = await playbookCard();
+    await focusAndPress(card, "Edit token limit per day");
+    await typeAndEnter(card, "token limit per day", "lots");
+    await focusAndPress(editor(card, "token limit per day"), "Cancel");
+    await focusAndPress(card, "Edit model");
+    const input = within(editor(card, "model")).getByRole("textbox", { name: "New model" }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "half-typed" } });
+    });
+    await act(async () => release());
+    expect((await within(card).findByRole("alert")).textContent).toBe("Set token limit per day: token_limit must be a positive whole number of tokens per day (invalid_input)");
+    expect(input.value).toBe("half-typed");
+    expect(document.activeElement).toBe(input);
+  });
+
   it("Escape leaves edit mode, sends nothing, and puts focus on the row's Edit", async () => {
     const k = playbookKit();
     await renderChat(k);

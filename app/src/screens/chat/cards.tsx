@@ -331,17 +331,28 @@ export interface PlaybookCardProps {
  */
 export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: PlaybookCardProps) {
   const [refusal, setRefusal] = useState("");
-  const [editing, setEditing] = useState<PolicyField | null>(null);
+  const [editing, setEditingState] = useState<PolicyField | null>(null);
+  // The open row as of now, not as of a render: a Set answers after the owner may have cancelled
+  // it or opened another row, and its completion must act only on its own row's editor.
+  const editingNow = useRef<PolicyField | null>(null);
+  const setEditing = (field: PolicyField | null): void => {
+    editingNow.current = field;
+    setEditingState(field);
+  };
   const { busy, act } = useCardAction();
   const editRefs = useRef(new Map<PolicyField, HTMLButtonElement>());
-  // Opening or closing a row's editor unmounts the focused control: say where focus goes.
+  // Opening or closing a row's editor, or a Turn off swapping the actions for the Turn on gap,
+  // unmounts the focused control: say where focus goes.
   const focusAfterSwap = useRef<PolicyField | null>(null);
+  const status = playbook?.status;
+  // Keyed on the status too: a Turn off's answer lands before the refetched list that disables it,
+  // so its target waits for the render that swaps the actions out.
   useLayoutEffect(() => {
     const target = focusAfterSwap.current;
     focusAfterSwap.current = null;
     if (target === null || !focusLost()) return;
     editRefs.current.get(target)?.focus();
-  }, [editing]);
+  }, [editing, status]);
   if (playbook === undefined) {
     return (
       <section className="chat-card" aria-label={`Playbook ${playbookId}`}>
@@ -355,16 +366,22 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
     act(path, async () => {
       const outcome = await write(api, path, params, body, changes);
       setRefusal(outcome.ok ? "" : outcome.text);
+      // A disabled playbook has no actions row: the focused Turn off unmounts once the list answers.
+      if (outcome.ok && path === "/playbooks/:id/off") focusAfterSwap.current = POLICY_FIELDS[0];
     });
-  const confirm = (field: PolicyField, value: string): void =>
+  const confirm = (field: PolicyField, name: string, value: string): void =>
     act(`set:${field}`, async () => {
       const outcome = await write(api, "/playbooks/:id/set", params, { field, value }, changes);
+      // Its editor may be gone by now (cancelled, or another row opened): never touch another row's.
+      const ownRowOpen = editingNow.current === field;
       if (!outcome.ok) {
-        // The row stays in edit mode with the owner's text, under the kernel's words.
-        setRefusal(outcome.text);
+        // The row stays in edit mode with the owner's text, under the kernel's words. With its
+        // editor gone, the words name the row they answer, so they never read as the open row's.
+        setRefusal(ownRowOpen ? outcome.text : `Set ${name}: ${outcome.text}`);
         return;
       }
       setRefusal("");
+      if (!ownRowOpen) return;
       focusAfterSwap.current = field;
       setEditing(null);
     });
@@ -397,7 +414,7 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
             <dt>{row.label}</dt>
             <dd className="chat-kv-row" data-field={row.label} data-editing={editing === row.field ? "true" : undefined}>
               {editing === row.field ? (
-                <PolicyEditor row={row} busy={busy === `set:${row.field}`} onConfirm={(value) => confirm(row.field, value)} onCancel={() => cancel(row.field)} />
+                <PolicyEditor row={row} busy={busy === `set:${row.field}`} onConfirm={(value) => confirm(row.field, row.name, value)} onCancel={() => cancel(row.field)} />
               ) : (
                 <>
                   <FieldValue value={row.shown} setBy={row.setBy} mono={row.mono} />

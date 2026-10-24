@@ -362,10 +362,10 @@ describe("thread", () => {
     await renderChat(k);
     const card = await screen.findByRole("region", { name: "Playbook pb-3" });
     expect(card.textContent).not.toContain("Turn on: not available from the kernel");
-    await act(async () => {
-      fireEvent.click(within(card).getByRole("button", { name: /^Turn off/ }));
-    });
+    await focusAndClick(within(card).getByRole("button", { name: /^Turn off/ }));
     await waitFor(() => expect(card.querySelector(".chat-card-head")?.textContent).toContain("disabled"));
+    // The focused Turn off unmounted: focus stays on the card (its first row's Edit), not the composer.
+    expect(document.activeElement).toBe(within(card).getByRole("button", { name: "Edit dedupe key" }));
     expect(k.posted("POST /playbooks/:id/off").map((r) => r.params)).toEqual([{ id: 3 }]);
     expect(screen.getByRole("region", { name: "Playbook pb-3" })).toBe(card);
     expect(within(card).queryByRole("button", { name: /^Run now/ })).toBeNull();
