@@ -213,6 +213,9 @@ function Recent({ api, queue }: { readonly api: StudioBridge; readonly queue: Na
   const showNewest = () => {
     const list = bodyRef.current?.querySelector<HTMLElement>(".menubar-recent-list");
     if (list === null || list === undefined || list.scrollTop <= 0) {
+      // Already at the top: no scroll follows, so the hint clears here. It goes under focus: hand focus to the
+      // newest row first, never to <body>. Nothing scrolled, so this commit cannot fight the List's anchoring.
+      list?.querySelector<HTMLElement>('[role="option"]')?.focus({ preventScroll: true });
       setUnseen(0);
       return;
     }

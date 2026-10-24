@@ -1005,6 +1005,91 @@ describe("the Recent list", () => {
     expect(screen.queryByTestId("menubar-recent-new")).toBeNull();
   });
 
+  it("AC4: only the Recent list's own scroll clears the hint; scrolling to the top with the hint focused moves focus to the newest row, and leaves focus elsewhere alone", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { list, scroll } = await liveWithScroll(m, 44);
+    await arrive(m, 7, 2);
+    // A scroll on another element in the section (here the section itself, at its top) is not the list's: the hint stays.
+    fireEvent.scroll(screen.getByTestId("menubar-recent"));
+    expect(screen.queryByTestId("menubar-recent-new")).not.toBeNull();
+    // The hint holds focus when the owner scrolls to the top: focus goes to the newest row, never <body>.
+    (screen.getByTestId("menubar-recent-new") as HTMLElement).focus();
+    expect(document.activeElement).toBe(screen.getByTestId("menubar-recent-new"));
+    scroll.top = 0;
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    expect(document.activeElement).toBe(recentRows()[0]);
+    expect(recentRows()[0]?.dataset.key).toBe("7");
+    // With focus elsewhere, reaching the top clears the hint and moves no focus.
+    scroll.top = 44;
+    await arrive(m, 8, 3);
+    await screen.findByTestId("menubar-recent-new");
+    const pause = screen.getByRole("button", { name: "Pause all" });
+    pause.focus();
+    scroll.top = 0;
+    fireEvent.scroll(list);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    expect(document.activeElement).toBe(pause);
+  });
+
+  it("AC4: activating the hint when the list already sits at its top clears it at once and focuses the newest row, never <body>", async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    const { scroll } = await liveWithScroll(m, 44);
+    await arrive(m, 7, 2);
+    // Back at the top with no scroll event seen yet (the hint is still up), then the hint is activated from focus.
+    scroll.top = 0;
+    const hint = screen.getByTestId("menubar-recent-new") as HTMLElement;
+    hint.focus();
+    fireEvent.click(hint);
+    await waitFor(() => expect(screen.queryByTestId("menubar-recent-new")).toBeNull());
+    expect(scroll.top).toBe(0);
+    expect(document.activeElement).toBe(recentRows()[0]);
+    expect(recentRows()[0]?.dataset.key).toBe("7");
+  });
+
+  it("AC4: rows arriving into an empty list show no hint, even with the list scrolled", async () => {
+    const m = await mount({ notifications: new Map() });
+    await waitFor(() => expect(within(screen.getByTestId("menubar-recent")).getByText(RECENT_EMPTY_TEXT)).toBeTruthy());
+    await liveWithScroll(m, 44);
+    await arrive(m, 1, 2);
+    await settle();
+    expect(screen.queryByTestId("menubar-recent-new")).toBeNull();
+  });
+
+  it(`AC4, AC5: the hint counts only the new rows above the old first row, not one that slides in at the bottom of the ${RECENT_LIMIT}`, async () => {
+    const m = await mount({ notifications: manyNotifications(25) });
+    await waitFor(() => expect(recentRows()).toHaveLength(RECENT_LIMIT));
+    const { list } = await liveWithScroll(m, 44);
+    // #10 and #11 leave the kernel's list as #26 arrives: #5 now fits under the cap, below the view, and is no new row above.
+    m.kernel.notifications.delete(10);
+    m.kernel.notifications.delete(11);
+    await arrive(m, 26, 2);
+    await waitFor(() => expect(rowKeys().at(-1)).toBe("5"));
+    expect(screen.getByTestId("menubar-recent-new").textContent).toBe("1 new notification above");
+    expect(list.scrollTop).toBe(44);
+  });
+
+  it(`AC4, AC5: the hint counts at most the ${RECENT_LIMIT} rows Recent shows`, async () => {
+    const m = await mount({ notifications: manyNotifications(6) });
+    await waitFor(() => expect(recentRows()).toHaveLength(6));
+    await liveWithScroll(m, 44);
+    // Two batches of 15 land above the view: 30 arrivals, but Recent shows only RECENT_LIMIT rows.
+    for (const [first, eventId] of [
+      [7, 2],
+      [22, 3],
+    ] as const) {
+      const reads = m.fake.requestsTo("GET /notifications").length;
+      for (let id = first; id < first + 15; id += 1) m.kernel.notifications.set(id, { ...notification(id, "agent:pim", `Note ${id}`), created_at: minutesAgo(0) });
+      act(() => m.fake.emit({ type: "event", id: eventId, at: "2026-10-23T09:00:01.000Z", kind: "notification_created", session_id: null, task_id: null, payload: {} }));
+      await waitFor(() => expect(m.fake.requestsTo("GET /notifications").length).toBeGreaterThan(reads));
+      await waitFor(() => expect(rowKeys()[0]).toBe(String(first + 14)));
+    }
+    await waitFor(() => expect(screen.getByTestId("menubar-recent-new").textContent).toBe(`${RECENT_LIMIT} new notifications above`));
+    expect(recentRows()).toHaveLength(RECENT_LIMIT);
+  });
+
   it(`AC5: more than ${RECENT_LIMIT} notifications show exactly the newest ${RECENT_LIMIT}`, async () => {
     await mount({ notifications: manyNotifications(25) });
     await waitFor(() => expect(recentRows()).toHaveLength(RECENT_LIMIT));
