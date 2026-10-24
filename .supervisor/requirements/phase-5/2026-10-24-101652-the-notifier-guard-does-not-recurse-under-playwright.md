@@ -60,3 +60,9 @@ none
 kernel/test/notifier-guard.ts
 kernel/test/notifications-test-guard.test.ts
 app/e2e/phase-5-exit.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-24T20:21:31Z
+- **Brief:** .supervisor/jobs/done/2026-10-24-notifier-guard-no-recursion-under-playwright.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/131
