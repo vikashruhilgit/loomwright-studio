@@ -774,6 +774,56 @@ describe("#/chat?playbook=<id>: scroll to the playbook's card", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("a missing card takes focus that fell to <body> once: onto the line, which says why; a refetch leaves moved focus alone", async () => {
+    const { calls } = stubScroll();
+    const k = cardKit();
+    await renderChat(k, "#/chat?playbook=99");
+    const missing = await screen.findByTestId("chat-card-missing");
+    // Nothing held focus (the link's screen unmounted): it must not stay on <body>.
+    await waitFor(() => expect(document.activeElement).toBe(missing));
+    const composer = screen.getByRole("textbox");
+    composer.focus();
+    await done(k);
+    expect(document.activeElement).toBe(composer);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("a missing card leaves focus held elsewhere where it is", async () => {
+    stubScroll();
+    await renderChat(cardKit(), "#/chat");
+    const composer = await screen.findByRole("textbox");
+    composer.focus();
+    await go("#/chat?playbook=99");
+    await screen.findByTestId("chat-card-missing");
+    expect(document.activeElement).toBe(composer);
+  });
+
+  it("a card older than the loaded pages puts focus that fell to <body> on Load earlier; the page it brings takes nothing back", async () => {
+    stubScroll();
+    const k = kit({
+      threads: { wright: thread([message(5, { text: "newer" })], { next_before: "c1" }) },
+      pages: { "wright c1": thread([eventItem(2, "playbook_created", "Playbook pr-review created", { playbook_id: 3 })]) },
+      playbooks: [playbook(3, { slug: "pr-review" })],
+    });
+    await renderChat(k, "#/chat?playbook=3");
+    await screen.findByTestId("chat-card-missing");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: /^Load earlier/ })));
+    const composer = screen.getByRole("textbox");
+    composer.focus();
+    await click(/^Load earlier/);
+    await screen.findByRole("region", { name: "Playbook pr-review" });
+    expect(document.activeElement).toBe(composer);
+  });
+
+  it("a thread that did not load moves focus that fell to <body> to the composer", async () => {
+    stubScroll();
+    const k = cardKit();
+    k.fake.route("GET /threads/:agent", () => ({ ok: false, status: 500, body: { error: "internal", message: "database is locked" } }));
+    await renderChat(k, "#/chat?playbook=3");
+    await screen.findByTestId("chat-error");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("textbox")));
+  });
+
   it("a listed playbook whose card is in no loaded page, with no cursor left, says it isn't in this thread", async () => {
     stubScroll();
     const k = cardKit();

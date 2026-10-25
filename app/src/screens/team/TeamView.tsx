@@ -31,6 +31,7 @@ import type { StatusState } from "../../components/StatusDot/StatusDot";
 import { useLiveStore, useResource } from "../../store/react";
 import type { ResourceError } from "../../store/store";
 import { REFETCH_THROTTLE_MS } from "../../store/store";
+import { focusLost } from "../chat/model";
 import { fetchAgentDetail, renameAgent, turnAgent } from "./actions";
 import { useTeamCommands } from "./commands";
 import { type AvatarLook, type DetailState, Inspector, type WrightSetValues } from "./Inspector";
@@ -342,6 +343,8 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
     setFocusSet(0);
     setSelectedId(agent.id);
   };
+  /** The id the last `#/team/<id>` route selected, until the roster answers (see the focus effect below). */
+  const routedId = useRef<string | undefined>(undefined);
   // A `#/team/<id>` route (an approval's Open in Team) selects that member, on mount and on each hashchange,
   // with no roster check: the roster loads after the screen mounts. `selected` opens the inspector once the
   // roster has the id, and shows nothing for an id it never has. Selection only: nothing is written.
@@ -349,6 +352,7 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
     const selectFromHash = (): void => {
       const id = memberIdFromHash(window.location.hash);
       if (id === undefined) return;
+      routedId.current = id;
       setCreating(false);
       setFocusSet(0);
       setSelectedId(id);
@@ -415,6 +419,16 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
     ...(sessionsError === undefined ? [] : [`sessions: ${errorText(sessionsError)}`]),
   ];
   const inspectorOpen = selected !== undefined && !creating;
+  // A routed id the answered roster lacks opens no inspector (which takes focus itself): when focus fell to <body>
+  // with the link's screen, it lands on the first card, once per route, so a later refetch never takes it.
+  useEffect(() => {
+    const id = routedId.current;
+    if (id === undefined || loading) return;
+    routedId.current = undefined;
+    if (roster.some((a) => a.id === id) || !focusLost()) return;
+    const first = roster[0];
+    (first === undefined ? newButton.current : cards.current.get(first.id))?.focus();
+  });
   const taskOf = (agent: RosterEntry): TaskLine => taskLineFor(agent.id, approvalList, messageList, sessionList, taskUnread);
 
   let body;

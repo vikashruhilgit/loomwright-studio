@@ -648,6 +648,19 @@ describe("the #/team/<id> route", () => {
     expect(screen.queryByTestId("team-inspector")).toBeNull();
     expect(cards().every((c) => c.getAttribute("aria-current") === null)).toBe(true);
   });
+
+  it("#/team/nobody puts focus that fell to <body> on the first card once the roster answers, and only once", async () => {
+    setHash("#/team/nobody");
+    const kernel = await startTeam();
+    await waitFor(() => expect(document.activeElement).toBe(cards()[0]));
+    expect(screen.queryByTestId("team-inspector")).toBeNull();
+    // Focus moved on purpose stays: a feed event's roster refetch takes nothing back.
+    const newButton = screen.getByRole("button", { name: "New crew member" });
+    newButton.focus();
+    emit(kernel, "agent_renamed");
+    await act(async () => undefined);
+    expect(document.activeElement).toBe(newButton);
+  });
 });
 
 // ---- AC3, AC4: a crew member's inspector -----------------------------------------------------------

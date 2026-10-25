@@ -214,6 +214,9 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   const wantedCard = playbookFromHash(hash);
   /** The `#/chat?playbook=<id>` hash already scrolled to; cleared off the route and by a repeated hashchange. */
   const handledHash = useRef<string | null>(null);
+  /** The `#/chat?playbook=<id>` hash whose card could not be shown, already given focus; cleared like `handledHash`. */
+  const missingHash = useRef<string | null>(null);
+  const missingRef = useRef<HTMLParagraphElement>(null);
   /** How many times a wanted card was scrolled to: a Load earlier's restore stands aside if one ran after it measured. */
   const cardScrolls = useRef(0);
   const [, setHashTick] = useState(0);
@@ -224,6 +227,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     const onHashChange = (event: HashChangeEvent): void => {
       if (event.oldURL !== event.newURL) return;
       handledHash.current = null;
+      missingHash.current = null;
       setHashTick((n) => n + 1);
     };
     window.addEventListener("hashchange", onHashChange);
@@ -301,6 +305,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     if (wantedCard === undefined) {
       // Off the route: coming back to the same `#/chat?playbook=<id>` scrolls again.
       handledHash.current = null;
+      missingHash.current = null;
       return;
     }
     if (handledHash.current === hash) return;
@@ -380,6 +385,19 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   else if (wantedListed === undefined) missingText = `Playbook ${wantedName} isn't in the kernel's playbook list.`;
   else if (cursor === null) missingText = `Playbook ${wantedName}'s card isn't in this thread.`;
   else missingText = `Playbook ${wantedName}'s card isn't in the part of this thread that's loaded. Load earlier to find it.`;
+  const loadEarlierNext = playbookList !== undefined && wantedListed !== undefined && cursor !== null;
+  const threadFailed = data === undefined && thread?.error !== undefined;
+  // No card takes focus (`chat-card-missing` is shown, or the thread did not load): when focus fell to <body> with
+  // the link's screen, start the keyboard on the next thing to do (the composer when the thread did not load, Load
+  // earlier when the line points at it, else the line itself), once per hash, so a refetch or a Load earlier never takes it.
+  useLayoutEffect(() => {
+    if (wantedCard === undefined || !(cardMissing || threadFailed) || missingHash.current === hash) return;
+    missingHash.current = hash;
+    if (!focusLost()) return;
+    if (threadFailed) focusComposer();
+    else if (loadEarlierNext) scrollRef.current?.querySelector<HTMLElement>(".chat-earlier button")?.focus();
+    else missingRef.current?.focus();
+  });
   const shownInPlaybook = new Set<number>();
   for (const id of playbookAt.keys()) {
     const tid = playbookList?.find((p) => p.id === id)?.trigger_id;
@@ -487,7 +505,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
       </div>
       {/* Outside the scroll: the thread opens at its end, and this line must be seen wherever the view is. */}
       {cardMissing ? (
-        <p className="chat-card-missing" role="status" data-testid="chat-card-missing">
+        <p className="chat-card-missing" role="status" data-testid="chat-card-missing" ref={missingRef} tabIndex={-1}>
           {missingText}
         </p>
       ) : null}
