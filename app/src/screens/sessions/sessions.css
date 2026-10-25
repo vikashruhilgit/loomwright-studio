@@ -1,15 +1,10 @@
 /* Sessions: docs/design/mockups/gui-v1.html §Sessions (the .sesswrap, .srow and .log rules). Colour, type, spacing and widths come only from tokens.css custom properties. */
 /*
- * The shell's `.window` row is `auto`, so `.main` grows with its content and
- * `.content` never scrolls (app.css, outside this screen; the same gap Chat
- * records in chat.css, and a finding in the evidence README). While Sessions is
- * shown, hold the column to the window so the log scrolls inside its pane
- * (otherwise it grows to its full height and "Jump to latest" never applies).
+ * The shell bounds `.main` to the window (`.window`'s row is `minmax(0, 1fr)` in
+ * app.css), so the log scrolls inside its own pane and "Jump to latest"
+ * applies. This rule only lays out the pane: the kernel band (if any) above a
+ * column Sessions fills.
  */
-.main:has(.sessions) {
-  min-height: 0;
-  overflow: hidden;
-}
 .content:has(> .sessions) {
   display: flex;
   flex-direction: column;

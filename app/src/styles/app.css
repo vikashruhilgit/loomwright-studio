@@ -22,9 +22,14 @@ body {
   outline-offset: 2px;
 }
 
+/* The window's one row is the viewport, never its content: `minmax(0, 1fr)`, not the implicit `auto`
+   row, so `.main` (and every screen in it) cannot grow the document past the window. Each screen
+   scrolls inside its own pane (`.content`, or the screen's own scroller), and the document has
+   nothing to scroll. */
 .window {
   display: grid;
   grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
 }
 

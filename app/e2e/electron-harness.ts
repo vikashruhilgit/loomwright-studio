@@ -2,7 +2,9 @@
 // visible window takes focus on macOS each time a spec launches it, and the
 // suites relaunch often (Linux CI hides this under xvfb, so only a local run
 // shows it). Playwright drives, reads and screenshots a hidden window the same
-// as a shown one. `scripts/hidden-windows.test.ts` fails any spec that calls
+// as a shown one, except that Linux renders a never-shown app window at about
+// one frame a second, so on Linux CI the app's window shows (`hidesAppWindow`).
+// `scripts/hidden-windows.test.ts` fails any spec that calls
 // `electron.launch` or `new BrowserWindow` itself.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron } from "@playwright/test";
 import type { ElectronApplication, Page } from "@playwright/test";
-import { HIDDEN_WINDOW_ENV } from "../electron/hidden-window";
+import { HIDDEN_WINDOW_ENV, hidesAppWindow } from "../electron/hidden-window";
 
 export const APP_DIR = fileURLToPath(new URL("..", import.meta.url));
 
@@ -21,9 +23,10 @@ export function processEnv(): Record<string, string> {
   return env;
 }
 
-/** Launches the built app (`npm run build` first) with its window hidden. */
+/** Launches the built app (`npm run build` first), its window hidden unless `hidesAppWindow` says otherwise. */
 export async function launchApp(env: Readonly<Record<string, string>>): Promise<ElectronApplication> {
-  return electron.launch({ args: [APP_DIR], cwd: APP_DIR, env: { ...env, [HIDDEN_WINDOW_ENV]: "1" } });
+  const hidden: Record<string, string> = hidesAppWindow(process.env, process.platform) ? { [HIDDEN_WINDOW_ENV]: "1" } : {};
+  return electron.launch({ args: [APP_DIR], cwd: APP_DIR, env: { ...env, ...hidden } });
 }
 
 export type GalleryTarget = { readonly url: string } | { readonly file: string };

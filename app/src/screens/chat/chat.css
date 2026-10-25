@@ -1,15 +1,10 @@
 /* Chat and the Crew group (docs/design/mockups/gui-v1.html renderChat, #crewnav). Tokens only. */
 
 /*
- * The shell's `.window` row is `auto`, so `.main` grows with its content and
- * `.content` never scrolls (app.css, outside this screen; see the evidence
- * README's findings). While Chat is shown, hold the column to the window and
- * let the thread scroll inside it, the kernel band (if any) above it.
+ * The shell bounds `.main` to the window (`.window`'s row is `minmax(0, 1fr)` in
+ * app.css), so the thread scrolls inside its own pane. This rule only lays out
+ * the pane: the kernel band (if any) above a column Chat fills.
  */
-.main:has(.chat) {
-  min-height: 0;
-  overflow: hidden;
-}
 .content:has(> .chat) {
   display: flex;
   flex-direction: column;
