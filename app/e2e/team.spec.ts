@@ -559,21 +559,29 @@ test("phase 5 polish: a long inspector scrolls alone; the sidebar, title bar and
 
   const before = await shellBoxes(page);
   const inspectorTop = () => inspector.evaluate((el) => el.scrollTop);
+  const inspectorLeft = () => inspector.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
   const pane = await inspector.boundingBox();
   if (pane === null) throw new Error("the inspector has no box");
 
-  // (a) The wheel over the inspector, well past its end.
+  // (a) The wheel over the inspector, well past its end. Wait until it is at its
+  // bottom, then wheel again: that extra input at the end is what would spill
+  // over to the document.
   await page.mouse.move(pane.x + pane.width / 2, pane.y + pane.height / 2);
   for (let i = 0; i < 8; i += 1) await page.mouse.wheel(0, 500);
-  await expect.poll(inspectorTop, { message: "the wheel scrolled the inspector" }).toBeGreaterThan(0);
+  await expect.poll(inspectorLeft, { message: "the wheel scrolled the inspector to its bottom" }).toBeLessThanOrEqual(1);
+  for (let i = 0; i < 4; i += 1) await page.mouse.wheel(0, 500);
   await settle(page);
+  expect(await inspectorLeft(), "the inspector is still at its bottom").toBeLessThanOrEqual(1);
   expect(await documentScrollTop(page), "the document did not scroll").toBe(0);
   expect(await shellBoxes(page), "the sidebar, title bar and Wright's card stayed put").toEqual(before);
 
-  // (b) Back up, past the top: nothing stays shifted.
+  // (b) Back up, past the top: nothing stays shifted. Wait until it is at its
+  // top, then wheel up again, so the input past the top is really sent.
   for (let i = 0; i < 8; i += 1) await page.mouse.wheel(0, -500);
   await expect.poll(inspectorTop, { message: "the inspector is back at its top" }).toBe(0);
+  for (let i = 0; i < 4; i += 1) await page.mouse.wheel(0, -500);
   await settle(page);
+  expect(await inspectorTop(), "the inspector is still at its top").toBe(0);
   expect(await documentScrollTop(page), "the document did not scroll").toBe(0);
   expect(await shellBoxes(page), "nothing stayed shifted").toEqual(before);
 
