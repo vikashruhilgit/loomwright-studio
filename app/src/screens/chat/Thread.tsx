@@ -3,7 +3,9 @@
 // `GET /threads/:agent` through the live store, oldest first: message
 // bubbles, one-line event cards, the playbook and trigger cards those events
 // name, and the agent's pending approvals inline at the end, then the
-// composer. Every kernel string is a React text child only.
+// composer. `#/chat?playbook=<id>` (an approval's Open playbook link) opens
+// Wright's thread scrolled to that playbook's card, or says the card is not in
+// what is loaded. Every kernel string is a React text child only.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { Approval, RosterEntry, StudioBridge, ThreadItem, ThreadResponse } from "../../api/contract";
@@ -14,6 +16,7 @@ import { EventCard } from "../../components/EventCard/EventCard";
 import { StatusDot } from "../../components/StatusDot/StatusDot";
 import { useResource } from "../../store/react";
 import { threadResource } from "../../store/resources";
+import { printable } from "../approvals/printable";
 import { sharedNames } from "../team/model";
 import { ApprovalCard, CharterCard, PlaybookCard, TriggerCard } from "./cards";
 import { ChatComposer } from "./ChatComposer";
@@ -30,6 +33,7 @@ import {
   navigate,
   onComposerFocusRequest,
   parseRetryAt,
+  playbookFromHash,
   readErrorText,
   refId,
   refusalOf,
@@ -205,6 +209,30 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   const lastLive = useRef<readonly ThreadItem[]>([]);
   /** Items that slid off the live page while a Load earlier was in flight, merged in when it answers. */
   const slid = useRef<readonly ThreadItem[]>([]);
+  // `#/chat?playbook=<id>`: the card to scroll to, once per hash value (a refetch never scrolls again).
+  const hash = useHash();
+  const wantedCard = playbookFromHash(hash);
+  /** The `#/chat?playbook=<id>` hash already scrolled to; cleared off the route and by a repeated hashchange. */
+  const handledHash = useRef<string | null>(null);
+  /** The `#/chat?playbook=<id>` hash whose card could not be shown, already given focus; cleared like `handledHash`. */
+  const missingHash = useRef<string | null>(null);
+  const missingRef = useRef<HTMLParagraphElement>(null);
+  /** How many times a wanted card was scrolled to: a Load earlier's restore stands aside if one ran after it measured. */
+  const cardScrolls = useRef(0);
+  const [, setHashTick] = useState(0);
+  useEffect(() => {
+    // The same link followed again dispatches a hashchange with no new hash (`rehashIfCurrent`): scroll again.
+    // A browser never fires one with `oldURL === newURL` itself, so a navigation that did change the hash
+    // (whose new value the handled-hash check already tells apart) never clears it.
+    const onHashChange = (event: HashChangeEvent): void => {
+      if (event.oldURL !== event.newURL) return;
+      handledHash.current = null;
+      missingHash.current = null;
+      setHashTick((n) => n + 1);
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
 
   const isWright = agent === WRIGHT;
   const name = nameOf(roster, agent);
@@ -271,6 +299,30 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     if (el !== null && atEnd.current) el.scrollTop = el.scrollHeight;
   }, [shape, pendingShape]);
 
+  // Scroll to the wanted playbook's card once it is rendered: after the keep-the-end-in-view effect, which
+  // then stands aside (`atEnd` false) until the owner scrolls back to the end. Runs after every render.
+  useLayoutEffect(() => {
+    if (wantedCard === undefined) {
+      // Off the route: coming back to the same `#/chat?playbook=<id>` scrolls again.
+      handledHash.current = null;
+      missingHash.current = null;
+      return;
+    }
+    if (handledHash.current === hash) return;
+    const card = listRef.current?.querySelector<HTMLElement>(`[data-playbook="${wantedCard}"]`);
+    if (card === null || card === undefined) return;
+    handledHash.current = hash;
+    atEnd.current = false;
+    card.scrollIntoView({ block: "center" });
+    cardScrolls.current += 1;
+    // Start the keyboard in the card, so a Tab reaches Run now, when a link led here: one that unmounted with its
+    // screen (focus fell to <body>), or the thread's own inline link, still focused, whose href is this hash. Focus
+    // anywhere else is there on purpose and stays, so a refetch that renders the card later never takes it.
+    const active = document.activeElement;
+    const followed = active instanceof HTMLAnchorElement && active.getAttribute("href") === hash && listRef.current?.contains(active) === true;
+    if (focusLost() || followed) card.querySelector<HTMLElement>("button:not(:disabled)")?.focus({ preventScroll: true });
+  });
+
   const loadEarlier = async (): Promise<void> => {
     if (cursor === null || pagingNow.current) return;
     pagingNow.current = true;
@@ -278,6 +330,8 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     setPaging(true);
     const el = scrollRef.current;
     const fromBottom = el === null ? 0 : el.scrollHeight - el.scrollTop;
+    // A scroll to the wanted card after this measure (the page brought it, or a refetch did) is the newer intent.
+    const scrollsAtMeasure = cardScrolls.current;
     let result;
     try {
       result = await api.request<ThreadResponse>({ method: "GET", path: "/threads/:agent", params: { agent }, query: { before: cursor } });
@@ -300,14 +354,15 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     atEnd.current = false;
     // Held items are newer than every older page (they left the live page's oldest end).
     setOlder((prev) => ({ items: mergeItems(mergeItems(page.items, prev?.items ?? []), held), next: page.next_before }));
-    // Keep what the owner was reading where it was.
+    // Keep what the owner was reading where it was, unless the view has since moved to the wanted card.
     requestAnimationFrame(() => {
-      if (el !== null) el.scrollTop = el.scrollHeight - fromBottom;
+      if (el !== null && cardScrolls.current === scrollsAtMeasure) el.scrollTop = el.scrollHeight - fromBottom;
     });
   };
 
   // Cards: each playbook once, after its newest created/updated event; each trigger once, after its newest registered or fired event.
   const playbookList = playbooks?.data?.playbooks;
+  const playbooksAnswered = playbookList !== undefined || playbooks?.error !== undefined;
   const triggerList = triggers?.data?.triggers;
   const playbookAt = new Map<number, number>();
   const triggerAt = new Map<number, number>();
@@ -320,6 +375,28 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
       const id = refId(item.ref, "trigger_id");
       if (id !== undefined) triggerAt.set(id, index);
     }
+  });
+  // The wanted card is not rendered: its event is older than the loaded pages, or the playbook is not this thread's.
+  const wantedListed = wantedCard === undefined ? undefined : playbookList?.find((p) => p.id === wantedCard);
+  const cardMissing = wantedCard !== undefined && data !== undefined && playbooksAnswered && !(playbookAt.has(wantedCard) && wantedListed !== undefined);
+  const wantedName = wantedListed === undefined ? `#${wantedCard ?? ""}` : printable(wantedListed.slug);
+  let missingText: string;
+  if (playbookList === undefined) missingText = `Playbook ${wantedName}'s card can't be shown: the kernel's playbook list didn't load.`;
+  else if (wantedListed === undefined) missingText = `Playbook ${wantedName} isn't in the kernel's playbook list.`;
+  else if (cursor === null) missingText = `Playbook ${wantedName}'s card isn't in this thread.`;
+  else missingText = `Playbook ${wantedName}'s card isn't in the part of this thread that's loaded. Load earlier to find it.`;
+  const loadEarlierNext = playbookList !== undefined && wantedListed !== undefined && cursor !== null;
+  const threadFailed = data === undefined && thread?.error !== undefined;
+  // No card takes focus (`chat-card-missing` is shown, or the thread did not load): when focus fell to <body> with
+  // the link's screen, start the keyboard on the next thing to do (the composer when the thread did not load, Load
+  // earlier when the line points at it, else the line itself), once per hash, so a refetch or a Load earlier never takes it.
+  useLayoutEffect(() => {
+    if (wantedCard === undefined || !(cardMissing || threadFailed) || missingHash.current === hash) return;
+    missingHash.current = hash;
+    if (!focusLost()) return;
+    if (threadFailed) focusComposer();
+    else if (loadEarlierNext) scrollRef.current?.querySelector<HTMLElement>(".chat-earlier button")?.focus();
+    else missingRef.current?.focus();
   });
   const shownInPlaybook = new Set<number>();
   for (const id of playbookAt.keys()) {
@@ -389,7 +466,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
                 }}
               />
             ) : (
-              <ApprovalCard api={api} approval={approval} agent={agent} />
+              <ApprovalCard api={api} approval={approval} agent={agent} playbooks={playbookList} />
             )}
           </li>
         ))}
@@ -426,6 +503,12 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
           </Button>
         )}
       </div>
+      {/* Outside the scroll: the thread opens at its end, and this line must be seen wherever the view is. */}
+      {cardMissing ? (
+        <p className="chat-card-missing" role="status" data-testid="chat-card-missing" ref={missingRef} tabIndex={-1}>
+          {missingText}
+        </p>
+      ) : null}
       <div
         className="chat-scroll"
         ref={scrollRef}

@@ -5,8 +5,10 @@
 // `#/approvals` and drives it by keyboard: the inbox order and the selection
 // by id (AC1), the detail (AC1b), A / ⇧A / D and what the kernel answered
 // (AC2, AC3), the escaped payload (AC4), the grants and a confirmed Revoke
-// (AC5), and keyboard-only reach (AC7). The fixture records every POST with
-// its body, so "exactly one request" is the kernel's own count.
+// (AC5), keyboard-only reach (AC7), and the link from an approval to what it
+// is about (Open playbook to its card in Chat, Open in Team). The fixture
+// records every POST with its body, so "exactly one request" is the kernel's
+// own count.
 //
 // Screenshots (AC6): with `APPROVALS_EVIDENCE=1` every designed state, light
 // and dark, is written to the committed `docs/evidence/phase-5-polish/approvals/`;
@@ -19,6 +21,7 @@ import { expect, test } from "@playwright/test";
 import type { ElectronApplication, Page, TestInfo } from "@playwright/test";
 import { launchApp } from "./electron-harness";
 import { appEnv, startFixtureKernel, unreachableDataDir } from "./fixture-kernel";
+import { chatFixture } from "./fixtures/chat";
 import type { FixtureKernel, FixtureRoute } from "./fixture-kernel";
 import type { RouteKey } from "../src/api/contract";
 import {
@@ -29,6 +32,8 @@ import {
   approvalsRoutes,
   cannedGrants,
   charterApproval,
+  enableApproval,
+  pagedWrightThread,
   hostileApproval,
   requestApproval,
   reviewApproval,
@@ -187,14 +192,19 @@ test("AC1b + AC2: a charter create's detail; A sends one approve once; the appli
   await expect(detail.getByTestId("approval-action")).toHaveText("kernel_agent_create");
   await expect(detail.getByTestId("approval-agent")).toHaveText("wright");
   await expect(detail.getByTestId("approval-session")).toHaveText("session #12");
-  await expect(detail.getByTestId("approval-playbook")).toHaveText("from playbook crew-setup v2");
-  // No cwd in the payload: the requesting session's.
+  await expect(detail.getByTestId("approval-source")).toHaveText("Requested by playbook crew-setup v2");
+  // The payload's cwd: the one the rail recorded, session #12's.
   await expect(detail.getByTestId("approval-cwd")).toHaveText("/Users/owner/src/studio");
+  // Pending, the member does not exist yet: nothing to open.
+  await expect(detail.getByTestId("approval-link")).toHaveCount(0);
   await expect(detail.getByTestId("approval-kernel-will")).toHaveText("The kernel creates this crew member when you allow it.");
   await expect(detail.getByTestId("approval-payload")).toContainText(KERNEL_AGENT_CREATE);
 
   await page.keyboard.press("a");
   await expect(detail.getByTestId("approval-applied")).toContainText(APPLIED);
+  // Created: the link goes to the member in Team.
+  await expect(detail.getByTestId("approval-link")).toHaveText("Open in Team");
+  await expect(detail.getByTestId("approval-link")).toHaveAttribute("href", "#/team/sable");
   await expect(detail.getByTestId("approval-message")).toHaveText(AGENT_MESSAGE);
   const approves = postsTo(kernel, "/approve");
   expect(approves).toHaveLength(1);
@@ -278,6 +288,68 @@ test("AC5: not current is marked; Revoke asks first; Cancel sends nothing; Confi
   const revokes = postsTo(kernel, "/revoke");
   expect(revokes).toHaveLength(1);
   expect(revokes[0]?.path).toBe("/approvals/grants/17/revoke");
+});
+
+test("an enable approval links to its playbook's card: Open playbook pr-review opens Wright's thread with the card in view", async () => {
+  // The chat fixture serves Wright's thread with playbook 3 (pr-review) and its card; the approvals kernel's
+  // routes come second, so its GET /approvals and GET /messages replace the chat fixture's own.
+  const kernel = approvalsKernel({ approvals: [enableApproval(6)] });
+  const started = await startFixtureKernel({ routes: { ...chatFixture("populated").options.routes, ...approvalsRoutes(kernel) } });
+  fixture = started;
+  const page = await openWith(started);
+  const detail = page.getByTestId("approval-detail");
+  await expect(detail).toHaveAttribute("data-approval-id", "6");
+  await expect(detail.getByTestId("approval-source")).toHaveText("Requested by Wright in chat");
+  const link = detail.getByRole("link", { name: "Open playbook pr-review" });
+  await expect(link).toHaveAttribute("href", "#/chat?playbook=3");
+
+  // By keyboard: the link unmounts with the Approvals screen, so focus must move into the card, not fall to <body>.
+  await link.focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => page.evaluate(() => window.location.hash)).toBe("#/chat?playbook=3");
+  await expect(page.getByTestId("screen-chat")).toHaveAttribute("data-agent", "wright");
+  const card = page.locator('[data-playbook="3"]');
+  await expect(card).toBeVisible();
+  await expect(card).toBeInViewport();
+  await expect.poll(() => card.evaluate((el) => el.contains(document.activeElement))).toBe(true);
+
+  // A playbook the thread has no card for: the line saying so is in view, though the thread opens at its end.
+  await page.evaluate(() => {
+    window.location.hash = "#/chat?playbook=99";
+  });
+  const missing = page.getByTestId("chat-card-missing");
+  await expect(missing).toContainText("#99");
+  await expect(missing).toBeInViewport();
+  // A link only navigates: nothing was decided.
+  expect(kernel.posts).toEqual([]);
+});
+
+test("a card one page back: Load earlier brings it, and the view stays on the card, not the old reading position", async () => {
+  // Wright's first page lacks playbook 3's card; page c1 has it, with twelve older messages around it.
+  const kernel = approvalsKernel({ approvals: [enableApproval(6)] });
+  const routes = { ...chatFixture("populated").options.routes, ...approvalsRoutes(kernel), "GET /threads/:agent": pagedWrightThread() };
+  const started = await startFixtureKernel({ routes });
+  fixture = started;
+  const page = await launch(started.env);
+  await page.evaluate(() => {
+    window.location.hash = "#/chat?playbook=3";
+  });
+  await expect(page.getByTestId("chat-card-missing")).toContainText("Load earlier to find it.");
+  // Load earlier restores the old reading position in an animation frame, which may run before or after React
+  // commits the page (and the card scroll). Hold each frame's callbacks until after the commit, the order that
+  // put the card off screen, so this check never passes by the luck of the other order.
+  await page.evaluate(() => {
+    const raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (cb) => raf(() => setTimeout(() => cb(performance.now()), 50));
+  });
+  await page.getByRole("button", { name: /^Load earlier/ }).click();
+  const card = page.locator('[data-playbook="3"]');
+  await expect(card).toBeVisible();
+  await expect(page.getByTestId("chat-card-missing")).toHaveCount(0);
+  // Past the held frame Load earlier restores the old reading position in: the card must still be in view.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(card).toBeInViewport();
+  expect(kernel.posts).toEqual([]);
 });
 
 /** Tab until the focused element's accessible text starts with `label` (at most 40 stops). */

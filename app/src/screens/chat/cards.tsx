@@ -1,5 +1,5 @@
 // The thread's actionable cards: a pending approval (EventCard's approval
-// variant), the charter card (a `kernel_agent_create` approval), the
+// variant, with a link to what it is about), the charter card (a `kernel_agent_create` approval), the
 // playbook card and the trigger card. Each action is one contract write
 // through the bridge; a refusal shows the kernel's words as text and leaves
 // the card in place. Every kernel string is a React text child only.
@@ -9,7 +9,8 @@ import { Button } from "../../components/Button/Button";
 import { EventCard } from "../../components/EventCard/EventCard";
 import { SelectField, TextField } from "../../components/Input/Input";
 import type { ResourceName } from "../../store/resources";
-import { focusLost, inFlightGuard, navigate, triggerSchedule, triggerState, when, write } from "./model";
+import { approvalLink, approvalSourceText } from "../approvals/subject";
+import { focusLost, inFlightGuard, navigate, rehashIfCurrent, triggerSchedule, triggerState, when, write } from "./model";
 
 /** What Always says when the approval did not come from a playbook session. */
 export const ALWAYS_INELIGIBLE = "Always needs an approval from a playbook session; approve once";
@@ -54,15 +55,18 @@ export interface ApprovalCardProps {
   readonly approval: Approval;
   /** The agent whose thread this is. */
   readonly agent: string;
+  /** The kernel's playbooks, for the link's slug; `undefined` while unread. */
+  readonly playbooks: readonly PlaybookListing[] | undefined;
 }
 
-/** A pending approval, inline at the end of the thread. */
-export function ApprovalCard({ api, approval, agent }: ApprovalCardProps) {
+/** A pending approval, inline at the end of the thread, with a link to what it is about when it names one. */
+export function ApprovalCard({ api, approval, agent, playbooks }: ApprovalCardProps) {
   const [refusal, setRefusal] = useState("");
   // EventCard's approval buttons take no `loading`, so the guard only drops repeats here.
   const { act } = useCardAction();
   const changes = approvalChanges(agent);
   const params = { id: approval.id };
+  const link = approvalLink(approval, playbooks);
   const decide = (decision: "once" | "always"): void =>
     act(decision, async () => {
       const outcome = await write(api, "/approvals/:id/approve", params, { decision }, changes);
@@ -78,7 +82,7 @@ export function ApprovalCard({ api, approval, agent }: ApprovalCardProps) {
           requestingAgent: approval.requesting_agent,
           title: approval.action,
           summary: approval.display ?? approval.action,
-          reason: approval.playbook?.slug ? `From playbook ${approval.playbook.slug}` : "Not from a playbook",
+          reason: approvalSourceText(approval),
         }}
         onAllowOnce={() => decide("once")}
         onAlways={() => {
@@ -97,6 +101,10 @@ export function ApprovalCard({ api, approval, agent }: ApprovalCardProps) {
         }
         onFullPayload={() => navigate("#/approvals")}
       />
+      {/* A link, not a button: it only navigates. The same href again still scrolls to the card. */}
+      {link === undefined ? null : (
+        <a className="chat-approval-link" href={link.href} data-testid="chat-approval-link" onClick={() => rehashIfCurrent(link.href)}>{link.text}</a>
+      )}
       <Refusal text={refusal} />
     </div>
   );

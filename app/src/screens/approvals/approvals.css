@@ -74,6 +74,7 @@
   overflow-wrap: anywhere;
 }
 .approvals-section-title:focus-visible,
+.approvals-link:focus-visible,
 .approvals-outcome:focus-visible,
 .approvals-detail:focus-visible,
 .approvals-empty:focus-visible {
@@ -116,6 +117,23 @@
   align-items: baseline;
   gap: var(--space-2);
   min-width: 0;
+}
+/* What the approval is about: a link, since it only navigates. */
+.approvals-link-row {
+  margin: 0;
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
+}
+.approvals-link {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  border-radius: var(--radius-xs);
+  overflow-wrap: anywhere;
+}
+.approvals-link:hover {
+  color: var(--accent-hover);
 }
 .approvals-label {
   flex: none;
