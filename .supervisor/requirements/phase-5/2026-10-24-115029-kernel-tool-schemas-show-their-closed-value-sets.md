@@ -61,3 +61,9 @@ none
 kernel/src/agents/charter-tools.ts
 kernel/test/agents-charter-tools.test.ts
 kernel/test/tools-sdk-list.test.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-25T06:31:56Z
+- **Brief:** .supervisor/jobs/done/2026-10-25-kernel-tool-schemas-closed-value-sets.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/139
