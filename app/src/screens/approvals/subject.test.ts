@@ -115,6 +115,8 @@ describe("approvalLink", () => {
     expect(approvalLink(create(SABLE), undefined)).toBeUndefined();
     expect(approvalLink(create(SABLE, { status: "denied", decision: "deny" }), undefined)).toBeUndefined();
     expect(approvalLink(create(SABLE, { status: "approved", decision: "once", apply_refused: "agent_exists" }), undefined)).toBeUndefined();
+    // Allowed but never applied (an approval an agent asked for itself): no `applied`, no member.
+    expect(approvalLink(create(SABLE, { status: "approved", decision: "once" }), undefined)).toBeUndefined();
     expect(approvalLink(create(SABLE, { status: "approved", decision: "once", applied: "The kernel created crew member sable." }), undefined)).toEqual({
       text: "Open in Team",
       href: "#/team/sable",

@@ -62,8 +62,10 @@ export function approvalSourceText(a: Approval): string {
  * The link to what the approval is about: `Open playbook <slug>` to that
  * playbook's card in Wright's thread (`#<id>` when the list does not have it
  * or is unread), or `Open in Team` to that member. A create links only once it
- * was allowed and the kernel applied it: before that, or after a deny or a
- * refused apply, the member does not exist. An update's member always does.
+ * was allowed and the kernel applied it, which needs the kernel's `applied`
+ * record: before that, after a deny or a refused apply, or for an approval an
+ * agent asked for itself (never applied), the member does not exist. An
+ * update's member always does.
  */
 export function approvalLink(a: Approval, playbooks: readonly PlaybookListing[] | undefined): { readonly text: string; readonly href: string } | undefined {
   const subject = approvalSubject(a);
@@ -74,6 +76,6 @@ export function approvalLink(a: Approval, playbooks: readonly PlaybookListing[] 
     return { text: `Open playbook ${name}`, href: playbookCardHash(subject.id) };
   }
   if (payloadTool(a.payload) === UPDATE) return { text: "Open in Team", href: memberHash(subject.id) };
-  const applied = a.status === "approved" && a.apply_refused === undefined;
+  const applied = a.status === "approved" && a.applied !== undefined;
   return applied ? { text: "Open in Team", href: memberHash(subject.id) } : undefined;
 }
