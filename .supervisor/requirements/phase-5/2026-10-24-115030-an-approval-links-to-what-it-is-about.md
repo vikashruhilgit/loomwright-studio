@@ -55,3 +55,9 @@ Recorded 2026-10-24, after the phase 5 live exit run (harness `phase-5-exit-live
 app/src/screens/approvals/
 app/e2e/approvals.spec.ts
 app/e2e/fixtures/approvals.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-25T06:32:29Z
+- **Brief:** .supervisor/jobs/done/2026-10-25-an-approval-links-to-what-it-is-about.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/138
