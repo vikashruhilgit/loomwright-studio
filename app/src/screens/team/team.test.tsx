@@ -620,6 +620,8 @@ describe("the #/team/<id> route", () => {
     expect(within(inspector).getByRole("heading", { level: 2 }).textContent).toBe("Mason");
     expect(card("Mason").getAttribute("aria-current")).toBe("true");
     expect(card("Pim").getAttribute("aria-current")).toBeNull();
+    // Nothing held focus (the link's screen unmounted): it lands in the inspector, once the member is there.
+    await waitFor(() => expect(inspector.contains(document.activeElement)).toBe(true));
   });
 
   it("a hashchange to another member's #/team/<id> moves the selection; nothing is written", async () => {
@@ -634,6 +636,7 @@ describe("the #/team/<id> route", () => {
     const inspector = await screen.findByTestId("team-inspector");
     await waitFor(() => expect(within(inspector).getByRole("heading", { level: 2 }).textContent).toBe("Pim"));
     expect(card("Pim").getAttribute("aria-current")).toBe("true");
+    await waitFor(() => expect(screen.getByTestId("team-inspector").contains(document.activeElement)).toBe(true));
     expect(card("Mason").getAttribute("aria-current")).toBeNull();
     expect(kernel.fake.requests.filter((r) => r.req.method !== "GET")).toEqual([]);
   });

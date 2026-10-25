@@ -674,8 +674,15 @@ describe("#/chat?playbook=<id>: scroll to the playbook's card", () => {
     expect(screen.getByText("with Wright")).toBeTruthy();
     await screen.findByRole("region", { name: "Playbook pr-review" });
     await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0]).toBe(view.container.querySelector('[data-playbook="3"]'));
+    const target = view.container.querySelector('[data-playbook="3"]');
+    expect(calls[0]).toBe(target);
     expect(screen.queryByTestId("chat-card-missing")).toBeNull();
+    // Nothing held focus (the link's screen unmounted): it starts in the card, on its first enabled control.
+    expect(target?.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement?.tagName).toBe("BUTTON");
+    // Focus moved on purpose stays where it is: a refetch neither scrolls nor takes it back.
+    const composer = screen.getByRole("textbox");
+    composer.focus();
 
     const scroller = view.container.querySelector(".chat-scroll") as HTMLElement;
     const pins: number[] = [];
@@ -686,6 +693,7 @@ describe("#/chat?playbook=<id>: scroll to the playbook's card", () => {
     await screen.findByText("newest");
     expect(calls).toHaveLength(1);
     expect(pins).not.toContain(900);
+    expect(document.activeElement).toBe(composer);
   });
 
   it("the same link followed again (the same hash, no hashchange of its own) scrolls again", async () => {
@@ -697,11 +705,14 @@ describe("#/chat?playbook=<id>: scroll to the playbook's card", () => {
     await waitFor(() => expect(calls).toHaveLength(1));
     const link = await screen.findByTestId("chat-approval-link");
     expect(link.getAttribute("href")).toBe("#/chat?playbook=3");
+    link.focus();
     await act(async () => {
       fireEvent.click(link);
     });
     await waitFor(() => expect(calls).toHaveLength(2));
     expect(window.location.hash).toBe("#/chat?playbook=3");
+    // The link is still on screen and focused: the scroll leaves focus on it.
+    expect(document.activeElement).toBe(link);
   });
 
   it("leaving the route and coming back to the same card scrolls again", async () => {
@@ -717,11 +728,34 @@ describe("#/chat?playbook=<id>: scroll to the playbook's card", () => {
   it("a card not in the loaded thread says so, with the playbook's id, and scrolls nothing", async () => {
     const { calls } = stubScroll();
     const k = cardKit();
-    await renderChat(k, "#/chat?playbook=99");
+    const view = await renderChat(k, "#/chat?playbook=99");
     const missing = await screen.findByTestId("chat-card-missing");
     expect(missing.getAttribute("role")).toBe("status");
-    expect(missing.textContent).toBe("Playbook #99's card isn't in this thread.");
+    expect(missing.textContent).toBe("Playbook #99 isn't in the kernel's playbook list.");
+    // Outside the scroll, which opens at the thread's end: the line is seen wherever the view is.
+    expect(view.container.querySelector(".chat-scroll")?.contains(missing)).toBe(false);
     expect(calls).toHaveLength(0);
+  });
+
+  it("a listed playbook whose card is in no loaded page, with no cursor left, says it isn't in this thread", async () => {
+    stubScroll();
+    const k = cardKit();
+    k.state.threads.wright = thread([message(1)]);
+    await renderChat(k, "#/chat?playbook=3");
+    expect((await screen.findByTestId("chat-card-missing")).textContent).toBe("Playbook pr-review's card isn't in this thread.");
+  });
+
+  it("an id the playbook list lacks never points at Load earlier, even with a cursor: no page can show its card", async () => {
+    stubScroll();
+    const k = kit({
+      threads: { wright: thread([message(5, { text: "newer" })], { next_before: "c1" }) },
+      pages: { "wright c1": thread([eventItem(2, "playbook_created", "Playbook pr-review created", { playbook_id: 3 })]) },
+      playbooks: [playbook(3, { slug: "pr-review" })],
+    });
+    await renderChat(k, "#/chat?playbook=99");
+    const missing = await screen.findByTestId("chat-card-missing");
+    expect(missing.textContent).toBe("Playbook #99 isn't in the kernel's playbook list.");
+    expect(missing.textContent).not.toContain("Load earlier");
   });
 
   it("a refused playbooks read is an answer too: the card can't be shown, and the line says why, by id", async () => {

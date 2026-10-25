@@ -307,6 +307,9 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     handledHash.current = hash;
     atEnd.current = false;
     card.scrollIntoView({ block: "center" });
+    // The link that led here unmounted with its screen (focus fell to <body>): start the keyboard in the card,
+    // so a Tab reaches Run now. Focus that is somewhere on purpose stays there.
+    if (focusLost()) card.querySelector<HTMLElement>("button:not(:disabled)")?.focus({ preventScroll: true });
   });
 
   const loadEarlier = async (): Promise<void> => {
@@ -366,6 +369,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   const wantedName = wantedListed === undefined ? `#${wantedCard ?? ""}` : printable(wantedListed.slug);
   let missingText: string;
   if (playbookList === undefined) missingText = `Playbook ${wantedName}'s card can't be shown: the kernel's playbook list didn't load.`;
+  else if (wantedListed === undefined) missingText = `Playbook ${wantedName} isn't in the kernel's playbook list.`;
   else if (cursor === null) missingText = `Playbook ${wantedName}'s card isn't in this thread.`;
   else missingText = `Playbook ${wantedName}'s card isn't in the part of this thread that's loaded. Load earlier to find it.`;
   const shownInPlaybook = new Set<number>();
@@ -473,6 +477,12 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
           </Button>
         )}
       </div>
+      {/* Outside the scroll: the thread opens at its end, and this line must be seen wherever the view is. */}
+      {cardMissing ? (
+        <p className="chat-card-missing" role="status" data-testid="chat-card-missing">
+          {missingText}
+        </p>
+      ) : null}
       <div
         className="chat-scroll"
         ref={scrollRef}
@@ -493,11 +503,6 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
             {pageError}
           </p>
         )}
-        {cardMissing ? (
-          <p className="chat-card-missing" role="status" data-testid="chat-card-missing">
-            {missingText}
-          </p>
-        ) : null}
         {body}
       </div>
       <ChatComposer api={api} agent={agent} agentName={name} text={text} onTextChange={setText} inputRef={inputRef} />

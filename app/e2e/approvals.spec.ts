@@ -302,12 +302,23 @@ test("an enable approval links to its playbook's card: Open playbook pr-review o
   const link = detail.getByRole("link", { name: "Open playbook pr-review" });
   await expect(link).toHaveAttribute("href", "#/chat?playbook=3");
 
-  await link.click();
+  // By keyboard: the link unmounts with the Approvals screen, so focus must move into the card, not fall to <body>.
+  await link.focus();
+  await page.keyboard.press("Enter");
   await expect.poll(() => page.evaluate(() => window.location.hash)).toBe("#/chat?playbook=3");
   await expect(page.getByTestId("screen-chat")).toHaveAttribute("data-agent", "wright");
   const card = page.locator('[data-playbook="3"]');
   await expect(card).toBeVisible();
   await expect(card).toBeInViewport();
+  await expect.poll(() => card.evaluate((el) => el.contains(document.activeElement))).toBe(true);
+
+  // A playbook the thread has no card for: the line saying so is in view, though the thread opens at its end.
+  await page.evaluate(() => {
+    window.location.hash = "#/chat?playbook=99";
+  });
+  const missing = page.getByTestId("chat-card-missing");
+  await expect(missing).toContainText("#99");
+  await expect(missing).toBeInViewport();
   // A link only navigates: nothing was decided.
   expect(kernel.posts).toEqual([]);
 });
