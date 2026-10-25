@@ -637,6 +637,7 @@ describe("thread", () => {
 describe("#/chat?playbook=<id>: scroll to the playbook's card", () => {
   const original = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
   afterEach(() => {
+    vi.restoreAllMocks();
     if (original === undefined) delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
     else Object.defineProperty(Element.prototype, "scrollIntoView", original);
   });
@@ -711,8 +712,44 @@ describe("#/chat?playbook=<id>: scroll to the playbook's card", () => {
     });
     await waitFor(() => expect(calls).toHaveLength(2));
     expect(window.location.hash).toBe("#/chat?playbook=3");
-    // The link is still on screen and focused: the scroll leaves focus on it.
+    // The link that was followed hands focus to the card, so the next Tab reaches its controls, not the composer.
+    expect(calls[1]?.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement?.tagName).toBe("BUTTON");
+  });
+
+  it("the inline link followed from the thread's end moves focus into the card; a refetch then takes nothing", async () => {
+    const { calls } = stubScroll();
+    const six = approval(6, { action: "kernel_playbook_enable", payload: { tool: "mcp__kernel__kernel_playbook_enable", input: { id: 3, idempotency_key: "k" }, cwd: "/" } });
+    const k = cardKit();
+    k.state.threads.wright = thread(k.state.threads.wright?.items ?? [], { pending_approvals: [six] });
+    const view = await renderChat(k, "#/chat");
+    const link = await screen.findByTestId("chat-approval-link");
+    // The link stays mounted (no focus lost), and its fragment names no element id: only the thread can move focus.
+    link.focus();
+    await act(async () => {
+      fireEvent.click(link);
+    });
+    await go("#/chat?playbook=3");
+    await waitFor(() => expect(calls).toHaveLength(1));
+    const card = view.container.querySelector('[data-playbook="3"]');
+    expect(card?.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement?.tagName).toBe("BUTTON");
+    // Focus moved on purpose (back to the link) stays there through a refetch.
+    link.focus();
+    await done(k);
+    expect(calls).toHaveLength(1);
     expect(document.activeElement).toBe(link);
+  });
+
+  it("a focused control other than the link that set the hash keeps focus when the card is scrolled to", async () => {
+    const { calls } = stubScroll();
+    const k = cardKit();
+    await renderChat(k, "#/chat");
+    const composer = await screen.findByRole("textbox");
+    composer.focus();
+    await go("#/chat?playbook=3");
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(document.activeElement).toBe(composer);
   });
 
   it("leaving the route and coming back to the same card scrolls again", async () => {
@@ -781,5 +818,70 @@ describe("#/chat?playbook=<id>: scroll to the playbook's card", () => {
     await click(/^Load earlier/);
     await screen.findByRole("region", { name: "Playbook pr-review" });
     await waitFor(() => expect(screen.queryByTestId("chat-card-missing")).toBeNull());
+  });
+
+  /** Hold every animation frame until `run` (Load earlier restores the reading position in one). */
+  function holdFrames(): { readonly run: () => void; readonly count: () => number } {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      frames.push(cb);
+      return frames.length;
+    });
+    return {
+      run: () => {
+        for (const cb of frames.splice(0)) cb(0);
+      },
+      count: () => frames.length,
+    };
+  }
+
+  /** Make `.chat-scroll`'s height settable and record every `scrollTop` written. */
+  function pinScroller(container: HTMLElement): { readonly pins: number[]; setHeight: (h: number) => void } {
+    const scroller = container.querySelector(".chat-scroll") as HTMLElement;
+    let height = 900;
+    const pins: number[] = [];
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, get: () => 0, set: (v: number) => pins.push(v) });
+    return { pins, setHeight: (h) => (height = h) };
+  }
+
+  it("Load earlier that brings the wanted card leaves the view on the card: its position restore stands aside", async () => {
+    const { calls } = stubScroll();
+    const frames = holdFrames();
+    const k = kit({
+      threads: { wright: thread([message(5, { text: "newer" })], { next_before: "c1" }) },
+      pages: { "wright c1": thread([eventItem(2, "playbook_created", "Playbook pr-review created", { playbook_id: 3 })]) },
+      playbooks: [playbook(3, { slug: "pr-review" })],
+    });
+    const view = await renderChat(k, "#/chat?playbook=3");
+    await screen.findByTestId("chat-card-missing");
+    const scroller = pinScroller(view.container);
+    await click(/^Load earlier/);
+    scroller.setHeight(1500);
+    await screen.findByRole("region", { name: "Playbook pr-review" });
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(frames.count()).toBe(1);
+    frames.run();
+    // The restore would write 1500 - 900: the card scroll ran after its measure, so it writes nothing.
+    expect(scroller.pins).toEqual([]);
+  });
+
+  it("Load earlier after the card was scrolled to still keeps the reading position (no stale guard)", async () => {
+    const { calls } = stubScroll();
+    const frames = holdFrames();
+    const k = kit({
+      threads: { wright: thread([eventItem(2, "playbook_created", "Playbook pr-review created", { playbook_id: 3 }), message(5, { text: "newer" })], { next_before: "c1" }) },
+      pages: { "wright c1": thread([message(1, { text: "older" })]) },
+      playbooks: [playbook(3, { slug: "pr-review" })],
+    });
+    const view = await renderChat(k, "#/chat?playbook=3");
+    await waitFor(() => expect(calls).toHaveLength(1));
+    const scroller = pinScroller(view.container);
+    await click(/^Load earlier/);
+    scroller.setHeight(1500);
+    await screen.findByText("older");
+    frames.run();
+    expect(calls).toHaveLength(1);
+    expect(scroller.pins).toContain(600);
   });
 });

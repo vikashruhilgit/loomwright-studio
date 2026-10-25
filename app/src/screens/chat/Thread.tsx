@@ -214,6 +214,8 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   const wantedCard = playbookFromHash(hash);
   /** The `#/chat?playbook=<id>` hash already scrolled to; cleared off the route and by a repeated hashchange. */
   const handledHash = useRef<string | null>(null);
+  /** How many times a wanted card was scrolled to: a Load earlier's restore stands aside if one ran after it measured. */
+  const cardScrolls = useRef(0);
   const [, setHashTick] = useState(0);
   useEffect(() => {
     // The same link followed again dispatches a hashchange with no new hash (`rehashIfCurrent`): scroll again.
@@ -307,9 +309,13 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     handledHash.current = hash;
     atEnd.current = false;
     card.scrollIntoView({ block: "center" });
-    // The link that led here unmounted with its screen (focus fell to <body>): start the keyboard in the card,
-    // so a Tab reaches Run now. Focus that is somewhere on purpose stays there.
-    if (focusLost()) card.querySelector<HTMLElement>("button:not(:disabled)")?.focus({ preventScroll: true });
+    cardScrolls.current += 1;
+    // Start the keyboard in the card, so a Tab reaches Run now, when a link led here: one that unmounted with its
+    // screen (focus fell to <body>), or the thread's own inline link, still focused, whose href is this hash. Focus
+    // anywhere else is there on purpose and stays, so a refetch that renders the card later never takes it.
+    const active = document.activeElement;
+    const followed = active instanceof HTMLAnchorElement && active.getAttribute("href") === hash && listRef.current?.contains(active) === true;
+    if (focusLost() || followed) card.querySelector<HTMLElement>("button:not(:disabled)")?.focus({ preventScroll: true });
   });
 
   const loadEarlier = async (): Promise<void> => {
@@ -319,6 +325,8 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     setPaging(true);
     const el = scrollRef.current;
     const fromBottom = el === null ? 0 : el.scrollHeight - el.scrollTop;
+    // A scroll to the wanted card after this measure (the page brought it, or a refetch did) is the newer intent.
+    const scrollsAtMeasure = cardScrolls.current;
     let result;
     try {
       result = await api.request<ThreadResponse>({ method: "GET", path: "/threads/:agent", params: { agent }, query: { before: cursor } });
@@ -341,9 +349,9 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     atEnd.current = false;
     // Held items are newer than every older page (they left the live page's oldest end).
     setOlder((prev) => ({ items: mergeItems(mergeItems(page.items, prev?.items ?? []), held), next: page.next_before }));
-    // Keep what the owner was reading where it was.
+    // Keep what the owner was reading where it was, unless the view has since moved to the wanted card.
     requestAnimationFrame(() => {
-      if (el !== null) el.scrollTop = el.scrollHeight - fromBottom;
+      if (el !== null && cardScrolls.current === scrollsAtMeasure) el.scrollTop = el.scrollHeight - fromBottom;
     });
   };
 

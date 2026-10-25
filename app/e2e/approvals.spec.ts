@@ -33,6 +33,7 @@ import {
   cannedGrants,
   charterApproval,
   enableApproval,
+  pagedWrightThread,
   hostileApproval,
   requestApproval,
   reviewApproval,
@@ -320,6 +321,34 @@ test("an enable approval links to its playbook's card: Open playbook pr-review o
   await expect(missing).toContainText("#99");
   await expect(missing).toBeInViewport();
   // A link only navigates: nothing was decided.
+  expect(kernel.posts).toEqual([]);
+});
+
+test("a card one page back: Load earlier brings it, and the view stays on the card, not the old reading position", async () => {
+  // Wright's first page lacks playbook 3's card; page c1 has it, with twelve older messages around it.
+  const kernel = approvalsKernel({ approvals: [enableApproval(6)] });
+  const routes = { ...chatFixture("populated").options.routes, ...approvalsRoutes(kernel), "GET /threads/:agent": pagedWrightThread() };
+  const started = await startFixtureKernel({ routes });
+  fixture = started;
+  const page = await launch(started.env);
+  await page.evaluate(() => {
+    window.location.hash = "#/chat?playbook=3";
+  });
+  await expect(page.getByTestId("chat-card-missing")).toContainText("Load earlier to find it.");
+  // Load earlier restores the old reading position in an animation frame, which may run before or after React
+  // commits the page (and the card scroll). Hold each frame's callbacks until after the commit, the order that
+  // put the card off screen, so this check never passes by the luck of the other order.
+  await page.evaluate(() => {
+    const raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (cb) => raf(() => setTimeout(() => cb(performance.now()), 50));
+  });
+  await page.getByRole("button", { name: /^Load earlier/ }).click();
+  const card = page.locator('[data-playbook="3"]');
+  await expect(card).toBeVisible();
+  await expect(page.getByTestId("chat-card-missing")).toHaveCount(0);
+  // Past the held frame Load earlier restores the old reading position in: the card must still be in view.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(card).toBeInViewport();
   expect(kernel.posts).toEqual([]);
 });
 

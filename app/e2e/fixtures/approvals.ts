@@ -18,7 +18,7 @@
 // every POST is recorded with its params and body. `onChange` is called after
 // each decision and revoke with the event kind the kernel would append, so a
 // spec can push it through the feed.
-import type { Approval, BrainMessage, EventFrame, Grant, RouteKey, SessionSummary } from "../../src/api/contract";
+import type { Approval, BrainMessage, EventFrame, Grant, RouteKey, SessionSummary, ThreadItem, ThreadResponse } from "../../src/api/contract";
 import type { FixtureAnswer, FixtureRequest, FixtureRoute } from "../fixture-kernel";
 
 export const KERNEL_AGENT_CREATE = "mcp__kernel__kernel_agent_create";
@@ -131,6 +131,28 @@ export function enableApproval(id = 6): Approval {
     payload: { tool: KERNEL_PLAYBOOK_ENABLE, input: { id: 3, idempotency_key: "k" }, cwd: "/" },
     display: "Enable playbook pr-review (v2)",
   });
+}
+
+/**
+ * A `GET /threads/:agent` whose playbook 3 card is one page back: Wright's
+ * first page is twelve replied messages with cursor `c1`; page `c1` is
+ * playbook 3's `playbook_created` and twelve older ones. Any other agent's
+ * thread is empty.
+ */
+export function pagedWrightThread(): FixtureRoute {
+  const replied = (id: number): ThreadItem => ({
+    type: "message",
+    ...brainMessage(id, "wright", "ask", `Question ${id} about this week's reviews.`),
+    status: "replied",
+    reply_text: `Answer ${id}: two PRs are waiting on you, one is blocked on CI, and the rest are merged.`,
+  });
+  const range = (from: number): ThreadItem[] => Array.from({ length: 12 }, (_, i) => replied(from + i));
+  const created: ThreadItem = { type: "event", id: 101, at: at(1), kind: "playbook_created", summary: "Playbook pr-review created (v1)", ref: { playbook_id: 3 } };
+  return (req) => {
+    if (req.params.agent !== "wright") return ok({ items: [], next_before: null, pending_approvals: [] } satisfies ThreadResponse);
+    if (req.query.before === "c1") return ok({ items: [created, ...range(1)], next_before: null, pending_approvals: [] } satisfies ThreadResponse);
+    return ok({ items: range(20), next_before: "c1", pending_approvals: [] } satisfies ThreadResponse);
+  };
 }
 
 /** #2: a rail-held Bash call from a playbook session, with its own cwd. */
