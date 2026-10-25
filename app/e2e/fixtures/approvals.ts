@@ -22,6 +22,7 @@ import type { Approval, BrainMessage, EventFrame, Grant, RouteKey, SessionSummar
 import type { FixtureAnswer, FixtureRequest, FixtureRoute } from "../fixture-kernel";
 
 export const KERNEL_AGENT_CREATE = "mcp__kernel__kernel_agent_create";
+export const KERNEL_PLAYBOOK_ENABLE = "mcp__kernel__kernel_playbook_enable";
 
 /** The kernel's sentence for an approval asked for by its agent (the first refusal `alwaysRefusal` gives). */
 export function notRailHeldMessage(id: number): string {
@@ -81,7 +82,7 @@ export function approval(id: number, overrides: Partial<Approval> = {}): Approva
   };
 }
 
-/** #1: a charter create, held from a playbook session, applied by the kernel on Allow once. */
+/** #1: a charter create, held from a playbook session, applied by the kernel on Allow once. The payload is the rail's `{tool, input, cwd}`. */
 export function charterApproval(id = 1): Approval {
   return approval(id, {
     requesting_agent: "wright",
@@ -92,12 +93,18 @@ export function charterApproval(id = 1): Approval {
     payload: {
       tool: KERNEL_AGENT_CREATE,
       input: {
-        name: "Sable",
-        persona: "Short, dry, no hashtags unless asked.",
-        duties: ["Draft posts from what shipped this week", "Summarise replies each evening"],
-        model: "sonnet",
-        limits: { tokens_per_day: 250000, sessions: 1 },
+        charter: {
+          id: "sable",
+          display_name: "Sable",
+          persona: "Short, dry, no hashtags unless asked.",
+          duties: ["Draft posts from what shipped this week", "Summarise replies each evening"],
+          model: "sonnet",
+          limits: { tokens_per_day: 250000, sessions: 1 },
+        },
+        idempotency_key: "crew-setup-sable",
       },
+      // The hook's cwd: session #12's (`cannedSessions`).
+      cwd: "/Users/owner/src/studio",
     },
     display: [
       "Sable · social",
@@ -107,6 +114,22 @@ export function charterApproval(id = 1): Approval {
       "  - Summarise replies each evening",
       "Model: sonnet · 250,000 tokens/day · 1 session",
     ].join("\n"),
+  });
+}
+
+/**
+ * Approval 6 of the phase 5 live run: Wright's chat session (no playbook)
+ * asking to enable playbook 3, which the chat fixture serves as `pr-review`.
+ */
+export function enableApproval(id = 6): Approval {
+  return approval(id, {
+    requesting_agent: "wright",
+    requesting_session: 12,
+    action: "kernel_playbook_enable",
+    requested_at: at(9),
+    playbook: null,
+    payload: { tool: KERNEL_PLAYBOOK_ENABLE, input: { id: 3, idempotency_key: "k" }, cwd: "/" },
+    display: "Enable playbook pr-review (v2)",
   });
 }
 

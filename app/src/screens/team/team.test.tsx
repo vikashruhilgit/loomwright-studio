@@ -5,7 +5,8 @@
 // off / on through the owner routes with the card updated only by the feed (AC4),
 // Wright's inspector (AC5), the New crew member form and `POST /agents` (AC6),
 // "Ask Wright to draft it" (AC7), the ⌘K commands (AC8), keyboard reachability
-// and focus (AC9), and the kernel vocabularies the form offers, read from the
+// and focus (AC9), the `#/team/<id>` route an approval's Open in Team opens, and
+// the kernel vocabularies the form offers, read from the
 // kernel's own source as text (the `Avatar.test.tsx` pattern).
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -29,6 +30,8 @@ import {
   charterOf,
   enforcedToolPolicy,
   limitOf,
+  memberHash,
+  memberIdFromHash,
   outcomeOf,
   rosterModel,
   settingText,
@@ -571,6 +574,76 @@ describe("the designed states", () => {
     await startTeam({ roster: [WRIGHT], details: {} });
     expect(cards().length).toBe(1);
     expect(screen.getByTestId("team-empty").textContent).toContain("No crew members yet");
+  });
+});
+
+// ---- The #/team/<id> route (an approval's Open in Team) -------------------------------------------
+
+describe("the #/team/<id> route", () => {
+  /** Put `hash` in the URL without a navigation: no hashchange and no popstate fires, so only what the test dispatches is seen. */
+  function setHash(hash: string): void {
+    window.history.replaceState(null, "", hash);
+  }
+
+  /** Mount Team with `GET /agents` held until `release()`: the roster answers after the screen mounted. */
+  function startHeld(): { readonly release: () => void } {
+    const fake = fakeBridge();
+    let answer: ((result: ApiResult<unknown>) => void) | undefined;
+    fake.route("GET /status", () => ok(STATUS));
+    fake.route("GET /agents", () => new Promise<ApiResult<unknown>>((resolve) => (answer = resolve)));
+    fake.route("GET /approvals", () => ok({ approvals: [] }));
+    fake.route("GET /messages", () => ok({ messages: [] }));
+    fake.route("GET /sessions", () => ok({ sessions: [] }));
+    fake.route("GET /agents/:id", (req) => {
+      const id = String(req.params?.id);
+      return id === "mason" ? ok(detail(MASON)) : id === "pim" ? ok(detail(PIM)) : refused(404, { error: "not_found" });
+    });
+    render(<TeamView api={fake.bridge} registry={createCommandRegistry()} />);
+    return { release: () => answer?.(ok({ agents: [MASON, WRIGHT, PIM] })) };
+  }
+
+  it("memberHash and memberIdFromHash: the id encoded and decoded; nothing for #/team or a malformed escape", () => {
+    expect(memberHash("sable")).toBe("#/team/sable");
+    expect(memberHash("a/b?c")).toBe("#/team/a%2Fb%3Fc");
+    expect(memberIdFromHash("#/team/sable")).toBe("sable");
+    expect(memberIdFromHash(memberHash("a/b?c"))).toBe("a/b?c");
+    for (const hash of ["#/team", "#/team/", "#/team/a/b", "#/team/%E0%A4%A", "#/chat/sable", "#/teams/sable"]) expect(memberIdFromHash(hash), hash).toBeUndefined();
+  });
+
+  it("a cold open at #/team/<id> selects that member once the roster, answering after mount, has it", async () => {
+    setHash("#/team/mason");
+    const { release } = startHeld();
+    await act(async () => undefined);
+    expect(screen.queryByTestId("team-inspector")).toBeNull();
+    await act(async () => release());
+    const inspector = await screen.findByTestId("team-inspector");
+    expect(within(inspector).getByRole("heading", { level: 2 }).textContent).toBe("Mason");
+    expect(card("Mason").getAttribute("aria-current")).toBe("true");
+    expect(card("Pim").getAttribute("aria-current")).toBeNull();
+  });
+
+  it("a hashchange to another member's #/team/<id> moves the selection; nothing is written", async () => {
+    setHash("#/team/mason");
+    const kernel = await startTeam();
+    await screen.findByTestId("team-inspector");
+    expect(card("Mason").getAttribute("aria-current")).toBe("true");
+    act(() => {
+      setHash("#/team/pim");
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    const inspector = await screen.findByTestId("team-inspector");
+    await waitFor(() => expect(within(inspector).getByRole("heading", { level: 2 }).textContent).toBe("Pim"));
+    expect(card("Pim").getAttribute("aria-current")).toBe("true");
+    expect(card("Mason").getAttribute("aria-current")).toBeNull();
+    expect(kernel.fake.requests.filter((r) => r.req.method !== "GET")).toEqual([]);
+  });
+
+  it("#/team/nobody selects no member: no inspector at all, and no card is current", async () => {
+    setHash("#/team/nobody");
+    await startTeam();
+    await act(async () => undefined);
+    expect(screen.queryByTestId("team-inspector")).toBeNull();
+    expect(cards().every((c) => c.getAttribute("aria-current") === null)).toBe(true);
   });
 });
 

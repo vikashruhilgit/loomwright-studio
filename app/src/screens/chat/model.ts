@@ -58,8 +58,31 @@ export function threadHash(agent: string): string {
   return agent === WRIGHT ? "#/chat" : `#/chat/${encodeURIComponent(agent)}`;
 }
 
+/** The route to playbook `id`'s card in Wright's thread (`hashAgent` reads it as Wright's, the shell as Chat). */
+export function playbookCardHash(id: number): string {
+  return `#/chat?playbook=${id}`;
+}
+
+const PLAYBOOK_CARD_ROUTE = /^#\/chat\?playbook=([1-9][0-9]{0,15})$/;
+
+/** The playbook a `#/chat?playbook=<id>` route names, or `undefined`. */
+export function playbookFromHash(hash: string): number | undefined {
+  const match = PLAYBOOK_CARD_ROUTE.exec(hash);
+  const id = match === null ? Number.NaN : Number(match[1]);
+  return Number.isSafeInteger(id) ? id : undefined;
+}
+
 export function navigate(hash: string): void {
   window.location.hash = hash;
+}
+
+/**
+ * A link's click: following an `href` equal to the current hash fires no
+ * `hashchange`, so say it again (the screen scrolls or selects once more).
+ * The link itself still navigates; nothing else is done.
+ */
+export function rehashIfCurrent(href: string): void {
+  if (window.location.hash === href) window.dispatchEvent(new HashChangeEvent("hashchange"));
 }
 
 /** The roster's specialists: every entry but Wright, who never appears under Crew (D25). */

@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 // Chat's cards: the playbook card (provenance, Set, Run now, Turn off, no
 // Enable), the trigger card (schedule, next fire, on / off / spent, On / Off,
-// needs_confirmation), and the charter
-// card (Create, Edit in English, Deny).
+// needs_confirmation), the charter
+// card (Create, Edit in English, Deny), and the inline approval's source label
+// and link to what it is about.
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ApiResult } from "../../api/contract";
@@ -503,6 +504,37 @@ describe("cards", () => {
     await act(async () => {
       for (const go of held) go();
     });
+  });
+
+  it("AC4: an inline enable approval reads Requested by Wright in chat and links to its playbook's card by slug", async () => {
+    const six = approval(6, {
+      action: "kernel_playbook_enable",
+      requesting_session: 12,
+      payload: { tool: "mcp__kernel__kernel_playbook_enable", input: { id: 3, idempotency_key: "k" }, cwd: "/" },
+    });
+    const k = kit({ threads: { wright: thread([], { pending_approvals: [six] }) }, playbooks: [playbook(3, { slug: "pr-review" })] });
+    const view = await renderChat(k);
+    const card = view.container.querySelector('[data-approval="6"]') as HTMLElement;
+    expect(await within(card).findByText("Requested by Wright in chat")).toBeTruthy();
+    expect(card.textContent).not.toContain("Not from a playbook");
+    const link = await within(card).findByTestId("chat-approval-link");
+    await waitFor(() => expect(link.textContent).toBe("Open playbook pr-review"));
+    expect(link.tagName).toBe("A");
+    expect(link.getAttribute("href")).toBe("#/chat?playbook=3");
+    // A link only navigates: following it decides nothing.
+    await act(async () => {
+      fireEvent.click(link);
+    });
+    expect(k.posted("POST /approvals/:id/approve")).toHaveLength(0);
+    expect(k.posted("POST /approvals/:id/deny")).toHaveLength(0);
+  });
+
+  it("an inline approval about nothing the app can open has no link", async () => {
+    const k = kit({ threads: { wright: thread([], { pending_approvals: [approval(7, { payload: { tool: "Bash", command: "gh pr comment 1" } })] }) } });
+    const view = await renderChat(k);
+    const card = view.container.querySelector('[data-approval="7"]') as HTMLElement;
+    expect(await within(card).findByText("Requested by Wright in chat")).toBeTruthy();
+    expect(within(card).queryByTestId("chat-approval-link")).toBeNull();
   });
 
   it("the confirm step never drops focus: On to Cancel, Cancel to On, Turn on and fire to On", async () => {

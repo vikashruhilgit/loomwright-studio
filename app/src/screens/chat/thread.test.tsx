@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 // Chat's thread: message states, the reply bubble, event cards, the inline
-// approval at the end, inert untrusted text, paging back, and routing.
+// approval at the end, inert untrusted text, paging back, routing, and the
+// `#/chat?playbook=<id>` route that scrolls to a playbook's card.
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ALWAYS_INELIGIBLE } from "./cards";
+import { playbookCardHash, playbookFromHash } from "./model";
 import { WRIGHT_EMPTY } from "./Thread";
 import { ok } from "../../store/fake-bridge";
 import { agent, approval, eventItem, kit, message, playbook, renderChat, resetChat, thread, trigger, go } from "./testkit";
@@ -130,7 +132,7 @@ describe("thread", () => {
     const k = kit({ threads: { wright: thread([], { pending_approvals: [approval(7, { playbook: { id: 3, slug: "pr-review", version: 1 } })] }) } });
     k.state.posts["POST /approvals/:id/approve"] = () => ({ ok: false, status: 409, body: { error: "always_not_supported", message: "This action can only be approved once." } });
     await renderChat(k);
-    expect(await screen.findByText("From playbook pr-review")).toBeTruthy();
+    expect(await screen.findByText("Requested by playbook pr-review v1")).toBeTruthy();
     await click(/^Always/);
     expect((await screen.findByRole("alert")).textContent).toContain("This action can only be approved once.");
     expect(k.posted("POST /approvals/:id/approve")[0]?.body).toEqual({ decision: "always" });
@@ -629,5 +631,121 @@ describe("thread", () => {
     await go("#/chat/pim");
     await go("#/chat");
     expect(await screen.findByText("answer 1")).toBeTruthy();
+  });
+});
+
+describe("#/chat?playbook=<id>: scroll to the playbook's card", () => {
+  const original = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
+  afterEach(() => {
+    if (original === undefined) delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    else Object.defineProperty(Element.prototype, "scrollIntoView", original);
+  });
+
+  /** Stub `scrollIntoView` (jsdom has none), recording the element each call was made on. */
+  function stubScroll(): { readonly calls: Element[]; readonly spy: ReturnType<typeof vi.fn> } {
+    const calls: Element[] = [];
+    const spy = vi.fn(function (this: Element) {
+      calls.push(this);
+    });
+    Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, writable: true, value: spy });
+    return { calls, spy };
+  }
+
+  function cardKit(): Kit {
+    return kit({
+      threads: { wright: thread([message(1), eventItem(2, "playbook_created", "Playbook pr-review created", { playbook_id: 3 }), message(4, { text: "later" })]) },
+      playbooks: [playbook(3, { slug: "pr-review" })],
+    });
+  }
+
+  it("playbookCardHash and playbookFromHash: a positive id only, nothing after it", () => {
+    expect(playbookCardHash(3)).toBe("#/chat?playbook=3");
+    expect(playbookFromHash("#/chat?playbook=3")).toBe(3);
+    expect(playbookFromHash("#/chat?playbook=1024")).toBe(1024);
+    for (const hash of ["#/chat?playbook=0", "#/chat?playbook=03", "#/chat?playbook=3x", "#/chat?playbook=-3", "#/chat?playbook=", "#/chat", "#/chat/pim?playbook=3", "#/approvals"]) {
+      expect(playbookFromHash(hash), hash).toBeUndefined();
+    }
+  });
+
+  it("scrolls Wright's thread to the card exactly once; a refetch (even with a new item) neither scrolls again nor pulls the view to the end", async () => {
+    const { calls } = stubScroll();
+    const k = cardKit();
+    const view = await renderChat(k, "#/chat?playbook=3");
+    expect(screen.getByText("with Wright")).toBeTruthy();
+    await screen.findByRole("region", { name: "Playbook pr-review" });
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toBe(view.container.querySelector('[data-playbook="3"]'));
+    expect(screen.queryByTestId("chat-card-missing")).toBeNull();
+
+    const scroller = view.container.querySelector(".chat-scroll") as HTMLElement;
+    const pins: number[] = [];
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, get: () => 900 });
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, get: () => 0, set: (v: number) => pins.push(v) });
+    k.state.threads.wright = thread([...(k.state.threads.wright?.items ?? []), message(5, { text: "newest" })]);
+    await done(k);
+    await screen.findByText("newest");
+    expect(calls).toHaveLength(1);
+    expect(pins).not.toContain(900);
+  });
+
+  it("the same link followed again (the same hash, no hashchange of its own) scrolls again", async () => {
+    const { calls } = stubScroll();
+    const six = approval(6, { action: "kernel_playbook_enable", payload: { tool: "mcp__kernel__kernel_playbook_enable", input: { id: 3, idempotency_key: "k" }, cwd: "/" } });
+    const k = cardKit();
+    k.state.threads.wright = thread(k.state.threads.wright?.items ?? [], { pending_approvals: [six] });
+    await renderChat(k, "#/chat?playbook=3");
+    await waitFor(() => expect(calls).toHaveLength(1));
+    const link = await screen.findByTestId("chat-approval-link");
+    expect(link.getAttribute("href")).toBe("#/chat?playbook=3");
+    await act(async () => {
+      fireEvent.click(link);
+    });
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(window.location.hash).toBe("#/chat?playbook=3");
+  });
+
+  it("leaving the route and coming back to the same card scrolls again", async () => {
+    const { calls } = stubScroll();
+    await renderChat(cardKit(), "#/chat?playbook=3");
+    await waitFor(() => expect(calls).toHaveLength(1));
+    await go("#/chat");
+    expect(calls).toHaveLength(1);
+    await go("#/chat?playbook=3");
+    await waitFor(() => expect(calls).toHaveLength(2));
+  });
+
+  it("a card not in the loaded thread says so, with the playbook's id, and scrolls nothing", async () => {
+    const { calls } = stubScroll();
+    const k = cardKit();
+    await renderChat(k, "#/chat?playbook=99");
+    const missing = await screen.findByTestId("chat-card-missing");
+    expect(missing.getAttribute("role")).toBe("status");
+    expect(missing.textContent).toBe("Playbook #99's card isn't in this thread.");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("a refused playbooks read is an answer too: the card can't be shown, and the line says why, by id", async () => {
+    const { calls } = stubScroll();
+    const k = cardKit();
+    k.fake.route("GET /playbooks", () => ({ ok: false, status: 500, body: { error: "internal" } }));
+    await renderChat(k, "#/chat?playbook=3");
+    expect((await screen.findByTestId("chat-card-missing")).textContent).toBe("Playbook #3's card can't be shown: the kernel's playbook list didn't load.");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("a card older than the loaded pages names the playbook and points at Load earlier", async () => {
+    stubScroll();
+    const k = kit({
+      threads: { wright: thread([message(5, { text: "newer" })], { next_before: "c1" }) },
+      pages: { "wright c1": thread([eventItem(2, "playbook_created", "Playbook pr-review created", { playbook_id: 3 })]) },
+      playbooks: [playbook(3, { slug: "pr-review" })],
+    });
+    await renderChat(k, "#/chat?playbook=3");
+    expect((await screen.findByTestId("chat-card-missing")).textContent).toBe(
+      "Playbook pr-review's card isn't in the part of this thread that's loaded. Load earlier to find it.",
+    );
+    await click(/^Load earlier/);
+    await screen.findByRole("region", { name: "Playbook pr-review" });
+    await waitFor(() => expect(screen.queryByTestId("chat-card-missing")).toBeNull());
   });
 });

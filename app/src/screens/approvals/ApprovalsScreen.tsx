@@ -6,9 +6,11 @@
 //   kernel's decided ones (`GET /approvals?all=1`). The selection is an
 //   approval id, never a list index, so an approval arriving or leaving never
 //   moves it.
-// - The detail: the action; the requesting agent and session; `from playbook
-//   <slug> v<n>`; the cwd; for a kernel-applied tool, what the kernel will do;
-//   the display and the exact payload. Every untrusted field is escaped by
+// - The detail: the action; the requesting agent and session; where it was
+//   requested (`Requested by playbook <slug> v<n>`, or `Requested by Wright in
+//   chat`); the cwd; a link to what it is about (`Open playbook <slug>`, `Open
+//   in Team`), which only navigates; for a kernel-applied tool, what the kernel
+//   will do; the display and the exact payload. Every untrusted field is escaped by
 //   `printable` (the kernel's own escaping) and rendered as text in a
 //   monospace `<pre>`.
 // - Decisions: Allow once (A), Always for this playbook (⇧A) and Deny (D),
@@ -31,6 +33,7 @@ import type {
   ApprovalsResponse,
   BrainMessage,
   Grant,
+  PlaybookListing,
   RevokeGrantResponse,
   SessionSummary,
   StudioBridge,
@@ -47,6 +50,7 @@ import { liveStoreFor, useResource } from "../../store/react";
 import type { ResourceError } from "../../store/store";
 import { alwaysRefusalFor, kernelWillLine, playbookText } from "./kernel-mirror";
 import { payloadText, printable } from "./printable";
+import { IN_CHAT, approvalLink, approvalSourceText } from "./subject";
 import "./approvals.css";
 
 /** The command ids this screen registers (owner `approvals`). */
@@ -199,6 +203,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
   const grants = useResource("grants", api);
   const messages = useResource("messages", api);
   const sessions = useResource("sessions", api);
+  const playbooks = useResource("playbooks", api);
   const store = liveStoreFor(api);
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -504,7 +509,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
         status: a.status === "pending" ? "waiting" : "idle",
         statusLabel: decisionWord(a),
         subject: printable(a.action),
-        meta: `${printable(a.requesting_agent)} · ${a.playbook === null ? "no playbook" : playbookText(a.playbook)}${a.status === "pending" ? "" : ` · ${decisionWord(a)}`}`,
+        meta: `${printable(a.requesting_agent)} · ${a.playbook === null ? IN_CHAT : playbookText(a.playbook)}${a.status === "pending" ? "" : ` · ${decisionWord(a)}`}`,
         aside: clock(a.requested_at),
       })),
     [rows],
@@ -668,6 +673,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
               focusLost={paneFocusLost}
               approval={selected}
               sessions={sessions?.data?.sessions}
+              playbooks={playbooks?.data?.playbooks}
               message={messageFor(selected.id, messages?.data?.messages)}
               messagesError={messages?.error !== undefined && messages.error.kind !== "not_connected" ? messages.error : undefined}
               notice={notices.get(selected.id)}
@@ -691,6 +697,8 @@ interface ApprovalDetailProps {
   readonly focusLost: RefObject<boolean>;
   readonly approval: Approval;
   readonly sessions: readonly SessionSummary[] | undefined;
+  /** The kernel's playbooks, for the link's slug; `undefined` while unread or refused. */
+  readonly playbooks: readonly PlaybookListing[] | undefined;
   readonly message: BrainMessage | undefined;
   /** The messages read's failure, if the last one failed: the agent's message on screen may be missing or older. */
   readonly messagesError: ResourceError | undefined;
@@ -729,10 +737,11 @@ function keepFocus(target: HTMLElement | null, scope: HTMLElement | null): void 
   if (focused === null || focused === document.body || (scope !== null && scope.contains(focused) && focused !== target)) target.focus();
 }
 
-function ApprovalDetail({ focusLost, approval: a, sessions, message, messagesError, notice, busyDecision, disabled, onDecide }: ApprovalDetailProps) {
+function ApprovalDetail({ focusLost, approval: a, sessions, playbooks, message, messagesError, notice, busyDecision, disabled, onDecide }: ApprovalDetailProps) {
   const titleId = useId();
   const reasonId = useId();
   const willLine = kernelWillLine(a);
+  const link = approvalLink(a, playbooks);
   const alwaysRefused = alwaysRefusalFor(a);
   const pending = a.status === "pending";
   const sectionRef = useRef<HTMLElement>(null);
@@ -762,12 +771,8 @@ function ApprovalDetail({ focusLost, approval: a, sessions, message, messagesErr
           </span>
           <span aria-hidden="true">·</span>
           <span data-testid="approval-session">{a.requesting_session === null ? "no session" : `session #${a.requesting_session}`}</span>
-          {a.playbook === null ? null : (
-            <>
-              <span aria-hidden="true">·</span>
-              <span data-testid="approval-playbook">from {playbookText(a.playbook)}</span>
-            </>
-          )}
+          <span aria-hidden="true">·</span>
+          <span data-testid="approval-source">{approvalSourceText(a)}</span>
           <span aria-hidden="true">·</span>
           <span>
             #{a.id} · requested <time dateTime={a.requested_at}>{clock(a.requested_at)}</time>
@@ -779,6 +784,12 @@ function ApprovalDetail({ focusLost, approval: a, sessions, message, messagesErr
             {cwdOf(a, sessions)}
           </code>
         </div>
+        {/* A link, not a button: it only navigates, and decides nothing. */}
+        {link === undefined ? null : (
+          <p className="approvals-link-row">
+            <a className="approvals-link" href={link.href} data-testid="approval-link">{link.text}</a>
+          </p>
+        )}
       </header>
 
       {/* Once decided, what the kernel did and what the agent was told come first. */}

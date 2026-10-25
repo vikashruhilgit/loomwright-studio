@@ -45,6 +45,7 @@ import {
   roleOf,
   rosterModel,
   settingsRead,
+  memberIdFromHash,
   sharedNames,
   taskLineFor,
   threadHash,
@@ -341,6 +342,21 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
     setFocusSet(0);
     setSelectedId(agent.id);
   };
+  // A `#/team/<id>` route (an approval's Open in Team) selects that member, on mount and on each hashchange,
+  // with no roster check: the roster loads after the screen mounts. `selected` opens the inspector once the
+  // roster has the id, and shows nothing for an id it never has. Selection only: nothing is written.
+  useEffect(() => {
+    const selectFromHash = (): void => {
+      const id = memberIdFromHash(window.location.hash);
+      if (id === undefined) return;
+      setCreating(false);
+      setFocusSet(0);
+      setSelectedId(id);
+    };
+    selectFromHash();
+    window.addEventListener("hashchange", selectFromHash);
+    return () => window.removeEventListener("hashchange", selectFromHash);
+  }, []);
   const closeInspector = () => {
     const id = selectedId;
     setSelectedId(undefined);

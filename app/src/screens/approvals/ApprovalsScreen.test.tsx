@@ -2,10 +2,11 @@
 // The Approvals screen over a scriptable bridge (`../../store/fake-bridge`):
 // the bridge guard, the pending-first inbox selected by id, the detail
 // fields, A / ⇧A / D and what the kernel answered, the escaped payload, the
-// grants with a confirmed Revoke, and the registered ⌘K commands.
+// grants with a confirmed Revoke, the registered ⌘K commands, and the source
+// label and the link to what an approval is about.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ApiRequest, Approval, BrainMessage, EventFrame, Grant, SessionSummary, StudioBridge } from "../../api/contract";
+import type { ApiRequest, Approval, BrainMessage, EventFrame, Grant, PlaybookListing, SessionSummary, StudioBridge } from "../../api/contract";
 import { installKeyboardMap } from "../../commands/keyboard";
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
@@ -72,12 +73,42 @@ function brainMessage(id: number, source: string, text: string): BrainMessage {
   };
 }
 
+function playbookListing(id: number, slug: string): PlaybookListing {
+  return {
+    id,
+    slug,
+    name: `Playbook ${id}`,
+    owning_agent: "wright",
+    intent: "Review PRs where I am requested",
+    status: "draft",
+    version: 1,
+    dedupe_key_spec: null,
+    dedupe_key_set_by: null,
+    priority: "normal",
+    priority_set_by: null,
+    model: null,
+    model_set_by: null,
+    effort: null,
+    effort_set_by: null,
+    token_limit_per_day: null,
+    token_limit_set_by: null,
+    api_key_fallback_json: null,
+    api_key_fallback_set_by: null,
+    created_at: "2026-10-22T08:00:00.000Z",
+    updated_at: "2026-10-22T08:00:00.000Z",
+    trigger_id: null,
+    next_fire_at: null,
+  };
+}
+
 interface Kernel {
   approvals: Approval[];
   decided: Approval[];
   grants: Grant[];
   messages: BrainMessage[];
   sessions: SessionSummary[];
+  /** `GET /playbooks`; `null` answers it refused. */
+  playbooks: PlaybookListing[] | null;
 }
 
 let eventId = 0;
@@ -99,13 +130,14 @@ interface Mounted {
 }
 
 async function mount(initial: Partial<Kernel> = {}, registry: CommandRegistry = createCommandRegistry()): Promise<Mounted> {
-  const kernel: Kernel = { approvals: [], decided: [], grants: [], messages: [], sessions: [], ...initial };
+  const kernel: Kernel = { approvals: [], decided: [], grants: [], messages: [], sessions: [], playbooks: [], ...initial };
   const fake = fakeBridge();
   fake.route("GET /status", () => ok({ kernel: { version: "0", uptime_s: 1, pid: 1 } }));
   fake.route("GET /approvals", (req) => ok({ approvals: req.query?.all === "1" ? [...kernel.approvals, ...kernel.decided] : [...kernel.approvals] }));
   fake.route("GET /approvals/grants", () => ok({ grants: [...kernel.grants] }));
   fake.route("GET /messages", () => ok({ messages: [...kernel.messages] }));
   fake.route("GET /sessions", () => ok({ sessions: [...kernel.sessions] }));
+  fake.route("GET /playbooks", () => (kernel.playbooks === null ? { ok: false, status: 500, body: { error: "internal" } } : ok({ playbooks: [...kernel.playbooks] })));
   setApi(fake.bridge);
   const view = render(<ApprovalsScreen registry={registry} />);
   await waitFor(() => expect(screen.getByTestId("screen-approvals").dataset.state).not.toBe("loading"));
@@ -329,7 +361,7 @@ describe("the detail", () => {
     expect(screen.getByTestId("approval-action").textContent).toBe("kernel_agent_create");
     expect(screen.getByTestId("approval-agent").textContent).toBe("wright");
     expect(screen.getByTestId("approval-session").textContent).toBe("session #7");
-    expect(screen.getByTestId("approval-playbook").textContent).toBe("from playbook crew-setup v4");
+    expect(screen.getByTestId("approval-source").textContent).toBe("Requested by playbook crew-setup v4");
     expect(screen.getByTestId("approval-kernel-will").textContent).toBe("The kernel creates this crew member when you allow it.");
     expect(screen.getByTestId("approval-action").tagName).toBe("H2");
   });
@@ -371,7 +403,7 @@ describe("the detail", () => {
     // The display keeps its line break; the payload keeps its pretty-printing.
     expect(display.textContent).toContain("\nline two");
     expect(payload.textContent).toContain('\n  "command": ');
-    expect(screen.getByTestId("approval-playbook").textContent).toBe("from playbook slug\\u202e v1");
+    expect(screen.getByTestId("approval-source").textContent).toBe("Requested by playbook slug\\u202e v1");
     const text = screen.getByTestId("screen-approvals").textContent ?? "";
     expect(text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/);
     expect(fake.requests.length).toBeGreaterThan(0);
@@ -832,5 +864,104 @@ describe("the #/approvals/<id> route (item 17's notification links)", () => {
       expect(selectedId(), hash).toBe(1);
       unmount();
     }
+  });
+});
+
+describe("what an approval is about (the source label and the link)", () => {
+  /** Approval 6 of the phase 5 live run: Wright's chat session asking to enable playbook 3. */
+  function enableApproval(): Approval {
+    return approval(6, {
+      requesting_agent: "wright",
+      requesting_session: 12,
+      action: "kernel_playbook_enable",
+      playbook: null,
+      payload: { tool: "mcp__kernel__kernel_playbook_enable", input: { id: 3, idempotency_key: "k" }, cwd: "/" },
+    });
+  }
+
+  function charterCreate(): Approval {
+    return approval(4, {
+      requesting_agent: "wright",
+      action: "kernel_agent_create",
+      playbook: null,
+      payload: { tool: "mcp__kernel__kernel_agent_create", input: { charter: { id: "sable", display_name: "Sable" }, idempotency_key: "k" }, cwd: "/" },
+    });
+  }
+
+  /** The list row's meta line. */
+  function rowMeta(id: number): string {
+    const row = screen.queryAllByRole("option").find((r) => r.getAttribute("data-key") === String(id));
+    return row?.querySelector(".list-meta")?.textContent ?? "";
+  }
+
+  it("AC1: approval 6 reads Requested by Wright in chat and links to playbook 3's card by slug, pending and after Allow once", async () => {
+    const six = enableApproval();
+    const { fake } = await mount({ approvals: [six], playbooks: [playbookListing(3, "phase5-exit-1024")] });
+    fake.route("POST /approvals/:id/approve", () =>
+      ok({ approval: { ...six, status: "approved", decision: "once", decided_by: "owner", decided_at: "2026-10-22T09:00:00.000Z", applied: "The kernel enabled playbook 3." } }),
+    );
+    const check = async (): Promise<void> => {
+      expect(screen.getByTestId("approval-source").textContent).toBe("Requested by Wright in chat");
+      await waitFor(() => expect(screen.getByTestId("approval-link").textContent).toBe("Open playbook phase5-exit-1024"));
+      const link = screen.getByTestId("approval-link");
+      expect(link.tagName).toBe("A");
+      expect(link.getAttribute("href")).toBe("#/chat?playbook=3");
+      expect(screen.getByTestId("screen-approvals").textContent).not.toContain("Not from a playbook");
+    };
+    await check();
+    expect(rowMeta(6)).toBe("wright · in chat");
+    press("a");
+    await waitFor(() => expect(screen.getByTestId("approval-applied").textContent).toContain("The kernel enabled playbook 3."));
+    await check();
+    expect(rowMeta(6)).toBe("wright · in chat · allowed once");
+  });
+
+  it("AC1: with GET /playbooks refused, the link names the playbook by its id", async () => {
+    const { fake } = await mount({ approvals: [enableApproval()], playbooks: null });
+    await waitFor(() => expect(fake.requestsTo("GET /playbooks").length).toBeGreaterThan(0));
+    expect(screen.getByTestId("approval-link").textContent).toBe("Open playbook #3");
+    expect(screen.getByTestId("approval-link").getAttribute("href")).toBe("#/chat?playbook=3");
+  });
+
+  it("an approval about nothing the app can open has no link", async () => {
+    await mount({ approvals: [approval(1)] });
+    expect(screen.getByTestId("approval-source").textContent).toBe("Requested by playbook review-prs v3");
+    expect(screen.queryByTestId("approval-link")).toBeNull();
+  });
+
+  it("AC2: a create has no link while pending; Open in Team to its member once allowed and applied", async () => {
+    const create = charterCreate();
+    const { fake } = await mount({ approvals: [create] });
+    expect(screen.getByTestId("approval-source").textContent).toBe("Requested by Wright in chat");
+    expect(screen.queryByTestId("approval-link")).toBeNull();
+    fake.route("POST /approvals/:id/approve", () =>
+      ok({ approval: { ...create, status: "approved", decision: "once", decided_by: "owner", decided_at: "2026-10-22T09:00:00.000Z", applied: "The kernel created crew member sable (Sable) on approval 4." } }),
+    );
+    press("a");
+    await waitFor(() => expect(screen.getByTestId("approval-applied").textContent).toContain("The kernel created crew member sable"));
+    const link = screen.getByTestId("approval-link");
+    expect(link.textContent).toBe("Open in Team");
+    expect(link.getAttribute("href")).toBe("#/team/sable");
+  });
+
+  it("AC2: a denied create, and an allowed one the kernel refused to apply, have no link", async () => {
+    const create = charterCreate();
+    const { fake } = await mount({ approvals: [create] });
+    fake.route("POST /approvals/:id/deny", () => ok({ approval: { ...create, status: "denied", decision: "deny", decided_by: "owner", decided_at: "2026-10-22T09:00:00.000Z" } }));
+    press("d");
+    await waitFor(() => expect(screen.getByTestId("approval-outcome").textContent).toContain("Denied by owner"));
+    expect(screen.queryByTestId("approval-link")).toBeNull();
+    cleanup();
+
+    const again = charterCreate();
+    const second = await mount({ approvals: [again] });
+    second.fake.route("POST /approvals/:id/approve", () =>
+      ok({
+        approval: { ...again, status: "approved", decision: "once", decided_by: "owner", decided_at: "2026-10-22T09:00:00.000Z", apply_refused: "agent_exists", apply_detail: "sable exists" },
+      }),
+    );
+    press("a");
+    await waitFor(() => expect(screen.getByTestId("approval-refused")).toBeTruthy());
+    expect(screen.queryByTestId("approval-link")).toBeNull();
   });
 });
