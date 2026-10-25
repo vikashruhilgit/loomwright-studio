@@ -573,18 +573,21 @@
       "action": "Set priority to high from the card",
       "value": "high",
       "chosen_by": "the runbook's flow 2 step 2, which the owner asked the agent to run",
-      "kernel_records": "priority_set_by owner (version 2)"
+      "kernel_records": "priority_set_by owner (version 2)",
+      "d35": "within the run's scope: runbook flow 2 step 2, a step of the procedure the owner asked the agent to run"
     },
     {
       "flow": "2_playbook_priority_enable_run",
       "action": "Pressed Run now on the card",
       "chosen_by": "the runbook's flow 2 step 5",
-      "kernel_records": "run 8, session 50"
+      "kernel_records": "run 8, session 50",
+      "d35": "within the run's scope: runbook flow 2 step 5"
     },
     {
       "flow": "cleanup",
       "action": "Turn off on playbook phase5-exit-1025, Off on its trigger 12, Turn off on crew member phase5-exit-1025",
-      "chosen_by": "the runbook's cleanup section"
+      "chosen_by": "the runbook's cleanup section",
+      "d35": "within the run's scope: the runbook's cleanup section"
     }
   ]
 }
