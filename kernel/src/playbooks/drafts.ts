@@ -74,7 +74,7 @@ import {
   updatePlaybook,
 } from "./store.js";
 import type { PlaybookChange, PlaybookRow } from "./store.js";
-import { PLAYBOOK_PRIORITIES } from "./types.js";
+import { DEDUPE_KEY_FIELDS, PLAYBOOK_PRIORITIES } from "./types.js";
 import type { PlaybookPart, PlaybookVerb } from "./types.js";
 
 export const PLAYBOOK_TOOL_NAMES = ["kernel_playbook_create", "kernel_playbook_update", "kernel_playbook_list", "kernel_playbook_disable"] as const;
@@ -145,11 +145,13 @@ const triggerShape = z.object({
   tz: z.string().min(1).max(64).optional(),
 });
 
+// The closed sets are the store's own (never a copied list), so `tools/list` publishes them as enums and a positive
+// integer; the store's `checkPolicyValue` stays the domain check (an empty or repeated dedupe_key, the owner's values).
 const policyShape = {
-  dedupe_key: z.array(z.string().max(200)).max(20).optional(),
+  dedupe_key: z.array(z.enum(DEDUPE_KEY_FIELDS)).max(20).optional(),
   priority: z.enum(PLAYBOOK_PRIORITIES).optional(),
   model: z.string().max(400).optional(),
-  token_limit: z.number().int().optional(),
+  token_limit: z.number().int().positive().optional(),
 };
 
 const REPEAT = "Repeating a call with the same idempotency_key in this session returns the first result, even if other arguments differ.";

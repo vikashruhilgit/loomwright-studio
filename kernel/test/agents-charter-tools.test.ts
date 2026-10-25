@@ -592,7 +592,8 @@ describe("kernel_agent_update (AC5, AC6)", () => {
     expect((await ask({ effort: "high" }, "u1")).permissionDecisionReason).toMatch(/^kernel_agent_update: idempotency_key_used: /);
     expect((await ask({ model: "x" }, "u2", "wright")).permissionDecisionReason).toMatch(/^kernel_agent_update: reserved: Wright is not a crew member: the owner edits .*wright\.json/);
     expect((await ask({ model: "x" }, "u3", "nobody")).permissionDecisionReason).toBe('kernel_agent_update: not_found: no crew member "nobody" (nothing was held for the owner)');
-    expect((await ask({ never: ["git_pushh"] }, "u4")).permissionDecisionReason).toMatch(/^kernel_agent_update: invalid_input: the result would not be a valid charter: tool_policy\.never\.0: /);
+    // `changes.never` publishes NEVER_CATEGORIES as an enum, so an unknown category is refused at argument validation.
+    expect((await ask({ never: ["git_pushh"] }, "u4")).permissionDecisionReason).toMatch(/^kernel_agent_update: invalid input: [\s\S]*→ at changes\.never\[0\]$/);
     expect((await ask({ workspaces: ["relative/path"] }, "u5")).permissionDecisionReason).toMatch(/^kernel_agent_update: invalid_input: .*workspaces\.0: "relative\/path" is not an absolute path/);
     expect((await ask({ limits: { tokens_per_day: 200000 }, model: "claude-sonnet-5" }, "u6")).permissionDecisionReason).toBe(
       "kernel_agent_update: invalid_input: changes changes nothing: every named value equals the current one (nothing was held for the owner)",

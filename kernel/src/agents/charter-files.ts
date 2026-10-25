@@ -191,6 +191,31 @@ const charterSchema = z
   })
   .strict();
 
+/** `value` and everything inside it frozen: the published schema is one shared object no caller may change. */
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null) {
+    for (const inner of Object.values(value)) deepFreeze(inner);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/**
+ * The charter's JSON Schema, derived from `charterSchema` (the `validateCharter`
+ * rule) so what `kernel_agent_create` publishes and what the kernel checks
+ * share one source: every closed set (avatar shape and hue, permission mode,
+ * `tool_policy.never`) is an `enum` and every limit a positive integer.
+ * Without the top-level `$schema` key (it is a property's schema, not a
+ * document). A refine (blank text, control characters, a repeated `never`)
+ * cannot be expressed and is absent: `validateCharter` still enforces it.
+ */
+export const CHARTER_JSON_SCHEMA: Readonly<Record<string, unknown>> = deepFreeze(
+  (() => {
+    const { $schema: _document, ...schema } = z.toJSONSchema(charterSchema);
+    return schema;
+  })(),
+);
+
 /**
  * Why `workspace` may not be one, or undefined when it may: the settings
  * reader's rule (`readAgentSettings`, D31 and the data dir), checked with the
