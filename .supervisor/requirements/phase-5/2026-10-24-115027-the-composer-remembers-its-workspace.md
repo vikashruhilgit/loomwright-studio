@@ -53,3 +53,9 @@ none
 ## Touches
 app/src/screens/chat/ChatComposer.tsx
 app/src/screens/chat/composer.test.tsx
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-25T06:30:56Z
+- **Brief:** .supervisor/jobs/done/2026-10-25-the-composer-remembers-its-workspace.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/136
