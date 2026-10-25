@@ -1,0 +1,515 @@
+{
+  "test": "phase-5-exit-live",
+  "date": "2026-10-25",
+  "result": "passed — all six flows passed in the packaged app against the launchd kernel, with nothing typed in a terminal after setup",
+  "run_by": "Claude (Claude Code session) at the owner's request, owner present and watching the screen (D33); every in-app decision (Allow once on approval 9, Create on approval 10, Deny on approval 11, Stop, Kill and its confirm, Pause all, Unpause, the kill switch and its confirm, Resume) was clicked by Claude on the owner's explicit word given before the run",
+  "commit": "1e39585d887c784b4970cfab63b81851bea58bb6",
+  "dirty_worktree": false,
+  "machine": {
+    "macos": "26.6.2",
+    "node": "v24.11.1",
+    "gh": "gh version 2.102.0 (2026-09-30)",
+    "notifier": "terminal-notifier",
+    "harness": {
+      "node": "v24.11.1",
+      "platform": "darwin"
+    }
+  },
+  "wright_model_at_start": "claude-sonnet-5-5",
+  "service": {
+    "launchd_pid": 27021,
+    "api_json_pid": 27021
+  },
+  "app": {
+    "bundle": "app/release/mac-arm64/Loomwright Studio.app",
+    "opened_from": "Finder",
+    "harness": {
+      "process_seen_at_start": false,
+      "process_seen_at_end": true
+    }
+  },
+  "harness_summary": "$TMPDIR/studio-phase-5-exit-live-summary-1792910652158.json",
+  "run_start": {
+    "at": "2026-10-25T06:44:12.711Z",
+    "event_id": 540,
+    "approval_id": 8,
+    "session_id": 44,
+    "playbook_run_id": 6,
+    "notification_id": 27,
+    "wright_model": "claude-sonnet-5-5"
+  },
+  "owner": {
+    "nothing_typed_in_a_terminal_after_setup": true,
+    "app_opened_from": "Finder",
+    "notes": "Setup steps 1-6 ran in the agent's terminal before the harness started; after it printed the run start, every step was a click or typing in the app, its menu-bar item or the macOS notification. The harness's progress lines did not stream to its log during the run (vitest printed only at the end), so progress was read from the summary file it rewrites."
+  },
+  "steps": {
+    "1_reminder_fires": {
+      "outcome": "pass",
+      "harness": {
+        "registered": [
+          {
+            "event_id": 551,
+            "at": "2026-10-25T06:51:32.391Z",
+            "trigger_id": 11,
+            "kind": "once",
+            "action": "notify",
+            "spec": {
+              "at": "2026-10-25T12:24:30+05:30"
+            }
+          },
+          {
+            "event_id": 750,
+            "at": "2026-10-25T07:10:52.181Z",
+            "trigger_id": 13,
+            "kind": "once",
+            "action": "notify",
+            "spec": {
+              "at": "2026-10-25T12:43:30+05:30"
+            }
+          }
+        ],
+        "fires": [
+          {
+            "event_id": 575,
+            "at": "2026-10-25T06:54:30.035Z",
+            "trigger_id": 11,
+            "scheduled_at": "2026-10-25T06:54:30.000Z",
+            "notification": {
+              "id": 28,
+              "source": "trigger:11",
+              "deep_link": "loomwright-studio://notifications/28",
+              "delivery_status": "delivered",
+              "created_at": "2026-10-25T06:54:30.035Z"
+            },
+            "step": {
+              "status": "done",
+              "result": "fired"
+            },
+            "problems": []
+          }
+        ],
+        "misses": [
+          {
+            "event_id": 757,
+            "trigger_id": 13,
+            "reason": "paused",
+            "scheduled_at": "2026-10-25T07:13:30.000Z"
+          }
+        ],
+        "passing_fire": 575
+      },
+      "owner": {
+        "asked_in_chat": true,
+        "fired_card_seen_in_chat": true,
+        "notification_appeared_on_screen": true,
+        "notification_click_opened_thread": true,
+        "source": "fired card: observed by the agent on screen, owner watching; the banner and its click: reported by the owner (the agent's screenshots filter out Notification Center)"
+      },
+      "findings": []
+    },
+    "2_playbook_priority_enable_run": {
+      "outcome": "pass",
+      "harness": {
+        "created": [
+          {
+            "event_id": 567,
+            "at": "2026-10-25T06:52:17.631Z",
+            "playbook_id": 4,
+            "slug": "phase5-exit-1025"
+          }
+        ],
+        "playbooks": [
+          {
+            "playbook_id": 4,
+            "row": {
+              "id": 4,
+              "slug": "phase5-exit-1025",
+              "status": "enabled",
+              "version": 3,
+              "priority": "high",
+              "priority_set_by": "owner"
+            },
+            "priority_sets": [
+              {
+                "event_id": 573,
+                "at": "2026-10-25T06:53:20.890Z",
+                "version": 2
+              }
+            ],
+            "dry_runs": [
+              {
+                "event_id": 601,
+                "at": "2026-10-25T07:00:47.631Z",
+                "version": 3,
+                "run_id": 7
+              }
+            ],
+            "enabled": {
+              "event_id": 613,
+              "at": "2026-10-25T07:02:13.750Z",
+              "version": 3,
+              "approval_id": 9
+            },
+            "enable_approval": {
+              "id": 9,
+              "requesting_agent": "wright",
+              "requesting_session": 47,
+              "action": "kernel_playbook_enable",
+              "status": "approved",
+              "decision": "once",
+              "decided_by": "owner",
+              "requested_at": "2026-10-25T07:00:48.889Z",
+              "decided_at": "2026-10-25T07:02:13.750Z"
+            },
+            "run_now": [
+              {
+                "id": 8,
+                "version": 3,
+                "status": "done",
+                "session_id": 50,
+                "started_at": "2026-10-25T07:02:42.540Z"
+              }
+            ],
+            "run_now_sessions": [
+              {
+                "id": 50,
+                "agent": "wright",
+                "status": "completed",
+                "playbook": 4,
+                "cwd": "~/.loomwright-studio/memory/wright",
+                "started_at": "2026-10-25T07:02:42.651Z",
+                "ended_at": "2026-10-25T07:02:53.496Z"
+              }
+            ],
+            "problems": []
+          }
+        ],
+        "passing_playbook": 4
+      },
+      "owner": {
+        "draft_card_seen_in_chat": true,
+        "priority_set_from_card": "high",
+        "dry_run_seen": true,
+        "approved_in_approvals_by": "the agent, on the owner's word",
+        "approved_at": "12:32 IST (07:02:13Z)",
+        "run_now_pressed": true,
+        "source": "observed by the agent on screen, owner watching"
+      },
+      "findings": [
+        "The draft card read 'Model: not set: needed before a dry run'; the runbook's flow 2 does not say to set it. The model (claude-sonnet-5-5) was set from the card's Model Edit before asking for the dry run.",
+        "Pressing Run now gave no visible feedback on the card (the run and its session 50 did start; the harness recorded run 8).",
+        "After dry run 7 completed, the card still read 'Last dry run: not available from the kernel yet'."
+      ]
+    },
+    "3_reviewer_cannot_push": {
+      "outcome": "pass",
+      "harness": {
+        "created": [
+          {
+            "event_id": 659,
+            "at": "2026-10-25T07:05:41.823Z",
+            "id": "phase5-exit-1025",
+            "approval_id": 10
+          }
+        ],
+        "members": [
+          {
+            "agent_id": "phase5-exit-1025",
+            "row": {
+              "id": "phase5-exit-1025",
+              "status": "active",
+              "created_by": "wright",
+              "approval_id": 10,
+              "never": [
+                "git_push",
+                "gh_pr_create",
+                "gh_pr_review",
+                "gh_pr_edit",
+                "gh_pr_close",
+                "gh_issue_create",
+                "gh_issue_comment",
+                "gh_issue_edit",
+                "gh_issue_close",
+                "gh_api_write",
+                "alias_define",
+                "settings_write",
+                "hooks_write"
+              ]
+            },
+            "create_approval": {
+              "id": 10,
+              "requesting_agent": "wright",
+              "requesting_session": 51,
+              "action": "kernel_agent_create",
+              "status": "approved",
+              "decision": "once",
+              "decided_by": "owner",
+              "requested_at": "2026-10-25T07:03:40.000Z",
+              "decided_at": "2026-10-25T07:05:41.823Z"
+            },
+            "sessions": [
+              {
+                "id": 53,
+                "agent": "phase5-exit-1025",
+                "status": "completed",
+                "playbook": null,
+                "cwd": "/private/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase5-exit-coUPIU/repo",
+                "started_at": "2026-10-25T07:06:12.609Z",
+                "ended_at": "2026-10-25T07:06:20.835Z"
+              },
+              {
+                "id": 54,
+                "agent": "phase5-exit-1025",
+                "status": "completed",
+                "playbook": null,
+                "cwd": "/private/var/folders/jh/sbkxjbkj7y959rkxq2m61rbw0000gn/T/studio-phase5-exit-coUPIU/repo",
+                "started_at": "2026-10-25T07:07:46.992Z",
+                "ended_at": "2026-10-25T07:07:56.105Z"
+              },
+              {
+                "id": 55,
+                "agent": "phase5-exit-1025",
+                "status": "completed",
+                "playbook": null,
+                "cwd": "~/.loomwright-studio/memory/phase5-exit-1025",
+                "started_at": "2026-10-25T07:09:02.713Z",
+                "ended_at": "2026-10-25T07:09:09.450Z"
+              }
+            ],
+            "boundary_denies": [
+              {
+                "event_id": 681,
+                "session_id": 53,
+                "payload": {
+                  "tool": "Bash",
+                  "decision": "deny",
+                  "reason": "agent_boundary",
+                  "command": "git push origin main",
+                  "tool_use_id": "toolu_01TVZddPiBzzbppjpvSFxHv9",
+                  "category": "git_push"
+                },
+                "in_output": true
+              }
+            ],
+            "output_rows": [
+              {
+                "session_id": 53,
+                "seq": 3,
+                "payload": {
+                  "tool": "Bash",
+                  "decision": "deny",
+                  "reason": "agent_boundary",
+                  "command": "git push origin main",
+                  "tool_use_id": "toolu_01TVZddPiBzzbppjpvSFxHv9",
+                  "category": "git_push"
+                }
+              }
+            ],
+            "allowed_pushes": [],
+            "push_approvals": [],
+            "comment_approvals": [
+              {
+                "id": 11,
+                "requesting_agent": "phase5-exit-1025",
+                "requesting_session": 54,
+                "action": "gh pr comment",
+                "status": "denied",
+                "decision": "deny",
+                "decided_by": "owner",
+                "requested_at": "2026-10-25T07:07:53.604Z",
+                "decided_at": "2026-10-25T07:09:02.157Z"
+              }
+            ],
+            "problems": []
+          }
+        ],
+        "passing_member": "phase5-exit-1025"
+      },
+      "owner": {
+        "charter_card_seen": true,
+        "create_pressed_by": "the agent, on the owner's word",
+        "push_deny_seen_in_sessions_output": true,
+        "comment_held_seen_in_approvals": true,
+        "denied_by": "the agent, on the owner's word",
+        "denied_at": "12:39 IST",
+        "remote_main_unchanged": true,
+        "source": "observed by the agent on screen, owner watching"
+      },
+      "findings": []
+    },
+    "4_sessions_stop_and_kill": {
+      "outcome": "pass",
+      "harness": {
+        "requests": [
+          {
+            "event_id": 734,
+            "at": "2026-10-25T07:09:59.952Z",
+            "session_id": 56,
+            "mode": "stop",
+            "ended": {
+              "event_id": 737,
+              "at": "2026-10-25T07:10:02.146Z",
+              "to": "stopped",
+              "reason": "owner_stop"
+            },
+            "request_to_end_ms": 2194,
+            "row_status": "stopped"
+          },
+          {
+            "event_id": 738,
+            "at": "2026-10-25T07:10:20.544Z",
+            "session_id": 57,
+            "mode": "kill",
+            "ended": {
+              "event_id": 741,
+              "at": "2026-10-25T07:10:20.621Z",
+              "to": "stopped",
+              "reason": "owner_kill"
+            },
+            "request_to_end_ms": 77,
+            "row_status": "stopped"
+          }
+        ],
+        "passing_stop": 56,
+        "passing_kill": 57
+      },
+      "owner": {
+        "stop_pressed_in_sessions": true,
+        "kill_confirm_shown": true,
+        "kill_confirmed": true,
+        "source": "observed by the agent on screen, owner watching"
+      },
+      "findings": []
+    },
+    "5_menu_bar_pause_and_kill_switch": {
+      "outcome": "pass",
+      "harness": {
+        "pause_events": [
+          {
+            "event_id": 756,
+            "at": "2026-10-25T07:11:30.874Z",
+            "kind": "pause_engaged",
+            "by": "owner",
+            "via": "api"
+          },
+          {
+            "event_id": 758,
+            "at": "2026-10-25T07:14:24.949Z",
+            "kind": "pause_released",
+            "by": "owner",
+            "via": "api"
+          }
+        ],
+        "kill_switch_events": [
+          {
+            "event_id": 759,
+            "at": "2026-10-25T07:14:43.716Z",
+            "kind": "kill_switch_engaged",
+            "actor": "api"
+          },
+          {
+            "event_id": 761,
+            "at": "2026-10-25T07:14:57.070Z",
+            "kind": "kill_switch_released",
+            "actor": "api"
+          }
+        ],
+        "pause_windows": [
+          {
+            "engaged": 756,
+            "released": {
+              "event_id": 758,
+              "via": "api"
+            },
+            "missed": [
+              {
+                "event_id": 757,
+                "trigger_id": 13,
+                "scheduled_at": "2026-10-25T07:13:30.000Z",
+                "step": {
+                  "status": "done",
+                  "result": "missed_paused"
+                },
+                "fired_too": false,
+                "ok": true
+              }
+            ]
+          }
+        ],
+        "kill_switch_engaged_at": [
+          "2026-10-25T07:14:43.716Z"
+        ],
+        "passing_pause": 756
+      },
+      "owner": {
+        "pause_all_from_tray": true,
+        "resume_from_tray": true,
+        "kill_switch_from_tray": true,
+        "kill_switch_confirm_shown": true,
+        "resumed_after_kill_switch": true,
+        "source": "observed by the agent on screen, owner watching; the pause was released with the tray's Unpause item, the kill switch with Resume"
+      },
+      "findings": []
+    },
+    "6_team_sets_wright_model": {
+      "outcome": "pass",
+      "harness": {
+        "model_at_start": "claude-sonnet-5-5",
+        "sets": [
+          {
+            "event_id": 762,
+            "at": "2026-10-25T07:15:26.156Z",
+            "old": "claude-sonnet-5-5",
+            "new": "claude-opus-5-5",
+            "by": "owner"
+          }
+        ],
+        "wright_json_model": "claude-opus-5-5",
+        "wright_json_error": null
+      },
+      "owner": {
+        "set_in_team_inspector": true,
+        "model_chosen": "claude-opus-5-5",
+        "source": "observed by the agent on screen, owner watching"
+      },
+      "findings": []
+    }
+  },
+  "cleanup": {
+    "left_for_the_owner": {
+      "playbooks_not_off": [
+        {
+          "id": 4,
+          "slug": "phase5-exit-1025",
+          "status": "enabled"
+        }
+      ],
+      "triggers_still_on": [
+        {
+          "id": 12,
+          "kind": "cron",
+          "playbook": "phase5-exit-1025"
+        }
+      ],
+      "crew_still_active": [
+        {
+          "id": "phase5-exit-1025",
+          "status": "active"
+        }
+      ],
+      "pending_approvals": [],
+      "paused": false,
+      "kill_switch_engaged": false
+    },
+    "done": [
+      "playbook phase5-exit-1025 (#4): Turn off on its card -> disabled",
+      "trigger 12 (the playbook's cron): Off on its card -> off, no next fire",
+      "crew member phase5-exit-1025: Turn off in Team -> off (row, settings file and memory/phase5-exit-1025/ kept)",
+      "triggers 11 and 13: already off, spent",
+      "no pending approvals; not paused; kill switch released",
+      "Wright's model left at claude-opus-5-5 (the owner's choice for flow 6); it was claude-sonnet-5-5 at the start",
+      "throwaway repo removed (rm -rf of the setup step 6 folder only), its bare remote's main still 0f465f1 just before removal"
+    ]
+  }
+}
