@@ -1,15 +1,10 @@
 /* Chat and the Crew group (docs/design/mockups/gui-v1.html renderChat, #crewnav). Tokens only. */
 
 /*
- * The shell's `.window` row is `auto`, so `.main` grows with its content and
- * `.content` never scrolls (app.css, outside this screen; see the evidence
- * README's findings). While Chat is shown, hold the column to the window and
- * let the thread scroll inside it, the kernel band (if any) above it.
+ * The shell bounds `.main` to the window (`.window`'s row is `minmax(0, 1fr)` in
+ * app.css), so the thread scrolls inside its own pane. This rule only lays out
+ * the pane: the kernel band (if any) above a column Chat fills.
  */
-.main:has(.chat) {
-  min-height: 0;
-  overflow: hidden;
-}
 .content:has(> .chat) {
   display: flex;
   flex-direction: column;
@@ -195,6 +190,31 @@
 .chat-card-refusal {
   margin: var(--space-2) 0 0;
   color: var(--danger);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+/* What a pending approval is about: a link (it only navigates), under its card. */
+.chat-approval-link {
+  display: inline-block;
+  margin-top: var(--space-2);
+  color: var(--accent);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+.chat-approval-link:hover {
+  color: var(--accent-hover);
+}
+/* A `#/chat?playbook=<id>` whose card is not in what is loaded: said, never a silent no-op. */
+.chat-card-missing {
+  margin: var(--space-3) var(--space-5) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink-secondary);
   font-size: var(--type-caption-size);
   line-height: var(--type-caption-line);
 }

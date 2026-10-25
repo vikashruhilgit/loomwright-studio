@@ -5,10 +5,17 @@
 // and keeps the text. A specialist's composer offers only "No workspace" and
 // the workspaces its `GET /agents/:id` lists; Wright's offers none.
 //
+// The workspace choice is remembered per crew member for the app's lifetime,
+// across leaving the thread or the Chat screen. With nothing chosen, a sole
+// listed workspace is preselected; a remembered one the list no longer has
+// becomes "No workspace" (and stays so) once the list has answered.
+// The memory is a per-bridge map here, not in the live store: that store
+// holds kernel answers only, and this is the owner's choice.
+//
 // It is built on the Composer's own markup and CSS (`.composer`, Input.css)
 // rather than the `Composer` component, so the send guard lives here, in the
 // one handler that calls the kernel.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import type { KeyboardEvent, Ref } from "react";
 import type { AgentDetailResponse, AskResponse, StudioBridge } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
@@ -26,6 +33,25 @@ export interface ChatComposerProps {
   readonly inputRef: Ref<HTMLTextAreaElement>;
 }
 
+// Per bridge (the app has one for its whole life), per agent id: the owner's
+// last workspace choice, where "" is an explicit "No workspace". Never persisted.
+const chosenWorkspaces = new WeakMap<StudioBridge, Map<string, string>>();
+
+function chosenFor(api: StudioBridge): Map<string, string> {
+  let chosen = chosenWorkspaces.get(api);
+  if (chosen === undefined) {
+    chosen = new Map();
+    chosenWorkspaces.set(api, chosen);
+  }
+  return chosen;
+}
+
+/** What the picker shows: a remembered listed workspace, else a sole listed one when nothing was chosen, else "No workspace". */
+function shownWorkspace(remembered: string | undefined, list: readonly string[]): string {
+  if (remembered === undefined) return list.length === 1 ? (list[0] ?? "") : "";
+  return remembered !== "" && list.includes(remembered) ? remembered : "";
+}
+
 /** The workspaces `GET /agents/:id` lists for `agent` (none for Wright, none while it has not answered). */
 function useWorkspaces(api: StudioBridge, agent: string): { readonly list: readonly string[]; readonly error: string } {
   const [state, setState] = useState<{ readonly agent: string; readonly list: readonly string[]; readonly error: string }>({ agent, list: [], error: "" });
@@ -37,8 +63,17 @@ function useWorkspaces(api: StudioBridge, agent: string): { readonly list: reado
       .then(
         (result) => {
           if (!live) return;
-          if (result.ok) setState({ agent, list: Array.isArray(result.body.workspaces) ? result.body.workspaces.filter((w) => typeof w === "string") : [], error: "" });
-          else setState({ agent, list: [], error: refusalOf(result).text });
+          if (result.ok) {
+            const list = Array.isArray(result.body.workspaces) ? result.body.workspaces.filter((w) => typeof w === "string") : [];
+            // A remembered workspace the kernel no longer lists is dropped to an explicit "No workspace",
+            // never deleted (a sole remaining one must not be preselected). A refusal leaves it: the list is unknown.
+            const chosen = chosenFor(api);
+            const remembered = chosen.get(agent);
+            if (remembered !== undefined && remembered !== "" && !list.includes(remembered)) chosen.set(agent, "");
+            setState({ agent, list, error: "" });
+          } else {
+            setState({ agent, list: [], error: refusalOf(result).text });
+          }
         },
         () => {
           if (live) setState({ agent, list: [], error: refusalOf(undefined).text });
@@ -54,7 +89,13 @@ function useWorkspaces(api: StudioBridge, agent: string): { readonly list: reado
 export function ChatComposer({ api, agent, agentName, text, onTextChange, inputRef }: ChatComposerProps) {
   const isWright = agent === WRIGHT;
   const workspaces = useWorkspaces(api, agent);
-  const [workspace, setWorkspace] = useState("");
+  // The memory is the source of truth across mounts; choosing writes it and re-renders.
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const workspace = isWright ? "" : shownWorkspace(chosenFor(api).get(agent), workspaces.list);
+  const choose = (value: string): void => {
+    chosenFor(api).set(agent, value);
+    rerender();
+  };
   const [refusal, setRefusal] = useState("");
   // A ref, not state: two Enters in one tick must not both pass the guard.
   const inFlight = useRef(false);
@@ -101,7 +142,7 @@ export function ChatComposer({ api, agent, agentName, text, onTextChange, inputR
     <div className="chat-composer">
       {isWright ? null : (
         <div className="chat-workspace">
-          <SelectField label="Workspace" value={workspace} onChange={(event) => setWorkspace(event.target.value)} hint={workspaces.error === "" ? undefined : workspaces.error}>
+          <SelectField label="Workspace" value={workspace} onChange={(event) => choose(event.target.value)} hint={workspaces.error === "" ? undefined : workspaces.error}>
             <option value="">No workspace</option>
             {workspaces.list.map((w) => (
               <option key={w} value={w}>

@@ -16,19 +16,141 @@
 //
 // `startKernel` runs the same listing before the store opens
 // (`assertKernelToolsList`) and refuses a start whose tools would not list.
+//
+// The same listing must also show every closed value set the kernel's checks
+// enforce as a JSON-Schema `enum`, and every positive-count bound as a
+// positive integer, so a session drafts a valid call the first time instead
+// of guessing: a session that has to guess a closed value set is refused and
+// retries, one call per wrong guess. `CLOSED_VALUE_SETS` classifies every
+// shipped tool, and its walk fails on a set not published.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { CHARTER_PERMISSION_MODES } from "../src/agents/charter-files.js";
+import { AVATAR_HUES, AVATAR_SHAPES } from "../src/agents/types.js";
 import { startFailureExit } from "../src/daemon-exit.js";
 import { InvalidContributionError, PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
 import type { ContributedTool } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
+import { DEDUPE_KEY_FIELDS, PLAYBOOK_PRIORITIES } from "../src/playbooks/types.js";
+import { NEVER_CATEGORIES } from "../src/sessions/policy.js";
 import { Store } from "../src/store/index.js";
 import { KERNEL_TOOL_NAMES, LISTING_CTX, assertKernelToolsList, kernelToolDefinitions, kernelToolNames, listKernelTools } from "../src/tools/server.js";
+import { TRIGGER_ACTIONS, TRIGGER_KINDS } from "../src/triggers/index.js";
 
 const SHIPPED = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools;
+
+/**
+ * One closed set a tool's input must publish. `path` is dotted through the
+ * input schema's `properties`, with `[]` for an array's `items`
+ * (`charter.tool_policy.never[]`). An `enum` entry must list exactly the
+ * source constant's values, in order; a `positiveInteger` entry must be
+ * `"type": "integer"` with a positive lower bound (`exclusiveMinimum >= 0` or
+ * `minimum >= 1`; a `maximum` is ignored). A `nullable` entry is zod 4's
+ * `anyOf: [<schema>, {"type": "null"}]`: the null branch must be there (null
+ * clears the value) and the other branch is checked.
+ */
+type ClosedValueSet =
+  | { readonly path: string; readonly enum: readonly string[]; readonly nullable?: true }
+  | { readonly path: string; readonly positiveInteger: true; readonly nullable?: true };
+
+/** The charter's closed sets, under `prefix` (`charter.` for create, `changes.` for update, whose `never` is top level). */
+function charterSets(prefix: string, never: string, nullableLimits: boolean): ClosedValueSet[] {
+  const nullable = nullableLimits ? ({ nullable: true } as const) : {};
+  return [
+    { path: `${prefix}avatar.shape`, enum: AVATAR_SHAPES },
+    { path: `${prefix}avatar.hue`, enum: AVATAR_HUES },
+    { path: `${prefix}permission_mode`, enum: CHARTER_PERMISSION_MODES },
+    { path: `${prefix}${never}[]`, enum: NEVER_CATEGORIES },
+    { path: `${prefix}limits.tokens_per_day`, positiveInteger: true, ...nullable },
+    { path: `${prefix}limits.sessions_at_once`, positiveInteger: true, ...nullable },
+    { path: `${prefix}limits.delegation_depth`, positiveInteger: true, ...nullable },
+  ];
+}
+
+/** A playbook draft's policy and trigger sets, under `prefix` (`changes.` for update). */
+function playbookSets(prefix: string): ClosedValueSet[] {
+  return [
+    { path: `${prefix}dedupe_key[]`, enum: DEDUPE_KEY_FIELDS },
+    { path: `${prefix}priority`, enum: PLAYBOOK_PRIORITIES },
+    { path: `${prefix}trigger.kind`, enum: TRIGGER_KINDS },
+    { path: `${prefix}token_limit`, positiveInteger: true },
+  ];
+}
+
+/**
+ * Every shipped tool, keyed by name, with the closed sets the kernel enforces
+ * on its input (empty: none). A new tool fails the walk until it is classified
+ * here. Task `state` / `kind` are the user's vocabulary (invariant 1), an
+ * approval's `payload` is free JSON, and `kernel_agent_message`'s `workspace`
+ * is checked against the target's own settings (per member, not a closed set).
+ */
+const CLOSED_VALUE_SETS: Readonly<Record<string, readonly ClosedValueSet[]>> = {
+  kernel_task_create: [],
+  kernel_task_update: [],
+  kernel_task_list: [],
+  kernel_task_get: [],
+  kernel_schedule_wakeup: [],
+  kernel_request_stop: [],
+  kernel_trigger_register: [
+    { path: "kind", enum: TRIGGER_KINDS },
+    { path: "action", enum: TRIGGER_ACTIONS },
+  ],
+  kernel_trigger_remove: [],
+  kernel_trigger_list: [],
+  kernel_notify: [],
+  kernel_approval_request: [],
+  kernel_loomwright_capabilities: [],
+  kernel_playbook_create: playbookSets(""),
+  kernel_playbook_update: playbookSets("changes."),
+  kernel_playbook_list: [],
+  kernel_playbook_disable: [],
+  kernel_playbook_dry_run: [],
+  kernel_playbook_enable: [],
+  kernel_agent_create: charterSets("charter.", "tool_policy.never", false),
+  kernel_agent_update: charterSets("changes.", "never", true),
+  kernel_agent_list: [],
+  kernel_agent_message: [],
+};
+
+type Json = Record<string, unknown>;
+
+function isJson(value: unknown): value is Json {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The schema at `path` in `schema`, or why there is none. */
+function schemaAt(schema: unknown, path: string): Json | string {
+  let node = schema;
+  for (const segment of path.split(".").flatMap((s) => (s.endsWith("[]") ? [s.slice(0, -2), "[]"] : [s]))) {
+    if (!isJson(node)) return `${path}: no schema above ${segment}`;
+    node = segment === "[]" ? node.items : isJson(node.properties) ? node.properties[segment] : undefined;
+  }
+  return isJson(node) ? node : `${path}: not in the listed schema`;
+}
+
+/** Why `inputSchema` does not publish `set`, or undefined when it does. */
+function closedSetProblem(inputSchema: unknown, set: ClosedValueSet): string | undefined {
+  const found = schemaAt(inputSchema, set.path);
+  if (typeof found === "string") return found;
+  let node = found;
+  if (set.nullable === true) {
+    const branches = Array.isArray(node.anyOf) ? (node.anyOf as unknown[]) : [];
+    const others = branches.filter((b) => !(isJson(b) && b.type === "null" && Object.keys(b).length === 1));
+    if (branches.length !== 2 || others.length !== 1 || !isJson(others[0])) return `${set.path}: not anyOf [<schema>, {"type":"null"}] (${JSON.stringify(node)})`;
+    node = others[0];
+  }
+  if ("enum" in set) {
+    if (JSON.stringify(node.enum) !== JSON.stringify(set.enum)) return `${set.path}: enum ${JSON.stringify(node.enum)}, not ${JSON.stringify(set.enum)}`;
+    return undefined;
+  }
+  const exclusive = typeof node.exclusiveMinimum === "number" && node.exclusiveMinimum >= 0;
+  const inclusive = typeof node.minimum === "number" && node.minimum >= 1;
+  if (node.type !== "integer" || !(exclusive || inclusive)) return `${set.path}: not a positive integer (${JSON.stringify(node)})`;
+  return undefined;
+}
 
 /** The old `kernel_agent_create` charter shape: a record the SDK's serialiser throws on. */
 function recordTool(name: string): ContributedTool {
@@ -66,10 +188,45 @@ describe("the shipped kernel tools list through the Agent SDK", () => {
     for (const t of listed) expect((t.inputSchema as { type?: unknown }).type, t.name).toBe("object");
   });
 
-  it("kernel_agent_create's charter is listed as a JSON object, not a record", async () => {
+  it("kernel_agent_create's charter is listed as a JSON object with its properties, not a record", async () => {
     const listed = await listKernelTools(SHIPPED);
     const create = listed.find((t) => t.name === "kernel_agent_create");
-    expect((create?.inputSchema as { properties?: Record<string, unknown> }).properties?.charter).toEqual({ type: "object" });
+    const charter = (create?.inputSchema as { properties?: Record<string, unknown> }).properties?.charter as Json | undefined;
+    expect(charter?.type).toBe("object");
+    expect(isJson(charter?.properties), JSON.stringify(charter)).toBe(true);
+    // A record publishes `additionalProperties` as a schema; the strict charter publishes `false`.
+    expect([undefined, false]).toContain(charter?.additionalProperties);
+  });
+
+  it("every shipped tool is classified in CLOSED_VALUE_SETS, and each listed input schema publishes its closed sets as enums and its bounds as positive integers", async () => {
+    expect(Object.keys(CLOSED_VALUE_SETS).sort()).toEqual([...kernelToolNames(SHIPPED)].sort());
+    const listed = await listKernelTools(SHIPPED);
+    const problems = listed.flatMap((t) => (CLOSED_VALUE_SETS[t.name] ?? []).map((set) => closedSetProblem(t.inputSchema, set)).filter((p) => p !== undefined).map((p) => `${t.name}: ${p}`));
+    expect(problems).toEqual([]);
+    // The table is not vacuous: the five tools with closed sets are each checked.
+    expect(Object.entries(CLOSED_VALUE_SETS).filter(([, sets]) => sets.length > 0).map(([name]) => name).sort()).toEqual(
+      ["kernel_agent_create", "kernel_agent_update", "kernel_playbook_create", "kernel_playbook_update", "kernel_trigger_register"],
+    );
+  });
+
+  it("the walk refuses a set published as a bare string, number or other order, a missing path, and a nullable bound without its null branch", async () => {
+    const loose = defineTool({
+      name: "kernel_probe_loose",
+      description: "A loose fixture.",
+      shape: { kind: z.string(), e: z.enum(TRIGGER_KINDS), n: z.number(), m: z.number().int().positive(), o: z.object({ p: z.array(z.string()) }) },
+      handler: () => null,
+    });
+    // The listing always has the phase 1 tools too: the fixture is found by name.
+    const schema = (await listKernelTools([loose])).find((t) => t.name === "kernel_probe_loose")?.inputSchema;
+    expect(isJson(schema)).toBe(true);
+    expect(closedSetProblem(schema, { path: "kind", enum: TRIGGER_KINDS })).toMatch(/^kind: enum undefined, not /);
+    expect(closedSetProblem(schema, { path: "o.p[]", enum: TRIGGER_KINDS })).toMatch(/^o\.p\[\]: enum undefined, not /);
+    expect(closedSetProblem(schema, { path: "n", positiveInteger: true })).toMatch(/^n: not a positive integer/);
+    expect(closedSetProblem(schema, { path: "m", positiveInteger: true })).toBeUndefined();
+    expect(closedSetProblem(schema, { path: "m", positiveInteger: true, nullable: true })).toMatch(/^m: not anyOf /);
+    expect(closedSetProblem(schema, { path: "absent", enum: TRIGGER_KINDS })).toBe("absent: not in the listed schema");
+    expect(closedSetProblem(schema, { path: "e", enum: TRIGGER_KINDS })).toBeUndefined();
+    expect(closedSetProblem(schema, { path: "e", enum: [...TRIGGER_KINDS].reverse() })).toBe('e: enum ["once","cron"], not ["cron","once"]');
   });
 
   it("(e) the listing context's members throw when used, and listing the shipped tools with it still resolves (no handler, store or session member runs)", async () => {

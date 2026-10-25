@@ -473,3 +473,19 @@ export function charterOf(form: CharterForm): AgentCreateBody {
 export function threadHash(agentId: string): string {
   return `#/chat/${encodeURIComponent(agentId)}`;
 }
+
+/** The `#/team` route that selects a member. */
+export function memberHash(id: string): string {
+  return `#/team/${encodeURIComponent(id)}`;
+}
+
+/** The member a `#/team/<id>` route names, or `undefined` (`#/team`, a malformed escape, anything else). */
+export function memberIdFromHash(hash: string): string | undefined {
+  const match = /^#\/team\/([^/?#]+)$/.exec(hash);
+  if (match?.[1] === undefined) return undefined;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return undefined;
+  }
+}

@@ -50,7 +50,8 @@
 //
 // The `studio` CLI loads this module through `./index.ts`, so it imports only
 // types, zod, `node:*`, the feature seam, `../loop/internal.js`,
-// `../brain/settings.js`, `../approvals/store.js` (a constant) and this
+// `../brain/settings.js`, `../approvals/store.js` (a constant),
+// `../sessions/policy.js` (`NEVER_CATEGORIES`) and this
 // feature's own modules: never the Agent SDK,
 // the session manager or `kernel.ts` (`kernel/test/feature-seams.test.ts`).
 import { createHash, randomBytes } from "node:crypto";
@@ -63,9 +64,19 @@ import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedToolContext } from "../features/contribution.js";
 import { NO_REF, appendEvent } from "../loop/internal.js";
-import type { HeldToolVerdict } from "../sessions/types.js";
+import { NEVER_CATEGORIES } from "../sessions/policy.js";
+import type { AllowedPermissionMode, HeldToolVerdict } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
-import { CHARTER_LIMIT_KEYS, CHARTER_PERMISSION_MODES, createAgent, ensureAgentFiles, renderAgentSettingsJson, renderRoleMd, validateCharter } from "./charter-files.js";
+import {
+  CHARTER_JSON_SCHEMA,
+  CHARTER_LIMIT_KEYS,
+  CHARTER_PERMISSION_MODES,
+  createAgent,
+  ensureAgentFiles,
+  renderAgentSettingsJson,
+  renderRoleMd,
+  validateCharter,
+} from "./charter-files.js";
 import type { AgentAuditKind, Charter } from "./charter-files.js";
 import { getAgent, listAgents } from "./registry.js";
 import type { AgentRow } from "./registry.js";
@@ -298,10 +309,12 @@ const createTool = defineTool({
   shape: {
     // Not `z.record`: the Agent SDK's bundled serialiser throws on a record, which empties `tools/list`; and a record rebuilds
     // the object in a plain `{}`, dropping an own `__proto__` key. `validateCharter` sees the charter as sent (and refuses `__proto__`).
+    // Published as the charter's own JSON Schema (`CHARTER_JSON_SCHEMA`: its closed sets as enums, its limits as positive
+    // integers), so a session sees the sets before it calls; the parse stays `z.unknown()` and `validateCharter` the check.
     charter: z
       .unknown()
       .refine((v) => typeof v === "object" && v !== null && !Array.isArray(v), { message: "charter must be a JSON object" })
-      .meta({ type: "object" }),
+      .meta(CHARTER_JSON_SCHEMA),
     idempotency_key: z.string().min(1).max(200),
   },
   beforeHold: createBeforeHold,
@@ -311,20 +324,22 @@ const createTool = defineTool({
 
 // ---- kernel_agent_update ----------------------------------------------------------
 
-/** A limit's change: a number, or null (clear: unset is no limit). */
-const limitChange = z.number().nullable().optional();
+/** A limit's change: a positive integer, or null (clear: unset is no limit). */
+const limitChange = z.number().int().positive().nullable().optional();
 
+// The closed sets are the charter's own (never a copied list), so `tools/list` publishes them as enums; the merged
+// result is still checked whole by `validateCharter` (defence in depth).
 const changesSchema = z
   .object({
     model: z.string().optional(),
     effort: z.string().nullable().optional(),
-    permission_mode: z.string().optional(),
+    permission_mode: z.enum(CHARTER_PERMISSION_MODES as [AllowedPermissionMode, ...AllowedPermissionMode[]]).optional(),
     tool_policy: z.object({ allowedTools: z.array(z.string()), allowedBashPrefixes: z.array(z.string()) }).strict().optional(),
-    never: z.array(z.string()).optional(),
+    never: z.array(z.enum(NEVER_CATEGORIES)).optional(),
     limits: z.object({ tokens_per_day: limitChange, sessions_at_once: limitChange, delegation_depth: limitChange }).strict().optional(),
     workspaces: z.array(z.string()).optional(),
     display_name: z.string().optional(),
-    avatar: z.object({ shape: z.string(), hue: z.string() }).strict().optional(),
+    avatar: z.object({ shape: z.enum(AVATAR_SHAPES), hue: z.enum(AVATAR_HUES) }).strict().optional(),
   })
   .strict()
   .refine((c) => Object.values(c).some((v) => v !== undefined), "name at least one field to change");

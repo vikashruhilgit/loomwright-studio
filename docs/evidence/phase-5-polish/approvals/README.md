@@ -31,10 +31,13 @@ The screens they match are in [`docs/design/mockups/gui-v1.html`](../../../desig
 
 ## What the spec checks besides the screenshots
 
+The screenshots above predate the approval source label (`Requested by …`) and the link to what an approval is about; the rows below describe the spec as it is now.
+
 | AC | What it asserts in the running app |
 |---|---|
 | AC1 | With two pending, #1 (oldest) comes first and is selected. When a third arrives through the feed, the order and the selection are unchanged. After J selects #2, `GET /approvals` stops returning #1 and an `approval_decided` event is pushed: #2 is still selected and still shown. |
-| AC1b, AC2 | The detail shows `kernel_agent_create`, `wright`, `session #12`, `from playbook crew-setup v2`, the session's cwd (the payload has none) and the kernel's line. A sends exactly one `POST /approvals/1/approve` with body `{"decision":"once"}`. The `applied` sentence then shows, followed by the agent's message. A second A sends nothing. |
+| AC1b, AC2 | The detail shows `kernel_agent_create`, `wright`, `session #12`, `Requested by playbook crew-setup v2`, the payload's cwd (session #12's) and the kernel's line, and no link while pending. A sends exactly one `POST /approvals/1/approve` with body `{"decision":"once"}`. The `applied` sentence then shows, then the **Open in Team** link (`#/team/sable`), followed by the agent's message. A second A sends nothing. |
+| Approval link | An enable approval shaped like the live run's #6 shows `Requested by Wright in chat`. **Open playbook pr-review** (`#/chat?playbook=3`) opens Wright's thread with playbook 3's card in view and focus inside it, and sends nothing. At `#/chat?playbook=99` the line saying the card is missing is in view. |
 | AC3 | With `playbook: null`, the Always button is disabled, its explanation is `always needs an approval the rail held from a playbook session; approve it once`, and ⇧A sends nothing. On a playbook approval the kernel refuses, ⇧A sends `{"decision":"always"}`, the 409's `message` shows, and the approval stays pending. |
 | AC4 | A payload and a display holding `\u001b[31m` and U+202E render as the literal text `\x1b[31m` and `\u202e`, in a `<pre>` with a monospace font. No raw C0/C1 control, bidi control or separator appears anywhere in `document.body.textContent`. |
 | AC5 | The `current: false` grant shows "not current"; the current one does not. Revoke opens the confirm. Cancel sends nothing, and Confirm sends exactly one `POST /approvals/grants/17/revoke`. |

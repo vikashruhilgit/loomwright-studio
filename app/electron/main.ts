@@ -103,7 +103,8 @@ async function main(): Promise<void> {
   const createWindow = (): BrowserWindow => {
     const created = new BrowserWindow(windowOptions(join(app.getAppPath(), "dist-electron", "preload.cjs")));
     lockDown(created);
-    // Hidden, the window still renders and runs as if on screen.
+    // Hidden, the window's timers run unthrottled. Its frames do not on Linux: a never-mapped
+    // X11 window renders about one frame a second, so the e2e harness shows it on Linux CI.
     if (shows) created.once("ready-to-show", () => created.show());
     else created.webContents.setBackgroundThrottling(false);
     created.on("closed", () => {

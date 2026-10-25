@@ -5,7 +5,10 @@
 // feed and never from a local insert (AC6), "Ask Wright to draft it" (AC7),
 // a light and a dark screenshot of every designed state (AC10), and two
 // members of the same name told apart, with the off one last in the Crew
-// sidebar (`told-apart`). Run `npm run build` first.
+// sidebar (`told-apart`). Phase 5 polish: a long inspector scrolls inside its
+// own pane while the sidebar, title bar and cards stay put
+// (`inspector-scrolled`), and on every screen the document has nothing to
+// scroll (the shell's grid bounds the window). Run `npm run build` first.
 //
 // Loading cannot be held open by the fixture (a `FixtureRoute` answers
 // synchronously), so that one state is the real `App` in a gallery window
@@ -523,4 +526,136 @@ test("AC7: Ask Wright to draft it sends the owner's words through POST /ask and 
   ]);
   expect(team.creates).toEqual([]);
   expect(fixture?.requests.filter((r) => r.method === "POST" && r.path === "/agents")).toEqual([]);
+});
+
+/** The shell's fixed boxes: the sidebar, the title bar and Wright's card. A document scroll moves all three. */
+async function shellBoxes(page: Page): Promise<unknown> {
+  return {
+    sidebar: await page.getByTestId("sidebar").boundingBox(),
+    titlebar: await page.locator(".titlebar").boundingBox(),
+    wright: await card(page, "Wright").boundingBox(),
+  };
+}
+
+/** The document's scroll position (the element the window scrolls). */
+function documentScrollTop(page: Page): Promise<number> {
+  return page.evaluate(() => document.scrollingElement?.scrollTop ?? -1);
+}
+
+test("phase 5 polish: a long inspector scrolls alone; the sidebar, title bar and cards never move", async ({}, testInfo) => {
+  const page = await openTeam(teamFixture());
+  await expect(grid(page).getByTestId("team-card")).toHaveCount(3);
+  await card(page, "Mason").click();
+  const inspector = page.getByTestId("team-inspector");
+  const heading = inspector.getByRole("heading", { name: "Mason", level: 2 });
+  await expect(heading).toBeVisible();
+  await expect(inspector.getByTestId("team-insp-memory").getByRole("listitem")).toHaveCount(5);
+  await settle(page);
+
+  // Not vacuous: the inspector has well over 100px to scroll inside its pane.
+  const overflow = await inspector.evaluate((el) => ({ scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }));
+  testInfo.annotations.push({ type: "inspector", description: `scrollHeight ${overflow.scrollHeight}, clientHeight ${overflow.clientHeight}` });
+  expect(overflow.scrollHeight - overflow.clientHeight, `the inspector overflows its pane (scrollHeight ${overflow.scrollHeight}, clientHeight ${overflow.clientHeight})`).toBeGreaterThanOrEqual(100);
+
+  const before = await shellBoxes(page);
+  const inspectorTop = () => inspector.evaluate((el) => el.scrollTop);
+  const inspectorLeft = () => inspector.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+  const pane = await inspector.boundingBox();
+  if (pane === null) throw new Error("the inspector has no box");
+
+  // (a) The wheel over the inspector, well past its end. Wait until it is at its
+  // bottom, then wheel again: that extra input at the end is what would spill
+  // over to the document.
+  await page.mouse.move(pane.x + pane.width / 2, pane.y + pane.height / 2);
+  for (let i = 0; i < 8; i += 1) await page.mouse.wheel(0, 500);
+  await expect.poll(inspectorLeft, { message: "the wheel scrolled the inspector to its bottom" }).toBeLessThanOrEqual(1);
+  for (let i = 0; i < 4; i += 1) await page.mouse.wheel(0, 500);
+  await settle(page);
+  expect(await inspectorLeft(), "the inspector is still at its bottom").toBeLessThanOrEqual(1);
+  expect(await documentScrollTop(page), "the document did not scroll").toBe(0);
+  expect(await shellBoxes(page), "the sidebar, title bar and Wright's card stayed put").toEqual(before);
+
+  // (b) Back up, past the top: nothing stays shifted. Wait until it is at its
+  // top, then wheel up again, so the input past the top is really sent.
+  for (let i = 0; i < 8; i += 1) await page.mouse.wheel(0, -500);
+  await expect.poll(inspectorTop, { message: "the inspector is back at its top" }).toBe(0);
+  for (let i = 0; i < 4; i += 1) await page.mouse.wheel(0, -500);
+  await settle(page);
+  expect(await inspectorTop(), "the inspector is still at its top").toBe(0);
+  expect(await documentScrollTop(page), "the document did not scroll").toBe(0);
+  expect(await shellBoxes(page), "nothing stayed shifted").toEqual(before);
+
+  // (c) By keyboard from the top: reaching Turn off scrolls the inspector, never the document.
+  await inspector.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await heading.focus();
+  const turnOff = inspector.getByRole("button", { name: "Turn off" });
+  await tabTo(page, turnOff, "Turn off");
+  await expect(turnOff).toBeFocused();
+  await settle(page);
+  const inView = await turnOff.evaluate((el) => {
+    const pane = el.closest('[data-testid="team-inspector"]');
+    if (pane === null) return false;
+    const r = el.getBoundingClientRect();
+    const p = pane.getBoundingClientRect();
+    return r.top >= p.top && r.bottom <= p.bottom && r.left >= p.left && r.right <= p.right;
+  });
+  expect(inView, "Turn off is inside the inspector's visible rect").toBe(true);
+  expect(await inspectorTop(), "reaching Turn off scrolled the inspector").toBeGreaterThan(0);
+  expect(await documentScrollTop(page), "the document did not scroll").toBe(0);
+  expect(await shellBoxes(page), "the sidebar, title bar and Wright's card stayed put").toEqual(before);
+
+  await screenshots(page, "inspector-scrolled", testInfo);
+});
+
+test("phase 5 polish: the document never scrolls, on any screen", async () => {
+  const page = await openTeam(teamFixture());
+
+  const check = async (what: string): Promise<void> => {
+    await settle(page);
+    const m = await page.evaluate(() => {
+      const box = (el: Element | null) => (el === null ? null : { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight });
+      const doc = document.scrollingElement;
+      const read = { doc: box(doc), root: box(document.getElementById("root")), win: box(document.querySelector(".window")), scrollY: window.scrollY };
+      const main = document.querySelector(".main")?.getBoundingClientRect().height ?? -1;
+      window.scrollTo(0, 500);
+      const scrolledTo = window.scrollY;
+      // Put it back, so each case is measured on its own.
+      window.scrollTo(0, 0);
+      return { ...read, main, viewport: window.innerHeight, scrolledTo };
+    });
+    const sizes = `(document scrollHeight ${m.doc?.scrollHeight}, clientHeight ${m.doc?.clientHeight}; .main ${m.main}px in a ${m.viewport}px window)`;
+    expect.soft(m.doc?.scrollTop, `${what}: the document's scrollTop is 0 ${sizes}`).toBe(0);
+    expect.soft(m.scrollY, `${what}: window.scrollY is 0 ${sizes}`).toBe(0);
+    expect.soft(m.doc !== null && m.doc.scrollHeight <= m.doc.clientHeight, `${what}: the document has nothing to scroll ${sizes}`).toBe(true);
+    expect.soft(m.scrolledTo, `${what}: window.scrollTo(0, 500) leaves window.scrollY at 0 ${sizes}`).toBe(0);
+    for (const [name, el] of [
+      ["#root", m.root],
+      [".window", m.win],
+    ] as const) {
+      expect.soft(el?.scrollTop, `${what}: ${name}'s scrollTop is 0`).toBe(0);
+      expect.soft(el !== null && el.scrollHeight <= el.clientHeight, `${what}: ${name} has nothing to scroll (scrollHeight ${el?.scrollHeight}, clientHeight ${el?.clientHeight})`).toBe(true);
+    }
+  };
+
+  for (const id of ["chat", "team", "approvals", "sessions", "menubar"]) {
+    await page.evaluate((screen) => {
+      window.location.hash = `#/${screen}`;
+    }, id);
+    await expect(page.getByTestId(`screen-${id}`)).toBeVisible();
+    if (id === "team") await expect(grid(page).getByTestId("team-card")).toHaveCount(3);
+    await check(id);
+  }
+
+  await page.evaluate(() => {
+    window.location.hash = "#/team";
+  });
+  await card(page, "Mason").click();
+  const inspector = page.getByTestId("team-inspector");
+  await expect(inspector.getByRole("heading", { name: "Mason", level: 2 })).toBeVisible();
+  await expect(inspector.getByTestId("team-insp-memory").getByRole("listitem")).toHaveCount(5);
+  await check("team with Mason's inspector");
+
+  expect(test.info().errors.length, "every screen's document stayed unscrollable (the soft failures above name each case)").toBe(0);
 });
