@@ -8,7 +8,7 @@ To regenerate the screenshots:
 cd app && npm run build && TEAM_EVIDENCE=1 npx playwright test e2e/team.spec.ts --workers=1
 ```
 
-Without `TEAM_EVIDENCE=1` the spec writes its screenshots to Playwright's per-test output directory, so CI never changes these files. The spec checks behaviour and never compares pixels, because fonts differ between macOS and the Ubuntu CI run. These files were captured on macOS on 2026-10-22.
+Without `TEAM_EVIDENCE=1` the spec writes its screenshots to Playwright's per-test output directory, so CI never changes these files. The spec checks behaviour and never compares pixels, because fonts differ between macOS and the Ubuntu CI run. These files were captured on macOS on 2026-10-22, except `told-apart` (2026-10-24) and `inspector-scrolled` (2026-10-25).
 
 ## Screenshots
 
@@ -23,6 +23,7 @@ The "Mockup state" column names the Team state in `docs/design/mockups/gui-v1.ht
 | `team-waiting-light.png` / `team-waiting-dark.png` | Waiting on you | A card whose agent has a pending approval (`agentState` = `waiting`: "Waiting on you · <title>") | Mason's task line reads "Waiting on you · Post a review on PR #412", with the waiting dot and the waiting avatar ring. |
 | `team-inspector-light.png` / `team-inspector-dark.png` | Inspector open | A selected card (`S.selAgent`: `aside.insp`) | Mason's 320px inspector. It shows the role unclamped, the duties, and "Boundaries · guidance, not enforced". Apart from those sit "Permissions · enforced by the kernel", with allowed tools, Bash prefixes and the `never` list, each marked "enforced". |
 | `team-told-apart-light.png` / `team-told-apart-dark.png` | Members told apart (phase 5 polish, 2026-10-24) | No mockup state: the collision roster (`teamFixture({ collision: true })`) | Two crew members named "Comment-only Reviewer" (one typed "comment-only reviewer ") with the same turtle and hue. Each card shows its id in muted mono under the name (`phase4-exit-mvg8wle4cf8f26`, `phase5-exit-1024`), and so does each Crew row. In the Crew sidebar the off Ada sorts after both, its avatar dimmed (the name and the word "off" stay at full opacity), with the word "off". Team's own card order is unchanged (Ada stays between the two). Wright's task line is its running message because `GET /sessions` reports session 12 `running`. A running message whose session the kernel reports ended (killed) now reads `idle` instead: that branch is pinned in `team.test.tsx`, not captured here. |
+| `team-inspector-scrolled-light.png` / `team-inspector-scrolled-dark.png` | Inspector scrolled to its actions (phase 5 polish, 2026-10-25) | No mockup state: Mason's inspector scrolled inside its own pane | Mason's inspector scrolled to its end by keyboard: Tab from its heading reached Turn off, which shows the focus ring next to Open thread. The sidebar, the "Team" title bar and the three cards sit exactly where they were before the inspector scrolled. Only the inspector moved. |
 | `team-new-crew-member-light.png` / `team-new-crew-member-dark.png` | New crew member form | `newAgent()` (the "New crew member" charter form) | The form as it opens: empty, with no presets. Focus is on its heading, so the heading shows the focus ring. |
 
 ### How each state is produced
@@ -43,6 +44,8 @@ The "Mockup state" column names the Team state in `docs/design/mockups/gui-v1.ht
 | Create by keyboard alone | AC6 and AC9. The spec uses Tab, Enter, Space, arrow keys and typing only, and a pointer-event counter must read 0. This drives both picker dialogs. `POST /agents` is called once with the exact charter. The card is still absent 750 ms after the `201`, and it appears only after the fixture publishes the agent and appends `agent_created`. |
 | Rename by keyboard alone | AC9. `POST /agents/mason/rename` is called with `{display_name}`, the card takes the new name from the feed's `agent_renamed`, and Escape closes the inspector with focus back on the card. |
 | Ask Wright to draft it | AC7. `POST /ask` carries the owner's words, the hash becomes `#/chat`, and no `POST /agents` is made. |
+| A long inspector scrolls alone | Phase 5 polish (the inspector scrolls inside its pane), AC1. Precondition: Mason's inspector overflows its pane by at least 100px (measured 1316px of content in a 708px pane at the 760px window, so the default fixture is long enough and no long variant was added). (a) Eight `page.mouse.wheel(0, 500)` over the inspector scroll it (`scrollTop` > 0). The wheel does scroll the hidden app window, so the brief's `scrollBy` fallback was not needed. The document's `scrollTop` stays 0, and the bounding boxes of the sidebar, the title bar and Wright's card are unchanged. (b) Wheeling back past the top brings the inspector to 0 with the document still at 0 and the boxes unchanged, which is the live run's "stayed shifted" case. (c) From the inspector's heading, Tab reaches Turn off: it is focused and inside the inspector's visible rect, the inspector scrolled to reveal it, the document did not, and the boxes are unchanged. |
+| The document never scrolls, on any screen | Phase 5 polish, AC2. On Chat, Team, Approvals, Sessions and the menu-bar panel (each by `#/<id>`), and again on Team with Mason's inspector open: the document's `scrollTop` and `window.scrollY` are 0, the document's `scrollHeight` is at most its `clientHeight` (it has nothing to scroll), `window.scrollTo(0, 500)` leaves `window.scrollY` at 0, and `#root` and `.window` each have `scrollTop` 0 and nothing to scroll. Each case is an `expect.soft` naming the screen and the measured heights, and a hard `expect` at the end fails if any did. |
 | Told apart | Phase 5 polish (crew members told apart). Both colliding cards and both Crew rows show their own id, each row's `title` and `aria-label` (`<name> (<id>)`) carry it, Ada's Crew row is last, has the `off` class, reads "off", has its avatar dimmed (opacity below 1) while the row itself stays at full opacity, and stays a visible, enabled button. |
 
 The brief lists two pin mutations for this spec. Each one was applied to `app/src/screens/team/`, rebuilt, made the spec fail, and was then reverted:
@@ -52,6 +55,26 @@ The brief lists two pin mutations for this spec. Each one was applied to `app/sr
 | `tabIndex={-1}` on the New crew member Create control | Failed with "Tab never reached Create in 60 presses". |
 | Add the returned agent to the roster locally on the `201` | Failed at the absent-after-`201` check: expected 3 cards, received 4. |
 | `[...crew].sort(offLast)` → `[...crew]` in `app/src/screens/chat/CrewSection.tsx` (told apart, 2026-10-24) | Failed at the Crew row order: expected `[phase4-exit-mvg8wle4cf8f26, phase5-exit-1024, ada]`, received `ada` second. |
+| `app/src/styles/app.css` reverted to base `9137fb3`, which deletes the one kept declaration, `.window`'s `grid-template-rows: minmax(0, 1fr);`, with `chat.css` and `sessions.css` already without their `.main:has()` rules (inspector scrolls inside its pane, 2026-10-25). This is also step 1's red run. | AC1 failed at its precondition: "the inspector overflows its pane (scrollHeight 1316, clientHeight 1316)", received 0. AC2 failed only on "team with Mason's inspector": "the document has nothing to scroll (document scrollHeight 1368, clientHeight 760; .main 1368px in a 760px window)", "window.scrollTo(0, 500) leaves window.scrollY at 0" (received 500), and "#root" and ".window has nothing to scroll (scrollHeight 1368, clientHeight 760)". `sessions.spec.ts` AC2 failed with "the log does not scroll: it is not bounded by the pane", and its AC9 failed waiting for the log pill to leave "Following". `chat.spec.ts` stayed green (see Limits). |
+
+## Root cause: the window scrolled because the shell's row was not bounded (2026-10-25)
+
+In the phase 5 live exit run the whole window scrolled when the owner scrolled Mason's inspector to reach Turn off. The inspector itself was fine (`.team-insp` has `overflow: auto; min-height: 0`); its parents were not bounded.
+
+**Measured on the unmodified base (`9137fb3`), built, at the 760px window.** `.window` is `display: grid` with one implicit `auto` row, and its grid item `.main` keeps `min-height: auto`. So `.main`, and with it the row, grew to the screen's content: with Mason's inspector open `.main` was 1368px tall, the document's `scrollHeight` was 1368 against a `clientHeight` of 760, `#root` and `.window` had the same 1368 / 760, and `window.scrollTo(0, 500)` moved the document to 500. The inspector's own `scrollHeight` equalled its `clientHeight` (1316 / 1316): it never became a scroll container, so the wheel and focus scrolled `<html>` instead. Chat and Sessions passed AC2 on base only through their own `.main:has()` workarounds, and Team, Approvals and the menu-bar panel passed because their content fit the window. The hypothesis held; no other mechanism was involved.
+
+**The fix:** one declaration in `app/src/styles/app.css`, `.window { grid-template-rows: minmax(0, 1fr); }`. The window's row is now the viewport, never its content, so every screen scrolls inside its own pane and the document has nothing to scroll. On the fixed build Mason's inspector is 1316px of content in a 708px pane (760 − the 52px title bar).
+
+**Ablation** (each variant rebuilt, then `team.spec.ts`, `sessions.spec.ts` and `chat.spec.ts` run in full, with Chat's and Sessions' `.main:has()` rules already removed):
+
+| `app.css` variant | Result |
+|---|---|
+| `.window { grid-template-rows: minmax(0, 1fr); }` plus `.main { grid-template-rows: var(--titlebar-height) minmax(0, 1fr); min-height: 0; }` | Green (33 of 33). |
+| `.main`'s two declarations removed, `.window`'s kept | Green (33 of 33). `.main`'s declarations are redundant, so they were dropped. This is the shipped fix. |
+| `.window`'s declaration removed, `.main`'s two kept | Green (33 of 33). `.main`'s pair also bounds the shell on its own. The brief prefers `.window`'s row, which bounds the row every screen sits in, so `.window`'s single declaration was kept. |
+| Neither (base `app.css`) | Red: the mutation row above. |
+
+Chat's and Sessions' `.main:has()` workarounds are gone. Their `.content:has()` flex columns stay, because they lay out the kernel band above the screen's column.
 
 ## Contract gaps found
 
@@ -84,4 +107,6 @@ None of these gaps was worked around by editing the kernel, `app/src/api/contrac
 - The pointer path for every action, and Set a field, Turn off and Turn on, are covered by `app/src/screens/team/team.test.tsx` (jsdom), not by this spec.
 - The ⌘K commands (AC8) are pinned in `team.test.tsx`, not driven in Electron here.
 - The screenshots other than `told-apart` were captured on 2026-10-22, before the Crew sidebar marked off members. In them Ada's Crew row is not yet dimmed and has no "off" word; regenerate them with the command above to bring them up to date.
+- **Chat's e2e does not pin the shell fix.** With base `app.css` and `.main:has(.chat)` removed, all of `chat.spec.ts` stayed green, because its fixture thread fits the window at the size it checks. Chat's containment is pinned only by this spec's AC2 Chat case (also short content), so a regression that let a long Chat thread grow the document would not be caught. `sessions.spec.ts` AC2 does pin it for Sessions.
+- **Step 4 smoke check after the fix:** post-fix captures of Chat (populated), Approvals (populated), Sessions (populated) and the menu-bar panel (idle) were compared with the committed ones. Approvals is unchanged (its detail pane already scrolls inside itself), Chat's composer stays at the bottom with the thread scrolling, and the Sessions log is bounded with its "Following" pill. Those screens' committed screenshots were not regenerated.
 - All screenshots come from one machine (macOS). The Ubuntu CI run executes the same assertions but does not write these files.
