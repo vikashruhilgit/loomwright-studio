@@ -2,7 +2,7 @@
   "test": "phase-5-exit-live",
   "date": "2026-10-25",
   "result": "passed — all six flows passed in the packaged app against the launchd kernel, with nothing typed in a terminal after setup",
-  "run_by": "Claude (Claude Code session) at the owner's request, owner present and watching the screen (D33, D35). Under D35, the owner named these in-app decisions in chat before the run, and Claude clicked them: Allow once on approval 9, Create on approval 10, Deny on approval 11, Stop, Kill and its confirm, Pause all, Unpause, the kill switch and its confirm, Resume, and Wright's model set to claude-opus-5-5 in Team. Claude also took in-app actions the owner did not name one by one; they are listed in actions_beyond_the_named_list, and one of them, the playbook's model, was a value the owner never chose",
+  "run_by": "Claude (Claude Code session) at the owner's request, owner present and watching the screen (D33, D35). Under D35, the owner named these in-app decisions in chat before the run, and Claude clicked them: Allow once on approval 9, Create on approval 10, Deny on approval 11, Stop, Kill and its confirm, Pause all, Unpause, the kill switch and its confirm, Resume, and Wright's model set to claude-opus-5-5 in Team. Under D35's test, the runbook's other steps were covered by the owner's request to run it; they are listed in actions_beyond_the_named_list, and one of them, the playbook's model, was a value the owner never chose",
   "commit": "1e39585d887c784b4970cfab63b81851bea58bb6",
   "dirty_worktree": false,
   "machine": {
@@ -566,7 +566,7 @@
       "chosen_by": "the agent (Wright's model at the time); the owner did not name it",
       "kernel_records": "set by owner (playbook updated, version 3)",
       "why": "the card required a model before a dry run; the runbook's flow 2 does not mention it",
-      "d35": "outside D35: a policy value (invariant 1) the owner did not choose"
+      "d35": "outside D35: a policy value the runbook does not fix (invariant 1), which the owner did not name"
     },
     {
       "flow": "2_playbook_priority_enable_run",
@@ -574,20 +574,20 @@
       "value": "high",
       "chosen_by": "the runbook's flow 2 step 2, which the owner asked the agent to run",
       "kernel_records": "priority_set_by owner (version 2)",
-      "d35": "within the run's scope: runbook flow 2 step 2, a step of the procedure the owner asked the agent to run"
+      "d35": "within D35: a runbook step, covered by the owner's request to run the runbook (runbook flow 2 step 2, with the value it states (high))"
     },
     {
       "flow": "2_playbook_priority_enable_run",
       "action": "Pressed Run now on the card",
       "chosen_by": "the runbook's flow 2 step 5",
       "kernel_records": "run 8, session 50",
-      "d35": "within the run's scope: runbook flow 2 step 5"
+      "d35": "within D35: a runbook step, covered by the owner's request to run the runbook (runbook flow 2 step 5)"
     },
     {
       "flow": "cleanup",
       "action": "Turn off on playbook phase5-exit-1025, Off on its trigger 12, Turn off on crew member phase5-exit-1025",
       "chosen_by": "the runbook's cleanup section",
-      "d35": "within the run's scope: the runbook's cleanup section"
+      "d35": "within D35: a runbook step, covered by the owner's request to run the runbook (the runbook's cleanup section)"
     }
   ]
 }
