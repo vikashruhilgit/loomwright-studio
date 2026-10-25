@@ -2,7 +2,7 @@
   "test": "phase-5-exit-live",
   "date": "2026-10-25",
   "result": "passed — all six flows passed in the packaged app against the launchd kernel, with nothing typed in a terminal after setup",
-  "run_by": "Claude (Claude Code session) at the owner's request, owner present and watching the screen (D33, D35). Under D35, the owner named each in-app decision in chat before the run, and Claude clicked exactly those: Allow once on approval 9, Create on approval 10, Deny on approval 11, Stop, Kill and its confirm, Pause all, Unpause, the kill switch and its confirm, Resume. Each is recorded below as 'the agent, on the owner's word'",
+  "run_by": "Claude (Claude Code session) at the owner's request, owner present and watching the screen (D33, D35). Under D35, the owner named each in-app decision in chat before the run, and Claude clicked exactly those: Allow once on approval 9, Create on approval 10, Deny on approval 11, Stop, Kill and its confirm, Pause all, Unpause, the kill switch and its confirm, Resume, and Wright's model set to claude-opus-5-5 in Team. Each is recorded below as 'the agent, on the owner's word'",
   "commit": "1e39585d887c784b4970cfab63b81851bea58bb6",
   "dirty_worktree": false,
   "machine": {
@@ -200,7 +200,7 @@
         "run_now_pressed": null
       },
       "findings": [
-        "The draft card read 'Model: not set: needed before a dry run'; the runbook's flow 2 does not say to set it. The model (claude-sonnet-5-5) was set from the card's Model Edit before asking for the dry run.",
+        "The draft card read 'Model: not set: needed before a dry run'; the runbook's flow 2 does not say to set it. The agent set it from the card's Model Edit to claude-sonnet-5-5 (Wright's model at the time) before asking for the dry run. The owner did not name that value: it is the agent's choice, although the kernel records it as set by the owner because it came from the app (invariant 1: a playbook's model is the user's to set).",
         "Pressing Run now gave no visible feedback on the card (the run and its session 50 did start; the harness recorded run 8).",
         "After dry run 7 completed, the card still read 'Last dry run: not available from the kernel yet'."
       ],
