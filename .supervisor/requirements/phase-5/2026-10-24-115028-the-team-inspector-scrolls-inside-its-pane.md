@@ -56,3 +56,9 @@ app/src/screens/team/Inspector.tsx
 app/src/screens/team/team.css
 app/src/shell/
 app/e2e/team.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-25T06:31:22Z
+- **Brief:** .supervisor/jobs/done/2026-10-25-team-inspector-scrolls-inside-its-pane.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/137
