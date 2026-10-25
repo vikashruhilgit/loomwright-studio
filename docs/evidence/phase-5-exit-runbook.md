@@ -4,7 +4,7 @@ Phase 5 is done when this holds in the running system ([`docs/ROADMAP.md`](../RO
 
 The deterministic half is in CI: `app/e2e/phase-5-exit.spec.ts` drives the built app with Playwright against a real kernel started in-process, with stand-in sessions, one injected clock and a stub notifier, and checks every step's effect in the kernel's store. This runbook is the live half: the packaged `Loomwright Studio.app`, the kernel installed as a launchd agent, a real Wright and a real crew member, on this Mac. Phase 4's live run is the precedent ([runbook](phase-4-exit-runbook.md), [evidence](phase-4-exit-live-2026-10-20.json)).
 
-The owner decides when this runs. It uses the owner's subscription, launchd service and screen. The owner runs it, or has an agent run it while watching the screen ([D33](../DECISIONS.md)). Either way, every decision in the app (approve, deny, Create, Stop, Kill, the kill switch's confirm) is the owner's, every `owner` field below holds only what the owner reports seeing, and the evidence file's `run_by` says who ran it.
+The owner decides when this runs. It uses the owner's subscription, launchd service and screen. The owner runs it, or has an agent run it while watching the screen ([D33](../DECISIONS.md), [D35](../DECISIONS.md)). Either way, every decision in the app (approve, deny, Create, Stop, Kill, Pause all, the kill switch and its confirm, Resume) is the owner's: the owner clicks it, or, under D35, names it in chat before the run and the agent clicks it, recorded as "the agent, on the owner's word". Every `owner` field below holds only what the owner reports seeing, and the evidence file's `run_by` says who ran it and who clicked each decision.
 
 ## What this run does to the machine
 

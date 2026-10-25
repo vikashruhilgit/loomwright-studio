@@ -2,7 +2,7 @@
   "test": "phase-5-exit-live",
   "date": "2026-10-25",
   "result": "passed — all six flows passed in the packaged app against the launchd kernel, with nothing typed in a terminal after setup",
-  "run_by": "Claude (Claude Code session) at the owner's request, owner present and watching the screen (D33); every in-app decision (Allow once on approval 9, Create on approval 10, Deny on approval 11, Stop, Kill and its confirm, Pause all, Unpause, the kill switch and its confirm, Resume) was clicked by Claude on the owner's explicit word given before the run",
+  "run_by": "Claude (Claude Code session) at the owner's request, owner present and watching the screen (D33, D35). Under D35, the owner named each in-app decision in chat before the run, and Claude clicked exactly those: Allow once on approval 9, Create on approval 10, Deny on approval 11, Stop, Kill and its confirm, Pause all, Unpause, the kill switch and its confirm, Resume. Each is recorded below as 'the agent, on the owner's word'",
   "commit": "1e39585d887c784b4970cfab63b81851bea58bb6",
   "dirty_worktree": false,
   "machine": {
@@ -39,9 +39,9 @@
     "wright_model": "claude-sonnet-5-5"
   },
   "owner": {
-    "nothing_typed_in_a_terminal_after_setup": true,
-    "app_opened_from": "Finder",
-    "notes": "Setup steps 1-6 ran in the agent's terminal before the harness started; after it printed the run start, every step was a click or typing in the app, its menu-bar item or the macOS notification. The harness's progress lines did not stream to its log during the run (vitest printed only at the end), so progress was read from the summary file it rewrites."
+    "nothing_typed_in_a_terminal_after_setup": null,
+    "app_opened_from": null,
+    "notes": "Only the flow 1 notification observations are the owner's own report. Everything else seen on screen is under each step's agent_observed (D33, D35)."
   },
   "steps": {
     "1_reminder_fires": {
@@ -100,13 +100,17 @@
         "passing_fire": 575
       },
       "owner": {
-        "asked_in_chat": true,
-        "fired_card_seen_in_chat": true,
+        "asked_in_chat": null,
+        "fired_card_seen_in_chat": null,
         "notification_appeared_on_screen": true,
-        "notification_click_opened_thread": true,
-        "source": "fired card: observed by the agent on screen, owner watching; the banner and its click: reported by the owner (the agent's screenshots filter out Notification Center)"
+        "notification_click_opened_thread": true
       },
-      "findings": []
+      "findings": [],
+      "owner_note": "The owner reported, when asked during the run, that the banner appeared and that clicking it brought the app forward on Wright's thread. The agent's screenshots filter out Notification Center, so it did not see the banner.",
+      "agent_observed": {
+        "asked_in_chat": true,
+        "fired_card_seen_in_chat": true
+      }
     },
     "2_playbook_priority_enable_run": {
       "outcome": "pass",
@@ -188,19 +192,27 @@
         "passing_playbook": 4
       },
       "owner": {
-        "draft_card_seen_in_chat": true,
-        "priority_set_from_card": "high",
-        "dry_run_seen": true,
-        "approved_in_approvals_by": "the agent, on the owner's word",
-        "approved_at": "12:32 IST (07:02:13Z)",
-        "run_now_pressed": true,
-        "source": "observed by the agent on screen, owner watching"
+        "draft_card_seen_in_chat": null,
+        "priority_set_from_card": null,
+        "dry_run_seen": null,
+        "approved_in_approvals_by": null,
+        "approved_at": null,
+        "run_now_pressed": null
       },
       "findings": [
         "The draft card read 'Model: not set: needed before a dry run'; the runbook's flow 2 does not say to set it. The model (claude-sonnet-5-5) was set from the card's Model Edit before asking for the dry run.",
         "Pressing Run now gave no visible feedback on the card (the run and its session 50 did start; the harness recorded run 8).",
         "After dry run 7 completed, the card still read 'Last dry run: not available from the kernel yet'."
-      ]
+      ],
+      "owner_note": "The owner watched but reported no separate observation for this flow; what the agent saw on screen is in agent_observed.",
+      "agent_observed": {
+        "draft_card_seen_in_chat": true,
+        "priority_set_from_card": "high",
+        "dry_run_seen": true,
+        "approved_in_approvals_by": "the agent, on the owner's word",
+        "approved_at": "12:32 IST (07:02:13Z)",
+        "run_now_pressed": true
+      }
     },
     "3_reviewer_cannot_push": {
       "outcome": "pass",
@@ -327,16 +339,25 @@
         "passing_member": "phase5-exit-1025"
       },
       "owner": {
+        "charter_card_seen": null,
+        "create_pressed_by": null,
+        "push_deny_seen_in_sessions_output": null,
+        "comment_held_seen_in_approvals": null,
+        "denied_by": null,
+        "denied_at": null,
+        "remote_main_unchanged": null
+      },
+      "findings": [],
+      "owner_note": "The owner watched but reported no separate observation for this flow; what the agent saw on screen is in agent_observed.",
+      "agent_observed": {
         "charter_card_seen": true,
         "create_pressed_by": "the agent, on the owner's word",
         "push_deny_seen_in_sessions_output": true,
         "comment_held_seen_in_approvals": true,
         "denied_by": "the agent, on the owner's word",
         "denied_at": "12:39 IST",
-        "remote_main_unchanged": true,
-        "source": "observed by the agent on screen, owner watching"
-      },
-      "findings": []
+        "remote_main_unchanged": true
+      }
     },
     "4_sessions_stop_and_kill": {
       "outcome": "pass",
@@ -375,12 +396,19 @@
         "passing_kill": 57
       },
       "owner": {
+        "stop_pressed_in_sessions": null,
+        "kill_confirm_shown": null,
+        "kill_confirmed": null
+      },
+      "findings": [],
+      "owner_note": "The owner watched but reported no separate observation for this flow; what the agent saw on screen is in agent_observed.",
+      "agent_observed": {
         "stop_pressed_in_sessions": true,
         "kill_confirm_shown": true,
         "kill_confirmed": true,
-        "source": "observed by the agent on screen, owner watching"
-      },
-      "findings": []
+        "stop_pressed_by": "the agent, on the owner's word",
+        "kill_pressed_and_confirmed_by": "the agent, on the owner's word"
+      }
     },
     "5_menu_bar_pause_and_kill_switch": {
       "outcome": "pass",
@@ -443,14 +471,22 @@
         "passing_pause": 756
       },
       "owner": {
+        "pause_all_from_tray": null,
+        "resume_from_tray": null,
+        "kill_switch_from_tray": null,
+        "kill_switch_confirm_shown": null,
+        "resumed_after_kill_switch": null
+      },
+      "findings": [],
+      "owner_note": "The owner watched but reported no separate observation for this flow; what the agent saw on screen is in agent_observed.",
+      "agent_observed": {
         "pause_all_from_tray": true,
         "resume_from_tray": true,
         "kill_switch_from_tray": true,
         "kill_switch_confirm_shown": true,
         "resumed_after_kill_switch": true,
-        "source": "observed by the agent on screen, owner watching; the pause was released with the tray's Unpause item, the kill switch with Resume"
-      },
-      "findings": []
+        "pause_unpause_kill_switch_resume_clicked_by": "the agent, on the owner's word"
+      }
     },
     "6_team_sets_wright_model": {
       "outcome": "pass",
@@ -469,11 +505,16 @@
         "wright_json_error": null
       },
       "owner": {
+        "set_in_team_inspector": null,
+        "model_chosen": null
+      },
+      "findings": [],
+      "owner_note": "The owner watched but reported no separate observation for this flow; what the agent saw on screen is in agent_observed.",
+      "agent_observed": {
         "set_in_team_inspector": true,
         "model_chosen": "claude-opus-5-5",
-        "source": "observed by the agent on screen, owner watching"
-      },
-      "findings": []
+        "model_set_by": "the agent, on the owner's word (the owner chose claude-opus-5-5 before the run)"
+      }
     }
   },
   "cleanup": {
@@ -511,5 +552,10 @@
       "Wright's model left at claude-opus-5-5 (the owner's choice for flow 6); it was claude-sonnet-5-5 at the start",
       "throwaway repo removed (rm -rf of the setup step 6 folder only), its bare remote's main still 0f465f1 just before removal"
     ]
+  },
+  "agent_observed": {
+    "nothing_typed_in_a_terminal_after_setup": true,
+    "app_opened_from": "Finder",
+    "notes": "Setup steps 1-6 ran in the agent's terminal before the harness started; after it printed the run start, every step was a click or typing in the app, its menu-bar item or the macOS notification. The harness's progress lines did not stream to its log during the run (vitest printed only at the end), so progress was read from the summary file it rewrites."
   }
 }
