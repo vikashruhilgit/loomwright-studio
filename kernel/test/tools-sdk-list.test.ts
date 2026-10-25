@@ -20,8 +20,8 @@
 // The same listing must also show every closed value set the kernel's checks
 // enforce as a JSON-Schema `enum`, and every positive-count bound as a
 // positive integer, so a session drafts a valid call the first time instead
-// of guessing (in the phase 5 live run `kernel_agent_create` was refused four
-// times before a charter was held). `CLOSED_VALUE_SETS` classifies every
+// of guessing: a session that has to guess a closed value set is refused and
+// retries, one call per wrong guess. `CLOSED_VALUE_SETS` classifies every
 // shipped tool, and its walk fails on a set not published.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
