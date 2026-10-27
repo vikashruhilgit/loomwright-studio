@@ -57,22 +57,30 @@
 // (`../playbooks/runs.ts`).
 // The status is read with raw SQL: this module never imports the playbooks
 // feature (that one depends on this one).
-import { KILL_SWITCH_ENGAGED, KILL_SWITCH_RELEASED, isKillSwitchEngaged } from "../api/kill-switch.js";
-import { PAUSE_ENGAGED, PAUSE_RELEASED } from "../console/pause.js";
+//
+// A `poll` trigger (phase 6) belongs to a playbook; its spec is validated and
+// it is fired by `./poll.ts` (`checkPollSpec`, `firePollTriggers`), never by
+// `fireDueTriggers`, whose due query leaves poll rows out.
+import { isKillSwitchEngaged } from "../api/kill-switch.js";
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
 import type { EnqueueParams } from "../loop/queue.js";
 import { getWorkStep, runStep } from "../loop/steps.js";
 import { InvalidNotificationError, MAX_NOTIFICATION_TITLE, recordNotification } from "../notifications/record.js";
+import type { PollSpec } from "../integrations/types.js";
 import type { Store } from "../store/store.js";
 import { canonicalZone, checkTimeZone, nextCronFire, parseCron, scheduleIdentity } from "./cron.js";
 import type { CronSchedule } from "./cron.js";
+import { TriggerError, fireStepKey, inKillSwitchWindow, inPauseWindow, killSwitchWindows, linkedPlaybook, pauseWindows } from "./fire-shared.js";
+import type { KillSwitchWindow, LinkedPlaybook, PauseWindow } from "./fire-shared.js";
+import { checkPollShape, checkPollSpec, nextPollFire, parsePollSpec, storedPollIdentity } from "./poll.js";
+
+export { TriggerError } from "./fire-shared.js";
+export type { TriggerErrorCode } from "./fire-shared.js";
 
 /**
- * `triggers.kind`. `poll` (phase 6: list a source on an interval) is named so
- * every closed set derived from this list carries it, and refused
- * `poll_not_implemented` on every write until phase 6 item 04 lands, so no
- * `poll` row exists yet.
+ * `triggers.kind`. `poll` (phase 6: list a source on an interval) belongs to
+ * a playbook; `./poll.ts` validates and fires it.
  */
 export const TRIGGER_KINDS = ["once", "cron", "poll"] as const;
 export type TriggerKind = (typeof TRIGGER_KINDS)[number];
@@ -89,15 +97,17 @@ export type TriggerCreator = (typeof TRIGGER_CREATORS)[number];
 export const TRIGGER_TOGGLERS = ["owner", "agent"] as const;
 export type TriggerToggler = (typeof TRIGGER_TOGGLERS)[number];
 
-/** `triggers.last_result`: the closed set of what the last due instant came to. */
-export const TRIGGER_RESULTS = ["fired", "missed_kill_switch", "missed_paused"] as const;
+/**
+ * `triggers.last_result`: the closed set of what the last due instant came to.
+ * The last three are a poll's (`./poll.ts`): its source answered
+ * `rate_limited`, its GitHub connector (or the kernel's client) is missing,
+ * or its source answered another failure.
+ */
+export const TRIGGER_RESULTS = ["fired", "missed_kill_switch", "missed_paused", "rate_limited", "connector_missing", "source_error"] as const;
 export type TriggerResult = (typeof TRIGGER_RESULTS)[number];
 
 /** The audit event kinds this feature appends (actor `kernel`), one per change. */
 export const TRIGGER_AUDIT_KINDS = ["trigger_registered", "trigger_removed", "trigger_fired", "trigger_missed", "trigger_toggled", "trigger_updated"] as const;
-
-/** Why a `poll` trigger is refused (`poll_not_implemented`): the code leads, so a re-wrapped refusal still names it. */
-const POLL_NOT_IMPLEMENTED = "poll_not_implemented: a poll trigger is not available yet; use kind once or cron";
 
 /** Longest stored text (a notification body or a message). */
 export const MAX_TRIGGER_TEXT = 2_000;
@@ -108,22 +118,6 @@ export const MAX_TRIGGER_TEXT = 2_000;
  * tick. Beyond it the audit event says `missed_at_least: true`.
  */
 export const MAX_COUNTED_INSTANTS = 10_000;
-
-/**
- * Why a trigger operation was refused; `message` names the problem for the agent or the owner.
- * `poll_not_implemented`: a `poll` trigger was asked for before phase 6 item 04.
- */
-export type TriggerErrorCode = "invalid_spec" | "invalid_input" | "not_found" | "not_owner" | "owner_off" | "needs_confirmation" | "poll_not_implemented";
-
-export class TriggerError extends Error {
-  readonly code: TriggerErrorCode;
-
-  constructor(code: TriggerErrorCode, message: string) {
-    super(message);
-    this.name = "TriggerError";
-    this.code = code;
-  }
-}
 
 /** A `triggers` row as stored. */
 interface TriggerRow {
@@ -147,8 +141,11 @@ interface TriggerRow {
 const COLUMNS =
   "id, owning_agent, playbook, kind, spec_json, action, action_payload, created_by, enabled, enabled_changed_by, enabled_changed_at, next_fire_at, last_fired_at, last_result, created_at";
 
-/** A `once` spec: the instant as the creator gave it (with its offset). A `cron` spec: the normalized expression and the IANA zone as given. */
-export type TriggerSpec = { readonly at: string } | { readonly cron: string; readonly tz: string };
+/**
+ * A `once` spec: the instant as the creator gave it (with its offset). A `cron` spec: the normalized expression and the IANA zone as given.
+ * A `poll` spec: the `PollSpec` (`{source, repos, filters, interval_seconds}`, repos and filter values as given).
+ */
+export type TriggerSpec = { readonly at: string } | { readonly cron: string; readonly tz: string } | PollSpec;
 
 /** A trigger as the tools, the API and the CLI report it. */
 export interface TriggerView {
@@ -284,11 +281,14 @@ interface CheckedSpec {
 /**
  * Validate a spec at `now`. `once`: an ISO-8601 instant with an explicit `Z`
  * or offset, strictly after `now`, and no `tz`. `cron`: a 5-field expression
- * and an IANA `tz`, with a next fire within eight years. Throws
- * `TriggerError("invalid_spec")` naming the problem.
+ * and an IANA `tz`, with a next fire within eight years. `poll`: the
+ * `PollSpec` as JSON text (`checkPollSpec`, which also reads the connector).
+ * Throws `TriggerError("invalid_spec")` naming the problem, or a poll's
+ * own `poll_*` code.
  */
-function checkSpec(kind: Exclude<TriggerKind, "poll">, spec: string, tz: string | undefined, now: Date): CheckedSpec {
+function checkSpec(store: Store, kind: TriggerKind, spec: string, tz: string | undefined, now: Date): CheckedSpec {
   const invalid = (why: string): TriggerError => new TriggerError("invalid_spec", why);
+  if (kind === "poll") return checkPollSpec(store, spec, tz, now);
   if (kind === "once") {
     if (tz !== undefined) throw invalid("a once spec carries its own offset (2026-10-14T17:00:00+05:30); tz is for cron");
     const at = normalizeInstant(spec);
@@ -325,6 +325,7 @@ function cronIdentity(schedule: CronSchedule, zone: string): string {
 
 /** The stored spec's identity (see `CheckedSpec.identity`), or `undefined` when it cannot be read. */
 function storedIdentity(row: TriggerRow): string | undefined {
+  if (row.kind === "poll") return storedPollIdentity(row.spec_json);
   const spec = parseSpec(row.spec_json) as { at?: unknown; cron?: unknown; tz?: unknown } | null;
   if (spec === null || typeof spec !== "object") return undefined;
   if (row.kind === "once") {
@@ -406,11 +407,11 @@ export function registerTrigger(store: Store, params: RegisterParams, now: Date)
   if (typeof params.agent !== "string" || params.agent === "") throw new TriggerError("invalid_input", "a trigger needs an owning agent");
   if (params.agent.includes("\u0000")) throw new TriggerError("invalid_input", "a trigger's owning agent must not contain a NUL character");
   if (!isOneOf(TRIGGER_KINDS, params.kind)) throw new TriggerError("invalid_input", `kind must be one of ${TRIGGER_KINDS.join(", ")}`);
-  if (params.kind === "poll") throw new TriggerError("poll_not_implemented", POLL_NOT_IMPLEMENTED);
   if (!isOneOf(TRIGGER_ACTIONS, params.action)) throw new TriggerError("invalid_input", `action must be one of ${TRIGGER_ACTIONS.join(", ")}`);
   const text = checkText(params.text);
   const playbook = checkPlaybook(params.playbook);
-  const checked = checkSpec(params.kind, params.spec, params.tz, now);
+  if (params.kind === "poll" && playbook === null) throw pollNeedsPlaybook();
+  const checked = checkSpec(store, params.kind, params.spec, params.tz, now);
   const at = now.toISOString();
   return store.transaction((): Registered => {
     const offByOwner = store
@@ -448,6 +449,11 @@ export function registerTrigger(store: Store, params: RegisterParams, now: Date)
     );
     return { id, next_fire_at: checked.nextFireAt };
   });
+}
+
+/** A `poll` with no playbook link: its fire's `source_ref` is the playbook's (`playbook:<id>:<instant>:<item>`). */
+function pollNeedsPlaybook(): TriggerError {
+  return new TriggerError("invalid_input", "a poll trigger must belong to a playbook; create it through a playbook's trigger");
 }
 
 /** A playbook link as stored: `null` when absent; otherwise 1-200 characters, no control character. */
@@ -495,8 +501,9 @@ export interface SpecUpdated {
  */
 export function updateTriggerSpec(store: Store, params: UpdateSpecParams, now: Date): SpecUpdated {
   if (!isOneOf(TRIGGER_KINDS, params.kind)) throw new TriggerError("invalid_input", `kind must be one of ${TRIGGER_KINDS.join(", ")}`);
-  if (params.kind === "poll") throw new TriggerError("poll_not_implemented", POLL_NOT_IMPLEMENTED);
-  const checked = checkSpec(params.kind, params.spec, params.tz, now);
+  // A poll's own checks run here; its connector checks only once the spec is known to change (below).
+  const pollShape = params.kind === "poll" ? checkPollShape(params.spec, params.tz) : undefined;
+  const checkedFirst = pollShape === undefined ? checkSpec(store, params.kind, params.spec, params.tz, now) : undefined;
   const at = now.toISOString();
   return store.transaction((): SpecUpdated => {
     const row = readRow(store, params.id);
@@ -505,8 +512,11 @@ export function updateTriggerSpec(store: Store, params: UpdateSpecParams, now: D
       throw new TriggerError("not_owner", `trigger ${row.id} belongs to agent ${row.owning_agent}; an agent can change only its own triggers`);
     }
     if (ownerTurnedOff(store, row)) throw ownerOff(row.id);
-    const specJson = JSON.stringify(checked.spec);
+    if (params.kind === "poll" && row.playbook === null) throw pollNeedsPlaybook();
+    const specJson = JSON.stringify(pollShape ?? checkedFirst?.spec);
     if (row.kind === params.kind && row.spec_json === specJson) return { id: row.id, next_fire_at: row.next_fire_at, changed: false };
+    // Reads only: still before any write.
+    const checked = checkedFirst ?? checkSpec(store, params.kind, params.spec, params.tz, now);
     const offByOwner = store
       .prepare<[string, string, string, string, number], TriggerRow>(
         `SELECT ${COLUMNS} FROM triggers
@@ -526,8 +536,11 @@ export function updateTriggerSpec(store: Store, params: UpdateSpecParams, now: D
           throw new TriggerError("invalid_spec", `once spec ${JSON.stringify(params.spec)}: trigger ${row.id} already fired or recorded that instant`);
         }
         next = checked.nextFireAt;
-      } else {
+      } else if ("cron" in checked.spec) {
         next = nextFreeCronFire(store, row.id, parseCron(checked.spec.cron), checked.spec.tz, now);
+      } else {
+        // A poll: `now + interval_seconds` (a step already done there is moved past when it comes due).
+        next = checked.nextFireAt;
       }
     }
     // A re-armed cron with no instant left stays off, as a spent trigger.
@@ -636,11 +649,6 @@ export interface Toggled {
   readonly changed: boolean;
 }
 
-/** The work step key of trigger `id`'s scheduled instant `iso`. */
-function fireStepKey(id: number, iso: string): string {
-  return `trigger:${id}:${iso}`;
-}
-
 /**
  * Whether trigger `id`'s instant `iso` already has a work step: it was fired
  * or recorded, and scheduling it again would only replay that result (the
@@ -681,6 +689,16 @@ function nextFireOnEnable(store: Store, row: TriggerRow, now: Date, confirm: boo
     }
     // "Fires now": its own new instant, so its work step is a new key.
     return now.toISOString();
+  }
+  if (row.kind === "poll") {
+    // From now: one interval after it is turned on, like a registration.
+    let interval: number;
+    try {
+      interval = parsePollSpec(row.spec_json).interval_seconds;
+    } catch {
+      throw new TriggerError("invalid_spec", `trigger ${row.id} has an unreadable spec`);
+    }
+    return nextPollFire(now, interval);
   }
   if (typeof spec?.cron !== "string" || typeof spec.tz !== "string") throw new TriggerError("invalid_spec", `trigger ${row.id} has an unreadable spec`);
   // From now: the instants it missed while off are not fired.
@@ -726,66 +744,6 @@ export function setTriggerEnabled(store: Store, params: ToggleParams, now: Date)
 }
 
 // ---- Firing ------------------------------------------------------------------
-
-/** A kill-switch engagement: from its first `kill_switch_engaged` to the `kill_switch_released` after it (`null`: still engaged). */
-interface KillSwitchWindow {
-  readonly from: string;
-  readonly to: string | null;
-}
-
-/** Every engagement window, from the append-only `events` log (the kill switch's only state). */
-function killSwitchWindows(store: Store): KillSwitchWindow[] {
-  const rows = store
-    .prepare<[string, string], { kind: string; at: string }>("SELECT kind, at FROM events WHERE kind IN (?, ?) ORDER BY id")
-    .all(KILL_SWITCH_ENGAGED, KILL_SWITCH_RELEASED);
-  const windows: KillSwitchWindow[] = [];
-  let open: string | null = null;
-  for (const r of rows) {
-    if (r.kind === KILL_SWITCH_ENGAGED) open ??= r.at;
-    else if (open !== null) {
-      windows.push({ from: open, to: r.at });
-      open = null;
-    }
-  }
-  if (open !== null) windows.push({ from: open, to: null });
-  return windows;
-}
-
-function inKillSwitchWindow(windows: readonly KillSwitchWindow[], iso: string): boolean {
-  return windows.some((w) => w.from <= iso && (w.to === null || iso < w.to));
-}
-
-/** A pause: from its first `pause_engaged` to the `pause_released` after it (`null`: still paused). */
-type PauseWindow = KillSwitchWindow;
-
-/** Every pause window, from the append-only `events` log (the pause's only state), read like `killSwitchWindows`. */
-function pauseWindows(store: Store): PauseWindow[] {
-  const rows = store
-    .prepare<[string, string], { kind: string; at: string }>("SELECT kind, at FROM events WHERE kind IN (?, ?) ORDER BY id")
-    .all(PAUSE_ENGAGED, PAUSE_RELEASED);
-  const windows: PauseWindow[] = [];
-  let open: string | null = null;
-  for (const r of rows) {
-    if (r.kind === PAUSE_ENGAGED) open ??= r.at;
-    else if (open !== null) {
-      windows.push({ from: open, to: r.at });
-      open = null;
-    }
-  }
-  if (open !== null) windows.push({ from: open, to: null });
-  return windows;
-}
-
-/**
- * Whether instant `iso` is paused: inside a pause window, or due at all while
- * the kernel is paused (the last window is open). The second keeps an instant
- * that came due just before the pause, and was not yet processed, from firing
- * during it.
- */
-function inPauseWindow(windows: readonly PauseWindow[], iso: string): boolean {
-  if (windows.at(-1)?.to === null) return true;
-  return windows.some((w) => w.from <= iso && (w.to === null || iso < w.to));
-}
 
 /** The kill-switch and pause windows a fire is planned against. */
 interface FireWindows {
@@ -853,24 +811,6 @@ function planFire(store: Store, row: TriggerRow, first: string, now: Date, windo
 /** A `notify` fire's title: `Trigger <id> (<agent>)`, clipped to `MAX_NOTIFICATION_TITLE`. */
 function notifyTitle(id: number, agent: string): string {
   return clip(`Trigger ${id} (${agent})`, MAX_NOTIFICATION_TITLE - 1);
-}
-
-/** What a fire reads of a linked playbook. */
-interface LinkedPlaybook {
-  readonly id: number;
-  readonly status: string;
-  readonly version: number;
-  readonly priority: string;
-  readonly owning_agent: string;
-}
-
-/**
- * The playbook with slug `slug`, or `undefined` when there is none. Raw SQL
- * over `playbooks` (migration 13): this module must not import the playbooks
- * feature, which depends on it.
- */
-function linkedPlaybook(store: Store, slug: string): LinkedPlaybook | undefined {
-  return store.prepare<[string], LinkedPlaybook>("SELECT id, status, version, priority, owning_agent FROM playbooks WHERE slug = ?").get(slug);
 }
 
 /** What `fireDueTriggers` did for one trigger. */
@@ -1049,18 +989,19 @@ function parkUnreadable(store: Store, id: number, scheduledAt: string): void {
 }
 
 /**
- * Fire every enabled trigger whose next fire is at or before `now`, earliest
+ * Fire every enabled `once` / `cron` trigger whose next fire is at or before `now`, earliest
  * first, each at most once per scheduled instant (see the header). Nothing
  * fires while the kill switch is engaged; while paused, each due instant is
  * recorded `missed_paused`. Returns what each due trigger came
  * to. One trigger's failure never stops the others: they all run, then the
- * first failure is thrown (one `due_work_failed` from the loop).
+ * failures are thrown as one error naming each (one `due_work_failed` from the loop).
  */
 export function fireDueTriggers(store: Store, now: Date = new Date()): TriggerFireOutcome[] {
   if (isKillSwitchEngaged(store)) return [];
   const due = store
     .prepare<[string], TriggerRow>(
-      `SELECT ${COLUMNS} FROM triggers WHERE enabled = 1 AND next_fire_at IS NOT NULL AND next_fire_at <= ? ORDER BY next_fire_at, id`,
+      // A poll is fired by `firePollTriggers` (`./poll.ts`), never here.
+      `SELECT ${COLUMNS} FROM triggers WHERE kind <> 'poll' AND enabled = 1 AND next_fire_at IS NOT NULL AND next_fire_at <= ? ORDER BY next_fire_at, id`,
     )
     .all(now.toISOString());
   if (due.length === 0) return [];

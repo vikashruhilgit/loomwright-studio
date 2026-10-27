@@ -27,7 +27,7 @@ import { PHASE1_RESERVED, mergeContributions } from "./features/contribution.js"
 import type { FeatureContribution, MergedContributions } from "./features/contribution.js";
 import { SHIPPED_CONTRIBUTIONS } from "./features/index.js";
 import { toolsForConnectors } from "./integrations/tool-filter.js";
-import type { ConnectorKind } from "./integrations/types.js";
+import type { ConnectorKind, GitHubClient } from "./integrations/types.js";
 import { EventLoop } from "./loop/loop.js";
 import type { EventHandlers, EventLoopDeps } from "./loop/types.js";
 import { SessionManager } from "./sessions/manager.js";
@@ -93,6 +93,13 @@ export interface KernelDeps {
   readonly randomBytes?: (size: number) => Buffer;
   readonly sessionDeps?: SessionManagerDeps;
   readonly loopDeps?: EventLoopDeps;
+  /**
+   * The GitHub client a `poll` trigger lists its source through (passed to the
+   * loop's due work as `DueWorkContext.github`). Defaults to none: until the
+   * real client (phase 6 item 03) is wired here, a due poll records
+   * `connector_missing` and never fetches.
+   */
+  readonly githubClient?: GitHubClient;
   readonly startApiServer?: (options: ApiServerOptions, deps: ApiServerDeps) => Promise<ApiServer>;
   /** Defaults to `() => new Date()`. */
   readonly now?: () => Date;
@@ -351,6 +358,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         dueWork: contributions.dueWork,
         sessions: manager,
         loomwright: { configured: options.sessions?.loomwrightPath, installedPluginsPath: options.sessions?.installedPluginsPath },
+        ...(deps.githubClient === undefined ? {} : { github: deps.githubClient }),
       },
       { now, ...deps.loopDeps },
     );

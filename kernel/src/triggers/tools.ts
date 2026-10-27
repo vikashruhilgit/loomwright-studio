@@ -1,5 +1,7 @@
 // The triggers feature's kernel tools: an agent registers, removes and lists
-// its own `once` / `cron` triggers. Creating one needs no approval; the owner
+// its own `once` / `cron` triggers (a `poll` belongs to a playbook, so it is
+// created through the playbooks feature and refused here, `invalid_input`).
+// Creating one needs no approval; the owner
 // sees and toggles every trigger (`studio triggers`, `routes.ts`).
 //
 // Tool input is untrusted data (invariant 3): the tool server validates the
@@ -47,6 +49,7 @@ const register = defineTool({
   description:
     "Create a time trigger you own. kind once: spec is an ISO-8601 instant WITH a time zone (2026-10-14T17:00:00+05:30), in the future. " +
     "kind cron: spec is a 5-field cron expression (minute hour day-of-month month day-of-week) and tz an IANA zone (Asia/Kolkata). " +
+    "kind poll belongs to a playbook: create it as a playbook's trigger, never here (refused invalid_input). " +
     "action notify posts text as a notification; action wake_agent queues text as a message to you. Returns {id, next_fire_at} (UTC): " +
     "tell the user when it fires. The owner sees and can turn off every trigger; one the owner turned off cannot be turned back on or " +
     `re-registered by an agent (a repeat of this call then returns that error too). ${REPEAT}`,

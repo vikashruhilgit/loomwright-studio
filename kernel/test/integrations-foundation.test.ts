@@ -1,7 +1,7 @@
 // Phase 6 foundation (item 01): the `integrations` feature's seams, its shared
 // types and test fake, the per-agent tool filter, and migration 17; then the
-// grown closed sets, each refused until its item lands (`poll`, playbook
-// `mode` `live`, the item dedupe fields), agent `connectors`, and the session
+// grown closed sets, each refused until its item lands (playbook `mode`
+// `live`, the item dedupe fields; `poll` is validated since item 04), agent `connectors`, and the session
 // seams (the per-agent tool list and the policy's `mode` / `connectors`).
 // Later phase 6 items extend this file with their refusals and seams.
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -530,43 +530,53 @@ function thrown(fn: () => unknown): unknown {
   throw new Error("expected a throw");
 }
 
-describe("poll triggers are refused poll_not_implemented (AC3)", () => {
+describe("poll triggers are validated, never refused poll_not_implemented (AC3; item 04)", () => {
+  /** A poll spec as JSON text: the shape `PollSpec` stores. */
+  const POLL = JSON.stringify({ source: "github.pulls", repos: ["o/r"], filters: {}, interval_seconds: 300 });
+
+  function connectGitHub(store: Store): void {
+    store.prepare("INSERT INTO connectors (kind, status, reachable_repos_json) VALUES ('github', 'connected', ?)").run(JSON.stringify(["o/r"]));
+  }
+
   it("TRIGGER_KINDS names poll, so every set derived from it carries it", () => {
     expect(TRIGGER_KINDS).toEqual(["once", "cron", "poll"]);
   });
 
-  it("kernel_trigger_register with kind poll: refused naming poll_not_implemented, nothing written", async () => {
+  it("kernel_trigger_register with kind poll: refused invalid_input (a poll belongs to a playbook), nothing written", async () => {
     const store = open();
-    const r = await callTool(store, triggersContribution, "kernel_trigger_register", { kind: "poll", spec: "every 5m", action: "notify", text: "hi", idempotency_key: "k1" });
+    connectGitHub(store);
+    const r = await callTool(store, triggersContribution, "kernel_trigger_register", { kind: "poll", spec: POLL, action: "notify", text: "hi", idempotency_key: "k1" });
     expect(r.isError).toBe(true);
-    expect(textOf(r)).toMatch(/poll_not_implemented/);
+    expect(textOf(r)).toMatch(/^kernel_trigger_register: a poll trigger must belong to a playbook/);
+    expect(textOf(r)).not.toMatch(/poll_not_implemented/);
     expect(written(store)).toEqual(NOTHING);
   });
 
-  it("registerTrigger and updateTriggerSpec throw TriggerError poll_not_implemented before any write; the stored trigger is unchanged", () => {
+  it("registerTrigger and updateTriggerSpec refuse a poll with no playbook link (invalid_input) before any write; the stored trigger is unchanged", () => {
     const store = open();
-    const reg = thrown(() => registerTrigger(store, { agent: "wright", kind: "poll", spec: "x", action: "notify", text: "hi" }, NOW));
+    connectGitHub(store);
+    const reg = thrown(() => registerTrigger(store, { agent: "wright", kind: "poll", spec: POLL, action: "notify", text: "hi" }, NOW));
     expect(reg).toBeInstanceOf(TriggerError);
-    expect((reg as TriggerError).code).toBe("poll_not_implemented");
+    expect((reg as TriggerError).code).toBe("invalid_input");
     expect(written(store)).toEqual(NOTHING);
 
     const { id } = registerTrigger(store, { agent: "wright", kind: "cron", spec: "0 9 * * *", tz: "UTC", action: "notify", text: "hi" }, NOW);
     const before = store.prepare("SELECT * FROM triggers").all();
-    const upd = thrown(() => updateTriggerSpec(store, { id, agent: "wright", kind: "poll", spec: "x" }, NOW));
-    expect((upd as TriggerError).code).toBe("poll_not_implemented");
+    const upd = thrown(() => updateTriggerSpec(store, { id, agent: "wright", kind: "poll", spec: POLL }, NOW));
+    expect((upd as TriggerError).code).toBe("invalid_input");
     expect(store.prepare("SELECT * FROM triggers").all()).toEqual(before);
   });
 
-  it("a playbook draft whose trigger kind is poll: refused through the trigger (`trigger: poll_not_implemented: …`), nothing written, on the store and the tool path", async () => {
+  it("a playbook draft whose trigger is a poll with no connector: refused through the trigger (`trigger: poll_connector_missing: …`), nothing written, on the store and the tool path", async () => {
     const store = open();
-    const err = thrown(() => createPlaybook(store, { agent: "wright", name: "Review", intent: "review PRs", trigger: { kind: "poll", spec: "x" } }, NOW));
+    const err = thrown(() => createPlaybook(store, { agent: "wright", name: "Review", intent: "review PRs", trigger: { kind: "poll", spec: POLL } }, NOW));
     expect(err).toBeInstanceOf(PlaybookError);
-    expect((err as PlaybookError).message).toMatch(/^trigger: poll_not_implemented: /);
+    expect((err as PlaybookError).message).toMatch(/^trigger: poll_connector_missing: /);
     expect(written(store)).toEqual(NOTHING);
 
-    const r = await callTool(store, playbooksContribution, "kernel_playbook_create", { name: "Review", intent: "review PRs", trigger: { kind: "poll", spec: "x" }, idempotency_key: "k1" });
+    const r = await callTool(store, playbooksContribution, "kernel_playbook_create", { name: "Review", intent: "review PRs", trigger: { kind: "poll", spec: POLL }, idempotency_key: "k1" });
     expect(r.isError).toBe(true);
-    expect(textOf(r)).toMatch(/^kernel_playbook_create: trigger: poll_not_implemented: /);
+    expect(textOf(r)).toMatch(/^kernel_playbook_create: trigger: poll_connector_missing: /);
     expect(written(store)).toEqual(NOTHING);
   });
 });
