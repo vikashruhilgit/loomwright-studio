@@ -71,10 +71,10 @@ const noDueWork: DueWorkFn = () => {};
 const noSubcommand = (name: string): ContributedSubcommand => ({ name, help: `studio ${name}`, run: async () => 0 });
 
 describe("the console contribution", () => {
-  it("is registered eighth, after agents (the last shipped contribution)", () => {
-    expect(SHIPPED_CONTRIBUTIONS).toHaveLength(8);
+  it("is registered eighth, after agents (phase 6's integrations follows it)", () => {
     expect(SHIPPED_CONTRIBUTIONS[6]).toBe(agentsContribution);
     expect(SHIPPED_CONTRIBUTIONS[7]).toBe(consoleContribution);
+    expect(SHIPPED_CONTRIBUTIONS[8]?.name).toBe("integrations");
     expect(consoleContribution.name).toBe("console");
   });
 
@@ -84,7 +84,7 @@ describe("the console contribution", () => {
     expect(consoleContribution.routes).toEqual([...eventsPart.routes, ...outputPart.routes, ...controlPart.routes, ...pausePart.routes, ...threadsPart.routes]);
     expect(consoleContribution.subcommands).toEqual([...(outputPart.subcommands ?? []), ...(pausePart.subcommands ?? [])]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
-    expect(merged.contributors.at(-1)).toBe("console");
+    expect(merged.contributors[7]).toBe("console");
     expect(merged.routes.filter((r) => r.owner === "console").map((r) => `${r.method} ${r.path}`)).toEqual([
       "GET /events",
       "GET /sessions",

@@ -18,6 +18,9 @@
 import { z } from "zod";
 import type { KillSwitchState } from "../api/kill-switch.js";
 import type { AppliedApproval, ApprovalApplier, ApprovalApplyOutcome } from "../approvals/store.js";
+// Type-only: `integrations/types.ts` holds the connector kinds, and a value
+// import would make a runtime cycle through the feature registry.
+import type { ConnectorKind } from "../integrations/types.js";
 import { EVENT_KINDS, isEventKind } from "../loop/types.js";
 import type { DueWork, DueWorkContext, EventHandler, EventHandlers } from "../loop/types.js";
 import type { SessionManager } from "../sessions/manager.js";
@@ -164,11 +167,17 @@ export interface ContributedToolContext {
  * (a sentence for the agent; `after` runs once the decision committed) or
  * `{refused, text}`; a throw rolls back its writes and is recorded as
  * `apply_error`.
+ *
+ * `requiresConnector` (optional) offers the tool only to sessions of an agent
+ * granted that connector (`connectors` in its enforced settings): the kernel
+ * MCP server a session gets lists it only then (`toolsForConnectors`,
+ * `src/integrations/tool-filter.ts`). Absent: every session gets it.
  */
 export interface ContributedTool<S extends z.ZodRawShape = z.ZodRawShape> {
   readonly name: string;
   readonly description: string;
   readonly shape: S;
+  readonly requiresConnector?: ConnectorKind;
   handler(args: z.infer<z.ZodObject<S>>, ctx: ContributedToolContext): unknown;
   beforeHold?(args: z.infer<z.ZodObject<S>>, ctx: ContributedToolContext): HeldToolVerdict;
   applyOnApproval?(args: z.infer<z.ZodObject<S>>, ctx: { readonly store: Store; readonly now: () => Date; readonly approval: AppliedApproval }): ApprovalApplyOutcome;
