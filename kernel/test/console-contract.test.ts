@@ -7,10 +7,10 @@
 //      literally below, each route once, so a route can't be added, dropped or
 //      renamed in the contract without this test saying so.
 //   2. Every route the contract marks existing (an origin that is not a phase 5
-//      `item-NN`) is one the kernel serves today: a phase 1 route or a shipped
-//      contribution's route, same method and same declared path. The routes
-//      phase 5 items add are not checked here; each item's own test pins its
-//      route against the contract.
+//      `item-NN` or a phase 6 `p6-item-NN`) is one the kernel serves today: a
+//      phase 1 route or a shipped contribution's route, same method and same
+//      declared path. The routes phase 5 and phase 6 items add are not checked
+//      here; each item's own test pins its route against the contract.
 //   3. The contract's `SessionOutputKind` union carries exactly the values of
 //      `SESSION_OUTPUT_KINDS` (`kernel/src/console/output.ts`).
 import { readFileSync } from "node:fs";
@@ -70,7 +70,9 @@ function sessionOutputKindUnion(text: string): string[] {
  * Every route the app calls, written out here so a change to the contract's
  * list is a change to this test too. The existing routes are the kernel's at
  * the phase 5 base; `item-NN` routes are the ones phase 5 items 02-06 add
- * (item 07 adds none: it widens `POST /agents/:id/set`).
+ * (item 07 adds none: it widens `POST /agents/:id/set`), and `p6-item-NN`
+ * routes the ones phase 6 items 03 and 07 add (item 08 adds none: it widens
+ * `POST /agents/:id/set` to take `connectors`).
  */
 const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "GET", path: "/status", origin: "phase-1" },
@@ -111,10 +113,16 @@ const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "POST", path: "/pause", origin: "item-05" },
   { method: "POST", path: "/unpause", origin: "item-05" },
   { method: "GET", path: "/threads/:agent", origin: "item-06" },
+  { method: "GET", path: "/connectors", origin: "p6-item-03" },
+  { method: "POST", path: "/connectors/github/token", origin: "p6-item-03" },
+  { method: "POST", path: "/connectors/github/disconnect", origin: "p6-item-03" },
+  { method: "GET", path: "/connectors/github/repos", origin: "p6-item-03" },
+  { method: "GET", path: "/drafts", origin: "p6-item-07" },
+  { method: "GET", path: "/drafts/:id", origin: "p6-item-07" },
 ];
 
-/** A route the contract says the kernel already serves: any origin but a phase 5 item's. */
-const isExisting = (entry: ContractEntry): boolean => !/^item-\d{2}$/.test(entry.origin);
+/** A route the contract says the kernel already serves: any origin but a phase 5 item's (`item-NN`) or a phase 6 item's (`p6-item-NN`). */
+const isExisting = (entry: ContractEntry): boolean => !/^(p6-)?item-\d{2}$/.test(entry.origin);
 
 const key = (r: { readonly method: string; readonly path: string }): string => `${r.method} ${r.path}`;
 
@@ -141,6 +149,19 @@ describe("the app contract's routes (app/src/api/contract.ts, read as text)", ()
     expect(existing).toHaveLength(29);
     const unserved = existing.filter((r) => !served.has(key(r))).map(key);
     expect(unserved).toEqual([]);
+  });
+
+  it("lists phase 6's six routes as not yet served: items 03 and 07 add them", () => {
+    const phase6 = routes.filter((r) => r.origin.startsWith("p6-"));
+    expect(phase6.map((r) => [r.origin, key(r)])).toEqual([
+      ["p6-item-03", "GET /connectors"],
+      ["p6-item-03", "POST /connectors/github/token"],
+      ["p6-item-03", "POST /connectors/github/disconnect"],
+      ["p6-item-03", "GET /connectors/github/repos"],
+      ["p6-item-07", "GET /drafts"],
+      ["p6-item-07", "GET /drafts/:id"],
+    ]);
+    expect(phase6.filter(isExisting)).toEqual([]);
   });
 
   it("the feed route is the path the API server upgrades", () => {
