@@ -528,6 +528,31 @@ describe("a GitHub item whose agent lacks the grant or a usable connector parks 
     expect(needsGithubNotifications()).toHaveLength(1);
   });
 
+  it.each([
+    ["absent", null],
+    ["expired", "expired"],
+  ])("no grant and a %s connector: one notification names both fixes; after the grant the connector park in the same outage notifies nothing more", async (_label, status) => {
+    setWright(null);
+    if (status !== null) connector(status);
+    const p = playbook({ dedupe: BY_REVISION });
+    const sessions = stubSessions({ ending: "held" });
+    await poll(p, [pr(1, "aaa")], "2026-10-14T08:00:00.000Z", sessions);
+    expect(runs()[0]).toMatchObject({ status: "parked", result_json: JSON.stringify({ reason: "needs_github", missing: "grant", connector_status: status }) });
+    expect(needsGithubNotifications()).toEqual([
+      {
+        title: `Playbook ${p.slug} parked: wright has no GitHub grant and GitHub is not connected`,
+        body: `Playbook ${p.slug} (#${p.id}) did not run for github:o/r#1: wright has no GitHub grant and GitHub is not connected. Add "github" to "connectors" in ${agentSettingsPath(dataDir, "wright")}. Connect GitHub (the github connector is ${status ?? "absent"}). Its items run again at the next poll.`,
+      },
+    ]);
+
+    // The grant alone is fixed: the next poll parks on the connector, and the one notification already named it.
+    setWright(["github"]);
+    await poll(p, [pr(1, "aaa")], "2026-10-14T08:05:00.000Z", sessions);
+    expect(runs()[1]).toMatchObject({ status: "parked", result_json: JSON.stringify({ reason: "needs_github", missing: "connector", connector_status: status }) });
+    expect(needsGithubNotifications()).toHaveLength(1);
+    expect(sessions.starts).toEqual([]);
+  });
+
   it("AC9: with the grant, an absent, disconnected, expired or rejected connector parks missing connector; connected or expiring starts", async () => {
     setWright();
     const p = playbook({ dedupe: BY_REVISION });

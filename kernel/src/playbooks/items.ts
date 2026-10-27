@@ -147,8 +147,8 @@ export interface NeedsGithubNotice {
 
 /**
  * Tell the owner a playbook's GitHub item parked: one notification per
- * outage. It records one only when no `parked` row of the playbook exists
- * after its newest item run that started a session (a skip or failed row
+ * outage. A missing grant with an unusable connector names both fixes. It
+ * records one only when no `parked` row of the playbook exists after its newest item run that started a session (a skip or failed row
  * never ends an outage, nor does a time-based fire, which has no item).
  * Called inside the `playbook-run` step, BEFORE the park row is written, so a
  * redelivery records none more.
@@ -163,11 +163,15 @@ export function notifyNeedsGithub(store: Store, n: NeedsGithubNotice, now: Date)
       .get(n.playbook, n.playbook) !== undefined;
   if (!parkedSinceLastSession) {
     const { park } = n;
-    const what = park.missing === "grant" ? `${n.agent} has no GitHub grant` : "GitHub is not connected";
-    const fix =
-      park.missing === "grant"
-        ? `Add "github" to "connectors" in ${agentSettingsPath(store.dataDir, n.agent)}.`
-        : `Connect GitHub (the github connector is ${park.connector_status ?? "absent"}).`;
+    // A missing grant hides the connector check, and a later park in this outage
+    // (`missing: "connector"`) notifies nothing: so name both fixes now.
+    const noGrant = park.missing === "grant";
+    const noConnector = !noGrant || !connectorUsable(park.connector_status);
+    const notConnected = "GitHub is not connected";
+    const what = noGrant ? `${n.agent} has no GitHub grant${noConnector ? ` and ${notConnected}` : ""}` : notConnected;
+    const grantFix = noGrant ? `Add "github" to "connectors" in ${agentSettingsPath(store.dataDir, n.agent)}.` : "";
+    const connectorFix = noConnector ? `Connect GitHub (the github connector is ${park.connector_status ?? "absent"}).` : "";
+    const fix = [grantFix, connectorFix].filter((s) => s !== "").join(" ");
     const settings = park.settings_error !== undefined ? ` The settings file was refused (${park.settings_error}): fix it first.` : "";
     recordNotification(
       store,
