@@ -74,3 +74,9 @@ none
 ## Touches
 docs/design/mockups/integrations.html
 docs/DESIGN.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-27T11:28:44Z
+- **Brief:** .supervisor/jobs/done/2026-10-27-integrations-screen-mockup.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/143
