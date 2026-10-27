@@ -1,7 +1,7 @@
 // The app's API contract, pinned from the kernel side (phase 5 item 01).
 // `app/src/api/contract.ts` is read as TEXT, never imported: the kernel's
 // tsconfig includes only `src` and `test`, and its build stays `rootDir src`,
-// so no kernel file may depend on the app package. Three pins:
+// so no kernel file may depend on the app package. Four pins:
 //
 //   1. `CONTRACT_ROUTES`' methods, paths and origins equal the list written
 //      literally below, each route once, so a route can't be added, dropped or
@@ -13,13 +13,18 @@
 //      here; each item's own test pins its route against the contract.
 //   3. The contract's `SessionOutputKind` union carries exactly the values of
 //      `SESSION_OUTPUT_KINDS` (`kernel/src/console/output.ts`).
+//   4. The playbook card's `POLICY_FIELDS` and `READ_ONLY_POLICY_FIELDS`
+//      (`app/src/screens/chat/cards.tsx`, also read as text) are together exactly
+//      `PLAYBOOK_POLICY_FIELDS` (`kernel/src/playbooks/store.ts`), in order.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { EVENT_FEED_PATH } from "../src/api/feed.js";
 import { SESSION_OUTPUT_KINDS } from "../src/console/output.js";
 import { PHASE1_RESERVED, PHASE1_ROUTES, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
+import { PLAYBOOK_POLICY_FIELDS } from "../src/playbooks/store.js";
 
 const CONTRACT = new URL("../../app/src/api/contract.ts", import.meta.url);
+const PLAYBOOK_CARDS = new URL("../../app/src/screens/chat/cards.tsx", import.meta.url);
 
 interface ContractEntry {
   readonly method: string;
@@ -179,6 +184,31 @@ describe("the contract's session output kinds", () => {
   });
 });
 
+/** The string literals of `export const <name> = ["…", …] as const;` in `text`, refusing anything else in the list. */
+function constStringList(text: string, name: string): string[] {
+  const match = new RegExp(`export const ${name} = \\[([^\\]]*)\\] as const;`).exec(text);
+  if (match === null) throw new Error(`no \`export const ${name} = [ … ] as const;\``);
+  return (match[1] ?? "")
+    .split(",")
+    .map((m) => m.trim())
+    .filter((m) => m !== "")
+    .map((member) => {
+      const literal = /^"([a-z_]+)"$/.exec(member);
+      if (literal === null) throw new Error(`${name} member is not a string literal: ${member}`);
+      return literal[1] ?? "";
+    });
+}
+
+describe("the playbook card's policy fields (app/src/screens/chat/cards.tsx, read as text)", () => {
+  it("POLICY_FIELDS then READ_ONLY_POLICY_FIELDS are exactly the kernel's PLAYBOOK_POLICY_FIELDS, in order", () => {
+    const cards = readFileSync(PLAYBOOK_CARDS, "utf8");
+    const edited = constStringList(cards, "POLICY_FIELDS");
+    const shown = constStringList(cards, "READ_ONLY_POLICY_FIELDS");
+    expect([...edited, ...shown]).toEqual([...PLAYBOOK_POLICY_FIELDS]);
+    expect(shown).toEqual(["mode"]);
+  });
+});
+
 describe("the text readers fail loudly on a contract they can't read", () => {
   it("refuses a CONTRACT_ROUTES line that is not one entry (an entry split over two lines)", () => {
     const split = 'export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([\n  { method: "GET",\n    path: "/status", origin: "phase-1" },\n]);\n';
@@ -187,6 +217,12 @@ describe("the text readers fail loudly on a contract they can't read", () => {
 
   it("refuses a contract with no CONTRACT_ROUTES", () => {
     expect(() => contractRoutes("export const ROUTES = [];\n")).toThrow(/no `export const CONTRACT_ROUTES`/);
+  });
+
+  it("refuses a const list member that is not a string literal, and a missing list", () => {
+    expect(() => constStringList('export const POLICY_FIELDS = ["model", OTHER] as const;\n', "POLICY_FIELDS")).toThrow(/not a string literal/);
+    expect(() => constStringList("export const OTHER = [] as const;\n", "POLICY_FIELDS")).toThrow(/no `export const POLICY_FIELDS/);
+    expect(constStringList('export const POLICY_FIELDS = ["model", "mode"] as const;\n', "POLICY_FIELDS")).toEqual(["model", "mode"]);
   });
 
   it("refuses a SessionOutputKind member that is not a string literal", () => {

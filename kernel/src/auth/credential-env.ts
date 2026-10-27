@@ -77,9 +77,14 @@ export const CREDENTIAL_ENV_VARS: readonly string[] = Object.freeze([
   // GitHub credentials: Studio's GitHub access goes through the kernel's
   // connector (its token lives only in the Keychain), never an inherited
   // token a child session's `gh` or `git` would pick up (owner, 2026-10-24).
+  // Every token variable `gh help environment` names: GH_TOKEN / GITHUB_TOKEN
+  // (github.com) and GH_ENTERPRISE_TOKEN / GITHUB_ENTERPRISE_TOKEN (GitHub
+  // Enterprise Server). Stored logins (gh's keychain/hosts.yml, git credential
+  // helpers) are not env and are not covered by this strip.
   "GH_TOKEN",
   "GITHUB_TOKEN",
   "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
 ]);
 
 const CREDENTIAL_SET: ReadonlySet<string> = new Set(CREDENTIAL_ENV_VARS);

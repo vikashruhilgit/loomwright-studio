@@ -426,6 +426,9 @@ export interface Playbook {
   readonly api_key_fallback_set_by: string | null;
   readonly created_at: IsoTime;
   readonly updated_at: IsoTime;
+  /** The kernel's `PLAYBOOK_MODES` value (`draft` / `live`; migration 17, default `draft`). Phase 6 accepts only `draft`. */
+  readonly mode: string;
+  readonly mode_set_by: string | null;
 }
 
 export interface PlaybookListing extends Playbook {

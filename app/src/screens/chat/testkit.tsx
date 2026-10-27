@@ -106,6 +106,8 @@ export function playbook(id: number, overrides: Partial<PlaybookListing> = {}): 
     token_limit_set_by: "wright",
     api_key_fallback_json: null,
     api_key_fallback_set_by: null,
+    mode: "draft",
+    mode_set_by: null,
     created_at: T0,
     updated_at: T0,
     trigger_id: null,

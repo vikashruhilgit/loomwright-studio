@@ -109,7 +109,12 @@ const ENDPOINT_SWITCHES = [...OAUTH_ENDPOINT_SWITCHES, ...API_ENDPOINT_SWITCHES]
  * LITERAL list: a child session never inherits a GitHub token, so its `gh` or
  * `git` can't act on GitHub outside the kernel's connector.
  */
-const GITHUB_TOKEN_VARS = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN"] as const;
+const GITHUB_TOKEN_VARS = [
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+] as const;
 
 const PARENT_ENV = {
   PATH: "/usr/bin:/bin",
@@ -380,8 +385,14 @@ describe("stripCredentialEnv", () => {
     expect(stripCredentialEnv({ [name]: "ghp_stray", PATH: "/bin" })).toEqual({ PATH: "/bin" });
   });
 
-  it("every provider's buildEnv drops GH_TOKEN, GITHUB_TOKEN and GH_ENTERPRISE_TOKEN from a daemon env that has all three", () => {
-    const parent = { ...PARENT_ENV, GH_TOKEN: "ghp_stray-1", GITHUB_TOKEN: "ghp_stray-2", GH_ENTERPRISE_TOKEN: "ghp_stray-3" };
+  it("every provider's buildEnv drops every GitHub token variable from a daemon env that has all four", () => {
+    const parent = {
+      ...PARENT_ENV,
+      GH_TOKEN: "ghp_stray-1",
+      GITHUB_TOKEN: "ghp_stray-2",
+      GH_ENTERPRISE_TOKEN: "ghp_stray-3",
+      GITHUB_ENTERPRISE_TOKEN: "ghp_stray-4",
+    };
     const envs = [
       createSubscriptionTokenProvider({ keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }) }).buildEnv(parent),
       createApiKeyProvider({ keychain: stubKeychain({ [API_KEY_KEYCHAIN_SERVICE]: FAKE_API_KEY }) }).buildEnv(parent),
