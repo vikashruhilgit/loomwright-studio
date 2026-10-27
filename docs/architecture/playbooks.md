@@ -88,7 +88,7 @@ Audit events (actor `kernel`; `session_id` is the calling session for a tool, nu
 
 ## Who set it
 
-Each policy field has a `*_set_by` column. A value an agent gives records `wright`, shown as `(proposed)`; a value the owner sets records `owner`. An omitted field stays null with a null setter (`priority` keeps its default `normal`, and `mode` its default `draft`, recorded in `mode_set_by`). The owner setting the value an agent proposed counts as a change: the field becomes the owner's. An agent can never overwrite a value the owner set; only the owner changes it. `effort` and the API-key fallback are not settable here ([budget](budget.md) owns the fallback).
+Each policy field has a `*_set_by` column. A value an agent gives records `wright`, shown as `(proposed)`; a value the owner sets records `owner`. An omitted field stays null with a null setter (`priority` keeps its default `normal`, and `mode` its default `draft`, with `mode_set_by` null). The owner setting the value an agent proposed counts as a change: the field becomes the owner's. An agent can never overwrite a value the owner set; only the owner changes it. `effort` and the API-key fallback are not settable here ([budget](budget.md) owns the fallback).
 
 ## The owner's off
 
