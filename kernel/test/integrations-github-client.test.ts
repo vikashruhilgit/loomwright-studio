@@ -10,6 +10,8 @@ import type { KeychainReader } from "../src/auth/index.js";
 import {
   createGitHubClient,
   GITHUB_API_ORIGIN,
+  GITHUB_DEFAULT_MAX_BODY_BYTES,
+  GITHUB_DEFAULT_MAX_PAGES,
   GITHUB_KEYCHAIN_SERVICE,
   parseTokenExpiration,
 } from "../src/integrations/github/client.js";
@@ -167,6 +169,13 @@ describe("listReachableRepos (AC9a)", () => {
     const res = await gh.listReachableRepos();
     expect(calls).toHaveLength(3);
     expect(res.ok && res.data.length).toBe(300);
+  });
+
+  it(`stops at the default page cap (${GITHUB_DEFAULT_MAX_PAGES}) when none is given`, async () => {
+    const { gh, calls } = client((url) => json(repos(Number(url.searchParams.get("page")) * 100, 100)));
+    const res = await gh.listReachableRepos();
+    expect(calls).toHaveLength(GITHUB_DEFAULT_MAX_PAGES);
+    expect(res.ok && res.data.length).toBe(GITHUB_DEFAULT_MAX_PAGES * 100);
   });
 
   it("a failed page fails the listing", async () => {
@@ -423,6 +432,21 @@ describe("failures never throw and never carry the token (AC9)", () => {
     const { gh } = client(() => new Response(stream, { headers: RL_HEADERS }), { maxBodyBytes: 2048 });
     expect(await gh.getTokenInfo()).toEqual({ ok: false, error: "unreachable", rateLimit: null });
     expect(pulled).toBeLessThan(10);
+  });
+
+  it(`the default body bound (${GITHUB_DEFAULT_MAX_BODY_BYTES} bytes) applies when none is given: a longer body is unreachable, read no further`, async () => {
+    const CHUNK = 64 * 1024;
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        if (pulled > 1000) controller.close();
+        else controller.enqueue(new Uint8Array(CHUNK).fill(0x20));
+      },
+    });
+    const { gh } = client(() => new Response(stream, { headers: RL_HEADERS }));
+    expect(await gh.getTokenInfo()).toEqual({ ok: false, error: "unreachable", rateLimit: null });
+    expect(pulled).toBeLessThan(GITHUB_DEFAULT_MAX_BODY_BYTES / CHUNK + 5);
   });
 
   it("a body that is not JSON, or not the documented shape, is unreachable", async () => {

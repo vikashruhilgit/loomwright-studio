@@ -11,7 +11,7 @@
 // table of the store, every response body and the CLI's output for it.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { securityCliKeychainDeleter } from "../src/auth/keychain.js";
 import type { ExecFileSyncLike, KeychainDeleter, KeychainReader, KeychainWriter } from "../src/auth/keychain.js";
 import { API_TOKEN_KEYCHAIN_SERVICE, startApiServer } from "../src/api/index.js";
@@ -140,6 +140,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   env.cleanup();
 });
 
@@ -333,6 +334,25 @@ describe("refusals write nothing to the Keychain (AC2, AC3, AC4)", () => {
     expect((res.body as { error: string }).error).toBe("token_permissions_unknown");
     expect(requests).toEqual([{ url: "https://api.github.com/user", method: "GET" }]);
     expect(keychain.writes()).toEqual([]);
+    expectNoToken(res.body);
+  });
+
+  it("the default clientFor (no clientFor given) validates the candidate over the real client: its Bearer header to api.github.com only, the Keychain neither read for it nor written", async () => {
+    const requests: { url: string; method: string | undefined; redirect: string | undefined; authorization: string | null }[] = [];
+    // The global `fetch` is stubbed (restored in afterEach): nothing reaches the network.
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(url), method: init?.method, redirect: init?.redirect, authorization: new Headers(init?.headers).get("authorization") });
+      return new Response(JSON.stringify({ login: "owner-one" }), {
+        status: 200,
+        headers: { "content-type": "application/json", "github-authentication-token-expiration": "2026-11-26 10:00:00 UTC", "x-ratelimit-remaining": "4999" },
+      });
+    }) as typeof fetch);
+    const c = createGitHubConnector({ keychain, writer: keychain, deleter: keychain });
+    const res = await call(c, "POST", "/connectors/github/token", { token: GOOD });
+    expect(res.status).toBe(422);
+    expect((res.body as { error: string }).error).toBe("token_permissions_unknown");
+    expect(requests).toEqual([{ url: "https://api.github.com/user", method: "GET", redirect: "manual", authorization: `Bearer ${GOOD}` }]);
+    expect(keychain.calls).toEqual([]);
     expectNoToken(res.body);
   });
 
