@@ -561,8 +561,8 @@ async function fireOnePoll(store: Store, github: GitHubClient | undefined, row: 
  * while the kill switch is engaged. `github` is the kernel's client
  * (`DueWorkContext.github`); without one, a due poll records
  * `connector_missing` and never throws. One trigger's failure never stops the
- * others: they all run, then the first failure is thrown (one
- * `due_work_failed` from the loop).
+ * others: they all run, then the failures are thrown as one error naming
+ * each (one `due_work_failed` from the loop).
  */
 export async function firePollTriggers(store: Store, github: GitHubClient | undefined, now: Date = new Date()): Promise<PollFireOutcome[]> {
   if (isKillSwitchEngaged(store)) return [];

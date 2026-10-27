@@ -20,9 +20,11 @@
 //
 // The due work fires the time-based triggers (`fireDueTriggers`), then the
 // polls (`firePollTriggers`, with the loop's `DueWorkContext.github`). Both
-// run every tick even when the first throws; the first failure is rethrown
-// after both, so the loop records one `due_work_failed`.
+// run every tick even when the first throws; after both, a lone failure is
+// rethrown as is and two are thrown as one error naming both, so the loop
+// records one `due_work_failed` that loses neither.
 import type { DueWorkFn, FeatureContribution } from "../features/contribution.js";
+import { clip, errorMessage } from "../loop/internal.js";
 import { triggersSubcommand } from "./cli.js";
 import { triggerRoutes } from "./routes.js";
 import { firePollTriggers } from "./poll.js";
@@ -74,7 +76,8 @@ export const triggersContribution: FeatureContribution = Object.freeze({
       } catch (err) {
         failures.push(err);
       }
-      if (failures.length > 0) throw failures[0];
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new Error(clip(failures.map(errorMessage).join("; ")));
     },
   ]),
 });

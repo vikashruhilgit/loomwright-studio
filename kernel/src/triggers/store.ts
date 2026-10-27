@@ -994,7 +994,7 @@ function parkUnreadable(store: Store, id: number, scheduledAt: string): void {
  * fires while the kill switch is engaged; while paused, each due instant is
  * recorded `missed_paused`. Returns what each due trigger came
  * to. One trigger's failure never stops the others: they all run, then the
- * first failure is thrown (one `due_work_failed` from the loop).
+ * failures are thrown as one error naming each (one `due_work_failed` from the loop).
  */
 export function fireDueTriggers(store: Store, now: Date = new Date()): TriggerFireOutcome[] {
   if (isKillSwitchEngaged(store)) return [];

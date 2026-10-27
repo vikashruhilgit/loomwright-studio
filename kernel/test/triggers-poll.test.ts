@@ -791,4 +791,23 @@ describe("the triggers due work (AC10b)", () => {
     // The unreadable poll is parked: reported once, not every tick.
     expect(triggerRow(store, triggerId).next_fire_at).toBeNull();
   });
+
+  it("a failing cron trigger and a failing poll in the same tick: the one due_work_failed names both failures", async () => {
+    const store = open();
+    connect(store);
+    const cron = registerTrigger(store, { agent: "wright", kind: "cron", spec: "* * * * *", tz: "UTC", action: "notify", text: "tick" }, NOW);
+    store.prepare("UPDATE triggers SET spec_json = ? WHERE id = ?").run(JSON.stringify({ cron: "not a cron", tz: "UTC" }), cron.id);
+    const { triggerId } = pollPlaybook(store);
+    store.prepare("UPDATE triggers SET spec_json = 'corrupt' WHERE id = ?").run(triggerId);
+    const run = triggersContribution.dueWork?.[0];
+    if (run === undefined) throw new Error("no due work");
+    const loop = new EventLoop({ store, handlers: {}, dueWork: [{ owner: "triggers", run }], github: new FakeGitHubClient() }, { now: () => AFTER_T1 });
+    await loop.tick();
+    const failed = events(store, "due_work_failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.payload).toMatchObject({ contributor: "triggers" });
+    const error = String(failed[0]?.payload.error);
+    expect(error).toMatch(new RegExp(`trigger ${cron.id}: `));
+    expect(error).toMatch(new RegExp(`trigger ${triggerId}: .*parked: no next fire`));
+  });
 });
