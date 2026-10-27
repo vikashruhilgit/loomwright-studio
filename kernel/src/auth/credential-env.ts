@@ -74,6 +74,12 @@ export const CREDENTIAL_ENV_VARS: readonly string[] = Object.freeze([
   // they carry) at another host. The bundled CLI reads it, and its own
   // settings-env deny-list names it next to CLAUDE_CODE_CUSTOM_OAUTH_URL.
   "CLAUDE_CODE_API_BASE_URL",
+  // GitHub credentials: Studio's GitHub access goes through the kernel's
+  // connector (its token lives only in the Keychain), never an inherited
+  // token a child session's `gh` or `git` would pick up (owner, 2026-10-24).
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
 ]);
 
 const CREDENTIAL_SET: ReadonlySet<string> = new Set(CREDENTIAL_ENV_VARS);
