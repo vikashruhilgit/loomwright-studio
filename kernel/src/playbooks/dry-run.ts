@@ -199,7 +199,8 @@ export interface DedupeFire {
  * `DEDUPE_KEY_FIELDS`) would give for `fire`: `<field>=<value>` joined with
  * `|`, in the spec's order. Pure. `null` with no spec, no fire, or a spec
  * that is not a list of known fields. A preview only: item 08 owns the
- * fire-time evaluation.
+ * fire-time evaluation. A polled item's fields (`item.id`, `item.revision`)
+ * show as `<per item>`: each item a poll finds has its own.
  */
 export function previewDedupeKey(spec: string | null, fire: DedupeFire | null): string | null {
   if (spec === null || fire === null) return null;
@@ -216,6 +217,8 @@ export function previewDedupeKey(spec: string | null, fire: DedupeFire | null): 
     "trigger.id": String(fire.triggerId),
     "trigger.scheduled_at": fire.scheduledAt,
     date: fire.date,
+    "item.id": "<per item>",
+    "item.revision": "<per item>",
   };
   return (fields as DedupeKeyField[]).map((f) => `${f}=${values[f]}`).join("|");
 }

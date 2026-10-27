@@ -127,7 +127,10 @@ function localDate(iso: string, timeZone: string): string | undefined {
  * calendar date of `scheduled_at` in `timeZone`), as `JSON.stringify` of that
  * object. Pure: the event's values only, never the clock. A spec that is not
  * such an array is `dedupe_spec_invalid`; a zone the runtime does not know is
- * `dedupe_zone_invalid`.
+ * `dedupe_zone_invalid`. A spec naming a polled item's field (`item.id`,
+ * `item.revision`) is `dedupe_spec_invalid` too: no event carries an item yet
+ * (phase 6 item 05 adds it), and a key that silently left the field out would
+ * dedupe every fire as one.
  */
 export function evaluateDedupeKey(spec: string, input: DedupeKeyInput, timeZone: string): DedupeKeyResult {
   let fields: unknown;
@@ -161,6 +164,10 @@ export function evaluateDedupeKey(spec: string, input: DedupeKeyInput, timeZone:
         key[field] = date;
         break;
       }
+      case "item.id":
+      case "item.revision":
+        // The event carries no item: refused, never left out of the key.
+        return { ok: false, error: "dedupe_spec_invalid" };
     }
   }
   return { ok: true, key: JSON.stringify(key) };

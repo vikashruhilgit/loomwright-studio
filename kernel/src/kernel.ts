@@ -26,6 +26,8 @@ import { isPaused } from "./console/pause.js";
 import { PHASE1_RESERVED, mergeContributions } from "./features/contribution.js";
 import type { FeatureContribution, MergedContributions } from "./features/contribution.js";
 import { SHIPPED_CONTRIBUTIONS } from "./features/index.js";
+import { toolsForConnectors } from "./integrations/tool-filter.js";
+import type { ConnectorKind } from "./integrations/types.js";
 import { EventLoop } from "./loop/loop.js";
 import type { EventHandlers, EventLoopDeps } from "./loop/types.js";
 import { SessionManager } from "./sessions/manager.js";
@@ -185,6 +187,20 @@ function budgetLimitsOf(limits: AgentLimits | undefined): AgentLimitsLookup {
 }
 
 /**
+ * The session manager's `connectorsFor`, as the kernel wires it: the
+ * connectors the owner granted `agent` in its own settings file
+ * (`connectors`), through the one reader, read afresh at every start and
+ * resume. Any refusal (missing, invalid or model-less file, an id that names
+ * no file) grants none: a session lists fewer tools, never more.
+ */
+export function connectorsFor(dataDir: string): (agent: string) => readonly ConnectorKind[] {
+  return (agent) => {
+    const r = readAgentSettings(dataDir, agent);
+    return r.ok ? (r.settings.connectors ?? []) : [];
+  };
+}
+
+/**
  * The budget's `agentLimits` lookup, as the kernel wires it: each agent's
  * `limits.tokens_per_day` and `limits.sessions_at_once` from its own settings
  * file, `<dataDir>/config/agents/<id>.json`, through the one reader
@@ -309,8 +325,11 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         onOutput: (sessionId, message) => recordSessionOutput(store, sessionId, message),
         // The owner's pause refuses every start and resume first (it never stops a running session).
         admission: admissionFor(budget, authProvider.id, () => isPaused(store)),
-        mcpServers: ({ sessionId }) => ({
-          [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now }, contributions.tools),
+        // The owner's connector grants, read afresh at each start and resume; the manager fills `ToolPolicy.connectors` from them.
+        connectorsFor: connectorsFor(dataDir),
+        // Each session lists only the contributed tools its agent's grants allow (`requiresConnector`): it only narrows.
+        mcpServers: ({ sessionId, connectors }) => ({
+          [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now }, toolsForConnectors(contributions.tools, connectors)),
         }),
         // The gate's pre-hold check, from the same contributed tools the server registers (it can only narrow).
         heldToolCheck: heldToolCheckOf(contributions.tools, (sessionId) => ({ store, sessions: manager, sessionId, now })),

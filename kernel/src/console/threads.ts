@@ -45,15 +45,22 @@ export const DEFAULT_THREAD_LIMIT = 50;
  * `session_id` (that session's `sessions.agent`), `playbook` its payload's
  * `playbook_id` (`playbooks.owning_agent`), `approval` its payload's `id`
  * (`approvals.requesting_agent`), `agent` its payload's `id` (the agent
- * itself) and `trigger` its payload's `trigger_id` (`triggers.owning_agent`).
+ * itself), `trigger` its payload's `trigger_id` (`triggers.owning_agent`) and
+ * `owner` no agent: the event is the owner's (a connector's status), shown in
+ * Wright's thread (`ASK_AGENT`) only.
  */
-export type ThreadEventTie = "session" | "playbook" | "approval" | "agent" | "trigger";
+export type ThreadEventTie = "session" | "playbook" | "approval" | "agent" | "trigger" | "owner";
 
 /**
- * The closed list of event kinds a thread shows, each with its tie. Existing
- * kinds only; any other kind is never a card. A `session_status` card is
- * shown only for a session starting (`to: "running"`) or ending (`to` a
- * terminal status, `isTerminalStatus`).
+ * The closed list of event kinds a thread shows, each with its tie; any
+ * other kind is never a card. A `session_status` card is shown only for a
+ * session starting (`to: "running"`) or ending (`to` a terminal status,
+ * `isTerminalStatus`). Phase 6's four kinds are listed before their writers
+ * land, so each tie is fixed now: `draft_output_recorded` (a draft-mode
+ * session recorded an outward call: `{draft_output_id, tool}`, item 07),
+ * `poll_item_skipped` / `poll_item_queued` (a poll's item:
+ * `{playbook_id, item_ref}`, item 04) and `connector_status`
+ * (`{connector_id, kind, status}`, item 03).
  */
 export const THREAD_EVENT_KINDS: Readonly<Record<string, ThreadEventTie>> = Object.freeze({
   session_status: "session",
@@ -69,6 +76,10 @@ export const THREAD_EVENT_KINDS: Readonly<Record<string, ThreadEventTie>> = Obje
   agent_status_changed: "agent",
   trigger_registered: "trigger",
   trigger_fired: "trigger",
+  draft_output_recorded: "session",
+  poll_item_skipped: "playbook",
+  poll_item_queued: "playbook",
+  connector_status: "owner",
 });
 
 /** The `session_status` targets a thread shows: the start and every end. */
@@ -92,7 +103,7 @@ export interface ThreadEventItem {
   readonly kind: string;
   /** One line (no newline); every stored string inside it is escaped by `shown`. */
   readonly summary: string;
-  /** The row the event is about (`{session_id}`, `{playbook_id}`, `{approval_id}`, `{agent_id}` or `{trigger_id}`), never the payload. */
+  /** The row the event is about (`{session_id}`, `{playbook_id}`, `{approval_id}`, `{agent_id}`, `{trigger_id}` or `{connector_id}`; a draft's card adds `draft_output_id`), never the payload. */
   readonly ref: Readonly<Record<string, number | string | null>>;
 }
 
@@ -158,6 +169,7 @@ function newestEvents(store: Store, agent: string, cursor: ThreadKey | null, lim
   const approvalKinds = kindsTiedBy("approval");
   const agentKinds = kindsTiedBy("agent");
   const triggerKinds = kindsTiedBy("trigger");
+  const ownerKinds = kindsTiedBy("owner");
   const inner: unknown[] = [...kinds];
   let innerWhere = `kind IN (${placeholders(kinds.length)})`;
   if (cursor !== null) {
@@ -180,6 +192,8 @@ function newestEvents(store: Store, agent: string, cursor: ThreadKey | null, lim
                THEN json_extract(e.pj, '$.id') = ?
              WHEN e.kind IN (${placeholders(triggerKinds.length)})
                THEN EXISTS (SELECT 1 FROM triggers t WHERE t.id = json_extract(e.pj, '$.trigger_id') AND t.owning_agent = ?)
+             WHEN e.kind IN (${placeholders(ownerKinds.length)})
+               THEN ?
              ELSE EXISTS (SELECT 1 FROM sessions s WHERE s.id = e.session_id AND s.agent = ?)
            END
      ORDER BY e.at DESC, e.id DESC
@@ -196,6 +210,8 @@ function newestEvents(store: Store, agent: string, cursor: ThreadKey | null, lim
     agent,
     ...triggerKinds,
     agent,
+    ...ownerKinds,
+    agent === ASK_AGENT ? 1 : 0,
     agent,
     limit,
   ];
@@ -228,6 +244,8 @@ const PLAYBOOK_VERBS: Readonly<Record<string, string>> = Object.freeze({
   playbook_disabled: "disabled",
 });
 
+const POLL_ITEM_VERBS: Readonly<Record<string, string>> = Object.freeze({ poll_item_skipped: "skipped", poll_item_queued: "queued" });
+
 /** The card for `row`: a one-line summary and the referenced row. Absent or mistyped fields fall back to a generic sentence, never a throw. */
 function eventItemOf(row: ThreadEventRow): ThreadEventItem {
   const p = payloadOf(row.payload_json);
@@ -235,6 +253,10 @@ function eventItemOf(row: ThreadEventRow): ThreadEventItem {
   switch (THREAD_EVENT_KINDS[row.kind]) {
     case "session": {
       const session = isId(row.session_id) ? `Session ${row.session_id}` : "A session";
+      if (row.kind === "draft_output_recorded") {
+        const draft = isId(p.draft_output_id) ? p.draft_output_id : null;
+        return card(isText(p.tool) ? `${session} recorded a draft: ${shown(p.tool)}` : `${session} recorded a draft`, { session_id: row.session_id, draft_output_id: draft });
+      }
       const to = isText(p.to) ? p.to : "";
       if (to === "running") return card(`${session} started`, { session_id: row.session_id });
       const reason = isText(p.reason) ? ` (${shown(p.reason)})` : "";
@@ -244,6 +266,8 @@ function eventItemOf(row: ThreadEventRow): ThreadEventItem {
       const id = isId(p.playbook_id) ? p.playbook_id : null;
       const name = isText(row.slug) ? `Playbook ${shown(row.slug)}` : id !== null ? `Playbook ${id}` : "A playbook";
       const version = isId(p.version) ? ` (version ${p.version})` : "";
+      const pollVerb = POLL_ITEM_VERBS[row.kind];
+      if (pollVerb !== undefined) return card(isText(p.item_ref) ? `${name} ${pollVerb} item ${shown(p.item_ref)}` : `${name} ${pollVerb} an item`, { playbook_id: id });
       return card(`${name} ${PLAYBOOK_VERBS[row.kind] ?? "changed"}${version}`, { playbook_id: id });
     }
     case "approval": {
@@ -269,6 +293,11 @@ function eventItemOf(row: ThreadEventRow): ThreadEventItem {
       const name = id !== null ? `Trigger ${id}` : "A trigger";
       if (row.kind === "trigger_registered") return card(`${name} registered`, { trigger_id: id });
       return card(isText(p.action) ? `${name} fired (${shown(p.action)})` : `${name} fired`, { trigger_id: id });
+    }
+    case "owner": {
+      const id = isId(p.connector_id) ? p.connector_id : null;
+      const name = isText(p.kind) ? `Connector ${shown(p.kind)}` : "A connector";
+      return card(isText(p.status) ? `${name}: ${shown(p.status)}` : `${name} changed status`, { connector_id: id });
     }
     default:
       // Unreachable: the query reads only closed-list kinds.

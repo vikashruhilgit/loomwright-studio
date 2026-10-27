@@ -753,12 +753,14 @@ describe("the owner: studio playbooks list | show | set | off and the /playbooks
 
     paths = [];
     const refused: [string[], string][] = [
-      [["nope", "x"], 'studio playbooks set: unknown field "nope" (one of dedupe_key, priority, model, token_limit)\n'],
+      [["nope", "x"], 'studio playbooks set: unknown field "nope" (one of dedupe_key, priority, model, token_limit, mode)\n'],
       [["priority", "urgent"], 'studio playbooks set: priority must be one of low, normal, high (got "urgent")\n'],
       [["priority", "none"], "studio playbooks set: priority cannot be cleared: it is one of low, normal, high\n"],
       [["token_limit", "0"], "studio playbooks set: token_limit must be a positive whole number of tokens per day\n"],
-      [["dedupe_key", "date,repo"], 'studio playbooks set: dedupe_key: unknown field "repo" (the fields are playbook.id, playbook.version, trigger.id, trigger.scheduled_at, date)\n'],
+      [["dedupe_key", "date,repo"], 'studio playbooks set: dedupe_key: unknown field "repo" (the fields are playbook.id, playbook.version, trigger.id, trigger.scheduled_at, date, item.id, item.revision)\n'],
       [["model", "two words"], "studio playbooks set: model must be 1-200 characters with no whitespace, NUL or other control character\n"],
+      [["mode", "live"], "studio playbooks set: live_mode_not_in_phase_6: mode live is not available in phase 6; a playbook runs in draft mode\n"],
+      [["mode", "none"], "studio playbooks set: mode cannot be cleared: it is one of draft, live\n"],
     ];
     for (const [rest, stderr] of refused) {
       const c = studio();

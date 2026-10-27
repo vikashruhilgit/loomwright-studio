@@ -30,7 +30,7 @@ import type { EventRef } from "../loop/internal.js";
 import type { Store } from "../store/store.js";
 import { TRIGGER_KINDS, TriggerError, listTriggers, registerTrigger, updateTriggerSpec } from "../triggers/index.js";
 import type { TriggerView } from "../triggers/index.js";
-import { DEDUPE_KEY_FIELDS, PLAYBOOK_PRIORITIES } from "./types.js";
+import { DEDUPE_KEY_FIELDS, PLAYBOOK_MODES, PLAYBOOK_PRIORITIES } from "./types.js";
 import type { PlaybookPriority, PolicySetter } from "./types.js";
 
 /**
@@ -41,7 +41,7 @@ import type { PlaybookPriority, PolicySetter } from "./types.js";
 export const PLAYBOOK_AUDIT_KINDS = ["playbook_created", "playbook_updated", "playbook_disabled", "playbook_dry_run", "playbook_enabled"] as const;
 
 /** The policy fields a playbook change names (`playbook_updated.fields`) and the owner's `set` takes. */
-export const PLAYBOOK_POLICY_FIELDS = ["dedupe_key", "priority", "model", "token_limit"] as const;
+export const PLAYBOOK_POLICY_FIELDS = ["dedupe_key", "priority", "model", "token_limit", "mode"] as const;
 export type PlaybookPolicyField = (typeof PLAYBOOK_POLICY_FIELDS)[number];
 
 /** Every field `updatePlaybook` takes, in the order a `playbook_updated` event lists them. */
@@ -62,8 +62,10 @@ export const CLEAR_VALUE = "none";
  * about, or names the problem. `crew_cannot_draft`: a registered crew
  * member's session called a drafting tool (Wright drafts a crew member's
  * playbooks). `agent_off`: the crew member a playbook is for is `off`.
+ * `live_mode_not_in_phase_6`: `mode` `live` was asked for, from any path
+ * (the owner's `set`, Wright's create or update); phase 6 runs only `draft`.
  */
-export type PlaybookErrorCode = "invalid_input" | "not_found" | "not_owner" | "owner_off" | "crew_cannot_draft" | "agent_off";
+export type PlaybookErrorCode = "invalid_input" | "not_found" | "not_owner" | "owner_off" | "crew_cannot_draft" | "agent_off" | "live_mode_not_in_phase_6";
 
 export class PlaybookError extends Error {
   readonly code: PlaybookErrorCode;
@@ -75,7 +77,7 @@ export class PlaybookError extends Error {
   }
 }
 
-/** A `playbooks` row as stored (every column of migration 13). */
+/** A `playbooks` row as stored (every column of migration 13, and migration 17's `mode`). */
 export interface PlaybookRow {
   readonly id: number;
   readonly slug: string;
@@ -99,6 +101,9 @@ export interface PlaybookRow {
   readonly api_key_fallback_set_by: string | null;
   readonly created_at: string;
   readonly updated_at: string;
+  /** One of `PLAYBOOK_MODES` (migration 17; `draft` until set). */
+  readonly mode: string;
+  readonly mode_set_by: string | null;
 }
 
 /** A playbook as listed: its row, its linked trigger's id and next fire (null when it has none). */
@@ -128,6 +133,7 @@ const POLICY_COLUMNS: Readonly<Record<PlaybookPolicyField, { readonly value: key
   priority: { value: "priority", setBy: "priority_set_by" },
   model: { value: "model", setBy: "model_set_by" },
   token_limit: { value: "token_limit_per_day", setBy: "token_limit_set_by" },
+  mode: { value: "mode", setBy: "mode_set_by" },
 };
 
 type ColumnValue = string | number | null;
@@ -179,14 +185,18 @@ function checkTriggerInput(trigger: unknown): PlaybookTriggerInput {
   return { kind: t.kind, spec: t.spec, ...(t.tz === undefined ? {} : { tz: t.tz }) };
 }
 
+/** The policy fields whose column is NOT NULL: never cleared, not even by the owner's `none`. */
+const UNCLEARABLE: readonly PlaybookPolicyField[] = Object.freeze(["priority", "mode"]);
+
 /**
  * `value` for policy field `field` as its column stores it, or a refusal
  * (`invalid_input`, message starting with the field name). `null` clears a
  * nullable field, and only when `allowClear` (the owner's `none`); `priority`
- * cannot be cleared.
+ * and `mode` cannot be cleared. `mode` `live` is refused
+ * `live_mode_not_in_phase_6` on every path: each one calls this check.
  */
 export function checkPolicyValue(field: PlaybookPolicyField, value: unknown, allowClear: boolean): ColumnValue {
-  if (value === null && allowClear && field !== "priority") return null;
+  if (value === null && allowClear && !UNCLEARABLE.includes(field)) return null;
   switch (field) {
     case "dedupe_key": {
       if (!Array.isArray(value) || value.length === 0) {
@@ -211,6 +221,10 @@ export function checkPolicyValue(field: PlaybookPolicyField, value: unknown, all
     case "token_limit":
       if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) throw invalid("token_limit must be a positive whole number of tokens per day");
       return value;
+    case "mode":
+      if (!isOneOf(PLAYBOOK_MODES, value)) throw invalid(`mode must be one of ${PLAYBOOK_MODES.join(", ")} (got ${shown(value)})`);
+      if (value === "live") throw new PlaybookError("live_mode_not_in_phase_6", "live_mode_not_in_phase_6: mode live is not available in phase 6; a playbook runs in draft mode");
+      return value;
   }
 }
 
@@ -227,6 +241,7 @@ export function parseOwnerPolicyValue(field: string, raw: string): { readonly fi
   let value: unknown = raw;
   if (raw === CLEAR_VALUE) {
     if (field === "priority") throw invalid(`priority cannot be cleared: it is one of ${PLAYBOOK_PRIORITIES.join(", ")}`);
+    if (field === "mode") throw invalid(`mode cannot be cleared: it is one of ${PLAYBOOK_MODES.join(", ")}`);
     value = null;
   } else if (field === "dedupe_key") value = raw.split(",").map((f) => f.trim());
   else if (field === "token_limit") {
@@ -427,6 +442,7 @@ export interface CreatePlaybookParams {
   readonly priority?: string | undefined;
   readonly model?: string | undefined;
   readonly token_limit?: number | undefined;
+  readonly mode?: string | undefined;
   /** The session that asked, for the audit rows. */
   readonly sessionId?: number | null;
 }
@@ -457,8 +473,8 @@ export function createPlaybook(store: Store, params: CreatePlaybookParams, now: 
         .prepare(
           `INSERT INTO playbooks (slug, name, owning_agent, intent, status, version,
              dedupe_key_spec, dedupe_key_set_by, priority, priority_set_by, model, model_set_by, token_limit_per_day, token_limit_set_by,
-             created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             mode, mode_set_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           slug,
@@ -473,6 +489,8 @@ export function createPlaybook(store: Store, params: CreatePlaybookParams, now: 
           proposed("model"),
           policy.get("token_limit") ?? null,
           proposed("token_limit"),
+          policy.get("mode") ?? "draft",
+          proposed("mode"),
           at,
           at,
         ).lastInsertRowid,
@@ -522,6 +540,7 @@ export interface PlaybookChanges {
   readonly priority?: string | undefined;
   readonly model?: string | undefined;
   readonly token_limit?: number | undefined;
+  readonly mode?: string | undefined;
 }
 
 export interface UpdatePlaybookParams {

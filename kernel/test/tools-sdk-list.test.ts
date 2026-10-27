@@ -34,7 +34,7 @@ import { startFailureExit } from "../src/daemon-exit.js";
 import { InvalidContributionError, PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
 import type { ContributedTool } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
-import { DEDUPE_KEY_FIELDS, PLAYBOOK_PRIORITIES } from "../src/playbooks/types.js";
+import { DEDUPE_KEY_FIELDS, PLAYBOOK_MODES, PLAYBOOK_PRIORITIES } from "../src/playbooks/types.js";
 import { NEVER_CATEGORIES } from "../src/sessions/policy.js";
 import { Store } from "../src/store/index.js";
 import { KERNEL_TOOL_NAMES, LISTING_CTX, assertKernelToolsList, kernelToolDefinitions, kernelToolNames, listKernelTools } from "../src/tools/server.js";
@@ -75,6 +75,7 @@ function playbookSets(prefix: string): ClosedValueSet[] {
   return [
     { path: `${prefix}dedupe_key[]`, enum: DEDUPE_KEY_FIELDS },
     { path: `${prefix}priority`, enum: PLAYBOOK_PRIORITIES },
+    { path: `${prefix}mode`, enum: PLAYBOOK_MODES },
     { path: `${prefix}trigger.kind`, enum: TRIGGER_KINDS },
     { path: `${prefix}token_limit`, positiveInteger: true },
   ];
@@ -226,7 +227,7 @@ describe("the shipped kernel tools list through the Agent SDK", () => {
     expect(closedSetProblem(schema, { path: "m", positiveInteger: true, nullable: true })).toMatch(/^m: not anyOf /);
     expect(closedSetProblem(schema, { path: "absent", enum: TRIGGER_KINDS })).toBe("absent: not in the listed schema");
     expect(closedSetProblem(schema, { path: "e", enum: TRIGGER_KINDS })).toBeUndefined();
-    expect(closedSetProblem(schema, { path: "e", enum: [...TRIGGER_KINDS].reverse() })).toBe('e: enum ["once","cron"], not ["cron","once"]');
+    expect(closedSetProblem(schema, { path: "e", enum: [...TRIGGER_KINDS].reverse() })).toBe(`e: enum ${JSON.stringify(TRIGGER_KINDS)}, not ${JSON.stringify([...TRIGGER_KINDS].reverse())}`);
   });
 
   it("(e) the listing context's members throw when used, and listing the shipped tools with it still resolves (no handler, store or session member runs)", async () => {
