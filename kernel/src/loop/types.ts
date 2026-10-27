@@ -1,3 +1,4 @@
+import type { GitHubClient } from "../integrations/types.js";
 import type { CancelTimer, ResumeSessionParams, SessionHandle, SessionRow, StartSessionParams } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 
@@ -179,6 +180,8 @@ export interface DueWorkContext {
   readonly now: () => Date;
   /** `EventLoopOptions.loomwright`, when the loop was given it. */
   readonly loomwright?: LoomwrightInstallSettings;
+  /** `EventLoopOptions.github`, when the loop was given it: the client a `poll` trigger lists its source through. */
+  readonly github?: GitHubClient;
 }
 
 /** A due-work function and the contribution it belongs to (named in its `due_work_failed` row). */
@@ -200,6 +203,8 @@ export interface EventLoopOptions {
   readonly sessions?: EventSessions;
   /** Passed to every due-work call as `DueWorkContext.loomwright`. Default none. */
   readonly loomwright?: LoomwrightInstallSettings;
+  /** Passed to every due-work call as `DueWorkContext.github`. Default none (a due poll then records `connector_missing`). */
+  readonly github?: GitHubClient;
 }
 
 export interface EventLoopDeps {
