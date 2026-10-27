@@ -22,13 +22,25 @@ export type PlaybookPriority = (typeof PLAYBOOK_PRIORITIES)[number];
 export const PLAYBOOK_RUN_KINDS = Object.freeze(["dry_run", "fire", "run_now"] as const);
 export type PlaybookRunKind = (typeof PLAYBOOK_RUN_KINDS)[number];
 
-/** The fields a playbook's dedupe key may be built from (`playbooks.dedupe_key_spec`); the user picks which. */
-export const DEDUPE_KEY_FIELDS = Object.freeze(["playbook.id", "playbook.version", "trigger.id", "trigger.scheduled_at", "date"] as const);
+/**
+ * The fields a playbook's dedupe key may be built from (`playbooks.dedupe_key_spec`); the user picks which.
+ * `item.id` / `item.revision` are a polled item's (`SourceItem.ref` / `.revision`, phase 6): a fire that
+ * carries no item refuses a key naming them (`evaluateDedupeKey`), never leaves them out.
+ */
+export const DEDUPE_KEY_FIELDS = Object.freeze(["playbook.id", "playbook.version", "trigger.id", "trigger.scheduled_at", "date", "item.id", "item.revision"] as const);
 export type DedupeKeyField = (typeof DEDUPE_KEY_FIELDS)[number];
 
 /** Who set a policy field (every `playbooks.*_set_by`): Wright proposed it, or the owner set it. Null while the field is unset. */
 export const POLICY_SETTERS = Object.freeze(["wright", "owner"] as const);
 export type PolicySetter = (typeof POLICY_SETTERS)[number];
+
+/**
+ * `playbooks.mode` (migration 17, default `draft`): `draft` records each outward
+ * call instead of sending it; `live` sends. Phase 6 refuses `live`
+ * (`live_mode_not_in_phase_6`, `./store.ts`).
+ */
+export const PLAYBOOK_MODES = Object.freeze(["draft", "live"] as const);
+export type PlaybookMode = (typeof PLAYBOOK_MODES)[number];
 
 /**
  * A `studio playbooks <verb> …` verb: the `ContributedSubcommand` call shape.

@@ -362,6 +362,14 @@ describe("GET /threads/:agent", () => {
     addEvent(store, "trigger_fired", 15, { trigger_id: trigger, action: 5 });
     // A trigger id stored as text: SQLite's tie still finds the row, the summary reads only a typed id.
     addEvent(store, "trigger_registered", 16, { trigger_id: String(trigger), owning_agent: "mason" }, session);
+    // Phase 6's kinds: a draft (tied by session), a poll's items (tied by playbook), a connector's status (the owner's: Wright's thread).
+    addEvent(store, "draft_output_recorded", 17, { draft_output_id: 3, tool: "kernel_github_comment" }, session);
+    addEvent(store, "poll_item_skipped", 18, { playbook_id: playbook, item_ref: "github:o/r#7" });
+    addEvent(store, "poll_item_queued", 19, { playbook_id: playbook, item_ref: "github:o/r#8\u001b" });
+    addEvent(store, "draft_output_recorded", 20, { tool: 9 }, session);
+    addEvent(store, "poll_item_queued", 21, { playbook_id: playbook });
+    addEvent(store, "connector_status", 22, { connector_id: 1, kind: "github", status: "connected" });
+    addEvent(store, "connector_status", 23, { kind: ["github"] });
 
     const body = await page(store, "/threads/mason");
     expect(eventsOf(body).map((e) => [e.kind, e.summary, e.ref])).toEqual([
@@ -382,12 +390,53 @@ describe("GET /threads/:agent", () => {
       ["agent_renamed", "Agent mason renamed", { agent_id: "mason" }],
       ["trigger_fired", `Trigger ${trigger} fired`, { trigger_id: trigger }],
       ["trigger_registered", "A trigger registered", { trigger_id: null }],
+      ["draft_output_recorded", `Session ${session} recorded a draft: kernel_github_comment`, { session_id: session, draft_output_id: 3 }],
+      ["poll_item_skipped", "Playbook triage skipped item github:o/r#7", { playbook_id: playbook }],
+      ["poll_item_queued", "Playbook triage queued item github:o/r#8\\x1b", { playbook_id: playbook }],
+      ["draft_output_recorded", `Session ${session} recorded a draft`, { session_id: session, draft_output_id: null }],
+      ["poll_item_queued", "Playbook triage queued an item", { playbook_id: playbook }],
     ]);
     // The non-JSON payload has no `to`, so it is neither a start nor an end: not a card.
-    expect(eventsOf(body)).toHaveLength(17);
-    expect(new Set(eventsOf(body).map((e) => e.kind))).toEqual(new Set(Object.keys(THREAD_EVENT_KINDS)));
+    expect(eventsOf(body)).toHaveLength(22);
+    // The owner's kind is in Wright's thread, never a crew member's.
+    const wright = await page(store, "/threads/wright");
+    expect(eventsOf(wright).map((e) => [e.kind, e.summary, e.ref])).toEqual([
+      ["connector_status", "Connector github: connected", { connector_id: 1 }],
+      ["connector_status", "A connector changed status", { connector_id: null }],
+    ]);
+    for (const e of [...eventsOf(body), ...eventsOf(wright)]) expect(e.summary).not.toMatch(/[\n\r]/);
+    expect(new Set([...eventsOf(body), ...eventsOf(wright)].map((e) => e.kind))).toEqual(new Set(Object.keys(THREAD_EVENT_KINDS)));
     // Decided approvals are not pending.
     expect(body.pending_approvals).toEqual([]);
+  });
+
+  it("phase 6's kinds each have their tie: a draft by its session, a poll item by its playbook (not the session that wrote it), a connector's status in Wright's thread only", async () => {
+    expect(Object.fromEntries(["draft_output_recorded", "poll_item_skipped", "poll_item_queued", "connector_status"].map((k) => [k, THREAD_EVENT_KINDS[k]]))).toEqual({
+      draft_output_recorded: "session",
+      poll_item_skipped: "playbook",
+      poll_item_queued: "playbook",
+      connector_status: "owner",
+    });
+    const store = openStore();
+    addAgent(store, "mason");
+    const wrightSession = addSession(store, "wright");
+    const masonSession = addSession(store, "mason");
+    const masonPlaybook = addPlaybook(store, "pr-review", "mason");
+    const draft = addEvent(store, "draft_output_recorded", 1, { draft_output_id: 1, tool: "kernel_github_review" }, masonSession);
+    // Written by Wright's session, about mason's playbook: the playbook decides.
+    const skipped = addEvent(store, "poll_item_skipped", 2, { playbook_id: masonPlaybook, item_ref: "github:o/r#1" }, wrightSession);
+    const queued = addEvent(store, "poll_item_queued", 3, { playbook_id: masonPlaybook, item_ref: "github:o/r#2" }, wrightSession);
+    // The owner's: no agent, no session.
+    const status = addEvent(store, "connector_status", 4, { connector_id: 1, kind: "github", status: "expired" });
+
+    const mason = await page(store, "/threads/mason");
+    expect(eventsOf(mason).map((e) => [e.id, e.kind, e.summary])).toEqual([
+      [draft, "draft_output_recorded", `Session ${masonSession} recorded a draft: kernel_github_review`],
+      [skipped, "poll_item_skipped", "Playbook pr-review skipped item github:o/r#1"],
+      [queued, "poll_item_queued", "Playbook pr-review queued item github:o/r#2"],
+    ]);
+    const wright = await page(store, "/threads/wright");
+    expect(eventsOf(wright).map((e) => [e.id, e.kind, e.summary, e.ref])).toEqual([[status, "connector_status", "Connector github: expired", { connector_id: 1 }]]);
   });
 
   it("names each approval decision, escapes an unknown one, and falls back to a generic sentence for an absent decision or agent field", async () => {

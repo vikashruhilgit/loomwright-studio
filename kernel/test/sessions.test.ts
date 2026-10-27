@@ -2927,7 +2927,7 @@ describe("Loomwright install, contract and host mode (D32)", () => {
 
 describe("mcpServers factory (item 07)", () => {
   const SID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-  type Ctx = { sessionId: number; agent: string | null; task: number | null };
+  type Ctx = { sessionId: number; agent: string | null; task: number | null; connectors: readonly string[] };
 
   function factory() {
     const seen: Ctx[] = [];
@@ -2948,14 +2948,14 @@ describe("mcpServers factory (item 07)", () => {
     expect(calls[0]?.options).not.toHaveProperty("mcpServers");
   });
 
-  it("startSession passes the factory's result as options.mcpServers; the factory gets the row id, agent and task", async () => {
+  it("startSession passes the factory's result as options.mcpServers; the factory gets the row id, agent, task and connector grants ([] without connectorsFor)", async () => {
     const store = openStore();
     const task = Number(store.prepare("INSERT INTO tasks (title, state) VALUES ('t', 'open')").run().lastInsertRowid);
     const f = factory();
     const { manager, calls } = harness({ store, options: { mcpServers: f.fn }, script: ({ stream }) => stream.push(msg.success()) });
     const handle = await manager.startSession(startParams({ task }));
     await handle.done;
-    expect(f.seen).toEqual([{ sessionId: handle.id, agent: "wright", task }]);
+    expect(f.seen).toEqual([{ sessionId: handle.id, agent: "wright", task, connectors: [] }]);
     expect(calls[0]?.options.mcpServers).toBe(f.made[0]);
     // Nothing else changes: the gate stays the only tool control.
     for (const forbidden of ["allowedTools", "canUseTool", "disallowedTools"]) expect(calls[0]?.options).not.toHaveProperty(forbidden);
@@ -2983,7 +2983,7 @@ describe("mcpServers factory (item 07)", () => {
     const handle = await manager.resumeSession(id, { permissionMode: "default", cwd: "/tmp", policy: { allowedTools: [], allowedBashPrefixes: [] } });
     expect(await handle.done).toBe("completed");
     expect(calls).toHaveLength(3);
-    expect(f.seen).toEqual([1, 2, 3].map(() => ({ sessionId: id, agent: "wright", task: null })));
+    expect(f.seen).toEqual([1, 2, 3].map(() => ({ sessionId: id, agent: "wright", task: null, connectors: [] })));
     expect(calls.map((c) => c.options.mcpServers)).toEqual(f.made);
     expect(new Set(calls.map((c) => c.options.mcpServers)).size).toBe(3);
   });

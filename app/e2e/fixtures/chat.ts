@@ -123,6 +123,8 @@ const PLAYBOOK: PlaybookListing = {
   token_limit_set_by: "wright",
   api_key_fallback_json: null,
   api_key_fallback_set_by: null,
+  mode: "draft",
+  mode_set_by: null,
   created_at: AT(10),
   updated_at: AT(20),
   trigger_id: 5,
