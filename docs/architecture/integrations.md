@@ -1,18 +1,90 @@
 # Integrations
 
-Part of [Phase 6 features](../ARCHITECTURE.md#phase-6-features). Built and documented by **item 03** (the GitHub connector: token validation and the repos the token reaches), in the integrations feature's `github/connector.ts` and `github/routes.ts` parts (`kernel/src/integrations/github/`), and by **item 11** (the Integrations screen, `app/src/screens/integrations/`).
+Part of [Phase 6 features](../ARCHITECTURE.md#phase-6-features). Built and documented by **item 03** (the GitHub connector: token validation and the repos the token reaches), in the integrations feature's `github/connector.ts` and `github/routes.ts` parts and its `cli.ts` (`kernel/src/integrations/`), over the read-only client in `github/client.ts`; and by **item 11** (the Integrations screen, `app/src/screens/integrations/`).
 
 **Routes** (owner-only):
 
 | Route | Answers |
 |---|---|
-| `GET /connectors` | `{connectors}`: every `connectors` row, none when nothing is connected |
-| `POST /connectors/github/token` | body `{token}`; the row after the change, never the token |
-| `POST /connectors/github/disconnect` | the row after the change |
-| `GET /connectors/github/repos[?refresh=1]` | `{repos, verified_at}`: the repos the token reaches, as `owner/name`; `refresh=1` re-reads them from GitHub first |
+| `GET /connectors` | `{connectors}`: every `connectors` row in the `Connector` shape, `[]` when nothing was ever set up |
+| `POST /connectors/github/token` | body `{token}`; validates it, then stores it; `{connector}`, the row after the change, never the token |
+| `POST /connectors/github/disconnect` | deletes the Keychain item; `{connector}`, the row after the change |
+| `GET /connectors/github/repos[?refresh=1]` | `{repos, verified_at}`: the repos the token reaches, as `owner/name` (`[]` and `null` with no row); `refresh=1` re-reads them from GitHub first |
 
 **Contract types it fills** (`app/src/api/contract.ts`): `ConnectorKind`, `ConnectorStatus`, `Connector`, `ConnectorsResponse`, `ConnectorTokenBody`, `ConnectorChangeResponse`, `ConnectorReposQuery` and `ConnectorReposResponse`.
 
-The credential is Studio's own fine-grained, read-only personal access token, which the owner creates for the personal repos they choose. It lives only in the Keychain item `loomwright-studio-github`: the `connectors` table (migration 17) holds its status, account, permissions, reachable repos and expiry, and never a secret. No route, log line or event carries the token. The kernel accepts only a token whose permissions are all read-only, and names the permission to drop otherwise. Studio runs no OAuth flow and never reuses the `gh` CLI's login. Every status change appends one `connector_status` event, shown in Wright's thread ([threads](threads.md#the-event-kinds)). GitHub is an optional connector (invariant 5): Studio works with none.
+The credential is Studio's own fine-grained, read-only personal access token, which the owner creates for the personal repos they choose. Studio runs no OAuth flow and never reuses the `gh` CLI's login. GitHub is an optional connector (invariant 5): Studio works with none. The app's Integrations entry (`⌘5`) stays a placeholder until item 11 builds the screen.
 
-Today (the phase 6 foundation) migration 17 creates the `connectors` table, both parts are empty, the four routes answer 404, and the app's Integrations entry (`⌘5`) is a placeholder that fetches nothing.
+## The token and the Keychain item
+
+The token lives only in the Keychain item `loomwright-studio-github` (generic password, account `loomwright-studio`), written and deleted through `kernel/src/auth/keychain.ts`, the one module that touches the Keychain. No route answer, `connectors` row, event, notification, log line, thrown error or CLI output carries it, and the tests check each of these for its absence, after a forced failure too:
+
+- the connector logs nothing, and every failure is a fixed code with a fixed message; a caught error's text is never kept;
+- each route handler catches everything and answers a typed failure, so the API's `route_failed` event (which records a clipped error message) is never written for these routes;
+- the client checks the token's shape before it reaches a header (so Node's `Headers` never throws a message quoting it) and answers every throw as `unreachable`.
+
+The client (`createGitHubClient`) reads the token fresh from the Keychain on each call, sends GETs only, and only to `https://api.github.com`.
+
+## The `connectors` table
+
+One row per connector kind (migration 17). It holds what the connector last verified: `status`, `account_login`, `permissions_json` (name to level, as GitHub reported them), `reachable_repos_json` (`owner/name` strings), `expires_at`, `verified_at`, and `created_at` / `updated_at`. It never holds the token or any other secret. The login, permission names and repo names come from GitHub: untrusted data, shown as text. Disconnecting keeps the row (and what it last verified) with status `disconnected`; nothing deletes it.
+
+## Lifecycle
+
+**Set.** `POST /connectors/github/token` (or `studio connectors github set`) validates the token before anything is written:
+
+1. Its shape: what the Keychain writer takes (no whitespace, quote or control character, at most 255 characters).
+2. `GET /user`, through a client whose only token source is the candidate: the login and the expiry (the `github-authentication-token-expiration` header).
+3. Its permissions: they must be reported, and every level must be `read` (or `none`).
+4. `GET /user/repos` (paginated, with a page cap): the reachable repos.
+
+Only then is it stored: the old item is deleted (none is fine), the new one added (never an overwrite: no `-U`), and the item **read back**, since `security -i` can exit 0 when its command failed. The row then reads `connected` with the login, permissions, repos, expiry and `verified_at`.
+
+**The three refusals.** Each writes nothing to the Keychain, answers 422 `{error, message, connector}`, and appends one `connector_status` event:
+
+| Refusal | When | Message |
+|---|---|---|
+| `token_invalid` | GitHub answers 401, or the value is not a token's shape | says what to check |
+| `token_write_scoped` | a permission's level is above read (`write`, `admin`, or any level not known to be read-only) | names every such permission and the setting to change, `pull_requests: write → set to read`; `write_permissions` lists them |
+| `token_permissions_unknown` | GitHub did not report the token's permissions (`null`, or none at all) | says Studio cannot check they are read-only |
+
+**`token_permissions_unknown` refuses every real token today (fail-closed).** No GitHub endpoint documented publicly lists a fine-grained token's own permissions, so the real client reports `permissions: null` and never infers them, least of all from a write attempt. Until the owner runs the permissions probe and decides the fallback ([open questions](../OPEN_QUESTIONS.md), "Phase 6: how does GitHub expose a fine-grained token's permissions?"; the probe is [`probes/p12-github-token-permissions.mjs`](../../probes/p12-github-token-permissions.mjs)), a real token cannot connect. Only a client that reports permissions, such as the tests' `FakeGitHubClient`, reaches the write.
+
+**A refusal while a token is in use.** With a `connected` or `expiring` token in place, a refused token leaves its Keychain item and its row unchanged: the token in use stays in use, and the event's `status` is the row's (`connected`). With none in place the row reads `rejected` ("the last token offered was refused"), and is created when there was none.
+
+**Failures that change nothing.** GitHub's rate limit (429 `rate_limited`, with `resets_at`), GitHub unreachable or answering something unreadable (502 `github_unreachable`), or another HTTP status (502 `github_error`, with `github_status`): no row, event or Keychain change. A Keychain delete that fails answers 500 `keychain_failed` with nothing changed.
+
+**Replace** is set with a token already in place: the new token is validated first and swapped in only when it passes, so a refused one leaves the first in use. If the read-back after the swap does not hold the new token, the old one is already deleted: the row reads `disconnected` (one event), never `connected`, and the answer is 500 `keychain_failed`.
+
+**Disconnect** deletes the Keychain item ("item not found", exit status 44, counts as already gone) and sets the row `disconnected`, kept. With no row it answers 404 `no_connector`.
+
+**Refresh.** `GET /connectors/github/repos?refresh=1` re-reads the repos with the stored token and updates `reachable_repos_json` and `verified_at`, without a status change or an event. It needs a token in use (409 `not_connected` otherwise, 404 `no_connector` with no row); a 401 answers `token_invalid` without changing the row.
+
+The connector runs one call at a time (set, disconnect, refresh), so two never interleave their Keychain steps.
+
+## Expiry
+
+The connector's due work (`checkGitHubExpiry`, every loop tick) reads the GitHub row only; it never touches the Keychain or GitHub. For a token in use with a known `expires_at`:
+
+- within 14 days, `connected` becomes `expiring` (one event), and the owner is notified through `recordNotification` (source `kernel:github_token_expiring_14d`);
+- within 1 day, a second notification (`kernel:github_token_expiring_1d`);
+- after `expires_at`, the status becomes `expired` (one event; no notification).
+
+Each threshold notifies once per token: the notification's body names the token's expiry, and a nearer warning already sent covers a farther one, so a token set with a day left gets only the 1-day warning. A replacement token (a new expiry) is warned afresh. An unknown expiry (`null`, or a header the client could not parse) is never warned about. The 14 and 1 days are the safety kernel's, fixed (`GITHUB_EXPIRY_NOTICE_DAYS`); the 14 days follows the approved design's proposal (`docs/DESIGN.md`).
+
+## Events
+
+Every status change appends exactly one `connector_status` event, `{connector_id, kind, status}`, plus `refused` (the code) for a refusal; never a secret. Wright's thread shows it ("Connector github: connected"; [threads](threads.md#the-event-kinds)). A refresh and a failure that changes nothing append none.
+
+## The CLI
+
+`studio connectors` calls the routes:
+
+| Command | Calls |
+|---|---|
+| `studio connectors [--json]` | `GET /connectors`: one line per connector |
+| `studio connectors github status [--json]` | `GET /connectors`: the GitHub connector in full (account, permissions, expiry, repos) |
+| `studio connectors github set` | reads the token from stdin, then `POST /connectors/github/token` |
+| `studio connectors github disconnect` | `POST /connectors/github/disconnect` |
+
+`set` reads the token **only from stdin**: piped, or typed at a terminal with echo off. Given any argument, it exits 2 without contacting the kernel, and never echoes the argument (a token on a command line lands in shell history and `ps`). No unknown argument is echoed either. A refusal prints its code and message on stderr and exits 1. Text from GitHub is printed with control characters escaped.
