@@ -1,6 +1,6 @@
-# Integrations mockup: screenshot and token evidence (phase 6, item 02)
+# Integrations mockup: screenshot and token evidence (phase 6 item 02, the Integrations screen mockup)
 
-These are screenshots of every designed view of `docs/design/mockups/integrations.html`, in light and dark, plus the audit of its token block and of every value outside it. The mockup is static: it runs no kernel and makes no GitHub call. Each view is forced by the URL hash (`#view=<view>&theme=<light|dark>`), so each screenshot comes from one headless-browser command. No script is committed. The owner approves the design by merging the PR that adds it (D9). What it commits item 11 to is in `docs/DESIGN.md` §"Phase 6: Integrations".
+These are screenshots of every designed view of `docs/design/mockups/integrations.html`, in light and dark, plus the audit of its token block and of every value outside it. The mockup is static: it runs no kernel and makes no GitHub call. Each view is forced by the URL hash (`#view=<view>&theme=<light|dark>`), so each screenshot comes from one headless-browser command. No script is committed. The owner approves the design by merging the PR that adds it (D9). What it commits phase 6 item 11 (the Integrations screen) to is in `docs/DESIGN.md` §"Phase 6: Integrations".
 
 ## Screenshots
 
@@ -23,7 +23,9 @@ No forced view covers two surfaces, so they have no screenshot here: the Disconn
 - typing a token enables Connect;
 - Connect clears the field and moves to `connecting`;
 - a token containing `write` lands on `rejected-write`, any other non-`github_pat_` value on `rejected-invalid`, and `github_pat_…` on `connected`, after which the value appears nowhere in the DOM;
-- `⌃K` → "disc" → Enter opens the confirm, `Esc` closes it, and focus returns to the GitHub row;
+- `⌃K` → "disc" → Enter opens the confirm, and `Esc` closes it;
+- focus returns to the control that opened a dialog or the palette, or to the same control after a re-render, and to the GitHub row when that control is gone or nothing was focused; it never lands on the page body. Driven on 2026-10-27: `⌃K` → "connect" → Enter → `Esc`; the same with a valid `github_pat_` token; the empty state's Connect GitHub → `Esc`, Cancel, the backdrop, and a valid token; Replace token → `Esc`, a valid token, a refused token, and `Esc` while connecting (no late refocus); Disconnect → `Esc`, Cancel and Disconnect; `⌃K` → Disconnect GitHub → `Esc` from the page and from Replace token; and a Crew row → `⌃K` → Connect GitHub → `Esc`;
+- replacing an expired token says the new one replaces it, not that the expired one stays in use, and the expired view's Disconnect confirm says the playbook is already parked;
 - "Show reachable repos" focuses the repos section;
 - a command that can't run stays open, marked `aria-disabled`;
 - `⌃5` focuses the GitHub row, and Tab cycles inside the sheet;
@@ -82,7 +84,7 @@ Result, 2026-10-27: no diff output, then `exit 0`. The block is 195 lines, the s
 
 The rest of the `<style>` is in two parts. The **harness** block (`harness:begin` … `harness:end`) is copied from gui-v1. The **app UI** part uses `var(--…)` tokens, plus the literals below.
 
-The table names every literal value outside the token block, found by listing each number, colour and keyword in the CSS outside the block, plus the values the script passes inline. Structural values are not listed: `0`, `100%`, `1fr`, `max-content`, `minmax(0, 1fr)`, `flex: 1` and `grid-row: 2` lay out the page and carry no design value. SVG geometry is not listed either: `viewBox` and path data of the Lucide icons, the Avatar creatures and the GitHub mark.
+The table names every literal value outside the token block, found by listing each number and colour in the CSS outside the block, plus the values the script passes inline. Structural values are not listed: `0`, `100%`, `1fr`, `auto`, `max-content`, `minmax(0, 1fr)`, `flex: 1` and `grid-row: 2` lay out the page and carry no design value. The colour keywords `transparent` (no fill or edge: Button's resting border, the field's input, the spinner's open quarter) and `currentColor` (the text colour of the element itself: icons, the GitHub mark, the spinner, the key chip on a primary Button) are structural too, since neither adds a colour. Other CSS keywords (`uppercase`, `nowrap`, `balance`, `tabular-nums`, `underline`, `infinite`, display and alignment values) are not listed: each restates a rule in the component READMEs or `brand-book.md` and carries no number or colour. SVG geometry is not listed either: `viewBox` and path data of the Lucide icons, the Avatar creatures and the GitHub mark.
 
 | Value | Where | Marking |
 |---|---|---|
@@ -90,7 +92,7 @@ The table names every literal value outside the token block, found by listing ea
 | `--win-shadow` `0 24px 80px #00000059, 0 0 0 1px #00000026` / `0 24px 80px #000000b3, 0 0 0 1px #ffffff1f` | The window's drop shadow on the desk, applied to `.win` | review-harness chrome (not app UI) |
 | `#ff5f57`, `#febc2e`, `#28c840`; 12px circles at `50%` radius, `8px` gap and padding | The macOS traffic lights (the real app gets them from the OS, `titleBarStyle: 'hiddenInset'`) | review-harness chrome (not app UI) |
 | `#ffffff14`, `#ffffff33`, `#ffffff26`, `#ffffff1f` | Review strip fill, borders, the selected segment and the key chips | review-harness chrome (not app UI) |
-| `1240px`, `26px`, `12px`, `15px`, `20px`, `16px`, `24px`, `-16px`, `10px`, `18px`, `6px`, `5px`, `4px`, `1px`, `2px`; opacity `.7`, `.75`, `.9`; weights `500`, `600` | Page, intro and review-strip sizes, type, padding, gaps, radii and focus ring | review-harness chrome (not app UI) |
+| `1240px`, `26px`, `12px`, `15px`, `20px`, `16px`, `24px`, `-16px`, `10px`, `18px`, `6px`, `5px`, `4px`, `1px`, `2px`; opacity `.7`, `.75`, `.9`; weights `500`, `600`; `max-width: 1280px` media query | Page, intro and review-strip sizes, type, padding, gaps, radii and focus ring; the breakpoint under which the intro and the strip go full width | review-harness chrome (not app UI) |
 | `1180px` × `760px` | The window | new — the default window size; gui-v1 and phase 5's polish evidence ("The default window is 1180×760") |
 | `blur(24px) saturate(1.4)` | Sidebar vibrancy | new — specified in `brand-book.md` §Layout; tokens.json has no filter values |
 | `1px` | Hairline and border widths; the visually hidden live region's size | new — component READMEs specify "a `hairline` edge" and tokens.json has edge colours but no widths |
@@ -106,15 +108,15 @@ The table names every literal value outside the token block, found by listing ea
 | `560px`, `20%`, `360px` | Palette width, its offset from the top, and its list's maximum height | new — CommandPalette README ("560px", "centred at 20% from the top"); the list height is gui-v1's |
 | `65ch` | Maximum width of the empty state's lines | new — `brand-book.md` §Type: "Running text stays under 65 characters" |
 | `500` | Font weight of buttons, the selected sidebar row and the neutral badge | new — List README ("weight 500" when selected), gui-v1's buttons and neutral badge; tokens.json defines 500 only for `kbd` |
-| `.55`, `.85` | The `working` dot's breathing keyframe (opacity, scale) | new — gui-v1's StatusDot `pulse`; the duration is `--duration-pulse` |
+| `50%`, `.55`, `.85` | The `working` dot's breathing keyframe (its midpoint, opacity, scale) | new — gui-v1's StatusDot `pulse`; the duration is `--duration-pulse` |
 | `.98` | Dialog and palette open scale | new — Dialog and CommandPalette READMEs: "scaling from 0.98" |
 | `1turn`, `linear` | The Button loading spinner, one constant-speed turn per `--duration-pulse` | new — a spinner turns at constant speed; tokens.json has no linear curve |
 | `50` | Overlay `z-index` | new — gui-v1's overlay stacking |
 | `inset(50%)` | `clip-path` of the visually hidden live region | new — standard visually-hidden pattern for the `aria-live` announcer |
 | Opacity `.28`, `.45`, `.85`; stroke widths `1.6`, `1.2`, `1.9`; dash arrays `2.6 1.5`, `1.8 1.4`, `2.4 2.6` | The Avatar's fill, stitches, lines and loose thread (static idle pose) | new — copied unchanged from `docs/design/avatar/avatar.css`; no avatar value is a token there either |
-| `1200` ms (script) | How long the mockup pretends GitHub takes to check a pasted token | new — mock behaviour only, not a design duration; item 11 shows `connecting` for as long as the kernel takes |
+| `1200` ms (script) | How long the mockup pretends GitHub takes to check a pasted token | new — mock behaviour only, not a design duration; phase 6 item 11's screen shows `connecting` for as long as the kernel takes |
 
-## Branding check (AC5, invariant 7)
+## Branding check (phase 6 item 02's AC5, invariant 7)
 
 ```sh
 grep -c "Claude Code" docs/design/mockups/integrations.html

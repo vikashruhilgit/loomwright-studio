@@ -37,9 +37,9 @@ The artefact links are private to the owner; the repo copies are the reviewable 
 
 ## Phase 6: Integrations
 
-The Integrations screen moved from GUI v2 to phase 6 by the owner's 2026-10-24 decision. ROADMAP's phase 6 row takes precedence over the GUI v2 listing that this file and `UI.md` carried. Phase 6 builds the screen with GitHub as its only connector, and later phases add the other connectors. As D9 requires, the mockup comes before any screen code: `design/mockups/integrations.html`, with its screenshots in [the evidence folder](evidence/phase-6-integrations-mockup/README.md). Open it in a browser and use the review strip, or force a view with the URL hash (`#view=connected&theme=dark`).
+The Integrations screen moved from GUI v2 to phase 6 by the owner's 2026-10-24 decision. ROADMAP's phase 6 row takes precedence over every GUI v2 listing that still names the screen: ROADMAP's own phase 7 row, and `UI.md`, which keeps it under GUI v2 until phase 6 item 01 (the phase 6 foundation) adds its note there. This file's "Not in v1" list below no longer names it. Phase 6 builds the screen with GitHub as its only connector, and later phases add the other connectors. As D9 requires, the mockup comes before any screen code: `design/mockups/integrations.html`, with its screenshots in [the evidence folder](evidence/phase-6-integrations-mockup/README.md). Open it in a browser and use the review strip, or force a view with the URL hash (`#view=connected&theme=dark`).
 
-### What the mockup commits item 11 to
+### What the mockup commits phase 6 item 11 (the Integrations screen) to
 
 - **Place and layout:** Integrations is the fifth sidebar screen, after Sessions, on `⌘5`. Its main column splits into a list pane (`list-pane-width`) and a detail pane, as Approvals and Sessions do. The list holds only GitHub in phase 6, then a quiet line: "More connectors come later. Studio works with none connected." It has no placeholder entries.
 - **Detail pane:**
@@ -56,7 +56,7 @@ The Integrations screen moved from GUI v2 to phase 6 by the owner's 2026-10-24 d
   - It has a link-out to GitHub's token page, a password field, and Connect.
   - Its copy says the token is kept in the Keychain and never shown again, and that the field clears the moment you press Connect.
   - There is no OAuth button and no "use gh login" option.
-  - Replacing a connected token uses the same sheet, and the current token stays in use until the new one passes the check.
+  - Replacing a connected or expiring token uses the same sheet, and the current token stays in use until the new one passes the check. Replacing an expired token says only that the new one replaces it once it passes, since nothing uses the expired one.
 - **Refusals render inline in the sheet**, under the field in Input's error state.
   - `token_invalid` says what to check.
   - `token_write_scoped` names each permission to change, in the form "Pull requests: Read and write → set to Read-only".
@@ -69,20 +69,20 @@ The Integrations screen moved from GUI v2 to phase 6 by the owner's 2026-10-24 d
   - **Expiring:** an `attention` dot, band and badge from 14 days before expiry. The 14 days is a design proposal the owner can change on this PR. Replace token becomes the primary action.
   - **Expired:** a `danger` dot and band that names the parked playbooks. Replace token is the primary action.
   - **Kernel unreachable:** the shared band at the top of the main column. The status reads "unknown" with no dot (honest status), and the last-read data stays visible with its time. Replace token, Disconnect and Refresh are disabled.
-- **Disconnect always confirms** (Dialog, `alertdialog`). It says that the token is deleted from the Keychain, which playbooks park, and that grants are kept.
+- **Disconnect always confirms** (Dialog, `alertdialog`). It says that the token is deleted from the Keychain, which playbooks park (for an expired token, which stay parked, since they already are), and that grants are kept.
 - **Keyboard:** `⌘5` (`⌃5` in a browser tab) opens the screen. `⌘K` offers three commands:
   - Connect GitHub.
   - Disconnect GitHub, which goes through its confirm.
   - Show reachable repos, which moves focus to the repos section.
 
-  A command that can't run in the current state stays listed but disabled, with the reason. `Esc` closes, focus is trapped in a dialog, and it returns to where it came from.
+  A command that can't run in the current state stays listed but disabled, with the reason. `Esc` closes, focus is trapped in a dialog, and it returns to where it came from: the control that opened the dialog or the palette, or the same control once the screen re-renders. When that control no longer exists (Connect GitHub after a connect succeeds, Disconnect after a disconnect), focus goes to the GitHub row, never to the page itself.
 - **Branding (invariant 7):** GitHub's name and mark appear only as the connector's label, in `ink`, with no GitHub colours or styling. The palette footer reads "Wright, powered by Claude".
 - **Components and tokens:** the mockup uses List, Card, Badge, StatusDot, Dialog and Input, plus Button, CommandPalette and Avatar as they already are. It adds no component and no token. The evidence README lists every value outside `tokens.json`.
 
 ### Open points for the owner (on this PR)
 
-- Item 11's requirement names the third palette command "Refresh reachable repos". The phase 6 job brief and this mockup use "Show reachable repos" in the palette, with Refresh as a button in the repos section. Pick one name for item 11.
-- The expiry warning starts at 14 days, a proposal that matches the kernel's 14-day notice (item 03).
+- Phase 6 item 11's requirement (the Integrations screen) names the third palette command "Refresh reachable repos". The phase 6 job brief and this mockup use "Show reachable repos" in the palette, with Refresh as a button in the repos section. Pick one name for phase 6 item 11.
+- The expiry warning starts at 14 days, a proposal that matches phase 6 item 03's planned 14-day expiry notice (the GitHub connector, not built yet).
 
 ## Not in v1 (deferred to GUI v2 or later)
 

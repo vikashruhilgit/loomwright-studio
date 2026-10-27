@@ -607,7 +607,7 @@ function sheetHTML(){
     ?`<div class="errmsg" id="cs-err" role="alert"><p>This token can write, so it wasn't saved. Studio takes only read-only tokens in this phase. On GitHub, edit the token and change:</p><ul>${DROP.map(d=>`<li>${esc(d)}</li>`).join('')}</ul><p>Then paste it here again.</p></div>`:'';
   return `<div class="dlg wide" role="dialog" aria-modal="true" aria-labelledby="cs-t" aria-describedby="cs-d">
     <h2 id="cs-t">Connect GitHub</h2>
-    <p id="cs-d">Studio reads your PRs with a token you create for it. In this phase it only reads: it can't comment, push or merge.${S.replace?' The current token stays in use until the new one passes the check.':''}</p>
+    <p id="cs-d">Studio reads your PRs with a token you create for it. In this phase it only reads: it can't comment, push or merge.${S.replace?(S.base==='expired'?' The new token replaces the expired one once it passes the check.':' The current token stays in use until the new one passes the check.'):''}</p>
     <ol class="well"><li>Create a <b>fine-grained</b> personal access token on GitHub.</li><li>Repository access: <b>Only select repositories</b>, then pick the personal repos Studio may read.</li><li>Permissions: <b>Pull requests</b> and <b>Contents</b>, each <b>Read-only</b>. Metadata is read-only already.</li><li>Choose an expiry, generate the token and copy it.</li></ol>
     <div class="out"><a class="link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">${I.ext}Open GitHub's token page</a><span class="cap">github.com/settings/personal-access-tokens/new</span></div>
     <div><label class="label" for="cs-token">Token</label>
@@ -620,14 +620,33 @@ function sheetHTML(){
   </div>`;
 }
 function confirmHTML(){
-  return `<div class="dlg" role="alertdialog" aria-modal="true" aria-labelledby="dc-t" aria-describedby="dc-d"><div class="icon" aria-hidden="true">${I.x}</div><h2 id="dc-t">Disconnect GitHub?</h2><p id="dc-d">Deletes the token from the Keychain. 1 playbook that needs GitHub parks until you connect again: ${esc(GH.playbook)}. Mason keeps its grant.</p><div class="acts"><button class="btn sec" data-act="close">Cancel <span class="kbd">Esc</span></button><button class="btn dng" data-act="disconnect-confirm">Disconnect</button></div></div>`;
+  return `<div class="dlg" role="alertdialog" aria-modal="true" aria-labelledby="dc-t" aria-describedby="dc-d"><div class="icon" aria-hidden="true">${I.x}</div><h2 id="dc-t">Disconnect GitHub?</h2><p id="dc-d">Deletes the token from the Keychain. ${S.base==='expired'?'1 playbook that needs GitHub is already parked, and stays parked until you connect again':'1 playbook that needs GitHub parks until you connect again'}: ${esc(GH.playbook)}. Mason keeps its grant.</p><div class="acts"><button class="btn sec" data-act="close">Cancel <span class="kbd">Esc</span></button><button class="btn dng" data-act="disconnect-confirm">Disconnect</button></div></div>`;
 }
-function openSheet(replace){ if(offline()) return; opener=document.activeElement; S.sheet='blank'; S.replace=!!replace&&hasToken(); S.confirm=false; render(); }
+/* Focus return. The opener is kept as the element plus a selector for it, because render() rewrites #main and
+   #crewnav, so the element itself is often detached by the time the overlay closes. The page body is never an opener. */
+function selFor(el){
+  if(el.id) return '#'+CSS.escape(el.id);
+  if(el.dataset.go) return `[data-go="${CSS.escape(el.dataset.go)}"]`;
+  if(!el.dataset.act) return '';
+  let q=`[data-act="${CSS.escape(el.dataset.act)}"]`;
+  if(el.dataset.what) q+=`[data-what="${CSS.escape(el.dataset.what)}"]`;
+  if(el.dataset.act==='open-sheet') q+=el.dataset.replace?'[data-replace]':':not([data-replace])';
+  return q;
+}
+function setOpener(el){ opener=(el&&el!==document.body&&el.isConnected&&!$('#overlay').contains(el))?{el,sel:selFor(el)}:null; }
+function openSheet(replace){ if(offline()) return; S.sheet='blank'; S.replace=!!replace&&hasToken(); S.confirm=false; render(); }
 function closeOverlay(){
   if($('.pal')){ $('#overlay').innerHTML=''; overlayKey=''; render(); restoreFocus(); return; }
   pending=null; S.sheet=null; S.replace=false; S.confirm=false; render(); restoreFocus();
 }
-function restoreFocus(){ const o=opener; opener=null; (o&&document.contains(o)?o:$('#row-github'))?.focus({preventScroll:true}); }
+function restoreFocus(){
+  const o=opener; opener=null;
+  let t=o&&(o.el.isConnected?o.el:(o.sel?$(o.sel):null));
+  if(!t||t.disabled) t=$('#row-github');
+  t?.focus({preventScroll:true});
+}
+/* Leaving the overlay without a close (the review strip, Reset, a hash change): drop the opener so it can't go stale. */
+function dropOverlay(){ $('#overlay').innerHTML=''; overlayKey=''; opener=null; }
 /* Mock check. The value is classified, then dropped: it is never kept in state, the hash or the DOM. */
 function connect(){
   const inp=$('#cs-token'); if(!inp||S.sheet==='connecting') return;
@@ -645,14 +664,14 @@ function showRepos(){ if(!hasToken()) return; const r=$('#repos'); if(r){ r.scro
 
 /* ---------- CommandPalette ---------- */
 function palette(){
-  if($('.pal')) return; opener=document.activeElement;
+  if($('#overlay').innerHTML) return; setOpener(document.activeElement);
   $('#overlay').innerHTML=`<div class="ov top" data-act="close-bg"><div class="pal" role="combobox" aria-expanded="true" aria-haspopup="listbox" aria-owns="pallst"><div class="in">${I.search}<input id="palin" aria-label="Command" aria-controls="pallst" aria-autocomplete="list" placeholder="Screens, actions, agents…" autocomplete="off"><span class="kbd">Esc</span></div><div class="lst" id="pallst" role="listbox" aria-label="Commands"></div><div class="foot cap"><span><span class="kbd">↑↓</span> move</span><span><span class="kbd">⏎</span> run</span><span class="attr">Wright, powered by Claude</span></div></div></div>`;
   overlayKey='pal';
   const items=()=>{
     const why=off=>off?'needs the kernel':'';
     return [
       {g:'Actions',ic:I.plug,t:'Connect GitHub',r:offline()?'needs the kernel':hasToken()?'replaces the token':'',dis:offline(),run:()=>openSheet(hasToken())},
-      {g:'Actions',ic:I.unlink,t:'Disconnect GitHub',r:!hasToken()?'not connected':why(offline()),dis:!hasToken()||offline(),run:()=>{opener=$('#row-github');S.confirm=true;render()}},
+      {g:'Actions',ic:I.unlink,t:'Disconnect GitHub',r:!hasToken()?'not connected':why(offline()),dis:!hasToken()||offline(),run:()=>{S.confirm=true;render()}},
       {g:'Actions',ic:I.repo,t:'Show reachable repos',r:!hasToken()?'not connected':String(GH.repos.length),dis:!hasToken(),run:showRepos},
       ...[['Chat',I.chat,'⌘1'],['Team',I.team,'⌘2'],['Approvals',I.list,'⌘3'],['Sessions',I.term,'⌘4']].map(s=>({g:'Screens',ic:s[1],t:s[0],r:s[2],run:()=>note(s[0]+' is in gui-v1.html. This mockup shows Integrations only.')})),
       {g:'Screens',ic:I.plug,t:'Integrations',r:'⌘5',run:()=>$('#row-github')?.focus()}
@@ -670,7 +689,12 @@ function palette(){
     if(cur.length) inp.setAttribute('aria-activedescendant','pal-'+sel); else inp.removeAttribute('aria-activedescendant');
     $('#pallst .sel')?.scrollIntoView({block:'nearest'});
   };
-  const run=k=>{ const i=cur[k]; if(!i||i.dis) return; $('#overlay').innerHTML=''; overlayKey=''; i.run(); };
+  const run=k=>{
+    const i=cur[k]; if(!i||i.dis) return; $('#overlay').innerHTML=''; overlayKey=''; i.run();
+    /* A command that opened the sheet or the confirm keeps the palette's opener for that dialog's close.
+       Otherwise the palette is done: return focus unless the command moved it. */
+    if(!$('#overlay').innerHTML){ const a=document.activeElement; if(!a||a===document.body) restoreFocus(); else opener=null; }
+  };
   draw(); inp.focus({preventScroll:true});
   inp.addEventListener('input',()=>{sel=0;draw()});
   inp.addEventListener('keydown',e=>{
@@ -689,9 +713,9 @@ document.addEventListener('click',e=>{
   if(a==='close-bg'&&e.target!==el) return;
   ({
     'close':closeOverlay,'close-bg':closeOverlay,
-    'open-sheet':()=>openSheet(!!el.dataset.replace),
+    'open-sheet':()=>{setOpener(el);openSheet(!!el.dataset.replace)},
     'connect':connect,
-    'disconnect':()=>{opener=el;S.confirm=true;render()},
+    'disconnect':()=>{setOpener(el);S.confirm=true;render()},
     'disconnect-confirm':()=>{S.confirm=false;S.base='none';opener=null;render();live('GitHub disconnected. The token was deleted from the Keychain.');$('#row-github')?.focus()},
     'refresh':()=>live('Reachable repos re-read: '+GH.repos.length+'.'),
     'other':()=>note(el.dataset.what+': not part of this mockup (see gui-v1.html).')
@@ -724,11 +748,11 @@ document.addEventListener('keydown',e=>{
 
 /* ---------- Review strip ---------- */
 $('#viewseg').innerHTML=Object.entries(VIEWS).map(([k,v])=>`<button data-v="${k}" aria-pressed="false">${v.label}</button>`).join('');
-$('#viewseg').onclick=e=>{const b=e.target.closest('button'); if(b&&setView(b.dataset.v)){ $('#overlay').innerHTML=''; overlayKey=''; render(); note(''); }};
+$('#viewseg').onclick=e=>{const b=e.target.closest('button'); if(b&&setView(b.dataset.v)){ dropOverlay(); render(); note(''); }};
 $('#themeseg').onclick=e=>{const b=e.target.closest('button'); if(b){ S.theme=b.dataset.t; render(); }};
-$('#tg-reset').onclick=()=>{ setView('not-connected'); S.theme=''; $('#overlay').innerHTML=''; overlayKey=''; render(); note('Reset.'); };
+$('#tg-reset').onclick=()=>{ setView('not-connected'); S.theme=''; dropOverlay(); render(); note('Reset.'); };
 $('#palbtn').onclick=palette;
-window.addEventListener('hashchange',()=>{ const p=new URLSearchParams(location.hash.slice(1)); if(p.get('view')!==viewName()||(p.get('theme')||'system')!==(S.theme||'system')){ $('#overlay').innerHTML=''; overlayKey=''; applyHash(); } });
+window.addEventListener('hashchange',()=>{ const p=new URLSearchParams(location.hash.slice(1)); if(p.get('view')!==viewName()||(p.get('theme')||'system')!==(S.theme||'system')){ dropOverlay(); applyHash(); } });
 applyHash();
 })();
 </script>
