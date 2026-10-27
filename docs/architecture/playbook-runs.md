@@ -80,6 +80,7 @@ The owner (or Wright's proposal the owner kept) sets `dedupe_key` as a list of f
 | `trigger.id` | the trigger's id, or `null` for a run now |
 | `trigger.scheduled_at` | the event's `scheduled_at` |
 | `date` | the `YYYY-MM-DD` calendar date of `scheduled_at` in the kernel host's time zone |
+| `item.id`, `item.revision` | a polled item's ref and revision (phase 6). No event carries an item until item 05, so a spec naming either fails the run `dedupe_spec_invalid`, never builds a key that leaves the field out |
 
 The key is that object's JSON (`{"date":"2026-10-14"}`). A spec that is not a list of distinct known fields, or a zone the runtime doesn't know, fails the run (`dedupe_spec_invalid`, `dedupe_zone_invalid`). Only a `fire` or `run_now` run of the same playbook, with the same key, that ended `done` makes a later one a duplicate: a run that failed, was skipped or is still running never does. `date` comes from the event's instant, not from when it is handled, so a fire the kernel handles late (a coalesced instant after a restart) still keys on its own day.
 

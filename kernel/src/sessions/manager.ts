@@ -15,6 +15,10 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { KERNEL_APPLIED_ACTIONS, holdOrUseGrant } from "../approvals/store.js";
 import { KeychainError } from "../auth/keychain.js";
+import { CONNECTOR_KINDS } from "../integrations/types.js";
+import type { ConnectorKind } from "../integrations/types.js";
+import { PLAYBOOK_MODES } from "../playbooks/types.js";
+import type { PlaybookMode } from "../playbooks/types.js";
 import { AuthProviderError } from "../auth/types.js";
 import type { AuthProvider, BaseEnv, ChildEnv } from "../auth/types.js";
 import { isProtectedPath, protectedLocationsText, resolvedPath } from "../protected-paths.js";
@@ -646,6 +650,7 @@ export class SessionManager {
   readonly #admission: ((request: AdmissionRequest) => AdmissionDecision) | undefined;
   readonly #mcpServers: SessionManagerOptions["mcpServers"];
   readonly #heldToolCheck: HeldToolCheck | undefined;
+  readonly #connectorsFor: SessionManagerOptions["connectorsFor"];
 
   readonly #query: QueryFn;
   readonly #spawn: SpawnFn;
@@ -684,6 +689,7 @@ export class SessionManager {
     this.#admission = options.admission;
     this.#mcpServers = options.mcpServers;
     this.#heldToolCheck = options.heldToolCheck;
+    this.#connectorsFor = options.connectorsFor;
 
     this.#query = deps.query ?? sdkQuery;
     this.#spawn = deps.spawn ?? spawnInNewProcessGroup;
@@ -794,7 +800,7 @@ export class SessionManager {
       return rowId;
     });
 
-    const live = this.#newLive(id, sdkSessionId, policy, "starting", dryRun);
+    const live = this.#newLive(id, sdkSessionId, this.#sessionPolicy(policy, params.agent, params.playbook ?? null), "starting", dryRun);
     let attempt: Attempt;
     try {
       // Before the spawn; a failure here is a spawn failure.
@@ -1096,7 +1102,7 @@ export class SessionManager {
       taskId: row.task_id,
       playbook,
     };
-    const live = this.#newLive(id, row.sdk_session_id, policy, "interrupted", dryRun);
+    const live = this.#newLive(id, row.sdk_session_id, this.#sessionPolicy(policy, row.agent, playbook), "interrupted", dryRun);
 
     let first: Attempt;
     try {
@@ -1489,7 +1495,7 @@ export class SessionManager {
    */
   #launch(live: LiveSession, config: LaunchConfig): Attempt {
     // Fresh servers for every launch attempt (a server instance cannot reconnect).
-    const mcpServers = this.#mcpServers?.({ sessionId: live.id, agent: config.agent, task: config.task });
+    const mcpServers = this.#mcpServers?.({ sessionId: live.id, agent: config.agent, task: config.task, connectors: live.policy.connectors ?? [] });
     let markExited!: () => void;
     const exited = new Promise<void>((resolve) => {
       markExited = resolve;
@@ -2772,6 +2778,35 @@ export class SessionManager {
       const found = this.#store.prepare<[number], number>("SELECT 1 FROM playbooks WHERE id = ?").pluck().get(params.playbook as number);
       if (found === undefined) throw new SessionError("invalid_params", `no playbook ${String(params.playbook)}`);
     }
+  }
+
+  /**
+   * The caller's frozen `policy` with what only the manager fills (phase 6):
+   * `mode`, the playbook's `playbooks.mode` when the session runs for one
+   * (absent otherwise), and `connectors`, `connectorsFor(agent)` (`[]` with no
+   * option, no agent, or a lookup that throws). A new frozen object: the
+   * caller's is never mutated, and a caller's own `mode`/`connectors` never
+   * reach it (`checkPolicy` keeps only the fields it checks). A stored mode
+   * outside `PLAYBOOK_MODES` (none is written) reads as `draft`, the mode
+   * that sends nothing; an unknown connector kind is dropped. The policy
+   * reads neither yet (phase 6 item 07).
+   */
+  #sessionPolicy(policy: ToolPolicy, agent: string | null, playbook: number | null): ToolPolicy {
+    let connectors: readonly ConnectorKind[] = [];
+    if (agent !== null && this.#connectorsFor !== undefined) {
+      try {
+        const granted: unknown = this.#connectorsFor(agent);
+        if (Array.isArray(granted)) connectors = (granted as unknown[]).filter((k): k is ConnectorKind => (CONNECTOR_KINDS as readonly unknown[]).includes(k));
+      } catch {
+        // Fail closed: no grant, so no connector's tool is listed.
+      }
+    }
+    let mode: PlaybookMode | undefined;
+    if (playbook !== null) {
+      const stored = this.#store.prepare<[number], unknown>("SELECT mode FROM playbooks WHERE id = ?").pluck().get(playbook);
+      mode = (PLAYBOOK_MODES as readonly unknown[]).includes(stored) ? (stored as PlaybookMode) : "draft";
+    }
+    return Object.freeze({ ...policy, ...(mode === undefined ? {} : { mode }), connectors: Object.freeze([...new Set(connectors)]) });
   }
 
   /** Whether session `id` started as a dry run: its `session_dry_run` event, written with its row. */

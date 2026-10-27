@@ -1,8 +1,9 @@
 // The Playwright Electron smoke (phase 5 foundation, Criterion 6): the built
 // app opens its window against the fixture kernel and shows the sidebar's
-// five entries; with no kernel answering it shows the "kernel unreachable"
-// band; with no api.json at all it shows the setup state. Run `npm run build`
-// first (`npm run e2e` launches dist-electron/main.cjs).
+// six entries (Integrations on ⌘5 since the phase 6 foundation); with no
+// kernel answering it shows the "kernel unreachable" band; with no api.json
+// at all it shows the setup state. Run `npm run build` first (`npm run e2e`
+// launches dist-electron/main.cjs).
 import { expect, test } from "@playwright/test";
 import type { ElectronApplication, Page } from "@playwright/test";
 import { appEnv, startFixtureKernel, tempDataDir, unreachableDataDir } from "./fixture-kernel";
@@ -24,13 +25,15 @@ test.afterEach(async () => {
   fixture = undefined;
 });
 
-test("against the fixture kernel, the window shows the sidebar's five entries and no band", async () => {
+test("against the fixture kernel, the window shows the sidebar's six entries, Integrations on ⌘5, and no band", async () => {
   fixture = await startFixtureKernel();
   const page = await launch(fixture.env);
   const sidebar = page.getByTestId("sidebar");
-  for (const entry of ["Chat", "Team", "Approvals", "Sessions"]) {
+  for (const entry of ["Chat", "Team", "Approvals", "Sessions", "Integrations"]) {
     await expect(sidebar.getByRole("button", { name: new RegExp(`^${entry}`) })).toBeVisible();
   }
+  // The screen entries in order, each with its shortcut: Integrations is the fifth, on ⌘5.
+  await expect(sidebar.getByRole("navigation", { name: "Screens" }).getByRole("button")).toHaveText(["Chat⌘1", "Team⌘2", "Approvals⌘3", "Sessions⌘4", "Integrations⌘5"]);
   await expect(sidebar.getByRole("heading", { name: "Crew" })).toBeVisible();
   // The main process called the fixture (with the token, which the fixture checks before routing).
   await expect.poll(() => fixture?.requests.some((r) => r.method === "GET" && r.path === "/status")).toBe(true);

@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import type { WebSocket } from "ws";
-import type { EventFrame, RouteKey, StatusBody } from "../src/api/contract";
+import type { ConnectorReposResponse, ConnectorsResponse, DraftsResponse, EventFrame, RouteKey, StatusBody } from "../src/api/contract";
 
 /** The fixture's token: the kernel's shape (64 lowercase hex characters), never a real one. */
 export const FIXTURE_TOKEN = "0123456789abcdef".repeat(4);
@@ -42,7 +42,7 @@ export interface FixtureAnswer {
 export type FixtureRoute = FixtureAnswer | ((req: FixtureRequest) => FixtureAnswer | Promise<FixtureAnswer>);
 
 export interface FixtureKernelOptions {
-  /** Keyed `"<METHOD> <path>"` as in `CONTRACT_ROUTES`; merged over the defaults (`GET /status`). */
+  /** Keyed `"<METHOD> <path>"` as in `CONTRACT_ROUTES`; merged over the defaults (`GET /status`, and phase 6's empty `GET /connectors`, `GET /connectors/github/repos` and `GET /drafts`). */
   readonly routes?: Partial<Record<RouteKey, FixtureRoute>>;
   /** The `events` rows the feed serves, by id. */
   readonly events?: readonly EventFrame[];
@@ -81,8 +81,17 @@ export function cannedStatus(overrides: Partial<StatusBody> = {}): StatusBody {
   };
 }
 
+/**
+ * Every spec's baseline: a kernel at rest, and phase 6's read routes answering
+ * empty (nothing connected, no repos, no drafts), so the Integrations screen
+ * (item 11) and the draft cards (item 12) add only their own
+ * `app/e2e/fixtures/<screen>.ts`.
+ */
 const DEFAULT_ROUTES: Partial<Record<RouteKey, FixtureRoute>> = {
   "GET /status": () => ({ status: 200, body: cannedStatus() }),
+  "GET /connectors": () => ({ status: 200, body: { connectors: [] } satisfies ConnectorsResponse }),
+  "GET /connectors/github/repos": () => ({ status: 200, body: { repos: [], verified_at: null } satisfies ConnectorReposResponse }),
+  "GET /drafts": () => ({ status: 200, body: { drafts: [] } satisfies DraftsResponse }),
 };
 
 /** The app's environment for a data dir: the fixture's dir and token, nothing of the owner's. */

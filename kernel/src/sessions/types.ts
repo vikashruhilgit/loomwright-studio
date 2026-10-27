@@ -9,6 +9,8 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { AuthProvider, BaseEnv } from "../auth/types.js";
 import type { UsageTotals } from "../budget/types.js";
+import type { ConnectorKind } from "../integrations/types.js";
+import type { PlaybookMode } from "../playbooks/types.js";
 import type { Store } from "../store/store.js";
 import type { NeverCategory } from "./policy.js";
 
@@ -76,6 +78,19 @@ export interface ToolPolicy {
    * never held; the matching is phase 4 item 03's `boundaryDecision`.
    */
   readonly never?: readonly NeverCategory[];
+  /**
+   * The playbook's `playbooks.mode` (phase 6), for a playbook's session only;
+   * absent otherwise. Filled by the session manager alone, at start and at
+   * each resume (a caller's value is dropped). The policy does not read it
+   * yet (phase 6 item 07).
+   */
+  readonly mode?: PlaybookMode;
+  /**
+   * The connectors the owner granted the session's agent
+   * (`SessionManagerOptions.connectorsFor`; `[]` without it). Filled by the
+   * session manager alone, like `mode`. The policy does not read it yet.
+   */
+  readonly connectors?: readonly ConnectorKind[];
 }
 
 /** Every permission mode except `bypassPermissions`, which the kernel never sets (D5). */
@@ -540,6 +555,14 @@ export interface SessionManagerOptions {
    * `kernel_gate_error`. Absent: every such call is held as today.
    */
   readonly heldToolCheck?: HeldToolCheck;
+  /**
+   * The connectors the owner granted `agent` (phase 6; the kernel reads them
+   * from the agent's settings file). Asked at each start and resume; the
+   * answer becomes the session's `ToolPolicy.connectors` and the `mcpServers`
+   * factory's `connectors`. A throw grants none (fail closed: fewer tools).
+   * Absent: every session's grants are `[]`.
+   */
+  readonly connectorsFor?: (agent: string) => readonly ConnectorKind[];
 }
 
 /**
@@ -558,4 +581,6 @@ export interface McpServersContext {
   readonly sessionId: number;
   readonly agent: string | null;
   readonly task: number | null;
+  /** The session's connector grants (`ToolPolicy.connectors`): the factory offers a `requiresConnector` tool only for these. */
+  readonly connectors: readonly ConnectorKind[];
 }

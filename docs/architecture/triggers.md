@@ -11,6 +11,7 @@ Agents get three kernel tools. Their input is untrusted data, and every refusal 
 - **`kernel_trigger_register(kind, spec, tz?, action, text, idempotency_key)`** creates an enabled trigger owned by the calling session's agent (`created_by: agent`). A session that runs no named agent is refused. It returns `{id, next_fire_at}` (UTC), so the agent can tell the user exactly when the trigger will fire.
   - `kind: once`: `spec` is an ISO-8601 instant with an explicit `Z` or offset (`2026-10-14T17:00:00+05:30`), strictly in the future, and `tz` must be absent. The spec is stored as given.
   - `kind: cron`: `spec` is a 5-field expression and `tz` is an IANA zone name (`Asia/Kolkata`), stored as given. A bare offset such as `+05:30` is refused. An expression that never fires within eight years (`0 0 31 2 *`) is refused too.
+  - `kind: poll` (phase 6) is in `TRIGGER_KINDS` but refused `poll_not_implemented` until item 04, so no `poll` row exists yet; the same refusal comes from a playbook's trigger and from a re-schedule (`updateTriggerSpec`).
   - `action: notify` posts `text` as a notification. `action: wake_agent` queues `text` as a `message` to the owning agent (item 06 handles it). `text` is 1-2000 characters with no NUL, and the owning agent's name holds no NUL either: a `notify` text is a notification's body, which the notifications record refuses a NUL in ([notifications](notifications.md)). Either is refused as `invalid_input` before anything is written.
 - **`kernel_trigger_remove(id, idempotency_key)`** deletes a trigger the calling agent owns. It refuses another agent's trigger and one the owner turned off, because remove-then-re-register would undo the owner's off.
 - **`kernel_trigger_list()`** lists the calling agent's own triggers, enabled and disabled, in id order.
@@ -93,7 +94,7 @@ Every register, remove, fire, miss, toggle and re-schedule appends exactly one e
 
 These sets are closed in code (`kernel/src/triggers/store.ts`), not by SQL:
 
-- `kind`: `once`, `cron`
+- `kind`: `once`, `cron`, `poll` (`poll` refused `poll_not_implemented` until phase 6 item 04)
 - `action`: `notify`, `wake_agent`
 - `created_by`: `agent`, `owner`. Owner-created triggers come later; only agents create them now.
 - `enabled_changed_by`: `owner`, `agent`, or null until someone toggles it. A spent `once` keeps it.

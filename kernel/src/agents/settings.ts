@@ -1,5 +1,7 @@
 // Every agent's settings file, `<dataDir>/config/agents/<id>.json`: the model,
-// the permission mode, the tool policy and, for a crew member, (optional) the
+// the permission mode, the tool policy, (optional) the connector grants
+// (`connectors`, phase 6: which contributed tools marked `requiresConnector`
+// its sessions list) and, for a crew member, (optional) the
 // enforced `never` categories, limits and workspaces. Wright's file refuses
 // `never` and `workspaces` until an item applies them to Wright's sessions;
 // its `limits` are read (the budget applies `tokens_per_day` and
@@ -14,8 +16,9 @@
 // created here (its absence is `settings_missing`). A malformed file is a
 // refusal naming it and the field, never a rewrite.
 //
-// Imports only zod, `node:*`, `../protected-paths.ts` and the leaf
-// `../sessions/policy.ts` (for `NEVER_CATEGORIES`), plus `../brain/settings.ts`
+// Imports only zod, `node:*`, `../protected-paths.ts`, the leaf
+// `../sessions/policy.ts` (for `NEVER_CATEGORIES`), the types-and-lists
+// `../integrations/types.ts` (for `CONNECTOR_KINDS`), plus `../brain/settings.ts`
 // for Wright's first-run text and the size limit (a cycle used only at call
 // time: neither module reads the other's bindings at load). Never the Agent SDK, the session
 // manager or `kernel.ts` (the `studio` CLI loads this module).
@@ -24,6 +27,8 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { MAX_SETTINGS_BYTES, defaultWrightSettingsJson } from "../brain/settings.js";
+import { CONNECTOR_KINDS } from "../integrations/types.js";
+import type { ConnectorKind } from "../integrations/types.js";
 import { isInsidePath, isProtectedPath, protectedLocationsText } from "../protected-paths.js";
 import { NEVER_CATEGORIES } from "../sessions/policy.js";
 import type { NeverCategory } from "../sessions/policy.js";
@@ -64,6 +69,8 @@ const shape = {
   permission_mode: permissionMode,
   tool_policy: z.object(toolPolicyShape),
   never: z.array(z.enum(NEVER_CATEGORIES)).optional(),
+  // The owner's connector grants (edited in the file; `set` does not take them until phase 6 item 08).
+  connectors: z.array(z.enum(CONNECTOR_KINDS)).optional(),
   // Strict: a misspelt limit is refused, never silently unenforced.
   limits: z.object({ tokens_per_day: limit.optional(), sessions_at_once: limit.optional(), delegation_depth: limit.optional() }).strict().optional(),
   workspaces: z.array(z.string()).optional(),
@@ -89,7 +96,7 @@ export interface AgentLimits {
   readonly delegation_depth?: number;
 }
 
-/** Settings a session can start with. `never`, `limits` and `workspaces` are present only when the file sets them. */
+/** Settings a session can start with. `never`, `limits`, `workspaces` and `connectors` are present only when the file sets them. */
 export interface AgentSettings {
   readonly model: string;
   /** Recorded, not applied: the session manager has no effort option. */
@@ -102,6 +109,8 @@ export interface AgentSettings {
   readonly limits?: AgentLimits;
   /** Absolute folders, none inside a macOS-protected folder, the data dir or inside it, or containing it. */
   readonly workspaces?: readonly string[];
+  /** The connectors the owner granted this agent: its sessions list the contributed tools that require one of them. */
+  readonly connectors?: readonly ConnectorKind[];
 }
 
 export type AgentSettingsRefusal =
@@ -256,6 +265,7 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
       ...(s.never !== undefined ? { never: Object.freeze([...s.never]) } : {}),
       ...(s.limits !== undefined ? { limits: Object.freeze({ ...s.limits }) } : {}),
       ...(s.workspaces !== undefined ? { workspaces: Object.freeze([...s.workspaces]) } : {}),
+      ...(s.connectors !== undefined ? { connectors: Object.freeze([...s.connectors]) } : {}),
     },
   };
 }

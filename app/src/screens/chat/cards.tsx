@@ -181,8 +181,19 @@ function Field({ label, value, setBy, mono = false }: { readonly label: string; 
   );
 }
 
-/** The owner-settable policy fields, by the kernel's own names (`PLAYBOOK_POLICY_FIELDS`, kernel/src/playbooks/store.ts). */
+/**
+ * The owner-settable policy fields the card edits, by the kernel's own names. With
+ * `READ_ONLY_POLICY_FIELDS` they are exactly the kernel's `PLAYBOOK_POLICY_FIELDS`
+ * (kernel/src/playbooks/store.ts), in its order; kernel/test/console-contract.test.ts
+ * reads this file as text and pins that.
+ */
 export const POLICY_FIELDS = ["dedupe_key", "priority", "model", "token_limit"] as const;
+/**
+ * Kernel policy fields the card shows but does not edit. `mode`: phase 6 accepts only
+ * `draft` (the kernel refuses `live` with `live_mode_not_in_phase_6`), so there is
+ * nothing to choose yet.
+ */
+export const READ_ONLY_POLICY_FIELDS = ["mode"] as const;
 export type PolicyField = (typeof POLICY_FIELDS)[number];
 
 /** What the Model row reads with no model: the kernel refuses a dry run without one. */
@@ -493,6 +504,8 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
             </dd>
           </Fragment>
         ))}
+        {/* `mode` (READ_ONLY_POLICY_FIELDS): only `draft` is accepted in phase 6, so it is shown, not edited. */}
+        <Field label="Mode" value={playbook.mode} setBy={playbook.mode_set_by} />
         {/* Not owner-settable (`PLAYBOOK_POLICY_FIELDS` has no such field): read-only. */}
         <Field label="API-key fallback" value={playbook.api_key_fallback_json ?? "not set"} setBy={playbook.api_key_fallback_set_by} mono />
       </dl>

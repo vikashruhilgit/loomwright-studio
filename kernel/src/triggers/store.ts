@@ -68,8 +68,13 @@ import type { Store } from "../store/store.js";
 import { canonicalZone, checkTimeZone, nextCronFire, parseCron, scheduleIdentity } from "./cron.js";
 import type { CronSchedule } from "./cron.js";
 
-/** `triggers.kind`. */
-export const TRIGGER_KINDS = ["once", "cron"] as const;
+/**
+ * `triggers.kind`. `poll` (phase 6: list a source on an interval) is named so
+ * every closed set derived from this list carries it, and refused
+ * `poll_not_implemented` on every write until phase 6 item 04 lands, so no
+ * `poll` row exists yet.
+ */
+export const TRIGGER_KINDS = ["once", "cron", "poll"] as const;
 export type TriggerKind = (typeof TRIGGER_KINDS)[number];
 
 /** `triggers.action`: post the stored text as a notification, or queue it as a `message` to the owning agent. */
@@ -91,6 +96,9 @@ export type TriggerResult = (typeof TRIGGER_RESULTS)[number];
 /** The audit event kinds this feature appends (actor `kernel`), one per change. */
 export const TRIGGER_AUDIT_KINDS = ["trigger_registered", "trigger_removed", "trigger_fired", "trigger_missed", "trigger_toggled", "trigger_updated"] as const;
 
+/** Why a `poll` trigger is refused (`poll_not_implemented`): the code leads, so a re-wrapped refusal still names it. */
+const POLL_NOT_IMPLEMENTED = "poll_not_implemented: a poll trigger is not available yet; use kind once or cron";
+
 /** Longest stored text (a notification body or a message). */
 export const MAX_TRIGGER_TEXT = 2_000;
 
@@ -101,8 +109,11 @@ export const MAX_TRIGGER_TEXT = 2_000;
  */
 export const MAX_COUNTED_INSTANTS = 10_000;
 
-/** Why a trigger operation was refused; `message` names the problem for the agent or the owner. */
-export type TriggerErrorCode = "invalid_spec" | "invalid_input" | "not_found" | "not_owner" | "owner_off" | "needs_confirmation";
+/**
+ * Why a trigger operation was refused; `message` names the problem for the agent or the owner.
+ * `poll_not_implemented`: a `poll` trigger was asked for before phase 6 item 04.
+ */
+export type TriggerErrorCode = "invalid_spec" | "invalid_input" | "not_found" | "not_owner" | "owner_off" | "needs_confirmation" | "poll_not_implemented";
 
 export class TriggerError extends Error {
   readonly code: TriggerErrorCode;
@@ -276,7 +287,7 @@ interface CheckedSpec {
  * and an IANA `tz`, with a next fire within eight years. Throws
  * `TriggerError("invalid_spec")` naming the problem.
  */
-function checkSpec(kind: TriggerKind, spec: string, tz: string | undefined, now: Date): CheckedSpec {
+function checkSpec(kind: Exclude<TriggerKind, "poll">, spec: string, tz: string | undefined, now: Date): CheckedSpec {
   const invalid = (why: string): TriggerError => new TriggerError("invalid_spec", why);
   if (kind === "once") {
     if (tz !== undefined) throw invalid("a once spec carries its own offset (2026-10-14T17:00:00+05:30); tz is for cron");
@@ -395,6 +406,7 @@ export function registerTrigger(store: Store, params: RegisterParams, now: Date)
   if (typeof params.agent !== "string" || params.agent === "") throw new TriggerError("invalid_input", "a trigger needs an owning agent");
   if (params.agent.includes("\u0000")) throw new TriggerError("invalid_input", "a trigger's owning agent must not contain a NUL character");
   if (!isOneOf(TRIGGER_KINDS, params.kind)) throw new TriggerError("invalid_input", `kind must be one of ${TRIGGER_KINDS.join(", ")}`);
+  if (params.kind === "poll") throw new TriggerError("poll_not_implemented", POLL_NOT_IMPLEMENTED);
   if (!isOneOf(TRIGGER_ACTIONS, params.action)) throw new TriggerError("invalid_input", `action must be one of ${TRIGGER_ACTIONS.join(", ")}`);
   const text = checkText(params.text);
   const playbook = checkPlaybook(params.playbook);
@@ -483,6 +495,7 @@ export interface SpecUpdated {
  */
 export function updateTriggerSpec(store: Store, params: UpdateSpecParams, now: Date): SpecUpdated {
   if (!isOneOf(TRIGGER_KINDS, params.kind)) throw new TriggerError("invalid_input", `kind must be one of ${TRIGGER_KINDS.join(", ")}`);
+  if (params.kind === "poll") throw new TriggerError("poll_not_implemented", POLL_NOT_IMPLEMENTED);
   const checked = checkSpec(params.kind, params.spec, params.tz, now);
   const at = now.toISOString();
   return store.transaction((): SpecUpdated => {

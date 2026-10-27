@@ -94,6 +94,8 @@ function playbookListing(id: number, slug: string): PlaybookListing {
     token_limit_set_by: null,
     api_key_fallback_json: null,
     api_key_fallback_set_by: null,
+    mode: "draft",
+    mode_set_by: null,
     created_at: "2026-10-22T08:00:00.000Z",
     updated_at: "2026-10-22T08:00:00.000Z",
     trigger_id: null,
