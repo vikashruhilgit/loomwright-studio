@@ -17,6 +17,7 @@ import { engageKillSwitch, releaseKillSwitch } from "../src/api/index.js";
 import { engagePause } from "../src/console/pause.js";
 import type { GitHubClient, GitHubFailure, GitHubPull, GitHubPullFilters, GitHubPullSummary, GitHubResponse } from "../src/integrations/types.js";
 import { EventLoop } from "../src/loop/loop.js";
+import { InvalidNotificationError } from "../src/notifications/record.js";
 import { createPlaybook } from "../src/playbooks/store.js";
 import { Store } from "../src/store/index.js";
 import { formatTriggers } from "../src/triggers/cli.js";
@@ -39,6 +40,18 @@ vi.mock("../src/loop/queue.js", async (importOriginal) => {
     },
   };
 });
+// The notification record refusing the connector_missing row: `recordNotification` runs as shipped unless a test sets the hook.
+const notifyHooks = vi.hoisted(() => ({ beforeRecord: undefined as undefined | (() => void) }));
+vi.mock("../src/notifications/record.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/notifications/record.js")>();
+  return {
+    ...actual,
+    recordNotification: (...args: Parameters<typeof actual.recordNotification>) => {
+      notifyHooks.beforeRecord?.();
+      return actual.recordNotification(...args);
+    },
+  };
+});
 
 const NOW = new Date("2026-10-27T10:00:00.000Z");
 const INTERVAL = 300;
@@ -53,6 +66,7 @@ beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "studio-triggers-poll-"));
   hooks.beforeEnqueue = undefined;
   hooks.calls = 0;
+  notifyHooks.beforeRecord = undefined;
 });
 
 afterEach(() => {
@@ -707,6 +721,61 @@ describe("the triggers due work (AC10b)", () => {
     expect(listCalls(github)).toBe(1);
     expect(queued(store)).toEqual([]);
     expect(triggerRow(store, triggerId).next_fire_at).toBeNull();
+  });
+
+  it("a connector_missing step whose notification the record refuses parks the poll (no next fire), as a time-based trigger is: reported once, never every tick", async () => {
+    const store = open();
+    connect(store);
+    const { triggerId } = pollPlaybook(store);
+    setConnector(store, "disconnected");
+    notifyHooks.beforeRecord = () => {
+      throw new InvalidNotificationError("refused by the test");
+    };
+    const github = new FakeGitHubClient({ pulls: { "o/r": [pull(1)] } });
+    await expect(firePollTriggers(store, github, AFTER_T1)).rejects.toThrow(/invalid notification: refused by the test \(parked: no next fire\)/);
+    // The step rolled back: no notification, no miss, last_result unchanged; the instant is cleared, not moved.
+    expect(triggerRow(store, triggerId)).toMatchObject({ enabled: 1, next_fire_at: null, last_result: null });
+    expect(count(store, "SELECT count(*) FROM notifications")).toBe(0);
+    expect(events(store, "trigger_missed")).toEqual([]);
+    expect(await firePollTriggers(store, github, new Date(plus(AFTER_T1, INTERVAL + 1)))).toEqual([]);
+    expect(listCalls(github)).toBe(0);
+  });
+
+  /** Moves the trigger to `ownerNext` (the owner's off/on) just before the first statement starting with `prefix` is prepared. */
+  function ownerMovesBefore(store: Store, prefix: string, triggerId: number, ownerNext: string): void {
+    const prepare = store.prepare.bind(store);
+    let moved = false;
+    vi.spyOn(store, "prepare").mockImplementation(((sql: string) => {
+      if (!moved && sql.startsWith(prefix)) {
+        moved = true;
+        prepare("UPDATE triggers SET next_fire_at = ? WHERE id = ?").run(ownerNext, triggerId);
+      }
+      return prepare(sql);
+    }) as typeof store.prepare);
+  }
+
+  it("the move after a throw is guarded on the instant: a row the owner moved meanwhile keeps the owner's next fire", async () => {
+    const store = open();
+    connect(store);
+    const { playbookId, triggerId } = pollPlaybook(store);
+    store.prepare("UPDATE playbooks SET priority = 'bogus' WHERE id = ?").run(playbookId);
+    const ownerNext = "2026-10-27T12:00:00.000Z";
+    ownerMovesBefore(store, "UPDATE triggers SET next_fire_at = ? WHERE id = ?", triggerId, ownerNext);
+    await expect(firePollTriggers(store, new FakeGitHubClient({ pulls: { "o/r": [pull(1)] } }), AFTER_T1)).rejects.toThrow(/next fire/);
+    vi.restoreAllMocks();
+    expect(triggerRow(store, triggerId).next_fire_at).toBe(ownerNext);
+  });
+
+  it("the park after a throw is guarded on the instant: a row the owner moved meanwhile is not parked", async () => {
+    const store = open();
+    connect(store);
+    const { triggerId } = pollPlaybook(store);
+    store.prepare("UPDATE triggers SET spec_json = ? WHERE id = ?").run(spec({ interval_seconds: Number.MAX_SAFE_INTEGER }), triggerId);
+    const ownerNext = "2026-10-27T12:00:00.000Z";
+    ownerMovesBefore(store, "UPDATE triggers SET next_fire_at = NULL WHERE id = ?", triggerId, ownerNext);
+    await expect(firePollTriggers(store, new FakeGitHubClient({ pulls: { "o/r": [pull(1)] } }), AFTER_T1)).rejects.toThrow(/parked: no next fire/);
+    vi.restoreAllMocks();
+    expect(triggerRow(store, triggerId).next_fire_at).toBe(ownerNext);
   });
 
   it("a failing poll never skips the cron fire either", async () => {
