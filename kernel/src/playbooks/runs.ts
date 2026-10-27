@@ -8,8 +8,13 @@
 //   verbs   studio playbooks run <id>  (calls only its route)
 //
 // A playbook's message is a `message` event whose payload carries `playbook`:
-// `{agent, playbook, version, trigger_id?, scheduled_at}`, at the playbook's
-// priority, `sourceRef` `playbook:<id>:<scheduled_at>`. The brain's `message`
+// `{agent, playbook, version, trigger_id?, scheduled_at, item?}`, at the
+// playbook's priority, `sourceRef` `playbook:<id>:<scheduled_at>`. A message
+// with an `item` (a polled item, phase 6 item 05: `./items.ts`) is its own
+// run: its row records the item, the owner's key may name `item.id` /
+// `item.revision`, a skip appends one `poll_item_skipped` event, the item
+// reaches the prompt only wrapped as data, and a GitHub item whose agent
+// lacks the grant or a usable connector parks (`parked`, `needs_github`). The brain's `message`
 // handler hands it to `handlePlaybookMessage` (this part claims no handler:
 // the brain owns `message`), which runs it under the playbook's own policy
 // (invariant 1): the version's model, never Wright's settings model; the
@@ -22,8 +27,9 @@
 //      (a registered crew member that is `off`: one notification, recorded in
 //      the step so a redelivery records none more), agent not routed (neither
 //      `wright` nor a registered crew member), model unset, dedupe spec
-//      invalid), skip a duplicate, and insert
-//      exactly one run row (the refusal or skip, or `running`). Every refusal
+//      invalid), skip a duplicate (an item's: one `poll_item_skipped`), park
+//      a GitHub item that needs GitHub (one notification per outage), and
+//      insert exactly one run row (the refusal, skip or park, or `running`). Every refusal
 //      is a return that writes its row inside the step, never a throw (a throw
 //      rolls the step back). A redelivery replays the stored `{run_id,
 //      outcome}` and never evaluates b-e again, so one event writes one row.
@@ -37,8 +43,8 @@
 //      `{session_id: null, fail}`; then the
 //      live row again (the stored `start` may be stale: the event was parked,
 //      or the kernel died after step b-f committed): not enabled or edited
-//      since, or a same-key run ended `done` meanwhile, stores
-//      `{session_id: null, skip}`; h. the prompt (`playbookPrompt` for
+//      since, or a same-key run ended `done` meanwhile (an item's: one
+//      `poll_item_skipped`, in the step), stores `{session_id: null, skip}`; h. the prompt (`playbookPrompt` for
 //      Wright, `crewPlaybookPrompt` for a crew member: its own memory files,
 //      never Wright's); i. the session, as the owning agent, cwd its memory
 //      folder, with `sessions.playbook` and `playbook_version`, stored as
@@ -59,7 +65,8 @@
 // (never `../brain/index.js` or `handler.js`: no runtime cycle), the agents
 // feature's leaf modules (`../agents/registry.js`, `settings.js`,
 // `memory.js`, `types.js`: never its index), `../notifications/record.js`
-// and this feature's files; never the Agent SDK or the session manager.
+// and this feature's files (`./items.js`, `./store.js`, `./types.js`); never
+// the Agent SDK or the session manager.
 import { agentMemoryDir, ensureAgentMemoryFiles } from "../agents/memory.js";
 import { getAgent, isRoutable } from "../agents/registry.js";
 import { readAgentSettings } from "../agents/settings.js";
@@ -76,15 +83,21 @@ import { recordNotification } from "../notifications/record.js";
 import type { SessionHandle, SessionStatus } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { wallClock } from "../triggers/cron.js";
+import { appendItemSkipped, isGithubItem, itemPromptBlock, needsGithub, notifyNeedsGithub, runItemOf } from "./items.js";
+import type { RunItem } from "./items.js";
 import { getPlaybook } from "./store.js";
 import { DEDUPE_KEY_FIELDS, PLAYBOOK_RUN_KINDS } from "./types.js";
 import type { DedupeKeyField, PlaybookPart, PlaybookPriority, PlaybookRunKind, PlaybookVerb } from "./types.js";
 
 /**
  * `playbook_runs.status` (closed here, not in `./types.ts`; migration 13 has
- * no SQL CHECK): every write below is checked against it.
+ * no SQL CHECK): every write below is checked against it. `parked` is a
+ * GitHub item's run whose agent lacked the grant or a usable connector
+ * (`needs_github`): terminal, and never a duplicate, so the next poll's
+ * message for the item runs. (An admission-parked run is another thing: it
+ * stays `running`, with `parked` in its `result_json`.)
  */
-export const PLAYBOOK_RUN_STATUSES = Object.freeze(["running", "done", "failed", "skipped_duplicate", "skipped_not_enabled"] as const);
+export const PLAYBOOK_RUN_STATUSES = Object.freeze(["running", "done", "failed", "skipped_duplicate", "skipped_not_enabled", "parked"] as const);
 export type PlaybookRunStatus = (typeof PLAYBOOK_RUN_STATUSES)[number];
 
 /** A playbook event's `sourceRef`: the queue keeps one row per playbook and instant. */
@@ -102,6 +115,8 @@ export interface DedupeKeyInput {
   readonly triggerId: number | null;
   /** The event's `scheduled_at` (ISO-8601). */
   readonly scheduledAt: string;
+  /** The polled item the event carries (`item.id` is its ref); absent for a per-instant message. */
+  readonly item?: Pick<RunItem, "ref" | "revision">;
 }
 
 export type DedupeKeyResult = { readonly ok: true; readonly key: string } | { readonly ok: false; readonly error: "dedupe_spec_invalid" | "dedupe_zone_invalid" };
@@ -124,13 +139,14 @@ function localDate(iso: string, timeZone: string): string | undefined {
  * `dedupe_key_spec`, a JSON array of distinct `DEDUPE_KEY_FIELDS`) evaluated
  * field by field, in spec order (`playbook.id`, `playbook.version`,
  * `trigger.id` (null for a run now), `trigger.scheduled_at`, `date`: the
- * calendar date of `scheduled_at` in `timeZone`), as `JSON.stringify` of that
- * object. Pure: the event's values only, never the clock. A spec that is not
- * such an array is `dedupe_spec_invalid`; a zone the runtime does not know is
- * `dedupe_zone_invalid`. A spec naming a polled item's field (`item.id`,
- * `item.revision`) is `dedupe_spec_invalid` too: no event carries an item yet
- * (phase 6 item 05 adds it), and a key that silently left the field out would
- * dedupe every fire as one.
+ * calendar date of `scheduled_at` in `timeZone`, `item.id`: the item's ref,
+ * `item.revision`: its revision), as `JSON.stringify` of that object. Pure:
+ * the event's values only, never the clock; only the spec's fields, never an
+ * item field the spec leaves out. A spec that is not such an array is
+ * `dedupe_spec_invalid`; a zone the runtime does not know is
+ * `dedupe_zone_invalid`. A spec naming an item field for an event that
+ * carries no item is `dedupe_spec_invalid` too: a key that silently left the
+ * field out would dedupe every fire as one.
  */
 export function evaluateDedupeKey(spec: string, input: DedupeKeyInput, timeZone: string): DedupeKeyResult {
   let fields: unknown;
@@ -167,7 +183,10 @@ export function evaluateDedupeKey(spec: string, input: DedupeKeyInput, timeZone:
       case "item.id":
       case "item.revision":
         // The event carries no item: refused, never left out of the key.
-        return { ok: false, error: "dedupe_spec_invalid" };
+        if (input.item === undefined) return { ok: false, error: "dedupe_spec_invalid" };
+        if (field === "item.id") key[field] = input.item.ref;
+        else key[field] = input.item.revision;
+        break;
     }
   }
   return { ok: true, key: JSON.stringify(key) };
@@ -187,6 +206,8 @@ interface NewRun {
   readonly status: PlaybookRunStatus;
   readonly dedupeKey: string | null;
   readonly result: Record<string, unknown> | null;
+  /** The event's item: its ref and revision are recorded on every row of an item event. */
+  readonly item: RunItem | null;
 }
 
 /** Insert one run row; a terminal one gets `ended_at`. Returns its id. */
@@ -196,8 +217,21 @@ function insertRun(store: Store, run: NewRun, now: Date): number {
   const at = now.toISOString();
   return Number(
     store
-      .prepare("INSERT INTO playbook_runs (playbook, version, kind, status, dedupe_key, result_json, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(run.playbook, run.version, run.kind, status, run.dedupeKey, run.result === null ? null : JSON.stringify(run.result), at, status === "running" ? null : at)
+      .prepare(
+        "INSERT INTO playbook_runs (playbook, version, kind, status, dedupe_key, result_json, started_at, ended_at, item_ref, item_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        run.playbook,
+        run.version,
+        run.kind,
+        status,
+        run.dedupeKey,
+        run.result === null ? null : JSON.stringify(run.result),
+        at,
+        status === "running" ? null : at,
+        run.item?.ref ?? null,
+        run.item?.revision ?? null,
+      )
       .lastInsertRowid,
   );
 }
@@ -253,6 +287,8 @@ interface PlaybookEvent {
   readonly triggerId: number | null;
   readonly scheduledAt: string;
   readonly kind: "fire" | "run_now";
+  /** The polled item the message is about (`./items.ts`), or `null` for a per-instant message. */
+  readonly item: RunItem | null;
 }
 
 function isPositiveId(value: unknown): value is number {
@@ -268,7 +304,8 @@ function playbookEventOf(eventId: number, payload: Readonly<Record<string, unkno
   if (typeof scheduledAt !== "string" || !Number.isFinite(Date.parse(scheduledAt))) throw bad("scheduled_at, an ISO-8601 instant");
   if (triggerId !== undefined && !isPositiveId(triggerId)) throw bad("trigger_id, absent or a positive integer");
   if (typeof agent !== "string") throw bad("agent, a string");
-  return { agent, playbook, version, triggerId: triggerId ?? null, scheduledAt, kind: triggerId === undefined ? "run_now" : "fire" };
+  const item = runItemOf(eventId, payload.item);
+  return { agent, playbook, version, triggerId: triggerId ?? null, scheduledAt, kind: triggerId === undefined ? "run_now" : "fire", item };
 }
 
 /** The fields of a version snapshot (the full row at that version) a run reads. */
@@ -332,13 +369,18 @@ interface LateSkip {
  * `start-session` step): the `start` stored by `playbook-run` may be stale.
  * The playbook not `enabled`, or at another version, is `skipped_not_enabled`
  * with the live `{status, version}`; a same-key run that ended `done` since is
- * `skipped_duplicate`. `undefined` when the session may start.
+ * `skipped_duplicate` (an item's appends its one `poll_item_skipped` here, in
+ * the step, so a redelivery appends none more). `undefined` when the session
+ * may start.
  */
-function lateSkip(store: Store, e: PlaybookEvent, runId: number, dedupeKey: string | null): LateSkip | undefined {
+function lateSkip(store: Store, e: PlaybookEvent, runId: number, dedupeKey: string | null, now: Date): LateSkip | undefined {
   const live = getPlaybook(store, e.playbook);
   if (live === undefined) return { status: "skipped_not_enabled", result: { status: null, version: null } };
   if (live.status !== "enabled" || live.version !== e.version) return { status: "skipped_not_enabled", result: { status: live.status, version: live.version } };
-  if (dedupeKey !== null && doneWithKey(store, e.playbook, dedupeKey, runId)) return { status: "skipped_duplicate", result: null };
+  if (dedupeKey !== null && doneWithKey(store, e.playbook, dedupeKey, runId)) {
+    if (e.item !== null) appendItemSkipped(store, e.playbook, e.item, dedupeKey, now);
+    return { status: "skipped_duplicate", result: null };
+  }
   return undefined;
 }
 
@@ -370,7 +412,7 @@ function notifyAgentOff(store: Store, e: PlaybookEvent, slug: string, now: Date)
  */
 function decideRun(store: Store, e: PlaybookEvent, timeZone: string, now: Date): RunDecision {
   const row = (status: Exclude<PlaybookRunStatus, "running" | "done">, result: Record<string, unknown> | null, dedupeKey: string | null = null): RunDecision => ({
-    run_id: insertRun(store, { playbook: e.playbook, version: e.version, kind: e.kind, status, dedupeKey, result }, now),
+    run_id: insertRun(store, { playbook: e.playbook, version: e.version, kind: e.kind, status, dedupeKey, result, item: e.item }, now),
     outcome: status,
   });
 
@@ -393,16 +435,30 @@ function decideRun(store: Store, e: PlaybookEvent, timeZone: string, now: Date):
   if (!isRoutable(store, e.agent)) return row("failed", { error: "agent_not_routed" });
   // The kernel never picks a model.
   if (snapshot.model === null) return row("failed", { error: "model_unset" });
-  // e. The owner's dedupe key: only a fire or run-now that ended `done` counts.
+  // e. The owner's dedupe key: only a fire or run-now that ended `done` counts. The item's
+  // fields are in it only when the spec names them (the kernel adds none).
   let dedupeKey: string | null = null;
   if (snapshot.dedupe_key_spec !== null) {
-    const evaluated = evaluateDedupeKey(snapshot.dedupe_key_spec, { playbook: e.playbook, version: e.version, triggerId: e.triggerId, scheduledAt: e.scheduledAt }, timeZone);
+    const input = { playbook: e.playbook, version: e.version, triggerId: e.triggerId, scheduledAt: e.scheduledAt, ...(e.item !== null ? { item: e.item } : {}) };
+    const evaluated = evaluateDedupeKey(snapshot.dedupe_key_spec, input, timeZone);
     if (!evaluated.ok) return row("failed", { error: evaluated.error });
     dedupeKey = evaluated.key;
-    if (doneWithKey(store, e.playbook, dedupeKey, null)) return row("skipped_duplicate", null, dedupeKey);
+    if (doneWithKey(store, e.playbook, dedupeKey, null)) {
+      if (e.item !== null) appendItemSkipped(store, e.playbook, e.item, dedupeKey, now);
+      return row("skipped_duplicate", null, dedupeKey);
+    }
+  }
+  // A GitHub item whose agent lacks the grant or a usable connector parks (terminal, never a
+  // duplicate: the next poll's message runs once both are there), one notification per outage.
+  if (e.item !== null && isGithubItem(e.item)) {
+    const park = needsGithub(store, e.agent);
+    if (park !== undefined) {
+      notifyNeedsGithub(store, { playbook: e.playbook, slug: snapshot.slug, agent: e.agent, item: e.item, park }, now);
+      return row("parked", { ...park }, dedupeKey);
+    }
   }
   // f. The run.
-  const runId = insertRun(store, { playbook: e.playbook, version: e.version, kind: e.kind, status: "running", dedupeKey, result: null }, now);
+  const runId = insertRun(store, { playbook: e.playbook, version: e.version, kind: e.kind, status: "running", dedupeKey, result: null, item: e.item }, now);
   return { run_id: runId, outcome: "start", slug: snapshot.slug, intent: snapshot.intent, model: snapshot.model, dedupe_key: dedupeKey };
 }
 
@@ -414,6 +470,8 @@ export interface PlaybookPromptInput {
   readonly intent: string;
   readonly kind: "fire" | "run_now";
   readonly scheduledAt: string;
+  /** The polled item the run is about, shown wrapped as data (`itemPromptBlock`); absent or `null` for a per-instant run. */
+  readonly item?: RunItem | null;
   readonly loomwright: LoomwrightSummary;
   readonly now: Date;
   readonly timeZone: string;
@@ -422,14 +480,17 @@ export interface PlaybookPromptInput {
 /**
  * The prompt a playbook session starts with: the playbook's heading and its
  * intent (the owner approved this exact version when enabling it; any edit
- * returns it to draft), then Wright's context (`buildContext`) whose message is
- * a kernel-built line, wrapped as data like any message that is not the owner's.
+ * returns it to draft), then the item block when the run is an item's (the
+ * item wrapped as data from its ref), then Wright's context (`buildContext`)
+ * whose message is a kernel-built line, wrapped as data like any message that
+ * is not the owner's.
  */
 export function playbookPrompt(input: PlaybookPromptInput): string {
   const heading = `## Playbook ${input.slug} (#${input.id}, version ${input.version}, enabled by the owner)\n\n`;
   const instruction = `Run this playbook. Its intent is your instruction for this session:\n\n${defuseWrapperTags(input.intent)}\n\n`;
+  const item = input.item == null ? "" : itemPromptBlock(input.item);
   const text = `Playbook ${input.slug} ${input.kind === "fire" ? `fired for ${input.scheduledAt}` : "run now by the owner"}.`;
-  return `${heading}${instruction}${buildContext({ dataDir: input.dataDir, source: `playbook:${input.id}`, text, loomwright: input.loomwright, now: input.now, timeZone: input.timeZone })}`;
+  return `${heading}${instruction}${item}${buildContext({ dataDir: input.dataDir, source: `playbook:${input.id}`, text, loomwright: input.loomwright, now: input.now, timeZone: input.timeZone })}`;
 }
 
 /** A crew member's own memory files, in the order its playbook prompt shows them. */
@@ -447,15 +508,15 @@ function crewCutNote(name: string, n: number, atLeast: boolean, why: string): st
 
 /**
  * The prompt a crew member's playbook session starts with: the same heading
- * and instruction as `playbookPrompt` (the intent, wrapper tags defused), then
- * the member's OWN memory files (`memory/<agent>/role.md`, `preferences.md`,
+ * and instruction as `playbookPrompt` (the intent, wrapper tags defused) and,
+ * for an item's run, the same item block, then the member's OWN memory files (`memory/<agent>/role.md`, `preferences.md`,
  * `people.md`, `lessons.md`, each cut at `MAX_MEMORY_FILE_CHARS`; a missing or
  * unreadable one is noted), then `## Now` with the local time and the
  * kernel-built line (`Playbook <slug> fired for <scheduled_at>.` or `… run now
  * by the owner.`: kernel text, so not wrapped). It never calls `buildContext`
  * and never reads `memory/wright`: Wright's memory is not the member's. At most
- * `MAX_CONTEXT_CHARS` characters: the heading, instruction, time and line are
- * always kept; the memory sections fill the rest in order, and the first one
+ * `MAX_CONTEXT_CHARS` characters: the heading, instruction, item block, time
+ * and line are always kept; the memory sections fill the rest in order, and the first one
  * that does not fit is cut (the ones after it dropped), each with a note.
  * Throws `TypeError` for an id that is not a crew member's (never reached:
  * the run checks the agent is registered first).
@@ -464,6 +525,7 @@ export function crewPlaybookPrompt(input: CrewPlaybookPromptInput): string {
   if (!isValidAgentId(input.agent)) throw new TypeError(`agent ${JSON.stringify(input.agent)} is not a crew member's id; a crew playbook prompt reads only a crew member's memory`);
   const heading = `## Playbook ${input.slug} (#${input.id}, version ${input.version}, enabled by the owner)\n\n`;
   const instruction = `Run this playbook. Its intent is your instruction for this session:\n\n${defuseWrapperTags(input.intent)}\n\n`;
+  const item = input.item == null ? "" : itemPromptBlock(input.item);
   const line = `Playbook ${input.slug} ${input.kind === "fire" ? `fired for ${input.scheduledAt}` : "run now by the owner"}.`;
   const tail = `## Now\n\n${localTimeLine(input.now, input.timeZone)}\n\n${line}\n`;
   const sections = CREW_PROMPT_FILES.map((file) => {
@@ -475,7 +537,7 @@ export function crewPlaybookPrompt(input: CrewPlaybookPromptInput): string {
     return { name, body };
   });
   const render = (name: string, body: string): string => `## ${name}\n\n${body}\n`;
-  const budget = MAX_CONTEXT_CHARS - heading.length - instruction.length - tail.length - CREW_NOTE_RESERVE;
+  const budget = MAX_CONTEXT_CHARS - heading.length - instruction.length - item.length - tail.length - CREW_NOTE_RESERVE;
   const kept: string[] = [];
   const notes: string[] = [];
   let used = 0;
@@ -499,7 +561,7 @@ export function crewPlaybookPrompt(input: CrewPlaybookPromptInput): string {
     }
   }
   const noteText = notes.length === 0 ? "" : `${notes.join("\n")}\n`;
-  return `${heading}${instruction}${[kept.join("\n"), noteText, tail].filter((p) => p !== "").join("\n")}`;
+  return `${heading}${instruction}${item}${[kept.join("\n"), noteText, tail].filter((p) => p !== "").join("\n")}`;
 }
 
 /** What the brain's handler passes through: its clock, zone and Loomwright reader. */
@@ -596,7 +658,7 @@ async function startCrewSession(ctx: EventContext, deps: PlaybookRunDeps, c: Cre
   }
   const sessions = ctx.sessions;
   if (sessions === undefined) return { started: { session_id: null, fail: "no_session_manager" } };
-  const skip = lateSkip(store, e, c.runId, c.dedupeKey);
+  const skip = lateSkip(store, e, c.runId, c.dedupeKey, deps.now());
   if (skip !== undefined) return { started: { session_id: null, skip } };
   // h. The prompt: the member's own memory, never Wright's.
   const prompt = crewPlaybookPrompt({
@@ -608,6 +670,7 @@ async function startCrewSession(ctx: EventContext, deps: PlaybookRunDeps, c: Cre
     intent: c.intent,
     kind: e.kind,
     scheduledAt: e.scheduledAt,
+    item: e.item,
     now: deps.now(),
     timeZone: deps.timeZone(),
   });
@@ -673,7 +736,7 @@ export async function handlePlaybookMessage(ctx: EventContext, deps: PlaybookRun
       if (sessions === undefined) return { session_id: null, fail: "no_session_manager" };
       // The stored `start` may be stale (a parked event, or a crash after step b-f):
       // the live row is read again, and a skip is stored so a replay skips too.
-      const skip = lateSkip(store, e, runId, dedupeKey);
+      const skip = lateSkip(store, e, runId, dedupeKey, deps.now());
       if (skip !== undefined) return { session_id: null, skip };
       // h. The prompt.
       const prompt = playbookPrompt({
@@ -684,6 +747,7 @@ export async function handlePlaybookMessage(ctx: EventContext, deps: PlaybookRun
         intent: decision.intent ?? "",
         kind: e.kind,
         scheduledAt: e.scheduledAt,
+        item: e.item,
         loomwright: deps.loomwright(sessions),
         now: deps.now(),
         timeZone: deps.timeZone(),
