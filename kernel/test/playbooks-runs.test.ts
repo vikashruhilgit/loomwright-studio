@@ -984,7 +984,7 @@ describe("the prompt, the run statuses and the doc", () => {
   });
 
   it("pins the closed set of run statuses", () => {
-    expect(PLAYBOOK_RUN_STATUSES).toEqual(["running", "done", "failed", "skipped_duplicate", "skipped_not_enabled"]);
+    expect(PLAYBOOK_RUN_STATUSES).toEqual(["running", "done", "failed", "skipped_duplicate", "skipped_not_enabled", "parked"]);
     expect(Object.isFrozen(PLAYBOOK_RUN_STATUSES)).toBe(true);
   });
 

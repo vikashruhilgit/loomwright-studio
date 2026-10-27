@@ -75,9 +75,13 @@ export function defuseWrapperTags(text: string): string {
   return text.replace(/<(\/?)(untrusted-data)/gi, "&lt;$1$2");
 }
 
-/** A source as an attribute value: the kernel builds it, but a quote or angle bracket is still never passed through. */
+/**
+ * A source as an attribute value: the kernel builds it, but a quote, angle
+ * bracket, ampersand, whitespace or control character is still never passed
+ * through. `/` and `#` are kept, so an item's ref reads `github:<owner>/<repo>#<n>`.
+ */
 function attribute(source: string): string {
-  return source.replace(/[^A-Za-z0-9:_.-]/g, "_");
+  return source.replace(/[^A-Za-z0-9:_.#\/-]/g, "_");
 }
 
 export interface ContextInput {
@@ -105,6 +109,14 @@ function untrustedFrame(source: string): { readonly open: string; readonly close
 function wrapDefused(source: string, defused: string): string {
   const { open, close } = untrustedFrame(source);
   return `${open}${defused}${close}`;
+}
+
+/**
+ * `text` from `source` as data: its wrapper tags defused, then wrapped with
+ * the line saying it is data (the one wrapper every prompt uses).
+ */
+export function wrapUntrusted(source: string, text: string): string {
+  return wrapDefused(source, defuseWrapperTags(text));
 }
 
 interface Section {
