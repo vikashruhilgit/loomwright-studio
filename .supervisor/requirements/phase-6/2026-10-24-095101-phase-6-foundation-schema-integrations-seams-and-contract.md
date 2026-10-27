@@ -147,3 +147,9 @@ docs/UI.md
 docs/architecture/integrations.md
 docs/architecture/github-tools.md
 docs/architecture/draft-mode.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-27T11:48:07Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/142
