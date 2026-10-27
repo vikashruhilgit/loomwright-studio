@@ -16,6 +16,8 @@ import { agentSettingsPath, readAgentSettings } from "../src/agents/settings.js"
 import { SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
 import type { ContributedRoute, ContributedTool } from "../src/features/index.js";
 import {
+  CONNECTORS_HELP,
+  CONNECTORS_SUBCOMMAND,
   CONNECTOR_KINDS,
   CONNECTOR_STATUSES,
   INTEGRATIONS_NAME,
@@ -25,6 +27,7 @@ import {
   toolsForConnectors,
 } from "../src/integrations/index.js";
 import type { GitHubClient, GitHubPull, IntegrationsPart } from "../src/integrations/index.js";
+import { githubExpiryDueWork } from "../src/integrations/github/connector.js";
 import { DB_FILENAME, Store, migrations } from "../src/store/index.js";
 import type { Migration } from "../src/store/index.js";
 import { startKernel } from "../src/kernel.js";
@@ -158,16 +161,51 @@ describe("the integrations feature (AC2)", () => {
     expect(Object.isFrozen(INTEGRATIONS_PARTS)).toBe(true);
   });
 
-  it.each(INTEGRATIONS_PARTS.map((p) => [p.name, p] as const))("part %s is empty: no tools, routes, subcommands, handlers or due work", (_, part) => {
-    expect(part).toEqual({ name: part.name, tools: [], routes: [], subcommands: [], handlers: {}, dueWork: [] });
-    expect(Object.isFrozen(part)).toBe(true);
+  it.each(INTEGRATIONS_PARTS.filter((p) => p.name === "github-tools" || p.name === "drafts").map((p) => [p.name, p] as const))(
+    "part %s is still empty: no tools, routes, subcommands, handlers or due work (items 06 and 07 fill them)",
+    (_, part) => {
+      expect(part).toEqual({ name: part.name, tools: [], routes: [], subcommands: [], handlers: {}, dueWork: [] });
+      expect(Object.isFrozen(part)).toBe(true);
+    },
+  );
+
+  it("item 03 filled the github parts: github-connector has the connectors subcommand and the expiry due work, github-routes the four /connectors routes", () => {
+    const [connector, routes] = INTEGRATIONS_PARTS;
+    expect(connector?.name).toBe("github-connector");
+    expect(connector?.tools).toEqual([]);
+    expect(connector?.routes).toEqual([]);
+    expect(connector?.handlers).toEqual({});
+    expect(connector?.subcommands?.map((s) => [s.name, s.help])).toEqual([[CONNECTORS_SUBCOMMAND, CONNECTORS_HELP]]);
+    expect(connector?.dueWork).toEqual([githubExpiryDueWork]);
+    expect(routes?.name).toBe("github-routes");
+    expect(routes?.tools).toEqual([]);
+    expect(routes?.handlers).toEqual({});
+    expect(routes?.subcommands).toEqual([]);
+    expect(routes?.dueWork).toEqual([]);
+    expect(routes?.routes.map((r) => `${r.method} ${r.path}`)).toEqual([
+      "GET /connectors",
+      "POST /connectors/github/token",
+      "POST /connectors/github/disconnect",
+      "GET /connectors/github/repos",
+    ]);
+    for (const part of [connector, routes]) expect(Object.isFrozen(part)).toBe(true);
   });
 
-  it("contributes nothing but its name: no tools, routes, subcommands, handlers or due work", () => {
-    expect(integrationsContribution).toEqual({ name: "integrations" });
+  it("contributes the github parts only: four routes, one subcommand and one due work, no tools or handlers", () => {
+    expect(Object.keys(integrationsContribution).sort()).toEqual(["dueWork", "name", "routes", "subcommands"]);
     expect(Object.isFrozen(integrationsContribution)).toBe(true);
     const merged = mergeContributions([integrationsContribution]);
-    expect(merged).toEqual({ contributors: ["integrations"], tools: [], routes: [], subcommands: [], handlers: {}, dueWork: [] });
+    expect(merged.contributors).toEqual(["integrations"]);
+    expect(merged.tools).toEqual([]);
+    expect(merged.handlers).toEqual({});
+    expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual([
+      "integrations GET /connectors",
+      "integrations POST /connectors/github/token",
+      "integrations POST /connectors/github/disconnect",
+      "integrations GET /connectors/github/repos",
+    ]);
+    expect(merged.subcommands.map((s) => s.name)).toEqual(["connectors"]);
+    expect(merged.dueWork).toEqual([{ owner: "integrations", run: githubExpiryDueWork }]);
   });
 
   it("a filled part's tool reaches the contribution under the integrations name, with its connector flag (the merge a later item relies on)", () => {
@@ -183,7 +221,7 @@ describe("the integrations feature (AC2)", () => {
     const dir = join(SRC_DIR, "integrations");
     const files = (readdirSync(dir, { recursive: true }) as string[]).filter((f) => f.endsWith(".ts"));
     expect(files.sort()).toEqual(
-      ["drafts.ts", "github/connector.ts", "github/routes.ts", "github/tools.ts", "index.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
+      ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/routes.ts", "github/tools.ts", "index.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
     );
     for (const f of files) {
       const text = readFileSync(join(dir, f), "utf8");

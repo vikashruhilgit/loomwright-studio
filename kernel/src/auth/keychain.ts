@@ -11,11 +11,14 @@ export const SECURITY_BIN = "/usr/bin/security";
 /**
  * `security` exits with this status when the item does not exist (probed
  * 2026-10-02; recorded in docs/OPEN_QUESTIONS.md "Subscription auth from the SDK").
+ * `delete-generic-password` on a missing item exits with it too (probed
+ * 2026-10-27 on a service name that never existed).
  */
 export const SECURITY_ITEM_NOT_FOUND_STATUS = 44;
 
 const READ_TIMEOUT_MS = 10_000;
 const WRITE_TIMEOUT_MS = 10_000;
+const DELETE_TIMEOUT_MS = 10_000;
 
 /** Reads one generic-password item's secret by service name. */
 export interface KeychainReader {
@@ -26,6 +29,15 @@ export interface KeychainReader {
 /** Adds one generic-password item. Never overwrites an existing one. */
 export interface KeychainWriter {
   add(service: string, account: string, secret: string): void;
+}
+
+/**
+ * Deletes one generic-password item by service name. Replacing an item is
+ * delete then add, never an overwrite.
+ */
+export interface KeychainDeleter {
+  /** `true` when an item was deleted, `false` when there was none (already gone). */
+  delete(service: string): boolean;
 }
 
 export interface ExecOptions {
@@ -49,9 +61,9 @@ export type ExecFileSyncLike = (file: string, args: readonly string[], options: 
 export class KeychainError extends Error {
   readonly service: string;
   readonly exitStatus: number | null;
-  readonly operation: "read" | "write";
+  readonly operation: "read" | "write" | "delete";
 
-  constructor(service: string, exitStatus: number | null, signal: string | null, operation: "read" | "write" = "read") {
+  constructor(service: string, exitStatus: number | null, signal: string | null, operation: "read" | "write" | "delete" = "read") {
     const how =
       exitStatus !== null ? `exit status ${exitStatus}` : `terminated by ${signal ?? "an unknown signal"}`;
     super(`Keychain ${operation} of service "${service}" failed (${SECURITY_BIN} ${how})`);
@@ -111,7 +123,7 @@ export function securityCliKeychain(exec: ExecFileSyncLike = realExec): Keychain
  * quote, backslash or newline can reach `security -i`'s command-line parser,
  * and nothing starts with `-` (never read as an option). The API token is hex.
  */
-const WRITE_ARG = /^[A-Za-z0-9_.@][A-Za-z0-9_.@-]*$/;
+export const WRITE_ARG = /^[A-Za-z0-9_.@][A-Za-z0-9_.@-]*$/;
 
 /**
  * The real writer: `/usr/bin/security -i`, which reads commands from stdin
@@ -144,6 +156,40 @@ export function securityCliKeychainWriter(exec: ExecFileSyncLike = realExec): Ke
         // Deliberately drop `err`: it carries stdout/stderr buffers.
         throw new KeychainError(service, numberOrNull(e["status"]), stringOrNull(e["signal"]), "write");
       }
+    },
+  };
+}
+
+/**
+ * The real deleter: `/usr/bin/security delete-generic-password -s <service>`,
+ * run with an argument array (never a shell). Only the service name is on the
+ * command line; no secret is ever passed. A service that does not match
+ * `WRITE_ARG` is refused before anything runs, so nothing starting with `-`
+ * reaches `security` as an option.
+ *
+ * Exit status 44 ("item not found") means the item is already gone: `false`,
+ * not an error. Any other failure throws `KeychainError` built from the
+ * service and exit status only, never the process's output (which lists the
+ * deleted item's attributes).
+ */
+export function securityCliKeychainDeleter(exec: ExecFileSyncLike = realExec): KeychainDeleter {
+  return {
+    delete(service: string): boolean {
+      if (!WRITE_ARG.test(service)) throw new RangeError("Keychain delete refused: the service has a character security cannot take");
+      try {
+        exec(SECURITY_BIN, ["delete-generic-password", "-s", service], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: DELETE_TIMEOUT_MS,
+        });
+      } catch (err) {
+        const e = (typeof err === "object" && err !== null ? err : {}) as Record<string, unknown>;
+        const status = numberOrNull(e["status"]);
+        if (status === SECURITY_ITEM_NOT_FOUND_STATUS) return false;
+        // Deliberately drop `err`: it carries stdout/stderr buffers.
+        throw new KeychainError(service, status, stringOrNull(e["signal"]), "delete");
+      }
+      return true;
     },
   };
 }
