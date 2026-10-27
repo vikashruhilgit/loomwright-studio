@@ -220,7 +220,12 @@ function statusEvent(store: Store, row: ConnectorRow, at: string, refused?: GitH
   appendEvent(store, "connector_status", { sessionId: null, taskId: null }, payload, at);
 }
 
-/** The GitHub row, created with `status` when there is none (the other columns null). */
+/**
+ * The GitHub row, created with `status` when there is none (the other columns
+ * null). Appends no event: a caller that creates the row appends its one
+ * event itself, so never follow this with `changeStatus` to the same status
+ * (that is a no-op and the event is lost); use `setStatus` for that.
+ */
 function ensureRow(store: Store, status: ConnectorStatus, at: string): ConnectorRow {
   const existing = githubConnectorRow(store);
   if (existing !== undefined) return existing;
@@ -235,6 +240,18 @@ function changeStatus(store: Store, row: ConnectorRow, status: ConnectorStatus, 
   const changed = githubConnectorRow(store) as ConnectorRow;
   statusEvent(store, changed, at);
   return changed;
+}
+
+/**
+ * Sets the GitHub row's status, creating the row when there is none, with
+ * one event for a new row or a changed status and none for an unchanged one.
+ */
+function setStatus(store: Store, status: ConnectorStatus, at: string): ConnectorRow {
+  const existing = githubConnectorRow(store);
+  if (existing !== undefined) return changeStatus(store, existing, status, at);
+  const created = ensureRow(store, status, at);
+  statusEvent(store, created, at);
+  return created;
 }
 
 // ---- Validation -------------------------------------------------------------------
@@ -381,7 +398,7 @@ export function createGitHubConnector(deps: GitHubConnectorDeps = {}): GitHubCon
     const at = now().toISOString();
     if (stored !== token) {
       // The old token is gone and the new one is not in place: never `connected`.
-      const row = store.transaction(() => changeStatus(store, ensureRow(store, "disconnected", at), "disconnected", at));
+      const row = store.transaction(() => setStatus(store, "disconnected", at));
       return failure("keychain_failed", MESSAGES.keychain_lost, row);
     }
 

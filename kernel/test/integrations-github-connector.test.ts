@@ -417,6 +417,27 @@ describe("replace a connected token (AC6)", () => {
     expectNoToken(res.body);
   });
 
+  it("AC10: a first-ever set whose read-back fails creates the row disconnected with exactly one connector_status event", async () => {
+    keychain.silentAddFailure = true;
+    const res = await call(connector(), "POST", "/connectors/github/token", { token: GOOD });
+    expect((res.body as { error: string }).error).toBe("keychain_failed");
+    expect(((res.body as { connector: Record<string, unknown> }).connector)["status"]).toBe("disconnected");
+    expect(rowNow()?.["status"]).toBe("disconnected");
+    expect(statusEvents()).toEqual([{ connector_id: rowNow()?.["id"], kind: "github", status: "disconnected" }]);
+    expectNoToken(res.body);
+  });
+
+  it("AC10: a failed read-back from a rejected row appends one disconnected event; from a disconnected row (no change) none", async () => {
+    const c = connector();
+    await call(c, "POST", "/connectors/github/token", { token: WRITE });
+    keychain.silentAddFailure = true;
+    await call(c, "POST", "/connectors/github/token", { token: GOOD });
+    expect(statusEvents().map((e) => e["status"])).toEqual(["rejected", "disconnected"]);
+    await call(c, "POST", "/connectors/github/token", { token: GOOD2 });
+    expect(statusEvents().map((e) => e["status"])).toEqual(["rejected", "disconnected"]);
+    expect(rowNow()?.["status"]).toBe("disconnected");
+  });
+
   it("an add that throws an error quoting the token: the read-back decides, and the error's text is never kept", async () => {
     const throwingWriter: KeychainWriter = {
       add: (_s, _a, secret) => {
