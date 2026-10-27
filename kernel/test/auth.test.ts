@@ -104,6 +104,13 @@ const API_ENDPOINT_SWITCHES = ["CLAUDE_CODE_API_BASE_URL"] as const;
 /** Every endpoint switch a child env must never carry. */
 const ENDPOINT_SWITCHES = [...OAUTH_ENDPOINT_SWITCHES, ...API_ENDPOINT_SWITCHES] as const;
 
+/**
+ * GitHub's credential variables (phase 6, owner 2026-10-24), pinned by a
+ * LITERAL list: a child session never inherits a GitHub token, so its `gh` or
+ * `git` can't act on GitHub outside the kernel's connector.
+ */
+const GITHUB_TOKEN_VARS = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN"] as const;
+
 const PARENT_ENV = {
   PATH: "/usr/bin:/bin",
   HOME: "/Users/someone",
@@ -366,6 +373,24 @@ describe("stripCredentialEnv", () => {
   it.each(API_ENDPOINT_SWITCHES.map((name) => [name]))("removes the API endpoint switch %s", (name) => {
     expect(isCredentialEnvVar(name)).toBe(true);
     expect(stripCredentialEnv({ [name]: "v", PATH: "/bin" })).toEqual({ PATH: "/bin" });
+  });
+
+  it.each(GITHUB_TOKEN_VARS.map((name) => [name]))("removes the GitHub credential %s", (name) => {
+    expect(isCredentialEnvVar(name)).toBe(true);
+    expect(stripCredentialEnv({ [name]: "ghp_stray", PATH: "/bin" })).toEqual({ PATH: "/bin" });
+  });
+
+  it("every provider's buildEnv drops GH_TOKEN, GITHUB_TOKEN and GH_ENTERPRISE_TOKEN from a daemon env that has all three", () => {
+    const parent = { ...PARENT_ENV, GH_TOKEN: "ghp_stray-1", GITHUB_TOKEN: "ghp_stray-2", GH_ENTERPRISE_TOKEN: "ghp_stray-3" };
+    const envs = [
+      createSubscriptionTokenProvider({ keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }) }).buildEnv(parent),
+      createApiKeyProvider({ keychain: stubKeychain({ [API_KEY_KEYCHAIN_SERVICE]: FAKE_API_KEY }) }).buildEnv(parent),
+    ];
+    for (const env of envs) {
+      for (const name of GITHUB_TOKEN_VARS) expect(env).not.toHaveProperty(name);
+      expect(Object.values(env).some((v) => v.startsWith("ghp_stray"))).toBe(false);
+      expect(env["PATH"]).toBe("/usr/bin:/bin");
+    }
   });
 
   it.each([
