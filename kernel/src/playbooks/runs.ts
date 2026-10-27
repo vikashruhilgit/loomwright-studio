@@ -94,7 +94,7 @@ import type { DedupeKeyField, PlaybookPart, PlaybookPriority, PlaybookRunKind, P
  * no SQL CHECK): every write below is checked against it. `parked` is a
  * GitHub item's run whose agent lacked the grant or a usable connector
  * (`needs_github`): terminal, and never a duplicate, so the next poll's
- * message for the item runs. (An admission-parked run is another thing: it
+ * message for the item is checked afresh (it runs once both are there). (An admission-parked run is another thing: it
  * stays `running`, with `parked` in its `result_json`.)
  */
 export const PLAYBOOK_RUN_STATUSES = Object.freeze(["running", "done", "failed", "skipped_duplicate", "skipped_not_enabled", "parked"] as const);

@@ -178,7 +178,7 @@ export function notifyNeedsGithub(store: Store, n: NeedsGithubNotice, now: Date)
       {
         source: NEEDS_GITHUB_SOURCE,
         title: cutChars(`Playbook ${n.slug} parked: ${what}`, MAX_NOTIFICATION_TITLE),
-        body: `Playbook ${n.slug} (#${n.playbook}) did not run for ${n.item.ref}: ${what}. ${fix}${settings} Its items run again at the next poll.`,
+        body: `Playbook ${n.slug} (#${n.playbook}) did not run for ${n.item.ref}: ${what}. ${fix}${settings} Its items run at the first poll after the grant and connector are both in place.`,
       },
       now,
     );

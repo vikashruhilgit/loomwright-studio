@@ -517,7 +517,7 @@ describe("a GitHub item whose agent lacks the grant or a usable connector parks 
     expect(needsGithubNotifications()).toEqual([
       {
         title: `Playbook ${p.slug} parked: wright has no GitHub grant`,
-        body: `Playbook ${p.slug} (#${p.id}) did not run for github:o/r#1: wright has no GitHub grant. Add "github" to "connectors" in ${agentSettingsPath(dataDir, "wright")}. Its items run again at the next poll.`,
+        body: `Playbook ${p.slug} (#${p.id}) did not run for github:o/r#1: wright has no GitHub grant. Add "github" to "connectors" in ${agentSettingsPath(dataDir, "wright")}. Its items run at the first poll after the grant and connector are both in place.`,
       },
     ]);
 
@@ -541,7 +541,7 @@ describe("a GitHub item whose agent lacks the grant or a usable connector parks 
     expect(needsGithubNotifications()).toEqual([
       {
         title: `Playbook ${p.slug} parked: wright has no GitHub grant and GitHub is not connected`,
-        body: `Playbook ${p.slug} (#${p.id}) did not run for github:o/r#1: wright has no GitHub grant and GitHub is not connected. Add "github" to "connectors" in ${agentSettingsPath(dataDir, "wright")}. Connect GitHub (the github connector is ${status ?? "absent"}). Its items run again at the next poll.`,
+        body: `Playbook ${p.slug} (#${p.id}) did not run for github:o/r#1: wright has no GitHub grant and GitHub is not connected. Add "github" to "connectors" in ${agentSettingsPath(dataDir, "wright")}. Connect GitHub (the github connector is ${status ?? "absent"}). Its items run at the first poll after the grant and connector are both in place.`,
       },
     ]);
 
