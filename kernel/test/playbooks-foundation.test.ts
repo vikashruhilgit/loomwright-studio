@@ -33,6 +33,7 @@ import {
   runsPart,
 } from "../src/playbooks/index.js";
 import type { PlaybookPart, PlaybookVerb } from "../src/playbooks/index.js";
+import { PLAYBOOK_MODES } from "../src/playbooks/types.js";
 
 let tmp: string;
 let dataDir: string;
@@ -173,13 +174,14 @@ describe("the playbooks contribution (AC4)", () => {
     expect(mergePlaybookParts(PLAYBOOK_PARTS).dueWork).toEqual([...(draftsPart.dueWork ?? [])]);
   });
 
-  it("pins the closed value sets migration 13's TEXT columns hold", () => {
+  it("pins the closed value sets migration 13's (and 17's) TEXT columns hold", () => {
     expect(PLAYBOOK_STATUSES).toEqual(["draft", "enabled", "disabled"]);
     expect(PLAYBOOK_PRIORITIES).toEqual(["low", "normal", "high"]);
     expect(PLAYBOOK_RUN_KINDS).toEqual(["dry_run", "fire", "run_now"]);
-    expect(DEDUPE_KEY_FIELDS).toEqual(["playbook.id", "playbook.version", "trigger.id", "trigger.scheduled_at", "date"]);
+    expect(DEDUPE_KEY_FIELDS).toEqual(["playbook.id", "playbook.version", "trigger.id", "trigger.scheduled_at", "date", "item.id", "item.revision"]);
     expect(POLICY_SETTERS).toEqual(["wright", "owner"]);
-    for (const list of [PLAYBOOK_STATUSES, PLAYBOOK_PRIORITIES, PLAYBOOK_RUN_KINDS, DEDUPE_KEY_FIELDS, POLICY_SETTERS]) expect(Object.isFrozen(list)).toBe(true);
+    expect(PLAYBOOK_MODES).toEqual(["draft", "live"]);
+    for (const list of [PLAYBOOK_STATUSES, PLAYBOOK_PRIORITIES, PLAYBOOK_RUN_KINDS, DEDUPE_KEY_FIELDS, POLICY_SETTERS, PLAYBOOK_MODES]) expect(Object.isFrozen(list)).toBe(true);
   });
 });
 
