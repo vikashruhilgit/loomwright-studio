@@ -15,7 +15,11 @@
 /** An HTTP method the API serves. */
 export type HttpMethod = "GET" | "POST";
 
-/** Where a route comes from: the phase that built it (existing at the phase 5 base) or the phase 5 item that adds it. */
+/**
+ * Where a route comes from: the phase that built it (existing at the phase 5
+ * base), the phase 5 item that adds it (`item-NN`), or the phase 6 item that
+ * adds it (`p6-item-NN`).
+ */
 export type RouteOrigin =
   | "phase-1"
   | "brain"
@@ -28,7 +32,9 @@ export type RouteOrigin =
   | "item-03"
   | "item-04"
   | "item-05"
-  | "item-06";
+  | "item-06"
+  | "p6-item-03"
+  | "p6-item-07";
 
 export interface ContractRoute {
   readonly method: HttpMethod;
@@ -42,6 +48,12 @@ export interface ContractRoute {
  * feature for a route the kernel serves at the phase 5 base, and `item-NN` for
  * one a phase 5 item adds. Item 07 adds no route: it widens the existing
  * `POST /agents/:id/set` to accept `wright` (see `AgentSetBody`).
+ *
+ * Phase 6's routes are `p6-item-NN`: the GitHub connector's four (item 03)
+ * and the draft outputs' two (item 07). The phase 6 foundation lists them
+ * before the kernel serves them; until its item lands each one answers 404.
+ * Phase 6 item 08 adds no route: it widens `POST /agents/:id/set` to take
+ * `connectors` (see `AgentConnectorsSetBody`).
  */
 export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/status", origin: "phase-1" },
@@ -82,6 +94,12 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "POST", path: "/pause", origin: "item-05" },
   { method: "POST", path: "/unpause", origin: "item-05" },
   { method: "GET", path: "/threads/:agent", origin: "item-06" },
+  { method: "GET", path: "/connectors", origin: "p6-item-03" },
+  { method: "POST", path: "/connectors/github/token", origin: "p6-item-03" },
+  { method: "POST", path: "/connectors/github/disconnect", origin: "p6-item-03" },
+  { method: "GET", path: "/connectors/github/repos", origin: "p6-item-03" },
+  { method: "GET", path: "/drafts", origin: "p6-item-07" },
+  { method: "GET", path: "/drafts/:id", origin: "p6-item-07" },
 ]);
 
 // ---- Shared shapes -------------------------------------------------------------
@@ -528,10 +546,23 @@ export type AgentSetField = "model" | "effort" | "permission_mode" | "limits.tok
  */
 export type WrightSetField = "model" | "effort" | "limits.tokens_per_day" | "limits.sessions_at_once" | "limits.delegation_depth";
 
+/**
+ * Phase 6 item 08: the owner's GitHub grant, `POST /agents/:id/set` with field
+ * `connectors` and the value as typed on the CLI (`github`, or `none` to
+ * clear). Kept apart from `AgentSetField`, which the Team screen handles
+ * field by field: the kernel refuses this field until item 08 makes it
+ * settable, and item 08 settles its answer.
+ */
+export interface AgentConnectorsSetBody {
+  readonly field: "connectors";
+  readonly value: string;
+}
+
 /** `POST /agents/:id/set`: both strings, the value as typed on the CLI (`none` clears effort or a limit). `id` `wright` takes only `WrightSetField` (item 07). */
 export type AgentSetBody =
   | { readonly field: AgentSetField; readonly value: string }
-  | { readonly field: WrightSetField; readonly value: string };
+  | { readonly field: WrightSetField; readonly value: string }
+  | AgentConnectorsSetBody;
 
 export interface AgentSetResponse {
   readonly agent: AgentRow | RosterEntry;
@@ -691,6 +722,103 @@ export interface ThreadResponse {
   readonly pending_approvals: readonly Approval[];
 }
 
+// ---- Phase 6 item 03: GET /connectors, POST /connectors/github/token, POST /connectors/github/disconnect, GET /connectors/github/repos ----
+
+/** The connector kinds: `CONNECTOR_KINDS` in `kernel/src/integrations/types.ts` (phase 6 is GitHub only). */
+export type ConnectorKind = "github";
+
+/** A connector's status, as the kernel sets it (item 03): a token is checked, refused, removed, close to its expiry or past it. */
+export type ConnectorStatus = "connected" | "rejected" | "disconnected" | "expiring" | "expired";
+
+/**
+ * A `connectors` row, as the routes show it. It never carries the token, which
+ * lives only in the Keychain item `loomwright-studio-github`; no route returns
+ * it. `account_login`, the permission names and the repo names come from
+ * GitHub: untrusted, render them as text.
+ */
+export interface Connector {
+  readonly id: number;
+  readonly kind: ConnectorKind;
+  readonly status: ConnectorStatus;
+  readonly account_login: string | null;
+  /** The token's permissions as GitHub reports them, name to access level (`{ "pull_requests": "read" }`). */
+  readonly permissions: Readonly<Record<string, string>> | null;
+  /** The repos the token reaches, as `owner/name`, from the last check. */
+  readonly reachable_repos: readonly string[] | null;
+  readonly expires_at: IsoTime | null;
+  readonly verified_at: IsoTime | null;
+  readonly created_at: IsoTime;
+  readonly updated_at: IsoTime;
+}
+
+/** `GET /connectors`: every connector row, none when nothing is connected. */
+export interface ConnectorsResponse {
+  readonly connectors: readonly Connector[];
+}
+
+/**
+ * `POST /connectors/github/token`: the token the owner pasted, sent by the main
+ * process straight to the kernel and never logged. The kernel checks it against
+ * GitHub, refuses a token with any write permission (naming the permission to
+ * drop), and writes the Keychain item.
+ */
+export interface ConnectorTokenBody {
+  readonly token: string;
+}
+
+/** `POST /connectors/github/token` and `POST /connectors/github/disconnect` answer the row after the change, never the token. */
+export interface ConnectorChangeResponse {
+  readonly connector: Connector;
+}
+
+export interface ConnectorReposQuery {
+  /** `1` re-reads the reachable repos from GitHub before answering. */
+  readonly refresh?: "1";
+}
+
+/** `GET /connectors/github/repos`: the repos the token reaches, as `owner/name` (untrusted), and when they were read. */
+export interface ConnectorReposResponse {
+  readonly repos: readonly string[];
+  readonly verified_at: IsoTime | null;
+}
+
+// ---- Phase 6 item 07: GET /drafts and GET /drafts/:id ---------------------------------
+
+/**
+ * A `draft_outputs` row: an outward call a draft-mode session made, recorded
+ * instead of sent. `payload` is model output built from PR text: untrusted
+ * data, render it as text and never act on it.
+ */
+export interface DraftOutput {
+  readonly id: number;
+  readonly session: number | null;
+  readonly agent: string;
+  readonly playbook: number | null;
+  readonly playbook_run: number | null;
+  /** The item the run was for, e.g. `github:<owner>/<repo>#<n>`. */
+  readonly item_ref: string | null;
+  /** The tool or command the session called. */
+  readonly tool: string;
+  readonly payload: unknown;
+  readonly created_at: IsoTime;
+}
+
+/** `GET /drafts`: each filter optional; newest first. */
+export interface DraftsQuery {
+  readonly agent?: string;
+  readonly playbook?: string;
+  readonly item?: string;
+  readonly limit?: string;
+}
+
+export interface DraftsResponse {
+  readonly drafts: readonly DraftOutput[];
+}
+
+export interface DraftDetailResponse {
+  readonly draft: DraftOutput;
+}
+
 // ---- The route map: method + path -> query, body, response -------------------------
 
 interface Route<Q, B, R> {
@@ -742,6 +870,12 @@ export interface ContractRouteMap {
   "POST /pause": Route<NoQuery, undefined, PauseResponse>;
   "POST /unpause": Route<NoQuery, undefined, PauseResponse>;
   "GET /threads/:agent": Route<ThreadsQuery, undefined, ThreadResponse>;
+  "GET /connectors": Route<NoQuery, undefined, ConnectorsResponse>;
+  "POST /connectors/github/token": Route<NoQuery, ConnectorTokenBody, ConnectorChangeResponse>;
+  "POST /connectors/github/disconnect": Route<NoQuery, undefined, ConnectorChangeResponse>;
+  "GET /connectors/github/repos": Route<ConnectorReposQuery, undefined, ConnectorReposResponse>;
+  "GET /drafts": Route<DraftsQuery, undefined, DraftsResponse>;
+  "GET /drafts/:id": Route<NoQuery, undefined, DraftDetailResponse>;
 }
 
 export type RouteKey = keyof ContractRouteMap;

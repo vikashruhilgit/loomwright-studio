@@ -39,6 +39,11 @@ Only the kinds in the closed list `THREAD_EVENT_KINDS` are cards, each tied to a
 | `approval_requested`, `approval_decided` | its payload's `id` names an approval whose `requesting_agent` is the agent | `Approval 7 requested: open_pr`, `Approval 7 denied: open_pr` |
 | `agent_created`, `agent_renamed`, `agent_settings_set`, `agent_status_changed` | its payload's `id` is the agent | `Agent mason renamed from Mason to Stone` |
 | `trigger_registered`, `trigger_fired` | its payload's `trigger_id` names a trigger whose `owning_agent` is the agent | `Trigger 3 registered`, `Trigger 3 fired (notify)` |
+| `draft_output_recorded` (tie `session`) | its `session_id`'s session has `sessions.agent` = the agent | one line naming the draft and its session (sentence in `threads.ts`) |
+| `poll_item_skipped`, `poll_item_queued` (tie `playbook`) | its payload's `playbook_id` names a playbook whose `owning_agent` is the agent | one line naming the playbook and whether the item was skipped or queued (sentence in `threads.ts`) |
+| `connector_status` (tie `owner`) | the agent is Wright (`ASK_AGENT`): a connector is the owner's, not an agent's, so it shows in Wright's thread only | one line naming the connector's new status (sentence in `threads.ts`) |
+
+The last four kinds were added by the phase 6 foundation, with their ties, before any code writes them, so the items that write them (03 `connector_status`, 04 and 05 the poll kinds, 07 `draft_output_recorded`) and the item that draws their cards (12) never edit `threads.ts`. `owner` is the one tie that names no stored row: it puts the event in Wright's thread. See [integrations](integrations.md) and [draft mode](draft-mode.md).
 
 `memory_updated` is not in the list: no kernel code writes that kind today, and this item adds no event kind (the gap with the approved design is logged in [open questions](../OPEN_QUESTIONS.md#deferred-decisions)). A new kind becomes a card only by adding it to `THREAD_EVENT_KINDS` with its tie (and its sentence beside the others in `threads.ts`).
 
