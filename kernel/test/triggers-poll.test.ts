@@ -451,10 +451,12 @@ describe("crash safety (AC5)", () => {
     };
     await expect(firePollTriggers(store, github, AFTER_T1)).rejects.toThrow(/crash after the first enqueue/);
     expect(hooks.calls).toBe(2);
-    // Nothing of the instant is on disk: no queue row, no event, no work step, still due at T1.
+    // Nothing of the instant is on disk: no queue row, no event, no work step. The thrown step moved it off T1.
     expect(written(store)).toEqual(before);
-    expect(triggerRow(store, triggerId)).toMatchObject({ next_fire_at: T1, last_result: null });
+    expect(triggerRow(store, triggerId)).toMatchObject({ next_fire_at: plus(AFTER_T1, INTERVAL), last_result: null });
 
+    // A `kill -9` at that throw would have left it due at T1: the replay queues each item once.
+    store.prepare("UPDATE triggers SET next_fire_at = ? WHERE id = ?").run(T1, triggerId);
     hooks.beforeEnqueue = undefined;
     expect(await firePollTriggers(store, github, AFTER_T1)).toMatchObject([{ result: "fired", items: 2 }]);
     expect(queued(store).map((r) => r.source_ref)).toEqual([`playbook:1:${T1}:github:o/r#1`, `playbook:1:${T1}:github:o/r#2`]);
@@ -669,6 +671,42 @@ describe("the triggers due work (AC10b)", () => {
     expect(failed).toHaveLength(1);
     expect(failed[0]?.payload).toMatchObject({ contributor: "triggers" });
     expect(String(failed[0]?.payload.error)).toMatch(new RegExp(`trigger ${cron.id}: `));
+  });
+
+  it("a step that throws on every try (a stored priority outside the closed set) is moved to now + interval: the source is fetched once per interval, never every tick", async () => {
+    const store = open();
+    connect(store);
+    const { playbookId, triggerId } = pollPlaybook(store);
+    store.prepare("UPDATE playbooks SET priority = 'bogus' WHERE id = ?").run(playbookId);
+    const github = new FakeGitHubClient({ pulls: { "o/r": [pull(1)] } });
+    const run = triggersContribution.dueWork?.[0];
+    if (run === undefined) throw new Error("no due work");
+    const loop = new EventLoop({ store, handlers: {}, dueWork: [{ owner: "triggers", run }], github }, { now: () => AFTER_T1 });
+    for (let i = 0; i < 5; i++) await loop.tick();
+    expect(listCalls(github)).toBe(1);
+    const failed = events(store, "due_work_failed");
+    expect(failed).toHaveLength(1);
+    expect(String(failed[0]?.payload.error)).toMatch(new RegExp(`trigger ${triggerId}: .*\\(next fire ${plus(AFTER_T1, INTERVAL).replace(/\./g, "\\.")}\\)`));
+    expect(queued(store)).toEqual([]);
+    expect(events(store, "trigger_fired")).toEqual([]);
+    expect(triggerRow(store, triggerId)).toMatchObject({ enabled: 1, next_fire_at: plus(AFTER_T1, INTERVAL), last_result: null });
+    // The next interval tries (and fetches) once more.
+    const later = new Date(plus(AFTER_T1, INTERVAL + 1));
+    await expect(firePollTriggers(store, github, later)).rejects.toThrow(/next fire/);
+    expect(listCalls(github)).toBe(2);
+  });
+
+  it("a step that throws with no next fire to move to (an interval past the last date) parks the poll after one fetch", async () => {
+    const store = open();
+    connect(store);
+    const { triggerId } = pollPlaybook(store);
+    store.prepare("UPDATE triggers SET spec_json = ? WHERE id = ?").run(spec({ interval_seconds: Number.MAX_SAFE_INTEGER }), triggerId);
+    const github = new FakeGitHubClient({ pulls: { "o/r": [pull(1)] } });
+    await expect(firePollTriggers(store, github, AFTER_T1)).rejects.toThrow(/parked: no next fire/);
+    expect(await firePollTriggers(store, github, AFTER_T1)).toEqual([]);
+    expect(listCalls(github)).toBe(1);
+    expect(queued(store)).toEqual([]);
+    expect(triggerRow(store, triggerId).next_fire_at).toBeNull();
   });
 
   it("a failing poll never skips the cron fire either", async () => {

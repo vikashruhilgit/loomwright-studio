@@ -39,7 +39,10 @@
 // instant plus the interval, so downtime coalesces into one poll), or
 // `max(now + interval_seconds, resets_at)` after `rate_limited`. A
 // `connector_missing` instant notifies the owner once per outage: only when
-// the trigger's previous `last_result` was not already `connector_missing`.
+// the trigger's previous `last_result` was not already `connector_missing`. A
+// Phase B that throws (other than a deferral) still moves the trigger off the
+// instant, to `now + interval_seconds` or parked, so a failure that repeats
+// never refetches the source on every tick (`movePollAfterFailure`).
 //
 // Imports: its own `fire-shared.ts` (never `store.ts` at runtime, so the two
 // form no cycle), `../loop/*`, `../api/kill-switch.js`,
@@ -51,7 +54,7 @@ import { appendEvent, clip, errorMessage } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
 import type { EnqueueParams } from "../loop/queue.js";
 import { getWorkStep, runStep } from "../loop/steps.js";
-import { MAX_NOTIFICATION_TITLE, recordNotification } from "../notifications/record.js";
+import { InvalidNotificationError, MAX_NOTIFICATION_TITLE, recordNotification } from "../notifications/record.js";
 import type { Store } from "../store/store.js";
 import { TriggerError, fireStepKey, inKillSwitchWindow, inPauseWindow, killSwitchWindows, linkedPlaybook, pauseWindows } from "./fire-shared.js";
 import type { LinkedPlaybook } from "./fire-shared.js";
@@ -490,6 +493,37 @@ function parkPoll(store: Store, id: number, scheduledAt: string): void {
   }
 }
 
+/**
+ * A poll whose Phase B threw (rolled back, nothing written for the instant)
+ * would stay due there and refetch the source on every tick, spending the
+ * shared GitHub quota on a failure that may repeat each time (a stored
+ * playbook priority `enqueueEvent` refuses). So it moves off the instant here:
+ * parked (no next fire) when the notification record refused the row, as the
+ * time-based fire does, or when no next fire can be computed; otherwise to
+ * `now + interval_seconds`, so a repeating failure refetches at the user's
+ * interval, never every tick. Answers what it did, for the failure message.
+ */
+function movePollAfterFailure(store: Store, id: number, scheduledAt: string, spec: PollSpec, now: Date, err: unknown): string {
+  let next: string | undefined;
+  if (!(err instanceof InvalidNotificationError)) {
+    try {
+      next = nextPollFire(now, spec.interval_seconds);
+    } catch {
+      // Past the last date: parked below.
+    }
+  }
+  if (next === undefined) {
+    parkPoll(store, id, scheduledAt);
+    return "parked: no next fire";
+  }
+  try {
+    store.prepare("UPDATE triggers SET next_fire_at = ? WHERE id = ? AND next_fire_at = ?").run(next, id, scheduledAt);
+  } catch {
+    // The store is failing too: the next tick tries again.
+  }
+  return `next fire ${next}`;
+}
+
 /** Phase A then Phase B for one due poll. */
 async function fireOnePoll(store: Store, github: GitHubClient | undefined, row: PollRow, now: Date): Promise<PollFireOutcome> {
   const scheduledAt = row.next_fire_at as string;
@@ -513,7 +547,8 @@ async function fireOnePoll(store: Store, github: GitHubClient | undefined, row: 
     outcome = runStep(store, key, () => recordInstant(store, row.id, scheduledAt, spec, fetched, github, now), { now: () => now });
   } catch (err) {
     if (err instanceof PollDeferred) return { trigger_id: row.id, scheduled_at: scheduledAt, result: "deferred" };
-    throw err;
+    // Still reported (the loop's `due_work_failed`), once per move rather than once per tick.
+    throw new Error(`${errorMessage(err)} (${movePollAfterFailure(store, row.id, scheduledAt, spec, now, err)})`);
   }
   // Every recorded instant moves the trigger past it: still due there means the step replayed a done result.
   const after = readPollRow(store, row.id);
