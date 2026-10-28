@@ -91,3 +91,9 @@ kernel/src/brain/templates.ts
 kernel/test/brain.test.ts
 docs/architecture/brain.md
 docs/architecture/playbooks.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-28T15:42:22Z
+- **Brief:** .supervisor/jobs/done/2026-10-28-wright-drafts-pr-review-duty.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/154
