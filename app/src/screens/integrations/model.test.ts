@@ -247,6 +247,12 @@ describe("refusalOf", () => {
     expect(dropLine("pull_requests", "write")).toBe("Pull requests: write → set to Read-only");
   });
 
+  it("token_permissions_unknown is the sheet's own copy, never the kernel's message (which names an internal doc)", () => {
+    const unknown = refusal(422, { error: "token_permissions_unknown", message: "GitHub did not report this token's permissions (docs/OPEN_QUESTIONS.md)", connector: {} });
+    expect(unknown).toEqual({ kind: "permissions_unknown" });
+    expect(JSON.stringify(unknown)).not.toContain("docs/");
+  });
+
   it("reads write_permissions defensively: junk entries are skipped, a missing list is empty", () => {
     const junk = refusal(422, { error: "token_write_scoped", write_permissions: [null, 3, { permission: "contents" }, { permission: 1, level: "write" }, { permission: "administration", level: "admin" }] });
     expect(junk).toEqual({ kind: "write", drops: ["Administration: admin → set to Read-only"] });

@@ -44,6 +44,12 @@ const writeScoped: ApiResult<unknown> = refused(422, {
   write_permissions: [{ permission: "pull_requests", level: "write" }],
 });
 const invalid: ApiResult<unknown> = refused(422, { error: "token_invalid", message: "GitHub did not accept the token", connector: {} });
+// The kernel's message ends with an internal doc path; the sheet must never show it.
+const permissionsUnknown: ApiResult<unknown> = refused(422, {
+  error: "token_permissions_unknown",
+  message: "GitHub did not report this token's permissions, so Studio cannot check that they are all read-only (docs/OPEN_QUESTIONS.md)",
+  connector: {},
+});
 
 // ---- The secrecy detector -------------------------------------------------------------------------
 
@@ -295,6 +301,20 @@ describe("refusals", () => {
     expect(field().value).toBe("");
   });
 
+  it("token_permissions_unknown: the sheet's own copy, not the kernel's message, with the field empty", async () => {
+    await openSheet("connect", { token: () => permissionsUnknown });
+    paste(TOKEN);
+    fireEvent.click(connectButton());
+    const alert = await screen.findByRole("alert");
+    expect(alert).toBe(screen.getByTestId(IDS.sheetError));
+    expect(alert.textContent).toBe("GitHub didn't report this token's permissions, so Studio can't confirm they're all read-only and refuses the token. Nothing changed.");
+    expect(alert.textContent).not.toContain("OPEN_QUESTIONS");
+    expect(within(alert).queryByRole("listitem")).toBeNull();
+    expect(field().value).toBe("");
+    expect(field().getAttribute("aria-invalid")).toBe("true");
+    expect(rowWords()).toBe("not connected");
+  });
+
   it("any other refusal shows the kernel's message as text", async () => {
     await openSheet("connect", { token: () => refused(429, { error: "rate_limited", message: "GitHub is rate limiting; try again in a minute", resets_at: "2026-10-28T12:00:00.000Z" }) });
     paste(TOKEN);
@@ -337,6 +357,7 @@ describe("secrecy", () => {
     ["a success", "ok"],
     ["token_invalid", invalid],
     ["token_write_scoped", writeScoped],
+    ["token_permissions_unknown", permissionsUnknown],
   ];
 
   describe.each<Mode>(["connect", "replace"])("in %s mode", (mode) => {

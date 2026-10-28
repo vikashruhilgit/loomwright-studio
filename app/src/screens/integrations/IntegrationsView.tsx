@@ -516,7 +516,7 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
 
   useIntegrationsCommands(
     registry,
-    { offline, hasToken: tokenInUse, canRefresh: view.state === "connected" || view.state === "expiring" },
+    { offline, hasToken: tokenInUse },
     { connect: connectHandler, disconnect: requestDisconnect, refreshRepos },
   );
 

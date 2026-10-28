@@ -14,7 +14,7 @@
 //
 // Phases (the mockup's `S.sheet`): blank, connecting (field disabled and
 // empty, "Checking with GitHub…", button busy), then a refusal shown inline
-// (`invalid`, `write`, or the kernel's own message) with the field empty again
+// (`invalid`, `write`, `permissions_unknown`, or the kernel's own message) with the field empty again
 // and focused, or the kernel's yes, which closes the sheet.
 import { type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -73,6 +73,8 @@ function Refused({ refusal, id }: { readonly refusal: Refusal; readonly id: stri
           )}
           <p>Then paste it here again.</p>
         </>
+      ) : refusal.kind === "permissions_unknown" ? (
+        <p>GitHub didn't report this token's permissions, so Studio can't confirm they're all read-only and refuses the token. Nothing changed.</p>
       ) : (
         <p>{refusal.text}</p>
       )}

@@ -468,7 +468,8 @@ describe("the ⌘K commands", () => {
     ["a disconnected row", [connector("disconnected")], { connect: true, disconnect: false, refresh: false }],
     ["connected", [connector("connected")], { connect: true, disconnect: true, refresh: true }],
     ["expiring", [connector("expiring")], { connect: true, disconnect: true, refresh: true }],
-    ["expired", [connector("expired")], { connect: true, disconnect: true, refresh: false }],
+    // Expired too, as the detail pane's Refresh button (off only while offline).
+    ["expired", [connector("expired")], { connect: true, disconnect: true, refresh: true }],
   ] as const)("with %s: enabled follows the state", async (_name, rows, want) => {
     const kernel = await startScreen({ connectors: withRows(...rows) });
     expect(command(kernel, "integrations.connect-github").enabled?.()).toBe(want.connect);

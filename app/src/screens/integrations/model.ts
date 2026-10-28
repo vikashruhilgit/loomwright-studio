@@ -258,6 +258,8 @@ export function permissionLines(permissions: Readonly<Record<string, string>> | 
 export type Refusal =
   | { readonly kind: "invalid" }
   | { readonly kind: "write"; readonly drops: readonly string[] }
+  /** `token_permissions_unknown`: the sheet's own copy, since the kernel's message names an internal doc. */
+  | { readonly kind: "permissions_unknown" }
   | { readonly kind: "other"; readonly text: string };
 
 /** "Pull requests: write → set to Read-only": one line per write permission, with GitHub's level as reported. */
@@ -286,6 +288,7 @@ export function writePermissionsOf(body: ApiError): string[] {
 export function refusalOf(reply: Exclude<Reply<unknown>, { readonly kind: "ok" }>): Refusal {
   if (reply.kind === "refused" && reply.error === "token_invalid") return { kind: "invalid" };
   if (reply.kind === "refused" && reply.error === "token_write_scoped") return { kind: "write", drops: writePermissionsOf(reply.body) };
+  if (reply.kind === "refused" && reply.error === "token_permissions_unknown") return { kind: "permissions_unknown" };
   return { kind: "other", text: replyText(reply) };
 }
 

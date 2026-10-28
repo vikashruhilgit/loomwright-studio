@@ -10,7 +10,8 @@
 //   Connect GitHub          disabled only while the kernel is unreachable; opens the sheet
 //                           in replace mode when a token exists (the mockup's palette entry)
 //   Disconnect GitHub       enabled only while a non-disconnected token row exists
-//   Refresh reachable repos enabled only while connected or expiring
+//   Refresh reachable repos enabled while a token is in use (expired too), the
+//                           same as the detail pane's Refresh button
 import { useEffect, useRef } from "react";
 import type { Command, CommandRegistry } from "../../commands/registry";
 
@@ -34,8 +35,6 @@ export interface IntegrationsCommandFlags {
   readonly offline: boolean;
   /** A token is in use: connected, expiring or expired. */
   readonly hasToken: boolean;
-  /** Connected or expiring: the token can still read repos. */
-  readonly canRefresh: boolean;
 }
 
 /** Integrations' commands over `flags` and `handlers` (both read when a command is asked, never captured). */
@@ -67,7 +66,7 @@ export function integrationsCommands(flags: () => IntegrationsCommandFlags, hand
       keywords: ["github", "repositories", "reload"],
       enabled: () => {
         const f = flags();
-        return f.canRefresh && !f.offline;
+        return f.hasToken && !f.offline;
       },
       run: () => handlers().refreshRepos(),
     },
