@@ -1,4 +1,4 @@
-// Forced-draft dry runs and the GitHub read tools in a dry run (phase 6 item 08,
+// Forced-draft dry runs and the GitHub read tools in a dry run (phase 6 item 09,
 // session layer): `forceDraft` makes a dry-run session take draft mode's path
 // for an outward call (denied `draft_mode`, recorded as a draft output, never a
 // `held` would-do entry) whatever `playbooks.mode` says, and survives a resume;

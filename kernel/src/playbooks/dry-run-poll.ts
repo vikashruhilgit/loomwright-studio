@@ -1,4 +1,4 @@
-// The playbooks feature's poll preview (phase 6 item 08): what
+// The playbooks feature's poll preview (phase 6 item 09): what
 // `kernel_playbook_dry_run` (`./dry-run.ts`) does for a playbook whose linked
 // trigger is a `poll`. It polls the source once WITHOUT recording anything,
 // says per open item whether the owner's dedupe key would run or skip it, and

@@ -1,4 +1,4 @@
-// Phase 6 item 08, playbook layer: `kernel_playbook_dry_run` on a playbook whose
+// Phase 6 item 09, playbook layer: `kernel_playbook_dry_run` on a playbook whose
 // linked trigger is a `poll` (`kernel/src/playbooks/dry-run-poll.ts`, the poll
 // branch of `dry-run.ts`). It polls the source once and records nothing, lists
 // each open PR as would run / would skip under the owner's dedupe key (the key's
