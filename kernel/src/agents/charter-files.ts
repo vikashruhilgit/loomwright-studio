@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
+import type { ConnectorKind } from "../integrations/types.js";
 import { NO_REF, appendEvent, errorMessage } from "../loop/internal.js";
 import { isInsidePath, isProtectedPath, protectedLocationsText } from "../protected-paths.js";
 import { NEVER_CATEGORIES } from "../sessions/policy.js";
@@ -33,7 +34,7 @@ import type { Store } from "../store/store.js";
 import { agentMemoryDir, ensureAgentMemoryFiles } from "./memory.js";
 import { getAgent } from "./registry.js";
 import type { AgentRow } from "./registry.js";
-import { agentSettingsPath } from "./settings.js";
+import { agentSettingsPath, readAgentSettings } from "./settings.js";
 import { AGENT_CREATED_BY, AVATAR_HUES, AVATAR_SHAPES, RESERVED_AGENT_IDS, isValidAgentId } from "./types.js";
 import type { AgentCreatedBy, AvatarHue, AvatarShape } from "./types.js";
 
@@ -277,6 +278,9 @@ export function validateCharter(input: unknown, options: ValidateCharterOptions)
 // ---- The files ------------------------------------------------------------------
 
 /** A bulleted markdown list, or `- None stated.` for an empty one. */
+/** How `role.md` names each connector kind. */
+const CONNECTOR_LABELS: Record<ConnectorKind, string> = { github: "GitHub" };
+
 function bullets(items: readonly string[]): string {
   return items.length === 0 ? "- None stated." : items.map((item) => `- ${item}`).join("\n");
 }
@@ -287,8 +291,14 @@ function bullets(items: readonly string[]): string {
  * prose is guidance, the kernel enforces only the settings file; untrusted
  * text is data; the memory files). `docs/architecture/agents.md` shows one
  * example verbatim (`kernel/test/agents-roster.test.ts` pins it).
+ *
+ * `connectors` is what the owner granted in the settings file (phase 6 item
+ * 08); the "What the kernel enforces" paragraph names them. With none (absent
+ * or empty) the text is byte-identical to a call with one argument.
  */
-export function renderRoleMd(charter: Charter): string {
+export function renderRoleMd(charter: Charter, connectors: readonly ConnectorKind[] = []): string {
+  const granted = connectors.map((kind) => CONNECTOR_LABELS[kind]).join(", ");
+  const enforced = granted === "" ? "limits and workspaces" : `limits, workspaces and connectors (${granted})`;
   return `# ${charter.display_name}
 
 You are ${charter.display_name} (id \`${charter.id}\`), a crew member in Loomwright Studio.
@@ -309,7 +319,7 @@ ${bullets(charter.boundaries)}
 
 The boundaries above are guidance for you. The kernel enforces only your
 settings file, config/agents/${charter.id}.json: your model, permission mode,
-tool policy, never list, limits and workspaces. A call outside them is refused
+tool policy, never list, ${enforced}. A call outside them is refused
 or held for the owner, whatever this file says. Only the owner changes them.
 
 ## Untrusted text
@@ -396,16 +406,20 @@ function writeIfAbsent(path: string, text: string): boolean {
  * Make `charter`'s files exist, each only when absent: the settings file and
  * `role.md` rendered here, then `ensureAgentMemoryFiles` for the other three
  * memory files (its templates, never re-implemented). Folders mode 0700.
- * Returns the paths it created. A write error is thrown.
+ * `role.md` names the connectors the settings file grants (read after the file
+ * exists). Returns the paths it created. A write error is thrown.
  */
-function writeCharterFiles(dataDir: string, charter: Charter): string[] {
+function writeCharterFiles(dataDir: string, charter: Charter, homeDir?: string): string[] {
   const paths = agentFilePaths(dataDir, charter.id);
   const role = paths.memory[0] as string;
   mkdirSync(dirname(paths.settings), { recursive: true, mode: 0o700 });
   mkdirSync(paths.memoryDir, { recursive: true, mode: 0o700 });
   const created: string[] = [];
   if (writeIfAbsent(paths.settings, renderAgentSettingsJson(charter))) created.push(paths.settings);
-  if (writeIfAbsent(role, renderRoleMd(charter))) created.push(role);
+  // The grant is the settings file's (the owner's `set` writes it there), so a re-created
+  // role.md names what the file holds; a file the reader refuses names none.
+  const settings = readAgentSettings(dataDir, charter.id, homeDir === undefined ? {} : { homeDir });
+  if (writeIfAbsent(role, renderRoleMd(charter, settings.ok ? settings.settings.connectors : undefined))) created.push(role);
   const absent = paths.memory.slice(1).filter((p) => !isPresent(p));
   const memory = ensureAgentMemoryFiles(dataDir, charter.id);
   if (!memory.ok) throw new Error(`memory files for ${charter.id}: ${memory.error} (${"file" in memory ? memory.file : memory.message})`);
@@ -493,7 +507,7 @@ export function createAgent(store: Store, dataDir: string, input: unknown, optio
   if (options.deferFiles === true) return { ok: true, agent: outcome, files: paths.all, filesError: null };
   let filesError: string | null = null;
   try {
-    writeCharterFiles(dataDir, charter);
+    writeCharterFiles(dataDir, charter, options.homeDir);
   } catch (err) {
     filesError = errorMessage(err);
   }
@@ -533,5 +547,5 @@ export function ensureAgentFiles(store: Store, dataDir: string, id: string, opti
   const checked = validateCharter(json, { dataDir, ...(options.homeDir === undefined ? {} : { homeDir: options.homeDir }) });
   if (!checked.ok) return { ok: false, error: "charter_invalid", field: checked.field, message: `charter_json of ${id}: ${checked.message}` };
   if (checked.charter.id !== id) return { ok: false, error: "charter_invalid", field: "id", message: `charter_json of ${id}: its id is ${JSON.stringify(checked.charter.id)}` };
-  return { ok: true, created: writeCharterFiles(dataDir, checked.charter) };
+  return { ok: true, created: writeCharterFiles(dataDir, checked.charter, options.homeDir) };
 }

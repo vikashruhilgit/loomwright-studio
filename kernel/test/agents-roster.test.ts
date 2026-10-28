@@ -834,7 +834,10 @@ describe("studio agents list | show (AC8)", () => {
       tokens_per_day: 200000,
       sessions_running: 2,
       sessions_at_once: 3,
+      connectors: [],
     });
+    // Wright's wright.json holds no grant: [] (null only when the file is absent or does not read ok).
+    expect(body.agents[0]?.connectors).toEqual([]);
   });
 
   it("no wright.json: Wright's model is not set and the listing never creates the file; no members says how to add one", async () => {

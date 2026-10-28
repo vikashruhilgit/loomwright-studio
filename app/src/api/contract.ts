@@ -487,6 +487,13 @@ export interface RosterEntry {
   readonly tokens_per_day: number | null;
   readonly sessions_running: number;
   readonly sessions_at_once: number | null;
+  /**
+   * Phase 6 item 08: the connectors the owner granted this agent (`["github"]`),
+   * `[]` for none, `null` when its settings file does not read ok (for Wright,
+   * also when `wright.json` is absent). Optional, so a roster that predates the
+   * grant still types; a missing value reads as unknown, never as no grant.
+   */
+  readonly connectors?: readonly ConnectorKind[] | null;
 }
 
 export interface AgentsResponse {
@@ -553,15 +560,16 @@ export type WrightSetField = "model" | "effort" | "limits.tokens_per_day" | "lim
  * Phase 6 item 08: the owner's GitHub grant, `POST /agents/:id/set` with field
  * `connectors` and the value as typed on the CLI (`github`, or `none` to
  * clear). Kept apart from `AgentSetField`, which the Team screen handles
- * field by field: the kernel refuses this field until item 08 makes it
- * settable, and item 08 settles its answer.
+ * field by field. Any other value is refused `400 invalid_input` with
+ * `field: "connectors"`. Only the owner's route and verb set it: a session
+ * cannot. Granting while GitHub is not connected is allowed and recorded.
  */
 export interface AgentConnectorsSetBody {
   readonly field: "connectors";
   readonly value: string;
 }
 
-/** `POST /agents/:id/set`: both strings, the value as typed on the CLI (`none` clears effort or a limit). `id` `wright` takes only `WrightSetField` (item 07). */
+/** `POST /agents/:id/set`: both strings, the value as typed on the CLI (`none` clears effort or a limit). `id` `wright` takes only `WrightSetField` (item 07) and the connectors grant (item 08). */
 export type AgentSetBody =
   | { readonly field: AgentSetField; readonly value: string }
   | { readonly field: WrightSetField; readonly value: string }
@@ -569,9 +577,10 @@ export type AgentSetBody =
 
 export interface AgentSetResponse {
   readonly agent: AgentRow | RosterEntry;
-  readonly field: AgentSetField;
-  readonly old: string | number | null;
-  readonly new: string | number | null;
+  readonly field: AgentSetField | "connectors";
+  /** A scalar field's value, or for `connectors` the granted kinds (`["github"]`); `null` is unset (no grant). */
+  readonly old: string | number | readonly string[] | null;
+  readonly new: string | number | readonly string[] | null;
   readonly changed: boolean;
 }
 
