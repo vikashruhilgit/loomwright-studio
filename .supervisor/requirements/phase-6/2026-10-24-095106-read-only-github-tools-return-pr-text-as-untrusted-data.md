@@ -79,3 +79,9 @@ Recorded 2026-10-24 in the phase 6 product-owner session, over four rounds of As
 kernel/src/integrations/github/tools.ts
 kernel/test/integrations-github-tools.test.ts
 docs/architecture/github-tools.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-28T11:26:00Z
+- **Brief:** .supervisor/jobs/done/2026-10-28-read-only-github-pr-tools-untrusted-data.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/151
