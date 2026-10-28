@@ -65,7 +65,7 @@ import type { Store } from "../store/store.js";
 import { nextCronFire } from "../triggers/index.js";
 import type { TriggerView } from "../triggers/index.js";
 import { afterPlaybookStep, mayManage, namedAsync, refuseCrewDrafting } from "./drafts.js";
-import { formatPollSummary, pollOf, previewPoll, readDryRunDrafts, wrapPollForModel } from "./dry-run-poll.js";
+import { formatPollSummary, pollOf, previewPoll, readDryRunDrafts, wrapPollForModel, wrapWouldDoForModel } from "./dry-run-poll.js";
 import type { PollDryRun } from "./dry-run-poll.js";
 import { itemPromptBlock } from "./items.js";
 import type { MirrorDryRun } from "./mirror.js";
@@ -139,19 +139,22 @@ function clipped(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-function wouldDoText(e: WouldDoEntry): string {
+/** A poll dry run's entry names no input: its session read hostile PR text, and the summary reaches the model unwrapped. */
+function wouldDoText(e: WouldDoEntry, withInput: boolean): string {
   const how = e.would === "held" ? `held for approval${e.action === undefined ? "" : `: ${e.action}`}` : "would run";
-  return `${e.tool} "${clipped(e.input_summary, SUMMARY_INPUT_CHARS)}" (${how})`;
+  return withInput ? `${e.tool} "${clipped(e.input_summary, SUMMARY_INPUT_CHARS)}" (${how})` : `${e.tool} (${how})`;
 }
 
 /**
  * The dry run as one paragraph: version, ending, tokens, what it would do,
  * the next fires (UTC) and the dedupe key's preview. The would-do inputs are
  * the model's untrusted text, copied as data: every reader renders it inert
- * (the mirror as a code span, `studio approvals` escaped and indented).
+ * (the mirror as a code span, `studio approvals` escaped and indented). A
+ * poll playbook's summary names the calls only: the tool result carries it to
+ * the model as is, and its inputs are in `would_do`, wrapped there.
  */
 export function formatDryRunSummary(run: DryRunSummaryInput): string {
-  const shown = run.would_do.slice(0, SUMMARY_ENTRIES).map(wouldDoText);
+  const shown = run.would_do.slice(0, SUMMARY_ENTRIES).map((e) => wouldDoText(e, run.poll === undefined));
   const more = run.would_do.length - shown.length;
   const doing =
     run.would_do.length === 0 ? "it would do nothing that acts" : `it would do ${run.would_do.length} call${run.would_do.length === 1 ? "" : "s"}: ${shown.join("; ")}${more > 0 ? `; and ${more} more` : ""}`;
@@ -564,8 +567,8 @@ const dryRunTool = defineTool({
         },
         { now: ctx.now, noEffect: (err) => phase === "checks" || (phase === "starting" && isAdmissionRefusal(err)) },
       );
-      // The model sees a poll's PR-author and model text wrapped as data (a replay's stored result too).
-      return afterPlaybookStep(ctx, result.playbook, result.poll === undefined ? result : { ...result, poll: wrapPollForModel(result.poll) });
+      // The model sees a poll's PR-author and model text wrapped as data (a replay's stored result too); its summary carries none.
+      return afterPlaybookStep(ctx, result.playbook, result.poll === undefined ? result : { ...result, would_do: wrapWouldDoForModel(result.would_do, result.poll), poll: wrapPollForModel(result.poll) });
     }),
 });
 

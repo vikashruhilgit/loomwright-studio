@@ -33,7 +33,7 @@
 import { agentSettingsPath } from "../agents/settings.js";
 import type { GitHubClient, PollSpec } from "../integrations/types.js";
 import { wrapUntrusted } from "../brain/context.js";
-import { clip } from "../loop/internal.js";
+import type { WouldDoEntry } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { fetchPollItems, githubConnectorState, parsePollSpec } from "../triggers/index.js";
 import type { TriggerView } from "../triggers/index.js";
@@ -176,7 +176,8 @@ export async function previewPoll(
     if (fetched.error === "rate_limited") {
       return incomplete(spec, "rate_limited", `GitHub rate-limited the poll of ${fetched.repo}; try the dry run again after ${fetched.resets_at}.`);
     }
-    const detail = fetched.status !== undefined ? ` (HTTP ${fetched.status})` : fetched.message !== undefined ? `: ${clip(fetched.message, 200)}` : "";
+    // The client's error message is outside text (a response body can carry a PR author's): kept out of the fix the model reads.
+    const detail = fetched.status !== undefined ? ` (HTTP ${fetched.status})` : "";
     return incomplete(spec, "source_error", `GitHub could not be read for ${fetched.repo}: ${fetched.error}${detail}. Check the connector and the repository, then dry-run again.`);
   }
   if (fetched.items.length === 0) return { poll: { spec, items: [], reviewed: null, drafts: [] }, review: null };
@@ -279,6 +280,16 @@ export function wrapPollForModel(poll: PollDryRun): PollDryRun {
   };
 }
 
+/**
+ * A poll dry run's would-do entries as the tool result shows them to the
+ * model: each `input_summary` (cut text of a call the review session made
+ * after reading a PR) wrapped as untrusted data from the reviewed item's ref.
+ */
+export function wrapWouldDoForModel(entries: readonly WouldDoEntry[], poll: PollDryRun): WouldDoEntry[] {
+  const source = poll.reviewed ?? "dry_run";
+  return entries.map((e) => ({ ...e, input_summary: wrapUntrusted(source, e.input_summary) }));
+}
+
 // ---- The summary -----------------------------------------------------------------------
 
 /** One line of text: control characters (which a model's or a PR's text could carry) become spaces, then cut. */
@@ -310,6 +321,6 @@ export function formatPollSummary(poll: PollDryRun): string {
   const drafted =
     poll.drafts.length === 0
       ? "it drafted nothing"
-      : `it drafted ${poll.drafts.length} output${poll.drafts.length === 1 ? "" : "s"} (not sent): ${poll.drafts.map((d) => `${inline(d.tool, SUMMARY_TARGET_CHARS)}${d.target === null ? "" : ` ${inline(d.target, SUMMARY_TARGET_CHARS)}`}`).join("; ")}`;
+      : `it drafted ${poll.drafts.length} output${poll.drafts.length === 1 ? "" : "s"} (not sent): ${poll.drafts.map((d) => inline(d.tool, SUMMARY_TARGET_CHARS)).join("; ")}`;
   return `${found} It reviewed ${poll.reviewed} in a draft-only session; ${drafted}.`;
 }
