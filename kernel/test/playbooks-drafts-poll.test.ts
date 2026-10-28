@@ -138,6 +138,12 @@ describe("kernel_playbook_create with a structured poll (AC1)", () => {
     expect(errorText(await create({ trigger: { kind: "poll" } }))).toContain("trigger: a poll trigger needs poll");
     nothingWritten();
   });
+
+  it("refuses a once or cron trigger with no spec, naming trigger and writing nothing", async () => {
+    expect(errorText(await create({ trigger: { kind: "cron", tz: "UTC" } }))).toContain("trigger: spec is required");
+    expect(errorText(await create({ trigger: { kind: "once" } }))).toContain("trigger: spec is required");
+    nothingWritten();
+  });
 });
 
 describe("item 04's refusals come back by their own reasons (AC2)", () => {

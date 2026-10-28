@@ -92,8 +92,9 @@ comment. Its never list covers pushes and every GitHub write it does not need
 charter; it is applied only if the owner approves the held call. Draft the
 playbook for that crew member too, and show the owner both.
 
-Tell the owner how to change each value. The dedupe key, the mode and the other
-policy values are changed in the playbook card's Set. The poll's repositories,
+Tell the owner how to change each value. The dedupe key, the priority, the model
+and the token limit are changed in the playbook card's Set. The card shows the
+mode but does not edit it: only draft is accepted in phase six. The poll's repositories,
 filters and interval are changed by asking you (you make a new version for the
 owner to review) or by turning the playbook off.
 
