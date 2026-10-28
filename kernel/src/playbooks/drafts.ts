@@ -53,7 +53,7 @@ import type {
 import { errorMessage } from "../loop/internal.js";
 import { runStep } from "../loop/steps.js";
 import type { Store } from "../store/store.js";
-import { MAX_CRON_LENGTH, TRIGGER_KINDS, formatZoned } from "../triggers/index.js";
+import { MAX_CRON_LENGTH, POLL_FILTER_KEYS, POLL_SOURCES, TRIGGER_KINDS, formatZoned } from "../triggers/index.js";
 import type { TriggerView } from "../triggers/index.js";
 // A cycle by design (`./dry-run.ts` imports this module's shared helpers):
 // both sides use the other's functions only when called, never at module load.
@@ -73,7 +73,7 @@ import {
   setPlaybookPolicy,
   updatePlaybook,
 } from "./store.js";
-import type { PlaybookChange, PlaybookRow } from "./store.js";
+import type { PlaybookChange, PlaybookRow, PlaybookTriggerInput } from "./store.js";
 import { DEDUPE_KEY_FIELDS, PLAYBOOK_MODES, PLAYBOOK_PRIORITIES } from "./types.js";
 import type { PlaybookPart, PlaybookVerb } from "./types.js";
 
@@ -139,11 +139,47 @@ const resyncOnce: DueWorkFn = ({ store }) => {
 
 const idempotencyKey = z.string().min(1).max(200);
 
+/**
+ * A poll trigger's `PollSpec` as an object (so `tools/list` publishes its shape and a multi-repo spec
+ * is not squeezed into a 200-character string). Only the spec's own shape is closed here: the source
+ * is the triggers feature's list, the interval a positive integer. The filters object is loose and the
+ * 60 second floor is not checked here, so an unknown filter or a short interval reaches the triggers
+ * feature's own check and is refused by its named reason (`poll_filter_unknown`,
+ * `poll_interval_below_floor`), never as a shape error.
+ */
+export const pollTriggerShape = z.object({
+  source: z.enum(POLL_SOURCES),
+  repos: z.array(z.string().min(1).max(201)).min(1),
+  filters: z.looseObject({}).optional(),
+  interval_seconds: z.number().int().positive(),
+});
+
 const triggerShape = z.object({
   kind: z.enum(TRIGGER_KINDS),
-  spec: z.string().min(1).max(MAX_CRON_LENGTH),
+  spec: z.string().min(1).max(MAX_CRON_LENGTH).optional(),
   tz: z.string().min(1).max(64).optional(),
+  poll: pollTriggerShape.optional(),
 });
+
+/**
+ * The trigger as the store takes it: `{kind, spec, tz?}`, `spec` a string. A `poll` object is
+ * serialised to the JSON text the triggers feature parses; `poll` with `spec`, or on a kind that is
+ * not `poll`, is refused naming `trigger`, as is a trigger with neither. Throws before anything is written.
+ */
+function storeTrigger(t: z.infer<typeof triggerShape>): PlaybookTriggerInput {
+  const { poll, spec, tz, kind } = t;
+  if (poll !== undefined) {
+    if (kind !== "poll") throw new PlaybookError("invalid_input", `trigger: poll is for kind poll only (got kind ${kind})`);
+    if (spec !== undefined) throw new PlaybookError("invalid_input", "trigger: give the poll as an object in poll or as JSON text in spec, not both");
+    const { source, repos, filters, interval_seconds } = poll;
+    const text = JSON.stringify({ source, repos, ...(filters === undefined ? {} : { filters }), interval_seconds });
+    return { kind, spec: text, ...(tz === undefined ? {} : { tz }) };
+  }
+  if (spec === undefined) {
+    throw new PlaybookError("invalid_input", `trigger: ${kind === "poll" ? "a poll trigger needs poll (the object) or spec (its JSON text)" : "spec is required"}`);
+  }
+  return { kind, spec, ...(tz === undefined ? {} : { tz }) };
+}
 
 // The closed sets are the store's own (never a copied list), so `tools/list` publishes them as enums and a positive
 // integer; the store's `checkPolicyValue` stays the domain check (an empty or repeated dedupe_key, the owner's values).
@@ -289,7 +325,9 @@ const create = defineTool({
   name: "kernel_playbook_create",
   description:
     "Draft a playbook: recurring work you will do for the owner. name: a short title (its slug, the mirror's file name, comes from it once). " +
-    "intent: what to do, in plain words. trigger: {kind: once, spec: an ISO-8601 instant WITH a time zone} or {kind: cron, spec: a 5-field cron expression, tz: an IANA zone}; " +
+    "intent: what to do, in plain words. trigger: {kind: once, spec: an ISO-8601 instant WITH a time zone} or {kind: cron, spec: a 5-field cron expression, tz: an IANA zone} " +
+    `or {kind: poll, poll: {source, repos: [owner/name, ...], filters (optional: ${POLL_FILTER_KEYS.join(", ")}), interval_seconds}} (no tz) to watch GitHub; ` +
+    "every poll value (the repos, the filters, the interval) is a proposal the owner can change by asking you; " +
     `it becomes the playbook's one linked trigger, which starts no work until the playbook is enabled. dedupe_key: fields from playbook.id, playbook.version, trigger.id, trigger.scheduled_at, date, item.id, item.revision ` +
     "(item.id and item.revision are a polled item's; a fire with no item refuses a key naming them). " +
     `priority: low, normal or high. model: a model id. token_limit: tokens per day. mode: draft only in phase 6 (live is refused). ${LIMITS} ` +
@@ -319,7 +357,7 @@ const create = defineTool({
                 agent,
                 name: a.name,
                 intent: a.intent,
-                trigger: a.trigger,
+                trigger: storeTrigger(a.trigger),
                 dedupe_key: a.dedupe_key,
                 priority: a.priority,
                 model: a.model,
@@ -339,7 +377,7 @@ const create = defineTool({
 const update = defineTool({
   name: "kernel_playbook_update",
   description:
-    "Change a playbook you own, or (Wright) one of a registered crew member's: changes gives any of name, intent, trigger, dedupe_key, priority, model, token_limit, mode (same forms as kernel_playbook_create; at least one). " +
+    "Change a playbook you own, or (Wright) one of a registered crew member's: changes gives any of name, intent, trigger (once, cron or the poll form), dedupe_key, priority, model, token_limit, mode (same forms as kernel_playbook_create; at least one). " +
     "A change makes a new version, and an enabled playbook goes back to draft for the owner to review. A trigger change re-schedules the same linked trigger. " +
     `${LIMITS} Returns {id, slug, status, version, trigger_id, next_fire_at, changed, mirror}. ${REPEAT}`,
   shape: {
@@ -351,10 +389,12 @@ const update = defineTool({
     named("kernel_playbook_update", () => {
       refuseCrewDrafting(ctx);
       const agent = actingAgentFor(ctx, a.id);
+      const { trigger, ...rest } = a.changes;
+      const changes = trigger === undefined ? rest : { ...rest, trigger: storeTrigger(trigger) };
       const first = runStep(
         ctx.store,
         ctx.stepKey(a.idempotency_key),
-        () => resultOf(updatePlaybook(ctx.store, { id: a.id, agent, changes: a.changes, sessionId: ctx.sessionId }, ctx.now())),
+        () => resultOf(updatePlaybook(ctx.store, { id: a.id, agent, changes, sessionId: ctx.sessionId }, ctx.now())),
         { now: ctx.now },
       );
       return afterStep(ctx, first);

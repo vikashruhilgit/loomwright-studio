@@ -548,6 +548,7 @@ describe("the markdown mirror (AC1, AC7)", () => {
         "- Priority: `high` (proposed)",
         "- Model: not set",
         "- Token limit per day: `1000` (proposed)",
+        "- Mode: `draft`",
         "- Effort: not set",
         "- API-key fallback: not set",
         "",
