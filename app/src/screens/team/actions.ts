@@ -6,6 +6,7 @@
 // local edit of the roster.
 import type {
   AgentChangeResponse,
+  AgentConnectorsSetBody,
   AgentCreateBody,
   AgentCreateResponse,
   AgentDetailResponse,
@@ -15,6 +16,7 @@ import type {
   ApiRequest,
   ApiResult,
   AskResponse,
+  ConnectorsResponse,
   StudioBridge,
 } from "../../api/contract";
 import { type CallOutcome, outcomeOf } from "./model";
@@ -49,6 +51,17 @@ export function renameAgent(api: StudioBridge, id: string, displayName: string):
 export function setAgentField(api: StudioBridge, id: string, field: AgentSetField, value: string): Promise<CallOutcome<AgentSetResponse>> {
   const body: AgentSetBody = { field, value };
   return call<AgentSetResponse>(api, { method: "POST", path: "/agents/:id/set", params: { id }, body });
+}
+
+/** `POST /agents/:id/set` with `{field: "connectors", value}`: `github` grants the connector, `none` removes the grant. The owner's route only; a session cannot set it. */
+export function setAgentConnectors(api: StudioBridge, id: string, value: "github" | "none"): Promise<CallOutcome<AgentSetResponse>> {
+  const body: AgentConnectorsSetBody = { field: "connectors", value };
+  return call<AgentSetResponse>(api, { method: "POST", path: "/agents/:id/set", params: { id }, body });
+}
+
+/** `GET /connectors`: every connector row, none when nothing is connected. Read here, not a store resource. */
+export function fetchConnectors(api: StudioBridge): Promise<CallOutcome<ConnectorsResponse>> {
+  return call<ConnectorsResponse>(api, { method: "GET", path: "/connectors" });
 }
 
 /** `POST /agents/:id/off` or `/on`. */

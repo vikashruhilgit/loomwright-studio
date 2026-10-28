@@ -13,15 +13,29 @@
 // `201` and appears only once the event arrives. Rename changes the roster and
 // appends `agent_renamed` at once, as the kernel's rename does.
 //
+// Phase 6 item 08 (the owner grants an agent GitHub): the roster carries each
+// agent's `connectors` (Mason holds GitHub, Wright and Ada hold none), `GET
+// /connectors` answers the connector's state (`connector` in the options,
+// changed by `setConnector`), and `POST /agents/:id/set` takes the shared
+// interface's `{field: "connectors", value: "github" | "none"}`: it changes the
+// roster, appends `agent_settings_set` (the feed is how the row changes) and
+// answers `{agent, field, old, new, changed}` with `null` for no grant. Any
+// other value is `400 invalid_input` with `field: "connectors"`. Wright's set
+// is answered the same way.
+//
 // Every value here is fixture data: no real path, account or token.
 import type {
   AgentChangeResponse,
   AgentCreateResponse,
   AgentDetailResponse,
   AgentRow,
+  AgentSetResponse,
   Approval,
   AskResponse,
   BrainMessage,
+  Connector,
+  ConnectorKind,
+  ConnectorsResponse,
   EventFrame,
   RosterEntry,
   SessionSummary,
@@ -47,6 +61,7 @@ export const WRIGHT: RosterEntry = {
   tokens_per_day: 500_000,
   sessions_running: 1,
   sessions_at_once: 3,
+  connectors: [],
 };
 
 /** A comment-only reviewer: no daily token limit, no sessions limit (both "no limit"). */
@@ -63,6 +78,7 @@ export const MASON: RosterEntry = {
   tokens_per_day: null,
   sessions_running: 0,
   sessions_at_once: null,
+  connectors: ["github"],
 };
 
 /** Turned off, with numeric limits. */
@@ -79,6 +95,7 @@ export const ADA: RosterEntry = {
   tokens_per_day: 250_000,
   sessions_running: 0,
   sessions_at_once: 2,
+  connectors: [],
 };
 
 /** Mason's comment-only charter: what `GET /agents/mason` reports. */
@@ -147,6 +164,7 @@ export const REVIEWER_OLD: RosterEntry = {
   tokens_per_day: null,
   sessions_running: 0,
   sessions_at_once: null,
+  connectors: [],
 };
 export const REVIEWER_NEW: RosterEntry = { ...REVIEWER_OLD, id: "phase5-exit-1024", display_name: "comment-only reviewer ", tokens_today: 2_400 };
 
@@ -231,6 +249,8 @@ export interface TeamFixtureOptions {
   readonly waiting?: boolean;
   /** The collision roster in place of Mason and Ada: the two reviewers with the off Ada between them (`crew` false wins). */
   readonly collision?: boolean;
+  /** The GitHub connector's state from the start: a row with this status, or none (default: none, "not connected"). */
+  readonly connector?: Connector["status"] | "none";
 }
 
 export interface TeamFixture {
@@ -242,6 +262,10 @@ export interface TeamFixture {
   readonly renames: { readonly id: string; readonly body: unknown }[];
   /** Every `POST /ask` body, in order. */
   readonly asks: unknown[];
+  /** Every `POST /agents/:id/set`, in order. */
+  readonly sets: { readonly id: string; readonly body: unknown }[];
+  /** Change what `GET /connectors` answers next (append `connector_status` after, as the kernel does). */
+  setConnector(status: Connector["status"] | "none"): void;
   /** Give the routes the started kernel, so rename can append its event. */
   attach(kernel: FixtureKernel): void;
   /** Move the crew member the last `201` created into `GET /agents`; returns it. Append `agent_created` after. */
@@ -275,6 +299,9 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
   const creates: unknown[] = [];
   const renames: { id: string; body: unknown }[] = [];
   const asks: unknown[] = [];
+  const sets: { id: string; body: unknown }[] = [];
+  const wright: { entry: RosterEntry } = { entry: { ...WRIGHT } };
+  let connector: Connector["status"] | "none" = options.connector ?? "none";
   let pending: CrewMember | undefined;
   let kernel: FixtureKernel | undefined;
   let nextId = 1;
@@ -282,6 +309,39 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
   const event = (kind: string, payload: unknown): EventFrame => ({ type: "event", id: nextId++, at: new Date().toISOString(), kind, session_id: null, task_id: null, payload });
   const member = (id: string): CrewMember | undefined => crew.find((m) => m.entry.id === id);
   const notFound = (id: string): FixtureAnswer => ({ status: 404, body: { error: "no_such_agent", message: `no agent ${id}` } });
+
+  const connectorRow = (status: Connector["status"]): Connector => ({
+    id: 1,
+    kind: "github",
+    status,
+    account_login: "studio-fixture",
+    permissions: { pull_requests: "read", contents: "read" },
+    reachable_repos: ["studio-fixture/site"],
+    expires_at: null,
+    verified_at: AT,
+    created_at: AT,
+    updated_at: AT,
+  });
+
+  /** `POST /agents/:id/set` for `connectors`: the roster changes and `agent_settings_set` follows. */
+  const set = (req: FixtureRequest): FixtureAnswer => {
+    const id = req.params.id ?? "";
+    sets.push({ id, body: req.body });
+    const found = id === "wright" ? wright : member(id);
+    if (found === undefined) return notFound(id);
+    const body = isRecord(req.body) ? req.body : {};
+    if (body.field !== "connectors" || (body.value !== "github" && body.value !== "none")) {
+      return { status: 400, body: { error: "invalid_input", field: "connectors", message: "connectors must be github or none" } };
+    }
+    const before: readonly ConnectorKind[] = found.entry.connectors ?? [];
+    const after: readonly ConnectorKind[] = body.value === "github" ? ["github"] : [];
+    const changed = before.join() !== after.join();
+    found.entry = { ...found.entry, connectors: after };
+    const asGrant = (list: readonly ConnectorKind[]): readonly ConnectorKind[] | null => (list.length === 0 ? null : list);
+    if (changed) kernel?.appendEvent(event("agent_settings_set", { id, field: "connectors", old: asGrant(before), new: asGrant(after), ...(id === "wright" ? { by: "owner" } : {}) }));
+    const answer: AgentSetResponse = { agent: found.entry, field: "connectors", old: asGrant(before), new: asGrant(after), changed };
+    return { status: 200, body: answer };
+  };
 
   const create = (req: FixtureRequest): FixtureAnswer => {
     creates.push(req.body);
@@ -305,6 +365,7 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
       tokens_per_day: typeof limits.tokens_per_day === "number" ? limits.tokens_per_day : null,
       sessions_running: 0,
       sessions_at_once: typeof limits.sessions_at_once === "number" ? limits.sessions_at_once : null,
+      connectors: [],
     };
     const never = Array.isArray(policy.never) ? (policy.never as string[]) : [];
     const workspaces = Array.isArray(c.workspaces) ? (c.workspaces as string[]) : [];
@@ -321,6 +382,10 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
     creates,
     renames,
     asks,
+    sets,
+    setConnector(status) {
+      connector = status;
+    },
     attach(started) {
       kernel = started;
     },
@@ -334,7 +399,9 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
     event,
     options: {
       routes: {
-        "GET /agents": () => ({ status: 200, body: { agents: [WRIGHT, ...crew.map((m) => m.entry)] } }),
+        "GET /agents": () => ({ status: 200, body: { agents: [wright.entry, ...crew.map((m) => m.entry)] } }),
+        "GET /connectors": () => ({ status: 200, body: { connectors: connector === "none" ? [] : [connectorRow(connector)] } satisfies ConnectorsResponse }),
+        "POST /agents/:id/set": set,
         "GET /agents/:id": (req) => {
           const id = req.params.id ?? "";
           if (id === "wright") return { status: 409, body: { error: "reserved", message: "wright is the lead agent; its settings are wright.json" } };

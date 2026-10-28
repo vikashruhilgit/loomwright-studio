@@ -14,6 +14,9 @@
 //   live read. Its effort and delegation depth read "not reported" unless set
 //   this session, when the value is marked "set this session" (no route reads
 //   it back), and "unknown" while the roster says wright.json does not read ok.
+// - Both: a Connectors row (phase 6 item 08) with the GitHub grant (the roster's
+//   `connectors`) and the connector's state (`GET /connectors`, read by the
+//   screen), and Grant GitHub or Revoke through `POST /agents/:id/set`.
 // - The header avatar carries the card's state (`avatar`, from the task line),
 //   never a fixed one.
 //
@@ -29,6 +32,7 @@ import { Button } from "../../components/Button/Button";
 import { formatTokens } from "../../components/Card/Card";
 import { SelectField, TextField } from "../../components/Input/Input";
 import { setAgentField, turnAgent } from "./actions";
+import { Connectors, type GrantChange, changeGithubGrant } from "./Connectors";
 import {
   CLEAR_VALUE,
   CREW_SET_FIELDS,
@@ -36,10 +40,12 @@ import {
   NO_LIMIT,
   PERMISSION_MODES,
   WRIGHT_SET_FIELDS,
+  type ConnectorsState,
   acceptedSettings,
   agentSessionsText,
   charterProse,
   enforcedToolPolicy,
+  githubGranted,
   isRecord,
   isWright,
   rosterModel,
@@ -76,6 +82,8 @@ export interface InspectorProps {
   /** A crew member's detail; always undefined for Wright (never fetched). */
   readonly detail: DetailState | undefined;
   readonly wrightSet: WrightSetValues;
+  /** `GET /connectors`, as the screen holds it: the GitHub connector's state. */
+  readonly connectors: ConnectorsState;
   readonly onWrightSet: (field: WrightSetField, value: string) => void;
   /** Open the rename dialog (crew only). */
   readonly onRename: () => void;
@@ -221,7 +229,7 @@ function SetField({
   );
 }
 
-export function Inspector({ api, agent, avatar, detail, wrightSet, onWrightSet, onRename, onClose, focusSet = false }: InspectorProps) {
+export function Inspector({ api, agent, avatar, detail, wrightSet, connectors, onWrightSet, onRename, onClose, focusSet = false }: InspectorProps) {
   const lead = isWright(agent);
   const headingId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -266,6 +274,18 @@ export function Inspector({ api, agent, avatar, detail, wrightSet, onWrightSet, 
       const outcome = await turnAgent(api, agent.id, to);
       if (!outcome.ok) setNotice({ kind: "error", text: outcome.message });
       else setNotice({ kind: "ok", text: outcome.body.changed ? `Turned ${to}.` : `Already ${to}.` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // A grant or revoke posts the owner's route; the row changes only when the feed's `agent_*` event refetches the roster.
+  const onGrant = async (change: GrantChange) => {
+    setBusy(true);
+    setNotice(undefined);
+    try {
+      const outcome = await changeGithubGrant(api, agent, change);
+      setNotice({ kind: outcome.ok ? "ok" : "error", text: outcome.text });
     } finally {
       setBusy(false);
     }
@@ -371,6 +391,10 @@ export function Inspector({ api, agent, avatar, detail, wrightSet, onWrightSet, 
         </dl>
         {agent.settings_error === null ? null : <p className="team-insp-error">Settings: {agent.settings_error}</p>}
         <SetField fields={lead ? WRIGHT_SET_FIELDS : CREW_SET_FIELDS} busy={busy} onSet={onSet} selectRef={selectRef} />
+      </Section>
+
+      <Section title="Connectors" note="granted per agent" testId="team-insp-connectors">
+        <Connectors granted={githubGranted(agent)} state={connectors} busy={busy} onChange={(change) => void onGrant(change)} />
       </Section>
 
       {ok === undefined ? null : (

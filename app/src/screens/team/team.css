@@ -243,6 +243,9 @@
 .team-tabular {
   font-variant-numeric: tabular-nums;
 }
+.team-insp-conn-action {
+  align-self: flex-start;
+}
 .team-insp-set {
   display: flex;
   flex-direction: column;
