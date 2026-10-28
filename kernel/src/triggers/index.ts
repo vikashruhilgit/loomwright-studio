@@ -54,8 +54,8 @@ export {
   updateTriggerSpec,
 } from "./store.js";
 export type { TriggerErrorCode, TriggerFireOutcome, TriggerResult, TriggerSpec, TriggerView } from "./store.js";
-export { MAX_POLL_ITEMS, POLL_FILTER_KEYS, POLL_SOURCES, firePollTriggers } from "./poll.js";
-export type { PollFireOutcome } from "./poll.js";
+export { MAX_POLL_ITEMS, POLL_FILTER_KEYS, POLL_SOURCES, fetchPollItems, firePollTriggers, githubConnectorState, parsePollSpec } from "./poll.js";
+export type { ConnectorState, Fetched, PollFireOutcome } from "./poll.js";
 
 export const triggersContribution: FeatureContribution = Object.freeze({
   name: "triggers",

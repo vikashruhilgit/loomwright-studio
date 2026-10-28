@@ -321,6 +321,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     const authProvider = await (deps.selectAuthProvider ?? selectAuthProvider)(providerId, { keychain, store, now });
 
     const budget = new Budget({ store, authProvider, agentLimits: agentLimitsFor(dataDir) }, { now });
+    // The client the loop's due work gets, also given to a contributed tool's context (a poll playbook's dry run); absent stays absent.
+    const githubOf = deps.githubClient === undefined ? {} : { github: deps.githubClient };
     const manager = new SessionManager(
       {
         store,
@@ -336,10 +338,10 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         connectorsFor: connectorsFor(dataDir),
         // Each session lists only the contributed tools its agent's grants allow (`requiresConnector`): it only narrows.
         mcpServers: ({ sessionId, connectors }) => ({
-          [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now }, toolsForConnectors(contributions.tools, connectors)),
+          [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now, ...githubOf }, toolsForConnectors(contributions.tools, connectors)),
         }),
         // The gate's pre-hold check, from the same contributed tools the server registers (it can only narrow).
-        heldToolCheck: heldToolCheckOf(contributions.tools, (sessionId) => ({ store, sessions: manager, sessionId, now })),
+        heldToolCheck: heldToolCheckOf(contributions.tools, (sessionId) => ({ store, sessions: manager, sessionId, now, ...githubOf })),
       },
       { now, ...deps.sessionDeps },
     );
@@ -358,7 +360,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         dueWork: contributions.dueWork,
         sessions: manager,
         loomwright: { configured: options.sessions?.loomwrightPath, installedPluginsPath: options.sessions?.installedPluginsPath },
-        ...(deps.githubClient === undefined ? {} : { github: deps.githubClient }),
+        ...githubOf,
       },
       { now, ...deps.loopDeps },
     );

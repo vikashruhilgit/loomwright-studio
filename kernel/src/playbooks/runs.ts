@@ -349,7 +349,7 @@ interface RunDecision {
 }
 
 /** Whether a `fire` or `run_now` of playbook `id` other than run `exceptRun` ended `done` with dedupe key `key`. */
-function doneWithKey(store: Store, id: number, key: string, exceptRun: number | null): boolean {
+export function doneWithKey(store: Store, id: number, key: string, exceptRun: number | null): boolean {
   return (
     store
       .prepare<[number, string, number], number>("SELECT 1 FROM playbook_runs WHERE playbook = ? AND kind IN ('fire', 'run_now') AND dedupe_key = ? AND status = 'done' AND id != ? LIMIT 1")

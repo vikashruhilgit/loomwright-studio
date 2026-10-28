@@ -41,6 +41,21 @@ export function isDryRunReadOnlyKernelTool(toolName: string): boolean {
 }
 
 /**
+ * The kernel's GitHub read tools (phase 6 item 06), read-only in a dry run so
+ * a poll playbook's review session can read its pull request: `_get` already
+ * matches `KERNEL_READ_TOOL`, `_diff`, `_files` and `_comments` do not, and
+ * all four are listed here for clarity. A separate list, never added to
+ * `DRY_RUN_READ_ONLY_TOOLS`. The session still lists them only for an agent
+ * holding the `github` grant, and its own policy must still allow them.
+ */
+export const DRY_RUN_GITHUB_READ_TOOLS: readonly string[] = Object.freeze([
+  "mcp__kernel__kernel_github_pr_get",
+  "mcp__kernel__kernel_github_pr_diff",
+  "mcp__kernel__kernel_github_pr_files",
+  "mcp__kernel__kernel_github_pr_comments",
+]);
+
+/**
  * The programs a dry-run session's Bash command may start with, matched
  * against the command's FIRST shell word exactly (`shellWords`, case-sensitive,
  * no path: `/bin/cat`, `./ls` and `CAT` are not in the set). Each one only
@@ -72,7 +87,7 @@ export function isDryRunReadOnly(toolName: string, toolInput: unknown): boolean 
     const command = bashCommandOf(toolInput);
     return command !== undefined && isDryRunReadOnlyBash(command);
   }
-  return DRY_RUN_READ_ONLY_TOOLS.includes(toolName) || isDryRunReadOnlyKernelTool(toolName);
+  return DRY_RUN_READ_ONLY_TOOLS.includes(toolName) || DRY_RUN_GITHUB_READ_TOOLS.includes(toolName) || isDryRunReadOnlyKernelTool(toolName);
 }
 
 /**
