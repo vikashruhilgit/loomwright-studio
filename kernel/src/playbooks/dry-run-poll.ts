@@ -25,12 +25,14 @@
 // evaluated, starts no session.
 //
 // The `studio` CLI loads this module through `./dry-run.ts`: besides
-// `node:` builtins it imports only `../agents/settings.js`, `../loop/internal.js`,
+// `node:` builtins it imports only `../agents/settings.js`, `../brain/context.js`
+// (the untrusted-data wrapper), `../loop/internal.js`,
 // the triggers feature's public index, type-only integrations and feature
 // modules and this feature's files; never the Agent SDK, the session manager
 // or `kernel.ts`. `./dry-run.ts` imports it, never the other way round.
 import { agentSettingsPath } from "../agents/settings.js";
 import type { GitHubClient, PollSpec } from "../integrations/types.js";
+import { wrapUntrusted } from "../brain/context.js";
 import { clip } from "../loop/internal.js";
 import type { Store } from "../store/store.js";
 import { fetchPollItems, githubConnectorState, parsePollSpec } from "../triggers/index.js";
@@ -70,7 +72,7 @@ export interface PreviewIncomplete {
 export interface PollPreviewItem {
   readonly ref: string;
   readonly revision: string;
-  /** The PR's title: its author's text, untrusted data, cut to `MAX_TITLE_CHARS`. */
+  /** The PR's title: its author's text, untrusted data, control characters made spaces, cut to `MAX_TITLE_CHARS`. */
   readonly title: string;
   readonly would: PollWould;
   /** The evaluated key (`{"item.id":"github:o/r#7","item.revision":"abc123"}`), or `null` with no dedupe spec or an unreadable one. */
@@ -182,7 +184,7 @@ export async function previewPoll(
   const scheduledAt = trigger.next_fire_at ?? now.toISOString();
   const timeZone = hostTimeZone();
   const items: PollPreviewItem[] = fetched.items.map((item) => {
-    const shown = { ref: item.ref, revision: item.revision, title: clip(item.title, MAX_TITLE_CHARS) };
+    const shown = { ref: item.ref, revision: item.revision, title: inline(item.title, MAX_TITLE_CHARS) };
     if (row.dedupe_key_spec === null) return { ...shown, would: "run", dedupe_key: null };
     const key = evaluateDedupeKey(row.dedupe_key_spec, { playbook: row.id, version: row.version, triggerId: trigger.id, scheduledAt, item: { ref: item.ref, revision: item.revision } }, timeZone);
     if (!key.ok) return { ...shown, would: "skip", dedupe_key: null, dedupe_error: key.error };
@@ -250,6 +252,30 @@ export function pollOf(value: unknown): PollDryRun | undefined {
     reviewed: typeof v.reviewed === "string" ? v.reviewed : null,
     drafts: Array.isArray(v.drafts) ? v.drafts.filter(isDraft) : [],
     ...(isIncomplete(v.preview_incomplete) ? { preview_incomplete: v.preview_incomplete } : {}),
+  };
+}
+
+// ---- The tool result's untrusted text ---------------------------------------------------
+
+/**
+ * `poll` as the tool result shows it to the model: the same shape, with every
+ * field that carries a PR author's or the model's text (an item's `title`, a
+ * draft's `target` and `body`) wrapped as untrusted data, as every kernel
+ * GitHub tool wraps its text (invariant 3). A title is wrapped from its own
+ * item's ref; a draft's text from the reviewed item's. The stored
+ * `result_json` keeps the raw text: readers other than the model render it
+ * themselves.
+ */
+export function wrapPollForModel(poll: PollDryRun): PollDryRun {
+  const draftSource = poll.reviewed ?? "dry_run";
+  return {
+    ...poll,
+    items: poll.items.map((i) => ({ ...i, title: wrapUntrusted(i.ref, i.title) })),
+    drafts: poll.drafts.map((d) => ({
+      ...d,
+      target: d.target === null ? null : wrapUntrusted(draftSource, d.target),
+      body: d.body === null ? null : wrapUntrusted(draftSource, d.body),
+    })),
   };
 }
 
