@@ -81,14 +81,18 @@ export interface ToolPolicy {
   /**
    * The playbook's `playbooks.mode` (phase 6), for a playbook's session only;
    * absent otherwise. Filled by the session manager alone, at start and at
-   * each resume (a caller's value is dropped). The policy does not read it
-   * yet (phase 6 item 07).
+   * each resume (a caller's value is dropped). The gate reads it (phase 6
+   * item 07): under `draft` an outward call is denied `draft_mode` and
+   * recorded as a draft (`draftDecision`, `draft-mode.ts`); `live` keeps the
+   * hold and the grants.
    */
   readonly mode?: PlaybookMode;
   /**
    * The connectors the owner granted the session's agent
    * (`SessionManagerOptions.connectorsFor`; `[]` without it). Filled by the
-   * session manager alone, like `mode`. The policy does not read it yet.
+   * session manager alone, like `mode`. The gate reads it: with `github` in
+   * it, every Bash `gh` call is denied `use_kernel_github_tools`
+   * (`githubCliDecision`, `draft-mode.ts`).
    */
   readonly connectors?: readonly ConnectorKind[];
 }

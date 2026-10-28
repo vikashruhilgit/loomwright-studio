@@ -6,7 +6,8 @@
 // parts: `github-connector` contributes the `studio connectors` subcommand
 // and the token's expiry check (due work), and `github-routes` the four
 // `/connectors` routes. Item 06 filled `github-tools`: the four read-only
-// `kernel_github_pr_*` tools; `drafts` is still empty.
+// `kernel_github_pr_*` tools. Item 07 filled `drafts`: the `GET /drafts` and
+// `GET /drafts/:id` routes, and `recordDraftOutput` for the session gate.
 // Integrations are optional (invariant 5): Studio works with none connected.
 // Mechanism only (invariant 1). `startKernel` and `runCli` merge it through
 // `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`), ninth and last, after
@@ -44,7 +45,7 @@ export function integrationsContributionOf(parts: readonly IntegrationsPart[]): 
 /** The shipped contribution: `INTEGRATIONS_PARTS` merged at module load (the github parts are filled and claim no handler kind, so it does not throw). */
 export const integrationsContribution: FeatureContribution = integrationsContributionOf(INTEGRATIONS_PARTS);
 
-export { draftsPart } from "./drafts.js";
+export { draftsPart, getDraft, listDrafts, recordDraftOutput } from "./drafts.js";
 export { CONNECTORS_HELP, CONNECTORS_SUBCOMMAND, connectorsSubcommand } from "./cli.js";
 export { GITHUB_KEYCHAIN_SERVICE, createGitHubClient } from "./github/client.js";
 export {

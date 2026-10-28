@@ -509,6 +509,10 @@ describe("phase 3 exit: a playbook from studio ask to a parked fire, every scope
     ]);
     expect(calls).toHaveLength(5);
 
+    // The phase 3 walk proves holds and `always` grants, which a `live` playbook keeps. Draft (the phase 6
+    // default, and the only mode the setter allows) records the comment instead (pinned in draft-mode.test.ts).
+    store.prepare("UPDATE playbooks SET mode = 'live' WHERE id = ?").run(id);
+
     // ---- 7. Day 2: the fire session's comment is held; the owner approves it always ----
     /** A fire session that runs the comment through its gate, then ends with `modelUsage`. */
     const commentFire = (decisions: Decision[], modelUsage: unknown = {}, until: Promise<void> = Promise.resolve()): Driver => {
