@@ -252,6 +252,25 @@ describe("the GitHub CLI deny (AC4)", () => {
     expect((await s.bash("echo gh pr view 12")).permissionDecision).toBe("allow");
   });
 
+  it("denies a policy-denied oversize command unread, in bounded time, only in a granted session", async () => {
+    const huge = "{".repeat(60000);
+    const granted = setup(["github"]);
+    const gs = await granted.session({ allowedTools: [], allowedBashPrefixes: ["echo"] });
+    const started = Date.now();
+    expect(await gs.bash(huge)).toEqual(denied(GITHUB_CLI_DENY_REASON));
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(granted.decisions().map((d) => d["reason"])).toEqual(["use_kernel_github_tools"]);
+    expect(granted.drafts()).toEqual([]);
+
+    // An ungranted session is unchanged: the policy's own deny stands.
+    const plain = setup();
+    const ps = await plain.session({ allowedTools: [], allowedBashPrefixes: ["echo"] });
+    const result = await ps.bash(huge);
+    expect(result.permissionDecision).toBe("deny");
+    expect(result.permissionDecisionReason).not.toBe(GITHUB_CLI_DENY_REASON);
+    expect(plain.decisions().map((d) => d["reason"])).not.toContain("use_kernel_github_tools");
+  });
+
   it("an agent without the github grant may still run gh pr view", async () => {
     const t = setup();
     const s = await t.session(GH);

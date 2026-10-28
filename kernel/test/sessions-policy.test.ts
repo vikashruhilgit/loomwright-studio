@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PROPOSED_ALLOWED_TOOLS } from "../src/brain/index.js";
 import { decideToolUse, freezePolicy } from "../src/sessions/index.js";
 import { DRAFT_PAYLOAD_KINDS, MAX_DRAFT_TEXT_CHARS, draftDecision, draftPayloadOf, githubCliDecision } from "../src/sessions/draft-mode.js";
-import { ALWAYS_HELD_TOOLS, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf, programCouldBe } from "../src/sessions/policy.js";
+import { ALWAYS_HELD_TOOLS, MAX_RAIL_COMMAND_LENGTH, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf, programCouldBe } from "../src/sessions/policy.js";
 import type { NeverCategory } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
 
@@ -403,6 +403,10 @@ describe("draftDecision and githubCliDecision", () => {
     expect(githubCliDecision(granted, "Bash", { command: 7 })).toBeUndefined();
     expect(githubCliDecision(granted, "Bash", undefined)).toBeUndefined();
     expect(githubCliDecision(granted, "Read", { command: "gh pr view 1" })).toBeUndefined();
+    // Over the rail's size limit: denied unread (never parsed), only in a granted session.
+    const big = "{".repeat(MAX_RAIL_COMMAND_LENGTH + 1);
+    expect(githubCliDecision(granted, "Bash", { command: big })).toEqual({ kind: "deny" });
+    expect(githubCliDecision(base, "Bash", { command: big })).toBeUndefined();
     expect(githubCliDecision(base, "Bash", { command: "gh pr view 1" })).toBeUndefined();
     expect(githubCliDecision({ ...base, connectors: [] }, "Bash", { command: "gh pr view 1" })).toBeUndefined();
   });

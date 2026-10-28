@@ -8,7 +8,7 @@
 // or model output turns it off. A merge stays `merge_blocked` (the rail denies
 // it first, invariant 4). The recorded payload is untrusted model output: it
 // is stored as data and never interpreted.
-import { bashCommandOf, programCouldBe, shellWords } from "./policy.js";
+import { MAX_RAIL_COMMAND_LENGTH, bashCommandOf, programCouldBe, shellWords } from "./policy.js";
 import type { ToolCallClass } from "./policy.js";
 import type { ToolPolicy } from "./types.js";
 
@@ -68,12 +68,16 @@ export function draftDecision(policy: ToolPolicy, rail: OutwardCall): DraftDecis
  * The gate's step 6 answer: the call is a Bash `gh` call in a session whose
  * agent holds the `github` grant. It only denies, so it never widens a policy.
  * The program is read as the rail reads it (`programCouldBe`): `env gh …`,
- * `sh -c …` and a script are not recognised. Pure.
+ * `sh -c …` and a script are not recognised. A command longer than
+ * `MAX_RAIL_COMMAND_LENGTH` is denied unread (the rail's own fail-closed size
+ * guard, which a policy-denied call never reaches), so no parse is unbounded.
+ * Pure.
  */
 export function githubCliDecision(policy: ToolPolicy, toolName: string, toolInput: unknown): { readonly kind: "deny" } | undefined {
   if (!(policy.connectors ?? []).includes("github") || toolName !== "Bash") return undefined;
   const command = bashCommandOf(toolInput);
-  return command !== undefined && programCouldBe(command, "gh") ? { kind: "deny" } : undefined;
+  if (command === undefined) return undefined;
+  return command.length > MAX_RAIL_COMMAND_LENGTH || programCouldBe(command, "gh") ? { kind: "deny" } : undefined;
 }
 
 /** The hook's reason for a `draft_mode` deny: nothing was sent, the call is draft output `id`, do not retry or ask. */
@@ -129,11 +133,13 @@ interface GhPrParts {
 
 /**
  * `gh [flags] pr <sub> [args]` read into its parts (best effort: a command the
- * words do not spell that way reads as no parts). `-R`/`--repo` takes a value
+ * words do not spell that way reads as no parts, and so is one longer than
+ * `MAX_RAIL_COMMAND_LENGTH`, which is never parsed). `-R`/`--repo` takes a value
  * before the subcommand too; any other flag before it is taken as a boolean.
  */
 function ghPrParts(command: string, sub: "review" | "comment"): GhPrParts {
   const parts: GhPrParts = { target: null, body: null, bodyFile: undefined, event: undefined };
+  if (command.length > MAX_RAIL_COMMAND_LENGTH) return parts;
   const words = shellWords(command);
   const start = words.findIndex((w) => w !== "");
   let stage = 0;

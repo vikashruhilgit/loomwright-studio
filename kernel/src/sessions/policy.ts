@@ -905,7 +905,12 @@ function wordCouldBe(word: string, literal: string): boolean {
  * Pure.
  */
 export function programCouldBe(command: string, name: string): boolean {
-  const program = shellWords(command).flatMap(braceExpand).find((w) => w !== "");
+  // Expand word by word and stop at the first non-empty result: later words are never brace-expanded.
+  let program: string | undefined;
+  for (const word of shellWords(command)) {
+    program = braceExpand(word).find((w) => w !== "");
+    if (program !== undefined) break;
+  }
   return program !== undefined && wordCouldBe(basename(program), name);
 }
 
