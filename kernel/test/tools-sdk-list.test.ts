@@ -114,6 +114,10 @@ const CLOSED_VALUE_SETS: Readonly<Record<string, readonly ClosedValueSet[]>> = {
   kernel_agent_update: charterSets("changes.", "never", true),
   kernel_agent_list: [],
   kernel_agent_message: [],
+  kernel_github_pr_get: [],
+  kernel_github_pr_diff: [{ path: "max_bytes", positiveInteger: true }],
+  kernel_github_pr_files: [],
+  kernel_github_pr_comments: [],
 };
 
 type Json = Record<string, unknown>;
@@ -181,9 +185,9 @@ afterEach(() => {
 });
 
 describe("the shipped kernel tools list through the Agent SDK", () => {
-  it("(a) every name of kernelToolNames is listed (22 in all), each with an object input schema", async () => {
+  it("(a) every name of kernelToolNames is listed (26 in all), each with an object input schema", async () => {
     const expected = kernelToolNames(SHIPPED);
-    expect(expected).toHaveLength(22);
+    expect(expected).toHaveLength(26);
     const listed = await listKernelTools(SHIPPED);
     expect(listed.map((t) => t.name).sort()).toEqual([...expected].sort());
     for (const t of listed) expect((t.inputSchema as { type?: unknown }).type, t.name).toBe("object");
@@ -204,9 +208,9 @@ describe("the shipped kernel tools list through the Agent SDK", () => {
     const listed = await listKernelTools(SHIPPED);
     const problems = listed.flatMap((t) => (CLOSED_VALUE_SETS[t.name] ?? []).map((set) => closedSetProblem(t.inputSchema, set)).filter((p) => p !== undefined).map((p) => `${t.name}: ${p}`));
     expect(problems).toEqual([]);
-    // The table is not vacuous: the five tools with closed sets are each checked.
+    // The table is not vacuous: the six tools with closed sets are each checked.
     expect(Object.entries(CLOSED_VALUE_SETS).filter(([, sets]) => sets.length > 0).map(([name]) => name).sort()).toEqual(
-      ["kernel_agent_create", "kernel_agent_update", "kernel_playbook_create", "kernel_playbook_update", "kernel_trigger_register"],
+      ["kernel_agent_create", "kernel_agent_update", "kernel_github_pr_diff", "kernel_playbook_create", "kernel_playbook_update", "kernel_trigger_register"],
     );
   });
 
@@ -235,8 +239,8 @@ describe("the shipped kernel tools list through the Agent SDK", () => {
     expect(() => LISTING_CTX.store.dataDir).toThrow("tool listing only");
     expect(() => LISTING_CTX.sessions.getSession(1)).toThrow("tool listing only");
     expect(() => LISTING_CTX.sessions.stopSession(1)).toThrow("tool listing only");
-    expect(kernelToolDefinitions(LISTING_CTX, SHIPPED)).toHaveLength(22);
-    await expect(listKernelTools(SHIPPED)).resolves.toHaveLength(22);
+    expect(kernelToolDefinitions(LISTING_CTX, SHIPPED)).toHaveLength(26);
+    await expect(listKernelTools(SHIPPED)).resolves.toHaveLength(26);
   });
 });
 
