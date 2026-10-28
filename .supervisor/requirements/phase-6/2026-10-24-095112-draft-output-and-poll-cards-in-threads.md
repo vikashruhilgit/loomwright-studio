@@ -74,3 +74,9 @@ app/src/screens/chat/cards.tsx
 app/src/screens/chat/cards.test.tsx
 app/e2e/chat.spec.ts
 app/e2e/fixtures/chat.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-28T18:14:03Z
+- **Brief:** .supervisor/jobs/done/2026-10-28-draft-and-poll-cards-in-threads.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/156
