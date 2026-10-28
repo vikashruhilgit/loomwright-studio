@@ -180,10 +180,13 @@ function listText(items: readonly string[], quoted = false): string {
 
 /**
  * The enforced line, from the parsed values only (never from prose): the
- * `never` categories, the allowed tools and the Bash prefixes (JSON-quoted).
+ * `never` categories, the allowed tools and the Bash prefixes (JSON-quoted),
+ * and the connectors grant a create proposes (appended only when there is
+ * one, so a line without a grant is byte-identical to what it always was).
  */
-function enforcedLine(never: readonly string[], allowedTools: readonly string[], prefixes: readonly string[]): string {
-  return `enforced: never: ${listText(never)}; tools: ${listText(allowedTools)}; bash prefixes: ${listText(prefixes, true)}`;
+function enforcedLine(never: readonly string[], allowedTools: readonly string[], prefixes: readonly string[], connectors: readonly string[] = []): string {
+  const grant = connectors.length === 0 ? "" : `; connectors: ${listText(connectors)}`;
+  return `enforced: never: ${listText(never)}; tools: ${listText(allowedTools)}; bash prefixes: ${listText(prefixes, true)}${grant}`;
 }
 
 /** Each limit as `<key> <n> (proposed)` or `<key> not set (no limit)`. */
@@ -205,7 +208,7 @@ function createHead(charter: Charter): string {
   const tp = charter.tool_policy;
   return [
     `Create crew member ${charter.id} (${JSON.stringify(charter.display_name)}, ${charter.avatar.shape} ${charter.avatar.hue}), proposed by Wright`,
-    enforcedLine(tp.never, tp.allowedTools, tp.allowedBashPrefixes),
+    enforcedLine(tp.never, tp.allowedTools, tp.allowedBashPrefixes, charter.connectors),
     limitsLine(charter.limits),
     `workspaces: ${listText(charter.workspaces)}`,
   ].join("\n");
@@ -233,7 +236,7 @@ export function createDisplay(charter: Charter): string {
     `config/agents/${charter.id}.json:`,
     asLines(renderAgentSettingsJson(charter)),
     `memory/${charter.id}/role.md:`,
-    asLines(renderRoleMd(charter)),
+    asLines(renderRoleMd(charter, charter.connectors)),
   ].join("\n");
 }
 
@@ -300,9 +303,10 @@ function appliedByKernel(tool: string): never {
 const createTool = defineTool({
   name: AGENT_CREATE_TOOL_NAME,
   description:
-    "Ask the owner to create a crew member from a charter you draft from the owner's words: {id, display_name, avatar: {shape, hue}, persona, duties, boundaries, model, effort?, permission_mode, tool_policy: {allowedTools, allowedBashPrefixes, never}, limits?: {tokens_per_day?, sessions_at_once?, delegation_depth?}, workspaces}. " +
+    "Ask the owner to create a crew member from a charter you draft from the owner's words: {id, display_name, avatar: {shape, hue}, persona, duties, boundaries, model, effort?, permission_mode, tool_policy: {allowedTools, allowedBashPrefixes, never}, limits?: {tokens_per_day?, sessions_at_once?, delegation_depth?}, workspaces, connectors?: [\"github\"]}. " +
     "Every value the owner did not state is your proposal: say so to the owner. Put each \"never …\" the owner said into both the prose boundaries and the enforced tool_policy.never (only never is enforced; boundaries are guidance). " +
     "Propose limits and limits.delegation_depth, and never let the owner think they are already set: an unset limit is no limit. " +
+    "connectors is your proposal of the GitHub grant, never a default: say so to the owner; it takes effect only if the owner approves this call, and no later update changes it. " +
     "The kernel always holds this call for the owner, showing the role.md and settings file it would write and what it enforces; end your turn. " +
     "The owner's approval creates the member: the kernel applies it itself and tells you what it did in a new message; do not repeat the call. " +
     `Refused (nothing held) with one of: ${CHARTER_TOOL_REFUSALS.join(", ")}. Use a new idempotency_key for each request to the owner.`,
