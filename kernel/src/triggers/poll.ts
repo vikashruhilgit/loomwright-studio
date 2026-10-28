@@ -181,7 +181,7 @@ export function storedPollIdentity(specJson: string): string | undefined {
 }
 
 /** What the kernel knows of the GitHub connector, from the `connectors` table. */
-interface ConnectorState {
+export interface ConnectorState {
   /** A `github` row whose status is `connected` or `expiring`. */
   readonly usable: boolean;
   /** The newest `github` row's status, or `null` when there is none. */
@@ -196,7 +196,7 @@ interface ConnectorState {
  * newest usable row decides; `reachable_repos_json` is a JSON array of
  * `owner/name` strings, and anything else reads as no repo.
  */
-function githubConnector(store: Store): ConnectorState {
+export function githubConnectorState(store: Store): ConnectorState {
   const rows = store
     .prepare<[], { status: string; reachable_repos_json: string | null }>("SELECT status, reachable_repos_json FROM connectors WHERE kind = 'github' ORDER BY id DESC")
     .all();
@@ -239,7 +239,7 @@ export interface CheckedPollSpec {
  */
 export function checkPollSpec(store: Store, spec: string, tz: string | undefined, now: Date): CheckedPollSpec {
   const parsed = checkPollShape(spec, tz);
-  const connector = githubConnector(store);
+  const connector = githubConnectorState(store);
   if (!connector.usable) {
     throw new TriggerError("poll_connector_missing", `poll_connector_missing: no connected GitHub connector (status ${connector.status ?? "none"}); connect GitHub before creating a poll`);
   }
@@ -286,7 +286,7 @@ export interface PollFireOutcome {
 }
 
 /** What Phase A's fetch came to: the items (capped) and how many were found, or the first repo's failure. */
-type Fetched =
+export type Fetched =
   | { readonly ok: true; readonly items: readonly SourceItem[]; readonly found: number }
   | { readonly ok: false; readonly error: "rate_limited"; readonly repo: string; readonly resets_at: string }
   | { readonly ok: false; readonly error: "http_error" | "unreachable" | "client_error"; readonly repo: string; readonly status?: number; readonly message?: string };
@@ -316,7 +316,7 @@ function itemOf(repo: string, p: GitHubPullSummary): SourceItem {
  * throws, or answers data that is not a list, is a `client_error`. Items are
  * repos in spec order, pulls by ascending number, at most `MAX_POLL_ITEMS`.
  */
-async function fetchItems(github: GitHubClient, spec: PollSpec): Promise<Fetched> {
+export async function fetchPollItems(github: GitHubClient, spec: PollSpec): Promise<Fetched> {
   const items: SourceItem[] = [];
   for (const repo of spec.repos) {
     let res: Awaited<ReturnType<GitHubClient["listOpenPulls"]>>;
@@ -360,7 +360,7 @@ function gateOf(store: Store, row: PollRow, scheduledAt: string, github: GitHubC
   if (linked === undefined || linked.status !== "enabled") return { kind: "playbook_not_enabled", status: linked?.status ?? null };
   if (inKillSwitchWindow(killSwitchWindows(store), scheduledAt)) return { kind: "kill_switch" };
   if (inPauseWindow(pauseWindows(store), scheduledAt)) return { kind: "paused" };
-  const connector = githubConnector(store);
+  const connector = githubConnectorState(store);
   if (!connector.usable || github === undefined) return { kind: "connector_missing", status: connector.status, client: github !== undefined };
   return { kind: "open", playbook: linked, github };
 }
@@ -539,7 +539,7 @@ async function fireOnePoll(store: Store, github: GitHubClient | undefined, row: 
   let fetched: Fetched | undefined;
   if (getWorkStep(store, key) === undefined) {
     const gate = gateOf(store, row, scheduledAt, github);
-    if (gate.kind === "open") fetched = await fetchItems(gate.github, spec);
+    if (gate.kind === "open") fetched = await fetchPollItems(gate.github, spec);
   }
   // Phase B: one transaction.
   let outcome: PollFireOutcome;

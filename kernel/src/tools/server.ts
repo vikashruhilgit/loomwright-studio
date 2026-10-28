@@ -32,6 +32,7 @@ import { KERNEL_APPLIED_ACTIONS } from "../approvals/store.js";
 import type { ApprovalApplier } from "../approvals/store.js";
 import { InvalidContributionError, PHASE1_TOOL_NAMES } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
+import type { GitHubClient } from "../integrations/types.js";
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import type { EventRef } from "../loop/internal.js";
 import { runStep, runStepAsync } from "../loop/steps.js";
@@ -78,6 +79,8 @@ export interface KernelToolContext {
   readonly sessionId: number;
   /** Defaults to `() => new Date()`. */
   readonly now?: () => Date;
+  /** The kernel's GitHub client, passed through to a contributed tool's context (`ContributedToolContext.github`). Absent when none is wired. */
+  readonly github?: GitHubClient;
   /** Runs the session stop out of band. Defaults to `setImmediate`. */
   readonly schedule?: (fn: () => void) => void;
 }
@@ -411,6 +414,7 @@ function contributedToolContext(contributed: ContributedTool, ctx: KernelToolCon
     sessions,
     sessionId,
     now: ctx.now ?? (() => new Date()),
+    ...(ctx.github === undefined ? {} : { github: ctx.github }),
     stepKey: (key) => kernelStepKey(contributed.name, sessionId, key),
   };
 }
