@@ -65,7 +65,7 @@ import type { Store } from "../store/store.js";
 import { nextCronFire } from "../triggers/index.js";
 import type { TriggerView } from "../triggers/index.js";
 import { afterPlaybookStep, mayManage, namedAsync, refuseCrewDrafting } from "./drafts.js";
-import { formatPollSummary, pollOf, previewPoll, readDryRunDrafts, wrapPollForModel, wrapWouldDoForModel } from "./dry-run-poll.js";
+import { closedAction, formatPollSummary, pollOf, previewPoll, readDryRunDrafts, wrapPollForModel, wrapWouldDoForModel } from "./dry-run-poll.js";
 import type { PollDryRun } from "./dry-run-poll.js";
 import { itemPromptBlock } from "./items.js";
 import type { MirrorDryRun } from "./mirror.js";
@@ -141,7 +141,8 @@ function clipped(text: string, max: number): string {
 
 /** A poll dry run's entry names no input: its session read hostile PR text, and the summary reaches the model unwrapped. */
 function wouldDoText(e: WouldDoEntry, withInput: boolean): string {
-  const how = e.would === "held" ? `held for approval${e.action === undefined ? "" : `: ${e.action}`}` : "would run";
+  // A poll summary shows the action closed: a `gh api` method is the model's text.
+  const how = e.would === "held" ? `held for approval${e.action === undefined ? "" : `: ${withInput ? e.action : closedAction(e.action)}`}` : "would run";
   return withInput ? `${e.tool} "${clipped(e.input_summary, SUMMARY_INPUT_CHARS)}" (${how})` : `${e.tool} (${how})`;
 }
 

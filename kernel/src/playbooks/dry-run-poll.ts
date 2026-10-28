@@ -33,6 +33,7 @@
 import { agentSettingsPath } from "../agents/settings.js";
 import type { GitHubClient, PollSpec } from "../integrations/types.js";
 import { wrapUntrusted } from "../brain/context.js";
+import type { DraftPayloadKind } from "../sessions/draft-mode.js";
 import type { WouldDoEntry } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { fetchPollItems, githubConnectorState, parsePollSpec } from "../triggers/index.js";
@@ -84,7 +85,7 @@ export interface PollPreviewItem {
 /** A draft the dry-run session recorded (`draft_outputs`), tagged so a reader never takes it for a real one. */
 export interface PollDraft {
   readonly id: number;
-  /** The rail's action label (`gh pr review`, `gh pr comment`, …). */
+  /** A closed label for the draft's kind (`DRAFT_TOOL_LABELS`, else `other`), never the rail's own label: that can carry the model's text (`gh api -X <text>`). */
   readonly tool: string;
   /** The PR the call named, or `null` when the draft is not a `gh pr` call. Model output: untrusted data. */
   readonly target: string | null;
@@ -199,10 +200,23 @@ export async function previewPoll(
   return { poll: { spec, items, reviewed: picked.ref, drafts: [] }, review: picked };
 }
 
+/** What a draft's `tool` shows per stored payload kind: a closed set, so no text of the model's reaches the field. */
+const DRAFT_TOOL_LABELS: Readonly<Record<DraftPayloadKind, string>> = Object.freeze({
+  gh_pr_review: "gh pr review",
+  gh_pr_comment: "gh pr comment",
+  command: "command",
+  input: "input",
+});
+
+/** `tool` as a draft shows it: one of the closed labels, else `other` (a result stored before the labels were closed may hold the rail's own text). */
+function closedDraftTool(tool: string): string {
+  return (Object.values(DRAFT_TOOL_LABELS) as readonly string[]).includes(tool) ? tool : "other";
+}
+
 /** The drafts session `sessionId` recorded, oldest first, each tagged `dry_run`. */
 export function readDryRunDrafts(store: Store, sessionId: number): PollDraft[] {
   const rows = store
-    .prepare<[number], { id: number; tool: string; payload_json: string }>("SELECT id, tool, payload_json FROM draft_outputs WHERE session = ? ORDER BY id")
+    .prepare<[number], { id: number; payload_json: string }>("SELECT id, payload_json FROM draft_outputs WHERE session = ? ORDER BY id")
     .all(sessionId);
   return rows.map((r) => {
     let payload: Record<string, unknown> = {};
@@ -214,7 +228,9 @@ export function readDryRunDrafts(store: Store, sessionId: number): PollDraft[] {
     }
     const text = (v: unknown): string | null => (typeof v === "string" ? v : null);
     const event = text(payload["event"]);
-    return { id: r.id, tool: r.tool, target: text(payload["target"]), body: text(payload["body"]), ...(event === null ? {} : { event }), tag: "dry_run" as const };
+    const kind = text(payload["kind"]);
+    const tool = kind !== null && Object.hasOwn(DRAFT_TOOL_LABELS, kind) ? DRAFT_TOOL_LABELS[kind as DraftPayloadKind] : "other";
+    return { id: r.id, tool, target: text(payload["target"]), body: text(payload["body"]), ...(event === null ? {} : { event }), tag: "dry_run" as const };
   });
 }
 
@@ -251,7 +267,7 @@ export function pollOf(value: unknown): PollDryRun | undefined {
     spec: v.spec as PollSpec,
     items: v.items.filter(isItem),
     reviewed: typeof v.reviewed === "string" ? v.reviewed : null,
-    drafts: Array.isArray(v.drafts) ? v.drafts.filter(isDraft) : [],
+    drafts: Array.isArray(v.drafts) ? v.drafts.filter(isDraft).map((d) => ({ ...d, tool: closedDraftTool(d.tool) })) : [],
     ...(isIncomplete(v.preview_incomplete) ? { preview_incomplete: v.preview_incomplete } : {}),
   };
 }
@@ -283,11 +299,20 @@ export function wrapPollForModel(poll: PollDryRun): PollDryRun {
 /**
  * A poll dry run's would-do entries as the tool result shows them to the
  * model: each `input_summary` (cut text of a call the review session made
- * after reading a PR) wrapped as untrusted data from the reviewed item's ref.
+ * after reading a PR) wrapped as untrusted data from the reviewed item's ref,
+ * and a `gh api` action's method (the model's `-X` text) closed.
  */
 export function wrapWouldDoForModel(entries: readonly WouldDoEntry[], poll: PollDryRun): WouldDoEntry[] {
   const source = poll.reviewed ?? "dry_run";
-  return entries.map((e) => ({ ...e, input_summary: wrapUntrusted(source, e.input_summary) }));
+  return entries.map((e) => ({ ...e, input_summary: wrapUntrusted(source, e.input_summary), ...(e.action === undefined ? {} : { action: closedAction(e.action) }) }));
+}
+
+/** The methods `gh api` is shown with: any other text of the model's (`-X <text>`) is not echoed. */
+const API_METHODS: readonly string[] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+
+/** The rail's approval action with the one part the model can write (`gh api <METHOD>`, from `-X`) closed. */
+export function closedAction(action: string): string {
+  return action.startsWith("gh api ") && action !== "gh api (flag unread)" && !API_METHODS.includes(action.slice("gh api ".length)) ? "gh api (other method)" : action;
 }
 
 // ---- The summary -----------------------------------------------------------------------
