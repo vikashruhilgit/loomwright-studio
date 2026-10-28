@@ -222,6 +222,47 @@ describe("draft card", () => {
     expect(k.fake.requestsTo("GET /drafts")).toHaveLength(2);
   });
 
+  it("a draft that arrives while the list read is in flight gets exactly one more list read", async () => {
+    const k = kit({ threads: { wright: thread([draftEvent(5, 9)]) }, drafts: [draft(9), draft(10, { item_ref: "github:acme/widgets#77" })] });
+    let release: (() => void) | undefined;
+    let first = true;
+    k.fake.route("GET /drafts", () => {
+      if (!first) return { ok: true, status: 200, body: { drafts: k.state.drafts } };
+      first = false;
+      return new Promise((resolve) => {
+        release = () => resolve({ ok: true, status: 200, body: { drafts: [draft(9)] } });
+      });
+    });
+    await renderChat(k);
+    await screen.findByText("Draft review (not sent)");
+    expect(k.fake.requestsTo("GET /drafts")).toHaveLength(1);
+    // Draft 10 shows up in the thread while the first read has not answered.
+    k.state.threads.wright = thread([draftEvent(5, 9), draftEvent(6, 10)]);
+    await act(async () => {
+      k.fake.emit(eventFrame(30, "event_done", {}));
+    });
+    await waitFor(() => expect(screen.getAllByText("Draft mode: nothing was posted")).toHaveLength(2));
+    expect(k.fake.requestsTo("GET /drafts")).toHaveLength(1);
+    await act(async () => {
+      release?.();
+    });
+    expect(await screen.findByText("Draft review for acme/widgets#77 (not sent)")).toBeTruthy();
+    expect(k.fake.requestsTo("GET /drafts")).toHaveLength(2);
+  });
+
+  it("a second list read keeps the rows the first one carried", async () => {
+    const k = await renderDraft();
+    k.state.threads.wright = thread([draftEvent(5, 9), draftEvent(6, 10)]);
+    // The second read does not carry draft 9 any more (it fell outside the newest 200).
+    k.state.drafts = [draft(10, { item_ref: "github:acme/widgets#77" })];
+    await act(async () => {
+      k.fake.emit(eventFrame(30, "event_done", {}));
+    });
+    expect(await screen.findByText("Draft review for acme/widgets#77 (not sent)")).toBeTruthy();
+    expect(k.fake.requestsTo("GET /drafts")).toHaveLength(2);
+    expect(screen.getByText(DRAFT_TITLE)).toBeTruthy();
+  });
+
   it("a draft the list never holds is asked for once, not on every refresh", async () => {
     const k = kit({ threads: { wright: thread([draftEvent(5, 9)]) }, drafts: [] });
     await renderChat(k);
@@ -411,6 +452,52 @@ describe("poll payload reads", () => {
       { after: "0", limit: "2" },
       { after: "699", limit: "1" },
     ]);
+  });
+});
+
+describe("poll payload read limits and retries", () => {
+  const queuedAt = (ids: number[]) => ids.map((id) => queuedEvent(id));
+
+  it("ids 499 apart (a span of exactly 500) are one request; 500 apart (a span of 501) are two; no limit exceeds 500", async () => {
+    const one = kit({ threads: { wright: thread(queuedAt([1, 500])) } });
+    await renderChat(one);
+    await waitFor(() => expect(one.fake.requestsTo("GET /events").length).toBeGreaterThan(0));
+    await screen.findByText("Playbook pb-1 queued item 500");
+    expect(one.fake.requestsTo("GET /events").map((r) => r.req.query)).toEqual([{ after: "0", limit: "500" }]);
+    resetChat();
+
+    const two = kit({ threads: { wright: thread(queuedAt([1, 501])) } });
+    await renderChat(two);
+    await waitFor(() => expect(two.fake.requestsTo("GET /events")).toHaveLength(2));
+    const queries = two.fake.requestsTo("GET /events").map((r) => r.req.query);
+    expect(queries).toEqual([
+      { after: "0", limit: "1" },
+      { after: "500", limit: "1" },
+    ]);
+    for (const q of queries) expect(Number(q?.["limit"])).toBeLessThanOrEqual(500);
+  });
+
+  it("a failed read shows the summary, is not retried while mounted, and is asked for again after a remount", async () => {
+    const k = kit({ threads: { wright: thread([queuedEvent(1)]) }, events: [queuedFrame(1, "github:acme/widgets#5", "abcdef1234567890")] });
+    let fail = true;
+    k.fake.route("GET /events", (req) => {
+      if (fail) return { ok: false, status: 500, body: { error: "boom" } };
+      const after = Number(req.query?.["after"]);
+      return { ok: true, status: 200, body: { events: k.state.events.filter((e) => e.id > after) } };
+    });
+    const view = await renderChat(k);
+    expect(await screen.findByText("Playbook pb-1 queued item 1")).toBeTruthy();
+    expect(k.fake.requestsTo("GET /events")).toHaveLength(1);
+    await act(async () => {
+      k.fake.emit(eventFrame(50, "event_done", {}));
+    });
+    expect(k.fake.requestsTo("GET /events")).toHaveLength(1);
+    // Unmount and mount again on the same bridge: nothing was cached for the failed id, so it is read again.
+    fail = false;
+    view.unmount();
+    await renderChat(k);
+    expect(await screen.findByText("Reviewing github:acme/widgets#5 @ abcdef1")).toBeTruthy();
+    expect(k.fake.requestsTo("GET /events")).toHaveLength(2);
   });
 });
 
