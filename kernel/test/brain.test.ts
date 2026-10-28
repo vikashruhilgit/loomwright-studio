@@ -365,6 +365,35 @@ describe("docs/architecture/brain.md (AC9)", () => {
     expect(ROLE_TEMPLATE).not.toContain("studio playbooks");
   });
 
+  it("the duty-drafting guidance calls every value a proposal and names no concrete value (AC6)", () => {
+    const start = ROLE_TEMPLATE.indexOf("## Drafting a duty");
+    expect(start).toBeGreaterThan(-1);
+    const next = ROLE_TEMPLATE.indexOf("\n## ", start);
+    expect(next).toBeGreaterThan(start);
+    const section = ROLE_TEMPLATE.slice(start, next);
+    // Whitespace collapsed, so the pins do not depend on the line wrap.
+    const flat = section.replace(/\s+/g, " ");
+    // Every value it describes is a proposal the owner can change, never picked silently.
+    expect(flat).toContain("Every value in it is a proposal the owner can read and change.");
+    expect(flat).toContain("Never pick a value silently");
+    for (const value of ["repositories", "filters", "interval", "dedupe key", "mode", "crew member", "connectors grant"]) {
+      expect(flat, value).toContain(value);
+    }
+    // It names no repo, no interval, no dedupe-key field, no playbook literal.
+    expect(section).not.toMatch(/[\w.-]+\/[\w.-]+/);
+    expect(section).not.toMatch(/\d/);
+    expect(section).not.toMatch(/\bitem\.|\bplaybook\.id\b/);
+    expect(section).not.toContain("github.pulls");
+    // "default" appears only to forbid calling a value one.
+    expect(flat.match(/default/gi)).toEqual(["default"]);
+    expect(flat).toContain("never call a value a default.");
+    // No CLI: the owner is sent to the app's controls.
+    expect(section).not.toContain("studio");
+    expect(flat).toContain("the playbook card's Set");
+    // The doc shows the section verbatim (the template<->doc pin above covers the rest).
+    expect(readFileSync(DOC, "utf8")).toContain(section);
+  });
+
   it("the role template and both doc blocks list the six playbook tool names (AC6)", () => {
     const doc = readFileSync(DOC, "utf8");
     expect(ROLE_TEMPLATE).toContain(`\n- playbooks: ${PLAYBOOK_TOOL_NAMES.join(", ")}\n`);
