@@ -103,7 +103,7 @@ function approvalOf(id: number, action: string, display: string, overrides: Part
   };
 }
 
-const PLAYBOOK: PlaybookListing = {
+export const PLAYBOOK: PlaybookListing = {
   id: 3,
   slug: "pr-review",
   name: "Review PRs where I'm requested",
