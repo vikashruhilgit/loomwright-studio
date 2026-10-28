@@ -13,7 +13,7 @@ Part of [Phase 6 features](../ARCHITECTURE.md#phase-6-features). Built and docum
 
 **Contract types it fills** (`app/src/api/contract.ts`): `ConnectorKind`, `ConnectorStatus`, `Connector`, `ConnectorsResponse`, `ConnectorTokenBody`, `ConnectorChangeResponse`, `ConnectorReposQuery` and `ConnectorReposResponse`.
 
-The credential is Studio's own fine-grained, read-only personal access token, which the owner creates for the personal repos they choose. Studio runs no OAuth flow and never reuses the `gh` CLI's login. GitHub is an optional connector (invariant 5): Studio works with none. The app's Integrations entry (`⌘5`) stays a placeholder until item 11 builds the screen.
+The credential is Studio's own fine-grained, read-only personal access token, which the owner creates for the personal repos they choose. Studio runs no OAuth flow and never reuses the `gh` CLI's login. GitHub is an optional connector (invariant 5): Studio works with none. Item 11 builds the screen (`app/src/screens/integrations/`; see [Phase 6 features](../ARCHITECTURE.md#phase-6-features)).
 
 ## The token and the Keychain item
 
