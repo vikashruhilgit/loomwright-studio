@@ -80,3 +80,9 @@ kernel/test/sessions-policy.test.ts
 kernel/src/integrations/drafts.ts
 kernel/test/draft-mode.test.ts
 docs/architecture/draft-mode.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-28T11:26:27Z
+- **Brief:** .supervisor/jobs/done/2026-10-28-draft-mode-records-outward-calls.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/150
