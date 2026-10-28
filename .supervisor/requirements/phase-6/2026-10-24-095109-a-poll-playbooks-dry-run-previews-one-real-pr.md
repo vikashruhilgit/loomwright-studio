@@ -84,3 +84,9 @@ kernel/src/playbooks/dry-run.ts
 kernel/src/sessions/dry-run.ts
 kernel/test/playbooks-dry-run-poll.test.ts
 docs/architecture/dry-run.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-28T15:41:48Z
+- **Brief:** .supervisor/jobs/done/2026-10-28-poll-playbook-dry-run-previews-real-pr.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/153
