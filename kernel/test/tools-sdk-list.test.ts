@@ -33,12 +33,13 @@ import { AVATAR_HUES, AVATAR_SHAPES } from "../src/agents/types.js";
 import { startFailureExit } from "../src/daemon-exit.js";
 import { InvalidContributionError, PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
 import type { ContributedTool } from "../src/features/index.js";
+import { CONNECTOR_KINDS } from "../src/integrations/types.js";
 import { startKernel } from "../src/kernel.js";
 import { DEDUPE_KEY_FIELDS, PLAYBOOK_MODES, PLAYBOOK_PRIORITIES } from "../src/playbooks/types.js";
 import { NEVER_CATEGORIES } from "../src/sessions/policy.js";
 import { Store } from "../src/store/index.js";
 import { KERNEL_TOOL_NAMES, LISTING_CTX, assertKernelToolsList, kernelToolDefinitions, kernelToolNames, listKernelTools } from "../src/tools/server.js";
-import { TRIGGER_ACTIONS, TRIGGER_KINDS } from "../src/triggers/index.js";
+import { POLL_SOURCES, TRIGGER_ACTIONS, TRIGGER_KINDS } from "../src/triggers/index.js";
 
 const SHIPPED = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools;
 
@@ -77,6 +78,8 @@ function playbookSets(prefix: string): ClosedValueSet[] {
     { path: `${prefix}priority`, enum: PLAYBOOK_PRIORITIES },
     { path: `${prefix}mode`, enum: PLAYBOOK_MODES },
     { path: `${prefix}trigger.kind`, enum: TRIGGER_KINDS },
+    { path: `${prefix}trigger.poll.source`, enum: POLL_SOURCES },
+    { path: `${prefix}trigger.poll.interval_seconds`, positiveInteger: true },
     { path: `${prefix}token_limit`, positiveInteger: true },
   ];
 }
@@ -110,7 +113,8 @@ const CLOSED_VALUE_SETS: Readonly<Record<string, readonly ClosedValueSet[]>> = {
   kernel_playbook_disable: [],
   kernel_playbook_dry_run: [],
   kernel_playbook_enable: [],
-  kernel_agent_create: charterSets("charter.", "tool_policy.never", false),
+  // `connectors` is a create-only proposal (an update never changes the grant), so only create publishes it.
+  kernel_agent_create: [...charterSets("charter.", "tool_policy.never", false), { path: "charter.connectors[]", enum: CONNECTOR_KINDS }],
   kernel_agent_update: charterSets("changes.", "never", true),
   kernel_agent_list: [],
   kernel_agent_message: [],
