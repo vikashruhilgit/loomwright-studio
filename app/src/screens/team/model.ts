@@ -17,6 +17,7 @@ import type {
   ApiResult,
   Approval,
   BrainMessage,
+  ConnectorsResponse,
   RosterEntry,
   SessionSummary,
   WrightSetField,
@@ -342,6 +343,47 @@ export function settingText(content: unknown, field: AgentSetField, absent: stri
     raw = content[field];
   }
   return raw === undefined || raw === null ? absent : UNKNOWN;
+}
+
+// ---- Connectors (phase 6 item 08) ----------------------------------------------------------
+
+/** `GET /connectors` as the screen holds it: loading, the rows, or a failed read (never "not connected"). */
+export type ConnectorsState =
+  | { readonly status: "loading" }
+  | { readonly status: "ok"; readonly connectors: ConnectorsResponse }
+  | { readonly status: "error" };
+
+/** The words for the GitHub connector's state in the inspector's Connectors row. */
+export const CONNECTOR_CONNECTED = "connected";
+export const CONNECTOR_EXPIRING = "expiring";
+export const CONNECTOR_NOT_CONNECTED = "not connected";
+export const CONNECTOR_UNKNOWN = "state unknown";
+export const CONNECTOR_LOADING = "checking…";
+
+/**
+ * Whether the roster says the agent holds GitHub: true or false when its
+ * `connectors` was read, undefined (unknown) when the kernel sent `null` (the
+ * settings file does not read ok) or no value at all. Unknown is never "no grant".
+ */
+export function githubGranted(agent: Pick<RosterEntry, "connectors">): boolean | undefined {
+  const held = agent.connectors;
+  if (held === undefined || held === null) return undefined;
+  return held.includes("github");
+}
+
+/**
+ * The GitHub connector's state from `GET /connectors`: "connected" or
+ * "expiring" from the row's status; "not connected" for no row, or a
+ * rejected, disconnected or expired one; "state unknown" when the read failed.
+ */
+export function connectorStateText(state: ConnectorsState): string {
+  if (state.status === "loading") return CONNECTOR_LOADING;
+  if (state.status === "error") return CONNECTOR_UNKNOWN;
+  const row = state.connectors.connectors.find((c) => c.kind === "github");
+  if (row === undefined) return CONNECTOR_NOT_CONNECTED;
+  if (row.status === "connected") return CONNECTOR_CONNECTED;
+  if (row.status === "expiring") return CONNECTOR_EXPIRING;
+  return CONNECTOR_NOT_CONNECTED;
 }
 
 // ---- Refusals ------------------------------------------------------------------------------

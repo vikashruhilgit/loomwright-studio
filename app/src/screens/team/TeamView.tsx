@@ -4,8 +4,10 @@
 // commands for every Team action.
 //
 // Data comes only from the live store (`useResource`: REST plus the one event
-// feed) and, per crew member, `GET /agents/:id` (not a store resource: fetched
-// here, and again when an `agent_*` event arrives). Wright has no detail route
+// feed), per crew member `GET /agents/:id` (not a store resource: fetched
+// here, and again when an `agent_*` event arrives), and `GET /connectors` for
+// the inspector's Connectors row (fetched on mount, and again when a
+// `connector_status` event arrives). Wright has no detail route
 // (`GET /agents/wright` answers `409 reserved`), so it is never requested.
 // Every write goes through `./actions.ts`; its result reaches the cards through
 // the feed, never a local edit of the roster.
@@ -32,10 +34,12 @@ import { useLiveStore, useResource } from "../../store/react";
 import type { ResourceError } from "../../store/store";
 import { REFETCH_THROTTLE_MS } from "../../store/store";
 import { focusLost } from "../chat/model";
-import { fetchAgentDetail, renameAgent, turnAgent } from "./actions";
+import { fetchAgentDetail, fetchConnectors, renameAgent, turnAgent } from "./actions";
 import { useTeamCommands } from "./commands";
+import { type GrantChange, changeGithubGrant } from "./Connectors";
 import { type AvatarLook, type DetailState, Inspector, type WrightSetValues } from "./Inspector";
 import {
+  type ConnectorsState,
   TASK_LOADING,
   TASK_UNAVAILABLE,
   type TaskLine,
@@ -111,6 +115,52 @@ function useAgentDetails(api: StudioBridge, ids: readonly string[], eventId: num
   }, [eventId, fetchAll]);
 
   return details;
+}
+
+/** The id of the newest `connector_status` event in the feed, 0 when none. */
+function useConnectorEventId(api: StudioBridge): number {
+  const { eventLog } = useLiveStore(api);
+  for (let i = eventLog.length - 1; i >= 0; i -= 1) {
+    const e = eventLog[i];
+    if (e !== undefined && e.kind === "connector_status") return e.id;
+  }
+  return 0;
+}
+
+/**
+ * `GET /connectors`, fetched on mount and again when a `connector_status` event
+ * arrives (trailing, `REFETCH_THROTTLE_MS` after the last one). A failed read is
+ * `error` ("state unknown"), never "not connected"; a refetch keeps the last
+ * answer until the next one lands. An answer older than the latest request is dropped.
+ */
+function useConnectors(api: StudioBridge, eventId: number): ConnectorsState {
+  const [state, setState] = useState<ConnectorsState>({ status: "loading" });
+  const generation = useRef(0);
+
+  const fetchOnce = useCallback(() => {
+    generation.current += 1;
+    const mine = generation.current;
+    void fetchConnectors(api).then((outcome) => {
+      if (generation.current !== mine) return;
+      setState(outcome.ok ? { status: "ok", connectors: outcome.body } : { status: "error" });
+    });
+  }, [api]);
+
+  useEffect(() => {
+    fetchOnce();
+    return () => {
+      // The answer in flight is dropped once the screen unmounts.
+      generation.current += 1;
+    };
+  }, [fetchOnce]);
+
+  useEffect(() => {
+    if (eventId === 0) return;
+    const timer = window.setTimeout(fetchOnce, REFETCH_THROTTLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [eventId, fetchOnce]);
+
+  return state;
 }
 
 // ---- The card ----------------------------------------------------------------------------
@@ -302,6 +352,7 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
   const shared = sharedNames(roster);
   const crew = crewIds(roster);
   const details = useAgentDetails(api, crew, useRosterEventId(api));
+  const connectors = useConnectors(api, useConnectorEventId(api));
 
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const [focusSet, setFocusSet] = useState(0);
@@ -385,6 +436,12 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
     setNotice(outcome.ok ? { kind: "ok", text: `${agent.display_name}: ${outcome.body.changed ? `turned ${to}` : `already ${to}`}.` } : { kind: "error", text: `${agent.display_name}: ${outcome.message}` });
   };
 
+  // The row changes only from the feed's `agent_*` refetch of the roster, never from this answer.
+  const changeGrant = async (agent: RosterEntry, change: GrantChange) => {
+    const outcome = await changeGithubGrant(api, agent, change);
+    setNotice(outcome.ok ? { kind: "ok", text: outcome.text } : { kind: "error", text: `${agent.display_name}: ${outcome.text}` });
+  };
+
   useTeamCommands(registry, roster, {
     newCrewMember,
     rename: (agent) => {
@@ -400,6 +457,8 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
     openThread: (agent) => {
       window.location.hash = threadHash(agent.id);
     },
+    grantGithub: (agent) => changeGrant(agent, "grant"),
+    revokeGithub: (agent) => changeGrant(agent, "revoke"),
   });
 
   const loading = agents === undefined || (agents.data === undefined && agents.error === undefined);
@@ -521,6 +580,7 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
           avatar={avatarFor(selected, taskOf(selected))}
           detail={isWright(selected) ? undefined : details.get(selected.id)}
           wrightSet={wrightSet}
+          connectors={connectors}
           onWrightSet={(field: WrightSetField, value: string) => setWrightSet((w) => ({ ...w, [field]: value }))}
           onRename={() => setRenamingId(selected.id)}
           onClose={closeInspector}
