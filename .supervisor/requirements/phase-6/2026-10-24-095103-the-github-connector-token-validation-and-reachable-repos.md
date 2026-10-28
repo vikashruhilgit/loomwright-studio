@@ -97,3 +97,9 @@ kernel/test/integrations-github-connector.test.ts
 kernel/test/integrations-github-client.test.ts
 docs/architecture/integrations.md
 docs/OPEN_QUESTIONS.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-28T04:08:25Z
+- **Brief:** .supervisor/jobs/done/2026-10-27-github-connector-token-validation.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/147
