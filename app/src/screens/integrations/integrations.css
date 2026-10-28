@@ -1,0 +1,421 @@
+/* Integrations (phase 6 item 11): docs/design/mockups/integrations.html on the tokens.
+   Colour comes only from tokens.css custom properties. Focus keeps the shell's ring (`:focus-visible` in app.css,
+   `.field:focus-within` in Input.css): nothing here removes it. */
+
+.integrations {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  height: 100%;
+  min-height: 0;
+  padding: var(--space-4) var(--space-5) var(--space-6);
+}
+.integrations-tbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height);
+}
+.integrations-cap {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+  font-variant-numeric: tabular-nums;
+}
+.integrations-mono {
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+.integrations-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.integrations-spacer {
+  flex: 1 1 auto;
+}
+
+/* The shell-less "no bridge" state, as Team's. */
+.integrations-state {
+  padding: var(--space-12) var(--space-6);
+  max-width: 640px;
+}
+.integrations-state-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--type-display-size);
+  line-height: var(--type-display-line);
+  font-weight: var(--type-display-weight);
+  letter-spacing: var(--type-display-tracking);
+}
+.integrations-state-note {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+
+/* Bands and notices: the kernel is unreachable, a read or a write failed. */
+.integrations-band {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+}
+.integrations-band[data-tone="danger"],
+.integrations-notice[data-tone="danger"],
+.integrations-inband[data-tone="danger"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.integrations-inband[data-tone="attention"] {
+  background: var(--attention-soft);
+  color: var(--attention);
+}
+.integrations-notice {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+}
+.integrations-inband {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+}
+.integrations-inband .integrations-glyph {
+  margin-top: 2px;
+}
+
+.integrations-glyph {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.integrations-mark {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+/* The split: the 360px list pane, then the detail pane. Both keep their size through a refetch. */
+.integrations-split {
+  display: grid;
+  grid-template-columns: var(--list-pane-width) minmax(0, 1fr);
+  gap: var(--space-4);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.integrations-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.integrations-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.integrations-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+.integrations-row-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: var(--type-body-strong-weight);
+}
+.integrations-more {
+  margin: 0;
+}
+
+.integrations-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--idle);
+  vertical-align: middle;
+  margin-right: var(--space-1);
+}
+.integrations-dot[data-state="ok"] {
+  background: var(--ok);
+}
+.integrations-dot[data-state="waiting"] {
+  background: var(--attention);
+}
+.integrations-dot[data-state="danger"] {
+  background: var(--danger);
+}
+.integrations-dot[data-state="working"] {
+  background: var(--working);
+}
+.integrations-dot[data-state="none"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--ink-tertiary);
+}
+.integrations-row .integrations-dot {
+  margin-right: 0;
+}
+
+/* The detail pane. */
+.integrations-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+}
+.integrations-dhead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+}
+.integrations-dhead h2 {
+  margin: 0;
+  font-size: var(--type-title-1-size);
+  line-height: var(--type-title-1-line);
+  font-weight: var(--type-title-1-weight);
+  letter-spacing: var(--type-title-1-tracking);
+}
+.integrations-badge {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  background: var(--surface-sunken);
+  color: var(--ink-secondary);
+}
+.integrations-dhead .integrations-badge {
+  margin-left: 0;
+}
+.integrations-badge[data-tone="attention"] {
+  background: var(--attention-soft);
+  color: var(--attention);
+}
+.integrations-badge[data-tone="danger"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.integrations-kv {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+}
+.integrations-kv dt {
+  color: var(--ink-tertiary);
+}
+.integrations-kv dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.integrations-kv dd .integrations-cap {
+  margin-left: var(--space-2);
+}
+
+.integrations-sec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.integrations-sech {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height);
+}
+.integrations-label {
+  margin: 0;
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.integrations-perm,
+.integrations-box {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.integrations-perm li,
+.integrations-box li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height);
+}
+.integrations-perm .integrations-glyph {
+  color: var(--ok);
+}
+.integrations-level {
+  color: var(--ink-secondary);
+  margin-left: var(--space-1);
+}
+.integrations-box {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+}
+.integrations-box li {
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+}
+.integrations-box li:last-child {
+  border-bottom: 0;
+}
+.integrations-box .integrations-glyph {
+  color: var(--ink-tertiary);
+}
+
+.integrations-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.integrations-agent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  text-decoration: none;
+}
+.integrations-agent:hover {
+  box-shadow: var(--shadow-1);
+}
+.integrations-agent:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.integrations-agent-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.integrations-agent-name {
+  font-weight: var(--type-body-strong-weight);
+}
+.integrations-sec > .integrations-cap {
+  margin: 0;
+}
+
+/* The empty and unknown states. */
+.integrations-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  max-width: 520px;
+  padding: var(--space-8) 0;
+}
+.integrations-empty h2 {
+  margin: 0;
+  font-size: var(--type-title-1-size);
+  line-height: var(--type-title-1-line);
+  font-weight: var(--type-title-1-weight);
+  letter-spacing: var(--type-title-1-tracking);
+}
+.integrations-empty p {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+
+.integrations-skel {
+  display: block;
+  height: 10px;
+  width: 80%;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+}
+.integrations-skel-title {
+  height: 20px;
+  width: 40%;
+}
+.integrations-skel-short {
+  width: 50%;
+}
+
+/* The Connect GitHub sheet: Dialog.css's panel, wide. */
+.integrations-sheet {
+  gap: var(--space-3);
+}
+.integrations-sheet .dialog-description p {
+  margin: 0;
+}
+.integrations-steps {
+  margin: 0;
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-6);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+.integrations-steps li + li {
+  margin-top: var(--space-1);
+}
+.integrations-token-page {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.integrations-refusal {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.integrations-refusal p {
+  margin: 0;
+}
+.integrations-refusal ul {
+  margin: var(--space-1) 0;
+  padding-left: var(--space-5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .integrations-agent {
+    transition-duration: 0s;
+  }
+}
