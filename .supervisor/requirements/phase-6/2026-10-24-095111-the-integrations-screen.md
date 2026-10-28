@@ -83,3 +83,9 @@ Recorded 2026-10-24 in the phase 6 product-owner session, over four rounds of As
 app/src/screens/integrations/
 app/e2e/integrations.spec.ts
 app/e2e/fixtures/integrations.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-28T18:13:35Z
+- **Brief:** .supervisor/jobs/done/2026-10-28-integrations-screen-github.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/157
