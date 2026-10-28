@@ -104,10 +104,27 @@ function instant(value: string | null, timeZone: string): string {
   return Number.isFinite(ms) ? formatZoned(ms, timeZone) : inline(value);
 }
 
+/**
+ * A poll's stored spec as a readable schedule, or `null` when it is not one the mirror can read
+ * (it then falls back to the raw JSON line). Every part is a value only an agent drafts in phase 6
+ * (no owner control sets a playbook's trigger), so the line ends ` (proposed)`.
+ */
+function pollSchedule(spec: { source?: unknown; repos?: unknown; filters?: unknown; interval_seconds?: unknown }): string | null {
+  const { source, repos, filters, interval_seconds: interval } = spec;
+  if (typeof source !== "string" || !Array.isArray(repos) || !repos.every((r) => typeof r === "string") || typeof interval !== "number") return null;
+  const filterEntries = typeof filters === "object" && filters !== null && !Array.isArray(filters) ? Object.entries(filters) : [];
+  const shownFilters = filterEntries.length === 0 ? "no filters" : `filters ${filterEntries.map(([key, v]) => `${inline(key)} ${inline(typeof v === "string" ? v : JSON.stringify(v))}`).join(", ")}`;
+  return `poll ${inline(source)} on ${repos.map((r) => inline(r)).join(", ")}, ${shownFilters}, every ${inline(interval)} seconds (proposed)`;
+}
+
 function schedule(trigger: MirrorTrigger): string {
-  const spec = (typeof trigger.spec === "object" && trigger.spec !== null ? trigger.spec : {}) as { at?: unknown; cron?: unknown; tz?: unknown };
+  const spec = (typeof trigger.spec === "object" && trigger.spec !== null ? trigger.spec : {}) as { at?: unknown; cron?: unknown; tz?: unknown; source?: unknown; repos?: unknown; filters?: unknown; interval_seconds?: unknown };
   if (trigger.kind === "once" && typeof spec.at === "string") return `once at ${inline(spec.at)}`;
   if (trigger.kind === "cron" && typeof spec.cron === "string" && typeof spec.tz === "string") return `cron ${inline(spec.cron)} in ${inline(spec.tz)}`;
+  if (trigger.kind === "poll") {
+    const readable = pollSchedule(spec);
+    if (readable !== null) return readable;
+  }
   return `${inline(trigger.kind)} ${inline(JSON.stringify(trigger.spec ?? null))}`;
 }
 
@@ -145,7 +162,7 @@ function policyLine(label: string, value: string | number | null, setBy: string 
 /**
  * The mirror of `row` (pure): its name, a line saying the file is generated
  * and edits are not read, status, version, intent, the linked trigger and its
- * next fire in `timeZone`, one line per policy field (`(proposed)` when
+ * next fire in `timeZone`, one line per policy field, mode included (`(proposed)` when
  * Wright set it), and the last dry run (`dryRun`; its summary is untrusted
  * text, shown as one inert code span).
  */
@@ -176,6 +193,7 @@ export function renderPlaybookMirror(row: PlaybookRow, trigger: MirrorTrigger | 
     policyLine("Priority", row.priority, row.priority_set_by),
     policyLine("Model", row.model, row.model_set_by),
     policyLine("Token limit per day", row.token_limit_per_day, row.token_limit_set_by),
+    policyLine("Mode", row.mode, row.mode_set_by),
     policyLine("Effort", row.effort, row.effort_set_by),
     policyLine("API-key fallback", row.api_key_fallback_json, row.api_key_fallback_set_by),
     "",
