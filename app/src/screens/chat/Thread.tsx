@@ -7,13 +7,14 @@
 // Wright's thread scrolled to that playbook's card, or says the card is not in
 // what is loaded. Every kernel string is a React text child only.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
-import type { Approval, RosterEntry, StudioBridge, ThreadItem, ThreadResponse } from "../../api/contract";
+import type { KeyboardEvent, ReactNode } from "react";
+import type { Approval, DraftOutput, RosterEntry, StudioBridge, ThreadItem, ThreadResponse } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
 import { Button } from "../../components/Button/Button";
 import { ChatBubble } from "../../components/ChatBubble/ChatBubble";
 import { EventCard } from "../../components/EventCard/EventCard";
 import { StatusDot } from "../../components/StatusDot/StatusDot";
+import { isEditableTarget, listMove } from "../../commands/keyboard";
 import { useResource } from "../../store/react";
 import { threadResource } from "../../store/resources";
 import { printable } from "../approvals/printable";
@@ -21,6 +22,8 @@ import { sharedNames } from "../team/model";
 import { ApprovalCard, CharterCard, PlaybookCard, TriggerCard } from "./cards";
 import { ChatComposer } from "./ChatComposer";
 import { useHash } from "./CrewSection";
+import { ConnectorLine, DraftCard, PollQueuedLine, SkipGroupCard, groupThreadRows, useDraftList } from "./integrationCards";
+import type { ThreadRow } from "./integrationCards";
 import {
   WRIGHT,
   agentAvatarState,
@@ -149,6 +152,22 @@ function EventView({ item }: { readonly item: EventItem }) {
   );
 }
 
+/** The phase 6 kinds as cards; every other kind (and a draft event with no usable id) stays a one-line `EventView`. */
+function IntegrationEvent({ api, item, drafts }: { readonly api: StudioBridge; readonly item: EventItem; readonly drafts: ReadonlyMap<number, DraftOutput> | undefined }) {
+  if (item.kind === "draft_output_recorded") {
+    const draftId = refId(item.ref, "draft_output_id");
+    if (draftId !== undefined) return <DraftCard api={api} draftId={draftId} at={item.at} listed={drafts?.get(draftId)} />;
+  } else if (item.kind === "poll_item_queued") {
+    return <PollQueuedLine api={api} item={item} />;
+  } else if (item.kind === "connector_status") {
+    return <ConnectorLine item={item} />;
+  }
+  return <EventView item={item} />;
+}
+
+/** The controls J and K move between: the phase 6 cards' toggles, and the phase 5 event lines' subjects. */
+const CARD_STOPS = "[data-thread-card], .eventcard-event .eventcard-subject";
+
 /** Merge pages oldest first, each item once; an item in both keeps `current`'s copy (it is the fresher read). */
 function mergeItems(older: readonly ThreadItem[], current: readonly ThreadItem[]): ThreadItem[] {
   const seen = new Set<string>(current.map(itemKey));
@@ -199,6 +218,17 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   // A ref, not state: two clicks in one tick must not both send the same cursor.
   const pagingNow = useRef(false);
   const [text, setText] = useState("");
+  // Skip ids of the groups the owner opened. A group is open if any of its skips is here, so it stays open when
+  // Load earlier or a live skip extends the run (its first skip, and so its key, can change). Per thread: this
+  // component is keyed by agent, so a thread switch starts empty; ids are never reused, so none go stale.
+  const [openSkips, setOpenSkips] = useState<ReadonlySet<number>>(() => new Set());
+  const toggleSkips = (ids: readonly number[]): void =>
+    setOpenSkips((prev) => {
+      const next = new Set(prev);
+      if (ids.some((id) => prev.has(id))) for (const id of ids) next.delete(id);
+      else for (const id of ids) next.add(id);
+      return next;
+    });
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLOListElement>(null);
@@ -244,6 +274,16 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   const items = useMemo(() => mergeItems(older?.items ?? [], data?.items ?? []), [older, data]);
   const cursor = older === null ? (data?.next_before ?? null) : older.next;
   const pending = (data?.pending_approvals ?? []).filter((a) => a.requesting_agent === agent);
+  const rows = useMemo(() => groupThreadRows(items), [items]);
+  const draftIds = useMemo(() => {
+    const ids: number[] = [];
+    for (const item of items) {
+      const id = item.type === "event" && item.kind === "draft_output_recorded" ? refId(item.ref, "draft_output_id") : undefined;
+      if (id !== undefined) ids.push(id);
+    }
+    return ids;
+  }, [items]);
+  const drafts = useDraftList(api, agent, draftIds);
 
   const focusComposer = useCallback(() => inputRef.current?.focus(), []);
   useEffect(() => onComposerFocusRequest(agent, focusComposer), [agent, focusComposer]);
@@ -422,6 +462,54 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     return out;
   };
 
+  const rowView = (row: ThreadRow): ReactNode => {
+    if (row.type === "skips") {
+      const ids = row.items.map((i) => i.id);
+      return (
+        <SkipGroupCard
+          api={api}
+          items={row.items}
+          playbook={row.playbookId === undefined ? undefined : playbookList?.find((p) => p.id === row.playbookId)}
+          open={ids.some((id) => openSkips.has(id))}
+          onToggle={() => toggleSkips(ids)}
+        />
+      );
+    }
+    if (row.type === "message") return <MessageView item={row} agent={agent} roster={roster} />;
+    return <IntegrationEvent api={api} item={row} drafts={drafts} />;
+  };
+
+  // J and K move focus between the cards and event lines in display order. The thread list owns the keys, so the
+  // composer (outside it) is never taken; arrows keep their native scroll; a key typed in a field, or one a nested
+  // handler already took (an approval's A/D, an editor's Escape), is left alone.
+  const onListKeyDown = (event: KeyboardEvent<HTMLOListElement>): void => {
+    if (event.defaultPrevented) return;
+    if (isEditableTarget(event.target)) return;
+    const letter = event.key.toLowerCase();
+    if (letter !== "j" && letter !== "k") return;
+    // The field check is made above, on the real target; `listMove` here reads the key and modifiers only.
+    const step = listMove({
+      key: event.key,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+      altKey: event.altKey,
+      ctrlKey: event.ctrlKey,
+      isComposing: event.nativeEvent.isComposing,
+      keyCode: event.keyCode,
+      target: event.currentTarget,
+    });
+    if (step === 0 || !(event.target instanceof Node)) return;
+    const from = event.target;
+    const stops = [...event.currentTarget.querySelectorAll<HTMLElement>(CARD_STOPS)];
+    const next =
+      step === 1
+        ? stops.find((el) => (from.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0)
+        : stops.findLast((el) => (from.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING) !== 0 && !el.contains(from));
+    if (next === undefined) return;
+    event.preventDefault();
+    next.focus();
+  };
+
   let body: ReactNode;
   if (data === undefined && thread?.error !== undefined) {
     body = (
@@ -441,18 +529,24 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
     );
   } else {
     body = (
-      <ol className="chat-items" aria-label={`Thread with ${name}`} ref={listRef} tabIndex={-1}>
+      <ol className="chat-items" aria-label={`Thread with ${name}`} ref={listRef} tabIndex={-1} onKeyDown={onListKeyDown}>
         {/* One flat keyed list (no Fragment per item), so a card whose newest event moves keeps its state. */}
-        {items.flatMap((item, index) => [
-          <li key={itemKey(item)} className="chat-item" data-item={itemKey(item)}>
-            {item.type === "message" ? <MessageView item={item} agent={agent} roster={roster} /> : <EventView item={item} />}
-          </li>,
-          ...cardsAfter(index).map((card) => (
-            <li key={card.key} className="chat-item chat-item-card">
-              {card.node}
-            </li>
-          )),
-        ])}
+        {rows.flatMap((row) => {
+          const last: ThreadItem = row.type === "skips" ? (row.items[row.items.length - 1] as ThreadItem) : row;
+          // A skip group is keyed by its first skip's item key, which Load earlier can change (an older page of the same
+          // run). Its open state lives in `openSkips` (any member id), so it survives that remount, not the key.
+          const key = itemKey(row.type === "skips" ? (row.items[0] as ThreadItem) : row);
+          return [
+            <li key={key} className="chat-item" data-item={key}>
+              {rowView(row)}
+            </li>,
+            ...cardsAfter(items.indexOf(last)).map((card) => (
+              <li key={card.key} className="chat-item chat-item-card">
+                {card.node}
+              </li>
+            )),
+          ];
+        })}
         {pending.map((approval) => (
           <li key={`approval:${approval.id}`} className="chat-item chat-item-approval" data-testid="chat-pending-approval">
             {approval.action === "kernel_agent_create" ? (

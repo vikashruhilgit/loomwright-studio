@@ -6,6 +6,8 @@ import type {
   ApiResult,
   Approval,
   BrainMessage,
+  DraftOutput,
+  EventFrame,
   NotificationRow,
   PlaybookListing,
   RosterEntry,
@@ -137,6 +139,27 @@ export function trigger(id: number, overrides: Partial<Trigger> = {}): Trigger {
   };
 }
 
+/** A `draft_outputs` row: a `gh pr review` a draft-mode session recorded instead of sending. */
+export function draft(id: number, overrides: Partial<DraftOutput> = {}): DraftOutput {
+  return {
+    id,
+    session: 1,
+    agent: "wright",
+    playbook: 1,
+    playbook_run: 1,
+    item_ref: "github:acme/widgets#42",
+    tool: "gh_pr_review",
+    payload: { kind: "gh_pr_review", tool: "Bash", command: "gh pr review 42 -b 'Looks fine'", cwd: "/tmp", target: "42", body: "Looks fine", event: "comment", truncated: false },
+    created_at: T0,
+    ...overrides,
+  };
+}
+
+/** One stored `events` row as `GET /events` and the feed send it. */
+export function eventFrame(id: number, kind: string, payload: unknown): EventFrame {
+  return { type: "event", id, at: T0, kind, session_id: null, task_id: null, payload };
+}
+
 export function notification(id: number, source: string, title: string): NotificationRow {
   return { id, source, title, body: "", deep_link: "loomwright-studio://chat", created_at: `2026-10-22T08:${String(id % 60).padStart(2, "0")}:00.000Z`, delivery_status: "delivered", delivery_detail: null, delivered_at: null };
 }
@@ -149,6 +172,10 @@ export interface KitState {
   playbooks: PlaybookListing[];
   triggers: Trigger[];
   notifications: NotificationRow[];
+  /** `GET /drafts` and `GET /drafts/:id` read these (empty by default). */
+  drafts: DraftOutput[];
+  /** `GET /events` reads these (empty by default). */
+  events: EventFrame[];
   threads: Record<string, ThreadResponse>;
   /** Older pages, keyed `<agent> <before>`. */
   pages: Record<string, ThreadResponse>;
@@ -187,6 +214,8 @@ export function kit(initial: Partial<KitState> = {}): Kit {
     playbooks: [],
     triggers: [],
     notifications: [],
+    drafts: [],
+    events: [],
     threads: {},
     pages: {},
     workspaces: { pim: ["~/work/a"] },
@@ -200,6 +229,19 @@ export function kit(initial: Partial<KitState> = {}): Kit {
   fake.route("GET /playbooks", () => ok({ playbooks: state.playbooks }));
   fake.route("GET /triggers", () => ok({ triggers: state.triggers }));
   fake.route("GET /notifications", () => ok({ notifications: state.notifications }));
+  fake.route("GET /drafts", (req) => {
+    const who = req.query?.agent;
+    return ok({ drafts: state.drafts.filter((d) => who === undefined || d.agent === who) });
+  });
+  fake.route("GET /drafts/:id", (req) => {
+    const found = state.drafts.find((d) => d.id === Number(req.params?.id));
+    return found === undefined ? { ok: false, status: 404, body: { error: "no_draft", message: `no draft ${String(req.params?.id)}` } } : ok({ draft: found });
+  });
+  fake.route("GET /events", (req) => {
+    const after = Number(req.query?.after ?? 0);
+    const limit = Number(req.query?.limit ?? 500);
+    return ok({ events: state.events.filter((e) => e.id > after).slice(0, limit) });
+  });
   fake.route("GET /threads/:agent", (req) => {
     const who = String(req.params?.agent);
     const before = req.query?.before;

@@ -438,3 +438,68 @@
 .chat-crew-notice {
   overflow-wrap: anywhere;
 }
+
+/* Phase 6 thread cards (draft output, skipped PRs): the phase 5 card look, read-only. */
+.chat-integration .chat-card-head {
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: nowrap;
+  margin-bottom: var(--space-1);
+}
+/* The card's header control: it looks like the card's title, with a chevron for its open state. */
+.chat-card-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-card-toggle:hover .chat-card-title {
+  text-decoration: underline;
+}
+.chat-card-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.chat-card-chevron {
+  flex: none;
+  color: var(--ink-tertiary);
+}
+.chat-integration .chat-card-meta {
+  overflow-wrap: anywhere;
+}
+/* A draft's body: the text it would have sent, whitespace kept, long lines wrapped, long bodies scrolled. */
+.chat-draft-text {
+  max-height: 360px;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-skip-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.chat-skip-line {
+  overflow-wrap: anywhere;
+  color: var(--ink-secondary);
+}
