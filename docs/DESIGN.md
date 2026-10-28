@@ -81,7 +81,7 @@ The Integrations screen moved from GUI v2 to phase 6 by the owner's 2026-10-24 d
 
 ### Open points for the owner (on this PR)
 
-- Phase 6 item 11's requirement (the Integrations screen) names the third palette command "Refresh reachable repos". The phase 6 job brief and this mockup use "Show reachable repos" in the palette, with Refresh as a button in the repos section. Pick one name for phase 6 item 11.
+- Phase 6 item 11's requirement (the Integrations screen) names the third palette command "Refresh reachable repos". The phase 6 job brief and this mockup use "Show reachable repos" in the palette, with Refresh as a button in the repos section. Pick one name for phase 6 item 11. (item 11 used 'Refresh reachable repos'; see the evidence README)
 - The expiry warning starts at 14 days, a proposal that matches phase 6 item 03's planned 14-day expiry notice (the GitHub connector, not built yet).
 
 ## Not in v1 (deferred to GUI v2 or later)
