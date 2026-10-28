@@ -218,6 +218,17 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   // A ref, not state: two clicks in one tick must not both send the same cursor.
   const pagingNow = useRef(false);
   const [text, setText] = useState("");
+  // Skip ids of the groups the owner opened. A group is open if any of its skips is here, so it stays open when
+  // Load earlier or a live skip extends the run (its first skip, and so its key, can change). Per thread: this
+  // component is keyed by agent, so a thread switch starts empty; ids are never reused, so none go stale.
+  const [openSkips, setOpenSkips] = useState<ReadonlySet<number>>(() => new Set());
+  const toggleSkips = (ids: readonly number[]): void =>
+    setOpenSkips((prev) => {
+      const next = new Set(prev);
+      if (ids.some((id) => prev.has(id))) for (const id of ids) next.delete(id);
+      else for (const id of ids) next.add(id);
+      return next;
+    });
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLOListElement>(null);
@@ -453,7 +464,16 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
 
   const rowView = (row: ThreadRow): ReactNode => {
     if (row.type === "skips") {
-      return <SkipGroupCard api={api} items={row.items} playbook={row.playbookId === undefined ? undefined : playbookList?.find((p) => p.id === row.playbookId)} />;
+      const ids = row.items.map((i) => i.id);
+      return (
+        <SkipGroupCard
+          api={api}
+          items={row.items}
+          playbook={row.playbookId === undefined ? undefined : playbookList?.find((p) => p.id === row.playbookId)}
+          open={ids.some((id) => openSkips.has(id))}
+          onToggle={() => toggleSkips(ids)}
+        />
+      );
     }
     if (row.type === "message") return <MessageView item={row} agent={agent} roster={roster} />;
     return <IntegrationEvent api={api} item={row} drafts={drafts} />;
@@ -513,7 +533,8 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
         {/* One flat keyed list (no Fragment per item), so a card whose newest event moves keeps its state. */}
         {rows.flatMap((row) => {
           const last: ThreadItem = row.type === "skips" ? (row.items[row.items.length - 1] as ThreadItem) : row;
-          // A skip group is keyed by its first skip's item key, so Load earlier never remounts an open group.
+          // A skip group is keyed by its first skip's item key, which Load earlier can change (an older page of the same
+          // run). Its open state lives in `openSkips` (any member id), so it survives that remount, not the key.
           const key = itemKey(row.type === "skips" ? (row.items[0] as ThreadItem) : row);
           return [
             <li key={key} className="chat-item" data-item={key}>

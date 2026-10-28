@@ -322,6 +322,39 @@ describe("poll cards", () => {
     expect(screen.getAllByText(/^Skipped /)).toHaveLength(5);
   });
 
+  it("an open skip group stays open when Load earlier extends its run across the page boundary", async () => {
+    const k = kit({
+      threads: { wright: thread([skipEvent(3), skipEvent(4)], { next_before: "c1" }) },
+      pages: { "wright c1": thread([skipEvent(1), skipEvent(2)]) },
+      playbooks: [playbook(1)],
+    });
+    await renderChat(k);
+    const toggle = await expand("2 unchanged PRs skipped");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Load earlier/ }));
+    });
+    const grown = await screen.findByRole("button", { name: "4 unchanged PRs skipped" });
+    expect(grown.getAttribute("aria-expanded")).toBe("true");
+    for (const n of [1, 2, 3, 4]) expect(await screen.findByText(`Playbook pb-1 skipped item ${n}`)).toBeTruthy();
+    // Closing it closes the whole run.
+    await press(grown, "Enter");
+    expect(grown.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("an open skip group stays open when a live skip extends it at the newer end", async () => {
+    const k = kit({ threads: { wright: thread([skipEvent(1), skipEvent(2)]) }, playbooks: [playbook(1)] });
+    await renderChat(k);
+    await expand("2 unchanged PRs skipped");
+    k.state.threads.wright = thread([skipEvent(1), skipEvent(2), skipEvent(3)]);
+    await act(async () => {
+      k.fake.emit(eventFrame(30, "event_done", {}));
+    });
+    const grown = await screen.findByRole("button", { name: "3 unchanged PRs skipped" });
+    expect(grown.getAttribute("aria-expanded")).toBe("true");
+    expect(await screen.findByText("Playbook pb-1 skipped item 3")).toBeTruthy();
+  });
+
   it("a single skip is one line with its key", async () => {
     const k = kit({ threads: { wright: thread([skipEvent(1)]) }, playbooks: [playbook(1, { dedupe_key_spec: SPEC })], events: [skipFrame(1, "github:acme/widgets#7")] });
     await renderChat(k);

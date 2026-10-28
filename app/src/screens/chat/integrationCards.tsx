@@ -319,8 +319,20 @@ function CardToggle({ label, open, controls, onToggle }: { readonly label: strin
 
 // ---- the skip group ----------------------------------------------------------------
 
-export function SkipGroupCard({ api, items, playbook }: { readonly api: StudioBridge; readonly items: readonly EventItem[]; readonly playbook: PlaybookListing | undefined }) {
-  const [open, setOpen] = useState(false);
+export function SkipGroupCard({
+  api,
+  items,
+  playbook,
+  open,
+  onToggle,
+}: {
+  readonly api: StudioBridge;
+  readonly items: readonly EventItem[];
+  readonly playbook: PlaybookListing | undefined;
+  /** Held by the thread, not here: a group's key (its first skip) changes when Load earlier extends the run. */
+  readonly open: boolean;
+  readonly onToggle: () => void;
+}) {
   const bodyId = useId();
   const single = items.length === 1;
   // A run's lines are read when they are shown: a single skip at once, a group when it is opened.
@@ -334,7 +346,7 @@ export function SkipGroupCard({ api, items, playbook }: { readonly api: StudioBr
   return (
     <section className="chat-card chat-integration chat-skips" aria-label={`${items.length} unchanged PRs skipped`}>
       <div className="chat-card-head">
-        <CardToggle label={`${items.length} unchanged PRs skipped`} open={open} controls={bodyId} onToggle={() => setOpen((o) => !o)} />
+        <CardToggle label={`${items.length} unchanged PRs skipped`} open={open} controls={bodyId} onToggle={onToggle} />
         <time className="chat-card-meta" dateTime={newest.at}>
           {clock(newest.at)}
         </time>
