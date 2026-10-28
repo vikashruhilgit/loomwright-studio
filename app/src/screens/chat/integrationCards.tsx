@@ -140,33 +140,80 @@ function readNow(api: StudioBridge, id: number): PayloadRead {
   return PENDING;
 }
 
-/** `GET /events?after=<id-1>&limit=1`, cached per bridge; resolves `false` when the read itself failed (nothing is cached then). */
-function loadPayload(api: StudioBridge, id: number): Promise<boolean> {
+/** The widest id span one `GET /events` batch asks for (the kernel caps `limit` at 500). */
+const BATCH_SPAN = 500;
+
+/** Ids asked for since the last flush, per bridge, with the resolver of each one's promise. */
+const waiting = new WeakMap<StudioBridge, Map<number, (done: boolean) => void>>();
+
+/** Read every id asked for in this tick: one `GET /events?after=<min-1>&limit=<span>` per run of ids within the span cap. */
+function flushPayloads(api: StudioBridge): void {
+  const queue = mapFor(waiting, api);
   const running = mapFor(inflight, api);
-  const existing = running.get(id);
-  if (existing !== undefined) return existing;
-  const run = (async (): Promise<boolean> => {
-    let result: ApiResult<EventsResponse> | undefined;
-    try {
-      result = await api.request<EventsResponse>({ method: "GET", path: "/events", query: { after: String(id - 1), limit: "1" } });
-    } catch {
-      result = undefined;
+  const ids = [...queue.keys()].sort((x, y) => x - y);
+  const resolvers = new Map(queue);
+  queue.clear();
+  const batches: number[][] = [];
+  for (const id of ids) {
+    const last = batches[batches.length - 1];
+    if (last !== undefined && id - (last[0] as number) + 1 <= BATCH_SPAN) last.push(id);
+    else batches.push([id]);
+  }
+  for (const batch of batches) {
+    const first = batch[0] as number;
+    // Events come back in id order, so a span of `n` ids holds at most `n` rows.
+    const span = (batch[batch.length - 1] as number) - first + 1;
+    void (async (): Promise<void> => {
+      let result: ApiResult<EventsResponse> | undefined;
+      try {
+        result = await api.request<EventsResponse>({ method: "GET", path: "/events", query: { after: String(first - 1), limit: String(span) } });
+      } catch {
+        result = undefined;
+      }
+      const done = result?.ok === true;
+      if (result?.ok === true) {
+        const events = Array.isArray(result.body?.events) ? result.body.events : [];
+        const cache = mapFor(settled, api);
+        for (const id of batch) {
+          const row = events.find((e) => e.id === id && !isTruncatedFrame(e));
+          cache.set(id, row === undefined || isTruncatedFrame(row) ? null : fieldsOf(row.payload));
+        }
+      }
+      for (const id of batch) {
+        running.delete(id);
+        resolvers.get(id)?.(done);
+      }
+    })();
+  }
+}
+
+/**
+ * Ask for the stored payloads of `ids`. Everything asked for in the same tick (a thread of queued lines
+ * mounts them together) goes out as batched `GET /events` reads. Cached per bridge and id; an id already
+ * being read shares that read. Each id's promise resolves `false` when the read failed (nothing is cached).
+ */
+function loadPayloads(api: StudioBridge, ids: readonly number[]): Map<number, Promise<boolean>> {
+  const running = mapFor(inflight, api);
+  const queue = mapFor(waiting, api);
+  const out = new Map<number, Promise<boolean>>();
+  for (const id of ids) {
+    let run = running.get(id);
+    if (run === undefined) {
+      run = new Promise<boolean>((resolve) => {
+        queue.set(id, resolve);
+      });
+      running.set(id, run);
     }
-    if (result?.ok !== true) return false;
-    const events = Array.isArray(result.body?.events) ? result.body.events : [];
-    const row = events.find((e) => e.id === id && !isTruncatedFrame(e));
-    mapFor(settled, api).set(id, row === undefined || isTruncatedFrame(row) ? null : fieldsOf(row.payload));
-    return true;
-  })().finally(() => {
-    running.delete(id);
-  });
-  running.set(id, run);
-  return run;
+    out.set(id, run);
+  }
+  if (queue.size > 0) queueMicrotask(() => flushPayloads(api));
+  return out;
 }
 
 /**
  * Each event id's stored payload: from the live store's `eventLog` when it holds
- * the frame, else `GET /events?after=<id-1>&limit=1`. Cached per bridge and id.
+ * the frame, else one batched `GET /events?after=<min-1>&limit=<span>` for all the
+ * ids still missing. Cached per bridge and id.
  * A read that failed is not retried until the component remounts.
  */
 export function useEventPayloads(api: StudioBridge, ids: readonly number[]): ReadonlyMap<number, PayloadRead> {
@@ -175,10 +222,14 @@ export function useEventPayloads(api: StudioBridge, ids: readonly number[]): Rea
   const wanted = ids.join(",");
   useEffect(() => {
     let live = true;
-    for (const id of ids) {
-      if (failed.current.has(id) || readNow(api, id).status !== "pending") continue;
-      void loadPayload(api, id).then((done) => {
-        if (!done) failed.current.add(id);
+    const need = ids.filter((id) => !failed.current.has(id) && readNow(api, id).status === "pending");
+    if (need.length > 0) {
+      const runs = loadPayloads(api, need);
+      void Promise.all(
+        need.map(async (id) => {
+          if (!(await (runs.get(id) as Promise<boolean>))) failed.current.add(id);
+        }),
+      ).then(() => {
         if (live) setTick((n) => n + 1);
       });
     }
@@ -250,8 +301,10 @@ export function ConnectorLine({ item }: { readonly item: EventItem }) {
 function CardToggle({ label, open, controls, onToggle }: { readonly label: string; readonly open: boolean; readonly controls: string; readonly onToggle: () => void }) {
   // A button's Enter is its click in a browser; handling the key here keeps it one toggle whichever way the key arrives.
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>): void => {
-    if (event.key !== "Enter" || event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    if (event.key !== "Enter" || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    // Taken even when ignored: left alone, the browser's Enter-to-click would toggle on every auto-repeat.
     event.preventDefault();
+    if (event.repeat) return;
     onToggle();
   };
   return (
@@ -423,12 +476,16 @@ export function DraftCard({ api, draftId, at, listed }: { readonly api: StudioBr
 }
 
 /**
- * The thread agent's recent drafts, read once per thread view (and only when the
- * thread shows a draft event): the collapsed card's PR comes from here.
+ * The thread agent's recent drafts: the collapsed card's PR comes from here. Read when the thread first
+ * shows a draft event, and once more for each draft id the last read did not carry (one that arrived live,
+ * or fell outside the newest 200). Each id triggers at most one read, so a draft the list never holds
+ * cannot loop; its card falls back to its title until opened.
  */
-export function useDraftList(api: StudioBridge, agent: string, enabled: boolean): ReadonlyMap<number, DraftOutput> | undefined {
+export function useDraftList(api: StudioBridge, agent: string, draftIds: readonly number[]): ReadonlyMap<number, DraftOutput> | undefined {
   const [rows, setRows] = useState<ReadonlyMap<number, DraftOutput> | undefined>(undefined);
-  const asked = useRef(false);
+  const [tick, setTick] = useState(0);
+  const covered = useRef(new Set<number>());
+  const busy = useRef(false);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -436,9 +493,13 @@ export function useDraftList(api: StudioBridge, agent: string, enabled: boolean)
       alive.current = false;
     };
   }, []);
+  const wanted = draftIds.join(",");
   useEffect(() => {
-    if (!enabled || asked.current) return;
-    asked.current = true;
+    if (busy.current) return;
+    const missing = draftIds.filter((id) => !covered.current.has(id) && rows?.has(id) !== true);
+    if (missing.length === 0) return;
+    for (const id of missing) covered.current.add(id);
+    busy.current = true;
     void (async () => {
       let result: ApiResult<DraftsResponse> | undefined;
       try {
@@ -446,9 +507,16 @@ export function useDraftList(api: StudioBridge, agent: string, enabled: boolean)
       } catch {
         result = undefined;
       }
-      if (!alive.current || result?.ok !== true || !Array.isArray(result.body?.drafts)) return;
-      setRows(new Map(result.body.drafts.map((d) => [d.id, d])));
+      busy.current = false;
+      if (!alive.current) return;
+      if (result?.ok === true && Array.isArray(result.body?.drafts)) {
+        const drafts = result.body.drafts;
+        setRows((prev) => new Map([...(prev ?? []), ...drafts.map((d): [number, DraftOutput] => [d.id, d])]));
+      }
+      // Ids that arrived while this read was in flight get their own pass.
+      setTick((n) => n + 1);
     })();
-  }, [api, agent, enabled]);
+    // `wanted` is `draftIds` by value; `tick` re-runs the pass after a read.
+  }, [api, agent, wanted, tick]);
   return rows;
 }

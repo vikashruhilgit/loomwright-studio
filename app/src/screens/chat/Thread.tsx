@@ -264,7 +264,15 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   const cursor = older === null ? (data?.next_before ?? null) : older.next;
   const pending = (data?.pending_approvals ?? []).filter((a) => a.requesting_agent === agent);
   const rows = useMemo(() => groupThreadRows(items), [items]);
-  const drafts = useDraftList(api, agent, items.some((item) => item.type === "event" && item.kind === "draft_output_recorded"));
+  const draftIds = useMemo(() => {
+    const ids: number[] = [];
+    for (const item of items) {
+      const id = item.type === "event" && item.kind === "draft_output_recorded" ? refId(item.ref, "draft_output_id") : undefined;
+      if (id !== undefined) ids.push(id);
+    }
+    return ids;
+  }, [items]);
+  const drafts = useDraftList(api, agent, draftIds);
 
   const focusComposer = useCallback(() => inputRef.current?.focus(), []);
   useEffect(() => onComposerFocusRequest(agent, focusComposer), [agent, focusComposer]);

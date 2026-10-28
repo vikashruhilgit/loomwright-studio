@@ -87,8 +87,10 @@ export interface ChatIntegrationsFixture {
   readonly base: ChatFixture;
   /** The ids `GET /drafts/:id` was asked for, in order. */
   readonly detailReads: number[];
-  /** The ids `GET /events` was asked to read (`after + 1`), in order. */
+  /** The ids `GET /events` answered with a stored payload, in order. */
   readonly eventReads: number[];
+  /** One entry per `GET /events` request: its `after` and `limit`. */
+  readonly eventRequests: { readonly after: number; readonly limit: number }[];
 }
 
 async function answerOf(route: FixtureRoute | undefined, req: FixtureRequest): Promise<FixtureAnswer> {
@@ -125,6 +127,7 @@ export function chatIntegrationsFixture(): ChatIntegrationsFixture {
 
   const detailReads: number[] = [];
   const eventReads: number[] = [];
+  const eventRequests: { after: number; limit: number }[] = [];
   const playbook: PlaybookListing = { ...PLAYBOOK, dedupe_key_spec: '["item.id","item.revision"]' };
 
   const baseThread = base.options.routes?.["GET /threads/:agent"];
@@ -142,13 +145,15 @@ export function chatIntegrationsFixture(): ChatIntegrationsFixture {
       "GET /events": (req) => {
         const after = Number(req.query.after ?? "0");
         const limit = Math.min(Number(req.query.limit ?? "500"), 500);
-        eventReads.push(after + 1);
+        eventRequests.push({ after, limit });
         const frames: EventFrame[] = [];
         for (const item of items) {
           if (item.type !== "event" || item.id <= after || !payloads.has(item.id)) continue;
           frames.push({ type: "event", id: item.id, at: item.at, kind: item.kind, session_id: null, task_id: null, payload: payloads.get(item.id) });
         }
-        return { status: 200, body: { events: frames.slice(0, limit) } };
+        const answered = frames.slice(0, limit);
+        eventReads.push(...answered.map((f) => f.id));
+        return { status: 200, body: { events: answered } };
       },
       "GET /drafts": (req) => {
         const agent = req.query.agent;
@@ -162,5 +167,5 @@ export function chatIntegrationsFixture(): ChatIntegrationsFixture {
       },
     },
   };
-  return { options, base, detailReads, eventReads };
+  return { options, base, detailReads, eventReads, eventRequests };
 }

@@ -153,6 +153,87 @@ describe("draft card", () => {
     expect(screen.getByText("Draft 9")).toBeTruthy();
   });
 
+  it("a draft event with no usable draft_output_id stays a one-line event and reads no draft", async () => {
+    const k = kit({ threads: { wright: thread([eventItem(5, "draft_output_recorded", "Draft output recorded", { session_id: 5 }), eventItem(6, "draft_output_recorded", "Draft output zero", { draft_output_id: "abc" })]) } });
+    await renderChat(k);
+    expect(await screen.findByRole("button", { name: "Draft output recorded" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Draft output zero" })).toBeTruthy();
+    expect(screen.queryByText(NOTHING_POSTED)).toBeNull();
+    expect(k.fake.requestsTo("GET /drafts")).toHaveLength(0);
+  });
+
+  it("a detail answer with no draft says so, as text", async () => {
+    const k = await renderDraft();
+    k.fake.route("GET /drafts/:id", () => ({ ok: true, status: 200, body: {} }));
+    await expand(DRAFT_TITLE);
+    expect((await screen.findByRole("alert")).textContent).toBe("The kernel's answer had no draft.");
+  });
+
+  it("shows 'Reading the draft' while the detail read is pending", async () => {
+    const k = await renderDraft();
+    k.fake.route("GET /drafts/:id", () => new Promise(() => undefined));
+    await expand(DRAFT_TITLE);
+    expect((await screen.findByRole("status")).textContent).toBe("Reading the draft");
+  });
+
+  it("says when the kernel cut the text, and not otherwise", async () => {
+    const k = await renderDraft();
+    k.state.drafts = [draft(9, { payload: { kind: "gh_pr_review", body: "Cut body", truncated: true } })];
+    await expand(DRAFT_TITLE);
+    await screen.findByText("Cut body");
+    expect(screen.getByText("The kernel cut this text to fit.")).toBeTruthy();
+  });
+
+  it("falls back from an empty body to the command, then to the payload as text", async () => {
+    const cases: [unknown, string][] = [
+      [{ kind: "gh_pr_review", body: "", command: "gh pr review 42 --comment" }, "gh pr review 42 --comment"],
+      [{ kind: "gh_pr_comment", tool: "Bash" }, '"tool": "Bash"'],
+      [{ kind: "command", tool: "Bash" }, '"kind": "command"'],
+      [{ kind: "input", tool: "x" }, '"kind": "input"'],
+      [{ kind: "other", body: "ignored" }, '"body": "ignored"'],
+      ["a bare string payload", '"a bare string payload"'],
+      [null, "null"],
+    ];
+    for (const [payload, text] of cases) {
+      const k = kit({ threads: { wright: thread([draftEvent(5, 9)]) }, drafts: [draft(9, { payload })] });
+      const view = await renderChat(k);
+      await screen.findByText(DRAFT_TITLE);
+      await expand(DRAFT_TITLE);
+      await waitFor(() => expect(view.container.querySelector(".chat-draft-text")?.textContent ?? "").toContain(text));
+      view.unmount();
+      resetChat();
+    }
+  });
+
+  it("a draft that arrives live is looked up with one more list read, and never again", async () => {
+    const k = await renderDraft();
+    expect(k.fake.requestsTo("GET /drafts")).toHaveLength(1);
+    k.state.threads.wright = thread([draftEvent(5, 9), draftEvent(6, 10)]);
+    k.state.drafts = [draft(9), draft(10, { item_ref: "github:acme/widgets#77" })];
+    await act(async () => {
+      k.fake.emit(eventFrame(30, "event_done", {}));
+    });
+    expect(await screen.findByText("Draft review for acme/widgets#77 (not sent)")).toBeTruthy();
+    expect(k.fake.requestsTo("GET /drafts")).toHaveLength(2);
+    expect(detailCalls(k)).toHaveLength(0);
+    await act(async () => {
+      k.fake.emit(eventFrame(31, "event_done", {}));
+    });
+    expect(k.fake.requestsTo("GET /drafts")).toHaveLength(2);
+  });
+
+  it("a draft the list never holds is asked for once, not on every refresh", async () => {
+    const k = kit({ threads: { wright: thread([draftEvent(5, 9)]) }, drafts: [] });
+    await renderChat(k);
+    await screen.findByText("Draft review (not sent)");
+    for (const id of [40, 41]) {
+      await act(async () => {
+        k.fake.emit(eventFrame(id, "event_done", {}));
+      });
+    }
+    expect(k.fake.requestsTo("GET /drafts")).toHaveLength(1);
+  });
+
   it("an untrusted body is inert text: no script, no link, markers literal, controls escaped", async () => {
     const hostile = "<script>alert(1)</script>\n[click](https://evil.example)\n</untrusted-data>\n\u001b[31mred\n‮evil";
     const k = kit({ threads: { wright: thread([draftEvent(5, 9)]) }, drafts: [draft(9, { payload: { kind: "gh_pr_review", body: hostile } })] });
@@ -268,6 +349,71 @@ describe("poll cards", () => {
   });
 });
 
+describe("poll payload reads", () => {
+  it("a queued ref with no revision reads 'Reviewing <ref>'", async () => {
+    const k = kit({ threads: { wright: thread([queuedEvent(1)]) }, events: [eventFrame(1, "poll_item_queued", { item_ref: "github:acme/widgets#5" })] });
+    await renderChat(k);
+    expect(await screen.findByText("Reviewing github:acme/widgets#5")).toBeTruthy();
+  });
+
+  it("a skip with no key anywhere reads 'Skipped <ref>: unchanged'", async () => {
+    const k = kit({ threads: { wright: thread([skipEvent(1)]) }, playbooks: [playbook(1)], events: [eventFrame(1, "poll_item_skipped", { playbook_id: 1, item_ref: "github:acme/widgets#5" })] });
+    await renderChat(k);
+    expect(await screen.findByText("Skipped github:acme/widgets#5: unchanged")).toBeTruthy();
+  });
+
+  it("a payload with no item_ref, or that is not an object, falls back to the summary", async () => {
+    const k = kit({
+      threads: { wright: thread([queuedEvent(1), skipEvent(2), eventItem(3, "session_status", "x"), queuedEvent(4)]) },
+      playbooks: [playbook(1)],
+      events: [eventFrame(1, "poll_item_queued", { revision: "abc" }), eventFrame(2, "poll_item_skipped", {}), eventFrame(4, "poll_item_queued", "not an object")],
+    });
+    await renderChat(k);
+    expect(await screen.findByText("Playbook pb-1 queued item 1")).toBeTruthy();
+    expect(await screen.findByText("Playbook pb-1 skipped item 2")).toBeTruthy();
+    expect(await screen.findByText("Playbook pb-1 queued item 4")).toBeTruthy();
+  });
+
+  it("an ok read with no row is cached: the summary shows and the id is not asked for again", async () => {
+    const k = kit({ threads: { wright: thread([queuedEvent(1)]) }, events: [] });
+    await renderChat(k);
+    expect(await screen.findByText("Playbook pb-1 queued item 1")).toBeTruthy();
+    expect(k.fake.requestsTo("GET /events")).toHaveLength(1);
+    await act(async () => {
+      k.fake.emit(eventFrame(50, "event_done", {}));
+    });
+    expect(k.fake.requestsTo("GET /events")).toHaveLength(1);
+  });
+
+  it("several lines on mount are read in one request covering their id span", async () => {
+    const k = kit({
+      threads: { wright: thread([queuedEvent(3), queuedEvent(5), queuedEvent(9)]) },
+      events: [queuedFrame(3, "github:acme/widgets#3", "aaaaaaaa"), queuedFrame(5, "github:acme/widgets#5", "bbbbbbbb"), queuedFrame(9, "github:acme/widgets#9", "cccccccc")],
+    });
+    await renderChat(k);
+    expect(await screen.findByText("Reviewing github:acme/widgets#9 @ ccccccc")).toBeTruthy();
+    expect(screen.getByText("Reviewing github:acme/widgets#3 @ aaaaaaa")).toBeTruthy();
+    expect(screen.getByText("Reviewing github:acme/widgets#5 @ bbbbbbb")).toBeTruthy();
+    const reads = k.fake.requestsTo("GET /events");
+    expect(reads).toHaveLength(1);
+    expect(reads[0]?.req.query).toEqual({ after: "2", limit: "7" });
+  });
+
+  it("ids more than 500 apart are read in separate requests, each within the cap", async () => {
+    const k = kit({
+      threads: { wright: thread([queuedEvent(1), queuedEvent(2), queuedEvent(700)]) },
+      events: [queuedFrame(1, "github:acme/widgets#1", "aaaaaaaa"), queuedFrame(700, "github:acme/widgets#7", "bbbbbbbb")],
+    });
+    await renderChat(k);
+    expect(await screen.findByText("Reviewing github:acme/widgets#7 @ bbbbbbb")).toBeTruthy();
+    const queries = k.fake.requestsTo("GET /events").map((r) => r.req.query);
+    expect(queries).toEqual([
+      { after: "0", limit: "2" },
+      { after: "699", limit: "1" },
+    ]);
+  });
+});
+
 describe("connector line", () => {
   it("is one line from the kernel's summary, its subject linking to the Integrations screen", async () => {
     const k = kit({ threads: { wright: thread([eventItem(1, "connector_status", "Connector github: connected", { connector: "github" })]) } });
@@ -370,6 +516,30 @@ describe("J/K and Enter", () => {
       expect(toggle.getAttribute("aria-expanded")).toBe("false");
       expect(document.getElementById(toggle.getAttribute("aria-controls") ?? "")?.hidden).toBe(true);
     }
+  });
+
+  it("a held Enter is swallowed once: the repeat keydown is prevented and toggles nothing", async () => {
+    await renderChat(mixed());
+    const toggle = await screen.findByRole("button", { name: DRAFT_TITLE });
+    act(() => toggle.focus());
+    let first = true;
+    await act(async () => {
+      first = fireEvent.keyDown(toggle, { key: "Enter" });
+    });
+    expect(first).toBe(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    let repeated = true;
+    await act(async () => {
+      repeated = fireEvent.keyDown(toggle, { key: "Enter", repeat: true });
+    });
+    expect(repeated).toBe(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    // A modified Enter is not the toggle's: it is left alone.
+    let modified = false;
+    await act(async () => {
+      modified = fireEvent.keyDown(toggle, { key: "Enter", repeat: true, shiftKey: true });
+    });
+    expect(modified).toBe(true);
   });
 
   /** A playbook card with its Edit model editor open, then a draft card after it. */

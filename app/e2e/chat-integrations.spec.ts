@@ -172,7 +172,11 @@ test("AC4: Enter on a draft card's toggle expands it, reads GET /drafts/:id once
   await page.keyboard.press("Enter");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   await expect(card.locator("pre")).toHaveCount(0);
-  await page.keyboard.press("Enter");
+  // A held Enter acts once: auto-repeat keydowns are swallowed, not turned into clicks.
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  await page.keyboard.up("Enter");
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   // Opened again: the detail is not read a second time.
   expect(chat.detailReads).toEqual([CARDS.draft.id]);
@@ -190,10 +194,14 @@ test("AC4: Enter on the skip group's toggle lists the five refs with the dedupe 
   for (let i = 0; i < 6; i += 1) await page.keyboard.press("j");
   await expect(toggle).toBeFocused();
 
+  // The two queued lines were read on mount in one batched request, not one each.
+  expect(chat.eventRequests).toHaveLength(1);
   await page.keyboard.press("Enter");
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(card.locator("li.chat-skip-line")).toHaveText(CARDS.skips.map((s) => `Skipped ${s.ref}: unchanged under key ${CARDS.skipKey}`));
   expect(chat.eventReads).toEqual(expect.arrayContaining(CARDS.skips.map((s) => s.id)));
+  // Opening the five skips is one more request, not five.
+  expect(chat.eventRequests).toHaveLength(2);
 
   await page.keyboard.press("Enter");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
