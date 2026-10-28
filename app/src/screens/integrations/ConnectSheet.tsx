@@ -3,7 +3,7 @@
 // Dialog chrome (`dialog-overlay` / `dialog-panel`). It is its own panel, not
 // `<Dialog>`, because the primary button must carry `aria-busy` while the
 // kernel checks the token and Dialog's action button cannot; the focus trap,
-// Escape and focus return are written here to match Dialog's.
+// Escape and focus return are Dialog's own, shared through `useModalFocus`.
 //
 // The token field is UNCONTROLLED. The pasted value is read from the input's
 // ref in the submit handler and nowhere else; it is emptied in the DOM before
@@ -16,11 +16,12 @@
 // empty, "Checking with GitHub…", button busy), then a refusal shown inline
 // (`invalid`, `write`, or the kernel's own message) with the field empty again
 // and focused, or the kernel's yes, which closes the sheet.
-import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { StudioBridge } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
 import "../../components/Dialog/Dialog.css";
+import { useModalFocus } from "../../components/Dialog/useModalFocus";
 import "../../components/Input/Input.css";
 import { connectGithub } from "./actions";
 import { INTEGRATIONS_TEST_IDS as IDS, type Refusal, refusalOf } from "./model";
@@ -42,11 +43,16 @@ export interface ConnectSheetProps {
   readonly onConnected: () => void;
   /** True from the moment the token is sent until the kernel answers (the list row reads "connecting"). */
   readonly onBusyChange?: (busy: boolean) => void;
+  /**
+   * True from the moment a token is sent until the kernel answers. Owned by the screen, not the sheet, so it survives
+   * the sheet being cancelled and a new one opened: one token check at a time per screen. Defaults to the sheet's own.
+   */
+  readonly inFlight?: MutableRefObject<boolean>;
+  /** The kernel answered the token (yes or no), whether or not the sheet is still open. */
+  readonly onSettled?: () => void;
 }
 
 type SheetPhase = { readonly kind: "blank" } | { readonly kind: "connecting" } | { readonly kind: "refused"; readonly refusal: Refusal };
-
-const FOCUSABLE = "button:not([disabled]), input:not([disabled]):not([type='hidden']), a[href], [tabindex]:not([tabindex='-1'])";
 
 function Refused({ refusal, id }: { readonly refusal: Refusal; readonly id: string }) {
   return (
@@ -74,7 +80,7 @@ function Refused({ refusal, id }: { readonly refusal: Refusal; readonly id: stri
   );
 }
 
-export function ConnectSheet({ api, mode, expired = false, onClose, onConnected, onBusyChange }: ConnectSheetProps) {
+export function ConnectSheet({ api, mode, expired = false, onClose, onConnected, onBusyChange, inFlight: screenInFlight, onSettled }: ConnectSheetProps) {
   const ids = useId();
   const titleId = `${ids}-title`;
   const descId = `${ids}-desc`;
@@ -86,13 +92,14 @@ export function ConnectSheet({ api, mode, expired = false, onClose, onConnected,
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const mounted = useRef(true);
-  const inFlight = useRef(false);
+  const ownInFlight = useRef(false);
+  const inFlight = screenInFlight ?? ownInFlight;
   const [filled, setFilled] = useState(false);
   const [phase, setPhase] = useState<SheetPhase>({ kind: "blank" });
 
   // The handlers the document listener and the late answer read: the latest props, never stale ones.
-  const latest = useRef({ onClose, onConnected, onBusyChange });
-  latest.current = { onClose, onConnected, onBusyChange };
+  const latest = useRef({ onClose, onConnected, onBusyChange, onSettled });
+  latest.current = { onClose, onConnected, onBusyChange, onSettled };
 
   useEffect(() => {
     mounted.current = true;
@@ -101,42 +108,10 @@ export function ConnectSheet({ api, mode, expired = false, onClose, onConnected,
     };
   }, []);
 
-  // Focus in on open and back out on close (to the opener, if it is still there), a Tab trap, and Escape.
-  const openerRef = useRef<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    const panel = panelRef.current;
-    if (panel === null) return;
-    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        latest.current.onClose();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const items = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
-      const first = items[0];
-      const last = items[items.length - 1];
-      if (first === undefined || last === undefined) {
-        event.preventDefault();
-        return;
-      }
-      const active = document.activeElement;
-      const outside = !panel.contains(active);
-      if (event.shiftKey ? outside || active === first || active === panel : outside || active === last) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+  // Focus in on open and back out on close, a Tab trap, and Escape: Dialog's own behaviour.
+  useModalFocus(panelRef, true, () => latest.current.onClose());
   useEffect(() => {
     return () => {
-      const opener = openerRef.current;
-      openerRef.current = null;
-      if (opener?.isConnected) opener.focus();
       // A sheet closed while the kernel is still checking no longer holds the list row at "connecting".
       latest.current.onBusyChange?.(false);
     };
@@ -162,6 +137,7 @@ export function ConnectSheet({ api, mode, expired = false, onClose, onConnected,
     latest.current.onBusyChange?.(true);
     const reply = await connectGithub(api, token);
     inFlight.current = false;
+    latest.current.onSettled?.();
     if (mounted.current) latest.current.onBusyChange?.(false);
     if (reply.kind === "ok") {
       latest.current.onConnected();

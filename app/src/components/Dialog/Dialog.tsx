@@ -36,6 +36,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } f
 import { createPortal } from "react-dom";
 import { Button } from "../Button/Button";
 import "./Dialog.css";
+import { useModalFocus } from "./useModalFocus";
 
 export type DialogKind = "confirm" | "decision";
 
@@ -78,24 +79,6 @@ export interface DialogProps {
   readonly open?: boolean;
   /** Gallery only: in flow, no overlay, no trap, no focus move. */
   readonly inline?: boolean;
-}
-
-const FOCUSABLE = [
-  "button:not([disabled])",
-  "input:not([disabled]):not([type='hidden'])",
-  "select:not([disabled])",
-  "textarea:not([disabled])",
-  "a[href]",
-  "[tabindex]:not([tabindex='-1'])",
-].join(",");
-
-function focusables(panel: HTMLElement): HTMLElement[] {
-  return Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
-}
-
-/** The first control that is not destructive (`Button`'s `data-variant="danger"`), else the panel. */
-function initialFocusTarget(panel: HTMLElement): HTMLElement {
-  return focusables(panel).find((el) => el.dataset.variant !== "danger") ?? panel;
 }
 
 /** The longest computed animation duration of `el`, in ms (0 when none, as in jsdom). */
@@ -148,70 +131,10 @@ export function Dialog({
   });
 
   const modal = open && !inline;
-  const openerRef = useRef<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    if (!modal) return;
-    const panel = panelRef.current;
-    if (!panel) return;
-    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    let lastInside: HTMLElement = initialFocusTarget(panel);
-    lastInside.focus();
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (latest.current.kind === "decision") latest.current.onCancel();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const items = focusables(panel);
-      const first = items[0];
-      const last = items[items.length - 1];
-      if (!first || !last) {
-        event.preventDefault();
-        return;
-      }
-      const active = document.activeElement;
-      const outside = !panel.contains(active);
-      const atStart = outside || active === first || active === panel;
-      const atEnd = outside || active === last;
-      const wrapTo = event.shiftKey ? (atStart ? last : null) : atEnd ? first : null;
-      if (wrapTo) {
-        event.preventDefault();
-        wrapTo.focus();
-      }
-    };
-    const onFocusIn = (event: FocusEvent) => {
-      const target = event.target;
-      if (target instanceof HTMLElement && panel.contains(target)) {
-        lastInside = target;
-        return;
-      }
-      // Focus escaped (a click on the overlay, a programmatic focus): bring it back.
-      lastInside.focus();
-    };
-
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("focusin", onFocusIn);
-    return () => {
-      // Released here, in the commit, so the focusin guard is gone before focus is restored below.
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("focusin", onFocusIn);
-    };
-  }, [modal]);
-
-  // Restore focus to the opener in a passive cleanup, which runs after the commit.
-  // A layout cleanup runs inside the commit, where React's own selection restore
-  // would refocus the still-mounted panel control (open={false} keeps it for the exit).
-  useEffect(() => {
-    if (!modal) return;
-    return () => {
-      const opener = openerRef.current;
-      openerRef.current = null;
-      if (opener?.isConnected) opener.focus();
-    };
-  }, [modal]);
+  // Escape closes a decision only; a confirm is left through its two buttons.
+  useModalFocus(panelRef, modal, () => {
+    if (latest.current.kind === "decision") latest.current.onCancel();
+  });
 
   // Exit: keep the panel for its `duration-fast` animation, then unmount.
   useEffect(() => {

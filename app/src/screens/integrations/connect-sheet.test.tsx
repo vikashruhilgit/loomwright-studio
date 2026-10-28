@@ -220,6 +220,34 @@ describe("connecting", () => {
     await waitFor(() => expect(requests(kernel, "GET /connectors").length).toBeGreaterThan(before));
     await waitFor(() => expect(rowWords()).toBe("connected · later-owner"));
   });
+
+  it("one token check at a time: after Cancel, neither the buttons nor ⌘K open a second sheet until the first is answered", async () => {
+    const answer = deferred<ApiResult<unknown>>();
+    const kernel = await openSheet("replace", { token: () => answer.promise });
+    const spies = spyOnConsole();
+    paste(TOKEN);
+    fireEvent.click(connectButton());
+    fireEvent.click(screen.getByTestId(IDS.sheetCancel));
+    expect(screen.queryByTestId(IDS.sheet)).toBeNull();
+
+    // The Replace button, the Connect GitHub command and Disconnect all refuse, with a notice that says why.
+    fireEvent.click(screen.getByTestId(IDS.replace));
+    expect(screen.queryByTestId(IDS.sheet)).toBeNull();
+    expect(screen.getByTestId(IDS.notice).textContent).toContain("still checking");
+    act(() => void kernel.registry.get("integrations.connect-github")?.run());
+    act(() => void kernel.registry.get("integrations.disconnect-github")?.run());
+    expect(screen.queryByTestId(IDS.sheet)).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(requests(kernel, "POST /connectors/github/token")).toEqual([{ method: "POST", path: "/connectors/github/token", body: { token: TOKEN } }]);
+
+    // Once the kernel answers, the notice goes and a new sheet opens (still empty: the first token never came back).
+    await act(async () => answer.resolve(ok({ connector: connector("connected") })));
+    await waitFor(() => expect(screen.queryByTestId(IDS.notice)).toBeNull());
+    fireEvent.click(screen.getByTestId(IDS.replace));
+    expect(field().value).toBe("");
+    expect(requests(kernel, "POST /connectors/github/token")).toHaveLength(1);
+    expectNoToken(kernel, spies, screen.getByTestId(IDS.screen));
+  });
 });
 
 // ---- AC4: refusals inline -----------------------------------------------------------------------------------------------

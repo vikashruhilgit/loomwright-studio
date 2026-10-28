@@ -409,6 +409,8 @@ interface RepoOverride extends RepoList {
   readonly basis: ConnectorsRead["latest"];
 }
 
+const TOKEN_PENDING = "GitHub is still checking the last token. Try again once it answers.";
+
 export function IntegrationsView({ api, registry = commandRegistry }: IntegrationsViewProps) {
   const { connection, eventLog } = useLiveStore(api);
   const { read, refetch } = useGithubConnectors(api, newestConnectorEventId(eventLog), connection.state === "live");
@@ -426,6 +428,9 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
   const [override, setOverride] = useState<RepoOverride | undefined>(undefined);
   const rowRef = useRef<HTMLButtonElement>(null);
   const disconnecting = useRef(false);
+  // A token check is out and unanswered. It outlives the sheet (Cancel does not stop the kernel), so a second sheet
+  // cannot send a second token while the first is pending: the older answer could land last and win.
+  const checkingToken = useRef(false);
   const refreshingNow = useRef(false);
   const latestRead = useRef(read);
   latestRead.current = read;
@@ -461,6 +466,11 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
 
   const openSheet = (mode: SheetMode) => {
     if (offline) return;
+    if (checkingToken.current) {
+      setNotice({ text: TOKEN_PENDING });
+      return;
+    }
+    if (disconnecting.current) return;
     setConfirming(false);
     setNotice(undefined);
     setSheet((open) => open ?? mode);
@@ -469,6 +479,10 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
 
   const requestDisconnect = () => {
     if (!tokenInUse || offline) return;
+    if (checkingToken.current) {
+      setNotice({ text: TOKEN_PENDING });
+      return;
+    }
     setSheet(undefined);
     setNotice(undefined);
     setConfirming(true);
@@ -572,6 +586,8 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
             refetch();
           }}
           onBusyChange={setConnecting}
+          inFlight={checkingToken}
+          onSettled={() => setNotice((current) => (current?.text === TOKEN_PENDING ? undefined : current))}
         />
       )}
       {confirming ? (

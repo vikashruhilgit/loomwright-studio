@@ -438,6 +438,12 @@ test("unreachable: when the kernel goes away mid-read the last answer stays, the
   await screenshots(page, "unreachable", testInfo);
 });
 
+// AC11 GAP, recorded as an open owner decision: AC11 says "the screen via ⌘5 ... ⌘K". The shell mounts neither the
+// command palette nor the screen shortcuts (CommandPaletteHost is mounted only by the palette gallery), and wiring them
+// is a shell change outside this screen's PR. So this test is keyboard-only and never clicks (a pointer-event counter
+// must read 0), but it reaches the screen by hash and drives Tab/Enter/Escape; ⌘5 and ⌘K are NOT exercised in the built
+// app. The three ⌘K commands are pinned in jsdom (`integrations.test.tsx`, `connect-sheet.test.tsx`). See the README's
+// "AC11: what is and is not met".
 test("AC11: by keyboard alone, connect, cancel, refuse, replace the token, refresh the repos and disconnect with a confirm", async () => {
   const { fx, page: opening } = launchWith();
   const page = await opening;
