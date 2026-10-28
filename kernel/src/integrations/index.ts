@@ -5,7 +5,8 @@
 // A part is empty until its item fills it in. Item 03 filled the GitHub
 // parts: `github-connector` contributes the `studio connectors` subcommand
 // and the token's expiry check (due work), and `github-routes` the four
-// `/connectors` routes; `github-tools` and `drafts` are still empty.
+// `/connectors` routes. Item 06 filled `github-tools`: the four read-only
+// `kernel_github_pr_*` tools; `drafts` is still empty.
 // Integrations are optional (invariant 5): Studio works with none connected.
 // Mechanism only (invariant 1). `startKernel` and `runCli` merge it through
 // `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`), ninth and last, after
@@ -58,7 +59,8 @@ export {
 } from "./github/connector.js";
 export type { ConnectorErrorCode, ConnectorOutcome, ConnectorView, GitHubConnector, GitHubConnectorDeps, GitHubTokenRefusal } from "./github/connector.js";
 export { githubRoutes, githubRoutesPart } from "./github/routes.js";
-export { githubToolsPart } from "./github/tools.js";
+export { GITHUB_PR_DIFF_DEFAULT_MAX_BYTES, GITHUB_TOOL_REFUSALS, createGitHubTools, githubToolsPart } from "./github/tools.js";
+export type { GitHubToolRefusal, GitHubToolsDeps } from "./github/tools.js";
 export { toolsForConnectors } from "./tool-filter.js";
 export { CONNECTOR_KINDS, CONNECTOR_STATUSES } from "./types.js";
 export type {

@@ -161,8 +161,8 @@ describe("the integrations feature (AC2)", () => {
     expect(Object.isFrozen(INTEGRATIONS_PARTS)).toBe(true);
   });
 
-  it.each(INTEGRATIONS_PARTS.filter((p) => p.name === "github-tools" || p.name === "drafts").map((p) => [p.name, p] as const))(
-    "part %s is still empty: no tools, routes, subcommands, handlers or due work (items 06 and 07 fill them)",
+  it.each(INTEGRATIONS_PARTS.filter((p) => p.name === "drafts").map((p) => [p.name, p] as const))(
+    "part %s is still empty: no tools, routes, subcommands, handlers or due work (item 07 fills it)",
     (_, part) => {
       expect(part).toEqual({ name: part.name, tools: [], routes: [], subcommands: [], handlers: {}, dueWork: [] });
       expect(Object.isFrozen(part)).toBe(true);
@@ -191,12 +191,12 @@ describe("the integrations feature (AC2)", () => {
     for (const part of [connector, routes]) expect(Object.isFrozen(part)).toBe(true);
   });
 
-  it("contributes the github parts only: four routes, one subcommand and one due work, no tools or handlers", () => {
-    expect(Object.keys(integrationsContribution).sort()).toEqual(["dueWork", "name", "routes", "subcommands"]);
+  it("contributes the github parts only: the four GitHub PR tools, four routes, one subcommand and one due work, no handlers", () => {
+    expect(Object.keys(integrationsContribution).sort()).toEqual(["dueWork", "name", "routes", "subcommands", "tools"]);
     expect(Object.isFrozen(integrationsContribution)).toBe(true);
     const merged = mergeContributions([integrationsContribution]);
     expect(merged.contributors).toEqual(["integrations"]);
-    expect(merged.tools).toEqual([]);
+    expect(merged.tools.map((t) => t.name)).toEqual(["kernel_github_pr_get", "kernel_github_pr_diff", "kernel_github_pr_files", "kernel_github_pr_comments"]);
     expect(merged.handlers).toEqual({});
     expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual([
       "integrations GET /connectors",
