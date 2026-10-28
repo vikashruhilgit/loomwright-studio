@@ -133,6 +133,18 @@ export interface StartSessionParams {
    * too. A boolean when given; absent or `false` ⇒ a real run.
    */
   readonly dryRun?: boolean;
+  /**
+   * Only with `dryRun: true` (`invalid_params` otherwise): the dry run takes
+   * draft mode's path for an outward call whatever `playbooks.mode` says. The
+   * manager sets the session policy's `mode` to `draft`, so an outward call is
+   * denied `draft_mode` and recorded as a draft output instead of becoming a
+   * `held` would-do entry; any other non-read-only call is still a would-do
+   * entry. It only narrows: the never boundary and a rail deny still win, and
+   * no approval is written. Recorded in the `session_dry_run` event's payload,
+   * so every resume of the session is forced-draft too. A boolean when given;
+   * absent or `false` ⇒ an ordinary dry run.
+   */
+  readonly forceDraft?: boolean;
 }
 
 export interface ResumeSessionParams {
