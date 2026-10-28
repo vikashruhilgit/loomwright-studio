@@ -94,3 +94,9 @@ kernel/src/triggers/cli.ts
 kernel/src/triggers/index.ts
 kernel/test/triggers-poll.test.ts
 docs/architecture/triggers.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-28T04:08:50Z
+- **Brief:** .supervisor/jobs/done/2026-10-27-poll-trigger-fetches-source-at-interval.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/146
