@@ -27,7 +27,7 @@ A success is one string: a line saying the text came from `source`, not from the
 
 Inside the block: every author-controlled field, that is the title, description, logins, branch names, labels, file paths, comment bodies and the diff. Outside it: the data line, the tags, and the diff's truncation note (below), all built by the kernel. The server JSON-encodes the string like every contributed tool's result, so the model reads the block inside a JSON string.
 
-Wrapping makes the text safer for the model, not safe. The hard guards are elsewhere: the read-only token ([integrations](integrations.md)) and, in item 07, the `gh` deny and draft mode.
+Wrapping makes the text safer for the model, not safe. The hard guards are elsewhere: the read-only token ([integrations](integrations.md)) and item 07's `gh` deny and draft mode.
 
 ## The diff bound
 
@@ -45,4 +45,4 @@ Each is an error result whose message starts with a fixed code, then kernel valu
 
 ## Why not `gh`
 
-Today GitHub is reachable in a session only through `gh` in Bash, whose output arrives as a raw tool result: the kernel wraps owner-external text only in prompts it builds, never in tool results. These tools are the path that marks a PR's text as data. Removing `gh` for granted sessions, so no unwrapped PR text reaches the model, is item 07 (draft mode and the `gh` deny); until then a granted session can still run `gh`, an open question ([open questions](../OPEN_QUESTIONS.md#technical-verify-dont-assume)).
+Today GitHub is reachable in a session only through `gh` in Bash, whose output arrives as a raw tool result: the kernel wraps owner-external text only in prompts it builds, never in tool results. These tools are the path that marks a PR's text as data. Item 07's GitHub CLI deny removes `gh` from granted sessions, so their PR text arrives only through these tools ([draft mode](draft-mode.md#deny-order)). A session without the grant may still run `gh` through the owner's stored login, an open question ([open questions](../OPEN_QUESTIONS.md#technical-verify-dont-assume)).
