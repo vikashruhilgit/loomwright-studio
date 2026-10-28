@@ -83,3 +83,9 @@ Recorded 2026-10-24 in the phase 6 product-owner session, over four rounds of As
 kernel/src/playbooks/runs.ts
 kernel/test/playbooks-runs-items.test.ts
 docs/architecture/playbook-runs.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-28T03:22:55Z
+- **Brief:** .supervisor/jobs/done/2026-10-27-per-item-playbook-runs-dedupe.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/145
