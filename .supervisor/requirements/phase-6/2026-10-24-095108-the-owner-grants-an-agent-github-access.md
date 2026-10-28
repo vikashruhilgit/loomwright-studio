@@ -85,3 +85,8 @@ docs/architecture/agents.md
 app/src/screens/team/
 app/e2e/team.spec.ts
 app/e2e/fixtures/team.ts
+
+## Status: done (PR #149, merge 6daf886)
+- **Completed:** 2026-10-28T11:41:19Z
+- **Brief:** .supervisor/jobs/done/2026-10-28-owner-grants-agent-github-access.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/149
