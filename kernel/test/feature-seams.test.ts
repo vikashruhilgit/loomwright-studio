@@ -89,6 +89,11 @@ function shippedToolNames(contributions: readonly FeatureContribution[] = SHIPPE
   return contributions.flatMap((c) => (c.tools ?? []).map((t) => t.name));
 }
 
+/** The shipped tool names a session of an agent with no connector grant lists: those without `requiresConnector` (`toolsForConnectors`). */
+function shippedUngrantedToolNames(contributions: readonly FeatureContribution[] = SHIPPED_CONTRIBUTIONS): string[] {
+  return contributions.flatMap((c) => (c.tools ?? []).filter((t) => t.requiresConnector === undefined).map((t) => t.name));
+}
+
 /** Every shipped route as `<owner> <METHOD> <path>`, in contribution order. */
 function shippedRoutes(contributions: readonly FeatureContribution[] = SHIPPED_CONTRIBUTIONS): string[] {
   return contributions.flatMap((c) => (c.routes ?? []).map((r) => `${c.name} ${r.method} ${r.path}`));
@@ -483,7 +488,7 @@ describe("the shipped kernel (AC3)", () => {
 
     expect(kernel.contributions.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents", "console", "integrations"]);
     expect(kernelToolNames(kernel.contributions.tools)).toEqual([...KERNEL_TOOL_NAMES, ...shippedToolNames()]);
-    expect(Object.keys(await launchedTools(kernel, fakes))).toEqual([...KERNEL_TOOL_NAMES, ...shippedToolNames()]);
+    expect(Object.keys(await launchedTools(kernel, fakes))).toEqual([...KERNEL_TOOL_NAMES, ...shippedUngrantedToolNames()]);
     expect(kernel.contributions.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(shippedRoutes());
     expect(kernel.contributions.subcommands.map((s) => s.name)).toEqual(shippedSubcommandNames());
     expectShippedHandlers(kernel.contributions.handlers);
@@ -520,7 +525,7 @@ describe("a contribution composed from outside (AC4)", () => {
   it("the tool is on the kernel MCP server (kernel_ prefix) and validates its arguments with zod", async () => {
     const { kernel, fakes, shipped } = await composed();
     const tools = await launchedTools(kernel, fakes);
-    expect(Object.keys(tools)).toEqual([...KERNEL_TOOL_NAMES, ...shippedToolNames(shipped), "kernel_probe_echo"]);
+    expect(Object.keys(tools)).toEqual([...KERNEL_TOOL_NAMES, ...shippedUngrantedToolNames(shipped), "kernel_probe_echo"]);
     const sessionId = Number(kernel.store.prepare<[], number>("SELECT max(id) FROM sessions").pluck().get());
 
     const ok = await tools.kernel_probe_echo?.handler({ text: "hi", idempotency_key: "k1" }, {});

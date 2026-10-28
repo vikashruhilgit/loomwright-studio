@@ -1242,16 +1242,22 @@ describe("the ⌘K commands", () => {
     expect(ids).toEqual([
       "team.new-crew-member",
       "team.set.wright",
+      "team.grant-github.wright",
+      "team.revoke-github.wright",
       "team.thread.wright",
       "team.rename.mason",
       "team.set.mason",
       "team.on.mason",
       "team.off.mason",
+      "team.grant-github.mason",
+      "team.revoke-github.mason",
       "team.thread.mason",
       "team.rename.pim",
       "team.set.pim",
       "team.on.pim",
       "team.off.pim",
+      "team.grant-github.pim",
+      "team.revoke-github.pim",
       "team.thread.pim",
     ]);
     expect(kernel.registry.get("team.on.mason")?.enabled?.()).toBe(false);

@@ -107,7 +107,7 @@ async function wrightListed(): Promise<Record<string, unknown>> {
 }
 
 const RESERVED_MESSAGE = (): string =>
-  `Wright is not a crew member: set takes only model, effort, limits.tokens_per_day, limits.sessions_at_once or limits.delegation_depth for it; edit the rest in ${wrightFile()}`;
+  `Wright is not a crew member: set takes only model, effort, limits.tokens_per_day, limits.sessions_at_once, limits.delegation_depth or connectors for it; edit the rest in ${wrightFile()}`;
 
 // ---- The allow-list mirrors the contract -------------------------------------------------------
 
@@ -246,43 +246,13 @@ describe("Wright's reserved fields (AC2)", () => {
   });
 });
 
-// ---- Phase 6: connectors are read, not set (until phase 6 item 08) -------------------------------
+// ---- Phase 6 item 08: connectors is a list field, apart from the scalar lists ---------------------
 
-describe("connectors is not settable yet (phase 6 item 08)", () => {
-  it("neither set-field list names it; set refuses it for Wright (reserved) and a crew member (invalid_input) and the CLI exits non-zero; a set of another field keeps the grant", async () => {
+describe("connectors is set apart from the scalar fields (phase 6 item 08)", () => {
+  it("neither scalar set-field list names it, and a set of another field keeps the grant (the grant itself: agents-connectors-grant.test.ts)", async () => {
     expect(AGENT_SET_FIELDS as readonly string[]).not.toContain("connectors");
     expect(WRIGHT_SET_FIELDS as readonly string[]).not.toContain("connectors");
-    const bytes = writeWright({ ...WRIGHT, connectors: ["github"] });
-    expect(await api("POST", "/agents/wright/set", { field: "connectors", value: "github" })).toEqual({ status: 409, body: { error: "reserved", message: RESERVED_MESSAGE() } });
-    const mason = createAgent(
-      env.store,
-      env.dataDir,
-      {
-        id: "mason",
-        display_name: "Mason",
-        avatar: { shape: "crab", hue: "crew-teal" },
-        persona: "Mason reviews code.",
-        duties: ["Review."],
-        boundaries: [],
-        model: "claude-sonnet-5",
-        permission_mode: "default",
-        tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [], never: [] },
-        workspaces: [join(dirname(env.dataDir), "work")],
-      },
-      { by: "owner", homeDir: join(dirname(env.dataDir), "home") },
-      env.now(),
-    );
-    expect(mason.ok ? "" : mason.message).toBe("");
-    const masonFile = agentSettingsPath(env.dataDir, "mason");
-    const masonBytes = readFileSync(masonFile);
-    const crew = await api("POST", "/agents/mason/set", { field: "connectors", value: "github" });
-    expect([crew.status, crew.body.error, crew.body.field]).toEqual([400, "invalid_input", "field"]);
-    const cli = await studio("agents", "set", "mason", "connectors", "github");
-    expect(cli.code).not.toBe(0);
-    expect(readFileSync(wrightFile()).equals(bytes)).toBe(true);
-    expect(readFileSync(masonFile).equals(masonBytes)).toBe(true);
-    expect(events(env.store, "agent_settings_set")).toEqual([]);
-
+    writeWright({ ...WRIGHT, connectors: ["github"] });
     expect((await api("POST", "/agents/wright/set", { field: "model", value: "claude-sonnet-5-5" })).status).toBe(200);
     expect(wrightJson().connectors).toEqual(["github"]);
     const read = readAgentSettings(env.dataDir, "wright");
