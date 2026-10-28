@@ -15,6 +15,8 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { KERNEL_APPLIED_ACTIONS, holdOrUseGrant } from "../approvals/store.js";
 import { KeychainError } from "../auth/keychain.js";
+import { recordDraftOutput } from "../integrations/drafts.js";
+import type { DraftRecord } from "../integrations/drafts.js";
 import { CONNECTOR_KINDS } from "../integrations/types.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import { PLAYBOOK_MODES } from "../playbooks/types.js";
@@ -31,6 +33,7 @@ import { LoomwrightSessionError, readSessionLoomwright, resolveSessionLoomwright
 import type { SessionLoomwright } from "./loomwright-path.js";
 import { TOOL_DEFERRAL_OFF } from "./kernel-env.js";
 import { DRY_RUN_DENY_MESSAGE, classifyDryRunCall, dryRunUsage } from "./dry-run.js";
+import { GITHUB_CLI_DENY_REASON, draftDecision, draftDenyReason, draftPayloadOf, githubCliDecision } from "./draft-mode.js";
 import { latestOrphanReason } from "./orphans.js";
 import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, boundaryDenyReason, classifyToolCall, decideToolUse, freezePolicy, NEVER_CATEGORIES } from "./policy.js";
 import type { NeverCategory, ToolCallClass, ToolDecisionReason } from "./policy.js";
@@ -90,7 +93,8 @@ const MAX_EVENT_COMMAND_CHARS = 500;
 
 /**
  * One `tool_decision` event's payload: the Bash command (truncated), the approval id and the SDK's
- * `tool_use_id` (which call of the turn it decided, so two calls to one tool are told apart) only when present.
+ * `tool_use_id` (which call of the turn it decided, so two calls to one tool are told apart) and the
+ * draft output id (a `draft_mode` deny) only when present.
  */
 function toolDecisionPayload(
   tool: string | null,
@@ -99,6 +103,7 @@ function toolDecisionPayload(
   command: string | undefined,
   approvalId: number | undefined,
   toolUseId: string | undefined,
+  draftOutputId?: number,
 ): Record<string, unknown> {
   return {
     tool,
@@ -107,6 +112,7 @@ function toolDecisionPayload(
     ...(command === undefined ? {} : { command: command.slice(0, MAX_EVENT_COMMAND_CHARS) }),
     ...(approvalId === undefined ? {} : { approval_id: approvalId }),
     ...(toolUseId === undefined ? {} : { tool_use_id: toolUseId }),
+    ...(draftOutputId === undefined ? {} : { draft_output_id: draftOutputId }),
   };
 }
 
@@ -2512,6 +2518,18 @@ export class SessionManager {
    * path a rail deny takes (no approval written, no grant looked up, in a dry
    * run no would-do entry). Its one `tool_decision` event carries the
    * `category`, and the hook's reason is `boundaryDenyReason`'s text naming it.
+   *
+   * Draft mode (`draftDecision`, phase 6 item 07) comes after the never
+   * boundary and the dry-run branch, before the pre-hold check and the hold:
+   * an outward call in a session whose playbook `mode` is `draft` is denied
+   * `draft_mode` and recorded as one `draft_outputs` row with one
+   * `draft_output_recorded` event, in one transaction with the call's one
+   * `tool_decision` event. It never looks up a grant and never writes an
+   * approval, so an `always` or once grant is not used. The GitHub CLI deny
+   * (`githubCliDecision`) follows it: a Bash `gh` call in a session whose
+   * agent holds the `github` grant is denied `use_kernel_github_tools`,
+   * whether or not the policy allowed it (it only denies). A rail deny wins
+   * over both.
    */
   #gate(live: LiveSession): HookCallback {
     return async (input): Promise<HookJSONOutput> => {
@@ -2548,6 +2566,9 @@ export class SessionManager {
           const boundary = rail.kind === "outward" ? boundaryDecision(live.policy, rail) : undefined;
           // A dry run narrows the policy and the rail: it is read only after both answered.
           const dry = live.dryRun === undefined ? undefined : classifyDryRunCall(input.tool_name, input.tool_input, d, rail);
+          // Draft mode records an outward call instead of holding it; the GitHub CLI deny follows it. A rail deny wins over both.
+          const draft = rail.kind === "outward" ? draftDecision(live.policy, rail) : undefined;
+          const githubCli = rail.kind === "deny" ? undefined : githubCliDecision(live.policy, input.tool_name, input.tool_input);
           if (boundary?.kind === "boundary") {
             // Denied and recorded below like a rail deny: no approval written, no grant looked up, no would-do entry.
             decision = "deny";
@@ -2557,6 +2578,26 @@ export class SessionManager {
             // Denied and recorded below; an outward call never reaches the approval path.
             wouldDo = dry.entry;
             reason = "dry_run";
+          } else if (draft?.kind === "draft") {
+            // One transaction: the draft row, its event and this call's one decision event. A throw rolls all of it
+            // back and falls through to the fail-closed deny below. No grant is looked up and no approval written.
+            const recorded = this.#store.transaction(() => {
+              const at = this.#nowIso();
+              const saved: DraftRecord = recordDraftOutput(
+                this.#store,
+                { ...this.#draftContext(live.id), tool: draft.action, payload: draftPayloadOf(input.tool_name, input.tool_input, draft.call) },
+                at,
+              );
+              this.#appendEvent("tool_decision", live.id, toolDecisionPayload(tool, "deny", "draft_mode", command, undefined, toolUseId, saved.id), at);
+              return saved;
+            });
+            return {
+              hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: draftDenyReason(recorded.id) },
+            };
+          } else if (githubCli !== undefined) {
+            // Denied and recorded below: the agent reads GitHub through the kernel's tools, never `gh`.
+            decision = "deny";
+            reason = "use_kernel_github_tools";
           } else if (rail.kind === "outward") {
             // The pre-hold check: an always-held tool only, never in a dry run (that branch is above), before the hold.
             // A throw, or an answer that is not a verdict, falls through to the fail-closed deny below.
@@ -2636,7 +2677,9 @@ export class SessionManager {
                 ? (refusal ?? reason)
                 : reason === "agent_boundary" && category !== undefined
                   ? boundaryDenyReason(category)
-                  : reason,
+                  : reason === "use_kernel_github_tools"
+                    ? GITHUB_CLI_DENY_REASON
+                    : reason,
         },
       };
     };
@@ -2788,8 +2831,9 @@ export class SessionManager {
    * caller's is never mutated, and a caller's own `mode`/`connectors` never
    * reach it (`checkPolicy` keeps only the fields it checks). A stored mode
    * outside `PLAYBOOK_MODES` (none is written) reads as `draft`, the mode
-   * that sends nothing; an unknown connector kind is dropped. The policy
-   * reads neither yet (phase 6 item 07).
+   * that sends nothing; an unknown connector kind is dropped. The gate reads
+   * `mode` (draft mode) and `connectors` (the GitHub CLI deny) from the
+   * policy (`draft-mode.ts`).
    */
   #sessionPolicy(policy: ToolPolicy, agent: string | null, playbook: number | null): ToolPolicy {
     let connectors: readonly ConnectorKind[] = [];
@@ -2807,6 +2851,23 @@ export class SessionManager {
       mode = (PLAYBOOK_MODES as readonly unknown[]).includes(stored) ? (stored as PlaybookMode) : "draft";
     }
     return Object.freeze({ ...policy, ...(mode === undefined ? {} : { mode }), connectors: Object.freeze([...new Set(connectors)]) });
+  }
+
+  /**
+   * What a draft row records about session `id`: its agent (`unknown` with
+   * none, as the approvals do), its playbook, and the newest `playbook_runs`
+   * row whose `session_id` is the session (both null when none: a call can
+   * arrive before the run's `session_id` is written). Read inside the draft
+   * transaction.
+   */
+  #draftContext(id: number): { session: number; agent: string; playbook: number | null; playbookRun: number | null; itemRef: string | null } {
+    const row = this.#store
+      .prepare<[number], { agent: string | null; playbook: number | null }>("SELECT agent, playbook FROM sessions WHERE id = ?")
+      .get(id);
+    const run = this.#store
+      .prepare<[number], { id: number; item_ref: string | null }>("SELECT id, item_ref FROM playbook_runs WHERE session_id = ? ORDER BY id DESC LIMIT 1")
+      .get(id);
+    return { session: id, agent: row?.agent ?? "unknown", playbook: row?.playbook ?? null, playbookRun: run?.id ?? null, itemRef: run?.item_ref ?? null };
   }
 
   /** Whether session `id` started as a dry run: its `session_dry_run` event, written with its row. */

@@ -24,7 +24,20 @@ export type ToolDecisionReason =
    * (`boundaryDecision`): denied whatever the policy, never held, never
    * covered by a grant. The hook's reason is `boundaryDenyReason`'s text.
    */
-  | "agent_boundary";
+  | "agent_boundary"
+  /**
+   * An outward call in a draft-mode playbook session (`draftDecision`): the
+   * kernel did not send it, it recorded it as a `draft_outputs` row for the
+   * owner. Denied without an approval, whatever the policy or any grant. The
+   * hook's reason is `draftDenyReason`'s text.
+   */
+  | "draft_mode"
+  /**
+   * A Bash `gh` call in a session whose agent holds the `github` grant
+   * (`githubCliDecision`): the agent reads GitHub through the kernel's tools.
+   * The hook's reason is `GITHUB_CLI_DENY_REASON`.
+   */
+  | "use_kernel_github_tools";
 
 export interface ToolDecision {
   readonly decision: "allow" | "deny";
@@ -882,6 +895,18 @@ function outwardLabels(read: PathRead, targets: RailTargets): string[] {
 function wordCouldBe(word: string, literal: string): boolean {
   const target = segment(literal, false);
   return braceExpand(word).some((e) => tokensIntersect(segment(e, true), target));
+}
+
+/**
+ * Whether the Bash `command`'s program could be `name`, read as the rail reads
+ * it: the first non-empty brace-expanded shell word, its basename, case-folded
+ * and compared as a glob (`gh`, `/usr/bin/gh`, `GH` and `g{h,x}` are `gh`).
+ * `env gh …`, `sh -c …` and a script are not: the rail's documented limit.
+ * Pure.
+ */
+export function programCouldBe(command: string, name: string): boolean {
+  const program = shellWords(command).flatMap(braceExpand).find((w) => w !== "");
+  return program !== undefined && wordCouldBe(basename(program), name);
 }
 
 // ---- Command forms ----

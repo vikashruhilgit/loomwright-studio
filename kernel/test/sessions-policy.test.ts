@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { PROPOSED_ALLOWED_TOOLS } from "../src/brain/index.js";
 import { decideToolUse, freezePolicy } from "../src/sessions/index.js";
-import { ALWAYS_HELD_TOOLS, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf } from "../src/sessions/policy.js";
+import { DRAFT_PAYLOAD_KINDS, MAX_DRAFT_TEXT_CHARS, draftDecision, draftPayloadOf, githubCliDecision } from "../src/sessions/draft-mode.js";
+import { ALWAYS_HELD_TOOLS, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf, programCouldBe } from "../src/sessions/policy.js";
 import type { NeverCategory } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
 
@@ -364,5 +365,103 @@ describe("ALWAYS_HELD_TOOLS (phase 3 foundation)", () => {
       const expected = ALWAYS_HELD_TOOLS.includes(name) ? "outward" : "ordinary";
       expect(classifyToolCall(name, {}, rail).kind, name).toBe(expected);
     }
+  });
+});
+
+// ---- Draft mode and the GitHub CLI deny (phase 6 item 07): the pure decisions ----
+
+describe("programCouldBe", () => {
+  it("reads the program as the rail does: first non-empty brace-expanded word, its basename, case-folded, as a glob", () => {
+    for (const command of ["gh pr view 1", "/usr/bin/gh pr view 1", "GH pr view 1", "g{h,x} pr view 1", "{,} gh pr view 1", "g? pr view 1", "gh pr view 1 | cat"]) {
+      expect(programCouldBe(command, "gh"), command).toBe(true);
+    }
+  });
+
+  it("does not take a later word, another program, or a program that runs gh", () => {
+    for (const command of ["echo gh", "ghx pr view 1", "env gh pr view 1", "sh -c 'gh pr view 1'", "git gh", "", "   "]) {
+      expect(programCouldBe(command, "gh"), command).toBe(false);
+    }
+  });
+});
+
+describe("draftDecision and githubCliDecision", () => {
+  const base: ToolPolicy = { allowedTools: [], allowedBashPrefixes: ["gh"] };
+  const outward = classifyToolCall("Bash", { command: "gh pr comment 1 --body x" }, { dataDir: "/data", homeDir: "/home/u", cwd: "/work" });
+
+  it("draftDecision drafts an outward call only when the policy's mode is draft", () => {
+    if (outward.kind !== "outward") throw new Error("expected outward");
+    expect(draftDecision({ ...base, mode: "draft" }, outward)).toEqual({ kind: "draft", action: "gh pr comment", call: outward });
+    expect(draftDecision({ ...base, mode: "live" }, outward)).toEqual({ kind: "none" });
+    expect(draftDecision(base, outward)).toEqual({ kind: "none" });
+  });
+
+  it("githubCliDecision denies a Bash gh call only with the github grant", () => {
+    const granted: ToolPolicy = { ...base, connectors: ["github"] };
+    expect(githubCliDecision(granted, "Bash", { command: "gh pr view 1" })).toEqual({ kind: "deny" });
+    expect(githubCliDecision(granted, "Bash", { command: "/usr/bin/gh pr view 1" })).toEqual({ kind: "deny" });
+    expect(githubCliDecision(granted, "Bash", { command: "git status" })).toBeUndefined();
+    expect(githubCliDecision(granted, "Bash", { command: 7 })).toBeUndefined();
+    expect(githubCliDecision(granted, "Bash", undefined)).toBeUndefined();
+    expect(githubCliDecision(granted, "Read", { command: "gh pr view 1" })).toBeUndefined();
+    expect(githubCliDecision(base, "Bash", { command: "gh pr view 1" })).toBeUndefined();
+    expect(githubCliDecision({ ...base, connectors: [] }, "Bash", { command: "gh pr view 1" })).toBeUndefined();
+  });
+});
+
+describe("draftPayloadOf", () => {
+  const ctx = { dataDir: "/data", homeDir: "/home/u", cwd: "/work" };
+  const payloadOf = (command: string) => {
+    const rail = classifyToolCall("Bash", { command }, ctx);
+    if (rail.kind !== "outward") throw new Error(`expected outward: ${command}`);
+    return draftPayloadOf("Bash", { command }, rail);
+  };
+
+  it("the closed kinds are exactly the four", () => {
+    expect(DRAFT_PAYLOAD_KINDS).toEqual(["gh_pr_review", "gh_pr_comment", "command", "input"]);
+  });
+
+  it("reads a review's target, body and verdict", () => {
+    expect(payloadOf('gh pr review 12 --approve --body "LGTM"')).toEqual({
+      kind: "gh_pr_review", tool: "Bash", command: 'gh pr review 12 --approve --body "LGTM"', cwd: "/work", target: "12", body: "LGTM", event: "approve", truncated: false,
+    });
+    expect(payloadOf("gh pr review 3 -r -b 'fix it'")).toMatchObject({ target: "3", body: "fix it", event: "request_changes" });
+    expect(payloadOf("gh pr review 3 --comment")).toMatchObject({ target: "3", body: null, event: "comment" });
+    expect(payloadOf("gh pr review 3 -a")).toMatchObject({ event: "approve" });
+  });
+
+  it("reads --body=, -bX, -F file and -R o/r (a repo flag's value is not the target)", () => {
+    expect(payloadOf("gh pr comment 5 --body=hello")).toMatchObject({ kind: "gh_pr_comment", target: "5", body: "hello" });
+    expect(payloadOf("gh pr comment 5 -bhello")).toMatchObject({ target: "5", body: "hello" });
+    expect(payloadOf("gh pr comment 5 -F notes.md")).toMatchObject({ target: "5", body: null, body_file: "notes.md" });
+    expect(payloadOf("gh pr comment 5 --body-file=notes.md")).toMatchObject({ body_file: "notes.md" });
+    expect(payloadOf("gh pr comment -R o/r 5 --body x")).toMatchObject({ target: "5", body: "x" });
+    expect(payloadOf("gh pr comment --repo o/r --body x 5")).toMatchObject({ target: "5", body: "x" });
+    expect(payloadOf("gh -R o/r pr comment 5 --body x")).toMatchObject({ target: "5", body: "x" });
+  });
+
+  it("takes the last body, records no target when none is named, and never reads a body file", () => {
+    expect(payloadOf("gh pr comment 5 -b one -b two")).toMatchObject({ body: "two" });
+    expect(payloadOf("gh pr comment --body x")).toMatchObject({ target: null, body: "x" });
+    expect(payloadOf("gh pr comment 5 -F /does/not/exist")).toMatchObject({ body: null, body_file: "/does/not/exist" });
+    // A comment has no verdict flag: -c is not an event there.
+    expect(payloadOf("gh pr comment 5 -c")).not.toHaveProperty("event");
+  });
+
+  it("records any other outward Bash call as a command, and another tool's input as JSON text", () => {
+    expect(payloadOf("git push origin main")).toEqual({ kind: "command", tool: "Bash", command: "git push origin main", cwd: "/work", truncated: false });
+    expect(payloadOf("gh pr close 3")).toMatchObject({ kind: "command" });
+    const rail = classifyToolCall("mcp__kernel__kernel_playbook_enable", { id: 1 }, ctx);
+    if (rail.kind !== "outward") throw new Error("expected outward");
+    expect(draftPayloadOf("mcp__kernel__kernel_playbook_enable", { id: 1 }, rail)).toEqual({
+      kind: "input", tool: "mcp__kernel__kernel_playbook_enable", input_json: '{"id":1}', cwd: "/work", truncated: false,
+    });
+  });
+
+  it("cuts a text past MAX_DRAFT_TEXT_CHARS and sets truncated", () => {
+    const rail = classifyToolCall("mcp__kernel__kernel_agent_create", { x: "y".repeat(MAX_DRAFT_TEXT_CHARS) }, ctx);
+    if (rail.kind !== "outward") throw new Error("expected outward");
+    const payload = draftPayloadOf("mcp__kernel__kernel_agent_create", { x: "y".repeat(MAX_DRAFT_TEXT_CHARS) }, rail);
+    expect(payload).toMatchObject({ kind: "input", truncated: true });
+    expect((payload as { input_json: string }).input_json).toHaveLength(MAX_DRAFT_TEXT_CHARS);
   });
 });

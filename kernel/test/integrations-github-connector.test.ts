@@ -717,9 +717,12 @@ describe("the four routes (AC11)", () => {
     const contract = readFileSync(new URL("../../app/src/api/contract.ts", import.meta.url), "utf8");
     const item03 = [...contract.matchAll(/\{ method: "([A-Z]+)", path: "([^"]+)", origin: "p6-item-03" \}/g)].map((m) => `${m[1]} ${m[2]}`);
     expect(item03).toHaveLength(4);
+    // The integrations feature also serves item 07's two drafts routes (the drafts part, merged last).
+    const item07 = [...contract.matchAll(/\{ method: "([A-Z]+)", path: "([^"]+)", origin: "p6-item-07" \}/g)].map((m) => `${m[1]} ${m[2]}`);
+    expect(item07).toEqual(["GET /drafts", "GET /drafts/:id"]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     const served = merged.routes.filter((r) => r.owner === "integrations").map((r) => `${r.method} ${r.path}`);
-    expect(served).toEqual(item03);
+    expect(served).toEqual([...item03, ...item07]);
     expect(githubRoutesPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual(item03);
   });
 });
