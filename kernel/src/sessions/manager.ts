@@ -423,6 +423,8 @@ interface DryRunState {
   readonly wouldDo: WouldDoEntry[];
   /** The last `result` message's raw `modelUsage` (a cumulative total: replaced, never added). */
   lastModelUsage: unknown;
+  /** A forced-draft dry run (`StartSessionParams.forceDraft`): the gate drafts an outward call instead of recording a would-do entry. */
+  readonly forceDraft: boolean;
 }
 
 /** The frozen report of a dry-run session that ended with `finalText`. */
@@ -797,16 +799,18 @@ export class SessionManager {
 
     const sdkSessionId = this.#randomUUID();
     const dryRun = params.dryRun === true;
+    // `#checkPlaybookParams` refused a `forceDraft` without `dryRun: true`.
+    const forceDraft = dryRun && params.forceDraft === true;
     const at = this.#nowIso();
     const id = this.#store.transaction(() => {
       const rowId = this.#insertRow(params, loomwrightPath, sdkSessionId, "starting", at);
       this.#appendStatusEvent(rowId, null, "starting", {}, at);
-      // With the row: every later resume of this session reads it back and runs dry too.
-      if (dryRun) this.#appendEvent(DRY_RUN_EVENT, rowId, {}, at);
+      // With the row: every later resume of this session reads it back and runs dry too (forced-draft too, from the payload).
+      if (dryRun) this.#appendEvent(DRY_RUN_EVENT, rowId, forceDraft ? { forceDraft: true } : {}, at);
       return rowId;
     });
 
-    const live = this.#newLive(id, sdkSessionId, this.#sessionPolicy(policy, params.agent, params.playbook ?? null), "starting", dryRun);
+    const live = this.#newLive(id, sdkSessionId, this.#sessionPolicy(policy, params.agent, params.playbook ?? null, forceDraft), "starting", dryRun, forceDraft);
     let attempt: Attempt;
     try {
       // Before the spawn; a failure here is a spawn failure.
@@ -1065,6 +1069,8 @@ export class SessionManager {
     this.#refuseChangedCwd(params.cwd, row);
     // A dry run only narrows: a session that started as one resumes as one, whatever `params.dryRun` says.
     const dryRun = params.dryRun === true || this.#startedAsDryRun(id);
+    // Likewise a forced-draft dry run resumes forced-draft: the flag rides on the `session_dry_run` event's payload.
+    const forceDraft = this.#startedAsForcedDraft(id);
     // The Loomwright the session started with, never re-resolved; before admission, the row untouched.
     const recordedPath = row.loomwright_path;
     const loomwright = this.#refusingLoomwright(id, () => readSessionLoomwright(recordedPath));
@@ -1108,7 +1114,7 @@ export class SessionManager {
       taskId: row.task_id,
       playbook,
     };
-    const live = this.#newLive(id, row.sdk_session_id, this.#sessionPolicy(policy, row.agent, playbook), "interrupted", dryRun);
+    const live = this.#newLive(id, row.sdk_session_id, this.#sessionPolicy(policy, row.agent, playbook, forceDraft), "interrupted", dryRun, forceDraft);
 
     let first: Attempt;
     try {
@@ -1448,7 +1454,7 @@ export class SessionManager {
 
   // ---- launching -----------------------------------------------------------
 
-  #newLive(id: number, sdkSessionId: string, policy: ToolPolicy, status: SessionStatus, dryRun: boolean): LiveSession {
+  #newLive(id: number, sdkSessionId: string, policy: ToolPolicy, status: SessionStatus, dryRun: boolean, forceDraft = false): LiveSession {
     let resolveDone!: (status: SessionStatus) => void;
     const done = new Promise<SessionStatus>((resolve) => {
       resolveDone = resolve;
@@ -1458,7 +1464,7 @@ export class SessionManager {
       (final) => (final === "completed" ? (live.attempt?.lastSuccessText ?? null) : null),
       () => null,
     );
-    const dryState: DryRunState | undefined = dryRun ? { wouldDo: [], lastModelUsage: undefined } : undefined;
+    const dryState: DryRunState | undefined = dryRun ? { wouldDo: [], lastModelUsage: undefined, forceDraft } : undefined;
     // Never rejects: a report whose usage cannot be read still lists what was recorded, with no usage.
     const dryRunReport: Promise<DryRunReport | null> =
       dryState === undefined
@@ -1467,7 +1473,7 @@ export class SessionManager {
             try {
               return dryRunReportOf(dryState, finalText);
             } catch {
-              return dryRunReportOf({ wouldDo: dryState.wouldDo, lastModelUsage: undefined }, finalText);
+              return dryRunReportOf({ wouldDo: dryState.wouldDo, lastModelUsage: undefined, forceDraft: dryState.forceDraft }, finalText);
             }
           });
     const live: LiveSession = {
@@ -2518,6 +2524,9 @@ export class SessionManager {
    * path a rail deny takes (no approval written, no grant looked up, in a dry
    * run no would-do entry). Its one `tool_decision` event carries the
    * `category`, and the hook's reason is `boundaryDenyReason`'s text naming it.
+   * A forced-draft dry run (`StartSessionParams.forceDraft`) skips the dry-run
+   * branch for an outward call only, so it takes the draft branch below (its
+   * policy `mode` is `draft`); every other non-read-only call stays a would-do entry.
    *
    * Draft mode (`draftDecision`, phase 6 item 07) comes after the never
    * boundary and the dry-run branch, before the pre-hold check and the hold:
@@ -2565,7 +2574,11 @@ export class SessionManager {
           // The never boundary is read first for an outward call: before the dry-run branch and any hold or grant.
           const boundary = rail.kind === "outward" ? boundaryDecision(live.policy, rail) : undefined;
           // A dry run narrows the policy and the rail: it is read only after both answered.
-          const dry = live.dryRun === undefined ? undefined : classifyDryRunCall(input.tool_name, input.tool_input, d, rail);
+          // A forced-draft dry run (`forceDraft`) sends an outward call to the draft branch below instead of a would-do entry.
+          const dry =
+            live.dryRun === undefined || (live.dryRun.forceDraft && rail.kind === "outward")
+              ? undefined
+              : classifyDryRunCall(input.tool_name, input.tool_input, d, rail);
           // Draft mode records an outward call instead of holding it; the GitHub CLI deny follows it. A rail deny wins over both.
           const draft = rail.kind === "outward" ? draftDecision(live.policy, rail) : undefined;
           const githubCli = rail.kind === "deny" ? undefined : githubCliDecision(live.policy, input.tool_name, input.tool_input);
@@ -2805,10 +2818,19 @@ export class SessionManager {
    * references it, so an unknown id would otherwise fail the insert untyped).
    * A given `dryRun` must be a boolean (`invalid_params` otherwise): `true`
    * runs the session as a dry run (`sessions/dry-run.ts`, the gate), and
-   * `false` or absent is a real run.
+   * `false` or absent is a real run. A given `forceDraft` must be a boolean
+   * too, and `true` only with `dryRun: true` (`invalid_params` otherwise): the
+   * dry run then takes draft mode's path for an outward call.
    */
-  #checkPlaybookParams(params: { readonly playbook?: unknown; readonly playbookVersion?: unknown; readonly dryRun?: unknown }): void {
+  #checkPlaybookParams(params: {
+    readonly playbook?: unknown;
+    readonly playbookVersion?: unknown;
+    readonly dryRun?: unknown;
+    readonly forceDraft?: unknown;
+  }): void {
     if (params.dryRun !== undefined && typeof params.dryRun !== "boolean") throw new SessionError("invalid_params", "dryRun must be a boolean");
+    if (params.forceDraft !== undefined && typeof params.forceDraft !== "boolean") throw new SessionError("invalid_params", "forceDraft must be a boolean");
+    if (params.forceDraft === true && params.dryRun !== true) throw new SessionError("invalid_params", "forceDraft is only allowed with dryRun: true");
     for (const [name, value] of [
       ["playbook", params.playbook],
       ["playbookVersion", params.playbookVersion],
@@ -2833,9 +2855,11 @@ export class SessionManager {
    * outside `PLAYBOOK_MODES` (none is written) reads as `draft`, the mode
    * that sends nothing; an unknown connector kind is dropped. The gate reads
    * `mode` (draft mode) and `connectors` (the GitHub CLI deny) from the
-   * policy (`draft-mode.ts`).
+   * policy (`draft-mode.ts`). A forced-draft dry run (`forceDraft`) gets
+   * `mode: "draft"` whatever `playbooks.mode` says (a `live` playbook
+   * included); only the manager sets it, never a caller.
    */
-  #sessionPolicy(policy: ToolPolicy, agent: string | null, playbook: number | null): ToolPolicy {
+  #sessionPolicy(policy: ToolPolicy, agent: string | null, playbook: number | null, forceDraft = false): ToolPolicy {
     let connectors: readonly ConnectorKind[] = [];
     if (agent !== null && this.#connectorsFor !== undefined) {
       try {
@@ -2845,8 +2869,8 @@ export class SessionManager {
         // Fail closed: no grant, so no connector's tool is listed.
       }
     }
-    let mode: PlaybookMode | undefined;
-    if (playbook !== null) {
+    let mode: PlaybookMode | undefined = forceDraft ? "draft" : undefined;
+    if (!forceDraft && playbook !== null) {
       const stored = this.#store.prepare<[number], unknown>("SELECT mode FROM playbooks WHERE id = ?").pluck().get(playbook);
       mode = (PLAYBOOK_MODES as readonly unknown[]).includes(stored) ? (stored as PlaybookMode) : "draft";
     }
@@ -2878,6 +2902,20 @@ export class SessionManager {
         .pluck()
         .get(id, DRY_RUN_EVENT) !== undefined
     );
+  }
+
+  /** Whether session `id` started as a forced-draft dry run: `forceDraft: true` on its `session_dry_run` event's payload. */
+  #startedAsForcedDraft(id: number): boolean {
+    const payload = this.#store
+      .prepare<[number, string], string>("SELECT payload_json FROM events WHERE session_id = ? AND kind = ? ORDER BY id LIMIT 1")
+      .pluck()
+      .get(id, DRY_RUN_EVENT);
+    if (payload === undefined) return false;
+    try {
+      return (JSON.parse(payload) as { forceDraft?: unknown } | null)?.forceDraft === true;
+    } catch {
+      return false;
+    }
   }
 
   /** A resume's `playbook` / `playbookVersion`, each written only when given. */

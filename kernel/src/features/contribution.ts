@@ -139,6 +139,15 @@ export interface ContributedToolContext {
   /** The `sessions` row this server instance serves. */
   readonly sessionId: number;
   readonly now: () => Date;
+  /**
+   * The kernel's GitHub client (`KernelDeps.githubClient`), the same one the
+   * loop's due work gets (`DueWorkContext.github`). Optional: absent when the
+   * composition wires none (the daemon passes none yet), and a tool that needs
+   * it (a poll playbook's dry run) reports that rather than guessing. A
+   * type-only inline import, so this file's one import from the integrations
+   * feature stays `ConnectorKind` (pinned by `integrations-foundation.test.ts`).
+   */
+  readonly github?: import("../integrations/types.js").GitHubClient;
   /** The work-step key of a call: `<tool>:session-<sessionId>:<idempotencyKey>` (the `kernelStepKey` shape). */
   stepKey(idempotencyKey: string): string;
 }

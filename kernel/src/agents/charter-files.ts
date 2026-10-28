@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
+import { CONNECTOR_KINDS } from "../integrations/types.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import { NO_REF, appendEvent, errorMessage } from "../loop/internal.js";
 import { isInsidePath, isProtectedPath, protectedLocationsText } from "../protected-paths.js";
@@ -94,6 +95,11 @@ export interface Charter {
   readonly permission_mode: AllowedPermissionMode;
   readonly tool_policy: { readonly allowedTools: readonly string[]; readonly allowedBashPrefixes: readonly string[]; readonly never: readonly NeverCategory[] };
   readonly limits?: CharterLimits;
+  /**
+   * The connectors Wright proposes for this member (phase 6 item 09), each of `CONNECTOR_KINDS`, no repeats. It is only a
+   * proposal: the settings file holds it only once the owner approved the held create (the grant is never changed by an update).
+   */
+  readonly connectors?: readonly ConnectorKind[];
   /** Absolute folders a message may name as the session's cwd. */
   readonly workspaces: readonly string[];
 }
@@ -189,6 +195,12 @@ const charterSchema = z
           .refine((s) => !CONTROL.test(s) && !BIDI.test(s), "must have no control or bidi character"),
       )
       .max(16),
+    // Optional and closed to the connector kinds the kernel knows; a misspelt kind or a repeat is refused.
+    connectors: z
+      .array(z.enum(CONNECTOR_KINDS))
+      .max(CONNECTOR_KINDS.length)
+      .refine((list) => new Set(list).size === list.length, "must not repeat a connector")
+      .optional(),
   })
   .strict();
 
@@ -343,7 +355,8 @@ win.
  * `effort` (when set), `permission_mode`, `tool_policy` (`allowedTools`,
  * `allowedBashPrefixes`), `never` (the charter's `tool_policy.never`: the
  * reader's `tool_policy` has no `never`), `limits` (when set, keys in
- * `CHARTER_LIMIT_KEYS` order) and `workspaces`. Two-space JSON and a newline.
+ * `CHARTER_LIMIT_KEYS` order), `workspaces` and `connectors` (only when the
+ * charter proposes a non-empty list). Two-space JSON and a newline.
  */
 export function renderAgentSettingsJson(charter: Charter): string {
   const limits: Record<string, number> = {};
@@ -359,6 +372,8 @@ export function renderAgentSettingsJson(charter: Charter): string {
     never: [...charter.tool_policy.never],
     ...(charter.limits !== undefined ? { limits } : {}),
     workspaces: [...charter.workspaces],
+    // Written only when the charter proposes one (an approved create), so a charter without it renders the same bytes as before.
+    ...(charter.connectors !== undefined && charter.connectors.length > 0 ? { connectors: [...charter.connectors] } : {}),
   };
   return `${JSON.stringify(settings, null, 2)}\n`;
 }
