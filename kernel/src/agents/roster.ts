@@ -7,10 +7,16 @@
 //           GET  /agents/:id           {agent, settings, never, workspaces, memory, charter}
 //           POST /agents               body: a charter; the owner's create (`createAgent`)
 //           POST /agents/:id/rename    body {display_name}
-//           POST /agents/:id/set       body {field, value}: one scalar setting, in the file
+//           POST /agents/:id/set       body {field, value}: one scalar setting, or the connectors grant, in the file
 //           POST /agents/:id/off       status off (never deletes a file)
 //           POST /agents/:id/on        status active
 //   verbs   studio agents list | show | create | rename | set | off | on   (each calls only its route)
+//
+// The connectors grant (phase 6 item 08) is the one list field `set` takes:
+// `connectors github` writes `connectors: ["github"]`, `connectors none`
+// removes the key, for a crew member and for Wright, through the same write
+// path. Only this owner route and verb set it: `kernel_agent_update` refuses it
+// and the protected-path rail refuses a session's write to the file.
 //
 // Mechanism only (invariant 1): `set` writes the one value the owner typed and
 // nothing else; the kernel picks no model, limit or workspace. Wright is not a
@@ -35,6 +41,7 @@ import { payloadText, shown } from "../approvals/cli.js";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
 import { agentCountedTokens, localDay } from "../budget/internal.js";
 import type { CliApiClient, CliSubcommandOutput, ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
+import type { ConnectorKind } from "../integrations/types.js";
 import { NO_REF, appendEvent, errorMessage } from "../loop/internal.js";
 import type { Store } from "../store/store.js";
 import {
@@ -82,8 +89,18 @@ export const WRIGHT_SET_FIELDS = Object.freeze([
 ] as const);
 export type WrightSetField = (typeof WRIGHT_SET_FIELDS)[number];
 
-/** The value that clears `effort` or a limit (unset = no limit). */
+/**
+ * The one list field `set` takes (phase 6 item 08): the owner's connectors
+ * grant, mirroring the contract's `AgentConnectorsSetBody`. Kept apart from
+ * `AGENT_SET_FIELDS` / `WRIGHT_SET_FIELDS`, which stay the scalar fields.
+ */
+export const CONNECTORS_FIELD = "connectors";
+
+/** The value that clears `effort` or a limit (unset = no limit), and revokes the connectors grant. */
 export const CLEAR_VALUE = "none";
+
+/** What `set` accepts besides the scalar fields, and the message for any other connectors value. */
+const CONNECTORS_VALUE_MESSAGE = "connectors must be github or none";
 
 /** One roster entry, as `GET /agents` answers it. */
 export interface RosterEntry {
@@ -105,6 +122,8 @@ export interface RosterEntry {
   readonly sessions_running: number;
   /** Null: no limit. */
   readonly sessions_at_once: number | null;
+  /** The connectors the owner granted: the file's (`[]` when none), or null when the settings file does not read ok (Wright: or is absent). */
+  readonly connectors: readonly ConnectorKind[] | null;
 }
 
 /** True when anything is at `path`. */
@@ -145,6 +164,7 @@ function wrightEntry(store: Store, now: Date): RosterEntry {
     tokens_per_day: wrightLimits?.tokens_per_day ?? null,
     sessions_running: sessionsRunning(store, WRIGHT_ID),
     sessions_at_once: wrightLimits?.sessions_at_once ?? null,
+    connectors: read?.ok === true ? (read.settings.connectors ?? []) : null,
   };
 }
 
@@ -164,6 +184,7 @@ function memberEntry(store: Store, row: AgentRow, now: Date, homeDir: string): R
     tokens_per_day: read.ok ? (read.settings.limits?.tokens_per_day ?? null) : null,
     sessions_running: sessionsRunning(store, row.id),
     sessions_at_once: read.ok ? (read.settings.limits?.sessions_at_once ?? null) : null,
+    connectors: read.ok ? (read.settings.connectors ?? []) : null,
   };
 }
 
@@ -287,8 +308,19 @@ function statusRoute(status: AgentStatus): (req: ContributedRouteRequest) => Pro
   };
 }
 
+/** A value `set` writes: a scalar, the connectors list, or null (clears the key). */
+type SetValue = string | number | readonly string[] | null;
+
+/** What `set` changes: a scalar field, or the connectors grant. */
+type SettableField = AgentSetField | typeof CONNECTORS_FIELD;
+
 /** `raw` (as typed on the CLI) as `field`'s value: null clears; a message when it is refused. */
-function parseSetValue(field: AgentSetField, raw: string): { readonly value: string | number | null } | { readonly message: string } {
+function parseSetValue(field: SettableField, raw: string): { readonly value: SetValue } | { readonly message: string } {
+  if (field === CONNECTORS_FIELD) {
+    if (raw === CLEAR_VALUE) return { value: null };
+    // The closed list of grantable kinds is one today; the exact spelling is the contract's.
+    return raw === "github" ? { value: ["github"] satisfies ConnectorKind[] } : { message: CONNECTORS_VALUE_MESSAGE };
+  }
   if (field === "model") {
     if (raw === CLEAR_VALUE) return { message: "model can't be cleared: the kernel never picks one" };
     return modelSchema.safeParse(raw).success ? { value: raw } : { message: "model must be 1-200 characters with no whitespace, control or bidi character" };
@@ -305,15 +337,19 @@ function parseSetValue(field: AgentSetField, raw: string): { readonly value: str
   return /^[1-9]\d{0,15}$/.test(raw) && Number.isSafeInteger(n) ? { value: n } : { message: `${field} must be a positive whole number, or none (no limit)` };
 }
 
-/** `field`'s value in the parsed settings `json`; null when absent. */
-function valueAt(json: Body, field: AgentSetField): unknown {
+/** `field`'s value in the parsed settings `json`; null when absent (an empty `connectors` list reads as no grant). */
+function valueAt(json: Body, field: SettableField): unknown {
+  if (field === CONNECTORS_FIELD) {
+    const list = json[CONNECTORS_FIELD];
+    return Array.isArray(list) && list.length > 0 ? list : null;
+  }
   if (!field.startsWith("limits.")) return json[field] ?? null;
   const limits = json.limits;
   return isBodyObject(limits) ? (limits[field.slice("limits.".length)] ?? null) : null;
 }
 
 /** A copy of `json` with only `field` changed: null deletes the key (`limits` itself stays). */
-function withValue(json: Body, field: AgentSetField, value: string | number | null): Body {
+function withValue(json: Body, field: SettableField, value: SetValue): Body {
   const next = structuredClone(json);
   if (!field.startsWith("limits.")) {
     if (value === null) delete next[field];
@@ -333,7 +369,8 @@ class ConcurrentEditError extends Error {}
 
 /** Wright's `set` refusal for a field it does not take: the reserved form, ending in the file's path. */
 function wrightFieldReserved(dataDir: string): ContributedRouteResponse {
-  const fields = `${WRIGHT_SET_FIELDS.slice(0, -1).join(", ")} or ${WRIGHT_SET_FIELDS[WRIGHT_SET_FIELDS.length - 1]}`;
+  const takes = [...WRIGHT_SET_FIELDS, CONNECTORS_FIELD];
+  const fields = `${takes.slice(0, -1).join(", ")} or ${takes[takes.length - 1]}`;
   return refusal(409, "reserved", `Wright is not a crew member: set takes only ${fields} for it; edit the rest in ${agentSettingsPath(dataDir, WRIGHT_ID)}`);
 }
 
@@ -344,18 +381,18 @@ async function set(req: ContributedRouteRequest): Promise<ContributedRouteRespon
   const row = isWright ? undefined : memberOf(req, "edit its settings in");
   if (row !== undefined && !isRow(row)) return row;
   if (!isBodyObject(req.body) || typeof req.body.field !== "string" || typeof req.body.value !== "string") {
-    return refusal(400, "invalid_body", "the body is {field, value}, both strings (value as typed on the CLI; none clears effort or a limit)");
+    return refusal(400, "invalid_body", "the body is {field, value}, both strings (value as typed on the CLI; none clears effort or a limit, or revokes connectors)");
   }
   const dataDir = req.store.dataDir;
   const { field: rawField, value: raw } = req.body;
   // The field and the value are checked before any filesystem call, so a refused Wright
   // set never creates `wright.json` (the reader below creates it with `wx`).
   if (isWright) {
-    if (!(WRIGHT_SET_FIELDS as readonly string[]).includes(rawField)) return wrightFieldReserved(dataDir);
-  } else if (!(AGENT_SET_FIELDS as readonly string[]).includes(rawField)) {
-    return refusal(400, "invalid_input", `field ${JSON.stringify(rawField.slice(0, 64))} is not one of ${AGENT_SET_FIELDS.join(", ")} (list fields are changed by editing the settings file)`, { field: "field" });
+    if (rawField !== CONNECTORS_FIELD && !(WRIGHT_SET_FIELDS as readonly string[]).includes(rawField)) return wrightFieldReserved(dataDir);
+  } else if (rawField !== CONNECTORS_FIELD && !(AGENT_SET_FIELDS as readonly string[]).includes(rawField)) {
+    return refusal(400, "invalid_input", `field ${JSON.stringify(rawField.slice(0, 64))} is not one of ${AGENT_SET_FIELDS.join(", ")}, ${CONNECTORS_FIELD} (other list fields are changed by editing the settings file)`, { field: "field" });
   }
-  const field = rawField as AgentSetField;
+  const field = rawField as SettableField;
   const parsed = parseSetValue(field, raw);
   if ("message" in parsed) return refusal(400, "invalid_input", parsed.message, { field });
 
@@ -405,7 +442,8 @@ async function set(req: ContributedRouteRequest): Promise<ContributedRouteRespon
     return refusal(409, "settings_changed", `${file} changed while it was read; try again`, { file });
   }
   const old = valueAt(json, field);
-  if (old === parsed.value) return { status: 200, body: { agent: agentOf(), field, old, new: parsed.value, changed: false } };
+  // Scalars compare by value; the connectors list by content (a stored `[]` is the same as no grant: `valueAt` reads it null).
+  if (JSON.stringify(old) === JSON.stringify(parsed.value)) return { status: 200, body: { agent: agentOf(), field, old, new: parsed.value, changed: false } };
   const text = `${JSON.stringify(withValue(json, field, parsed.value), null, 2)}\n`;
   if (Buffer.byteLength(text) > MAX_SETTINGS_BYTES) return refusal(409, "settings_invalid", `${file}: the change would make it over ${MAX_SETTINGS_BYTES} bytes`, { file, field: "the file" });
 
@@ -503,7 +541,7 @@ export function formatAgent(body: Body): string {
   const lines = [rosterLine((isBodyObject(body.agent) ? body.agent : {}) as EntryLike), `  settings: ${field(settings.file)} (edit it to change tool_policy, never or workspaces)`];
   if (isBodyObject(settings.error)) lines.push(`  settings error: ${field(settings.error.error)}: ${field(settings.error.message)}`);
   lines.push(settings.content === null || settings.content === undefined ? "    (unreadable)" : payloadText(settings.content, "    "));
-  lines.push(`  never: ${list(body.never)}`, `  workspaces: ${list(body.workspaces)}`, `  memory: ${field(memory.dir)}`);
+  lines.push(`  never: ${list(body.never)}`, `  workspaces: ${list(body.workspaces)}`, `  connectors: ${list(isBodyObject(body.agent) ? body.agent.connectors : undefined)}`, `  memory: ${field(memory.dir)}`);
   for (const f of Array.isArray(memory.files) ? (memory.files as { name?: unknown; path?: unknown; present?: unknown }[]) : []) {
     lines.push(`    ${field(f.name)}: ${field(f.path)}${f.present === true ? "" : " (missing)"}`);
   }
@@ -649,11 +687,11 @@ const setVerb: AgentVerb = {
   async run(args, client, out) {
     const [id, name, value, ...rest] = args;
     if (!idArg(id) || name === undefined || value === undefined || rest.length > 0) {
-      return usage(out, ROSTER_VERB_HELP.set, ` (field: ${AGENT_SET_FIELDS.join(", ")}; ${CLEAR_VALUE} clears effort or a limit)`);
+      return usage(out, ROSTER_VERB_HELP.set, ` (field: ${AGENT_SET_FIELDS.join(", ")}, ${CONNECTORS_FIELD} (github or ${CLEAR_VALUE}); ${CLEAR_VALUE} clears effort or a limit)`);
     }
     const path = `/agents/${encodeURIComponent(id)}/set`;
     const res = await client.request("POST", path, { field: name, value });
-    const shownValue = (v: unknown): string => (v === null || v === undefined ? (name.startsWith("limits.") ? "no limit" : "not set") : field(v));
+    const shownValue = (v: unknown): string => (v === null || v === undefined ? (name.startsWith("limits.") ? "no limit" : name === CONNECTORS_FIELD ? "no connectors" : "not set") : field(v));
     return report(
       res,
       "POST",
