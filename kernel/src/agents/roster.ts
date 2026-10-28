@@ -21,8 +21,9 @@
 // Mechanism only (invariant 1): `set` writes the one value the owner typed and
 // nothing else; the kernel picks no model, limit or workspace. Wright is not a
 // crew member: `show`, `rename`, `off` and `on` on it are refused `reserved`,
-// and `set` takes only `WRIGHT_SET_FIELDS` for it (phase 5 item 07), through
-// the same write path as a crew member's; every other field is `reserved` (the
+// and `set` takes only `WRIGHT_SET_FIELDS` and the connectors grant for it
+// (phase 5 item 07), through the same write path as a crew member's; every
+// other field is `reserved` (the
 // owner edits `config/agents/wright.json`). Only the owner's route changes
 // Wright's settings: no agent tool does. Every stored string is untrusted
 // text (invariant 3): the verbs print it through `shown` / `payloadText`, as

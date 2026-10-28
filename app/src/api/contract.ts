@@ -569,7 +569,7 @@ export interface AgentConnectorsSetBody {
   readonly value: string;
 }
 
-/** `POST /agents/:id/set`: both strings, the value as typed on the CLI (`none` clears effort or a limit). `id` `wright` takes only `WrightSetField` (item 07). */
+/** `POST /agents/:id/set`: both strings, the value as typed on the CLI (`none` clears effort or a limit). `id` `wright` takes only `WrightSetField` (item 07) and the connectors grant (item 08). */
 export type AgentSetBody =
   | { readonly field: AgentSetField; readonly value: string }
   | { readonly field: WrightSetField; readonly value: string }

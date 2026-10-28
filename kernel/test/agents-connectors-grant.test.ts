@@ -302,6 +302,16 @@ describe("a connectors value other than github or none (AC4)", () => {
     expect(existsSync(fileOf("wright"))).toBe(false);
   });
 
+  it("a valid Wright connectors set on a fresh data dir creates the default wright.json, answers 409 model_unset and grants nothing", async () => {
+    unlinkSync(fileOf("wright"));
+    const r = await api("POST", "/agents/wright/set", { field: "connectors", value: "github" });
+    expect([r.status, r.body.error, r.body.file]).toEqual([409, "model_unset", fileOf("wright")]);
+    expect(jsonOf("wright")).toEqual(JSON.parse(defaultWrightSettingsJson()));
+    expect(setEvents()).toEqual([]);
+    const roster = (await api("GET", "/agents")).body.agents as { id: string; connectors: unknown }[];
+    expect(roster[0]).toMatchObject({ id: "wright", connectors: null });
+  });
+
   it("the field is named once: CONNECTORS_FIELD is connectors; a list field other than it stays refused", async () => {
     expect(CONNECTORS_FIELD).toBe("connectors");
     create("reviewer");
