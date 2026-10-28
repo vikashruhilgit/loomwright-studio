@@ -107,9 +107,21 @@ interface TriggerLike {
 }
 
 function specText(t: TriggerLike): string {
-  const spec = (typeof t.spec === "object" && t.spec !== null ? t.spec : {}) as { at?: unknown; cron?: unknown; tz?: unknown };
+  const spec = (typeof t.spec === "object" && t.spec !== null ? t.spec : {}) as {
+    at?: unknown;
+    cron?: unknown;
+    tz?: unknown;
+    source?: unknown;
+    repos?: unknown;
+    filters?: unknown;
+    interval_seconds?: unknown;
+  };
   if (t.kind === "once") return `once at ${bare(spec.at)}`;
   if (t.kind === "cron") return `cron ${quoted(spec.cron)} in ${bare(spec.tz)}`;
+  if (t.kind === "poll" && Array.isArray(spec.repos)) {
+    const filters = typeof spec.filters === "object" && spec.filters !== null && Object.keys(spec.filters).length > 0 ? ` filters ${quoted(JSON.stringify(spec.filters))}` : "";
+    return `poll ${bare(spec.source)} ${spec.repos.map(quoted).join(", ")} every ${bare(spec.interval_seconds)}s${filters}`;
+  }
   return `${bare(t.kind)} ${quoted(JSON.stringify(t.spec ?? null))}`;
 }
 

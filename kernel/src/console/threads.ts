@@ -58,8 +58,8 @@ export type ThreadEventTie = "session" | "playbook" | "approval" | "agent" | "tr
  * `isTerminalStatus`). Phase 6's four kinds are listed before their writers
  * land, so each tie is fixed now: `draft_output_recorded` (a draft-mode
  * session recorded an outward call: `{draft_output_id, tool}`, item 07),
- * `poll_item_skipped` / `poll_item_queued` (a poll's item:
- * `{playbook_id, item_ref}`, item 04) and `connector_status`
+ * `poll_item_queued` (item 04) / `poll_item_skipped` (item 05) (a poll's
+ * item: at least `{playbook_id, item_ref}`) and `connector_status`
  * (`{connector_id, kind, status}`, item 03).
  */
 export const THREAD_EVENT_KINDS: Readonly<Record<string, ThreadEventTie>> = Object.freeze({

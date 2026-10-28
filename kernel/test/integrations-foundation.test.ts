@@ -1,7 +1,7 @@
 // Phase 6 foundation (item 01): the `integrations` feature's seams, its shared
 // types and test fake, the per-agent tool filter, and migration 17; then the
-// grown closed sets, each refused until its item lands (`poll`, playbook
-// `mode` `live`, the item dedupe fields), agent `connectors`, and the session
+// grown closed sets, each refused until its item lands (playbook `mode`
+// `live`, the item dedupe fields; `poll` is validated since item 04), agent `connectors`, and the session
 // seams (the per-agent tool list and the policy's `mode` / `connectors`).
 // Later phase 6 items extend this file with their refusals and seams.
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -16,6 +16,8 @@ import { agentSettingsPath, readAgentSettings } from "../src/agents/settings.js"
 import { SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
 import type { ContributedRoute, ContributedTool } from "../src/features/index.js";
 import {
+  CONNECTORS_HELP,
+  CONNECTORS_SUBCOMMAND,
   CONNECTOR_KINDS,
   CONNECTOR_STATUSES,
   INTEGRATIONS_NAME,
@@ -25,6 +27,7 @@ import {
   toolsForConnectors,
 } from "../src/integrations/index.js";
 import type { GitHubClient, GitHubPull, IntegrationsPart } from "../src/integrations/index.js";
+import { githubExpiryDueWork } from "../src/integrations/github/connector.js";
 import { DB_FILENAME, Store, migrations } from "../src/store/index.js";
 import type { Migration } from "../src/store/index.js";
 import { startKernel } from "../src/kernel.js";
@@ -158,16 +161,51 @@ describe("the integrations feature (AC2)", () => {
     expect(Object.isFrozen(INTEGRATIONS_PARTS)).toBe(true);
   });
 
-  it.each(INTEGRATIONS_PARTS.map((p) => [p.name, p] as const))("part %s is empty: no tools, routes, subcommands, handlers or due work", (_, part) => {
-    expect(part).toEqual({ name: part.name, tools: [], routes: [], subcommands: [], handlers: {}, dueWork: [] });
-    expect(Object.isFrozen(part)).toBe(true);
+  it.each(INTEGRATIONS_PARTS.filter((p) => p.name === "github-tools" || p.name === "drafts").map((p) => [p.name, p] as const))(
+    "part %s is still empty: no tools, routes, subcommands, handlers or due work (items 06 and 07 fill them)",
+    (_, part) => {
+      expect(part).toEqual({ name: part.name, tools: [], routes: [], subcommands: [], handlers: {}, dueWork: [] });
+      expect(Object.isFrozen(part)).toBe(true);
+    },
+  );
+
+  it("item 03 filled the github parts: github-connector has the connectors subcommand and the expiry due work, github-routes the four /connectors routes", () => {
+    const [connector, routes] = INTEGRATIONS_PARTS;
+    expect(connector?.name).toBe("github-connector");
+    expect(connector?.tools).toEqual([]);
+    expect(connector?.routes).toEqual([]);
+    expect(connector?.handlers).toEqual({});
+    expect(connector?.subcommands?.map((s) => [s.name, s.help])).toEqual([[CONNECTORS_SUBCOMMAND, CONNECTORS_HELP]]);
+    expect(connector?.dueWork).toEqual([githubExpiryDueWork]);
+    expect(routes?.name).toBe("github-routes");
+    expect(routes?.tools).toEqual([]);
+    expect(routes?.handlers).toEqual({});
+    expect(routes?.subcommands).toEqual([]);
+    expect(routes?.dueWork).toEqual([]);
+    expect(routes?.routes.map((r) => `${r.method} ${r.path}`)).toEqual([
+      "GET /connectors",
+      "POST /connectors/github/token",
+      "POST /connectors/github/disconnect",
+      "GET /connectors/github/repos",
+    ]);
+    for (const part of [connector, routes]) expect(Object.isFrozen(part)).toBe(true);
   });
 
-  it("contributes nothing but its name: no tools, routes, subcommands, handlers or due work", () => {
-    expect(integrationsContribution).toEqual({ name: "integrations" });
+  it("contributes the github parts only: four routes, one subcommand and one due work, no tools or handlers", () => {
+    expect(Object.keys(integrationsContribution).sort()).toEqual(["dueWork", "name", "routes", "subcommands"]);
     expect(Object.isFrozen(integrationsContribution)).toBe(true);
     const merged = mergeContributions([integrationsContribution]);
-    expect(merged).toEqual({ contributors: ["integrations"], tools: [], routes: [], subcommands: [], handlers: {}, dueWork: [] });
+    expect(merged.contributors).toEqual(["integrations"]);
+    expect(merged.tools).toEqual([]);
+    expect(merged.handlers).toEqual({});
+    expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual([
+      "integrations GET /connectors",
+      "integrations POST /connectors/github/token",
+      "integrations POST /connectors/github/disconnect",
+      "integrations GET /connectors/github/repos",
+    ]);
+    expect(merged.subcommands.map((s) => s.name)).toEqual(["connectors"]);
+    expect(merged.dueWork).toEqual([{ owner: "integrations", run: githubExpiryDueWork }]);
   });
 
   it("a filled part's tool reaches the contribution under the integrations name, with its connector flag (the merge a later item relies on)", () => {
@@ -183,7 +221,7 @@ describe("the integrations feature (AC2)", () => {
     const dir = join(SRC_DIR, "integrations");
     const files = (readdirSync(dir, { recursive: true }) as string[]).filter((f) => f.endsWith(".ts"));
     expect(files.sort()).toEqual(
-      ["drafts.ts", "github/connector.ts", "github/routes.ts", "github/tools.ts", "index.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
+      ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/routes.ts", "github/tools.ts", "index.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
     );
     for (const f of files) {
       const text = readFileSync(join(dir, f), "utf8");
@@ -492,43 +530,53 @@ function thrown(fn: () => unknown): unknown {
   throw new Error("expected a throw");
 }
 
-describe("poll triggers are refused poll_not_implemented (AC3)", () => {
+describe("poll triggers are validated, never refused poll_not_implemented (AC3; item 04)", () => {
+  /** A poll spec as JSON text: the shape `PollSpec` stores. */
+  const POLL = JSON.stringify({ source: "github.pulls", repos: ["o/r"], filters: {}, interval_seconds: 300 });
+
+  function connectGitHub(store: Store): void {
+    store.prepare("INSERT INTO connectors (kind, status, reachable_repos_json) VALUES ('github', 'connected', ?)").run(JSON.stringify(["o/r"]));
+  }
+
   it("TRIGGER_KINDS names poll, so every set derived from it carries it", () => {
     expect(TRIGGER_KINDS).toEqual(["once", "cron", "poll"]);
   });
 
-  it("kernel_trigger_register with kind poll: refused naming poll_not_implemented, nothing written", async () => {
+  it("kernel_trigger_register with kind poll: refused invalid_input (a poll belongs to a playbook), nothing written", async () => {
     const store = open();
-    const r = await callTool(store, triggersContribution, "kernel_trigger_register", { kind: "poll", spec: "every 5m", action: "notify", text: "hi", idempotency_key: "k1" });
+    connectGitHub(store);
+    const r = await callTool(store, triggersContribution, "kernel_trigger_register", { kind: "poll", spec: POLL, action: "notify", text: "hi", idempotency_key: "k1" });
     expect(r.isError).toBe(true);
-    expect(textOf(r)).toMatch(/poll_not_implemented/);
+    expect(textOf(r)).toMatch(/^kernel_trigger_register: a poll trigger must belong to a playbook/);
+    expect(textOf(r)).not.toMatch(/poll_not_implemented/);
     expect(written(store)).toEqual(NOTHING);
   });
 
-  it("registerTrigger and updateTriggerSpec throw TriggerError poll_not_implemented before any write; the stored trigger is unchanged", () => {
+  it("registerTrigger and updateTriggerSpec refuse a poll with no playbook link (invalid_input) before any write; the stored trigger is unchanged", () => {
     const store = open();
-    const reg = thrown(() => registerTrigger(store, { agent: "wright", kind: "poll", spec: "x", action: "notify", text: "hi" }, NOW));
+    connectGitHub(store);
+    const reg = thrown(() => registerTrigger(store, { agent: "wright", kind: "poll", spec: POLL, action: "notify", text: "hi" }, NOW));
     expect(reg).toBeInstanceOf(TriggerError);
-    expect((reg as TriggerError).code).toBe("poll_not_implemented");
+    expect((reg as TriggerError).code).toBe("invalid_input");
     expect(written(store)).toEqual(NOTHING);
 
     const { id } = registerTrigger(store, { agent: "wright", kind: "cron", spec: "0 9 * * *", tz: "UTC", action: "notify", text: "hi" }, NOW);
     const before = store.prepare("SELECT * FROM triggers").all();
-    const upd = thrown(() => updateTriggerSpec(store, { id, agent: "wright", kind: "poll", spec: "x" }, NOW));
-    expect((upd as TriggerError).code).toBe("poll_not_implemented");
+    const upd = thrown(() => updateTriggerSpec(store, { id, agent: "wright", kind: "poll", spec: POLL }, NOW));
+    expect((upd as TriggerError).code).toBe("invalid_input");
     expect(store.prepare("SELECT * FROM triggers").all()).toEqual(before);
   });
 
-  it("a playbook draft whose trigger kind is poll: refused through the trigger (`trigger: poll_not_implemented: …`), nothing written, on the store and the tool path", async () => {
+  it("a playbook draft whose trigger is a poll with no connector: refused through the trigger (`trigger: poll_connector_missing: …`), nothing written, on the store and the tool path", async () => {
     const store = open();
-    const err = thrown(() => createPlaybook(store, { agent: "wright", name: "Review", intent: "review PRs", trigger: { kind: "poll", spec: "x" } }, NOW));
+    const err = thrown(() => createPlaybook(store, { agent: "wright", name: "Review", intent: "review PRs", trigger: { kind: "poll", spec: POLL } }, NOW));
     expect(err).toBeInstanceOf(PlaybookError);
-    expect((err as PlaybookError).message).toMatch(/^trigger: poll_not_implemented: /);
+    expect((err as PlaybookError).message).toMatch(/^trigger: poll_connector_missing: /);
     expect(written(store)).toEqual(NOTHING);
 
-    const r = await callTool(store, playbooksContribution, "kernel_playbook_create", { name: "Review", intent: "review PRs", trigger: { kind: "poll", spec: "x" }, idempotency_key: "k1" });
+    const r = await callTool(store, playbooksContribution, "kernel_playbook_create", { name: "Review", intent: "review PRs", trigger: { kind: "poll", spec: POLL }, idempotency_key: "k1" });
     expect(r.isError).toBe(true);
-    expect(textOf(r)).toMatch(/^kernel_playbook_create: trigger: poll_not_implemented: /);
+    expect(textOf(r)).toMatch(/^kernel_playbook_create: trigger: poll_connector_missing: /);
     expect(written(store)).toEqual(NOTHING);
   });
 });

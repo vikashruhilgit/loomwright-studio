@@ -319,7 +319,7 @@ describe("triggers while paused (AC1)", () => {
     expect(fired).toHaveLength(1);
     expect(fired[0]?.payload).toMatchObject({ trigger_id: cron.id, scheduled_at: "2026-10-21T12:00:00.000Z", missed: 0 });
     expect(fired[0]?.payload).not.toHaveProperty("missed_paused");
-    expect(TRIGGER_RESULTS).toEqual(["fired", "missed_kill_switch", "missed_paused"]);
+    expect(TRIGGER_RESULTS).toEqual(["fired", "missed_kill_switch", "missed_paused", "rate_limited", "connector_missing", "source_error"]);
   });
 
   it("a cron whose missed instants straddle a past pause fires once for the ones outside it, carrying missed_paused", () => {

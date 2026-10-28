@@ -6,6 +6,7 @@ import type { EventRef } from "./internal.js";
 import { nextPendingRow, toQueuedEvent } from "./queue.js";
 import type { QueueRow } from "./queue.js";
 import { WorkStepFailedError, WorkStepInterruptedError, getWorkStep, runStep, runStepAsync } from "./steps.js";
+import type { GitHubClient } from "../integrations/types.js";
 import { isEventKind } from "./types.js";
 import type {
   DueWork,
@@ -82,6 +83,7 @@ export class EventLoop {
   readonly #dueWork: readonly DueWork[];
   readonly #sessions: EventSessions | undefined;
   readonly #loomwright: LoomwrightInstallSettings | undefined;
+  readonly #github: GitHubClient | undefined;
   readonly #now: () => Date;
   readonly #schedule: (fn: () => void, ms: number) => CancelTimer;
   readonly #tickMs: number;
@@ -99,6 +101,7 @@ export class EventLoop {
     this.#dueWork = [...(options.dueWork ?? [])];
     this.#sessions = options.sessions;
     this.#loomwright = options.loomwright === undefined ? undefined : Object.freeze({ ...options.loomwright });
+    this.#github = options.github;
     this.#now = deps.now ?? (() => new Date());
     this.#schedule = deps.schedule ?? defaultSchedule;
     const tickMs = deps.tickMs ?? DEFAULT_TICK_MS;
@@ -175,7 +178,12 @@ export class EventLoop {
     for (const work of this.#dueWork) {
       if (this.#abortTick) return;
       try {
-        await work.run({ store: this.#store, now: this.#now, ...(this.#loomwright === undefined ? {} : { loomwright: this.#loomwright }) });
+        await work.run({
+          store: this.#store,
+          now: this.#now,
+          ...(this.#loomwright === undefined ? {} : { loomwright: this.#loomwright }),
+          ...(this.#github === undefined ? {} : { github: this.#github }),
+        });
       } catch (err) {
         this.#recordSafely("due_work_failed", NO_REF, { contributor: work.owner, error: clip(errorMessage(err)) });
       }
