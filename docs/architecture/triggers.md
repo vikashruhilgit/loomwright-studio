@@ -122,7 +122,7 @@ While the kill switch is engaged nothing runs at all, as for every trigger.
 
 **A step that throws.** When Phase B throws for any other reason (for example a stored playbook `priority` outside the closed set, which `enqueueEvent` refuses), the step rolls back with nothing written for the instant, and the trigger is still moved off it in its own write, so a failure that repeats never refetches the source on every tick. It moves to `now + interval_seconds`, or is parked (no next fire) when the notification record refused the row (as for a time-based trigger) or no next fire can be computed. The failure is still reported (the loop's `due_work_failed`), naming the next fire or `parked: no next fire`. A `kill -9` mid-step skips that move, so the next tick redoes the same instant.
 
-**The client seam.** The client reaches the due work as `DueWorkContext.github`, passed by the loop (`EventLoopOptions.github`) from `startKernel`'s `KernelDeps.githubClient`. It defaults to none, so until the real client (phase 6 item 03) is wired into that default, a due poll records `connector_missing`. Wiring it is item 03's one-line change in `kernel/src/kernel.ts` (or this item's, whichever lands second). Tests use `FakeGitHubClient` and never reach the network.
+**The client seam.** The client reaches the due work as `DueWorkContext.github`, passed by the loop (`EventLoopOptions.github`) from `startKernel`'s `KernelDeps.githubClient`. It defaults to none, and a kernel without one records each due poll `connector_missing`. The shipped daemon passes the real client (`daemonKernelDeps`, `kernel/src/daemon-deps.ts`); other compositions, the tests included, pass their own or none. Tests use `FakeGitHubClient` and never reach the network.
 
 ## Owner control
 

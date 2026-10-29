@@ -4,6 +4,7 @@
 //
 //   node dist/daemon.js [--auth-provider <id>] [--launchd]
 //   node dist/daemon.js --version
+import { daemonKernelDeps } from "./daemon-deps.js";
 import { DAEMON_NAME, parseArgs, startFailureExit, stopFailureExit, underLaunchd } from "./daemon-exit.js";
 import type { DaemonExit } from "./daemon-exit.js";
 import { startKernel } from "./kernel.js";
@@ -20,7 +21,7 @@ async function main(args: readonly string[]): Promise<void> {
   const launchd = underLaunchd(args);
   let kernel: Kernel;
   try {
-    kernel = await startKernel(parseArgs(args));
+    kernel = await startKernel(parseArgs(args), daemonKernelDeps());
   } catch (err) {
     exitWith(startFailureExit(err, launchd));
   }

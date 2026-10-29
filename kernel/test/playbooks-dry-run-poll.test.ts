@@ -21,6 +21,9 @@ import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/i
 import { wrapUntrusted } from "../src/brain/context.js";
 import { defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
 import { agentSettingsPath } from "../src/agents/settings.js";
+import { daemonKernelDeps } from "../src/daemon-deps.js";
+import { GITHUB_KEYCHAIN_SERVICE } from "../src/integrations/github/client.js";
+import type { GitHubClientDeps } from "../src/integrations/github/client.js";
 import { startKernel } from "../src/kernel.js";
 import type { Kernel, KernelDeps } from "../src/kernel.js";
 import { mirrorPath } from "../src/playbooks/index.js";
@@ -204,12 +207,14 @@ interface BootOptions {
   readonly grant?: boolean;
   /** Wright's allowed Bash prefixes (default `gh pr`). */
   readonly prefixes?: readonly string[];
+  /** Wire the client the shipped daemon builds (`daemonKernelDeps`) over these deps, in place of `client`. */
+  readonly daemon?: GitHubClientDeps;
 }
 
 async function boot(o: BootOptions = {}) {
   const grant = o.grant ?? true;
   writeSettings(grant, o.prefixes);
-  const client = o.client === undefined ? new FakeGitHubClient({ pulls: { "o/r": [pull(1), pull(2), pull(3)] } }) : o.client;
+  const client = o.daemon !== undefined ? null : o.client === undefined ? new FakeGitHubClient({ pulls: { "o/r": [pull(1), pull(2), pull(3)] } }) : o.client;
   const keychain = memoryKeychain();
   const prompts: string[] = [];
   const seen: Seen = { tools: [] };
@@ -248,7 +253,7 @@ async function boot(o: BootOptions = {}) {
     availableProviderIds: async () => ["api-key"],
     loopDeps: { tickMs: 3_600_000 },
     now: () => clock.at,
-    ...(client === null ? {} : { githubClient: client }),
+    ...(o.daemon !== undefined ? daemonKernelDeps(o.daemon) : client === null ? {} : { githubClient: client }),
   };
   const kernel = await startKernel({ dataDir, env: { PATH: "/usr/bin" }, sessions: { loomwrightPath: pluginDir, stopGraceMs: 10 }, contributions: stubNotifierContributions() }, d);
   kernels.push(kernel);
@@ -570,6 +575,55 @@ describe("a poll playbook whose mode is forced to live (AC3)", () => {
     expect(count(h.store, "SELECT count(*) FROM approvals")).toBe(0);
     expect(result.would_do.map((w) => w.input_summary)).toEqual([wrapped("github:o/r#1", VIEW)]);
     expect((result.poll as PollDryRun).drafts.map((d) => d.tool)).toEqual(["gh pr review"]);
+  });
+});
+
+// ---- The shipped daemon's client ------------------------------------------------------------
+
+describe("the client the shipped daemon wires (daemonKernelDeps)", () => {
+  const TOKEN = `github_pat_11${"A".repeat(20)}_${"b".repeat(59)}`;
+
+  /** A `fetch` answering GitHub's open-pulls listing for o/r with PRs 1 to 3, recording each URL. */
+  function githubFetch(): { fetch: typeof fetch; urls: string[] } {
+    const urls: string[] = [];
+    const f = (async (input: unknown) => {
+      const url = new URL(String(input));
+      urls.push(url.toString());
+      if (url.pathname !== "/repos/o/r/pulls") return new Response("{}", { status: 404 });
+      const body = [1, 2, 3].map((n) => ({
+        number: n,
+        title: `PR ${n}`,
+        user: { login: "alice" },
+        draft: false,
+        head: { sha: `sha${n}`, ref: `b${n}` },
+        html_url: `https://github.com/o/r/pull/${n}`,
+        updated_at: "2026-10-14T09:00:00Z",
+      }));
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    return { fetch: f, urls };
+  }
+
+  const ends: Driver = async (call) => {
+    await flush(1);
+    call.stream.push(assistant());
+    call.stream.push(success());
+    call.stream.end();
+  };
+
+  it("lists the repo through the connector's Keychain token: the dry run polls GitHub instead of reporting connector_missing", async () => {
+    const gh = githubFetch();
+    const keychain: KeychainReader = { read: (service) => (service === GITHUB_KEYCHAIN_SERVICE ? TOKEN : undefined) };
+    const h = await boot({ daemon: { keychain, fetch: gh.fetch } });
+    const id = await h.create();
+    const poll = value<DryRunValue>(await h.dryRun(id, "d1", ends)).poll as PollDryRun;
+    expect(poll.preview_incomplete).toBeUndefined();
+    expect(poll.items.map((i) => [i.ref, i.revision, i.would])).toEqual([
+      ["github:o/r#1", "sha1", "run"],
+      ["github:o/r#2", "sha2", "run"],
+      ["github:o/r#3", "sha3", "run"],
+    ]);
+    expect(gh.urls).toEqual(["https://api.github.com/repos/o/r/pulls?per_page=100&page=1"]);
   });
 });
 
