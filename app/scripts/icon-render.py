@@ -41,6 +41,15 @@ THREADS = int(os.environ.get("ICON_THREADS", "16"))
 q = (s / (2 * W) + 0.5) * THREADS
 fibre_face = (0.56 + 0.44 * np.sin(np.pi * (q % 1.0)) ** 0.7) * np.ones_like(t)
 
+# Implied motion: light runs along each thread in the direction of travel. A streak brightens slowly over its
+# tail and cuts off at a bright head, so the eye reads which way it moves. Each thread gets its own phase.
+STREAKS = float(os.environ.get("ICON_STREAKS", "3"))   # streaks per thread round the loop
+thread = np.floor(np.clip(q, 0, THREADS - 1e-6))
+phase = (np.sin(thread * 12.9898) * 43758.5453) % 1.0   # a fixed scatter per thread
+f = (STREAKS * t / (2 * np.pi) + phase) % 1.0
+TAIL = 0.42
+streak_face = np.where(f > 1 - TAIL, ((f - (1 - TAIL)) / TAIL) ** 3, 0.0) * np.sin(np.pi * (q % 1.0)) ** 2
+
 # A fine cord along each edge. A ribbon seen edge-on has no width, so at each twist the band would vanish;
 # the two cords cross there instead, so the loop stays visibly one piece all the way round.
 CORD = 0.015
@@ -56,7 +65,7 @@ M = rot(tilt, spin, roll)
 L = np.array([-0.45, -0.7, 0.55]); L /= np.linalg.norm(L)
 H = L + np.array([0, 0, 1.0]); H /= np.linalg.norm(H)
 
-def shade(P, N, fibre, tt, gloss):
+def shade(P, N, fibre, tt, gloss, streak=0.0):
     P = P @ M.T; N = N @ M.T
     N = np.where((N[..., 2] < 0)[..., None], -N, N)   # one-sided: light whichever way the surface faces the viewer
     ndl = np.clip((N * L).sum(-1), 0, 1)
@@ -64,14 +73,15 @@ def shade(P, N, fibre, tt, gloss):
     rim = (1 - np.abs(N[..., 2])) ** 2
     drift = (0.5 + 0.5 * np.cos(tt - 0.6)) * np.ones(N.shape[:-1])
     dark = np.array([118, 126, 234]) * (1 - drift[..., None]) + np.array([160, 168, 250]) * drift[..., None]
-    lit = np.array([236, 238, 255]) * (1 - drift[..., None]) + np.array([255, 255, 255]) * drift[..., None]
+    lit = np.array([218, 222, 255]) * (1 - drift[..., None]) + np.array([242, 243, 255]) * drift[..., None]
     col = dark + (lit - dark) * (0.3 + 0.7 * ndl)[..., None]
-    col = col * fibre[..., None] + 255 * sp[..., None] + 40 * rim[..., None]
-    return P.reshape(-1, 3), np.clip(col, 0, 255).reshape(-1, 3)
+    col = col * fibre[..., None] + 255 * sp[..., None] + 40 * rim[..., None] + 170 * np.asarray(streak)[..., None]
+    st = np.broadcast_to(np.asarray(streak, float), N.shape[:-1])
+    return P.reshape(-1, 3), np.clip(col, 0, 255).reshape(-1, 3), st.reshape(-1)
 
-Pf, Cf = shade(P_face, N_face, fibre_face, t, 1.0)
-Pc, Cc = shade(P_cord, N_cord, fibre_cord, t, 1.0)
-P = np.concatenate([Pf, Pc]); col = np.concatenate([Cf, Cc])
+Pf, Cf, Sf = shade(P_face, N_face, fibre_face, t, 1.0, streak_face)
+Pc, Cc, Sc = shade(P_cord, N_cord, fibre_cord, t, 1.0)
+P = np.concatenate([Pf, Pc]); col = np.concatenate([Cf, Cc]); stk = np.concatenate([Sf, Sc])
 
 # --- project and z-buffer (larger z = nearer)
 scale = S * 0.255
@@ -79,12 +89,16 @@ x = S / 2 + P[:, 0] * scale; y = S / 2 + P[:, 1] * scale
 z = P[:, 2]
 xi, yi = np.round(x).astype(int), np.round(y).astype(int)
 ok = (xi >= 0) & (xi < S) & (yi >= 0) & (yi < S)
-xi, yi, z, col = xi[ok], yi[ok], z[ok], col[ok]
+xi, yi, z, col, stk = xi[ok], yi[ok], z[ok], col[ok], stk[ok]
 order = np.argsort(z)                         # far first, near last wins
 idx = yi[order] * S + xi[order]
 img = np.zeros((S * S, 3)); alpha = np.zeros(S * S)
 img[idx] = col[order]; alpha[idx] = 1
+st_img = np.zeros(S * S); st_img[idx] = stk[order]
 img = img.reshape(S, S, 3); alpha = alpha.reshape(S, S)
+# the streaks glow a little past their thread, which sells them as moving light
+glow_l = np.asarray(Image.fromarray((st_img.reshape(S, S) * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(7)), float) / 255
+img = np.clip(img + glow_l[..., None] * np.array([150, 160, 255]) * 0.9, 0, 255)
 
 ribbon = Image.fromarray(np.dstack([img, alpha * 255]).astype(np.uint8))
 ribbon = ribbon.filter(ImageFilter.MedianFilter(3))   # close single-pixel splat gaps
