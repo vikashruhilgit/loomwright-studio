@@ -397,6 +397,38 @@ export function readRunStart(db: Database.Database, now: Date = new Date()): Run
   };
 }
 
+/**
+ * The run start of an earlier live run, read from its summary file (`STUDIO_LIVE_RUN_START_FROM`): the store
+ * stages are then judged again from that start, with this harness's checkers. The store is only read, so
+ * re-scoring changes nothing in it; the new summary says which run it re-scored.
+ */
+export function runStartFromSummary(text: string): { readonly ok: true; readonly start: RunStart } | { readonly ok: false; readonly reason: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: false, reason: "the summary is not JSON" };
+  }
+  const rs = typeof parsed === "object" && parsed !== null ? (parsed as { run_start?: unknown }).run_start : undefined;
+  if (typeof rs !== "object" || rs === null) return { ok: false, reason: "the summary has no run_start" };
+  const r = rs as Record<string, unknown>;
+  const ids = ["event_id", "approval_id", "session_id", "playbook_run_id", "notification_id", "draft_output_id"] as const;
+  for (const k of ids) if (!Number.isSafeInteger(r[k]) || (r[k] as number) < 0) return { ok: false, reason: `run_start.${k} is not a whole number` };
+  if (typeof r.at !== "string" || Number.isNaN(Date.parse(r.at))) return { ok: false, reason: "run_start.at is not a time" };
+  return {
+    ok: true,
+    start: {
+      at: r.at,
+      event_id: r.event_id as number,
+      approval_id: r.approval_id as number,
+      session_id: r.session_id as number,
+      playbook_run_id: r.playbook_run_id as number,
+      notification_id: r.notification_id as number,
+      draft_output_id: r.draft_output_id as number,
+    },
+  };
+}
+
 function eventsSince(db: Database.Database, start: RunStart, kinds: readonly string[]): EventRow[] {
   return db
     .prepare<unknown[], { id: number; at: string; kind: string; session_id: number | null; payload_json: string | null }>(
@@ -648,12 +680,21 @@ export function checkDryRunStage(db: Database.Database, start: RunStart, sandbox
     const runs = db
       .prepare<[number, number], RunRow & { readonly version: number }>(`SELECT ${RUN_COLUMNS}, version FROM playbook_runs WHERE playbook = ? AND kind = 'dry_run' AND id > ? ORDER BY id`)
       .all(c.id, start.playbook_run_id);
-    // The latest done dry run of the playbook's current version decides, as the kernel's enable does: an earlier
-    // one that stopped for a reason the owner then fixed (a missing grant) is history, not the stage's result.
-    const doneRuns = runs.filter((r) => r.status === "done");
-    const done = doneRuns.filter((r) => r.version === c.version).at(-1) ?? doneRuns.at(-1);
+    // The dry run the stage is about is the preview before anything ran: the latest done dry run before the
+    // playbook's first poll run. An earlier one that stopped for a reason the owner then fixed (a missing grant) is
+    // history, and so is a later one the kernel required after an owner's edit to the enabled playbook (it rightly
+    // sees the items already run). Before any poll run: the latest done dry run of the current version, as the
+    // kernel's enable needs.
+    const firstFire = db
+      .prepare<[number, number], number>("SELECT MIN(id) FROM playbook_runs WHERE playbook = ? AND kind = 'fire' AND id > ?")
+      .pluck()
+      .get(c.id, start.playbook_run_id);
+    const doneRuns = runs.filter((r) => r.status === "done" && (firstFire === null || firstFire === undefined || r.id < firstFire));
+    const beforePolls = firstFire !== null && firstFire !== undefined;
+    const done = beforePolls ? doneRuns.at(-1) : (doneRuns.filter((r) => r.version === c.version).at(-1) ?? doneRuns.at(-1));
     const harness: Record<string, unknown> = { dry_runs: runs.map((r) => ({ run_id: r.id, version: r.version, status: r.status, session_id: r.session_id })) };
-    if (done === undefined) return { harness, problems: [`playbook ${c.id}: no dry run done since the run started (ask Wright to dry-run it)`] };
+    if (done === undefined)
+      return { harness, problems: [beforePolls ? `playbook ${c.id}: no dry run was done before its first poll run` : `playbook ${c.id}: no dry run done since the run started (ask Wright to dry-run it)`] };
     const poll = pollOf(payloadOf(done.result_json).poll);
     const session = done.session_id === null ? undefined : db.prepare<[number], SessionRow>(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`).get(done.session_id);
     const durationMs = session?.started_at != null && session.ended_at != null ? Date.parse(session.ended_at) - Date.parse(session.started_at) : null;
@@ -677,7 +718,7 @@ export function checkDryRunStage(db: Database.Database, start: RunStart, sandbox
       session_ended_at: session?.ended_at ?? null,
     });
     const problems: string[] = [];
-    if (done.version !== c.version) problems.push(`dry run ${done.id} is of version ${done.version}, not the playbook's current version ${c.version} (ask Wright to dry-run it again)`);
+    if (!beforePolls && done.version !== c.version) problems.push(`dry run ${done.id} is of version ${done.version}, not the playbook's current version ${c.version} (ask Wright to dry-run it again)`);
     if (poll === undefined) problems.push(`dry run ${done.id} holds no poll result (the playbook's trigger is not a poll?)`);
     else {
       if (poll.preview_incomplete !== undefined) problems.push(`the poll preview is incomplete (${poll.preview_incomplete.reason}): ${clipped(poll.preview_incomplete.fix, 300)}`);
@@ -1666,6 +1707,35 @@ describe("phase 6 live checkers against a canned store", () => {
     expect(stoppedLast.findings.join("; ")).toMatch(/needs_github/);
   });
 
+  it("judges the dry run from before the first poll: a later one the kernel required after an owner's edit (it sees the items already run) does not fail stage 3", () => {
+    const start = startNow();
+    const { playbook } = cannedRun(env, workspace);
+    const before = check(start)["3_dry_run"];
+    expect(before.outcome).toBe("pass");
+    const chosen = (before.harness as { playbooks: { run_id: number }[] }).playbooks[0]?.run_id;
+    // The owner edits the enabled playbook after the polls; the kernel asks for a new dry run, which sees both PRs already run.
+    const version = (env.store.prepare("SELECT version FROM playbooks WHERE id = ?").pluck().get(playbook) as number) + 1;
+    env.store.prepare("UPDATE playbooks SET version = ? WHERE id = ?").run(version, playbook);
+    const skips = [SANDBOX.ordinary, SANDBOX.injection].map((n) => ({ ref: itemRefOf(SANDBOX, n), revision: "d".repeat(40), title: "t", would: "skip", dedupe_key: null }));
+    const late = insertRun(env, { playbook, version, kind: "dry_run", status: "done", session: null, ref: null, revision: null, result: { would_do: [], next_fires: [], dedupe_key: null, poll: { spec: {}, items: skips, reviewed: null, drafts: [] } } });
+    const after = check(start)["3_dry_run"];
+    expect(after.findings).toEqual([]);
+    expect(after.outcome).toBe("pass");
+    const listed = (after.harness as { playbooks: { run_id: number; dry_runs: { run_id: number }[] }[] }).playbooks[0];
+    expect(listed?.run_id).toBe(chosen);
+    expect(listed?.dry_runs.map((r) => r.run_id)).toContain(late);
+  });
+
+  it("re-scores an earlier run from its summary's run_start, and refuses a summary without a whole one", () => {
+    const start = startNow();
+    const summary = { run_start: start, steps: {} };
+    expect(runStartFromSummary(JSON.stringify(summary))).toEqual({ ok: true, start });
+    expect(runStartFromSummary("not json")).toEqual({ ok: false, reason: "the summary is not JSON" });
+    expect(runStartFromSummary(JSON.stringify({ steps: {} }))).toEqual({ ok: false, reason: "the summary has no run_start" });
+    expect(runStartFromSummary(JSON.stringify({ run_start: { ...start, event_id: -1 } }))).toMatchObject({ ok: false, reason: "run_start.event_id is not a whole number" });
+    expect(runStartFromSummary(JSON.stringify({ run_start: { ...start, at: "soon" } }))).toMatchObject({ ok: false, reason: "run_start.at is not a time" });
+  });
+
   describe("stage 1 and the owner's declaration", () => {
     it("a declared fixture (permissions null, source declared) passes stage 1 only as declared: the evidence carries the source and its time", () => {
       const start = startNow();
@@ -2240,8 +2310,16 @@ describe.skipIf(!LIVE || STAGE !== "run")("live phase 6 exit: unchanged PRs skip
     expect(t.ok ? "" : t.reason).toBe("");
     token = t.ok ? t.token : undefined;
     expect(existsSync(join(dataDir, "studio.db")), `no store at ${redact(dataDir)}: install the service first (runbook setup)`).toBe(true);
-    start = withDb(dataDir, (db) => readRunStart(db));
+    // `STUDIO_LIVE_RUN_START_FROM=<an earlier run's summary>` re-scores that run from its own start instead of starting a new one.
+    const rescoreFrom = process.env.STUDIO_LIVE_RUN_START_FROM;
+    if (rescoreFrom !== undefined && rescoreFrom !== "") {
+      const earlier = runStartFromSummary(readFileSync(rescoreFrom, "utf8"));
+      expect(earlier.ok ? "" : earlier.reason).toBe("");
+      if (!earlier.ok) return;
+      start = earlier.start;
+    } else start = withDb(dataDir, (db) => readRunStart(db));
     summary = newSummary(start, sandbox, summaryPath);
+    if (rescoreFrom !== undefined && rescoreFrom !== "") summary.rescored_from = redact(rescoreFrom);
     let commit = "unknown";
     let dirty: boolean | null = null;
     try {
