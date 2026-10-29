@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API_TOKEN_KEYCHAIN_SERVICE, engageKillSwitch } from "../src/api/index.js";
 import { KeychainError } from "../src/auth/index.js";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
+import { daemonKernelDeps } from "../src/daemon-deps.js";
 import { SHIPPED_CONTRIBUTIONS } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
 import type { Kernel, KernelDeps, KernelOptions } from "../src/kernel.js";
@@ -193,6 +194,25 @@ describe("startKernel", () => {
     // Invariant 1: the shipped entry point installs no handler.
     const daemonSource = readFileSync(fileURLToPath(new URL("../src/daemon.ts", import.meta.url)), "utf8");
     expect(daemonSource).not.toMatch(/handlers/);
+  });
+
+  it("daemon.ts passes daemonKernelDeps(), whose only dependency is the real GitHub client, built with no Keychain read and no request", () => {
+    // The production entry point is the one composition no other test starts: pin that it wires the client.
+    const daemonSource = readFileSync(fileURLToPath(new URL("../src/daemon.ts", import.meta.url)), "utf8");
+    expect(daemonSource).toContain("startKernel(parseArgs(args), daemonKernelDeps())");
+    const reads: string[] = [];
+    const requests: string[] = [];
+    const d = daemonKernelDeps({
+      keychain: { read: (service) => void reads.push(service) },
+      fetch: (async (input: unknown) => {
+        requests.push(String(input));
+        return new Response("[]");
+      }) as typeof fetch,
+    });
+    expect(Object.keys(d)).toEqual(["githubClient"]);
+    expect(typeof d.githubClient?.listOpenPulls).toBe("function");
+    expect(reads).toEqual([]);
+    expect(requests).toEqual([]);
   });
 
   it("with handlers (another composition) the message handler runs and the event ends event_done", async () => {

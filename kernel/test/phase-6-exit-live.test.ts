@@ -729,7 +729,7 @@ export function checkFirstPollStage(db: Database.Database, start: RunStart, sand
         const other = runs.find((r) => r.item_ref !== null && sameText(r.item_ref, ref));
         problems.push(
           other === undefined
-            ? `no run started for ${ref}${c.trigger?.last_result === "connector_missing" ? " (the poll recorded connector_missing: the kernel has no GitHub client wired, an open finding)" : ""}`
+            ? `no run started for ${ref}${c.trigger?.last_result === "connector_missing" ? " (the poll recorded connector_missing: the installed service predates the daemon's GitHub client, or the connector is not connected)" : ""}`
             : `the run for ${ref} is ${other.status} with no session${other.status === "parked" ? " (needs GitHub?)" : ""}`,
         );
       } else if (started.item_revision === null || started.item_revision === "") problems.push(`the run for ${ref} recorded no item revision`);
@@ -1456,7 +1456,7 @@ function cannedRun(env: LoopEnv, workspace: string, omit: ReadonlySet<Omission> 
     appendEvent(store, "tool_decision", { sessionId: session, taskId: null }, { tool: d.tool, decision: d.decision, reason: d.reason, ...(d.command === undefined ? {} : { command: d.command }), ...(d.draft === undefined ? {} : { draft_output_id: d.draft }) }, at());
   };
   if (omit.has("first_poll_connector_missing")) {
-    // The installed kernel has no GitHub client: every due poll records connector_missing and fetches nothing.
+    // An installed kernel without a GitHub client (one older than the daemon's), or a connector not connected: the due poll records connector_missing.
     store.prepare("UPDATE triggers SET last_result = 'connector_missing' WHERE playbook = ?").run(draft.playbook.slug);
     return { playbook };
   }
@@ -1584,12 +1584,12 @@ describe("phase 6 live checkers against a canned store", () => {
     expect(storeStagesSettled(checks)).toBe(expected === "not_exercised" && stage === INJECTION_STAGE);
   });
 
-  it("reports the daemon's missing GitHub client by name when the first poll recorded connector_missing", () => {
+  it("names the two causes when the first poll recorded connector_missing", () => {
     const start = startNow();
     cannedRun(env, workspace, new Set<Omission>(["first_poll_connector_missing"]));
     const first = check(start)["5_first_poll"];
     expect(first.outcome).toBe("fail");
-    expect(first.findings.join(" ")).toMatch(/connector_missing: the kernel has no GitHub client wired/);
+    expect(first.findings.join(" ")).toMatch(/connector_missing: the installed service predates the daemon's GitHub client, or the connector is not connected/);
   });
 
   it("is not_exercised on an empty store, stage 1 included, and fails a connector that is not connected or not the personal account's", () => {

@@ -95,9 +95,9 @@ export interface KernelDeps {
   readonly loopDeps?: EventLoopDeps;
   /**
    * The GitHub client a `poll` trigger lists its source through (passed to the
-   * loop's due work as `DueWorkContext.github`). Defaults to none: until the
-   * real client (phase 6 item 03) is wired here, a due poll records
-   * `connector_missing` and never fetches.
+   * loop's due work as `DueWorkContext.github`). Defaults to none, and a due
+   * poll then records `connector_missing` and never fetches. The shipped
+   * daemon passes the real client (`daemonKernelDeps`, daemon-deps.ts).
    */
   readonly githubClient?: GitHubClient;
   readonly startApiServer?: (options: ApiServerOptions, deps: ApiServerDeps) => Promise<ApiServer>;
