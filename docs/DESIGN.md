@@ -37,7 +37,7 @@ The artefact links are private to the owner; the repo copies are the reviewable 
 
 ## Phase 6: Integrations
 
-The Integrations screen moved from GUI v2 to phase 6 by the owner's 2026-10-24 decision. ROADMAP's phase 6 row takes precedence over every GUI v2 listing that still names the screen: ROADMAP's own phase 7 row; `UI.md`, which keeps it under GUI v2 until phase 6 item 01 (the phase 6 foundation) adds its note there; and the toast `design/mockups/gui-v1.html` shows for an unconnected tool, "Integrations is GUI v2." This file's "Not in v1" list below no longer names it. Phase 6 builds the screen with GitHub as its only connector, and later phases add the other connectors. As D9 requires, the mockup comes before any screen code: `design/mockups/integrations.html`, with its screenshots in [the evidence folder](evidence/phase-6-integrations-mockup/README.md). Open it in a browser and use the review strip, or force a view with the URL hash (`#view=connected&theme=dark`).
+The Integrations screen moved from GUI v2 to phase 6 by the owner's 2026-10-24 decision. ROADMAP's phase 6 row takes precedence over every GUI v2 listing that still names the screen: ROADMAP's own phase 7 row; `UI.md`, which keeps it under GUI v2 until phase 6 item 01 (the phase 6 foundation) adds its note there; and the toast `design/mockups/gui-v1.html` shows for an unconnected tool, "Integrations is GUI v2." This file's "Not in v1" list below no longer names it. Phase 6 builds the screen with GitHub as its only connector, and later phases add the other connectors. As D9 requires, the mockup comes before any screen code: `design/mockups/integrations.html`, with its screenshots in [the evidence folder](evidence/phase-6-integrations-mockup/README.md). Open it in a browser and use the review strip, or force a view with the URL hash (`#view=connected&theme=dark`). Phase 6 item 14 adds the owner's declaration to the sheet and a `connected-declared` view (below).
 
 ### What the mockup commits phase 6 item 11 (the Integrations screen) to
 
@@ -48,13 +48,14 @@ The Integrations screen moved from GUI v2 to phase 6 by the owner's 2026-10-24 d
   - Account login.
   - Token: fine-grained, kept in the Keychain item `loomwright-studio-github`. The value is never shown.
   - Expiry, with the days left.
-  - Each permission the kernel read, with its level.
+  - Each permission the kernel read, with its level, when GitHub reported them. When the owner declared the token read-only instead (GitHub reports none for a fine-grained token), the section reads "Read-only, declared by you" with the declaration time and a caption that this is the owner's word, not something Studio checked. It shows no permission list, and no permissions text says "verified" or "read from GitHub". The header badge reads `read-only · declared`, and the status line says only that the account and repos were checked.
   - The reachable repos, with Refresh and the rule that a poll trigger can name only these.
   - The agents holding the grant (`connectors: ["github"]`), as agent Cards without Team's budget block. The agents without the grant are named in a caption, and the grant itself is set in Team.
 - **The Connect GitHub sheet** (Dialog, 480px variant):
   - It says what token to create: fine-grained, "Only select repositories" limited to personal repos, and Pull requests and Contents each Read-only.
   - It has a link-out to GitHub's token page, a password field, and Connect.
   - Its copy says the token is kept in the Keychain and never shown again, and that the field clears the moment you press Connect.
+  - **A required confirmation, "This is a fine-grained token, and every permission I gave it is Read"** (a checkbox under the token field, with a caption: GitHub doesn't tell Studio what a fine-grained token can do, so Studio keeps this as your word, never as checked). Connect stays disabled until the field holds something and the box is ticked, and Enter in the field does not submit while it is disabled. The request sends `declared_read_only: true`. The box is unticked each time the sheet opens, and ticked (disabled while connecting) in the connecting and refused views. A token whose permissions GitHub does not report and that was sent without the confirmation is refused `token_permissions_unknown`, and the sheet's copy for it points at the confirmation: "GitHub doesn't report what this token can do. Tick the box that says every permission you gave it is Read, then connect again."
   - There is no OAuth button and no "use gh login" option.
   - Replacing a connected or expiring token uses the same sheet, and the current token stays in use until the new one passes the check. Replacing an expired token says only that the new one replaces it once it passes, since nothing uses the expired one.
 - **Refusals render inline in the sheet**, under the field in Input's error state.
@@ -65,6 +66,7 @@ The Integrations screen moved from GUI v2 to phase 6 by the owner's 2026-10-24 d
   - **Not connected:** an `idle` ring. The detail pane shows the empty state: a `display` line, one `body` line, and one primary action, Connect GitHub.
   - **Connecting:** a `working` dot. The sheet's Connect shows Button's loading spinner with `aria-busy`, and the field is disabled and already empty.
   - **Connected:** `ok`, shown only after the kernel verified the token, with the time it did.
+  - **Connected, declared by you** (`#view=connected-declared`): the same, except the permissions section is the owner's declaration ("declared by you", with the time) in place of the checked list, as above. A connect from the sheet always lands here, since a fine-grained token's permissions are never reported.
   - **Token rejected:** two variants, invalid and write-scoped, as above.
   - **Expiring:** an `attention` dot, band and badge from 14 days before expiry. The 14 days is a design proposal the owner can change on this PR. Replace token becomes the primary action.
   - **Expired:** a `danger` dot and band that names the parked playbooks. Replace token is the primary action.
@@ -77,10 +79,11 @@ The Integrations screen moved from GUI v2 to phase 6 by the owner's 2026-10-24 d
 
   A command that can't run in the current state stays listed but disabled, with the reason. `Esc` closes, focus is trapped in a dialog, and it returns to where it came from: the control that opened the dialog or the palette, or the same control once the screen re-renders. When that control no longer exists (Connect GitHub after a connect succeeds, Disconnect after a disconnect), focus goes to the GitHub row, never to the page itself.
 - **Branding (invariant 7):** GitHub's name and mark appear only as the connector's label, in `ink`, with no GitHub colours or styling. The palette footer reads "Wright, powered by Claude".
-- **Components and tokens:** the mockup uses List, Card, Badge, StatusDot, Dialog and Input, plus Button, CommandPalette and Avatar as they already are. It adds no component and no token. The evidence README lists every value outside `tokens.json`.
+- **Components and tokens:** the mockup uses List, Card, Badge, StatusDot, Dialog and Input, plus Button, CommandPalette and Avatar as they already are. The confirmation is a native checkbox, 16px, in `accent` (no new component, no new token). The evidence README lists every value outside `tokens.json`.
 
 ### Open points for the owner (on this PR)
 
+- Phase 6 item 14 (the owner's declaration): the sheet's confirmation wording, its caption, the "declared by you" permissions section and the refusal copy above are proposals. The owner approves them by merging the PR; the app's sheet and connected state use the mockup's copy.
 - Phase 6 item 11's requirement (the Integrations screen) names the third palette command "Refresh reachable repos". The phase 6 job brief and this mockup use "Show reachable repos" in the palette, with Refresh as a button in the repos section. Pick one name for phase 6 item 11. (item 11 used 'Refresh reachable repos'; see the evidence README)
 - The expiry warning starts at 14 days, a proposal that matches phase 6 item 03's planned 14-day expiry notice (the GitHub connector, not built yet).
 
