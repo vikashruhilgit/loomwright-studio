@@ -743,6 +743,14 @@ export type ConnectorKind = "github";
 export type ConnectorStatus = "connected" | "rejected" | "disconnected" | "expiring" | "expired";
 
 /**
+ * Who vouched for a connector's permissions: `reported` (GitHub listed them) or
+ * `declared` (GitHub reports none for a fine-grained token, and the owner said
+ * every permission is Read). Mirrors `CONNECTOR_PERMISSIONS_SOURCES` in
+ * `kernel/src/integrations/types.ts`. A declared token is the owner's word, never GitHub-verified.
+ */
+export type ConnectorPermissionsSource = "reported" | "declared";
+
+/**
  * A `connectors` row, as the routes show it. It never carries the token, which
  * lives only in the Keychain item `loomwright-studio-github`; no route returns
  * it. `account_login`, the permission names and the repo names come from
@@ -755,6 +763,10 @@ export interface Connector {
   readonly account_login: string | null;
   /** The token's permissions as GitHub reports them, name to access level (`{ "pull_requests": "read" }`). */
   readonly permissions: Readonly<Record<string, string>> | null;
+  /** Who vouched for the permissions; `null` on a row from before the field existed (never backfilled). */
+  readonly permissions_source: ConnectorPermissionsSource | null;
+  /** When the owner declared the token read-only; set only when `permissions_source` is `declared`. */
+  readonly permissions_declared_at: IsoTime | null;
   /** The repos the token reaches, as `owner/name`, from the last check. */
   readonly reachable_repos: readonly string[] | null;
   readonly expires_at: IsoTime | null;
@@ -776,6 +788,12 @@ export interface ConnectorsResponse {
  */
 export interface ConnectorTokenBody {
   readonly token: string;
+  /**
+   * The owner's declaration that this is a fine-grained token and every permission
+   * they gave it is Read. Only `true` declares; the kernel answers 400 `invalid_body` for a non-boolean.
+   * A token whose permissions GitHub does not report is refused `token_permissions_unknown` without it.
+   */
+  readonly declared_read_only?: boolean;
 }
 
 /** `POST /connectors/github/token` and `POST /connectors/github/disconnect` answer the row after the change, never the token. */

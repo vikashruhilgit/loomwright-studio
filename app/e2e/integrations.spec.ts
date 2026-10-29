@@ -61,6 +61,7 @@ const IDS = {
   sheet: "integrations-sheet",
   sheetCancel: "integrations-sheet-cancel",
   sheetConnect: "integrations-sheet-connect",
+  sheetDeclare: "integrations-sheet-declare",
   sheetError: "integrations-sheet-error",
   sheetStatus: "integrations-sheet-status",
   sheetToken: "integrations-token",
@@ -200,6 +201,17 @@ async function tabTo(page: Page, target: Locator, what: string, max = 60): Promi
 }
 
 const byId = (page: Page, id: string): Locator => page.getByTestId(id);
+
+/** From the focused token field: Tab to the confirmation, Space ticks it, Shift+Tab returns to the field. */
+async function tickByKeyboard(page: Page): Promise<void> {
+  const box = byId(page, IDS.sheetDeclare);
+  await page.keyboard.press("Tab");
+  await expect(box).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(box).toBeChecked();
+  await page.keyboard.press("Shift+Tab");
+  await expect(byId(page, IDS.sheetToken)).toBeFocused();
+}
 const reads = (): number => fixture?.requests.filter((r) => r.method === "GET" && r.path === "/connectors").length ?? 0;
 
 test("AC9: the pasted token reaches the kernel through the main process, the field is empty at once, and the token is in no page text, storage, URL or console line", async ({}, testInfo) => {
@@ -221,7 +233,17 @@ test("AC9: the pasted token reaches the kernel through the main process, the fie
   await expect(connect).toBeDisabled();
   await screenshots(page, "sheet", testInfo);
 
+  // The owner's confirmation is required: with a token pasted and the box unticked, Connect stays off.
+  const declare = byId(page, IDS.sheetDeclare);
+  await expect(declare).not.toBeChecked();
+  await expect(declare).toBeEnabled();
   await field.fill(TOKEN);
+  await expect(connect).toBeDisabled();
+  await declare.check();
+  await expect(connect).toBeEnabled();
+  await declare.uncheck();
+  await expect(connect).toBeDisabled();
+  await declare.check();
   await expect(connect).toBeEnabled();
   // Not vacuous: the scan does find the token while it is still in the field.
   expect(await whereIn(page, [TOKEN]), "the scan sees the token in the field before Connect").toEqual(["field 0 value"]);
@@ -230,9 +252,10 @@ test("AC9: the pasted token reaches the kernel through the main process, the fie
   await connect.click();
   await expect.poll(() => fx.tokens.length, { message: "the kernel received the token" }).toBe(1);
   // The main process posted exactly the pasted value, and the field is already empty while the kernel checks.
-  expect(fx.tokens).toEqual([{ token: TOKEN }]);
+  expect(fx.tokens).toEqual([{ token: TOKEN, declared_read_only: true }]);
   await expect(field).toHaveValue("");
   await expect(field).toBeDisabled();
+  await expect(declare, "the box is locked while the kernel checks").toBeDisabled();
   await expect(byId(page, IDS.sheetStatus)).toHaveText("Checking with GitHub…");
   await expect(connect).toHaveAttribute("aria-busy", "true");
   await expect(byId(page, IDS.listMeta)).toHaveText("connecting · checking the token with GitHub");
@@ -243,7 +266,7 @@ test("AC9: the pasted token reaches the kernel through the main process, the fie
   await expect(sheet).toHaveCount(0);
   await expect(byId(page, IDS.detail)).toHaveAttribute("data-state", "connected");
   await expect(byId(page, IDS.account)).toHaveText(ACCOUNT);
-  expect(fx.tokens, "one token was posted").toEqual([{ token: TOKEN }]);
+  expect(fx.tokens, "one token was posted").toEqual([{ token: TOKEN, declared_read_only: true }]);
   await expectNoToken(page, "after the kernel accepted it");
 });
 
@@ -255,6 +278,7 @@ test("AC9: a write-scoped token is refused inline, naming the permission, and th
   const sheet = byId(page, IDS.sheet);
   const field = byId(page, IDS.sheetToken);
   await field.fill(TOKEN);
+  await byId(page, IDS.sheetDeclare).check();
   await byId(page, IDS.sheetConnect).click();
 
   const alert = byId(page, IDS.sheetError);
@@ -267,7 +291,9 @@ test("AC9: a write-scoped token is refused inline, naming the permission, and th
   await expect(field).toHaveValue("");
   await expect(field).toBeEnabled();
   await expect(field).toHaveAttribute("aria-invalid", "true");
-  expect(fx.tokens).toEqual([{ token: TOKEN }]);
+  expect(fx.tokens).toEqual([{ token: TOKEN, declared_read_only: true }]);
+  // The box stays ticked through a refusal, so a retry needs only a new paste.
+  await expect(byId(page, IDS.sheetDeclare)).toBeChecked();
   // The kernel wrote a rejected row: the list reads it, and the empty state stays under the sheet.
   await expect(byId(page, IDS.listMeta)).toHaveText("not connected · the last token was refused");
   await expect(byId(page, IDS.empty)).toBeVisible();
@@ -278,7 +304,7 @@ test("AC9: a write-scoped token is refused inline, naming the permission, and th
   await field.fill(NEW_TOKEN);
   await byId(page, IDS.sheetConnect).click();
   await expect.poll(() => fx.tokens.length).toBe(2);
-  expect(fx.tokens[1]).toEqual({ token: NEW_TOKEN });
+  expect(fx.tokens[1]).toEqual({ token: NEW_TOKEN, declared_read_only: true });
   await expect(alert).toContainText("GitHub didn't accept this token");
   await expect(alert).not.toContainText("Pull requests");
   await expect(field).toHaveValue("");
@@ -291,7 +317,11 @@ test("AC9: a write-scoped token is refused inline, naming the permission, and th
   await byId(page, IDS.sheetConnect).click();
   await expect(sheet).toHaveCount(0);
   await expect(byId(page, IDS.detail)).toHaveAttribute("data-state", "connected");
-  expect(fx.tokens).toEqual([{ token: TOKEN }, { token: NEW_TOKEN }, { token: TOKEN }]);
+  expect(fx.tokens).toEqual([
+    { token: TOKEN, declared_read_only: true },
+    { token: NEW_TOKEN, declared_read_only: true },
+    { token: TOKEN, declared_read_only: true },
+  ]);
   await expectNoToken(page, "after the good token");
 });
 
@@ -468,19 +498,27 @@ test("AC11: by keyboard alone, connect, cancel, refuse, replace the token, refre
   await kb.press("Enter");
   await expect(field).toBeFocused();
   await kb.press("Tab");
+  await expect(byId(page, IDS.sheetDeclare)).toBeFocused();
+  await kb.press("Tab");
   await expect(byId(page, IDS.sheetCancel)).toBeFocused();
   await kb.press("Enter");
   await expect(sheet).toHaveCount(0);
   expect(fx.tokens, "Cancel sends nothing").toEqual([]);
 
-  // Typing a token and pressing Enter submits it; a refusal leaves the field empty and focused.
+  // Enter in the field sends nothing until the confirmation is ticked; ticked, it submits, and a refusal leaves the field empty and focused.
   fx.refuse("token_invalid");
   await kb.press("Enter");
   await expect(field).toBeFocused();
+  await expect(byId(page, IDS.sheetDeclare), "a fresh sheet starts unticked").not.toBeChecked();
   await kb.type(TOKEN);
   await kb.press("Enter");
+  await settle(page);
+  expect(fx.tokens, "Enter without the confirmation sends nothing").toEqual([]);
+  await expect(field).toHaveValue(TOKEN);
+  await tickByKeyboard(page);
+  await kb.press("Enter");
   await expect(byId(page, IDS.sheetError)).toContainText("GitHub didn't accept this token");
-  expect(fx.tokens).toEqual([{ token: TOKEN }]);
+  expect(fx.tokens).toEqual([{ token: TOKEN, declared_read_only: true }]);
   await expect(field).toHaveValue("");
   await expect(field).toBeFocused();
 
@@ -490,7 +528,10 @@ test("AC11: by keyboard alone, connect, cancel, refuse, replace the token, refre
   await kb.press("Enter");
   await expect(sheet).toHaveCount(0);
   await expect(detail).toHaveAttribute("data-state", "connected");
-  expect(fx.tokens).toEqual([{ token: TOKEN }, { token: TOKEN }]);
+  expect(fx.tokens).toEqual([
+    { token: TOKEN, declared_read_only: true },
+    { token: TOKEN, declared_read_only: true },
+  ]);
 
   // Replace token: the sheet in replace mode; the new token is posted and the field is empty afterwards.
   await tabTo(page, byId(page, IDS.replace), "Replace token");
@@ -500,9 +541,10 @@ test("AC11: by keyboard alone, connect, cancel, refuse, replace the token, refre
   await expect(field).toBeFocused();
   fx.holdToken();
   await kb.type(NEW_TOKEN);
+  await tickByKeyboard(page);
   await kb.press("Enter");
   await expect.poll(() => fx.tokens.length).toBe(3);
-  expect(fx.tokens[2]).toEqual({ token: NEW_TOKEN });
+  expect(fx.tokens[2]).toEqual({ token: NEW_TOKEN, declared_read_only: true });
   await expect(field).toHaveValue("");
   fx.releaseToken();
   await expect(sheet).toHaveCount(0);

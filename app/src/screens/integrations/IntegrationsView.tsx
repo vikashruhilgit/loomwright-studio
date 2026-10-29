@@ -242,6 +242,9 @@ function TokenDetail({ view, row, repos, roster, rosterError, refreshing, now, o
   const days = daysLeft(row.expires_at, now);
   const readNote = state === "expired" || offline ? `last read ${verified}` : `read from GitHub ${verified}`;
   const lines = permissionLines(row.permissions);
+  // The owner's word, not GitHub's: a fine-grained token's permissions are never reported, so Studio keeps what the owner declared.
+  const declared = row.permissions_source === "declared";
+  const declaredAt = row.permissions_declared_at === null ? "" : ` ${whenText(row.permissions_declared_at, now)}`;
   const granted = roster === undefined ? undefined : grantedAgents(roster);
   const others = roster === undefined ? undefined : ungrantedNote(roster);
 
@@ -251,7 +254,7 @@ function TokenDetail({ view, row, repos, roster, rosterError, refreshing, now, o
         <GitHubMark />
         <h2>GitHub</h2>
         <span className="integrations-badge" data-tone="neutral">
-          read-only
+          {declared ? "read-only · declared" : "read-only"}
         </span>
         <span className="integrations-spacer" />
         <Button size="row" variant={urgent ? "primary" : "secondary"} onClick={onReplace} data-testid={IDS.replace} {...dis}>
@@ -279,12 +282,12 @@ function TokenDetail({ view, row, repos, roster, rosterError, refreshing, now, o
         <dt>Status</dt>
         <dd data-testid={IDS.status}>
           {offline ? (
-            <span className="integrations-cap">{`Unknown while the kernel is unreachable · last verified ${verified}`}</span>
+            <span className="integrations-cap">{`Unknown while the kernel is unreachable · last ${declared ? "checked" : "verified"} ${verified}`}</span>
           ) : (
             <>
               <span className="integrations-dot" data-state={state === "connected" ? "ok" : state === "expiring" ? "waiting" : "danger"} aria-hidden="true" />
               {state}
-              <span className="integrations-cap">{`${state === "expired" ? "checked" : "verified"} ${verified}`}</span>
+              <span className="integrations-cap">{`${state === "expired" ? "checked" : declared ? "account and repos checked" : "verified"} ${verified}`}</span>
             </>
           )}
         </dd>
@@ -314,9 +317,18 @@ function TokenDetail({ view, row, repos, roster, rosterError, refreshing, now, o
           <h3 className="integrations-label" id={`${ids}-perm`}>
             Permissions
           </h3>
-          <span className="integrations-cap">{readNote}</span>
+          <span className="integrations-cap">{declared ? `declared by you${declaredAt}` : readNote}</span>
         </div>
-        {lines.length === 0 ? (
+        {declared ? (
+          <>
+            <p>
+              <b>Read-only</b>, declared by you.
+            </p>
+            <p className="integrations-cap">
+              GitHub doesn't report what a fine-grained token can do, so Studio keeps this as your word, not as something it checked. If you gave the token more than Read, change it on GitHub and replace it here.
+            </p>
+          </>
+        ) : lines.length === 0 ? (
           <p className="integrations-cap">No permissions reported.</p>
         ) : (
           <ul className="integrations-perm" data-testid={IDS.permissions}>

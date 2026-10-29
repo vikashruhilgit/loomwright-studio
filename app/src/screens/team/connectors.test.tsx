@@ -72,6 +72,8 @@ function connector(status: ConnectorStatus): Connector {
     status,
     account_login: "octo-owner",
     permissions: { pull_requests: "read" },
+    permissions_source: "reported",
+    permissions_declared_at: null,
     reachable_repos: ["octo-owner/site"],
     expires_at: null,
     verified_at: "2026-10-28T09:00:00.000Z",

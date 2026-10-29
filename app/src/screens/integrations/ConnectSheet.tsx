@@ -12,6 +12,13 @@
 // it holds anything (a boolean, so Connect can enable). The token leaves this
 // module in one call: `connectGithub`, which hands it to the bridge.
 //
+// The owner's declaration (phase 6 item 14) is a required confirmation: "This is
+// a fine-grained token, and every permission I gave it is Read". GitHub reports
+// no permissions for a fine-grained token, so the kernel takes the owner's word,
+// records it as the owner's (never as checked) and refuses without it. It is
+// ordinary state (a boolean) and never touches the token. Connect stays off, and
+// Enter sends nothing, until the field holds something and the box is ticked.
+//
 // Phases (the mockup's `S.sheet`): blank, connecting (field disabled and
 // empty, "Checking with GitHub…", button busy), then a refusal shown inline
 // (`invalid`, `write`, `permissions_unknown`, or the kernel's own message) with the field empty again
@@ -74,7 +81,7 @@ function Refused({ refusal, id }: { readonly refusal: Refusal; readonly id: stri
           <p>Then paste it here again.</p>
         </>
       ) : refusal.kind === "permissions_unknown" ? (
-        <p>GitHub didn't report this token's permissions, so Studio can't confirm they're all read-only and refuses the token. Nothing changed.</p>
+        <p>GitHub doesn't report what this token can do. Tick the box that says every permission you gave it is Read, then connect again.</p>
       ) : (
         <p>{refusal.text}</p>
       )}
@@ -89,6 +96,8 @@ export function ConnectSheet({ api, mode, expired = false, onClose, onConnected,
   const fieldId = `${ids}-token`;
   const hintId = `${ids}-hint`;
   const errorId = `${ids}-error`;
+  const declareId = `${ids}-declare`;
+  const declareHintId = `${ids}-declare-hint`;
 
   const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -97,6 +106,8 @@ export function ConnectSheet({ api, mode, expired = false, onClose, onConnected,
   const ownInFlight = useRef(false);
   const inFlight = screenInFlight ?? ownInFlight;
   const [filled, setFilled] = useState(false);
+  // Unticked each time the sheet opens; it stays ticked through a refusal, so a retry needs only a new paste.
+  const [declared, setDeclared] = useState(false);
   const [phase, setPhase] = useState<SheetPhase>({ kind: "blank" });
 
   // The handlers the document listener and the late answer read: the latest props, never stale ones.
@@ -128,7 +139,8 @@ export function ConnectSheet({ api, mode, expired = false, onClose, onConnected,
 
   const submit = async () => {
     const input = inputRef.current;
-    if (input === null || inFlight.current) return;
+    // Without the owner's declaration nothing is sent and the field keeps what was pasted.
+    if (input === null || inFlight.current || !declared) return;
     const token = input.value.trim();
     // Emptied in the DOM first: before the request is made, let alone answered.
     input.value = "";
@@ -222,12 +234,21 @@ export function ConnectSheet({ api, mode, expired = false, onClose, onConnected,
           <p className="integrations-sr-only" role="status" data-testid={IDS.sheetStatus}>
             {connecting ? "Checking with GitHub…" : ""}
           </p>
+          <div className="integrations-declare">
+            <label className="integrations-check" htmlFor={declareId}>
+              <input id={declareId} type="checkbox" checked={declared} disabled={connecting} aria-describedby={declareHintId} data-testid={IDS.sheetDeclare} onChange={(event) => setDeclared(event.currentTarget.checked)} />
+              <span>This is a fine-grained token, and every permission I gave it is Read</span>
+            </label>
+            <div className="field-hint" id={declareHintId}>
+              GitHub doesn't tell Studio what a fine-grained token can do, so Studio keeps this as your word, never as checked.
+            </div>
+          </div>
         </form>
         <div className="dialog-actions">
           <Button ref={cancelRef} variant="secondary" kbd="Esc" onClick={onClose} data-testid={IDS.sheetCancel}>
             Cancel
           </Button>
-          <Button variant="primary" kbd={connecting ? undefined : "⏎"} loading={connecting} disabled={!connecting && !filled} onClick={() => void submit()} data-testid={IDS.sheetConnect}>
+          <Button variant="primary" kbd={connecting ? undefined : "⏎"} loading={connecting} disabled={!connecting && !(filled && declared)} onClick={() => void submit()} data-testid={IDS.sheetConnect}>
             {connecting ? "Connecting" : "Connect"}
           </Button>
         </div>

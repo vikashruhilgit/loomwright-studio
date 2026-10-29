@@ -38,6 +38,8 @@ function connector(status: ConnectorStatus, overrides: Partial<Connector> = {}):
     status,
     account_login: "octo-owner",
     permissions: { metadata: "read", contents: "read", pull_requests: "read" },
+    permissions_source: "reported",
+    permissions_declared_at: null,
     reachable_repos: ["octo-owner/site"],
     expires_at: "2027-01-23T00:00:00.000Z",
     verified_at: "2026-10-28T09:00:00.000Z",
@@ -247,10 +249,10 @@ describe("refusalOf", () => {
     expect(dropLine("pull_requests", "write")).toBe("Pull requests: write → set to Read-only");
   });
 
-  it("token_permissions_unknown is the sheet's own copy, never the kernel's message (which names an internal doc)", () => {
-    const unknown = refusal(422, { error: "token_permissions_unknown", message: "GitHub did not report this token's permissions (docs/OPEN_QUESTIONS.md)", connector: {} });
+  it("token_permissions_unknown is the sheet's own copy (it points at the confirmation box), never the kernel's message (which names the API field)", () => {
+    const unknown = refusal(422, { error: "token_permissions_unknown", message: "GitHub did not report this token's permissions; send declared_read_only: true to declare them Read", connector: {} });
     expect(unknown).toEqual({ kind: "permissions_unknown" });
-    expect(JSON.stringify(unknown)).not.toContain("docs/");
+    expect(JSON.stringify(unknown)).not.toContain("declared_read_only");
   });
 
   it("reads write_permissions defensively: junk entries are skipped, a missing list is empty", () => {
