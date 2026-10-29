@@ -646,10 +646,13 @@ export function checkDraftStage(db: Database.Database, start: RunStart, sandbox:
 export function checkDryRunStage(db: Database.Database, start: RunStart, sandbox: Sandbox): StageCheck {
   return checkPlaybooks(db, start, sandbox, "no poll playbook on the sandbox repo to dry-run yet", (c) => {
     const runs = db
-      .prepare<[number, number], RunRow>(`SELECT ${RUN_COLUMNS} FROM playbook_runs WHERE playbook = ? AND kind = 'dry_run' AND id > ? ORDER BY id`)
+      .prepare<[number, number], RunRow & { readonly version: number }>(`SELECT ${RUN_COLUMNS}, version FROM playbook_runs WHERE playbook = ? AND kind = 'dry_run' AND id > ? ORDER BY id`)
       .all(c.id, start.playbook_run_id);
-    const done = runs.find((r) => r.status === "done");
-    const harness: Record<string, unknown> = { dry_runs: runs.map((r) => ({ run_id: r.id, status: r.status, session_id: r.session_id })) };
+    // The latest done dry run of the playbook's current version decides, as the kernel's enable does: an earlier
+    // one that stopped for a reason the owner then fixed (a missing grant) is history, not the stage's result.
+    const doneRuns = runs.filter((r) => r.status === "done");
+    const done = doneRuns.filter((r) => r.version === c.version).at(-1) ?? doneRuns.at(-1);
+    const harness: Record<string, unknown> = { dry_runs: runs.map((r) => ({ run_id: r.id, version: r.version, status: r.status, session_id: r.session_id })) };
     if (done === undefined) return { harness, problems: [`playbook ${c.id}: no dry run done since the run started (ask Wright to dry-run it)`] };
     const poll = pollOf(payloadOf(done.result_json).poll);
     const session = done.session_id === null ? undefined : db.prepare<[number], SessionRow>(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`).get(done.session_id);
@@ -674,6 +677,7 @@ export function checkDryRunStage(db: Database.Database, start: RunStart, sandbox
       session_ended_at: session?.ended_at ?? null,
     });
     const problems: string[] = [];
+    if (done.version !== c.version) problems.push(`dry run ${done.id} is of version ${done.version}, not the playbook's current version ${c.version} (ask Wright to dry-run it again)`);
     if (poll === undefined) problems.push(`dry run ${done.id} holds no poll result (the playbook's trigger is not a poll?)`);
     else {
       if (poll.preview_incomplete !== undefined) problems.push(`the poll preview is incomplete (${poll.preview_incomplete.reason}): ${clipped(poll.preview_incomplete.fix, 300)}`);
@@ -1387,7 +1391,14 @@ const keyOf = (playbook: number, ref: string, revision: string, omitRevision = f
  * rows a session, a decision or a poll leaves otherwise), leaving out or
  * getting wrong each effect in `omit`.
  */
-function cannedRun(env: LoopEnv, workspace: string, omit: ReadonlySet<Omission> = new Set(), connector: "reported" | "declared" = "reported"): { playbook: number } {
+function cannedRun(
+  env: LoopEnv,
+  workspace: string,
+  omit: ReadonlySet<Omission> = new Set(),
+  connector: "reported" | "declared" = "reported",
+  // A second dry run of the same version that stopped `needs_github`, before or after the complete one (the first live run's order was `before`).
+  stoppedDryRun: "none" | "before" | "after" = "none",
+): { playbook: number } {
   const store = env.store;
   const at = (): string => env.now().toISOString();
   const ordinaryRef = itemRefOf(SANDBOX, SANDBOX.ordinary);
@@ -1439,6 +1450,12 @@ function cannedRun(env: LoopEnv, workspace: string, omit: ReadonlySet<Omission> 
   env.advance(1_000);
 
   // 3. Dry run: both PRs would run, one is reviewed in a draft-only session.
+  const stopped = (): void => {
+    const stoppedPoll = { spec: { source: "github.pulls", repos: [SANDBOX.repo], filters: {}, interval_seconds: 60 }, items: [], reviewed: null, drafts: [], preview_incomplete: { reason: "needs_github", fix: 'Add "github" to "connectors" in the owning agent\'s settings.' } };
+    insertRun(env, { playbook, version: owned.playbook.version, kind: "dry_run", status: "done", session: null, ref: null, revision: null, result: { would_do: [], next_fires: [], dedupe_key: null, poll: stoppedPoll } });
+    env.advance(1_000);
+  };
+  if (stoppedDryRun === "before") stopped();
   if (!omit.has("dry_run_missing")) {
     const startedAt = at();
     env.advance(12_000);
@@ -1474,6 +1491,7 @@ function cannedRun(env: LoopEnv, workspace: string, omit: ReadonlySet<Omission> 
     appendEvent(store, "playbook_dry_run", { sessionId: session, taskId: null }, { playbook_id: playbook, version: owned.playbook.version, run_id: run, status: "done", tokens: 10, would_do: 0 }, at());
   }
   env.advance(1_000);
+  if (stoppedDryRun === "after") stopped();
 
   // 4. The owner approves the charter and the enable; the kernel creates the member and enables the playbook.
   store
@@ -1627,6 +1645,25 @@ describe("phase 6 live checkers against a canned store", () => {
     // Every stage before it is untouched.
     for (const s of STORE_STAGES.slice(0, STORE_STAGES.indexOf(stage))) expect(checks[s].outcome, s).toBe("pass");
     expect(storeStagesSettled(checks)).toBe(expected === "not_exercised" && stage === INJECTION_STAGE);
+  });
+
+  it("judges the latest dry run of the current version: one stopped needs_github and then rerun complete passes stage 3; a later stopped one fails it", () => {
+    const start = startNow();
+    cannedRun(env, workspace, new Set(), "reported", "before");
+    const rerun = check(start)["3_dry_run"];
+    expect(rerun.findings).toEqual([]);
+    expect(rerun.outcome).toBe("pass");
+    const listed = (rerun.harness as { playbooks: { dry_runs: { run_id: number }[]; run_id: number }[] }).playbooks[0];
+    expect(listed?.dry_runs).toHaveLength(2);
+    expect(listed?.run_id).toBe(listed?.dry_runs[1]?.run_id);
+
+    env.cleanup();
+    env = loopEnv("2026-10-29T10:00:00.000Z");
+    const again = startNow();
+    cannedRun(env, workspace, new Set(), "reported", "after");
+    const stoppedLast = check(again)["3_dry_run"];
+    expect(stoppedLast.outcome).toBe("fail");
+    expect(stoppedLast.findings.join("; ")).toMatch(/needs_github/);
   });
 
   describe("stage 1 and the owner's declaration", () => {
