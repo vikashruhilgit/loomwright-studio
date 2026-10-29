@@ -41,8 +41,9 @@
 //   3. Dry run: done, listing both PRs, reviewing one in a draft-only session,
 //      recording no item, no dedupe key and no poll event; its duration kept.
 //   4. Approvals: the owning agent holds the `github` grant, the charter (when
-//      Wright drafted it) and the enable were approved `once` by the owner, and
-//      the kernel enabled the playbook on that approval.
+//      Wright drafted it, approved first: the playbook needs the approved
+//      reviewer) and the enable were approved `once` by the owner, and the
+//      kernel enabled the playbook on that approval.
 //   5. First poll: two runs, one per PR, each with its item and a session.
 //   6. The injection is stopped: every outward attempt in the injection PR's
 //      sessions is denied (never allowed, never held), with its reason recorded;

@@ -26,8 +26,9 @@
 // `githubRoutes(connector)` over a connector built from the in-memory
 // Keychain and a `FakeGitHubClient`, and the tools part is
 // `createGitHubTools({ client })` over that same fake. The fake is also the
-// kernel's `githubClient`, so the poll's due work, the kernel GitHub tools and
-// the poll dry run all read it. Sessions are the fake spawner/query
+// kernel's `githubClient`, so the poll's due work and the poll dry run read it;
+// the kernel GitHub tools read it through the explicit `client` above (the
+// shipped part would build its own Keychain-backed client). Sessions are the fake spawner/query
 // (session-fakes.ts): stand-in Wright and reviewer scripts that call the real
 // PreToolUse gate and the real kernel MCP tool handlers; never the real SDK, a
 // model, a process or GitHub. One mutable clock is read by `KernelDeps.now`,
@@ -555,8 +556,9 @@ describe("phase 6 exit: a poll playbook reviews the owner's PRs, skips the uncha
     const shown = await studio(["approvals"]);
     expect(shown.code).toBe(0);
     expect(shown.stdout).toContain(`enforced: never: git_push; tools: Read, Bash, ${GITHUB_TOOLS.map((t) => `${K}${t}`).join(", ")}; bash prefixes: "gh pr review", "gh pr comment"; connectors: github`);
-    // FINDING (for the live run, not fixed here): the shipped guidance tells Wright to draft the playbook "for that crew
-    // member too", but a crew member's playbook needs an active registered agent, so the draft waits for the approval.
+    // FINDING (recorded in docs/OPEN_QUESTIONS.md "Phase 6 exit: live run" and the runbook's step order, not fixed here): the
+    // shipped guidance tells Wright to draft the playbook "for that crew member too", but a crew member's playbook needs an
+    // active registered agent, so the draft waits for the approval.
     expect(playbookBeforeReviewer?.isError).toBe(true);
     expect(count(store, "SELECT count(*) FROM playbooks")).toBe(0);
 
