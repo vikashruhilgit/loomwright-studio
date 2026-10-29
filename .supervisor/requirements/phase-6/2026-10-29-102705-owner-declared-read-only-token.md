@@ -84,3 +84,9 @@ docs/DESIGN.md
 docs/architecture/integrations.md
 docs/evidence/phase-6-exit-runbook.md
 docs/OPEN_QUESTIONS.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-29T11:54:39Z
+- **Brief:** .supervisor/jobs/done/2026-10-29-owner-declared-read-only-token.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/162
