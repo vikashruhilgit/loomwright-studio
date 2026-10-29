@@ -26,6 +26,11 @@ const field = (): HTMLInputElement => screen.getByTestId(IDS.sheetToken) as HTML
 const connectButton = (): HTMLButtonElement => screen.getByTestId(IDS.sheetConnect) as HTMLButtonElement;
 const rowWords = (): string | null => screen.getByTestId(IDS.listMeta).textContent;
 const paste = (value: string): void => void fireEvent.change(field(), { target: { value } });
+const declareBox = (): HTMLInputElement => screen.getByTestId(IDS.sheetDeclare) as HTMLInputElement;
+/** Tick the owner's confirmation (idempotent): Connect needs it as well as a token. */
+const tick = (): void => {
+  if (!declareBox().checked) fireEvent.click(declareBox());
+};
 
 /** The screen with the sheet open: no token (connect mode) or a connected one (replace mode). */
 async function openSheet(mode: Mode, setup: Setup = {}): Promise<Kernel> {
@@ -44,10 +49,10 @@ const writeScoped: ApiResult<unknown> = refused(422, {
   write_permissions: [{ permission: "pull_requests", level: "write" }],
 });
 const invalid: ApiResult<unknown> = refused(422, { error: "token_invalid", message: "GitHub did not accept the token", connector: {} });
-// The kernel's message ends with an internal doc path; the sheet must never show it.
+// The kernel's message names the API field; the sheet shows its own copy, which points at the confirmation box.
 const permissionsUnknown: ApiResult<unknown> = refused(422, {
   error: "token_permissions_unknown",
-  message: "GitHub did not report this token's permissions, so Studio cannot check that they are all read-only (docs/OPEN_QUESTIONS.md)",
+  message: "GitHub did not report this token's permissions; confirm they are all Read (declared_read_only: true) to connect it",
   connector: {},
 });
 
@@ -144,9 +149,67 @@ describe("connecting", () => {
     expect(document.activeElement).toBe(field());
     expect(connectButton().disabled).toBe(true);
     paste("github_pat_x");
+    // A token alone is not enough: the owner's confirmation is required too.
+    expect(connectButton().disabled).toBe(true);
+    tick();
     expect(connectButton().disabled).toBe(false);
     paste("   ");
     expect(connectButton().disabled).toBe(true);
+  });
+
+  it("asks for the owner's confirmation, unticked on open, labelled with the mockup's words and a caption that it is their word", async () => {
+    await openSheet("connect");
+    const box = within(screen.getByRole("dialog", { name: "Connect GitHub" })).getByLabelText("This is a fine-grained token, and every permission I gave it is Read");
+    expect(box).toBe(declareBox());
+    expect(declareBox().type).toBe("checkbox");
+    expect(declareBox().checked).toBe(false);
+    const hint = document.getElementById(declareBox().getAttribute("aria-describedby") ?? "");
+    expect(hint?.textContent).toBe("GitHub doesn't tell Studio what a fine-grained token can do, so Studio keeps this as your word, never as checked.");
+  });
+
+  it("Connect needs both: unticking turns it off again, and ⏎ with the box unticked sends nothing and keeps what was pasted", async () => {
+    const kernel = await openSheet("connect");
+    paste(TOKEN);
+    fireEvent.keyDown(field(), { key: "Enter" });
+    fireEvent.submit(field().closest("form") as HTMLFormElement);
+    expect(requests(kernel, "POST /connectors/github/token")).toHaveLength(0);
+    expect(field().value).toBe(TOKEN);
+    tick();
+    expect(connectButton().disabled).toBe(false);
+    fireEvent.click(declareBox());
+    expect(declareBox().checked).toBe(false);
+    expect(connectButton().disabled).toBe(true);
+    fireEvent.click(connectButton());
+    fireEvent.keyDown(field(), { key: "Enter" });
+    expect(requests(kernel, "POST /connectors/github/token")).toHaveLength(0);
+    expect(field().value).toBe(TOKEN);
+  });
+
+  it("the box is locked while the kernel checks, and stays ticked through a refusal so a retry needs only a new paste", async () => {
+    const answer = deferred<ApiResult<unknown>>();
+    const kernel = await openSheet("connect", { token: () => answer.promise });
+    paste(TOKEN);
+    tick();
+    fireEvent.click(connectButton());
+    expect(declareBox().disabled).toBe(true);
+    expect(declareBox().checked).toBe(true);
+    await act(async () => answer.resolve(invalid));
+    await screen.findByTestId(IDS.sheetError);
+    expect(declareBox().disabled).toBe(false);
+    expect(declareBox().checked).toBe(true);
+    expect(connectButton().disabled).toBe(true);
+    paste(TOKEN);
+    expect(connectButton().disabled).toBe(false);
+    expect(requests(kernel, "POST /connectors/github/token")).toHaveLength(1);
+  });
+
+  it("a new sheet starts unticked again", async () => {
+    await openSheet("connect");
+    tick();
+    fireEvent.click(screen.getByTestId(IDS.sheetCancel));
+    expect(screen.queryByTestId(IDS.sheet)).toBeNull();
+    fireEvent.click(screen.getByTestId(IDS.emptyConnect));
+    expect(declareBox().checked).toBe(false);
   });
 
   it("shows the token page as text to copy, not a link (the main process denies every window open)", async () => {
@@ -159,10 +222,11 @@ describe("connecting", () => {
     const answer = deferred<ApiResult<unknown>>();
     const kernel = await openSheet("connect", { token: () => answer.promise });
     paste(TOKEN);
+    tick();
     fireEvent.click(connectButton());
 
     // The request is out and unanswered.
-    expect(requests(kernel, "POST /connectors/github/token")).toEqual([{ method: "POST", path: "/connectors/github/token", body: { token: TOKEN } }]);
+    expect(requests(kernel, "POST /connectors/github/token")).toEqual([{ method: "POST", path: "/connectors/github/token", body: { token: TOKEN, declared_read_only: true } }]);
     expect(field().value).toBe("");
     expect(field().disabled).toBe(true);
     expect(field().getAttribute("placeholder")).toBe("Checking with GitHub…");
@@ -180,15 +244,17 @@ describe("connecting", () => {
     const answer = deferred<ApiResult<unknown>>();
     const kernel = await openSheet("connect", { token: () => answer.promise });
     paste(TOKEN);
+    tick();
     fireEvent.keyDown(field(), { key: "Enter" });
     fireEvent.keyDown(field(), { key: "Enter" });
-    expect(requests(kernel, "POST /connectors/github/token")).toEqual([{ method: "POST", path: "/connectors/github/token", body: { token: TOKEN } }]);
+    expect(requests(kernel, "POST /connectors/github/token")).toEqual([{ method: "POST", path: "/connectors/github/token", body: { token: TOKEN, declared_read_only: true } }]);
     expect(field().value).toBe("");
     await act(async () => answer.resolve(ok({ connector: connector("connected") })));
   });
 
   it("an empty or whitespace-only field sends nothing", async () => {
     const kernel = await openSheet("connect");
+    tick();
     fireEvent.keyDown(field(), { key: "Enter" });
     paste("   ");
     fireEvent.keyDown(field(), { key: "Enter" });
@@ -203,6 +269,7 @@ describe("connecting", () => {
       return ok({ connector: connector("connected") });
     };
     paste(TOKEN);
+    tick();
     fireEvent.click(connectButton());
     await waitFor(() => expect(screen.queryByTestId(IDS.sheet)).toBeNull());
     await waitFor(() => expect(rowWords()).toBe("connected · octo-owner"));
@@ -214,6 +281,7 @@ describe("connecting", () => {
     const answer = deferred<ApiResult<unknown>>();
     const kernel = await openSheet("replace", { token: () => answer.promise });
     paste(TOKEN);
+    tick();
     fireEvent.click(connectButton());
     // Cancel holds focus while the field is disabled, and is not disabled itself.
     expect(document.activeElement).toBe(screen.getByTestId(IDS.sheetCancel));
@@ -232,6 +300,7 @@ describe("connecting", () => {
     const kernel = await openSheet("replace", { token: () => answer.promise });
     const spies = spyOnConsole();
     paste(TOKEN);
+    tick();
     fireEvent.click(connectButton());
     fireEvent.click(screen.getByTestId(IDS.sheetCancel));
     expect(screen.queryByTestId(IDS.sheet)).toBeNull();
@@ -244,7 +313,7 @@ describe("connecting", () => {
     act(() => void kernel.registry.get("integrations.disconnect-github")?.run());
     expect(screen.queryByTestId(IDS.sheet)).toBeNull();
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(requests(kernel, "POST /connectors/github/token")).toEqual([{ method: "POST", path: "/connectors/github/token", body: { token: TOKEN } }]);
+    expect(requests(kernel, "POST /connectors/github/token")).toEqual([{ method: "POST", path: "/connectors/github/token", body: { token: TOKEN, declared_read_only: true } }]);
 
     // Once the kernel answers, the notice goes and a new sheet opens (still empty: the first token never came back).
     await act(async () => answer.resolve(ok({ connector: connector("connected") })));
@@ -273,6 +342,7 @@ describe("refusals", () => {
         }),
     });
     paste(TOKEN);
+    tick();
     fireEvent.click(connectButton());
     const alert = await screen.findByRole("alert");
     expect(alert).toBe(screen.getByTestId(IDS.sheetError));
@@ -293,6 +363,7 @@ describe("refusals", () => {
   it("token_invalid: the mockup's invalid copy, with the field empty", async () => {
     await openSheet("connect", { token: () => invalid });
     paste(TOKEN);
+    tick();
     fireEvent.click(connectButton());
     const alert = await screen.findByTestId(IDS.sheetError);
     expect(alert.textContent).toContain("GitHub didn't accept this token.");
@@ -304,10 +375,12 @@ describe("refusals", () => {
   it("token_permissions_unknown: the sheet's own copy, not the kernel's message, with the field empty", async () => {
     await openSheet("connect", { token: () => permissionsUnknown });
     paste(TOKEN);
+    tick();
     fireEvent.click(connectButton());
     const alert = await screen.findByRole("alert");
     expect(alert).toBe(screen.getByTestId(IDS.sheetError));
-    expect(alert.textContent).toBe("GitHub didn't report this token's permissions, so Studio can't confirm they're all read-only and refuses the token. Nothing changed.");
+    expect(alert.textContent).toBe("GitHub doesn't report what this token can do. Tick the box that says every permission you gave it is Read, then connect again.");
+    expect(alert.textContent).not.toContain("declared_read_only");
     expect(alert.textContent).not.toContain("OPEN_QUESTIONS");
     expect(within(alert).queryByRole("listitem")).toBeNull();
     expect(field().value).toBe("");
@@ -318,6 +391,7 @@ describe("refusals", () => {
   it("any other refusal shows the kernel's message as text", async () => {
     await openSheet("connect", { token: () => refused(429, { error: "rate_limited", message: "GitHub is rate limiting; try again in a minute", resets_at: "2026-10-28T12:00:00.000Z" }) });
     paste(TOKEN);
+    tick();
     fireEvent.click(connectButton());
     expect((await screen.findByTestId(IDS.sheetError)).textContent).toBe("GitHub is rate limiting; try again in a minute");
   });
@@ -325,6 +399,7 @@ describe("refusals", () => {
   it("an unreachable kernel is said in the bridge's words, not as a refusal of the token", async () => {
     await openSheet("connect", { token: () => UNREACHABLE });
     paste(TOKEN);
+    tick();
     fireEvent.click(connectButton());
     expect((await screen.findByTestId(IDS.sheetError)).textContent).toBe("Couldn't reach the kernel (daemon_not_running).");
   });
@@ -332,10 +407,12 @@ describe("refusals", () => {
   it("the owner can paste again after a refusal, and the next yes closes the sheet", async () => {
     const kernel = await openSheet("connect", { token: () => invalid });
     paste(TOKEN);
+    tick();
     fireEvent.click(connectButton());
     await screen.findByTestId(IDS.sheetError);
     kernel.token = () => ok({ connector: connector("connected") });
     paste(TOKEN);
+    tick();
     fireEvent.keyDown(field(), { key: "Enter" });
     await waitFor(() => expect(screen.queryByTestId(IDS.sheet)).toBeNull());
     expect(requests(kernel, "POST /connectors/github/token")).toHaveLength(2);
@@ -344,6 +421,7 @@ describe("refusals", () => {
   it("a refusal in the list row's words: back from 'connecting' to what it was", async () => {
     await openSheet("connect", { token: () => invalid });
     paste(TOKEN);
+    tick();
     fireEvent.click(connectButton());
     await screen.findByTestId(IDS.sheetError);
     expect(rowWords()).toBe("not connected");
@@ -371,6 +449,7 @@ describe("secrecy", () => {
       const kernel = await openSheet(mode, { token: () => answer.promise });
       const input = field();
       paste(TOKEN);
+      tick();
       // Typing it is the one moment the field holds it.
       expect(input.value).toBe(TOKEN);
       fireEvent.click(connectButton());
@@ -398,6 +477,7 @@ describe("secrecy", () => {
   it("a refusal's error text is the kernel's, never built from the pasted value", async () => {
     await openSheet("connect", { token: () => refused(400, { error: "invalid_body", message: 'needs {"token": "<a GitHub token>"}' }) });
     paste(TOKEN);
+    tick();
     fireEvent.click(connectButton());
     const alert = await screen.findByTestId(IDS.sheetError);
     expect(alert.textContent).toBe('needs {"token": "<a GitHub token>"}');
@@ -407,6 +487,7 @@ describe("secrecy", () => {
   it("the field is uncontrolled: the screen never renders the value back, and the DOM value is the only copy until Connect", async () => {
     await openSheet("connect");
     paste(TOKEN);
+    tick();
     expect(field().value).toBe(TOKEN);
     expect(field().getAttribute("value")).toBeNull();
     expect(document.body.textContent).not.toContain(TOKEN);
@@ -436,14 +517,17 @@ describe("the sheet by keyboard", () => {
 
   it("Tab and Shift+Tab stay inside the sheet", async () => {
     await openSheet("connect");
-    // Connect is off while the field is empty: the field, then Cancel.
+    // Connect is off while the field is empty or the box is unticked: the field, the confirmation, then Cancel.
     screen.getByTestId(IDS.sheetCancel).focus();
     expect(fireEvent.keyDown(document.activeElement ?? document.body, { key: "Tab" })).toBe(false);
     expect(document.activeElement).toBe(field());
     expect(fireEvent.keyDown(field(), { key: "Tab", shiftKey: true })).toBe(false);
     expect(document.activeElement).toBe(screen.getByTestId(IDS.sheetCancel));
-    // With something pasted, Connect is the last stop.
+    declareBox().focus();
+    expect(document.activeElement).toBe(declareBox());
+    // With something pasted and the box ticked, Connect is the last stop.
     paste("github_pat_x");
+    tick();
     connectButton().focus();
     fireEvent.keyDown(connectButton(), { key: "Tab" });
     expect(document.activeElement).toBe(field());

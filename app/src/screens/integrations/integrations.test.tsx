@@ -418,9 +418,10 @@ describe("Replace token", () => {
     const before = screen.getByTestId(IDS.detail).textContent;
     fireEvent.click(screen.getByTestId(IDS.replace));
     fireEvent.change(screen.getByTestId(IDS.sheetToken), { target: { value: TOKEN } });
+    fireEvent.click(screen.getByTestId(IDS.sheetDeclare));
     fireEvent.click(screen.getByTestId(IDS.sheetConnect));
     await screen.findByTestId(IDS.sheetError);
-    expect(requests(kernel, "POST /connectors/github/token")).toEqual([{ method: "POST", path: "/connectors/github/token", body: { token: TOKEN } }]);
+    expect(requests(kernel, "POST /connectors/github/token")).toEqual([{ method: "POST", path: "/connectors/github/token", body: { token: TOKEN, declared_read_only: true } }]);
     expect(screen.getByTestId(IDS.detail).textContent).toBe(before);
     expect(rowWords()).toBe("connected · octo-owner");
     // The sheet is still the replace one.
@@ -437,6 +438,7 @@ describe("Replace token", () => {
     screen.getByTestId(IDS.replace).focus();
     fireEvent.click(screen.getByTestId(IDS.replace));
     fireEvent.change(screen.getByTestId(IDS.sheetToken), { target: { value: TOKEN } });
+    fireEvent.click(screen.getByTestId(IDS.sheetDeclare));
     fireEvent.click(screen.getByTestId(IDS.sheetConnect));
     await waitFor(() => expect(screen.queryByTestId(IDS.sheet)).toBeNull());
     await waitFor(() => expect(screen.getByTestId(IDS.account).textContent).toBe("new-owner"));

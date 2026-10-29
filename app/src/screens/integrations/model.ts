@@ -43,6 +43,7 @@ export const INTEGRATIONS_TEST_IDS = {
   agentsNote: "integrations-agents-note",
   sheet: "integrations-sheet",
   sheetToken: "integrations-token",
+  sheetDeclare: "integrations-sheet-declare",
   sheetConnect: "integrations-sheet-connect",
   sheetCancel: "integrations-sheet-cancel",
   sheetError: "integrations-sheet-error",
@@ -258,7 +259,7 @@ export function permissionLines(permissions: Readonly<Record<string, string>> | 
 export type Refusal =
   | { readonly kind: "invalid" }
   | { readonly kind: "write"; readonly drops: readonly string[] }
-  /** `token_permissions_unknown`: the sheet's own copy, since the kernel's message names an internal doc. */
+  /** `token_permissions_unknown`: the sheet's own copy, which points at the confirmation box. */
   | { readonly kind: "permissions_unknown" }
   | { readonly kind: "other"; readonly text: string };
 
