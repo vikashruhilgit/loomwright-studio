@@ -3,13 +3,22 @@
 //
 //   studio connectors [--json]                every connector, one line each (or the API's JSON)
 //   studio connectors github status [--json]  the GitHub connector in full: account, permissions, expiry, repos
-//   studio connectors github set              read the token from stdin, then POST /connectors/github/token
+//   studio connectors github set              read the token from stdin (then the owner's declaration), then POST /connectors/github/token
 //   studio connectors github disconnect       POST /connectors/github/disconnect
 //
 // The token is read ONLY from stdin: piped, or typed at a terminal with echo
 // off. `set` with any argument exits 2 before the kernel is contacted, and
 // this verb never echoes an argument (one may be a pasted token) or what it
 // read. Nothing it prints holds the token: the kernel never answers it.
+//
+// The owner's declaration (that a fine-grained token's every permission is
+// Read, which GitHub cannot say) is read AFTER the token, from the same input:
+// at a terminal a second prompt (echo on) asks for it; piped, line 1 is the
+// token and an optional line 2 is the answer. Both come from one capped read
+// (`MAX_STDIN_SECRET_BYTES`); `readDeclaration` never reads the stream again.
+// Only `yes` or `y` declares: any other answer, or none, sends the token
+// alone, so a token whose permissions GitHub does not report is refused. It is
+// never an argument: `set` with any argument still exits 2.
 //
 // Text from GitHub (the login, permission and repo names) is untrusted data:
 // it is printed through `shown`, so no control character reaches the
@@ -28,9 +37,23 @@ export const MAX_STDIN_SECRET_BYTES = 4096;
 /** What reading the token gave: the token, or why there is none (never the input itself). */
 export type SecretRead = { readonly ok: true; readonly token: string } | { readonly ok: false; readonly reason: "empty" | "too_long" | "aborted" };
 
+/** The owner's answer to the declaration question, as typed (`undefined`: none was given). Never printed. */
+export type DeclarationRead = string | undefined;
+
 export interface ConnectorsSubcommandDeps {
   /** Read the token. Default: `readStdinSecret` (stdin; echo off at a terminal). */
   readonly readSecret?: () => Promise<SecretRead>;
+  /** Read the owner's declaration answer, after the token. Default: `readStdinDeclaration` (the piped input's line 2; a prompt, echo on, at a terminal). */
+  readonly readDeclaration?: () => Promise<DeclarationRead>;
+}
+
+/** The question asked at a terminal. */
+export const DECLARATION_PROMPT = "Is this a fine-grained token, and is every permission you gave it Read? Type yes to declare it: ";
+
+/** Whether `answer` declares: `yes` or `y`, trimmed, any case. Anything else (or none) does not. */
+export function isDeclaration(answer: DeclarationRead): boolean {
+  const a = answer?.trim().toLowerCase();
+  return a === "yes" || a === "y";
 }
 
 /** `raw` without its trailing line ending(s): a piped `echo` adds one. */
@@ -38,13 +61,16 @@ function trimLineEnd(raw: string): string {
   return raw.replace(/[\r\n]+$/, "");
 }
 
+/** The answer line that followed the token on piped stdin, kept for `readStdinDeclaration` (which never reads the stream again). Cleared by each token read. */
+let pipedAnswer: DeclarationRead;
+
 function secretOf(raw: string, over: boolean): SecretRead {
   if (over) return { ok: false, reason: "too_long" };
   const token = trimLineEnd(raw);
   return token === "" ? { ok: false, reason: "empty" } : { ok: true, token };
 }
 
-/** Reads piped stdin to its end, at most `MAX_STDIN_SECRET_BYTES` bytes. */
+/** Reads piped stdin to its end, at most `MAX_STDIN_SECRET_BYTES` bytes: line 1 is the token, the next line (if any) is kept as the declaration answer. */
 async function readPiped(stdin: NodeJS.ReadStream): Promise<SecretRead> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -57,7 +83,34 @@ async function readPiped(stdin: NodeJS.ReadStream): Promise<SecretRead> {
     }
     chunks.push(buf);
   }
-  return secretOf(Buffer.concat(chunks).toString("utf8"), false);
+  const [first = "", second] = Buffer.concat(chunks).toString("utf8").split(/\r\n|\n|\r/, 2);
+  pipedAnswer = second;
+  return secretOf(first, false);
+}
+
+/** Reads one line at a terminal with echo ON (cooked mode: the terminal edits and shows it); EOF ends it. At most `MAX_STDIN_SECRET_BYTES` bytes, else none. */
+function readVisible(stdin: NodeJS.ReadStream, prompt: (text: string) => void): Promise<DeclarationRead> {
+  return new Promise((resolve) => {
+    prompt(DECLARATION_PROMPT);
+    let line = "";
+    const finish = (answer: DeclarationRead): void => {
+      stdin.removeListener("data", onData);
+      stdin.removeListener("end", onEnd);
+      stdin.pause();
+      resolve(answer);
+    };
+    const onEnd = (): void => finish(line);
+    const onData = (text: string): void => {
+      line += text;
+      if (Buffer.byteLength(line, "utf8") > MAX_STDIN_SECRET_BYTES) return finish(undefined);
+      const end = line.search(/[\r\n]/);
+      if (end !== -1) finish(line.slice(0, end));
+    };
+    stdin.setEncoding("utf8");
+    stdin.on("data", onData);
+    stdin.on("end", onEnd);
+    stdin.resume();
+  });
 }
 
 /** Reads one line at a terminal with echo off (raw mode): Enter ends it, Backspace edits it, Ctrl-C or Ctrl-D on an empty line aborts. */
@@ -91,7 +144,17 @@ function readHidden(stdin: NodeJS.ReadStream, prompt: (text: string) => void): P
 /** The default token reader: stdin, with echo off when it is a terminal (the prompt goes to stderr). */
 export function readStdinSecret(): Promise<SecretRead> {
   const stdin = process.stdin;
+  pipedAnswer = undefined;
   return stdin.isTTY === true ? readHidden(stdin, (t) => void process.stderr.write(t)) : readPiped(stdin);
+}
+
+/** The default declaration reader: at a terminal a visible prompt (on stderr); piped, the line that followed the token (the stream is not read again). */
+export function readStdinDeclaration(): Promise<DeclarationRead> {
+  const stdin = process.stdin;
+  if (stdin.isTTY === true) return readVisible(stdin, (t) => void process.stderr.write(t));
+  const answer = pipedAnswer;
+  pipedAnswer = undefined;
+  return Promise.resolve(answer);
 }
 
 type Command =
@@ -124,6 +187,8 @@ interface ConnectorLike {
   readonly reachable_repos?: unknown;
   readonly expires_at?: unknown;
   readonly verified_at?: unknown;
+  readonly permissions_source?: unknown;
+  readonly permissions_declared_at?: unknown;
 }
 
 /** A value from the API as one safe terminal token. */
@@ -136,6 +201,8 @@ function reposOf(c: ConnectorLike): string[] {
 }
 
 function permissionsText(c: ConnectorLike): string {
+  // The owner's word, not GitHub's: said so, with when.
+  if (c.permissions_source === "declared") return `read-only, declared by the owner at ${text(c.permissions_declared_at)}`;
   if (typeof c.permissions !== "object" || c.permissions === null || Array.isArray(c.permissions)) return "-";
   const entries = Object.entries(c.permissions as Record<string, unknown>);
   return entries.length === 0 ? "-" : entries.map(([name, level]) => `${shown(name)}: ${text(level)}`).join(", ");
@@ -187,6 +254,7 @@ const SECRET_REFUSALS: Record<Exclude<SecretRead, { ok: true }>["reason"], strin
  */
 export function connectorsSubcommand(deps: ConnectorsSubcommandDeps = {}): ContributedSubcommand {
   const readSecret = deps.readSecret ?? readStdinSecret;
+  const readDeclaration = deps.readDeclaration ?? readStdinDeclaration;
 
   async function getConnectors(client: CliApiClient, out: CliSubcommandOutput): Promise<ConnectorLike[] | undefined> {
     const res = await client.request("GET", "/connectors");
@@ -251,12 +319,22 @@ export function connectorsSubcommand(deps: ConnectorsSubcommandDeps = {}): Contr
         out.stderr.write(`${SECRET_REFUSALS[secret.reason]}\n`);
         return 1;
       }
+      // The declaration comes after the token, from the same input. A failed read is no answer.
+      let answer: DeclarationRead;
+      try {
+        answer = await readDeclaration();
+      } catch {
+        answer = undefined;
+      }
+      const body = isDeclaration(answer) ? { token: secret.token, declared_read_only: true } : { token: secret.token };
       return change(
         "/connectors/github/token",
-        { token: secret.token },
+        body,
         client,
         out,
-        (c) => `studio: GitHub connected as ${text(c.account_login)}: ${reposOf(c).length} reachable repos; expires ${text(c.expires_at)}\n`,
+        (c) =>
+          `studio: GitHub connected as ${text(c.account_login)}: ${reposOf(c).length} reachable repos; expires ${text(c.expires_at)}` +
+          `${c.permissions_source === "declared" ? "; permissions read-only as declared by you (GitHub did not report them)" : ""}\n`,
         "token not stored",
       );
     },

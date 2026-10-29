@@ -179,7 +179,7 @@ function rowNow(): Record<string, unknown> | undefined {
   return env.store.prepare("SELECT * FROM connectors WHERE kind = 'github'").get() as Record<string, unknown> | undefined;
 }
 
-const CONNECTOR_KEYS = ["account_login", "created_at", "expires_at", "id", "kind", "permissions", "reachable_repos", "status", "updated_at", "verified_at"];
+const CONNECTOR_KEYS = ["account_login", "created_at", "expires_at", "id", "kind", "permissions", "permissions_declared_at", "permissions_source", "reachable_repos", "status", "updated_at", "verified_at"];
 
 // ---------------------------------------------------------------------------
 // AC1: set a valid read-only token (route)
@@ -197,6 +197,8 @@ describe("set a valid read-only token through POST /connectors/github/token (AC1
       account_login: "owner-one",
       permissions: READ_ONLY,
       reachable_repos: ["owner-one/studio-sandbox", "owner-one/loomwright"],
+      permissions_source: "reported",
+      permissions_declared_at: null,
       expires_at: EXPIRES,
       verified_at: T0,
     });
@@ -208,8 +210,10 @@ describe("set a valid read-only token through POST /connectors/github/token (AC1
       reachable_repos_json: JSON.stringify(["owner-one/studio-sandbox", "owner-one/loomwright"]),
       expires_at: EXPIRES,
       verified_at: T0,
+      permissions_source: "reported",
+      permissions_declared_at: null,
     });
-    expect(statusEvents()).toEqual([{ connector_id: c.id, kind: "github", status: "connected" }]);
+    expect(statusEvents()).toEqual([{ connector_id: c.id, kind: "github", status: "connected", permissions_source: "reported" }]);
     // Validated through the candidate token, before anything was written.
     expect(clients[0]?.calls.map((x) => x.method)).toEqual(["getTokenInfo", "listReachableRepos"]);
     expectNoToken(res.body);
@@ -411,8 +415,8 @@ describe("replace a connected token (AC6)", () => {
     expect(keychain.items.get(GITHUB_KEYCHAIN_SERVICE)?.secret).toBe(GOOD2);
     expect(rowNow()).toMatchObject({ id, status: "connected", reachable_repos_json: JSON.stringify(["owner-one/ntfs-tool"]), verified_at: env.now().toISOString() });
     expect(statusEvents()).toEqual([
-      { connector_id: id, kind: "github", status: "connected" },
-      { connector_id: id, kind: "github", status: "connected" },
+      { connector_id: id, kind: "github", status: "connected", permissions_source: "reported" },
+      { connector_id: id, kind: "github", status: "connected", permissions_source: "reported" },
     ]);
     expectNoToken(res.body);
   });
@@ -604,7 +608,7 @@ describe("the expiry check (AC8)", () => {
 // ---------------------------------------------------------------------------
 
 describe("connector_status events (AC10)", () => {
-  it("one per change (set, refused, replace, disconnect), each {connector_id, kind, status} (plus refused for a refusal), never a secret", async () => {
+  it("one per change (set, refused, replace, disconnect), each {connector_id, kind, status} (plus refused for a refusal, or permissions_source for a successful set), never a secret", async () => {
     const c = connector();
     await call(c, "POST", "/connectors/github/token", { token: WRITE });
     await call(c, "POST", "/connectors/github/token", { token: GOOD });
@@ -613,8 +617,8 @@ describe("connector_status events (AC10)", () => {
     const id = rowNow()?.["id"];
     expect(statusEvents()).toEqual([
       { connector_id: id, kind: "github", status: "rejected", refused: "token_write_scoped" },
-      { connector_id: id, kind: "github", status: "connected" },
-      { connector_id: id, kind: "github", status: "connected" },
+      { connector_id: id, kind: "github", status: "connected", permissions_source: "reported" },
+      { connector_id: id, kind: "github", status: "connected", permissions_source: "reported" },
       { connector_id: id, kind: "github", status: "disconnected" },
     ]);
     expect(events(env.store, "connector_status").every((e) => e.actor === "kernel" && e.session_id === null)).toBe(true);

@@ -42,6 +42,7 @@ import { decideToolUse } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/types.js";
 import { checkAfterMigrating, checkBeforeMigrating } from "../src/store/integrity.js";
 import { phase6Foundation } from "../src/store/migrations/017_phase_6_foundation.js";
+import { connectorPermissionsSource } from "../src/store/migrations/018_connector_permissions_source.js";
 import { contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolContext, KernelToolResult } from "../src/tools/server.js";
 import { TRIGGER_KINDS, TriggerError, registerTrigger, triggersContribution, updateTriggerSpec } from "../src/triggers/index.js";
@@ -275,14 +276,17 @@ describe("toolsForConnectors", () => {
 describe("migration 17: phase_6_foundation (AC1)", () => {
   const V16 = migrations.slice(0, 16);
 
-  it("is the last migration, version 17", () => {
-    expect(migrations.at(-1)).toBe(phase6Foundation);
+  it("is version 17, and migration 18 (connector_permissions_source, its own tests in integrations-github-declared.test.ts) is the last migration", () => {
+    expect(migrations.at(16)).toBe(phase6Foundation);
     expect([phase6Foundation.version, phase6Foundation.name]).toEqual([17, "phase_6_foundation"]);
+    expect(migrations.at(-1)).toBe(connectorPermissionsSource);
+    expect([connectorPermissionsSource.version, connectorPermissionsSource.name]).toEqual([18, "connector_permissions_source"]);
   });
 
   it("on a fresh store creates connectors and draft_outputs with exactly their columns, and adds playbooks.mode / mode_set_by and playbook_runs.item_ref / item_revision", () => {
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([17, "phase_6_foundation"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([18, "connector_permissions_source"]);
+    // Migration 17's columns, then the two migration 18 adds at the end.
     expect(columnsOf(store, "connectors")).toEqual([
       "id",
       "kind",
@@ -294,6 +298,8 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
       "verified_at",
       "created_at",
       "updated_at",
+      "permissions_source",
+      "permissions_declared_at",
     ]);
     expect(columnsOf(store, "draft_outputs")).toEqual(["id", "session", "agent", "playbook", "playbook_run", "item_ref", "tool", "payload_json", "created_at"]);
     expect(columnsOf(store, "playbooks").slice(-2)).toEqual(["mode", "mode_set_by"]);
@@ -353,7 +359,7 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     expect(before.tables).not.toContain("draft_outputs");
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([17, "phase_6_foundation"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([18, "connector_permissions_source"]);
     expect(store.prepare("SELECT mode, mode_set_by FROM playbooks WHERE id = 1").get()).toEqual({ mode: "draft", mode_set_by: null });
     expect(store.prepare("SELECT item_ref, item_revision FROM playbook_runs WHERE id = 1").get()).toEqual({ item_ref: null, item_revision: null });
     store.close();
@@ -380,7 +386,7 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     });
   });
 
-  it("is safe to re-run: with its record deleted, migration 17 runs again as a no-op and every row and object stays", () => {
+  it("is safe to re-run: with its record deleted (and 18's, which sits above it), migration 17 runs again as a no-op and every row and object stays", () => {
     const first = open();
     first.prepare("INSERT INTO playbooks (slug, name, owning_agent, intent, mode, mode_set_by) VALUES ('review', 'Review', 'wright', 'review PRs', 'draft', 'owner')").run();
     first.prepare("INSERT INTO sessions (agent, status, playbook, playbook_version) VALUES ('mason', 'completed', 1, 1)").run();
@@ -396,10 +402,11 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     const before = snap();
 
     const db = new Database(join(tmp, DB_FILENAME));
-    db.exec("DELETE FROM schema_migrations WHERE version = 17");
+    // Deleting 17 alone would leave 18 above a gap: 17 and 18 re-run together.
+    db.exec("DELETE FROM schema_migrations WHERE version >= 17");
     db.close();
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([17, "phase_6_foundation"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([18, "connector_permissions_source"]);
     rerun.close();
     expect(snap()).toEqual(before);
   });

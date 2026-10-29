@@ -28,7 +28,19 @@ export const CONNECTOR_STATUSES = Object.freeze(["connected", "rejected", "disco
 /** One of `CONNECTOR_STATUSES`. */
 export type ConnectorStatus = (typeof CONNECTOR_STATUSES)[number];
 
-/** A `connectors` row (migration 17). It never holds a secret: a connector's token lives only in the Keychain. */
+/**
+ * Every `connectors.permissions_source`, closed in code (no SQL CHECK): who
+ * vouched for the token's permissions. `reported` is GitHub's own answer;
+ * `declared` is the owner's word, recorded as theirs and never as verified
+ * (GitHub publishes no permissions for a fine-grained token). A row from
+ * before migration 18 reads null.
+ */
+export const CONNECTOR_PERMISSIONS_SOURCES = Object.freeze(["reported", "declared"] as const);
+
+/** One of `CONNECTOR_PERMISSIONS_SOURCES`. */
+export type ConnectorPermissionsSource = (typeof CONNECTOR_PERMISSIONS_SOURCES)[number];
+
+/** A `connectors` row (migrations 17 and 18). It never holds a secret: a connector's token lives only in the Keychain. */
 export interface ConnectorRow {
   readonly id: number;
   readonly kind: ConnectorKind;
@@ -38,6 +50,10 @@ export interface ConnectorRow {
   readonly reachable_repos_json: string | null;
   readonly expires_at: string | null;
   readonly verified_at: string | null;
+  /** Who vouched for `permissions_json` (migration 18); null before it, and while nothing was connected. */
+  readonly permissions_source: ConnectorPermissionsSource | null;
+  /** When the owner declared the permissions (ISO time); set only when `permissions_source` is `declared`. */
+  readonly permissions_declared_at: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -120,9 +136,10 @@ export type GitHubResponse<T> = { readonly ok: true; readonly data: T; readonly 
 
 /**
  * What GitHub says about the token in use: its user, its expiry (null when it
- * has none) and its permissions (null when GitHub does not report them; how
- * it reports a fine-grained token's permissions is item 03's probe, NEEDS
- * VERIFICATION).
+ * has none) and its permissions (null when GitHub does not report them,
+ * which is always so for a fine-grained token: probe p12, 2026-10-29, found
+ * GitHub publishes none, so the owner may declare them instead; see
+ * `ConnectorRow.permissions_source`).
  */
 export interface GitHubTokenInfo {
   readonly login: string;
