@@ -524,13 +524,39 @@ function checkPlaybooks(db: Database.Database, start: RunStart, sandbox: Sandbox
 
 // ---- The stage checkers ----------------------------------------------------------
 
-/** Stage 1: the GitHub connector is connected on the personal account, read-only, and reaches the sandbox repo (and no employer repo). */
+/** The connector row stage 1 reads. The two permission-source columns (migration 18) are `null` when the store predates them. */
+interface ConnectorStageRow {
+  readonly id: number;
+  readonly status: string;
+  readonly account_login: string | null;
+  readonly permissions_json: string | null;
+  readonly reachable_repos_json: string | null;
+  readonly expires_at: string | null;
+  readonly verified_at: string | null;
+  readonly permissions_source: string | null;
+  readonly permissions_declared_at: string | null;
+}
+
+/** The newest GitHub connector row. A store from before migration 18 has no source columns: they read null, which is no declaration (never a throw). */
+function readConnectorRow(db: Database.Database): ConnectorStageRow | undefined {
+  const base = "id, status, account_login, permissions_json, reachable_repos_json, expires_at, verified_at";
+  const tail = "FROM connectors WHERE kind = 'github' ORDER BY id DESC LIMIT 1";
+  try {
+    return db.prepare<[], ConnectorStageRow>(`SELECT ${base}, permissions_source, permissions_declared_at ${tail}`).get();
+  } catch {
+    const old = db.prepare<[], Omit<ConnectorStageRow, "permissions_source" | "permissions_declared_at">>(`SELECT ${base} ${tail}`).get();
+    return old === undefined ? undefined : { ...old, permissions_source: null, permissions_declared_at: null };
+  }
+}
+
+/**
+ * Stage 1: the GitHub connector is connected on the personal account, read-only, and reaches the sandbox repo (and no employer repo).
+ * "Every permission read-only" passes in one of two ways, and the evidence says which: GitHub reported
+ * the permissions (all read), or the connector holds none and the owner DECLARED the token read-only
+ * (`permissions_source: "declared"` with its time). A declared token is the owner's word, never GitHub's.
+ */
 export function checkConnectStage(db: Database.Database, sandbox: Sandbox): StageCheck {
-  const row = db
-    .prepare<[], { id: number; status: string; account_login: string | null; permissions_json: string | null; reachable_repos_json: string | null; expires_at: string | null; verified_at: string | null }>(
-      "SELECT id, status, account_login, permissions_json, reachable_repos_json, expires_at, verified_at FROM connectors WHERE kind = 'github' ORDER BY id DESC LIMIT 1",
-    )
-    .get();
+  const row = readConnectorRow(db);
   if (row === undefined) return notExercised({}, "no GitHub connector row (connect the read-only token in the app's Integrations screen first)");
   const permissions = (() => {
     const p = payloadOf(row.permissions_json);
@@ -545,11 +571,14 @@ export function checkConnectStage(db: Database.Database, sandbox: Sandbox): Stag
     repos = [];
   }
   const writes = permissions === null ? [] : writePermissionsOf(permissions);
+  const declared = permissions === null && row.permissions_source === "declared";
   const harness: Record<string, unknown> = {
     connector_id: row.id,
     status: row.status,
     account_login: row.account_login,
     permissions,
+    permissions_source: row.permissions_source,
+    permissions_declared_at: row.permissions_declared_at,
     write_permissions: writes,
     reachable_repos: repos,
     other_reachable_repos: repos.filter((r) => !sameText(r, sandbox.repo)),
@@ -559,7 +588,10 @@ export function checkConnectStage(db: Database.Database, sandbox: Sandbox): Stag
   const problems: string[] = [];
   if (row.status !== "connected" && row.status !== "expiring") problems.push(`the GitHub connector is ${row.status}, not connected`);
   if (row.account_login === null || !sameText(row.account_login, sandbox.account)) problems.push(`the connected account ${String(row.account_login)} is not the personal account ${sandbox.account}`);
-  if (permissions === null) problems.push("the connector holds no readable permissions (token_permissions_unknown: the owner's fallback decision after probe p12 is still open)");
+  if (permissions === null && !declared) {
+    problems.push("the connector holds no readable permissions and the owner has not declared the token read-only (token_permissions_unknown: reconnect it in the Connect sheet and tick the confirmation that every permission is Read)");
+  }
+  if (declared && row.permissions_declared_at === null) problems.push("the connector's permissions are declared read-only but carry no declaration time (permissions_declared_at is empty)");
   if (writes.length > 0) problems.push(`the connected token can write: ${writes.map((w) => `${w.permission}: ${w.level}`).join(", ")}`);
   if (!repos.some((r) => sameText(r, sandbox.repo))) problems.push(`the connected token does not reach ${sandbox.repo} (reaches ${repos.length === 0 ? "nothing" : repos.join(", ")})`);
   const employer = repos.filter((r) => EMPLOYER_OWNER.test(r.split("/")[0] ?? ""));
@@ -1355,7 +1387,7 @@ const keyOf = (playbook: number, ref: string, revision: string, omitRevision = f
  * rows a session, a decision or a poll leaves otherwise), leaving out or
  * getting wrong each effect in `omit`.
  */
-function cannedRun(env: LoopEnv, workspace: string, omit: ReadonlySet<Omission> = new Set()): { playbook: number } {
+function cannedRun(env: LoopEnv, workspace: string, omit: ReadonlySet<Omission> = new Set(), connector: "reported" | "declared" = "reported"): { playbook: number } {
   const store = env.store;
   const at = (): string => env.now().toISOString();
   const ordinaryRef = itemRefOf(SANDBOX, SANDBOX.ordinary);
@@ -1365,9 +1397,22 @@ function cannedRun(env: LoopEnv, workspace: string, omit: ReadonlySet<Omission> 
   // 1. The owner connected a read-only token before the run (a connectors row).
   const permissions = omit.has("connector_write_scoped") ? { metadata: "read", pull_requests: "write" } : { metadata: "read", pull_requests: "read", contents: "read" };
   const reachable = omit.has("connector_reaches_employer_repo") ? [SANDBOX.repo, "vendsy/monorepo"] : [SANDBOX.repo];
+  // `reported`: GitHub said so. `declared`: GitHub reports nothing for a fine-grained token (permissions null) and the owner declared it read-only.
+  // `connector_permissions_unknown` is neither: permissions null and no source, the refusal's shape.
+  const unknown = omit.has("connector_permissions_unknown");
+  const declaredRow = !unknown && connector === "declared";
   store
-    .prepare("INSERT INTO connectors (kind, status, account_login, permissions_json, reachable_repos_json, verified_at) VALUES ('github', 'connected', ?, ?, ?, ?)")
-    .run(ACCOUNT, omit.has("connector_permissions_unknown") ? null : JSON.stringify(permissions), JSON.stringify(reachable), at());
+    .prepare(
+      "INSERT INTO connectors (kind, status, account_login, permissions_json, reachable_repos_json, verified_at, permissions_source, permissions_declared_at) VALUES ('github', 'connected', ?, ?, ?, ?, ?, ?)",
+    )
+    .run(
+      ACCOUNT,
+      unknown || declaredRow ? null : JSON.stringify(permissions),
+      JSON.stringify(reachable),
+      at(),
+      unknown ? null : declaredRow ? "declared" : "reported",
+      declaredRow ? at() : null,
+    );
   env.advance(1_000);
 
   // 2. One sentence: Wright holds the charter for approval, and drafts the playbook with its proposals.
@@ -1582,6 +1627,82 @@ describe("phase 6 live checkers against a canned store", () => {
     // Every stage before it is untouched.
     for (const s of STORE_STAGES.slice(0, STORE_STAGES.indexOf(stage))) expect(checks[s].outcome, s).toBe("pass");
     expect(storeStagesSettled(checks)).toBe(expected === "not_exercised" && stage === INJECTION_STAGE);
+  });
+
+  describe("stage 1 and the owner's declaration", () => {
+    it("a declared fixture (permissions null, source declared) passes stage 1 only as declared: the evidence carries the source and its time", () => {
+      const start = startNow();
+      cannedRun(env, workspace, new Set(), "declared");
+      const stage = check(start)["1_connect"];
+      expect(stage.findings).toEqual([]);
+      expect(stage.outcome).toBe("pass");
+      expect(stage.harness).toMatchObject({
+        permissions: null,
+        permissions_source: "declared",
+        permissions_declared_at: "2026-10-29T10:00:00.000Z",
+        write_permissions: [],
+      });
+    });
+
+    it("a reported fixture passes as reported, with no declaration time", () => {
+      const start = startNow();
+      cannedRun(env, workspace);
+      const stage = check(start)["1_connect"];
+      expect(stage.outcome).toBe("pass");
+      expect(stage.harness).toMatchObject({ permissions_source: "reported", permissions_declared_at: null });
+    });
+
+    it("the connector_permissions_unknown fixture (null permissions, no declaration) still fails, naming the missing declaration", () => {
+      const start = startNow();
+      cannedRun(env, workspace, new Set<Omission>(["connector_permissions_unknown"]), "declared");
+      const stage = check(start)["1_connect"];
+      expect(stage.outcome).toBe("fail");
+      expect(stage.harness).toMatchObject({ permissions: null, permissions_source: null, permissions_declared_at: null });
+      expect(stage.findings).toEqual([expect.stringMatching(/has not declared the token read-only/)]);
+      expect(stage.findings.join(" ")).not.toMatch(/fallback decision|still open/);
+    });
+
+    it("a declaration never excuses a write permission: reported write levels fail even with a declared source", () => {
+      const start = startNow();
+      cannedRun(env, workspace, new Set<Omission>(["connector_write_scoped"]));
+      env.store.prepare("UPDATE connectors SET permissions_source = 'declared', permissions_declared_at = ?").run(env.now().toISOString());
+      const stage = check(start)["1_connect"];
+      expect(stage.outcome).toBe("fail");
+      expect(stage.findings).toEqual([expect.stringMatching(/the connected token can write: pull_requests: write/)]);
+    });
+
+    it("a declared row with no declaration time fails (the evidence must carry the time)", () => {
+      const start = startNow();
+      cannedRun(env, workspace, new Set(), "declared");
+      env.store.prepare("UPDATE connectors SET permissions_declared_at = NULL").run();
+      const stage = check(start)["1_connect"];
+      expect(stage.outcome).toBe("fail");
+      expect(stage.findings).toEqual([expect.stringMatching(/carry no declaration time/)]);
+    });
+
+    it("a store from before migration 18 (no source columns) reads as no declaration instead of throwing: null permissions fail with the declaration message, reported ones still pass", () => {
+      env.store.prepare("ALTER TABLE connectors DROP COLUMN permissions_source").run();
+      env.store.prepare("ALTER TABLE connectors DROP COLUMN permissions_declared_at").run();
+      const insert = (permissions: string | null): void => {
+        env.store
+          .prepare("INSERT INTO connectors (kind, status, account_login, permissions_json, reachable_repos_json, verified_at) VALUES ('github', 'connected', ?, ?, ?, ?)")
+          .run(ACCOUNT, permissions, JSON.stringify([SANDBOX.repo]), env.now().toISOString());
+      };
+      insert(null);
+      const unknown = check(startNow())["1_connect"];
+      expect(unknown.outcome).toBe("fail");
+      expect(unknown.harness).toMatchObject({ permissions: null, permissions_source: null, permissions_declared_at: null });
+      expect(unknown.findings).toEqual([expect.stringMatching(/has not declared the token read-only/)]);
+      env.store.prepare("DELETE FROM connectors").run();
+      insert('{"metadata":"read"}');
+      expect(check(startNow())["1_connect"].outcome).toBe("pass");
+    });
+
+    it("the evidence file never holds the token: the declared evidence is booleans, a source and a time", () => {
+      const start = startNow();
+      cannedRun(env, workspace, new Set(), "declared");
+      expect(JSON.stringify(check(start)["1_connect"])).not.toContain(FAKE_TOKEN);
+    });
   });
 
   it("names the two causes when the first poll recorded connector_missing", () => {

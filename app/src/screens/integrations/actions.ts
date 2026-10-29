@@ -32,10 +32,12 @@ export function readConnectors(api: StudioBridge): Promise<Reply<ConnectorsRespo
 
 /**
  * `POST /connectors/github/token`: the token the owner pasted, to the kernel by
- * way of the main process. The answer is the row after the change, never the token.
+ * way of the main process, with the owner's declaration that every permission they
+ * gave it is Read (the sheet sends only once the box is ticked). The answer is the row
+ * after the change, never the token.
  */
 export function connectGithub(api: StudioBridge, token: string): Promise<Reply<ConnectorChangeResponse>> {
-  return send<ConnectorChangeResponse>(api, { method: "POST", path: "/connectors/github/token", body: { token } });
+  return send<ConnectorChangeResponse>(api, { method: "POST", path: "/connectors/github/token", body: { token, declared_read_only: true } });
 }
 
 /** `POST /connectors/github/disconnect`: deletes the Keychain item; the row reads `disconnected`. */

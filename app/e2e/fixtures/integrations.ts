@@ -85,6 +85,8 @@ export function connectorRow(state: Exclude<ConnectorState, "none">): Connector 
     status: state,
     account_login: dead ? null : ACCOUNT,
     permissions: dead ? null : { metadata: "read", pull_requests: "read", contents: "read" },
+    permissions_source: dead ? null : "reported",
+    permissions_declared_at: null,
     reachable_repos: dead ? null : [...REPOS],
     expires_at: dead ? null : new Date(Date.now() + days * DAY_MS).toISOString(),
     verified_at: dead ? null : new Date().toISOString(),

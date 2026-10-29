@@ -9,10 +9,15 @@
 // refusals, each writing nothing to the Keychain:
 //   - `token_invalid`: GitHub refuses it (401), or it is not a token's shape;
 //   - `token_write_scoped`: a permission above read, named with the setting to change;
-//   - `token_permissions_unknown`: GitHub did not report its permissions. The
-//     real client always reports `null` until the owner's probe
-//     (`probes/p12-github-token-permissions.mjs`) decides how to read them, so
-//     today every real token is refused here (fail-closed, owner's revision).
+//   - `token_permissions_unknown`: GitHub did not report its permissions. GitHub
+//     publishes none for a fine-grained token (probe p12, 2026-10-29), so the
+//     real client reports `null`: such a token is refused unless the OWNER
+//     declares that every permission they gave it is Read.
+// The declaration (`opts.declaredReadOnly`) is the owner's word, recorded as
+// such (`permissions_source: "declared"` and `permissions_declared_at`), never
+// as GitHub-verified. It is consulted only when GitHub reported no
+// permissions: a reported write permission is refused `token_write_scoped`
+// with or without it.
 // A refusal while a good token is in use (`connected` or `expiring`) leaves
 // the row and the Keychain item unchanged; otherwise the row reads `rejected`.
 // Replace is validate, then delete the old item, add the new one (never an
@@ -38,7 +43,8 @@ import { appendEvent } from "../../loop/internal.js";
 import { recordNotification } from "../../notifications/record.js";
 import type { Store } from "../../store/store.js";
 import { connectorsSubcommand } from "../cli.js";
-import type { ConnectorKind, ConnectorRow, ConnectorStatus, GitHubClient, GitHubFailure, IntegrationsPart } from "../types.js";
+import { CONNECTOR_PERMISSIONS_SOURCES } from "../types.js";
+import type { ConnectorKind, ConnectorPermissionsSource, ConnectorRow, ConnectorStatus, GitHubClient, GitHubFailure, IntegrationsPart } from "../types.js";
 import { GITHUB_KEYCHAIN_SERVICE, createGitHubClient } from "./client.js";
 
 /** The connector kind this file owns. */
@@ -97,6 +103,10 @@ export interface ConnectorView {
   readonly reachable_repos: readonly string[] | null;
   readonly expires_at: string | null;
   readonly verified_at: string | null;
+  /** Who vouched for `permissions`: GitHub (`reported`) or the owner (`declared`); `null` when unset. */
+  readonly permissions_source: ConnectorPermissionsSource | null;
+  /** When the owner declared the permissions; `null` unless the source is `declared`. */
+  readonly permissions_declared_at: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -148,10 +158,16 @@ export interface GitHubConnectorDeps {
   readonly clientFor?: (readToken: (() => string | undefined) | undefined, keychain: KeychainReader) => GitHubClient;
 }
 
+/** What `setToken` is told beside the token. */
+export interface SetTokenOptions {
+  /** The owner declares that every permission they gave this token is Read. Only `true` declares; used only when GitHub reports no permissions. */
+  readonly declaredReadOnly?: boolean;
+}
+
 /** The GitHub connector's calls. One instance serializes its own calls (set, disconnect, refresh), so two never interleave their Keychain steps. */
 export interface GitHubConnector {
   /** Validate `token`, then store it (a replace when one is stored). Never throws. */
-  setToken(store: Store, token: string, now: () => Date): Promise<ConnectorOutcome>;
+  setToken(store: Store, token: string, now: () => Date, opts?: SetTokenOptions): Promise<ConnectorOutcome>;
   /** Delete the Keychain item and mark the row `disconnected` (kept, never deleted). Never throws. */
   disconnect(store: Store, now: () => Date): Promise<ConnectorOutcome>;
   /** Re-read the repos the stored token reaches. Never throws. */
@@ -160,7 +176,8 @@ export interface GitHubConnector {
 
 // ---- The row --------------------------------------------------------------------
 
-const COLUMNS = "id, kind, status, account_login, permissions_json, reachable_repos_json, expires_at, verified_at, created_at, updated_at";
+const COLUMNS =
+  "id, kind, status, account_login, permissions_json, reachable_repos_json, expires_at, verified_at, permissions_source, permissions_declared_at, created_at, updated_at";
 
 /** Every `connectors` row, by id. */
 export function listConnectorRows(store: Store): ConnectorRow[] {
@@ -192,6 +209,11 @@ function reposOf(text: string | null): readonly string[] | null {
   return Array.isArray(v) && v.every((r) => typeof r === "string") ? (v as string[]) : null;
 }
 
+/** The source column as a known source, or `null` (an unknown value is never passed on). */
+function sourceOf(value: string | null): ConnectorPermissionsSource | null {
+  return CONNECTOR_PERMISSIONS_SOURCES.find((s) => s === value) ?? null;
+}
+
 /** `row` in the contract's `Connector` shape: the JSON columns parsed (an unreadable one is `null`). */
 export function connectorView(row: ConnectorRow): ConnectorView {
   return {
@@ -203,6 +225,8 @@ export function connectorView(row: ConnectorRow): ConnectorView {
     reachable_repos: reposOf(row.reachable_repos_json),
     expires_at: row.expires_at,
     verified_at: row.verified_at,
+    permissions_source: sourceOf(row.permissions_source),
+    permissions_declared_at: row.permissions_declared_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -213,10 +237,15 @@ export function listConnectors(store: Store): ConnectorView[] {
   return listConnectorRows(store).map(connectorView);
 }
 
-/** One `connector_status` event: `{connector_id, kind, status}`, plus `refused` (the code) for a refusal. Never a secret. */
-function statusEvent(store: Store, row: ConnectorRow, at: string, refused?: GitHubTokenRefusal): void {
+/**
+ * One `connector_status` event: `{connector_id, kind, status}`, plus `refused`
+ * (the code) for a refusal, or `permissions_source` for a successful set.
+ * Never a secret.
+ */
+function statusEvent(store: Store, row: ConnectorRow, at: string, refused?: GitHubTokenRefusal, permissionsSource?: ConnectorPermissionsSource): void {
   const payload: Record<string, unknown> = { connector_id: row.id, kind: row.kind, status: row.status };
   if (refused !== undefined) payload["refused"] = refused;
+  if (permissionsSource !== undefined) payload["permissions_source"] = permissionsSource;
   appendEvent(store, "connector_status", { sessionId: null, taskId: null }, payload, at);
 }
 
@@ -277,7 +306,7 @@ const MESSAGES = {
   token_shape: "this is not a GitHub token's shape: paste the whole token, with no spaces, quotes or line breaks",
   token_invalid: "GitHub did not accept the token: check it was copied whole, and that it has not expired or been revoked",
   token_permissions_unknown:
-    "GitHub did not report this token's permissions, so Studio cannot check that they are all read-only; every token is refused until the owner's permissions probe decides how to read them (docs/OPEN_QUESTIONS.md)",
+    "GitHub did not report this token's permissions (it publishes none for a fine-grained token), so Studio cannot check that they are all read-only. If every permission you gave this token is Read, declare it: tick the confirmation in the Connect sheet, answer yes at the studio connectors github set prompt, or send declared_read_only: true",
   github_unreachable: "GitHub could not be reached, or answered something unreadable; nothing changed",
   keychain_failed: `the Keychain item "${GITHUB_KEYCHAIN_SERVICE}" could not be changed; nothing else changed`,
   keychain_lost: `the Keychain item "${GITHUB_KEYCHAIN_SERVICE}" did not hold the new token after it was added, and the old one was already deleted: the connector is disconnected; set the token again`,
@@ -359,7 +388,7 @@ export function createGitHubConnector(deps: GitHubConnectorDeps = {}): GitHubCon
     return failure("github_unreachable", MESSAGES.github_unreachable, githubConnectorRow(store));
   }
 
-  async function setToken(store: Store, token: string, now: () => Date): Promise<ConnectorOutcome> {
+  async function setToken(store: Store, token: string, now: () => Date, opts: SetTokenOptions): Promise<ConnectorOutcome> {
     if (!isGitHubTokenShape(token)) return refuse(store, "token_invalid", MESSAGES.token_shape, now().toISOString());
 
     // 1. Validate, writing nothing: the candidate is the client's only token source.
@@ -367,13 +396,19 @@ export function createGitHubConnector(deps: GitHubConnectorDeps = {}): GitHubCon
     const info = await candidate.getTokenInfo();
     if (!info.ok) return githubFailure(store, info, now().toISOString(), true);
     const permissions = info.data.permissions;
-    if (permissions === null || Object.keys(permissions).length === 0) {
+    // The write check runs first, on whatever GitHub reported: a declaration
+    // never overrides a reported write permission. Only when GitHub reported
+    // nothing does the owner's declaration matter.
+    const reported = permissions !== null && Object.keys(permissions).length > 0;
+    if (reported) {
+      const writes = writePermissionsOf(permissions);
+      if (writes.length > 0) {
+        return refuse(store, "token_write_scoped", writeScopedMessage(writes), now().toISOString(), { write_permissions: writes });
+      }
+    } else if (opts.declaredReadOnly !== true) {
       return refuse(store, "token_permissions_unknown", MESSAGES.token_permissions_unknown, now().toISOString());
     }
-    const writes = writePermissionsOf(permissions);
-    if (writes.length > 0) {
-      return refuse(store, "token_write_scoped", writeScopedMessage(writes), now().toISOString(), { write_permissions: writes });
-    }
+    const source: ConnectorPermissionsSource = reported ? "reported" : "declared";
     const repos = await candidate.listReachableRepos();
     if (!repos.ok) return githubFailure(store, repos, now().toISOString(), true);
 
@@ -402,17 +437,27 @@ export function createGitHubConnector(deps: GitHubConnectorDeps = {}): GitHubCon
       return failure("keychain_failed", MESSAGES.keychain_lost, row);
     }
 
-    // 3. The row: what was verified, then one event.
+    // 3. The row: what was verified (or declared by the owner), then one event.
     const row = store.transaction(() => {
       const r = ensureRow(store, "connected", at);
       store
         .prepare(
           `UPDATE connectors SET status = 'connected', account_login = ?, permissions_json = ?, reachable_repos_json = ?,
-             expires_at = ?, verified_at = ?, updated_at = ? WHERE id = ?`,
+             expires_at = ?, verified_at = ?, permissions_source = ?, permissions_declared_at = ?, updated_at = ? WHERE id = ?`,
         )
-        .run(info.data.login, JSON.stringify(permissions), JSON.stringify(repos.data.map((r2) => r2.full_name)), info.data.expires_at, at, at, r.id);
+        .run(
+          info.data.login,
+          reported ? JSON.stringify(permissions) : null,
+          JSON.stringify(repos.data.map((r2) => r2.full_name)),
+          info.data.expires_at,
+          at,
+          source,
+          source === "declared" ? at : null,
+          at,
+          r.id,
+        );
       const updated = githubConnectorRow(store) as ConnectorRow;
-      statusEvent(store, updated, at);
+      statusEvent(store, updated, at, undefined, source);
       return updated;
     });
     return { ok: true, connector: connectorView(row) };
@@ -459,7 +504,7 @@ export function createGitHubConnector(deps: GitHubConnectorDeps = {}): GitHubCon
   }
 
   return {
-    setToken: (store, token, now) => exclusive(() => guarded(store, () => setToken(store, token, now))),
+    setToken: (store, token, now, opts = {}) => exclusive(() => guarded(store, () => setToken(store, token, now, opts))),
     disconnect: (store, now) => exclusive(() => guarded(store, () => disconnect(store, now))),
     refreshRepos: (store, now) => exclusive(() => guarded(store, () => refreshRepos(store, now))),
   };

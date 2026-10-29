@@ -316,6 +316,8 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
     status,
     account_login: "studio-fixture",
     permissions: { pull_requests: "read", contents: "read" },
+    permissions_source: "reported",
+    permissions_declared_at: null,
     reachable_repos: ["studio-fixture/site"],
     expires_at: null,
     verified_at: AT,

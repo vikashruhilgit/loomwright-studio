@@ -38,6 +38,7 @@ const IDS = {
   screen: "screen-integrations",
   sheet: "integrations-sheet",
   sheetConnect: "integrations-sheet-connect",
+  sheetDeclare: "integrations-sheet-declare",
   sheetStatus: "integrations-sheet-status",
   sheetToken: "integrations-token",
 } as const;
@@ -84,12 +85,14 @@ test("phase 6 exit, in the app: connect GitHub, see the reviewer's draft card, s
   const field = byId(page, IDS.sheetToken);
   await expect(field).toHaveAttribute("type", "password");
   await field.fill(TOKEN);
+  // The owner's confirmation that every permission they gave the token is Read: GitHub reports none for a fine-grained token.
+  await byId(page, IDS.sheetDeclare).check();
 
   // The kernel's connect route holds the request, so the sheet's "connecting" phase can be read.
   fx.holdToken();
   await byId(page, IDS.sheetConnect).click();
   await expect.poll(() => fx.tokens.length, { message: "the kernel's connect route received the token" }).toBe(1);
-  expect(fx.tokens).toEqual([{ token: TOKEN }]);
+  expect(fx.tokens).toEqual([{ token: TOKEN, declared_read_only: true }]);
   await expect(field).toHaveValue("");
   await expect(byId(page, IDS.sheetStatus)).toHaveText("Checking with GitHub…");
   fx.releaseToken();
@@ -98,7 +101,7 @@ test("phase 6 exit, in the app: connect GitHub, see the reviewer's draft card, s
   await expect(byId(page, IDS.detail)).toHaveAttribute("data-state", "connected");
   await expect(byId(page, IDS.account)).toHaveText(ACCOUNT);
   await expect(byId(page, IDS.repos).getByRole("listitem")).toHaveText([...REPOS]);
-  expect(fx.tokens, "one token was posted").toEqual([{ token: TOKEN }]);
+  expect(fx.tokens, "one token was posted").toEqual([{ token: TOKEN, declared_read_only: true }]);
   // The token is nowhere in the page once the kernel accepted it.
   const everywhere = await page.evaluate(() => `${document.documentElement.outerHTML}\n${document.body.innerText}\n${window.location.href}\n${JSON.stringify({ ...window.localStorage })}`);
   expect(everywhere.includes(TOKEN), "the token is in no markup, text, URL or storage").toBe(false);

@@ -36,6 +36,8 @@ export function connector(status: ConnectorStatus, overrides: Partial<Connector>
     status,
     account_login: "octo-owner",
     permissions: { metadata: "read", contents: "read", pull_requests: "read" },
+    permissions_source: "reported",
+    permissions_declared_at: null,
     reachable_repos: ["octo-owner/site", "octo-owner/docs"],
     expires_at: new Date(Date.now() + 88 * 86_400_000).toISOString(),
     verified_at: new Date().toISOString(),

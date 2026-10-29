@@ -63,9 +63,10 @@ export { githubRoutes, githubRoutesPart } from "./github/routes.js";
 export { GITHUB_PR_DIFF_DEFAULT_MAX_BYTES, GITHUB_TOOL_REFUSALS, createGitHubTools, githubToolsPart } from "./github/tools.js";
 export type { GitHubToolRefusal, GitHubToolsDeps } from "./github/tools.js";
 export { toolsForConnectors } from "./tool-filter.js";
-export { CONNECTOR_KINDS, CONNECTOR_STATUSES } from "./types.js";
+export { CONNECTOR_KINDS, CONNECTOR_PERMISSIONS_SOURCES, CONNECTOR_STATUSES } from "./types.js";
 export type {
   ConnectorKind,
+  ConnectorPermissionsSource,
   ConnectorRow,
   ConnectorStatus,
   DraftOutputRow,
