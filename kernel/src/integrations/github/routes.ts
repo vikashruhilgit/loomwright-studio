@@ -3,7 +3,9 @@
 // every route), over the connector in `connector.ts`.
 //
 //   GET  /connectors                     {connectors}: every row in the contract's `Connector` shape, [] when none
-//   POST /connectors/github/token        body {token}: validate, then store it; {connector}, never the token
+//   POST /connectors/github/token        body {token, declared_read_only?}: validate, then store it; {connector}, never the token.
+//                                        `declared_read_only: true` is the owner declaring that every permission they gave a
+//                                        fine-grained token is Read (used only when GitHub reports none); a non-boolean is 400
 //   POST /connectors/github/disconnect   delete the Keychain item, the row reads `disconnected`; {connector}
 //   GET  /connectors/github/repos        {repos, verified_at}; `?refresh=1` re-reads them from GitHub first
 //
@@ -71,9 +73,15 @@ export function githubRoutes(connector: GitHubConnector = githubConnector): read
       path: "/connectors/github/token",
       handler: (req: ContributedRouteRequest) =>
         total(async () => {
-          const token = typeof req.body === "object" && req.body !== null && !Array.isArray(req.body) ? (req.body as { token?: unknown }).token : undefined;
+          const body = typeof req.body === "object" && req.body !== null && !Array.isArray(req.body) ? (req.body as { token?: unknown; declared_read_only?: unknown }) : undefined;
+          const token = body?.token;
           if (typeof token !== "string") return { status: 400, body: { error: "invalid_body", message: 'needs {"token": "<a GitHub token>"}' } };
-          return answer(await connector.setToken(req.store, token, req.now));
+          // Present, it must be a boolean; only `true` declares (`false` is the same as absent).
+          const declared = body?.declared_read_only;
+          if (declared !== undefined && typeof declared !== "boolean") {
+            return { status: 400, body: { error: "invalid_body", message: "declared_read_only must be true or false" } };
+          }
+          return answer(await connector.setToken(req.store, token, req.now, { declaredReadOnly: declared === true }));
         }),
     },
     {
