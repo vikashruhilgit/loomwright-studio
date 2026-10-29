@@ -556,9 +556,8 @@ describe("phase 6 exit: a poll playbook reviews the owner's PRs, skips the uncha
     const shown = await studio(["approvals"]);
     expect(shown.code).toBe(0);
     expect(shown.stdout).toContain(`enforced: never: git_push; tools: Read, Bash, ${GITHUB_TOOLS.map((t) => `${K}${t}`).join(", ")}; bash prefixes: "gh pr review", "gh pr comment"; connectors: github`);
-    // FINDING (recorded in docs/OPEN_QUESTIONS.md "Phase 6 exit: live run" and the runbook's step order, not fixed here): the
-    // shipped guidance tells Wright to draft the playbook "for that crew member too", but a crew member's playbook needs an
-    // active registered agent, so the draft waits for the approval.
+    // A crew member's playbook needs an active registered agent, so the draft waits for the approval; the shipped guidance
+    // says so (phase 6 item 16: draft the playbook when the approval's decision reaches Wright).
     expect(playbookBeforeReviewer?.isError).toBe(true);
     expect(count(store, "SELECT count(*) FROM playbooks")).toBe(0);
 

@@ -387,6 +387,13 @@ describe("docs/architecture/brain.md (AC9)", () => {
     // "default" appears only to forbid calling a value one.
     expect(flat.match(/default/gi)).toEqual(["default"]);
     expect(flat).toContain("never call a value a default.");
+    // A duty that reads an outside source goes to a crew member, and its playbook is drafted after the charter's
+    // approval: a crew member's playbook needs an active registered agent (phase 6 item 16, the first live run).
+    expect(flat).toContain("belongs to a crew member, not to you");
+    expect(flat).toContain("only when the owner asks you to own it");
+    expect(flat).toContain("the playbook comes after the approval");
+    expect(flat).not.toContain("for that crew member too");
+    expect(flat.indexOf("kernel_agent_create")).toBeLessThan(flat.indexOf("Draft the playbook with kernel_playbook_create"));
     // No CLI: the owner is sent to the app's controls.
     expect(section).not.toContain("studio");
     expect(flat).toContain("the playbook card's Set");
