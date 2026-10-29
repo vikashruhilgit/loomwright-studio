@@ -157,8 +157,8 @@ describe("the integrations feature (AC2)", () => {
     expect(SHIPPED_CONTRIBUTIONS.at(-1)).toBe(integrationsContribution);
   });
 
-  it("merges its four parts in a fixed order: github-connector, github-routes (item 03), github-tools (item 06), drafts (item 07)", () => {
-    expect(INTEGRATIONS_PARTS.map((p) => p.name)).toEqual(["github-connector", "github-routes", "github-tools", "drafts"]);
+  it("merges its five parts in a fixed order: github-connector, github-routes (item 03), github-tools (item 06), drafts (item 07), github-app-routes (D36)", () => {
+    expect(INTEGRATIONS_PARTS.map((p) => p.name)).toEqual(["github-connector", "github-routes", "github-tools", "drafts", "github-app-routes"]);
     expect(Object.isFrozen(INTEGRATIONS_PARTS)).toBe(true);
   });
 
@@ -194,14 +194,16 @@ describe("the integrations feature (AC2)", () => {
     expect(Object.isFrozen(drafts)).toBe(true);
   });
 
-  it("contributes the github parts and the drafts routes: the four GitHub PR tools, six routes, one subcommand and one due work, no handlers", () => {
+  it("contributes the github parts and the drafts routes: the four GitHub PR tools, six token/drafts routes plus the App's routes under /connectors/github/app/, one subcommand and one due work, no handlers", () => {
     expect(Object.keys(integrationsContribution).sort()).toEqual(["dueWork", "name", "routes", "subcommands", "tools"]);
     expect(Object.isFrozen(integrationsContribution)).toBe(true);
     const merged = mergeContributions([integrationsContribution]);
     expect(merged.contributors).toEqual(["integrations"]);
     expect(merged.tools.map((t) => t.name)).toEqual(["kernel_github_pr_get", "kernel_github_pr_diff", "kernel_github_pr_files", "kernel_github_pr_comments"]);
     expect(merged.handlers).toEqual({});
-    expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual([
+    // The six token/drafts routes are exact; the App's routes are matched by prefix, so the setup item can add its own without editing this pin.
+    const isApp = (r: { readonly path: string }): boolean => r.path.startsWith("/connectors/github/app/");
+    expect(merged.routes.filter((r) => !isApp(r)).map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual([
       "integrations GET /connectors",
       "integrations POST /connectors/github/token",
       "integrations POST /connectors/github/disconnect",
@@ -209,6 +211,11 @@ describe("the integrations feature (AC2)", () => {
       "integrations GET /drafts",
       "integrations GET /drafts/:id",
     ]);
+    const appRoutes = merged.routes.filter(isApp);
+    expect(appRoutes.every((r) => r.owner === "integrations")).toBe(true);
+    expect(appRoutes.map((r) => `${r.method} ${r.path}`)).toEqual(
+      expect.arrayContaining(["POST /connectors/github/app/setup", "POST /connectors/github/app/setup/cancel"]),
+    );
     expect(merged.subcommands.map((s) => s.name)).toEqual(["connectors"]);
     expect(merged.dueWork).toEqual([{ owner: "integrations", run: githubExpiryDueWork }]);
   });
@@ -225,9 +232,12 @@ describe("the integrations feature (AC2)", () => {
   it("nothing under src/integrations imports the Agent SDK, the session manager or kernel.ts; contribution.ts imports the connector kinds type-only", () => {
     const dir = join(SRC_DIR, "integrations");
     const files = (readdirSync(dir, { recursive: true }) as string[]).filter((f) => f.endsWith(".ts"));
-    expect(files.sort()).toEqual(
+    // The GitHub App's modules (`github/app-*.ts`: the port and routes stubs, then the tokens and setup items' own) are matched by pattern, so a new one does not edit this pin.
+    const isAppModule = (f: string): boolean => /^github[\\/]app-[^\\/]+\.ts$/.test(f);
+    expect(files.filter((f) => !isAppModule(f)).sort()).toEqual(
       ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/routes.ts", "github/tools.ts", "index.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
     );
+    expect(files).toEqual(expect.arrayContaining([join("github/app-port.ts"), join("github/app-routes.ts")]));
     for (const f of files) {
       const text = readFileSync(join(dir, f), "utf8");
       const specifiers = [...text.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1] ?? "");

@@ -8,6 +8,7 @@
 // Mechanism only (invariant 1): what to poll, how often and which filters are
 // the user's, set per playbook; the kernel stores them as given.
 import type { ConsolePart } from "../console/types.js";
+import type { Store } from "../store/store.js";
 
 // ---- Connectors --------------------------------------------------------------
 
@@ -40,7 +41,25 @@ export const CONNECTOR_PERMISSIONS_SOURCES = Object.freeze(["reported", "declare
 /** One of `CONNECTOR_PERMISSIONS_SOURCES`. */
 export type ConnectorPermissionsSource = (typeof CONNECTOR_PERMISSIONS_SOURCES)[number];
 
-/** A `connectors` row (migrations 17 and 18). It never holds a secret: a connector's token lives only in the Keychain. */
+/**
+ * Every way a connector is connected, closed in code (no SQL CHECK): `token`
+ * is a token the owner pasted, `app` is a GitHub App Studio created through
+ * the App Manifest flow (D36) and installed. A row with no method reads `token`.
+ */
+export const CONNECTOR_METHODS = Object.freeze(["token", "app"] as const);
+
+/** One of `CONNECTOR_METHODS`. */
+export type ConnectorMethod = (typeof CONNECTOR_METHODS)[number];
+
+/**
+ * A `connectors` row (migrations 17 and 18). It never holds a secret: a connector's token lives only in the Keychain.
+ *
+ * `method`, `app_slug` and `installation_id` are optional because the table gets
+ * those columns only in the GitHub App tokens item's migration 19; until then a
+ * row has none and reads as `token`. For `method: app`, `permissions_source` is
+ * always `reported` and `expires_at` is the current installation token's
+ * expiry, which renews.
+ */
 export interface ConnectorRow {
   readonly id: number;
   readonly kind: ConnectorKind;
@@ -54,6 +73,12 @@ export interface ConnectorRow {
   readonly permissions_source: ConnectorPermissionsSource | null;
   /** When the owner declared the permissions (ISO time); set only when `permissions_source` is `declared`. */
   readonly permissions_declared_at: string | null;
+  /** How the connector is connected (migration 19); absent before it, which reads `token`. */
+  readonly method?: ConnectorMethod;
+  /** The App's slug, for `method: app` (migration 19); null or absent otherwise. */
+  readonly app_slug?: string | null;
+  /** The installation's id, for `method: app` (migration 19); null or absent otherwise. */
+  readonly installation_id?: number | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -217,6 +242,69 @@ export interface GitHubClient {
   getPullDiff(repo: string, number: number, maxBytes: number): Promise<GitHubResponse<GitHubPullDiff>>;
   listPullFiles(repo: string, number: number): Promise<GitHubResponse<readonly GitHubPullFile[]>>;
   listPullComments(repo: string, number: number): Promise<GitHubResponse<readonly GitHubPullComment[]>>;
+}
+
+// ---- The GitHub App connect (D36) ------------------------------------------------------
+
+/**
+ * Every way the App setup refuses or fails, closed in code: `setup_not_open`
+ * (no setup window is open, or it was cancelled), `state_mismatch` (a return's
+ * `state` is not the open window's single-use one), `setup_expired` (the window
+ * is past its short life), `conversion_failed` (GitHub's manifest conversion
+ * did not answer a usable app), `install_failed` (the installation or its first
+ * token could not be recorded) and `token_write_scoped` (an installation token
+ * carries a write permission: Studio stays read-only). A new list, apart from
+ * the token path's `GITHUB_TOKEN_REFUSALS`.
+ */
+export const GITHUB_APP_SETUP_REFUSALS = Object.freeze([
+  "setup_not_open",
+  "state_mismatch",
+  "setup_expired",
+  "conversion_failed",
+  "install_failed",
+  "token_write_scoped",
+] as const);
+
+/** One of `GITHUB_APP_SETUP_REFUSALS`. */
+export type GitHubAppSetupRefusal = (typeof GITHUB_APP_SETUP_REFUSALS)[number];
+
+/**
+ * The non-secret fields of GitHub's manifest conversion
+ * (`POST /app-manifests/{code}/conversions`). The conversion's secrets are never
+ * part of this type: `pem` is handed to the port apart and goes to the
+ * Keychain, `client_secret` (and `webhook_secret`) is never stored, logged or returned.
+ */
+export interface GitHubAppConversion {
+  readonly app_id: number;
+  readonly slug: string;
+  readonly name: string;
+  readonly owner_login: string;
+  readonly html_url: string;
+  readonly client_id: string;
+}
+
+/**
+ * Why a port method did not do its work: one of the setup refusals, or
+ * `not_implemented` (what the stub answers until the tokens item fills it in).
+ */
+export type GitHubAppPortError = GitHubAppSetupRefusal | "not_implemented";
+
+/** A port method's outcome: the connector row after the change, or a typed failure. Never a throw. */
+export type GitHubAppPortResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: GitHubAppPortError; readonly message: string };
+
+/**
+ * The GitHub App connect's storage side: the stub is `github/app-port.ts`, the
+ * kernel tokens item fills it in and the setup flow calls it. Every method
+ * resolves a `GitHubAppPortResult` and never throws or rejects. Dependencies
+ * (the store, the clock) are parameters, as in `GitHubConnector`.
+ */
+export interface GitHubAppPort {
+  /** Store the converted app (its `pem` goes to the Keychain, never to the store) and record it on the connector row. */
+  storeApp(store: Store, conversion: GitHubAppConversion, pem: string, now: () => Date): Promise<GitHubAppPortResult<ConnectorRow>>;
+  /** Record the installation, mint the first installation token and verify its permissions are read-only. */
+  recordInstallation(store: Store, installationId: number, now: () => Date): Promise<GitHubAppPortResult<ConnectorRow>>;
+  /** Remove the App connect: delete its Keychain item; the row reads `disconnected`. */
+  removeApp(store: Store, now: () => Date): Promise<GitHubAppPortResult<ConnectorRow>>;
 }
 
 // ---- The feature's parts ----------------------------------------------------------
