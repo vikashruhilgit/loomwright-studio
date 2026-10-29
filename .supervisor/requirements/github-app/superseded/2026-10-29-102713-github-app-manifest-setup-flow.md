@@ -1,6 +1,6 @@
 # 04 — Kernel: set the App up through the manifest flow
 
-## Status: ready
+## Status: done (superseded on 2026-10-29 by the /product-owner rewrite: _BACKLOG-2026-10-29-174816-github-app-connect.md)
 
 **Priority:** MVP of the GitHub App backlog · invariants 3, 6 · D12 (loopback API)
 

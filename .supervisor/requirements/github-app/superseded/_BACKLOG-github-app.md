@@ -1,6 +1,6 @@
 # GitHub App connect, set up through the manifest flow. Plan doc (an index, not an implementable item)
 
-## Status: ready (index document — nothing to implement)
+## Status: done (superseded on 2026-10-29 by the /product-owner rewrite: _BACKLOG-2026-10-29-174816-github-app-connect.md)
 
 ## Why
 Probe p12 (2026-10-29) showed GitHub reports no permissions for a fine-grained token, so the token path can only rest on the owner's declaration (phase 6 item 14). A GitHub App's installation tokens report their permissions and repos, expire within the hour, and give a later posting phase a bot identity. The owner chose to add it beside the token path, set up by the manifest flow, after phase 6 closes.

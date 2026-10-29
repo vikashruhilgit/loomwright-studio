@@ -1,6 +1,6 @@
 # 01 — Probe the GitHub App manifest flow and record the decision
 
-## Status: ready
+## Status: done (superseded on 2026-10-29 by the /product-owner rewrite: _BACKLOG-2026-10-29-174816-github-app-connect.md)
 
 **Priority:** MVP of the GitHub App backlog · invariants 3, 5, 6 · verify before asserting
 

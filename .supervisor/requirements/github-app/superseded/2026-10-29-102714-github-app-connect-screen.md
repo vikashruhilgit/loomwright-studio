@@ -1,6 +1,6 @@
 # 05 — App: connect through a GitHub App from the Integrations screen
 
-## Status: ready
+## Status: done (superseded on 2026-10-29 by the /product-owner rewrite: _BACKLOG-2026-10-29-174816-github-app-connect.md)
 
 **Priority:** MVP of the GitHub App backlog · D9 (polish gate), invariant 7
 

@@ -1,6 +1,6 @@
 # 02 — Mockup: the GitHub App path in the Connect sheet
 
-## Status: ready
+## Status: done (superseded on 2026-10-29 by the /product-owner rewrite: _BACKLOG-2026-10-29-174816-github-app-connect.md)
 
 **Priority:** MVP of the GitHub App backlog · D9 (mockup first)
 

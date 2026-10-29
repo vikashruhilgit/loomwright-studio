@@ -1,6 +1,6 @@
 # 03 — Kernel: connect through a GitHub App and use its installation tokens
 
-## Status: ready
+## Status: done (superseded on 2026-10-29 by the /product-owner rewrite: _BACKLOG-2026-10-29-174816-github-app-connect.md)
 
 **Priority:** MVP of the GitHub App backlog · invariants 2, 3, 5, 6, 8 · D27 (Keychain pattern)
 
