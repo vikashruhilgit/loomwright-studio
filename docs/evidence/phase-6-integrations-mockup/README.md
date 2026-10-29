@@ -1,6 +1,6 @@
 # Integrations mockup: screenshot and token evidence (phase 6 item 02, the Integrations screen mockup)
 
-These are screenshots of every designed view of `docs/design/mockups/integrations.html`, in light and dark, plus the audit of its token block and of every value outside it. The mockup is static: it runs no kernel and makes no GitHub call. Each view is forced by the URL hash (`#view=<view>&theme=<light|dark>`), so each screenshot comes from one headless-browser command. No script is committed. The owner approves the design by merging the PR that adds it (D9). What it commits phase 6 item 11 (the Integrations screen) to is in `docs/DESIGN.md` §"Phase 6: Integrations".
+These are screenshots of every designed view of `docs/design/mockups/integrations.html`, in light and dark, plus the audit of its token block and of every value outside it. The mockup is static: it runs no kernel and makes no GitHub call. Each view is forced by the URL hash (`#view=<view>&theme=<light|dark>`), so each screenshot comes from one headless-browser command, except the two `sheet-declare` shots, which need a typed token and a ticked box (see "How to regenerate"). No script is committed. The owner approves the design by merging the PR that adds it (D9). What it commits phase 6 item 11 (the Integrations screen) to is in `docs/DESIGN.md` §"Phase 6: Integrations".
 
 ## Screenshots
 
@@ -9,20 +9,23 @@ Each image is the full page: the intro line, the 1180×760 window, and the revie
 | View (`#view=`) | What it shows | Light | Dark |
 |---|---|---|---|
 | `not-connected` | The designed empty state: the GitHub row with an `idle` ring, then a `display` line, one `body` line and one primary action, Connect GitHub | [integrations-not-connected-light.png](integrations-not-connected-light.png) | [integrations-not-connected-dark.png](integrations-not-connected-dark.png) |
-| `connecting` | The sheet after Connect: the field is disabled and already cleared, Connect shows the loading spinner with `aria-busy`, and the row shows a `working` dot | [integrations-connecting-light.png](integrations-connecting-light.png) | [integrations-connecting-dark.png](integrations-connecting-dark.png) |
+| `connecting` | The sheet after Connect: the field is disabled and already cleared, the confirmation ticked and disabled, Connect shows the loading spinner with `aria-busy`, and the row shows a `working` dot | [integrations-connecting-light.png](integrations-connecting-light.png) | [integrations-connecting-dark.png](integrations-connecting-dark.png) |
 | `connected` | The detail pane: status `ok` with its verification time, the account, the Keychain item, expiry with days left, three read-only permissions, three reachable repos with Refresh, Mason's card under the grant, Replace token and Disconnect | [integrations-connected-light.png](integrations-connected-light.png) | [integrations-connected-dark.png](integrations-connected-dark.png) |
-| `rejected-invalid` | The sheet with the `token_invalid` refusal inline under the field, in Input's error state; Connect is unavailable | [integrations-rejected-invalid-light.png](integrations-rejected-invalid-light.png) | [integrations-rejected-invalid-dark.png](integrations-rejected-invalid-dark.png) |
+| `rejected-invalid` | The sheet with the `token_invalid` refusal inline under the field, in Input's error state; the confirmation stays ticked; Connect is unavailable | [integrations-rejected-invalid-light.png](integrations-rejected-invalid-light.png) | [integrations-rejected-invalid-dark.png](integrations-rejected-invalid-dark.png) |
 | `rejected-write` | The sheet with the `token_write_scoped` refusal naming each permission to change ("Pull requests: Read and write → set to Read-only", "Contents: Read and write → set to Read-only"); Connect stays unavailable until a token is pasted again | [integrations-rejected-write-light.png](integrations-rejected-write-light.png) | [integrations-rejected-write-dark.png](integrations-rejected-write-dark.png) |
 | `expiring` | 8 days left: an `attention` dot, band and badge, with Replace token as the primary | [integrations-expiring-light.png](integrations-expiring-light.png) | [integrations-expiring-dark.png](integrations-expiring-dark.png) |
 | `expired` | A `danger` dot, a band naming the parked playbook, the last-read permissions and repos with their date, and Replace token as the primary | [integrations-expired-light.png](integrations-expired-light.png) | [integrations-expired-dark.png](integrations-expired-dark.png) |
 | `unreachable` | The shared `Kernel unreachable` band (gui-v1's copy), the status as "unknown" with no dot, the last-read data with its time, and every action that needs the kernel disabled | [integrations-unreachable-light.png](integrations-unreachable-light.png) | [integrations-unreachable-dark.png](integrations-unreachable-dark.png) |
-| `sheet` | The Connect GitHub sheet as it opens: what token to create, the link-out to GitHub's token page, the password field, the Keychain copy, and Cancel and Connect (disabled until something is pasted) | [integrations-sheet-light.png](integrations-sheet-light.png) | [integrations-sheet-dark.png](integrations-sheet-dark.png) |
+| `sheet` | The Connect GitHub sheet as it opens: what token to create, the link-out to GitHub's token page, the password field, the Keychain copy, the unticked confirmation "This is a fine-grained token, and every permission I gave it is Read" with its caption, and Cancel and Connect (disabled until something is pasted and the box is ticked) | [integrations-sheet-light.png](integrations-sheet-light.png) | [integrations-sheet-dark.png](integrations-sheet-dark.png) |
+| `connected-declared` | The detail pane after the owner declared the token read-only: the `read-only · declared` badge, the status line saying only that the account and repos were checked, and the permissions section reading "Read-only, declared by you" with the declaration time and a caption that it is the owner's word. No permission list, and no permissions text says "verified" or "read from GitHub"; the repos section still says it was read from GitHub | [integrations-connected-declared-light.png](integrations-connected-declared-light.png) | [integrations-connected-declared-dark.png](integrations-connected-declared-dark.png) |
+| `sheet`, token typed and box ticked (not a forced view) | The same sheet with a token typed (masked) and the confirmation ticked: Connect is now enabled. Taken from `#view=sheet` after typing a mock token and ticking the box | [integrations-sheet-declare-light.png](integrations-sheet-declare-light.png) | [integrations-sheet-declare-dark.png](integrations-sheet-declare-dark.png) |
 
 No forced view covers two surfaces, so they have no screenshot here: the Disconnect confirm (Disconnect, or ⌘K → Disconnect GitHub) and the ⌘K palette. Both open from the page. The interactive paths were driven once in headless Chromium with a scratch script outside the repo:
 
-- typing a token enables Connect;
+- typing a token alone leaves Connect disabled, and so does ticking the confirmation alone; both together enable it, and unticking disables it again (driven 2026-10-29); Enter in the token field submits only while Connect is enabled;
+- opening the sheet (and Replace token) starts with the box unticked, and a refused connect keeps it ticked with the field empty;
 - Connect clears the field and moves to `connecting`;
-- a token containing `write` lands on `rejected-write`, any other non-`github_pat_` value on `rejected-invalid`, and `github_pat_…` on `connected`, after which the value appears nowhere in the DOM;
+- a token containing `write` lands on `rejected-write`, any other non-`github_pat_` value on `rejected-invalid`, and `github_pat_…` on `connected-declared` (a connect always carries the declaration, since a fine-grained token's permissions are never reported), after which the value appears nowhere in the DOM;
 - `⌃K` → "disc" → Enter opens the confirm, and `Esc` closes it;
 - focus returns to the control that opened a dialog or the palette, or to the same control after a re-render, and to the GitHub row when that control is gone or nothing was focused; it never lands on the page body. Driven on 2026-10-27: `⌃K` → "connect" → Enter → `Esc`; the same with a valid `github_pat_` token; the empty state's Connect GitHub → `Esc`, Cancel, the backdrop, and a valid token; Replace token → `Esc`, a valid token, a refused token, and `Esc` while connecting (no late refocus); Disconnect → `Esc`, Cancel and Disconnect; `⌃K` → Disconnect GitHub → `Esc` from the page and from Replace token; and a Crew row → `⌃K` → Connect GitHub → `Esc`;
 - replacing an expired token says the new one replaces it, not that the expired one stays in use, and the expired view's Disconnect confirm says the playbook is already parked;
@@ -52,6 +55,8 @@ npx playwright screenshot --color-scheme=light --viewport-size=1280,1000 --full-
 npx playwright screenshot --color-scheme=dark --viewport-size=1280,1000 --full-page --wait-for-timeout=600 'file://<repo>/docs/design/mockups/integrations.html#view=connecting&theme=dark' <repo>/docs/evidence/phase-6-integrations-mockup/integrations-connecting-dark.png
 npx playwright screenshot --color-scheme=light --viewport-size=1280,1000 --full-page --wait-for-timeout=600 'file://<repo>/docs/design/mockups/integrations.html#view=connected&theme=light' <repo>/docs/evidence/phase-6-integrations-mockup/integrations-connected-light.png
 npx playwright screenshot --color-scheme=dark --viewport-size=1280,1000 --full-page --wait-for-timeout=600 'file://<repo>/docs/design/mockups/integrations.html#view=connected&theme=dark' <repo>/docs/evidence/phase-6-integrations-mockup/integrations-connected-dark.png
+npx playwright screenshot --color-scheme=light --viewport-size=1280,1000 --full-page --wait-for-timeout=600 'file://<repo>/docs/design/mockups/integrations.html#view=connected-declared&theme=light' <repo>/docs/evidence/phase-6-integrations-mockup/integrations-connected-declared-light.png
+npx playwright screenshot --color-scheme=dark --viewport-size=1280,1000 --full-page --wait-for-timeout=600 'file://<repo>/docs/design/mockups/integrations.html#view=connected-declared&theme=dark' <repo>/docs/evidence/phase-6-integrations-mockup/integrations-connected-declared-dark.png
 npx playwright screenshot --color-scheme=light --viewport-size=1280,1000 --full-page --wait-for-timeout=600 'file://<repo>/docs/design/mockups/integrations.html#view=rejected-invalid&theme=light' <repo>/docs/evidence/phase-6-integrations-mockup/integrations-rejected-invalid-light.png
 npx playwright screenshot --color-scheme=dark --viewport-size=1280,1000 --full-page --wait-for-timeout=600 'file://<repo>/docs/design/mockups/integrations.html#view=rejected-invalid&theme=dark' <repo>/docs/evidence/phase-6-integrations-mockup/integrations-rejected-invalid-dark.png
 npx playwright screenshot --color-scheme=light --viewport-size=1280,1000 --full-page --wait-for-timeout=600 'file://<repo>/docs/design/mockups/integrations.html#view=rejected-write&theme=light' <repo>/docs/evidence/phase-6-integrations-mockup/integrations-rejected-write-light.png
@@ -66,6 +71,8 @@ npx playwright screenshot --color-scheme=light --viewport-size=1280,1000 --full-
 npx playwright screenshot --color-scheme=dark --viewport-size=1280,1000 --full-page --wait-for-timeout=600 'file://<repo>/docs/design/mockups/integrations.html#view=sheet&theme=dark' <repo>/docs/evidence/phase-6-integrations-mockup/integrations-sheet-dark.png
 ```
 
+The two `sheet-declare` shots are the one exception to "one command": open `#view=sheet`, type a mock token such as `github_pat_mockexample1` into the password field (it renders as dots), tick the confirmation, wait 300 ms and take the same full-page shot. With Playwright's library that is `page.fill('#cs-token', …)`, `page.check('#cs-declare')` then `page.screenshot({ fullPage: true })`, at the same viewport and colour scheme, saved as `integrations-sheet-declare-<theme>.png`.
+
 The hash's `theme` sets `data-theme` on the page, and `--color-scheme` matches it, so a shot never depends on the host's appearance setting. `--wait-for-timeout=600` lets the sheet's open animation (`duration-slow`, 240ms) finish. The `working` dot and the spinner animate, so their frame in a regenerated `connecting` shot can differ by a few pixels.
 
 ## Token audit
@@ -78,7 +85,7 @@ The mockup's `<style>` opens with the stdout of `node app/scripts/tokens.mjs`, p
 diff <(node app/scripts/tokens.mjs) <(awk '/\/\* tokens:end \*\//{f=0} f; /\/\* tokens:begin \*\//{f=1}' docs/design/mockups/integrations.html); echo "exit $?"
 ```
 
-Result, 2026-10-27: no diff output, then `exit 0`. The block is 195 lines, the same as the generator's stdout.
+Result, 2026-10-27: no diff output, then `exit 0`. The block is 195 lines, the same as the generator's stdout. Re-run 2026-10-29 after item 14's edits (the declaration): the same, no diff output and `exit 0`.
 
 ### Values outside the block
 
@@ -98,7 +105,7 @@ The table names every literal value outside the token block, found by listing ea
 | `1px` | Hairline and border widths; the visually hidden live region's size | new — component READMEs specify "a `hairline` edge" and tokens.json has edge colours but no widths |
 | `2px` | Focus ring width and offset; the `idle` ring's stroke; the spinner's stroke | new — `brand-book.md` §Colour: "2px solid with a 2px offset"; the StatusDot idle ring and Button spinner as in gui-v1 |
 | `8px` (and `calc((var(--type-body-line) - 8px) / 2)`) | StatusDot size; the list row's dot column; centring the dot on the subject line | new — StatusDot README: "An 8px dot" |
-| `16px`, `14px`, `12px`; stroke widths `1.5`, `1.75`, `2` | Lucide icon sizes (rows, buttons and badges, checks) and the Button loading spinner | new — `brand-book.md` §Iconography (16px at 1.5px stroke; 14px in badges), Button README ("a 12px spinner"), gui-v1's icon classes |
+| `16px`, `14px`, `12px`; stroke widths `1.5`, `1.75`, `2` | Lucide icon sizes (rows, buttons and badges, checks), the Button loading spinner, and the Connect sheet's confirmation checkbox (16px, `accent-color: var(--accent)`, centred on the first text line) | new — `brand-book.md` §Iconography (16px at 1.5px stroke; 14px in badges), Button README ("a 12px spinner"), gui-v1's icon classes |
 | `20px` | Badge height | new — Badge README: "All 20px tall" |
 | `24px`, `36px` (inline `--s`), `32px` (Avatar's default `--s`) | Avatar sizes in Crew rows and on the grant card | new — List README (24px Crew avatar), Card README (36px agent avatar), `avatar.css` default |
 | `32px` | The Disconnect confirm's icon disc | new — Dialog README: "a 32px `danger-soft` icon disc" |
@@ -123,7 +130,7 @@ grep -c "Claude Code" docs/design/mockups/integrations.html
 grep -n -i -E "#(24292f|2da44e|1f883d|238636|2ea043|0969da|f6f8fa|57606a|d0d7de|161b22|0d1117|8b949e|30363d|58a6ff|1a7f37|6e7781|eaeef2)\b" docs/design/mockups/integrations.html
 ```
 
-Results, 2026-10-27:
+Results, 2026-10-27 (re-run 2026-10-29 after item 14's edits, with the same results):
 
 - The first command prints `0`.
 - The second prints nothing and exits 1. It checks for GitHub's Primer greys, greens and blues, including `#24292f` and `#2da44e`.
