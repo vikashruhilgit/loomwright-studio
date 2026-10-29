@@ -184,6 +184,16 @@ Touch only the run's own playbook, trigger, crew member and sandbox PRs. The sum
 
 Nothing else is touched. Note in the evidence file's `cleanup` what you did about each item.
 
+## Re-scoring a run
+
+The store stages only read the store, so a run can be judged again from its own start after a checker is fixed, without repeating it. Point the harness at the earlier summary; it re-reads the store from that summary's `run_start` and writes a new summary that names the one it re-scored (`rescored_from`). Set the account, sandbox and PR variables as for the run; give a read-only token to repeat stage 9 as well.
+
+```bash
+cd kernel && STUDIO_LIVE=1 STUDIO_LIVE_RUN_START_FROM=<the earlier summary> npx vitest run test/phase-6-exit-live.test.ts
+```
+
+Stage 3 judges the latest dry run done **before the playbook's first poll run**: the preview is what it checks. An owner's edit to the enabled playbook makes a new draft version, and the kernel then requires a new dry run; that later one rightly sees the items already run, so it is listed but not judged (the second live run, 2026-10-29).
+
 ## If a stage fails
 
 Record it as failed (or `not_exercised`), with what you saw, in the evidence file. Don't patch the code in the PR that adds this check. Each fix becomes a new item in `.supervisor/requirements/phase-6/`. Phase 6 stays not done until a rerun passes. Earlier phases' first live runs failed the same way and were rerun.
