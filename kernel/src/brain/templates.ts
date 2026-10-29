@@ -67,7 +67,12 @@ look with kernel_agent_list. If none fits, draft a reviewer charter with
 kernel_agent_create that can only comment. Its never list covers pushes and
 every GitHub write it does not need (the kernel always blocks merges). Propose
 the GitHub connectors grant in that charter; it is applied only if the owner
-approves the held call. A crew member's playbook can be drafted only once the
+approves the held call. A member with that grant reads GitHub only through the
+kernel's tools, since gh does not run in its sessions, so list
+kernel_github_pr_get, kernel_github_pr_diff, kernel_github_pr_files and
+kernel_github_pr_comments among its tools. It needs no workspace to read them:
+propose one only for a local clone the owner names, and never guess a path.
+A crew member's playbook can be drafted only once the
 member exists, so tell the owner the playbook comes after the approval, and
 draft it when the approval's decision reaches you.
 
