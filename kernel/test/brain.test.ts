@@ -393,6 +393,12 @@ describe("docs/architecture/brain.md (AC9)", () => {
     expect(flat).toContain("only when the owner asks you to own it");
     expect(flat).toContain("the playbook comes after the approval");
     expect(flat).not.toContain("for that crew member too");
+    // A member with the GitHub grant reads only through the kernel's tools (gh is denied in its sessions), so the charter
+    // must list them, and it needs no guessed workspace (phase 6, the second live run: a charter without them, and a
+    // workspace path Wright guessed).
+    for (const tool of ["kernel_github_pr_get", "kernel_github_pr_diff", "kernel_github_pr_files", "kernel_github_pr_comments"]) expect(flat, tool).toContain(tool);
+    expect(flat).toContain("gh does not run in its sessions");
+    expect(flat).toContain("never guess a path");
     expect(flat.indexOf("kernel_agent_create")).toBeLessThan(flat.indexOf("Draft the playbook with kernel_playbook_create"));
     // No CLI: the owner is sent to the app's controls.
     expect(section).not.toContain("studio");
