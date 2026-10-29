@@ -387,6 +387,11 @@ svg.mark{width:16px;height:16px;fill:currentColor;flex:none}
 .field input::placeholder{color:var(--ink-tertiary)}
 .field input:disabled{cursor:progress}
 .hint{margin-top:var(--space-1)}
+.declare{display:flex;flex-direction:column;gap:var(--space-1)}
+.chk{display:flex;align-items:flex-start;gap:var(--space-2);color:var(--ink);cursor:pointer}
+.chk input{width:16px;height:16px;margin:calc((var(--type-body-line) - 16px) / 2) 0 0;accent-color:var(--accent);flex:none;cursor:pointer}
+.chk input:disabled{cursor:progress}
+.declare .cap{padding-left:var(--space-6)}
 .errmsg{margin-top:var(--space-2);color:var(--danger);display:flex;flex-direction:column;gap:var(--space-1)}
 .errmsg p{margin:0;color:var(--danger)}
 .errmsg ul{margin:0;padding-left:var(--space-5)}
@@ -437,7 +442,7 @@ svg.mark{width:16px;height:16px;fill:currentColor;flex:none}
     <div class="g"><span class="t">Theme</span><span class="seg" id="themeseg"><button data-t="">System</button><button data-t="light">Light</button><button data-t="dark">Dark</button></span></div>
     <div class="g"><span class="t">View</span><span class="seg" id="viewseg"></span></div>
     <div class="g"><button class="tog" id="tg-reset">Reset</button></div>
-    <div class="kbdl">Keys: <b>⌘K</b> or <b>/</b> palette · <b>⌘5</b> Integrations (in a browser tab ⌘ switches tabs first; use <b>⌃5</b>, and <b>⌃K</b>) · <b>J</b>/<b>K</b> rows · <b>⏎</b> connect from the token field · <b>Esc</b> closes. URL hash: <b>#view=&lt;view&gt;&amp;theme=&lt;light|dark|system&gt;</b>. In the sheet, a token starting <b>github_pat_</b> connects, one containing <b>write</b> is refused as write-scoped, anything else is refused as invalid.</div>
+    <div class="kbdl">Keys: <b>⌘K</b> or <b>/</b> palette · <b>⌘5</b> Integrations (in a browser tab ⌘ switches tabs first; use <b>⌃5</b>, and <b>⌃K</b>) · <b>J</b>/<b>K</b> rows · <b>⏎</b> connect from the token field · <b>Esc</b> closes. URL hash: <b>#view=&lt;view&gt;&amp;theme=&lt;light|dark|system&gt;</b>. In the sheet, Connect needs a token and the ticked confirmation. A token starting <b>github_pat_</b> connects (as <b>declared by you</b>, since GitHub reports no permissions for a fine-grained token), one containing <b>write</b> is refused as write-scoped, anything else is refused as invalid.</div>
     <div class="note" id="note" aria-live="polite"></div>
   </div>
 </div>
@@ -485,8 +490,9 @@ const GH={
   account:'vikashruhilgit', item:'loomwright-studio-github', verified:'today 14:02',
   perms:[['Metadata','Read-only'],['Contents','Read-only'],['Pull requests','Read-only']],
   repos:[['vikashruhilgit/studio-sandbox','private'],['vikashruhilgit/loomwright','public'],['vikashruhilgit/ntfs-tool','public']],
+  declared:'today 14:02',
   grant:['mason'], playbook:'Review PRs on studio-sandbox',
-  expiry:{connected:['23 Jan 2027','88 days left'],expiring:['4 Nov 2026','8 days left'],expired:['25 Oct 2026','expired 2 days ago'],unreachable:['23 Jan 2027','88 days left']}
+  expiry:{connected:['23 Jan 2027','88 days left'],'connected-declared':['23 Jan 2027','88 days left'],expiring:['4 Nov 2026','8 days left'],expired:['25 Oct 2026','expired 2 days ago'],unreachable:['23 Jan 2027','88 days left']}
 };
 /* The kernel's token_write_scoped refusal names each write permission and the setting to change. */
 const DROP=['Pull requests: Read and write → set to Read-only','Contents: Read and write → set to Read-only'];
@@ -496,6 +502,7 @@ const VIEWS={
   'not-connected':{base:'none',sheet:null,label:'Not connected'},
   'connecting':{base:'none',sheet:'connecting',label:'Connecting'},
   'connected':{base:'connected',sheet:null,label:'Connected'},
+  'connected-declared':{base:'connected-declared',sheet:null,label:'Connected: declared by you'},
   'rejected-invalid':{base:'none',sheet:'invalid',label:'Rejected: invalid'},
   'rejected-write':{base:'none',sheet:'write',label:'Rejected: write-scoped'},
   'expiring':{base:'expiring',sheet:null,label:'Expiring'},
@@ -504,12 +511,12 @@ const VIEWS={
   'sheet':{base:'none',sheet:'blank',label:'Connect GitHub sheet'}
 };
 const SHEET_VIEW={blank:'sheet',connecting:'connecting',invalid:'rejected-invalid',write:'rejected-write'};
-let S={base:'none',sheet:null,replace:false,confirm:false,theme:''};
+let S={base:'none',sheet:null,replace:false,confirm:false,declare:false,theme:''};
 let pending=null, opener=null, overlayKey='';
 const hasToken=()=>S.base!=='none';
 const offline=()=>S.base==='unreachable';
 function viewName(){ return S.base==='none'?(S.sheet?SHEET_VIEW[S.sheet]:'not-connected'):S.base; }
-function setView(v){ const V=VIEWS[v]; if(!V) return false; pending=null; S.base=V.base; S.sheet=V.sheet; S.replace=false; S.confirm=false; return true; }
+function setView(v){ const V=VIEWS[v]; if(!V) return false; pending=null; S.base=V.base; S.sheet=V.sheet; S.replace=false; S.confirm=false; S.declare=!!V.sheet&&V.sheet!=='blank'; return true; }
 function applyHash(){
   const p=new URLSearchParams(location.hash.slice(1));
   setView(p.get('view')||'not-connected')||setView('not-connected');
@@ -538,7 +545,7 @@ function rowMeta(){
     if(S.sheet==='invalid'||S.sheet==='write') return ['idle','not connected · the last token was refused'];
     return ['idle','not connected'];
   }
-  return {connected:['ok','connected · '+GH.account],expiring:['waiting','expiring in 8 days · '+GH.account],expired:['danger','expired · '+GH.account],unreachable:['none','status unknown · kernel unreachable']}[S.base];
+  return {connected:['ok','connected · '+GH.account],'connected-declared':['ok','connected · '+GH.account],expiring:['waiting','expiring in 8 days · '+GH.account],expired:['danger','expired · '+GH.account],unreachable:['none','status unknown · kernel unreachable']}[S.base];
 }
 function renderMain(){
   const [dot,meta]=rowMeta();
@@ -555,6 +562,7 @@ function detailHTML(){
   const urgent=b==='expiring'||b==='expired';
   const status={
     connected:`<span class="dot ok" aria-hidden="true"></span>connected<span class="cap">verified ${GH.verified}</span>`,
+    'connected-declared':`<span class="dot ok" aria-hidden="true"></span>connected<span class="cap">account and repos checked ${GH.verified}</span>`,
     expiring:`<span class="dot waiting" aria-hidden="true"></span>expiring<span class="cap">verified ${GH.verified}</span>`,
     expired:`<span class="dot danger" aria-hidden="true"></span>expired<span class="cap">checked ${GH.verified}</span>`,
     unreachable:`<span class="cap">Unknown while the kernel is unreachable · last verified ${GH.verified}</span>`
@@ -563,10 +571,11 @@ function detailHTML(){
   const expBadge=b==='expiring'?'<span class="badge att">renew soon</span>':b==='expired'?'<span class="badge dng">expired</span>':'';
   const inBand=b==='expiring'?`<div class="band att in" role="status">${I.warn}<span>The token expires in 8 days, on ${date}. Replace it before then, or playbooks that need GitHub park.</span></div>`
     :b==='expired'?`<div class="band dng in" role="alert">${I.warn}<span>The token expired on ${date}. 1 playbook that needs GitHub is parked: ${esc(GH.playbook)}. Replace the token to resume it.</span></div>`:'';
+  const declared=b==='connected-declared';
   const read=b==='expired'?'last read 24 Oct 09:12, before it expired':b==='unreachable'?'last read '+GH.verified:'read from GitHub '+GH.verified;
   const others=Object.values(AGENTS).filter(a=>!GH.grant.includes(a.id)).map(a=>a.name);
   return `<div class="detail" aria-label="GitHub">
-    <div class="dhead">${MARK}<h2>GitHub</h2><span class="badge neu">read-only</span><span class="sp"></span>
+    <div class="dhead">${MARK}<h2>GitHub</h2><span class="badge neu">${declared?'read-only · declared':'read-only'}</span><span class="sp"></span>
       <button class="btn ${urgent?'pri':'sec'} sm" data-act="open-sheet" data-replace="1"${dis}>Replace token</button>
       <button class="btn dng sm" data-act="disconnect"${dis}>Disconnect</button></div>
     ${inBand}
@@ -576,8 +585,9 @@ function detailHTML(){
       <dt>Token</dt><dd><span>Fine-grained, kept in the Keychain as <span class="mono">${GH.item}</span></span></dd>
       <dt>Expires</dt><dd class="tn">${date} · ${left}${expBadge}</dd>
     </dl>
-    <section class="sec" aria-labelledby="h-perm"><div class="sech"><h3 class="label" id="h-perm">Permissions</h3><span class="cap">${read}</span></div>
-      <ul class="perm">${GH.perms.map(p=>`<li>${I.check}<b>${p[0]}</b><span class="lvl">${p[1]}</span></li>`).join('')}</ul></section>
+    <section class="sec" aria-labelledby="h-perm"><div class="sech"><h3 class="label" id="h-perm">Permissions</h3><span class="cap">${declared?'declared by you '+GH.declared:read}</span></div>
+      ${declared?`<p id="perm-declared"><b>Read-only</b>, declared by you.</p><p class="cap">GitHub doesn't report what a fine-grained token can do, so Studio keeps this as your word, not as something it checked. If you gave the token more than Read, change it on GitHub and replace it here.</p>`
+      :`<ul class="perm">${GH.perms.map(p=>`<li>${I.check}<b>${p[0]}</b><span class="lvl">${p[1]}</span></li>`).join('')}</ul>`}</section>
     <section class="sec" id="repos" tabindex="-1" aria-labelledby="h-repos"><div class="sech"><h3 class="label" id="h-repos">Reachable repos · ${GH.repos.length}</h3><span class="cap">${read}</span><span class="sp"></span><button class="btn ghost sm" data-act="refresh"${dis}>${I.refresh}Refresh</button></div>
       <ul class="box">${GH.repos.map(r=>`<li>${I.repo}<span class="mono">${r[0]}</span><span class="badge neu">${r[1]}</span></li>`).join('')}</ul>
       <p class="cap">A poll trigger can name only these repos. Change the set on GitHub, then Refresh.</p></section>
@@ -588,6 +598,7 @@ function detailHTML(){
 }
 
 /* ---------- Overlay: the Connect GitHub sheet, the Disconnect confirm ---------- */
+const busyNow=()=>S.sheet==='connecting';
 function renderOverlay(){
   const key=S.sheet?('sheet:'+S.sheet+':'+S.replace):S.confirm?'confirm':'';
   if(key===overlayKey) return; overlayKey=key;
@@ -595,7 +606,8 @@ function renderOverlay(){
   $('#overlay').innerHTML=`<div class="ov" data-act="close-bg">${S.sheet?sheetHTML():confirmHTML()}</div>`;
   if(S.sheet){
     const inp=$('#cs-token');
-    inp.addEventListener('input',()=>{ $('#cs-go').disabled=!inp.value.trim(); });
+    const box=$('#cs-declare'), gate=()=>{ S.declare=box.checked; $('#cs-go').disabled=busyNow()||!inp.value.trim()||!box.checked; };
+    inp.addEventListener('input',gate); box.addEventListener('change',gate);
     (S.sheet==='connecting'?$('#overlay [data-act="close"]'):inp).focus({preventScroll:true});
   } else $('#overlay [data-act="close"]').focus({preventScroll:true});
 }
@@ -614,6 +626,8 @@ function sheetHTML(){
       <div class="field${err?' err':''}"><input id="cs-token" type="password" autocomplete="off" spellcheck="false" autocapitalize="off"${busy?' disabled':''} placeholder="${busy?'Checking with GitHub…':err?'Paste the changed or new token':'github_pat_…'}" aria-invalid="${err}" aria-describedby="${err?'cs-err ':''}cs-hint"></div>
       ${errHTML}
       <div class="hint cap" id="cs-hint">${busy?'Sent to the kernel, and this field is already cleared. The kernel checks the account, the permissions, the expiry and the repos the token reaches.':'Kept in the macOS Keychain. Studio never shows it again, and this field clears the moment you press Connect.'}</div></div>
+    <div class="declare"><label class="chk" for="cs-declare"><input type="checkbox" id="cs-declare"${S.declare?' checked':''}${busy?' disabled':''} aria-describedby="cs-declare-hint"><span>This is a fine-grained token, and every permission I gave it is Read</span></label>
+      <div class="cap" id="cs-declare-hint">GitHub doesn't tell Studio what a fine-grained token can do, so Studio keeps this as your word, never as checked.</div></div>
     <div class="acts"><button class="btn sec" data-act="close">Cancel</button>${busy
       ?`<button class="btn pri" id="cs-go" data-act="connect" aria-busy="true"><span class="spin" aria-hidden="true"></span>Connecting</button>`
       :`<button class="btn pri" id="cs-go" data-act="connect" disabled>Connect <span class="kbd">⏎</span></button>`}</div>
@@ -634,10 +648,10 @@ function selFor(el){
   return q;
 }
 function setOpener(el){ opener=(el&&el!==document.body&&el.isConnected&&!$('#overlay').contains(el))?{el,sel:selFor(el)}:null; }
-function openSheet(replace){ if(offline()) return; S.sheet='blank'; S.replace=!!replace&&hasToken(); S.confirm=false; render(); }
+function openSheet(replace){ if(offline()) return; S.sheet='blank'; S.replace=!!replace&&hasToken(); S.confirm=false; S.declare=false; render(); }
 function closeOverlay(){
   if($('.pal')){ $('#overlay').innerHTML=''; overlayKey=''; render(); restoreFocus(); return; }
-  pending=null; S.sheet=null; S.replace=false; S.confirm=false; render(); restoreFocus();
+  pending=null; S.sheet=null; S.replace=false; S.confirm=false; S.declare=false; render(); restoreFocus();
 }
 function restoreFocus(){
   const o=opener; opener=null;
@@ -649,14 +663,14 @@ function restoreFocus(){
 function dropOverlay(){ $('#overlay').innerHTML=''; overlayKey=''; opener=null; }
 /* Mock check. The value is classified, then dropped: it is never kept in state, the hash or the DOM. */
 function connect(){
-  const inp=$('#cs-token'); if(!inp||S.sheet==='connecting') return;
-  const v=inp.value.trim(); inp.value=''; if(!v) return;
+  const inp=$('#cs-token'), box=$('#cs-declare'); if(!inp||!box||S.sheet==='connecting') return;
+  const v=inp.value.trim(); if(!v||!box.checked) return; inp.value=''; S.declare=true;
   const verdict=/write/i.test(v)?'write':/^github_pat_\w{8,}$/.test(v)?'ok':'invalid';
   S.sheet='connecting'; render(); live('Checking the token with GitHub.');
   const ticket=pending={};
   setTimeout(()=>{
     if(pending!==ticket) return; pending=null;
-    if(verdict==='ok'){ S.sheet=null; S.replace=false; S.base='connected'; render(); live('GitHub connected as '+GH.account+', verified '+GH.verified+'.'); restoreFocus(); }
+    if(verdict==='ok'){ S.sheet=null; S.replace=false; S.base='connected-declared'; render(); live('GitHub connected as '+GH.account+', account and repos checked '+GH.verified+'. Permissions: read-only, declared by you.'); restoreFocus(); }
     else { S.sheet=verdict; render(); live(verdict==='write'?'Refused: the token can write.':'Refused: GitHub did not accept the token.'); }
   },1200);
 }
