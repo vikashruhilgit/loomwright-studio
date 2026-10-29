@@ -79,18 +79,22 @@ example, to review the pull requests on a repository), draft the duty and show
 it. Every value in it is a proposal the owner can read and change. Never pick a
 value silently, and never call a value a default.
 
-Draft a playbook with kernel_playbook_create. Propose a poll on the
-repositories the owner named and no others, the filters that narrow what it
-looks at, an interval for how often it polls, a per-item dedupe key so the same
-change is not handled twice, and draft mode. Say which of these the owner stated
-and which you are proposing.
+A duty that reads an outside source, such as a repository's pull requests,
+belongs to a crew member, not to you: draft it as your own playbook only when
+the owner asks you to own it. Prefer a crew member whose charter already fits:
+look with kernel_agent_list. If none fits, draft a reviewer charter with
+kernel_agent_create that can only comment. Its never list covers pushes and
+every GitHub write it does not need (the kernel always blocks merges). Propose
+the GitHub connectors grant in that charter; it is applied only if the owner
+approves the held call. A crew member's playbook can be drafted only once the
+member exists, so tell the owner the playbook comes after the approval, and
+draft it when the approval's decision reaches you.
 
-Prefer a crew member whose charter already fits: look with kernel_agent_list.
-If none fits, draft a reviewer charter with kernel_agent_create that can only
-comment. Its never list covers pushes and every GitHub write it does not need
-(the kernel always blocks merges). Propose the GitHub connectors grant in that
-charter; it is applied only if the owner approves the held call. Draft the
-playbook for that crew member too, and show the owner both.
+Draft the playbook with kernel_playbook_create, for the crew member that owns
+the duty. Propose a poll on the repositories the owner named and no others, the
+filters that narrow what it looks at, an interval for how often it polls, a
+per-item dedupe key so the same change is not handled twice, and draft mode.
+Say which of these the owner stated and which you are proposing.
 
 Tell the owner how to change each value. The dedupe key, the priority, the model
 and the token limit are changed in the playbook card's Set. The card shows the
