@@ -8,6 +8,10 @@
 // `/connectors` routes. Item 06 filled `github-tools`: the four read-only
 // `kernel_github_pr_*` tools. Item 07 filled `drafts`: the `GET /drafts` and
 // `GET /drafts/:id` routes, and `recordDraftOutput` for the session gate.
+// `github-app-routes` (D36) holds the GitHub App connect's owner routes under
+// `/connectors/github/app/`: stubs answering 501 until the App setup item fills
+// them in; `github/app-port.ts` is the App port's stub, filled in by the App
+// tokens item.
 // Integrations are optional (invariant 5): Studio works with none connected.
 // Mechanism only (invariant 1). `startKernel` and `runCli` merge it through
 // `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`), ninth and last, after
@@ -20,6 +24,7 @@
 import { consoleContributionOf } from "../console/index.js";
 import type { FeatureContribution } from "../features/contribution.js";
 import { draftsPart } from "./drafts.js";
+import { githubAppRoutesPart } from "./github/app-routes.js";
 import { githubConnectorPart } from "./github/connector.js";
 import { githubRoutesPart } from "./github/routes.js";
 import { githubToolsPart } from "./github/tools.js";
@@ -29,7 +34,7 @@ import type { IntegrationsPart } from "./types.js";
 export const INTEGRATIONS_NAME = "integrations";
 
 /** Every part, in merge order: tools, routes, subcommands and due work keep this order. */
-export const INTEGRATIONS_PARTS: readonly IntegrationsPart[] = Object.freeze([githubConnectorPart, githubRoutesPart, githubToolsPart, draftsPart]);
+export const INTEGRATIONS_PARTS: readonly IntegrationsPart[] = Object.freeze([githubConnectorPart, githubRoutesPart, githubToolsPart, draftsPart, githubAppRoutesPart]);
 
 /**
  * The contribution `parts` make: `name` always, and only the non-empty keys
@@ -47,6 +52,8 @@ export const integrationsContribution: FeatureContribution = integrationsContrib
 
 export { draftsPart, getDraft, listDrafts, recordDraftOutput } from "./drafts.js";
 export { CONNECTORS_HELP, CONNECTORS_SUBCOMMAND, connectorsSubcommand } from "./cli.js";
+export { githubAppPort } from "./github/app-port.js";
+export { githubAppRoutes, githubAppRoutesPart } from "./github/app-routes.js";
 export { GITHUB_KEYCHAIN_SERVICE, createGitHubClient } from "./github/client.js";
 export {
   GITHUB_EXPIRY_NOTICE_DAYS,
@@ -63,13 +70,19 @@ export { githubRoutes, githubRoutesPart } from "./github/routes.js";
 export { GITHUB_PR_DIFF_DEFAULT_MAX_BYTES, GITHUB_TOOL_REFUSALS, createGitHubTools, githubToolsPart } from "./github/tools.js";
 export type { GitHubToolRefusal, GitHubToolsDeps } from "./github/tools.js";
 export { toolsForConnectors } from "./tool-filter.js";
-export { CONNECTOR_KINDS, CONNECTOR_PERMISSIONS_SOURCES, CONNECTOR_STATUSES } from "./types.js";
+export { CONNECTOR_KINDS, CONNECTOR_METHODS, CONNECTOR_PERMISSIONS_SOURCES, CONNECTOR_STATUSES, GITHUB_APP_SETUP_REFUSALS } from "./types.js";
 export type {
   ConnectorKind,
+  ConnectorMethod,
   ConnectorPermissionsSource,
   ConnectorRow,
   ConnectorStatus,
   DraftOutputRow,
+  GitHubAppConversion,
+  GitHubAppPort,
+  GitHubAppPortError,
+  GitHubAppPortResult,
+  GitHubAppSetupRefusal,
   GitHubClient,
   GitHubFailure,
   GitHubPull,

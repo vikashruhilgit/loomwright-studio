@@ -725,7 +725,8 @@ describe("the four routes (AC11)", () => {
     const item07 = [...contract.matchAll(/\{ method: "([A-Z]+)", path: "([^"]+)", origin: "p6-item-07" \}/g)].map((m) => `${m[1]} ${m[2]}`);
     expect(item07).toEqual(["GET /drafts", "GET /drafts/:id"]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
-    const served = merged.routes.filter((r) => r.owner === "integrations").map((r) => `${r.method} ${r.path}`);
+    // The GitHub App's owner routes (D36) live under /connectors/github/app/ and are pinned by the contract test, not here.
+    const served = merged.routes.filter((r) => r.owner === "integrations" && !r.path.startsWith("/connectors/github/app/")).map((r) => `${r.method} ${r.path}`);
     expect(served).toEqual([...item03, ...item07]);
     expect(githubRoutesPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual(item03);
   });
