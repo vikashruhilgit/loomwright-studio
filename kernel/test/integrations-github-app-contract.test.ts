@@ -1,9 +1,10 @@
-// The GitHub App connect's contract in code (D36), before any of it is built:
-// the closed lists, the stub port and the two stub owner routes wave 2 builds
-// against. The stubs have no behaviour: both routes answer
-// `501 {"error":"not_implemented"}` (behind the API token like every route) and
-// every port method resolves `not_implemented`, never throwing. Wave 2's items
-// replace the stubs and their assertions in their own tests, not here.
+// The GitHub App connect's contract in code (D36): the closed lists, the stub
+// port, and the two owner routes and three browser routes the setup flow
+// serves. The port has no behaviour: every method resolves `not_implemented`,
+// never throwing; the tokens item replaces it and its assertions in its own
+// tests, not here. The owner routes open and close the setup window (behind the
+// API token like every route); the setup flow's own tests
+// (`integrations-github-app-setup.test.ts`) pin the rest.
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startApiServer } from "../src/api/index.js";

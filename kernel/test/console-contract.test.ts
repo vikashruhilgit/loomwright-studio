@@ -78,7 +78,8 @@ function sessionOutputKindUnion(text: string): string[] {
  * (item 07 adds none: it widens `POST /agents/:id/set`), and `p6-item-NN`
  * routes the ones phase 6 items 03 and 07 add (item 08 adds none: it widens
  * `POST /agents/:id/set` to take `connectors`); `github-app` routes are the
- * GitHub App connect's two owner routes (D36), which the kernel serves as 501 stubs.
+ * GitHub App connect's two owner routes (D36), served by the setup flow: they
+ * open and close the setup window.
  */
 const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "GET", path: "/status", origin: "phase-1" },
