@@ -1,13 +1,9 @@
-// Playbooks (phase 7): a placeholder until its screen item builds the real one. The
-// shell discovers this module's `screen` (`import.meta.glob` in App.tsx); the
-// item replaces `Component` and keeps the id, title and nav entry unless its
-// mockup says otherwise.
+// Playbooks (phase 7 item 04): every playbook, its runs and versions, and
+// field-level edits, on ⌘7 after Tasks. The screen is `./PlaybooksScreen.tsx`; this
+// module's one export is the screen the shell discovers (`import.meta.glob` in
+// App.tsx).
 import type { ScreenDefinition } from "../types";
-import { ScreenPlaceholder } from "../placeholder";
-
-function PlaybooksScreen() {
-  return <ScreenPlaceholder id="playbooks" title="Playbooks" note="Every playbook Wright has written, with its runs and versions." />;
-}
+import { PlaybooksScreen } from "./PlaybooksScreen";
 
 export const screen: ScreenDefinition = {
   id: "playbooks",
