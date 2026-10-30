@@ -14,7 +14,7 @@ import type { ApprovalApplier } from "../approvals/store.js";
 import type { AuthHealth, AuthProvider } from "../auth/types.js";
 import { localDay } from "../budget/index.js";
 import { UNAUTHENTICATED_ROUTE_PATHS, compileRoutePath, matchRoutePath } from "../features/contribution.js";
-import type { ContributedBrowserAnswer, KillSwitchView, OwnedRoute } from "../features/contribution.js";
+import type { ContributedBrowserAnswer, KillSwitchView, OwnedRoute, StatusView } from "../features/contribution.js";
 import { isPaused, releasePause } from "../console/pause.js";
 import type { PauseVia } from "../console/pause.js";
 import { NO_REF, appendEvent, clip, errorMessage } from "../loop/internal.js";
@@ -594,6 +594,11 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
   const managed = options.sessionManager === undefined ? {} : { sessions: options.sessionManager };
   // Read-only: a route may read the switch, never engage or release it.
   const killSwitch: KillSwitchView = Object.freeze({ state: () => killSwitchState(store) });
+  // Read-only: `/status`'s own helpers, so a provider's `health()` stays the one Keychain read.
+  const statusView: StatusView = Object.freeze({
+    auth: (at: Date) => authProviders.map((p) => ({ id: p.id, account: safeAccount(p), health: healthOf(p, at) })),
+    loomwright: () => (loomwrightStatus === undefined ? undefined : loomwrightOf(loomwrightStatus)),
+  });
 
   let control: Promise<unknown> = Promise.resolve();
   const serialized = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -783,6 +788,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
         store,
         now,
         killSwitch,
+        status: statusView,
         serialized,
         ...origin,
         ...managed,
