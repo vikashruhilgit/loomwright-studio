@@ -149,7 +149,7 @@ Each screen has an empty, a loading, a populated, an error and a `Kernel unreach
 - **Playbooks (item 04):**
   - A Table of intent, trigger, dedupe key, priority, model, mode, last run, tokens today against the limit (dollars only as "≈ at API rates", D24) and an on/off switch.
   - A detail page shows who set each policy field ("set by you", "proposed by Wright"), the trigger, recent runs and tokens, with Edit in English (opens Wright's thread with the playbook named), Edit fields and Version history.
-  - Field-level edit shows a live diff and saves as the next version through `POST /playbooks/:id/set`, and a refusal is shown as the kernel gives it. Version history is read-only: going back writes a new version.
+  - Field-level edit shows a live diff and saves as the next version through `POST /playbooks/:id/set`. Save stays off while a field holds a value the kernel would refuse, and each refused field shows its reason in `danger` under it: an empty name or intent, a dedupe key naming a field outside the kernel's closed set of seven, or a token limit that is not a whole number above 0. Item 04 shows the kernel's own refusal text when the route answers with one. Version history is read-only: going back writes a new version.
   - A change makes an enabled playbook a draft again, as the kernel does, and the page says so.
 - **Schedules & triggers (item 05):**
   - A timeline of upcoming wake-ups, polls and cron fires, with a list of the triggers and an on/off switch for each.

@@ -641,9 +641,6 @@ const CARDS=[
   {key:'t5',kind:'task',id:5,grp:'done',ag:'mason',st:'done',title:'Review PR #2 on studio-sandbox',meta:'13:20',tkind:'review',created:'13:10',upd:'13:20',sess:37,dedupe:'vikashruhilgit/studio-sandbox#2@9f8e7d6',
    h:[['13:10','task_created','mason','Review PR #2 on studio-sandbox · state working'],['13:19','draft_output_recorded','mason','Draft review recorded for studio-sandbox #2'],['13:20','task_updated','mason','state done']],
    l:[['13:10','tool','read   PR #2 · 1 file changed'],['13:19','okl','draft review saved (recorded, not sent)'],['13:20','out','done']]},
-  {key:'r17',kind:'run',id:17,grp:'done',ag:'mason',st:'completed',title:'Review PRs on studio-sandbox',meta:'fire · 13:10',pb:'Review PRs on studio-sandbox',rkind:'fire',ver:3,tok:31870,started:'13:10',ended:'13:20',sess:37,dedupe:'vikashruhilgit/studio-sandbox#2@9f8e7d6',
-   h:[['13:10','trigger_fired','kernel','Poll fired Review PRs on studio-sandbox v3'],['13:20','playbook_run','mason','Run 17 completed · 31,870 tokens']],
-   l:[['13:10','tool','read   PR #2 · 1 file changed'],['13:19','okl','draft review saved (recorded, not sent)']]},
   {key:'r16',kind:'run',id:16,grp:'done',ag:'mason',st:'failed',title:'Review PRs on studio-sandbox',why:'GitHub answered with an error; no draft was saved.',meta:'fire · 11:42',pb:'Review PRs on studio-sandbox',rkind:'fire',ver:2,tok:2104,started:'11:42',ended:'11:43',sess:35,
    h:[['11:42','trigger_fired','kernel','Poll fired Review PRs on studio-sandbox v2'],['11:43','playbook_run','mason','Run 16 failed · 2,104 tokens']],
    l:[['11:42','tool','read   PR #1'],['11:43','err','GitHub answered 502; the run stopped without a draft']]},
@@ -833,6 +830,7 @@ const VIEWS={
   'playbooks-unreachable':{scr:'playbooks',st:'unreachable',label:'Kernel unreachable',grp:'playbooks'},
   'playbooks-detail':{scr:'playbooks',st:'detail',label:'Detail',grp:'playbooks'},
   'playbooks-edit':{scr:'playbooks',st:'edit',label:'Field-level edit',grp:'playbooks'},
+  'playbooks-edit-refused':{scr:'playbooks',st:'edit',label:'Field-level edit: refused',grp:'playbooks'},
   'playbooks-history':{scr:'playbooks',st:'history',label:'Version history',grp:'playbooks'},
   'schedules-empty':{scr:'schedules',st:'empty',label:'Empty',grp:'schedules'},
   'schedules-loading':{scr:'schedules',st:'loading',label:'Loading',grp:'schedules'},
@@ -887,7 +885,7 @@ const dis=off=>off?' disabled title="Needs the kernel"':'';
 function setView(v){
   if(!Object.prototype.hasOwnProperty.call(VIEWS,v)) return false;
   pending=null; S.view=v; S.w2=false; S.dlg=VIEWS[v].dlg||null;
-  if(v==='playbooks-edit'){ if(!S.f) S.f=formFrom(pbNow(),true); } else S.f=null;
+  if(v==='playbooks-edit'||v==='playbooks-edit-refused'){ if(!S.f) S.f=formFrom(pbNow(),v==='playbooks-edit-refused'?'refused':true); } else S.f=null;
   /* Memory: a forced edit or conflict view starts from the owner's demo edit of mason/lessons.md; a click starts from the file as it is. */
   if(v==='memory-conflict'){ S.mp=LS_PATH; if(!S.mf||S.mf.path!==LS_PATH) S.mf=memDraft(LS_PATH,true); }
   else if(v==='memory-edit'){ if(!S.mf||S.mf.path!==S.mp) S.mf=memDraft(S.mp,true); }
@@ -968,11 +966,25 @@ const FIELDS=[['name','name','Name'],['intent','intent','Intent'],['dedupe','ded
 const setBy=b=>b==='owner'?'<span class="badge neu">set by you</span>':'<span class="badge acc">proposed by Wright</span>';
 function formFrom(p,demo){
   const f={name:p.name,intent:p.intent,dedupe:p.dedupe,priority:p.priority,model:p.model,effort:p.effort,limit:String(p.limit),mode:p.mode};
-  if(demo){ f.priority='high'; f.limit='150000'; }
+  if(demo==='refused'){ f.name=''; f.intent='   '; f.dedupe='{repo}#{pr}'; }
+  else if(demo){ f.priority='high'; f.limit='150000'; }
   return f;
 }
 function changes(p,f){ return FIELDS.filter(([k])=>String(p[k])!==String(f[k])).map(([k,col])=>({key:k,col,from:String(p[k]),to:String(f[k])})); }
-const limitBad=f=>!/^[1-9]\d*$/.test(String(f.limit).trim());
+/* The refusals the form draws, one per field, in the kernel's words. Closed set: DEDUPE_KEY_FIELDS in kernel/src/playbooks/types.ts. */
+const KEY_FIELDS=['playbook.id','playbook.version','trigger.id','trigger.scheduled_at','date','item.id','item.revision'];
+const OK_HINT={name:'',intent:'Plain English. Wright reads this.',dedupe:'What counts as already done: a comma-separated list of the kernel\'s key fields, such as item.id, item.revision or date.',limit:'Input, output and cache-write tokens count. Cache reads do not.'};
+function formErrs(f){
+  const e={};
+  if(!String(f.name).trim()) e.name='Give the playbook a name.';
+  if(!String(f.intent).trim()) e.intent='Say in plain English what the playbook does.';
+  const keys=String(f.dedupe).split(',').map(x=>x.trim()), unk=keys.filter(k=>!KEY_FIELDS.includes(k));
+  if(keys.length===1&&!keys[0]) e.dedupe='Name at least one key field: '+KEY_FIELDS.join(', ')+'.';
+  else if(unk.length) e.dedupe=(unk[0]?'“'+unk[0]+'”':'An empty entry')+' is not a key field. Use '+KEY_FIELDS.join(', ')+'.';
+  if(!/^[1-9]\d*$/.test(String(f.limit).trim())) e.limit='Use a whole number of tokens greater than 0.';
+  return e;
+}
+const formBad=f=>Object.keys(formErrs(f)).length>0;
 function diffHTML(lines,head){
   const body=lines.length?lines.map(([t,x])=>`<div class="ln ${t}"><span aria-hidden="true">${t==='add'?'+':t==='del'?'−':' '}</span><span><span class="vh">${t==='add'?'added: ':t==='del'?'removed: ':''}</span>${esc(x)}</span></div>`).join(''):'<div class="nodiff">No changes yet.</div>';
   return `<div class="diff mono" role="group" aria-label="${esc(head)}"><div class="dh cap">${esc(head)}</div>${body}</div>`;
@@ -1018,18 +1030,20 @@ function pbPage(st){
       <div class="pane"><div class="pad"><div class="sech"><h3 class="label">${v.chg?'Changes in':'Created as'} v${v.v}</h3><span class="cap">by ${by} · ${v.at}</span></div>${diffHTML(lines,`playbook_versions · v${v.v}`)}<p class="cap">Older versions are read-only. To go back, change the fields or ask Wright; that writes a new version.</p></div></div></div>`};
   }
   if(st==='edit'){
-    const f=S.f||formFrom(p), ch=changes(p,f), bad=limitBad(f);
+    const f=S.f||formFrom(p), ch=changes(p,f), er=formErrs(f), bad=Object.keys(er).length>0;
     const sel=(id,opts)=>`<div class="field"><select id="f-${id}" aria-label="${id}">${opts.map(o=>`<option value="${o}"${f[id]===o?' selected':''}>${o}</option>`).join('')}</select></div>`;
+    const fld=(key,inner,cls)=>`<div class="field${cls?' '+cls:''}${er[key]?' err':''}" id="fld-${key}">${inner}</div><span class="cap" id="h-${key}" role="${er[key]?'alert':'note'}" style="${er[key]?'color:var(--danger)':''}">${esc(er[key]||OK_HINT[key])}</span>`;
+    const ia=key=>`aria-describedby="h-${key}"${er[key]?' aria-invalid="true"':''}`;
     const row=(key,lbl,ctl,help)=>`<label class="lbl" for="f-${key}">${lbl}</label><div class="ctl">${ctl}<span class="by cap">${key==='name'||key==='intent'?'':setBy(p.by[key])}${help||''}</span></div>`;
     return {title:'Playbooks',sub:'Field-level edit',html:`<div class="content insp"><div class="scroll"><div class="pad tight">${crumb('cancel-edit','Playbook')}<div class="dhead"><h2>Edit fields</h2><span class="badge neu">v${p.ver} now · saves as v${p.ver+1}</span></div></div>
       <form class="pad fe" id="editform" onsubmit="return false">
-        ${row('name','Name',`<div class="field"><input id="f-name" value="${esc(f.name)}"></div>`)}
-        ${row('intent','Intent',`<div class="field ta"><textarea id="f-intent" rows="3">${esc(f.intent)}</textarea></div>`,' <span>Plain English. Wright reads this.</span>')}
-        ${row('dedupe','Dedupe key',`<div class="field"><input id="f-dedupe" class="mono" value="${esc(f.dedupe)}"></div>`,' <span>What counts as already done: a comma-separated list of the kernel\'s key fields, such as item.id, item.revision or date.</span>')}
+        ${row('name','Name',fld('name',`<input id="f-name" value="${esc(f.name)}" ${ia('name')}>`))}
+        ${row('intent','Intent',fld('intent',`<textarea id="f-intent" rows="3" ${ia('intent')}>${esc(f.intent)}</textarea>`,'ta'))}
+        ${row('dedupe','Dedupe key',fld('dedupe',`<input id="f-dedupe" class="mono" value="${esc(f.dedupe)}" ${ia('dedupe')}>`))}
         ${row('priority','Priority',sel('priority',['low','normal','high']))}
         ${row('model','Model',sel('model',['haiku','sonnet','opus']))}
         ${row('effort','Effort',sel('effort',['low','medium','high']),' <span>Recorded only.</span>')}
-        ${row('limit','Token limit per day',`<div class="field${bad?' err':''}" id="limfield"><input id="f-limit" class="tn" inputmode="numeric" value="${esc(f.limit)}" aria-describedby="lim-h"${bad?' aria-invalid="true"':''}></div><span class="cap" id="lim-h" role="${bad?'alert':'note'}" style="color:${bad?'var(--danger)':''}">${bad?'Use a whole number of tokens greater than 0.':'Input, output and cache-write tokens count. Cache reads do not.'}</span>`)}
+        ${row('limit','Token limit per day',fld('limit',`<input id="f-limit" class="tn" inputmode="numeric" value="${esc(f.limit)}" ${ia('limit')}>`))}
         ${row('mode','Mode',`<div class="field"><select id="f-mode" aria-label="mode"><option value="draft" selected>draft</option><option value="live" disabled>live (not available yet)</option></select></div>`,' <span>Draft records outward calls and sends none.</span>')}
       </form></div>
       <aside class="inspector" aria-label="Changes"><div class="sech"><h3 class="label">Changes</h3></div><div id="diffbox">${diffBox(p,f)}</div><p class="cap" id="chgnote">${chgNote(ch)}</p>${p.status==='enabled'?'<p class="cap">Any change makes this playbook a draft again, as the kernel does. Turn it on once you have read the new version.</p>':''}<div class="dhead"><span class="sp"></span><button class="btn sec" data-act="cancel-edit">Cancel</button><button class="btn pri" id="savebtn" data-act="save-edit"${!ch.length||bad?' disabled':''}>Save as v${p.ver+1}</button></div></aside></div>`};
@@ -1052,15 +1066,17 @@ function diffBox(p,f){
 }
 const chgNote=ch=>ch.length?`${ch.length} field${ch.length>1?'s':''} changed. Policy fields among them will read “set by you”; the rest keep who set them.`:'Nothing changed. Edit a field to see it here.';
 function updateEdit(){
-  const p=pbNow(), f=S.f; if(!f) return; const ch=changes(p,f), bad=limitBad(f);
+  const p=pbNow(), f=S.f; if(!f) return; const ch=changes(p,f), er=formErrs(f), bad=Object.keys(er).length>0;
   $('#diffbox').innerHTML=diffBox(p,f); $('#chgnote').textContent=chgNote(ch);
   $('#savebtn').disabled=!ch.length||bad;
-  $('#limfield').classList.toggle('err',bad); const h=$('#lim-h'), inp=$('#f-limit');
-  h.textContent=bad?'Use a whole number of tokens greater than 0.':'Input, output and cache-write tokens count. Cache reads do not.'; h.style.color=bad?'var(--danger)':''; h.setAttribute('role',bad?'alert':'note');
-  if(bad) inp.setAttribute('aria-invalid','true'); else inp.removeAttribute('aria-invalid');
+  Object.keys(OK_HINT).forEach(k=>{
+    $('#fld-'+k).classList.toggle('err',!!er[k]); const h=$('#h-'+k), inp=$('#f-'+k);
+    h.textContent=er[k]||OK_HINT[k]; h.style.color=er[k]?'var(--danger)':''; h.setAttribute('role',er[k]?'alert':'note');
+    if(er[k]) inp.setAttribute('aria-invalid','true'); else inp.removeAttribute('aria-invalid');
+  });
 }
 function saveEdit(){
-  const p=pbNow(), f=S.f; if(!f) return; const ch=changes(p,f); if(!ch.length||limitBad(f)) return;
+  const p=pbNow(), f=S.f; if(!f) return; const ch=changes(p,f); if(!ch.length||formBad(f)) return;
   ch.forEach(c=>{ p[c.key]=c.key==='limit'?+c.to:c.to; p.by[c.key]='owner'; });
   const wasOn=p.status==='enabled'; if(wasOn) p.status='draft';
   p.ver++; p.vers.unshift({v:p.ver,at:'Fri 30 Oct 14:23',chg:ch.map(c=>[c.col,c.from,c.to,'owner'])}); S.ver=p.ver;
