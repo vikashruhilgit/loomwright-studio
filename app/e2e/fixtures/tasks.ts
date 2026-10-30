@@ -162,8 +162,8 @@ function listHandler(kernel: TasksKernel, req: FixtureRequest): FixtureAnswer {
   const rawLimit = req.query.limit;
   let limit = DEFAULT_LIMIT;
   if (rawLimit !== undefined) {
-    if (!/^[1-9][0-9]*$/.test(rawLimit)) return refused(400, "invalid_query");
-    limit = Math.min(Number(rawLimit), MAX_LIMIT);
+    if (!/^[1-9][0-9]*$/.test(rawLimit) || !Number.isSafeInteger(Number(rawLimit)) || Number(rawLimit) > MAX_LIMIT) return refused(400, "invalid_query");
+    limit = Number(rawLimit);
   }
   const ordered = [...kernel.items].sort(newestFirst);
   let rows = ordered;

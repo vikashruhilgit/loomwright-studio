@@ -251,6 +251,22 @@ test("AC4: four columns in the mockup's order; every state is the kernel's word;
   await expect(page.getByTestId("tasks-subtitle")).toHaveText("13 cards · 4 working");
 });
 
+test("the fixture refuses what the kernel route refuses: limit and id outside the rules answer 400, an unknown card 404", async () => {
+  const routes = tasksRoutes(tasksKernel({ items: populatedItems() }));
+  const answer = async (key: RouteKey, query: Record<string, string>, params: Record<string, string> = {}): Promise<number> => {
+    const route = routes[key];
+    if (typeof route !== "function") throw new Error(`no handler for ${key}`);
+    return (await route({ method: "GET", path: "/", params, query, body: undefined })).status;
+  };
+  for (const limit of ["201", "0", "-1", "1.5", "abc", "", "050", "9007199254740993"]) expect(await answer("GET /tasks", { limit }), `limit=${limit}`).toBe(400);
+  for (const limit of ["1", "200"]) expect(await answer("GET /tasks", { limit }), `limit=${limit}`).toBe(200);
+  expect(await answer("GET /tasks", { before: "not-a-cursor" })).toBe(400);
+  const history = (kind: string, id: string): Promise<number> => answer("GET /tasks/:kind/:id", {}, { kind, id });
+  expect(await history("nope", "1")).toBe(400);
+  for (const id of ["0", "-1", "1.5", "abc", "01"]) expect(await history("task", id), `id=${id}`).toBe(400);
+  expect(await history("task", "999999")).toBe(404);
+});
+
 test("AC5: with no rows the designed empty state shows, never an empty board", async () => {
   const { fixture: started } = await startKernel({});
   const page = await openWith(started, "empty");
