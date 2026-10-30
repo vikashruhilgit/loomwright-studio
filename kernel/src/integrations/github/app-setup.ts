@@ -308,6 +308,10 @@ export function createGitHubAppSetup(deps: GitHubAppSetupDeps): GitHubAppSetup {
       close(win);
       return refuse(req, portReason(stored.error));
     }
+    // The window may have gone during the store too: no redirect then. The App it stored is left for the next setup or disconnect (removing it here could remove a replacement window's App).
+    const settled = gate(req.now());
+    if (!settled.ok) return refuse(req, settled.reason);
+    if (settled.win !== win) return refuse(req, "setup_not_open");
     const installState = mintState();
     win.phase = "awaiting_install";
     win.installState = installState;
@@ -330,11 +334,14 @@ export function createGitHubAppSetup(deps: GitHubAppSetupDeps): GitHubAppSetup {
       return refuse(req, "install_failed");
     }
     const recorded = await safely(() => port.recordInstallation(req.store, Number(id), req.now));
+    // A window other than this one that opened during the call (undefined when none, or when this one is still current).
+    const replacement = current === win ? undefined : current;
     close(win);
     if (!recorded.ok) {
       const reason = portReason(recorded.error);
       // An App that can write is not kept: its key is removed, and the setup ends with the reason.
-      if (reason === "token_write_scoped") await safely(() => port.removeApp(req.store, req.now));
+      // Not when a replacement window has moved past `awaiting_create` during the call: the stored App may be its own.
+      if (reason === "token_write_scoped" && (replacement === undefined || replacement.phase === "awaiting_create")) await safely(() => port.removeApp(req.store, req.now));
       return refuse(req, reason);
     }
     return browserPage(200, pageHtml("Done — return to Studio", "GitHub is connected. You can close this tab."));

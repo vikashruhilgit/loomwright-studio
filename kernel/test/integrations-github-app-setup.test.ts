@@ -541,6 +541,88 @@ describe("the window (AC3, AC4, AC5)", () => {
     expect(headingOf(await pendingExpired)).toBe("Setup timed out");
     expect(storeApp).not.toHaveBeenCalled();
   });
+
+  /** A port whose storeApp waits for `release`, so a window can change while the App is being stored. */
+  function gatedStore() {
+    let release: () => void = () => undefined;
+    const fake = fakePort();
+    fake.storeApp.mockImplementation(() => new Promise((resolve) => (release = () => resolve({ ok: true, value: ROW }))));
+    return { ...fake, release: () => release() };
+  }
+
+  it("answers setup_not_open, not the install redirect, when the window is cancelled while the App is being stored", async () => {
+    const { port, storeApp, release } = gatedStore();
+    const f = await flow(port, fakeGitHub());
+    const { startState, createState } = await toCreate(f);
+    const pending = f.ret({ code: CODE, state: createState });
+    await vi.waitFor(() => expect(storeApp).toHaveBeenCalledTimes(1));
+    await f.post(CANCEL);
+    release();
+    const answer = await pending;
+    expect(answer.status).toBe(400);
+    expect(answer.headers.get("location")).toBeNull();
+    expect(headingOf(answer)).toBe("No setup is open");
+    expect(headingOf(await f.startPage(startState))).toBe("No setup is open");
+    expect(storeApp).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers setup_not_open when a replacement opens while the App is being stored, and leaves the replacement window open", async () => {
+    const { port, storeApp, release } = gatedStore();
+    const f = await flow(port, fakeGitHub());
+    const { createState } = await toCreate(f);
+    const pending = f.ret({ code: CODE, state: createState });
+    await vi.waitFor(() => expect(storeApp).toHaveBeenCalledTimes(1));
+    const replacement = await f.open();
+    release();
+    const answer = await pending;
+    expect([answer.status, answer.headers.get("location")]).toEqual([400, null]);
+    expect(headingOf(answer)).toBe("No setup is open");
+    // The old answer did not close the new window.
+    expect((await f.startPage(replacement.startState)).status).toBe(200);
+  });
+
+  it("answers setup_expired when the window expires while the App is being stored", async () => {
+    const { port, storeApp, release } = gatedStore();
+    const f = await flow(port, fakeGitHub());
+    const { createState } = await toCreate(f);
+    const pending = f.ret({ code: CODE, state: createState });
+    await vi.waitFor(() => expect(storeApp).toHaveBeenCalledTimes(1));
+    env.advance(GITHUB_APP_SETUP_WINDOW_MS);
+    release();
+    const answer = await pending;
+    expect([answer.status, answer.headers.get("location")]).toEqual([400, null]);
+    expect(headingOf(answer)).toBe("Setup timed out");
+  });
+
+  it("spends the install state before recordInstallation is awaited: a concurrent second /installed is refused and records nothing", async () => {
+    const { port, recordInstallation } = fakePort();
+    let release: () => void = () => undefined;
+    recordInstallation.mockImplementation(() => new Promise((resolve) => (release = () => resolve({ ok: true, value: ROW }))));
+    const f = await flow(port, fakeGitHub());
+    const installState = await toInstall(f);
+    const first = f.installed({ installation_id: "5", state: installState });
+    await vi.waitFor(() => expect(recordInstallation).toHaveBeenCalledTimes(1));
+    const second = await f.installed({ installation_id: "5", state: installState });
+    expect(second.status).toBe(400);
+    release();
+    expect((await first).status).toBe(200);
+    expect(recordInstallation).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not remove the App on token_write_scoped when a replacement window has stored its own during the call", async () => {
+    const { port, recordInstallation, removeApp } = fakePort();
+    let release: () => void = () => undefined;
+    recordInstallation.mockImplementationOnce(() => new Promise((resolve) => (release = () => resolve({ ok: false, error: "token_write_scoped", message: "write" }))));
+    const f = await flow(port, fakeGitHub());
+    const installState = await toInstall(f);
+    const pending = f.installed({ installation_id: "5", state: installState });
+    await vi.waitFor(() => expect(recordInstallation).toHaveBeenCalledTimes(1));
+    await toInstall(f);
+    release();
+    const answer = await pending;
+    expect(answer.status).toBe(422);
+    expect(removeApp).not.toHaveBeenCalled();
+  });
 });
 
 describe("no window, a wrong state, an expired window (Error AC1)", () => {
@@ -740,6 +822,22 @@ describe("the port (Error AC2)", () => {
     expect(connectorEvents().map((e) => e.payload["refused"])).toEqual(["install_failed", "install_failed", "install_failed"]);
   });
 
+  it("closes the window when storeApp fails: a start-page reload then says setup_not_open, not state_mismatch", async () => {
+    const f = await flow(fakePort({ storeApp: () => fail("install_failed") }).port, fakeGitHub());
+    const { startState, createState } = await toCreate(f);
+    expect((await f.ret({ code: CODE, state: createState })).status).toBe(502);
+    expect(headingOf(await f.startPage(startState))).toBe("No setup is open");
+  });
+
+  it("closes the window on a bad installation id: the same state then says setup_not_open, not state_mismatch", async () => {
+    const { port, recordInstallation } = fakePort();
+    const f = await flow(port, fakeGitHub());
+    const installState = await toInstall(f);
+    expect((await f.installed({ installation_id: "abc", state: installState })).status).toBe(502);
+    expect(headingOf(await f.installed({ installation_id: "5", state: installState }))).toBe("No setup is open");
+    expect(recordInstallation).not.toHaveBeenCalled();
+  });
+
   it("refuses an installation id that is missing or not a positive integer install_failed, without calling the port", async () => {
     const { port, recordInstallation } = fakePort();
     const f = await flow(port, fakeGitHub());
@@ -821,6 +919,19 @@ describe("a request without the API's origin (design constraint 3)", () => {
     });
     // No window was opened by the failed setup.
     expect((await startRoute?.handler(request({ state: "x" })))?.status).toBe(400);
+  });
+
+  it("answers the start page of an open window a fixed install_failed page, not a manifest, when the request has no origin", async () => {
+    const routes = githubAppRoutes({ port: fakePort().port, fetch: fakeGitHub() });
+    const setup = routes.find((r) => r.method === "POST" && r.path === SETUP);
+    const startRoute = routes.find((r) => r.path === START);
+    const opened = await setup?.handler({ ...request(), origin: "http://127.0.0.1:1" });
+    const startState = new URL((opened?.body as { setup_url: string }).setup_url).searchParams.get("state") as string;
+    const res = await startRoute?.handler(request({ state: startState }));
+    expect(res?.status).toBe(502);
+    const html = res?.browser !== undefined && "html" in res.browser ? res.browser.html : "";
+    expect(html).toContain("Setup did not finish");
+    expect(html).not.toContain("<form");
   });
 });
 

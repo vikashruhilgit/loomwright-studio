@@ -10,6 +10,7 @@
 // real SDK, a model or the Keychain.
 import { mkdtempSync, rmSync } from "node:fs";
 import { request } from "node:http";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -217,8 +218,29 @@ describe("the no-token exception (Mechanism AC1, Error AC3)", () => {
 
   it("does not read an oversized unauthenticated body either (no 413)", async () => {
     const server = await serve([owned("GET", START, { unauthenticated: true })]);
-    const res = await raw(server, "GET", START, { body: "x".repeat(1024 * 1024 + 10) });
-    expect(res.status).toBe(200);
+    // Headers only, claiming a 2 MB body that never comes: a server that read or limited the body would wait (or answer 413), so the 200 status line must arrive on its own. No body is written, so there is no write to race a close.
+    const statusLine = await new Promise<string>((resolve, reject) => {
+      const socket = connect({ host: "127.0.0.1", port: server.port });
+      const timer = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("no status line within 3 s: the server is waiting for the body"));
+      }, 3000);
+      let seen = "";
+      socket.on("data", (chunk: Buffer) => {
+        seen += chunk.toString("latin1");
+        const end = seen.indexOf("\r\n");
+        if (end === -1) return;
+        clearTimeout(timer);
+        socket.destroy();
+        resolve(seen.slice(0, end));
+      });
+      socket.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      socket.write(`GET ${START} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: ${2 * 1024 * 1024}\r\n\r\n`);
+    });
+    expect(statusLine).toBe("HTTP/1.1 200 OK");
   });
 
   it("answers 401 to a POST to a browser path, even for a hand-built route {POST, unauthenticated} that skipped the merge", async () => {
