@@ -10,11 +10,16 @@ describe("CONTRACT_ROUTES", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it("holds only GET and POST routes on absolute paths, with `:param` segments", () => {
+  it("holds only GET, POST and PUT routes on absolute paths, with `:param` segments", () => {
     for (const route of CONTRACT_ROUTES) {
-      expect(["GET", "POST"]).toContain(route.method);
+      expect(["GET", "POST", "PUT"]).toContain(route.method);
       expect(route.path).toMatch(/^(\/(:?[a-z][a-z0-9-]*))+$/);
     }
+  });
+
+  it("holds a PUT only on the memory write, `PUT /memory/file`", () => {
+    const puts = CONTRACT_ROUTES.filter((r) => r.method === "PUT");
+    expect(puts.map((r) => `${r.method} ${r.path} ${r.origin}`)).toEqual(["PUT /memory/file p7-item-06"]);
   });
 
   it("is frozen", () => {

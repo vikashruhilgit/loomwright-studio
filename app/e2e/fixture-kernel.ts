@@ -17,7 +17,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import type { WebSocket } from "ws";
-import type { ConnectorReposResponse, ConnectorsResponse, DraftsResponse, EventFrame, RouteKey, StatusBody } from "../src/api/contract";
+import type {
+  AuditResponse,
+  BudgetUsageResponse,
+  ConnectorReposResponse,
+  ConnectorsResponse,
+  DraftsResponse,
+  EventFrame,
+  MemoryFileResponse,
+  MemoryTreeResponse,
+  PlaybookRunsResponse,
+  PlaybookVersionsResponse,
+  RouteKey,
+  ScheduleResponse,
+  SettingsResponse,
+  StatusBody,
+  TaskBoardKind,
+  TaskHistoryResponse,
+  TasksResponse,
+  TriggerFiresResponse,
+} from "../src/api/contract";
 
 /** The fixture's token: the kernel's shape (64 lowercase hex characters), never a real one. */
 export const FIXTURE_TOKEN = "0123456789abcdef".repeat(4);
@@ -42,7 +61,13 @@ export interface FixtureAnswer {
 export type FixtureRoute = FixtureAnswer | ((req: FixtureRequest) => FixtureAnswer | Promise<FixtureAnswer>);
 
 export interface FixtureKernelOptions {
-  /** Keyed `"<METHOD> <path>"` as in `CONTRACT_ROUTES`; merged over the defaults (`GET /status`, and phase 6's empty `GET /connectors`, `GET /connectors/github/repos` and `GET /drafts`). */
+  /**
+   * Keyed `"<METHOD> <path>"` as in `CONTRACT_ROUTES`; merged over the defaults: `GET /status`, phase 6's empty
+   * `GET /connectors`, `GET /connectors/github/repos` and `GET /drafts`, and phase 7's eleven read routes
+   * (`GET /tasks`, `/tasks/:kind/:id`, `/playbooks/:id/runs`, `/playbooks/:id/versions`, `/schedule`,
+   * `/triggers/:id/fires`, `/memory`, `/memory/file`, `/budget/usage`, `/audit` and a canned `/settings`).
+   * `PUT /memory/file` has no default: the Memory screen's spec adds it.
+   */
   readonly routes?: Partial<Record<RouteKey, FixtureRoute>>;
   /** The `events` rows the feed serves, by id. */
   readonly events?: readonly EventFrame[];
@@ -82,16 +107,65 @@ export function cannedStatus(overrides: Partial<StatusBody> = {}): StatusBody {
 }
 
 /**
- * Every spec's baseline: a kernel at rest, and phase 6's read routes answering
- * empty (nothing connected, no repos, no drafts), so the Integrations screen
- * (item 11) and the draft cards (item 12) add only their own
- * `app/e2e/fixtures/<screen>.ts`.
+ * Every spec's baseline: a kernel at rest, phase 6's read routes answering
+ * empty (nothing connected, no repos, no drafts), and phase 7's eleven read
+ * routes answering empty too (no tasks, runs, versions, schedule, fires, memory
+ * files, usage or audit rows, `null` cursors) with a canned settings view, so
+ * each screen adds only its own `app/e2e/fixtures/<screen>.ts`. Each body is
+ * `satisfies` its contract response type, so `npm run typecheck` checks it.
+ * `PUT /memory/file` has no default: item 06 adds it.
  */
 const DEFAULT_ROUTES: Partial<Record<RouteKey, FixtureRoute>> = {
   "GET /status": () => ({ status: 200, body: cannedStatus() }),
   "GET /connectors": () => ({ status: 200, body: { connectors: [] } satisfies ConnectorsResponse }),
   "GET /connectors/github/repos": () => ({ status: 200, body: { repos: [], verified_at: null } satisfies ConnectorReposResponse }),
   "GET /drafts": () => ({ status: 200, body: { drafts: [] } satisfies DraftsResponse }),
+  "GET /tasks": () => ({ status: 200, body: { groups: [], next_before: null } satisfies TasksResponse }),
+  // The history of the item asked for: a bare card, nothing recorded against it.
+  "GET /tasks/:kind/:id": ({ params }) => ({
+    status: 200,
+    body: {
+      item: {
+        kind: params.kind as TaskBoardKind,
+        id: Number(params.id),
+        title: null,
+        state: "open",
+        agent: null,
+        playbook: null,
+        item_ref: null,
+        session: null,
+        tokens: null,
+        started: null,
+        ended: null,
+        updated: "2026-10-30T00:00:00.000Z",
+      },
+      events: [],
+      runs: [],
+      sessions: [],
+      approvals: [],
+    } satisfies TaskHistoryResponse,
+  }),
+  "GET /playbooks/:id/runs": () => ({ status: 200, body: { runs: [], next_before: null } satisfies PlaybookRunsResponse }),
+  "GET /playbooks/:id/versions": () => ({ status: 200, body: { versions: [] } satisfies PlaybookVersionsResponse }),
+  "GET /schedule": () => ({ status: 200, body: { entries: [] } satisfies ScheduleResponse }),
+  "GET /triggers/:id/fires": () => ({ status: 200, body: { fires: [], next_before: null } satisfies TriggerFiresResponse }),
+  "GET /memory": () => ({ status: 200, body: { agents: [], shared: [] } satisfies MemoryTreeResponse }),
+  // An empty file at the path asked for (the hash is SHA-256 of the empty text).
+  "GET /memory/file": ({ query }) => ({
+    status: 200,
+    body: { path: query.path ?? "", content: "", content_hash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" } satisfies MemoryFileResponse,
+  }),
+  "GET /budget/usage": () => ({ status: 200, body: { rows: [], limits: [], cap_state: [] } satisfies BudgetUsageResponse }),
+  "GET /audit": () => ({ status: 200, body: { events: [], next_before: null } satisfies AuditResponse }),
+  "GET /settings": () => ({
+    status: 200,
+    body: {
+      provider: { id: "subscription-token", account: "fixture", health: { status: "ok" }, token_created_at: null },
+      data_dir: "/fixture/studio-data",
+      notifier: "none",
+      loomwright: { status: "ok", install_path: "/fixture/loomwright", plugin_version: "0.0.0-fixture", contract_schema_version: 1, host_switch: false },
+    } satisfies SettingsResponse,
+  }),
 };
 
 /** The app's environment for a data dir: the fixture's dir and token, nothing of the owner's. */

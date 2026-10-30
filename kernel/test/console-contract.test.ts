@@ -7,10 +7,12 @@
 //      literally below, each route once, so a route can't be added, dropped or
 //      renamed in the contract without this test saying so.
 //   2. Every route the contract marks existing (an origin that is not a phase 5
-//      `item-NN` or a phase 6 `p6-item-NN`) is one the kernel serves today: a
-//      phase 1 route or a shipped contribution's route, same method and same
-//      declared path. The routes phase 5 and phase 6 items add are not checked
-//      here; each item's own test pins its route against the contract.
+//      `item-NN`, a phase 6 `p6-item-NN` or a phase 7 `p7-item-NN`) is one the
+//      kernel serves today: a phase 1 route or a shipped contribution's route,
+//      same method and same declared path. The routes phase 5, phase 6 and
+//      phase 7 items add are not checked here; each item's own test pins its
+//      route against the contract. Phase 7's twelve are listed below as not yet
+//      served, and never counted as existing.
 //   3. The contract's `SessionOutputKind` union carries exactly the values of
 //      `SESSION_OUTPUT_KINDS` (`kernel/src/console/output.ts`).
 //   4. The playbook card's `POLICY_FIELDS` and `READ_ONLY_POLICY_FIELDS`
@@ -79,7 +81,8 @@ function sessionOutputKindUnion(text: string): string[] {
  * routes the ones phase 6 items 03 and 07 add (item 08 adds none: it widens
  * `POST /agents/:id/set` to take `connectors`); `github-app` routes are the
  * GitHub App connect's two owner routes (D36), served by the setup flow: they
- * open and close the setup window.
+ * open and close the setup window; `p7-item-NN` routes are the twelve phase 7
+ * items 03-08 add (the app's one `PUT`, the memory write, among them).
  */
 const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "GET", path: "/status", origin: "phase-1" },
@@ -128,10 +131,22 @@ const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "GET", path: "/drafts/:id", origin: "p6-item-07" },
   { method: "POST", path: "/connectors/github/app/setup", origin: "github-app" },
   { method: "POST", path: "/connectors/github/app/setup/cancel", origin: "github-app" },
+  { method: "GET", path: "/tasks", origin: "p7-item-03" },
+  { method: "GET", path: "/tasks/:kind/:id", origin: "p7-item-03" },
+  { method: "GET", path: "/playbooks/:id/runs", origin: "p7-item-04" },
+  { method: "GET", path: "/playbooks/:id/versions", origin: "p7-item-04" },
+  { method: "GET", path: "/schedule", origin: "p7-item-05" },
+  { method: "GET", path: "/triggers/:id/fires", origin: "p7-item-05" },
+  { method: "GET", path: "/memory", origin: "p7-item-06" },
+  { method: "GET", path: "/memory/file", origin: "p7-item-06" },
+  { method: "PUT", path: "/memory/file", origin: "p7-item-06" },
+  { method: "GET", path: "/budget/usage", origin: "p7-item-07" },
+  { method: "GET", path: "/audit", origin: "p7-item-07" },
+  { method: "GET", path: "/settings", origin: "p7-item-08" },
 ];
 
-/** A route the contract says the kernel already serves: any origin but a phase 5 item's (`item-NN`) or a phase 6 item's (`p6-item-NN`). */
-const isExisting = (entry: ContractEntry): boolean => !/^(p6-)?item-\d{2}$/.test(entry.origin);
+/** A route the contract says the kernel already serves: any origin but a phase 5 item's (`item-NN`), a phase 6 item's (`p6-item-NN`) or a phase 7 item's (`p7-item-NN`). */
+const isExisting = (entry: ContractEntry): boolean => !/^(p[67]-)?item-\d{2}$/.test(entry.origin);
 
 const key = (r: { readonly method: string; readonly path: string }): string => `${r.method} ${r.path}`;
 
@@ -171,6 +186,25 @@ describe("the app contract's routes (app/src/api/contract.ts, read as text)", ()
       ["p6-item-07", "GET /drafts/:id"],
     ]);
     expect(phase6.filter(isExisting)).toEqual([]);
+  });
+
+  it("lists phase 7's twelve routes as not yet served: items 03 to 08 add them", () => {
+    const phase7 = routes.filter((r) => r.origin.startsWith("p7-"));
+    expect(phase7.map((r) => [r.origin, key(r)])).toEqual([
+      ["p7-item-03", "GET /tasks"],
+      ["p7-item-03", "GET /tasks/:kind/:id"],
+      ["p7-item-04", "GET /playbooks/:id/runs"],
+      ["p7-item-04", "GET /playbooks/:id/versions"],
+      ["p7-item-05", "GET /schedule"],
+      ["p7-item-05", "GET /triggers/:id/fires"],
+      ["p7-item-06", "GET /memory"],
+      ["p7-item-06", "GET /memory/file"],
+      ["p7-item-06", "PUT /memory/file"],
+      ["p7-item-07", "GET /budget/usage"],
+      ["p7-item-07", "GET /audit"],
+      ["p7-item-08", "GET /settings"],
+    ]);
+    expect(phase7.filter(isExisting)).toEqual([]);
   });
 
   it("the feed route is the path the API server upgrades", () => {

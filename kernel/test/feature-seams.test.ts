@@ -119,10 +119,10 @@ function expectShippedDueWork(dueWork: readonly DueWork[]): void {
 }
 
 describe("mergeContributions", () => {
-  it("the shipped contributions: the nine features in a fixed order, merged part by part in that order (each feature's own lists are pinned in its own test) (AC3)", () => {
-    expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents", "console", "integrations"]);
+  it("the shipped contributions: the ten features in a fixed order, merged part by part in that order (each feature's own lists are pinned in its own test) (AC3)", () => {
+    expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name)).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents", "console", "integrations", "gui"]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1);
-    expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents", "console", "integrations"]);
+    expect(merged.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents", "console", "integrations", "gui"]);
     expect(merged.tools.map((t) => t.name)).toEqual(shippedToolNames());
     expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(shippedRoutes());
     expect(merged.subcommands.map((s) => s.name)).toEqual(shippedSubcommandNames());
@@ -486,7 +486,7 @@ describe("the shipped kernel (AC3)", () => {
     const { d, fakes, keychain } = deps();
     const kernel = await start(options(), d);
 
-    expect(kernel.contributions.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents", "console", "integrations"]);
+    expect(kernel.contributions.contributors).toEqual(["loomwright", "notifications", "triggers", "approvals", "brain", "playbooks", "agents", "console", "integrations", "gui"]);
     expect(kernelToolNames(kernel.contributions.tools)).toEqual([...KERNEL_TOOL_NAMES, ...shippedToolNames()]);
     expect(Object.keys(await launchedTools(kernel, fakes))).toEqual([...KERNEL_TOOL_NAMES, ...shippedUngrantedToolNames()]);
     expect(kernel.contributions.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(shippedRoutes());
