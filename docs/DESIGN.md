@@ -13,6 +13,7 @@ Phase 0 is done: the owner approved the design system and the GUI v1 mockups on 
 | Component guidelines and previews | `docs/design/design-system/components/` | One folder per component: `README.md` + `preview.html` |
 | Avatar system | `docs/design/avatar/avatar.css`, `avatar.js` | The stitched sea creatures and their motion, as used by the mockup |
 | Integrations mockup (phase 6): the Integrations screen, the Connect GitHub sheet, every state in light and dark, clickable | `docs/design/mockups/integrations.html` | One HTML file, no build. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. The owner approves it by merging the PR that adds it (D9). Screenshots and the token audit: [evidence](evidence/phase-6-integrations-mockup/README.md). The GitHub App views (D36) are in the same file: [evidence](evidence/github-app-mockup/README.md) |
+| GUI v2 mockup (phase 7): Tasks, Playbooks, Schedules & triggers, Memory, Budget & audit, Settings and the Integrations token-to-App path, every state in light and dark, clickable | `docs/design/mockups/gui-v2.html` | One HTML file, no build. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. The owner approves it by merging the PR that adds it (D9). Screenshots, the token audit and the field map: [evidence](evidence/gui-v2-mockup/README.md). What it commits items 03–09 to: [Phase 7: GUI v2](#phase-7-gui-v2) |
 
 The artefact links are private to the owner; the repo copies are the reviewable record. When the design system changes, update the artefact first, then re-copy here in the same commit.
 
@@ -107,7 +108,7 @@ D36 adds a GitHub App connect beside the token path; the contract is in [integra
 
 ### What the mockup commits the app's Connect sheet to (wave 2)
 
-- **Connect GitHub opens the choice** when nothing is connected, from the empty state's button and from `⌘K`. "Paste a token" opens the token sheet above, unchanged. Replace token on a token connection still opens the token sheet directly. Studio keeps one GitHub connection at a time, so an App connection has no Replace token: `⌘K` lists Connect GitHub disabled with "disconnect first".
+- **Connect GitHub opens the choice** when nothing is connected, from the empty state's button and from `⌘K`. "Paste a token" opens the token sheet above, unchanged. Replace token on a token connection still opens the token sheet directly. Studio keeps one GitHub connection at a time, so an App connection has no Replace token: `⌘K` lists Connect GitHub disabled with "disconnect first". The one exception is the proposed switch in [Phase 7: GUI v2](#the-token-to-app-switch-a-proposal): while it runs, the token stays in use until the App connects, so the two exist together for those minutes and never after.
 - **The setup dialog** (Dialog, 480px) says the two clicks on GitHub are the owner's and that Studio receives the key itself, lists the two steps with StatusDots (`working` for the step the owner is on, `ok` and a "done" Badge for a finished one, `idle` for the next), says what the App asks for, and shows when the window closes. Cancel, `Esc` and a click on the backdrop all cancel the setup, since the one window must not be left open, and land on the cancelled view. "Open GitHub again" reopens github.com.
 - **A connected App's detail pane** is the token's, with these differences: a `GitHub App` Badge beside `read-only`; rows for the App, the installation and the key (kept in the Keychain, never shown); the access token's expiry with a "renews automatically" Badge in place of the days left (no expiry band, since the owner does nothing); permissions read "Read-only, checked by GitHub" with the list GitHub reported, never "declared by you"; the repos section reads "Repos chosen at install" and says a poll trigger can name only these. There is no Replace token. Disconnect always confirms.
 - **Refusals and failures render in the same dialog** as setup, in `danger` text as the token sheet's refusals do, each with Close and "Set up again" (primary), and with "Paste a token instead" where a token is a way out. The expired, cancelled and write-scoped views link to the owner's GitHub Apps page, since an App the owner already created stays on their account until they delete it.
@@ -119,12 +120,84 @@ D36 adds a GitHub App connect beside the token path; the contract is in [integra
 
 - All the copy above is a proposal the owner can change on this PR, as with the token sheet.
 - The setup window closes 10 minutes after it opens (the mockup shows 14:12 for a 14:02 start). The length is the kernel setup item's call; 10 minutes is a proposal.
-- Studio keeps one GitHub connection at a time. To go from a token to the App (or back), the owner disconnects first. A one-step switch is a later decision.
+- Studio keeps one GitHub connection at a time. This point is replaced by a proposal in [Phase 7: GUI v2](#the-token-to-app-switch-a-proposal): a token connection gets a "Switch to GitHub App" control, so it no longer needs Disconnect first. Going from the App back to a token still disconnects first.
 - The expired and cancelled copy says an App the owner already created stays on GitHub until they delete it, and does not say whether setting up again creates a new App or reuses that one. The write-scoped copy says only "set it up again". Both depend on the kernel setup item.
 - The kernel's other two setup refusals, `setup_not_open` and `state_mismatch`, are answered to the browser tab, so the mockup shows no app state for them. If the app item finds one needs a screen, it adds it with the owner's approval.
 - The empty state's body line still reads "a token you create", since the existing views are unchanged. The app item should widen it to both ways when it builds the choice.
 - The mockup does not name the Keychain item that holds the App's key; the kernel tokens item does.
 
+## Phase 7: GUI v2
+
+Phase 7 builds six screens (Tasks, Playbooks, Schedules & triggers, Memory, Budget & audit and Settings) and a polish pass on Integrations. As D9 requires, the mockup comes before any screen code: `design/mockups/gui-v2.html`, one HTML file with every screen and every designed state, in light and dark. Its screenshots, its token audit and the map from every field to a kernel column or route are in [the evidence folder](evidence/gui-v2-mockup/README.md). Open the file in a browser and use the review strip, or force a view with the URL hash (`#view=tasks-waiting&theme=dark`). The owner approves the design by merging the PR that adds it. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. The mockup adds no route and no code: items 03–09 build the screens to it, and each adds the routes it reads.
+
+Two owner decisions (2026-10-30) shape it:
+
+- **Hooks moved to phase 9.** The Hooks screen is built with the hook-management mechanism it shows (propose, apply with backup, verified to fire, rollback), and `hooks_installed` does not exist yet (`kernel/src/store/migrations/001_initial.ts`). Phase 7 has no Hooks screen and the mockup draws none. `UI.md` gets the same note from phase 7 item 01.
+- **Tasks shows today's kernel data.** Tasks, playbook runs and sessions, grouped by state, with a click-through to their history and their session log. Linked PRs and tickets, approvals counts and CI state join in phase 8, so the mockup shows none of them.
+
+Each screen has an empty, a loading, a populated, an error and a `Kernel unreachable` view, and a waiting-on-you view where it applies. The error view is a route failure: a card inside the screen's body that says which request failed, distinct from the shared band, which means the kernel itself is unreachable. Tasks, Playbooks, Budget & audit and Settings have a waiting-on-you view. Schedules & triggers and Memory have none, and [the evidence](evidence/gui-v2-mockup/README.md#screens-without-a-waiting-on-you-view) says why.
+
+### What the mockup commits items 03–09 to
+
+- **Shell (every item):** the GUI v1 window (240px sidebar, 52px title bar, 320px inspector, 360px list pane, all tokens), its `Kernel unreachable` band, and `integrations.html`'s URL-hash state hook (`#view=<view>&theme=<light|dark|system>`, its own-keys-only view lookup and its fall-back to the default view on an odd hash). The sidebar lists Chat, Team, Approvals, Sessions and Integrations, a rule, then Tasks, Playbooks, Schedules & triggers, Memory, Budget & audit and Settings. Every action is reachable by keyboard: `Esc` closes, focus is trapped in a dialog and returns to the control that opened it (to a stable row when that control is gone), and `J`/`K` move between cards, rows and files. A stale read stays visible with "last known" while the band shows, and every control that needs the kernel is disabled.
+- **Keyboard map (every item):** `⌘5` Integrations (unchanged), `⌘6` Tasks, `⌘7` Playbooks, `⌘8` Schedules & triggers, `⌘9` Memory, `⌘,` Settings, Budget & audit by `⌘K` only. In a browser tab `⌃` replaces `⌘`, as in GUI v1. `?` opens a keyboard map that lists every shortcut and every palette command by screen. This is a proposal (open point 5).
+- **Tasks (item 03):**
+  - A board of four columns: Waiting on you, Working, Parked, Done today. A card is one of three kinds (task, playbook run, session) and shows its kind, id, a state Badge, its title and who it is for. A session or a run is its own card only when no task owns it.
+  - A card opens a click-through: the item's facts, its history as EventCards, and its session log (StreamingLog, with `live` or `kept`).
+  - A card that waits on you has an `attention` edge. The empty state is "No tasks yet." with one action, Ask Wright.
+  - It shows no linked PRs, approvals counts or CI state.
+- **Playbooks (item 04):**
+  - A Table of intent, trigger, dedupe key, priority, model, mode, last run, tokens today against the limit (dollars only as "≈ at API rates", D24) and an on/off switch.
+  - A detail page shows who set each policy field ("set by you", "proposed by Wright"), the trigger, recent runs and tokens, with Edit in English (opens Wright's thread with the playbook named), Edit fields and Version history.
+  - Field-level edit shows a live diff and saves as the next version through `POST /playbooks/:id/set`, and a refusal is shown as the kernel gives it. Version history is read-only: going back writes a new version.
+  - A change makes an enabled playbook a draft again, as the kernel does, and the page says so.
+- **Schedules & triggers (item 05):**
+  - A timeline of upcoming wake-ups, polls and cron fires, with a list of the triggers and an on/off switch for each.
+  - A firing history that keeps each missed fire's reason (`missed_paused`, `missed_kill_switch`, `rate_limited`, `connector_missing`, `source_error`), filterable to the fires that did not happen.
+  - A missed poll caused by a missing connector points to Integrations; the screen holds no action of its own.
+- **Memory (item 06):**
+  - A per-agent tree (role, preferences, people, lessons) and shared memory; a file view with its path, size, modified time and content hash; an edit with a live diff and Save.
+  - **Changed since you opened it:** a save is checked against the hash it was opened at. When the file changed, nothing is overwritten. The screen shows the file on disk beside the owner's edit and the diff between them, with four ways out: see who wrote it in the audit log, Discard my edit, Copy my version, and Edit on top of the current version (which carries over the lines the owner added, not the ones removed).
+  - Only files under `memory/` can be edited here; the settings the kernel enforces live in `config/agents/<id>.json`, which Team owns.
+- **Budget & audit (item 07):**
+  - Tokens counted per day (cache reads shown, never counted); per agent against its daily limit and its sessions at once; per playbook against its daily limit; the subscription cap windows with their reset times. Every limit is in tokens or sessions at once, and a dollar figure is only "≈ at API rates" (D24).
+  - A meter turns `attention` only at the limit, and an agent at its limit is the waiting-on-you view.
+  - The audit log is the full event log, newest first, with Kind, Agent, Playbook and Time range filters, 8 rows a page and a note that it is append-only. The palette opens it, and "Show refused starts" opens it already filtered.
+- **Settings (item 08):**
+  - The auth provider is read-only: the provider, the account, its health, the token's creation and life, and the Keychain item that holds it (never the value). The terminal commands that change it are the three the app already shows (`claude setup-token`, `security add-generic-password -a loomwright-studio -s loomwright-studio-oauth -w`, `studio service install`), each with Copy. There is no secret field, no OAuth button and no sign-in of any kind (invariant 6).
+  - Then the kernel's data location, the notifier in use and the Loomwright install (read-only), and the app's own settings: launch at login, notifications and theme. Those three live in the app, never in the kernel's store.
+- **Integrations (item 09):** polish only. The one change is the token-to-App switch below. Every other Integrations view is approved in `integrations.html` and unchanged.
+- **Components and tokens:** List, Card, Badge, StatusDot, Dialog, Input, Toast, DiffView, StreamingLog, EventCard and Avatar, plus Button, CommandPalette and Table, as the design system defines them. The mockup adds no token. It adds the classes and values the [evidence README](evidence/gui-v2-mockup/README.md#token-audit) names and justifies one by one, and it names where it departs from a component README (open point 13).
+- **Branding (invariant 7):** "Wright, powered by Claude" appears only as the palette's attribution. Nothing says or looks like the Claude command-line tool.
+
+### The token-to-App switch (a proposal)
+
+Today a token connection's detail offers Replace token and Disconnect, so moving to the GitHub App means pressing Disconnect first (the owner had to on 2026-10-30). The mockup proposes one added control, "Switch to GitHub App", on the token-connected detail. The owner approves it on this PR, as with the rest of the mockup. It replaces the earlier "disconnects first" open point under "GitHub App connect", and it qualifies the "one GitHub connection at a time" line there.
+
+- **The token stays in use until the App connects.** The switch opens the existing App setup dialog over the token connection. While it runs, GitHub stays connected through the token and the row reads "connected · token · setting up the App".
+- **A cancel, `Esc` or a failed setup leaves the token connected.** The failed view says nothing changed.
+- **When the install succeeds,** the connection becomes the App's and the token's Keychain item is removed (the view "App connected, token gone").
+- **Going from the App back to a token** still disconnects first, and an App connection still has no Replace token.
+- The interim state maps to the existing `connectors` row: `method` stays `token` until the install succeeds, so no column and no migration is new ([the field map](evidence/gui-v2-mockup/README.md#integrations-the-proposed-token-to-app-path)). The kernel already supports this; item 09 builds the control.
+
+### Open points for the owner (on this PR)
+
+The mockup's copy and layout are proposals the owner can change on this PR, as with the earlier mockups. These need a decision, or an owner's word that the proposal stands:
+
+1. **`tasks.state` is free text** (`kernel_task_create`: "the kernel defines no states"). The four columns are the screen's grouping, and the mockup shows no "other" column. Either the kernel closes the set, or the screen maps the words it knows and shows the rest somewhere.
+2. **Memory shows four files per agent plus `shared/`.** `handoffs/` and the playbook mirrors are not shown. Say whether they should be.
+3. **`memory_updated` is not an event the kernel writes today** ([open questions](OPEN_QUESTIONS.md)). Item 06 plans one for the owner's own writes. The audit log shows one for Mason's lesson and the conflict's "See who wrote it in the audit log" depends on it, so until an agent's write is recorded too, a write by an agent leaves nothing to find. Decide whether the kernel tracks memory writes by agents, or the button and the row go.
+4. **`studio auth …` is not a command.** The phase 7 requirement names it in Settings' copy, and the only commands that exist are the three above. The mockup shows those three. A real `studio auth` is a later decision.
+5. **The keymap is a proposal:** `⌘6`–`⌘9` for Tasks, Playbooks, Schedules & triggers and Memory, `⌘,` for Settings, and Budget & audit by `⌘K` only (no digit).
+6. **Field-level edit shows eight fields; the owner's write route takes five.** `POST /playbooks/:id/set` takes `dedupe_key`, `priority`, `model`, `token_limit` and `mode`. Name, intent and effort have no owner write route today, and `mode: live` is refused in phase 6. Item 04 adds a write for the three, or the edit shows them read-only.
+7. **A saved edit makes an enabled playbook a draft again** (the kernel's rule: a changed playbook is reviewed before it runs). The mockup says so. Say whether that is right for an owner's one-field edit.
+8. **The On switch.** Only turning a playbook off has an owner route. Turning a draft or disabled playbook on is Wright's request plus the owner's approval, so item 04 decides what the switch does when it is off.
+9. **The token-to-App switch** is the proposal above. It replaces the "disconnects first" point.
+10. **A trigger has no name.** A trigger shows its playbook's name, or its action's text when it has none (Friday wrap-up, Rotate the sandbox token). A wake-up's firing history has no route in item 05's plan.
+11. **The audit log needs two derivations.** The existing `GET /events` omits `actor`, and `events` has no agent or playbook column, so item 07's `GET /audit` returns the actor and derives the Agent and Playbook filters from the session or the payload.
+12. **The App's display name** is not a `connectors` column (only `app_slug`). The approved App views already show it, and this mockup copies them.
+13. **Departures from component READMEs:** the switch is 32×18 (Table README: 26×16); the usage meter is 4px (Card README: 3px) and turns `attention` only at the limit (Card README: from 80%); table cells wrap (Table README: truncate); a toast stays 4s in the mock (Toast README: 6s). Say which side moves.
+
 ## Not in v1 (deferred to GUI v2 or later)
 
-Field-level playbook editing, memory file viewing, a group thread with several agents, and any tool connectors beyond GitHub and Loomwright.
+A group thread with several agents, and any tool connectors beyond GitHub and Loomwright. The playbook and memory work this list used to carry is designed in Phase 7: GUI v2, above.
