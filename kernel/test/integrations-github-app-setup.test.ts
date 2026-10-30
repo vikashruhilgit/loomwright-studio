@@ -12,7 +12,6 @@ import type { ApiServer } from "../src/api/index.js";
 import { mergeContributions } from "../src/features/index.js";
 import type { ContributedRouteRequest } from "../src/features/index.js";
 import { GITHUB_APP_SETUP_STATUS, GITHUB_APP_SETUP_WINDOW_MS, createGitHubAppSetup } from "../src/integrations/github/app-setup.js";
-import { githubAppPort } from "../src/integrations/github/app-port.js";
 import { githubAppRoutes } from "../src/integrations/github/app-routes.js";
 import { GITHUB_APP_SETUP_REFUSALS } from "../src/integrations/index.js";
 import type { ConnectorRow, GitHubAppPort, GitHubAppPortError, GitHubAppPortResult, GitHubAppSetupRefusal } from "../src/integrations/index.js";
@@ -971,13 +970,12 @@ describe("a request without the API's origin (design constraint 3)", () => {
 });
 
 describe("the shipped routes", () => {
-  it("default to the stub port: a full setup shows install_failed, never a throw", async () => {
-    const setup = createGitHubAppSetup({ port: githubAppPort, fetch: fakeGitHub() });
-    const f = await flow(githubAppPort, fakeGitHub());
-    const { createState } = await toCreate(f);
-    const res = await f.ret({ code: CODE, state: createState });
-    expect([res.status, headingOf(res)]).toEqual([502, "Setup did not finish"]);
-    expect(setup.routes.map((r) => `${r.method} ${r.path}`)).toEqual([`POST ${SETUP}`, `POST ${CANCEL}`, `GET ${START}`, `GET ${RETURN}`, `GET ${INSTALLED}`]);
-    expect(setup.routes.filter((r) => r.unauthenticated === true).map((r) => r.path)).toEqual([START, RETURN, INSTALLED]);
+  // The shipped port is real (`app-port.ts`) and its default Keychain is the
+  // real one, so no setup is driven through it here: the flow is pinned above
+  // over a fake port, and the port in `integrations-github-app-port.test.ts`.
+  it("are the five routes, the three browser ones without the token", () => {
+    const routes = githubAppRoutes();
+    expect(routes.map((r) => `${r.method} ${r.path}`)).toEqual([`POST ${SETUP}`, `POST ${CANCEL}`, `GET ${START}`, `GET ${RETURN}`, `GET ${INSTALLED}`]);
+    expect(routes.filter((r) => r.unauthenticated === true).map((r) => r.path)).toEqual([START, RETURN, INSTALLED]);
   });
 });
