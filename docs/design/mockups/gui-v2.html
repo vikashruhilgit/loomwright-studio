@@ -981,7 +981,9 @@ function formErrs(f){
   const keys=String(f.dedupe).split(',').map(x=>x.trim()), unk=keys.filter(k=>!KEY_FIELDS.includes(k));
   if(keys.length===1&&!keys[0]) e.dedupe='Name at least one key field: '+KEY_FIELDS.join(', ')+'.';
   else if(unk.length) e.dedupe=(unk[0]?'“'+unk[0]+'”':'An empty entry')+' is not a key field. Use '+KEY_FIELDS.join(', ')+'.';
-  if(!/^[1-9]\d*$/.test(String(f.limit).trim())) e.limit='Use a whole number of tokens greater than 0.';
+  else if(new Set(keys).size!==keys.length) e.dedupe='Each key field can be listed once.';
+  const lim=String(f.limit).trim();
+  if(!/^[1-9]\d{0,15}$/.test(lim)||!Number.isSafeInteger(Number(lim))) e.limit='Use a whole number of tokens greater than 0, up to 16 digits.';
   return e;
 }
 const formBad=f=>Object.keys(formErrs(f)).length>0;
