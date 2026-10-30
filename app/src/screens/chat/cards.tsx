@@ -3,11 +3,12 @@
 // playbook card and the trigger card. Each action is one contract write
 // through the bridge; a refusal shows the kernel's words as text and leaves
 // the card in place. Every kernel string is a React text child only.
-import { Fragment, useId, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import type { Approval, PlaybookListing, StudioBridge, Trigger } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
 import { EventCard } from "../../components/EventCard/EventCard";
-import { SelectField, TextField } from "../../components/Input/Input";
+import { POLICY_FIELDS, PolicyEditor, policyRows, provenance } from "../../components/PlaybookPolicy/PlaybookPolicy";
+import type { PolicyField } from "../../components/PlaybookPolicy/PlaybookPolicy";
 import type { ResourceName } from "../../store/resources";
 import { approvalLink, approvalSourceText } from "../approvals/subject";
 import { focusLost, inFlightGuard, navigate, rehashIfCurrent, triggerSchedule, triggerState, when, write } from "./model";
@@ -152,13 +153,6 @@ export function CharterCard({ api, approval, agent, onEditInEnglish }: CharterCa
   );
 }
 
-/** "proposed" when Wright set a value, "set by owner" when the owner did, nothing otherwise. */
-export function provenance(setBy: string | null): string {
-  if (setBy === "wright") return "proposed";
-  if (setBy === "owner") return "set by owner";
-  return "";
-}
-
 /** A value and its provenance tag, as text. */
 function FieldValue({ value, setBy, mono = false }: { readonly value: string; readonly setBy?: string | null; readonly mono?: boolean }) {
   const tag = setBy === undefined ? "" : provenance(setBy);
@@ -181,175 +175,8 @@ function Field({ label, value, setBy, mono = false }: { readonly label: string; 
   );
 }
 
-/**
- * The owner-settable policy fields the card edits, by the kernel's own names. With
- * `READ_ONLY_POLICY_FIELDS` they are exactly the kernel's `PLAYBOOK_POLICY_FIELDS`
- * (kernel/src/playbooks/store.ts), in its order; kernel/test/console-contract.test.ts
- * reads this file as text and pins that.
- */
-export const POLICY_FIELDS = ["dedupe_key", "priority", "model", "token_limit"] as const;
-/**
- * Kernel policy fields the card shows but does not edit. `mode`: phase 6 accepts only
- * `draft` (the kernel refuses `live` with `live_mode_not_in_phase_6`), so there is
- * nothing to choose yet.
- */
-export const READ_ONLY_POLICY_FIELDS = ["mode"] as const;
-export type PolicyField = (typeof POLICY_FIELDS)[number];
-
-/** What the Model row reads with no model: the kernel refuses a dry run without one. */
-export const MODEL_NOT_SET = "not set: needed before a dry run";
-
 /** The kernel has no owner route that turns a disabled playbook back on (only an approved draft is enabled). */
 export const TURN_ON_GAP = "Turn on: not available from the kernel";
-
-/** One settable row of the card: its label, the value as shown, and what its editor starts with. */
-interface PolicyRow {
-  readonly field: PolicyField;
-  readonly label: string;
-  /** The row's name in its controls' accessible names ("Edit model", "Set model"). */
-  readonly name: string;
-  readonly shown: string;
-  readonly setBy: string | null;
-  readonly mono: boolean;
-  /** The editor's first value. */
-  readonly draft: string;
-  /** Text rows only: the line under the controls. */
-  readonly hint: string | null;
-}
-
-/**
- * The kernel stores a dedupe key as a JSON list of field names; its editor
- * takes them comma-separated (`parseOwnerPolicyValue`). The spec is untrusted
- * and read by type only: anything but a list of strings is offered as-is.
- */
-function dedupeDraft(spec: string | null): string {
-  if (spec === null) return "";
-  try {
-    const parsed: unknown = JSON.parse(spec);
-    if (Array.isArray(parsed) && parsed.every((f) => typeof f === "string")) return parsed.join(", ");
-  } catch {
-    // Not JSON: offer the text as the kernel sent it.
-  }
-  return spec;
-}
-
-function policyRows(playbook: PlaybookListing): readonly PolicyRow[] {
-  return [
-    {
-      field: "dedupe_key",
-      label: "Dedupe key",
-      name: "dedupe key",
-      shown: playbook.dedupe_key_spec ?? "not set",
-      setBy: playbook.dedupe_key_set_by,
-      mono: true,
-      draft: dedupeDraft(playbook.dedupe_key_spec),
-      hint: "comma-separated fields; none clears it",
-    },
-    { field: "priority", label: "Priority", name: "priority", shown: playbook.priority, setBy: playbook.priority_set_by, mono: false, draft: playbook.priority, hint: null },
-    {
-      field: "model",
-      label: "Model",
-      name: "model",
-      shown: playbook.model ?? MODEL_NOT_SET,
-      setBy: playbook.model_set_by,
-      mono: false,
-      draft: playbook.model ?? "",
-      hint: "none clears it",
-    },
-    {
-      field: "token_limit",
-      label: "Token limit per day",
-      name: "token limit per day",
-      shown: playbook.token_limit_per_day === null ? "not set" : String(playbook.token_limit_per_day),
-      setBy: playbook.token_limit_set_by,
-      mono: false,
-      draft: playbook.token_limit_per_day === null ? "" : String(playbook.token_limit_per_day),
-      hint: "none clears it",
-    },
-  ];
-}
-
-interface PolicyEditorProps {
-  readonly row: PolicyRow;
-  /** This editor's Set is pending. */
-  readonly busy: boolean;
-  /** A card write is pending: the editor stays as it is (text, Set, Cancel, Escape) until it answers. */
-  readonly held: boolean;
-  readonly onConfirm: (value: string) => void;
-  readonly onCancel: () => void;
-}
-
-/**
- * A row's inline editor: Priority a select, the others a text field, then Set
- * and Cancel on one line, and the hint on its own line under them, so a hint
- * never moves the controls. Enter submits (the form's submit path carries the
- * card's guard); Escape cancels. While held, nothing in it changes, so a
- * pending Set always answers the editor, and the text, that sent it.
- */
-function PolicyEditor({ row, busy, held, onConfirm, onCancel }: PolicyEditorProps) {
-  const [value, setValue] = useState(row.draft);
-  const hintId = useId();
-  const label = `New ${row.name}`;
-  return (
-    <form
-      className="chat-edit"
-      aria-label={`Set ${row.name}`}
-      onSubmit={(event) => {
-        event.preventDefault();
-        // Enter in the field submits too, so the guard sits on this path, not only on the button.
-        onConfirm(value);
-      }}
-      onKeyDown={(event) => {
-        if (event.key !== "Escape") return;
-        event.preventDefault();
-        event.stopPropagation();
-        if (!held) onCancel();
-      }}
-    >
-      <div className="chat-edit-controls">
-        {row.hint === null ? (
-          <SelectField
-            label={label}
-            aria-label={label}
-            aria-disabled={held ? "true" : undefined}
-            value={value}
-            onChange={(event) => {
-              if (!held) setValue(event.target.value);
-            }}
-            autoFocus
-          >
-            <option value="low">low</option>
-            <option value="normal">normal</option>
-            <option value="high">high</option>
-          </SelectField>
-        ) : (
-          <TextField
-            label={label}
-            aria-label={label}
-            aria-describedby={hintId}
-            value={value}
-            onChange={(event) => {
-              if (!held) setValue(event.target.value);
-            }}
-            readOnly={held}
-            autoFocus
-          />
-        )}
-        <Button variant="primary" size="standalone" type="submit" aria-label={`Set ${row.name}`} loading={busy} disabled={held && !busy}>
-          Set
-        </Button>
-        <Button variant="ghost" size="standalone" onClick={onCancel} disabled={held}>
-          Cancel
-        </Button>
-      </div>
-      {row.hint === null ? null : (
-        <p className="chat-edit-hint" id={hintId}>
-          {row.hint}
-        </p>
-      )}
-    </form>
-  );
-}
 
 /** The Turn off write's path, which is also its key in the card's in-flight guard. */
 const OFF = "/playbooks/:id/off";

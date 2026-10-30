@@ -22,6 +22,7 @@ import { sharedNames } from "../team/model";
 import { ApprovalCard, CharterCard, PlaybookCard, TriggerCard } from "./cards";
 import { ChatComposer } from "./ChatComposer";
 import { useHash } from "./CrewSection";
+import { takeComposerHandoff } from "./handoff";
 import { ConnectorLine, DraftCard, PollQueuedLine, SkipGroupCard, groupThreadRows, useDraftList } from "./integrationCards";
 import type { ThreadRow } from "./integrationCards";
 import {
@@ -287,6 +288,15 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
 
   const focusComposer = useCallback(() => inputRef.current?.focus(), []);
   useEffect(() => onComposerFocusRequest(agent, focusComposer), [agent, focusComposer]);
+  // A line another screen handed off for this agent (Playbooks' Edit in English) fills the composer once, on
+  // mount, and takes focus. Sends nothing. An effect, not a state initializer: StrictMode runs initializers twice,
+  // and the second would find the line already taken; the state it sets survives StrictMode's effect re-run.
+  useLayoutEffect(() => {
+    const handedOff = takeComposerHandoff(agent);
+    if (handedOff === undefined) return;
+    setText(handedOff);
+    focusComposer();
+  }, [agent, focusComposer]);
 
   // The live store refetches only the newest page. Once older pages are loaded, an item that slides
   // off that page (a newer one pushed it out) would be in neither list: keep it with the older ones.
