@@ -109,7 +109,8 @@ export interface GitHubAppSetup {
 interface SetupWindow {
   readonly startState: string;
   readonly expiresAtMs: number;
-  phase: "awaiting_create" | "awaiting_install";
+  // `converting`: the return spent the create state and the conversion / storing is in flight; no route takes the window until it settles.
+  phase: "awaiting_create" | "converting" | "awaiting_install";
   createState: string | null;
   installState: string | null;
 }
@@ -290,8 +291,9 @@ export function createGitHubAppSetup(deps: GitHubAppSetupDeps): GitHubAppSetup {
     if (!g.ok) return refuse(req, g.reason);
     const win = g.win;
     if (win.phase !== "awaiting_create" || !sameState(req.query["state"], win.createState)) return refuse(req, "state_mismatch");
-    // Spent on first use, before anything is awaited: a replay is a mismatch.
+    // Spent on first use, and the phase moved off `awaiting_create`, before anything is awaited: a replay is a mismatch and a start-page reload cannot mint a new create `state` mid-conversion.
     win.createState = null;
+    win.phase = "converting";
     const converted = await convert(req.query["code"]);
     // The window may have been cancelled, replaced or have expired during the call: store nothing then.
     const after = gate(req.now());

@@ -439,6 +439,23 @@ describe("the window (AC3, AC4, AC5)", () => {
     expect(storeApp).toHaveBeenCalledTimes(1);
   });
 
+  it("refuses a start-page reload while the conversion is in flight: no second create state, conversion or storeApp", async () => {
+    const { port, storeApp } = fakePort();
+    let release: () => void = () => undefined;
+    const github = fakeGitHub(() => new Promise<Response>((resolve) => (release = () => resolve(new Response(JSON.stringify(CONVERSION_BODY), { status: 201 })))));
+    const f = await flow(port, github);
+    const { startState, createState } = await toCreate(f);
+    const first = f.ret({ code: CODE, state: createState });
+    await vi.waitFor(() => expect(github).toHaveBeenCalledTimes(1));
+    const reload = await f.startPage(startState);
+    expect(reload.status).toBe(400);
+    expect(headingOf(reload)).toBe("This link is not valid");
+    release();
+    expect((await first).status).toBe(302);
+    expect(github).toHaveBeenCalledTimes(1);
+    expect(storeApp).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a replayed install state: it is spent, and the window with it", async () => {
     const { port, recordInstallation } = fakePort();
     const f = await flow(port, fakeGitHub());
