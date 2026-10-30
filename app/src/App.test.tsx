@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-// The shell: the sidebar's six entries (Chat, Team, Approvals, Sessions,
-// Integrations and the Crew group), routing to each screen, the "kernel
-// unreachable" band and the "kernel not installed" state with the setup
-// commands, and each sidebar entry registered as a palette command.
+// The shell: the sidebar's eleven entries (Chat, Team, Approvals, Sessions,
+// Integrations, then phase 7's Tasks, Playbooks, Schedules, Memory, Budget &
+// audit and Settings, plus the Crew group), routing to each screen, the
+// "kernel unreachable" band and the "kernel not installed" state with the
+// setup commands, and each sidebar entry registered as a palette command.
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { App, SCREENS } from "./App";
@@ -31,17 +32,29 @@ afterEach(() => {
 });
 
 describe("the shell", () => {
-  it("shows the sidebar's six entries: five buttons, Integrations on ⌘5, and the Crew group", async () => {
+  it("shows the sidebar's eleven entries: eleven buttons in nav order, Budget & audit with no key, and the Crew group", async () => {
     await renderApp({ state: "connected", port: 1 });
     const sidebar = within(screen.getByTestId("sidebar"));
-    expect(sidebar.getAllByRole("button").map((b) => b.textContent)).toEqual(["Chat⌘1", "Team⌘2", "Approvals⌘3", "Sessions⌘4", "Integrations⌘5"]);
+    expect(sidebar.getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Chat⌘1",
+      "Team⌘2",
+      "Approvals⌘3",
+      "Sessions⌘4",
+      "Integrations⌘5",
+      "Tasks⌘6",
+      "Playbooks⌘7",
+      "Schedules⌘8",
+      "Memory⌘9",
+      "Budget & audit",
+      "Settings⌘,",
+    ]);
     expect(sidebar.getByRole("heading", { name: "Crew" })).toBeTruthy();
   });
 
   it("routes each entry to its screen, Chat first", async () => {
     await renderApp({ state: "connected", port: 1 });
     expect(screen.getByTestId("screen-chat")).toBeTruthy();
-    for (const id of ["team", "approvals", "sessions", "integrations", "chat"]) {
+    for (const id of ["team", "approvals", "sessions", "integrations", "tasks", "playbooks", "schedules", "memory", "budget", "settings", "chat"]) {
       const entry = SCREENS.find((s) => s.id === id);
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${entry?.nav?.label}`) }));
@@ -84,6 +97,12 @@ describe("the shell", () => {
       ["screens.approvals", "Screens", "⌘3"],
       ["screens.sessions", "Screens", "⌘4"],
       ["screens.integrations", "Screens", "⌘5"],
+      ["screens.tasks", "Screens", "⌘6"],
+      ["screens.playbooks", "Screens", "⌘7"],
+      ["screens.schedules", "Screens", "⌘8"],
+      ["screens.memory", "Screens", "⌘9"],
+      ["screens.budget", "Screens", undefined],
+      ["screens.settings", "Screens", "⌘,"],
     ]);
   });
 });
