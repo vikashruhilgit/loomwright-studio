@@ -1,5 +1,7 @@
 // The test run's notifier guard: while `STUDIO_LIVE` is not "1", no test can
-// spawn `terminal-notifier` or `osascript`. `installNotifierGuard()` wraps
+// spawn `terminal-notifier` or `osascript`, nor `/usr/bin/security`, the
+// owner's real Keychain (`keychain.ts`'s `SECURITY_BIN`; a wave 2 test once
+// stored a fixture GitHub App there through a shipped default writer). `installNotifierGuard()` wraps
 // `spawn`, `spawnSync`, `execFile`, `execFileSync` (the file argument, or the
 // command's first word when the options say `shell: true`) and `exec`,
 // `execSync` (the command string's first word) on `node:child_process` and
@@ -20,6 +22,7 @@
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { basename } from "node:path";
 import { promisify } from "node:util";
+import { SECURITY_BIN } from "../src/auth/keychain.js";
 import { OSASCRIPT_PATH, TERMINAL_NOTIFIER_PATHS } from "../src/notifications/notifier.js";
 
 /** The shared record: the refusals not yet taken, and whether the wrapper is in place. */
@@ -34,6 +37,9 @@ const WRAPPED = Symbol.for("studio.notifierGuard.wrapped");
 
 const REFUSED_NAMES: ReadonlySet<string> = new Set(["terminal-notifier", "osascript"]);
 const REFUSED_PATHS: ReadonlySet<string> = new Set([...TERMINAL_NOTIFIER_PATHS, OSASCRIPT_PATH]);
+/** The real Keychain: refused by path or by name, like a notifier, with its own message. */
+const KEYCHAIN_NAMES: ReadonlySet<string> = new Set(["security"]);
+const KEYCHAIN_PATHS: ReadonlySet<string> = new Set([SECURITY_BIN]);
 
 function record(): GuardRecord {
   const g = globalThis as { [RECORD_KEY]?: GuardRecord };
@@ -60,23 +66,33 @@ export function takeNotifierRefusals(): readonly { file: string }[] {
   return record().refusals.splice(0);
 }
 
-/** Throws, naming each refused binary, when a real notifier was refused since the last take (and clears the list). */
+/** Throws, naming each refused binary, when a real notifier or the real Keychain was refused since the last take (and clears the list). */
 export function assertNoNotifierRefusals(): void {
   const refused = takeNotifierRefusals();
-  if (refused.length > 0) throw new Error(`a real notifier was refused in this test: ${refused.map((r) => r.file).join(", ")}`);
+  if (refused.length > 0) throw new Error(`a real notifier or Keychain was refused in this test: ${refused.map((r) => r.file).join(", ")}`);
 }
 
-function refused(file: string): boolean {
+function refusedNotifier(file: string): boolean {
   return REFUSED_NAMES.has(basename(file)) || REFUSED_PATHS.has(file);
 }
 
-/** Records and throws when `file` is a notifier; otherwise returns. */
+function refusedKeychain(file: string): boolean {
+  return KEYCHAIN_NAMES.has(basename(file)) || KEYCHAIN_PATHS.has(file);
+}
+
+/** Records and throws when `file` is a notifier or the Keychain; otherwise returns. */
 function check(file: unknown): void {
-  if (typeof file !== "string" || !refused(file)) return;
-  record().refusals.push({ file });
-  throw new Error(
-    `real notifier refused in a test run: ${file} (set STUDIO_LIVE=1 for a live harness, or inject a stub notifier: docs/architecture/notifications.md#testing)`,
-  );
+  if (typeof file !== "string") return;
+  if (refusedNotifier(file)) {
+    record().refusals.push({ file });
+    throw new Error(
+      `real notifier refused in a test run: ${file} (set STUDIO_LIVE=1 for a live harness, or inject a stub notifier: docs/architecture/notifications.md#testing)`,
+    );
+  }
+  if (refusedKeychain(file)) {
+    record().refusals.push({ file });
+    throw new Error(`real Keychain refused in a test run: ${file} (set STUDIO_LIVE=1 for a live harness, or inject a Keychain reader, writer or deleter)`);
+  }
 }
 
 /** The executable of a shell command string: its first word, without surrounding quotes. */

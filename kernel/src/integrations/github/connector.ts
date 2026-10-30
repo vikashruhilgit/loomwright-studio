@@ -213,7 +213,7 @@ export interface GitHubConnectorDeps {
   readonly writer?: KeychainWriter;
   /** Default: `securityCliKeychainDeleter()`. */
   readonly deleter?: KeychainDeleter;
-  /** The App's installation-token holder. Default: `githubAppTokens`, the process-wide one. */
+  /** The App's installation-token holder. Default: `githubAppTokens`, the process-wide one; with `keychain` given, a holder over that reader. */
   readonly tokens?: GitHubAppTokens;
   /**
    * A client over `readToken` (a candidate being validated), or, when
@@ -430,7 +430,9 @@ export function createGitHubConnector(deps: GitHubConnectorDeps = {}): GitHubCon
   let reader: KeychainReader | undefined = deps.keychain;
   let writer: KeychainWriter | undefined = deps.writer;
   let deleter: KeychainDeleter | undefined = deps.deleter;
-  const tokens = deps.tokens ?? githubAppTokens;
+  // An injected Keychain gets its own holder (as `createResolvingGitHubClient` does): the
+  // process-wide one reads the real Keychain, which a caller that injected one never meant.
+  const tokens = deps.tokens ?? (deps.keychain !== undefined ? createGitHubAppTokens({ keychain: deps.keychain }) : githubAppTokens);
   const keychain = (): KeychainReader => (reader ??= securityCliKeychain());
   const clientFor = (readToken: (() => string | undefined) | undefined): GitHubClient =>
     deps.clientFor !== undefined
