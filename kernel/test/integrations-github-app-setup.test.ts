@@ -770,6 +770,41 @@ describe("the conversion (Error AC2)", () => {
       expectNoSecrets(f);
     });
   }
+
+  it("stops reading a conversion body past 256 KB and cancels the rest of the stream: conversion_failed, like any bad answer", async () => {
+    const chunk = new TextEncoder().encode("x".repeat(64 * 1024));
+    let pulled = 0;
+    let cancelled = false;
+    // An endless 201 body: only a bounded read ever finishes.
+    const endless = (): Promise<Response> =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              pulled += 1;
+              controller.enqueue(chunk);
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 201 },
+        ),
+      );
+    const { port, storeApp } = fakePort();
+    const f = await flow(port, fakeGitHub(endless));
+    const { startState, createState } = await toCreate(f);
+    const res = await f.ret({ code: CODE, state: createState });
+    expect(res.status).toBe(502);
+    expect(headingOf(res)).toBe("GitHub did not hand the App over");
+    expect(cancelled).toBe(true);
+    // 256 KB is four 64 KB chunks; the fifth crosses the bound (a stream may pull a chunk or two ahead).
+    expect(pulled).toBeLessThanOrEqual(7);
+    expect(storeApp).not.toHaveBeenCalled();
+    expect(connectorEvents().map((e) => e.payload["refused"])).toEqual(["conversion_failed"]);
+    expect(headingOf(await f.startPage(startState))).toBe("No setup is open");
+    expectNoSecrets(f);
+  });
 });
 
 describe("the port (Error AC2)", () => {

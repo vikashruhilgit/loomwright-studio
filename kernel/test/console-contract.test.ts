@@ -153,7 +153,7 @@ describe("the app contract's routes (app/src/api/contract.ts, read as text)", ()
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     const served = new Set([...PHASE1_ROUTES.map(key), ...merged.routes.map(key)]);
     const existing = routes.filter(isExisting);
-    // 31 existing routes: 4 phase 1, then brain, notifications, approvals, triggers, playbooks, agents, and the GitHub App's two owner routes (stubs).
+    // 31 existing routes: 4 phase 1, then brain, notifications, approvals, triggers, playbooks, agents, and the GitHub App's two owner routes (served by the setup flow).
     expect(existing).toHaveLength(31);
     const unserved = existing.filter((r) => !served.has(key(r))).map(key);
     expect(unserved).toEqual([]);

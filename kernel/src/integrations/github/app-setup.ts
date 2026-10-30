@@ -69,6 +69,34 @@ const SLUG = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
 const MAX_CONVERSION_BYTES = 256 * 1024;
 const CONVERSION_TIMEOUT_MS = 15_000;
 
+/**
+ * The body as UTF-8 text, or `undefined` once it passes `max` bytes: reading
+ * stops there and the rest of the stream is cancelled, so an oversized answer
+ * is never buffered whole. `client.ts`'s `readBounded` idiom; that file is the
+ * tokens item's, so this is a local copy.
+ */
+async function readBoundedText(body: ReadableStream<Uint8Array> | null, max: number): Promise<string | undefined> {
+  if (body === null) return "";
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > max) {
+        await reader.cancel().catch(() => undefined);
+        return undefined;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
 /** The HTTP status each refusal answers (the table in `docs/architecture/github-app-setup.md`). */
 export const GITHUB_APP_SETUP_STATUS: Readonly<Record<GitHubAppSetupRefusal, number>> = Object.freeze({
   setup_not_open: 400,
@@ -269,8 +297,8 @@ export function createGitHubAppSetup(deps: GitHubAppSetupDeps): GitHubAppSetup {
         await res.body?.cancel().catch(() => undefined);
         return undefined;
       }
-      const text = await res.text();
-      if (text.length > MAX_CONVERSION_BYTES) return undefined;
+      const text = await readBoundedText(res.body, MAX_CONVERSION_BYTES);
+      if (text === undefined) return undefined;
       return parseConversion(JSON.parse(text));
     } catch {
       return undefined;
