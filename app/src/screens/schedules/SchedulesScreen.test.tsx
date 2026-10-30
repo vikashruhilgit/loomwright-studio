@@ -308,6 +308,35 @@ describe("the states", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Refresh" }));
   });
 
+  it("a plain first load leaves focus where it was: nothing armed the Try again hand-off", async () => {
+    await start(populated());
+    await screen.findByTestId(IDS.timeline);
+    expect(document.activeElement).toBe(document.body);
+    expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Refresh" }));
+  });
+
+  it("Try again does not steal focus from a control the user moved to before the answer landed", async () => {
+    let release: (value: ApiResult<unknown>) => void = () => undefined;
+    const held = new Promise<ApiResult<unknown>>((resolve) => {
+      release = resolve;
+    });
+    const kernel = await start({ ...populated(), schedule: () => refused(500, { error: "store_unreadable" }) });
+    const retry = await screen.findByTestId(IDS.retry);
+    retry.focus();
+    kernel.schedule = () => held;
+    fireEvent.click(retry);
+    const elsewhere = document.createElement("button");
+    document.body.appendChild(elsewhere);
+    try {
+      elsewhere.focus();
+      release(ok({ entries: kernel.entries }));
+      await screen.findByTestId(IDS.timeline);
+      expect(document.activeElement).toBe(elsewhere);
+    } finally {
+      elsewhere.remove();
+    }
+  });
+
   it("a route failure with data: the rows stay and a notice says what was not refreshed", async () => {
     const kernel = await start(populated());
     await screen.findByTestId(IDS.timeline);
@@ -465,6 +494,30 @@ describe("the confirm for a once trigger whose time has passed", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(sw));
     expect(kernel.fake.requests.filter((r) => r.req.method === "POST")).toHaveLength(1);
+  });
+
+  it("when nothing held focus as the confirm opened, closing it lands focus on that trigger's switch", async () => {
+    await start({ ...populated(), toggle: needsConfirm });
+    await screen.findByTestId(IDS.triggers);
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.click(screen.getByRole("switch", { name: "Morning digest trigger is off" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /Cancel/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("switch", { name: "Morning digest trigger is off" })));
+  });
+
+  it("closing it does not pull focus to the switch when focus is already on the control that had it", async () => {
+    await start({ ...populated(), toggle: needsConfirm });
+    await screen.findByTestId(IDS.triggers);
+    const other = screen.getAllByRole("switch", { name: /Weekly changelog draft/ })[0] as HTMLElement;
+    other.focus();
+    fireEvent.click(screen.getByRole("switch", { name: "Morning digest trigger is off" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /Cancel/ }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await sleep(30);
+    expect(document.activeElement).toBe(other);
   });
 
   it("Cancel closes it the same way", async () => {
