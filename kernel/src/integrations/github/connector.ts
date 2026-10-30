@@ -39,17 +39,20 @@
 // deleted, so `removeApp` can still find it), the App's installation deletes
 // the PAT item, and a disconnect deletes every GitHub credential item. An
 // `app` row raises no expiry warning (the installation token renews silently
-// every hour); a mint
-// GitHub answers 401 or 404 reads `rejected`, with one notification
-// (`checkGitHubAppMint`).
+// every hour); a mint that GitHub answers 401 or 404 makes the row read
+// `rejected`, with one notification (`checkGitHubAppMint`).
+//
+// The connector and the App port change the same Keychain items, row columns
+// and token holder, so both run on one queue (`credential-lock.ts`): a token
+// set never interleaves with an App installation or removal.
 //
 // Mechanism only (invariant 1): the kernel checks, stores and warns. The
 // warning thresholds (`GITHUB_EXPIRY_NOTICE_DAYS`) are the safety kernel's,
 // fixed, like the read-only rule (invariant 3).
 //
 // The `studio` CLI loads it, so it imports only types, the feature seam, the
-// Keychain module, the client, the store helpers and its CLI verb: never the
-// Agent SDK, the session manager or `kernel.ts`
+// Keychain module, the client, the credential lock, the store helpers and its
+// CLI verb: never the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the registry's module graph).
 import { WRITE_ARG, securityCliKeychain, securityCliKeychainDeleter, securityCliKeychainWriter } from "../../auth/keychain.js";
 import type { KeychainDeleter, KeychainReader, KeychainWriter } from "../../auth/keychain.js";
@@ -82,6 +85,8 @@ import {
 import type { GitHubAppTokens, WritePermission } from "./app-token.js";
 import { GITHUB_KEYCHAIN_SERVICE, createGitHubClient, resolveGitHubTokenProvider } from "./client.js";
 import type { GitHubClientDeps } from "./client.js";
+import { githubCredentialLock } from "./credential-lock.js";
+import type { GitHubCredentialLock } from "./credential-lock.js";
 
 /** The connector kind this file owns. */
 export const GITHUB_KIND: ConnectorKind = "github";
@@ -217,6 +222,8 @@ export interface GitHubConnectorDeps {
    * method rule.
    */
   readonly clientFor?: (readToken: (() => string | undefined) | undefined, keychain: KeychainReader) => GitHubClient;
+  /** The queue every call runs on. Default: `githubCredentialLock`, the one the App port shares. */
+  readonly lock?: GitHubCredentialLock;
 }
 
 /** What `setToken` is told beside the token. */
@@ -225,7 +232,12 @@ export interface SetTokenOptions {
   readonly declaredReadOnly?: boolean;
 }
 
-/** The GitHub connector's calls. One instance serializes its own calls (set, disconnect, refresh), so two never interleave their Keychain steps. */
+/**
+ * The GitHub connector's calls. They run one at a time on the queue the App
+ * port shares (`githubCredentialLock` by default), so no two credential
+ * changes (set, disconnect, refresh, or the App's store, installation or
+ * removal) interleave their Keychain or row steps.
+ */
 export interface GitHubConnector {
   /** Validate `token`, then store it (a replace when one is stored). Never throws. */
   setToken(store: Store, token: string, now: () => Date, opts?: SetTokenOptions): Promise<ConnectorOutcome>;
@@ -427,12 +439,11 @@ export function createGitHubConnector(deps: GitHubConnectorDeps = {}): GitHubCon
         ? createGitHubClient({ readToken })
         : createResolvingGitHubClient({ keychain: keychain() }, tokens);
 
-  // One call at a time: a set, disconnect or refresh waits for the one before it to settle.
-  let queue: Promise<unknown> = Promise.resolve();
+  // One call at a time, on the queue the App port shares (`credential-lock.ts`): a set,
+  // disconnect or refresh waits for any connector or App port call before it to settle.
+  const lock = deps.lock ?? githubCredentialLock;
   function exclusive(fn: () => Promise<ConnectorOutcome>): Promise<ConnectorOutcome> {
-    const run = queue.then(fn, fn);
-    queue = run.catch(() => undefined);
-    return run;
+    return lock.run(fn);
   }
 
   /** Any throw from `fn` (a store failure, a bug) answers a fixed failure: no message of it is kept. */

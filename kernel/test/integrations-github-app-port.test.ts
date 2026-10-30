@@ -32,15 +32,20 @@ import {
   GITHUB_KEYCHAIN_ACCOUNT,
   applyGitHubAppMintFailure,
   checkGitHubAppMint,
+  createGitHubConnector,
   createResolvingGitHubClient,
   githubConnectorPart,
   githubConnectorRow,
   listConnectors,
 } from "../src/integrations/github/connector.js";
+import { createGitHubCredentialLock } from "../src/integrations/github/credential-lock.js";
+import type { GitHubCredentialLock } from "../src/integrations/github/credential-lock.js";
 import { createGitHubAppPort as exportedCreate, githubAppPort as exportedPort } from "../src/integrations/index.js";
 import type { GitHubAppConversion, GitHubAppPort, GitHubAppPortResult } from "../src/integrations/index.js";
 import { events, loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
+import { FakeGitHubClient } from "./fixtures/github-fake.js";
+import type { FakeGitHubData } from "./fixtures/github-fake.js";
 
 const T0 = "2026-10-30T12:00:00.000Z";
 const HOUR = 3_600_000;
@@ -115,6 +120,8 @@ interface World {
   /** A mint, or the whole network, throws this. */
   fetchThrows: Error | undefined;
   repos: string[];
+  /** Every request waits on this first, when set. */
+  hold: Promise<void> | undefined;
   fetch: typeof fetch;
 }
 
@@ -137,6 +144,7 @@ function makeWorld(): World {
   } as unknown as World;
   const json = (body: unknown, status: number): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   world.fetch = (async (input: unknown, init?: RequestInit) => {
+    if (world.hold !== undefined) await world.hold;
     if (world.fetchThrows !== undefined) throw world.fetchThrows;
     const url = new URL(String(input));
     const bearer = (new Headers(init?.headers).get("authorization") ?? "").replace(/^Bearer /, "");
@@ -824,6 +832,137 @@ describe("never throws or rejects, whatever it is given (AC11)", () => {
     expect(a.ok && b.ok).toBe(true);
     expect([...w.keychain.items.keys()]).toEqual([]);
     expect(rowNow()).toMatchObject({ status: "disconnected", app_slug: null, installation_id: null });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One queue for the token and App paths
+// ---------------------------------------------------------------------------
+
+/** A fake client whose `getTokenInfo` waits on `gate` first. */
+class GatedClient extends FakeGitHubClient {
+  readonly #gate: Promise<void>;
+
+  constructor(data: FakeGitHubData, gate: Promise<void>) {
+    super(data);
+    this.#gate = gate;
+  }
+
+  override async getTokenInfo(): ReturnType<FakeGitHubClient["getTokenInfo"]> {
+    await this.#gate;
+    return super.getTokenInfo();
+  }
+}
+
+describe("the token connector and the App port share one queue", () => {
+  const PAT_DATA: FakeGitHubData = { tokenInfo: { login: "pat-user", expires_at: null, permissions: { ...READ_ONLY } }, repos: [{ full_name: "pat-user/repo", private: true }] };
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 10));
+  /** Every Keychain write or delete after the first `from` calls. */
+  const writesAfter = (from: number): string[] => w.keychain.calls.slice(from).filter((c) => !c.startsWith("read"));
+  const APP_DELETES = [GITHUB_APP_ID_SERVICE, GITHUB_APP_SLUG_SERVICE, GITHUB_APP_INSTALLATION_SERVICE, GITHUB_APP_KEY_SERVICE].map((s) => `delete ${s}`);
+  const SET_WRITES = [`delete ${GITHUB_KEYCHAIN_SERVICE}`, `add ${GITHUB_KEYCHAIN_SERVICE} ${GITHUB_KEYCHAIN_ACCOUNT}`, ...APP_DELETES];
+
+  /** A connector and a port over the world's Keychain and holder, on `connectorLock` and `portLock` (each the default when absent); the connector's validation waits on `gate`. */
+  function paths(gate: Promise<void>, connectorLock?: GitHubCredentialLock, portLock?: GitHubCredentialLock) {
+    const connector = createGitHubConnector({
+      keychain: w.keychain,
+      writer: w.keychain,
+      deleter: w.keychain,
+      tokens: w.tokens,
+      ...(connectorLock !== undefined ? { lock: connectorLock } : {}),
+      clientFor: () => new GatedClient(PAT_DATA, gate),
+    });
+    const port = createGitHubAppPort({
+      keychain: w.keychain,
+      writer: w.keychain,
+      deleter: w.keychain,
+      tokens: w.tokens,
+      ...(portLock !== undefined ? { lock: portLock } : {}),
+      clientFor: (tokenProvider) => createGitHubClient({ tokenProvider, fetch: w.fetch, now: w.env.now }),
+    });
+    return { connector, port };
+  }
+
+  it("by default (the process-wide queue), a token set started first holds back an App removal until it settles: their Keychain steps never interleave", async () => {
+    await installApp();
+    let release = (): void => undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    const { connector, port } = paths(gate);
+    const from = w.keychain.calls.length;
+    const set = connector.setToken(store(), PAT, w.env.now);
+    const removal = port.removeApp(store(), w.env.now);
+    await tick();
+    // The set is waiting on GitHub; the removal has not touched the Keychain.
+    expect(writesAfter(from)).toEqual([]);
+    release();
+    const [a, b] = await Promise.all([set, removal]);
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    expect(writesAfter(from)).toEqual([...SET_WRITES, ...APP_DELETES]);
+    expect(w.keychain.items.get(GITHUB_KEYCHAIN_SERVICE)?.secret).toBe(PAT);
+    expect(rowNow()).toMatchObject({ status: "connected", method: "token", app_slug: null, installation_id: null });
+  });
+
+  it("the control: on two separate queues the removal runs while the set waits (what the shared queue prevents)", async () => {
+    await installApp();
+    let release = (): void => undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    const { connector, port } = paths(gate, createGitHubCredentialLock(), createGitHubCredentialLock());
+    const from = w.keychain.calls.length;
+    const set = connector.setToken(store(), PAT, w.env.now);
+    const removal = port.removeApp(store(), w.env.now);
+    await tick();
+    expect(writesAfter(from)).toEqual(APP_DELETES);
+    release();
+    await Promise.all([set, removal]);
+  });
+
+  it("an App installation started first holds back a token set: the set lands after it, so the token is current", async () => {
+    ok(await w.port.storeApp(store(), CONVERSION, PEM, w.env.now));
+    const lock = createGitHubCredentialLock();
+    const { connector, port } = paths(Promise.resolve(), lock, lock);
+    let release = (): void => undefined;
+    w.hold = new Promise<void>((r) => (release = r));
+    const from = w.keychain.calls.length;
+    const install = port.recordInstallation(store(), INSTALLATION, w.env.now);
+    const set = connector.setToken(store(), PAT, w.env.now);
+    await tick();
+    // The installation is waiting on its mint; the set has not touched the Keychain.
+    expect(writesAfter(from)).toEqual([`delete ${GITHUB_APP_INSTALLATION_SERVICE}`, `add ${GITHUB_APP_INSTALLATION_SERVICE} ${GITHUB_KEYCHAIN_ACCOUNT}`]);
+    release();
+    w.hold = undefined;
+    const [a, b] = await Promise.all([install, set]);
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    expect(writesAfter(from)).toEqual([
+      `delete ${GITHUB_APP_INSTALLATION_SERVICE}`,
+      `add ${GITHUB_APP_INSTALLATION_SERVICE} ${GITHUB_KEYCHAIN_ACCOUNT}`,
+      `delete ${GITHUB_KEYCHAIN_SERVICE}`,
+      ...SET_WRITES,
+    ]);
+    expect([...w.keychain.items.keys()]).toEqual([GITHUB_KEYCHAIN_SERVICE]);
+    expect(rowNow()).toMatchObject({ status: "connected", method: "token", app_slug: null, installation_id: null });
+  });
+
+  it("a call that throws or rejects never wedges the queue: the next one still runs, in order", async () => {
+    const lock = createGitHubCredentialLock();
+    const order: string[] = [];
+    const first = lock.run(async () => {
+      order.push("first");
+      throw new Error("boom");
+    });
+    const second = lock.run(() => {
+      order.push("second");
+      return Promise.reject(new Error("again"));
+    });
+    const third = lock.run(async () => {
+      order.push("third");
+      return 3;
+    });
+    await expect(first).rejects.toThrow("boom");
+    await expect(second).rejects.toThrow("again");
+    await expect(third).resolves.toBe(3);
+    expect(order).toEqual(["first", "second", "third"]);
   });
 });
 

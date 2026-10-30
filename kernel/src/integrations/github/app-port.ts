@@ -22,10 +22,14 @@
 // current by deleting the PAT item as its last step; a refusal leaves a PAT in
 // use exactly as it was.
 //
+// The port and the token connector change the same Keychain items, row columns
+// and token holder, so their calls share one queue (`credential-lock.ts`): an
+// App installation never interleaves with a token set.
+//
 // The `studio` CLI loads it, so it imports only types: never the Agent SDK, the
 // session manager or `kernel.ts` (`kernel/test/feature-seams.test.ts` pins the
-// registry's module graph), only the connector, the token holder, the client
-// and the Keychain module.
+// registry's module graph), only the connector, the token holder, the client,
+// the credential lock and the Keychain module.
 import { WRITE_ARG, securityCliKeychain, securityCliKeychainDeleter, securityCliKeychainWriter } from "../../auth/keychain.js";
 import type { KeychainDeleter, KeychainReader, KeychainWriter } from "../../auth/keychain.js";
 import type { Store } from "../../store/store.js";
@@ -41,6 +45,8 @@ import {
 import type { GitHubAppTokens } from "./app-token.js";
 import { GITHUB_KEYCHAIN_SERVICE, createGitHubClient } from "./client.js";
 import type { GitHubTokenProvider, GitHubTokenProviderResolver } from "./client.js";
+import { githubCredentialLock } from "./credential-lock.js";
+import type { GitHubCredentialLock } from "./credential-lock.js";
 import {
   GITHUB_APP_SERVICES,
   GITHUB_KEYCHAIN_ACCOUNT,
@@ -64,6 +70,8 @@ export interface GitHubAppPortDeps {
   readonly tokens?: GitHubAppTokens;
   /** The client the installed repos are read through, over the credential `tokenProvider` picks. Default: `createGitHubClient`. */
   readonly clientFor?: (tokenProvider: GitHubTokenProviderResolver) => GitHubClient;
+  /** The queue every call runs on. Default: `githubCredentialLock`, the one the token connector shares. */
+  readonly lock?: GitHubCredentialLock;
 }
 
 /** The largest App or installation id stored: what the holder reads back (`app-token.ts`, `NUMERIC_ID`). */
@@ -132,8 +140,9 @@ export function createGitHubAppPort(deps: GitHubAppPortDeps = {}): GitHubAppPort
   const keychain = (): KeychainReader => (reader ??= securityCliKeychain());
   const clientFor = deps.clientFor ?? ((tokenProvider: GitHubTokenProviderResolver): GitHubClient => createGitHubClient({ tokenProvider }));
 
-  // One call at a time: a store, installation or removal waits for the one before it to settle.
-  let queue: Promise<unknown> = Promise.resolve();
+  // One call at a time, on the queue the token connector shares (`credential-lock.ts`): a store,
+  // installation or removal waits for any App port or connector call before it to settle.
+  const lock = deps.lock ?? githubCredentialLock;
   function exclusive<T>(fn: () => Promise<GitHubAppPortResult<T>>, failed: GitHubAppPortResult<never>): Promise<GitHubAppPortResult<T>> {
     const guarded = async (): Promise<GitHubAppPortResult<T>> => {
       try {
@@ -143,9 +152,7 @@ export function createGitHubAppPort(deps: GitHubAppPortDeps = {}): GitHubAppPort
         return failed;
       }
     };
-    const run = queue.then(guarded, guarded);
-    queue = run;
-    return run;
+    return lock.run(guarded);
   }
 
   /** Replaces one item: delete (none is fine), add (never an overwrite), then trust only the read-back. Never throws. */

@@ -239,7 +239,7 @@ describe("the integrations feature (AC2)", () => {
     // The GitHub App's modules (`github/app-*.ts`: the port and routes stubs, then the tokens and setup items' own) are matched by pattern, so a new one does not edit this pin.
     const isAppModule = (f: string): boolean => /^github[\\/]app-[^\\/]+\.ts$/.test(f);
     expect(files.filter((f) => !isAppModule(f)).sort()).toEqual(
-      ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/routes.ts", "github/tools.ts", "index.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
+      ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/credential-lock.ts", "github/routes.ts", "github/tools.ts", "index.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
     );
     expect(files).toEqual(expect.arrayContaining([join("github/app-port.ts"), join("github/app-routes.ts")]));
     for (const f of files) {

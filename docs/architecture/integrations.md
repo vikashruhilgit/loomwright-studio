@@ -69,7 +69,7 @@ A token set over a GitHub App connection replaces the App: after the read-back c
 
 **Refresh.** `GET /connectors/github/repos?refresh=1` re-reads the repos with the stored token and updates `reachable_repos_json` and `verified_at`, without a status change or an event. It needs a token in use (409 `not_connected` otherwise, 404 `no_connector` with no row); a 401 answers `token_invalid` without changing the row.
 
-The connector runs one call at a time (set, disconnect, refresh), so two never interleave their Keychain steps.
+The connector runs one call at a time (set, disconnect, refresh) on the same queue as [the App port](#the-port) (`githubCredentialLock`, `github/credential-lock.ts`): both change the token's Keychain item, the App's four items, the row's `method`, `app_slug` and `installation_id`, and the held installation token, so no two credential changes, token or App, ever interleave their Keychain or row steps. A call that fails or throws never blocks the next.
 
 ## Expiry
 
@@ -167,7 +167,7 @@ The kernel keeps the App's credentials in the Keychain and mints, renews and use
 | `loomwright-studio-github-app-installation` | the installation's numeric id |
 | `loomwright-studio-github-app-key` | the App's private key, **encoded** |
 
-The Keychain writer takes only `WRITE_ARG` characters (letters, digits, `_ . @ -`, never first `-`), and a PEM has spaces and newlines, so the key item holds the `pem` as **unpadded base64url**. The `pem` must start with `-----BEGIN` before it is encoded (a `pem` that does not is `conversion_failed`), which guarantees the encoded form starts with a letter and passes `WRITE_ARG`; `WRITE_ARG` itself is never widened. Every write is replace by delete then add, and is trusted only after a read-back that matches (`security -i` can exit 0 on a failure). `client_secret` is never a parameter anywhere. Whether `security -i` accepts a ~2.3 KB secret on one line on a real Keychain is unverified: the read-back decides, and a failure is `conversion_failed`.
+The Keychain writer takes only `WRITE_ARG` characters (letters, digits, `_ . @ -`, never first `-`), and a PEM has spaces and newlines, so the key item holds the `pem` as **unpadded base64url**. The `pem` must start with `-----BEGIN` before it is encoded (a `pem` that does not is `conversion_failed`), which guarantees the encoded form starts with a letter and passes `WRITE_ARG`; `WRITE_ARG` itself is never widened. Every write is replace by delete then add, and is trusted only after a read-back that matches (`security -i` can exit 0 on a failure). `client_secret` is never a parameter anywhere. Whether `security -i` accepts a ~2.3 KB secret on one line on a real Keychain is unverified ([open question](../OPEN_QUESTIONS.md)): the read-back decides, and a failure is `conversion_failed`.
 
 **The mint.** The kernel signs an RS256 JWT with the key (`iss` the App id, `iat` 60 s before the kernel's clock, `exp` 10 minutes after `iat`; the 60 s keeps a fast clock inside GitHub's tolerance), sends it as the bearer of `POST /app/installations/{id}/access_tokens`, and receives the token, its `expires_at` and the permissions GitHub reports for it. The key is read for one mint and dropped; the JWT is sent once and dropped.
 
@@ -183,7 +183,7 @@ The Keychain writer takes only `WRITE_ARG` characters (letters, digits, `_ . @ -
 
 ### The port
 
-`GitHubAppPort` (`kernel/src/integrations/types.ts`) is the interface between the setup flow and the connector. `githubAppPort` (`github/app-port.ts`) is the real port, `createGitHubAppPort(deps)` its factory (Keychain reader, writer and deleter, the token holder and a client factory, each resolved only when a call needs it). Three methods, each returning a `Promise<GitHubAppPortResult<…>>`, never throwing or rejecting whatever they are given, and serialised (one call at a time):
+`GitHubAppPort` (`kernel/src/integrations/types.ts`) is the interface between the setup flow and the connector. `githubAppPort` (`github/app-port.ts`) is the real port, `createGitHubAppPort(deps)` its factory (Keychain reader, writer and deleter, the token holder and a client factory, each resolved only when a call needs it). Three methods, each returning a `Promise<GitHubAppPortResult<…>>`, never throwing or rejecting whatever they are given, and serialised (one call at a time, on the queue the token connector shares, so a token set never interleaves with an App call):
 
 | Method | Does |
 |---|---|
