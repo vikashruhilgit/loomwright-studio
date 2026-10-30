@@ -132,7 +132,7 @@ Phase 7 builds six screens (Tasks, Playbooks, Schedules & triggers, Memory, Budg
 
 Two owner decisions (2026-10-30) shape it:
 
-- **Hooks moved to phase 9.** The Hooks screen is built with the hook-management mechanism it shows (propose, apply with backup, verified to fire, rollback), and `hooks_installed` does not exist yet (`kernel/src/store/migrations/001_initial.ts`). Phase 7 has no Hooks screen and the mockup draws none. `UI.md` gets the same note from phase 7 item 01.
+- **Hooks moved to phase 9.** The Hooks screen is built with the hook-management mechanism it shows (propose, apply with backup, verified to fire, rollback), and `hooks_installed` does not exist yet (`kernel/src/store/migrations/001_initial.ts`). Phase 7 has no Hooks screen and the mockup draws none. `UI.md` carries the same note, and `ROADMAP.md` lists the Hooks screen under phase 9.
 - **Tasks shows today's kernel data.** Tasks, playbook runs and sessions, grouped by state, with a click-through to their history and their session log. Linked PRs and tickets, approvals counts and CI state join in phase 8, so the mockup shows none of them.
 
 Each screen has an empty, a loading, a populated, an error and a `Kernel unreachable` view, and a waiting-on-you view where it applies. The error view is a route failure: a card inside the screen's body that says which request failed, distinct from the shared band, which means the kernel itself is unreachable. Tasks, Playbooks, Budget & audit and Settings have a waiting-on-you view. Schedules & triggers and Memory have none, and [the evidence](evidence/gui-v2-mockup/README.md#screens-without-a-waiting-on-you-view) says why.
