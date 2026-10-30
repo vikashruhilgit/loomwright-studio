@@ -1,6 +1,6 @@
 # Integrations
 
-Part of [Phase 6 features](../ARCHITECTURE.md#phase-6-features). Built and documented by **item 03** (the GitHub connector: token validation and the repos the token reaches) and **item 14** (the owner's declaration that a token is read-only), in the integrations feature's `github/connector.ts` and `github/routes.ts` parts and its `cli.ts` (`kernel/src/integrations/`), over the read-only client in `github/client.ts`; and by **item 11** (the Integrations screen, `app/src/screens/integrations/`).
+Part of [Phase 6 features](../ARCHITECTURE.md#phase-6-features). Built and documented by **item 03** (the GitHub connector: token validation and the repos the token reaches) and **item 14** (the owner's declaration that a token is read-only), in the integrations feature's `github/connector.ts` and `github/routes.ts` parts and its `cli.ts` (`kernel/src/integrations/`), over the read-only client in `github/client.ts`; and by **item 11** (the Integrations screen, `app/src/screens/integrations/`). The GitHub App connect, decided in [D36](../DECISIONS.md), is a second way to connect beside the token; its contract is [below](#github-app-connect).
 
 **Routes** (owner-only):
 
@@ -13,7 +13,7 @@ Part of [Phase 6 features](../ARCHITECTURE.md#phase-6-features). Built and docum
 
 **Contract types it fills** (`app/src/api/contract.ts`): `ConnectorKind`, `ConnectorStatus`, `Connector`, `ConnectorsResponse`, `ConnectorTokenBody`, `ConnectorChangeResponse`, `ConnectorReposQuery` and `ConnectorReposResponse`.
 
-The credential is Studio's own fine-grained, read-only personal access token, which the owner creates for the personal repos they choose. Studio runs no OAuth flow and never reuses the `gh` CLI's login. GitHub is an optional connector (invariant 5): Studio works with none. Item 11 builds the screen (`app/src/screens/integrations/`; see [Phase 6 features](../ARCHITECTURE.md#phase-6-features)).
+On the token path the credential is Studio's own fine-grained, read-only personal access token, which the owner creates for the personal repos they choose; that path runs no OAuth flow and never reuses the `gh` CLI's login. The App path ([D36](../DECISIONS.md), which supersedes phase 6 item 03's "Studio never runs an OAuth flow") is not a login either and reuses no `gh` credential, but it is a browser round trip that returns a secret, the App's key: [GitHub App connect](#github-app-connect). GitHub is an optional connector (invariant 5): Studio works with none. Item 11 builds the screen (`app/src/screens/integrations/`; see [Phase 6 features](../ARCHITECTURE.md#phase-6-features)).
 
 ## The token and the Keychain item
 
@@ -23,7 +23,7 @@ The token lives only in the Keychain item `loomwright-studio-github` (generic pa
 - each route handler catches everything and answers a typed failure, so the API's `route_failed` event (which records a clipped error message) is never written for these routes;
 - the client checks the token's shape before it reaches a header (so Node's `Headers` never throws a message quoting it) and answers every throw as `unreachable`.
 
-The client (`createGitHubClient`) reads the token fresh from the Keychain on each call, sends GETs only, and only to `https://api.github.com`.
+The client (`createGitHubClient`) reads the token fresh from the Keychain on each call, sends GETs only, and only to `https://api.github.com`. The App path adds exactly two allowlisted non-GET calls, both to `api.github.com` ([below](#the-two-non-get-calls)).
 
 ## The `connectors` table
 
@@ -95,3 +95,90 @@ Every status change appends exactly one `connector_status` event, `{connector_id
 | `studio connectors github disconnect` | `POST /connectors/github/disconnect` |
 
 `set` reads the token **only from stdin**: piped, or typed at a terminal with echo off. The declaration answer comes from the same capped input (a second prompt, with echo on, at a terminal; line 2 when piped). Given any argument, it exits 2 without contacting the kernel, and never echoes the argument (a token on a command line lands in shell history and `ps`). No unknown argument is echoed either. A refusal prints its code and message on stderr and exits 1. Text from GitHub is printed with control characters escaped.
+
+## GitHub App connect
+
+The second way to connect GitHub, beside the token path, which stays as it is. [D36](../DECISIONS.md) records the decision and its evidence (probe p13, [open questions](../OPEN_QUESTIONS.md), "GitHub App connect"); the screens are in [DESIGN](../DESIGN.md#github-app-connect). Setup is GitHub's App Manifest flow: Studio opens github.com in the system browser with the App pre-filled (private, no webhook, `Pull requests: Read`, `Contents: Read`, `Metadata: Read`), and the owner clicks Create, then picks repos and clicks Install. Studio receives and stores the App's key itself.
+
+It is built in two waves. **Wave 1** is this contract: the types (`kernel/src/integrations/types.ts`), a stub port (`github/app-port.ts`), the two owner routes as 501 stubs (`github/app-routes.ts`), the app's contract types (`app/src/api/contract.ts`), the decision and the mockup. **Wave 2** is three items built in parallel against it: the kernel tokens item (the port, the App's key and installation tokens), the kernel setup item (the setup window and the browser routes) and the app's Connect sheet. Until they land nothing works: the owner routes answer `501 {"error":"not_implemented"}`, every port method answers `not_implemented`, and the browser routes are not served.
+
+### Owner routes
+
+They take the API token like every route (401 without it).
+
+| Route | Answers |
+|---|---|
+| `POST /connectors/github/app/setup` | `{setup_url, expires_at}`: opens the one setup window and returns the address the app opens in the system browser (`setup_url`) and when the window closes (`expires_at`, an ISO time) |
+| `POST /connectors/github/app/setup/cancel` | `{cancelled}` (a boolean): closes the open setup window, if any |
+
+Two existing routes gain the App method, documented here and built by the kernel tokens item. `GET /connectors` carries the App fields below on the GitHub row. `POST /connectors/github/disconnect` on an App connection removes the App's key from the Keychain; Studio cannot uninstall or delete the App on GitHub, so the screen sends the owner there.
+
+### Browser routes
+
+GET only, served by the kernel's loopback API, **without the API token**: the owner's browser carries no token, so each is gated instead by the open setup window and its single-use `state`. This item only names them; the API server's mechanism for an unauthenticated route is the setup item's.
+
+| Route | What it is |
+|---|---|
+| `/connectors/github/app/start` | the local page that posts the manifest to github.com (the manifest carries no `hook_attributes`: GitHub refuses a loopback webhook URL, even when inactive) |
+| `/connectors/github/app/return` | GitHub's `redirect_url`, after Create: query `code` and `state`. Studio converts the code and stores the App |
+| `/connectors/github/app/installed` | GitHub's `setup_url`, after Install: query `installation_id`, `setup_action` and `state`. Studio records the installation |
+
+GitHub accepts a loopback `redirect_url` and `setup_url` (`http://127.0.0.1:<port>`) and returns the `state` on both returns (probe p13). The `state` appears in the browser's address bar and history, so it is **spent on its first use**. Each setup window is **single-use, short-lived, and at most one is open at a time**; a browser route outside an open window, or with a `state` that is not the window's current one, is refused.
+
+### The connector row's App fields
+
+The GitHub row (`ConnectorRow`, and `Connector` in the app's contract) gains three **optional** fields, optional because the `connectors` table gets the columns only in the kernel tokens item's migration 19; a row without `method` reads as `token`:
+
+| Field | Meaning |
+|---|---|
+| `method` | `token` or `app` (`CONNECTOR_METHODS`, `ConnectorMethod`) |
+| `app_slug` | the App's slug on GitHub, or `null`; not secret |
+| `installation_id` | the installation's number, or `null`; not secret |
+
+For `method: app`, `permissions_source` is always `reported` (GitHub reports an installation token's permissions), and `expires_at` is the current installation token's expiry, which **renews** (no extra field). The row never holds the App's key, a client secret or an installation token, as before.
+
+### The setup refusal reasons
+
+A closed list (`GITHUB_APP_SETUP_REFUSALS`, type `GitHubAppSetupRefusal`):
+
+| Reason | When |
+|---|---|
+| `setup_not_open` | a browser route was called with no setup window open |
+| `state_mismatch` | the `state` is missing, wrong or already spent |
+| `setup_expired` | the window closed before the step finished |
+| `conversion_failed` | GitHub's conversion did not return the App |
+| `install_failed` | the install did not complete, or the installation could not be recorded or its first token minted |
+| `token_write_scoped` | the installation token reports a write permission: refused as for a token, and the App stays read-only |
+
+The mapping of these reasons to HTTP statuses and to what the browser tab shows is the setup item's.
+
+### The port
+
+`GitHubAppPort` (`kernel/src/integrations/types.ts`) is the interface between the setup flow and the connector. Its stub, `githubAppPort` (`github/app-port.ts`), answers `not_implemented`; the kernel tokens item fills it. Three methods, each returning a `Promise<GitHubAppPortResult<…>>` and never throwing:
+
+| Method | Does |
+|---|---|
+| `storeApp(…, conversion, pem)` | stores the converted App: the non-secret `GitHubAppConversion` fields (`app_id`, `slug`, `name`, `owner_login`, `html_url`, `client_id`) and the `pem`, which goes to the Keychain |
+| `recordInstallation(…, installationId)` | records the installation, mints the first installation token and verifies its permissions (a write permission is `token_write_scoped`) |
+| `removeApp(…)` | removes the App's key from the Keychain and its connection |
+
+Its dependencies (the store, the clock) are parameters, in `GitHubConnector`'s idiom (`setToken(store, token, now, …)`), imported type-only. `GitHubAppPortResult<T>` is `{ ok: true; … }` or `{ ok: false; error: GitHubAppPortError; message: string }`, where `GitHubAppPortError` is a `GitHubAppSetupRefusal` or `"not_implemented"`. `GitHubAppConversion` never carries `client_secret` or `webhook_secret`.
+
+### The two non-GET calls
+
+The client may send exactly two requests that are not GET, both to `api.github.com`, both in a fixed allowlist; every other method stays refused:
+
+- `POST /app/installations/{id}/access_tokens`: mints an installation token, authenticated by an app JWT signed with the App's key;
+- `POST /app-manifests/{code}/conversions`: the manifest conversion, which returns the App and its secrets.
+
+The **reach list** is `GET /installation/repositories`, which lists exactly the repos the owner chose at install (the mint response carries no repo list).
+
+### The secrets
+
+The conversion's secret values are `pem` and `client_secret`. The `pem` goes to the Keychain. `client_secret` is never stored, logged or returned, and nothing uses it. As for the token, no route answer, row, event, notification, log line, thrown error or CLI output carries a secret.
+
+### Open for wave 2
+
+- `checkGitHubExpiry` (the [expiry](#expiry) work) warns 14 days and 1 day before `expires_at`. An App row's `expires_at` is an installation token's, which renews every hour, so the kernel tokens item decides how that work treats a `method: app` row (it must not raise an expiry warning every hour).
+- The Keychain item that holds the App's key is named by the kernel tokens item.
+- The length of a setup window is the setup item's call.

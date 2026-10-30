@@ -12,7 +12,7 @@ Phase 0 is done: the owner approved the design system and the GUI v1 mockups on 
 | Brand book | `docs/design/brand-book.md` | Voice, colour, type, layout, keyboard, motion, states, presence, limits |
 | Component guidelines and previews | `docs/design/design-system/components/` | One folder per component: `README.md` + `preview.html` |
 | Avatar system | `docs/design/avatar/avatar.css`, `avatar.js` | The stitched sea creatures and their motion, as used by the mockup |
-| Integrations mockup (phase 6): the Integrations screen, the Connect GitHub sheet, every state in light and dark, clickable | `docs/design/mockups/integrations.html` | One HTML file, no build. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. The owner approves it by merging the PR that adds it (D9). Screenshots and the token audit: [evidence](evidence/phase-6-integrations-mockup/README.md) |
+| Integrations mockup (phase 6): the Integrations screen, the Connect GitHub sheet, every state in light and dark, clickable | `docs/design/mockups/integrations.html` | One HTML file, no build. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. The owner approves it by merging the PR that adds it (D9). Screenshots and the token audit: [evidence](evidence/phase-6-integrations-mockup/README.md). The GitHub App views (D36) are in the same file: [evidence](evidence/github-app-mockup/README.md) |
 
 The artefact links are private to the owner; the repo copies are the reviewable record. When the design system changes, update the artefact first, then re-copy here in the same commit.
 
@@ -56,7 +56,7 @@ The Integrations screen moved from GUI v2 to phase 6 by the owner's 2026-10-24 d
   - It has a link-out to GitHub's token page, a password field, and Connect.
   - Its copy says the token is kept in the Keychain and never shown again, and that the field clears the moment you press Connect.
   - **A required confirmation, "This is a fine-grained token, and every permission I gave it is Read"** (a checkbox under the token field, with a caption: GitHub doesn't tell Studio what a fine-grained token can do, so Studio keeps this as your word, never as checked). Connect stays disabled until the field holds something and the box is ticked, and Enter in the field does not submit while it is disabled. The request sends `declared_read_only: true`. The box is unticked each time the sheet opens, and ticked (disabled while connecting) in the connecting and refused views. A token whose permissions GitHub does not report and that was sent without the confirmation is refused `token_permissions_unknown`, and the sheet's copy for it points at the confirmation: "GitHub doesn't report what this token can do. Tick the box that says every permission you gave it is Read, then connect again."
-  - There is no OAuth button and no "use gh login" option.
+  - There is no OAuth button and no "use gh login" option. The GitHub App is a separate choice that comes before this sheet (see "GitHub App connect" below), and it is not a login either.
   - Replacing a connected or expiring token uses the same sheet, and the current token stays in use until the new one passes the check. Replacing an expired token says only that the new one replaces it once it passes, since nothing uses the expired one.
 - **Refusals render inline in the sheet**, under the field in Input's error state.
   - `token_invalid` says what to check.
@@ -86,6 +86,44 @@ The Integrations screen moved from GUI v2 to phase 6 by the owner's 2026-10-24 d
 - Phase 6 item 14 (the owner's declaration): the sheet's confirmation wording, its caption, the "declared by you" permissions section and the refusal copy above are proposals. The owner approves them by merging the PR; the app's sheet and connected state use the mockup's copy.
 - Phase 6 item 11's requirement (the Integrations screen) names the third palette command "Refresh reachable repos". The phase 6 job brief and this mockup use "Show reachable repos" in the palette, with Refresh as a button in the repos section. Pick one name for phase 6 item 11. (item 11 used 'Refresh reachable repos'; see the evidence README)
 - The expiry warning starts at 14 days, a proposal that matches phase 6 item 03's planned 14-day expiry notice (the GitHub connector, not built yet).
+
+### GitHub App connect
+
+D36 adds a GitHub App connect beside the token path; the contract is in [integrations](architecture/integrations.md#github-app-connect). As D9 requires, its screens come before any screen code: `design/mockups/integrations.html` gains the views below, each in light and dark and forced by the URL hash (`#view=app-choice&theme=dark`). The review strip has a second group, "GitHub App view", for them. The ten existing views (`not-connected` to `sheet`) render as before. The screenshots, and the commands that regenerate them, are in [the evidence folder](evidence/github-app-mockup/README.md). The owner approves the mockup by merging the PR that adds it.
+
+| View (`#view=`) | What it shows | Refusal |
+|---|---|---|
+| `app-choice` | The Connect sheet's choice: "Install GitHub App" (suggested; permissions are checked by GitHub) and "Paste a token" (permissions are declared by you) | |
+| `app-setup-create` | Setup in progress, step 1 of 2: waiting for the owner on GitHub to click Create. Cancel and "Open GitHub again" | |
+| `app-setup-install` | Step 2 of 2: Create is done, waiting for the owner to pick repos and click Install | |
+| `app-connected` | Connected through the App: the App's name and slug, the account, the installation, the repos chosen at install, "Read-only, checked by GitHub" with the permissions GitHub reported, and the access token's expiry shown as "renews automatically" | |
+| `app-expired` | Setup timed out: the window closed before GitHub came back | `setup_expired` |
+| `app-cancelled` | Setup cancelled, with Set up again | |
+| `app-write-scoped` | The App reports a write permission, named in the form "Contents: Read and write → set to Read-only" | `token_write_scoped` |
+| `app-revoked` | Status `rejected` (a `danger` dot): the App was uninstalled, its key revoked or the App deleted on GitHub; the parked playbook is named; Set up again is the primary | `rejected` (a status, not a setup refusal) |
+| `app-failed` | Setup didn't finish: GitHub did not hand the key over, or the install did not complete | `conversion_failed`, `install_failed` |
+| `app-unreachable` | The shared Kernel unreachable band; the status reads "unknown" with no dot; the last-read data stays visible with its time; Disconnect and Refresh are disabled | |
+| `app-disconnect` | The Disconnect confirm: what Studio removes (the App's key, from the Keychain) and what only the owner can remove on GitHub (uninstall the App, or delete it), with a link to each page | |
+
+### What the mockup commits the app's Connect sheet to (wave 2)
+
+- **Connect GitHub opens the choice** when nothing is connected, from the empty state's button and from `⌘K`. "Paste a token" opens the token sheet above, unchanged. Replace token on a token connection still opens the token sheet directly. Studio keeps one GitHub connection at a time, so an App connection has no Replace token: `⌘K` lists Connect GitHub disabled with "disconnect first".
+- **The setup dialog** (Dialog, 480px) says the two clicks on GitHub are the owner's and that Studio receives the key itself, lists the two steps with StatusDots (`working` for the step the owner is on, `ok` and a "done" Badge for a finished one, `idle` for the next), says what the App asks for, and shows when the window closes. Cancel, `Esc` and a click on the backdrop all cancel the setup, since the one window must not be left open, and land on the cancelled view. "Open GitHub again" reopens github.com.
+- **A connected App's detail pane** is the token's, with these differences: a `GitHub App` Badge beside `read-only`; rows for the App, the installation and the key (kept in the Keychain, never shown); the access token's expiry with a "renews automatically" Badge in place of the days left (no expiry band, since the owner does nothing); permissions read "Read-only, checked by GitHub" with the list GitHub reported, never "declared by you"; the repos section reads "Repos chosen at install" and says a poll trigger can name only these. There is no Replace token. Disconnect always confirms.
+- **Refusals and failures render in the same dialog** as setup, in `danger` text as the token sheet's refusals do, each with Close and "Set up again" (primary), and with "Paste a token instead" where a token is a way out. The expired, cancelled and write-scoped views link to the owner's GitHub Apps page, since an App the owner already created stays on their account until they delete it.
+- **`rejected`** is the status row's word, as for a token. The detail pane keeps the last-read permissions and repos with their time, and Disconnect still confirms.
+- **Branding (invariant 7):** the same as the sheet above. GitHub's name and mark appear only as the connector's label, in `ink`, with no GitHub colours. The App choice uses a shield icon and the token a key, both Lucide, in `ink`. The mockup adds no raw colour value and leaves its token block as the generator wrote it; the evidence README repeats both checks.
+- **Components:** Dialog, Card (the two options; the suggested one has an `accent` edge), Badge, StatusDot, Input's error text, Button, List and the Band. No new component and no new token.
+
+### Open points for the owner (GitHub App, on this PR)
+
+- All the copy above is a proposal the owner can change on this PR, as with the token sheet.
+- The setup window closes 10 minutes after it opens (the mockup shows 14:12 for a 14:02 start). The length is the kernel setup item's call; 10 minutes is a proposal.
+- Studio keeps one GitHub connection at a time. To go from a token to the App (or back), the owner disconnects first. A one-step switch is a later decision.
+- The expired and cancelled copy says an App the owner already created stays on GitHub until they delete it, and does not say whether setting up again creates a new App or reuses that one. The write-scoped copy says only "set it up again". Both depend on the kernel setup item.
+- The kernel's other two setup refusals, `setup_not_open` and `state_mismatch`, are answered to the browser tab, so the mockup shows no app state for them. If the app item finds one needs a screen, it adds it with the owner's approval.
+- The empty state's body line still reads "a token you create", since the existing views are unchanged. The app item should widen it to both ways when it builds the choice.
+- The mockup does not name the Keychain item that holds the App's key; the kernel tokens item does.
 
 ## Not in v1 (deferred to GUI v2 or later)
 

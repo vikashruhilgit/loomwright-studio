@@ -396,6 +396,9 @@ svg.mark{width:16px;height:16px;fill:currentColor;flex:none}
 .errmsg p{margin:0;color:var(--danger)}
 .errmsg ul{margin:0;padding-left:var(--space-5)}
 .errmsg li{font-weight:var(--type-body-strong-weight)}
+/* GitHub App connect: the choice's two options (Card, the suggested one edged in accent) */
+.opts{display:flex;flex-direction:column;gap:var(--space-3)}
+.card.sug{border-color:var(--accent)}
 
 /* CommandPalette */
 .pal{width:560px;background:var(--surface-raised);border-radius:var(--radius-lg);box-shadow:var(--shadow-3);overflow:hidden;animation:pop var(--duration-slow) var(--ease-palette)}
@@ -417,7 +420,7 @@ svg.mark{width:16px;height:16px;fill:currentColor;flex:none}
 </style>
 
 <div class="page">
-  <div class="intro"><h1>Loomwright Studio · Integrations mockup (phase 6)</h1><p>The Integrations screen and its Connect GitHub sheet. Click through, use the keyboard, or force a view from the strip below or the URL hash. Nothing here talks to a real kernel; only the token-page link leaves the page.</p></div>
+  <div class="intro"><h1>Loomwright Studio · Integrations mockup (phase 6)</h1><p>The Integrations screen and its Connect GitHub sheet. Click through, use the keyboard, or force a view from the strip below or the URL hash. Nothing here talks to a real kernel; only the links to GitHub leave the page.</p></div>
 
   <div class="stage"><div class="desk">
     <div class="win" id="win">
@@ -441,8 +444,9 @@ svg.mark{width:16px;height:16px;fill:currentColor;flex:none}
   <div class="review" aria-label="Review controls">
     <div class="g"><span class="t">Theme</span><span class="seg" id="themeseg"><button data-t="">System</button><button data-t="light">Light</button><button data-t="dark">Dark</button></span></div>
     <div class="g"><span class="t">View</span><span class="seg" id="viewseg"></span></div>
+    <div class="g"><span class="t">GitHub App view</span><span class="seg" id="appseg"></span></div>
     <div class="g"><button class="tog" id="tg-reset">Reset</button></div>
-    <div class="kbdl">Keys: <b>⌘K</b> or <b>/</b> palette · <b>⌘5</b> Integrations (in a browser tab ⌘ switches tabs first; use <b>⌃5</b>, and <b>⌃K</b>) · <b>J</b>/<b>K</b> rows · <b>⏎</b> connect from the token field · <b>Esc</b> closes. URL hash: <b>#view=&lt;view&gt;&amp;theme=&lt;light|dark|system&gt;</b>. In the sheet, Connect needs a token and the ticked confirmation. A token starting <b>github_pat_</b> connects (as <b>declared by you</b>, since GitHub reports no permissions for a fine-grained token), one containing <b>write</b> is refused as write-scoped, anything else is refused as invalid.</div>
+    <div class="kbdl">Keys: <b>⌘K</b> or <b>/</b> palette · <b>⌘5</b> Integrations (in a browser tab ⌘ switches tabs first; use <b>⌃5</b>, and <b>⌃K</b>) · <b>J</b>/<b>K</b> rows · <b>⏎</b> connect from the token field · <b>Esc</b> closes. URL hash: <b>#view=&lt;view&gt;&amp;theme=&lt;light|dark|system&gt;</b>. In the sheet, Connect needs a token and the ticked confirmation. A token starting <b>github_pat_</b> connects (as <b>declared by you</b>, since GitHub reports no permissions for a fine-grained token), one containing <b>write</b> is refused as write-scoped, anything else is refused as invalid. In the GitHub App views, <b>Install GitHub App</b> starts a mock setup that moves through its two steps by itself and ends connected; <b>Esc</b>, the backdrop and Cancel all cancel it.</div>
     <div class="note" id="note" aria-live="polite"></div>
   </div>
 </div>
@@ -465,6 +469,8 @@ const I={
   team:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0M15 19a4.5 4.5 0 0 1 7 0"/></svg>',
   list:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7"/></svg>',
   term:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 20h10M8 9l3 3-3 3M13 15h3"/></svg>',
+  shield:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>',
+  key:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>',
   x:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.4 5.6 5.6 18.4M5.6 5.6l12.8 12.8"/></svg>'
 };
 /* The GitHub mark, in currentColor (ink): it appears only as the connector's label, never as styling. */
@@ -496,6 +502,15 @@ const GH={
 };
 /* The kernel's token_write_scoped refusal names each write permission and the setting to change. */
 const DROP=['Pull requests: Read and write → set to Read-only','Contents: Read and write → set to Read-only'];
+/* The GitHub App path: the owner's personal account and repos only. The repos are the ones chosen at install. */
+const APP={
+  name:'Loomwright Studio vikashruhilgit', slug:'loomwright-studio-vikashruhilgit', installation:'51234567', expires:'today 15:02', closes:'14:12', refused:'today 14:20',
+  repos:[['vikashruhilgit/studio-sandbox','private'],['vikashruhilgit/loomwright','public']],
+  drop:['Contents: Read and write → set to Read-only'],
+  links:{installed:'https://github.com/settings/installations',apps:'https://github.com/settings/apps'}
+};
+const APP_SHEETS=['choice','setup-create','setup-install','setup-expired','setup-cancelled','setup-write','setup-failed'];
+const APP_NOTE={'setup-expired':'setup timed out','setup-cancelled':'setup cancelled','setup-write':'the App can write','setup-failed':'setup did not finish'};
 
 /* ---------- Views: each one the review strip and the URL hash can force ---------- */
 const VIEWS={
@@ -508,15 +523,29 @@ const VIEWS={
   'expiring':{base:'expiring',sheet:null,label:'Expiring'},
   'expired':{base:'expired',sheet:null,label:'Expired'},
   'unreachable':{base:'unreachable',sheet:null,label:'Kernel unreachable'},
-  'sheet':{base:'none',sheet:'blank',label:'Connect GitHub sheet'}
+  'sheet':{base:'none',sheet:'blank',label:'Connect GitHub sheet'},
+  'app-choice':{grp:'app',base:'none',sheet:'choice',label:'Choice'},
+  'app-setup-create':{grp:'app',base:'none',sheet:'setup-create',label:'Setup: Create'},
+  'app-setup-install':{grp:'app',base:'none',sheet:'setup-install',label:'Setup: Install'},
+  'app-connected':{grp:'app',base:'app-connected',sheet:null,label:'Connected'},
+  'app-expired':{grp:'app',base:'none',sheet:'setup-expired',label:'Setup expired'},
+  'app-cancelled':{grp:'app',base:'none',sheet:'setup-cancelled',label:'Setup cancelled'},
+  'app-write-scoped':{grp:'app',base:'none',sheet:'setup-write',label:'Write-scoped'},
+  'app-revoked':{grp:'app',base:'app-revoked',sheet:null,label:'Revoked on GitHub'},
+  'app-failed':{grp:'app',base:'none',sheet:'setup-failed',label:'Setup failed'},
+  'app-unreachable':{grp:'app',base:'app-unreachable',sheet:null,label:'Kernel unreachable'},
+  'app-disconnect':{grp:'app',base:'app-connected',sheet:null,confirm:true,label:'Disconnect'}
 };
-const SHEET_VIEW={blank:'sheet',connecting:'connecting',invalid:'rejected-invalid',write:'rejected-write'};
+const SHEET_VIEW={blank:'sheet',connecting:'connecting',invalid:'rejected-invalid',write:'rejected-write',choice:'app-choice','setup-create':'app-setup-create','setup-install':'app-setup-install','setup-expired':'app-expired','setup-cancelled':'app-cancelled','setup-write':'app-write-scoped','setup-failed':'app-failed'};
+const TOKEN_SHEETS=['blank','connecting','invalid','write'];
 let S={base:'none',sheet:null,replace:false,confirm:false,declare:false,theme:''};
 let pending=null, opener=null, overlayKey='';
 const hasToken=()=>S.base!=='none';
-const offline=()=>S.base==='unreachable';
-function viewName(){ return S.base==='none'?(S.sheet?SHEET_VIEW[S.sheet]:'not-connected'):S.base; }
-function setView(v){ const V=VIEWS[v]; if(!V) return false; pending=null; S.base=V.base; S.sheet=V.sheet; S.replace=false; S.confirm=false; S.declare=!!V.sheet&&V.sheet!=='blank'; return true; }
+const offline=()=>S.base==='unreachable'||S.base==='app-unreachable';
+const isApp=()=>S.base.startsWith('app-');
+const reposNow=()=>isApp()?APP.repos:GH.repos;
+function viewName(){ return S.base==='none'?(S.sheet?SHEET_VIEW[S.sheet]:'not-connected'):(S.confirm&&S.base==='app-connected'?'app-disconnect':S.base); }
+function setView(v){ const V=Object.prototype.hasOwnProperty.call(VIEWS,v)?VIEWS[v]:null; if(!V) return false; pending=null; S.base=V.base; S.sheet=V.sheet; S.replace=false; S.confirm=!!V.confirm; S.declare=['connecting','invalid','write'].includes(V.sheet); return true; }
 function applyHash(){
   const p=new URLSearchParams(location.hash.slice(1));
   setView(p.get('view')||'not-connected')||setView('not-connected');
@@ -531,7 +560,7 @@ function live(t){ $('#live').textContent=t; }
 function render(){
   if(S.theme) document.documentElement.dataset.theme=S.theme; else delete document.documentElement.dataset.theme;
   $$('#themeseg button').forEach(b=>b.classList.toggle('on',b.dataset.t===S.theme));
-  $$('#viewseg button').forEach(b=>{const on=b.dataset.v===viewName();b.classList.toggle('on',on);b.setAttribute('aria-pressed',on)});
+  $$('#viewseg button, #appseg button').forEach(b=>{const on=b.dataset.v===viewName();b.classList.toggle('on',on);b.setAttribute('aria-pressed',on)});
   $('#footdot').className='dot '+(offline()?'danger':'idle');
   $('#foottext').textContent=offline()?'kernel unreachable':'idle';
   $('#crewnav').innerHTML=Object.values(AGENTS).map(a=>`<button class="nav crew" data-act="other" data-what="${esc(a.name)}'s thread is Chat" aria-label="${esc(a.name)}">${avatarHTML(a,24)}<span class="txt"><span class="nm">${esc(a.name)}</span><span class="last cap">${esc(a.last)}</span></span></button>`).join('');
@@ -543,16 +572,19 @@ function rowMeta(){
   if(S.base==='none'){
     if(S.sheet==='connecting') return ['working','connecting · checking the token with GitHub'];
     if(S.sheet==='invalid'||S.sheet==='write') return ['idle','not connected · the last token was refused'];
+    if(S.sheet==='setup-create'||S.sheet==='setup-install') return ['working','setting up the GitHub App · waiting for you on GitHub'];
+    if(APP_NOTE[S.sheet]) return ['idle','not connected · '+APP_NOTE[S.sheet]];
     return ['idle','not connected'];
   }
-  return {connected:['ok','connected · '+GH.account],'connected-declared':['ok','connected · '+GH.account],expiring:['waiting','expiring in 8 days · '+GH.account],expired:['danger','expired · '+GH.account],unreachable:['none','status unknown · kernel unreachable']}[S.base];
+  return {connected:['ok','connected · '+GH.account],'connected-declared':['ok','connected · '+GH.account],expiring:['waiting','expiring in 8 days · '+GH.account],expired:['danger','expired · '+GH.account],unreachable:['none','status unknown · kernel unreachable'],
+    'app-connected':['ok','connected · '+GH.account+' · GitHub App'],'app-revoked':['danger','rejected · GitHub no longer accepts the App'],'app-unreachable':['none','status unknown · kernel unreachable']}[S.base];
 }
 function renderMain(){
   const [dot,meta]=rowMeta();
   const band=offline()?`<div class="band dng" role="alert">${I.warn}Couldn't reach the kernel. It may be restarting; this window reconnects on its own.<button class="a" data-act="other" data-what="The kernel log">Kernel log</button></div>`:'';
   const list=`<div class="list"><div role="listbox" aria-label="Connectors"><button class="row sel" role="option" aria-selected="true" id="row-github"><span class="dot ${dot}" aria-hidden="true"></span><span><span class="t">${MARK}GitHub</span><span class="m cap tn">${esc(meta)}</span></span></button></div><p class="more cap">More connectors come later. Studio works with none connected.</p></div>`;
   return `<div class="tbar"><h1>Integrations</h1><span class="cap">1 connector · all optional</span></div>
-  <div class="col">${band}<div class="split">${list}${S.base==='none'?emptyHTML():detailHTML()}</div></div>`;
+  <div class="col">${band}<div class="split">${list}${S.base==='none'?emptyHTML():isApp()?appDetailHTML():detailHTML()}</div></div>`;
 }
 function emptyHTML(){
   return `<div class="detail"><div class="empty"><h2>Connect GitHub so a playbook can read your PRs.</h2><p>Studio works with no connectors. GitHub is read-only here: a token you create, limited to the personal repos you choose, kept in the Keychain.</p><button class="btn pri" data-act="open-sheet">Connect GitHub</button></div></div>`;
@@ -573,7 +605,6 @@ function detailHTML(){
     :b==='expired'?`<div class="band dng in" role="alert">${I.warn}<span>The token expired on ${date}. 1 playbook that needs GitHub is parked: ${esc(GH.playbook)}. Replace the token to resume it.</span></div>`:'';
   const declared=b==='connected-declared';
   const read=b==='expired'?'last read 24 Oct 09:12, before it expired':b==='unreachable'?'last read '+GH.verified:'read from GitHub '+GH.verified;
-  const others=Object.values(AGENTS).filter(a=>!GH.grant.includes(a.id)).map(a=>a.name);
   return `<div class="detail" aria-label="GitHub">
     <div class="dhead">${MARK}<h2>GitHub</h2><span class="badge neu">${declared?'read-only · declared':'read-only'}</span><span class="sp"></span>
       <button class="btn ${urgent?'pri':'sec'} sm" data-act="open-sheet" data-replace="1"${dis}>Replace token</button>
@@ -591,9 +622,49 @@ function detailHTML(){
     <section class="sec" id="repos" tabindex="-1" aria-labelledby="h-repos"><div class="sech"><h3 class="label" id="h-repos">Reachable repos · ${GH.repos.length}</h3><span class="cap">${read}</span><span class="sp"></span><button class="btn ghost sm" data-act="refresh"${dis}>${I.refresh}Refresh</button></div>
       <ul class="box">${GH.repos.map(r=>`<li>${I.repo}<span class="mono">${r[0]}</span><span class="badge neu">${r[1]}</span></li>`).join('')}</ul>
       <p class="cap">A poll trigger can name only these repos. Change the set on GitHub, then Refresh.</p></section>
-    <section class="sec" aria-labelledby="h-grant"><div class="sech"><h3 class="label" id="h-grant">Agents with the GitHub grant · ${GH.grant.length}</h3></div>
+    ${grantHTML()}
+  </div>`;
+}
+function grantHTML(){
+  const others=Object.values(AGENTS).filter(a=>!GH.grant.includes(a.id)).map(a=>a.name);
+  return `<section class="sec" aria-labelledby="h-grant"><div class="sech"><h3 class="label" id="h-grant">Agents with the GitHub grant · ${GH.grant.length}</h3></div>
       <div class="cards">${GH.grant.map(id=>{const a=AGENTS[id];return `<button class="card" data-act="other" data-what="${esc(a.name)} in Team">${avatarHTML(a,36)}<span><span class="name">${esc(a.name)}</span><span class="cap">${esc(a.role)}</span></span></button>`}).join('')}</div>
-      <p class="cap">${others.join(' and ')} ${others.length>1?'don\'t':'doesn\'t'} have it. The grant is set per agent in Team.</p></section>
+      <p class="cap">${others.join(' and ')} ${others.length>1?'don\'t':'doesn\'t'} have it. The grant is set per agent in Team.</p></section>`;
+}
+
+/* The GitHub App path: Connected, Revoked on GitHub and Kernel unreachable share one detail pane. */
+function appDetailHTML(){
+  const b=S.base, off=offline(), rev=b==='app-revoked', dis=off?' disabled title="Needs the kernel"':'';
+  const status={
+    'app-connected':`<span class="dot ok" aria-hidden="true"></span>connected<span class="cap">verified ${GH.verified}</span>`,
+    'app-revoked':`<span class="dot danger" aria-hidden="true"></span>rejected<span class="cap">GitHub refused the App's key ${APP.refused}</span>`,
+    'app-unreachable':`<span class="cap">Unknown while the kernel is unreachable · last verified ${GH.verified}</span>`
+  }[b];
+  const read=rev||off?'last read '+GH.verified:'read from GitHub '+GH.verified;
+  const access=rev?'<span>None: GitHub refused the App\'s key</span>'
+    :`<span class="tn">${off?'last known: expires':'expires'} ${APP.expires}</span><span class="badge neu">renews automatically</span>`;
+  const band=rev?`<div class="band dng in" role="alert">${I.warn}<span>GitHub no longer accepts this App. It may have been uninstalled, its key revoked, or the App deleted on GitHub. 1 playbook that needs GitHub is parked: ${esc(GH.playbook)}. Set the App up again to resume it.</span></div>`:'';
+  return `<div class="detail" aria-label="GitHub">
+    <div class="dhead">${MARK}<h2>GitHub</h2><span class="badge neu">read-only</span><span class="badge neu">GitHub App</span><span class="sp"></span>
+      ${rev?`<button class="btn pri sm" data-act="start-setup">Set up again</button>`:''}
+      <button class="btn dng sm" data-act="disconnect"${dis}>Disconnect</button></div>
+    ${band}
+    <dl class="kv">
+      <dt>Status</dt><dd>${status}</dd>
+      <dt>Account</dt><dd><span class="mono">${GH.account}</span></dd>
+      <dt>App</dt><dd><span>${esc(APP.name)}</span><span class="mono cap">${APP.slug}</span></dd>
+      <dt>Installation</dt><dd><span class="mono">${APP.installation}</span></dd>
+      <dt>Key</dt><dd><span>Kept in the Keychain. The value is never shown.</span></dd>
+      <dt>Access token</dt><dd class="tn">${access}</dd>
+    </dl>
+    <section class="sec" aria-labelledby="h-perm"><div class="sech"><h3 class="label" id="h-perm">Permissions</h3><span class="cap">${rev||off?read:'checked by GitHub '+GH.verified}</span></div>
+      <p id="perm-checked"><b>Read-only</b>, ${rev||off?'as last checked by GitHub':'checked by GitHub'}.</p>
+      <ul class="perm">${GH.perms.map(p=>`<li>${I.check}<b>${p[0]}</b><span class="lvl">${p[1]}</span></li>`).join('')}</ul>
+      <p class="cap">If GitHub ever reports a write permission on the App, Studio refuses it.</p></section>
+    <section class="sec" id="repos" tabindex="-1" aria-labelledby="h-repos"><div class="sech"><h3 class="label" id="h-repos">Repos chosen at install · ${APP.repos.length}</h3><span class="cap">${read}</span><span class="sp"></span><button class="btn ghost sm" data-act="refresh"${dis}>${I.refresh}Refresh</button></div>
+      <ul class="box">${APP.repos.map(r=>`<li>${I.repo}<span class="mono">${r[0]}</span><span class="badge neu">${r[1]}</span></li>`).join('')}</ul>
+      <p class="cap">Exactly the repos you chose when you installed the App. A poll trigger can name only these. To change them, edit the installation on GitHub, then Refresh.</p></section>
+    ${grantHTML()}
   </div>`;
 }
 
@@ -603,8 +674,9 @@ function renderOverlay(){
   const key=S.sheet?('sheet:'+S.sheet+':'+S.replace):S.confirm?'confirm':'';
   if(key===overlayKey) return; overlayKey=key;
   if(!key){ if(!$('.pal')) $('#overlay').innerHTML=''; return; }
-  $('#overlay').innerHTML=`<div class="ov" data-act="close-bg">${S.sheet?sheetHTML():confirmHTML()}</div>`;
-  if(S.sheet){
+  $('#overlay').innerHTML=`<div class="ov" data-act="close-bg">${S.sheet?(TOKEN_SHEETS.includes(S.sheet)?sheetHTML():appSheetHTML()):confirmHTML()}</div>`;
+  if(S.sheet&&!TOKEN_SHEETS.includes(S.sheet)) ($('#overlay [data-af]')||$('#overlay button')).focus({preventScroll:true});
+  else if(S.sheet){
     const inp=$('#cs-token');
     const box=$('#cs-declare'), gate=()=>{ S.declare=box.checked; $('#cs-go').disabled=busyNow()||!inp.value.trim()||!box.checked; };
     inp.addEventListener('input',gate); box.addEventListener('change',gate);
@@ -633,8 +705,62 @@ function sheetHTML(){
       :`<button class="btn pri" id="cs-go" data-act="connect" disabled>Connect <span class="kbd">⏎</span></button>`}</div>
   </div>`;
 }
+
+/* ---------- The GitHub App sheets: the choice, setup in progress, and every setup outcome ---------- */
+function appSheetHTML(){
+  const ph=S.sheet, ext=I.ext;
+  const link=(u,t)=>`<a class="link" href="${u}" target="_blank" rel="noopener noreferrer">${ext}${t}</a>`;
+  const frame=(title,body,acts)=>`<div class="dlg wide" role="dialog" aria-modal="true" aria-labelledby="as-t" aria-describedby="as-d">
+    <h2 id="as-t">${title}</h2>${body}<div class="acts">${acts}</div></div>`;
+  const again=`<button class="btn sec" data-act="choose-token">Paste a token instead</button><button class="btn pri" data-act="start-setup" data-af>Set up again</button>`;
+  if(ph==='choice') return frame('Connect GitHub',
+    `<p id="as-d">Choose how Studio gets read access to your repos. Either way it only reads: it can't comment, push or merge.</p>
+    <div class="opts">
+      <button class="card sug" data-act="start-setup" data-af>${I.shield}<span><span class="out"><span class="name">Install GitHub App</span><span class="badge neu">Suggested</span></span><span class="cap">GitHub opens in your browser. You click Create, then pick the repos and click Install. Permissions are checked by GitHub, and access renews itself.</span></span></button>
+      <button class="card" data-act="choose-token">${I.key}<span><span class="name">Paste a token</span><span class="cap">A fine-grained token you create on GitHub. Permissions are declared by you: GitHub doesn't tell Studio what a token can do.</span></span></button>
+    </div>
+    <p class="cap">Studio keeps one GitHub connection at a time.</p>`,
+    `<button class="btn sec" data-act="close">Cancel</button>`);
+  if(ph==='setup-create'||ph==='setup-install'){
+    const one=ph==='setup-create';
+    const step=(n,label,dot,badge)=>`<li><span class="dot ${dot}" aria-hidden="true"></span><span>Step ${n} of 2 · ${label}</span>${badge}</li>`;
+    return frame('Set up the GitHub App',
+      `<p id="as-d">Studio opened GitHub in your browser. The two clicks there are yours: Create, then Install. Studio can't make them for you, and it receives the App's key itself, so you never download a file.</p>
+      <ul class="box" aria-label="Setup steps">${step(1,'Create the App on GitHub',one?'working':'ok',one?'<span class="badge neu">waiting for you</span>':'<span class="badge ok">done</span>')}${step(2,'Pick the repos and install it',one?'idle':'working',one?'<span class="badge neu">next</span>':'<span class="badge neu">waiting for you</span>')}</ul>
+      <p class="cap">${one?'On GitHub, click Create GitHub App.':'On GitHub, choose the repos Studio may read, then click Install.'} The App is private, has no webhook, and asks for Pull requests: Read, Contents: Read and Metadata: Read. Nothing more.</p>
+      <p class="cap">This setup window closes at ${APP.closes}.</p>`,
+      `<button class="btn sec" data-act="cancel-setup">Cancel</button><button class="btn pri" data-act="reopen" data-af>${ext}Open GitHub again</button>`);
+  }
+  if(ph==='setup-cancelled') return frame('Setup cancelled',
+    `<p id="as-d">Nothing was connected, and the setup window is closed. If you had already created the App on GitHub, it stays on your account until you delete it.</p>
+    ${link(APP.links.apps,'Open your GitHub Apps')}`,
+    `<button class="btn sec" data-act="close">Close</button>${again}`);
+  if(ph==='setup-expired') return frame('Setup timed out',
+    `<div class="errmsg" id="as-d" role="alert"><p>The setup window closed at ${APP.closes}, before GitHub came back to Studio. Nothing was connected.</p></div>
+    <p>If you had already created the App on GitHub, it stays on your account until you delete it.</p>
+    ${link(APP.links.apps,'Open your GitHub Apps')}`,
+    `<button class="btn sec" data-act="close">Close</button>${again}`);
+  if(ph==='setup-write') return frame('The App can write',
+    `<div class="errmsg" id="as-d" role="alert"><p>GitHub reports that the App you installed can write, so Studio didn't connect it. Studio takes only read-only access in this phase. On GitHub, open the App's permissions and change:</p><ul>${APP.drop.map(d=>`<li>${esc(d)}</li>`).join('')}</ul><p>Then set it up again.</p></div>
+    ${link(APP.links.apps,'Open your GitHub Apps')}`,
+    `<button class="btn sec" data-act="close">Close</button><button class="btn pri" data-act="start-setup" data-af>Set up again</button>`);
+  return frame("Setup didn't finish",
+    `<div class="errmsg" id="as-d" role="alert"><p>GitHub didn't finish setting the App up. Either it did not hand the App's key to Studio after Create, or the install did not complete or could not be checked. Nothing was connected.</p></div>
+    <p class="cap">Try again. If it keeps failing, paste a token instead.</p>`,
+    `<button class="btn sec" data-act="close">Close</button>${again}`);
+}
 function confirmHTML(){
+  if(isApp()) return appConfirmHTML();
   return `<div class="dlg" role="alertdialog" aria-modal="true" aria-labelledby="dc-t" aria-describedby="dc-d"><div class="icon" aria-hidden="true">${I.x}</div><h2 id="dc-t">Disconnect GitHub?</h2><p id="dc-d">Deletes the token from the Keychain. ${S.base==='expired'?'1 playbook that needs GitHub is already parked, and stays parked until you connect again':'1 playbook that needs GitHub parks until you connect again'}: ${esc(GH.playbook)}. Mason keeps its grant.</p><div class="acts"><button class="btn sec" data-act="close">Cancel <span class="kbd">Esc</span></button><button class="btn dng" data-act="disconnect-confirm">Disconnect</button></div></div>`;
+}
+function appConfirmHTML(){
+  const link=(u,t)=>`<a class="link" href="${u}" target="_blank" rel="noopener noreferrer">${I.ext}${t}</a>`;
+  return `<div class="dlg wide" role="alertdialog" aria-modal="true" aria-labelledby="dc-t" aria-describedby="dc-d"><div class="icon" aria-hidden="true">${I.x}</div><h2 id="dc-t">Disconnect GitHub?</h2>
+    <p id="dc-d">Deletes the App's key from the Keychain. ${S.base==='app-revoked'?'1 playbook that needs GitHub is already parked, and stays parked until you connect again':'1 playbook that needs GitHub parks until you connect again'}: ${esc(GH.playbook)}. Mason keeps its grant.</p>
+    <p>Studio can't remove the App from GitHub. That part stays yours:</p>
+    <ul class="well"><li><b>Uninstall</b> it, to end its access to your repos.</li><li><b>Delete</b> it, to remove the App itself.</li></ul>
+    <div class="out">${link(APP.links.installed,'Open Installed GitHub Apps')}${link(APP.links.apps,'Open your GitHub Apps')}</div>
+    <div class="acts"><button class="btn sec" data-act="close">Cancel</button><button class="btn dng" data-act="disconnect-confirm">Disconnect</button></div></div>`;
 }
 /* Focus return. The opener is kept as the element plus a selector for it, because render() rewrites #main and
    #crewnav, so the element itself is often detached by the time the overlay closes. The page body is never an opener. */
@@ -648,9 +774,23 @@ function selFor(el){
   return q;
 }
 function setOpener(el){ opener=(el&&el!==document.body&&el.isConnected&&!$('#overlay').contains(el))?{el,sel:selFor(el)}:null; }
-function openSheet(replace){ if(offline()) return; S.sheet='blank'; S.replace=!!replace&&hasToken(); S.confirm=false; S.declare=false; render(); }
+/* Not connected: the choice comes first. A connected token's Replace goes straight to the token sheet, as before. */
+function openSheet(replace){ if(offline()) return; S.sheet=hasToken()?'blank':'choice'; S.replace=!!replace&&hasToken(); S.confirm=false; S.declare=false; render(); }
+function chooseToken(){ S.sheet='blank'; S.replace=false; S.confirm=false; S.declare=false; render(); }
+/* The mock setup moves through its two steps by itself. Any close of the setup dialog cancels it: the one window must not be left open. */
+function startSetup(){
+  if(offline()) return;
+  S.sheet='setup-create'; S.replace=false; S.confirm=false; render(); live('Setting up the GitHub App. Waiting for you on GitHub: step 1 of 2, Create.');
+  const ticket=pending={};
+  setTimeout(()=>{
+    if(pending!==ticket) return; S.sheet='setup-install'; render(); live('Step 2 of 2, Install.');
+    setTimeout(()=>{ if(pending!==ticket) return; pending=null; S.sheet=null; S.base='app-connected'; render(); live('GitHub connected through the GitHub App as '+GH.account+'. Permissions: read-only, checked by GitHub.'); restoreFocus(); },2500);
+  },2500);
+}
+function cancelSetup(){ pending=null; S.sheet='setup-cancelled'; render(); live('Setup cancelled. Nothing was connected.'); }
 function closeOverlay(){
   if($('.pal')){ $('#overlay').innerHTML=''; overlayKey=''; render(); restoreFocus(); return; }
+  if(S.sheet==='setup-create'||S.sheet==='setup-install'){ cancelSetup(); return; }
   pending=null; S.sheet=null; S.replace=false; S.confirm=false; S.declare=false; render(); restoreFocus();
 }
 function restoreFocus(){
@@ -684,9 +824,9 @@ function palette(){
   const items=()=>{
     const why=off=>off?'needs the kernel':'';
     return [
-      {g:'Actions',ic:I.plug,t:'Connect GitHub',r:offline()?'needs the kernel':hasToken()?'replaces the token':'',dis:offline(),run:()=>openSheet(hasToken())},
+      {g:'Actions',ic:I.plug,t:'Connect GitHub',r:offline()?'needs the kernel':isApp()?'disconnect first':hasToken()?'replaces the token':'',dis:offline()||isApp(),run:()=>openSheet(hasToken())},
       {g:'Actions',ic:I.unlink,t:'Disconnect GitHub',r:!hasToken()?'not connected':why(offline()),dis:!hasToken()||offline(),run:()=>{S.confirm=true;render()}},
-      {g:'Actions',ic:I.repo,t:'Show reachable repos',r:!hasToken()?'not connected':String(GH.repos.length),dis:!hasToken(),run:showRepos},
+      {g:'Actions',ic:I.repo,t:'Show reachable repos',r:!hasToken()?'not connected':String(reposNow().length),dis:!hasToken(),run:showRepos},
       ...[['Chat',I.chat,'⌘1'],['Team',I.team,'⌘2'],['Approvals',I.list,'⌘3'],['Sessions',I.term,'⌘4']].map(s=>({g:'Screens',ic:s[1],t:s[0],r:s[2],run:()=>note(s[0]+' is in gui-v1.html. This mockup shows Integrations only.')})),
       {g:'Screens',ic:I.plug,t:'Integrations',r:'⌘5',run:()=>$('#row-github')?.focus()}
     ];
@@ -728,10 +868,14 @@ document.addEventListener('click',e=>{
   ({
     'close':closeOverlay,'close-bg':closeOverlay,
     'open-sheet':()=>{setOpener(el);openSheet(!!el.dataset.replace)},
+    'choose-token':chooseToken,
+    'start-setup':()=>{ if(!$('#overlay').contains(el)) setOpener(el); startSetup(); },
+    'cancel-setup':cancelSetup,
+    'reopen':()=>{ note('Opens github.com in your browser. This mockup stays on the page.'); live('Opening GitHub again.'); },
     'connect':connect,
     'disconnect':()=>{setOpener(el);S.confirm=true;render()},
-    'disconnect-confirm':()=>{S.confirm=false;S.base='none';opener=null;render();live('GitHub disconnected. The token was deleted from the Keychain.');$('#row-github')?.focus()},
-    'refresh':()=>live('Reachable repos re-read: '+GH.repos.length+'.'),
+    'disconnect-confirm':()=>{const app=isApp();S.confirm=false;S.base='none';opener=null;render();live('GitHub disconnected. '+(app?'The App\'s key':'The token')+' was deleted from the Keychain.');$('#row-github')?.focus()},
+    'refresh':()=>live('Reachable repos re-read: '+reposNow().length+'.'),
     'other':()=>note(el.dataset.what+': not part of this mockup (see gui-v1.html).')
   }[a]||(()=>{}))();
 });
@@ -761,8 +905,10 @@ document.addEventListener('keydown',e=>{
 });
 
 /* ---------- Review strip ---------- */
-$('#viewseg').innerHTML=Object.entries(VIEWS).map(([k,v])=>`<button data-v="${k}" aria-pressed="false">${v.label}</button>`).join('');
-$('#viewseg').onclick=e=>{const b=e.target.closest('button'); if(b&&setView(b.dataset.v)){ dropOverlay(); render(); note(''); }};
+const viewBtns=g=>Object.entries(VIEWS).filter(([,v])=>(v.grp||'')===g).map(([k,v])=>`<button data-v="${k}" aria-pressed="false">${v.label}</button>`).join('');
+$('#viewseg').innerHTML=viewBtns(''); $('#appseg').innerHTML=viewBtns('app');
+const pickView=e=>{const b=e.target.closest('button'); if(b&&setView(b.dataset.v)){ dropOverlay(); render(); note(''); }};
+$('#viewseg').onclick=pickView; $('#appseg').onclick=pickView;
 $('#themeseg').onclick=e=>{const b=e.target.closest('button'); if(b){ S.theme=b.dataset.t; render(); }};
 $('#tg-reset').onclick=()=>{ setView('not-connected'); S.theme=''; dropOverlay(); render(); note('Reset.'); };
 $('#palbtn').onclick=palette;
