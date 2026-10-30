@@ -68,3 +68,9 @@ kernel/src/gui/schedules.ts
 kernel/test/gui-schedules.test.ts
 app/src/screens/schedules
 app/e2e/schedules.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-30T16:06:00Z
+- **Brief:** .supervisor/jobs/done/2026-10-30-the-schedules-and-triggers-screen.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/181
