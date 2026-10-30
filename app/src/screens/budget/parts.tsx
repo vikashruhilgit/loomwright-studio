@@ -1,36 +1,29 @@
 // Marks and small parts the Budget & audit screen draws: the meter, the limit cell, the loading
-// skeleton and three glyphs. The glyphs are decorative (`aria-hidden`): the text beside each one
+// skeleton and three glyphs (the glyph frame, warning mark and skeleton are shared under components/;
+// these wrappers pin the `budget` class prefix). The glyphs are decorative (`aria-hidden`): the text beside each one
 // names the thing. Every meter is in tokens (a share of a limit, the busiest day or a cap window),
 // never in dollars, and carries `role="img"` with an `aria-label` that says what it measures.
 import type { ReactNode } from "react";
 import { Badge } from "../../components/Badge/Badge";
+import { Glyph, WarnGlyph as SharedWarnGlyph } from "../../components/Glyph";
+import { Skeleton as SharedSkeleton } from "../../components/Skeleton";
 import type { LimitFigure } from "./model";
 import { formatTokens, limitLabel, limitMeterLabel } from "./model";
 
-function Glyph({ children }: { readonly children: ReactNode }) {
-  return (
-    <svg className="budget-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {children}
-    </svg>
-  );
-}
+const BudgetGlyph = ({ children }: { readonly children: ReactNode }) => <Glyph className="budget-glyph">{children}</Glyph>;
 
-export const WarnGlyph = () => (
-  <Glyph>
-    <path d="M12 8v5M12 16h.01M4.9 19h14.2a2 2 0 0 0 1.7-3L13.7 4a2 2 0 0 0-3.4 0L3.2 16a2 2 0 0 0 1.7 3Z" />
-  </Glyph>
-);
+export const WarnGlyph = () => <SharedWarnGlyph className="budget-glyph" />;
 
 export const HistoryGlyph = () => (
-  <Glyph>
+  <BudgetGlyph>
     <path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2" />
-  </Glyph>
+  </BudgetGlyph>
 );
 
 export const BackGlyph = () => (
-  <Glyph>
+  <BudgetGlyph>
     <path d="m15 18-6-6 6-6" />
-  </Glyph>
+  </BudgetGlyph>
 );
 
 /** A bar: `percent` of its track, `full` when it is at a limit. The width is the only inline style; every colour is a token in the stylesheet. */
@@ -68,19 +61,4 @@ export function LimitCell({ figure, testId }: { readonly figure: LimitFigure; re
 }
 
 /** Four placeholder rows while a read is in flight; `what` is the status text's object ("Loading usage"). */
-export function Skeleton({ testId, what }: { readonly testId: string; readonly what: string }) {
-  return (
-    <div className="budget-skels" data-testid={testId} aria-busy="true">
-      <span className="budget-sr-only" role="status">
-        {`Loading ${what}`}
-      </span>
-      {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="budget-skel" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </div>
-      ))}
-    </div>
-  );
-}
+export const Skeleton = ({ testId, what }: { readonly testId: string; readonly what: string }) => <SharedSkeleton prefix="budget" testId={testId} what={what} />;
