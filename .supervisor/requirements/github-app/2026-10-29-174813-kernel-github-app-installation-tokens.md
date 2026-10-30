@@ -139,3 +139,9 @@ kernel/test/integrations-github-connector.test.ts
 kernel/test/integrations-github-app-token.test.ts
 kernel/test/integrations-github-app-port.test.ts
 docs/architecture/integrations.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-30T06:16:49Z
+- **Brief:** .supervisor/jobs/done/2026-10-30-kernel-github-app-installation-tokens.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/173
