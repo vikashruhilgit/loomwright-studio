@@ -1,7 +1,8 @@
 // Phase 7 foundation (item 01): the `gui` feature's seams. Six empty parts in a
 // fixed order, merged by the console's part merge under the name `gui`, and
 // registered tenth and last. Each phase 7 screen item (03-08) fills in one part
-// and edits this file's pins for it (the empty-part pin, below).
+// with routes only, and the generic pins below ("gui parts serve routes only")
+// hold for each without an edit here.
 import { describe, expect, it } from "vitest";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { GUI_NAME, GUI_PARTS, guiContribution, guiContributionOf } from "../src/gui/index.js";
@@ -26,16 +27,16 @@ describe("the gui feature (phase 7 foundation)", () => {
     for (const part of GUI_PARTS) expect(Object.isFrozen(part)).toBe(true);
   });
 
-  it("holds every part empty: no tools, routes, subcommands, handlers or due work (until each screen item fills its part)", () => {
+  it("holds no tools, subcommands, handlers or due work in any part: gui parts serve routes only", () => {
     for (const part of GUI_PARTS) {
       expect(part.tools, part.name).toEqual([]);
-      expect(part.routes, part.name).toEqual([]);
       expect(part.subcommands ?? [], part.name).toEqual([]);
       expect(part.handlers, part.name).toEqual({});
       expect(part.dueWork ?? [], part.name).toEqual([]);
     }
-    // The merged contribution carries only its name while every part is empty.
-    expect(Object.keys(guiContribution)).toEqual(["name"]);
+    // The merged contribution carries its name, and `routes` only once some part has one.
+    const anyRoute = GUI_PARTS.some((part) => part.routes.length > 0);
+    expect(Object.keys(guiContribution)).toEqual(anyRoute ? ["name", "routes"] : ["name"]);
     expect(guiContribution.name).toBe("gui");
     expect(Object.isFrozen(guiContribution)).toBe(true);
   });
