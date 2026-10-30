@@ -1,0 +1,41 @@
+{
+  "test": "github-app-connect-live",
+  "date": "2026-10-30",
+  "decision": "D36",
+  "result": "passed",
+  "run_by": "the owner clicked every step in the app and on github.com; Claude Code built and installed the service, packaged the app and ran the checks below",
+  "commit": "fb27d27",
+  "dirty_worktree": false,
+  "machine": { "macos": "26.6.2", "node": "v24.11.1" },
+  "service": "com.loomwright.studio.kernel, reinstalled from fb27d27 (pid 64666), restarted for the mint check (pid 28340); migration 19 applied on start",
+  "app": "app/release/mac-arm64/Loomwright Studio.app, packaged from fb27d27, ad-hoc signed",
+  "github_app": { "slug": "loomwright-studio-747311", "installation_id": 176803627, "repos_chosen_at_install": ["vikashruhilgit/studio-sandbox"] },
+  "steps": {
+    "1_store_app": {
+      "outcome": "pass",
+      "machine": "Keychain items loomwright-studio-github-app-id, -slug and -key written at 2026-10-30T07:02:32Z; the key item reads back 2239 characters (security find-generic-password ... -w | wc -c, value never printed), which base64url-decode to a PEM that openssl pkey parses as 'Private-Key: (2048 bit, 2 primes)'"
+    },
+    "2_record_installation": {
+      "outcome": "pass",
+      "machine": "loomwright-studio-github-app-installation written at 07:02:59Z; event 2813 connector_status connected, permissions_source reported; connectors row: status connected, method app, app_slug loomwright-studio-747311, installation_id 176803627, permissions {contents: read, metadata: read, pull_requests: read}, reachable_repos [vikashruhilgit/studio-sandbox], expires_at 2026-10-30T08:02:59.000Z"
+    },
+    "3_fresh_process_mint": {
+      "outcome": "pass",
+      "machine": "launchctl kickstart -k restarted the service (pid 28340), dropping the in-memory installation token; GET /connectors/github/repos?refresh=1 answered {repos: [vikashruhilgit/studio-sandbox]} and verified_at moved to 2026-10-30T07:04:42.873Z, so the key was read back from the Keychain, a JWT signed and a new token minted"
+    },
+    "4_cli_status": {
+      "outcome": "pass",
+      "machine": "studio connectors github status prints 'method: app (loomwright-studio-747311, installation 176803627)' and 'permissions source: reported'"
+    }
+  },
+  "observations": [
+    "Event 2811 connector_status disconnected at 07:01:48Z, 44 s before storeApp: the token-connected detail offers only Replace and Disconnect, so switching from a token to the App goes through Disconnect, which deleted the token item loomwright-studio-github (not recordInstallation's delete).",
+    "Before the run the Keychain held leaked test fixtures (app id 4242, slug loomwright-studio-ab12cd, a 140-character key) written at 2026-10-30T05:46:29Z by integrations-github-app-setup.test.ts during wave 2's local CI (fixed in 5d084f2, items never removed). The Disconnect and storeApp replaced them."
+  ],
+  "owner": {
+    "screen_seen": "Integrations: GitHub connected, GitHub App, read-only checked by GitHub, App loomwright-studio-747311, installation 176803627, access token renews automatically, one repo chosen at install",
+    "keychain_prompt_shown": "not reported by the owner",
+    "pressed_disconnect_before_setup": "inferred, not stated: event 2811 (connector_status disconnected, 07:01:48Z) precedes storeApp, and the token-connected detail offers no App path without Disconnect",
+    "browser_tab_final_page": "Done — return to Studio / GitHub is connected. You can close this tab. (owner's screenshot of /connectors/github/app/installed)"
+  }
+}
