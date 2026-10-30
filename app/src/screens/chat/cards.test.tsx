@@ -134,12 +134,18 @@ describe("cards", () => {
     expect(within(card.querySelector('dd[data-field="API-key fallback"]') as HTMLElement).queryByRole("button")).toBeNull();
   });
 
-  it("the playbook's mode is shown read-only: phase 6 accepts only draft, so its row has no Edit", async () => {
+  it("the playbook's default mode reads 'not set' (nobody chose it) and is read-only: phase 6 accepts only draft, so its row has no Edit", async () => {
     const k = kit({ threads: { wright: thread([eventItem(1, "playbook_created", "created", { playbook_id: 3 })]) }, playbooks: [playbook(3, { mode: "draft", mode_set_by: null })] });
     await renderChat(k);
     const card = await playbookCard();
-    expect(shownValue(card, "Mode")).toBe("draft");
+    expect(shownValue(card, "Mode")).toBe("not set");
     expect(within(card.querySelector('dd[data-field="Mode"]') as HTMLElement).queryByRole("button")).toBeNull();
+  });
+
+  it("a mode someone set reads as its value, with its setter", async () => {
+    const k = kit({ threads: { wright: thread([eventItem(1, "playbook_created", "created", { playbook_id: 3 })]) }, playbooks: [playbook(3, { mode: "draft", mode_set_by: "owner" })] });
+    await renderChat(k);
+    expect(shownValue(await playbookCard(), "Mode")).toBe("draftset by owner");
   });
 
   it("Set priority high posts and shows set by owner", async () => {
