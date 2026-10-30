@@ -1,5 +1,6 @@
 // The kernel's loopback HTTP API (AC1-AC3): 127.0.0.1 only, every request
-// authenticated with the Keychain bearer token before any routing. Mechanism
+// authenticated with the Keychain bearer token before any routing (bar the
+// three GET browser routes of the GitHub App connect flow). Mechanism
 // only (invariant 1): it reports state, pulls the kill switch and carries the
 // owner's abandon of an unverifiable orphan, nothing more. Later features add
 // routes through their contributions (`FeatureContribution.routes`).
@@ -12,8 +13,8 @@ import { WebSocketServer } from "ws";
 import type { ApprovalApplier } from "../approvals/store.js";
 import type { AuthHealth, AuthProvider } from "../auth/types.js";
 import { localDay } from "../budget/index.js";
-import { compileRoutePath, matchRoutePath } from "../features/contribution.js";
-import type { KillSwitchView, OwnedRoute } from "../features/contribution.js";
+import { UNAUTHENTICATED_ROUTE_PATHS, compileRoutePath, matchRoutePath } from "../features/contribution.js";
+import type { ContributedBrowserAnswer, KillSwitchView, OwnedRoute } from "../features/contribution.js";
 import { isPaused, releasePause } from "../console/pause.js";
 import type { PauseVia } from "../console/pause.js";
 import { NO_REF, appendEvent, clip, errorMessage } from "../loop/internal.js";
@@ -45,6 +46,14 @@ const ABANDON_PATH = /^\/sessions\/(\d+)\/abandon$/;
  */
 export { PHASE1_ROUTES } from "../features/contribution.js";
 
+/**
+ * The only paths served without the token, and only as a `GET` to a merged
+ * route that declares `unauthenticated: true` (the GitHub App connect flow's
+ * browser returns). `mergeContributions` refuses any other unauthenticated
+ * route; the server checks the list itself too (defence in depth).
+ */
+export { UNAUTHENTICATED_ROUTE_PATHS } from "../features/contribution.js";
+
 /** The largest JSON body a contributed route reads; beyond it ⇒ `413 {"error":"body_too_large"}`. */
 export const MAX_CONTRIBUTED_BODY_BYTES = 1024 * 1024;
 
@@ -58,6 +67,44 @@ const BODYLESS_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
  */
 function isContributedRouteStatus(status: unknown): boolean {
   return typeof status === "number" && Number.isInteger(status) && status >= 200 && status <= 599 && !BODYLESS_STATUSES.has(status);
+}
+
+/**
+ * Whether a merged route may be served without the token: it declares
+ * `unauthenticated: true`, is a `GET` and sits on exactly one of the listed
+ * paths. Checked here as well as at the merge, so a hand-built `OwnedRoute`
+ * handed straight to `startApiServer` cannot open any other route.
+ */
+function isBrowserRoute(route: OwnedRoute): boolean {
+  return route.unauthenticated === true && route.method === "GET" && UNAUTHENTICATED_ROUTE_PATHS.includes(route.path);
+}
+
+/** The Content-Type of a browser page. */
+const HTML_CONTENT_TYPE = "text/html; charset=utf-8";
+
+/**
+ * The answer of a route's browser form, checked before anything is written
+ * (an invalid one reaches the route's 500, never the socket): the page's HTML
+ * with its status, or a `302` to an absolute `http(s)` address with no control
+ * characters (no header splitting). Both carry `Referrer-Policy: no-referrer`
+ * (a `state` is in the URL; `send` already adds `Cache-Control: no-store`).
+ */
+function browserReply(browser: ContributedBrowserAnswer, status: number): { readonly text: string; readonly headers: Record<string, string> } {
+  const headers = { "Content-Type": HTML_CONTENT_TYPE, "Referrer-Policy": "no-referrer" };
+  const answer = (typeof browser === "object" && browser !== null ? browser : {}) as { readonly html?: unknown; readonly redirect?: unknown };
+  if (typeof answer.html === "string") return { text: answer.html, headers };
+  const location = answer.redirect;
+  if (typeof location !== "string") throw new Error("a contributed route answered a browser form that is neither a page nor a redirect");
+  if (status !== 302) throw new Error(`a contributed route answered a redirect with status ${String(status)}, not 302`);
+  if (/[\u0000-\u001f\u007f]/.test(location)) throw new Error("a contributed route answered a redirect whose address has a control character");
+  let parsed: URL;
+  try {
+    parsed = new URL(location);
+  } catch {
+    throw new Error("a contributed route answered a redirect that is not an absolute address");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("a contributed route answered a redirect that is not http(s)");
+  return { text: "", headers: { ...headers, Location: location } };
 }
 
 /**
@@ -455,12 +502,19 @@ export function readStatus(
 /**
  * Start the API on `127.0.0.1:<port>` (default an OS-assigned port).
  *
- * - Every request is authenticated first, whatever its path or method:
+ * - Every request is authenticated first, whatever its path or method (bar the one exception below):
  *   missing or wrong ⇒ `401 {"error":"unauthorized"}` with
  *   `WWW-Authenticate: Bearer`, so an unauthenticated caller learns nothing
  *   about the routes. Then: unknown path ⇒ 404, wrong method ⇒ 405.
  *   Phase 1 routes ignore request bodies (every answer other than a matched
  *   contributed route drains the body with `req.resume()`, unread).
+ *   The one exception: a `GET` without a valid token is served when its
+ *   pathname is exactly one of `UNAUTHENTICATED_ROUTE_PATHS` and a merged
+ *   route with `unauthenticated: true` matches it (the GitHub App connect
+ *   flow's browser returns). A POST or HEAD to those paths, any other path and
+ *   every WebSocket upgrade keep the 401. Such a request's body is never read
+ *   (drained, the handler's `body` is `undefined`), and its route may answer
+ *   the browser form below.
  * - Contributed routes (`options.routes`) match after the phase 1 routes; an
  *   exact path or a `:param` pattern. Their handler gets `{params, query,
  *   body, store, now, killSwitch, serialized}` (the server's store and clock,
@@ -470,7 +524,9 @@ export function readStatus(
  *   where `body` is the parsed JSON body (`undefined` when empty):
  *   one over `MAX_CONTRIBUTED_BODY_BYTES` ⇒ `413 {"error":"body_too_large"}`,
  *   malformed JSON ⇒ `400 {"error":"invalid_json"}`, both without calling
- *   the handler. It answers `{status, body}`: `body` is sent as JSON
+ *   the handler. It also gets `origin`, the server's own bound loopback origin
+ *   (`http://127.0.0.1:<port>`, from `address()`, never the `Host` header).
+ *   It answers `{status, body}`: `body` is sent as JSON
  *   (`undefined` ⇒ `null`; a string ⇒ a JSON string); a throw, a body
  *   `JSON.stringify` cannot serialize, or a `status` that cannot carry that
  *   JSON body (not an integer 200-599, or 204/205/304, which have no body)
@@ -478,6 +534,12 @@ export function readStatus(
  *   `route_failed` event (actor `kernel`) naming the contributor, the
  *   route's method and declared path, and the clipped error (the same idiom
  *   as the loop's `due_work_failed`; a failed write never changes the 500).
+ *   An unauthenticated route may instead answer `{status, body: null,
+ *   browser}`: `browser: {html}` is sent as `text/html; charset=utf-8` with
+ *   `status`, `browser: {redirect}` as a `302` with that `Location` (an
+ *   absolute http(s) address, `status` 302); both carry `Cache-Control:
+ *   no-store` and `Referrer-Policy: no-referrer`. A token-gated route that
+ *   answers `browser`, or an invalid one, is the same 500.
  * - `GET /status` ⇒ `StatusBody`. Each provider's `health(at)` reads the
  *   request's one instant; its failures are typed `{status: "error", reason}`
  *   values, and a provider whose `health()` still throws reports
@@ -598,6 +660,14 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // Headers only: the body is not touched before the caller is authenticated.
     if (!isAuthorized(req, expected)) {
+      // The one exception: a GET to one of the listed browser paths that a merged
+      // `unauthenticated` route serves. Every other request (a POST or HEAD to
+      // one of them included) is the 401, whatever its path.
+      const browserUrl = browserUrlOf(req);
+      if (browserUrl !== undefined) {
+        await handleContributed(req, res, browserUrl, false);
+        return;
+      }
       req.resume();
       send(res, 401, UNAUTHORIZED_BODY, { "WWW-Authenticate": "Bearer" });
       return;
@@ -626,7 +696,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     }
     const route = Object.hasOwn(routes, path) ? routes[path] : undefined;
     if (route === undefined) {
-      await handleContributed(req, res, url);
+      await handleContributed(req, res, url, true);
       return;
     }
     req.resume();
@@ -637,10 +707,37 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
     send(res, 200, await route.run(req));
   };
 
-  /** A contributed route (after the phase 1 routes): 404 / 405 drain the body; only a match reads it. */
-  const handleContributed = async (req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> => {
+  /**
+   * The parsed URL of a request that may be served without the token, else
+   * `undefined`: method exactly `GET`, pathname exactly on the list, and a
+   * merged route that is a browser route matching it. A URL that cannot be
+   * parsed is simply not one (the caller gets the 401).
+   */
+  const browserUrlOf = (req: IncomingMessage): URL | undefined => {
+    if (req.method !== "GET") return undefined;
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://localhost");
+    } catch {
+      return undefined;
+    }
+    if (!UNAUTHENTICATED_ROUTE_PATHS.includes(url.pathname)) return undefined;
+    const parts = url.pathname.slice(1).split("/");
+    const served = contributed.some(({ route, segments }) => isBrowserRoute(route) && matchRoutePath(segments, parts) !== undefined);
+    return served ? url : undefined;
+  };
+
+  /**
+   * A contributed route (after the phase 1 routes): 404 / 405 drain the body;
+   * only a match reads it. An unauthenticated request (`authenticated` false,
+   * which only reaches here through `browserUrlOf`) matches browser routes
+   * only, never reads its body (drained with `req.resume()`, so a handler's
+   * `body` is always `undefined`) and cannot reach a 404 or 405.
+   */
+  const handleContributed = async (req: IncomingMessage, res: ServerResponse, url: URL, authenticated: boolean): Promise<void> => {
     const parts = url.pathname.slice(1).split("/");
     const matches = contributed.flatMap(({ route, segments }) => {
+      if (!authenticated && !isBrowserRoute(route)) return [];
       const params = matchRoutePath(segments, parts);
       return params === undefined ? [] : [{ route, params }];
     });
@@ -651,42 +748,72 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
       else send(res, 405, { error: "method_not_allowed" }, { Allow: [...new Set(matches.map((m) => m.route.method))].join(", ") });
       return;
     }
-    const raw = await readBoundedBody(req, MAX_CONTRIBUTED_BODY_BYTES);
-    if (raw === undefined) {
-      send(res, 413, { error: "body_too_large" });
-      return;
-    }
     let body: unknown;
-    if (raw.length > 0) {
-      try {
-        body = JSON.parse(raw.toString("utf8"));
-      } catch {
-        send(res, 400, { error: "invalid_json" });
+    if (authenticated) {
+      const raw = await readBoundedBody(req, MAX_CONTRIBUTED_BODY_BYTES);
+      if (raw === undefined) {
+        send(res, 413, { error: "body_too_large" });
         return;
       }
+      if (raw.length > 0) {
+        try {
+          body = JSON.parse(raw.toString("utf8"));
+        } catch {
+          send(res, 400, { error: "invalid_json" });
+          return;
+        }
+      }
+    } else {
+      // Never read or parsed: nothing from an unauthenticated caller reaches the handler.
+      req.resume();
     }
+    // Always from the server's own bound address, never the `Host` header (a caller controls it).
+    const bound = server.address();
+    const origin = typeof bound === "object" && bound !== null ? { origin: `http://${API_HOST}:${bound.port}` } : {};
     const query: Record<string, string> = Object.create(null) as Record<string, string>;
     for (const [key, value] of url.searchParams) query[key] = value;
     let status: number;
     let text: string;
+    let extra: Record<string, string> | undefined;
     try {
-      const { status: answered, body: answerBody } = await match.route.handler({ params: match.params, query, body, store, now, killSwitch, serialized, ...managed, ...applier });
+      const { status: answered, body: answerBody, browser } = await match.route.handler({
+        params: match.params,
+        query,
+        body,
+        store,
+        now,
+        killSwitch,
+        serialized,
+        ...origin,
+        ...managed,
+        ...applier,
+      });
       // The seam's body is JSON: serialized here, so a string answers a JSON
       // string (`send` writes a string as already-serialized text, phase 1's use).
       // Checked before anything is written: an invalid status reaches the 500 path,
       // never `writeHead` (which would close the socket on a 1xx or send a 204's
       // Content-Length with no body).
       if (!isContributedRouteStatus(answered)) throw new Error(`a contributed route answered status ${String(answered)}, which cannot carry a JSON body`);
-      const json = JSON.stringify(answerBody ?? null) as string | undefined;
-      if (json === undefined) throw new Error("a contributed route answered a body that is not JSON");
-      status = answered;
-      text = json;
+      if (browser !== undefined) {
+        // The non-JSON form is for the unauthenticated routes only: a token-gated one is the 500.
+        if (!isBrowserRoute(match.route)) throw new Error("a token-gated contributed route answered the browser form, which only an unauthenticated route may");
+        const reply = browserReply(browser, answered);
+        status = answered;
+        text = reply.text;
+        extra = reply.headers;
+        // `send` writes a string as already-serialized text: a page as it is.
+      } else {
+        const json = JSON.stringify(answerBody ?? null) as string | undefined;
+        if (json === undefined) throw new Error("a contributed route answered a body that is not JSON");
+        status = answered;
+        text = json;
+      }
     } catch (err) {
       // The client gets only `internal_error`; the cause goes to the daemon's own record.
       recordRouteFailure(match.route, err);
       throw err;
     }
-    send(res, status, text);
+    send(res, status, text, extra);
   };
 
   /**

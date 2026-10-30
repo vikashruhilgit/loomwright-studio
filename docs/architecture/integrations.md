@@ -102,7 +102,7 @@ Every status change appends exactly one `connector_status` event, `{connector_id
 
 The second way to connect GitHub, beside the token path, which stays as it is. [D36](../DECISIONS.md) records the decision and its evidence (probe p13, [open questions](../OPEN_QUESTIONS.md), "GitHub App connect"); the screens are in [DESIGN](../DESIGN.md#github-app-connect). Setup is GitHub's App Manifest flow: Studio opens github.com in the system browser with the App pre-filled (private, no webhook, `Pull requests: Read`, `Contents: Read`, `Metadata: Read`), and the owner clicks Create, then picks repos and clicks Install. Studio receives and stores the App's key itself.
 
-It is built in two waves. **Wave 1** is this contract: the types (`kernel/src/integrations/types.ts`), a stub port (`github/app-port.ts`), the two owner routes as 501 stubs (`github/app-routes.ts`), the app's contract types (`app/src/api/contract.ts`), the decision and the mockup. **Wave 2** is three items built in parallel against it: the kernel tokens item (the port, the App's key and installation tokens; [the credential lifecycle](#the-credential-lifecycle) and [the port](#the-port) below are its), the kernel setup item (the setup window and the browser routes) and the app's Connect sheet. Until the setup item lands, the owner routes answer `501 {"error":"not_implemented"}` and the browser routes are not served, so nothing calls the port yet.
+It is built in two waves. **Wave 1** is this contract: the types (`kernel/src/integrations/types.ts`), a stub port (`github/app-port.ts`), the two owner routes as 501 stubs (`github/app-routes.ts`), the app's contract types (`app/src/api/contract.ts`), the decision and the mockup. **Wave 2** is three items built in parallel against it: the kernel tokens item (the port, the App's key and installation tokens; [the credential lifecycle](#the-credential-lifecycle) and [the port](#the-port) below are its), the kernel setup item (the setup window and the browser routes) and the app's Connect sheet. Both kernel items have landed: the port is real, `POST /connectors/github/app/setup` and `/setup/cancel` open and close the real setup window, and the three browser routes are served ([GitHub App setup](github-app-setup.md)).
 
 ### Owner routes
 
@@ -125,7 +125,7 @@ GET only, served by the kernel's loopback API, **without the API token**: the ow
 | `/connectors/github/app/return` | GitHub's `redirect_url`, after Create: query `code` and `state`. Studio converts the code and stores the App |
 | `/connectors/github/app/installed` | GitHub's `setup_url`, after Install: query `installation_id`, `setup_action` and `state`. Studio records the installation |
 
-GitHub accepts a loopback `redirect_url` and `setup_url` (`http://127.0.0.1:<port>`) and returns the `state` on both returns (probe p13). The `state` appears in the browser's address bar and history, so it is **spent on its first use**. Each setup window is **single-use, short-lived, and at most one is open at a time**; a browser route outside an open window, or with a `state` that is not the window's current one, is refused.
+GitHub accepts a loopback `redirect_url` and `setup_url` (`http://127.0.0.1:<port>`) and returns the `state` on both returns (probe p13). The `state` appears in the browser's address bar and history, so every `state` GitHub carries is **spent on its first use**. The one exception is the start `state` in `setup_url`, which GitHub never carries: it can be reused for start-page reloads until the return arrives (a recorded deviation, [GitHub App setup](github-app-setup.md#the-window)). Each setup window is **single-use, short-lived, and at most one is open at a time**; a browser route outside an open window, or with a `state` that is not the window's current one, is refused.
 
 ### The connector row's App fields
 
@@ -198,7 +198,7 @@ Its dependencies (the store, the clock) are parameters, in `GitHubConnector`'s i
 The client may send exactly two requests that are not GET, both to `api.github.com`, both in a fixed allowlist; every other method stays refused:
 
 - `POST /app/installations/{id}/access_tokens`: mints an installation token, authenticated by an app JWT signed with the App's key (`mintInstallationToken`);
-- `POST /app-manifests/{code}/conversions`: the manifest conversion, which returns the App and its secrets (`convertManifest`; unauthenticated, as the single-use `code` is the credential).
+- `POST /app-manifests/{code}/conversions`: the manifest conversion, which returns the App and its secrets (`convertManifest`; unauthenticated, as the single-use `code` is the credential). The setup flow does not call it yet: `app-setup.ts` sends its own conversion, a recorded deviation pending the owner's confirmation ([GitHub App setup](github-app-setup.md#the-conversion)).
 
 `isAllowedGitHubRequest(method, url)` is the one authority, checked with the origin before every request: GET, or exactly one of these two POSTs (no query, no fragment), and no host but `api.github.com`; no PUT, PATCH or DELETE and no other POST. Every request, GET or POST, goes through the one request path (timeout, rate limit, bounded read, no redirects).
 

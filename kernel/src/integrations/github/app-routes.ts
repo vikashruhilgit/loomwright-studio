@@ -1,40 +1,31 @@
-// The `integrations` feature's GitHub App routes part (D36), stubbed: the
-// owner's two App setup routes, on the loopback API (bearer token, like every
-// route). The contract is fixed here and in `docs/architecture/integrations.md`;
-// the behaviour is the setup item's, which fills this file in.
+// The `integrations` feature's GitHub App routes part (D36): the owner's two
+// App setup routes (bearer token, like every route) and the three browser routes
+// GitHub returns to (no token, GET only, gated by the open setup window and its
+// single-use `state`). The flow itself, its window and its pages are in
+// `app-setup.ts` (`docs/architecture/github-app-setup.md`); this file only builds
+// the routes over the GitHub App port.
 //
-//   POST /connectors/github/app/setup         will answer {setup_url, expires_at}: open the one setup window
-//   POST /connectors/github/app/setup/cancel  will answer {cancelled}: close it
+//   POST /connectors/github/app/setup         {setup_url, expires_at}: open the one setup window
+//   POST /connectors/github/app/setup/cancel  {cancelled}: close it
+//   GET  /connectors/github/app/start         the page that posts the manifest to github.com
+//   GET  /connectors/github/app/return        GitHub's redirect_url, after Create
+//   GET  /connectors/github/app/installed     GitHub's setup_url, after Install
 //
-// Until then both answer `501 {"error":"not_implemented"}`. The three browser
-// routes (`/connectors/github/app/start`, `/return`, `/installed`) are the setup
-// item's too and are not served here.
+// The port defaults to `githubAppPort` (`app-port.ts`), which the tokens item
+// fills in place; tests pass a fake port to `githubAppRoutes`.
 //
-// The `studio` CLI loads it, so it imports only types and the feature seam:
-// never the Agent SDK, the session manager or `kernel.ts`
+// The `studio` CLI loads it, so it imports only types, the feature seam and
+// its siblings: never the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the registry's module graph).
-import type { ContributedRoute, ContributedRouteResponse } from "../../features/contribution.js";
+import type { ContributedRoute } from "../../features/contribution.js";
 import type { IntegrationsPart } from "../types.js";
+import { githubAppPort } from "./app-port.js";
+import { createGitHubAppSetup } from "./app-setup.js";
+import type { GitHubAppSetupDeps } from "./app-setup.js";
 
-/** The one answer both stub routes give. */
-function notImplemented(): Promise<ContributedRouteResponse> {
-  return Promise.resolve({ status: 501, body: { error: "not_implemented" } });
-}
-
-/** The two owner routes (the setup item replaces the handlers). */
-export function githubAppRoutes(): readonly ContributedRoute[] {
-  return Object.freeze([
-    {
-      method: "POST",
-      path: "/connectors/github/app/setup",
-      handler: () => notImplemented(),
-    },
-    {
-      method: "POST",
-      path: "/connectors/github/app/setup/cancel",
-      handler: () => notImplemented(),
-    },
-  ] satisfies ContributedRoute[]);
+/** The five routes, over one setup window (each call builds its own). */
+export function githubAppRoutes(deps: Partial<GitHubAppSetupDeps> = {}): readonly ContributedRoute[] {
+  return createGitHubAppSetup({ ...deps, port: deps.port ?? githubAppPort }).routes;
 }
 
 export const githubAppRoutesPart: IntegrationsPart = Object.freeze({

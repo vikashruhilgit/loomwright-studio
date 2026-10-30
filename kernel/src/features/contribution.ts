@@ -67,6 +67,19 @@ export const PHASE1_ROUTES: readonly { readonly method: string; readonly path: s
   { method: "POST", path: "/sessions/:id/abandon" },
 ];
 
+/**
+ * The only paths a route may serve without the API token: the GitHub App
+ * connect flow's three browser routes (GitHub's returns can't carry the
+ * token). A route declares `unauthenticated: true` only for a `GET` on exactly
+ * one of these; `mergeContributions` refuses anything else, and the API server
+ * checks the list itself too. Frozen, and never extended at runtime.
+ */
+export const UNAUTHENTICATED_ROUTE_PATHS: readonly string[] = Object.freeze([
+  "/connectors/github/app/start",
+  "/connectors/github/app/return",
+  "/connectors/github/app/installed",
+]);
+
 /** The part of a contribution a refusal is about. */
 export type ContributionPart = "contribution" | "tool" | "route" | "subcommand" | "handler" | "dueWork";
 
@@ -251,6 +264,14 @@ export interface ContributedRouteRequest {
    * tools), when the composition built one. Only the approvals decision reads it.
    */
   readonly approvalApplier?: ApprovalApplier;
+  /**
+   * The API server's own bound loopback origin (`http://127.0.0.1:<port>`),
+   * read from its `address()`, never from the request's `Host` header (which a
+   * caller controls). The API server always sets it; a route that builds an
+   * address GitHub returns to answers a typed error when it is missing, never a
+   * throw. Optional in the type for the same reason as `sessions`.
+   */
+  readonly origin?: string;
 }
 
 /** A contributed route's read-only view of the kill switch: it can read the state, never change it. */
@@ -260,23 +281,42 @@ export interface KillSwitchView {
 }
 
 /**
- * A contributed route's answer, always sent with a JSON body: `status` must
- * be an integer 200-599 other than 204/205/304 (statuses that have no body),
- * or the API answers 500 instead.
+ * A browser answer, the non-JSON form of a route's response: a fixed HTML page
+ * (`text/html; charset=utf-8`) or a redirect to an absolute `http(s)` address.
+ * Both are sent with `Cache-Control: no-store` and `Referrer-Policy:
+ * no-referrer` (a `state` is in the URL). Only an unauthenticated route
+ * (`ContributedRoute.unauthenticated`) may answer it.
+ */
+export type ContributedBrowserAnswer = { readonly html: string } | { readonly redirect: string };
+
+/**
+ * A contributed route's answer, sent with a JSON body: `status` must be an
+ * integer 200-599 other than 204/205/304 (statuses that have no body), or the
+ * API answers 500 instead. With `browser` set (an unauthenticated route only;
+ * from a token-gated route it is the same 500), `body` is ignored and the
+ * answer is the page, or a redirect, which must carry `status` 302; write
+ * `body: null` beside it.
  */
 export interface ContributedRouteResponse {
   readonly status: number;
   readonly body: unknown;
+  readonly browser?: ContributedBrowserAnswer;
 }
 
 /**
- * An API route, reached only with the bearer token. `path` is exact
- * (`/approvals`) or a pattern whose `:name` segments are captured into
- * `params` (`/approvals/:id`).
+ * An API route, reached with the bearer token unless it is `unauthenticated`.
+ * `path` is exact (`/approvals`) or a pattern whose `:name` segments are
+ * captured into `params` (`/approvals/:id`).
  */
 export interface ContributedRoute {
   readonly method: RouteMethod;
   readonly path: string;
+  /**
+   * Served without the token (a browser return from GitHub). Only a `GET` on
+   * exactly one of `UNAUTHENTICATED_ROUTE_PATHS` may declare it, or
+   * `mergeContributions` refuses. Its request never carries a body.
+   */
+  readonly unauthenticated?: true;
   handler(req: ContributedRouteRequest): Promise<ContributedRouteResponse>;
 }
 
@@ -456,7 +496,8 @@ function isZodRawShape(shape: unknown): boolean {
  * - `UnknownEventKindError` for a handler keyed by a kind outside `EVENT_KINDS`.
  * - `InvalidContributionError` for a malformed part (a tool name that does not
  *   start with `kernel_`, a tool shape that is not a zod raw shape, a bad
- *   route path or method, a subcommand name or help that is not one short
+ *   route path or method, an `unauthenticated` route that is not a `GET` on
+ *   one of `UNAUTHENTICATED_ROUTE_PATHS`, a subcommand name or help that is not one short
  *   line, a part that is not a function (a tool's `beforeHold` and
  *   `applyOnApproval` included, when given), a part list that is not a list).
  */
@@ -524,6 +565,13 @@ export function mergeContributions(contributions: readonly FeatureContribution[]
         throw invalid("route", (err as Error).message);
       }
       if (typeof r.handler !== "function") throw invalid("route", `${r.method} ${r.path} needs a handler`);
+      if (r.unauthenticated !== undefined) {
+        if (r.unauthenticated !== true) throw invalid("route", `${r.method} ${r.path}: unauthenticated must be true when given`);
+        if (r.method !== "GET") throw invalid("route", `${r.method} ${r.path} cannot be unauthenticated: only a GET may be served without the token`);
+        if (!UNAUTHENTICATED_ROUTE_PATHS.includes(r.path)) {
+          throw invalid("route", `${r.method} ${r.path} cannot be unauthenticated: its path is not one of ${UNAUTHENTICATED_ROUTE_PATHS.join(", ")}`);
+        }
+      }
       const shadowing = phase1Routes.find((p) => routePathsOverlap(p.segments, segments));
       if (shadowing !== undefined) {
         throw new ContributionConflictError("route", `${r.method} ${r.path} (overlaps ${shadowing.method} ${shadowing.path})`, [PHASE1_OWNER, owner]);
@@ -535,7 +583,14 @@ export function mergeContributions(contributions: readonly FeatureContribution[]
       }
       routeOwners.push({ method: r.method, path: r.path, segments, owner });
       // A new object, never the contribution's own: the handler is still called on `r`.
-      routes.push({ owner, method: r.method, path: r.path, handler: (req) => r.handler(req) });
+      // The flag is carried explicitly: this copy drops every field it does not name.
+      routes.push({
+        owner,
+        method: r.method,
+        path: r.path,
+        ...(r.unauthenticated === true ? { unauthenticated: true as const } : {}),
+        handler: (req) => r.handler(req),
+      });
     }
 
     for (const s of c.subcommands ?? []) {

@@ -57,8 +57,9 @@ export interface ContractRoute {
  * `connectors` (see `AgentConnectorsSetBody`).
  *
  * The GitHub App connect's two owner routes (D36) are `github-app`: the kernel
- * serves them as stubs that answer 501 `not_implemented` until the App setup item
- * fills them in.
+ * serves them: setup answers `setup_url` and `expires_at`, cancel answers
+ * `cancelled`. The three token-free browser routes are served by
+ * `github/app-setup.ts` and are not contract entries.
  */
 export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/status", origin: "phase-1" },
@@ -844,8 +845,7 @@ export type GitHubAppSetupRefusal = "setup_not_open" | "state_mismatch" | "setup
 
 /**
  * `POST /connectors/github/app/setup`: opens the one setup window and answers the
- * loopback URL the owner opens in the browser. Until the setup item lands it
- * answers 501 `not_implemented`.
+ * loopback URL the owner opens in the browser, with when the window expires.
  */
 export interface GitHubAppSetupResponse {
   readonly setup_url: string;
