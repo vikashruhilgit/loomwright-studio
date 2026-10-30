@@ -117,3 +117,9 @@ kernel/test/api-unauthenticated-routes.test.ts
 kernel/test/integrations-github-app-setup.test.ts
 docs/architecture/github-app-setup.md
 docs/ARCHITECTURE.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-30T06:19:42Z
+- **Brief:** .supervisor/jobs/done/2026-10-30-kernel-github-app-manifest-setup-flow.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/172
