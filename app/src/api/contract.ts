@@ -17,8 +17,8 @@ export type HttpMethod = "GET" | "POST";
 
 /**
  * Where a route comes from: the phase that built it (existing at the phase 5
- * base), the phase 5 item that adds it (`item-NN`), or the phase 6 item that
- * adds it (`p6-item-NN`).
+ * base), the phase 5 item that adds it (`item-NN`), the phase 6 item that
+ * adds it (`p6-item-NN`), or the GitHub App connect (`github-app`, D36).
  */
 export type RouteOrigin =
   | "phase-1"
@@ -34,7 +34,8 @@ export type RouteOrigin =
   | "item-05"
   | "item-06"
   | "p6-item-03"
-  | "p6-item-07";
+  | "p6-item-07"
+  | "github-app";
 
 export interface ContractRoute {
   readonly method: HttpMethod;
@@ -54,6 +55,10 @@ export interface ContractRoute {
  * before the kernel serves them; until its item lands each one answers 404.
  * Phase 6 item 08 adds no route: it widens `POST /agents/:id/set` to take
  * `connectors` (see `AgentConnectorsSetBody`).
+ *
+ * The GitHub App connect's two owner routes (D36) are `github-app`: the kernel
+ * serves them as stubs that answer 501 `not_implemented` until the App setup item
+ * fills them in.
  */
 export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/status", origin: "phase-1" },
@@ -100,6 +105,8 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/connectors/github/repos", origin: "p6-item-03" },
   { method: "GET", path: "/drafts", origin: "p6-item-07" },
   { method: "GET", path: "/drafts/:id", origin: "p6-item-07" },
+  { method: "POST", path: "/connectors/github/app/setup", origin: "github-app" },
+  { method: "POST", path: "/connectors/github/app/setup/cancel", origin: "github-app" },
 ]);
 
 // ---- Shared shapes -------------------------------------------------------------
@@ -751,6 +758,14 @@ export type ConnectorStatus = "connected" | "rejected" | "disconnected" | "expir
 export type ConnectorPermissionsSource = "reported" | "declared";
 
 /**
+ * How a connector is connected: a pasted `token`, or a GitHub `app` (D36). Mirrors
+ * `CONNECTOR_METHODS` in `kernel/src/integrations/types.ts`. For `app`,
+ * `permissions_source` is always `reported` and `expires_at` is the current
+ * installation token's expiry, which renews.
+ */
+export type ConnectorMethod = "token" | "app";
+
+/**
  * A `connectors` row, as the routes show it. It never carries the token, which
  * lives only in the Keychain item `loomwright-studio-github`; no route returns
  * it. `account_login`, the permission names and the repo names come from
@@ -767,6 +782,12 @@ export interface Connector {
   readonly permissions_source: ConnectorPermissionsSource | null;
   /** When the owner declared the token read-only; set only when `permissions_source` is `declared`. */
   readonly permissions_declared_at: IsoTime | null;
+  /** How the connector is connected; absent on a row from before the App connect, which reads `token`. */
+  readonly method?: ConnectorMethod;
+  /** The GitHub App's slug, for `method: "app"`; `null` or absent otherwise. */
+  readonly app_slug?: string | null;
+  /** The App installation's id, for `method: "app"`; `null` or absent otherwise. */
+  readonly installation_id?: number | null;
   /** The repos the token reaches, as `owner/name`, from the last check. */
   readonly reachable_repos: readonly string[] | null;
   readonly expires_at: IsoTime | null;
@@ -810,6 +831,31 @@ export interface ConnectorReposQuery {
 export interface ConnectorReposResponse {
   readonly repos: readonly string[];
   readonly verified_at: IsoTime | null;
+}
+
+// ---- GitHub App: POST /connectors/github/app/setup, POST /connectors/github/app/setup/cancel ----
+
+/**
+ * Why a GitHub App setup refuses or fails. Mirrors `GITHUB_APP_SETUP_REFUSALS` in
+ * `kernel/src/integrations/types.ts`. `token_write_scoped` here is the App's: an
+ * installation token carried a write permission.
+ */
+export type GitHubAppSetupRefusal = "setup_not_open" | "state_mismatch" | "setup_expired" | "conversion_failed" | "install_failed" | "token_write_scoped";
+
+/**
+ * `POST /connectors/github/app/setup`: opens the one setup window and answers the
+ * loopback URL the owner opens in the browser. Until the setup item lands it
+ * answers 501 `not_implemented`.
+ */
+export interface GitHubAppSetupResponse {
+  readonly setup_url: string;
+  /** When the window closes (single-use, short-lived). */
+  readonly expires_at: IsoTime;
+}
+
+/** `POST /connectors/github/app/setup/cancel`: closes the open setup window. */
+export interface GitHubAppSetupCancelResponse {
+  readonly cancelled: boolean;
 }
 
 // ---- Phase 6 item 07: GET /drafts and GET /drafts/:id ---------------------------------
@@ -906,6 +952,8 @@ export interface ContractRouteMap {
   "GET /connectors/github/repos": Route<ConnectorReposQuery, undefined, ConnectorReposResponse>;
   "GET /drafts": Route<DraftsQuery, undefined, DraftsResponse>;
   "GET /drafts/:id": Route<NoQuery, undefined, DraftDetailResponse>;
+  "POST /connectors/github/app/setup": Route<NoQuery, undefined, GitHubAppSetupResponse>;
+  "POST /connectors/github/app/setup/cancel": Route<NoQuery, undefined, GitHubAppSetupCancelResponse>;
 }
 
 export type RouteKey = keyof ContractRouteMap;

@@ -77,7 +77,8 @@ function sessionOutputKindUnion(text: string): string[] {
  * the phase 5 base; `item-NN` routes are the ones phase 5 items 02-06 add
  * (item 07 adds none: it widens `POST /agents/:id/set`), and `p6-item-NN`
  * routes the ones phase 6 items 03 and 07 add (item 08 adds none: it widens
- * `POST /agents/:id/set` to take `connectors`).
+ * `POST /agents/:id/set` to take `connectors`); `github-app` routes are the
+ * GitHub App connect's two owner routes (D36), which the kernel serves as 501 stubs.
  */
 const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "GET", path: "/status", origin: "phase-1" },
@@ -124,6 +125,8 @@ const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "GET", path: "/connectors/github/repos", origin: "p6-item-03" },
   { method: "GET", path: "/drafts", origin: "p6-item-07" },
   { method: "GET", path: "/drafts/:id", origin: "p6-item-07" },
+  { method: "POST", path: "/connectors/github/app/setup", origin: "github-app" },
+  { method: "POST", path: "/connectors/github/app/setup/cancel", origin: "github-app" },
 ];
 
 /** A route the contract says the kernel already serves: any origin but a phase 5 item's (`item-NN`) or a phase 6 item's (`p6-item-NN`). */
@@ -150,8 +153,8 @@ describe("the app contract's routes (app/src/api/contract.ts, read as text)", ()
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     const served = new Set([...PHASE1_ROUTES.map(key), ...merged.routes.map(key)]);
     const existing = routes.filter(isExisting);
-    // 29 existing routes: 4 phase 1, then brain, notifications, approvals, triggers, playbooks, agents.
-    expect(existing).toHaveLength(29);
+    // 31 existing routes: 4 phase 1, then brain, notifications, approvals, triggers, playbooks, agents, and the GitHub App's two owner routes (stubs).
+    expect(existing).toHaveLength(31);
     const unserved = existing.filter((r) => !served.has(key(r))).map(key);
     expect(unserved).toEqual([]);
   });
