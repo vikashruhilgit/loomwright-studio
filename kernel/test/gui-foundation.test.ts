@@ -27,17 +27,25 @@ describe("the gui feature (phase 7 foundation)", () => {
   });
 
   it("holds every part empty: no tools, routes, subcommands, handlers or due work (until each screen item fills its part)", () => {
-    for (const part of GUI_PARTS) {
+    for (const part of GUI_PARTS.filter((p) => p.name !== "playbook-history")) {
       expect(part.tools, part.name).toEqual([]);
       expect(part.routes, part.name).toEqual([]);
       expect(part.subcommands ?? [], part.name).toEqual([]);
       expect(part.handlers, part.name).toEqual({});
       expect(part.dueWork ?? [], part.name).toEqual([]);
     }
-    // The merged contribution carries only its name while every part is empty.
-    expect(Object.keys(guiContribution)).toEqual(["name"]);
+    // The merged contribution carries its name and the routes of the parts that hold some.
+    expect(Object.keys(guiContribution)).toEqual(["name", "routes"]);
     expect(guiContribution.name).toBe("gui");
     expect(Object.isFrozen(guiContribution)).toBe(true);
+  });
+
+  it("holds exactly two GET routes in the playbook-history part (item 04), neither unauthenticated", () => {
+    const part = GUI_PARTS.find((p) => p.name === "playbook-history");
+    expect(part?.routes.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /playbooks/:id/runs", "GET /playbooks/:id/versions"]);
+    expect(part?.routes.some((r) => r.unauthenticated === true)).toBe(false);
+    expect(part?.tools).toEqual([]);
+    expect(part?.handlers).toEqual({});
   });
 
   it("serves no gui route unauthenticated: every gui route is an owner route that needs the API token", () => {
