@@ -15,8 +15,8 @@
 // tokens through `github/app-token.ts`), built by the App tokens item.
 // Integrations are optional (invariant 5): Studio works with none connected.
 // Mechanism only (invariant 1). `startKernel` and `runCli` merge it through
-// `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`), ninth and last, after
-// `console`.
+// `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`), ninth, after
+// `console`, before phase 7's `gui`.
 //
 // The `studio` CLI loads it, so it imports only types, the feature seam, the
 // console's part merge and its own parts: never the Agent SDK, the session

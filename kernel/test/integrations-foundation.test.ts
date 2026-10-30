@@ -153,9 +153,9 @@ describe("connector closed sets", () => {
 // ---------------------------------------------------------------------------
 
 describe("the integrations feature (AC2)", () => {
-  it("is registered last, after console", () => {
-    expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name).slice(-2)).toEqual(["console", INTEGRATIONS_NAME]);
-    expect(SHIPPED_CONTRIBUTIONS.at(-1)).toBe(integrationsContribution);
+  it("is ninth, after console, before gui", () => {
+    expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name).slice(7, 9)).toEqual(["console", INTEGRATIONS_NAME]);
+    expect(SHIPPED_CONTRIBUTIONS[8]).toBe(integrationsContribution);
   });
 
   it("merges its five parts in a fixed order: github-connector, github-routes (item 03), github-tools (item 06), drafts (item 07), github-app-routes (D36)", () => {
