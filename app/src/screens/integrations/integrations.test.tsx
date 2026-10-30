@@ -14,12 +14,15 @@ import { INTEGRATIONS_OWNER } from "./commands";
 import { IntegrationsView } from "./IntegrationsView";
 import { INTEGRATIONS_TEST_IDS as IDS } from "./model";
 import {
+  APP_INSTALLATION,
+  APP_SLUG,
   MASON,
   PIM,
   TOKEN,
   UNREACHABLE,
   WRIGHT,
   agent,
+  appConnector,
   connector,
   createKernel,
   deferred,
@@ -68,9 +71,11 @@ describe("the empty state", () => {
     expect(rowWords()).toBe("not connected");
   });
 
-  it("the Connect GitHub button opens the sheet in connect mode", async () => {
+  it("the Connect GitHub button opens the choice, and Paste a token opens the sheet in connect mode", async () => {
     await startScreen({ connectors: withRows() });
     fireEvent.click(screen.getByTestId(IDS.emptyConnect));
+    expect(screen.getByTestId(IDS.choice).getAttribute("data-mode")).toBe("connect");
+    fireEvent.click(screen.getByTestId(IDS.choiceToken));
     const sheet = screen.getByTestId(IDS.sheet);
     expect(sheet.getAttribute("data-mode")).toBe("connect");
     expect(sheet.textContent).not.toContain("The current token stays in use");
@@ -489,9 +494,11 @@ describe("the ⌘K commands", () => {
     expect(command(kernel, "integrations.refresh-repos").enabled?.()).toBe(false);
   });
 
-  it("Connect GitHub opens the connect sheet with no token, and the replace sheet when one exists", async () => {
+  it("Connect GitHub opens the choice with no token, and the replace sheet when one exists", async () => {
     const kernel = await startScreen({ connectors: withRows() });
     act(() => void command(kernel, "integrations.connect-github").run());
+    expect(screen.getByTestId(IDS.choice).getAttribute("data-mode")).toBe("connect");
+    fireEvent.click(screen.getByTestId(IDS.choiceToken));
     expect(screen.getByTestId(IDS.sheet).getAttribute("data-mode")).toBe("connect");
     cleanup();
 
@@ -553,5 +560,197 @@ describe("mounting", () => {
     expect(requests(kernel, "GET /connectors")).toHaveLength(1);
     await waitFor(() => expect(requests(kernel, "GET /agents").length).toBeGreaterThan(0));
     expect(kernel.fake.requests.filter((r) => r.req.method !== "GET")).toEqual([]);
+  });
+});
+
+// ---- The GitHub App (GitHub App 4): detail pane, disconnect, ⌘K ------------------------------------------------
+
+describe("a connected GitHub App's detail pane", () => {
+  const appRows = withRows(appConnector("connected", { reachable_repos: ["octo-owner/site", "octo-owner/docs"] }));
+
+  it("says read-only, checked by GitHub, with the permissions GitHub reported, the slug, the installation and the renewing access token", async () => {
+    await startScreen({ connectors: appRows });
+    expect(rowWords()).toBe("connected · octo-owner · GitHub App");
+    const header = screen.getByTestId(IDS.detailHeader).textContent ?? "";
+    expect(header).toContain("read-only");
+    expect(header).toContain("GitHub App");
+    expect(screen.getByRole("region", { name: "Permissions" }).textContent).toContain("Read-only, checked by GitHub.");
+    expect(screen.getByRole("region", { name: "Permissions" }).textContent).not.toMatch(/declared by you/i);
+    expect(within(screen.getByTestId(IDS.permissions)).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["MetadataRead-only", "ContentsRead-only", "Pull requestsRead-only"]);
+    expect(screen.getByTestId(IDS.appName).textContent).toBe(APP_SLUG);
+    expect(screen.getByTestId(IDS.appInstallation).textContent).toBe(String(APP_INSTALLATION));
+    expect(screen.getByTestId(IDS.appKey).textContent).toBe("Kept in the Keychain. The value is never shown.");
+    expect(screen.getByTestId(IDS.appAccess).textContent).toMatch(/^expires .*renews automatically$/);
+    expect(screen.getByTestId(IDS.status).textContent).toContain("connected");
+    expect(screen.getByTestId(IDS.account).textContent).toBe("octo-owner");
+  });
+
+  it("lists exactly the row's reachable_repos under 'Repos chosen at install'", async () => {
+    await startScreen({ connectors: appRows });
+    expect(screen.getByTestId(IDS.reposHeading).textContent).toBe("Repos chosen at install · 2");
+    expect(within(screen.getByTestId(IDS.repos)).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["octo-owner/site", "octo-owner/docs"]);
+  });
+
+  it("has no Replace token and no expiry band, only Disconnect", async () => {
+    await startScreen({ connectors: appRows });
+    expect(screen.queryByTestId(IDS.replace)).toBeNull();
+    expect(screen.queryByTestId(IDS.inBand)).toBeNull();
+    expect(screen.queryByTestId(IDS.expires)).toBeNull();
+    expect(screen.getByTestId(IDS.disconnect)).toBeTruthy();
+    expect(screen.queryByTestId(IDS.appSetUpAgain)).toBeNull();
+  });
+
+  it("shows nothing as read-only when the row reports a permission above Read", async () => {
+    await startScreen({ connectors: withRows(appConnector("connected", { permissions: { contents: "write" } })) });
+    expect(screen.queryByTestId(IDS.appChecked)).toBeNull();
+    expect(screen.getByRole("region", { name: "Permissions" }).textContent).toContain("above Read");
+  });
+
+  it("with the kernel unreachable keeps the last-read data with its time, and Disconnect and Refresh are off", async () => {
+    const kernel = await startScreen({ connectors: appRows });
+    await waitFor(() => expect(kernel.fake.listenerCount()).toBeGreaterThan(0));
+    kernel.connectors = () => UNREACHABLE;
+    emit(kernel, "connector_status");
+    await waitFor(() => expect(screen.getByTestId(IDS.band)).toBeTruthy());
+    expect((screen.getByTestId(IDS.disconnect) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId(IDS.refresh) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId(IDS.status).textContent).toContain("Unknown while the kernel is unreachable · last verified");
+    expect(screen.getByTestId(IDS.appName).textContent).toBe(APP_SLUG);
+    expect(screen.getByTestId(IDS.appAccess).textContent).toContain("last known: expires");
+    expect(within(screen.getByTestId(IDS.repos)).getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("Refresh reads the repos again, as for a token", async () => {
+    const kernel = await startScreen({ connectors: appRows, repos: () => ok({ repos: ["octo-owner/new"], verified_at: null }) });
+    fireEvent.click(screen.getByTestId(IDS.refresh));
+    await waitFor(() => expect(screen.getByTestId(IDS.reposHeading).textContent).toBe("Repos chosen at install · 1"));
+    expect(requests(kernel, "GET /connectors/github/repos")[0]?.query).toEqual({ refresh: "1" });
+  });
+});
+
+describe("a GitHub App GitHub no longer accepts (revoked)", () => {
+  const revoked = withRows(appConnector("rejected"));
+
+  it("is rejected with a danger band and the last-read data kept; Set up again is the primary and Disconnect still confirms", async () => {
+    const kernel = await startScreen({ connectors: revoked });
+    expect(rowWords()).toBe("rejected · GitHub no longer accepts the App");
+    expect(screen.getByTestId(IDS.inBand).textContent).toContain("GitHub no longer accepts this App");
+    expect(screen.getByTestId(IDS.status).textContent).toContain("rejected");
+    expect(screen.getByTestId(IDS.appAccess).textContent).toBe("None: GitHub refused the App's key");
+    expect(screen.getByTestId(IDS.repos)).toBeTruthy();
+    expect(screen.queryByTestId(IDS.replace)).toBeNull();
+    expect(screen.getByRole("region", { name: "Permissions" }).textContent).toContain("as last checked by GitHub");
+
+    fireEvent.click(screen.getByTestId(IDS.disconnect));
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    expect(requests(kernel, "POST /connectors/github/disconnect")).toHaveLength(0);
+  });
+
+  it("Set up again starts a fresh setup", async () => {
+    const kernel = await startScreen({ connectors: revoked });
+    fireEvent.click(screen.getByTestId(IDS.appSetUpAgain));
+    await waitFor(() => expect(screen.getByTestId(IDS.appSetup).getAttribute("data-phase")).toBe("create"));
+    expect(requests(kernel, "POST /connectors/github/app/setup")).toHaveLength(1);
+    expect(kernel.opened).toHaveLength(1);
+  });
+});
+
+describe("Disconnect on a GitHub App connection", () => {
+  const appRows = withRows(appConnector("connected"));
+
+  it("confirms what Studio removes, and each GitHub link opens through the channel", async () => {
+    const kernel = await startScreen({ connectors: appRows });
+    fireEvent.click(screen.getByTestId(IDS.disconnect));
+    const confirm = screen.getByRole("alertdialog");
+    expect(confirm.textContent).toContain("Deletes the App's key from the Keychain.");
+    expect(confirm.textContent).toContain("Studio can't remove the App from GitHub. That part stays yours:");
+    expect(requests(kernel, "POST /connectors/github/disconnect")).toHaveLength(0);
+
+    const installed = screen.getByTestId(IDS.appConfirmInstalled);
+    const apps = screen.getByTestId(IDS.appConfirmApps);
+    expect(installed.textContent).toContain("Open Installed GitHub Apps");
+    expect(apps.textContent).toContain("Open your GitHub Apps");
+    expect(fireEvent.click(installed)).toBe(false);
+    expect(fireEvent.click(apps)).toBe(false);
+    await waitFor(() => expect(kernel.opened).toEqual(["https://github.com/settings/installations", `https://github.com/settings/apps/${APP_SLUG}`]));
+    // Opening a page does not disconnect.
+    expect(requests(kernel, "POST /connectors/github/disconnect")).toHaveLength(0);
+  });
+
+  it("confirming calls the disconnect route once", async () => {
+    const kernel = await startScreen({ connectors: appRows });
+    fireEvent.click(screen.getByTestId(IDS.disconnect));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(requests(kernel, "POST /connectors/github/disconnect")).toHaveLength(1));
+  });
+
+  it("Cancel and Escape leave without a request", async () => {
+    const kernel = await startScreen({ connectors: appRows });
+    fireEvent.click(screen.getByTestId(IDS.disconnect));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    fireEvent.click(screen.getByTestId(IDS.disconnect));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(requests(kernel, "POST /connectors/github/disconnect")).toHaveLength(0);
+  });
+
+  it("shows the apps address as text, not a link, when the App's slug is unknown", async () => {
+    await startScreen({ connectors: withRows(appConnector("connected", { app_slug: "Not/A/Slug" })) });
+    fireEvent.click(screen.getByTestId(IDS.disconnect));
+    expect(within(screen.getByRole("alertdialog")).queryByTestId(IDS.appConfirmApps)?.tagName).toBe("P");
+    expect(within(screen.getByRole("alertdialog")).getAllByRole("link")).toHaveLength(1);
+  });
+
+  it("a token connection's confirm is unchanged: no GitHub links", async () => {
+    await startScreen();
+    fireEvent.click(screen.getByTestId(IDS.disconnect));
+    const confirm = screen.getByRole("alertdialog");
+    expect(confirm.textContent).toContain("Deletes the token from the Keychain.");
+    expect(within(confirm).queryAllByRole("link")).toHaveLength(0);
+  });
+});
+
+describe("⌘K with a GitHub App", () => {
+  const command = (kernel: Kernel, id: string) => {
+    const found = kernel.registry.get(id);
+    if (found === undefined) throw new Error(`no command ${id}`);
+    return found;
+  };
+
+  it("Connect GitHub is off while an App is connected (disconnect first), and does nothing if run anyway", async () => {
+    const kernel = await startScreen({ connectors: withRows(appConnector("connected")) });
+    expect(command(kernel, "integrations.connect-github").enabled?.()).toBe(false);
+    expect(command(kernel, "integrations.disconnect-github").enabled?.()).toBe(true);
+    expect(command(kernel, "integrations.refresh-repos").enabled?.()).toBe(true);
+    act(() => void command(kernel, "integrations.connect-github").run());
+    expect(screen.queryByTestId(IDS.sheet)).toBeNull();
+    expect(screen.queryByTestId(IDS.choice)).toBeNull();
+  });
+
+  it("is off for a revoked App too, and on again once the App is disconnected", async () => {
+    const kernel = await startScreen({ connectors: withRows(appConnector("rejected")) });
+    await waitFor(() => expect(kernel.fake.listenerCount()).toBeGreaterThan(0));
+    expect(command(kernel, "integrations.connect-github").enabled?.()).toBe(false);
+    kernel.connectors = withRows(appConnector("disconnected"));
+    emit(kernel, "connector_status");
+    await waitFor(() => expect(command(kernel, "integrations.connect-github").enabled?.()).toBe(true));
+  });
+
+  it("Connect GitHub still opens the replace sheet on a token connection, and the choice when nothing is connected", async () => {
+    const kernel = await startScreen();
+    act(() => void command(kernel, "integrations.connect-github").run());
+    expect(screen.getByTestId(IDS.sheet).getAttribute("data-mode")).toBe("replace");
+    cleanup();
+    const empty = await startScreen({ connectors: withRows() });
+    act(() => void command(empty, "integrations.connect-github").run());
+    expect(screen.getByTestId(IDS.choice)).toBeTruthy();
+  });
+});
+
+describe("the empty state names both ways", () => {
+  it("says a GitHub App you install or a token you create", async () => {
+    await startScreen({ connectors: withRows() });
+    expect(screen.getByTestId(IDS.empty).textContent).toContain("a GitHub App you install or a token you create");
   });
 });
