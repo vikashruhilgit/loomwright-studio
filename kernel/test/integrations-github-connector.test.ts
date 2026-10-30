@@ -21,6 +21,12 @@ import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../s
 import type { CliApiClient, ContributedRoute, ContributedRouteResponse, FeatureContribution } from "../src/features/index.js";
 import { CONNECTORS_HELP, connectorsSubcommand, formatGitHubStatus } from "../src/integrations/cli.js";
 import type { SecretRead } from "../src/integrations/cli.js";
+import {
+  GITHUB_APP_ID_SERVICE,
+  GITHUB_APP_INSTALLATION_SERVICE,
+  GITHUB_APP_KEY_SERVICE,
+  GITHUB_APP_SLUG_SERVICE,
+} from "../src/integrations/github/app-token.js";
 import { GITHUB_KEYCHAIN_SERVICE, createGitHubClient } from "../src/integrations/github/client.js";
 import {
   GITHUB_KEYCHAIN_ACCOUNT,
@@ -242,17 +248,61 @@ describe("set a valid read-only token through POST /connectors/github/token (AC1
 // ---------------------------------------------------------------------------
 
 describe("a token set is the token method (GitHub App tokens, AC5)", () => {
-  it("writes method token and nulls the App fields, leaving the Keychain calls as they were", async () => {
-    const c = connector();
+  const APP_ITEMS = [GITHUB_APP_ID_SERVICE, GITHUB_APP_SLUG_SERVICE, GITHUB_APP_INSTALLATION_SERVICE, GITHUB_APP_KEY_SERVICE];
+
+  /** Connects `GOOD`, then makes the row and the Keychain an App's (as the port's `storeApp` or `recordInstallation` leaves them). */
+  async function appClaimed(c: GitHubConnector): Promise<void> {
     await call(c, "POST", "/connectors/github/token", { token: GOOD });
-    // A row the App had claimed (as the port's `storeApp` or `recordInstallation` leaves it).
     env.store.prepare("UPDATE connectors SET method = 'app', app_slug = 'studio-reader', installation_id = 4242").run();
+    for (const service of APP_ITEMS) keychain.add(service, GITHUB_KEYCHAIN_ACCOUNT, `value-of-${service}`);
     keychain.calls.length = 0;
+  }
+
+  function countingTokens(): { tokens: NonNullable<GitHubConnectorDeps["tokens"]>; invalidated: () => number } {
+    let n = 0;
+    const tokens = { configured: () => true, current: async () => ({ ok: false as const, error: "no_credentials" as const }), invalidate: () => void (n += 1), lastMintFailure: undefined, clearMintFailure: () => {} };
+    return { tokens, invalidated: () => n };
+  }
+
+  it("writes method token, deletes the App's four Keychain items, invalidates the token holder and nulls the App fields", async () => {
+    const { tokens, invalidated } = countingTokens();
+    const c = connector({ tokens });
+    await appClaimed(c);
+    const before = invalidated();
     const res = await call(c, "POST", "/connectors/github/token", { token: GOOD2 });
     expect(res.status).toBe(200);
-    expect(keychain.calls).toEqual([`delete ${GITHUB_KEYCHAIN_SERVICE}`, `add ${GITHUB_KEYCHAIN_SERVICE} ${GITHUB_KEYCHAIN_ACCOUNT}`, `read ${GITHUB_KEYCHAIN_SERVICE}`]);
+    expect(keychain.calls).toEqual([
+      `delete ${GITHUB_KEYCHAIN_SERVICE}`,
+      `add ${GITHUB_KEYCHAIN_SERVICE} ${GITHUB_KEYCHAIN_ACCOUNT}`,
+      `read ${GITHUB_KEYCHAIN_SERVICE}`,
+      ...APP_ITEMS.map((s) => `delete ${s}`),
+    ]);
+    expect([...keychain.items.keys()]).toEqual([GITHUB_KEYCHAIN_SERVICE]);
+    expect(invalidated()).toBe(before + 1);
     expect(rowNow()).toMatchObject({ method: "token", app_slug: null, installation_id: null, status: "connected" });
     expect((res.body as { connector: Record<string, unknown> }).connector).toMatchObject({ method: "token", app_slug: null, installation_id: null });
+    expectNoToken(res.body);
+  });
+
+  it("an App item that cannot be deleted: the set still succeeds, the others are deleted, and the row keeps the App's slug and installation id", async () => {
+    const { tokens, invalidated } = countingTokens();
+    const flaky: KeychainDeleter = {
+      delete: (service) => {
+        if (service === GITHUB_APP_KEY_SERVICE) throw new Error("security failed");
+        return keychain.delete(service);
+      },
+    };
+    const c = connector({ tokens, deleter: flaky });
+    await appClaimed(c);
+    const before = invalidated();
+    const res = await call(c, "POST", "/connectors/github/token", { token: GOOD2 });
+    expect(res.status).toBe(200);
+    expect(keychain.items.get(GITHUB_KEYCHAIN_SERVICE)?.secret).toBe(GOOD2);
+    expect([...keychain.items.keys()].sort()).toEqual([GITHUB_APP_KEY_SERVICE, GITHUB_KEYCHAIN_SERVICE].sort());
+    expect(invalidated()).toBe(before + 1);
+    expect(rowNow()).toMatchObject({ method: "token", app_slug: "studio-reader", installation_id: 4242, status: "connected" });
+    expect((res.body as { connector: Record<string, unknown> }).connector).toMatchObject({ method: "token", app_slug: "studio-reader", installation_id: 4242 });
+    expectNoToken(res.body);
   });
 
   it("a row from before migration 19 (a null method column) reads token", async () => {
@@ -451,6 +501,11 @@ describe("replace a connected token (AC6)", () => {
       `delete ${GITHUB_KEYCHAIN_SERVICE}`,
       `add ${GITHUB_KEYCHAIN_SERVICE} ${GITHUB_KEYCHAIN_ACCOUNT}`,
       `read ${GITHUB_KEYCHAIN_SERVICE}`,
+      // Then the App's items, none of them here ("already gone").
+      `delete ${GITHUB_APP_ID_SERVICE}`,
+      `delete ${GITHUB_APP_SLUG_SERVICE}`,
+      `delete ${GITHUB_APP_INSTALLATION_SERVICE}`,
+      `delete ${GITHUB_APP_KEY_SERVICE}`,
     ]);
     expect(keychain.items.get(GITHUB_KEYCHAIN_SERVICE)?.secret).toBe(GOOD2);
     expect(rowNow()).toMatchObject({ id, status: "connected", reachable_repos_json: JSON.stringify(["owner-one/ntfs-tool"]), verified_at: env.now().toISOString() });

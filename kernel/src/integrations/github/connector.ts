@@ -34,9 +34,12 @@
 // One credential is current at a time, and the Keychain decides it per call: the
 // PAT item present means `token`, otherwise the App's items present means `app`
 // (`resolveGitHubTokenProvider`). Every writer keeps the row's `method` in step:
-// a set writes `method = 'token'`, the App's installation deletes the PAT item,
-// and a disconnect deletes every GitHub credential item. An `app` row raises no
-// expiry warning (the installation token renews silently every hour); a mint
+// a set writes `method = 'token'` and deletes the App's items (the row keeps
+// the App's slug and installation id only while one of them could not be
+// deleted, so `removeApp` can still find it), the App's installation deletes
+// the PAT item, and a disconnect deletes every GitHub credential item. An
+// `app` row raises no expiry warning (the installation token renews silently
+// every hour); a mint
 // GitHub answers 401 or 404 reads `rejected`, with one notification
 // (`checkGitHubAppMint`).
 //
@@ -532,14 +535,31 @@ export function createGitHubConnector(deps: GitHubConnectorDeps = {}): GitHubCon
       return failure("keychain_failed", MESSAGES.keychain_lost, row);
     }
 
-    // 3. The row: what was verified (or declared by the owner), then one event.
+    // 3. The token replaces any App connection: the App's items go (each tried
+    // even after one fails, as a disconnect does) and the held token with them.
+    // The set stands either way, since the PAT item is current; but only when
+    // every App item is gone does the row forget the App, so a later
+    // `removeApp` can still find what was left.
+    let appDropped = true;
+    for (const service of GITHUB_APP_SERVICES) {
+      try {
+        // `false` (exit status 44) is "already gone": the same outcome.
+        (deleter ??= securityCliKeychainDeleter()).delete(service);
+      } catch {
+        appDropped = false;
+      }
+    }
+    tokens.invalidate();
+
+    // 4. The row: what was verified (or declared by the owner), then one event.
     const row = store.transaction(() => {
       const r = ensureRow(store, "connected", at);
       store
         .prepare(
           `UPDATE connectors SET status = 'connected', account_login = ?, permissions_json = ?, reachable_repos_json = ?,
              expires_at = ?, verified_at = ?, permissions_source = ?, permissions_declared_at = ?,
-             method = 'token', app_slug = NULL, installation_id = NULL, updated_at = ? WHERE id = ?`,
+             method = 'token', app_slug = CASE WHEN ? THEN NULL ELSE app_slug END,
+             installation_id = CASE WHEN ? THEN NULL ELSE installation_id END, updated_at = ? WHERE id = ?`,
         )
         .run(
           info.data.login,
@@ -549,6 +569,8 @@ export function createGitHubConnector(deps: GitHubConnectorDeps = {}): GitHubCon
           at,
           source,
           source === "declared" ? at : null,
+          appDropped ? 1 : 0,
+          appDropped ? 1 : 0,
           at,
           r.id,
         );
