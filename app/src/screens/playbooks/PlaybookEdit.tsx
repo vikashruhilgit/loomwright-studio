@@ -171,7 +171,7 @@ export function PlaybookEdit({ playbook, actions, onSet, onBack }: PlaybookEditP
                   ) : (
                     <span className="pb-value">
                       <span className={row.mono ? "pb-mono" : undefined}>{safe(row.shown)}</span>
-                      <SetBy setBy={row.shown === NOT_SET ? null : row.setBy} />
+                      <SetBy setBy={row.unset ? null : row.setBy} />
                       <Button
                         variant="ghost"
                         size="row"

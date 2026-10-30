@@ -90,6 +90,17 @@ describe("policyRows", () => {
     expect(rows.map((r) => r.shown)).toEqual(["not set", "normal", MODEL_NOT_SET, "not set"]);
     expect(rows.map((r) => r.draft)).toEqual(["", "normal", "", ""]);
     expect(rows.map((r) => r.setBy)).toEqual([null, "wright", null, null]);
+    expect(rows.map((r) => r.unset)).toEqual([true, false, true, true]);
+  });
+
+  it("mark a value the owner cleared as unset, whatever its not-set words read, so no provenance shows beside it", () => {
+    const rows = policyRows(playbook({ model: null, model_set_by: "owner", token_limit_per_day: null, token_limit_set_by: "owner" }));
+    const model = rows.find((r) => r.field === "model");
+    expect(model?.shown).toBe(MODEL_NOT_SET);
+    expect(model?.unset).toBe(true);
+    expect(rows.find((r) => r.field === "token_limit")?.unset).toBe(true);
+    expect(modePolicyRow(playbook({ mode_set_by: null })).unset).toBe(true);
+    expect(modePolicyRow(playbook({ mode_set_by: "owner" })).unset).toBe(false);
   });
 
   it("offer a dedupe spec that is not a JSON list of names as the kernel sent it", () => {

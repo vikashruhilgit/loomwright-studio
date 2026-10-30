@@ -5,9 +5,11 @@
 // instead of copying it.
 //
 // Every string from the kernel (a trigger's `text`, a wake-up's reason, a
-// playbook's name, a fire's `reason`, a spec) is untrusted data (invariant 3):
-// nothing here builds markup, and the components render each value as a React
-// text child.
+// playbook's name, a fire's `reason`, a trigger's kind, a spec) is untrusted
+// data (invariant 3): it passes through `printable` (the kernel's own escaping,
+// so a bidi override or a control character cannot reorder or hide what is
+// shown), nothing here builds markup, and the components render each value as
+// a React text child.
 //
 // What lives here: the test ids, the bridge's answer as a `Reply`, the labels and
 // tones of the missed-fire reasons (a reason the table does not know is shown
@@ -16,6 +18,7 @@
 // were loaded), the trigger's name and spec text, the time labels, and the
 // event kinds that make the screen read again.
 import type { ApiError, ApiResult, PlaybookListing, ScheduleEntry, Trigger, TriggerFire, TriggerFiresResponse } from "../../api/contract";
+import { printable } from "../approvals/printable";
 
 /** The ids the unit tests and the e2e spec target. */
 export const SCHEDULES_TEST_IDS = {
@@ -102,8 +105,8 @@ export function nextRead<R>(prev: Read<R>, reply: Reply<R>): Read<R> {
 
 /** The route-failure card's words for a non-ok reply that is not "unreachable": `GET /schedule · 500 · the code`. */
 export function failureDetail(request: string, reply: Exclude<Reply<unknown>, { readonly kind: "ok" } | { readonly kind: "unreachable" }>): string {
-  if (reply.kind === "refused") return `${request} · ${reply.status} · ${reply.message ?? reply.error}`;
-  return `${request} · ${reply.message}`;
+  if (reply.kind === "refused") return `${request} · ${reply.status} · ${safe(reply.message ?? reply.error)}`;
+  return `${request} · ${safe(reply.message)}`;
 }
 
 // ---- Why a fire did not happen ------------------------------------------------------------------------
@@ -253,12 +256,17 @@ export function appendOlderPage(prev: History, page: TriggerFiresResponse): Hist
 
 // ---- Names and specs ------------------------------------------------------------------------------------
 
+/** Kernel text as inert, single-line text. */
+export function safe(text: string): string {
+  return printable(text);
+}
+
 /** A trigger's name: its playbook's name when it has one, else its action's text, else its playbook slug, else "Trigger #id". */
 export function triggerName(trigger: Pick<Trigger, "id" | "playbook" | "text">, playbooks: readonly Pick<PlaybookListing, "slug" | "name">[] | undefined): string {
   const playbook = trigger.playbook === null ? undefined : playbooks?.find((p) => p.slug === trigger.playbook);
-  if (playbook !== undefined && playbook.name.trim() !== "") return playbook.name;
-  if (trigger.text.trim() !== "") return trigger.text;
-  if (trigger.playbook !== null && trigger.playbook.trim() !== "") return trigger.playbook;
+  if (playbook !== undefined && playbook.name.trim() !== "") return safe(playbook.name);
+  if (trigger.text.trim() !== "") return safe(trigger.text);
+  if (trigger.playbook !== null && trigger.playbook.trim() !== "") return safe(trigger.playbook);
   return `Trigger #${trigger.id}`;
 }
 
@@ -270,7 +278,7 @@ export function entryName(entry: ScheduleEntry, playbooks: readonly Pick<Playboo
 
 /** The line under a wake-up's name: its recorded reason. */
 export function wakeupNote(entry: ScheduleEntry): string {
-  return entry.text.trim() === "" ? "No reason recorded" : `Reason: ${entry.text}`;
+  return entry.text.trim() === "" ? "No reason recorded" : `Reason: ${safe(entry.text)}`;
 }
 
 /** The trigger kinds the kernel has (`once`, `cron`, `poll`); anything else is shown as its own text. */
@@ -299,11 +307,11 @@ export function specSummary(kind: string, spec: unknown, now: Date): string {
   const s = record(spec);
   if (s === undefined) return "";
   if (kind === "once") return typeof s.at === "string" ? whenLabel(s.at, now) : "";
-  if (kind === "cron") return typeof s.cron === "string" ? (typeof s.tz === "string" && s.tz !== "" ? `${s.cron} · ${s.tz}` : s.cron) : "";
+  if (kind === "cron") return typeof s.cron === "string" ? safe(typeof s.tz === "string" && s.tz !== "" ? `${s.cron} · ${s.tz}` : s.cron) : "";
   if (kind === "poll") {
     const every = typeof s.interval_seconds === "number" && Number.isFinite(s.interval_seconds) && s.interval_seconds > 0 ? everyText(s.interval_seconds) : "";
     const repos = Array.isArray(s.repos) ? (s.repos as unknown[]).filter((r): r is string => typeof r === "string").join(", ") : "";
-    return [every, repos].filter((part) => part !== "").join(" · ");
+    return [every, safe(repos)].filter((part) => part !== "").join(" · ");
   }
   return "";
 }
@@ -311,7 +319,8 @@ export function specSummary(kind: string, spec: unknown, now: Date): string {
 /** "poll · every 10 min · studio-sandbox": the trigger's kind, then its spec when there is one. */
 export function specLine(trigger: Pick<Trigger, "kind" | "spec">, now: Date): string {
   const spec = specSummary(trigger.kind, trigger.spec, now);
-  return spec === "" ? trigger.kind : `${trigger.kind} · ${spec}`;
+  const kind = safe(trigger.kind);
+  return spec === "" ? kind : `${kind} · ${spec}`;
 }
 
 // ---- Times --------------------------------------------------------------------------------------------
@@ -390,10 +399,13 @@ export function toggleOutcome(reply: Reply<unknown>, confirmed: boolean): Toggle
   if (reply.kind === "ok") return { kind: "done" };
   if (reply.kind === "refused") {
     if (reply.status === 409 && reply.error === "needs_confirmation" && !confirmed) return { kind: "confirm" };
-    return { kind: "refused", text: reply.error };
+    return { kind: "refused", text: safe(reply.error) };
   }
-  return { kind: "refused", text: reply.message };
+  return { kind: "refused", text: safe(reply.message) };
 }
+
+/** Why a toggle asked while the kernel cannot be asked sent nothing. */
+export const OFFLINE_TOGGLE_TEXT = "the kernel could not be reached";
 
 /** The line the row shows for a refused toggle. */
 export function toggleFailure(wantOn: boolean, text: string): string {

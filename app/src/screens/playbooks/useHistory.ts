@@ -131,7 +131,9 @@ export function useLastRuns(api: StudioBridge, ids: readonly number[], eventId: 
         .then((result) => {
           if (generation.current !== mine) return;
           setHeld((prev) => {
-            const next = new Map(prev);
+            // Only ids still listed are kept, so a removed playbook leaves no row and the map never outgrows the list.
+            const listed = new Set(idsRef.current);
+            const next = new Map([...prev].filter(([held]) => listed.has(held)));
             const before = prev.get(id);
             next.set(id, { data: result.ok ? (result.body.runs[0] ?? null) : before?.data, failed: !result.ok, settled: true });
             return next;

@@ -121,7 +121,8 @@ function RunsSection({ runs }: { readonly runs: Read<readonly PlaybookRun[]> }) 
 }
 
 function TokensSection({ playbook, runs }: { readonly playbook: PlaybookListing; readonly runs: Read<readonly PlaybookRun[]> }) {
-  const sums = runs.data === undefined ? undefined : tokensOfRuns(runs.data);
+  // The same newest runs Recent runs lists, so "the last N runs" names runs the owner can see below.
+  const sums = runs.data === undefined ? undefined : tokensOfRuns(runs.data.slice(0, RECENT_RUNS));
   return (
     <section className="pb-block" aria-labelledby="pb-h-tokens" data-testid={IDS.tokens}>
       <h3 id="pb-h-tokens">Tokens</h3>

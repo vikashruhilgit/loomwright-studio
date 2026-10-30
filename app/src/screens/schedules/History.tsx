@@ -31,6 +31,7 @@ import {
   fireView,
   groupFires,
   linksToIntegrations,
+  safe,
 } from "./model";
 
 export interface HistoryProps {
@@ -49,11 +50,11 @@ export interface HistoryProps {
 
 /** The Trigger cell's second line: one fire's due time and session, or a group's count and span. */
 function caption(trigger: Trigger, group: FireGroup, now: Date): string {
-  if (group.count > 1) return `${trigger.kind} · ${group.count} times, ${fireTime(group.oldest.at, now)} to ${fireTime(group.newest.at, now)}`;
+  if (group.count > 1) return `${safe(trigger.kind)} · ${group.count} times, ${fireTime(group.oldest.at, now)} to ${fireTime(group.newest.at, now)}`;
   const fire = group.newest;
   const due = fire.scheduled_at === null ? "" : ` · due ${fireTime(fire.scheduled_at, now)}`;
   const session = fire.session_id === null ? "" : ` · session #${fire.session_id}`;
-  return `${trigger.kind}${due}${session}`;
+  return `${safe(trigger.kind)}${due}${session}`;
 }
 
 function Row({ trigger, name, group, first, now }: { readonly trigger: Trigger; readonly name: string; readonly group: FireGroup; readonly first: boolean; readonly now: Date }) {
@@ -95,7 +96,7 @@ function Row({ trigger, name, group, first, now }: { readonly trigger: Trigger; 
         </span>
         {missed ? (
           <span className="schedules-mono schedules-clip schedules-reason" data-testid={IDS.fireReason}>
-            {group.reason ?? NO_REASON_TEXT}
+            {group.reason === null ? NO_REASON_TEXT : safe(group.reason)}
           </span>
         ) : null}
       </td>

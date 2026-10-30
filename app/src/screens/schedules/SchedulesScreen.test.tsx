@@ -483,6 +483,19 @@ describe("the confirm for a once trigger whose time has passed", () => {
     ]);
   });
 
+  it("confirming after the kernel dropped sends nothing and says so in the row, never a silent close", async () => {
+    const kernel = await start({ ...populated(), toggle: needsConfirm });
+    await screen.findByTestId(IDS.triggers);
+    fireEvent.click(screen.getByRole("switch", { name: "Morning digest trigger is off" }));
+    const dialog = await screen.findByRole("dialog");
+    kernel.schedule = () => UNREACHABLE;
+    emit(kernel, "trigger_fired");
+    await waitFor(() => expect(screen.getByTestId(IDS.summary).textContent).toContain("last known"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Turn on and fire now" }));
+    expect((await screen.findByTestId(IDS.rowError)).textContent).toBe("Couldn't turn it on: the kernel could not be reached");
+    expect(kernel.fake.requests.filter((r) => r.req.method === "POST")).toHaveLength(1);
+  });
+
   it("Escape closes it with nothing sent, and focus returns to the switch that opened it", async () => {
     const kernel = await start({ ...populated(), toggle: needsConfirm });
     await screen.findByTestId(IDS.triggers);

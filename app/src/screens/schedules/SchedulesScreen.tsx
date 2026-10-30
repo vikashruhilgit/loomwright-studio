@@ -43,9 +43,11 @@ import {
   failureDetail,
   iconOf,
   newestScheduleEventId,
+  safe,
   specLine,
   summaryText,
   timelineTime,
+  OFFLINE_TOGGLE_TEXT,
   toggleFailure,
   toggleOutcome,
   triggerName,
@@ -104,7 +106,7 @@ function Detail({ trigger, name, now }: { readonly trigger: Trigger; readonly na
         <h2 id="schedules-detail-h" className="schedules-title" data-testid={IDS.detailName}>
           {name}
         </h2>
-        <Badge>{trigger.kind}</Badge>
+        <Badge>{safe(trigger.kind)}</Badge>
         <Badge tone={trigger.enabled ? "ok" : "neutral"}>{trigger.enabled ? "on" : "off"}</Badge>
       </div>
       <dl className="schedules-kv">
@@ -220,7 +222,12 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
   }, [confirm]);
 
   const toggle = async (id: number, name: string, enabled: boolean, confirmed: boolean) => {
-    if (offline || inFlight.current.has(id)) return;
+    if (inFlight.current.has(id)) return;
+    // Offline, the switch is disabled, but a confirm dialog opened before the kernel dropped can still ask: say so in the row.
+    if (offline) {
+      setRowErrors((prev) => ({ ...prev, [id]: toggleFailure(enabled, OFFLINE_TOGGLE_TEXT) }));
+      return;
+    }
     inFlight.current.add(id);
     setBusy(new Set(inFlight.current));
     setRowErrors((prev) => {

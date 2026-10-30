@@ -52,6 +52,8 @@ export interface PolicyRow<F extends KernelPolicyField = KernelPolicyField> {
   /** The row's name in its controls' accessible names ("Edit model", "Set model"). */
   readonly name: string;
   readonly shown: string;
+  /** No value is set: the row shows its not-set words and no provenance, whatever `shown` reads. */
+  readonly unset: boolean;
   readonly setBy: string | null;
   readonly mono: boolean;
   /** The editor's first value. */
@@ -93,6 +95,7 @@ export function policyRows(playbook: PlaybookListing): readonly PolicyRow<Policy
       label: "Dedupe key",
       name: "dedupe key",
       shown: playbook.dedupe_key_spec ?? "not set",
+      unset: playbook.dedupe_key_spec === null,
       setBy: playbook.dedupe_key_set_by,
       mono: true,
       draft: dedupeDraft(playbook.dedupe_key_spec),
@@ -104,6 +107,7 @@ export function policyRows(playbook: PlaybookListing): readonly PolicyRow<Policy
       label: "Priority",
       name: "priority",
       shown: playbook.priority_set_by === null ? "not set" : playbook.priority,
+      unset: playbook.priority_set_by === null,
       setBy: playbook.priority_set_by,
       mono: false,
       draft: playbook.priority,
@@ -115,6 +119,7 @@ export function policyRows(playbook: PlaybookListing): readonly PolicyRow<Policy
       label: "Model",
       name: "model",
       shown: playbook.model ?? MODEL_NOT_SET,
+      unset: playbook.model === null,
       setBy: playbook.model_set_by,
       mono: false,
       draft: playbook.model ?? "",
@@ -126,6 +131,7 @@ export function policyRows(playbook: PlaybookListing): readonly PolicyRow<Policy
       label: "Token limit per day",
       name: "token limit per day",
       shown: playbook.token_limit_per_day === null ? "not set" : String(playbook.token_limit_per_day),
+      unset: playbook.token_limit_per_day === null,
       setBy: playbook.token_limit_set_by,
       mono: false,
       draft: playbook.token_limit_per_day === null ? "" : String(playbook.token_limit_per_day),
@@ -146,6 +152,7 @@ export function modePolicyRow(playbook: PlaybookListing): PolicyRow<"mode"> {
     label: "Mode",
     name: "mode",
     shown: playbook.mode_set_by === null ? "not set" : playbook.mode,
+    unset: playbook.mode_set_by === null,
     setBy: playbook.mode_set_by,
     mono: false,
     draft: playbook.mode,

@@ -26,6 +26,7 @@ import {
   toggleFailure,
   toggleOutcome,
   triggerName,
+  wakeupNote,
   whenLabel,
 } from "./model";
 import type { History, Reply } from "./model";
@@ -213,6 +214,15 @@ describe("names", () => {
 
   it("keeps markup in a name as text, untouched", () => {
     expect(triggerName({ id: 4, playbook: null, text: "<img src=x onerror=alert(1)>" }, undefined)).toBe("<img src=x onerror=alert(1)>");
+  });
+
+  it("writes a bidi override or a control character in kernel text out as an escape, like the sibling screens", () => {
+    expect(triggerName({ id: 4, playbook: null, text: "pay\u202eexe.txt" }, undefined)).toBe("pay\\u202eexe.txt");
+    expect(triggerName({ id: 4, playbook: "x", text: "" }, [{ slug: "x", name: "a\u0007b" }])).toBe("a\\x07b");
+    const wake: ScheduleEntry = { kind: "wakeup", id: 5, at: "2026-10-30T15:30:00.000Z", agent: null, playbook: null, action: null, text: "line\nnext\u2066", task_id: null };
+    expect(wakeupNote(wake)).toBe("Reason: line\\nnext\\u2066");
+    expect(specLine({ kind: "cr\u202eon", spec: {} }, new Date())).toBe("cr\\u202eon");
+    expect(specLine({ kind: "cron", spec: { cron: "0 9 * * 1\u202e", tz: "UTC" } }, new Date())).toBe("cron · 0 9 * * 1\\u202e · UTC");
   });
 });
 
