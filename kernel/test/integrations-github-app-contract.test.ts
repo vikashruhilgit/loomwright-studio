@@ -1,25 +1,22 @@
 // The GitHub App connect's contract in code (D36), before any of it is built:
-// the closed lists, the stub port and the two stub owner routes wave 2 builds
-// against. The stubs have no behaviour: both routes answer
-// `501 {"error":"not_implemented"}` (behind the API token like every route) and
-// every port method resolves `not_implemented`, never throwing. Wave 2's items
-// replace the stubs and their assertions in their own tests, not here.
+// the closed lists and the two stub owner routes wave 2 builds against. The
+// stubs have no behaviour: both routes answer `501 {"error":"not_implemented"}`
+// (behind the API token like every route). Wave 2's items replace the stubs and
+// their assertions in their own tests, not here: the port is real now, and its
+// tests are in `integrations-github-app-port.test.ts`.
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startApiServer } from "../src/api/index.js";
 import type { ApiServer } from "../src/api/index.js";
 import { PHASE1_RESERVED, mergeContributions } from "../src/features/index.js";
-import { githubAppPort } from "../src/integrations/github/app-port.js";
 import { githubAppRoutesPart } from "../src/integrations/github/app-routes.js";
 import {
   CONNECTOR_METHODS,
   GITHUB_APP_SETUP_REFUSALS,
   INTEGRATIONS_PARTS,
-  githubAppPort as exportedPort,
   githubAppRoutesPart as exportedPart,
   integrationsContribution,
 } from "../src/integrations/index.js";
-import type { GitHubAppConversion, GitHubAppPort, GitHubAppPortResult } from "../src/integrations/index.js";
 import { loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
 import { stubProvider, unexpectedAbandon } from "./session-fakes.js";
@@ -28,15 +25,6 @@ const T0 = "2026-10-29T10:00:00.000Z";
 const API_TOKEN = "0123456789abcdef".repeat(4);
 const SETUP = "/connectors/github/app/setup";
 const CANCEL = "/connectors/github/app/setup/cancel";
-
-const CONVERSION: GitHubAppConversion = {
-  app_id: 4242,
-  slug: "loomwright-studio-owner",
-  name: "Loomwright Studio (owner)",
-  owner_login: "owner-one",
-  html_url: "https://github.com/apps/loomwright-studio-owner",
-  client_id: "Iv1.0123456789abcdef",
-};
 
 let env: LoopEnv;
 
@@ -63,38 +51,6 @@ describe("the closed lists", () => {
     expect((union?.[1] ?? "").split("|").map((m) => m.trim().replace(/^"|"$/g, ""))).toEqual([...GITHUB_APP_SETUP_REFUSALS]);
     const methods = /export type ConnectorMethod =([^;]*);/.exec(contract);
     expect((methods?.[1] ?? "").split("|").map((m) => m.trim().replace(/^"|"$/g, ""))).toEqual([...CONNECTOR_METHODS]);
-  });
-});
-
-describe("the stub port (AC5)", () => {
-  const CALLS: ReadonlyArray<readonly [string, (port: GitHubAppPort) => Promise<GitHubAppPortResult<unknown>>]> = [
-    ["storeApp", (p) => p.storeApp(env.store, CONVERSION, "-----BEGIN RSA PRIVATE KEY-----\nstub\n-----END RSA PRIVATE KEY-----\n", env.now)],
-    ["recordInstallation", (p) => p.recordInstallation(env.store, 987654, env.now)],
-    ["removeApp", (p) => p.removeApp(env.store, env.now)],
-  ];
-
-  it("is the one the integrations index exports, frozen", () => {
-    expect(exportedPort).toBe(githubAppPort);
-    expect(Object.isFrozen(githubAppPort)).toBe(true);
-  });
-
-  for (const [name, call] of CALLS) {
-    it(`${name} resolves not_implemented with a message`, async () => {
-      const result = await call(githubAppPort);
-      expect(result).toEqual({ ok: false, error: "not_implemented", message: expect.stringMatching(/not implemented/) });
-    });
-  }
-
-  it("never throws or rejects, whatever it is given", async () => {
-    const port = githubAppPort as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
-    const weird: unknown[][] = [[], [undefined], [null, null, null, null], [{}, "x", 1, "y"], [env.store, {}, "", () => new Date(Number.NaN)], [NaN, -1, Symbol("s")]];
-    for (const method of ["storeApp", "recordInstallation", "removeApp"]) {
-      for (const args of weird) {
-        const result = (await port[method]?.(...args)) as GitHubAppPortResult<unknown>;
-        expect(result.ok).toBe(false);
-        if (!result.ok) expect(result.error).toBe("not_implemented");
-      }
-    }
   });
 });
 

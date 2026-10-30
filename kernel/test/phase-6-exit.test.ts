@@ -65,6 +65,7 @@ import {
   integrationsContributionOf,
 } from "../src/integrations/index.js";
 import { connectorsSubcommand } from "../src/integrations/cli.js";
+import { GITHUB_APP_SERVICES } from "../src/integrations/github/connector.js";
 import type { SecretRead } from "../src/integrations/cli.js";
 import type { GitHubPull } from "../src/integrations/types.js";
 import { startKernel } from "../src/kernel.js";
@@ -88,6 +89,8 @@ const PLAYBOOK_MODEL = "claude-opus-4-1";
 /** The brain's context zone (no DST). */
 const ZONE = "Asia/Kolkata";
 const START = "2026-10-29T10:00:00.000Z";
+/** A token set's Keychain writes: the PAT swapped (delete, then add), then the App's items deleted ("already gone" here). */
+const GITHUB_SET_WRITES = [`delete ${GITHUB_KEYCHAIN_SERVICE}`, `add ${GITHUB_KEYCHAIN_SERVICE}`, ...GITHUB_APP_SERVICES.map((s) => `delete ${s}`)];
 const INTERVAL = 300;
 const REPO = "vikashruhilgit/studio-sandbox";
 const ORDINARY = 1;
@@ -521,7 +524,7 @@ describe("phase 6 exit: a poll playbook reviews the owner's PRs, skips the uncha
     expect(store.prepare("SELECT count(*) AS n FROM connectors").pluck().get()).toBe(1);
     // The token is in the Keychain under the connector's service and nowhere else.
     expect([...keychain.items].filter(([, item]) => item.secret === READ_ONLY_TOKEN).map(([service]) => service)).toEqual([GITHUB_KEYCHAIN_SERVICE]);
-    expect(keychain.writes.slice(writesBefore.length)).toEqual([`delete ${GITHUB_KEYCHAIN_SERVICE}`, `add ${GITHUB_KEYCHAIN_SERVICE}`]);
+    expect(keychain.writes.slice(writesBefore.length)).toEqual(GITHUB_SET_WRITES);
 
     // ---- 2. One sentence: the stand-in Wright drafts the reviewer's charter (held) ----
     let charterHeld: Decision | undefined;
@@ -795,7 +798,7 @@ describe("phase 6 exit: a poll playbook reviews the owner's PRs, skips the uncha
     expect(approvalRows(store)).toHaveLength(approvalsBeforePolls);
     expect(events(store, "tool_decision").filter((e) => e.payload.tool === "Bash" && e.payload.decision === "allow")).toEqual([]);
     expect(new Set(fetched)).toEqual(new Set(["127.0.0.1"]));
-    expect(keychain.writes.filter((w) => w.includes(GITHUB_KEYCHAIN_SERVICE))).toEqual([`delete ${GITHUB_KEYCHAIN_SERVICE}`, `add ${GITHUB_KEYCHAIN_SERVICE}`]);
+    expect(keychain.writes.filter((w) => w.includes(GITHUB_KEYCHAIN_SERVICE))).toEqual(GITHUB_SET_WRITES);
     expect(wright).toHaveLength(0);
     noFailures();
   }, 90_000);
