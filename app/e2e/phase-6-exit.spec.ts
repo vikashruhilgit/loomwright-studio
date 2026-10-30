@@ -32,6 +32,7 @@ import { EXIT, phase6ExitFixture } from "./fixtures/phase-6-exit";
  */
 const IDS = {
   account: "integrations-account",
+  choiceToken: "integrations-choice-token",
   detail: "integrations-detail",
   emptyConnect: "integrations-connect",
   repos: "integrations-repos",
@@ -80,6 +81,8 @@ test("phase 6 exit, in the app: connect GitHub, see the reviewer's draft card, s
   });
   await expect(byId(page, IDS.screen)).toBeVisible();
   await byId(page, IDS.emptyConnect).click();
+  // Connect GitHub opens the choice first (GitHub App 4); this walk pastes a token.
+  await byId(page, IDS.choiceToken).click();
   const sheet = byId(page, IDS.sheet);
   await expect(sheet).toBeVisible();
   const field = byId(page, IDS.sheetToken);

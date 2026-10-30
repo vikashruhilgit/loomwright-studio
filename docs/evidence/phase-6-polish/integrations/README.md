@@ -1,6 +1,6 @@
-# Integrations screen evidence (phase 6 item 11)
+# Integrations screen evidence (phase 6 item 11, and the GitHub App connect)
 
-These are screenshots of the built app's Integrations screen in every designed state, in light and dark mode. Each one was taken by `app/e2e/integrations.spec.ts` against the fixture kernel, with the canned data in `app/e2e/fixtures/integrations.ts`. The account, repos and token are fixture values (`studio-fixture`, `studio-fixture/site`, a `github_pat_E2E…` string), so none of it is real data. The roster is Team's fixture roster: Mason holds the GitHub grant, Wright and Ada do not.
+These are screenshots of the built app's Integrations screen in every designed state, in light and dark mode: the token's (18 files, below) and the GitHub App's (22 files, [further down](#the-github-app-screenshots)). Each one was taken by `app/e2e/integrations.spec.ts` against the fixture kernel, with the canned data in `app/e2e/fixtures/integrations.ts`. The account, repos and token are fixture values (`studio-fixture`, `studio-fixture/site`, a `github_pat_E2E…` string), so none of it is real data. The roster is Team's fixture roster: Mason holds the GitHub grant, Wright and Ada do not.
 
 To regenerate the screenshots (macOS):
 
@@ -8,7 +8,9 @@ To regenerate the screenshots (macOS):
 cd app && npm run build && INTEGRATIONS_EVIDENCE=1 npx playwright test e2e/integrations.spec.ts --workers=1
 ```
 
-Without `INTEGRATIONS_EVIDENCE=1` the spec writes its screenshots to Playwright's per-test output directory, so CI never changes these files, and its last test fails if any file in this directory is newer than the run's start. The spec checks behaviour and never compares pixels, because fonts differ between macOS and the Ubuntu CI run. All 18 files were captured on macOS on 2026-10-28. The expiry dates in the screenshots are relative to the capture date (88 days ahead for connected, 8 ahead for expiring, 3 behind for expired).
+`INTEGRATIONS_EVIDENCE=1 npm run e2e` writes the same files, and also rewrites other screens' tracked screenshots, whose pixels change a little on every run; use the command above to regenerate these alone.
+
+Without `INTEGRATIONS_EVIDENCE=1` the spec writes its screenshots to Playwright's per-test output directory, so CI never changes these files, and its last test fails if any file in this directory is newer than the run's start. The spec checks behaviour and never compares pixels, because fonts differ between macOS and the Ubuntu CI run. All 40 files were captured on macOS on 2026-10-30. The expiry dates in the screenshots are relative to the capture date (88 days ahead for connected, 8 ahead for expiring, 3 behind for expired; the App's access token expires 55 minutes ahead).
 
 ## Screenshots
 
@@ -34,7 +36,49 @@ The "Mockup state" column names the state of `docs/design/mockups/integrations.h
 - **Unreachable:** the fixture starts connected; `dropNextRead()` closes the kernel when the next `GET /connectors` arrives, and a `connector_status` event makes the screen ask.
 - **Dark mode:** the spec sets `data-theme` on the root element and checks that `--ground` differs between the two themes, so a dark capture that silently stayed light fails the run.
 
-## What the spec proves (`app/e2e/integrations.spec.ts`)
+## The GitHub App screenshots
+
+The GitHub App connect (GitHub App 4, D36) adds eleven designed states, each in light and dark: `integrations-app-<state>-light.png` and `integrations-app-<state>-dark.png`. They come from the same spec and fixture, so the regeneration command above writes them. The approved mockup views are `app-*` in `docs/design/mockups/integrations.html`, and the mockup's own reference captures are in [`docs/evidence/github-app-mockup/`](../../github-app-mockup/README.md). The fixture gives the App the slug `studio-fixture-reader`, the installation `51234567` and two repos (`studio-fixture/site`, `studio-fixture/notes-cli`); none of it is real.
+
+| Screenshot (light / dark) | Mockup view | How the spec reaches it | Matches the mockup? |
+|---|---|---|---|
+| `integrations-app-choice-light.png` / `-dark.png` | `app-choice` | Connect GitHub on the empty state | Yes: both options with "Suggested" on the App, the one-connection line, Cancel. The empty state behind it now says "a GitHub App you install or a token you create" (DESIGN.md asked for it widened), where the mockup still says "a token you create". |
+| `integrations-app-setup-create-light.png` / `-dark.png` | `app-setup-create` | "Install GitHub App": one setup call, the `setup_url` opened through the stubbed channel | Yes: step 1 `waiting for you`, step 2 `next`, the window's closing time, Cancel and "Open GitHub again"; the list row reads "setting up the GitHub App · waiting for you on GitHub". |
+| `integrations-app-setup-install-light.png` / `-dark.png` | `app-setup-install` | the fixture's `change("app-created")`: a non-refusal `connector_status` and the App row with its slug and no installation | Yes: step 1 `done`, step 2 `waiting for you`. |
+| `integrations-app-connected-light.png` / `-dark.png` | `app-connected` | the fixture's `change("app-connected")`: the sheet closes by itself | Yes, with three differences below (the App row, the repo badges, the permissions order). The pane is longer than the 1000 px capture window, so Mason's grant card is cut off at the bottom, as it is in the token's connected capture. |
+| `integrations-app-disconnect-light.png` / `-dark.png` | `app-disconnect` | Disconnect on the connected App | Yes: the key's removal, what stays on GitHub, and the two links. One difference below (the parked playbook). |
+| `integrations-app-expired-light.png` / `-dark.png` | `app-expired` | a `connector_status` event with `refused: setup_expired` | Yes: the closing time, nothing connected, Close, "Paste a token instead", "Set up again". One difference below (the Apps link is text). |
+| `integrations-app-cancelled-light.png` / `-dark.png` | `app-cancelled` | Cancel on the running setup (one `POST …/setup/cancel`) | Yes; the Apps link is text, as for expired. |
+| `integrations-app-write-scoped-light.png` / `-dark.png` | `app-write-scoped` | `refused: token_write_scoped` with `write_permissions` | Yes, with one difference below (the permission's wording). Here the event names the slug, so "Open your GitHub Apps" is a real link to the App's page. |
+| `integrations-app-failed-light.png` / `-dark.png` | `app-failed` | `refused: conversion_failed` | Yes. |
+| `integrations-app-revoked-light.png` / `-dark.png` | `app-revoked` | the fixture starts with a `rejected` App row that keeps its slug and installation | Yes: the danger band, "rejected", "None: GitHub refused the App's key", the last-read permissions and repos, Set up again as the primary. The band does not name a parked playbook (below). |
+| `integrations-app-unreachable-light.png` / `-dark.png` | `app-unreachable` | the fixture closes the kernel under the next `GET /connectors` | Yes: the last-read data, the last known expiry, Disconnect and Refresh disabled. Like the token's capture, it shows the shell's "Reconnecting to the kernel…" band above the screen's own, where the mockup has one band. |
+
+Differences from the mockup, seen in these captures (none is a renderer fault):
+
+- **The App's slug stands where the mockup shows the App's name and slug.** `Connector` carries no App name, and the fixture carries only fields `Connector` has, so the App row reads `studio-fixture-reader`. Owner open point: a later optional `app_name` from the kernel tokens item would restore the mockup's "Loomwright Studio <login>" line.
+- **The expired and cancelled views show `github.com/settings/apps` as text, not a link.** The mockup links the bare GitHub Apps page, which the open-external allowlist excludes (it allows `https://github.com/settings/installations` and `https://github.com/settings/apps/<slug>` only). A view with no slug yet shows the address to copy; one that has the slug (write-scoped, the disconnect confirm) links to the App's page. Owner open point: allow the bare page, or keep it text.
+- **No private/public badge on the repos, no parked playbook's name, no per-agent line on the Disconnect confirm.** The contract carries none of them, so the confirm says "Playbooks that need GitHub park until you connect again. Agents keep their grant." and the revoked band says "Playbooks that need GitHub are parked."
+- **The write-scoped list shows GitHub's level as reported** ("Contents: write → set to Read-only"), where the mockup writes "Read and write". The token's refusal differs the same way.
+- **The permissions list is in the order the fixture sends** (Metadata, Pull requests, Contents); the screen keeps the kernel's order, and the mockup's is Metadata, Contents, Pull requests.
+- **The "Open GitHub again" step-spent caveat:** it reopens the same `setup_url`. If the kernel spends the `state` on its first GET, the browser tab shows the kernel's refusal and the owner uses "Set up again". The fixture does not spend it, so no screenshot shows this.
+
+### What the App tests prove (`app/e2e/integrations.spec.ts`)
+
+`shell.openExternal` is replaced in the main process (`electronApp.evaluate`) before any click, in every test, so a run can never open a real browser; the URLs the main process would have opened are read back from the stub.
+
+| Test | Criteria |
+|---|---|
+| Install GitHub App, step 2, connected, Disconnect | AC1: one `POST /connectors/github/app/setup`, and exactly the returned `setup_url` (this kernel's `127.0.0.1:<port>`, `/connectors/github/app/start`, a `state` query alone) was handed to `shell.openExternal`; the page URL is unchanged and no second window opened. AC5 (slice): "Open GitHub again" opens the same URL with no second setup call. AC2: a non-refusal `connector_status` moves the sheet to step 2; the connected event closes it, and the pane shows "Read-only, checked by GitHub", the permissions, the slug, the installation, the expiry with "renews automatically", exactly the row's two repos under "Repos chosen at install", no Replace token and no expiry band. AC6: the confirm names the key's removal; its two links open `https://github.com/settings/installations` and `https://github.com/settings/apps/<slug>` through the channel, the window stays put, Cancel sends nothing, and confirming sends one disconnect. |
+| One test per refusal view (`setup_expired`, `token_write_scoped`, `conversion_failed`) | AC9: the mockup's view and copy show, the kernel's own message (`RAW-KERNEL-MESSAGE …`) is nowhere in the page, and Close from the ended view cancels nothing. |
+| Cancel, Escape, Set up again, a refused setup route | AC4: Cancel and Escape each send one `POST …/setup/cancel` and show setup-cancelled; AC5: Set up again makes a new setup call and opens a new address; a 422 `install_failed` from the setup route shows setup-failed, opens nothing and shows no raw message; "Paste a token instead" opens the token sheet with the field focused. |
+| Revoked | A `rejected` App row with its installation: the danger band, the last-read repos, no Replace token, Set up again as the primary, which starts a fresh setup. |
+| Unreachable (App) | The last App data stays with its time; Disconnect and Refresh are disabled; never the empty state. |
+| Token specs, after the choice | AC7: every existing token test now opens "Paste a token" first and keeps every assertion, including the secrecy scans and the AC12 guard; the keyboard walk reaches "Paste a token" with Tab and Enter, and checks that Escape on the choice opens and starts nothing. `phase-6-exit.spec.ts` gets the same one extra click. |
+
+The e2e does not drive the real GitHub or a real browser, and its kernel is the fixture: the step-2 signal and the `refused` field of an event are the ones `docs/architecture/app.md` defines, because the contract fixes neither. Owner open points for the PR body: the step-2 signal and refusal shape for the kernel setup item to confirm, the App name, and the bare GitHub Apps page link.
+
+## What the token spec proves (`app/e2e/integrations.spec.ts`)
 
 | Test | Criteria |
 |---|---|
