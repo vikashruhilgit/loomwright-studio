@@ -9,6 +9,9 @@ import type { GuiPart } from "../src/gui/index.js";
 
 const PART_NAMES = ["tasks", "playbook-history", "schedules", "memory", "budget-audit", "settings"];
 
+// The parts a screen item has filled in so far (each item adds its own part name here).
+const FILLED: ReadonlySet<string> = new Set(["schedules"]);
+
 describe("the gui feature (phase 7 foundation)", () => {
   it("is tenth and last in the registry, after integrations, and merges with no conflict", () => {
     expect(SHIPPED_CONTRIBUTIONS).toHaveLength(10);
@@ -26,16 +29,25 @@ describe("the gui feature (phase 7 foundation)", () => {
     for (const part of GUI_PARTS) expect(Object.isFrozen(part)).toBe(true);
   });
 
-  it("holds every part empty: no tools, routes, subcommands, handlers or due work (until each screen item fills its part)", () => {
-    for (const part of GUI_PARTS) {
+  it("holds every part not yet filled empty: no tools, routes, subcommands, handlers or due work (until each screen item fills its part)", () => {
+    for (const part of GUI_PARTS.filter((p) => !FILLED.has(p.name))) {
       expect(part.tools, part.name).toEqual([]);
       expect(part.routes, part.name).toEqual([]);
       expect(part.subcommands ?? [], part.name).toEqual([]);
       expect(part.handlers, part.name).toEqual({});
       expect(part.dueWork ?? [], part.name).toEqual([]);
     }
-    // The merged contribution carries only its name while every part is empty.
-    expect(Object.keys(guiContribution)).toEqual(["name"]);
+    // The merged contribution carries its name, and a key only while a filled part has something under it.
+    const filled = GUI_PARTS.filter((p) => FILLED.has(p.name));
+    const expectedKeys = [
+      "name",
+      ...(filled.some((p) => p.tools.length > 0) ? ["tools"] : []),
+      ...(filled.some((p) => p.routes.length > 0) ? ["routes"] : []),
+      ...(filled.some((p) => (p.subcommands ?? []).length > 0) ? ["subcommands"] : []),
+      ...(filled.some((p) => Object.keys(p.handlers).length > 0) ? ["handlers"] : []),
+      ...(filled.some((p) => (p.dueWork ?? []).length > 0) ? ["dueWork"] : []),
+    ];
+    expect(Object.keys(guiContribution).sort()).toEqual([...expectedKeys].sort());
     expect(guiContribution.name).toBe("gui");
     expect(Object.isFrozen(guiContribution)).toBe(true);
   });
