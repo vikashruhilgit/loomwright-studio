@@ -98,8 +98,9 @@ describe("the stub port (AC5)", () => {
   });
 });
 
-describe("the stub owner routes (AC2, AC7)", () => {
+describe("the owner and browser routes", () => {
   let server: ApiServer;
+  const BROWSER = ["/connectors/github/app/start", "/connectors/github/app/return", "/connectors/github/app/installed"];
 
   beforeEach(async () => {
     server = await startApiServer(
@@ -125,20 +126,28 @@ describe("the stub owner routes (AC2, AC7)", () => {
       headers: authorization === undefined ? {} : { Authorization: authorization },
     });
 
-  it("the shipped contribution serves both under the App part, last in the parts", () => {
+  it("the shipped contribution serves all five under the App part, last in the parts", () => {
     expect(exportedPart).toBe(githubAppRoutesPart);
     expect(INTEGRATIONS_PARTS.at(-1)).toBe(githubAppRoutesPart);
-    expect(githubAppRoutesPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual([`POST ${SETUP}`, `POST ${CANCEL}`]);
+    expect(githubAppRoutesPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual([`POST ${SETUP}`, `POST ${CANCEL}`, ...BROWSER.map((p) => `GET ${p}`)]);
     expect(Object.isFrozen(githubAppRoutesPart)).toBe(true);
   });
 
-  for (const path of [SETUP, CANCEL]) {
-    it(`POST ${path} with the API token answers 501 {"error":"not_implemented"}`, async () => {
-      const res = await call(path, `Bearer ${API_TOKEN}`);
-      expect(res.status).toBe(501);
-      expect(await res.text()).toBe('{"error":"not_implemented"}');
-    });
+  it("POST setup with the API token answers 200 {setup_url, expires_at} on the API's own origin, 10 minutes out; cancel closes it", async () => {
+    const res = await call(SETUP, `Bearer ${API_TOKEN}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { setup_url: string; expires_at: string };
+    expect(Object.keys(body).sort()).toEqual(["expires_at", "setup_url"]);
+    expect(body.setup_url).toMatch(new RegExp(`^http://127\\.0\\.0\\.1:${server.port}/connectors/github/app/start\\?state=[A-Za-z0-9_-]{32,}$`));
+    expect(body.expires_at).toBe("2026-10-29T10:10:00.000Z");
 
+    const cancelled = await call(CANCEL, `Bearer ${API_TOKEN}`);
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toEqual({ cancelled: true });
+    expect(await (await call(CANCEL, `Bearer ${API_TOKEN}`)).json()).toEqual({ cancelled: false });
+  });
+
+  for (const path of [SETUP, CANCEL]) {
     it(`POST ${path} without the token, or with a wrong one, answers 401`, async () => {
       for (const authorization of [undefined, "Bearer wrong", `Bearer ${API_TOKEN}x`, API_TOKEN]) {
         const res = await call(path, authorization);
