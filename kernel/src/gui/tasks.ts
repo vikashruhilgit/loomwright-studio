@@ -22,6 +22,7 @@ import type { ApprovalRow } from "../approvals/store.js";
 import { eventFrameOf } from "../console/events.js";
 import type { EventRow } from "../console/events.js";
 import type { ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
+import { positiveIntegerOf } from "./query.js";
 import type { GuiPart } from "./types.js";
 
 /** `GET /tasks`' `limit`: default and ceiling. */
@@ -77,13 +78,6 @@ const BOARD_SESSION_SELECT = `${SESSION_SELECT}
 
 const invalidQuery = (message: string): ContributedRouteResponse => ({ status: 400, body: { error: "invalid_query", message } });
 
-/** A positive integer written in digits only (no sign, no leading zero, within the safe range). */
-function positiveInteger(text: string): number | undefined {
-  if (!/^[1-9]\d*$/.test(text)) return undefined;
-  const n = Number(text);
-  return Number.isSafeInteger(n) ? n : undefined;
-}
-
 const isKind = (value: string): value is BoardKind => (KINDS as readonly string[]).includes(value);
 
 // ---- The cursor ----------------------------------------------------------------
@@ -124,7 +118,7 @@ function listHandler(req: ContributedRouteRequest): Promise<ContributedRouteResp
   const { limit: rawLimit, before: rawBefore } = req.query;
   let limit = DEFAULT_LIMIT;
   if (rawLimit !== undefined) {
-    const n = positiveInteger(rawLimit);
+    const n = positiveIntegerOf(rawLimit);
     if (n === undefined || n > MAX_LIMIT) return Promise.resolve(invalidQuery(`limit must be an integer from 1 to ${MAX_LIMIT}`));
     limit = n;
   }
@@ -199,7 +193,7 @@ const APPROVAL_COLUMNS = "id, requesting_agent, requesting_session, action, payl
 function historyHandler(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
   const kind = req.params["kind"] ?? "";
   if (!isKind(kind)) return Promise.resolve({ status: 400, body: { error: "invalid_kind", message: `kind must be one of ${KINDS.join(", ")}` } });
-  const id = positiveInteger(req.params["id"] ?? "");
+  const id = positiveIntegerOf(req.params["id"] ?? "");
   if (id === undefined) return Promise.resolve({ status: 400, body: { error: "invalid_id", message: "id must be a positive integer" } });
 
   const { store } = req;

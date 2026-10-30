@@ -12,18 +12,11 @@
 // payload does not parse is skipped, never a throw.
 import type { ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
 import { getTrigger } from "../triggers/store.js";
+import { limitOf, positiveIntegerOf } from "./query.js";
 import type { GuiPart } from "./types.js";
 
-const ID = /^[1-9]\d*$/;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
-
-/** A whole number from 1 to `MAX_LIMIT`, or `DEFAULT_LIMIT` when absent; `undefined` when it is anything else. */
-function limitOf(raw: string | undefined): number | undefined {
-  if (raw === undefined) return DEFAULT_LIMIT;
-  const n = Number(raw);
-  return ID.test(raw) && Number.isSafeInteger(n) && n <= MAX_LIMIT ? n : undefined;
-}
 
 interface TriggerEntryRow {
   readonly id: number;
@@ -61,7 +54,7 @@ function compareAt(a: string, b: string): number {
 }
 
 async function schedule(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
-  const limit = limitOf(req.query.limit);
+  const limit = limitOf(req.query.limit, DEFAULT_LIMIT, MAX_LIMIT);
   if (limit === undefined) return { status: 400, body: { error: "invalid_limit" } };
   // Each source is cut to `limit` in its own order first: the merged first `limit` entries can only come from there.
   const triggers = req.store
@@ -108,16 +101,15 @@ function payloadOf(json: string | null): Record<string, unknown> | undefined {
 
 async function fires(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
   const raw = req.params.id ?? "";
-  const id = Number(raw);
-  if (!ID.test(raw) || !Number.isSafeInteger(id)) return { status: 400, body: { error: "invalid_id" } };
+  const id = positiveIntegerOf(raw);
+  if (id === undefined) return { status: 400, body: { error: "invalid_id" } };
   if (getTrigger(req.store, id) === undefined) return { status: 404, body: { error: "not_found" } };
   let before: number | undefined;
   if (req.query.before !== undefined) {
-    const n = Number(req.query.before);
-    if (!ID.test(req.query.before) || !Number.isSafeInteger(n)) return { status: 400, body: { error: "invalid_cursor" } };
-    before = n;
+    before = positiveIntegerOf(req.query.before);
+    if (before === undefined) return { status: 400, body: { error: "invalid_cursor" } };
   }
-  const limit = limitOf(req.query.limit);
+  const limit = limitOf(req.query.limit, DEFAULT_LIMIT, MAX_LIMIT);
   if (limit === undefined) return { status: 400, body: { error: "invalid_limit" } };
   // `json_extract` raises on malformed JSON, so the filter guards it with `json_valid`: such a row never matches.
   const rows = req.store
