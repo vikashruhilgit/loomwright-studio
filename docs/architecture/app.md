@@ -69,7 +69,7 @@ An attempt is `connection()` (the main process's `api.json`, pid, token and `GET
 
 ## The open-external channel
 
-The window can't open the system browser itself: `lockDown` (`app/electron/main.ts`) denies every new window and every navigation, and that stays. The one way out is the `studio:open-external` IPC channel, reached as `window.api.openExternal(url)` (an optional member of `StudioBridge`; a caller treats a missing method as `false`). It answers a boolean and nothing else: `true` once `shell.openExternal` accepted the address, `false` for everything else. The renderer is given no channel name, no `ipcRenderer` and no Node API.
+The window can't open the system browser itself: `lockDown` (`app/electron/main.ts`) denies every new window and every navigation, and that stays. The one way out is the `studio:open-external` IPC channel, reached as `window.api.openExternal(url)` (an optional member of `StudioBridge`; a caller treats a missing method as `false`). It answers a boolean and nothing else: `true` once `shell.openExternal` accepted the address, `false` for everything else. The renderer is given no channel name, no `ipcRenderer` and no Node API. Three more invoke channels carry the app's own preferences (see "The app's own preferences" below); none of them opens an address.
 
 The main process's handler, in order:
 
@@ -88,7 +88,7 @@ The main process's handler, in order:
 
 Anything else is refused: another host or port, `localhost` for `127.0.0.1`, `https:` on the loopback host, `http:` on `github.com`, another path or a path prefix, any other query, userinfo, a fragment (even an empty one), `javascript:`, `file:`, `data:`, the bare `https://github.com/settings/apps`, and a slug with `/`, `..`, `%2F` or any escape. The address must also be exactly what the URL parser would write back, so a spelling it would rewrite (a case change, a stripped default port, a resolved `..`, a dropped tab or newline) is refused, never normalised into an allowed address.
 
-**Tests:** `app/electron/open-external.test.ts` (the allowlist, one case per off-list form), `app/electron/main.test.ts` ("the open-external channel": the caller check, a non-string argument, a kernel that is not connected, the port read at call time, a failed open) and `app/electron/preload.test.ts` (the method forwards over `studio:open-external` and the bridge's key list). `app/e2e/smoke.spec.ts` pins the built preload's key list.
+**Tests:** `app/electron/open-external.test.ts` (the allowlist, one case per off-list form), `app/electron/main.test.ts` ("the open-external channel": the caller check, a non-string argument, a kernel that is not connected, the port read at call time, a failed open) and `app/electron/preload.test.ts` (the method forwards over `studio:open-external`, the three prefs methods forward over their channels, and the bridge's key list). `app/e2e/smoke.spec.ts` pins the built preload's key list.
 
 ## The GitHub App connect (renderer)
 
@@ -119,3 +119,45 @@ The kernel's `message` is never shown. The first outcome stands: a refusal arriv
 **The detail pane.** A row with `method: "app"` gets `AppDetail.tsx`: the `GitHub App` badge, the App row (the slug, because `Connector` carries no App name), the installation, the key (never shown), the access token's expiry with "renews automatically", "Read-only, checked by GitHub" with the permissions GitHub reported (it says nothing is read-only if a level above Read is reported), "Repos chosen at install" (the row's `reachable_repos`), no Replace token and no expiry band. A `rejected` App row with both a slug and an installation is **revoked** (`app-revoked`): the danger band, the last-read data kept, Set up again as the primary; a `rejected` App row without an installation is a refused setup and reads as not connected. Disconnect on an App connection confirms what Studio removes (the App's key, from the Keychain) and links to `https://github.com/settings/installations` and to the App's page, each through the channel. `⌘K` Connect GitHub is disabled while an App is connected or revoked (the mockup's "disconnect first"; the command registry has no field for the reason, so the palette shows the command off without the words).
 
 **Tests:** `app-setup.test.ts` (the model, and the dialog over the scripted kernel: the setup call and the opened address, step 2, cancel by each route, reopen, expiry, a test per refusal reason as an event and as the route's refusal, a refused channel, the links, the unreachable kernel), `connect-sheet.test.tsx` (the choice), `integrations.test.tsx` (the detail pane, revoked, the App's disconnect confirm, `⌘K`) and `model.test.ts`.
+
+## The app's own preferences (Settings)
+
+The Settings screen's "This app" section sets three things that belong to the app, not the kernel: launch at login, notifications and the theme. They live in the main process (`app/electron/settings.ts`; `main.ts` only wires it), reached as the optional `window.api.prefs` member of `StudioBridge` (`AppPreferencesBridge` in `app/src/api/contract.ts`; a caller treats a missing member as "preferences unavailable"). The preload still exposes exactly one key, `api`, and nothing on it is named `token`, `ipc`, `require` or `process`.
+
+| Call | Channel | What it does |
+|---|---|---|
+| `prefs.get()` | `studio:prefs:get` | Answers `AppPreferences`: `launchAtLogin: { enabled, status }`, `notifications`, `theme` |
+| `prefs.set(patch)` | `studio:prefs:set` | Applies a valid `AppPreferencesPatch` (any of `launchAtLogin`, `notifications`, `theme`) and answers the state read back |
+| `prefs.revealDataDir()` | `studio:reveal-data-dir` | Opens the main process's own data folder; answers `true` once opened, else `false` |
+
+Every handler refuses a caller that is not the app's own window (`throw new Error("refused")`, as every other handler does), and the renderer names no channel.
+
+**What is kept where.**
+
+- **`prefs.json`** in `app.getPath("userData")`: `{ "notifications": boolean, "theme": "system" | "light" | "dark" }`, defaulting to `{ notifications: true, theme: "system" }`. It is read once at start. A missing, unreadable or invalid file (not exactly those two keys with valid values) means the defaults and never a throw, and the file is rewritten only by the next change, atomically (a temp file in the same folder, then a rename). It is never in the kernel's store or data dir. A failed write is logged as a reason with no path, and the change holds for that run.
+- **Launch at login is not stored.** `set` calls `app.setLoginItemSettings({ openAtLogin })`, and every `get` (and the answer to every `set`) reads `app.getLoginItemSettings()` again, so the switch shows what the OS holds, including a change made in System Settings. `launchAtLogin.status` is the OS's own word where it gives one (macOS 13+: `enabled`, `not-registered`, `requires-approval`, `not-found`), else `null`. `enabled` is `false` when the OS says the item needs approval, so the screen can say so rather than show a switch on. A call that throws answers `{ enabled: false, status: null }`.
+- **Theme.** The main process sets `nativeTheme.themeSource` from `prefs.json` at start, before the window is created, and on every change. The renderer's tokens follow `prefers-color-scheme` (`app/src/styles/tokens.css`), so the app re-themes at once with no reload. Verified on Electron 44.9.2 (macOS, 2026-10-30), in a plain window and in the built app: `themeSource` `dark` and `light` flipped `matchMedia("(prefers-color-scheme: dark)")` in the renderer at once, and `system` returned it to the OS's setting, and a relaunch over the same `prefs.json` read the stored theme on the first read, so no `data-theme` fallback is needed. **An e2e must reset Playwright's emulation first:** Playwright pins `prefers-color-scheme: light` on every page by default, which hides `themeSource` entirely (the media query read `false` for every theme), so call `await page.emulateMedia({ colorScheme: null })` before reading `matchMedia`.
+- **Notifications** is the app's own preference: stored and returned, and nothing reads it yet. The kernel posts its own macOS notifications through its notifier, which this preference does not reach (the open question is in [OPEN_QUESTIONS.md](../OPEN_QUESTIONS.md)).
+
+**The patch is validated here, never trusted.** `studio:prefs:set` accepts an object whose keys are only `launchAtLogin` (boolean), `notifications` (boolean) and `theme` (`system`, `light` or `dark`). Anything else (another key, a wrong type, an unknown theme, an `undefined` value, a non-object) refuses the whole patch: nothing changes and the current state comes back. It never throws.
+
+**Reveal never takes a path.** The handler takes no argument, so whatever the renderer sends is dropped. It opens `resolveDataDir(process.env)`, the one the kernel connection uses, with `shell.openPath`, and answers `false` for a folder it could not open (the kernel was never started here, for example).
+
+**Test seams, unpackaged builds only** (the `tokenReaderFor(process.env, app.isPackaged)` rule: a packaged build ignores both, pinned by `app/electron/settings.test.ts`):
+
+| Variable | Effect |
+|---|---|
+| `STUDIO_APP_PREFS_DIR` | Moves `prefs.json` to that folder |
+| `STUDIO_APP_FAKE_OS=1` | Replaces the login-item calls and Reveal with a fake that records each call and keeps the login-item state in `os-calls.json`, beside `prefs.json` |
+
+`os-calls.json` is `{ "loginItem": { "openAtLogin": boolean, "status": string }, "calls": [...] }`. Each call is `{ "op": "setLoginItemSettings", "openAtLogin": boolean }` or `{ "op": "reveal", "path": <the resolved data dir> }`, in order. The fake reads the file on every `get`, so a relaunch over the same folder shows the fake OS's state, not a stored value. A seeded `requires-approval` status survives a set (the call is recorded, the state is not changed), which is how a test shows the "needs approval" case. An e2e run sets both variables on every launch, so none ever registers a real login item or opens Finder.
+
+**Tests:** `app/electron/settings.test.ts` (Electron mocked: the prefs file and every fallback, the login item set and read back from the OS, the theme at start and on change, the refused patch, Reveal and an ignored argument, and the seams, including a packaged build ignoring them), `app/electron/main.test.ts` ("the preferences channels": the owner check on each channel, the theme applied before the window, Reveal opening the resolved data dir only) and `app/electron/preload.test.ts` (the three methods and their channels). `app/e2e/smoke.spec.ts` pins the built preload's key list, `prefs` included.
+
+## `GET /settings`
+
+The kernel's `gui` feature serves it from its `settings` part (`kernel/src/gui/settings.ts`), against the `SettingsResponse` that `app/src/api/contract.ts` declares (route key `"GET /settings"`). It is an owner route (it needs the API token) and read-only: nothing is written, and no secret is read into the answer.
+
+It answers `200` with `provider` (`id`, `account`, `health`, and `token_created_at` from the provider's metadata, else `null`), `data_dir` (the store's data dir), `notifier` (`terminal-notifier`, `osascript` or `none`, from the kernel's own choice of notifier) and `loomwright` (the adapter's state). `provider` is the first provider `GET /status` reports, read through the same view `/status` uses, so there is one Keychain-reading health path and never a second: a provider whose `health()` throws reports `{ status: "error", reason: "health_threw" }` with `200`, and a Loomwright reader that throws reports `status_threw`. The body is built field by field and never holds a token, a key or Keychain output.
+
+When it cannot answer it refuses, never with a thrown error: `503 { "error": "settings_unavailable", "reason": <reason> }` with `no_status_view` (the route's request carries no status view), `no_auth_provider` or `no_loomwright_reader`. The Settings screen shows the provider read-only, with the terminal commands that change it and no field for a credential.

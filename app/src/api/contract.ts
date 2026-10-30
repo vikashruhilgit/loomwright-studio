@@ -1398,4 +1398,43 @@ export interface StudioBridge {
    * without it (a test fake) compiles; a caller treats a missing method as `false`.
    */
   openExternal?(url: string): Promise<boolean>;
+  /**
+   * The app's own preferences, kept by the main process (never in the kernel's store): launch at login
+   * (read from the OS on every call), notifications and the theme, plus Reveal in Finder for the data
+   * folder. Optional so a bridge without it (a test fake) compiles; a caller treats a missing member as
+   * "preferences unavailable".
+   */
+  prefs?: AppPreferencesBridge;
+}
+
+/** The theme the owner picked; `system` follows macOS. The main process applies it to `nativeTheme.themeSource`. */
+export type ThemePreference = "system" | "light" | "dark";
+
+/** The app's own preferences, as the main process reports them. */
+export interface AppPreferences {
+  /**
+   * Launch at login, read from the OS each time, never from a stored value. `status` is the OS's own word
+   * for the login item where it gives one (macOS 13+: `enabled`, `not-registered`, `requires-approval`,
+   * `not-found`), else `null`; `enabled` can be `false` while `status` says `requires-approval`.
+   */
+  readonly launchAtLogin: { readonly enabled: boolean; readonly status: string | null };
+  /** The app's own notifications preference (kept in the app's `prefs.json`; the kernel's notifier does not read it). */
+  readonly notifications: boolean;
+  readonly theme: ThemePreference;
+}
+
+/** What `prefs.set` accepts: known keys with valid values only. Anything else is refused whole and the state comes back unchanged. */
+export interface AppPreferencesPatch {
+  readonly launchAtLogin?: boolean;
+  readonly notifications?: boolean;
+  readonly theme?: ThemePreference;
+}
+
+/** `window.api.prefs`: three calls over three owner-only IPC channels. The renderer sends no path and names no channel. */
+export interface AppPreferencesBridge {
+  get(): Promise<AppPreferences>;
+  /** Applies a valid patch and answers the state read back afterwards; an invalid patch changes nothing and answers the current state. */
+  set(patch: AppPreferencesPatch): Promise<AppPreferences>;
+  /** Opens the main process's own resolved data folder in Finder (it takes no path); `false` if it could not be opened. */
+  revealDataDir(): Promise<boolean>;
 }
