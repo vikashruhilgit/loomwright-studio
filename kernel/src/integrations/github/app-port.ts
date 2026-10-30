@@ -40,6 +40,7 @@ import {
   GITHUB_APP_KEY_SERVICE,
   GITHUB_APP_SLUG_SERVICE,
   encodeAppKey,
+  createGitHubAppTokens,
   githubAppTokens,
 } from "./app-token.js";
 import type { GitHubAppTokens } from "./app-token.js";
@@ -66,7 +67,7 @@ export interface GitHubAppPortDeps {
   readonly writer?: KeychainWriter;
   /** Default: `securityCliKeychainDeleter()`. */
   readonly deleter?: KeychainDeleter;
-  /** The installation-token holder. Default: `githubAppTokens`, the process-wide one (it reads the real Keychain on its own). */
+  /** The installation-token holder. Default: `githubAppTokens`, the process-wide one (it reads the real Keychain on its own); with `keychain` given, a holder over that reader. */
   readonly tokens?: GitHubAppTokens;
   /** The client the installed repos are read through, over the credential `tokenProvider` picks. Default: `createGitHubClient`. */
   readonly clientFor?: (tokenProvider: GitHubTokenProviderResolver) => GitHubClient;
@@ -136,7 +137,9 @@ export function createGitHubAppPort(deps: GitHubAppPortDeps = {}): GitHubAppPort
   let reader: KeychainReader | undefined = deps.keychain;
   let writer: KeychainWriter | undefined = deps.writer;
   let deleter: KeychainDeleter | undefined = deps.deleter;
-  const tokens = deps.tokens ?? githubAppTokens;
+  // An injected Keychain gets its own holder (as `createResolvingGitHubClient` does): the
+  // process-wide one reads the real Keychain, which a caller that injected one never meant.
+  const tokens = deps.tokens ?? (deps.keychain !== undefined ? createGitHubAppTokens({ keychain: deps.keychain }) : githubAppTokens);
   const keychain = (): KeychainReader => (reader ??= securityCliKeychain());
   const clientFor = deps.clientFor ?? ((tokenProvider: GitHubTokenProviderResolver): GitHubClient => createGitHubClient({ tokenProvider }));
 

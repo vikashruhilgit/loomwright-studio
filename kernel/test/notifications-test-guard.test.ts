@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
+import { SECURITY_BIN, securityCliKeychain, securityCliKeychainDeleter, securityCliKeychainWriter } from "../src/auth/keychain.js";
 import { startKernel } from "../src/kernel.js";
 import type { Kernel } from "../src/kernel.js";
 import { OSASCRIPT_PATH, TERMINAL_NOTIFIER_PATHS, getNotification, postNotification, recordNotification, spawnNotifier } from "../src/notifications/index.js";
@@ -64,7 +65,7 @@ describe.skipIf(!notifierGuardInstalled())("the notifier guard (STUDIO_LIVE unse
 
     // What the setup's afterEach does with a refusal: throw, naming the binary (and clear).
     expect(() => childProcess.spawn(OSASCRIPT_PATH)).toThrow(REFUSED);
-    expect(() => assertNoNotifierRefusals()).toThrow(/a real notifier was refused in this test: .*osascript/);
+    expect(() => assertNoNotifierRefusals()).toThrow(/a real notifier or Keychain was refused in this test: .*osascript/);
     expect(takeNotifierRefusals()).toEqual([]);
   });
 
@@ -86,6 +87,13 @@ describe.skipIf(!notifierGuardInstalled())("the notifier guard (STUDIO_LIVE unse
     expect(r.status).toBe(0);
     expect(r.stdout).toBe("osascript\n");
     expect(takeNotifierRefusals()).toEqual([]);
+  });
+
+  it("(a2) refuses the shipped Keychain reader, writer and deleter before /usr/bin/security runs, and records each", () => {
+    expect(() => securityCliKeychain().read("loomwright-studio-guard-probe")).toThrow();
+    expect(() => securityCliKeychainWriter().add("loomwright-studio-guard-probe", "loomwright-studio", "value")).toThrow();
+    expect(() => securityCliKeychainDeleter().delete("loomwright-studio-guard-probe")).toThrow();
+    expect(takeNotifierRefusals()).toEqual([{ file: SECURITY_BIN }, { file: SECURITY_BIN }, { file: SECURITY_BIN }]);
   });
 
   it.runIf(process.platform === "darwin")("(b) a kernel on the shipped contributions settles a notification failed with the guard's error, and nothing is posted", async () => {
@@ -183,6 +191,19 @@ describe("the notifier guard on a stand-in child_process", () => {
     await expect(promised(execFile)("/bin/echo", [])).resolves.toBe("out");
     expect([...cp.calls, ...cp.promisedCalls]).toEqual(["/bin/echo", "/bin/echo"]);
     expect(takeNotifierRefusals()).toEqual([]);
+  });
+
+  it.each(["self", "node"] as const)("(h) refuses the real Keychain (%s) by path and by name, through both forms", async (shape) => {
+    const cp = standIn(shape);
+    guard.guardChildProcess(cp.record);
+    const execFile = cp.record.execFile as Fn;
+
+    expect(() => execFile(SECURITY_BIN, ["find-generic-password", "-s", "x", "-w"])).toThrow(`real Keychain refused in a test run: ${SECURITY_BIN} (`);
+    expect(() => execFile("security", ["-i"])).toThrow("real Keychain refused in a test run: security (");
+    await expect(Promise.resolve().then(() => promised(execFile)(SECURITY_BIN, []))).rejects.toThrow("real Keychain refused in a test run: ");
+    expect(takeNotifierRefusals()).toEqual([{ file: SECURITY_BIN }, { file: "security" }, { file: SECURITY_BIN }]);
+    expect(cp.calls).toEqual([]);
+    expect(cp.promisedCalls).toEqual([]);
   });
 
   it("(g) applied twice (and installed again on the real module) is a no-op: each call is guarded once", async () => {
