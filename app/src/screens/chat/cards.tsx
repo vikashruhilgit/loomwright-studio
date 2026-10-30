@@ -7,7 +7,7 @@ import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import type { Approval, PlaybookListing, StudioBridge, Trigger } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
 import { EventCard } from "../../components/EventCard/EventCard";
-import { POLICY_FIELDS, PolicyEditor, policyRows, provenance } from "../../components/PlaybookPolicy/PlaybookPolicy";
+import { POLICY_FIELDS, PolicyEditor, modePolicyRow, policyRows, provenance } from "../../components/PlaybookPolicy/PlaybookPolicy";
 import type { PolicyField } from "../../components/PlaybookPolicy/PlaybookPolicy";
 import type { ResourceName } from "../../store/resources";
 import { approvalLink, approvalSourceText } from "../approvals/subject";
@@ -331,8 +331,9 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
             </dd>
           </Fragment>
         ))}
-        {/* `mode` (READ_ONLY_POLICY_FIELDS): only `draft` is accepted in phase 6, so it is shown, not edited. */}
-        <Field label="Mode" value={playbook.mode} setBy={playbook.mode_set_by} />
+        {/* `mode` (READ_ONLY_POLICY_FIELDS): only `draft` is accepted in phase 6, so it is shown, not edited.
+            The kernel's default `draft` has no `mode_set_by`, so it reads "not set" (invariant 1). */}
+        <Field label="Mode" value={modePolicyRow(playbook).shown} setBy={playbook.mode_set_by} />
         {/* Not owner-settable (`PLAYBOOK_POLICY_FIELDS` has no such field): read-only. */}
         <Field label="API-key fallback" value={playbook.api_key_fallback_json ?? "not set"} setBy={playbook.api_key_fallback_set_by} mono />
       </dl>
