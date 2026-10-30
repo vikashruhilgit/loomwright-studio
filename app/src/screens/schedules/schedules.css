@@ -1,0 +1,536 @@
+/* Schedules & triggers (phase 7 item 05): docs/design/mockups/gui-v2.html (`schedulesScreen`, and the
+   "Timeline (Schedules)" block of its style) on the tokens. Colour comes only from tokens.css custom properties.
+   Focus keeps the shell's ring (`:focus-visible` in app.css): nothing here removes it.
+   Row heights are fixed (a line of text clips with an ellipsis), so a refetch that changes a name,
+   a count or a time changes text inside a row and moves nothing. */
+
+.schedules {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.schedules-tbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  min-height: calc(var(--control-height) + var(--space-2));
+  padding: 0 var(--space-5);
+}
+.schedules-spacer {
+  flex: 1 1 auto;
+}
+.schedules-cap {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+  font-variant-numeric: tabular-nums;
+}
+.schedules-tn {
+  font-variant-numeric: tabular-nums;
+}
+.schedules-mono {
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+.schedules-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.schedules-clip {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schedules-glyph {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.schedules-label {
+  margin: 0;
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.schedules-title {
+  margin: 0;
+  font-size: var(--type-title-1-size);
+  line-height: var(--type-title-1-line);
+  font-weight: var(--type-title-1-weight);
+  letter-spacing: var(--type-title-1-tracking);
+}
+
+/* The window has no bridge (the shell rendered without a preload). */
+.schedules-state {
+  padding: var(--space-12) var(--space-6);
+  max-width: 640px;
+}
+.schedules-state-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--type-display-size);
+  line-height: var(--type-display-line);
+  font-weight: var(--type-display-weight);
+  letter-spacing: var(--type-display-tracking);
+}
+.schedules-state-note {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+
+/* Notices: a read failed while the screen still holds data, or a history could not load. */
+.schedules-notice {
+  margin: 0 var(--space-5) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+}
+.schedules-notice[data-tone="danger"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.schedules-pane .schedules-notice {
+  margin: 0;
+}
+
+/* The split: the list pane, then the detail pane. Both keep their size through a refetch. */
+.schedules-split {
+  display: grid;
+  grid-template-columns: var(--list-pane-width) minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+  border-top: 1px solid var(--hairline);
+}
+.schedules-list {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--hairline);
+}
+.schedules-lsec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: var(--space-3);
+}
+.schedules-lsec + .schedules-lsec {
+  border-top: 1px solid var(--hairline);
+}
+.schedules-lsec > .schedules-label {
+  padding: var(--space-3) var(--space-3) var(--space-1);
+}
+.schedules-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.schedules-pad {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+  padding: var(--space-5) var(--space-6);
+}
+.schedules-lsec > p.schedules-pad {
+  padding: var(--space-1) var(--space-3);
+}
+
+/* Upcoming: the timeline. */
+.schedules-tl {
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--space-2);
+}
+.schedules-tl li {
+  display: grid;
+  grid-template-columns: 52px 20px minmax(0, 1fr);
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+}
+.schedules-tl time {
+  padding-top: var(--space-2);
+  color: var(--ink-secondary);
+  text-align: right;
+}
+.schedules-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.schedules-rail::after {
+  content: "";
+  flex: 1;
+  width: 1px;
+  margin-top: var(--space-1);
+  background: var(--hairline);
+}
+.schedules-tl li:last-child .schedules-rail::after {
+  display: none;
+}
+.schedules-pip {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-top: var(--space-1);
+  border-radius: var(--radius-full);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.schedules-item {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  height: calc(var(--type-body-line) + var(--type-caption-line) + var(--space-4) + 2px);
+  padding: 0 var(--space-3);
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+/* Triggers: the list with its switches. */
+.schedules-box {
+  list-style: none;
+  margin: var(--space-1) var(--space-2) 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.schedules-box > li {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: var(--space-12);
+  padding: 0 var(--space-3);
+}
+.schedules-box > li + li {
+  border-top: 1px solid var(--hairline);
+}
+.schedules-box > li[data-selected="true"] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.schedules-box > li > .schedules-glyph {
+  color: var(--ink-tertiary);
+}
+.schedules-ttext {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+.schedules-select {
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-weight: var(--type-body-strong-weight);
+  text-align: left;
+  cursor: pointer;
+}
+.schedules-select:hover {
+  color: var(--accent);
+}
+.schedules-box > li[data-selected="true"] .schedules-cap {
+  color: var(--ink-secondary);
+}
+.schedules-cap[data-tone="danger"] {
+  color: var(--danger);
+}
+.schedules-box > li[data-selected="true"] .schedules-cap[data-tone="danger"] {
+  color: var(--danger);
+}
+
+/* The on/off switch (role="switch"). */
+.schedules-sw {
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--border);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.schedules-sw::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+.schedules-sw[aria-checked="true"] {
+  background: var(--accent);
+}
+.schedules-sw[aria-checked="true"]::after {
+  transform: translateX(14px);
+  background: var(--on-accent);
+}
+.schedules-sw[aria-busy="true"] {
+  cursor: progress;
+}
+.schedules-sw:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The open trigger. */
+.schedules-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.schedules-dhead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+}
+.schedules-dhead .schedules-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schedules-kv {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+}
+.schedules-kv dt {
+  color: var(--ink-tertiary);
+}
+.schedules-kv dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* The firing history. */
+.schedules-sec {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.schedules-sec > p {
+  margin: 0;
+}
+.schedules-sech {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height);
+}
+.schedules-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.schedules-chip {
+  height: var(--row-height);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--ink-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.schedules-chip:hover {
+  border-color: var(--border);
+  color: var(--ink);
+}
+.schedules-chip[aria-pressed="true"] {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+.schedules-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.schedules-c1 {
+  width: 96px;
+}
+.schedules-c3 {
+  width: 176px;
+}
+.schedules-table th {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--hairline);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-align: left;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.schedules-fire {
+  height: 64px;
+}
+.schedules-fire:focus-visible {
+  outline-offset: -2px;
+}
+.schedules-fire td {
+  box-sizing: border-box;
+  padding: var(--space-2);
+  overflow: hidden;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: top;
+}
+.schedules-fire td b {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schedules-fire:hover td {
+  background: var(--surface);
+}
+.schedules-result {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.schedules-count {
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.schedules-reason {
+  color: var(--ink-secondary);
+}
+.schedules-link {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: var(--radius-xs);
+  color: var(--accent);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.schedules-more {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-height);
+}
+
+/* Empty, unknown, the route failure and the loading skeleton. */
+.schedules-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-12) var(--space-6);
+  text-align: center;
+}
+.schedules-empty p {
+  max-width: 65ch;
+  margin: 0 0 var(--space-2);
+  color: var(--ink-secondary);
+}
+.schedules-fail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 480px;
+  margin: var(--space-6) auto;
+  padding: var(--space-5);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.schedules-fail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--danger);
+}
+.schedules-fail p {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.schedules-fail-detail {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+.schedules-skels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+.schedules-skel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.schedules-skel i {
+  display: block;
+  height: 10px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+}
+.schedules-skel i:nth-child(2) {
+  width: 70%;
+}
+.schedules-skel i:nth-child(3) {
+  width: 40%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .schedules-sw,
+  .schedules-sw::after {
+    transition-duration: 0s;
+  }
+}
