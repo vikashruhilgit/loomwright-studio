@@ -71,3 +71,9 @@ kernel/src/gui/playbook-history.ts
 kernel/test/gui-playbook-history.test.ts
 app/src/screens/playbooks
 app/e2e/playbooks.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-30T16:05:25Z
+- **Brief:** .supervisor/jobs/done/2026-10-30-the-playbooks-screen.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/182
