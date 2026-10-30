@@ -15,8 +15,8 @@
 //      served, and never counted as existing.
 //   3. The contract's `SessionOutputKind` union carries exactly the values of
 //      `SESSION_OUTPUT_KINDS` (`kernel/src/console/output.ts`).
-//   4. The playbook card's `POLICY_FIELDS` and `READ_ONLY_POLICY_FIELDS`
-//      (`app/src/screens/chat/cards.tsx`, also read as text) are together exactly
+//   4. The shared playbook policy editor's `POLICY_FIELDS` and `READ_ONLY_POLICY_FIELDS`
+//      (`app/src/components/PlaybookPolicy/PlaybookPolicy.tsx`, also read as text) are together exactly
 //      `PLAYBOOK_POLICY_FIELDS` (`kernel/src/playbooks/store.ts`), in order.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -26,7 +26,7 @@ import { PHASE1_RESERVED, PHASE1_ROUTES, SHIPPED_CONTRIBUTIONS, mergeContributio
 import { PLAYBOOK_POLICY_FIELDS } from "../src/playbooks/store.js";
 
 const CONTRACT = new URL("../../app/src/api/contract.ts", import.meta.url);
-const PLAYBOOK_CARDS = new URL("../../app/src/screens/chat/cards.tsx", import.meta.url);
+const PLAYBOOK_CARDS = new URL("../../app/src/components/PlaybookPolicy/PlaybookPolicy.tsx", import.meta.url);
 
 interface ContractEntry {
   readonly method: string;
@@ -237,7 +237,7 @@ function constStringList(text: string, name: string): string[] {
     });
 }
 
-describe("the playbook card's policy fields (app/src/screens/chat/cards.tsx, read as text)", () => {
+describe("the shared policy editor's fields (app/src/components/PlaybookPolicy/PlaybookPolicy.tsx, read as text)", () => {
   it("POLICY_FIELDS then READ_ONLY_POLICY_FIELDS are exactly the kernel's PLAYBOOK_POLICY_FIELDS, in order", () => {
     const cards = readFileSync(PLAYBOOK_CARDS, "utf8");
     const edited = constStringList(cards, "POLICY_FIELDS");

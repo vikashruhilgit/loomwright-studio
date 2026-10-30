@@ -41,6 +41,14 @@ describe("the gui feature (phase 7 foundation)", () => {
     expect(Object.isFrozen(guiContribution)).toBe(true);
   });
 
+  it("holds exactly two GET routes in the playbook-history part (item 04), neither unauthenticated", () => {
+    const part = GUI_PARTS.find((p) => p.name === "playbook-history");
+    expect(part?.routes.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /playbooks/:id/runs", "GET /playbooks/:id/versions"]);
+    expect(part?.routes.some((r) => r.unauthenticated === true)).toBe(false);
+    expect(part?.tools).toEqual([]);
+    expect(part?.handlers).toEqual({});
+  });
+
   it("serves no gui route unauthenticated: every gui route is an owner route that needs the API token", () => {
     const routes = GUI_PARTS.flatMap((p) => p.routes);
     expect(routes.filter((r) => r.unauthenticated === true).map((r) => `${r.method} ${r.path}`)).toEqual([]);
