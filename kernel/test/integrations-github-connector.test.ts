@@ -852,6 +852,19 @@ describe("the four routes (AC11)", () => {
     expect(rowNow()).toEqual(before);
   });
 
+  it("given only a Keychain (no token holder), the connector reads the App's items through its own holder over it, never the process-wide one", async () => {
+    // Regression: the default holder was the process-wide one, which reads the real Keychain, even with a reader injected.
+    const c = createGitHubConnector({ keychain, writer: keychain, deleter: keychain, clientFor: () => new FakeGitHubClient(GITHUB[GOOD] ?? {}) });
+    await call(c, "POST", "/connectors/github/token", { token: GOOD });
+    keychain.items.delete(GITHUB_KEYCHAIN_SERVICE);
+    keychain.items.set(GITHUB_APP_INSTALLATION_SERVICE, { account: GITHUB_KEYCHAIN_ACCOUNT, secret: "7" });
+    keychain.items.set(GITHUB_APP_KEY_SERVICE, { account: GITHUB_KEYCHAIN_ACCOUNT, secret: "LS0tLS1CRUdJTg" });
+    keychain.calls.length = 0;
+    expect(await call(c, "GET", "/connectors/github/repos", undefined, { refresh: "1" })).toMatchObject({ status: 200 });
+    expect(keychain.calls).toContain(`read ${GITHUB_APP_INSTALLATION_SERVICE}`);
+    expect(keychain.calls).toContain(`read ${GITHUB_APP_KEY_SERVICE}`);
+  });
+
   it("a refusal after the token expired sets rejected (no token in use); the expiry check then leaves the row alone", async () => {
     const c = connector();
     await call(c, "POST", "/connectors/github/token", { token: GOOD });

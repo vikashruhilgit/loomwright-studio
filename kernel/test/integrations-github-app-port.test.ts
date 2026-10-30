@@ -12,7 +12,7 @@
 // result, row, event, notification and Keychain call.
 import { generateKeyPairSync } from "node:crypto";
 import { inspect } from "node:util";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KeychainDeleter, KeychainReader, KeychainWriter } from "../src/auth/keychain.js";
 import { daemonKernelDeps } from "../src/daemon-deps.js";
 import {
@@ -393,6 +393,29 @@ describe("recordInstallation (AC1)", () => {
     w.repos = ["owner-one/only-one"];
     ok(await w.port.recordInstallation(store(), INSTALLATION, w.env.now));
     expect(listConnectors(store())[0]?.reachable_repos).toEqual(["owner-one/only-one"]);
+  });
+});
+
+describe("the port's default token holder", () => {
+  it("given only a Keychain (no token holder), the port mints through its own holder over that Keychain, never the process-wide one", async () => {
+    // Regression: the default holder was the process-wide one, which reads the real Keychain, even with a reader injected.
+    // A holder built from `keychain` alone takes the global fetch, so the fake GitHub stands in for it here.
+    vi.stubGlobal("fetch", w.fetch);
+    try {
+      const port = createGitHubAppPort({
+        keychain: w.keychain,
+        writer: w.keychain,
+        deleter: w.keychain,
+        clientFor: (tokenProvider) => createGitHubClient({ tokenProvider, fetch: w.fetch, now: w.env.now }),
+      });
+      ok(await port.storeApp(store(), CONVERSION, PEM, w.env.now));
+      const row = ok(await port.recordInstallation(store(), INSTALLATION, w.env.now));
+      expect(row).toMatchObject({ status: "connected", method: "app", installation_id: INSTALLATION });
+      expect(w.issued.length).toBeGreaterThanOrEqual(1);
+      expect(w.calls.some((c) => c.method === "POST" && c.path === `/app/installations/${INSTALLATION}/access_tokens`)).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
