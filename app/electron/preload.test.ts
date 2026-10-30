@@ -48,7 +48,7 @@ describe("the preload bridge", () => {
 
   it("holds only the bridge's methods: nothing that is ipcRenderer, a Node API or a secret", () => {
     const api = bridge();
-    expect(Object.keys(api).sort()).toEqual(["connection", "feed", "onNavigate", "request"]);
+    expect(Object.keys(api).sort()).toEqual(["connection", "feed", "onNavigate", "openExternal", "request"]);
     expect(Object.keys(api.feed as object).sort()).toEqual(["onFrame", "subscribe", "unsubscribe"]);
     for (const value of [...Object.values(api), ...Object.values(api.feed as object)]) {
       if (value !== api.feed) expect(typeof value).toBe("function");
@@ -61,17 +61,20 @@ describe("the preload bridge", () => {
       connection(): Promise<unknown>;
       request(r: unknown): Promise<unknown>;
       feed: { subscribe(after: number): Promise<unknown>; unsubscribe(): Promise<unknown> };
+      openExternal(url: string): Promise<unknown>;
     };
     const request = { method: "GET", path: "/status" };
     await api.connection();
     await api.request(request);
     await api.feed.subscribe(7);
     await api.feed.unsubscribe();
+    await api.openExternal("https://github.com/settings/installations");
     expect(electron.invoked).toEqual([
       { channel: "studio:connection", args: [] },
       { channel: "studio:request", args: [request] },
       { channel: "studio:feed:subscribe", args: [7] },
       { channel: "studio:feed:unsubscribe", args: [] },
+      { channel: "studio:open-external", args: ["https://github.com/settings/installations"] },
     ]);
   });
 

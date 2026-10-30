@@ -66,3 +66,26 @@ An attempt is `connection()` (the main process's `api.json`, pid, token and `GET
 - `not_installed`: in place of the screen, the setup steps (`SETUP_STEPS`) the owner runs in his own terminal, `claude setup-token`, `security add-generic-password -a loomwright-studio -s loomwright-studio-oauth -w` and `studio service install`, and the `api.json` path it looked for.
 
 **Tests:** `app/src/store/store.test.ts` (routing and throttling, dedupe, resume and the id-space check, connection states and backoff, honest data, failure paths, dispose) and `app/src/store/connection.test.tsx` (the shell's states and the hooks) run on the scriptable bridge in `app/src/store/fake-bridge.ts`. `app/e2e/store.spec.ts` runs the store against the fixture kernel through the real kernel connection (refetch and throttle, resume across a restart) and launches the app to see the reconnecting band come and go (`npm run build` first).
+
+## The open-external channel
+
+The window can't open the system browser itself: `lockDown` (`app/electron/main.ts`) denies every new window and every navigation, and that stays. The one way out is the `studio:open-external` IPC channel, reached as `window.api.openExternal(url)` (an optional member of `StudioBridge`; a caller treats a missing method as `false`). It answers a boolean and nothing else: `true` once `shell.openExternal` accepted the address, `false` for everything else. The renderer is given no channel name, no `ipcRenderer` and no Node API.
+
+The main process's handler, in order:
+
+1. refuses a caller that is not its own window (`throw new Error("refused")`, like every other handler);
+2. answers `false` for an argument that is not a string;
+3. answers `false` unless the kernel is `connected` right now (the kernel's start page is only valid on the port the kernel has now, read from `kernel.connection()` at call time, never cached);
+4. answers `false` unless `isAllowedExternal(url, port)` says yes, and then opens the address. The renderer's address is re-checked here and never trusted. A failure to open also answers `false` and logs a reason with no address in it, because the setup `state` is in the query.
+
+`isAllowedExternal` (`app/electron/open-external.ts`) is a pure function. It allows exactly three forms:
+
+| Form | Rule |
+|---|---|
+| The kernel's GitHub App start page | `http://127.0.0.1:<the kernel's current port>/connectors/github/app/start?state=<state>`: host `API_HOST`, that port, that path, and a query of `state` alone (one non-empty value) |
+| The installations page | `https://github.com/settings/installations` |
+| One App's page | `https://github.com/settings/apps/<slug>`, where `<slug>` matches `^[a-z0-9][a-z0-9-]*$` |
+
+Anything else is refused: another host or port, `localhost` for `127.0.0.1`, `https:` on the loopback host, `http:` on `github.com`, another path or a path prefix, any other query, userinfo, a fragment (even an empty one), `javascript:`, `file:`, `data:`, the bare `https://github.com/settings/apps`, and a slug with `/`, `..`, `%2F` or any escape. The address must also be exactly what the URL parser would write back, so a spelling it would rewrite (a case change, a stripped default port, a resolved `..`, a dropped tab or newline) is refused, never normalised into an allowed address.
+
+**Tests:** `app/electron/open-external.test.ts` (the allowlist, one case per off-list form), `app/electron/main.test.ts` ("the open-external channel": the caller check, a non-string argument, a kernel that is not connected, the port read at call time, a failed open) and `app/electron/preload.test.ts` (the method forwards over `studio:open-external` and the bridge's key list). `app/e2e/smoke.spec.ts` pins the built preload's key list.
