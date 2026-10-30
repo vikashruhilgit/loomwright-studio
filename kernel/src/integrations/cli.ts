@@ -2,9 +2,9 @@
 // in `github/routes.ts`.
 //
 //   studio connectors [--json]                every connector, one line each (or the API's JSON)
-//   studio connectors github status [--json]  the GitHub connector in full: account, permissions, expiry, repos
+//   studio connectors github status [--json]  the GitHub connector in full: method, account, permissions and their source, expiry, repos
 //   studio connectors github set              read the token from stdin (then the owner's declaration), then POST /connectors/github/token
-//   studio connectors github disconnect       POST /connectors/github/disconnect
+//   studio connectors github disconnect       POST /connectors/github/disconnect (deletes the token's and the GitHub App's Keychain items)
 //
 // The token is read ONLY from stdin: piped, or typed at a terminal with echo
 // off. `set` with any argument exits 2 before the kernel is contacted, and
@@ -189,6 +189,9 @@ interface ConnectorLike {
   readonly verified_at?: unknown;
   readonly permissions_source?: unknown;
   readonly permissions_declared_at?: unknown;
+  readonly method?: unknown;
+  readonly app_slug?: unknown;
+  readonly installation_id?: unknown;
 }
 
 /** A value from the API as one safe terminal token. */
@@ -219,14 +222,27 @@ export function formatConnectors(connectors: readonly ConnectorLike[]): string {
     .join("");
 }
 
+/** How it is connected: `token`, or `app` with the App's slug and installation (a row from before the App reads `token`). */
+function methodText(c: ConnectorLike): string {
+  if (c.method !== "app") return "token";
+  return `app (${text(c.app_slug)}, installation ${text(c.installation_id)})`;
+}
+
+/** Who vouched for the permissions: GitHub (`reported`) or the owner (`declared`); `-` when neither did. */
+function permissionsSourceText(c: ConnectorLike): string {
+  return c.permissions_source === "reported" || c.permissions_source === "declared" ? c.permissions_source : "-";
+}
+
 /** The GitHub connector in full, or a line saying there is none. */
 export function formatGitHubStatus(c: ConnectorLike | undefined): string {
   if (c === undefined) return "github: not connected (studio connectors github set connects it)\n";
   const repos = reposOf(c);
   return [
     `github: ${text(c.status)}`,
+    `  method: ${methodText(c)}`,
     `  account: ${text(c.account_login)}`,
     `  permissions: ${permissionsText(c)}`,
+    `  permissions source: ${permissionsSourceText(c)}`,
     `  expires: ${text(c.expires_at)}`,
     `  verified: ${text(c.verified_at)}`,
     `  reachable repos (${repos.length}): ${repos.length === 0 ? "-" : repos.map(shown).join(", ")}`,
@@ -312,7 +328,7 @@ export function connectorsSubcommand(deps: ConnectorsSubcommandDeps = {}): Contr
         return 0;
       }
       if (command.kind === "disconnect") {
-        return change("/connectors/github/disconnect", undefined, client, out, () => "studio: GitHub disconnected: the Keychain item is deleted and the connector row is kept\n", "GitHub not disconnected");
+        return change("/connectors/github/disconnect", undefined, client, out, () => "studio: GitHub disconnected: the Keychain items (the token's and the GitHub App's) are deleted and the connector row is kept\n", "GitHub not disconnected");
       }
       const secret = await readSecret();
       if (!secret.ok) {

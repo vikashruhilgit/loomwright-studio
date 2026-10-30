@@ -27,7 +27,7 @@ import {
   toolsForConnectors,
 } from "../src/integrations/index.js";
 import type { GitHubClient, GitHubPull, IntegrationsPart } from "../src/integrations/index.js";
-import { githubExpiryDueWork } from "../src/integrations/github/connector.js";
+import { checkGitHubAppMint, githubExpiryDueWork } from "../src/integrations/github/connector.js";
 import { DB_FILENAME, Store, migrations } from "../src/store/index.js";
 import type { Migration } from "../src/store/index.js";
 import { startKernel } from "../src/kernel.js";
@@ -43,6 +43,7 @@ import type { ToolPolicy } from "../src/sessions/types.js";
 import { checkAfterMigrating, checkBeforeMigrating } from "../src/store/integrity.js";
 import { phase6Foundation } from "../src/store/migrations/017_phase_6_foundation.js";
 import { connectorPermissionsSource } from "../src/store/migrations/018_connector_permissions_source.js";
+import { connectorApp } from "../src/store/migrations/019_connector_app.js";
 import { contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolContext, KernelToolResult } from "../src/tools/server.js";
 import { TRIGGER_KINDS, TriggerError, registerTrigger, triggersContribution, updateTriggerSpec } from "../src/triggers/index.js";
@@ -169,7 +170,7 @@ describe("the integrations feature (AC2)", () => {
     expect(connector?.routes).toEqual([]);
     expect(connector?.handlers).toEqual({});
     expect(connector?.subcommands?.map((s) => [s.name, s.help])).toEqual([[CONNECTORS_SUBCOMMAND, CONNECTORS_HELP]]);
-    expect(connector?.dueWork).toEqual([githubExpiryDueWork]);
+    expect(connector?.dueWork).toEqual([githubExpiryDueWork, checkGitHubAppMint]);
     expect(routes?.name).toBe("github-routes");
     expect(routes?.tools).toEqual([]);
     expect(routes?.handlers).toEqual({});
@@ -194,7 +195,7 @@ describe("the integrations feature (AC2)", () => {
     expect(Object.isFrozen(drafts)).toBe(true);
   });
 
-  it("contributes the github parts and the drafts routes: the four GitHub PR tools, six token/drafts routes plus the App's routes under /connectors/github/app/, one subcommand and one due work, no handlers", () => {
+  it("contributes the github parts and the drafts routes: the four GitHub PR tools, six token/drafts routes plus the App's routes under /connectors/github/app/, one subcommand and two due works (the expiry check, then the App's mint check), no handlers", () => {
     expect(Object.keys(integrationsContribution).sort()).toEqual(["dueWork", "name", "routes", "subcommands", "tools"]);
     expect(Object.isFrozen(integrationsContribution)).toBe(true);
     const merged = mergeContributions([integrationsContribution]);
@@ -217,7 +218,10 @@ describe("the integrations feature (AC2)", () => {
       expect.arrayContaining(["POST /connectors/github/app/setup", "POST /connectors/github/app/setup/cancel"]),
     );
     expect(merged.subcommands.map((s) => s.name)).toEqual(["connectors"]);
-    expect(merged.dueWork).toEqual([{ owner: "integrations", run: githubExpiryDueWork }]);
+    expect(merged.dueWork).toEqual([
+      { owner: "integrations", run: githubExpiryDueWork },
+      { owner: "integrations", run: checkGitHubAppMint },
+    ]);
   });
 
   it("a filled part's tool reaches the contribution under the integrations name, with its connector flag (the merge a later item relies on)", () => {
@@ -286,17 +290,19 @@ describe("toolsForConnectors", () => {
 describe("migration 17: phase_6_foundation (AC1)", () => {
   const V16 = migrations.slice(0, 16);
 
-  it("is version 17, and migration 18 (connector_permissions_source, its own tests in integrations-github-declared.test.ts) is the last migration", () => {
+  it("is version 17, and migration 18 (connector_permissions_source, its own tests in integrations-github-declared.test.ts) and 19 (connector_app, in integrations-github-app-migration.test.ts) sit above it, 19 last", () => {
     expect(migrations.at(16)).toBe(phase6Foundation);
     expect([phase6Foundation.version, phase6Foundation.name]).toEqual([17, "phase_6_foundation"]);
-    expect(migrations.at(-1)).toBe(connectorPermissionsSource);
+    expect(migrations.at(-2)).toBe(connectorPermissionsSource);
     expect([connectorPermissionsSource.version, connectorPermissionsSource.name]).toEqual([18, "connector_permissions_source"]);
+    expect(migrations.at(-1)).toBe(connectorApp);
+    expect([connectorApp.version, connectorApp.name]).toEqual([19, "connector_app"]);
   });
 
   it("on a fresh store creates connectors and draft_outputs with exactly their columns, and adds playbooks.mode / mode_set_by and playbook_runs.item_ref / item_revision", () => {
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([18, "connector_permissions_source"]);
-    // Migration 17's columns, then the two migration 18 adds at the end.
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([19, "connector_app"]);
+    // Migration 17's columns, then the two migration 18 adds, then the three migration 19 adds at the end.
     expect(columnsOf(store, "connectors")).toEqual([
       "id",
       "kind",
@@ -310,6 +316,9 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
       "updated_at",
       "permissions_source",
       "permissions_declared_at",
+      "method",
+      "app_slug",
+      "installation_id",
     ]);
     expect(columnsOf(store, "draft_outputs")).toEqual(["id", "session", "agent", "playbook", "playbook_run", "item_ref", "tool", "payload_json", "created_at"]);
     expect(columnsOf(store, "playbooks").slice(-2)).toEqual(["mode", "mode_set_by"]);
@@ -369,7 +378,7 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     expect(before.tables).not.toContain("draft_outputs");
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([18, "connector_permissions_source"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([19, "connector_app"]);
     expect(store.prepare("SELECT mode, mode_set_by FROM playbooks WHERE id = 1").get()).toEqual({ mode: "draft", mode_set_by: null });
     expect(store.prepare("SELECT item_ref, item_revision FROM playbook_runs WHERE id = 1").get()).toEqual({ item_ref: null, item_revision: null });
     store.close();
@@ -396,7 +405,7 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     });
   });
 
-  it("is safe to re-run: with its record deleted (and 18's, which sits above it), migration 17 runs again as a no-op and every row and object stays", () => {
+  it("is safe to re-run: with its record deleted (and 18's and 19's, which sit above it), migration 17 runs again as a no-op and every row and object stays", () => {
     const first = open();
     first.prepare("INSERT INTO playbooks (slug, name, owning_agent, intent, mode, mode_set_by) VALUES ('review', 'Review', 'wright', 'review PRs', 'draft', 'owner')").run();
     first.prepare("INSERT INTO sessions (agent, status, playbook, playbook_version) VALUES ('mason', 'completed', 1, 1)").run();
@@ -412,11 +421,11 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     const before = snap();
 
     const db = new Database(join(tmp, DB_FILENAME));
-    // Deleting 17 alone would leave 18 above a gap: 17 and 18 re-run together.
+    // Deleting 17 alone would leave 18 and 19 above a gap: 17, 18 and 19 re-run together.
     db.exec("DELETE FROM schema_migrations WHERE version >= 17");
     db.close();
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([18, "connector_permissions_source"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([19, "connector_app"]);
     rerun.close();
     expect(snap()).toEqual(before);
   });

@@ -19,11 +19,12 @@ import type { ApiServer } from "../src/api/index.js";
 import { runCli } from "../src/cli/index.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { CliApiClient, ContributedRoute, ContributedRouteResponse, FeatureContribution } from "../src/features/index.js";
-import { CONNECTORS_HELP, connectorsSubcommand } from "../src/integrations/cli.js";
+import { CONNECTORS_HELP, connectorsSubcommand, formatGitHubStatus } from "../src/integrations/cli.js";
 import type { SecretRead } from "../src/integrations/cli.js";
 import { GITHUB_KEYCHAIN_SERVICE, createGitHubClient } from "../src/integrations/github/client.js";
 import {
   GITHUB_KEYCHAIN_ACCOUNT,
+  checkGitHubAppMint,
   checkGitHubExpiry,
   createGitHubConnector,
   githubConnectorPart,
@@ -179,7 +180,23 @@ function rowNow(): Record<string, unknown> | undefined {
   return env.store.prepare("SELECT * FROM connectors WHERE kind = 'github'").get() as Record<string, unknown> | undefined;
 }
 
-const CONNECTOR_KEYS = ["account_login", "created_at", "expires_at", "id", "kind", "permissions", "permissions_declared_at", "permissions_source", "reachable_repos", "status", "updated_at", "verified_at"];
+const CONNECTOR_KEYS = [
+  "account_login",
+  "app_slug",
+  "created_at",
+  "expires_at",
+  "id",
+  "installation_id",
+  "kind",
+  "method",
+  "permissions",
+  "permissions_declared_at",
+  "permissions_source",
+  "reachable_repos",
+  "status",
+  "updated_at",
+  "verified_at",
+];
 
 // ---------------------------------------------------------------------------
 // AC1: set a valid read-only token (route)
@@ -223,6 +240,29 @@ describe("set a valid read-only token through POST /connectors/github/token (AC1
 // ---------------------------------------------------------------------------
 // AC2-AC4: the three refusals, with and without a good token in place
 // ---------------------------------------------------------------------------
+
+describe("a token set is the token method (GitHub App tokens, AC5)", () => {
+  it("writes method token and nulls the App fields, leaving the Keychain calls as they were", async () => {
+    const c = connector();
+    await call(c, "POST", "/connectors/github/token", { token: GOOD });
+    // A row the App had claimed (as the port's `storeApp` or `recordInstallation` leaves it).
+    env.store.prepare("UPDATE connectors SET method = 'app', app_slug = 'studio-reader', installation_id = 4242").run();
+    keychain.calls.length = 0;
+    const res = await call(c, "POST", "/connectors/github/token", { token: GOOD2 });
+    expect(res.status).toBe(200);
+    expect(keychain.calls).toEqual([`delete ${GITHUB_KEYCHAIN_SERVICE}`, `add ${GITHUB_KEYCHAIN_SERVICE} ${GITHUB_KEYCHAIN_ACCOUNT}`, `read ${GITHUB_KEYCHAIN_SERVICE}`]);
+    expect(rowNow()).toMatchObject({ method: "token", app_slug: null, installation_id: null, status: "connected" });
+    expect((res.body as { connector: Record<string, unknown> }).connector).toMatchObject({ method: "token", app_slug: null, installation_id: null });
+  });
+
+  it("a row from before migration 19 (a null method column) reads token", async () => {
+    await call(connector(), "POST", "/connectors/github/token", { token: GOOD });
+    env.store.prepare("UPDATE connectors SET method = NULL").run();
+    expect(githubConnectorRow(env.store)?.method).toBe("token");
+    const res = await call(connector(), "GET", "/connectors");
+    expect((res.body as { connectors: Record<string, unknown>[] }).connectors[0]).toMatchObject({ method: "token", app_slug: null, installation_id: null });
+  });
+});
 
 describe("refusals write nothing to the Keychain (AC2, AC3, AC4)", () => {
   async function connectGood(c: GitHubConnector): Promise<Record<string, unknown>> {
@@ -519,6 +559,55 @@ describe("disconnect (AC7)", () => {
   });
 });
 
+describe("disconnect removes whichever method is current (GitHub App tokens, AC5)", () => {
+  const APP_ITEMS = ["loomwright-studio-github-app-id", "loomwright-studio-github-app-slug", "loomwright-studio-github-app-installation", "loomwright-studio-github-app-key"];
+
+  function appConnected(): void {
+    for (const service of APP_ITEMS) keychain.add(service, GITHUB_KEYCHAIN_ACCOUNT, `value-of-${service}`);
+    env.store
+      .prepare("INSERT INTO connectors (kind, status, method, app_slug, installation_id, created_at, updated_at) VALUES ('github', 'connected', 'app', 'studio-reader', 4242, ?, ?)")
+      .run(T0, T0);
+  }
+
+  it("deletes the PAT item and all four App items, invalidates the token holder, and the row reads disconnected with no App fields", async () => {
+    appConnected();
+    keychain.add(GITHUB_KEYCHAIN_SERVICE, GITHUB_KEYCHAIN_ACCOUNT, GOOD);
+    let invalidated = 0;
+    const tokens = { configured: () => true, current: async () => ({ ok: false as const, error: "no_credentials" as const }), invalidate: () => void (invalidated += 1), lastMintFailure: undefined, clearMintFailure: () => {} };
+    const res = await call(connector({ tokens }), "POST", "/connectors/github/disconnect");
+    expect(res.status).toBe(200);
+    expect([...keychain.items.keys()]).toEqual([]);
+    expect(keychain.calls.filter((c) => c.startsWith("delete"))).toEqual([GITHUB_KEYCHAIN_SERVICE, ...APP_ITEMS].map((s) => `delete ${s}`));
+    expect(invalidated).toBe(1);
+    expect(rowNow()).toMatchObject({ status: "disconnected", app_slug: null, installation_id: null });
+    expect((res.body as { connector: Record<string, unknown> }).connector).toMatchObject({ status: "disconnected", app_slug: null, installation_id: null });
+    expect(statusEvents().map((e) => e["status"])).toEqual(["disconnected"]);
+  });
+
+  it("an App connection alone: disconnected the same way", async () => {
+    appConnected();
+    const res = await call(connector(), "POST", "/connectors/github/disconnect");
+    expect(res.status).toBe(200);
+    expect(keychain.items.size).toBe(0);
+    expect(rowNow()).toMatchObject({ method: "app", status: "disconnected", app_slug: null, installation_id: null });
+  });
+
+  it("one item that cannot be deleted is keychain_failed, the others are still deleted, and the row is unchanged", async () => {
+    appConnected();
+    keychain.add(GITHUB_KEYCHAIN_SERVICE, GITHUB_KEYCHAIN_ACCOUNT, GOOD);
+    const flaky: KeychainDeleter = {
+      delete: (service) => {
+        if (service === APP_ITEMS[3]) throw new Error("security failed");
+        return keychain.delete(service);
+      },
+    };
+    const res = await call(connector({ deleter: flaky }), "POST", "/connectors/github/disconnect");
+    expect(res).toMatchObject({ status: 500, body: { error: "keychain_failed" } });
+    expect([...keychain.items.keys()]).toEqual([APP_ITEMS[3]]);
+    expect(rowNow()).toMatchObject({ status: "connected", app_slug: "studio-reader", installation_id: 4242 });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // AC8: expiry
 // ---------------------------------------------------------------------------
@@ -598,8 +687,33 @@ describe("the expiry check (AC8)", () => {
     expect(notifications()).toEqual([]);
   });
 
+  it("a method: app row raises no expiry warning and keeps its status, even with expires_at minutes away or past (GitHub App tokens, AC6)", () => {
+    const expiresIn = (ms: number): string => new Date(env.now().getTime() + ms).toISOString();
+    env.store
+      .prepare(
+        "INSERT INTO connectors (kind, status, method, app_slug, installation_id, expires_at, created_at, updated_at) VALUES ('github', 'connected', 'app', 'studio-reader', 4242, ?, ?, ?)",
+      )
+      .run(expiresIn(10 * 60_000), T0, T0);
+    checkGitHubExpiry(env.store, env.now());
+    expect(rowNow()?.["status"]).toBe("connected");
+    expect(notifications()).toEqual([]);
+    for (const ms of [60_000, -60_000, 20 * DAY]) {
+      env.store.prepare("UPDATE connectors SET expires_at = ?").run(expiresIn(ms));
+      checkGitHubExpiry(env.store, env.now());
+    }
+    env.advance(DAY);
+    checkGitHubExpiry(env.store, env.now());
+    expect(rowNow()?.["status"]).toBe("connected");
+    expect(notifications()).toEqual([]);
+    expect(statusEvents()).toEqual([]);
+    // The same dates on a token row do act.
+    env.store.prepare("UPDATE connectors SET method = 'token', expires_at = ?").run(expiresIn(10 * 60_000));
+    checkGitHubExpiry(env.store, env.now());
+    expect(notifications().map((n) => n.source)).toEqual(["kernel:github_token_expiring_1d"]);
+  });
+
   it("the shipped connector part's due work is the expiry check", () => {
-    expect(githubConnectorPart.dueWork).toEqual([githubExpiryDueWork]);
+    expect(githubConnectorPart.dueWork).toEqual([githubExpiryDueWork, checkGitHubAppMint]);
   });
 });
 
@@ -836,7 +950,9 @@ describe("studio connectors (AC1 via the CLI, AC5)", () => {
     const list = await studio("connectors");
     expect(list.stdout).toBe(`github: connected as owner-one; expires ${EXPIRES}; verified ${T0}; 2 reachable repos\n`);
     const status = await studio("connectors", "github", "status");
-    expect(status.stdout).toContain("github: connected\n  account: owner-one\n  permissions: metadata: read, contents: read, pull_requests: read\n");
+    expect(status.stdout).toContain(
+      "github: connected\n  method: token\n  account: owner-one\n  permissions: metadata: read, contents: read, pull_requests: read\n  permissions source: reported\n",
+    );
     expect(status.stdout).toContain("reachable repos (2): owner-one/studio-sandbox, owner-one/loomwright\n");
     const json = await studio("connectors", "--json");
     expect(JSON.parse(json.stdout).connectors[0].status).toBe("connected");
@@ -899,6 +1015,21 @@ describe("studio connectors (AC1 via the CLI, AC5)", () => {
       expect(r.stderr).toMatch(/nothing was sent/);
     }
     expect(fetchCalls).toEqual([]);
+  });
+
+  it("AC8: status names the method and the permissions' source, for either method and either source, and a row without a method reads token", () => {
+    const base = { kind: "github", status: "connected", account_login: "o", reachable_repos: [] };
+    const app = formatGitHubStatus({ ...base, method: "app", app_slug: "studio-reader", installation_id: 4242, permissions: { metadata: "read" }, permissions_source: "reported" });
+    expect(app).toContain("  method: app (studio-reader, installation 4242)\n");
+    expect(app).toContain("  permissions: metadata: read\n  permissions source: reported\n");
+    const token = formatGitHubStatus({ ...base, method: "token", permissions: null, permissions_source: "declared", permissions_declared_at: T0 });
+    expect(token).toContain("  method: token\n");
+    expect(token).toContain("  permissions source: declared\n");
+    expect(formatGitHubStatus({ ...base, permissions: null, permissions_source: null })).toContain("  method: token\n");
+    expect(formatGitHubStatus({ ...base, permissions: null, permissions_source: null })).toContain("  permissions source: -\n");
+    // GitHub-sourced text is shown safely, even in the App's slug.
+    // eslint-disable-next-line no-control-regex
+    expect(formatGitHubStatus({ ...base, method: "app", app_slug: "x\u001b[31my" })).not.toMatch(/\u001b/);
   });
 
   it("a subcommand run with a recording client: set with an argument makes no request at all", async () => {

@@ -213,10 +213,10 @@ describe("migration 18: connector_permissions_source (AC6)", () => {
 
   const columnsOf = (db: Store): string[] => db.prepare<[], string>("SELECT name FROM pragma_table_info('connectors')").pluck().all();
 
-  it("is the last migration, version 18, and the shipped list is contiguous from 1", () => {
-    expect(migrations.at(-1)).toBe(connectorPermissionsSource);
+  it("is version 18 (second to last: migration 19 sits above it), and the shipped list is contiguous from 1", () => {
+    expect(migrations.at(-2)).toBe(connectorPermissionsSource);
     expect([connectorPermissionsSource.version, connectorPermissionsSource.name]).toEqual([18, "connector_permissions_source"]);
-    expect(migrations.map((m) => m.version)).toEqual(Array.from({ length: 18 }, (_, i) => i + 1));
+    expect(migrations.map((m) => m.version)).toEqual(Array.from({ length: 19 }, (_, i) => i + 1));
   });
 
   it("upgrades a v17 store: both columns are added (nullable TEXT, no default, no CHECK), the existing row keeps its values and reads null for both, and the integrity check passes", () => {
@@ -228,8 +228,11 @@ describe("migration 18: connector_permissions_source (AC6)", () => {
     v17.close();
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([18, "connector_permissions_source"]);
-    expect(columnsOf(store).slice(-2)).toEqual(["permissions_source", "permissions_declared_at"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).find(([v]) => v === 18)).toEqual([18, "connector_permissions_source"]);
+    // Checked by name, not by tail position: migration 19 adds its columns after these.
+    const at = columnsOf(store).indexOf("permissions_source");
+    expect(at).toBeGreaterThan(-1);
+    expect(columnsOf(store).slice(at, at + 2)).toEqual(["permissions_source", "permissions_declared_at"]);
     for (const column of ["permissions_source", "permissions_declared_at"]) {
       expect(store.prepare(`SELECT type, "notnull", dflt_value FROM pragma_table_info('connectors') WHERE name = ?`).get(column), column).toEqual({ type: "TEXT", notnull: 0, dflt_value: null });
     }
@@ -244,17 +247,18 @@ describe("migration 18: connector_permissions_source (AC6)", () => {
     inspect((db) => expect(() => checkAfterMigrating(db, dir, migrations)).not.toThrow());
   });
 
-  it("is safe to re-run: with its record deleted, migration 18 runs again as a no-op and every row stays", () => {
+  it("is safe to re-run: with its record deleted (and 19's, which sits above it), migration 18 runs again as a no-op and every row stays", () => {
     const first = open();
     first.prepare("INSERT INTO connectors (kind, status, permissions_source, permissions_declared_at) VALUES ('github', 'connected', 'declared', ?)").run(T0);
     first.close();
 
     const db = new Database(join(dir, DB_FILENAME));
-    db.exec("DELETE FROM schema_migrations WHERE version = 18");
+    // Deleting 18 alone would leave 19 above a gap: 18 and 19 re-run together.
+    db.exec("DELETE FROM schema_migrations WHERE version >= 18");
     db.close();
 
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([18, "connector_permissions_source"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).find(([v]) => v === 18)).toEqual([18, "connector_permissions_source"]);
     expect(rerun.prepare("SELECT permissions_source, permissions_declared_at FROM connectors").all()).toEqual([{ permissions_source: "declared", permissions_declared_at: T0 }]);
     expect(columnsOf(rerun).filter((c) => c.startsWith("permissions_"))).toEqual(["permissions_json", "permissions_source", "permissions_declared_at"]);
   });

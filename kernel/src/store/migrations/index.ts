@@ -16,6 +16,7 @@ import { sessionCwd } from "./015_session_cwd.js";
 import { sessionOutput } from "./016_session_output.js";
 import { phase6Foundation } from "./017_phase_6_foundation.js";
 import { connectorPermissionsSource } from "./018_connector_permissions_source.js";
+import { connectorApp } from "./019_connector_app.js";
 import type { Migration } from "./types.js";
 
 export type { Migration } from "./types.js";
@@ -40,4 +41,5 @@ export const migrations: readonly Migration[] = [
   sessionOutput,
   phase6Foundation,
   connectorPermissionsSource,
+  connectorApp,
 ];

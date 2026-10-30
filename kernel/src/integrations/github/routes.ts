@@ -2,11 +2,12 @@
 // owner's four connector routes, on the loopback API (bearer token, like
 // every route), over the connector in `connector.ts`.
 //
-//   GET  /connectors                     {connectors}: every row in the contract's `Connector` shape, [] when none
+//   GET  /connectors                     {connectors}: every row in the contract's `Connector` shape, [] when none; it carries `method` (`token` or `app`),
+//                                        `app_slug` and `installation_id` (the GitHub App's, null for a token) beside the reach list
 //   POST /connectors/github/token        body {token, declared_read_only?}: validate, then store it; {connector}, never the token.
 //                                        `declared_read_only: true` is the owner declaring that every permission they gave a
 //                                        fine-grained token is Read (used only when GitHub reports none); a non-boolean is 400
-//   POST /connectors/github/disconnect   delete the Keychain item, the row reads `disconnected`; {connector}
+//   POST /connectors/github/disconnect   delete every GitHub credential Keychain item (the token's and the GitHub App's, whichever is current), the row reads `disconnected`; {connector}
 //   GET  /connectors/github/repos        {repos, verified_at}; `?refresh=1` re-reads them from GitHub first
 //
 // Refusals and failures are typed answers, never a throw: `{error, message,
