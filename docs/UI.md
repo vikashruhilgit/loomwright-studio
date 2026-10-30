@@ -41,7 +41,7 @@
 | **Sessions** | Live running sessions: agent, task, running time, tokens. Streaming output; **Stop** and **Kill** |
 | **Approvals** | Inbox of pending actions showing exactly what will happen (review text, hook diff, message). Allow once / Always for this playbook / Deny |
 | **Memory** | View and edit each agent's role, preferences, people and lessons files, plus shared memory |
-| **Hooks** | Installed hooks, their scope, whether they're verified to fire, one-click rollback |
+| **Hooks** | Installed hooks, their scope, whether they're verified to fire, one-click rollback. *Phase 9 (owner, 2026-10-30); see the note below* |
 | **Integrations** | Optional connectors: connect, disconnect, see scopes. *Phase 6, GitHub only (owner, 2026-10-24); see the note below* |
 | **Budget & audit** | Usage per day, playbook and agent against caps; cap state; the full event log |
 | **Settings** | Auth provider, data location, launch at login, notifications, theme |
@@ -59,6 +59,6 @@
 
 **Integrations is phase 6, GitHub only** (the owner's decision, 2026-10-24). The ROADMAP's phase 6 row wins over the GUI v2 listing above: phase 6 builds the real Integrations screen with GitHub as its only connector (connect, disconnect, scopes, expiry, status and the repos the token reaches), on `⌘5` after Sessions, from a mockup the owner approves first (D9). Phase 7 adds its polish and the other connectors. DESIGN.md gets the matching note in phase 6.
 
-**Hooks is phase 9** (the owner's decision, 2026-10-30). Phase 7's GUI v2 builds the other screens above (Tasks, Playbooks, Schedules, Memory, Budget & audit, Settings) and leaves the Hooks row as written; the Hooks screen moves to phase 9.
+**Hooks is phase 9** (the owner's decision, 2026-10-30). The Hooks screen is built with the hook-management mechanism it shows (propose, apply with backup, verified to fire, rollback), so it moves out of the GUI v2 listing above to the ROADMAP's phase 9 row. Phase 7 has no Hooks screen. See DESIGN.md §Phase 7.
 
 **Tasks in phase 7.** A read-only board grouped by state, over the kernel's tasks, playbook runs and sessions. Each card shows its kind and state, and opens its history: the events that touched it, its runs, its sessions and any approvals that name it. It shows only what the kernel recorded; there is no edit or create. The shortcuts are a proposal (Tasks `⌘6`, Playbooks `⌘7`, Schedules `⌘8`, Memory `⌘9`, Budget & audit none, Settings `⌘,`) until the GUI v2 mockup sets the final ones.
