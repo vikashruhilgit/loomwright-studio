@@ -57,3 +57,21 @@ export const RefreshGlyph = () => (
     <path d="M3 12a9 9 0 0 1 15.5-6.2L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.5 6.2L3 16M3 21v-5h5" />
   </Glyph>
 );
+
+/** Four placeholder rows while a read is in flight; `what` is the status text's object ("Loading the schedule"). */
+export function Skeleton({ testId, what }: { readonly testId: string; readonly what: string }) {
+  return (
+    <div className="schedules-skels" data-testid={testId} aria-busy="true">
+      <span className="schedules-sr-only" role="status">
+        {`Loading ${what}`}
+      </span>
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} className="schedules-skel" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </div>
+      ))}
+    </div>
+  );
+}

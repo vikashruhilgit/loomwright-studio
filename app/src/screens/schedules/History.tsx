@@ -12,10 +12,11 @@
 //
 // Rows are a fixed height and keyed by their oldest fire's id, so a refetch that
 // changes a group's count changes text inside the row and moves nothing.
-import type { ReactNode, Ref } from "react";
+import { type ReactNode, type Ref, useEffect, useRef } from "react";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import type { Trigger } from "../../api/contract";
+import { Skeleton } from "./parts";
 import type { HistoryView } from "./useHistory";
 import {
   type FireGroup,
@@ -102,23 +103,6 @@ function Row({ trigger, name, group, first, now }: { readonly trigger: Trigger; 
   );
 }
 
-function Skeleton() {
-  return (
-    <div className="schedules-skels" data-testid={IDS.historyLoading} aria-busy="true">
-      <span className="schedules-sr-only" role="status">
-        Loading the firing history
-      </span>
-      {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="schedules-skel" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </div>
-      ))}
-    </div>
-  );
-}
-
 export function History({ trigger, name, view, filter, onFilter, offline, now, missedChipRef }: HistoryProps) {
   const { history, latest } = view;
   const fires = history?.fires ?? [];
@@ -126,11 +110,27 @@ export function History({ trigger, name, view, filter, onFilter, offline, now, m
   const more = history?.cursor !== null && history?.cursor !== undefined;
   // "50+" while older pages exist: the count is of what is loaded.
   const countText = (f: HistoryFilter) => `${countFires(fires, f)}${more ? "+" : ""}`;
+  const section = useRef<HTMLElement>(null);
+  // "Load older" unmounts at the last page; when that click was the user's, focus moves to the first row it added
+  // (else the pressed filter chip) instead of falling to the page. Armed only by the click, so a live refetch never moves focus.
+  const resume = useRef<number | undefined>(undefined);
+  const busy = view.olderBusy;
+  useEffect(() => {
+    if (busy || resume.current === undefined) return;
+    const before = resume.current;
+    resume.current = undefined;
+    if (more) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    const root = section.current;
+    const added = root?.querySelectorAll<HTMLElement>("[data-nav-row]")[before];
+    (added ?? root?.querySelector<HTMLElement>('.schedules-chip[aria-pressed="true"]'))?.focus();
+  }, [busy, more]);
   const failed = latest !== undefined && (latest.kind === "refused" || latest.kind === "failed") ? latest : undefined;
 
   let body: ReactNode;
   if (history === undefined) {
-    if (latest === undefined) body = <Skeleton />;
+    if (latest === undefined) body = <Skeleton testId={IDS.historyLoading} what="the firing history" />;
     else if (latest.kind === "unreachable") {
       body = (
         <p className="schedules-cap" data-testid={IDS.historyError}>
@@ -143,7 +143,7 @@ export function History({ trigger, name, view, filter, onFilter, offline, now, m
           {`Couldn't load the firing history: ${failureDetail(`GET /triggers/${trigger.id}/fires`, failed)}`}
         </p>
       );
-    } else body = <Skeleton />;
+    } else body = <Skeleton testId={IDS.historyLoading} what="the firing history" />;
   } else if (groups.length === 0) {
     body = (
       <p className="schedules-cap" data-testid={IDS.historyEmpty}>
@@ -176,7 +176,7 @@ export function History({ trigger, name, view, filter, onFilter, offline, now, m
   }
 
   return (
-    <section className="schedules-sec" aria-labelledby="schedules-history-h" data-testid={IDS.history}>
+    <section ref={section} className="schedules-sec" aria-labelledby="schedules-history-h" data-testid={IDS.history}>
       <div className="schedules-sech">
         <h3 className="schedules-label" id="schedules-history-h">
           Firing history
@@ -199,7 +199,11 @@ export function History({ trigger, name, view, filter, onFilter, offline, now, m
       {body}
       {more ? (
         <div className="schedules-more">
-          <Button size="row" variant="secondary" loading={view.olderBusy} disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={view.loadOlder} data-testid={IDS.loadOlder}>
+          <Button size="row" variant="secondary" loading={view.olderBusy} disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={() => {
+              resume.current = groups.length;
+              view.loadOlder();
+            }}
+            data-testid={IDS.loadOlder}>
             Load older
           </Button>
           {view.olderError === undefined ? null : (

@@ -298,6 +298,16 @@ describe("the states", () => {
     expect(screen.queryByTestId(IDS.error)).toBeNull();
   });
 
+  it("Try again hands focus to Refresh when the card it sat on is replaced by the schedule", async () => {
+    const kernel = await start({ ...populated(), schedule: () => refused(500, { error: "store_unreadable" }) });
+    const retry = await screen.findByTestId(IDS.retry);
+    retry.focus();
+    kernel.schedule = () => ok({ entries: kernel.entries });
+    fireEvent.click(retry);
+    await screen.findByTestId(IDS.timeline);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Refresh" }));
+  });
+
   it("a route failure with data: the rows stay and a notice says what was not refreshed", async () => {
     const kernel = await start(populated());
     await screen.findByTestId(IDS.timeline);
@@ -536,6 +546,34 @@ describe("the firing history", () => {
     ]);
     expect(screen.queryByTestId(IDS.loadOlder)).toBeNull();
     expect(reasons()).toEqual(["paused", "connector_missing", "rate_limited", "playbook_not_enabled", "kill_switch", "already_done", "brand_new_code"]);
+  });
+
+  it("'Load older' unmounting at the last page hands focus to the first row it added, not to the page", async () => {
+    await start(withHistory());
+    await screen.findByTestId(IDS.table);
+    const button = screen.getByTestId(IDS.loadOlder);
+    button.focus();
+    expect(document.activeElement).toBe(button);
+    fireEvent.click(button);
+    await waitFor(() => expect(rows()).toHaveLength(8));
+    expect(screen.queryByTestId(IDS.loadOlder)).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(rows()[4]);
+  });
+
+  it("'Load older' does not move focus when the user has moved on, nor when a refetch lands", async () => {
+    const kernel = await start(withHistory());
+    await screen.findByTestId(IDS.table);
+    const button = screen.getByTestId(IDS.loadOlder);
+    button.focus();
+    fireEvent.click(button);
+    const chip = screen.getByTestId(IDS.filterAll);
+    chip.focus();
+    await waitFor(() => expect(rows()).toHaveLength(8));
+    expect(document.activeElement).toBe(chip);
+    emit(kernel, "trigger_fired");
+    await sleep(30);
+    expect(document.activeElement).toBe(chip);
   });
 
   it("filters to 'Not fired' with counts of the fires loaded, '+' while older pages exist", async () => {

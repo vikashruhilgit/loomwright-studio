@@ -52,7 +52,7 @@ import {
   whenLabel,
   wakeupNote,
 } from "./model";
-import { KindIcon, RefreshGlyph, WarnGlyph } from "./parts";
+import { KindIcon, RefreshGlyph, Skeleton, WarnGlyph } from "./parts";
 import { useFeedRefetch, useScheduleRead } from "./useSchedule";
 import { useHistory } from "./useHistory";
 import "./schedules.css";
@@ -121,23 +121,6 @@ function Detail({ trigger, name, now }: { readonly trigger: Trigger; readonly na
   );
 }
 
-function Skeleton({ testId, what }: { readonly testId: string; readonly what: string }) {
-  return (
-    <div className="schedules-skels" data-testid={testId} aria-busy="true">
-      <span className="schedules-sr-only" role="status">
-        {`Loading ${what}`}
-      </span>
-      {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="schedules-skel" aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ---- The screen ---------------------------------------------------------------------------------------
 
 export interface SchedulesScreenProps {
@@ -170,6 +153,9 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
   const inFlight = useRef(new Set<number>());
   const switchRefs = useRef(new Map<number, HTMLButtonElement>());
   const missedChip = useRef<HTMLButtonElement>(null);
+  const refreshButton = useRef<HTMLButtonElement>(null);
+  // "Try again" is replaced by the schedule when the read lands; focus follows to Refresh, only if that click armed it.
+  const retried = useRef(false);
 
   const connectionDown = connection.state === "reconnecting" || connection.state === "unreachable" || connection.state === "not_installed";
   const offline = connectionDown || read.latest?.kind === "unreachable" || history.latest?.kind === "unreachable";
@@ -291,7 +277,12 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
             {failureDetail("GET /schedule", failed)}
           </div>
           <div>
-            <Button size="row" variant="secondary" disabled={offline} onClick={refetchSchedule} data-testid={IDS.retry}>
+            <Button size="row" variant="secondary" disabled={offline} onClick={() => {
+                retried.current = true;
+                refetchSchedule();
+              }}
+              data-testid={IDS.retry}
+            >
               Try again
             </Button>
           </div>
@@ -419,6 +410,14 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
     );
   }
 
+  useEffect(() => {
+    if (!retried.current) return;
+    if (!hasData) return;
+    retried.current = false;
+    const active = document.activeElement;
+    if (active === null || active === document.body) refreshButton.current?.focus();
+  }, [hasData]);
+
   const showTools = hasData && !nothingScheduled;
   return (
     <div className="schedules" data-testid={IDS.screen} data-offline={offline ? "true" : undefined} onKeyDown={onKeyDown}>
@@ -434,7 +433,7 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
         ) : null}
         <span className="schedules-spacer" />
         {hasData ? (
-          <Button size="row" variant="ghost" icon={<RefreshGlyph />} disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={refetchAll}>
+          <Button ref={refreshButton} size="row" variant="ghost" icon={<RefreshGlyph />} disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={refetchAll}>
             Refresh
           </Button>
         ) : null}
