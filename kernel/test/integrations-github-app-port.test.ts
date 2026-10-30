@@ -499,6 +499,47 @@ describe("a mint reporting a write permission (AC9)", () => {
     for (const s of [GITHUB_APP_ID_SERVICE, GITHUB_APP_SLUG_SERVICE, GITHUB_APP_INSTALLATION_SERVICE, GITHUB_APP_KEY_SERVICE]) expect(w.keychain.has(s)).toBe(false);
   });
 
+  // The real holder refuses a write-scoped mint itself, so these two drive the port's own check
+  // (defence in depth) with a holder that hands one out as ok.
+  function portWithLaxHolder(permissions: Record<string, string>): GitHubAppPort {
+    const lax: GitHubAppTokens = {
+      configured: () => true,
+      current: async () => ({ ok: true, token: "ghs_" + "y".repeat(36), expires_at: new Date(w.env.now().getTime() + HOUR).toISOString(), permissions }),
+      invalidate: () => undefined,
+      lastMintFailure: undefined,
+      clearMintFailure: () => undefined,
+    } as unknown as GitHubAppTokens;
+    return createGitHubAppPort({
+      keychain: w.keychain,
+      writer: w.keychain,
+      deleter: w.keychain,
+      tokens: lax,
+      clientFor: (tokenProvider) => createGitHubClient({ tokenProvider, fetch: w.fetch, now: w.env.now }),
+    });
+  }
+
+  it("the port refuses a write permission even from a holder that returns ok (defence in depth)", async () => {
+    ok(await w.port.storeApp(store(), CONVERSION, PEM, w.env.now));
+    const port = portWithLaxHolder({ metadata: "read", pull_requests: "write" });
+    const result = await port.recordInstallation(store(), INSTALLATION, w.env.now);
+    expect(result).toMatchObject({ ok: false, error: "token_write_scoped" });
+    if (result.ok) throw new Error("unreachable");
+    expect(result.message).toContain("pull_requests: write");
+    for (const s of [GITHUB_APP_ID_SERVICE, GITHUB_APP_SLUG_SERVICE, GITHUB_APP_INSTALLATION_SERVICE, GITHUB_APP_KEY_SERVICE]) expect(w.keychain.has(s)).toBe(false);
+    expect(rowNow()).toMatchObject({ status: "rejected", app_slug: null, installation_id: null });
+    expect(w.calls.map((c) => c.path)).not.toContain("/installation/repositories");
+  });
+
+  it("the port's own refusal leaves a PAT in use unchanged", async () => {
+    seedPat();
+    ok(await w.port.storeApp(store(), CONVERSION, PEM, w.env.now));
+    const port = portWithLaxHolder({ metadata: "read", contents: "admin" });
+    expect(await port.recordInstallation(store(), INSTALLATION, w.env.now)).toMatchObject({ ok: false, error: "token_write_scoped" });
+    expect(w.keychain.items.get(GITHUB_KEYCHAIN_SERVICE)?.secret).toBe(PAT);
+    expect(rowNow()).toMatchObject({ status: "connected", method: "token", account_login: "pat-user", app_slug: null, installation_id: null });
+    for (const s of [GITHUB_APP_ID_SERVICE, GITHUB_APP_SLUG_SERVICE, GITHUB_APP_INSTALLATION_SERVICE, GITHUB_APP_KEY_SERVICE]) expect(w.keychain.has(s)).toBe(false);
+  });
+
   it("a mint reporting no permissions at all cannot be proven read-only: install_failed, nothing connected", async () => {
     ok(await w.port.storeApp(store(), CONVERSION, PEM, w.env.now));
     w.permissions = {};
