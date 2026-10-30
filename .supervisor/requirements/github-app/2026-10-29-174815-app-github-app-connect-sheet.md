@@ -119,3 +119,9 @@ app/electron/preload.test.ts
 app/e2e/integrations.spec.ts
 app/e2e/fixtures/integrations.ts
 docs/architecture/app.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-30T06:18:56Z
+- **Brief:** .supervisor/jobs/done/2026-10-30-app-github-app-connect-sheet.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/171
