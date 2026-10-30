@@ -6,6 +6,15 @@
 // light and a dark screenshot of every designed state (AC12). Run `npm run
 // build` first.
 //
+// The GitHub App path (GitHub App 4) is driven the same way: Connect GitHub
+// opens the choice, "Install GitHub App" makes the one setup call and opens the
+// kernel's `setup_url` through the open-external channel, and the sheet follows
+// the fixture kernel's events to step 2, to the connected App and to each
+// refusal. `shell.openExternal` is replaced in the main process before any click
+// (`open` does it for every test), so no run can open a real browser, and the
+// URLs the main process would have opened are read back from it. The window must
+// never navigate: the page URL is asserted unchanged around every open.
+//
 // Screenshots: with `INTEGRATIONS_EVIDENCE=1` they are written to the
 // committed evidence dir `docs/evidence/phase-6-polish/integrations/`;
 // otherwise to Playwright's per-test output dir, so CI never dirties tracked
@@ -25,7 +34,7 @@ import type { ElectronApplication, Locator, Page, TestInfo } from "@playwright/t
 import { launchApp } from "./electron-harness";
 import { startFixtureKernel } from "./fixture-kernel";
 import type { FixtureKernel } from "./fixture-kernel";
-import { ACCOUNT, NEW_TOKEN, REFRESHED_REPO, REPOS, TOKEN, integrationsFixture } from "./fixtures/integrations";
+import { ACCOUNT, APP_INSTALLATION, APP_REPOS, APP_SLUG, NEW_TOKEN, RAW_REFUSAL_MESSAGE, REFRESHED_REPO, REPOS, TOKEN, integrationsFixture } from "./fixtures/integrations";
 import type { IntegrationsFixture, IntegrationsFixtureOptions } from "./fixtures/integrations";
 
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-6-polish/integrations/", import.meta.url));
@@ -38,9 +47,32 @@ const THEMES = ["light", "dark"] as const;
  */
 const IDS = {
   account: "integrations-account",
+  appAccess: "integrations-app-access",
+  appAgain: "integrations-app-again",
+  appCancel: "integrations-app-cancel",
+  appChecked: "integrations-app-checked",
+  appClose: "integrations-app-close",
+  appConfirm: "integrations-app-confirm",
+  appConfirmApps: "integrations-app-confirm-apps",
+  appConfirmInstalled: "integrations-app-confirm-installed",
+  appInstallation: "integrations-app-installation",
+  appKey: "integrations-app-key",
+  appLink: "integrations-app-link",
+  appName: "integrations-app-name",
+  appOpenAgain: "integrations-app-open-again",
+  appOutcome: "integrations-app-outcome",
+  appPasteToken: "integrations-app-paste-token",
+  appSetUpAgain: "integrations-app-set-up-again",
+  appSetup: "integrations-app-setup",
+  appStep1: "integrations-app-step-1",
+  appStep2: "integrations-app-step-2",
   agentCard: "integrations-agent",
   agentsNote: "integrations-agents-note",
   band: "integrations-band",
+  choice: "integrations-choice",
+  choiceApp: "integrations-choice-app",
+  choiceCancel: "integrations-choice-cancel",
+  choiceToken: "integrations-choice-token",
   count: "integrations-count",
   detail: "integrations-detail",
   detailHeader: "integrations-detail-header",
@@ -93,6 +125,7 @@ async function open(fx: IntegrationsFixture): Promise<Page> {
   fixture = await startFixtureKernel(fx.options);
   fx.attach(fixture);
   app = await launchApp(fixture.env);
+  await stubOpenExternal(app);
   for (const stream of [app.process().stdout, app.process().stderr]) stream?.on("data", (chunk: Buffer) => logs.push(String(chunk)));
   const page = await app.firstWindow();
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -103,6 +136,28 @@ async function open(fx: IntegrationsFixture): Promise<Page> {
   });
   await expect(page.getByTestId(IDS.screen)).toBeVisible();
   return page;
+}
+
+/**
+ * Replaces `shell.openExternal` in the main process with a recorder, so the app can never open a real browser: the
+ * address the main process would have opened is pushed onto `globalThis.__opened` instead, and `openedUrls` reads it.
+ * Runs before any click. The stub resolves like the real call, so the channel answers `true` for an allowed address.
+ */
+async function stubOpenExternal(electronApp: ElectronApplication): Promise<void> {
+  await electronApp.evaluate(({ shell }) => {
+    const g = globalThis as unknown as { __opened?: string[] };
+    g.__opened = [];
+    shell.openExternal = (url: string): Promise<void> => {
+      g.__opened?.push(url);
+      return Promise.resolve();
+    };
+  });
+}
+
+/** Every address the main process was asked to open since launch, in order. */
+async function openedUrls(): Promise<string[]> {
+  if (app === undefined) throw new Error("no app is running");
+  return app.evaluate(() => (globalThis as unknown as { __opened?: string[] }).__opened ?? []);
 }
 
 /** `open` for a fixture made from `options`. */
@@ -223,6 +278,7 @@ test("AC9: the pasted token reaches the kernel through the main process, the fie
   await screenshots(page, "not-connected", testInfo);
 
   await byId(page, IDS.emptyConnect).click();
+  await byId(page, IDS.choiceToken).click();
   const sheet = byId(page, IDS.sheet);
   await expect(sheet).toBeVisible();
   await expect(sheet).toHaveAttribute("data-mode", "connect");
@@ -275,6 +331,7 @@ test("AC9: a write-scoped token is refused inline, naming the permission, and th
   const page = await opening;
   fx.refuse("token_write_scoped");
   await byId(page, IDS.emptyConnect).click();
+  await byId(page, IDS.choiceToken).click();
   const sheet = byId(page, IDS.sheet);
   const field = byId(page, IDS.sheetToken);
   await field.fill(TOKEN);
@@ -483,10 +540,27 @@ test("AC11: by keyboard alone, connect, cancel, refuse, replace the token, refre
   const field = byId(page, IDS.sheetToken);
   const detail = byId(page, IDS.detail);
 
-  // Connect GitHub opens the sheet with the field focused; Escape cancels it and focus returns to the opener.
+  // Connect GitHub opens the choice with "Install GitHub App" focused; Escape closes it and focus returns to the opener.
   const connect = byId(page, IDS.emptyConnect);
   await tabTo(page, connect, "Connect GitHub");
   await kb.press("Enter");
+  await expect(byId(page, IDS.choice)).toBeVisible();
+  await expect(byId(page, IDS.choiceApp)).toBeFocused();
+  await kb.press("Escape");
+  await expect(byId(page, IDS.choice)).toHaveCount(0);
+  await expect(connect).toBeFocused();
+  expect(await openedUrls(), "Escape on the choice opens nothing").toEqual([]);
+  expect(fx.setups, "Escape on the choice starts no setup").toEqual([]);
+
+  // Tab moves to "Paste a token", Enter opens the token sheet with the field focused; Escape cancels it and focus returns to the opener.
+  const pasteToken = async (): Promise<void> => {
+    await kb.press("Enter");
+    await expect(byId(page, IDS.choiceApp)).toBeFocused();
+    await kb.press("Tab");
+    await expect(byId(page, IDS.choiceToken)).toBeFocused();
+    await kb.press("Enter");
+  };
+  await pasteToken();
   await expect(sheet).toBeVisible();
   await expect(field).toBeFocused();
   await kb.press("Escape");
@@ -495,7 +569,7 @@ test("AC11: by keyboard alone, connect, cancel, refuse, replace the token, refre
   expect(fx.tokens, "Escape sends nothing").toEqual([]);
 
   // Cancel, reached by Tab, closes it too.
-  await kb.press("Enter");
+  await pasteToken();
   await expect(field).toBeFocused();
   await kb.press("Tab");
   await expect(byId(page, IDS.sheetDeclare)).toBeFocused();
@@ -507,7 +581,7 @@ test("AC11: by keyboard alone, connect, cancel, refuse, replace the token, refre
 
   // Enter in the field sends nothing until the confirmation is ticked; ticked, it submits, and a refusal leaves the field empty and focused.
   fx.refuse("token_invalid");
-  await kb.press("Enter");
+  await pasteToken();
   await expect(field).toBeFocused();
   await expect(byId(page, IDS.sheetDeclare), "a fresh sheet starts unticked").not.toBeChecked();
   await kb.type(TOKEN);
@@ -581,6 +655,260 @@ test("AC11: by keyboard alone, connect, cancel, refuse, replace the token, refre
   await expect(byId(page, IDS.empty)).toBeVisible();
   await expect(byId(page, IDS.listMeta)).toHaveText("not connected");
   expect(await pointer(), "no pointer input").toBe(0);
+  expect(await openedUrls(), "the token walk opened nothing").toEqual([]);
+});
+
+const INSTALLATIONS_URL = "https://github.com/settings/installations";
+
+/** From the empty state: the choice, then "Install GitHub App"; resolves once the setup is on step 1 (the URL was opened). */
+async function startApp(page: Page): Promise<void> {
+  await byId(page, IDS.emptyConnect).click();
+  await expect(byId(page, IDS.choice)).toBeVisible();
+  await byId(page, IDS.choiceApp).click();
+  await expect(byId(page, IDS.appSetup)).toHaveAttribute("data-phase", "create");
+  await expect.poll(async () => (await openedUrls()).length, { message: "the setup URL was opened" }).toBeGreaterThanOrEqual(1);
+}
+
+test("AC1, AC2, AC6: Install GitHub App makes one setup call and opens the setup URL through the channel while the window stays put; step 2 and the connected App follow the kernel; Disconnect links open through the channel", async ({}, testInfo) => {
+  const { fx, page: opening } = launchWith();
+  const page = await opening;
+  const home = page.url();
+  await expect(byId(page, IDS.empty)).toContainText("a GitHub App you install or a token you create");
+
+  // Connect GitHub opens the choice, and choosing nothing calls nothing.
+  await byId(page, IDS.emptyConnect).click();
+  await expect(byId(page, IDS.choice)).toBeVisible();
+  await expect(byId(page, IDS.choiceApp)).toBeFocused();
+  await expect(byId(page, IDS.choiceApp)).toContainText("Permissions are checked by GitHub");
+  await expect(byId(page, IDS.choiceToken)).toContainText("Permissions are declared by you");
+  expect(fx.setups, "the choice makes no setup call").toEqual([]);
+  expect(await openedUrls(), "the choice opens nothing").toEqual([]);
+  await screenshots(page, "app-choice", testInfo);
+
+  // AC1: one setup call, then the returned setup_url (this kernel's start page) through the channel; the Studio window does not navigate.
+  await byId(page, IDS.choiceApp).click();
+  const setup = byId(page, IDS.appSetup);
+  await expect(setup).toHaveAttribute("data-phase", "create");
+  await expect.poll(async () => (await openedUrls()).length, { message: "the setup URL was opened" }).toBe(1);
+  expect(fx.setups, "exactly one setup call").toHaveLength(1);
+  const [url] = fx.setupUrls;
+  expect(url, "the kernel answered a setup_url").toBeDefined();
+  expect(await openedUrls(), "the main process was asked to open exactly the returned setup_url").toEqual([url]);
+  const opened = new URL(url as string);
+  expect([opened.protocol, opened.hostname, opened.port, opened.pathname, [...opened.searchParams.keys()]], "the kernel's start page on its own port, with a state query alone").toEqual(["http:", "127.0.0.1", String(fixture?.port), "/connectors/github/app/start", ["state"]]);
+  expect(page.url(), "the Studio window did not navigate").toBe(home);
+  expect(app?.windows().length, "no second window opened").toBe(1);
+  await expect(byId(page, IDS.appStep1)).toContainText("Step 1 of 2 · Create the App on GitHub");
+  await expect(byId(page, IDS.appStep1)).toContainText("waiting for you");
+  await expect(byId(page, IDS.appStep2)).toContainText("next");
+  await expect(setup).toContainText("This setup window closes at");
+  await expect(byId(page, IDS.listMeta)).toHaveText("setting up the GitHub App · waiting for you on GitHub");
+  await screenshots(page, "app-setup-create", testInfo);
+
+  // AC5 (e2e slice): Open GitHub again opens the same URL, with no second setup call.
+  await byId(page, IDS.appOpenAgain).click();
+  await expect.poll(openedUrls).toEqual([url, url]);
+  expect(fx.setups, "no second setup call").toHaveLength(1);
+  expect(page.url()).toBe(home);
+
+  // Create is done on GitHub: the kernel's event moves the sheet to step 2.
+  fx.change("app-created");
+  await expect(setup).toHaveAttribute("data-phase", "install");
+  await expect(byId(page, IDS.appStep1)).toContainText("done");
+  await expect(byId(page, IDS.appStep2)).toContainText("Step 2 of 2 · Pick the repos and install it");
+  await expect(byId(page, IDS.appStep2)).toContainText("waiting for you");
+  expect(fx.cancels, "moving to step 2 cancels nothing").toEqual([]);
+  await screenshots(page, "app-setup-install", testInfo);
+
+  // AC2: the install lands: the sheet closes and the detail pane shows what GitHub reported.
+  fx.change("app-connected");
+  await expect(setup).toHaveCount(0);
+  const detail = byId(page, IDS.detail);
+  await expect(detail).toHaveAttribute("data-state", "connected");
+  await expect(detail).toHaveAttribute("data-method", "app");
+  await expect(byId(page, IDS.detailHeader)).toContainText("GitHub App");
+  await expect(byId(page, IDS.listMeta)).toHaveText(`connected · ${ACCOUNT} · GitHub App`);
+  await expect(byId(page, IDS.status)).toContainText("connected");
+  await expect(byId(page, IDS.account)).toHaveText(ACCOUNT);
+  await expect(byId(page, IDS.appName), "the slug stands in the App row, because Connector carries no App name").toHaveText(APP_SLUG);
+  await expect(byId(page, IDS.appInstallation)).toHaveText(String(APP_INSTALLATION));
+  await expect(byId(page, IDS.appKey)).toContainText("The value is never shown");
+  await expect(byId(page, IDS.appAccess)).toContainText(/expires (today|\d+ \w+) \d\d:\d\d/);
+  await expect(byId(page, IDS.appAccess)).toContainText("renews automatically");
+  await expect(detail.getByRole("heading", { level: 3, name: "Permissions" })).toBeVisible();
+  await expect(byId(page, IDS.appChecked)).toHaveText("Read-only, checked by GitHub.");
+  await expect(byId(page, IDS.permissions).getByRole("listitem")).toHaveText([/^Metadata\s*Read-only$/, /^Pull requests\s*Read-only$/, /^Contents\s*Read-only$/]);
+  await expect(byId(page, IDS.reposHeading)).toHaveText(`Repos chosen at install · ${APP_REPOS.length}`);
+  await expect(byId(page, IDS.repos).getByRole("listitem"), "exactly the row's reachable_repos").toHaveText([...APP_REPOS]);
+  await expect(byId(page, IDS.replace), "an App has no Replace token").toHaveCount(0);
+  await expect(byId(page, IDS.inBand), "an App has no expiry band").toHaveCount(0);
+  await expect(byId(page, IDS.disconnect)).toBeVisible();
+  await expect(byId(page, IDS.empty)).toHaveCount(0);
+  expect(page.url(), "the window still has not navigated").toBe(home);
+  await screenshots(page, "app-connected", testInfo);
+
+  // AC6: Disconnect confirms what Studio removes and links to the two GitHub pages, each opened through the channel.
+  await byId(page, IDS.disconnect).click();
+  const confirm = page.getByRole("alertdialog", { name: "Disconnect GitHub?" });
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText("Deletes the App's key from the Keychain.");
+  await expect(byId(page, IDS.appConfirm)).toContainText("Studio can't remove the App from GitHub");
+  expect(fx.disconnects, "nothing is sent while the confirm is open").toEqual([]);
+  await screenshots(page, "app-disconnect", testInfo);
+  await byId(page, IDS.appConfirmInstalled).click();
+  await byId(page, IDS.appConfirmApps).click();
+  await expect.poll(openedUrls).toEqual([url, url, INSTALLATIONS_URL, `https://github.com/settings/apps/${APP_SLUG}`]);
+  expect(page.url(), "the links opened in the system browser, not in the window").toBe(home);
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirm).toHaveCount(0);
+  expect(fx.disconnects, "Cancel sends nothing").toEqual([]);
+
+  await byId(page, IDS.disconnect).click();
+  await confirm.getByRole("button", { name: "Disconnect" }).click();
+  await expect.poll(() => fx.disconnects.length, { message: "the kernel received the disconnect" }).toBe(1);
+  await expect(byId(page, IDS.empty)).toBeVisible();
+  await expect(byId(page, IDS.listMeta)).toHaveText("not connected");
+});
+
+/** The refusals the mockup has a view for: each as the `refused` field of a `connector_status` event. */
+const REFUSALS = [
+  { state: "app-expired", reason: "setup_expired", outcome: "expired", title: "Setup timed out", copy: "The setup window closed", meta: "not connected · setup timed out", slug: false },
+  { state: "app-write-scoped", reason: "token_write_scoped", outcome: "write-scoped", title: "The App can write", copy: "GitHub reports that the App you installed can write", meta: "not connected · the App can write", slug: true },
+  { state: "app-failed", reason: "conversion_failed", outcome: "failed", title: "Setup didn't finish", copy: "GitHub didn't finish setting the App up", meta: "not connected · setup did not finish", slug: false },
+] as const;
+
+for (const refusal of REFUSALS) {
+  test(`AC9: ${refusal.reason} arriving as a connector_status event shows the mockup's ${refusal.outcome} view, never the kernel's message, and the window stays put`, async ({}, testInfo) => {
+    const { fx, page: opening } = launchWith();
+    const page = await opening;
+    const home = page.url();
+    await startApp(page);
+
+    fx.refuseEvent(refusal.reason, refusal.slug ? { app_slug: APP_SLUG } : {});
+    const setup = byId(page, IDS.appSetup);
+    await expect(setup).toHaveAttribute("data-phase", refusal.outcome);
+    await expect(setup.getByRole("heading", { level: 2 })).toHaveText(refusal.title);
+    await expect(byId(page, IDS.appOutcome)).toContainText(refusal.copy);
+    await expect(byId(page, IDS.appOutcome)).toHaveAttribute("role", "alert");
+    await expect(byId(page, IDS.listMeta)).toHaveText(refusal.meta);
+    expect(await whereIn(page, [RAW_REFUSAL_MESSAGE]), "the kernel's own message is nowhere in the page").toEqual([]);
+    await expect(byId(page, IDS.appAgain)).toBeVisible();
+    await expect(byId(page, IDS.appClose)).toBeVisible();
+    if (refusal.reason === "token_write_scoped") {
+      await expect(byId(page, IDS.appOutcome)).toContainText("Contents: write → set to Read-only");
+      // The event named the App's slug, so the link is the App's own page, opened through the channel.
+      const before = (await openedUrls()).length;
+      await byId(page, IDS.appLink).click();
+      await expect.poll(async () => (await openedUrls()).slice(before)).toEqual([`https://github.com/settings/apps/${APP_SLUG}`]);
+    } else if (refusal.reason === "setup_expired") {
+      // No slug yet: the bare GitHub Apps page is not on the channel's allowlist, so the address is text (an owner open point).
+      await expect(byId(page, IDS.appLink)).toContainText("github.com/settings/apps");
+      await expect(byId(page, IDS.appLink)).not.toHaveAttribute("href", /.*/);
+    }
+    expect(page.url()).toBe(home);
+    await screenshots(page, refusal.state, testInfo);
+
+    // Close ends it: nothing was running, so nothing is cancelled.
+    await byId(page, IDS.appClose).click();
+    await expect(setup).toHaveCount(0);
+    await expect(byId(page, IDS.empty)).toBeVisible();
+    expect(fx.cancels, "a finished setup has no window left to cancel").toEqual([]);
+  });
+}
+
+test("AC4, AC5, AC9: Cancel and Escape call the cancel route once each and show setup cancelled; Set up again makes a fresh setup call; a refused setup route shows setup-failed and opens nothing", async ({}, testInfo) => {
+  const { fx, page: opening } = launchWith();
+  const page = await opening;
+  await startApp(page);
+  const setup = byId(page, IDS.appSetup);
+
+  await byId(page, IDS.appCancel).click();
+  await expect(setup).toHaveAttribute("data-phase", "cancelled");
+  await expect.poll(() => fx.cancels.length, { message: "the kernel received the cancel" }).toBe(1);
+  await expect(setup.getByRole("heading", { level: 2 })).toHaveText("Setup cancelled");
+  await expect(setup).toContainText("Nothing was connected, and the setup window is closed.");
+  await expect(byId(page, IDS.listMeta)).toHaveText("not connected · setup cancelled");
+  await screenshots(page, "app-cancelled", testInfo);
+
+  // Set up again is a fresh start: a new setup call, a new state in the opened address.
+  await byId(page, IDS.appAgain).click();
+  await expect(setup).toHaveAttribute("data-phase", "create");
+  await expect.poll(async () => (await openedUrls()).length).toBe(2);
+  expect(fx.setups, "Set up again makes a new setup call").toHaveLength(2);
+  expect(await openedUrls()).toEqual(fx.setupUrls);
+  expect(new Set(fx.setupUrls).size, "each setup opens its own address").toBe(2);
+
+  // Escape closes the running dialog the same way: one more cancel, then the cancelled view; Close then returns to the screen.
+  await page.keyboard.press("Escape");
+  await expect(setup).toHaveAttribute("data-phase", "cancelled");
+  await expect.poll(() => fx.cancels.length).toBe(2);
+  await byId(page, IDS.appClose).click();
+  await expect(setup).toHaveCount(0);
+  expect(fx.cancels, "Close from an outcome view cancels nothing more").toHaveLength(2);
+
+  // The setup route refusing (a reason the mockup maps to setup-failed): nothing is opened, and the raw message is not shown.
+  const before = (await openedUrls()).length;
+  fx.refuseSetup("install_failed");
+  await byId(page, IDS.emptyConnect).click();
+  await byId(page, IDS.choiceApp).click();
+  await expect(setup).toHaveAttribute("data-phase", "failed");
+  await expect(setup.getByRole("heading", { level: 2 })).toHaveText("Setup didn't finish");
+  expect(fx.setups).toHaveLength(3);
+  expect((await openedUrls()).length, "a refused setup opens nothing").toBe(before);
+  expect(await whereIn(page, [RAW_REFUSAL_MESSAGE])).toEqual([]);
+
+  // Paste a token instead leaves for the token sheet unchanged.
+  await byId(page, IDS.appPasteToken).click();
+  await expect(setup).toHaveCount(0);
+  await expect(byId(page, IDS.sheet)).toHaveAttribute("data-mode", "connect");
+  await expect(byId(page, IDS.sheetToken)).toBeFocused();
+});
+
+test("revoked: GitHub no longer accepts the App: the danger band, the last-read data kept, no Replace token, and Set up again as the primary button starts a fresh setup", async ({}, testInfo) => {
+  const { fx, page: opening } = launchWith({ connector: "app-revoked" });
+  const page = await opening;
+  const detail = byId(page, IDS.detail);
+  await expect(detail).toHaveAttribute("data-state", "revoked");
+  await expect(detail).toHaveAttribute("data-method", "app");
+  const band = byId(page, IDS.inBand);
+  await expect(band).toContainText("GitHub no longer accepts this App");
+  await expect(band).toHaveAttribute("role", "alert");
+  await expect(band).toHaveAttribute("data-tone", "danger");
+  await expect(byId(page, IDS.listMeta)).toHaveText("rejected · GitHub no longer accepts the App");
+  await expect(byId(page, IDS.status)).toContainText("rejected");
+  await expect(byId(page, IDS.appAccess)).toContainText("None: GitHub refused the App's key");
+  await expect(byId(page, IDS.repos).getByRole("listitem"), "the last-read repos are kept").toHaveText([...APP_REPOS]);
+  await expect(byId(page, IDS.replace)).toHaveCount(0);
+  await expect(byId(page, IDS.appSetUpAgain)).toHaveAttribute("data-variant", "primary");
+  await expect(byId(page, IDS.disconnect)).toHaveAttribute("data-variant", "danger");
+  await screenshots(page, "app-revoked", testInfo);
+
+  await byId(page, IDS.appSetUpAgain).click();
+  await expect(byId(page, IDS.appSetup)).toHaveAttribute("data-phase", "create");
+  await expect.poll(async () => (await openedUrls()).length).toBe(1);
+  expect(fx.setups).toHaveLength(1);
+  expect(await openedUrls()).toEqual(fx.setupUrls);
+});
+
+test("unreachable (App): when the kernel goes away mid-read the last App data stays with its time, Disconnect and Refresh are disabled and it never reads not connected", async ({}, testInfo) => {
+  const { fx, page: opening } = launchWith({ connector: "app-connected" });
+  const page = await opening;
+  await expect(byId(page, IDS.detail)).toHaveAttribute("data-state", "connected");
+
+  fx.dropNextRead();
+  fx.change("app-connected");
+  const band = byId(page, IDS.band);
+  await expect(band).toContainText("Couldn't reach the kernel");
+  await expect(byId(page, IDS.listMeta)).toHaveText("status unknown · kernel unreachable");
+  await expect(byId(page, IDS.empty)).toHaveCount(0);
+  await expect(byId(page, IDS.detail)).toHaveAttribute("data-state", "connected");
+  await expect(byId(page, IDS.appName)).toHaveText(APP_SLUG);
+  await expect(byId(page, IDS.status)).toContainText("Unknown while the kernel is unreachable");
+  await expect(byId(page, IDS.appAccess)).toContainText("last known: expires");
+  for (const id of [IDS.disconnect, IDS.refresh]) await expect(byId(page, id)).toBeDisabled();
+  await expect(byId(page, IDS.replace)).toHaveCount(0);
+  await screenshots(page, "app-unreachable", testInfo);
 });
 
 test("AC12: without INTEGRATIONS_EVIDENCE the screenshots went to the output dir and nothing under the tracked evidence dir changed during the run", async () => {

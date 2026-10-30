@@ -25,6 +25,7 @@ const api: StudioBridge = {
     unsubscribe: () => ipcRenderer.invoke(CHANNELS.feedUnsubscribe) as Promise<void>,
     onFrame: (listener: (frame: FeedRelayFrame) => void) => listen(CHANNELS.feedFrame, listener),
   },
+  openExternal: (url: string) => ipcRenderer.invoke(CHANNELS.openExternal, url) as Promise<boolean>,
   onNavigate: (listener: (route: string) => void) => listen(CHANNELS.navigate, listener),
 };
 

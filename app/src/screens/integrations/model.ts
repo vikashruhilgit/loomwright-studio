@@ -49,6 +49,33 @@ export const INTEGRATIONS_TEST_IDS = {
   sheetError: "integrations-sheet-error",
   sheetStatus: "integrations-sheet-status",
   sheetPage: "integrations-token-page",
+  // The GitHub App path (GitHub App 4): the choice, the setup dialog, the App's detail pane and its disconnect confirm.
+  choice: "integrations-choice",
+  choiceApp: "integrations-choice-app",
+  choiceToken: "integrations-choice-token",
+  choiceCancel: "integrations-choice-cancel",
+  appSetup: "integrations-app-setup",
+  appSteps: "integrations-app-steps",
+  appStep1: "integrations-app-step-1",
+  appStep2: "integrations-app-step-2",
+  appCloses: "integrations-app-closes",
+  appStatus: "integrations-app-status",
+  appOpenAgain: "integrations-app-open-again",
+  appCancel: "integrations-app-cancel",
+  appClose: "integrations-app-close",
+  appAgain: "integrations-app-again",
+  appPasteToken: "integrations-app-paste-token",
+  appOutcome: "integrations-app-outcome",
+  appLink: "integrations-app-link",
+  appName: "integrations-app-name",
+  appInstallation: "integrations-app-installation",
+  appKey: "integrations-app-key",
+  appAccess: "integrations-app-access",
+  appChecked: "integrations-app-checked",
+  appSetUpAgain: "integrations-app-set-up-again",
+  appConfirm: "integrations-app-confirm",
+  appConfirmInstalled: "integrations-app-confirm-installed",
+  appConfirmApps: "integrations-app-confirm-apps",
 } as const;
 
 // ---- One call's answer ------------------------------------------------------------------------
@@ -90,8 +117,11 @@ export function replyText(reply: Exclude<Reply<unknown>, { readonly kind: "ok" }
 
 // ---- Status to designed state -----------------------------------------------------------------
 
-/** The mockup's `S.base`: `none` (no token in use) or a token's state. `unreachable` is the read's phase, not a row state. */
-export type DesignedState = "none" | "connected" | "expiring" | "expired";
+/**
+ * The mockup's `S.base`: `none` (no token in use), a token's state, or `revoked` (an
+ * App GitHub no longer accepts: `app-revoked`). `unreachable` is the read's phase, not a row state.
+ */
+export type DesignedState = "none" | "connected" | "expiring" | "expired" | "revoked";
 
 /**
  * Each row status's designed state. A `rejected` row (the kernel writes one
@@ -105,6 +135,19 @@ export const STATE_OF_STATUS: Readonly<Record<ConnectorStatus, DesignedState>> =
   rejected: "none",
   disconnected: "none",
 });
+
+/** Whether the row is a GitHub App connection (`method: "app"`); a row without `method` reads as a token. */
+export function isAppRow(row: Connector | undefined): boolean {
+  return row?.method === "app";
+}
+
+/**
+ * An App GitHub refused after it had been installed: `rejected` with the App's slug and installation both
+ * recorded. A `rejected` App row without them is a setup that was refused, which reads as not connected.
+ */
+export function isRevokedApp(row: Connector | undefined): boolean {
+  return row !== undefined && isAppRow(row) && row.status === "rejected" && typeof row.app_slug === "string" && row.app_slug !== "" && typeof row.installation_id === "number";
+}
 
 /** The GitHub row of a `GET /connectors` answer, if the kernel has one. */
 export function githubRow(answer: ConnectorsResponse | undefined): Connector | undefined {
@@ -138,7 +181,7 @@ export interface IntegrationsView {
  */
 export function viewOf(read: ConnectorsRead): IntegrationsView {
   const row = githubRow(read.lastOk);
-  const state: DesignedState = row === undefined ? "none" : STATE_OF_STATUS[row.status];
+  const state: DesignedState = row === undefined ? "none" : isRevokedApp(row) ? "revoked" : STATE_OF_STATUS[row.status];
   const shown = { state, row: state === "none" ? undefined : row, refused: row?.status === "rejected" };
   const { latest } = read;
   if (latest === undefined) return { phase: "loading", ...shown, message: undefined };
@@ -147,9 +190,14 @@ export function viewOf(read: ConnectorsRead): IntegrationsView {
   return { phase: "error", ...shown, message: replyText(latest) };
 }
 
-/** Whether a token is in use (connected, expiring or expired): Replace token and Disconnect exist. */
+/** Whether a connection is in use (connected, expiring, expired or a revoked App): Disconnect exists. */
 export function hasToken(view: IntegrationsView): boolean {
   return view.state !== "none";
+}
+
+/** The connection in use is a GitHub App: it has no Replace token, and Connect GitHub waits for a disconnect. */
+export function isAppConnection(view: IntegrationsView): boolean {
+  return isAppRow(view.row);
 }
 
 /** The kernel cannot be asked right now: every write is disabled. */
@@ -223,7 +271,8 @@ export function rowMeta(view: IntegrationsView, connecting: boolean, now: Date):
     return { dot: "idle", text: view.refused ? "not connected · the last token was refused" : "not connected" };
   }
   const who = row?.account_login ? ` · ${row.account_login}` : "";
-  if (view.state === "connected") return { dot: "ok", text: `connected${who}` };
+  if (view.state === "revoked") return { dot: "danger", text: "rejected · GitHub no longer accepts the App" };
+  if (view.state === "connected") return { dot: "ok", text: `connected${who}${isAppRow(row) ? " · GitHub App" : ""}` };
   if (view.state === "expired") return { dot: "danger", text: `expired${who}` };
   const days = daysLeft(row?.expires_at ?? null, now);
   return { dot: "waiting", text: `${days === undefined ? "expiring" : `expiring in ${plural(Math.max(days, 0), "day", "days")}`}${who}` };

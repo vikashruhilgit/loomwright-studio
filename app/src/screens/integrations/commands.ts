@@ -7,8 +7,10 @@
 // The palette reads `enabled` when it opens, so the flags are read through a
 // ref that every render refreshes: the three commands are registered once,
 // never again when the connector changes state.
-//   Connect GitHub          disabled only while the kernel is unreachable; opens the sheet
-//                           in replace mode when a token exists (the mockup's palette entry)
+//   Connect GitHub          disabled while the kernel is unreachable, and while a GitHub App is
+//                           connected (the mockup's "disconnect first": one connection at a time);
+//                           opens the choice when nothing is connected, and the sheet in replace
+//                           mode when a token exists (the mockup's palette entry)
 //   Disconnect GitHub       enabled only while a non-disconnected token row exists
 //   Refresh reachable repos enabled while a token is in use (expired too), the
 //                           same as the detail pane's Refresh button
@@ -23,7 +25,7 @@ export const INTEGRATIONS_GROUP = "Integrations";
 
 /** What each command does: the same handlers the screen's buttons call. */
 export interface IntegrationsCommandHandlers {
-  /** The sheet; in replace mode when a token exists. */
+  /** The choice when nothing is connected; the token sheet in replace mode when a token exists. */
   readonly connect: () => void;
   readonly disconnect: () => void;
   readonly refreshRepos: () => void | Promise<void>;
@@ -35,6 +37,8 @@ export interface IntegrationsCommandFlags {
   readonly offline: boolean;
   /** A token is in use: connected, expiring or expired. */
   readonly hasToken: boolean;
+  /** The connection in use is a GitHub App (connected or revoked): Connect GitHub waits for a disconnect. */
+  readonly appConnected: boolean;
 }
 
 /** Integrations' commands over `flags` and `handlers` (both read when a command is asked, never captured). */
@@ -45,7 +49,10 @@ export function integrationsCommands(flags: () => IntegrationsCommandFlags, hand
       title: "Connect GitHub",
       group: INTEGRATIONS_GROUP,
       keywords: ["token", "replace", "integration", "connector"],
-      enabled: () => !flags().offline,
+      enabled: () => {
+        const f = flags();
+        return !f.offline && !f.appConnected;
+      },
       run: () => handlers().connect(),
     },
     {

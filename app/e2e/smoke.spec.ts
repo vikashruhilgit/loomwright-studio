@@ -46,7 +46,7 @@ test("against the fixture kernel, the window shows the sidebar's six entries, In
     require: typeof (window as unknown as { require?: unknown }).require,
     process: typeof (window as unknown as { process?: unknown }).process,
   }));
-  expect(exposed).toEqual({ api: ["connection", "feed", "onNavigate", "request"], require: "undefined", process: "undefined" });
+  expect(exposed).toEqual({ api: ["connection", "feed", "onNavigate", "openExternal", "request"], require: "undefined", process: "undefined" });
 });
 
 test("with no kernel answering, the window shows the kernel unreachable band", async () => {

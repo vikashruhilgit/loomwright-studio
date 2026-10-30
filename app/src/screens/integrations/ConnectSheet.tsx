@@ -19,6 +19,13 @@
 // ordinary state (a boolean) and never touches the token. Connect stays off, and
 // Enter sends nothing, until the field holds something and the box is ticked.
 //
+// Choice first. With nothing connected the sheet opens on the mockup's choice
+// ("Install GitHub App" or "Paste a token"); "Paste a token" shows the token
+// form below, unchanged, and "Install GitHub App" hands over to the App setup
+// dialog (`AppSetupSheet.tsx`) through `onChooseApp`. Replace token on a token
+// connection starts on the form. The choice is a view of this one panel, so the
+// focus trap, Escape and the focus return to the opener are the same throughout.
+//
 // Phases (the mockup's `S.sheet`): blank, connecting (field disabled and
 // empty, "Checking with GitHub…", button busy), then a refusal shown inline
 // (`invalid`, `write`, `permissions_unknown`, or the kernel's own message) with the field empty again
@@ -34,6 +41,8 @@ import { connectGithub } from "./actions";
 import { INTEGRATIONS_TEST_IDS as IDS, type Refusal, refusalOf } from "./model";
 import "./integrations.css";
 
+type SheetStep = "choice" | "token";
+
 /** Where the owner creates the token. The main process denies every window open, so it is shown as text to copy, not a link. */
 export const TOKEN_PAGE = "github.com/settings/personal-access-tokens/new";
 
@@ -42,6 +51,12 @@ export type SheetMode = "connect" | "replace";
 export interface ConnectSheetProps {
   readonly api: StudioBridge;
   readonly mode: SheetMode;
+  /** Open on the choice between the GitHub App and a token (nothing is connected). Without it the sheet opens on the token form. */
+  readonly choice?: boolean;
+  /** The kernel cannot be asked right now: "Install GitHub App" is off (the screen's band says why). */
+  readonly offline?: boolean;
+  /** "Install GitHub App" was chosen: the screen closes this sheet and opens the setup dialog. */
+  readonly onChooseApp?: () => void;
   /** The row being replaced is `expired`: the replace sentence says so. */
   readonly expired?: boolean;
   /** Cancel, Escape, or the kernel's yes. */
@@ -89,7 +104,24 @@ function Refused({ refusal, id }: { readonly refusal: Refusal; readonly id: stri
   );
 }
 
-export function ConnectSheet({ api, mode, expired = false, onClose, onConnected, onBusyChange, inFlight: screenInFlight, onSettled }: ConnectSheetProps) {
+function ShieldGlyph() {
+  return (
+    <svg className="integrations-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+  );
+}
+
+function KeyGlyph() {
+  return (
+    <svg className="integrations-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4" />
+    </svg>
+  );
+}
+
+export function ConnectSheet({ api, mode, choice = false, offline = false, onChooseApp, expired = false, onClose, onConnected, onBusyChange, inFlight: screenInFlight, onSettled }: ConnectSheetProps) {
   const ids = useId();
   const titleId = `${ids}-title`;
   const descId = `${ids}-desc`;
@@ -109,10 +141,13 @@ export function ConnectSheet({ api, mode, expired = false, onClose, onConnected,
   // Unticked each time the sheet opens; it stays ticked through a refusal, so a retry needs only a new paste.
   const [declared, setDeclared] = useState(false);
   const [phase, setPhase] = useState<SheetPhase>({ kind: "blank" });
+  const [step, setStep] = useState<SheetStep>(choice ? "choice" : "token");
+  const appRef = useRef<HTMLButtonElement>(null);
+  const tokenCardRef = useRef<HTMLButtonElement>(null);
 
   // The handlers the document listener and the late answer read: the latest props, never stale ones.
-  const latest = useRef({ onClose, onConnected, onBusyChange, onSettled });
-  latest.current = { onClose, onConnected, onBusyChange, onSettled };
+  const latest = useRef({ onClose, onConnected, onBusyChange, onSettled, onChooseApp });
+  latest.current = { onClose, onConnected, onBusyChange, onSettled, onChooseApp };
 
   useEffect(() => {
     mounted.current = true;
@@ -131,11 +166,13 @@ export function ConnectSheet({ api, mode, expired = false, onClose, onConnected,
   }, []);
 
   // The field takes focus on open and again after a refusal; while the kernel checks, Cancel holds it (a disabled field cannot).
+  // On the choice, the suggested card does (the token card when the App is off).
   const phaseKind = phase.kind;
   useEffect(() => {
-    if (phaseKind === "connecting") cancelRef.current?.focus();
+    if (step === "choice") (appRef.current !== null && !appRef.current.disabled ? appRef.current : tokenCardRef.current)?.focus();
+    else if (phaseKind === "connecting") cancelRef.current?.focus();
     else inputRef.current?.focus();
-  }, [phaseKind]);
+  }, [phaseKind, step]);
 
   const submit = async () => {
     const input = inputRef.current;
@@ -172,6 +209,49 @@ export function ConnectSheet({ api, mode, expired = false, onClose, onConnected,
   const refusal = phase.kind === "refused" ? phase.refusal : undefined;
   const placeholder = connecting ? "Checking with GitHub…" : refusal !== undefined ? "Paste the changed or new token" : "github_pat_…";
   const replaceSentence = mode === "replace" ? (expired ? " The new token replaces the expired one once it passes the check." : " The current token stays in use until the new one passes the check.") : "";
+
+  if (step === "choice") {
+    return createPortal(
+      <div className="dialog-overlay" data-state="open">
+        <div ref={panelRef} className="dialog-panel integrations-sheet" data-wide="true" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descId} tabIndex={-1} data-testid={IDS.choice} data-mode={mode}>
+          <h2 className="dialog-title" id={titleId}>
+            Connect GitHub
+          </h2>
+          <div className="dialog-description" id={descId}>
+            <p>Choose how Studio gets read access to your repos. Either way it only reads: it can't comment, push or merge.</p>
+          </div>
+          <div className="integrations-opts">
+            <button ref={appRef} type="button" className="integrations-option" data-suggested="true" disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={() => latest.current.onChooseApp?.()} data-testid={IDS.choiceApp}>
+              <ShieldGlyph />
+              <span className="integrations-option-text">
+                <span className="integrations-option-head">
+                  <span className="integrations-option-name">Install GitHub App</span>
+                  <span className="integrations-badge" data-tone="neutral">
+                    Suggested
+                  </span>
+                </span>
+                <span className="integrations-cap">GitHub opens in your browser. You click Create, then pick the repos and click Install. Permissions are checked by GitHub, and access renews itself.</span>
+              </span>
+            </button>
+            <button ref={tokenCardRef} type="button" className="integrations-option" onClick={() => setStep("token")} data-testid={IDS.choiceToken}>
+              <KeyGlyph />
+              <span className="integrations-option-text">
+                <span className="integrations-option-name">Paste a token</span>
+                <span className="integrations-cap">A fine-grained token you create on GitHub. Permissions are declared by you: GitHub doesn't tell Studio what a token can do.</span>
+              </span>
+            </button>
+          </div>
+          <p className="integrations-cap">Studio keeps one GitHub connection at a time.</p>
+          <div className="dialog-actions">
+            <Button variant="secondary" onClick={onClose} data-testid={IDS.choiceCancel}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </div>,
+      document.body,
+    );
+  }
 
   return createPortal(
     <div className="dialog-overlay" data-state="open">

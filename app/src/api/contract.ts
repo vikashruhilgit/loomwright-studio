@@ -1003,4 +1003,10 @@ export interface StudioBridge {
   };
   /** A `loomwright-studio://` link the app was opened with (item 17), as an app route. */
   onNavigate(listener: (route: string) => void): () => void;
+  /**
+   * Open one address in the system browser. The main process refuses (answers `false`) anything off its
+   * allowlist: the kernel's GitHub App start page, and two GitHub settings pages. Optional so a bridge
+   * without it (a test fake) compiles; a caller treats a missing method as `false`.
+   */
+  openExternal?(url: string): Promise<boolean>;
 }

@@ -14,7 +14,10 @@ import {
   githubRow,
   grantedAgents,
   hasToken,
+  isAppConnection,
+  isAppRow,
   isOffline,
+  isRevokedApp,
   levelLabel,
   permissionLabel,
   permissionLines,
@@ -284,5 +287,42 @@ describe("the agents with the GitHub grant", () => {
     expect(ungrantedNote(roster)).toBe("Pim doesn't have it.");
     expect(ungrantedNote([agent("pim", "Pim", []), agent("cy", "Cy", []), agent("di", "Di", [])])).toBe("Pim, Cy and Di don't have it.");
     expect(ungrantedNote([agent("mason", "Mason", ["github"])])).toBeUndefined();
+  });
+});
+
+// ---- The GitHub App (GitHub App 4) ------------------------------------------------------------------
+
+describe("a GitHub App connection", () => {
+  const app = (status: ConnectorStatus, overrides: Partial<Connector> = {}): Connector => connector(status, { method: "app", app_slug: "loomwright-studio-fixture", installation_id: 51234567, ...overrides });
+  const read = (row: Connector): ConnectorsRead => ({ latest: { kind: "ok", status: 200, body: { connectors: [row] } }, lastOk: { connectors: [row] } });
+
+  it("a row without a method reads as a token; method app is an App", () => {
+    expect(isAppRow(connector("connected"))).toBe(false);
+    expect(isAppRow(connector("connected", { method: "token" }))).toBe(false);
+    expect(isAppRow(app("connected"))).toBe(true);
+    expect(isAppRow(undefined)).toBe(false);
+    expect(isAppConnection(viewOf(read(app("connected"))))).toBe(true);
+    expect(isAppConnection(viewOf(read(connector("connected"))))).toBe(false);
+  });
+
+  it("a connected App is the connected designed state, with 'GitHub App' in the list row", () => {
+    const view = viewOf(read(app("connected")));
+    expect(view.state).toBe("connected");
+    expect(rowMeta(view, false, NOW)).toEqual({ dot: "ok", text: "connected · octo-owner · GitHub App" });
+  });
+
+  it("a rejected App that had been installed is revoked: Disconnect exists, the row says GitHub no longer accepts it", () => {
+    const view = viewOf(read(app("rejected")));
+    expect(isRevokedApp(app("rejected"))).toBe(true);
+    expect(view.state).toBe("revoked");
+    expect(hasToken(view)).toBe(true);
+    expect(rowMeta(view, false, NOW)).toEqual({ dot: "danger", text: "rejected · GitHub no longer accepts the App" });
+  });
+
+  it("a rejected App that was never installed (or a rejected token) is not connected", () => {
+    for (const row of [app("rejected", { installation_id: null }), app("rejected", { app_slug: null }), connector("rejected")]) {
+      expect(isRevokedApp(row)).toBe(false);
+      expect(viewOf(read(row)).state).toBe("none");
+    }
   });
 });
