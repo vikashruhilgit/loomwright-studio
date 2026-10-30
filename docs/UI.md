@@ -58,3 +58,7 @@
 **GUI v1** (roadmap phase 5): menu bar, Chat (with Crew threads), Team, Approvals, Sessions. **GUI v2** (phase 7): all the rest.
 
 **Integrations is phase 6, GitHub only** (the owner's decision, 2026-10-24). The ROADMAP's phase 6 row wins over the GUI v2 listing above: phase 6 builds the real Integrations screen with GitHub as its only connector (connect, disconnect, scopes, expiry, status and the repos the token reaches), on `⌘5` after Sessions, from a mockup the owner approves first (D9). Phase 7 adds its polish and the other connectors. DESIGN.md gets the matching note in phase 6.
+
+**Hooks is phase 9** (the owner's decision, 2026-10-30). Phase 7's GUI v2 builds the other screens above (Tasks, Playbooks, Schedules, Memory, Budget & audit, Settings) and leaves the Hooks row as written; the Hooks screen moves to phase 9.
+
+**Tasks in phase 7.** A read-only board grouped by state, over the kernel's tasks, playbook runs and sessions. Each card shows its kind and state, and opens its history: the events that touched it, its runs, its sessions and any approvals that name it. It shows only what the kernel recorded; there is no edit or create. The shortcuts are a proposal (Tasks `⌘6`, Playbooks `⌘7`, Schedules `⌘8`, Memory `⌘9`, Budget & audit none, Settings `⌘,`) until the GUI v2 mockup sets the final ones.

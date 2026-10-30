@@ -253,6 +253,25 @@ Each part is documented on its own page, which names the item that builds it and
 
 Items 04, 05, 08 and 09 document their part on the existing pages: [triggers](architecture/triggers.md), [playbook runs](architecture/playbook-runs.md), [agents](architecture/agents.md) and [dry runs](architecture/dry-run.md).
 
+## Phase 7 features
+
+Phase 7 adds GUI v2: the Tasks, Playbooks, Schedules, Memory, Budget & audit and Settings screens ([UI](UI.md)). Hooks moved to phase 9 (owner, 2026-10-30). The foundation item ships only the contract, empty kernel parts and placeholder screens, so each screen item edits only its own kernel part, `app/src/screens/<id>/` and its tests; no route is served and no screen has behaviour yet.
+
+**The gui feature.** `kernel/src/gui/` is registered as the tenth and last contribution (`guiContribution`, after integrations). Each screen item fills one part, merged in this order with the same collision rules: `tasks`, `playbook-history`, `schedules`, `memory`, `budget-audit` and `settings` (`GUI_PARTS`). Every part is empty until its item lands, and every route a part contributes is an owner route that needs the API token (none sets `unauthenticated`). Like every feature module, nothing it loads may import the Agent SDK, the session manager or `kernel.ts` as a value, because the `studio` CLI loads it.
+
+**The app.** The contract (`app/src/api/contract.ts`) declares every shape phase 7 serves or reads, and lists twelve routes as `p7-item-NN` (`HttpMethod` gains `PUT`, for the memory write):
+
+| Origin | Routes |
+|---|---|
+| `p7-item-03` | `GET /tasks`, `GET /tasks/:kind/:id` |
+| `p7-item-04` | `GET /playbooks/:id/runs`, `GET /playbooks/:id/versions` |
+| `p7-item-05` | `GET /schedule`, `GET /triggers/:id/fires` |
+| `p7-item-06` | `GET /memory`, `GET /memory/file`, `PUT /memory/file` |
+| `p7-item-07` | `GET /budget/usage`, `GET /audit` |
+| `p7-item-08` | `GET /settings` |
+
+`kernel/test/console-contract.test.ts` pins the twelve routes by origin, never as existing routes, until their items serve them. The sidebar gains Tasks `⌘6`, Playbooks `⌘7`, Schedules `⌘8`, Memory `⌘9`, Budget & audit (no shortcut) and Settings `⌘,`, after Integrations; each renders the shared "coming in this phase" placeholder (`app/src/screens/placeholder.tsx`) until its item builds the screen. The e2e fixture kernel answers the eleven new `GET` routes with empty lists and a canned settings view by default; `PUT /memory/file` has no default.
+
 ## Auth (D15, D16, D27, D29)
 
 - A pluggable provider interface: `subscription-token`, `api-key` (Keychain); `bedrock`, `vertex` later (D16).
