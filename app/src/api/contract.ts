@@ -11,14 +11,21 @@
 //
 // Every request is authenticated by the main process with the Keychain bearer
 // token; the renderer never sees it (see `app/electron/kernel-connection.ts`).
+//
+// Phase 7's twelve routes (`p7-item-NN`) are declared here before the kernel
+// serves them, as phase 6's were: the six GUI screens (items 03-08) each read
+// their own routes against the shapes below, and `kernel/test/console-contract.test.ts`
+// lists them as not yet served until their item lands. They add the app's one
+// `PUT` (the memory write), which the kernel already accepts.
 
 /** An HTTP method the API serves. */
-export type HttpMethod = "GET" | "POST";
+export type HttpMethod = "GET" | "POST" | "PUT";
 
 /**
  * Where a route comes from: the phase that built it (existing at the phase 5
  * base), the phase 5 item that adds it (`item-NN`), the phase 6 item that
- * adds it (`p6-item-NN`), or the GitHub App connect (`github-app`, D36).
+ * adds it (`p6-item-NN`), the phase 7 item that adds it (`p7-item-NN`), or the
+ * GitHub App connect (`github-app`, D36).
  */
 export type RouteOrigin =
   | "phase-1"
@@ -35,6 +42,12 @@ export type RouteOrigin =
   | "item-06"
   | "p6-item-03"
   | "p6-item-07"
+  | "p7-item-03"
+  | "p7-item-04"
+  | "p7-item-05"
+  | "p7-item-06"
+  | "p7-item-07"
+  | "p7-item-08"
   | "github-app";
 
 export interface ContractRoute {
@@ -60,6 +73,14 @@ export interface ContractRoute {
  * serves them: setup answers `setup_url` and `expires_at`, cancel answers
  * `cancelled`. The three token-free browser routes are served by
  * `github/app-setup.ts` and are not contract entries.
+ *
+ * Phase 7's twelve routes are `p7-item-NN`, each served by the item that owns
+ * its screen: the Tasks board (item 03: `/tasks`, `/tasks/:kind/:id`), a
+ * playbook's runs and versions (item 04), the schedule and a trigger's fires
+ * (item 05), the Memory tree, file and guarded write (item 06, the one `PUT`),
+ * budget usage and the audit log (item 07), and Settings (item 08). The phase 7
+ * foundation lists them before the kernel serves them; until its item lands
+ * each one answers 404. Every one is an owner route that needs the API token.
  */
 export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/status", origin: "phase-1" },
@@ -108,6 +129,18 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/drafts/:id", origin: "p6-item-07" },
   { method: "POST", path: "/connectors/github/app/setup", origin: "github-app" },
   { method: "POST", path: "/connectors/github/app/setup/cancel", origin: "github-app" },
+  { method: "GET", path: "/tasks", origin: "p7-item-03" },
+  { method: "GET", path: "/tasks/:kind/:id", origin: "p7-item-03" },
+  { method: "GET", path: "/playbooks/:id/runs", origin: "p7-item-04" },
+  { method: "GET", path: "/playbooks/:id/versions", origin: "p7-item-04" },
+  { method: "GET", path: "/schedule", origin: "p7-item-05" },
+  { method: "GET", path: "/triggers/:id/fires", origin: "p7-item-05" },
+  { method: "GET", path: "/memory", origin: "p7-item-06" },
+  { method: "GET", path: "/memory/file", origin: "p7-item-06" },
+  { method: "PUT", path: "/memory/file", origin: "p7-item-06" },
+  { method: "GET", path: "/budget/usage", origin: "p7-item-07" },
+  { method: "GET", path: "/audit", origin: "p7-item-07" },
+  { method: "GET", path: "/settings", origin: "p7-item-08" },
 ]);
 
 // ---- Shared shapes -------------------------------------------------------------
@@ -895,6 +928,350 @@ export interface DraftDetailResponse {
   readonly draft: DraftOutput;
 }
 
+// ---- Phase 7 item 03: GET /tasks and GET /tasks/:kind/:id ------------------------------
+
+/** What a Tasks board card is: a `tasks` row, a `playbook_runs` row or a `sessions` row. */
+export type TaskBoardKind = "task" | "playbook_run" | "session";
+
+/**
+ * One card on the Tasks board. `state` is the source's own value, verbatim and
+ * open (`tasks.state`, `playbook_runs.status`, `sessions.status`): the three
+ * sources have different vocabularies and the kernel invents no state. `title`
+ * is the task's `title`, a playbook run's playbook name, or `null` for a session;
+ * it and `item_ref` are untrusted (they can carry PR or ticket text).
+ */
+export interface TaskBoardItem {
+  readonly kind: TaskBoardKind;
+  readonly id: number;
+  readonly title: string | null;
+  readonly state: string;
+  /** `tasks.assignee_agent`, `sessions.agent`, or a run's playbook owner; `null` when unset. */
+  readonly agent: string | null;
+  /** The playbook (`playbooks.id`) of a run or a playbook's session; `null` otherwise. */
+  readonly playbook: number | null;
+  /** A run's `item_ref` (e.g. `github:<owner>/<repo>#<n>`); `null` for everything else. */
+  readonly item_ref: string | null;
+  /** The session: a task's `owner_session_id`, a run's `session_id`; `null` for a session card and when none. */
+  readonly session: number | null;
+  /** Counted tokens (D26) when the kernel recorded them (a run's `tokens`, a session's total); `null` otherwise. */
+  readonly tokens: number | null;
+  readonly started: IsoTime | null;
+  readonly ended: IsoTime | null;
+  /** When the row last changed; the board orders newest first by it. */
+  readonly updated: IsoTime;
+}
+
+/** One state's cards: the board groups by the source's `state`, in the page's order. */
+export interface TaskBoardGroup {
+  readonly state: string;
+  readonly items: readonly TaskBoardItem[];
+}
+
+export interface TasksQuery {
+  /** The opaque cursor from `next_before`. */
+  readonly before?: string;
+  /** Default 50, at most 200. */
+  readonly limit?: string;
+}
+
+export interface TasksResponse {
+  readonly groups: readonly TaskBoardGroup[];
+  /** `null` once the oldest card is in this page. */
+  readonly next_before: string | null;
+}
+
+/** `GET /tasks/:kind/:id`: the card, and everything that names it. Every string in an event `payload` is untrusted. */
+export interface TaskHistoryResponse {
+  readonly item: TaskBoardItem;
+  /** The item's events (its task or session), oldest first. */
+  readonly events: readonly EventFrame[];
+  /** The playbook runs for it: a playbook run's own row, a task's or session's runs; empty for none. */
+  readonly runs: readonly PlaybookRun[];
+  readonly sessions: readonly SessionSummary[];
+  /** The approvals that name it (its session or playbook), pending first. */
+  readonly approvals: readonly Approval[];
+}
+
+// ---- Phase 7 item 04: GET /playbooks/:id/runs and GET /playbooks/:id/versions ----------
+
+/** A `playbook_runs` row. `item_ref` and `item_revision` come from the source item (a PR): untrusted. */
+export interface PlaybookRun {
+  readonly id: number;
+  /** The playbook's id. */
+  readonly playbook: number;
+  /** The playbook version the run used. */
+  readonly version: number;
+  /** The kernel's run kind (`dry_run`, `fire` or `run_now`), kept open. */
+  readonly kind: string;
+  /** The run's own status (`running` until it ends), kept open: render an unknown one as text. */
+  readonly status: string;
+  readonly item_ref: string | null;
+  /** The source item's revision (e.g. a head SHA); `null` for a run that is not an item's. */
+  readonly item_revision: string | null;
+  /** Counted tokens (D26); `null` until the run ends. */
+  readonly tokens: number | null;
+  readonly session: number | null;
+  readonly started: IsoTime;
+  readonly ended: IsoTime | null;
+}
+
+export interface PlaybookRunsQuery {
+  /** The opaque cursor from `next_before`. */
+  readonly before?: string;
+  /** Default 50, at most 200. */
+  readonly limit?: string;
+}
+
+/** `GET /playbooks/:id/runs`: newest first. */
+export interface PlaybookRunsResponse {
+  readonly runs: readonly PlaybookRun[];
+  readonly next_before: string | null;
+}
+
+/** A `playbook_versions` row. */
+export interface PlaybookVersion {
+  readonly playbook: number;
+  readonly version: number;
+  /**
+   * The playbook row as it was at that version (`snapshot_json`). Partial: a
+   * snapshot taken before a column existed lacks it (for example `mode`), and a
+   * missing value reads as unknown, never as a default. `name` and `intent` are untrusted.
+   */
+  readonly snapshot: Readonly<Partial<Playbook>>;
+  readonly created_at: IsoTime;
+}
+
+/** `GET /playbooks/:id/versions`: newest first. */
+export interface PlaybookVersionsResponse {
+  readonly versions: readonly PlaybookVersion[];
+}
+
+// ---- Phase 7 item 05: GET /schedule and GET /triggers/:id/fires -------------------------
+
+/** What a schedule entry is: an enabled trigger's next fire, or a pending wake-up. */
+export type ScheduleEntryKind = "trigger" | "wakeup";
+
+/** One upcoming fire. `text` is untrusted: a trigger's `text`, or a wake-up's `reason`. */
+export interface ScheduleEntry {
+  readonly kind: ScheduleEntryKind;
+  /** The trigger's id, or the wake-up's id. */
+  readonly id: number;
+  /** When it is next due: a trigger's `next_fire_at`, a wake-up's `due_at`. */
+  readonly at: IsoTime;
+  /** A trigger's `owning_agent`; `null` for a wake-up. */
+  readonly agent: string | null;
+  /** A trigger's playbook (its slug); `null` otherwise. */
+  readonly playbook: string | null;
+  /** A trigger's `action`; `null` for a wake-up. */
+  readonly action: string | null;
+  readonly text: string;
+  /** A wake-up's task (`wakeups.task_id`); `null` otherwise. */
+  readonly task_id: number | null;
+}
+
+export interface ScheduleQuery {
+  /** Default 50, at most 200. */
+  readonly limit?: string;
+}
+
+/** `GET /schedule`: the next fires of every enabled trigger and every pending wake-up, soonest first, bounded by `limit`. */
+export interface ScheduleResponse {
+  readonly entries: readonly ScheduleEntry[];
+}
+
+/**
+ * One `trigger_fired` or `trigger_missed` event for a trigger. A missed fire
+ * carries its `reason` (a kernel code such as `already_done`, `missed_paused` or
+ * `playbook_not_enabled`); a fired one has none.
+ */
+export interface TriggerFire {
+  /** The event's id. */
+  readonly id: number;
+  readonly kind: "trigger_fired" | "trigger_missed";
+  /** When the kernel recorded it. */
+  readonly at: IsoTime;
+  /** The instant it was due, when the event records one. */
+  readonly scheduled_at: IsoTime | null;
+  readonly reason: string | null;
+  readonly session_id: number | null;
+}
+
+export interface TriggerFiresQuery {
+  /** The opaque cursor from `next_before`. */
+  readonly before?: string;
+  /** Default 50, at most 200. */
+  readonly limit?: string;
+}
+
+/** `GET /triggers/:id/fires`: newest first. */
+export interface TriggerFiresResponse {
+  readonly fires: readonly TriggerFire[];
+  readonly next_before: string | null;
+}
+
+// ---- Phase 7 item 06: GET /memory, GET /memory/file, PUT /memory/file --------------------
+
+/** One markdown file under `<dataDir>/memory/`. `path` is relative to `memory/` (`wright/role.md`), shown to the owner (invariant 8). */
+export interface MemoryFileEntry {
+  readonly path: string;
+  /** Bytes. */
+  readonly size: number;
+  readonly modified: IsoTime;
+}
+
+/** One agent's files (Wright's or a crew member's: `memory/<agent>/`). */
+export interface MemoryAgentFiles {
+  readonly agent: string;
+  readonly files: readonly MemoryFileEntry[];
+}
+
+/** `GET /memory`: each agent's files, then the shared files (`memory/shared/`). */
+export interface MemoryTreeResponse {
+  readonly agents: readonly MemoryAgentFiles[];
+  readonly shared: readonly MemoryFileEntry[];
+}
+
+export interface MemoryFileQuery {
+  /** Relative to `memory/`. */
+  readonly path: string;
+}
+
+/** `GET /memory/file`. `content` is a file an agent may have written: untrusted, render it as text. */
+export interface MemoryFileResponse {
+  readonly path: string;
+  readonly content: string;
+  /** A hash of `content`, opaque to the app: send it back as `base_hash` on a write. */
+  readonly content_hash: string;
+}
+
+/** `PUT /memory/file`: the whole new text, and the hash of the text the owner read. */
+export interface MemoryWriteBody {
+  readonly path: string;
+  readonly content: string;
+  readonly base_hash: string;
+}
+
+/** `200`: the file is written atomically and one `memory_updated` event is recorded. */
+export interface MemoryWriteResponse {
+  readonly path: string;
+  /** The hash of the text now on disk: the next write's `base_hash`. */
+  readonly content_hash: string;
+  readonly size: number;
+  readonly modified: IsoTime;
+}
+
+/**
+ * Why `PUT /memory/file` refuses (the `error` code; nothing is written). `changed_since_read`
+ * is `409` and answers a `MemoryConflictError`; the others are `400` or `404`.
+ */
+export type MemoryWriteRefusal =
+  | "invalid_body"
+  | "invalid_path"
+  | "path_outside_memory"
+  | "path_protected"
+  | "not_markdown"
+  | "too_large"
+  | "not_found"
+  | "changed_since_read";
+
+/** `409`: the file changed after the owner read it. Nothing was overwritten; both versions are on the screen. */
+export interface MemoryConflictError extends ApiError {
+  readonly error: "changed_since_read";
+  /** The text on disk now: untrusted. */
+  readonly current_content: string;
+  readonly current_hash: string;
+}
+
+// ---- Phase 7 item 07: GET /budget/usage and GET /audit -----------------------------------
+
+export interface BudgetUsageQuery {
+  /** How many days back, today included. */
+  readonly days?: string;
+}
+
+/**
+ * One `budget` day for an agent and a playbook. Tokens are counted per D26
+ * (input + output + cache writes); cache reads are shown and never counted.
+ * `cost_estimate_usd` is "≈ at API rates" (D24): an estimate from the recorded
+ * `cost_usd`, never a charge on the subscription build; `null` when none was recorded.
+ */
+export interface BudgetUsageRow {
+  /** `YYYY-MM-DD`. */
+  readonly day: string;
+  readonly agent: string | null;
+  /** A playbook's slug, or `null` outside a playbook. */
+  readonly playbook: string | null;
+  readonly counted_tokens: number;
+  /** Shown, not counted. */
+  readonly cache_read_tokens: number;
+  readonly cost_estimate_usd: number | null;
+}
+
+/** One limit against today's use: an agent's or a playbook's tokens per day, and an agent's sessions at once. A limit the owner never set is `null`. */
+export interface BudgetLimitUsage {
+  readonly scope: "agent" | "playbook";
+  /** The agent's id, or the playbook's slug. */
+  readonly id: string;
+  readonly tokens_today: number;
+  readonly tokens_per_day: number | null;
+  readonly sessions_running: number;
+  /** `null` for a playbook (it has no sessions-at-once limit) and for an unset one. */
+  readonly sessions_at_once: number | null;
+}
+
+/** The per-account cap state with its reset times, as `GET /status` shows it. */
+export type BudgetCapState = StatusBody["cap_state"];
+
+export interface BudgetUsageResponse {
+  readonly rows: readonly BudgetUsageRow[];
+  readonly limits: readonly BudgetLimitUsage[];
+  readonly cap_state: BudgetCapState;
+}
+
+export interface AuditQuery {
+  /** An event kind. */
+  readonly kind?: string;
+  readonly agent?: string;
+  /** A playbook's slug. */
+  readonly playbook?: string;
+  /** Inclusive ISO-8601 bounds on the event's time. */
+  readonly since?: string;
+  readonly until?: string;
+  /** The opaque cursor from `next_before`. */
+  readonly before?: string;
+  /** Default 50, at most 200. */
+  readonly limit?: string;
+}
+
+/** `GET /audit`: events, newest first. Every string in a `payload` is untrusted. */
+export interface AuditResponse {
+  readonly events: readonly EventFrame[];
+  readonly next_before: string | null;
+}
+
+// ---- Phase 7 item 08: GET /settings ------------------------------------------------------
+
+/** The notifier the kernel delivers with (`none` when it has no way to). */
+export type NotifierKind = "terminal-notifier" | "osascript" | "none";
+
+/**
+ * `GET /settings`: read-only. It never carries a secret: the provider's health
+ * and when its token was made, never the token (invariant 6 keeps sign-in out of the app).
+ */
+export interface SettingsResponse {
+  readonly provider: {
+    readonly id: string;
+    readonly account: string | null;
+    readonly health: AuthHealth;
+    /** When the credential was created (`auth_providers.token_created_at`), for expiry; `null` when unknown. */
+    readonly token_created_at: IsoTime | null;
+  };
+  readonly data_dir: string;
+  readonly notifier: NotifierKind;
+  /** The Loomwright install the adapter resolved, or why it did not. */
+  readonly loomwright: LoomwrightAdapterStatus;
+}
+
 // ---- The route map: method + path -> query, body, response -------------------------
 
 interface Route<Q, B, R> {
@@ -954,6 +1331,18 @@ export interface ContractRouteMap {
   "GET /drafts/:id": Route<NoQuery, undefined, DraftDetailResponse>;
   "POST /connectors/github/app/setup": Route<NoQuery, undefined, GitHubAppSetupResponse>;
   "POST /connectors/github/app/setup/cancel": Route<NoQuery, undefined, GitHubAppSetupCancelResponse>;
+  "GET /tasks": Route<TasksQuery, undefined, TasksResponse>;
+  "GET /tasks/:kind/:id": Route<NoQuery, undefined, TaskHistoryResponse>;
+  "GET /playbooks/:id/runs": Route<PlaybookRunsQuery, undefined, PlaybookRunsResponse>;
+  "GET /playbooks/:id/versions": Route<NoQuery, undefined, PlaybookVersionsResponse>;
+  "GET /schedule": Route<ScheduleQuery, undefined, ScheduleResponse>;
+  "GET /triggers/:id/fires": Route<TriggerFiresQuery, undefined, TriggerFiresResponse>;
+  "GET /memory": Route<NoQuery, undefined, MemoryTreeResponse>;
+  "GET /memory/file": Route<MemoryFileQuery, undefined, MemoryFileResponse>;
+  "PUT /memory/file": Route<NoQuery, MemoryWriteBody, MemoryWriteResponse>;
+  "GET /budget/usage": Route<BudgetUsageQuery, undefined, BudgetUsageResponse>;
+  "GET /audit": Route<AuditQuery, undefined, AuditResponse>;
+  "GET /settings": Route<NoQuery, undefined, SettingsResponse>;
 }
 
 export type RouteKey = keyof ContractRouteMap;
