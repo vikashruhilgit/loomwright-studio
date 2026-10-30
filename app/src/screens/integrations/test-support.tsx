@@ -1,7 +1,9 @@
-// Test-only support for Integrations' two screen suites (`integrations.test.tsx`,
-// `connect-sheet.test.tsx`): the fixtures, and a scripted kernel over
-// `fake-bridge.ts` with the four connector routes, each answer swappable per
-// test. Imported by tests only; never by the app.
+// Test-only support for Integrations' screen suites (`integrations.test.tsx`,
+// `connect-sheet.test.tsx`, `app-setup.test.ts`): the fixtures, and a scripted
+// kernel over `fake-bridge.ts` with the connector routes (the four token ones and
+// the two GitHub App setup ones), each answer swappable per test, and an
+// open-external channel that records what it was asked to open. Imported by tests
+// only; never by the app.
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { expect } from "vitest";
 import type { ApiRequest, ApiResult, Connector, ConnectorStatus, EventFrame, RosterEntry, StatusBody } from "../../api/contract";
@@ -45,6 +47,15 @@ export function connector(status: ConnectorStatus, overrides: Partial<Connector>
     updated_at: "2026-10-01T09:00:00.000Z",
     ...overrides,
   };
+}
+
+/** The fixture App's slug and installation: fixture data, no real account. */
+export const APP_SLUG = "loomwright-studio-fixture";
+export const APP_INSTALLATION = 51234567;
+
+/** A github row connected through the GitHub App: the token fields it never has stay at their defaults. */
+export function appConnector(status: ConnectorStatus = "connected", overrides: Partial<Connector> = {}): Connector {
+  return connector(status, { method: "app", app_slug: APP_SLUG, installation_id: APP_INSTALLATION, permissions_source: "reported", expires_at: new Date(Date.now() + 3_600_000).toISOString(), ...overrides });
 }
 
 export function agent(id: string, name: string, connectors: RosterEntry["connectors"]): RosterEntry {
@@ -97,6 +108,14 @@ export interface Kernel {
   disconnect: (req: ApiRequest) => Answer;
   /** `GET /connectors/github/repos`. */
   repos: (req: ApiRequest) => Answer;
+  /** `POST /connectors/github/app/setup`. */
+  appSetup: (req: ApiRequest) => Answer;
+  /** `POST /connectors/github/app/setup/cancel`. */
+  appCancel: (req: ApiRequest) => Answer;
+  /** Every address the open-external channel was asked to open, in order. */
+  readonly opened: string[];
+  /** What the channel answers: `true` when it opened the address. */
+  openAnswer: (url: string) => boolean | Promise<boolean>;
 }
 
 export interface Setup {
@@ -105,7 +124,12 @@ export interface Setup {
   readonly token?: Kernel["token"];
   readonly disconnect?: Kernel["disconnect"];
   readonly repos?: Kernel["repos"];
+  readonly appSetup?: Kernel["appSetup"];
+  readonly appCancel?: Kernel["appCancel"];
 }
+
+/** The loopback address the fake kernel hands back as `setup_url` (the fake connection's port is 1). */
+export const SETUP_URL = "http://127.0.0.1:1/connectors/github/app/start?state=fixture-state";
 
 /** A kernel that answers the four routes, with the defaults of a connected token. */
 export function createKernel(setup: Setup = {}): Kernel {
@@ -118,6 +142,10 @@ export function createKernel(setup: Setup = {}): Kernel {
     token: setup.token ?? (() => ok({ connector: connector("connected") })),
     disconnect: setup.disconnect ?? (() => ok({ connector: connector("disconnected") })),
     repos: setup.repos ?? (() => ok({ repos: ["octo-owner/site", "octo-owner/docs"], verified_at: new Date().toISOString() })),
+    appSetup: setup.appSetup ?? (() => ok({ setup_url: SETUP_URL, expires_at: new Date(Date.now() + 600_000).toISOString() })),
+    appCancel: setup.appCancel ?? (() => ok({ cancelled: true })),
+    opened: [],
+    openAnswer: () => true,
   };
   fake.route("GET /status", () => ok(STATUS));
   fake.route("GET /agents", () => ok({ agents: kernel.roster }));
@@ -125,6 +153,12 @@ export function createKernel(setup: Setup = {}): Kernel {
   fake.route("POST /connectors/github/token", (req) => kernel.token(req));
   fake.route("POST /connectors/github/disconnect", (req) => kernel.disconnect(req));
   fake.route("GET /connectors/github/repos", (req) => kernel.repos(req));
+  fake.route("POST /connectors/github/app/setup", (req) => kernel.appSetup(req));
+  fake.route("POST /connectors/github/app/setup/cancel", (req) => kernel.appCancel(req));
+  fake.bridge.openExternal = async (url: string) => {
+    kernel.opened.push(url);
+    return kernel.openAnswer(url);
+  };
   return kernel;
 }
 
@@ -142,11 +176,11 @@ export async function startScreen(setup: Setup = {}): Promise<Kernel> {
 
 let nextEventId = 1;
 
-/** A feed event of `kind` (the screen follows `kind` only). */
-export function emit(kernel: Kernel, kind: string): void {
+/** A feed event of `kind` (the screen follows `kind`, and the App setup dialog also reads `payload`). */
+export function emit(kernel: Kernel, kind: string, payload: unknown = {}): void {
   const id = nextEventId;
   nextEventId += 1;
-  const frame: EventFrame = { type: "event", id, at: new Date(id * 1000).toISOString(), kind, session_id: null, task_id: null, payload: {} };
+  const frame: EventFrame = { type: "event", id, at: new Date(id * 1000).toISOString(), kind, session_id: null, task_id: null, payload };
   act(() => kernel.fake.emit(frame));
 }
 

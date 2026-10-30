@@ -35,8 +35,8 @@ import { defineTool } from "../../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../../features/contribution.js";
 import type { Store } from "../../store/store.js";
 import type { GitHubClient, GitHubResponse, IntegrationsPart } from "../types.js";
-import { GITHUB_DEFAULT_MAX_BODY_BYTES, createGitHubClient } from "./client.js";
-import { connectorView, githubConnectorRow } from "./connector.js";
+import { GITHUB_DEFAULT_MAX_BODY_BYTES } from "./client.js";
+import { connectorView, createResolvingGitHubClient, githubConnectorRow } from "./connector.js";
 
 /** The diff bound when a call names none: 256 KiB. */
 export const GITHUB_PR_DIFF_DEFAULT_MAX_BYTES = 256 * 1024;
@@ -48,7 +48,11 @@ export const GITHUB_TOOL_REFUSALS = Object.freeze(["connector_missing", "repo_no
 export type GitHubToolRefusal = (typeof GITHUB_TOOL_REFUSALS)[number];
 
 export interface GitHubToolsDeps {
-  /** The client each call reads through. Default: the real client, built on first use (it reads the Keychain only when a request runs). */
+  /**
+   * The client each call reads through. Default: the real client over the
+   * method rule (the token's PAT, else the GitHub App's installation token),
+   * built on first use (it reads the Keychain only when a request runs).
+   */
   readonly client?: () => GitHubClient;
   /** The diff bound when a call names none. Default: `GITHUB_PR_DIFF_DEFAULT_MAX_BYTES`. */
   readonly maxDiffBytes?: number;
@@ -95,7 +99,7 @@ function sourceOf(repo: string, number: number, part?: string): string {
 /** The four tools over `deps`. Nothing is read or requested until a handler runs. */
 export function createGitHubTools(deps: GitHubToolsDeps = {}): readonly ContributedTool[] {
   let built: GitHubClient | undefined;
-  const client = (): GitHubClient => (deps.client !== undefined ? deps.client() : (built ??= createGitHubClient()));
+  const client = (): GitHubClient => (deps.client !== undefined ? deps.client() : (built ??= createResolvingGitHubClient()));
   const defaultBound = deps.maxDiffBytes ?? GITHUB_PR_DIFF_DEFAULT_MAX_BYTES;
 
   /** The checks every handler starts with, then the client to read through. */

@@ -32,12 +32,19 @@ const tick = (): void => {
   if (!declareBox().checked) fireEvent.click(declareBox());
 };
 
+/** The choice's "Paste a token": the token form, unchanged. */
+function pasteATokenInstead(): void {
+  fireEvent.click(screen.getByTestId(IDS.choiceToken));
+}
+
 /** The screen with the sheet open: no token (connect mode) or a connected one (replace mode). */
 async function openSheet(mode: Mode, setup: Setup = {}): Promise<Kernel> {
   const kernel = await startScreen(mode === "connect" ? { connectors: () => ok({ connectors: [] }), ...setup } : setup);
   const opener = screen.getByTestId(mode === "connect" ? IDS.emptyConnect : IDS.replace);
   opener.focus();
   fireEvent.click(opener);
+  // With nothing connected the sheet opens on the choice; the token form is behind "Paste a token".
+  if (mode === "connect") pasteATokenInstead();
   expect(screen.getByTestId(IDS.sheet).getAttribute("data-mode")).toBe(mode);
   return kernel;
 }
@@ -209,6 +216,7 @@ describe("connecting", () => {
     fireEvent.click(screen.getByTestId(IDS.sheetCancel));
     expect(screen.queryByTestId(IDS.sheet)).toBeNull();
     fireEvent.click(screen.getByTestId(IDS.emptyConnect));
+    pasteATokenInstead();
     expect(declareBox().checked).toBe(false);
   });
 
@@ -551,5 +559,84 @@ describe("the replace sheet", () => {
   it("the connect sheet does not say so", async () => {
     await openSheet("connect");
     expect(screen.getByRole("dialog").textContent).not.toContain("stays in use");
+  });
+});
+
+// ---- The choice (GitHub App 4) ----------------------------------------------------------------------------------------------------
+
+describe("the choice between the GitHub App and a token", () => {
+  async function openChoice(setup: Setup = {}): Promise<Kernel> {
+    const kernel = await startScreen({ connectors: () => ok({ connectors: [] }), ...setup });
+    const opener = screen.getByTestId(IDS.emptyConnect);
+    opener.focus();
+    fireEvent.click(opener);
+    return kernel;
+  }
+
+  it("is the first view when nothing is connected, with the mockup's words", async () => {
+    await openChoice();
+    const choice = screen.getByTestId(IDS.choice);
+    expect(choice.textContent).toContain("Choose how Studio gets read access to your repos. Either way it only reads: it can't comment, push or merge.");
+    expect(screen.getByTestId(IDS.choiceApp).textContent).toContain("Install GitHub App");
+    expect(screen.getByTestId(IDS.choiceApp).textContent).toContain("Suggested");
+    expect(screen.getByTestId(IDS.choiceApp).textContent).toContain("Permissions are checked by GitHub, and access renews itself.");
+    expect(screen.getByTestId(IDS.choiceToken).textContent).toContain("Permissions are declared by you: GitHub doesn't tell Studio what a token can do.");
+    expect(choice.textContent).toContain("Studio keeps one GitHub connection at a time.");
+    // No token field, and no request, until a way is chosen.
+    expect(screen.queryByTestId(IDS.sheetToken)).toBeNull();
+    expect(screen.queryByTestId(IDS.sheet)).toBeNull();
+  });
+
+  it("focuses the suggested card on open", async () => {
+    await openChoice();
+    expect(document.activeElement).toBe(screen.getByTestId(IDS.choiceApp));
+  });
+
+  it("Paste a token opens the token sheet unchanged, with the field focused, empty and unticked", async () => {
+    const kernel = await openChoice();
+    fireEvent.click(screen.getByTestId(IDS.choiceToken));
+    expect(screen.queryByTestId(IDS.choice)).toBeNull();
+    expect(screen.getByTestId(IDS.sheet).getAttribute("data-mode")).toBe("connect");
+    expect(document.activeElement).toBe(field());
+    expect(field().value).toBe("");
+    expect(declareBox().checked).toBe(false);
+    expect(connectButton().disabled).toBe(true);
+    expect(screen.getByTestId(IDS.sheetPage).textContent).toContain("github.com/settings/personal-access-tokens/new");
+    expect(requests(kernel, "POST /connectors/github/app/setup")).toHaveLength(0);
+  });
+
+  it("Cancel and Escape close it with no request, and focus goes back to the opener", async () => {
+    const kernel = await openChoice();
+    const opener = screen.getByTestId(IDS.emptyConnect);
+    fireEvent.click(screen.getByTestId(IDS.choiceCancel));
+    expect(screen.queryByTestId(IDS.choice)).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+    fireEvent.click(opener);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    expect(screen.queryByTestId(IDS.choice)).toBeNull();
+    expect(requests(kernel, "POST /connectors/github/app/setup")).toHaveLength(0);
+    expect(requests(kernel, "POST /connectors/github/token")).toHaveLength(0);
+  });
+
+  it("Tab stays inside it", async () => {
+    await openChoice();
+    screen.getByTestId(IDS.choiceCancel).focus();
+    expect(fireEvent.keyDown(document.activeElement ?? document.body, { key: "Tab" })).toBe(false);
+    expect(document.activeElement).toBe(screen.getByTestId(IDS.choiceApp));
+  });
+
+  it("Replace token on a token connection goes straight to the token sheet, with no choice", async () => {
+    await startScreen();
+    fireEvent.click(screen.getByTestId(IDS.replace));
+    expect(screen.queryByTestId(IDS.choice)).toBeNull();
+    expect(screen.getByTestId(IDS.sheet).getAttribute("data-mode")).toBe("replace");
+  });
+
+  it("Install GitHub App hands over to the setup dialog and closes the choice", async () => {
+    const kernel = await openChoice();
+    fireEvent.click(screen.getByTestId(IDS.choiceApp));
+    expect(screen.queryByTestId(IDS.choice)).toBeNull();
+    await waitFor(() => expect(screen.getByTestId(IDS.appSetup).getAttribute("data-phase")).toBe("create"));
+    expect(requests(kernel, "POST /connectors/github/app/setup")).toHaveLength(1);
   });
 });

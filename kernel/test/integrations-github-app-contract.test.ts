@@ -1,25 +1,21 @@
-// The GitHub App connect's contract in code (D36), before any of it is built:
-// the closed lists, the stub port and the two stub owner routes wave 2 builds
-// against. The stubs have no behaviour: both routes answer
-// `501 {"error":"not_implemented"}` (behind the API token like every route) and
-// every port method resolves `not_implemented`, never throwing. Wave 2's items
-// replace the stubs and their assertions in their own tests, not here.
+// The GitHub App connect's contract in code (D36): the closed lists, and the two
+// owner routes and three browser routes the setup flow serves. The owner routes
+// open and close the setup window (behind the API token like every route). The
+// port is real now, and its tests are in `integrations-github-app-port.test.ts`;
+// the setup flow's own tests (`integrations-github-app-setup.test.ts`) pin the rest.
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startApiServer } from "../src/api/index.js";
 import type { ApiServer } from "../src/api/index.js";
 import { PHASE1_RESERVED, mergeContributions } from "../src/features/index.js";
-import { githubAppPort } from "../src/integrations/github/app-port.js";
 import { githubAppRoutesPart } from "../src/integrations/github/app-routes.js";
 import {
   CONNECTOR_METHODS,
   GITHUB_APP_SETUP_REFUSALS,
   INTEGRATIONS_PARTS,
-  githubAppPort as exportedPort,
   githubAppRoutesPart as exportedPart,
   integrationsContribution,
 } from "../src/integrations/index.js";
-import type { GitHubAppConversion, GitHubAppPort, GitHubAppPortResult } from "../src/integrations/index.js";
 import { loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
 import { stubProvider, unexpectedAbandon } from "./session-fakes.js";
@@ -28,15 +24,6 @@ const T0 = "2026-10-29T10:00:00.000Z";
 const API_TOKEN = "0123456789abcdef".repeat(4);
 const SETUP = "/connectors/github/app/setup";
 const CANCEL = "/connectors/github/app/setup/cancel";
-
-const CONVERSION: GitHubAppConversion = {
-  app_id: 4242,
-  slug: "loomwright-studio-owner",
-  name: "Loomwright Studio (owner)",
-  owner_login: "owner-one",
-  html_url: "https://github.com/apps/loomwright-studio-owner",
-  client_id: "Iv1.0123456789abcdef",
-};
 
 let env: LoopEnv;
 
@@ -66,40 +53,9 @@ describe("the closed lists", () => {
   });
 });
 
-describe("the stub port (AC5)", () => {
-  const CALLS: ReadonlyArray<readonly [string, (port: GitHubAppPort) => Promise<GitHubAppPortResult<unknown>>]> = [
-    ["storeApp", (p) => p.storeApp(env.store, CONVERSION, "-----BEGIN RSA PRIVATE KEY-----\nstub\n-----END RSA PRIVATE KEY-----\n", env.now)],
-    ["recordInstallation", (p) => p.recordInstallation(env.store, 987654, env.now)],
-    ["removeApp", (p) => p.removeApp(env.store, env.now)],
-  ];
-
-  it("is the one the integrations index exports, frozen", () => {
-    expect(exportedPort).toBe(githubAppPort);
-    expect(Object.isFrozen(githubAppPort)).toBe(true);
-  });
-
-  for (const [name, call] of CALLS) {
-    it(`${name} resolves not_implemented with a message`, async () => {
-      const result = await call(githubAppPort);
-      expect(result).toEqual({ ok: false, error: "not_implemented", message: expect.stringMatching(/not implemented/) });
-    });
-  }
-
-  it("never throws or rejects, whatever it is given", async () => {
-    const port = githubAppPort as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
-    const weird: unknown[][] = [[], [undefined], [null, null, null, null], [{}, "x", 1, "y"], [env.store, {}, "", () => new Date(Number.NaN)], [NaN, -1, Symbol("s")]];
-    for (const method of ["storeApp", "recordInstallation", "removeApp"]) {
-      for (const args of weird) {
-        const result = (await port[method]?.(...args)) as GitHubAppPortResult<unknown>;
-        expect(result.ok).toBe(false);
-        if (!result.ok) expect(result.error).toBe("not_implemented");
-      }
-    }
-  });
-});
-
-describe("the stub owner routes (AC2, AC7)", () => {
+describe("the owner and browser routes", () => {
   let server: ApiServer;
+  const BROWSER = ["/connectors/github/app/start", "/connectors/github/app/return", "/connectors/github/app/installed"];
 
   beforeEach(async () => {
     server = await startApiServer(
@@ -125,20 +81,28 @@ describe("the stub owner routes (AC2, AC7)", () => {
       headers: authorization === undefined ? {} : { Authorization: authorization },
     });
 
-  it("the shipped contribution serves both under the App part, last in the parts", () => {
+  it("the shipped contribution serves all five under the App part, last in the parts", () => {
     expect(exportedPart).toBe(githubAppRoutesPart);
     expect(INTEGRATIONS_PARTS.at(-1)).toBe(githubAppRoutesPart);
-    expect(githubAppRoutesPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual([`POST ${SETUP}`, `POST ${CANCEL}`]);
+    expect(githubAppRoutesPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual([`POST ${SETUP}`, `POST ${CANCEL}`, ...BROWSER.map((p) => `GET ${p}`)]);
     expect(Object.isFrozen(githubAppRoutesPart)).toBe(true);
   });
 
-  for (const path of [SETUP, CANCEL]) {
-    it(`POST ${path} with the API token answers 501 {"error":"not_implemented"}`, async () => {
-      const res = await call(path, `Bearer ${API_TOKEN}`);
-      expect(res.status).toBe(501);
-      expect(await res.text()).toBe('{"error":"not_implemented"}');
-    });
+  it("POST setup with the API token answers 200 {setup_url, expires_at} on the API's own origin, 10 minutes out; cancel closes it", async () => {
+    const res = await call(SETUP, `Bearer ${API_TOKEN}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { setup_url: string; expires_at: string };
+    expect(Object.keys(body).sort()).toEqual(["expires_at", "setup_url"]);
+    expect(body.setup_url).toMatch(new RegExp(`^http://127\\.0\\.0\\.1:${server.port}/connectors/github/app/start\\?state=[A-Za-z0-9_-]{32,}$`));
+    expect(body.expires_at).toBe("2026-10-29T10:10:00.000Z");
 
+    const cancelled = await call(CANCEL, `Bearer ${API_TOKEN}`);
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toEqual({ cancelled: true });
+    expect(await (await call(CANCEL, `Bearer ${API_TOKEN}`)).json()).toEqual({ cancelled: false });
+  });
+
+  for (const path of [SETUP, CANCEL]) {
     it(`POST ${path} without the token, or with a wrong one, answers 401`, async () => {
       for (const authorization of [undefined, "Bearer wrong", `Bearer ${API_TOKEN}x`, API_TOKEN]) {
         const res = await call(path, authorization);

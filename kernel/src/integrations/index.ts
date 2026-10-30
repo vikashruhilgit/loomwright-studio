@@ -9,9 +9,10 @@
 // `kernel_github_pr_*` tools. Item 07 filled `drafts`: the `GET /drafts` and
 // `GET /drafts/:id` routes, and `recordDraftOutput` for the session gate.
 // `github-app-routes` (D36) holds the GitHub App connect's owner routes under
-// `/connectors/github/app/`: stubs answering 501 until the App setup item fills
-// them in; `github/app-port.ts` is the App port's stub, filled in by the App
-// tokens item.
+// `/connectors/github/app/`: setup and cancel, plus the three token-free browser
+// routes served by `github/app-setup.ts`; `github/app-port.ts` is the App port
+// (stores the App's credentials, records the installation, mints installation
+// tokens through `github/app-token.ts`), built by the App tokens item.
 // Integrations are optional (invariant 5): Studio works with none connected.
 // Mechanism only (invariant 1). `startKernel` and `runCli` merge it through
 // `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`), ninth and last, after
@@ -53,11 +54,15 @@ export const integrationsContribution: FeatureContribution = integrationsContrib
 export { draftsPart, getDraft, listDrafts, recordDraftOutput } from "./drafts.js";
 export { CONNECTORS_HELP, CONNECTORS_SUBCOMMAND, connectorsSubcommand } from "./cli.js";
 export { githubAppPort } from "./github/app-port.js";
+export { createGitHubAppPort } from "./github/app-port.js";
+export type { GitHubAppPortDeps } from "./github/app-port.js";
+export type { GitHubAppTokens } from "./github/app-token.js";
 export { githubAppRoutes, githubAppRoutesPart } from "./github/app-routes.js";
 export { GITHUB_KEYCHAIN_SERVICE, createGitHubClient } from "./github/client.js";
 export {
   GITHUB_EXPIRY_NOTICE_DAYS,
   GITHUB_TOKEN_REFUSALS,
+  checkGitHubAppMint,
   checkGitHubExpiry,
   connectorView,
   createGitHubConnector,

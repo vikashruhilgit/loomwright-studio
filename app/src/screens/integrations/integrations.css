@@ -229,6 +229,10 @@
   background: var(--danger-soft);
   color: var(--danger);
 }
+.integrations-badge[data-tone="ok"] {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
 
 .integrations-kv {
   display: grid;
@@ -442,7 +446,102 @@
   padding-left: var(--space-5);
 }
 
+/* The GitHub App dialogs (GitHub App 4): the choice, the setup steps and the outcome views. */
+.integrations-sheet > p {
+  margin: 0;
+}
+.integrations-opts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.integrations-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: box-shadow var(--duration-instant) var(--ease-standard);
+}
+.integrations-option:hover:not(:disabled) {
+  box-shadow: var(--shadow-1);
+}
+.integrations-option:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.integrations-option:disabled {
+  color: var(--ink-tertiary);
+  cursor: not-allowed;
+}
+.integrations-option[data-suggested="true"] {
+  border-color: var(--accent);
+}
+.integrations-option .integrations-glyph {
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+.integrations-option-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.integrations-option-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.integrations-option-name {
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+}
+.integrations-sheet .integrations-box li .integrations-badge {
+  margin-left: auto;
+}
+.integrations-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  align-self: flex-start;
+  color: var(--accent);
+  text-decoration: none;
+  border-radius: var(--radius-xs);
+}
+.integrations-link:hover {
+  text-decoration: underline;
+}
+.integrations-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.integrations-link .integrations-glyph {
+  width: 14px;
+  height: 14px;
+}
+.integrations-links {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.integrations-flush {
+  margin: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .integrations-option {
+    transition-duration: 0s;
+  }
   .integrations-agent {
     transition-duration: 0s;
   }

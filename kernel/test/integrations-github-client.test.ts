@@ -8,14 +8,18 @@ import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
 import type { KeychainReader } from "../src/auth/index.js";
 import {
+  convertManifest,
   createGitHubClient,
+  GITHUB_ALLOWED_NON_GET,
   GITHUB_API_ORIGIN,
   GITHUB_DEFAULT_MAX_BODY_BYTES,
   GITHUB_DEFAULT_MAX_PAGES,
   GITHUB_KEYCHAIN_SERVICE,
+  isAllowedGitHubRequest,
+  mintInstallationToken,
   parseTokenExpiration,
 } from "../src/integrations/github/client.js";
-import type { GitHubClientDeps } from "../src/integrations/github/client.js";
+import type { GitHubClientDeps, GitHubTokenProvider } from "../src/integrations/github/client.js";
 import type { GitHubClient, GitHubResponse } from "../src/integrations/types.js";
 import { FakeGitHubClient } from "./fixtures/github-fake.js";
 
@@ -580,11 +584,502 @@ describe("read-only, one origin, a fresh token (AC9, AC9a)", () => {
     expect(calls).toEqual([]);
   });
 
-  it("the source never names a write method, never infers permissions, and never logs", () => {
+  it("the source names no method but the allowlist's two POSTs, never infers permissions, and never logs", () => {
     const src = readFileSync(fileURLToPath(new URL("../src/integrations/github/client.ts", import.meta.url)), "utf8");
-    expect(src).not.toMatch(/["'](POST|PUT|PATCH|DELETE)["']/);
+    // Any other write method, quoted or as a property, fails here.
+    expect(src).not.toMatch(/["'](PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)["']/);
     expect(src).not.toMatch(/\bconsole\./);
-    expect([...src.matchAll(/method:\s*"([A-Z]+)"/g)].map((m) => m[1])).toEqual(["GET"]);
+    // Every `method: "X"` literal is an allowlist entry: exactly the two POSTs (a GET goes through the `method` argument).
+    expect([...src.matchAll(/method:\s*"([A-Z]+)"/g)].map((m) => m[1])).toEqual(["POST", "POST"]);
+    expect([...src.matchAll(/prefix:\s*"([^"]+)"/g)].map((m) => m[1])).toEqual(["/app/installations/", "/app-manifests/"]);
+    expect([...src.matchAll(/suffix:\s*"([^"]+)"/g)].map((m) => m[1])).toEqual(["/access_tokens", "/conversions"]);
     expect(src).toMatch(/permissions: null,/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The allowlist (GitHub App 2, AC13)
+// ---------------------------------------------------------------------------
+
+describe("the request allowlist (AC13)", () => {
+  const MINT = "https://api.github.com/app/installations/42/access_tokens";
+  const CONVERT = "https://api.github.com/app-manifests/abc123def456/conversions";
+
+  it("names exactly two POSTs, frozen: the mint and the manifest conversion", () => {
+    expect(GITHUB_ALLOWED_NON_GET.map((a) => [a.method, a.prefix, a.suffix])).toEqual([
+      ["POST", "/app/installations/", "/access_tokens"],
+      ["POST", "/app-manifests/", "/conversions"],
+    ]);
+    expect(Object.isFrozen(GITHUB_ALLOWED_NON_GET)).toBe(true);
+    for (const a of GITHUB_ALLOWED_NON_GET) expect(Object.isFrozen(a)).toBe(true);
+  });
+
+  it.each([
+    ["GET", "https://api.github.com/user"],
+    ["GET", "https://api.github.com/repos/o/r/pulls/1?per_page=1"],
+    ["GET", "https://api.github.com/installation/repositories?per_page=100&page=2"],
+    ["POST", MINT],
+    ["POST", CONVERT],
+    ["POST", "https://api.github.com/app/installations/9007199254740/access_tokens"],
+  ])("allows %s %s", (method, url) => {
+    expect(isAllowedGitHubRequest(method, url)).toBe(true);
+    expect(isAllowedGitHubRequest(method, new URL(url))).toBe(true);
+  });
+
+  it.each(["PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "post", "get", "Post", "GET ", "", "TRACE", "CONNECT"])("refuses the method %j on every URL, the allowlisted ones included", (method) => {
+    expect(isAllowedGitHubRequest(method, MINT)).toBe(false);
+    expect(isAllowedGitHubRequest(method, CONVERT)).toBe(false);
+    expect(isAllowedGitHubRequest(method, "https://api.github.com/user")).toBe(false);
+  });
+
+  it.each([
+    ["any other POST", "POST", "https://api.github.com/repos/o/r/issues"],
+    ["a POST to the pulls", "POST", "https://api.github.com/repos/o/r/pulls/1/comments"],
+    ["a POST to a different app path", "POST", "https://api.github.com/app/installations/42/suspended"],
+    ["a POST to /app/ with the id in the wrong place", "POST", "https://api.github.com/app/42/access_tokens"],
+    ["a POST with a non-numeric installation id", "POST", "https://api.github.com/app/installations/abc/access_tokens"],
+    ["a POST with a zero installation id", "POST", "https://api.github.com/app/installations/0/access_tokens"],
+    ["a POST with a negative installation id", "POST", "https://api.github.com/app/installations/-1/access_tokens"],
+    ["a POST with no installation id", "POST", "https://api.github.com/app/installations//access_tokens"],
+    ["a POST with no installation id and no slash", "POST", "https://api.github.com/app/installations/access_tokens"],
+    ["a POST with extra segments", "POST", "https://api.github.com/app/installations/42/extra/access_tokens"],
+    ["a POST with a trailing segment", "POST", "https://api.github.com/app/installations/42/access_tokens/more"],
+    ["a POST with a query", "POST", `${MINT}?x=1`],
+    ["a POST with a fragment", "POST", `${MINT}#x`],
+    ["a POST with an encoded slash in the id", "POST", "https://api.github.com/app/installations/4%2F2/access_tokens"],
+    ["a conversion with no code", "POST", "https://api.github.com/app-manifests//conversions"],
+    ["a conversion with a path in the code", "POST", "https://api.github.com/app-manifests/a/b/conversions"],
+    ["a conversion with a query", "POST", `${CONVERT}?x=1`],
+  ])("refuses %s", (_, method, url) => {
+    expect(isAllowedGitHubRequest(method, url)).toBe(false);
+  });
+
+  it.each([
+    ["another host", "https://evil.example/app/installations/42/access_tokens"],
+    ["a subdomain", "https://uploads.api.github.com/user"],
+    ["a look-alike", "https://api.github.com.evil.example/user"],
+    ["github.com itself", "https://github.com/app-manifests/abc/conversions"],
+    ["plain http", "http://api.github.com/user"],
+    ["another port", "https://api.github.com:8443/user"],
+    ["userinfo", "https://user:pass@api.github.com/user"],
+    ["a user name alone", "https://user@api.github.com/user"],
+    ["a protocol-relative URL (no base)", "//api.github.com/user"],
+    ["a path (no origin)", "/user"],
+    ["not a URL", "not a url"],
+    ["an empty string", ""],
+  ])("refuses every method on %s", (_, url) => {
+    for (const method of ["GET", "POST"]) expect(isAllowedGitHubRequest(method, url)).toBe(false);
+  });
+
+  it("never throws, whatever it is given", () => {
+    for (const bad of [undefined, null, 1, {}, [], Symbol("x"), () => 1]) {
+      expect(isAllowedGitHubRequest(bad as never, MINT)).toBe(false);
+      expect(isAllowedGitHubRequest("GET", bad as never)).toBe(false);
+      expect(isAllowedGitHubRequest(bad as never, bad as never)).toBe(false);
+    }
+  });
+
+  it("the client's read methods send nothing to another host, whatever path they are given", async () => {
+    const { gh, calls } = client(() => json({}));
+    // A repo that tries to leave the origin or the path is refused before a request.
+    for (const repo of ["//evil.example/x", "evil.example/x/y", "o/..", "../..", "o/r?x=1", "o/r#x", "o/r/../../x"]) {
+      expect(await gh.getPull(repo, 1), repo).toMatchObject({ error: "unreachable" });
+    }
+    expect(calls).toEqual([]);
+    // And every request it does make is a GET to the one origin.
+    await gh.getPull("o/r", 1);
+    expect(calls.map((c) => [c.init.method, new URL(c.url).origin])).toEqual([["GET", "https://api.github.com"]]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two POSTs (GitHub App 2, AC12, AC13)
+// ---------------------------------------------------------------------------
+
+describe("mintInstallationToken and convertManifest (AC12, AC13)", () => {
+  const JWT = `eyJhbGciOiJSUzI1NiJ9.${"c".repeat(120)}.${"s".repeat(342)}`;
+  const INSTALL_TOKEN = `ghs_${"T".repeat(36)}`;
+  const EXPIRES = "2026-10-27T13:00:00Z";
+  const mintBody = (over: Record<string, unknown> = {}) => ({
+    token: INSTALL_TOKEN,
+    expires_at: EXPIRES,
+    permissions: { metadata: "read", pull_requests: "read" },
+    repository_selection: "selected",
+    ...over,
+  });
+
+  it("mint: one POST to /app/installations/{id}/access_tokens with the JWT as the bearer, no body, no redirect", async () => {
+    const { fetch, calls } = fakeFetch(() => json(mintBody(), 201));
+    const res = await mintInstallationToken(42, JWT, { fetch, now: () => NOW });
+    expect(res).toEqual({ ok: true, token: INSTALL_TOKEN, expires_at: "2026-10-27T13:00:00.000Z", permissions: { metadata: "read", pull_requests: "read" } });
+    expect(calls).toHaveLength(1);
+    const [c] = calls;
+    expect(c?.url).toBe("https://api.github.com/app/installations/42/access_tokens");
+    expect(c?.init.method).toBe("POST");
+    expect(c?.init.redirect).toBe("manual");
+    expect(c?.init.body).toBeUndefined();
+    expect(headerOf(c, "authorization")).toBe(`Bearer ${JWT}`);
+    expect(headerOf(c, "x-github-api-version")).toBe("2022-11-28");
+  });
+
+  it("mint: a JWT longer than the PAT bound (255) is sent, one longer than 2048 or not three base64url segments is not", async () => {
+    expect(JWT.length).toBeGreaterThan(255);
+    const ok = fakeFetch(() => json(mintBody(), 201));
+    expect((await mintInstallationToken(42, JWT, { fetch: ok.fetch })).ok).toBe(true);
+    for (const bad of [`a.b.${"c".repeat(2048)}`, "a.b", "a.b.c.d", "a..c", `${JWT} `, `${JWT}\n`, "a.b.c d", "", "Bearer x", "github_pat_x"]) {
+      const f = fakeFetch(() => json(mintBody(), 201));
+      expect(await mintInstallationToken(42, bad, { fetch: f.fetch }), JSON.stringify(bad.slice(0, 20))).toEqual({ ok: false, error: "unreachable" });
+      expect(f.calls).toEqual([]);
+    }
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 2, "42" as unknown as number, undefined as unknown as number])("mint: an installation id of %j makes no request", async (id) => {
+    const f = fakeFetch(() => json(mintBody(), 201));
+    expect(await mintInstallationToken(id, JWT, { fetch: f.fetch })).toEqual({ ok: false, error: "unreachable" });
+    expect(f.calls).toEqual([]);
+  });
+
+  it("mint: a 401 and a 404 arrive as http_error with the status; a rate limit as rate_limited; a network error as unreachable", async () => {
+    for (const status of [401, 404, 422, 500]) {
+      const { fetch } = fakeFetch(() => json({ message: `secret ${JWT}` }, status));
+      expect(await mintInstallationToken(42, JWT, { fetch })).toEqual({ ok: false, error: "http_error", status });
+    }
+    const limited = fakeFetch(() => new Response("{}", { status: 429, headers: RL_HEADERS }));
+    expect(await mintInstallationToken(42, JWT, { fetch: limited.fetch, now: () => NOW })).toEqual({ ok: false, error: "rate_limited" });
+    const down = fakeFetch(() => {
+      throw new Error(`boom ${JWT}`);
+    });
+    const res = await mintInstallationToken(42, JWT, { fetch: down.fetch });
+    expect(res).toEqual({ ok: false, error: "unreachable" });
+    expect(JSON.stringify(res)).not.toContain(JWT);
+  });
+
+  it.each([
+    ["no token", { token: undefined }],
+    ["a token that is not a string", { token: 5 }],
+    ["a token with a space", { token: "ghs_a b" }],
+    ["a token with a newline", { token: "ghs_a\nb" }],
+    ["an empty token", { token: "" }],
+    ["a token over the bound", { token: `ghs_${"x".repeat(1100)}` }],
+    ["no expires_at", { expires_at: undefined }],
+    ["an expires_at that is not a date", { expires_at: "soon" }],
+    ["an expires_at that is not a string", { expires_at: 1793106000 }],
+    ["no permissions", { permissions: undefined }],
+    ["permissions that are not an object", { permissions: ["read"] }],
+    ["a permission level that is not a string", { permissions: { metadata: 1 } }],
+  ])("mint: %s is unreachable, never a throw", async (_, over) => {
+    const { fetch } = fakeFetch(() => json(mintBody(over), 201));
+    expect(await mintInstallationToken(42, JWT, { fetch })).toEqual({ ok: false, error: "unreachable" });
+  });
+
+  it("mint: a body that is not JSON, or over the bound, is unreachable", async () => {
+    expect(await mintInstallationToken(42, JWT, { fetch: fakeFetch(() => new Response("<html>", { status: 201 })).fetch })).toEqual({ ok: false, error: "unreachable" });
+    expect(await mintInstallationToken(42, JWT, { fetch: fakeFetch(() => json(mintBody(), 201)).fetch, maxBodyBytes: 10 })).toEqual({ ok: false, error: "unreachable" });
+  });
+
+  it("mint: the permissions are reported as GitHub gives them, write levels included (the caller refuses those)", async () => {
+    const { fetch } = fakeFetch(() => json(mintBody({ permissions: { metadata: "read", pull_requests: "write" } }), 201));
+    expect(await mintInstallationToken(42, JWT, { fetch })).toMatchObject({ ok: true, permissions: { pull_requests: "write" } });
+  });
+
+  it("mint: the result is frozen where it carries the permissions, and holds nothing else of the response", async () => {
+    const { fetch } = fakeFetch(() => json(mintBody({ repositories: [{ full_name: "o/secret-repo" }], extra: "x" }), 201));
+    const res = await mintInstallationToken(42, JWT, { fetch });
+    expect(Object.keys(res).sort()).toEqual(["expires_at", "ok", "permissions", "token"]);
+    if (res.ok) expect(Object.isFrozen(res.permissions)).toBe(true);
+  });
+
+  const CODE = "0123456789abcdef0123456789abcdef01234567";
+  const conversionBody = () => ({
+    id: 987,
+    slug: "studio-reader",
+    name: "Studio reader",
+    owner: { login: "owner-one", id: 1 },
+    html_url: "https://github.com/apps/studio-reader",
+    client_id: "Iv1.abc123",
+    client_secret: "CLIENT-SECRET-VALUE",
+    webhook_secret: "WEBHOOK-SECRET-VALUE",
+    pem: "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----\n",
+    permissions: { metadata: "read" },
+  });
+
+  it("convert: one unauthenticated POST to /app-manifests/{code}/conversions, no authorization header at all", async () => {
+    const { fetch, calls } = fakeFetch(() => json(conversionBody(), 201));
+    const res = await convertManifest(CODE, { fetch, now: () => NOW });
+    expect(res.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    const [c] = calls;
+    expect(c?.url).toBe(`https://api.github.com/app-manifests/${CODE}/conversions`);
+    expect(c?.init.method).toBe("POST");
+    expect(c?.init.redirect).toBe("manual");
+    expect(c?.init.body).toBeUndefined();
+    expect(new Headers(c?.init.headers).has("authorization")).toBe(false);
+  });
+
+  it("convert: returns the non-secret fields and the pem, and never client_secret or webhook_secret", async () => {
+    const { fetch } = fakeFetch(() => json(conversionBody(), 201));
+    const res = await convertManifest(CODE, { fetch });
+    expect(res).toEqual({
+      ok: true,
+      conversion: { app_id: 987, slug: "studio-reader", name: "Studio reader", owner_login: "owner-one", html_url: "https://github.com/apps/studio-reader", client_id: "Iv1.abc123" },
+      pem: conversionBody().pem,
+    });
+    const text = JSON.stringify(res);
+    expect(text).not.toContain("CLIENT-SECRET-VALUE");
+    expect(text).not.toContain("WEBHOOK-SECRET-VALUE");
+    expect(text).not.toContain("client_secret");
+  });
+
+  it.each(["", "a b", "a/b", "../x", "a?b=1", "a#b", "é", "x".repeat(129), 5 as unknown as string, undefined as unknown as string])("convert: a code of %j makes no request", async (code) => {
+    const f = fakeFetch(() => json(conversionBody(), 201));
+    expect(await convertManifest(code, { fetch: f.fetch })).toEqual({ ok: false, error: "unreachable" });
+    expect(f.calls).toEqual([]);
+  });
+
+  it.each([
+    ["no id", { id: undefined }],
+    ["no slug", { slug: undefined }],
+    ["no owner", { owner: undefined }],
+    ["no pem", { pem: undefined }],
+    ["a pem that is not a string", { pem: 5 }],
+    ["no client_id", { client_id: undefined }],
+  ])("convert: a response with %s is unreachable", async (_, over) => {
+    const { fetch } = fakeFetch(() => json({ ...conversionBody(), ...over }, 201));
+    expect(await convertManifest(CODE, { fetch })).toEqual({ ok: false, error: "unreachable" });
+  });
+
+  it("convert: a refused or failed conversion is typed, and its body is dropped", async () => {
+    expect(await convertManifest(CODE, { fetch: fakeFetch(() => json({ message: "Not Found" }, 404)).fetch })).toEqual({ ok: false, error: "http_error", status: 404 });
+    const res = await convertManifest(CODE, {
+      fetch: fakeFetch(() => {
+        throw new Error("CLIENT-SECRET-VALUE");
+      }).fetch,
+    });
+    expect(res).toEqual({ ok: false, error: "unreachable" });
+  });
+
+  it("neither POST follows a redirect: a 307 to another host is an http_error and nothing else is requested", async () => {
+    const redirect = () => new Response(null, { status: 307, headers: { location: "https://evil.example/x", ...RL_HEADERS } });
+    const a = fakeFetch(redirect);
+    expect(await mintInstallationToken(42, JWT, { fetch: a.fetch })).toEqual({ ok: false, error: "http_error", status: 307 });
+    expect(a.calls).toHaveLength(1);
+    const b = fakeFetch(redirect);
+    expect(await convertManifest(CODE, { fetch: b.fetch })).toEqual({ ok: false, error: "http_error", status: 307 });
+    expect(b.calls).toHaveLength(1);
+  });
+
+  it("the PAT path's token bound is unchanged: a 256-character token is refused, a JWT-shaped one too", async () => {
+    for (const t of ["x".repeat(256), JWT]) {
+      const { gh, calls } = client(() => json(user("x")), { readToken: () => t });
+      expect(await gh.getTokenInfo()).toEqual({ ok: false, error: "unreachable", rateLimit: null });
+      expect(calls).toEqual([]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The token provider: installation repos, one renewal on a 401 (AC2 client half, AC3)
+// ---------------------------------------------------------------------------
+
+describe("the token provider (AC2, AC3)", () => {
+  const OLD = `ghs_${"O".repeat(36)}`;
+  const FRESH = `ghs_${"F".repeat(36)}`;
+
+  /** An `app` provider that hands out `OLD`, then `FRESH` after a renewal, and counts both. */
+  function appProvider(over: Partial<GitHubTokenProvider> = {}): { provider: GitHubTokenProvider; renewals: () => number; reads: () => number } {
+    let renewals = 0;
+    let reads = 0;
+    let current = OLD;
+    const provider: GitHubTokenProvider = {
+      method: "app",
+      token: async () => {
+        reads++;
+        return current;
+      },
+      renew: async () => {
+        renewals++;
+        current = FRESH;
+        return FRESH;
+      },
+      ...over,
+    };
+    return { provider, renewals: () => renewals, reads: () => reads };
+  }
+
+  const withProvider = (route: Route, provider: GitHubTokenProvider | undefined) => {
+    const { fetch, calls } = fakeFetch(route);
+    const gh = createGitHubClient({ tokenProvider: () => provider, fetch, now: () => NOW });
+    return { gh, calls };
+  };
+
+  function installationRepos(n: number) {
+    return (url: URL) => {
+      expect(url.pathname).toBe("/installation/repositories");
+      const page = Number(url.searchParams.get("page"));
+      const from = (page - 1) * 100;
+      return json({ total_count: n, repositories: repos(from + 1, Math.max(0, Math.min(100, n - from))) });
+    };
+  }
+
+  it("method app: listReachableRepos reads GET /installation/repositories (the repositories array, paged) with the installation token", async () => {
+    const { provider } = appProvider();
+    const { gh, calls } = withProvider(installationRepos(150), provider);
+    const res = await gh.listReachableRepos();
+    expect(res.ok && res.data).toHaveLength(150);
+    expect(res.ok && res.data[149]).toEqual({ full_name: "owner/repo-150", private: true });
+    expect(calls.map((c) => new URL(c.url).pathname + new URL(c.url).search)).toEqual([
+      "/installation/repositories?per_page=100&page=1",
+      "/installation/repositories?per_page=100&page=2",
+    ]);
+    for (const c of calls) {
+      expect(c.init.method).toBe("GET");
+      expect(headerOf(c, "authorization")).toBe(`Bearer ${OLD}`);
+    }
+  });
+
+  it("method app: an installation body that is not {repositories: [...]} is unreachable", async () => {
+    const { provider } = appProvider();
+    for (const body of [[], { total_count: 0 }, { repositories: "x" }, { repositories: [{ nope: 1 }] }]) {
+      const { gh } = withProvider(() => json(body), provider);
+      expect(await gh.listReachableRepos()).toEqual({ ok: false, error: "unreachable", rateLimit: null });
+    }
+  });
+
+  it("method token: listReachableRepos still reads /user/repos with the PAT", async () => {
+    const provider: GitHubTokenProvider = { method: "token", token: async () => TOKEN };
+    const { gh, calls } = withProvider(() => json(repos(1, 2)), provider);
+    const res = await gh.listReachableRepos();
+    expect(res.ok && res.data).toHaveLength(2);
+    expect(new URL(calls[0]?.url ?? "").pathname).toBe("/user/repos");
+    expect(headerOf(calls[0], "authorization")).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("the other read methods use the installation token too (a poll, a dry run, a tool)", async () => {
+    const { provider } = appProvider();
+    const { gh, calls } = withProvider((url) => (url.pathname.endsWith("/pulls/1") ? json(apiPull(1)) : json([])), provider);
+    await gh.listOpenPulls("o/r", {});
+    await gh.getPull("o/r", 1);
+    await gh.getPullDiff("o/r", 1, 100);
+    await gh.listPullFiles("o/r", 1);
+    await gh.listPullComments("o/r", 1);
+    expect(calls.length).toBeGreaterThanOrEqual(6);
+    for (const c of calls) expect(headerOf(c, "authorization")).toBe(`Bearer ${OLD}`);
+  });
+
+  it("a 401 renews once and retries once with the new token (AC3)", async () => {
+    const p = appProvider();
+    let n = 0;
+    const { gh, calls } = withProvider(() => (n++ === 0 ? json({ message: "Bad credentials" }, 401) : json(apiPull(1))), p.provider);
+    const res = await gh.getPull("o/r", 1);
+    expect(res.ok && res.data.number).toBe(1);
+    expect(calls.map((c) => headerOf(c, "authorization"))).toEqual([`Bearer ${OLD}`, `Bearer ${FRESH}`]);
+    expect(p.renewals()).toBe(1);
+  });
+
+  it("a second 401 is the answer: at most one renewal and one retry per call", async () => {
+    const p = appProvider();
+    const { gh, calls } = withProvider(() => json({ message: "Bad credentials" }, 401), p.provider);
+    expect(await gh.getPull("o/r", 1)).toMatchObject({ ok: false, error: "http_error", status: 401 });
+    expect(calls).toHaveLength(2);
+    expect(p.renewals()).toBe(1);
+  });
+
+  it("a listing renews at most once however many pages it reads", async () => {
+    const p = appProvider();
+    let hits = 0;
+    const route: Route = (url) => {
+      hits++;
+      // Page 1 passes with the old token, page 2 is rejected (renewal), page 2 retried passes, page 3 is rejected again.
+      if (url.searchParams.get("page") === "2" && hits === 2) return json({ message: "expired" }, 401);
+      if (url.searchParams.get("page") === "3") return json({ message: "expired again" }, 401);
+      const page = Number(url.searchParams.get("page"));
+      return json({ total_count: 300, repositories: repos((page - 1) * 100 + 1, 100) });
+    };
+    const { gh, calls } = withProvider(route, p.provider);
+    expect(await gh.listReachableRepos()).toMatchObject({ ok: false, error: "http_error", status: 401 });
+    expect(p.renewals()).toBe(1);
+    expect(calls.map((c) => headerOf(c, "authorization"))).toEqual([`Bearer ${OLD}`, `Bearer ${OLD}`, `Bearer ${FRESH}`, `Bearer ${FRESH}`]);
+  });
+
+  it("a PAT (no renew) is never retried on a 401", async () => {
+    const provider: GitHubTokenProvider = { method: "token", token: async () => TOKEN };
+    const { gh, calls } = withProvider(() => json({ message: "Bad credentials" }, 401), provider);
+    expect(await gh.getPull("o/r", 1)).toMatchObject({ error: "http_error", status: 401 });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("only a 401 renews: a 403, a 404 and a 500 do not", async () => {
+    for (const status of [403, 404, 500]) {
+      const p = appProvider();
+      const { gh, calls } = withProvider(() => json({}, status), p.provider);
+      expect(await gh.getPull("o/r", 1)).toMatchObject({ error: "http_error", status });
+      expect(calls).toHaveLength(1);
+      expect(p.renewals()).toBe(0);
+    }
+  });
+
+  it.each([
+    ["a renewal that finds no token", { renew: async () => undefined }],
+    ["a renewal that returns an unusable token", { renew: async () => "has a space" }],
+    [
+      "a renewal that throws",
+      {
+        renew: async () => {
+          throw new Error(`boom ${OLD}`);
+        },
+      },
+    ],
+  ])("%s: the 401 is the answer, no retry, no throw, no secret", async (_, over) => {
+    const p = appProvider(over);
+    const { gh, calls } = withProvider(() => json({ message: "Bad credentials" }, 401), p.provider);
+    const res = await gh.getPull("o/r", 1);
+    expect(res).toMatchObject({ ok: false, error: "http_error", status: 401 });
+    expect(JSON.stringify(res)).not.toContain(OLD);
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([
+    ["no provider", () => undefined],
+    ["a resolver that throws", () => { throw new Error(`boom ${OLD}`); }],
+    ["a token() that resolves nothing", () => ({ method: "app" as const, token: async () => undefined })],
+    ["a token() that rejects", () => ({ method: "app" as const, token: () => Promise.reject(new Error(`boom ${OLD}`)) })],
+    ["a token() that throws", () => ({ method: "app" as const, token: () => { throw new Error(`boom ${OLD}`); } })],
+    ["an installation token with a space", () => ({ method: "app" as const, token: async () => "ghs_a b" })],
+    ["a PAT over its bound", () => ({ method: "token" as const, token: async () => "x".repeat(256) })],
+  ])("%s: unreachable, no request, no secret in the result", async (_, resolve) => {
+    const { fetch, calls } = fakeFetch(() => json({}));
+    const gh = createGitHubClient({ tokenProvider: resolve as never, fetch });
+    for (const call of [() => gh.getTokenInfo(), () => gh.listReachableRepos(), () => gh.getPull("o/r", 1), () => gh.getPullDiff("o/r", 1, 10), () => gh.listPullComments("o/r", 1)]) {
+      const res = await call();
+      expect(res).toEqual({ ok: false, error: "unreachable", rateLimit: null });
+      expect(JSON.stringify(res)).not.toContain(OLD);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("the provider is resolved on every call, never at construction", async () => {
+    let resolved = 0;
+    const p = appProvider();
+    const { fetch } = fakeFetch(() => json([]));
+    const gh = createGitHubClient({ tokenProvider: () => (resolved++, p.provider), fetch });
+    expect(resolved).toBe(0);
+    await gh.listOpenPulls("o/r", {});
+    await gh.listOpenPulls("o/r", {});
+    expect(resolved).toBe(2);
+  });
+
+  it("a given tokenProvider wins over readToken and keychain", async () => {
+    let patReads = 0;
+    const p = appProvider();
+    const { fetch, calls } = fakeFetch(() => json([]));
+    const gh = createGitHubClient({
+      tokenProvider: () => p.provider,
+      readToken: () => (patReads++, TOKEN),
+      keychain: { read: () => (patReads++, TOKEN) },
+      fetch,
+    });
+    await gh.listOpenPulls("o/r", {});
+    expect(patReads).toBe(0);
+    expect(headerOf(calls[0], "authorization")).toBe(`Bearer ${OLD}`);
   });
 });

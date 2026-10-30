@@ -11,7 +11,7 @@
 //
 // The pasted token appears in this module once: as the `body` of
 // `connectGithub`'s request. It is never logged, stored or put in an error.
-import type { ApiRequest, ApiResult, ConnectorChangeResponse, ConnectorReposResponse, ConnectorsResponse, StudioBridge } from "../../api/contract";
+import type { ApiRequest, ApiResult, ConnectorChangeResponse, ConnectorReposResponse, ConnectorsResponse, GitHubAppSetupCancelResponse, GitHubAppSetupResponse, StudioBridge } from "../../api/contract";
 import { type Reply, replyOf } from "./model";
 
 async function send<R>(api: StudioBridge, request: ApiRequest): Promise<Reply<R>> {
@@ -51,4 +51,32 @@ export function fetchRepos(api: StudioBridge, refresh: boolean): Promise<Reply<C
     ? { method: "GET", path: "/connectors/github/repos", query: { refresh: "1" } }
     : { method: "GET", path: "/connectors/github/repos" };
   return send<ConnectorReposResponse>(api, request);
+}
+
+/**
+ * `POST /connectors/github/app/setup`: opens the one setup window. The answer is
+ * the loopback `setup_url` to open in the system browser and when the window closes.
+ */
+export function startAppSetup(api: StudioBridge): Promise<Reply<GitHubAppSetupResponse>> {
+  return send<GitHubAppSetupResponse>(api, { method: "POST", path: "/connectors/github/app/setup" });
+}
+
+/** `POST /connectors/github/app/setup/cancel`: closes the open setup window, if any. */
+export function cancelAppSetup(api: StudioBridge): Promise<Reply<GitHubAppSetupCancelResponse>> {
+  return send<GitHubAppSetupCancelResponse>(api, { method: "POST", path: "/connectors/github/app/setup/cancel" });
+}
+
+/**
+ * Opens `url` in the system browser through the main process's allowlisted
+ * channel. `false` for everything that is not a clear yes: the channel refusing
+ * the address, the bridge lacking the method, or the IPC call failing. The
+ * window itself never navigates.
+ */
+export async function openExternalUrl(api: StudioBridge, url: string): Promise<boolean> {
+  if (api.openExternal === undefined) return false;
+  try {
+    return (await api.openExternal(url)) === true;
+  } catch {
+    return false;
+  }
 }

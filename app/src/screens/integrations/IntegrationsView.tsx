@@ -15,19 +15,26 @@
 // gives the agents with the GitHub grant. Every write goes through `./actions.ts`
 // and reaches the screen through `GET /connectors`, never a local edit.
 //
+// The GitHub App path (GitHub App 4): with nothing connected the Connect sheet opens on
+// a choice; "Install GitHub App" mounts the setup dialog (`./AppSetupSheet.tsx`), which
+// follows the setup through the feed, and an App connection has its own detail pane
+// (`./AppDetail.tsx`) and a disconnect confirm that sends the owner to GitHub for the
+// part Studio cannot remove.
+//
 // Every string from the kernel or GitHub (account, permission names, repo
 // names, refusals) is untrusted data: a React text child, never markup.
 import { type ReactNode, type Ref, useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Connector, ConnectorsResponse, RosterEntry, StudioBridge } from "../../api/contract";
 import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
-import { Avatar } from "../../components/Avatar/Avatar";
 import { Button } from "../../components/Button/Button";
 import { Dialog } from "../../components/Dialog/Dialog";
 import { useLiveStore, useResource } from "../../store/react";
 import { REFETCH_THROTTLE_MS } from "../../store/store";
-import { memberHash } from "../team/model";
 import { disconnectGithub, fetchRepos, readConnectors } from "./actions";
+import { AppDetail } from "./AppDetail";
+import { AppSetupSheet } from "./AppSetupSheet";
+import { type AppSetupPhase, INSTALLATIONS_URL, appRowMeta, slugOf } from "./app-setup";
 import { ConnectSheet } from "./ConnectSheet";
 import type { SheetMode } from "./ConnectSheet";
 import { useIntegrationsCommands } from "./commands";
@@ -38,16 +45,17 @@ import {
   type Reply,
   daysLeft,
   expiryOf,
-  grantedAgents,
+  githubRow,
   hasToken,
+  isAppConnection,
   isOffline,
   permissionLines,
   replyText,
   rowMeta,
-  ungrantedNote,
   viewOf,
   whenText,
 } from "./model";
+import { AppsPageLink, CheckGlyph, ExternalLink, GitHubMark, GrantSection, RefreshGlyph, RepoGlyph, WarnGlyph } from "./parts";
 import "./integrations.css";
 
 // ---- Data ------------------------------------------------------------------------------------------
@@ -103,45 +111,6 @@ function useGithubConnectors(api: StudioBridge, eventId: number, live: boolean):
   return { read, refetch };
 }
 
-// ---- Small marks ---------------------------------------------------------------------------------------
-
-function GitHubMark() {
-  return (
-    <svg className="integrations-mark" viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z" />
-    </svg>
-  );
-}
-
-function Glyph({ children }: { readonly children: ReactNode }) {
-  return (
-    <svg className="integrations-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {children}
-    </svg>
-  );
-}
-
-const WarnGlyph = () => (
-  <Glyph>
-    <path d="M12 8v5M12 16h.01M4.9 19h14.2a2 2 0 0 0 1.7-3L13.7 4a2 2 0 0 0-3.4 0L3.2 16a2 2 0 0 0 1.7 3Z" />
-  </Glyph>
-);
-const CheckGlyph = () => (
-  <Glyph>
-    <path d="m5 12 5 5L20 7" />
-  </Glyph>
-);
-const RepoGlyph = () => (
-  <Glyph>
-    <path d="M4 19.5V5a2 2 0 0 1 2-2h14v14H6.5a2.5 2.5 0 0 0 0 5H20" />
-  </Glyph>
-);
-const RefreshGlyph = () => (
-  <Glyph>
-    <path d="M3 12a9 9 0 0 1 15.5-6.2L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.5 6.2L3 16M3 21v-5h5" />
-  </Glyph>
-);
-
 // ---- Panes ------------------------------------------------------------------------------------------------
 
 interface ListPaneProps {
@@ -149,11 +118,13 @@ interface ListPaneProps {
   readonly connecting: boolean;
   readonly now: Date;
   readonly rowRef: Ref<HTMLButtonElement>;
+  /** The App setup dialog is open: its words replace the row's. */
+  readonly setup: AppSetupPhase | undefined;
 }
 
 /** The list pane: the one connector, with its dot and words. */
-function ListPane({ view, connecting, now, rowRef }: ListPaneProps) {
-  const meta = rowMeta(view, connecting, now);
+function ListPane({ view, connecting, now, rowRef, setup }: ListPaneProps) {
+  const meta = setup === undefined ? rowMeta(view, connecting, now) : appRowMeta(setup);
   return (
     <div className="integrations-list" data-testid={IDS.list}>
       <div role="listbox" aria-label="Connectors">
@@ -180,7 +151,7 @@ function EmptyDetail({ offline, onConnect }: { readonly offline: boolean; readon
     <div className="integrations-detail" data-testid={IDS.detail} data-state="none">
       <div className="integrations-empty" data-testid={IDS.empty}>
         <h2>Connect GitHub so a playbook can read your PRs.</h2>
-        <p>Studio works with no connectors. GitHub is read-only here: a token you create, limited to the personal repos you choose, kept in the Keychain.</p>
+        <p>Studio works with no connectors. GitHub is read-only here: a GitHub App you install or a token you create, limited to the personal repos you choose, kept in the Keychain.</p>
         <Button variant="primary" disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={onConnect} data-testid={IDS.emptyConnect}>
           Connect GitHub
         </Button>
@@ -245,8 +216,6 @@ function TokenDetail({ view, row, repos, roster, rosterError, refreshing, now, o
   // The owner's word, not GitHub's: a fine-grained token's permissions are never reported, so Studio keeps what the owner declared.
   const declared = row.permissions_source === "declared";
   const declaredAt = row.permissions_declared_at === null ? "" : ` ${whenText(row.permissions_declared_at, now)}`;
-  const granted = roster === undefined ? undefined : grantedAgents(roster);
-  const others = roster === undefined ? undefined : ungrantedNote(roster);
 
   return (
     <div className="integrations-detail" aria-label="GitHub" data-testid={IDS.detail} data-state={state}>
@@ -369,37 +338,7 @@ function TokenDetail({ view, row, repos, roster, rosterError, refreshing, now, o
         <p className="integrations-cap">A poll trigger can name only these repos. Change the set on GitHub, then Refresh.</p>
       </section>
 
-      <section className="integrations-sec" aria-labelledby={`${ids}-grant`}>
-        <div className="integrations-sech">
-          <h3 className="integrations-label" id={`${ids}-grant`}>
-            {granted === undefined ? "Agents with the GitHub grant" : `Agents with the GitHub grant · ${granted.length}`}
-          </h3>
-        </div>
-        {granted === undefined ? (
-          <p className="integrations-cap" data-testid={IDS.agentsNote}>
-            {rosterError ? "Couldn't read the team." : "Reading the team…"}
-          </p>
-        ) : (
-          <>
-            {granted.length === 0 ? null : (
-              <div className="integrations-cards" data-testid={IDS.agents}>
-                {granted.map((agent) => (
-                  <a key={agent.id} className="integrations-agent" href={memberHash(agent.id)} data-testid={IDS.agentCard} data-agent-id={agent.id}>
-                    <Avatar agent={{ id: agent.id, name: agent.display_name, shape: agent.avatar.shape, hue: agent.avatar.hue }} state="idle" size={36} />
-                    <span className="integrations-agent-text">
-                      <span className="integrations-agent-name">{agent.display_name}</span>
-                      <span className="integrations-cap">{agent.model ?? "model not reported"}</span>
-                    </span>
-                  </a>
-                ))}
-              </div>
-            )}
-            <p className="integrations-cap" data-testid={IDS.agentsNote}>
-              {`${granted.length === 0 ? "No agent has it. " : others === undefined ? "" : `${others} `}The grant is set per agent in Team.`}
-            </p>
-          </>
-        )}
-      </section>
+      <GrantSection roster={roster} rosterError={rosterError} />
     </div>
   );
 }
@@ -423,6 +362,17 @@ interface RepoOverride extends RepoList {
 
 const TOKEN_PENDING = "GitHub is still checking the last token. Try again once it answers.";
 
+/** What is open of the Connect sheet: its mode, and whether it starts on the choice between the App and a token. */
+interface SheetState {
+  readonly mode: SheetMode;
+  readonly choice: boolean;
+}
+
+/** One run of the App setup dialog; a new `key` mounts a fresh dialog, which makes a new setup call. */
+interface AppRun {
+  readonly key: number;
+}
+
 export function IntegrationsView({ api, registry = commandRegistry }: IntegrationsViewProps) {
   const { connection, eventLog } = useLiveStore(api);
   const { read, refetch } = useGithubConnectors(api, newestConnectorEventId(eventLog), connection.state === "live");
@@ -431,8 +381,14 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
   const now = new Date();
   const offline = isOffline(view);
   const tokenInUse = hasToken(view);
+  const appInUse = isAppConnection(view);
 
-  const [sheet, setSheet] = useState<SheetMode | undefined>(undefined);
+  const [sheet, setSheet] = useState<SheetState | undefined>(undefined);
+  const [app, setApp] = useState<AppRun | undefined>(undefined);
+  const [appPhase, setAppPhase] = useState<AppSetupPhase | undefined>(undefined);
+  const appRuns = useRef(0);
+  // Where focus goes when the App dialog closes: the control that opened the choice (the dialog replaces it, so its own return has nothing).
+  const opener = useRef<HTMLElement | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -476,21 +432,86 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
     if (confirming && !tokenInUse) setConfirming(false);
   }, [confirming, tokenInUse]);
 
+  const rememberOpener = () => {
+    const active = document.activeElement;
+    opener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+  };
+
+  /** Opens the Connect sheet: on the choice when nothing is connected, on the token form to replace one. */
   const openSheet = (mode: SheetMode) => {
     if (offline) return;
     if (checkingToken.current) {
       setNotice({ text: TOKEN_PENDING });
       return;
     }
-    if (disconnecting.current) return;
+    if (disconnecting.current || app !== undefined) return;
+    if (sheet === undefined) rememberOpener();
     setConfirming(false);
     setNotice(undefined);
-    setSheet((open) => open ?? mode);
+    setSheet((open) => open ?? { mode, choice: mode === "connect" });
   };
-  const connectHandler = () => openSheet(tokenInUse ? "replace" : "connect");
+  // One connection at a time: with an App connected, Connect GitHub waits for a disconnect.
+  const connectHandler = () => {
+    if (appInUse) return;
+    openSheet(tokenInUse ? "replace" : "connect");
+  };
+
+  /** Starts a fresh App setup (the choice's "Install GitHub App", "Set up again"). It never runs over another sheet or the confirm. */
+  const startApp = () => {
+    if (offline) return;
+    if (checkingToken.current) {
+      setNotice({ text: TOKEN_PENDING });
+      return;
+    }
+    if (disconnecting.current) return;
+    if (sheet === undefined && app === undefined) rememberOpener();
+    setConfirming(false);
+    setNotice(undefined);
+    setSheet(undefined);
+    appRuns.current += 1;
+    // The row's words start with the dialog's first phase; the dialog reports each change after it.
+    setAppPhase({ kind: "starting" });
+    setApp({ key: appRuns.current });
+  };
+
+  const closeApp = () => {
+    setApp(undefined);
+    setAppPhase(undefined);
+  };
+
+  /** "Paste a token instead": the token form, over nothing. */
+  const pasteToken = () => {
+    closeApp();
+    if (offline) return;
+    setSheet({ mode: "connect", choice: false });
+  };
+
+  // The last sheet or dialog is gone: focus goes back to what opened it, else the connector's row, unless something took it already.
+  // (The App dialog replaces the control that opened it, so it has no return of its own.)
+  const overlayOpen = app !== undefined || sheet !== undefined;
+  const wasOverlayOpen = useRef(false);
+  useEffect(() => {
+    if (overlayOpen) {
+      wasOverlayOpen.current = true;
+      return;
+    }
+    if (!wasOverlayOpen.current) return;
+    wasOverlayOpen.current = false;
+    const back = opener.current;
+    opener.current = null;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    (back?.isConnected === true ? back : rowRef.current)?.focus();
+  }, [overlayOpen]);
+
+  // The connector became an App connection while the dialog was open: the setup is done, and the detail pane says so.
+  const appConnected = appInUse && (view.state === "connected" || view.state === "expiring");
+  useEffect(() => {
+    if (app !== undefined && appConnected) closeApp();
+  }, [app, appConnected]);
 
   const requestDisconnect = () => {
-    if (!tokenInUse || offline) return;
+    if (!tokenInUse || offline || app !== undefined) return;
     if (checkingToken.current) {
       setNotice({ text: TOKEN_PENDING });
       return;
@@ -528,7 +549,7 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
 
   useIntegrationsCommands(
     registry,
-    { offline, hasToken: tokenInUse },
+    { offline, hasToken: tokenInUse, appConnected: appInUse },
     { connect: connectHandler, disconnect: requestDisconnect, refreshRepos },
   );
 
@@ -543,6 +564,21 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
   if (view.phase === "loading") detail = <UnknownDetail loading />;
   else if (unknownNoData) detail = <UnknownDetail loading={false} />;
   else if (row === undefined) detail = <EmptyDetail offline={offline} onConnect={() => openSheet("connect")} />;
+  else if (appInUse)
+    detail = (
+      <AppDetail
+        view={view}
+        row={row}
+        repos={repos}
+        roster={roster}
+        rosterError={rosterError}
+        refreshing={refreshing}
+        now={now}
+        onSetUpAgain={startApp}
+        onDisconnect={requestDisconnect}
+        onRefresh={() => void refreshRepos()}
+      />
+    );
   else
     detail = (
       <TokenDetail
@@ -583,13 +619,16 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
         </p>
       )}
       <div className="integrations-split">
-        <ListPane view={view} connecting={connecting} now={now} rowRef={rowRef} />
+        <ListPane view={view} connecting={connecting} now={now} rowRef={rowRef} setup={app === undefined ? undefined : appPhase} />
         {detail}
       </div>
       {sheet === undefined ? null : (
         <ConnectSheet
           api={api}
-          mode={sheet}
+          mode={sheet.mode}
+          choice={sheet.choice}
+          offline={offline}
+          onChooseApp={startApp}
           expired={view.state === "expired"}
           onClose={() => setSheet(undefined)}
           onConnected={() => {
@@ -602,7 +641,46 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
           onSettled={() => setNotice((current) => (current?.text === TOKEN_PENDING ? undefined : current))}
         />
       )}
-      {confirming ? (
+      {app === undefined ? null : (
+        <AppSetupSheet
+          key={app.key}
+          api={api}
+          events={eventLog}
+          connector={githubRow(read.lastOk)}
+          onClose={closeApp}
+          onSetUpAgain={startApp}
+          onPasteToken={pasteToken}
+          onPhaseChange={setAppPhase}
+        />
+      )}
+      {confirming && appInUse ? (
+        <Dialog
+          kind="confirm"
+          wide
+          title="Disconnect GitHub?"
+          description={`Deletes the App's key from the Keychain. ${view.state === "revoked" ? "Playbooks that need GitHub are already parked, and stay parked until you connect again." : "Playbooks that need GitHub park until you connect again."} Agents keep their grant.`}
+          action={{ label: "Disconnect", onAction: () => void confirmDisconnect() }}
+          cancelLabel="Cancel"
+          onCancel={() => setConfirming(false)}
+        >
+          <p className="integrations-flush" data-testid={IDS.appConfirm}>Studio can&apos;t remove the App from GitHub. That part stays yours:</p>
+          <ul className="integrations-steps">
+            <li>
+              <b>Uninstall</b> it, to end its access to your repos.
+            </li>
+            <li>
+              <b>Delete</b> it, to remove the App itself.
+            </li>
+          </ul>
+          <div className="integrations-links">
+            <ExternalLink api={api} url={INSTALLATIONS_URL} testId={IDS.appConfirmInstalled}>
+              Open Installed GitHub Apps
+            </ExternalLink>
+            <AppsPageLink api={api} slug={slugOf(row?.app_slug)} testId={IDS.appConfirmApps} />
+          </div>
+        </Dialog>
+      ) : null}
+      {confirming && !appInUse ? (
         <Dialog
           kind="confirm"
           title="Disconnect GitHub?"

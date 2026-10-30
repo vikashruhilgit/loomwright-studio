@@ -285,7 +285,7 @@ export interface GitHubAppConversion {
 
 /**
  * Why a port method did not do its work: one of the setup refusals, or
- * `not_implemented` (what the stub answers until the tokens item fills it in).
+ * `not_implemented` (a value the real port, `github/app-port.ts`, no longer answers).
  */
 export type GitHubAppPortError = GitHubAppSetupRefusal | "not_implemented";
 
@@ -293,8 +293,8 @@ export type GitHubAppPortError = GitHubAppSetupRefusal | "not_implemented";
 export type GitHubAppPortResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: GitHubAppPortError; readonly message: string };
 
 /**
- * The GitHub App connect's storage side: the stub is `github/app-port.ts`, the
- * kernel tokens item fills it in and the setup flow calls it. Every method
+ * The GitHub App connect's storage side: the real port is `github/app-port.ts`
+ * (built by the kernel tokens item) and the setup flow calls it. Every method
  * resolves a `GitHubAppPortResult` and never throws or rejects. Dependencies
  * (the store, the clock) are parameters, as in `GitHubConnector`.
  */

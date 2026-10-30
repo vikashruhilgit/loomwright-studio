@@ -5,7 +5,7 @@
 // token never enters the renderer, which is the surface that renders
 // untrusted text (invariant 3).
 import { join } from "node:path";
-import { BrowserWindow, app, ipcMain, session } from "electron";
+import { BrowserWindow, app, ipcMain, session, shell } from "electron";
 import type { BrowserWindowConstructorOptions, IpcMainInvokeEvent, WebContents } from "electron";
 import type { ApiRequest, FeedRelayFrame } from "../src/api/contract";
 import { CHANNELS } from "./channels";
@@ -13,6 +13,7 @@ import { registerDeepLinks } from "./deeplink";
 import { showsWindow } from "./hidden-window";
 import { createKernelConnection, resolveDataDir, tokenReaderFor } from "./kernel-connection";
 import type { FeedHandle, KernelConnection } from "./kernel-connection";
+import { isAllowedExternal } from "./open-external";
 import { createTray } from "./tray";
 
 /** The window's options. The three security settings are pinned by `electron/main.test.ts`. */
@@ -81,6 +82,24 @@ function handleBridge(kernel: KernelConnection, owner: () => WebContents | undef
   ipcMain.handle(CHANNELS.feedUnsubscribe, async (event) => {
     if (!fromOwner(event)) throw new Error("refused");
     closeFeed();
+  });
+  // The one way out to the system browser. It answers `false` (never throws) for anything off the
+  // allowlist, and for a kernel that is not connected, because the kernel's start page is only valid
+  // on the port the kernel has now. The address is re-checked here and never trusted from the renderer.
+  ipcMain.handle(CHANNELS.openExternal, async (event, url: unknown) => {
+    if (!fromOwner(event)) throw new Error("refused");
+    if (typeof url !== "string") return false;
+    const where = await kernel.connection();
+    if (where.state !== "connected") return false;
+    if (!isAllowedExternal(url, where.port)) return false;
+    try {
+      await shell.openExternal(url);
+      return true;
+    } catch {
+      // Reasons only: never the address, whose query carries the setup `state`.
+      console.warn("loomwright-studio: could not open the system browser");
+      return false;
+    }
   });
 }
 

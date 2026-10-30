@@ -8,7 +8,7 @@ Part of [Phase 6 features](../ARCHITECTURE.md#phase-6-features). Built and docum
 |---|---|
 | `GET /connectors` | `{connectors}`: every `connectors` row in the `Connector` shape, `[]` when nothing was ever set up |
 | `POST /connectors/github/token` | body `{token, declared_read_only?}`; `declared_read_only`, when present, must be a boolean (else 400 `invalid_body`), and only `true` declares; validates the token, then stores it; `{connector}`, the row after the change, never the token |
-| `POST /connectors/github/disconnect` | deletes the Keychain item; `{connector}`, the row after the change |
+| `POST /connectors/github/disconnect` | deletes every GitHub credential Keychain item (the token's and the GitHub App's, [below](#the-credential-lifecycle)); `{connector}`, the row after the change |
 | `GET /connectors/github/repos[?refresh=1]` | `{repos, verified_at}`: the repos the token reaches, as `owner/name` (`[]` and `null` with no row); `refresh=1` re-reads them from GitHub first |
 
 **Contract types it fills** (`app/src/api/contract.ts`): `ConnectorKind`, `ConnectorStatus`, `Connector`, `ConnectorsResponse`, `ConnectorTokenBody`, `ConnectorChangeResponse`, `ConnectorReposQuery` and `ConnectorReposResponse`.
@@ -23,11 +23,11 @@ The token lives only in the Keychain item `loomwright-studio-github` (generic pa
 - each route handler catches everything and answers a typed failure, so the API's `route_failed` event (which records a clipped error message) is never written for these routes;
 - the client checks the token's shape before it reaches a header (so Node's `Headers` never throws a message quoting it) and answers every throw as `unreachable`.
 
-The client (`createGitHubClient`) reads the token fresh from the Keychain on each call, sends GETs only, and only to `https://api.github.com`. The App path adds exactly two allowlisted non-GET calls, both to `api.github.com` ([below](#the-two-non-get-calls)).
+The client (`createGitHubClient`) reads its credential fresh on each call, sends GETs, and only to `https://api.github.com`. On the token path that credential is the Keychain item above. The App path adds a second credential, an installation token, chosen per call by [the method rule](#the-credential-lifecycle), and exactly two allowlisted non-GET calls, both to `api.github.com` ([below](#the-two-non-get-calls)).
 
 ## The `connectors` table
 
-One row per connector kind (migration 17, plus migration 18 for the two permission-source columns). It holds what the connector last verified: `status`, `account_login`, `permissions_json` (name to level, as GitHub reported them; `NULL` when GitHub reported none), `permissions_source` and `permissions_declared_at` (below), `reachable_repos_json` (`owner/name` strings), `expires_at`, `verified_at`, and `created_at` / `updated_at`. It never holds the token or any other secret. `permissions_source` says who vouched for the permissions: `reported` (GitHub's own answer; `permissions_declared_at` is `NULL`), `declared` (the owner said so; `permissions_json` is `NULL` and `permissions_declared_at` is the time of the write), or `NULL` on a row from before migration 18, which is never backfilled. The kernel never infers a source. A later `reported` connect clears `permissions_declared_at`; disconnect and refresh leave both columns as they were. The login, permission names and repo names come from GitHub: untrusted data, shown as text. Disconnecting keeps the row (and what it last verified) with status `disconnected`; nothing deletes it.
+One row per connector kind (migration 17, plus migration 18 for the two permission-source columns and migration 19 for the three GitHub App columns, below). It holds what the connector last verified: `status`, `account_login`, `permissions_json` (name to level, as GitHub reported them; `NULL` when GitHub reported none), `permissions_source` and `permissions_declared_at` (below), `reachable_repos_json` (`owner/name` strings), `expires_at`, `verified_at`, and `created_at` / `updated_at`. It never holds the token or any other secret. `permissions_source` says who vouched for the permissions: `reported` (GitHub's own answer; `permissions_declared_at` is `NULL`), `declared` (the owner said so; `permissions_json` is `NULL` and `permissions_declared_at` is the time of the write), or `NULL` on a row from before migration 18, which is never backfilled. The kernel never infers a source. A later `reported` connect clears `permissions_declared_at`; disconnect and refresh leave both columns as they were. The login, permission names and repo names come from GitHub: untrusted data, shown as text. Disconnecting keeps the row (and what it last verified) with status `disconnected`; nothing deletes it.
 
 ## Lifecycle
 
@@ -63,15 +63,17 @@ A declared token is validated like any other (user, expiry, reachable repos), th
 
 **Replace** is set with a token already in place: the new token is validated first and swapped in only when it passes, so a refused one leaves the first in use. If the read-back after the swap does not hold the new token, the old one is already deleted: the row reads `disconnected` (one event), never `connected`, and the answer is 500 `keychain_failed`.
 
-**Disconnect** deletes the Keychain item ("item not found", exit status 44, counts as already gone) and sets the row `disconnected`, kept. With no row it answers 404 `no_connector`.
+A token set over a GitHub App connection replaces the App: after the read-back confirms the new token, the App's four Keychain items are deleted ("item not found", exit status 44, counts as already gone; every item is tried even when one fails) and the held installation token is dropped. The set succeeds either way, since the token's item is current by [the method rule](#the-credential-lifecycle). The row clears `app_slug` and `installation_id` only when every App item is gone; if one could not be deleted, the row keeps them, so a later remove of the App can still find and delete what is left.
+
+**Disconnect** deletes every GitHub credential Keychain item, the token's and the GitHub App's four, whichever method is current ("item not found", exit status 44, counts as already gone), drops the held installation token, clears the App fields and sets the row `disconnected`, kept. Every item is tried even when one fails; a failure answers 500 `keychain_failed` and leaves the row as it was. With no row it answers 404 `no_connector`.
 
 **Refresh.** `GET /connectors/github/repos?refresh=1` re-reads the repos with the stored token and updates `reachable_repos_json` and `verified_at`, without a status change or an event. It needs a token in use (409 `not_connected` otherwise, 404 `no_connector` with no row); a 401 answers `token_invalid` without changing the row.
 
-The connector runs one call at a time (set, disconnect, refresh), so two never interleave their Keychain steps.
+The connector runs one call at a time (set, disconnect, refresh) on the same queue as [the App port](#the-port) (`githubCredentialLock`, `github/credential-lock.ts`): both change the token's Keychain item, the App's four items, the row's `method`, `app_slug` and `installation_id`, and the held installation token, so no two credential changes, token or App, ever interleave their Keychain or row steps. A call that fails or throws never blocks the next.
 
 ## Expiry
 
-The connector's due work (`checkGitHubExpiry`, every loop tick) reads the GitHub row only; it never touches the Keychain or GitHub. For a token in use with a known `expires_at`:
+The connector's expiry due work (`checkGitHubExpiry`, every loop tick) reads the GitHub row only; it never touches the Keychain or GitHub. A `method: app` row is skipped (its installation token renews itself: [the credential lifecycle](#the-credential-lifecycle)). For a token in use with a known `expires_at`:
 
 - within 14 days, `connected` becomes `expiring` (one event), and the owner is notified through `recordNotification` (source `kernel:github_token_expiring_14d`);
 - within 1 day, a second notification (`kernel:github_token_expiring_1d`);
@@ -100,7 +102,7 @@ Every status change appends exactly one `connector_status` event, `{connector_id
 
 The second way to connect GitHub, beside the token path, which stays as it is. [D36](../DECISIONS.md) records the decision and its evidence (probe p13, [open questions](../OPEN_QUESTIONS.md), "GitHub App connect"); the screens are in [DESIGN](../DESIGN.md#github-app-connect). Setup is GitHub's App Manifest flow: Studio opens github.com in the system browser with the App pre-filled (private, no webhook, `Pull requests: Read`, `Contents: Read`, `Metadata: Read`), and the owner clicks Create, then picks repos and clicks Install. Studio receives and stores the App's key itself.
 
-It is built in two waves. **Wave 1** is this contract: the types (`kernel/src/integrations/types.ts`), a stub port (`github/app-port.ts`), the two owner routes as 501 stubs (`github/app-routes.ts`), the app's contract types (`app/src/api/contract.ts`), the decision and the mockup. **Wave 2** is three items built in parallel against it: the kernel tokens item (the port, the App's key and installation tokens), the kernel setup item (the setup window and the browser routes) and the app's Connect sheet. Until they land nothing works: the owner routes answer `501 {"error":"not_implemented"}`, every port method answers `not_implemented`, and the browser routes are not served.
+It is built in two waves. **Wave 1** is this contract: the types (`kernel/src/integrations/types.ts`), a stub port (`github/app-port.ts`), the two owner routes as 501 stubs (`github/app-routes.ts`), the app's contract types (`app/src/api/contract.ts`), the decision and the mockup. **Wave 2** is three items built in parallel against it: the kernel tokens item (the port, the App's key and installation tokens; [the credential lifecycle](#the-credential-lifecycle) and [the port](#the-port) below are its), the kernel setup item (the setup window and the browser routes) and the app's Connect sheet. All three have landed: the port is real, `POST /connectors/github/app/setup` and `/setup/cancel` open and close the real setup window, the three browser routes are served ([GitHub App setup](github-app-setup.md)), and the Connect sheet drives them ([app](app.md)).
 
 ### Owner routes
 
@@ -111,7 +113,7 @@ They take the API token like every route (401 without it).
 | `POST /connectors/github/app/setup` | `{setup_url, expires_at}`: opens the one setup window and returns the address the app opens in the system browser (`setup_url`) and when the window closes (`expires_at`, an ISO time) |
 | `POST /connectors/github/app/setup/cancel` | `{cancelled}` (a boolean): closes the open setup window, if any |
 
-Two existing routes gain the App method, documented here and built by the kernel tokens item. `GET /connectors` carries the App fields below on the GitHub row. `POST /connectors/github/disconnect` on an App connection removes the App's key from the Keychain; Studio cannot uninstall or delete the App on GitHub, so the screen sends the owner there.
+Two existing routes gain the App method, built by the kernel tokens item. `GET /connectors` carries the App fields below on the GitHub row. `POST /connectors/github/disconnect` deletes **every** GitHub credential item, the token's and the App's four, whichever method is current, drops the held installation token and clears the App fields; the row reads `disconnected` and is kept. Studio cannot uninstall or delete the App on GitHub, so the screen sends the owner there.
 
 ### Browser routes
 
@@ -123,11 +125,11 @@ GET only, served by the kernel's loopback API, **without the API token**: the ow
 | `/connectors/github/app/return` | GitHub's `redirect_url`, after Create: query `code` and `state`. Studio converts the code and stores the App |
 | `/connectors/github/app/installed` | GitHub's `setup_url`, after Install: query `installation_id`, `setup_action` and `state`. Studio records the installation |
 
-GitHub accepts a loopback `redirect_url` and `setup_url` (`http://127.0.0.1:<port>`) and returns the `state` on both returns (probe p13). The `state` appears in the browser's address bar and history, so it is **spent on its first use**. Each setup window is **single-use, short-lived, and at most one is open at a time**; a browser route outside an open window, or with a `state` that is not the window's current one, is refused.
+GitHub accepts a loopback `redirect_url` and `setup_url` (`http://127.0.0.1:<port>`) and returns the `state` on both returns (probe p13). The `state` appears in the browser's address bar and history, so every `state` GitHub carries is **spent on its first use**. The one exception is the start `state` in `setup_url`, which GitHub never carries: it can be reused for start-page reloads until the return arrives (a recorded deviation, [GitHub App setup](github-app-setup.md#the-window)). Each setup window is **single-use, short-lived, and at most one is open at a time**; a browser route outside an open window, or with a `state` that is not the window's current one, is refused.
 
 ### The connector row's App fields
 
-The GitHub row (`ConnectorRow`, and `Connector` in the app's contract) gains three **optional** fields, optional because the `connectors` table gets the columns only in the kernel tokens item's migration 19; a row without `method` reads as `token`:
+The GitHub row (`ConnectorRow`, and `Connector` in the app's contract) gains three **optional** fields, stored by migration 19 (`connectors.method`, `app_slug` and `installation_id`: nullable, no default, no CHECK, no trigger, safe to re-run, like migration 18). A row from before it, or whose `method` is `NULL`, reads as `token` at the read boundary; it is never backfilled:
 
 | Field | Meaning |
 |---|---|
@@ -135,7 +137,7 @@ The GitHub row (`ConnectorRow`, and `Connector` in the app's contract) gains thr
 | `app_slug` | the App's slug on GitHub, or `null`; not secret |
 | `installation_id` | the installation's number, or `null`; not secret |
 
-For `method: app`, `permissions_source` is always `reported` (GitHub reports an installation token's permissions), and `expires_at` is the current installation token's expiry, which **renews** (no extra field). The row never holds the App's key, a client secret or an installation token, as before.
+For `method: app`, `permissions_source` is always `reported` (GitHub reports an installation token's permissions), and `expires_at` is the installation token's expiry as of the connect, which **renews** hourly without the row following it (no extra field; it is never owner-actionable, [see below](#the-credential-lifecycle)). `reachable_repos` is exactly the repos the owner chose at install. The row never holds the App's key, a client secret or an installation token, as before. `studio connectors github status` prints a `method:` line (`token`, or `app (<slug>, installation <id>)`) and a `permissions source:` line (`reported`, `declared` or `-`) beside the permissions line.
 
 ### The setup refusal reasons
 
@@ -152,33 +154,67 @@ A closed list (`GITHUB_APP_SETUP_REFUSALS`, type `GitHubAppSetupRefusal`):
 
 The mapping of these reasons to HTTP statuses and to what the browser tab shows is the setup item's.
 
+### The credential lifecycle
+
+The kernel keeps the App's credentials in the Keychain and mints, renews and uses short-lived **installation tokens**, whose permissions and repos GitHub reports. Read-only is therefore GitHub's word (the token's permissions are checked at mint), not a declaration, and a leaked token dies within the hour.
+
+**Keychain items.** Each is a generic password with account `loomwright-studio` (the connector's `GITHUB_KEYCHAIN_ACCOUNT`), written and deleted through `kernel/src/auth/keychain.ts` like the token:
+
+| Item (service) | Holds |
+|---|---|
+| `loomwright-studio-github-app-id` | the App's numeric id (the JWT's `iss`) |
+| `loomwright-studio-github-app-slug` | the App's slug |
+| `loomwright-studio-github-app-installation` | the installation's numeric id |
+| `loomwright-studio-github-app-key` | the App's private key, **encoded** |
+
+The Keychain writer takes only `WRITE_ARG` characters (letters, digits, `_ . @ -`, never first `-`), and a PEM has spaces and newlines, so the key item holds the `pem` as **unpadded base64url**. The `pem` must start with `-----BEGIN` before it is encoded (a `pem` that does not is `conversion_failed`), which guarantees the encoded form starts with a letter and passes `WRITE_ARG`; `WRITE_ARG` itself is never widened. Every write is replace by delete then add, and is trusted only after a read-back that matches (`security -i` can exit 0 on a failure). `client_secret` is never a parameter anywhere. Whether `security -i` accepts a ~2.3 KB secret on one line on a real Keychain is unverified ([open question](../OPEN_QUESTIONS.md)): the read-back decides, and a failure is `conversion_failed`.
+
+**The mint.** The kernel signs an RS256 JWT with the key (`iss` the App id, `iat` 60 s before the kernel's clock, `exp` 10 minutes after `iat`; the 60 s keeps a fast clock inside GitHub's tolerance), sends it as the bearer of `POST /app/installations/{id}/access_tokens`, and receives the token, its `expires_at` and the permissions GitHub reports for it. The key is read for one mint and dropped; the JWT is sent once and dropped.
+
+**Renewal.** The token lives in memory only, in one process-wide holder shared by polls, tools and routes (`githubAppTokens`, `github/app-token.ts`); it is never written to the store, a file, an event or a log. A token with 5 minutes or less left is renewed before it is handed out, a 401 on a call renews it and retries **once** per call, and concurrent callers share one mint. A failed renewal is a typed failure to the caller, never a throw.
+
+**The method rule.** One credential is current at a time, resolved **per call** with no read at construction (the shipped daemon builds its client before the store opens): the token's Keychain item present means `token`; otherwise the App's installation id and key present means `app`; otherwise there is no credential (`unreachable`, as with no token). Every writer keeps the row's `method` in step with that rule: a successful token set writes `method = 'token'`, deletes the App's four items, drops the held installation token and clears the App fields (keeping them while an App item could not be deleted, [above](#lifecycle)), a successful installation deletes the token's item, and a disconnect deletes every GitHub credential item.
+
+**The reach list.** For `method: app` the client reads `GET /installation/repositories` (the `repositories` array, paged), the repos the owner chose at install, because `/user/repos` answers an installation token 403. `getTokenInfo` (`GET /user`) is the token path's and is not called for an App row.
+
+**Expiry and rejection.** `checkGitHubExpiry` skips a `method: app` row: renewal is silent and the hourly `expires_at` is never owner-actionable, so the status is unchanged and no `kernel:github_token_expiring_*` notification is recorded. A mint answered 401 (the key is revoked) or 404 (the installation is gone) is recorded on the holder (`lastMintFailure`); a due work (`checkGitHubAppMint`) applies it: the row reads `rejected` (one `connector_status` event) and the owner is notified once, `kernel:github_app_rejected`, on the transition into `rejected` only. A renewed installation token that reports a write permission is refused the same way (`write_scoped`): the holder drops the held token, records the failure, and the same due work marks the row `rejected` and notifies once, naming the permissions; the check runs on every mint, not only the first. Any other failure (a network error, a 5xx) is not recorded: it may pass.
+
+**No new closed-list value.** Port failures reuse `GitHubAppPortError`'s values: `token_write_scoped`; `install_failed` (a mint, reach-list or Keychain failure in `recordInstallation`, and a Keychain failure in `removeApp`); `conversion_failed` (a `pem` that is not PEM-shaped, an App id or slug that cannot be stored, or a Keychain failure in `storeApp`). `ConnectorErrorCode` and `CONNECTOR_ERROR_STATUS` are unchanged.
+
 ### The port
 
-`GitHubAppPort` (`kernel/src/integrations/types.ts`) is the interface between the setup flow and the connector. Its stub, `githubAppPort` (`github/app-port.ts`), answers `not_implemented`; the kernel tokens item fills it. Three methods, each returning a `Promise<GitHubAppPortResult<…>>` and never throwing:
+`GitHubAppPort` (`kernel/src/integrations/types.ts`) is the interface between the setup flow and the connector. `githubAppPort` (`github/app-port.ts`) is the real port, `createGitHubAppPort(deps)` its factory (Keychain reader, writer and deleter, the token holder and a client factory, each resolved only when a call needs it). Three methods, each returning a `Promise<GitHubAppPortResult<…>>`, never throwing or rejecting whatever they are given, and serialised (one call at a time, on the queue the token connector shares, so a token set never interleaves with an App call):
 
 | Method | Does |
 |---|---|
-| `storeApp(…, conversion, pem)` | stores the converted App: the non-secret `GitHubAppConversion` fields (`app_id`, `slug`, `name`, `owner_login`, `html_url`, `client_id`) and the `pem`, which goes to the Keychain |
-| `recordInstallation(…, installationId)` | records the installation, mints the first installation token and verifies its permissions (a write permission is `token_write_scoped`) |
-| `removeApp(…)` | removes the App's key from the Keychain and its connection |
+| `storeApp(…, conversion, pem)` | writes the App's id, slug and encoded key (replacing any earlier App's), sets `app_slug` on the connector row and creates the row `disconnected` when there is none; `method` and `status` are unchanged, so a token in use stays in use |
+| `recordInstallation(…, installationId)` | stores the installation id, mints the first installation token and reads the permissions GitHub reports. Any write permission (or an unknown level) is `token_write_scoped`, naming it: nothing is connected, the App's four items are removed, and a token in use stays as it was. Otherwise it reads the reach list, deletes the token's Keychain item, and writes the row `connected`, `method: app`, `permissions_source: reported`, with the permissions, the installed repos, `installation_id`, `expires_at` and one `connector_status` event. A mint, reach-list or Keychain failure is `install_failed`, removes the installation item and leaves a token in use unchanged |
+| `removeApp(…)` | deletes the App's four items, drops the held token, clears `app_slug` and `installation_id`, and returns the row, `disconnected` if it was an App row (one event, on a change only); a token connection is not the App's to end and stays as it is |
 
-Its dependencies (the store, the clock) are parameters, in `GitHubConnector`'s idiom (`setToken(store, token, now, …)`), imported type-only. `GitHubAppPortResult<T>` is `{ ok: true; … }` or `{ ok: false; error: GitHubAppPortError; message: string }`, where `GitHubAppPortError` is a `GitHubAppSetupRefusal` or `"not_implemented"`. `GitHubAppConversion` never carries `client_secret` or `webhook_secret`.
+Its dependencies (the store, the clock) are parameters, in `GitHubConnector`'s idiom (`setToken(store, token, now, …)`). `GitHubAppPortResult<T>` is `{ ok: true; value }` or `{ ok: false; error: GitHubAppPortError; message: string }`, where `GitHubAppPortError` is a `GitHubAppSetupRefusal` or `"not_implemented"` (a value the real port no longer answers). A failure's `message` is a fixed sentence (plus the permission names GitHub reported, for a write scope): never a caught error's text. `GitHubAppConversion` never carries `client_secret` or `webhook_secret`.
 
 ### The two non-GET calls
 
 The client may send exactly two requests that are not GET, both to `api.github.com`, both in a fixed allowlist; every other method stays refused:
 
-- `POST /app/installations/{id}/access_tokens`: mints an installation token, authenticated by an app JWT signed with the App's key;
-- `POST /app-manifests/{code}/conversions`: the manifest conversion, which returns the App and its secrets.
+- `POST /app/installations/{id}/access_tokens`: mints an installation token, authenticated by an app JWT signed with the App's key (`mintInstallationToken`);
+- `POST /app-manifests/{code}/conversions`: the manifest conversion, which returns the App and its secrets (`convertManifest`; unauthenticated, as the single-use `code` is the credential). The setup flow does not call it yet: `app-setup.ts` sends its own conversion, a recorded deviation pending the owner's confirmation ([GitHub App setup](github-app-setup.md#the-conversion)).
+
+`isAllowedGitHubRequest(method, url)` is the one authority, checked with the origin before every request: GET, or exactly one of these two POSTs (no query, no fragment), and no host but `api.github.com`; no PUT, PATCH or DELETE and no other POST. Every request, GET or POST, goes through the one request path (timeout, rate limit, bounded read, no redirects).
 
 The **reach list** is `GET /installation/repositories`, which lists exactly the repos the owner chose at install (the mint response carries no repo list).
 
 ### The secrets
 
-The conversion's secret values are `pem` and `client_secret`. The `pem` goes to the Keychain. `client_secret` is never stored, logged or returned, and nothing uses it. As for the token, no route answer, row, event, notification, log line, thrown error or CLI output carries a secret.
+The conversion's secret values are `pem` and `client_secret`. The `pem` goes to the Keychain, as its base64url encoding, and nowhere else. `client_secret` is never stored, logged or returned, and nothing uses it. Beside the `pem`, the secrets are the JWT (built, sent once, dropped) and the installation token (memory only). As for the token, no route answer, row, event, notification, log line, thrown error or CLI output carries any of them; the tests look for each secret string, and for the encoded `pem`, in every result, row, event and notification, after forced failures too.
 
 ### Open for wave 2
 
-- `checkGitHubExpiry` (the [expiry](#expiry) work) warns 14 days and 1 day before `expires_at`. An App row's `expires_at` is an installation token's, which renews every hour, so the kernel tokens item decides how that work treats a `method: app` row (it must not raise an expiry warning every hour).
-- The Keychain item that holds the App's key is named by the kernel tokens item.
+Answered by the kernel tokens item:
+
+- `checkGitHubExpiry` (the [expiry](#expiry) work) skips a `method: app` row: an installation token renews every hour, so it never raises an expiry warning ([the credential lifecycle](#the-credential-lifecycle)).
+- The Keychain item that holds the App's key is `loomwright-studio-github-app-key`, with the three other items above.
+
+Still open:
+
 - The length of a setup window is the setup item's call.
