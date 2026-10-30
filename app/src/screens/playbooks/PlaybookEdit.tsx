@@ -90,12 +90,18 @@ export function PlaybookEdit({ playbook, actions, onSet, onBack }: PlaybookEditP
   }, [editing]);
   const on = isOn(playbook);
 
+  // Set while this editor's own Set is pending (Enter in the field submits too) is dropped here, before it can touch `busy`:
+  // the screen's guard would drop it as well, but its `undefined` answer would then clear the first Set's busy state early.
+  const sending = useRef(false);
   const confirm = async (row: PolicyRow, value: string): Promise<void> => {
+    if (sending.current) return;
+    sending.current = true;
     setBusy(row.field);
     let outcome: WriteOutcome<PlaybookChangeResponse> | undefined;
     try {
       outcome = await onSet(playbook, row.field, value);
     } finally {
+      sending.current = false;
       setBusy(null);
     }
     // Dropped by the guard: an earlier Set is still pending, and its answer is the one to show.

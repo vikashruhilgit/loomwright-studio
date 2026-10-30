@@ -320,7 +320,22 @@ describe("AC4: every field, who set it, and 'not set'", () => {
   it("reads 'not set' for an unset dedupe key and model, never a filled-in default", async () => {
     await mountLoaded();
     const weekly = rowOf("Weekly changelog").textContent ?? "";
-    expect(weekly.match(/not set/g)?.length).toBe(2);
+    // Dedupe key, priority, model and mode: priority and mode have no setter, so their column defaults read "not set" too.
+    expect(weekly.match(/not set/g)?.length).toBe(4);
+    expect(weekly).not.toContain("low");
+  });
+
+  it("a priority or mode with no setter reads 'not set' in the detail and the edit view, with no setter tag", async () => {
+    await mountLoaded();
+    await openDetail("Weekly changelog");
+    const detail = within(screen.getByTestId(IDS.detail));
+    expect(detail.getAllByText("not set").length).toBeGreaterThanOrEqual(5);
+    expect(detail.queryByText("low")).toBeNull();
+    fireEvent.click(screen.getByTestId(IDS.editFields));
+    await screen.findByTestId(IDS.edit);
+    expect(within(field("priority")).getByText("not set")).toBeTruthy();
+    expect(within(field("mode")).getByText("not set")).toBeTruthy();
+    expect(within(field("priority")).queryByText("low")).toBeNull();
   });
 
   it("a run still running has no tokens yet and says so; a playbook with no run says so", async () => {
@@ -368,9 +383,13 @@ describe("AC5: a field edit is one /set, and nothing changes until the kernel an
     const select = screen.getByLabelText("New priority") as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "low" } });
     const readsBefore = fake.requestsTo("GET /playbooks").length;
-    fireEvent.click(screen.getByRole("button", { name: "Set priority" }));
-    // Pressing Set again while it is pending sends nothing more.
-    fireEvent.click(screen.getByRole("button", { name: "Set priority" }));
+    // Submitting again while it is pending (Enter in the editor) sends nothing more. The form is
+    // submitted directly, so the Set button's loading state cannot be what drops the repeat: the in-flight guard must.
+    const form = screen.getByRole("form", { name: "Set priority" });
+    act(() => {
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
     await waitFor(() => expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1));
     expect(posts(fake, "POST /playbooks/:id/set")[0]).toMatchObject({ params: { id: 1 }, body: { field: "priority", value: "low" } });
     // Held: the editor keeps its text, Cancel and Escape do nothing, typing changes nothing.
@@ -520,8 +539,12 @@ describe("AC6: the switch never turns a playbook on", () => {
     const { fake, kernel } = await mountLoaded();
     kernel.posts["POST /playbooks/:id/off"] = () => gate.promise as never;
     const sw = within(rowOf("Review PRs")).getByRole("switch", { name: "Review PRs is on" });
-    fireEvent.click(sw);
-    fireEvent.click(sw);
+    // One act(): no re-render lands between the presses, so the switch's own pending state cannot drop them; the in-flight guard must.
+    act(() => {
+      fireEvent.click(sw);
+      fireEvent.click(sw);
+      fireEvent.click(sw);
+    });
     await waitFor(() => expect(posts(fake, "POST /playbooks/:id/off")).toHaveLength(1));
     expect(posts(fake, "POST /playbooks/:id/off")[0]?.params).toEqual({ id: 1 });
     await act(async () => gate.release({ ok: false, status: 409, body: { error: "kill_switch_engaged", message: "The kill switch is engaged" } }));
@@ -560,9 +583,12 @@ describe("AC8: Run now", () => {
     kernel.posts["POST /playbooks/:id/run"] = () => gate.promise as never;
     await openDetail("Review PRs");
     const button = screen.getByTestId(IDS.runNow);
-    fireEvent.click(button);
-    fireEvent.click(button);
-    fireEvent.click(button);
+    // One act(): no re-render lands between the presses, so Button's loading state cannot drop them; the in-flight guard must.
+    act(() => {
+      fireEvent.click(button);
+      fireEvent.click(button);
+      fireEvent.click(button);
+    });
     await waitFor(() => expect(posts(fake, "POST /playbooks/:id/run")).toHaveLength(1));
     expect(posts(fake, "POST /playbooks/:id/run")[0]?.params).toEqual({ id: 1 });
     await act(async () => gate.release(ok({ queue_id: 77, created: true, playbook: 1, version: 3, scheduled_at: AT })));

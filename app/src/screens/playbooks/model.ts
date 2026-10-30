@@ -118,6 +118,14 @@ export function valueOrNotSet(value: string | number | boolean | null | undefine
 }
 
 /**
+ * A value whose column has a default (priority, mode): with no `*_set_by` nobody set it, so
+ * the stored default reads "not set", never as a filled-in value (invariant 1, D4).
+ */
+export function setValueOrNotSet(value: string | null | undefined, setBy: string | null): string {
+  return setBy === null || setBy === undefined ? NOT_SET : valueOrNotSet(value);
+}
+
+/**
  * The kernel stores a dedupe key as a JSON list of field names; shown as the
  * list, comma-separated, in full. The spec is untrusted and read by type only:
  * anything but a list of strings is shown as the kernel sent it.

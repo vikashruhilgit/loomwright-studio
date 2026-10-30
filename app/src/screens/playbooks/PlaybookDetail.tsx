@@ -24,6 +24,7 @@ import {
   stateOf,
   tokenFigure,
   tokensOfRuns,
+  setValueOrNotSet,
   triggerText,
   valueOrNotSet,
 } from "./model";
@@ -155,7 +156,7 @@ export function PlaybookDetail({ playbook, trigger, approval, runs, actions, tur
           <h2>{safe(playbook.name)}</h2>
           <Badge tone={STATE_TONE[state] ?? "neutral"}>{state === "on" ? "on" : state === "draft" ? "draft" : "off"}</Badge>
           <Badge>{`v${playbook.version}`}</Badge>
-          <Badge>{safe(playbook.mode)}</Badge>
+          {playbook.mode_set_by === null ? null : <Badge>{safe(playbook.mode)}</Badge>}
           <span className="pb-cap pb-mono">{safe(playbook.slug)}</span>
         </div>
         <div className="pb-actions">
@@ -191,7 +192,7 @@ export function PlaybookDetail({ playbook, trigger, approval, runs, actions, tur
           <span className="pb-cap">Every value shows who set it. A value nobody set reads "not set".</span>
           <dl className="pb-rows">
             <PolicyRow label="Dedupe key" value={dedupeText(playbook.dedupe_key_spec)} setBy={playbook.dedupe_key_set_by} mono />
-            <PolicyRow label="Priority" value={valueOrNotSet(playbook.priority)} setBy={playbook.priority_set_by} />
+            <PolicyRow label="Priority" value={setValueOrNotSet(playbook.priority, playbook.priority_set_by)} setBy={playbook.priority_set_by} />
             <PolicyRow label="Model" value={valueOrNotSet(playbook.model)} setBy={playbook.model_set_by} />
             <PolicyRow label="Effort" value={valueOrNotSet(playbook.effort)} setBy={playbook.effort_set_by} note="recorded only" />
             <PolicyRow
@@ -200,7 +201,7 @@ export function PlaybookDetail({ playbook, trigger, approval, runs, actions, tur
               setBy={playbook.token_limit_set_by}
               note={playbook.token_limit_per_day === null ? undefined : "tokens"}
             />
-            <PolicyRow label="Mode" value={valueOrNotSet(playbook.mode)} setBy={playbook.mode_set_by} note="outward calls are recorded, never sent" />
+            <PolicyRow label="Mode" value={setValueOrNotSet(playbook.mode, playbook.mode_set_by)} setBy={playbook.mode_set_by} note="outward calls are recorded, never sent" />
           </dl>
         </section>
         <section className="pb-block" aria-labelledby="pb-h-trigger">

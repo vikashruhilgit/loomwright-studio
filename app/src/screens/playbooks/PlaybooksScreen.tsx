@@ -49,6 +49,7 @@ import {
   safeBlock,
   stateOf,
   triggerText,
+  setValueOrNotSet,
   valueOrNotSet,
 } from "./model";
 import { Breakable, type Notice, type PlaybookActions, PlaybookSwitch, RunStatus, SetBy, Skeleton, TurnOnNote } from "./parts";
@@ -174,7 +175,7 @@ function PlaybookTable({ playbooks, lastRuns, actions, triggerOf, onOpen }: List
                 <td>
                   <div className="pb-cell">
                     <span>
-                      <Badge tone={playbook.priority === "high" ? "attention" : "neutral"}>{valueOrNotSet(playbook.priority)}</Badge>
+                      <Badge tone={playbook.priority === "high" ? "attention" : "neutral"}>{setValueOrNotSet(playbook.priority, playbook.priority_set_by)}</Badge>
                     </span>
                     <SetBy compact setBy={playbook.priority_set_by} />
                   </div>
@@ -188,7 +189,7 @@ function PlaybookTable({ playbooks, lastRuns, actions, triggerOf, onOpen }: List
                 <td>
                   <div className="pb-cell">
                     <span>
-                      <Badge>{valueOrNotSet(playbook.mode)}</Badge>
+                      <Badge>{setValueOrNotSet(playbook.mode, playbook.mode_set_by)}</Badge>
                     </span>
                     <SetBy compact setBy={playbook.mode_set_by} />
                   </div>
