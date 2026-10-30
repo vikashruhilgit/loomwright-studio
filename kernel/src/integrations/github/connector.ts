@@ -1,6 +1,6 @@
 // The `integrations` feature's GitHub connector part (phase 6, item 03): set,
 // replace and disconnect the token, re-read the repos it reaches, its expiry
-// check (due work), the `connectors` row, and the `studio connectors` CLI verb.
+// check and the App mint check (two due works), the `connectors` row, and the `studio connectors` CLI verb.
 //
 // The token lives only in the Keychain item `GITHUB_KEYCHAIN_SERVICE`
 // (`loomwright-studio-github`). It is validated BEFORE anything is written:
@@ -71,10 +71,12 @@ import {
   GITHUB_APP_INSTALLATION_SERVICE,
   GITHUB_APP_KEY_SERVICE,
   GITHUB_APP_SLUG_SERVICE,
+  READ_ONLY_LEVELS,
   createGitHubAppTokens,
   githubAppTokens,
+  writePermissionsOf,
 } from "./app-token.js";
-import type { GitHubAppTokens } from "./app-token.js";
+import type { GitHubAppTokens, WritePermission } from "./app-token.js";
 import { GITHUB_KEYCHAIN_SERVICE, createGitHubClient, resolveGitHubTokenProvider } from "./client.js";
 import type { GitHubClientDeps } from "./client.js";
 
@@ -106,8 +108,10 @@ export function githubExpiryNoticeSource(days: number): string {
   return `kernel:github_token_expiring_${days}d`;
 }
 
-/** The access levels that cannot write: `none` (no access) and `read`. Any other level, a level unknown here included, is write-scoped (fail-closed). */
-export const READ_ONLY_LEVELS: readonly string[] = Object.freeze(["read", "none"]);
+// `READ_ONLY_LEVELS`, `WritePermission` and `writePermissionsOf` live in `app-token.ts`
+// (the holder checks every mint's permissions); they are re-exported below.
+export { READ_ONLY_LEVELS, writePermissionsOf };
+export type { WritePermission };
 
 /** The three token refusals. */
 export const GITHUB_TOKEN_REFUSALS = Object.freeze(["token_invalid", "token_write_scoped", "token_permissions_unknown"] as const);
@@ -165,12 +169,6 @@ export interface ConnectorView {
   readonly installation_id: number | null;
   readonly created_at: string;
   readonly updated_at: string;
-}
-
-/** One permission above read: its name and level, as GitHub reported them (untrusted). */
-export interface WritePermission {
-  readonly permission: string;
-  readonly level: string;
 }
 
 /** A connector call that changed what it was asked to: the row after the change. */
@@ -389,13 +387,6 @@ export function createResolvingGitHubClient(deps: GitHubClientDeps = {}, tokens?
 /** Whether `token` has a token's shape: what the Keychain writer and the client accept. */
 export function isGitHubTokenShape(token: unknown): token is string {
   return typeof token === "string" && token.length > 0 && token.length <= MAX_GITHUB_TOKEN_LENGTH && WRITE_ARG.test(token);
-}
-
-/** Every permission whose level is not read-only, in GitHub's order. */
-export function writePermissionsOf(permissions: Readonly<Record<string, string>>): WritePermission[] {
-  return Object.entries(permissions)
-    .filter(([, level]) => !READ_ONLY_LEVELS.includes(level))
-    .map(([permission, level]) => ({ permission, level }));
 }
 
 /** The refusal's sentence for `writes`: each permission and the setting to change (`pull_requests: write → set to read`). */
@@ -700,7 +691,8 @@ export const githubExpiryDueWork: DueWorkFn = (ctx) => checkGitHubExpiry(ctx.sto
 
 /**
  * Applies a mint failure the holder recorded (`lastMintFailure`: GitHub answered
- * 401, the App's key is revoked, or 404, the installation is gone) to the row. A
+ * 401, the App's key is revoked, or 404, the installation is gone, or a renewed
+ * token reports a write permission) to the row. A
  * `method: app` row in use becomes `rejected` (one `connector_status` event)
  * and the owner is notified once (`GITHUB_APP_REJECTED_SOURCE`), on that
  * transition only: a row already `rejected` or `disconnected`, or one that is
@@ -721,7 +713,10 @@ export function applyGitHubAppMintFailure(store: Store, now: Date, tokens: GitHu
       {
         source: GITHUB_APP_REJECTED_SOURCE,
         title: "GitHub no longer accepts Studio's GitHub App",
-        body: `GitHub refused to give Studio an access token for its GitHub App (HTTP ${failure.status}): the App's key was revoked, or the App was uninstalled. Studio cannot read GitHub until you set the App up again in Integrations.`,
+        body:
+          "status" in failure
+            ? `GitHub refused to give Studio an access token for its GitHub App (HTTP ${failure.status}): the App's key was revoked, or the App was uninstalled. Studio cannot read GitHub until you set the App up again in Integrations.`
+            : `GitHub's access token for Studio's GitHub App can now write (${failure.write_permissions.map((w) => `${w.permission}: ${w.level}`).join("; ")}), and Studio only reads. Studio refused the token. Set each of these App permissions back to read-only on GitHub, then set the App up again in Integrations.`,
       },
       now,
     );

@@ -498,10 +498,39 @@ describe("createGitHubAppTokens (AC3, AC11)", () => {
     expect(await odd.current()).toEqual({ ok: false, error: "unreachable" });
   });
 
-  it("a mint that reports a write permission is returned as GitHub reported it (the port refuses it, not the holder)", async () => {
+  it("a mint that reports a write permission is refused write_scoped, naming the permissions, and nothing is held", async () => {
     env.permissions = { metadata: "read", pull_requests: "write" };
     const res = await env.tokens_.current();
-    expect(res).toMatchObject({ ok: true, permissions: { pull_requests: "write" } });
+    expect(res).toEqual({ ok: false, error: "write_scoped", write_permissions: [{ permission: "pull_requests", level: "write" }] });
+    expect(JSON.stringify(res)).not.toContain(env.tokens[0] ?? "ghs_");
+    expect(env.tokens_.lastMintFailure).toMatchObject({ write_permissions: [{ permission: "pull_requests", level: "write" }] });
+    // Nothing was held: the next call mints again.
+    env.permissions = { metadata: "read" };
+    const ok = await env.tokens_.current();
+    expect(ok.ok && ok.token).toBe(env.tokens[1]);
+    expect(env.tokens_.lastMintFailure).toBeUndefined();
+  });
+
+  it("a renewal that turns write-scoped is refused, the held read-only token is dropped, and the failure is recorded", async () => {
+    const first = await env.tokens_.current();
+    expect(first.ok).toBe(true);
+    env.nowMs += HOUR - 60_000;
+    env.permissions = { metadata: "read", contents: "write", pull_requests: "write" };
+    const res = await env.tokens_.current();
+    expect(res).toEqual({
+      ok: false,
+      error: "write_scoped",
+      write_permissions: [
+        { permission: "contents", level: "write" },
+        { permission: "pull_requests", level: "write" },
+      ],
+    });
+    expect(JSON.stringify([res, env.tokens_.lastMintFailure])).not.toContain(env.tokens[1] ?? "ghs_");
+    expect(env.tokens_.lastMintFailure).toBeDefined();
+    // The old token is gone too: a following call mints (and is refused) again, never serves a held token.
+    const again = await env.tokens_.current();
+    expect(again).toMatchObject({ ok: false, error: "write_scoped" });
+    expect(env.calls).toHaveLength(3);
   });
 
   describe("no credentials", () => {

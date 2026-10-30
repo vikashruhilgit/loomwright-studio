@@ -654,6 +654,26 @@ describe("a revoked key or an uninstalled App reads rejected, with one notificat
     expectNoSecret(notifications());
   });
 
+  it("a renewal that turns write-scoped marks the row rejected and notifies once, with no secret", async () => {
+    await installApp();
+    w.env.advance(HOUR - 60_000);
+    w.permissions = { metadata: "read", pull_requests: "write" };
+    expect(await w.tokens.current()).toMatchObject({ ok: false, error: "write_scoped" });
+    expect(rowNow()?.["status"]).toBe("connected");
+    applyGitHubAppMintFailure(store(), w.env.now(), w.tokens);
+    expect(rowNow()).toMatchObject({ status: "rejected", method: "app" });
+    expect(notifications().map((n) => n.source)).toEqual([GITHUB_APP_REJECTED_SOURCE]);
+    expect(notifications()[0]?.body).toContain("pull_requests: write");
+    expect(statusEvents().filter((e) => e["status"] === "rejected")).toHaveLength(1);
+    expect(w.tokens.lastMintFailure).toBeUndefined();
+    // A later write-scoped mint on the already rejected row changes nothing more.
+    await w.tokens.current();
+    applyGitHubAppMintFailure(store(), w.env.now(), w.tokens);
+    expect(notifications()).toHaveLength(1);
+    expect(statusEvents().filter((e) => e["status"] === "rejected")).toHaveLength(1);
+    expectNoSecret([notifications(), rowNow()]);
+  });
+
   it("a failure other than 401 or 404 (a 500, the network) does not reject the row", async () => {
     await installApp();
     await mintFails(500);

@@ -53,6 +53,22 @@ export const GITHUB_APP_JWT_LIFETIME_SECONDS = 600;
 /** A held installation token with this much life left or less is renewed before it is handed out. */
 export const GITHUB_APP_TOKEN_RENEW_MS = 5 * 60_000;
 
+/** The access levels that cannot write: `none` (no access) and `read`. Any other level, a level unknown here included, is write-scoped (fail-closed). */
+export const READ_ONLY_LEVELS: readonly string[] = Object.freeze(["read", "none"]);
+
+/** One permission above read: its name and level, as GitHub reported them (untrusted). */
+export interface WritePermission {
+  readonly permission: string;
+  readonly level: string;
+}
+
+/** Every permission whose level is not read-only, in GitHub's order. */
+export function writePermissionsOf(permissions: Readonly<Record<string, string>>): WritePermission[] {
+  return Object.entries(permissions)
+    .filter(([, level]) => !READ_ONLY_LEVELS.includes(level))
+    .map(([permission, level]) => ({ permission, level }));
+}
+
 /** The most characters of PEM the encoder takes: a 4096-bit RSA key is ~3.3 KB. */
 const MAX_PEM_LENGTH = 8000;
 
@@ -122,29 +138,31 @@ export function signAppJwt(appId: number | string, pem: string, now: Date): stri
  * Why the holder has no token: `no_credentials` (the App's items are not all in
  * the Keychain), `keychain_failed` (a read threw), `bad_key` (the stored key does
  * not decode or sign), or the mint's own failure (`unreachable`, `rate_limited`,
- * `http_error` with its `status`).
+ * `http_error` with its `status`), or `write_scoped` (GitHub reports a write
+ * permission for the minted token: it is refused and dropped, and the failure
+ * names the permissions as `write_permissions`).
  */
-export type GitHubAppTokenError = "no_credentials" | "keychain_failed" | "bad_key" | "unreachable" | "rate_limited" | "http_error";
+export type GitHubAppTokenError = "no_credentials" | "keychain_failed" | "bad_key" | "unreachable" | "rate_limited" | "http_error" | "write_scoped";
 
 /** The holder's answer: a token with its expiry and the permissions GitHub reports for it, or a typed failure. */
 export type GitHubAppTokenResult =
   | { readonly ok: true; readonly token: string; readonly expires_at: string; readonly permissions: Readonly<Record<string, string>> }
-  | { readonly ok: false; readonly error: GitHubAppTokenError; readonly status?: number };
+  | { readonly ok: false; readonly error: GitHubAppTokenError; readonly status?: number; readonly write_permissions?: readonly WritePermission[] };
 
 /**
- * A mint GitHub answered 401 (the key is revoked) or 404 (the installation is
- * gone): the connector reads the App as `rejected`. `at` is when it was seen
- * (ISO-8601 UTC). No other failure is recorded: a network error or a 5xx may
- * pass.
+ * A mint the connector must read the App as `rejected` for, with when it was
+ * seen (`at`, ISO-8601 UTC): GitHub answered 401 (the key is revoked) or 404
+ * (the installation is gone), or the minted token reports a write permission
+ * (`write_permissions`, never read-only). No other failure is recorded: a
+ * network error or a 5xx may pass.
  */
-export interface GitHubAppMintFailure {
-  readonly status: 401 | 404;
-  readonly at: string;
-}
+export type GitHubAppMintFailure =
+  | { readonly status: 401 | 404; readonly at: string }
+  | { readonly write_permissions: readonly WritePermission[]; readonly at: string };
 
 export interface GitHubAppTokens extends GitHubAppTokenSource {
   current(): Promise<GitHubAppTokenResult>;
-  /** The latest mint answered 401 or 404 and no mint has succeeded since, else `undefined`. */
+  /** The latest mint answered 401 or 404, or reported a write permission, and no mint has succeeded since, else `undefined`. */
   readonly lastMintFailure: GitHubAppMintFailure | undefined;
   /** Forgets `lastMintFailure` (once the connector has acted on it). */
   clearMintFailure(): void;
@@ -173,7 +191,8 @@ interface Held {
  * or less left, or the Keychain's installation is not the one it was minted for
  * (one Keychain read on every call; the key is read only to mint). Concurrent
  * calls share one mint. A failed renewal is returned as a failure and keeps the
- * held token unless GitHub answered 401 or 404 (which also set `lastMintFailure`).
+ * held token unless GitHub answered 401 or 404, or the renewed token reports a write
+ * permission (both drop it and set `lastMintFailure`).
  * `invalidate()` forgets the token and any mint in flight (a result that arrives
  * after it is not kept) and clears `lastMintFailure`. Nothing is read when it is
  * built, and the token is never written anywhere.
@@ -223,6 +242,15 @@ export function createGitHubAppTokens(deps: GitHubAppTokenDeps = {}): GitHubAppT
           failure = { status: res.status as 401 | 404, at: now().toISOString() };
         }
         return res.status === undefined ? { ok: false, error: res.error } : { ok: false, error: res.error, status: res.status };
+      }
+      // Read-only is GitHub's word on every mint, a renewal included: a token that reports a write is never held or handed out.
+      const writes = writePermissionsOf(res.permissions);
+      if (writes.length > 0) {
+        if (gen === generation) {
+          held = undefined;
+          failure = { write_permissions: writes, at: now().toISOString() };
+        }
+        return { ok: false, error: "write_scoped", write_permissions: writes };
       }
       if (gen === generation) {
         held = { installation, token: res.token, expires_at: res.expires_at, expiresMs: Date.parse(res.expires_at), permissions: res.permissions };

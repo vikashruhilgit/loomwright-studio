@@ -273,11 +273,11 @@ export function createGitHubAppPort(deps: GitHubAppPortDeps = {}): GitHubAppPort
     // 2. The first installation token, minted fresh for this installation.
     tokens.invalidate();
     const minted = await tokens.current();
-    if (!minted.ok) return abandon(mintMessage(minted));
+    if (!minted.ok && minted.error !== "write_scoped") return abandon(mintMessage(minted));
 
-    // 3. Read-only is GitHub's word, not ours: the permissions it reports for the token.
-    if (Object.keys(minted.permissions).length === 0) return abandon(MESSAGES.no_permissions);
-    const writes = writePermissionsOf(minted.permissions);
+    // 3. Read-only is GitHub's word, not ours: the permissions it reports for the token (the holder refuses a write-scoped one).
+    if (minted.ok && Object.keys(minted.permissions).length === 0) return abandon(MESSAGES.no_permissions);
+    const writes = minted.ok ? writePermissionsOf(minted.permissions) : (minted.write_permissions ?? []);
     if (writes.length > 0) {
       dropItems(GITHUB_APP_SERVICES);
       tokens.invalidate();
@@ -287,6 +287,7 @@ export function createGitHubAppPort(deps: GitHubAppPortDeps = {}): GitHubAppPort
         `the GitHub App can write; change each of these App permissions to read-only on GitHub and install it again: ${writes.map((w) => `${w.permission}: ${w.level} → set to read`).join("; ")}`,
       );
     }
+    if (!minted.ok) return abandon(MESSAGES.mint_unreachable);
 
     // 4. The repos the installation reaches (`GET /installation/repositories`), through the App's token alone.
     const provider = appProvider(tokens);
