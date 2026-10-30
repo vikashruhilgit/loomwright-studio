@@ -45,7 +45,7 @@ Only the kinds in the closed list `THREAD_EVENT_KINDS` are cards, each tied to a
 
 The last four kinds were added by the phase 6 foundation, with their ties, before any code writes them, so the items that write them (03 `connector_status`, 04 and 05 the poll kinds, 07 `draft_output_recorded`) and the item that draws their cards (12) never edit `threads.ts`. `owner` is the one tie that names no stored row: it puts the event in Wright's thread. See [integrations](integrations.md) and [draft mode](draft-mode.md).
 
-`memory_updated` is not in the list: no kernel code writes that kind today, and this item adds no event kind (the gap with the approved design is logged in [open questions](../OPEN_QUESTIONS.md#deferred-decisions)). A new kind becomes a card only by adding it to `THREAD_EVENT_KINDS` with its tie (and its sentence beside the others in `threads.ts`).
+`memory_updated` is not in the list: the kernel now writes that kind, but only for the owner's own writes (`PUT /memory/file`, payload `{path, by: "owner", size, content_hash}`, tied to no session or task), and it has no thread tie yet, so it stays out of `THREAD_EVENT_KINDS` (the gap with the approved design is logged in [open questions](../OPEN_QUESTIONS.md#deferred-decisions)). A new kind becomes a card only by adding it to `THREAD_EVENT_KINDS` with its tie (and its sentence beside the others in `threads.ts`).
 
 ### Summaries are escaped
 
