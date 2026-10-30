@@ -159,3 +159,9 @@ kernel/src/integrations/github/app-routes.ts
 kernel/test/console-contract.test.ts
 kernel/test/integrations-github-app-contract.test.ts
 app/src/api/contract.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-30T02:00:35Z
+- **Brief:** .supervisor/jobs/done/2026-10-29-github-app-contract-decision-and-mockup.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/169
