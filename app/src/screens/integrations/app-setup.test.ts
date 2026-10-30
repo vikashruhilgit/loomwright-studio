@@ -538,3 +538,46 @@ describe("a connector the setup left behind", () => {
     expect(screen.getByTestId(IDS.listMeta).textContent).not.toContain("GitHub no longer accepts");
   });
 });
+
+describe("the list row and the dialog are one state", () => {
+  /** Every DOM change while the dialog is on `view`, the row's words as they were at that moment. */
+  function watchRow(view: string): string[] {
+    const seen: string[] = [];
+    const observer = new MutationObserver(() => {
+      if (screen.queryByTestId(IDS.appSetup)?.getAttribute("data-phase") === view) seen.push(screen.getByTestId(IDS.listMeta).textContent ?? "");
+    });
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+    cleanups.push(() => observer.disconnect());
+    return seen;
+  }
+  const cleanups: (() => void)[] = [];
+  afterEach(() => {
+    for (const stop of cleanups.splice(0)) stop();
+  });
+
+  it("the row never lags the dialog, even for one commit (a refused setup)", async () => {
+    await startScreen({ connectors: none, appSetup: () => refused(501, { error: "not_implemented" }) });
+    const seen = watchRow("failed");
+    fireEvent.click(screen.getByTestId(IDS.emptyConnect));
+    fireEvent.click(screen.getByTestId(IDS.choiceApp));
+    await waitFor(() => expect(phase()).toBe("failed"));
+    expect(screen.getByTestId(IDS.listMeta).textContent).toBe("not connected · setup did not finish");
+    expect(seen.length).toBeGreaterThan(0);
+    expect(new Set(seen)).toEqual(new Set(["not connected · setup did not finish"]));
+  });
+
+  it("nor on Cancel, nor from the first commit of the dialog", async () => {
+    const kernel = await startScreen({ connectors: none });
+    const waiting = "setting up the GitHub App · waiting for you on GitHub";
+    const starting = watchRow("starting");
+    fireEvent.click(screen.getByTestId(IDS.emptyConnect));
+    fireEvent.click(screen.getByTestId(IDS.choiceApp));
+    await waitFor(() => expect(phase()).toBe("create"));
+    expect(new Set(starting)).toEqual(new Set([waiting]));
+    const cancelled = watchRow("cancelled");
+    fireEvent.click(screen.getByTestId(IDS.appCancel));
+    await waitFor(() => expect(cancelCalls(kernel)).toHaveLength(1));
+    expect(cancelled.length).toBeGreaterThan(0);
+    expect(new Set(cancelled)).toEqual(new Set(["not connected · setup cancelled"]));
+  });
+});

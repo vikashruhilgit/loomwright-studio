@@ -469,6 +469,8 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
     setNotice(undefined);
     setSheet(undefined);
     appRuns.current += 1;
+    // The row's words start with the dialog's first phase; the dialog reports each change after it.
+    setAppPhase({ kind: "starting" });
     setApp({ key: appRuns.current });
   };
 

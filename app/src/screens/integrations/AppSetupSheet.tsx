@@ -106,9 +106,13 @@ export function AppSetupSheet({ api, events, connector, onClose, onSetUpAgain, o
   const seenEvent = useRef(newestId(events));
   const initialUpdate = useRef(connector?.updated_at);
 
+  // The one place the phase changes. The screen's list row follows it, so it is told here, in the same batch as the
+  // sheet's own state: both commit together and the row never lags the dialog (an effect would commit a render later).
+  // The screen seeds the first phase (`starting`) itself when it opens the dialog.
   const move = useCallback((next: AppSetupPhase) => {
     phaseRef.current = next;
     setPhaseState(next);
+    latest.current.onPhaseChange?.(next);
   }, []);
 
   /** Ends a running setup in an outcome view. The first outcome stands: a later refusal never replaces it. */
@@ -203,11 +207,6 @@ export function AppSetupSheet({ api, events, connector, onClose, onSetUpAgain, o
   }, [cancel]);
 
   useModalFocus(panelRef, true, dismiss);
-
-  // The row's words while the dialog is open.
-  useEffect(() => {
-    latest.current.onPhaseChange?.(phase);
-  }, [phase]);
 
   // The connector became an App connection: the setup is over, and the screen closes the dialog.
   useEffect(() => {
