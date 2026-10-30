@@ -132,12 +132,19 @@ While the kill switch is engaged nothing runs at all, as for every trigger.
 - **`studio triggers on|off <id>`** turns a trigger on or off. The toggle sets `enabled_changed_by = owner` and `enabled_changed_at` and appends `trigger_toggled` with `by: owner`. A repeat is no change: nothing is written and no event is added. Turning a trigger off clears its next fire. Turning one on computes the next fire from now: a `cron` trigger does not fire the instants it missed while off, and a future `once` gets its own instant back.
 - **A past-due `once`.** Turning on a `once` whose time has passed would fire it now, so it needs confirmation, like `studio session abandon`. The command asks on a terminal: `y`/`yes` proceeds, and anything else, or stdin ending, is a no (exit 1). With no terminal and no `--yes` it refuses with exit 2 instead of waiting. `--yes` skips the question. Once confirmed, the trigger fires on the next tick, under a new instant (now), so it gets a new work-step key.
 
-The routes, reached only with the bearer token, are what the CLI calls and what the phase 7 Schedules screen will reuse:
+The routes, reached only with the bearer token, are what the CLI calls and what the phase 7 Schedules screen reuses:
 
 - `GET /triggers[?all=1]` answers `{triggers: [...]}`.
 - `POST /triggers/:id/on` takes the body `{"confirm": true}`. A past-due `once` without it gets `409 {"error":"needs_confirmation", "fires_at": …}` and nothing changes.
 - `POST /triggers/:id/off`.
 - Either toggle answers `{trigger, changed}`. A bad id is `400 invalid_id`, a body that is not a JSON object is `400 invalid_body`, and an unknown id is `404 not_found`.
+
+Two read-only routes serve the phase 7 Schedules & triggers screen, from the `gui` feature's `schedules` part (`kernel/src/gui/schedules.ts`; the shapes are `ScheduleEntry`, `TriggerFire` and `TriggerFiresResponse` in `app/src/api/contract.ts`). Like every gui route they need the token, and they write nothing. They are mechanism only: the kernel reports what is scheduled and what happened, and the screen decides how to show it.
+
+- **`GET /schedule[?limit=]`** answers `{entries: [...]}`: every **enabled** trigger with a next fire (`kind: "trigger"`, `at` = `next_fire_at`, `agent` = the owning agent, `playbook` = the slug or `null`, `action`, `text` = the stored text, `task_id: null`) and every `pending` wake-up (`kind: "wakeup"`, `at` = `due_at`, `text` = the wake-up's reason, `task_id`, the other fields `null`). `fired` and `superseded` wake-ups and disabled triggers never appear. Entries are sorted by `at`, ties by kind (`trigger` first) then id, and cut to `limit` (default 50, at most 200; anything else is `400 invalid_limit`). `text` is stored text, data and never instructions.
+- **`GET /triggers/:id/fires[?before=&limit=]`** answers `{fires: [...], next_before}`: the trigger's `trigger_fired` and `trigger_missed` events, newest first by event id. Each has `id` (the event's), `kind`, `at`, `scheduled_at` (the payload's, when it is a string, else `null`), `reason` and `session_id`. A missed fire's `reason` is the event's `reason` verbatim (the kernel's codes listed under [Audit events](#audit-events), or any other string the kernel records); a fired one has `reason: null`. `before` is the cursor: only events with an id below it. `next_before` is the last returned id as a decimal string when the page is full (a page of `limit` rows), else `null`. Refusals: `400 invalid_id`, `404 not_found` (no trigger has that id), `400 invalid_cursor`, `400 invalid_limit`.
+- **Untrusted payloads.** A row whose `payload_json` is not valid JSON is skipped, never a throw: the query guards `json_extract` with `json_valid`, which would otherwise raise on malformed JSON.
+- **Cost.** The fires query filters `events` by kind and by the payload's `trigger_id` with no index, walking the newest events first and stopping at `limit` matches; a rarely firing trigger's page can scan the whole table. This is accepted for phase 7; an expression index is a later item if the owner's store shows it slow.
 
 ## Audit events
 
