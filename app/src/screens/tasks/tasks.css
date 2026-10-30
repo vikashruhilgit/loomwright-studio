@@ -1,0 +1,486 @@
+/* Tasks: docs/design/mockups/gui-v2.html §Tasks (the .board, .bcol, .tcard, .crumb, .facts, .evs and .log rules). Colour, type, spacing and widths come only from tokens.css custom properties. */
+/*
+ * The shell bounds `.main` to the window, so the open card's log scrolls inside
+ * its own pane. This rule only lays out the pane: the kernel band (if any)
+ * above a column Tasks fills.
+ */
+.content:has(> .tasks) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.tasks {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.tasks-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height);
+  padding: var(--space-2) var(--space-5);
+  border-bottom: 1px solid var(--hairline);
+}
+.tasks-subtitle {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The attention band: "Waiting on you" is not empty. */
+.tasks-band {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-3) var(--space-5) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--attention-soft);
+  color: var(--attention);
+}
+.tasks-band-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+/* The last good board is on screen, or more rows exist than one page holds. */
+.tasks-stale {
+  flex: none;
+  margin: 0;
+  padding: var(--space-2) var(--space-5);
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  overflow-wrap: anywhere;
+}
+.tasks-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-5);
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  overflow-wrap: anywhere;
+}
+
+/* The board: four columns, always, in the mockup's order. */
+.tasks-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.tasks-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+  padding: var(--space-5);
+}
+.tasks-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.tasks-col-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--row-height);
+}
+.tasks-col-label {
+  margin: 0;
+  color: var(--ink-tertiary);
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+}
+.tasks-col-wait .tasks-col-label,
+.tasks-col-wait .tasks-col-head {
+  color: var(--attention);
+}
+.tasks-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--ink-tertiary);
+}
+.tasks-dot[data-column="wait"] {
+  background: var(--attention);
+}
+.tasks-dot[data-column="work"] {
+  background: var(--working);
+}
+.tasks-dot[data-column="park"] {
+  background: var(--parked);
+}
+.tasks-none {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px dashed var(--hairline);
+  border-radius: var(--radius-md);
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.tasks-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A card: one button, so Enter and Space open it. */
+.tasks-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: box-shadow var(--duration-instant) var(--ease-standard);
+}
+.tasks-card:hover:not([aria-disabled="true"]) {
+  box-shadow: var(--shadow-1);
+}
+.tasks-card:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.tasks-card-wait {
+  border-color: var(--attention);
+}
+.tasks-card[aria-disabled="true"] {
+  cursor: default;
+}
+.tasks-card-kind {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.tasks-card-title {
+  color: var(--ink);
+  font-weight: var(--type-body-strong-weight);
+  overflow-wrap: anywhere;
+}
+.tasks-card-why {
+  color: var(--ink-secondary);
+  overflow-wrap: anywhere;
+}
+.tasks-card-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+
+/* Loading: skeleton cards in the four columns, never a spinner. */
+.tasks-skel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.tasks-skel i {
+  display: block;
+  height: 10px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+}
+.tasks-skel i:nth-child(2) {
+  width: 70%;
+}
+.tasks-skel i:nth-child(3) {
+  width: 40%;
+}
+.tasks-vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Empty and error: inside the screen's own body. */
+.tasks-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-12) var(--space-6);
+  text-align: center;
+}
+.tasks-empty-title {
+  margin: 0;
+  max-width: 65ch;
+  font-family: var(--type-display-family);
+  font-size: var(--type-display-size);
+  line-height: var(--type-display-line);
+  font-weight: var(--type-display-weight);
+  letter-spacing: var(--type-display-tracking);
+}
+.tasks-empty-note {
+  max-width: 65ch;
+  margin: 0 0 var(--space-2);
+  color: var(--ink-secondary);
+}
+.tasks-fail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  max-width: 480px;
+  margin: auto;
+  padding: var(--space-5);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  text-align: left;
+}
+.tasks-fail-title {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+}
+.tasks-fail-note {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.tasks-fail-detail {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  overflow-wrap: anywhere;
+}
+
+/* The open card: crumb, title, facts, then history beside the log. */
+.tasks-detail {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.tasks-detail:focus {
+  outline: none;
+}
+.tasks-detail-head {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-6);
+}
+.tasks-crumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-tertiary);
+}
+.tasks-detail-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.tasks-detail-h {
+  margin: 0;
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+  overflow-wrap: anywhere;
+}
+.tasks-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-6);
+  margin: 0;
+}
+.tasks-fact {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.tasks-fact dt {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.tasks-fact dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.tasks-split {
+  display: grid;
+  flex: 1;
+  grid-template-columns: var(--list-pane-width) minmax(0, 1fr);
+  /* One row bounded by the screen: an implicit `auto` row would grow to the log's full height, so it never scrolls. */
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  border-top: 1px solid var(--hairline);
+}
+.tasks-history {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 0;
+  padding: var(--space-2);
+  border-right: 1px solid var(--hairline);
+  overflow: auto;
+}
+.tasks-history-head {
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  color: var(--ink-tertiary);
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+}
+.tasks-events {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  list-style: none;
+}
+.tasks-event {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-0-5);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.tasks-event-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-tertiary);
+}
+.tasks-event-top b {
+  color: var(--ink-secondary);
+  overflow-wrap: anywhere;
+}
+.tasks-event-top time {
+  margin-left: auto;
+  font-size: var(--type-caption-size);
+  font-variant-numeric: tabular-nums;
+}
+.tasks-event-text {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--type-mono-small-family);
+  font-size: var(--type-mono-small-size);
+  line-height: var(--type-mono-small-line);
+  overflow-wrap: anywhere;
+}
+.tasks-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-2);
+  list-style: none;
+}
+.tasks-side-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* The log pane: StreamingLog, or the mockup's "no log yet" note. */
+.tasks-log {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+.tasks-log > .streaming-log {
+  flex: 1;
+  min-height: 0;
+}
+.tasks-log-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+/* No read has answered yet (in flight, or failed): the log is not known to be empty, so StreamingLog's "No output" is not shown. */
+.tasks-log[data-output="unread"] .streaming-log__empty {
+  display: none;
+}
+/* The kernel has no token count: StreamingLog's figure takes a number, so it (and the separator before it) is hidden rather than saying 0. */
+.tasks-log[data-tokens="unknown"] [data-testid="streaming-log-tokens"],
+.tasks-log[data-tokens="unknown"] .streaming-log__meta > [aria-hidden="true"]:has(+ [data-testid="streaming-log-tokens"]) {
+  display: none;
+}
+.tasks-nolog {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--surface-sunken);
+}
+.tasks-nolog-bar {
+  display: flex;
+  align-items: center;
+  flex: none;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: var(--type-body-strong-weight);
+}
+.tasks-nolog-note {
+  max-width: 44ch;
+  margin: auto;
+  padding: var(--space-6);
+  color: var(--ink-secondary);
+  text-align: center;
+}
