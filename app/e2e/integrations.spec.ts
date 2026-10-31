@@ -98,6 +98,7 @@ const IDS = {
   sheetStatus: "integrations-sheet-status",
   sheetToken: "integrations-token",
   status: "integrations-status",
+  switchToApp: "integrations-switch-to-app",
 } as const;
 const MODEL_SOURCE = fileURLToPath(new URL("../src/screens/integrations/model.ts", import.meta.url));
 
@@ -521,7 +522,7 @@ test("unreachable: when the kernel goes away mid-read the last answer stays, the
   await expect(byId(page, IDS.detail)).toHaveAttribute("data-state", "connected");
   await expect(byId(page, IDS.account)).toHaveText(ACCOUNT);
   await expect(byId(page, IDS.status)).toContainText("Unknown while the kernel is unreachable");
-  for (const id of [IDS.replace, IDS.disconnect, IDS.refresh]) await expect(byId(page, id)).toBeDisabled();
+  for (const id of [IDS.replace, IDS.switchToApp, IDS.disconnect, IDS.refresh]) await expect(byId(page, id)).toBeDisabled();
   await screenshots(page, "unreachable", testInfo);
 });
 
@@ -624,6 +625,14 @@ test("AC11: by keyboard alone, connect, cancel, refuse, replace the token, refre
   await expect(sheet).toHaveCount(0);
   await expect(detail).toHaveAttribute("data-state", "connected");
   await expectNoToken(page, "after the keyboard-driven connect and replace");
+
+  // The header's Tab order is the mockup's: Replace token, then Switch to GitHub App, then Disconnect (the switch itself is
+  // `integrations-switch.spec.ts`).
+  await tabTo(page, byId(page, IDS.replace), "Replace token");
+  await kb.press("Tab");
+  await expect(byId(page, IDS.switchToApp)).toBeFocused();
+  await kb.press("Tab");
+  await expect(byId(page, IDS.disconnect)).toBeFocused();
 
   // Refresh re-reads the repos from GitHub (`?refresh=1`) and shows the answer.
   await expect(byId(page, IDS.reposHeading)).toHaveText(`Reachable repos · ${REPOS.length}`);
