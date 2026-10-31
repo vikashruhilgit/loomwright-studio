@@ -4,7 +4,17 @@
 // main process's answer, `feed.subscribe` answers `connected` before the
 // socket proves itself, and frames (including the close) arrive through
 // `onFrame`.
-import type { ApiRequest, ApiResult, FeedRelayFrame, KernelConnectionState, StudioBridge } from "../api/contract";
+import type {
+  ApiRequest,
+  ApiResult,
+  AppPreferences,
+  AppPreferencesBridge,
+  AppPreferencesPatch,
+  FeedRelayFrame,
+  KernelConnectionState,
+  StudioBridge,
+  ThemePreference,
+} from "../api/contract";
 
 export type Responder = (req: ApiRequest) => ApiResult<unknown> | Promise<ApiResult<unknown>>;
 
@@ -25,7 +35,17 @@ export interface FakeBridge {
   emit(frame: FeedRelayFrame): void;
   listenerCount(): number;
   requestsTo(key: string): { readonly at: number; readonly req: ApiRequest }[];
+  /** What `prefs.get` answers next, and what `prefs.set` changes (an in-memory stand-in for the main process's preferences). */
+  prefsState: AppPreferences;
+  /** Every patch `prefs.set` was handed, valid or not, in order. */
+  readonly prefsSets: unknown[];
+  /** How many times `prefs.revealDataDir` was called. */
+  reveals: number;
+  /** What `prefs.revealDataDir` answers next. */
+  revealAnswer: boolean;
 }
+
+const THEME_PREFERENCES: readonly ThemePreference[] = ["system", "light", "dark"];
 
 export function ok<T>(body: T): ApiResult<T> {
   return { ok: true, status: 200, body };
@@ -34,7 +54,34 @@ export function ok<T>(body: T): ApiResult<T> {
 export function fakeBridge(initial: KernelConnectionState = { state: "connected", port: 1 }): FakeBridge {
   const listeners = new Set<(frame: FeedRelayFrame) => void>();
   const routes = new Map<string, Responder>();
+  const prefs: AppPreferencesBridge = {
+    get: async () => ({ ...fake.prefsState, launchAtLogin: { ...fake.prefsState.launchAtLogin } }),
+    set: async (patch: AppPreferencesPatch) => {
+      fake.prefsSets.push(patch);
+      // The real main process refuses a patch whole when any key or value is unknown; the stand-in does the same.
+      const known = typeof patch === "object" && patch !== null && Object.keys(patch).every((k) => k === "launchAtLogin" || k === "notifications" || k === "theme");
+      const { launchAtLogin, notifications, theme } = known ? patch : ({} as AppPreferencesPatch);
+      const valid =
+        known && (launchAtLogin === undefined || typeof launchAtLogin === "boolean") && (notifications === undefined || typeof notifications === "boolean") && (theme === undefined || THEME_PREFERENCES.includes(theme));
+      if (valid) {
+        fake.prefsState = {
+          launchAtLogin: launchAtLogin === undefined ? fake.prefsState.launchAtLogin : { enabled: launchAtLogin, status: launchAtLogin ? "enabled" : "not-registered" },
+          notifications: notifications ?? fake.prefsState.notifications,
+          theme: theme ?? fake.prefsState.theme,
+        };
+      }
+      return { ...fake.prefsState, launchAtLogin: { ...fake.prefsState.launchAtLogin } };
+    },
+    revealDataDir: async () => {
+      fake.reveals += 1;
+      return fake.revealAnswer;
+    },
+  };
   const fake: FakeBridge = {
+    prefsState: { launchAtLogin: { enabled: false, status: "not-registered" }, notifications: true, theme: "system" },
+    prefsSets: [],
+    reveals: 0,
+    revealAnswer: true,
     connectionAnswer: initial,
     subscribeAnswer: initial,
     closeAfterSubscribe: 0,
@@ -88,6 +135,7 @@ export function fakeBridge(initial: KernelConnectionState = { state: "connected"
         },
       },
       onNavigate: () => () => undefined,
+      prefs,
     },
   };
   return fake;
