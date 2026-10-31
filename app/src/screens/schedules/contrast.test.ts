@@ -3,42 +3,12 @@
 // `src/styles/tokens.css` in the light and the dark theme. Text needs 4.5:1; the
 // switch's track and the focus ring are non-text and need 3:1. The evidence README
 // (`docs/evidence/phase-7-polish/schedules/README.md`) records these same pairs.
+// The token parsing, hex resolution and ratio live in `src/styles/test-support.ts`.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { dark, hex, light, ratio } from "../../styles/test-support";
 
-const TOKENS = readFileSync(new URL("../../styles/tokens.css", import.meta.url), "utf8");
 const SCREEN_CSS = readFileSync(new URL("./schedules.css", import.meta.url), "utf8");
-
-/** The custom properties of the block that starts at `marker`, up to its closing brace. */
-function block(marker: string): Map<string, string> {
-  const start = TOKENS.indexOf(marker);
-  if (start < 0) throw new Error(`no ${marker} in tokens.css`);
-  const body = TOKENS.slice(TOKENS.indexOf("{", start) + 1, TOKENS.indexOf("}", start));
-  return new Map([...body.matchAll(/--([\w-]+):\s*([^;]+);/g)].map((m) => [m[1] as string, (m[2] as string).trim()]));
-}
-
-const light = block(":root {");
-const dark = new Map([...light, ...block(':root[data-theme="dark"]')]);
-
-function hex(theme: Map<string, string>, name: string): string {
-  let value = theme.get(name);
-  while (value !== undefined && value.startsWith("var(")) value = theme.get(value.slice(6, -1));
-  if (value === undefined || !/^#[0-9a-f]{6}$/i.test(value)) throw new Error(`--${name} is not a 6-digit hex: ${String(value)}`);
-  return value;
-}
-
-function luminance(color: string): number {
-  const channel = (i: number): number => {
-    const c = parseInt(color.slice(1 + i * 2, 3 + i * 2), 16) / 255;
-    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-  };
-  return 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
-}
-
-function ratio(a: string, b: string): number {
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number];
-  return (hi + 0.05) / (lo + 0.05);
-}
 
 /** [foreground token, background token, where it is used]. */
 const TEXT: readonly (readonly [string, string, string])[] = [

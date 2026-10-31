@@ -1,0 +1,512 @@
+/* Memory (phase 7 item 06): docs/design/mockups/gui-v2.html (`memoryScreen`, and the .split, .list, .nav, .pane,
+   .kv, .src, .cmp, .inspector and .band rules of its style) on the tokens. Colour comes only from tokens.css
+   custom properties, and `contrast.test.ts` pins each text colour here against the ground it sits on.
+   Focus keeps the shell's ring (`:focus-visible` in app.css): nothing here removes it.
+   Row heights are fixed (a name clips with an ellipsis), so a refetch that changes a size or a time changes text
+   inside a row and moves nothing. */
+
+/* The shell bounds `.content` to the window, so the pane and the editor scroll inside themselves; this lays out
+   the kernel band (if any) above a column Memory fills. */
+.content:has(> .memory) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.memory {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  color: var(--ink);
+}
+
+.memory-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height);
+  padding: var(--space-2) var(--space-5);
+  border-bottom: 1px solid var(--hairline);
+}
+.memory-subtitle {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-variant-numeric: tabular-nums;
+}
+
+.memory-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.memory-spacer {
+  flex: 1 1 auto;
+}
+.memory-cap {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+}
+.memory-mono {
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+.memory-tn {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The one list pane and the one detail pane. */
+.memory-split {
+  display: grid;
+  flex: 1;
+  grid-template-columns: var(--list-pane-width) minmax(0, 1fr);
+  min-height: 0;
+}
+.memory-tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 0;
+  padding: var(--space-2);
+  overflow: auto;
+  border-right: 1px solid var(--hairline);
+}
+.memory-root {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink-tertiary);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-small-size);
+  line-height: var(--type-mono-small-line);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.memory-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.memory-folder {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: var(--space-2);
+  height: var(--row-height);
+  padding: var(--space-2) var(--space-3) var(--space-1);
+}
+.memory-folder-name {
+  color: var(--ink-tertiary);
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+}
+.memory-file {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: var(--row-height);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--duration-instant) var(--ease-standard);
+}
+.memory-file:hover {
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+.memory-file[aria-disabled="true"] {
+  cursor: default;
+}
+.memory-file-current,
+.memory-file-current:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+.memory-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.memory-file-size {
+  margin-left: auto;
+  flex: none;
+  color: var(--ink-tertiary);
+  font-family: var(--type-kbd-family);
+  font-size: var(--type-kbd-size);
+  line-height: var(--type-kbd-line);
+  font-variant-numeric: tabular-nums;
+}
+.memory-file-current .memory-file-size {
+  color: var(--accent);
+}
+
+.memory-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.memory-pad {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+  padding: var(--space-5) var(--space-6);
+}
+.memory-tight {
+  padding-bottom: var(--space-3);
+  gap: var(--space-3);
+}
+.memory-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.memory-h {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+  overflow-wrap: anywhere;
+}
+.memory-text {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.memory-label {
+  margin: 0;
+  color: var(--ink-tertiary);
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+}
+.memory-crumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-tertiary);
+}
+
+/* The overview's folders: a box of rows. */
+.memory-box {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+}
+.memory-box > li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-height);
+  padding: var(--space-1) var(--space-3);
+}
+.memory-box > li + li {
+  border-top: 1px solid var(--hairline);
+}
+.memory-box > li > .memory-cap:last-child {
+  flex: none;
+  margin-left: auto;
+}
+.memory-box-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* The file's facts. */
+.memory-kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-2) var(--space-6);
+  margin: 0;
+}
+.memory-kv dt {
+  color: var(--ink-tertiary);
+}
+.memory-kv dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+}
+.memory-blk {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.memory-blk > p {
+  margin: 0;
+}
+
+/* A file's text, as written. The body's `user-select: none` is lifted here: this is what the owner reads and copies. */
+.memory-src {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.memory-src-current {
+  border-color: var(--accent);
+}
+
+/* A refusal or a failed read, under what it is about. */
+.memory-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+}
+.memory-note[data-tone="danger"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.memory-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--type-body-strong-weight);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.memory-stale {
+  flex: none;
+  margin: 0;
+  padding: var(--space-2) var(--space-5);
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  overflow-wrap: anywhere;
+}
+
+/* Loading: skeleton rows, never a spinner. */
+.memory-skel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.memory-skel i {
+  display: block;
+  height: 10px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+}
+.memory-skel i:nth-child(2) {
+  width: 70%;
+}
+.memory-skel i:nth-child(3) {
+  width: 40%;
+}
+
+/* Empty, no bridge and error: inside the screen's own body. */
+.memory-state {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-12) var(--space-6);
+  text-align: center;
+}
+.memory-state-title {
+  margin: 0;
+  max-width: 65ch;
+  color: var(--ink);
+  font-family: var(--type-display-family);
+  font-size: var(--type-display-size);
+  line-height: var(--type-display-line);
+  font-weight: var(--type-display-weight);
+  letter-spacing: var(--type-display-tracking);
+}
+.memory-state-note {
+  max-width: 65ch;
+  margin: 0 0 var(--space-2);
+  color: var(--ink-secondary);
+}
+.memory-fail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 480px;
+  margin: auto;
+  padding: var(--space-5);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  text-align: left;
+}
+.memory-fail-title {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+}
+.memory-fail-note {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.memory-fail-detail {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* The editor: the text beside the Changes inspector. */
+.memory-edit {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) var(--inspector-width);
+  min-height: 0;
+}
+.memory-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.memory-field {
+  display: flex;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  transition: background var(--duration-instant) var(--ease-standard), border-color var(--duration-instant) var(--ease-standard);
+}
+.memory-field:focus-within {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+.memory-textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 240px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  resize: vertical;
+}
+.memory-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+  padding: var(--space-5);
+  overflow: auto;
+  border-left: 1px solid var(--hairline);
+  background: var(--surface);
+  color: var(--ink);
+}
+.memory-inspector .memory-cap {
+  margin: 0;
+}
+.memory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The conflict: the attention band, then the two versions side by side. */
+.memory-conflict {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.memory-conflict:focus {
+  outline: none;
+}
+.memory-conflict > .memory-scroll {
+  flex: 1;
+}
+.memory-band {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-3) var(--space-5) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--attention-soft);
+  color: var(--attention);
+}
+.memory-band-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+.memory-cmp {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+.memory-cmp > section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
