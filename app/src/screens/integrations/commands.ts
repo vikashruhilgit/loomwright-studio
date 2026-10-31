@@ -5,7 +5,7 @@
 // its button, so both reach the same route.
 //
 // The palette reads `enabled` when it opens, so the flags are read through a
-// ref that every render refreshes: the three commands are registered once,
+// ref that every render refreshes: the four commands are registered once,
 // never again when the connector changes state.
 //   Connect GitHub          disabled while the kernel is unreachable, and while a GitHub App is
 //                           connected (the mockup's "disconnect first": one connection at a time);
@@ -14,6 +14,10 @@
 //   Disconnect GitHub       enabled only while a non-disconnected token row exists
 //   Refresh reachable repos enabled while a token is in use (expired too), the
 //                           same as the detail pane's Refresh button
+//   Switch GitHub to the GitHub App
+//                           enabled only while a token is in use, the kernel is reachable and no App is
+//                           connected (the detail pane's "Switch to GitHub App"): it opens the App setup
+//                           dialog over the token, which stays in use until the install succeeds
 import { useEffect, useRef } from "react";
 import type { Command, CommandRegistry } from "../../commands/registry";
 
@@ -29,6 +33,8 @@ export interface IntegrationsCommandHandlers {
   readonly connect: () => void;
   readonly disconnect: () => void;
   readonly refreshRepos: () => void | Promise<void>;
+  /** The App setup dialog over the token in use (the detail pane's "Switch to GitHub App"). */
+  readonly switchToApp: () => void;
 }
 
 /** What decides `enabled`, read at the moment the palette asks. */
@@ -76,6 +82,17 @@ export function integrationsCommands(flags: () => IntegrationsCommandFlags, hand
         return f.hasToken && !f.offline;
       },
       run: () => handlers().refreshRepos(),
+    },
+    {
+      id: "integrations.switch-to-app",
+      title: "Switch GitHub to the GitHub App",
+      group: INTEGRATIONS_GROUP,
+      keywords: ["token", "app", "install", "integration", "connector"],
+      enabled: () => {
+        const f = flags();
+        return f.hasToken && !f.offline && !f.appConnected;
+      },
+      run: () => handlers().switchToApp(),
     },
   ];
 }
