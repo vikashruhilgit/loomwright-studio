@@ -66,3 +66,9 @@ Recorded 2026-10-30 in the phase 7 product-owner session, over two rounds of Ask
 ## Touches
 app/src/screens/integrations
 app/e2e/integrations.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-31T07:17:33Z
+- **Brief:** .supervisor/jobs/done/2026-10-31-integrations-token-to-app-switch.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/188
