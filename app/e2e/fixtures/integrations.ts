@@ -35,6 +35,14 @@
 // `RAW_REFUSAL_MESSAGE`, which the screen must never show. The fixture carries only the fields `Connector`
 // has (`method`, `app_slug`, `installation_id`), never an invented App name.
 //
+// The switch from a token (phase 7 item 09) is driven by `appStored()`, which is the kernel's `storeApp` over the
+// row that exists (`kernel/src/integrations/github/app-port.ts`): the App's slug is recorded on the row, `method`,
+// `status`, the account, the repos and the permissions stay as they were (a token stays in use), and exactly one
+// `connector_status` event is appended, with the row's unchanged status and no `refused`. That event is the setup
+// dialog's step-2 signal. It is not an `AppState` and it is not `app-created`: that one makes an App row, which a
+// token connection never becomes before the install. The install itself is `change("app-connected")`, which mirrors
+// `recordInstallation` (the token item gone, the row an App, connected).
+//
 // Every value here is fixture data: no real account, repo or token.
 import type { Connector, ConnectorChangeResponse, ConnectorReposResponse, ConnectorsResponse, EventFrame, GitHubAppSetupCancelResponse, GitHubAppSetupRefusal, GitHubAppSetupResponse } from "../../src/api/contract";
 import type { FixtureAnswer, FixtureKernel, FixtureKernelOptions, FixtureRequest } from "../fixture-kernel";
@@ -93,6 +101,12 @@ export interface IntegrationsFixture {
   setConnector(state: ConnectorState): void;
   /** `setConnector`, then a `connector_status` event: the kernel changing the connector. */
   change(state: ConnectorState): void;
+  /**
+   * The kernel's `storeApp` over the current row: the App's slug is recorded on it, its method, status and the rest stay
+   * as they were, and one non-refusal `connector_status` event is appended (the setup dialog's step-2 signal). With no
+   * row at all it creates one, which is `change("app-created")`.
+   */
+  appStored(): void;
   /** The next token is refused with this error (`undefined`: accepted again). */
   refuse(error: Refusal | undefined): void;
   /** The token route holds each request open until `releaseToken`. */
@@ -189,6 +203,8 @@ export function integrationsFixture(options: IntegrationsFixtureOptions = {}): I
   let drop = false;
   let kernel: FixtureKernel | undefined;
   let nextId = 1;
+  /** `storeApp` has recorded the App's slug on the token row (a row the kernel keeps, even after a Disconnect). */
+  let slugStored = false;
   /** The repos a `?refresh=1` read has added. */
   let refreshed = false;
 
@@ -196,6 +212,11 @@ export function integrationsFixture(options: IntegrationsFixtureOptions = {}): I
   const change = (next: ConnectorState): void => {
     state = next;
     if (next !== "none") kernel?.appendEvent(event("connector_status", { connector_id: 1, kind: "github", status: statusOf(next) }));
+  };
+  /** The row `GET /connectors` answers: for a token's row, with the App's slug once `storeApp` recorded it (nothing else changes). */
+  const answerRow = (current: Exclude<ConnectorState, "none">): Connector => {
+    const row = rowOf(current);
+    return slugStored && row.method !== "app" ? { ...row, app_slug: APP_SLUG } : row;
   };
   /** A token is in use: connected, expiring or expired. */
   const hasToken = (): boolean => state === "connected" || state === "expiring" || state === "expired";
@@ -238,6 +259,14 @@ export function integrationsFixture(options: IntegrationsFixtureOptions = {}): I
       state = next;
     },
     change,
+    appStored() {
+      if (state === "none") {
+        change("app-created");
+        return;
+      }
+      slugStored = true;
+      kernel?.appendEvent(event("connector_status", { connector_id: 1, kind: "github", status: statusOf(state) }));
+    },
     refuse(error) {
       refusal = error;
     },
@@ -272,7 +301,7 @@ export function integrationsFixture(options: IntegrationsFixtureOptions = {}): I
             void kernel?.close();
             return new Promise<FixtureAnswer>(() => undefined);
           }
-          return { status: 200, body: { connectors: state === "none" ? [] : [rowOf(state)] } satisfies ConnectorsResponse };
+          return { status: 200, body: { connectors: state === "none" ? [] : [answerRow(state)] } satisfies ConnectorsResponse };
         },
         "POST /connectors/github/token": token,
         "POST /connectors/github/disconnect": (req) => {

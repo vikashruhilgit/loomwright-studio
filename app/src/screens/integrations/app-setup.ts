@@ -14,7 +14,7 @@
 // field is only ever checked against the closed list, `app_slug` against the
 // slug shape the open-external allowlist uses, and nothing here builds markup.
 import type { ApiError, Connector, EventFrame, GitHubAppSetupRefusal, TruncatedEventFrame } from "../../api/contract";
-import { type Reply, writePermissionsOf } from "./model";
+import { type Reply, type RowDot, writePermissionsOf } from "./model";
 
 // ---- Outcomes ---------------------------------------------------------------------------------
 
@@ -74,6 +74,15 @@ export function appRowMeta(phase: AppSetupPhase): { readonly dot: "working" | "i
     failed: "setup did not finish",
   };
   return { dot: "idle", text: `not connected · ${note[phase.outcome]}` };
+}
+
+/**
+ * The list row's words while the dialog is open over a token in use (the switch): the token's own words (`token`,
+ * what `rowMeta` says for it) with `token` after them, and `setting up the App` while the setup runs. A cancelled or
+ * failed setup leaves the token's words, because the connection is untouched. Never "not connected".
+ */
+export function switchRowMeta(phase: AppSetupPhase, token: { readonly dot: RowDot; readonly text: string }): { readonly dot: RowDot; readonly text: string } {
+  return { dot: token.dot, text: `${token.text} · token${phase.kind === "outcome" ? "" : " · setting up the App"}` };
 }
 
 // ---- What an event or a refusal says -----------------------------------------------------------------

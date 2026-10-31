@@ -220,6 +220,23 @@
 }
 .integrations-dhead .integrations-badge {
   margin-left: 0;
+  /* A badge is one word group: it never breaks inside itself when the header is tight. */
+  white-space: nowrap;
+}
+/* The token detail's three buttons (Replace token, Switch to GitHub App, Disconnect) travel together, right-aligned: when the
+   pane is too narrow for them beside the title they drop to a line of their own, never clipped at the pane's edge. */
+.integrations-dhead {
+  flex: none;
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+}
+.integrations-dactions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-left: auto;
 }
 .integrations-badge[data-tone="attention"] {
   background: var(--attention-soft);
