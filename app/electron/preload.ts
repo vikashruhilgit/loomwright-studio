@@ -5,7 +5,15 @@
 // here hands the renderer `ipcRenderer`, a channel name, or any Node API.
 import { contextBridge, ipcRenderer } from "electron";
 import type { IpcRendererEvent } from "electron";
-import type { ApiRequest, ApiResult, FeedRelayFrame, KernelConnectionState, StudioBridge } from "../src/api/contract";
+import type {
+  ApiRequest,
+  ApiResult,
+  AppPreferences,
+  AppPreferencesPatch,
+  FeedRelayFrame,
+  KernelConnectionState,
+  StudioBridge,
+} from "../src/api/contract";
 import { CHANNELS } from "./channels";
 
 /** Subscribe to a main -> renderer channel; the listener gets only the payload, never the IPC event. */
@@ -27,6 +35,12 @@ const api: StudioBridge = {
   },
   openExternal: (url: string) => ipcRenderer.invoke(CHANNELS.openExternal, url) as Promise<boolean>,
   onNavigate: (listener: (route: string) => void) => listen(CHANNELS.navigate, listener),
+  prefs: {
+    get: () => ipcRenderer.invoke(CHANNELS.prefsGet) as Promise<AppPreferences>,
+    set: (patch: AppPreferencesPatch) => ipcRenderer.invoke(CHANNELS.prefsSet, patch) as Promise<AppPreferences>,
+    // No argument: the main process opens its own data dir, never a path from here.
+    revealDataDir: () => ipcRenderer.invoke(CHANNELS.revealDataDir) as Promise<boolean>,
+  },
 };
 
 contextBridge.exposeInMainWorld("api", api);

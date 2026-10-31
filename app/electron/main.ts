@@ -14,6 +14,8 @@ import { showsWindow } from "./hidden-window";
 import { createKernelConnection, resolveDataDir, tokenReaderFor } from "./kernel-connection";
 import type { FeedHandle, KernelConnection } from "./kernel-connection";
 import { isAllowedExternal } from "./open-external";
+import { createPreferences } from "./settings";
+import type { Preferences } from "./settings";
 import { createTray } from "./tray";
 
 /** The window's options. The three security settings are pinned by `electron/main.test.ts`. */
@@ -43,7 +45,7 @@ export function windowOptions(preload: string): BrowserWindowConstructorOptions 
 }
 
 /** Wires the bridge's channels to `kernel`, answering only `owner`'s window. */
-function handleBridge(kernel: KernelConnection, owner: () => WebContents | undefined): void {
+function handleBridge(kernel: KernelConnection, prefs: Preferences, owner: () => WebContents | undefined): void {
   const fromOwner = (event: IpcMainInvokeEvent): boolean => event.sender === owner();
   let feed: FeedHandle | undefined;
   // Bumped by every subscribe and unsubscribe: a socket opened for a request a later one superseded is closed, never kept.
@@ -101,6 +103,20 @@ function handleBridge(kernel: KernelConnection, owner: () => WebContents | undef
       return false;
     }
   });
+  // The app's own preferences (`settings.ts`). `set` validates its patch; Reveal takes no argument at all,
+  // so a path from the renderer is never opened: the main process opens the data dir it resolved itself.
+  ipcMain.handle(CHANNELS.prefsGet, async (event) => {
+    if (!fromOwner(event)) throw new Error("refused");
+    return prefs.get();
+  });
+  ipcMain.handle(CHANNELS.prefsSet, async (event, patch: unknown) => {
+    if (!fromOwner(event)) throw new Error("refused");
+    return prefs.set(patch);
+  });
+  ipcMain.handle(CHANNELS.revealDataDir, async (event) => {
+    if (!fromOwner(event)) throw new Error("refused");
+    return prefs.revealDataDir();
+  });
 }
 
 /** The renderer may never navigate away, open a window, or be granted a permission. */
@@ -116,6 +132,7 @@ async function main(): Promise<void> {
     // Reasons only: never a token or a response body.
     log: (line) => console.warn(`loomwright-studio: ${line}`),
   });
+  const prefs = createPreferences({ env: process.env, isPackaged: app.isPackaged, dataDir: resolveDataDir(process.env) });
   let window: BrowserWindow | undefined;
   const shows = showsWindow(process.env, app.isPackaged);
 
@@ -138,7 +155,7 @@ async function main(): Promise<void> {
     else if (shows) window.show();
   };
 
-  handleBridge(kernel, () => window?.webContents);
+  handleBridge(kernel, prefs, () => window?.webContents);
   registerDeepLinks({
     navigate: (route) => {
       showWindow();
@@ -148,6 +165,8 @@ async function main(): Promise<void> {
 
   await app.whenReady();
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, decide) => decide(false));
+  // The theme goes on before any window exists, so the first paint is already in the owner's theme.
+  await prefs.load();
   createTray({ kernel, showWindow });
   createWindow();
   // macOS: closing the window keeps the app (and, after item 17, the tray) running.

@@ -1,0 +1,395 @@
+/* Settings (phase 7 item 08): docs/design/mockups/gui-v2.html (`settingsScreen`) on the tokens. Colour comes
+   only from tokens.css custom properties (contrast.test.ts fails on a literal colour). Focus keeps the
+   shell's ring (`:focus-visible` in app.css): nothing here removes it.
+   Rows have fixed or content-bound heights and the data never reflows on a refetch: a read that lands
+   changes text inside a row and moves nothing already shown. */
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.settings-pad {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 760px;
+  padding: var(--space-5);
+}
+.settings-cap {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+}
+.settings-cap[data-tone="danger"] {
+  color: var(--danger);
+}
+.settings-tn {
+  font-variant-numeric: tabular-nums;
+}
+.settings-mono {
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+.settings-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.settings-glyph {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.settings-label {
+  margin: 0;
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.settings-title {
+  margin: 0;
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+}
+.settings-text {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+
+/* The window has no bridge (the shell rendered without a preload). */
+.settings-state {
+  padding: var(--space-12) var(--space-6);
+  max-width: 640px;
+}
+.settings-state-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--type-display-size);
+  line-height: var(--type-display-line);
+  font-weight: var(--type-display-weight);
+  letter-spacing: var(--type-display-tracking);
+}
+.settings-state-note {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+
+/* The band above the sections (the mockup's attention and danger bands) and the notices. */
+.settings-band {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-3) var(--space-5) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+}
+.settings-band[data-tone="attention"] {
+  background: var(--attention-soft);
+  color: var(--attention);
+}
+.settings-band[data-tone="danger"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.settings-notice {
+  margin: var(--space-3) var(--space-5) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+}
+.settings-notice[data-tone="danger"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.settings-notice[data-tone="neutral"] {
+  background: var(--surface-sunken);
+  color: var(--ink-secondary);
+}
+.settings-blk > .settings-notice {
+  margin: 0;
+}
+
+/* A section: its heading with the read-only badge, then its content. */
+.settings-blk {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.settings-sech {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height);
+}
+
+/* Key and value rows. */
+.settings-kv {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+}
+.settings-row {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: center;
+  min-height: var(--row-height);
+}
+.settings-row dt {
+  color: var(--ink-tertiary);
+}
+.settings-row dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+}
+.settings-row dd [data-tone="danger"] {
+  color: var(--danger);
+}
+.settings-row dd [data-tone="attention"] {
+  color: var(--attention);
+}
+.settings-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--idle);
+}
+.settings-dot[data-tone="ok"] {
+  background: var(--ok);
+}
+.settings-dot[data-tone="attention"] {
+  background: var(--attention);
+}
+.settings-dot[data-tone="danger"] {
+  background: var(--danger);
+}
+
+/* The terminal commands. */
+.settings-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.settings-steps li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  align-items: start;
+}
+.settings-steps li > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.settings-cmdline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+.settings-cmdline code {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
+}
+.settings-copied {
+  flex: none;
+  min-width: 12ch;
+}
+
+/* This app: the switches and the theme buttons. */
+.settings-box {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.settings-box > li {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--space-12);
+  padding: var(--space-2) var(--space-3);
+}
+.settings-box > li + li {
+  border-top: 1px solid var(--hairline);
+}
+.settings-ttext {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+.settings-ttext .settings-cap[data-tone="attention"] {
+  color: var(--attention);
+}
+
+/* The on/off switch (role="switch"). */
+.settings-sw {
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--border);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.settings-sw::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+.settings-sw[aria-checked="true"] {
+  background: var(--accent);
+}
+.settings-sw[aria-checked="true"]::after {
+  transform: translateX(14px);
+  background: var(--on-accent);
+}
+.settings-sw[aria-busy="true"] {
+  cursor: progress;
+}
+.settings-sw:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings-chips {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.settings-chip {
+  height: var(--row-height);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--ink-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-chip:hover {
+  border-color: var(--border);
+  color: var(--ink);
+}
+.settings-chip[aria-pressed="true"] {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+.settings-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The route failure, "status unknown" and the loading skeleton. */
+.settings-fail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 480px;
+  padding: var(--space-5);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.settings-fail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--danger);
+}
+.settings-fail p {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.settings-fail-detail {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+.settings-unknown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.settings-unknown p {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.settings-skels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.settings-skel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.settings-skel i {
+  display: block;
+  height: 10px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+}
+.settings-skel i:nth-child(2) {
+  width: 60%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-sw,
+  .settings-sw::after {
+    transition-duration: 0s;
+  }
+}

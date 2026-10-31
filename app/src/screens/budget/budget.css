@@ -1,0 +1,470 @@
+/* Budget & audit (phase 7 item 07): docs/design/mockups/gui-v2.html (`budgetScreen`, `auditScreen`, and the
+   "Table", "Band", "EventCard", `.meter` and `.fbar` blocks of its style) on the tokens. Colour comes only from
+   tokens.css custom properties. Focus keeps the shell's ring (`:focus-visible` in app.css): nothing here removes it.
+   Row heights are fixed (a line of text clips with an ellipsis), so a refetch that changes a figure, a name or an
+   event changes text inside a row and moves nothing. Every meter is a share of tokens, never of dollars. */
+
+.budget {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  outline: none;
+}
+.budget-tbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  min-height: calc(var(--control-height) + var(--space-2));
+  padding: 0 var(--space-5);
+}
+.budget-spacer {
+  flex: 1 1 auto;
+}
+.budget-cap {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+  font-variant-numeric: tabular-nums;
+}
+.budget-tn {
+  font-variant-numeric: tabular-nums;
+}
+.budget-dim {
+  color: var(--ink-tertiary);
+}
+.budget-mono {
+  font-family: var(--type-mono-family);
+  font-size: var(--type-mono-size);
+  line-height: var(--type-mono-line);
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+.budget-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.budget-clip {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.budget-glyph {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.budget-label {
+  margin: 0;
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.budget-title {
+  margin: 0;
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+}
+
+/* The window has no bridge (the shell rendered without a preload). */
+.budget-state {
+  padding: var(--space-12) var(--space-6);
+  max-width: 640px;
+}
+.budget-state-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--type-display-size);
+  line-height: var(--type-display-line);
+  font-weight: var(--type-display-weight);
+  letter-spacing: var(--type-display-tracking);
+}
+.budget-state-note {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+
+/* The waiting-on-you band (the mockup's `.band.att`) and the refresh notice. */
+.budget-band {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: none;
+  margin: var(--space-3) var(--space-5) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--attention-soft);
+  color: var(--attention);
+}
+.budget-band > span {
+  min-width: 0;
+}
+.budget-band .btn {
+  margin-left: auto;
+  flex: none;
+  color: inherit;
+  text-decoration: underline;
+}
+.budget-notice {
+  margin: var(--space-3) var(--space-5) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+}
+.budget-notice[data-tone="danger"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.budget-pad > .budget-notice {
+  margin: 0;
+}
+
+/* The overview: the sections, then the inspector. */
+.budget-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--inspector-width);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.budget-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.budget-pad {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+  padding: var(--space-5) var(--space-6);
+}
+.budget-pad.budget-tight {
+  gap: var(--space-4);
+  padding-bottom: var(--space-3);
+}
+.budget-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-5);
+  border-left: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.budget-blk {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.budget-blk > p {
+  margin: 0;
+}
+.budget-sech {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height);
+}
+.budget-window {
+  padding-top: var(--space-2);
+}
+
+/* Tables. */
+.budget-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.budget-table th {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--hairline);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-align: left;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.budget-table tbody tr {
+  height: 64px;
+}
+.budget-day tbody tr {
+  height: 56px;
+}
+.budget-table td {
+  box-sizing: border-box;
+  padding: var(--space-2);
+  overflow: hidden;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: middle;
+}
+.budget-table tbody tr:hover td {
+  background: var(--surface);
+}
+.budget-table tbody tr:focus-visible {
+  outline-offset: -2px;
+}
+.budget-table tbody tr[data-waiting="true"] td {
+  background: var(--attention-soft);
+}
+.budget-table tbody tr[data-waiting="true"] .budget-cap,
+.budget-table tbody tr[data-waiting="true"] .budget-dim {
+  color: var(--ink-secondary);
+}
+.budget-table b {
+  font-weight: var(--type-body-strong-weight);
+}
+.budget-c-day {
+  width: 190px;
+}
+.budget-c-cache {
+  width: 190px;
+}
+.budget-c-name {
+  width: 150px;
+}
+.budget-c-sessions {
+  width: 150px;
+}
+.budget-c-id {
+  width: 64px;
+}
+.budget-c-when {
+  width: 112px;
+}
+.budget-c-kind {
+  width: 184px;
+}
+.budget-c-actor {
+  width: 96px;
+}
+.budget-by {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* A limit cell and the meters. */
+.budget-limit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.budget-limit-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.budget-meter {
+  height: 4px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+.budget-meter i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.budget-meter[data-full="true"] i {
+  background: var(--attention);
+}
+.budget-inspector .budget-meter {
+  background: var(--surface-sunken);
+}
+
+/* The three latest events (the mockup's `evc` cards). */
+.budget-evs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.budget-evc {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-0-5);
+  height: 64px;
+  padding: var(--space-2) var(--space-3);
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.budget-evc:focus-visible {
+  outline-offset: -2px;
+}
+.budget-evc-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-tertiary);
+}
+.budget-evc-top b {
+  min-width: 0;
+  color: var(--ink-secondary);
+}
+.budget-evc-top time {
+  margin-left: auto;
+  flex: none;
+}
+.budget-evc p {
+  margin: 0;
+  color: var(--ink);
+}
+.budget-latest-note {
+  margin: 0;
+}
+
+/* The audit log. */
+.budget-auditview {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.budget-auditview .budget-pad {
+  padding-bottom: var(--space-3);
+}
+.budget-crumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-tertiary);
+}
+.budget-crumb .btn {
+  margin-left: calc(var(--space-2) * -1);
+}
+.budget-dhead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+}
+.budget-fbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2) var(--space-4);
+}
+.budget-fbar .field-group {
+  min-width: 150px;
+}
+.budget-tblw {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 0 var(--space-6) var(--space-5);
+}
+.budget-tblw > p {
+  margin: 0;
+}
+.budget-audit-table tbody tr {
+  height: 64px;
+}
+.budget-audit-table td .budget-cap {
+  display: block;
+}
+.budget-pager {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+  padding-top: var(--space-2);
+}
+
+/* Empty, unknown, the route failure and the loading skeleton. */
+.budget-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-12) var(--space-6);
+  text-align: center;
+}
+.budget-empty p {
+  max-width: 65ch;
+  margin: 0 0 var(--space-2);
+  color: var(--ink-secondary);
+}
+.budget-fail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 480px;
+  margin: var(--space-6) auto;
+  padding: var(--space-5);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.budget-fail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--danger);
+}
+.budget-fail p {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.budget-fail-detail {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+.budget-skels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-5);
+}
+.budget-skel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.budget-skel i {
+  display: block;
+  height: 10px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+}
+.budget-skel i:nth-child(2) {
+  width: 70%;
+}
+.budget-skel i:nth-child(3) {
+  width: 40%;
+}
+.budget-pad > .budget-skels {
+  padding: 0;
+}
