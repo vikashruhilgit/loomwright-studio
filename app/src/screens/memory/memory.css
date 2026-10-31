@@ -80,6 +80,8 @@
   min-height: 0;
   padding: var(--space-2);
   overflow: auto;
+  /* Reserve the scrollbar's width up front so a file added by an event never narrows the rows already shown (AC11). */
+  scrollbar-gutter: stable;
   border-right: 1px solid var(--hairline);
 }
 .memory-root {
