@@ -281,7 +281,22 @@ describe("storeApp (AC1)", () => {
     expect(row).toMatchObject({ status: "connected", method: "token", app_slug: SLUG });
     expect(w.keychain.items.get(GITHUB_KEYCHAIN_SERVICE)?.secret).toBe(PAT);
     expect({ ...rowNow(), app_slug: null, updated_at: null }).toEqual({ ...before, app_slug: null, updated_at: null });
-    expect(statusEvents()).toEqual([]);
+    // The step-2 signal: one event, the status as it is (no `refused`, no secret), so the setup dialog moves on.
+    expect(statusEvents()).toEqual([{ connector_id: row.id, kind: "github", status: "connected" }]);
+    expectNoSecret(row, statusEvents());
+  });
+
+  it("over an existing row (disconnected), one connector_status event", async () => {
+    store()
+      .prepare("INSERT INTO connectors (kind, status, method, created_at, updated_at) VALUES ('github', 'disconnected', 'token', ?, ?)")
+      .run(T0, T0);
+    const before = rowNow();
+    const row = ok(await w.port.storeApp(store(), CONVERSION, PEM, w.env.now));
+    expect(row).toMatchObject({ status: "disconnected", method: "token", app_slug: SLUG, installation_id: null });
+    expect({ ...rowNow(), app_slug: null, updated_at: null }).toEqual({ ...before, app_slug: null, updated_at: null });
+    expect(w.keychain.has(GITHUB_KEYCHAIN_SERVICE)).toBe(false);
+    expect(statusEvents()).toEqual([{ connector_id: row.id, kind: "github", status: "disconnected" }]);
+    expectNoSecret(row, statusEvents());
   });
 
   it("a second App replaces the first (delete, then add) and drops the held installation token", async () => {

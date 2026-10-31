@@ -18,6 +18,14 @@
 // `POST /connectors/github/app/setup/cancel`) and land on setup-cancelled: the
 // one window is never left open by closing the dialog.
 //
+// Over a token in use (`overToken`, the screen's "Switch to GitHub App"): the same dialog, the same one setup
+// call, cancel and step logic, with the mockup's switch copy (`docs/design/mockups/gui-v2.html`, `switchDialog()`).
+// It says GitHub stays connected through the token, and every ending says so: a cancel is "Setup cancelled.
+// GitHub is still connected through your token.", and every refusal (setup-expired and write-scoped included)
+// is the one "Setup didn't finish" view, which lists the write permissions a `token_write_scoped` names. None of
+// them offers "Paste a token instead": a token is already in use. The dialog never touches the token: only the
+// install does, in the kernel.
+//
 // "Open GitHub again" reopens the same `setup_url`, with no second setup call.
 // A `setup_url` the channel refuses (it answers `false`) is setup-failed, never
 // a silent no-op, and the window it opened is cancelled.
@@ -59,6 +67,8 @@ export interface AppSetupSheetProps {
   readonly onPasteToken: () => void;
   /** Called with the dialog's phase as it changes, for the list row's words. */
   readonly onPhaseChange?: (phase: AppSetupPhase) => void;
+  /** The dialog runs over a token in use (the switch): its copy says the token stays connected. */
+  readonly overToken?: boolean;
 }
 
 function newestId(events: readonly { readonly id: number }[]): number {
@@ -78,7 +88,7 @@ function Step({ n, label, dot, badge, tone, testId }: { readonly n: number; read
   );
 }
 
-export function AppSetupSheet({ api, events, connector, onClose, onSetUpAgain, onPasteToken, onPhaseChange }: AppSetupSheetProps) {
+export function AppSetupSheet({ api, events, connector, onClose, onSetUpAgain, onPasteToken, onPhaseChange, overToken = false }: AppSetupSheetProps) {
   const ids = useId();
   const titleId = `${ids}-title`;
   const descId = `${ids}-desc`;
@@ -262,7 +272,7 @@ export function AppSetupSheet({ api, events, connector, onClose, onSetUpAgain, o
   };
 
   const closes = closesAtText(expiresAt);
-  const status = phaseStatus(phase);
+  const status = phaseStatus(phase, overToken);
   let title: string;
   let body: ReactNode;
   let actions: ReactNode;
@@ -281,20 +291,33 @@ export function AppSetupSheet({ api, events, connector, onClose, onSetUpAgain, o
       Close
     </Button>
   );
+  // Over a token the actions are Close and Set up again only: the token is in use, so there is nothing to paste.
+  const againOverToken = (
+    <>
+      {close}
+      <Button ref={primaryRef} variant="primary" onClick={onSetUpAgain} data-testid={IDS.appAgain}>
+        Set up again
+      </Button>
+    </>
+  );
   const appsLink = <AppsPageLink api={api} slug={slug} testId={IDS.appLink} />;
   const staysOnGitHub = <p>If you had already created the App on GitHub, it stays on your account until you delete it.</p>;
 
   if (phase.kind !== "outcome") {
     const one = phase.kind !== "install";
-    title = "Set up the GitHub App";
+    title = overToken ? "Switch GitHub to the GitHub App" : "Set up the GitHub App";
     body = (
       <>
-        <p id={descId}>Studio opened GitHub in your browser. The two clicks there are yours: Create, then Install. Studio can&apos;t make them for you, and it receives the App&apos;s key itself, so you never download a file.</p>
+        <p id={descId}>
+          {overToken
+            ? "Studio opened GitHub in your browser. The two clicks there are yours: Create, then Install. GitHub stays connected through your token while this runs, and keeps working if you cancel or setup fails."
+            : "Studio opened GitHub in your browser. The two clicks there are yours: Create, then Install. Studio can't make them for you, and it receives the App's key itself, so you never download a file."}
+        </p>
         <ul className="integrations-box" aria-label="Setup steps" data-testid={IDS.appSteps} data-step={one ? "1" : "2"}>
           <Step n={1} label="Create the App on GitHub" dot={one ? "working" : "ok"} badge={one ? "waiting for you" : "done"} tone={one ? undefined : "ok"} testId={IDS.appStep1} />
           <Step n={2} label="Pick the repos and install it" dot={one ? "idle" : "working"} badge={one ? "next" : "waiting for you"} testId={IDS.appStep2} />
         </ul>
-        <p className="integrations-cap">{`${one ? "On GitHub, click Create GitHub App." : "On GitHub, choose the repos Studio may read, then click Install."} The App is private, has no webhook, and asks for Pull requests: Read, Contents: Read and Metadata: Read. Nothing more.`}</p>
+        <p className="integrations-cap">{`${one ? "On GitHub, click Create GitHub App." : "On GitHub, choose the repos Studio may read, then click Install."} The App is private, has no webhook, and asks for Pull requests: Read, Contents: Read and Metadata: Read. ${overToken ? "When it connects, the token item is removed." : "Nothing more."}`}</p>
         {closes === undefined ? null : (
           <p className="integrations-cap" data-testid={IDS.appCloses}>
             {`This setup window closes at ${closes}.`}
@@ -316,7 +339,11 @@ export function AppSetupSheet({ api, events, connector, onClose, onSetUpAgain, o
     title = "Setup cancelled";
     body = (
       <>
-        <p id={descId}>Nothing was connected, and the setup window is closed. If you had already created the App on GitHub, it stays on your account until you delete it.</p>
+        <p id={descId}>
+          {overToken
+            ? "Setup cancelled. GitHub is still connected through your token. The setup window is closed. If you had already created the App on GitHub, it stays on your account until you delete it."
+            : "Nothing was connected, and the setup window is closed. If you had already created the App on GitHub, it stays on your account until you delete it."}
+        </p>
         {cancelFailed ? (
           <p className="integrations-cap" role="status">
             {`Studio couldn't reach the kernel to close the setup window. It closes by itself${closes === undefined ? "" : ` at ${closes}`}.`}
@@ -325,12 +352,41 @@ export function AppSetupSheet({ api, events, connector, onClose, onSetUpAgain, o
         {appsLink}
       </>
     );
-    actions = (
+    actions = overToken ? (
+      againOverToken
+    ) : (
       <>
         {close}
         {again}
       </>
     );
+  } else if (overToken) {
+    // The mockup's `swf`: the one failure view of the switch, whatever the reason. Nothing changed, and the token is still in use.
+    const writes = phase.outcome === "write-scoped";
+    title = "Setup didn't finish";
+    body = (
+      <>
+        <div className="integrations-refusal" id={descId} role="alert" data-testid={IDS.appOutcome}>
+          <p>GitHub didn&apos;t finish setting the App up, so nothing changed. GitHub is still connected through your token.</p>
+          {writes ? (
+            <>
+              <p>GitHub reports that the App you installed can write, so Studio didn&apos;t connect it. Studio takes only read-only access in this phase. On GitHub, open the App&apos;s permissions and change:</p>
+              {drops.length === 0 ? null : (
+                <ul>
+                  {drops.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              )}
+              <p>Then set it up again.</p>
+            </>
+          ) : null}
+        </div>
+        <p className="integrations-cap">Try again. If it keeps failing, keep using the token: it works as before.</p>
+        {writes ? appsLink : null}
+      </>
+    );
+    actions = againOverToken;
   } else if (phase.outcome === "expired") {
     title = "Setup timed out";
     body = (
@@ -416,10 +472,12 @@ export function AppSetupSheet({ api, events, connector, onClose, onSetUpAgain, o
   );
 }
 
-/** What the live region says on each view (the mockup's `live()` lines). */
-function phaseStatus(phase: AppSetupPhase): string {
-  if (phase.kind === "starting") return "Setting up the GitHub App.";
-  if (phase.kind === "create") return "Setting up the GitHub App. Waiting for you on GitHub: step 1 of 2, Create.";
-  if (phase.kind === "install") return "Step 2 of 2, Install.";
-  return phase.outcome === "cancelled" ? "Setup cancelled. Nothing was connected." : "";
+/** What the live region says on each view (the mockup's `live()` lines). Over a token every running step says the token stays connected. */
+function phaseStatus(phase: AppSetupPhase, overToken: boolean): string {
+  const stays = overToken ? " GitHub stays connected through the token." : "";
+  if (phase.kind === "starting") return `Setting up the GitHub App.${stays}`;
+  if (phase.kind === "create") return `Setting up the GitHub App. Waiting for you on GitHub: step 1 of 2, Create.${stays}`;
+  if (phase.kind === "install") return `Step 2 of 2, Install.${stays}`;
+  if (phase.outcome !== "cancelled") return "";
+  return overToken ? "Setup cancelled. GitHub is still connected through your token." : "Setup cancelled. Nothing was connected.";
 }

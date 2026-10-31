@@ -21,6 +21,12 @@
 // (`./AppDetail.tsx`) and a disconnect confirm that sends the owner to GitHub for the
 // part Studio cannot remove.
 //
+// Switching from a token: "Switch to GitHub App" (the token detail's header, and the palette's "Switch GitHub
+// to the GitHub App") is `startApp` called while a token is in use. It is the same setup dialog, told it runs
+// over the token (`overToken`), so its words say the token stays connected, and the list row reads `token ·
+// setting up the App`. Nothing here disconnects: the token goes only when the kernel records the install, and a
+// cancel or a failure leaves the connection as it was.
+//
 // Every string from the kernel or GitHub (account, permission names, repo
 // names, refusals) is untrusted data: a React text child, never markup.
 import { type ReactNode, type Ref, useCallback, useEffect, useId, useRef, useState } from "react";
@@ -34,7 +40,7 @@ import { REFETCH_THROTTLE_MS } from "../../store/store";
 import { disconnectGithub, fetchRepos, readConnectors } from "./actions";
 import { AppDetail } from "./AppDetail";
 import { AppSetupSheet } from "./AppSetupSheet";
-import { type AppSetupPhase, INSTALLATIONS_URL, appRowMeta, slugOf } from "./app-setup";
+import { type AppSetupPhase, INSTALLATIONS_URL, appRowMeta, slugOf, switchRowMeta } from "./app-setup";
 import { ConnectSheet } from "./ConnectSheet";
 import type { SheetMode } from "./ConnectSheet";
 import { useIntegrationsCommands } from "./commands";
@@ -52,6 +58,7 @@ import {
   permissionLines,
   replyText,
   rowMeta,
+  switchToApp,
   viewOf,
   whenText,
 } from "./model";
@@ -120,11 +127,13 @@ interface ListPaneProps {
   readonly rowRef: Ref<HTMLButtonElement>;
   /** The App setup dialog is open: its words replace the row's. */
   readonly setup: AppSetupPhase | undefined;
+  /** The dialog runs over a token in use: the row keeps the token's words and adds the setup's. */
+  readonly switching: boolean;
 }
 
 /** The list pane: the one connector, with its dot and words. */
-function ListPane({ view, connecting, now, rowRef, setup }: ListPaneProps) {
-  const meta = setup === undefined ? rowMeta(view, connecting, now) : appRowMeta(setup);
+function ListPane({ view, connecting, now, rowRef, setup, switching }: ListPaneProps) {
+  const meta = setup === undefined ? rowMeta(view, connecting, now) : switching ? switchRowMeta(setup, rowMeta(view, false, now)) : appRowMeta(setup);
   return (
     <div className="integrations-list" data-testid={IDS.list}>
       <div role="listbox" aria-label="Connectors">
@@ -198,11 +207,12 @@ interface TokenDetailProps {
   readonly refreshing: boolean;
   readonly now: Date;
   readonly onReplace: () => void;
+  readonly onSwitch: () => void;
   readonly onDisconnect: () => void;
   readonly onRefresh: () => void;
 }
 
-function TokenDetail({ view, row, repos, roster, rosterError, refreshing, now, onReplace, onDisconnect, onRefresh }: TokenDetailProps) {
+function TokenDetail({ view, row, repos, roster, rosterError, refreshing, now, onReplace, onSwitch, onDisconnect, onRefresh }: TokenDetailProps) {
   const ids = useId();
   const offline = isOffline(view);
   const state = view.state;
@@ -225,13 +235,17 @@ function TokenDetail({ view, row, repos, roster, rosterError, refreshing, now, o
         <span className="integrations-badge" data-tone="neutral">
           {declared ? "read-only · declared" : "read-only"}
         </span>
-        <span className="integrations-spacer" />
-        <Button size="row" variant={urgent ? "primary" : "secondary"} onClick={onReplace} data-testid={IDS.replace} {...dis}>
-          Replace token
-        </Button>
-        <Button size="row" variant="danger" onClick={onDisconnect} data-testid={IDS.disconnect} {...dis}>
-          Disconnect
-        </Button>
+        <div className="integrations-dactions">
+          <Button size="row" variant={urgent ? "primary" : "secondary"} onClick={onReplace} data-testid={IDS.replace} {...dis}>
+            Replace token
+          </Button>
+          <Button size="row" variant="secondary" onClick={onSwitch} data-testid={IDS.switchToApp} {...dis}>
+            Switch to GitHub App
+          </Button>
+          <Button size="row" variant="danger" onClick={onDisconnect} data-testid={IDS.disconnect} {...dis}>
+            Disconnect
+          </Button>
+        </div>
       </div>
 
       {state === "expiring" ? (
@@ -371,6 +385,8 @@ interface SheetState {
 /** One run of the App setup dialog; a new `key` mounts a fresh dialog, which makes a new setup call. */
 interface AppRun {
   readonly key: number;
+  /** The run started while a token was in use (the switch): the dialog's words say the token stays connected. */
+  readonly overToken: boolean;
 }
 
 export function IntegrationsView({ api, registry = commandRegistry }: IntegrationsViewProps) {
@@ -382,6 +398,7 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
   const offline = isOffline(view);
   const tokenInUse = hasToken(view);
   const appInUse = isAppConnection(view);
+  const switchable = switchToApp(view);
 
   const [sheet, setSheet] = useState<SheetState | undefined>(undefined);
   const [app, setApp] = useState<AppRun | undefined>(undefined);
@@ -471,7 +488,14 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
     appRuns.current += 1;
     // The row's words start with the dialog's first phase; the dialog reports each change after it.
     setAppPhase({ kind: "starting" });
-    setApp({ key: appRuns.current });
+    // A setup started while a token is in use is the switch (also "Set up again" from one): it never touches the token.
+    setApp({ key: appRuns.current, overToken: switchable });
+  };
+
+  /** "Switch to GitHub App": the setup dialog over the token in use. Not over another App dialog, and never a disconnect. */
+  const switchHandler = () => {
+    if (!switchable || offline || app !== undefined) return;
+    startApp();
   };
 
   const closeApp = () => {
@@ -506,6 +530,8 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
 
   // The connector became an App connection while the dialog was open: the setup is done, and the detail pane says so.
   const appConnected = appInUse && (view.state === "connected" || view.state === "expiring");
+  // The dialog's copy follows the token: if it is gone (disconnected elsewhere) the words are the no-token ones again.
+  const switching = app !== undefined && app.overToken && view.state !== "none";
   useEffect(() => {
     if (app !== undefined && appConnected) closeApp();
   }, [app, appConnected]);
@@ -550,7 +576,7 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
   useIntegrationsCommands(
     registry,
     { offline, hasToken: tokenInUse, appConnected: appInUse },
-    { connect: connectHandler, disconnect: requestDisconnect, refreshRepos },
+    { connect: connectHandler, disconnect: requestDisconnect, refreshRepos, switchToApp: switchHandler },
   );
 
   const row = view.row;
@@ -590,6 +616,7 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
         refreshing={refreshing}
         now={now}
         onReplace={() => openSheet("replace")}
+        onSwitch={switchHandler}
         onDisconnect={requestDisconnect}
         onRefresh={() => void refreshRepos()}
       />
@@ -619,7 +646,7 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
         </p>
       )}
       <div className="integrations-split">
-        <ListPane view={view} connecting={connecting} now={now} rowRef={rowRef} setup={app === undefined ? undefined : appPhase} />
+        <ListPane view={view} connecting={connecting} now={now} rowRef={rowRef} setup={app === undefined || appConnected ? undefined : appPhase} switching={switching} />
         {detail}
       </div>
       {sheet === undefined ? null : (
@@ -651,6 +678,7 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
           onSetUpAgain={startApp}
           onPasteToken={pasteToken}
           onPhaseChange={setAppPhase}
+          overToken={switching}
         />
       )}
       {confirming && appInUse ? (

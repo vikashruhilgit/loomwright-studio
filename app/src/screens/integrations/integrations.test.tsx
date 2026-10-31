@@ -461,10 +461,10 @@ describe("the ⌘K commands", () => {
     return found;
   };
 
-  it("registers Connect GitHub, Disconnect GitHub and Refresh reachable repos under owner integrations, and unregisters them on unmount", async () => {
+  it("registers Connect GitHub, Disconnect GitHub, Refresh reachable repos and Switch GitHub to the GitHub App under owner integrations, and unregisters them on unmount", async () => {
     const kernel = await startScreen();
-    expect(owned(kernel)).toEqual(["integrations.connect-github", "integrations.disconnect-github", "integrations.refresh-repos"]);
-    expect(kernel.registry.list().map((c) => c.title)).toEqual(["Connect GitHub", "Disconnect GitHub", "Refresh reachable repos"]);
+    expect(owned(kernel)).toEqual(["integrations.connect-github", "integrations.disconnect-github", "integrations.refresh-repos", "integrations.switch-to-app"]);
+    expect(kernel.registry.list().map((c) => c.title)).toEqual(["Connect GitHub", "Disconnect GitHub", "Refresh reachable repos", "Switch GitHub to the GitHub App"]);
     cleanup();
     expect(owned(kernel)).toEqual([]);
   });
@@ -484,7 +484,7 @@ describe("the ⌘K commands", () => {
     expect(command(kernel, "integrations.refresh-repos").enabled?.()).toBe(want.refresh);
   });
 
-  it("while the kernel is unreachable all three are disabled, and they follow the state as it changes", async () => {
+  it("while the kernel is unreachable every command is disabled, and they follow the state as it changes", async () => {
     const kernel = await startScreen();
     expect(command(kernel, "integrations.disconnect-github").enabled?.()).toBe(true);
     kernel.connectors = () => UNREACHABLE;
@@ -492,6 +492,7 @@ describe("the ⌘K commands", () => {
     await waitFor(() => expect(command(kernel, "integrations.connect-github").enabled?.()).toBe(false));
     expect(command(kernel, "integrations.disconnect-github").enabled?.()).toBe(false);
     expect(command(kernel, "integrations.refresh-repos").enabled?.()).toBe(false);
+    expect(command(kernel, "integrations.switch-to-app").enabled?.()).toBe(false);
   });
 
   it("Connect GitHub opens the choice with no token, and the replace sheet when one exists", async () => {
@@ -529,14 +530,18 @@ describe("the ⌘K commands", () => {
 // ---- AC8: keyboard alone --------------------------------------------------------------------------------------------------------------------
 
 describe("keyboard", () => {
-  it("every control is a real button or link, in the tab order: Replace token, Disconnect, Refresh, the agent link", async () => {
+  it("every control is a real button or link, in the tab order: Replace token, Switch to GitHub App, Disconnect, Refresh, the agent link", async () => {
     await startScreen();
     await waitFor(() => expect(screen.getAllByTestId(IDS.agentCard)).toHaveLength(1));
-    for (const id of [IDS.listRow, IDS.replace, IDS.disconnect, IDS.refresh]) {
+    for (const id of [IDS.listRow, IDS.replace, IDS.switchToApp, IDS.disconnect, IDS.refresh]) {
       const el = screen.getByTestId(id);
       expect(el.tagName).toBe("BUTTON");
       expect(el.getAttribute("tabindex")).not.toBe("-1");
     }
+    // The mockup's order in the header: Replace token, then Switch, then Disconnect (document order is the tab order).
+    const header = screen.getByTestId(IDS.detailHeader);
+    const order = [...header.querySelectorAll("button")].map((b) => b.getAttribute("data-testid"));
+    expect(order).toEqual([IDS.replace, IDS.switchToApp, IDS.disconnect]);
     expect(screen.getByTestId(IDS.agentCard).tagName).toBe("A");
   });
 

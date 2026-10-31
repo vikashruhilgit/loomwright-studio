@@ -29,6 +29,7 @@ export const INTEGRATIONS_TEST_IDS = {
   detail: "integrations-detail",
   detailHeader: "integrations-detail-header",
   replace: "integrations-replace",
+  switchToApp: "integrations-switch-to-app",
   disconnect: "integrations-disconnect",
   status: "integrations-status",
   account: "integrations-account",
@@ -198,6 +199,14 @@ export function hasToken(view: IntegrationsView): boolean {
 /** The connection in use is a GitHub App: it has no Replace token, and Connect GitHub waits for a disconnect. */
 export function isAppConnection(view: IntegrationsView): boolean {
   return isAppRow(view.row);
+}
+
+/**
+ * "Switch to GitHub App" exists: a token is in use (connected, expiring or expired) and no App is. A revoked App, a
+ * rejected or disconnected row and a read that has not answered yet are not a token in use.
+ */
+export function switchToApp(view: IntegrationsView): boolean {
+  return !isAppRow(view.row) && (view.state === "connected" || view.state === "expiring" || view.state === "expired");
 }
 
 /** The kernel cannot be asked right now: every write is disabled. */
