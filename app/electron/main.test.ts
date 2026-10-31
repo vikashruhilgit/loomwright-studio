@@ -2,7 +2,7 @@
 // context-isolated, with no Node integration, sandboxed, and loads the
 // preload; the renderer can't open windows or navigate away; and the main
 // process answers the bridge's channels only for its own window.
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const electron = vi.hoisted(() => {
   const windows: {
@@ -12,9 +12,24 @@ const electron = vi.hoisted(() => {
     openHandler?: () => unknown;
     navigate?: (e: { preventDefault(): void }) => void;
     loaded?: string;
+    /** `nativeTheme.themeSource` at the moment this window was constructed. */
+    themeAtCreation?: string;
   }[] = [];
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
-  return { windows, handlers, permission: undefined as undefined | ((c: unknown, p: string, decide: (ok: boolean) => void) => void) };
+  // The app's own preferences live in a throwaway dir (the unpackaged-run seam), seeded with a dark theme.
+  const fs = process.getBuiltinModule("node:fs");
+  const prefsDir = fs.mkdtempSync(`${process.getBuiltinModule("node:os").tmpdir()}/studio-main-test-`);
+  fs.writeFileSync(`${prefsDir}/prefs.json`, JSON.stringify({ notifications: true, theme: "dark" }));
+  process.env.STUDIO_APP_PREFS_DIR = prefsDir;
+  // What the mocked OS holds and was asked: the login item, the theme and the folders `shell.openPath` was handed.
+  const os = { login: { openAtLogin: false, status: "not-registered" }, loginSets: [] as unknown[], themeSource: "system", opened: [] as string[] };
+  return {
+    windows,
+    handlers,
+    prefsDir,
+    os,
+    permission: undefined as undefined | ((c: unknown, p: string, decide: (ok: boolean) => void) => void),
+  };
 });
 
 /** The kernel connection, faked: each `openFeed` waits until the test opens it. */
@@ -51,7 +66,7 @@ vi.mock("electron", () => {
   class BrowserWindow {
     readonly webContents: Record<string, unknown>;
     constructor(options: Record<string, unknown>) {
-      const record: (typeof electron.windows)[number] = { options, sent: [] };
+      const record: (typeof electron.windows)[number] = { options, sent: [], themeAtCreation: electron.os.themeSource };
       electron.windows.push(record);
       this.webContents = {
         setWindowOpenHandler: (handler: () => unknown) => {
@@ -75,6 +90,12 @@ vi.mock("electron", () => {
     app: {
       isPackaged: false,
       getAppPath: () => "/the/app",
+      getPath: () => electron.prefsDir,
+      getLoginItemSettings: () => ({ ...electron.os.login }),
+      setLoginItemSettings: (settings: { openAtLogin: boolean }) => {
+        electron.os.loginSets.push(settings);
+        electron.os.login = { openAtLogin: settings.openAtLogin, status: settings.openAtLogin ? "enabled" : "not-registered" };
+      },
       whenReady: async () => undefined,
       on: () => undefined,
       quit: () => undefined,
@@ -100,9 +121,21 @@ vi.mock("electron", () => {
     Menu: { buildFromTemplate: (template: unknown) => ({ template }) },
     nativeImage: { createFromBitmap: () => ({}) },
     dialog: { showMessageBox: async () => ({ response: 0 }) },
+    nativeTheme: {
+      get themeSource() {
+        return electron.os.themeSource;
+      },
+      set themeSource(value: string) {
+        electron.os.themeSource = value;
+      },
+    },
     shell: {
       openExternal: async (url: string) => {
         kernel.opened.push(url);
+      },
+      openPath: async (path: string) => {
+        electron.os.opened.push(path);
+        return "";
       },
     },
   };
@@ -111,6 +144,10 @@ vi.mock("electron", () => {
 beforeAll(async () => {
   await import("./main");
   await vi.waitFor(() => expect(electron.windows).toHaveLength(1));
+});
+
+afterAll(() => {
+  process.getBuiltinModule("node:fs").rmSync(electron.prefsDir, { recursive: true, force: true });
 });
 
 describe("the main window", () => {
@@ -144,7 +181,10 @@ describe("the main window", () => {
       "studio:feed:subscribe",
       "studio:feed:unsubscribe",
       "studio:open-external",
+      "studio:prefs:get",
+      "studio:prefs:set",
       "studio:request",
+      "studio:reveal-data-dir",
     ]);
     const handler = electron.handlers.get("studio:request");
     await expect(Promise.resolve(handler?.({ sender: {} }, { method: "GET", path: "/status" }))).rejects.toThrow("refused");
@@ -241,6 +281,55 @@ describe("the open-external channel", () => {
 
   it("leaves the window's navigation and window-open guards in place", () => {
     expect(electron.windows[0]?.openHandler?.()).toEqual({ action: "deny" });
+  });
+});
+
+describe("the preferences channels", () => {
+  const owner = () => ({ sender: electron.windows[0]?.contents });
+  const call = (channel: string, event: unknown, ...args: unknown[]) => Promise.resolve(electron.handlers.get(channel)?.(event, ...args));
+
+  beforeEach(() => {
+    electron.os.loginSets.length = 0;
+    electron.os.opened.length = 0;
+  });
+
+  it("applies the stored theme before the window is created", () => {
+    expect(electron.windows[0]?.themeAtCreation).toBe("dark");
+    expect(electron.os.themeSource).toBe("dark");
+  });
+
+  it("refuses a caller that is not the window, on each channel, and changes and opens nothing", async () => {
+    for (const sender of [{}, undefined]) {
+      await expect(call("studio:prefs:get", { sender })).rejects.toThrow("refused");
+      await expect(call("studio:prefs:set", { sender }, { theme: "light", launchAtLogin: true })).rejects.toThrow("refused");
+      await expect(call("studio:reveal-data-dir", { sender })).rejects.toThrow("refused");
+    }
+    expect(electron.os.loginSets).toEqual([]);
+    expect(electron.os.opened).toEqual([]);
+    expect(electron.os.themeSource).toBe("dark");
+  });
+
+  it("answers the window's get and applies its valid set", async () => {
+    await expect(call("studio:prefs:get", owner())).resolves.toEqual({ launchAtLogin: { enabled: false, status: "not-registered" }, notifications: true, theme: "dark" });
+    await expect(call("studio:prefs:set", owner(), { launchAtLogin: true, theme: "light" })).resolves.toEqual({
+      launchAtLogin: { enabled: true, status: "enabled" },
+      notifications: true,
+      theme: "light",
+    });
+    expect(electron.os.loginSets).toEqual([{ openAtLogin: true }]);
+    expect(electron.os.themeSource).toBe("light");
+  });
+
+  it("refuses an invalid patch without throwing, answering the unchanged state", async () => {
+    await expect(call("studio:prefs:set", owner(), { theme: "purple", launchAtLogin: false })).resolves.toMatchObject({ theme: "light", launchAtLogin: { enabled: true } });
+    await expect(call("studio:prefs:set", owner(), "dark")).resolves.toMatchObject({ theme: "light" });
+    expect(electron.os.loginSets).toEqual([]);
+  });
+
+  it("reveals the main process's own data dir and ignores any argument the renderer sends", async () => {
+    await expect(call("studio:reveal-data-dir", owner())).resolves.toBe(true);
+    await expect(call("studio:reveal-data-dir", owner(), "/Users/o/.ssh")).resolves.toBe(true);
+    expect(electron.os.opened).toEqual(["/the/data", "/the/data"]);
   });
 });
 

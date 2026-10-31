@@ -7,6 +7,12 @@ export const CHANNELS = Object.freeze({
   feedUnsubscribe: "studio:feed:unsubscribe",
   /** Renderer -> main: open one allowlisted address in the system browser (`open-external.ts`). */
   openExternal: "studio:open-external",
+  /** Renderer -> main: the app's own preferences (`settings.ts`). */
+  prefsGet: "studio:prefs:get",
+  /** Renderer -> main: a patch of the app's own preferences; the main process validates it. */
+  prefsSet: "studio:prefs:set",
+  /** Renderer -> main: open the main process's own resolved data dir in Finder. Carries no argument. */
+  revealDataDir: "studio:reveal-data-dir",
   /** Main -> renderer: one `FeedRelayFrame`. */
   feedFrame: "studio:feed:frame",
   /** Main -> renderer: an app route a deep link asked for (item 17). */
@@ -20,4 +26,7 @@ export const INVOKE_CHANNELS: readonly string[] = [
   CHANNELS.feedSubscribe,
   CHANNELS.feedUnsubscribe,
   CHANNELS.openExternal,
+  CHANNELS.prefsGet,
+  CHANNELS.prefsSet,
+  CHANNELS.revealDataDir,
 ];
