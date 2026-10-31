@@ -120,6 +120,8 @@ The kernel's `message` is never shown. The first outcome stands: a refusal arriv
 
 **Switching from a token (`switch.test.tsx`, `integrations-switch.spec.ts`).** On a token connection (connected, expiring or expired, no App) the detail header offers **Switch to GitHub App**, between Replace token and Disconnect (the mockup's order, `docs/design/mockups/gui-v2.html`, views `integrations-token` to `integrations-token-to-app-failed`), and the palette offers "Switch GitHub to the GitHub App" (`integrations.switch-to-app`, group Integrations), enabled only while a token is in use, the kernel is reachable and no App is connected. Both call one handler, which is `startApp` run while a token is in use: the same dialog, the same one setup call, the same cancel and step logic, told it runs over a token (`overToken`). Nothing in the switch disconnects, writes a token or edits a row. The token goes only when the kernel records the install (`recordInstallation`), and the screen learns that the usual way, from `connector_status` and `GET /connectors`, when the row reads `method: "app"` and the dialog closes.
 
+The switch is a second place in the app where App setup starts, beside the Connect sheet, as decided in D37 (`docs/DECISIONS.md`); D36's no-CLI-setup-verb rule stands.
+
 What the token's owner sees differs from the no-token dialog in words and buttons only:
 
 | Where | Words |
