@@ -70,3 +70,9 @@ kernel/src/gui/memory.ts
 kernel/test/gui-memory.test.ts
 app/src/screens/memory
 app/e2e/memory.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-31T03:49:30Z
+- **Brief:** .supervisor/jobs/done/2026-10-30-the-memory-screen.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/185
