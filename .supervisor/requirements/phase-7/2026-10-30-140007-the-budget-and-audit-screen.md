@@ -70,3 +70,9 @@ kernel/src/gui/budget-audit.ts
 kernel/test/gui-budget-audit.test.ts
 app/src/screens/budget
 app/e2e/budget.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-10-31T04:15:31Z
+- **Brief:** .supervisor/jobs/done/2026-10-30-the-budget-and-audit-screen.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/184
