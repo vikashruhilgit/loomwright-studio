@@ -246,12 +246,14 @@ export function createGitHubAppPort(deps: GitHubAppPortDeps = {}): GitHubAppPort
     }
 
     // The row records the slug only: method and status stay as they are (a PAT may be in use).
+    // One `connector_status` event, with the status unchanged, whether the row is new or
+    // existing: it is the setup flow's step-2 signal (the App is stored; install it next).
+    // `ensureRow` appends none for an existing row, and none for a new one here, so this is never a second.
     const row = store.transaction(() => {
-      const existing = githubConnectorRow(store);
       const r = ensureRow(store, "disconnected", at);
       store.prepare("UPDATE connectors SET app_slug = ?, updated_at = ? WHERE id = ?").run(slug, at, r.id);
       const updated = githubConnectorRow(store) as ConnectorRow;
-      if (existing === undefined) statusEvent(store, updated, at);
+      statusEvent(store, updated, at);
       return updated;
     });
     return { ok: true, value: row };
