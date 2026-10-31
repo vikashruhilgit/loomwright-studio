@@ -93,3 +93,29 @@ D28: when the subscription cap is hit, a playbook may continue on the user's own
 | `admission_refused` | Every refusal (shared with `check`), with `playbook` set on the playbook path. `reason` is `cap_parked`, `settings_invalid`, `settings_missing`, `agent_daily_limit`, `agent_sessions_at_once` or `playbook_daily_limit`. |
 | `budget_limit_reached` | An agent's counted tokens reached its `tokens_per_day`, once per agent-day (meter or gate). Paired with one `notify` (`reason: "agent_daily_limit"`). |
 | `notify` | Also written for `settings_invalid`, `settings_missing` and `agent_sessions_at_once` refusals: once per agent and reason per hour, with `agent` and the refusal's details. |
+
+## Reading usage
+
+Two read-only routes serve the Budget & audit screen, from the `gui` feature's `budget-audit` part (`kernel/src/gui/budget-audit.ts`). They report; they set no policy and write nothing. Both need the API token like every route.
+
+### `GET /budget/usage?days=`
+
+`days` is a whole number from 1 to 90 (default 7); anything else answers `400 {"error":"invalid_days"}`. The window is today and the `days - 1` host-local days before it, the same local day the meter and `rosterOf` use. The answer is `{rows, limits, cap_state}`:
+
+- **`rows`** are `budget` rows grouped by day, agent and playbook, newest day first, then by agent and playbook (a missing agent or playbook sorts first). `counted_tokens` is the sum of the generated `counted_tokens` column (input + output + cache writes, D26); `cache_read_tokens` is shown beside it and never added. `cost_estimate_usd` is the sum of `cost_usd`, or `null` when every row in the group has none; it is an estimate "at API rates", never a charge on the subscription build. A day with no usage has no row (the screen draws it as 0).
+- **`playbook` is the slug.** `budget.playbook` stores the playbook's id as text, so the route joins `playbooks` to answer the slug. A stored value that names no playbook (a deleted one) keeps its stored text, so a day's rows still add up to the `budget` rows. A row outside any playbook has `playbook: null`.
+- **`limits`** has one `scope: "agent"` entry per roster agent (Wright first, then members in id order) taken from the roster as it is: `tokens_today`, `tokens_per_day`, `sessions_running`, `sessions_at_once`, with `null` for a limit never set. Then one `scope: "playbook"` entry per playbook (id order), `id` the slug: `tokens_today` is the meter's own query (`playbookCountedTokens`), `tokens_per_day` is `token_limit_per_day` (`null` when unset or damaged), `sessions_running` counts that playbook's `starting` and `running` sessions, and `sessions_at_once` is `null` (a playbook has none).
+- **`cap_state`** is the same rows and grouping `GET /status` reports, with `status`, `resets_at`, `utilization` and `reset_source` as stored. `account` holds the **provider id**, not a label: a contributed route has no auth-provider list, so it cannot look the label up as `GET /status` does. The screen takes the label from the `status` resource entry with the same `provider`. `utilization` is returned as stored; its scale (a 0 to 1 fraction in the observed `unifiedWindows`) is unverified for the top-level field (`docs/OPEN_QUESTIONS.md` Q6).
+
+### `GET /audit?kind=&agent=&playbook=&since=&until=&before=&limit=`
+
+The answer is `{events, next_before}`: events as the feed sends them (`EventFrame`), newest first by id. Every filter is optional and they combine with AND.
+
+- **`kind`** matches `events.kind` exactly. It is free text, so the route has no closed list.
+- **`agent`** matches an event when its session has that agent **or** its payload's `agent` key equals it. `events` has no agent column (its `actor` is `kernel` or `api`), so those two links are the only ones.
+- **`playbook`** (a slug) matches when the event's session runs that playbook **or** its payload's `playbook` key is the playbook's id (a number) or its slug. A slug naming no playbook answers `200 {"events": [], "next_before": null}`.
+- **`since`** and **`until`** are inclusive ISO-8601 instants with an explicit `Z` or offset, normalized to UTC and compared with `events.at` as text. A bad one answers `400 invalid_since` or `invalid_until`; `since` after `until` answers `400 invalid_range`.
+- **`limit`** is 1 to 200 (default 50), else `400 invalid_limit`. **`before`** is an event id, and only ids below it are returned; a value that is not a positive whole number answers `400 invalid_cursor`.
+- **`next_before`** is the last returned id as a decimal string when the page is full, else `null`. Paging is by keyset, so there is no total, and a page that is exactly full carries a cursor whose next page is empty (with `null`).
+
+A payload is untrusted JSON. A row whose `payload_json` is not valid JSON never raises: it matches no payload condition (`agent`, `playbook`) but still matches `kind` and the time filters, and it is returned with its payload as the stored text.
