@@ -17,6 +17,8 @@
 // (`kernel/test/feature-seams.test.ts` pins the module graph).
 import { z } from "zod";
 import type { KillSwitchState } from "../api/kill-switch.js";
+import type { AuthHealth } from "../auth/types.js";
+import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
 import type { AppliedApproval, ApprovalApplier, ApprovalApplyOutcome } from "../approvals/store.js";
 // Type-only: `integrations/types.ts` holds the connector kinds, and a value
 // import would make a runtime cycle through the feature registry.
@@ -245,6 +247,13 @@ export interface ContributedRouteRequest {
    */
   readonly killSwitch?: KillSwitchView;
   /**
+   * A read-only view of what `GET /status` reports about the auth providers
+   * and the Loomwright adapter, built from `/status`'s own helpers. The API
+   * server always sets it; it exposes reads only, never a provider object or a
+   * credential. Optional in the type for the same reason as `sessions`.
+   */
+  readonly status?: StatusView;
+  /**
    * The API server's one POST queue (phase 1's `POST /stop-all`, `POST
    * /resume` and `POST /sessions/:id/abandon` run on it): `fn` runs once every
    * POST queued before it has finished, and the promise settles with `fn`'s.
@@ -278,6 +287,25 @@ export interface ContributedRouteRequest {
 export interface KillSwitchView {
   /** The switch's state now, read from the `events` log on every call. */
   state(): KillSwitchState;
+}
+
+/** One auth provider as `/status` reports it: its id, account label and health, never a credential. */
+export interface StatusViewAuth {
+  readonly id: string;
+  readonly account: string | null;
+  readonly health: AuthHealth;
+}
+
+/**
+ * A contributed route's read-only view of `/status`'s auth and Loomwright
+ * entries. A provider's `health()` stays the only Keychain read: this view adds
+ * no second path to a credential.
+ */
+export interface StatusView {
+  /** Each provider's `{id, account, health}` at `at`, exactly as `/status` reports it (a throwing provider is an `error` health, never a throw). */
+  auth(at: Date): readonly StatusViewAuth[];
+  /** The Loomwright adapter's state, or `undefined` when the composition has no reader (never a throw). */
+  loomwright(): LoomwrightAdapterStatus | undefined;
 }
 
 /**
