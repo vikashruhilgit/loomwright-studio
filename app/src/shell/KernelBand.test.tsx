@@ -2,10 +2,10 @@
 // The shared kernel band and the screen contract (`last-known.ts`). The shell shows one red band
 // (`KernelBand`, `role="alert"`) while the store reads `reconnecting` or `unreachable`; it never renders request
 // text (method, path, connection state, reason, port). `useKernelReach` tells a screen when to keep its last data.
-import { act, cleanup, render, renderHook, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import type { KernelConnectionState, KernelUnreachableReason, StatusBody } from "../api/contract";
+import type { KernelConnectionState, KernelUnreachableReason, StatusBody, StudioBridge } from "../api/contract";
 import { createCommandRegistry } from "../commands/registry";
 import { fakeBridge, ok } from "../store/fake-bridge";
 import type { FakeBridge } from "../store/fake-bridge";
@@ -14,6 +14,11 @@ import { LAST_KNOWN, useKernelReach, withLastKnown } from "./last-known";
 
 /** The copy, pinned here on its own (not imported from the component). */
 const COPY = "Couldn't reach the kernel. It may be restarting; this window reconnects on its own.";
+/** The band's action label, and the band's whole text with it (pinned here on its own, not imported). */
+const LABEL = "Kernel log";
+const BAND_TEXT = COPY + LABEL;
+const NOTE_MISSING = "There is no kernel log yet.";
+const NOTE_FAILED = "Couldn't open the kernel log.";
 
 const REASONS: readonly KernelUnreachableReason[] = ["api_info_unreadable", "daemon_not_running", "token_unavailable", "token_rejected", "connection_failed", "timeout"];
 
@@ -38,6 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.location.hash = "";
+  delete (window as unknown as { api?: StudioBridge }).api;
   vi.useRealTimers();
 });
 
@@ -74,14 +80,14 @@ describe("KernelBand", () => {
     render(<KernelBand />);
     const band = screen.getByTestId("kernel-unreachable-band");
     expect(band.getAttribute("role")).toBe("alert");
-    expect(band.textContent).toBe(COPY);
+    expect(band.textContent).toBe(BAND_TEXT);
     expect(band.className).toContain("band-danger");
     expect(band.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("takes only a test id (a screen's own pin), never text", () => {
     render(<KernelBand testId="integrations-band" />);
-    expect(screen.getByTestId("integrations-band").textContent).toBe(COPY);
+    expect(screen.getByTestId("integrations-band").textContent).toBe(BAND_TEXT);
     expect(screen.queryByTestId("kernel-unreachable-band")).toBeNull();
   });
 
@@ -91,7 +97,7 @@ describe("KernelBand", () => {
       await renderApp(fake);
       const bands = screen.getAllByTestId("kernel-unreachable-band");
       expect(bands, reason).toHaveLength(1);
-      expect(bands[0]?.textContent, reason).toBe(COPY);
+      expect(bands[0]?.textContent, reason).toBe(BAND_TEXT);
       expectNoRequestText(bands[0]?.textContent ?? "");
       cleanup();
     }
@@ -102,7 +108,7 @@ describe("KernelBand", () => {
     const bands = screen.getAllByTestId("kernel-unreachable-band");
     expect(bands).toHaveLength(1);
     expect(bands[0]?.getAttribute("role")).toBe("alert");
-    expect(bands[0]?.textContent).toBe(COPY);
+    expect(bands[0]?.textContent).toBe(BAND_TEXT);
     expectNoRequestText(bands[0]?.textContent ?? "");
     expect(screen.queryByTestId("kernel-reconnecting-band")).toBeNull();
     expect(screen.getByTestId("screen-chat")).toBeTruthy();
@@ -120,6 +126,127 @@ describe("KernelBand", () => {
     await renderApp(fakeBridge({ state: "not_installed", dataDir: "/Users/o/.loomwright-studio" }));
     expect(screen.queryByTestId("kernel-unreachable-band")).toBeNull();
     expect(screen.getByTestId("kernel-not-installed")).toBeTruthy();
+  });
+});
+
+describe("KernelBand's Kernel log action", () => {
+  function install(fake: FakeBridge): void {
+    (window as unknown as { api?: StudioBridge }).api = fake.bridge;
+  }
+  async function press(): Promise<void> {
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: LABEL }));
+    });
+  }
+
+  it("holds exactly one button, named Kernel log, after the sentence, and still no request text", () => {
+    render(<KernelBand />);
+    const band = screen.getByTestId("kernel-unreachable-band");
+    const buttons = screen.getAllByRole("button");
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]?.textContent).toBe(LABEL);
+    expect(buttons[0]?.getAttribute("type")).toBe("button");
+    expect(buttons[0]?.className).toContain("toast-band-action");
+    expect(band.lastElementChild).toBe(buttons[0]);
+    expect(band.textContent).toBe(BAND_TEXT);
+    expectNoRequestText(band.textContent ?? "");
+    expect(screen.queryByTestId("kernel-log-note")).toBeNull();
+  });
+
+  it("is on the shell's band, on whichever screen is showing", async () => {
+    await renderApp(fakeBridge({ state: "unreachable", reason: "daemon_not_running" }));
+    expect(screen.getByTestId("kernel-unreachable-band").querySelectorAll("button")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: LABEL })).toBeTruthy();
+  });
+
+  it("a press asks the bridge to reveal the log once, with no argument, and a revealed answer shows no note", async () => {
+    const fake = fakeBridge();
+    const reveal = vi.spyOn(fake.bridge, "revealKernelLog");
+    install(fake);
+    render(<KernelBand />);
+    await press();
+    expect(fake.kernelLogReveals).toBe(1);
+    expect(reveal).toHaveBeenCalledOnce();
+    expect(reveal).toHaveBeenCalledWith();
+    expect(screen.queryByTestId("kernel-log-note")).toBeNull();
+    expect(screen.getByTestId("kernel-unreachable-band").textContent).toBe(BAND_TEXT);
+  });
+
+  it("a missing log shows the note after the action, as a status", async () => {
+    const fake = fakeBridge();
+    fake.kernelLogAnswer = "missing";
+    install(fake);
+    render(<KernelBand />);
+    await press();
+    const note = screen.getByTestId("kernel-log-note");
+    expect(note.textContent).toBe(NOTE_MISSING);
+    expect(note.getAttribute("role")).toBe("status");
+    expect(screen.getByTestId("kernel-unreachable-band").textContent).toBe(BAND_TEXT + NOTE_MISSING);
+    expect(screen.getByRole("button", { name: LABEL }).nextElementSibling).toBe(note);
+    expectNoRequestText(NOTE_MISSING);
+  });
+
+  it("a failed answer, a rejected call and a bridge without the member all show the failure note", async () => {
+    const failed = fakeBridge();
+    failed.kernelLogAnswer = "failed";
+    install(failed);
+    render(<KernelBand />);
+    await press();
+    expect(screen.getByTestId("kernel-log-note").textContent).toBe(NOTE_FAILED);
+    cleanup();
+
+    const rejecting = fakeBridge();
+    rejecting.bridge.revealKernelLog = async () => {
+      throw new Error("refused");
+    };
+    install(rejecting);
+    render(<KernelBand />);
+    await press();
+    expect(screen.getByTestId("kernel-log-note").textContent).toBe(NOTE_FAILED);
+    cleanup();
+
+    const without = fakeBridge();
+    delete without.bridge.revealKernelLog;
+    install(without);
+    render(<KernelBand />);
+    await press();
+    expect(screen.getByTestId("kernel-log-note").textContent).toBe(NOTE_FAILED);
+    cleanup();
+
+    // No bridge at all (no preload ran).
+    delete (window as unknown as { api?: StudioBridge }).api;
+    render(<KernelBand />);
+    await press();
+    expect(screen.getByTestId("kernel-log-note").textContent).toBe(NOTE_FAILED);
+    expectNoRequestText(NOTE_FAILED);
+  });
+
+  it("the next press replaces the note, and a revealed answer clears it", async () => {
+    const fake = fakeBridge();
+    fake.kernelLogAnswer = "missing";
+    install(fake);
+    render(<KernelBand />);
+    await press();
+    expect(screen.getByTestId("kernel-log-note").textContent).toBe(NOTE_MISSING);
+    fake.kernelLogAnswer = "failed";
+    await press();
+    expect(screen.getByTestId("kernel-log-note").textContent).toBe(NOTE_FAILED);
+    fake.kernelLogAnswer = "revealed";
+    await press();
+    expect(screen.queryByTestId("kernel-log-note")).toBeNull();
+    expect(fake.kernelLogReveals).toBe(3);
+  });
+
+  it("the note goes when the band unmounts", async () => {
+    const fake = fakeBridge();
+    fake.kernelLogAnswer = "missing";
+    install(fake);
+    const first = render(<KernelBand />);
+    await press();
+    expect(screen.getByTestId("kernel-log-note")).toBeTruthy();
+    first.unmount();
+    render(<KernelBand />);
+    expect(screen.queryByTestId("kernel-log-note")).toBeNull();
   });
 });
 

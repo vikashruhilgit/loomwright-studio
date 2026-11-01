@@ -48,7 +48,7 @@ describe("the preload bridge", () => {
 
   it("holds only the bridge's methods: nothing that is ipcRenderer, a Node API or a secret", () => {
     const api = bridge();
-    expect(Object.keys(api).sort()).toEqual(["connection", "feed", "homeDir", "onNavigate", "openExternal", "prefs", "request"]);
+    expect(Object.keys(api).sort()).toEqual(["connection", "feed", "homeDir", "onNavigate", "openExternal", "prefs", "request", "revealKernelLog"]);
     expect(Object.keys(api.feed as object).sort()).toEqual(["onFrame", "subscribe", "unsubscribe"]);
     expect(Object.keys(api.prefs as object).sort()).toEqual(["get", "revealDataDir", "set"]);
     for (const value of [...Object.values(api), ...Object.values(api.feed as object), ...Object.values(api.prefs as object)]) {
@@ -64,6 +64,7 @@ describe("the preload bridge", () => {
       feed: { subscribe(after: number): Promise<unknown>; unsubscribe(): Promise<unknown> };
       openExternal(url: string): Promise<unknown>;
       homeDir(...args: unknown[]): Promise<unknown>;
+      revealKernelLog(...args: unknown[]): Promise<unknown>;
       prefs: { get(): Promise<unknown>; set(patch: unknown): Promise<unknown>; revealDataDir(...args: unknown[]): Promise<unknown> };
     };
     const request = { method: "GET", path: "/status" };
@@ -73,6 +74,7 @@ describe("the preload bridge", () => {
     await api.feed.unsubscribe();
     await api.openExternal("https://github.com/settings/installations");
     await api.homeDir("x");
+    await api.revealKernelLog("/Users/o/.ssh");
     await api.prefs.get();
     await api.prefs.set({ theme: "dark" });
     await api.prefs.revealDataDir("/Users/o/.ssh");
@@ -84,6 +86,8 @@ describe("the preload bridge", () => {
       { channel: "studio:open-external", args: ["https://github.com/settings/installations"] },
       // The home folder sends nothing: an argument is dropped at the preload.
       { channel: "studio:home-dir", args: [] },
+      // The kernel log sends nothing: the main process reveals its own log, never a path from the renderer.
+      { channel: "studio:reveal-kernel-log", args: [] },
       { channel: "studio:prefs:get", args: [] },
       { channel: "studio:prefs:set", args: [{ theme: "dark" }] },
       // Reveal sends nothing: the main process opens its own data dir, never a path from the renderer.

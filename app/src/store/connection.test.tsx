@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import type { Approval, StatusBody } from "../api/contract";
 import { createCommandRegistry } from "../commands/registry";
-import { KERNEL_BAND_COPY, SETUP_STEPS } from "../shell/KernelStates";
+import { KERNEL_BAND_COPY, KERNEL_LOG_LABEL, SETUP_STEPS } from "../shell/KernelStates";
 import { fakeBridge, ok } from "./fake-bridge";
 import type { FakeBridge } from "./fake-bridge";
 import { liveStoreFor, useResource } from "./react";
@@ -141,7 +141,7 @@ describe("the shell's kernel states, from the live store", () => {
     // The shell shows the one shared band for `reconnecting` too (owner decision 3): alert, the fixed copy, nothing else.
     const band = screen.getByTestId("kernel-unreachable-band");
     expect(band.getAttribute("role")).toBe("alert");
-    expect(band.textContent).toBe(KERNEL_BAND_COPY);
+    expect(band.textContent).toBe(`${KERNEL_BAND_COPY}${KERNEL_LOG_LABEL}`);
     expect(band.querySelector("time")).toBeNull();
     expect(screen.getAllByTestId("kernel-unreachable-band")).toHaveLength(1);
     expect(screen.queryByTestId("kernel-reconnecting-band")).toBeNull();

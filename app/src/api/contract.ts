@@ -1438,6 +1438,12 @@ export interface StudioBridge {
    */
   homeDir?(): Promise<string>;
   /**
+   * Reveals the kernel service's own log (`<dataDir>/logs/kernel.err.log`) in Finder. It takes no argument: the
+   * main process resolves the path itself and never opens one from the renderer. Works with the kernel down.
+   * Optional so a bridge without it (a test fake) compiles; a caller treats a missing member as `"failed"`.
+   */
+  revealKernelLog?(): Promise<KernelLogReveal>;
+  /**
    * The app's own preferences, kept by the main process (never in the kernel's store): launch at login
    * (read from the OS on every call), notifications and the theme, plus Reveal in Finder for the data
    * folder. Optional so a bridge without it (a test fake) compiles; a caller treats a missing member as
@@ -1445,6 +1451,12 @@ export interface StudioBridge {
    */
   prefs?: AppPreferencesBridge;
 }
+
+/**
+ * What `revealKernelLog` answers: `revealed` (Finder was asked to show the log), `missing` (there is no such file,
+ * or it is not a regular file; nothing was revealed) or `failed` (any other error; nothing was revealed).
+ */
+export type KernelLogReveal = "revealed" | "missing" | "failed";
 
 /** The theme the owner picked; `system` follows macOS. The main process applies it to `nativeTheme.themeSource`. */
 export type ThemePreference = "system" | "light" | "dark";

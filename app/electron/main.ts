@@ -4,10 +4,11 @@
 // through the preload's `window.api`, and every API call is made here, so the
 // token never enters the renderer, which is the surface that renders
 // untrusted text (invariant 3).
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { BrowserWindow, app, ipcMain, session, shell } from "electron";
 import type { BrowserWindowConstructorOptions, IpcMainInvokeEvent, WebContents } from "electron";
-import type { ApiRequest, FeedRelayFrame } from "../src/api/contract";
+import type { ApiRequest, FeedRelayFrame, KernelLogReveal } from "../src/api/contract";
 import { CHANNELS } from "./channels";
 import { registerDeepLinks } from "./deeplink";
 import { showsWindow } from "./hidden-window";
@@ -44,8 +45,14 @@ export function windowOptions(preload: string): BrowserWindowConstructorOptions 
   };
 }
 
+/**
+ * The kernel service's own log, under the data dir. Mirrors `STDERR_LOG_FILENAME` in `kernel/src/service/launchd.ts`
+ * (kept under `<dataDir>/logs/`); the app does not import kernel sources.
+ */
+const KERNEL_LOG_FILE = join("logs", "kernel.err.log");
+
 /** Wires the bridge's channels to `kernel`, answering only `owner`'s window. */
-function handleBridge(kernel: KernelConnection, prefs: Preferences, owner: () => WebContents | undefined): void {
+function handleBridge(kernel: KernelConnection, prefs: Preferences, dataDir: string, owner: () => WebContents | undefined): void {
   const fromOwner = (event: IpcMainInvokeEvent): boolean => event.sender === owner();
   let feed: FeedHandle | undefined;
   // Bumped by every subscribe and unsubscribe: a socket opened for a request a later one superseded is closed, never kept.
@@ -117,6 +124,23 @@ function handleBridge(kernel: KernelConnection, prefs: Preferences, owner: () =>
     if (!fromOwner(event)) throw new Error("refused");
     return prefs.revealDataDir();
   });
+  // Argument-free like Reveal: the path is the main process's own (`<dataDir>/logs/kernel.err.log`), never one from
+  // the renderer. A log that is not there is answered, not revealed (there is nothing for Finder to select).
+  ipcMain.handle(CHANNELS.revealKernelLog, async (event): Promise<KernelLogReveal> => {
+    if (!fromOwner(event)) throw new Error("refused");
+    const path = join(dataDir, KERNEL_LOG_FILE);
+    try {
+      if (!(await stat(path)).isFile()) return "missing";
+    } catch (err) {
+      const code = (err as { code?: unknown }).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return "missing";
+      // Reasons only: never the path.
+      console.warn("loomwright-studio: could not read the kernel log");
+      return "failed";
+    }
+    shell.showItemInFolder(path);
+    return "revealed";
+  });
   // Read-only and argument-free: the main process answers its own home folder, never a path from the renderer.
   ipcMain.handle(CHANNELS.homeDir, async (event) => {
     if (!fromOwner(event)) throw new Error("refused");
@@ -131,13 +155,14 @@ function lockDown(window: BrowserWindow): void {
 }
 
 async function main(): Promise<void> {
+  const dataDir = resolveDataDir(process.env);
   const kernel = createKernelConnection({
-    dataDir: resolveDataDir(process.env),
+    dataDir,
     readToken: tokenReaderFor(process.env, app.isPackaged),
     // Reasons only: never a token or a response body.
     log: (line) => console.warn(`loomwright-studio: ${line}`),
   });
-  const prefs = createPreferences({ env: process.env, isPackaged: app.isPackaged, dataDir: resolveDataDir(process.env) });
+  const prefs = createPreferences({ env: process.env, isPackaged: app.isPackaged, dataDir });
   let window: BrowserWindow | undefined;
   const shows = showsWindow(process.env, app.isPackaged);
 
@@ -160,7 +185,7 @@ async function main(): Promise<void> {
     else if (shows) window.show();
   };
 
-  handleBridge(kernel, prefs, () => window?.webContents);
+  handleBridge(kernel, prefs, dataDir, () => window?.webContents);
   registerDeepLinks({
     navigate: (route) => {
       showWindow();
