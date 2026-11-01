@@ -7,7 +7,7 @@
 // registered ⌘K commands, the live feed, the version history and hostile text.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ApiRequest, ApiResult, Approval, EventFrame, PlaybookListing, PlaybookRun, PlaybookVersion, StudioBridge, Trigger } from "../../api/contract";
+import type { ApiRequest, ApiResult, Approval, BudgetLimitUsage, EventFrame, PlaybookListing, PlaybookRun, PlaybookVersion, StudioBridge, Trigger } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
@@ -18,6 +18,7 @@ import { PLAYBOOKS_COMMANDS, PLAYBOOKS_OWNER } from "./commands";
 import { PlaybooksScreen } from "./PlaybooksScreen";
 import { screen as playbooksScreen } from "./index";
 import { PLAYBOOKS_TEST_IDS as IDS } from "./model";
+import { PlaybooksSubtitle } from "./subtitle";
 
 const ENABLE_TOOL = "mcp__kernel__kernel_playbook_enable";
 const AT = "2026-10-29T10:00:00.000Z";
@@ -28,6 +29,8 @@ interface Kernel {
   approvals: Approval[];
   runs: Record<number, PlaybookRun[]>;
   versions: Record<number, PlaybookVersion[]>;
+  /** `GET /budget/usage` lists these: each playbook's tokens counted today. */
+  limits: BudgetLimitUsage[];
   /** `GET /playbooks` answers this instead of the list (a refusal). */
   playbooksAnswer?: () => ApiResult<unknown>;
   /** POST answers by `"POST <path>"`; the default for `/set` applies the change to `playbooks`. */
@@ -36,6 +39,10 @@ interface Kernel {
 
 function run(id: number, playbookId: number, overrides: Partial<PlaybookRun> = {}): PlaybookRun {
   return { id, playbook: playbookId, version: 1, kind: "fire", status: "done", item_ref: null, item_revision: null, tokens: 1000, session: null, started: AT, ended: AT, ...overrides };
+}
+
+function limitRow(slug: string, tokens_today: number, tokens_per_day: number | null): BudgetLimitUsage {
+  return { scope: "playbook", id: slug, tokens_today, tokens_per_day, sessions_running: 0, sessions_at_once: null };
 }
 
 function version(n: number, snapshot: PlaybookVersion["snapshot"]): PlaybookVersion {
@@ -91,6 +98,7 @@ function standard(): Partial<Kernel> {
         last_result: "fired",
       }),
     ],
+    limits: [limitRow("review-prs", 38200, 200000), limitRow("weekly-changelog", 0, null)],
     runs: {
       1: [run(11, 1, { tokens: 31870, status: "done", kind: "fire", item_ref: "github:acme/widgets#42", item_revision: "9f3c2a1e7b04" }), run(10, 1, { tokens: 2104, status: "failed" })],
       2: [run(12, 2, { kind: "dry_run", status: "running", tokens: null })],
@@ -123,8 +131,10 @@ interface Mounted {
 }
 
 function mount(initial: Partial<Kernel> = standard(), registry: CommandRegistry = createCommandRegistry()): Mounted {
-  const kernel: Kernel = { playbooks: [], triggers: [], approvals: [], runs: {}, versions: {}, posts: {}, ...initial };
+  const kernel: Kernel = { playbooks: [], triggers: [], approvals: [], runs: {}, versions: {}, limits: [], posts: {}, ...initial };
   const fake = fakeBridge();
+  // The title bar's subtitle reads `window.api`, as the shell mounts it: the same bridge as the screen's.
+  (window as unknown as { api?: StudioBridge }).api = fake.bridge as StudioBridge;
   fake.route("GET /status", () => ok({ kernel: { version: "0", uptime_s: 1, pid: 1 } }));
   fake.route("GET /playbooks", () => kernel.playbooksAnswer?.() ?? ok({ playbooks: [...kernel.playbooks] }));
   fake.route("GET /triggers", () => ok({ triggers: [...kernel.triggers] }));
@@ -134,11 +144,18 @@ function mount(initial: Partial<Kernel> = standard(), registry: CommandRegistry 
     return ok({ runs: all.slice(0, Number(req.query?.limit ?? 50)), next_before: null });
   });
   fake.route("GET /playbooks/:id/versions", (req) => ok({ versions: kernel.versions[Number(req.params?.id)] ?? [] }));
+  fake.route("GET /budget/usage", () => ok({ rows: [], limits: [...kernel.limits], cap_state: [] }));
   for (const path of ["/playbooks/:id/set", "/playbooks/:id/off", "/playbooks/:id/run", "/ask"]) {
     const key = `POST ${path}`;
     fake.route(key, (req) => kernel.posts[key]?.(req) ?? (path === "/playbooks/:id/set" ? applySet(kernel, req) : ok({})));
   }
-  const view = render(<PlaybooksScreen api={fake.bridge as StudioBridge} registry={registry} />);
+  // The count line lives in the title bar: render the subtitle beside the screen, as the shell does.
+  const view = render(
+    <>
+      <PlaybooksSubtitle />
+      <PlaybooksScreen api={fake.bridge as StudioBridge} registry={registry} />
+    </>,
+  );
   return { fake, kernel, registry, unmount: view.unmount };
 }
 
@@ -212,6 +229,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  delete (window as unknown as { api?: StudioBridge }).api;
   window.location.hash = "";
   takeComposerHandoff("wright");
 });
@@ -289,6 +307,7 @@ describe("AC4: every field, who set it, and 'not set'", () => {
   it("shows the row's name, intent, trigger in full, dedupe key, priority, model, mode, last run, tokens and switch", async () => {
     const { root } = await mountLoaded();
     expect(screen.getByTestId(IDS.count).textContent).toBe("2 playbooks · 1 on");
+    expect(screen.getByRole("columnheader", { name: "Tokens today" })).toBeTruthy();
     const row = rowOf("Review PRs");
     const text = row.textContent ?? "";
     expect(text).toContain("When a PR opens or gets a new commit, read it and save a draft review for me.");
@@ -298,7 +317,9 @@ describe("AC4: every field, who set it, and 'not set'", () => {
     expect(text).toContain("high");
     expect(text).toContain("sonnet");
     expect(text).toContain("draft");
-    expect(text).toContain("31,870 tokens");
+    // Tokens today against the playbook's own daily limit, compact; the last run's kind is in the Last run cell.
+    expect(text).toContain("38.2k of 200k");
+    expect(text).not.toContain("31,870");
     expect(text).toContain("fire");
     expect(within(row).getByRole("switch", { name: "Review PRs is on" }).getAttribute("aria-checked")).toBe("true");
     expect(within(rowOf("Weekly changelog")).getByRole("switch", { name: "Weekly changelog is off" }).getAttribute("aria-checked")).toBe("false");
@@ -338,12 +359,13 @@ describe("AC4: every field, who set it, and 'not set'", () => {
     expect(within(field("priority")).queryByText("low")).toBeNull();
   });
 
-  it("a run still running has no tokens yet and says so; a playbook with no run says so", async () => {
+  it("a run still running has no tokens yet and the detail says so; a playbook with no run says so", async () => {
     const base = standard();
     await mountLoaded({ ...base, runs: { 1: [], 2: [run(12, 2, { kind: "dry_run", status: "running", tokens: null })] } });
-    expect(rowOf("Weekly changelog").textContent).toContain("not counted yet");
     expect(rowOf("Weekly changelog").textContent).toContain("dry run");
     expect(rowOf("Review PRs").textContent).toContain("no runs yet");
+    await openDetail("Weekly changelog");
+    expect(within(screen.getByTestId(IDS.runs)).getByTestId(IDS.run).textContent).toContain("not counted yet");
   });
 
   it("the detail shows the same fields, the trigger and the tokens counted, with the run status in words beside each dot", async () => {
@@ -726,10 +748,13 @@ describe("AC11: the live feed updates in place", () => {
     const { fake, kernel, root } = await mountLoaded();
     const row = rowOf("Review PRs");
     const switchBefore = within(row).getByRole("switch");
-    expect(row.textContent).toContain("31,870 tokens");
-    kernel.runs[1] = [run(13, 1, { tokens: 5000, status: "done" }), ...(kernel.runs[1] as PlaybookRun[])];
+    expect(row.textContent).toContain("38.2k of 200k");
+    expect(row.textContent).toContain("done");
+    kernel.runs[1] = [run(13, 1, { tokens: 5000, status: "parked" }), ...(kernel.runs[1] as PlaybookRun[])];
+    kernel.limits = [limitRow("review-prs", 45000, 200000), limitRow("weekly-changelog", 0, null)];
     await act(async () => fake.emit(feedEvent("session_status")));
-    await waitFor(() => expect(rowOf("Review PRs").textContent).toContain("5,000 tokens"));
+    await waitFor(() => expect(rowOf("Review PRs").textContent).toContain("45k of 200k"));
+    await waitFor(() => expect(rowOf("Review PRs").textContent).toContain("parked"));
     // The same row and the same switch: nothing was re-created, and no loading line replaced anything.
     expect(rowOf("Review PRs")).toBe(row);
     expect(within(row).getByRole("switch")).toBe(switchBefore);

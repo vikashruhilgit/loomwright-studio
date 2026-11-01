@@ -9,6 +9,7 @@ import {
   NOT_COUNTED,
   NOT_SET,
   UNKNOWN,
+  compactTokens,
   countText,
   dedupeText,
   draftsOf,
@@ -25,11 +26,13 @@ import {
   runTone,
   safe,
   setByWord,
+  shortModel,
   snapshotValue,
   stateOf,
   switchName,
   tokenFigure,
   tokensOfRuns,
+  tokensTodayText,
   triggerText,
   valueOrNotSet,
   versionActors,
@@ -332,5 +335,74 @@ describe("a failed read", () => {
     expect(readError({ kind: "refused", status: 500, body: { error: "store_locked", message: "the store is locked" } }).detail).toBe("GET /playbooks · 500 · store_locked · the store is locked");
     expect(readError({ kind: "not_connected", connection: { state: "unreachable", reason: "connection_failed" } }).text).toContain("not reachable");
     expect(readError({ kind: "bridge_failed" }).text).toContain("could not ask the kernel");
+  });
+});
+
+describe("shortModel: the list's Model cell", () => {
+  it("shows the family word of claude-<family>-… for the four known families", () => {
+    expect(shortModel("claude-sonnet-5-5")).toBe("sonnet");
+    expect(shortModel("claude-opus-4-1")).toBe("opus");
+    expect(shortModel("claude-haiku-4-5-20251001")).toBe("haiku");
+    expect(shortModel("claude-fable-1")).toBe("fable");
+  });
+
+  it("shows any other id as stored, through safe, and invents no family", () => {
+    expect(shortModel("sonnet")).toBe("sonnet");
+    expect(shortModel("claude-sonnet")).toBe("claude-sonnet");
+    expect(shortModel("claude-mystery-9")).toBe("claude-mystery-9");
+    expect(shortModel("gpt-5")).toBe("gpt-5");
+    expect(shortModel("claude-sonnetx-1")).toBe("claude-sonnetx-1");
+    expect(shortModel("m\u001b[31mx")).toBe(safe("m\u001b[31mx"));
+  });
+
+  it("reads 'not set' for none, never a default", () => {
+    expect(shortModel(null)).toBe(NOT_SET);
+    expect(shortModel(undefined)).toBe(NOT_SET);
+    expect(shortModel("")).toBe(NOT_SET);
+  });
+});
+
+describe("compactTokens: the mockup's tk, without a trailing .0 and with an M tier", () => {
+  it("shows a count below 1,000 as it is", () => {
+    expect(compactTokens(0)).toBe("0");
+    expect(compactTokens(7)).toBe("7");
+    expect(compactTokens(999)).toBe("999");
+  });
+
+  it("shows one decimal with k from 1,000, dropping a trailing .0", () => {
+    expect(compactTokens(38200)).toBe("38.2k");
+    expect(compactTokens(200000)).toBe("200k");
+    expect(compactTokens(50000)).toBe("50k");
+    expect(compactTokens(1000)).toBe("1k");
+    expect(compactTokens(1001)).toBe("1k");
+    expect(compactTokens(1550)).toBe("1.6k");
+    expect(compactTokens(999949)).toBe("999.9k");
+  });
+
+  it("shows one decimal with M from 1,000,000", () => {
+    expect(compactTokens(1500000)).toBe("1.5M");
+    expect(compactTokens(1000000)).toBe("1M");
+    expect(compactTokens(12340000)).toBe("12.3M");
+  });
+
+  it("moves a figure that would round to 1000k up to the next tier", () => {
+    expect(compactTokens(999950)).toBe("1M");
+    expect(compactTokens(999999)).toBe("1M");
+  });
+
+  it("is tokens, never dollars", () => {
+    for (const n of [0, 999, 38200, 1500000]) expect(compactTokens(n)).not.toContain("$");
+  });
+});
+
+describe("tokensTodayText: the Tokens today cell", () => {
+  it("reads '<today> of <limit>' for a playbook with a daily limit", () => {
+    expect(tokensTodayText(38200, 200000)).toEqual({ value: "38.2k of 200k", caption: "" });
+    expect(tokensTodayText(0, 50000)).toEqual({ value: "0 of 50k", caption: "" });
+  });
+
+  it("reads '<today>' with the caption 'no limit set' for one with none", () => {
+    expect(tokensTodayText(0, null)).toEqual({ value: "0", caption: "no limit set" });
+    expect(tokensTodayText(1200, null)).toEqual({ value: "1.2k", caption: "no limit set" });
   });
 });

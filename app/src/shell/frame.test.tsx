@@ -91,7 +91,7 @@ describe("the title bar", () => {
   });
 
   it("only the screens whose item moved their count line declare one", () => {
-    expect(SCREENS.filter((s) => s.Subtitle !== undefined).map((s) => s.id)).toEqual(["tasks", "memory", "keymap"]);
+    expect(SCREENS.filter((s) => s.Subtitle !== undefined).map((s) => s.id)).toEqual(["tasks", "playbooks", "memory", "keymap"]);
   });
 });
 
