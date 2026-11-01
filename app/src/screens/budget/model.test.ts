@@ -1,7 +1,7 @@
 // Budget & audit's view model (phase 7 item 07): the pure logic behind the screen. Plain vitest,
 // no DOM. The screen itself is covered by `BudgetScreen.test.tsx`, the built app by `e2e/budget.spec.ts`.
 import { describe, expect, it } from "vitest";
-import type { BudgetCapState, BudgetLimitUsage, BudgetUsageResponse, BudgetUsageRow } from "../../api/contract";
+import type { BudgetLimitUsage, BudgetUsageResponse, BudgetUsageRow } from "../../api/contract";
 import {
   FIRST_PAGE,
   NO_FILTER,
@@ -12,11 +12,10 @@ import {
   auditRows,
   bandText,
   busiestShare,
-  capAccountLabel,
-  capCaption,
-  capNote,
   capStatusView,
   count,
+  countBadge,
+  countOf,
   currentCursor,
   dayLabel,
   daySeries,
@@ -41,7 +40,7 @@ import {
   refsOf,
   resetLabel,
   sessionsLabel,
-  summaryOf,
+  summaryText,
   utilizationPercent,
   waitingAgents,
   windowDays,
@@ -216,36 +215,6 @@ describe("the subscription cap", () => {
     expect(resetLabel(new Date(2026, 10, 2, 9, 0).toISOString(), NOW)).toBe("Mon 2 Nov 09:00");
     expect(resetLabel("later", NOW)).toBe("later");
   });
-
-  const window = (o: Partial<BudgetCapState[number]["limits"][number]> = {}) => ({ utilization: 0.41, resets_at: new Date(2026, 9, 30, 17, 0).toISOString(), reset_source: null, ...o });
-
-  it("the caption: 'N% used · resets <time>'", () => {
-    expect(capCaption(window(), NOW)).toBe("41% used · resets today 17:00");
-  });
-
-  it("a recheck reads 'reset unknown · rechecked <time>'", () => {
-    expect(capCaption(window({ reset_source: "recheck" }), NOW)).toBe("41% used · reset unknown · rechecked today 17:00");
-    expect(capCaption(window({ reset_source: "recheck", resets_at: null }), NOW)).toBe("41% used · reset unknown");
-  });
-
-  it("no reset time and no utilization say so", () => {
-    expect(capCaption(window({ resets_at: null }), NOW)).toBe("41% used · no reset time");
-    expect(capCaption(window({ utilization: null }), NOW)).toBe("usage not reported · resets today 17:00");
-  });
-
-  it("the account is labelled from GET /status when the live store has the provider, else it is the provider id", () => {
-    const status: BudgetCapState = [{ account: "personal subscription", provider: "subscription-token", limits: [] }];
-    expect(capAccountLabel({ account: "subscription-token", provider: "subscription-token" }, status)).toBe("personal subscription");
-    expect(capAccountLabel({ account: "subscription-token", provider: "subscription-token" }, undefined)).toBe("subscription-token");
-    expect(capAccountLabel({ account: "other", provider: "other" }, status)).toBe("other");
-  });
-
-  it("the note says whether a window is rejected", () => {
-    const entry = (status: string): BudgetCapState => [{ account: "a", provider: "a", limits: [{ rate_limit_type: "five_hour", status, resets_at: null, utilization: null, reset_source: null }] }];
-    expect(capNote(entry("allowed"))).toBe("No window is rejected, so nothing is parked on the cap.");
-    expect(capNote(entry("rejected"))).toContain("rejected");
-    expect(capNote([])).toBe("No cap state has been reported yet.");
-  });
 });
 
 describe("the audit query", () => {
@@ -286,7 +255,7 @@ describe("the audit query", () => {
   });
 });
 
-describe("paging (keyset: a cursor stack, no total)", () => {
+describe("paging (keyset: a cursor stack; the route's counts only label the page)", () => {
   it("starts at the first page; Older pushes the cursor and Newer pops it", () => {
     expect(isFirstPage(FIRST_PAGE)).toBe(true);
     expect(pageNumber(FIRST_PAGE)).toBe(1);
@@ -302,11 +271,36 @@ describe("paging (keyset: a cursor stack, no total)", () => {
     expect(pageNewer(FIRST_PAGE)).toBe(FIRST_PAGE);
   });
 
-  it("the footer names the rows and the page, never a total", () => {
-    expect(footerText(1, 8)).toBe("Showing rows 1–8 · page 1 · newest first");
-    expect(footerText(2, 8)).toBe("Showing rows 9–16 · page 2 · newest first");
-    expect(footerText(3, 4)).toBe("Showing rows 17–20 · page 3 · newest first");
+  it("the footer names the rows, the filtered total and the page count when the kernel sent a count", () => {
+    expect(footerText(1, 8, 20)).toBe("Showing 1–8 of 20 · page 1 of 3 · newest first");
+    expect(footerText(2, 8, 20)).toBe("Showing 9–16 of 20 · page 2 of 3 · newest first");
+    expect(footerText(3, 4, 20)).toBe("Showing 17–20 of 20 · page 3 of 3 · newest first");
+    expect(footerText(1, 3, 3)).toBe("Showing 1–3 of 3 · page 1 of 1 · newest first");
+    expect(footerText(1, 0, 0)).toBe("0 events · newest first");
     expect(footerText(1, 0)).toBe("0 events · newest first");
+  });
+
+  it("an older kernel sends no count: the footer falls back to rows and page, never a total", () => {
+    expect(footerText(1, 8)).toBe("Showing rows 1–8 · page 1 · newest first");
+    expect(footerText(2, 8, undefined)).toBe("Showing rows 9–16 · page 2 · newest first");
+    expect(footerText(3, 4)).toBe("Showing rows 17–20 · page 3 · newest first");
+    // A damaged count is no count.
+    expect(footerText(1, 8, -3)).toBe("Showing rows 1–8 · page 1 · newest first");
+    expect(footerText(1, 8, 1.5)).toBe("Showing rows 1–8 · page 1 · newest first");
+  });
+
+  it("the badge beside the title reads 'N of M events', and is absent without both counts", () => {
+    expect(countBadge({ matching: 20, total: 20 })).toBe("20 of 20 events");
+    expect(countBadge({ matching: 3, total: 20 })).toBe("3 of 20 events");
+    expect(countBadge({ matching: 1, total: 1 })).toBe("1 of 1 event");
+    expect(countBadge({ matching: 1234, total: 5678 })).toBe("1,234 of 5,678 events");
+    expect(countBadge({ matching: 3 })).toBeUndefined();
+    expect(countBadge({ total: 3 })).toBeUndefined();
+    expect(countBadge({})).toBeUndefined();
+    expect(countBadge(undefined)).toBeUndefined();
+    expect(countOf("7")).toBeUndefined();
+    expect(countOf(Number.NaN)).toBeUndefined();
+    expect(countOf(0)).toBe(0);
   });
 
   it("the next cursor is the page's, else null", () => {
@@ -318,31 +312,29 @@ describe("paging (keyset: a cursor stack, no total)", () => {
 });
 
 describe("an event as a row", () => {
-  it("Actor is the payload's agent, else '—' (EventFrame carries no actor; nothing is guessed)", () => {
-    expect(actorOf({ agent: "mason", reason: "x" })).toBe("mason");
-    expect(actorOf({ reason: "x" })).toBe("—");
-    expect(actorOf({ agent: "  " })).toBe("—");
-    expect(actorOf({ agent: 7 })).toBe("—");
-    expect(actorOf(null)).toBe("—");
-    expect(actorOf("plain text")).toBe("—");
-    expect(actorOf(["mason"])).toBe("—");
+  const ev = (id: number, kind = "k", payload: unknown = {}) => ({ type: "event" as const, id, at: "2026-10-30T10:00:00.000Z", kind, session_id: null, task_id: null, payload });
+
+  it("Actor is the route's actor: an agent by its roster display name, 'you' or 'kernel', never '—'", () => {
+    const roster = [{ id: "mason", display_name: "Mason" }];
+    expect(actorOf("mason", roster)).toBe("Mason");
+    expect(actorOf("ada", roster)).toBe("ada");
+    expect(actorOf("you", roster)).toBe("you");
+    expect(actorOf("kernel", roster)).toBe("kernel");
+    expect(actorOf("a‮b", undefined)).toBe("a\\u202eb");
   });
 
-  it("the summary is the payload's text, reason or message, in that order, else compact JSON", () => {
-    expect(summaryOf({ text: "a", reason: "b", message: "c" })).toBe("a");
-    expect(summaryOf({ reason: "b", message: "c" })).toBe("b");
-    expect(summaryOf({ message: "c" })).toBe("c");
-    expect(summaryOf({ n: 1, ok: true })).toBe('{"n":1,"ok":true}');
-    expect(summaryOf("not json {")).toBe("not json {");
-    expect(summaryOf(null)).toBe("");
-    expect(summaryOf(undefined)).toBe("");
+  it("an older kernel sends no actor: the row reads 'kernel', and the payload's agent is not taken for one", () => {
+    expect(actorOf(undefined, undefined)).toBe("kernel");
+    expect(actorOf(null, undefined)).toBe("kernel");
+    expect(actorOf("  ", undefined)).toBe("kernel");
+    expect(actorOf(7, undefined)).toBe("kernel");
+    const [r] = auditRows({ events: [ev(1, "cap_warning", { agent: "mason" })], next_before: null }, undefined, undefined, NOW);
+    expect(r?.actor).toBe("kernel");
   });
 
-  it("a long summary is truncated, and control characters are written out", () => {
-    const long = summaryOf({ text: "x".repeat(500) });
-    expect(long.length).toBe(160);
-    expect(long.endsWith("…")).toBe(true);
-    expect(summaryOf({ text: "a\u001b[31mb" })).toBe("a\\x1b[31mb");
+  it("the count line is 'N tokens today' (the subtitle adds 'last known')", () => {
+    expect(summaryText(61924)).toBe("61,924 tokens today");
+    expect(summaryText(0)).toBe("0 tokens today");
   });
 
   it("refs name the task, the session and the playbook; a playbook id is shown only when it resolves to a slug", () => {
@@ -354,18 +346,33 @@ describe("an event as a row", () => {
     expect(refsOf({ task_id: null, session_id: null, payload: "oops" }, playbooks)).toBe("");
   });
 
-  const ev = (id: number, kind = "k", payload: unknown = {}) => ({ type: "event" as const, id, at: "2026-10-30T10:00:00.000Z", kind, session_id: null, task_id: null, payload });
-
   it("rows are newest first, each id once, and anything that is not an event is dropped", () => {
     const page = { events: [ev(3), ev(5), ev(3), { nope: true }, null, ev(4, "x")] as never, next_before: null };
-    expect(auditRows(page, undefined).map((r) => r.id)).toEqual([5, 4, 3]);
-    expect(auditRows({ events: "nope" as never, next_before: null }, undefined)).toEqual([]);
-    expect(auditRows(undefined, undefined)).toEqual([]);
+    expect(auditRows(page, undefined, undefined, NOW).map((r) => r.id)).toEqual([5, 4, 3]);
+    expect(auditRows({ events: "nope" as never, next_before: null }, undefined, undefined, NOW)).toEqual([]);
+    expect(auditRows(undefined, undefined, undefined, NOW)).toEqual([]);
   });
 
-  it("a row carries the made-inert kind, the actor, the summary and the refs", () => {
-    const [r] = auditRows({ events: [{ ...ev(7, "admission_refused‮", { agent: "mason", reason: "agent_sessions_at_once" }), task_id: 2, session_id: 3 }], next_before: null }, undefined);
-    expect(r).toMatchObject({ id: 7, kind: "admission_refused\\u202e", actor: "mason", summary: "agent_sessions_at_once", refs: "task 2 · session 3" });
+  it("a row carries the made-inert kind, the actor, the sentence and the refs", () => {
+    const roster = [{ id: "mason", display_name: "Mason" }];
+    const [r] = auditRows({ events: [{ ...ev(7, "admission_refused", { agent: "mason", kind: "start", reason: "agent_sessions_at_once" }), actor: "mason", task_id: 2, session_id: 3 }], next_before: null }, undefined, roster, NOW);
+    expect(r).toMatchObject({ id: 7, kind: "admission_refused", actor: "Mason", summary: "A session start for Mason was refused: agent sessions at once.", refs: "task 2 · session 3" });
+  });
+
+  it("a kind with no sentence is made inert and reads 'no description yet', never its payload as JSON", () => {
+    const [r] = auditRows({ events: [ev(7, "made_up‮", { secret: "x", nested: { a: 1 } })], next_before: null }, undefined, undefined, NOW);
+    expect(r?.kind).toBe("made_up\\u202e");
+    expect(r?.summary).toBe("made_up\\u202e · no description yet");
+    expect(r?.summary).not.toMatch(/[{}]/);
+  });
+
+  it("a sentence names a playbook by its listing's name, by slug or by id", () => {
+    const playbooks = [{ id: 4, slug: "review-prs", name: "Review PRs on studio-sandbox" }];
+    const rows = auditRows({ events: [ev(2, "playbook_enabled", { playbook_id: 4, version: 1, by: "owner" }), ev(1, "playbook_updated", { playbook: "review-prs", version: 3, fields: ["priority"], by: "you" })], next_before: null }, playbooks, undefined, NOW);
+    expect(rows.map((r) => r.summary)).toEqual([
+      "Playbook Review PRs on studio-sandbox v1 was turned on by owner.",
+      "Playbook Review PRs on studio-sandbox was updated to v3: priority by you.",
+    ]);
   });
 
   it("the Kind select offers the kinds seen plus the one filtered on, sorted", () => {

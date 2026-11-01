@@ -4,22 +4,27 @@
 // It answers the way the kernel's routes do where the screen can tell (`kernel/src/gui/budget-audit.ts`):
 //   GET /budget/usage   the last `days` days of per-agent, per-playbook counted tokens (cache reads beside
 //                       them, never added), each limit against today's use, and the cap state with its resets
-//   GET /audit          events newest first; `kind`, `agent` (the payload's `agent`), `playbook` (the payload's
-//                       slug), `since` and `before` narrow them; `next_before` is the last id of a full page
+//   GET /audit          events newest first, each with its `actor` (the session's agent, else "you" for an owner
+//                       action, else "kernel"); `kind`, `agent` (the payload's `agent`), `playbook` (the payload's
+//                       slug), `since` and `before` narrow them; `next_before` is the last id of a full page;
+//                       `matching` counts the events under the filters without `before`, `total` counts them all
 //   GET /agents         the roster the screen names agents from (and the sidebar's Crew section)
 //   GET /playbooks      the playbooks it names playbooks from
-//   GET /status         a canned status whose `cap_state` labels the account ("personal subscription")
+//   GET /status         a canned status whose `cap_state` labels the account ("personal subscription"), or, with
+//                       `statusAccount: ""`, carries no label so the screen falls back to the provider's display name
 // Every query a spec's screen sends is recorded in `usageReads` and `auditReads`.
 //
 // The state is mutable and the fixture is a script for a spec: `holdUsage` keeps the next usage read open
 // (the loading state), `failUsage` answers it 500 (the route-failure card), and `liveUpdate` changes the data
 // AND appends the events the kernel would (`session_status`, `budget_limit_reached`), which is how the screen
 // learns. Times and days are relative to the moment the fixture is made, so "today" and "17:00 today" hold
-// whenever the spec runs. The two states: `populated` (nobody at a limit), `waiting` (Ada has used her whole
-// daily limit), and `empty` (nothing used, nothing logged).
+// whenever the spec runs. The three states: `populated` (nobody at a limit), `waiting` (Ada has used her whole
+// daily limit), and `empty` (nothing used, nothing logged). `staleCap` ends the seven-day window two days ago
+// (the kernel last recorded it as `allowed_warning` before that), as a store the kernel has not touched since
+// would answer; every audit payload follows the shape the kernel writes, so the screen's sentences read them.
 //
 // Every value here is fixture data: no real repo, account or task.
-import type { AuditResponse, BudgetLimitUsage, BudgetUsageResponse, BudgetUsageRow, EventFrame, PlaybookListing, RosterEntry, RouteKey } from "../../src/api/contract";
+import type { AuditEvent, AuditResponse, BudgetLimitUsage, BudgetUsageResponse, BudgetUsageRow, EventFrame, PlaybookListing, RosterEntry, RouteKey } from "../../src/api/contract";
 import type { FixtureAnswer, FixtureKernel, FixtureKernelOptions, FixtureRequest, FixtureRoute } from "../fixture-kernel";
 import { cannedStatus } from "../fixture-kernel";
 
@@ -33,6 +38,13 @@ export type BudgetState = "populated" | "waiting" | "empty";
 export interface BudgetFixtureOptions {
   /** Default `populated`. */
   readonly state?: BudgetState;
+  /** The seven-day cap window's reset has passed (its status is what was last read). Default false. */
+  readonly staleCap?: boolean;
+  /**
+   * The label `GET /status` gives the subscription account. Default "personal subscription"; `""` is no label, so
+   * the cap card falls back to the provider's display name.
+   */
+  readonly statusAccount?: string;
 }
 
 export interface BudgetFixture {
@@ -154,17 +166,30 @@ function makeLimits(state: BudgetState, rows: readonly BudgetUsageRow[]): Budget
   ];
 }
 
-/** Two windows of the mockup's `budget-populated`: the five-hour one resets at 17:00 today, the seven-day one in three days at 09:00. */
-function makeCap(state: BudgetState): BudgetUsageResponse["cap_state"] {
+/**
+ * Two windows of the mockup's `budget-populated`: the five-hour one resets at 17:00 today, the seven-day one in three days at
+ * 09:00. Each carries `updated_at`, when the kernel last recorded it. With `stale` the seven-day window ended two days ago at
+ * 00:30 and was last recorded two hours and a half before that, still `allowed_warning`: nothing has touched it since.
+ */
+function makeCap(state: BudgetState, stale: boolean): BudgetUsageResponse["cap_state"] {
   if (state === "empty") return [];
   const now = new Date();
+  const at = (days: number, h: number, m: number): Date => new Date(now.getFullYear(), now.getMonth(), now.getDate() + days, h, m);
+  const sevenReset = stale ? at(-2, 0, 30) : at(3, 9, 0);
   return [
     {
       account: "subscription-token",
       provider: "subscription-token",
       limits: [
-        { rate_limit_type: "five_hour", status: "allowed", resets_at: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 17, 0).toISOString(), utilization: 0.41, reset_source: null },
-        { rate_limit_type: "seven_day", status: "allowed_warning", resets_at: new Date(now.getFullYear(), now.getMonth(), now.getDate() + 3, 9, 0).toISOString(), utilization: 0.83, reset_source: null },
+        { rate_limit_type: "five_hour", status: "allowed", resets_at: at(0, 17, 0).toISOString(), utilization: 0.41, reset_source: null, updated_at: new Date(now.getTime() - 14 * MINUTE).toISOString() },
+        {
+          rate_limit_type: "seven_day",
+          status: "allowed_warning",
+          resets_at: sevenReset.toISOString(),
+          utilization: 0.83,
+          reset_source: null,
+          updated_at: stale ? new Date(sevenReset.getTime() - 150 * MINUTE).toISOString() : new Date(now.getTime() - 14 * MINUTE).toISOString(),
+        },
       ],
     },
   ];
@@ -173,31 +198,42 @@ function makeCap(state: BudgetState): BudgetUsageResponse["cap_state"] {
 /** The first audit id; the log holds 20 events, ids 381 to 400, and a live one is 401. */
 const FIRST_ID = 400;
 
-function makeEvents(state: BudgetState): EventFrame[] {
+/** Today at `h:m` local, as the ISO instant a payload carries. */
+function todayAt(h: number, m: number): string {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m).toISOString();
+}
+
+/**
+ * The 20 events, newest first. Each payload has the fields the kernel writes for its kind (the screen's sentences read
+ * them), plus the `agent` and `playbook` slug the route's filters match on. `actor` is what `GET /audit` answers: the
+ * session's agent, else "you" for an owner action, else "kernel".
+ */
+function makeEvents(state: BudgetState): AuditEvent[] {
   if (state === "empty") return [];
-  const rows: [string, Record<string, unknown>, Partial<EventFrame>?][] = [
-    ["memory_updated", { agent: "mason", playbook: "review-prs", text: "path: memory/mason/lessons.md" }, { session_id: 41 }],
-    ["draft_output_recorded", { agent: "mason", playbook: "review-prs", text: "Draft review recorded for studio-sandbox #3. Recorded, not sent." }, { task_id: 9, session_id: 41 }],
-    ["playbook_dry_run", { agent: "ada", playbook: "weekly-changelog", text: "Dry run of Weekly changelog draft v1 started" }, { session_id: 42 }],
-    ["trigger_fired", { agent: "mason", playbook: "review-prs", text: "Poll found PR #3 · dedupe studio-sandbox#3@a1b2c3d" }],
-    ["wakeup_scheduled", { agent: "mason", text: "Wake-up #5 due 15:30: PR #3 review may be ready" }, { task_id: 7 }],
-    ["session_status", { agent: "ada", text: "Session 39 ended failed:auth. Parked, not retried." }, { session_id: 39 }],
-    ["task_created", { agent: "wright", text: "Pick the repos Mason reviews first · state waiting" }, { task_id: 12 }],
-    ["session_status", { agent: "mason", playbook: "review-prs", text: "Session 37 ended completed · playbook run 17 · 31,870 tokens" }, { session_id: 37 }],
-    ["session_status", { text: "Session 38 interrupted: the kernel that ran it restarted" }, { session_id: 38 }],
-    ["session_status", { agent: "mason", playbook: "review-prs", text: "Session 35 ended failed · playbook run 16 · 2,104 tokens" }, { session_id: 35 }],
-    ["admission_refused", { agent: "mason", reason: "agent_sessions_at_once · live 2 of 2 · retry in 60 s" }],
-    ["cap_warning", { reason: "rate_limit_type: seven_day · utilization 0.83" }],
-    ["kill_switch_released", { text: "The kill switch was released. The event loop restarted." }],
-    ["trigger_missed", { text: "Rotate the sandbox token", reason: "kill_switch" }],
-    ["kill_switch_engaged", { text: "Every session was stopped. No trigger fires while it is on." }],
-    ["playbook_updated", { agent: "mason", playbook: "review-prs", text: "v3 · priority low to normal, token_limit_per_day 150000 to 200000" }],
-    ["playbook_updated", { agent: "wright", playbook: "morning-digest", text: "v2 · model sonnet to haiku" }],
-    ["session_status", { agent: "wright", playbook: "morning-digest", text: "Session 30 ended completed · playbook run 15 · 6,120 tokens" }, { session_id: 30 }],
-    ["playbook_updated", { agent: "mason", playbook: "review-prs", text: "v2 · intent, model haiku to sonnet" }],
-    ["playbook_created", { agent: "mason", playbook: "review-prs", text: "v1 · Review PRs on studio-sandbox" }],
+  const rows: [string, string, Record<string, unknown>, Partial<EventFrame>?][] = [
+    ["memory_updated", "mason", { agent: "mason", playbook: "review-prs", path: "memory/mason/lessons.md" }, { session_id: 41 }],
+    ["draft_output_recorded", "mason", { agent: "mason", playbook: "review-prs", draft_output_id: 3, tool: "gh pr review", summary: "gh pr review studio-sandbox #3" }, { task_id: 9, session_id: 41 }],
+    ["playbook_dry_run", "ada", { agent: "ada", playbook: "weekly-changelog", version: 1, status: "started" }, { session_id: 42 }],
+    ["trigger_fired", "kernel", { agent: "mason", playbook: "review-prs", trigger_id: 4, items: 1 }],
+    ["wakeup_scheduled", "mason", { agent: "mason", wakeup_id: 5, due_at: todayAt(15, 30), reason: "PR #3 review may be ready" }, { task_id: 7, session_id: 41 }],
+    ["session_status", "ada", { agent: "ada", from: "running", to: "failed", reason: "auth" }, { session_id: 39 }],
+    ["task_created", "wright", { agent: "wright", title: "Pick repos for Mason to review", state: "waiting" }, { task_id: 12, session_id: 36 }],
+    ["session_status", "mason", { agent: "mason", playbook: "review-prs", from: "running", to: "completed", reason: "result_success" }, { session_id: 37 }],
+    ["session_status", "ada", { from: "running", to: "interrupted", reason: "kernel_restarted" }, { session_id: 38 }],
+    ["session_status", "mason", { agent: "mason", playbook: "review-prs", from: "running", to: "failed", reason: "result_error" }, { session_id: 35 }],
+    ["admission_refused", "kernel", { kind: "start", agent: "mason", reason: "agent_sessions_at_once", retry_at: todayAt(15, 30) }],
+    ["cap_warning", "kernel", { rate_limit_type: "seven_day", utilization: 0.83 }],
+    ["kill_switch_released", "you", {}],
+    ["trigger_missed", "kernel", { trigger_id: 6, reason: "kill_switch" }],
+    ["kill_switch_engaged", "you", {}],
+    ["playbook_updated", "you", { agent: "mason", playbook: "review-prs", version: 3, fields: ["priority"] }],
+    ["playbook_updated", "you", { agent: "wright", playbook: "morning-digest", version: 2, fields: ["model"] }],
+    ["session_status", "wright", { agent: "wright", playbook: "morning-digest", from: "running", to: "completed", reason: "result_success" }, { session_id: 30 }],
+    ["playbook_updated", "wright", { agent: "mason", playbook: "review-prs", version: 2, fields: ["model"] }, { session_id: 22 }],
+    ["playbook_created", "wright", { agent: "mason", playbook: "review-prs", version: 1 }, { session_id: 21 }],
   ];
-  return rows.map(([kind, payload, extra], i) => ({
+  return rows.map(([kind, actor, payload, extra], i) => ({
     type: "event" as const,
     id: FIRST_ID - i,
     at: new Date(Date.now() - (i * 11 + 2) * MINUTE).toISOString(),
@@ -205,12 +241,15 @@ function makeEvents(state: BudgetState): EventFrame[] {
     session_id: null,
     task_id: null,
     payload,
+    actor,
     ...extra,
   }));
 }
 
 export function budgetFixture(options: BudgetFixtureOptions = {}): BudgetFixture {
   const state = options.state ?? "populated";
+  const staleCap = options.staleCap ?? false;
+  const statusAccount = options.statusAccount ?? "personal subscription";
   let rows = makeRows(state, state === "waiting");
   let events = makeEvents(state);
   const usageReads: Record<string, string>[] = [];
@@ -227,7 +266,7 @@ export function budgetFixture(options: BudgetFixtureOptions = {}): BudgetFixture
     const days = Number(req.query.days ?? 7);
     const oldest = dayOf(days - 1);
     const inWindow = rows.filter((r) => r.day >= oldest);
-    return { status: 200, body: { rows: inWindow, limits: makeLimits(state, rows), cap_state: makeCap(state) } satisfies BudgetUsageResponse };
+    return { status: 200, body: { rows: inWindow, limits: makeLimits(state, rows), cap_state: makeCap(state, staleCap) } satisfies BudgetUsageResponse };
   };
 
   const payloadOf = (e: EventFrame): { agent?: unknown; playbook?: unknown } => (typeof e.payload === "object" && e.payload !== null ? (e.payload as { agent?: unknown; playbook?: unknown }) : {});
@@ -238,19 +277,23 @@ export function budgetFixture(options: BudgetFixtureOptions = {}): BudgetFixture
     const size = Number(q.limit ?? 50);
     const before = q.before === undefined ? Infinity : Number(q.before);
     const since = q.since === undefined ? -Infinity : Date.parse(q.since);
-    const list = events
-      .filter((e) => e.id < before && Date.parse(e.at) >= since)
+    // The filters alone count `matching`; the cursor and the page size only cut the page.
+    const filtered = events
+      .filter((e) => Date.parse(e.at) >= since)
       .filter((e) => q.kind === undefined || e.kind === q.kind)
       .filter((e) => q.agent === undefined || payloadOf(e).agent === q.agent)
       .filter((e) => q.playbook === undefined || payloadOf(e).playbook === q.playbook)
       .sort((a, b) => b.id - a.id);
-    const page = list.slice(0, size);
+    const page = filtered.filter((e) => e.id < before).slice(0, size);
     const last = page[page.length - 1];
-    return { status: 200, body: { events: page, next_before: page.length === size && last !== undefined ? String(last.id) : null } satisfies AuditResponse };
+    return {
+      status: 200,
+      body: { events: page, next_before: page.length === size && last !== undefined ? String(last.id) : null, matching: filtered.length, total: events.length } satisfies AuditResponse,
+    };
   };
 
   const routes: Partial<Record<RouteKey, FixtureRoute>> = {
-    "GET /status": () => ({ status: 200, body: cannedStatus({ cap_state: [{ account: "personal subscription", provider: "subscription-token", limits: [] }] }) }),
+    "GET /status": () => ({ status: 200, body: cannedStatus({ cap_state: [{ account: statusAccount, provider: "subscription-token", limits: [] }] }) }),
     "GET /budget/usage": usage,
     "GET /audit": audit,
     "GET /agents": () => ({ status: 200, body: { agents: ROSTER } }),
@@ -260,9 +303,11 @@ export function budgetFixture(options: BudgetFixtureOptions = {}): BudgetFixture
     "GET /notifications": () => ({ status: 200, body: { notifications: [] } }),
   };
 
-  const append = (event: EventFrame): void => {
+  // The log keeps the event with its `actor`; the feed carries none (`EventFrame`).
+  const append = (event: AuditEvent): void => {
     events = [event, ...events];
-    kernel?.appendEvent(event);
+    const { actor: _actor, ...frame } = event;
+    kernel?.appendEvent(frame);
   };
 
   return {
@@ -289,8 +334,8 @@ export function budgetFixture(options: BudgetFixtureOptions = {}): BudgetFixture
       const now = new Date().toISOString();
       rows = rows.map((r) => (r.day === dayOf(0) && r.agent === "mason" ? { ...r, counted_tokens: r.counted_tokens + 4_456, cache_read_tokens: r.cache_read_tokens + 120_000 } : r));
       // The rows change first, so the screen's read after the first event already sees both.
-      append({ type: "event", id: FIRST_ID + 1, at: now, kind: "session_status", session_id: 44, task_id: null, payload: { agent: "mason", playbook: "review-prs", text: "Session 44 ended completed · playbook run 18 · 4,456 tokens" } });
-      append({ type: "event", id: FIRST_ID + 2, at: now, kind: "budget_limit_reached", session_id: null, task_id: null, payload: { agent: "ada", text: "ada reached its daily token limit of 100,000" } });
+      append({ type: "event", id: FIRST_ID + 1, at: now, kind: "session_status", session_id: 44, task_id: null, payload: { agent: "mason", playbook: "review-prs", from: "running", to: "completed", reason: "result_success" }, actor: "mason" });
+      append({ type: "event", id: FIRST_ID + 2, at: now, kind: "budget_limit_reached", session_id: null, task_id: null, payload: { agent: "ada", limit: 100_000 }, actor: "kernel" });
     },
     todayTokens: () => rows.filter((r) => r.day === dayOf(0)).reduce((n, r) => n + r.counted_tokens, 0),
   };

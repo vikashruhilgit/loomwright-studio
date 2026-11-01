@@ -13,7 +13,6 @@
 // here builds markup, and the components render each value as a React text child.
 import type {
   AuditResponse,
-  BudgetCapState,
   BudgetLimitUsage,
   BudgetUsageResponse,
   BudgetUsageRow,
@@ -22,6 +21,8 @@ import type {
 } from "../../api/contract";
 import { fireTime, safe } from "../schedules/model";
 import type { Tone } from "../schedules/model";
+import { auditSentence } from "./audit-sentences";
+import type { SentenceRefs } from "./audit-sentences";
 
 // The reply plumbing is Schedules': one bridge answer kept apart as ok / unreachable / refused / failed.
 export { NOT_READ, failureDetail, nextRead, replyOf, safe } from "../schedules/model";
@@ -58,6 +59,7 @@ export const BUDGET_TEST_IDS = {
   cap: "budget-cap",
   capWindow: "budget-cap-window",
   capStatus: "budget-cap-status",
+  capStale: "budget-cap-stale",
   capText: "budget-cap-text",
   today: "budget-today",
   todayTokens: "budget-today-tokens",
@@ -76,6 +78,8 @@ export const BUDGET_TEST_IDS = {
   auditId: "budget-audit-id",
   auditKind: "budget-audit-kind",
   auditActor: "budget-audit-actor",
+  auditCount: "budget-audit-count",
+  kernelBand: "budget-kernel-band",
   auditDetail: "budget-audit-detail",
   auditEmpty: "budget-audit-empty",
   auditLoading: "budget-audit-loading",
@@ -260,9 +264,9 @@ export function bandText(waiting: readonly WaitingAgent[]): string {
   return `${waiting.length} agents wait on you: ${waiting.map(used).join("; ")}, so their new sessions wait until midnight. Raise their limits in Team to continue.`;
 }
 
-/** The toolbar line: "61,900 tokens today", with " · last known" while the kernel cannot be asked. */
-export function summaryText(todayTokens: number, lastKnown: boolean): string {
-  return `${formatTokens(todayTokens)} tokens today${lastKnown ? " · last known" : ""}`;
+/** The title bar's count line: "61,900 tokens today". The screen's subtitle adds " · last known" while the kernel cannot be asked. */
+export function summaryText(todayTokens: number): string {
+  return `${formatTokens(todayTokens)} tokens today`;
 }
 
 // ---- The subscription cap -----------------------------------------------------------------------------------
@@ -304,41 +308,8 @@ export function resetLabel(iso: string, now: Date): string {
   return localDay(at) === localDay(now) ? `today ${clock}` : `${WEEKDAYS[at.getDay()] ?? ""} ${at.getDate()} ${MONTHS[at.getMonth()] ?? ""} ${clock}`;
 }
 
-type CapWindow = BudgetCapState[number]["limits"][number];
-
-/**
- * The line under a window's meter: "41% used · resets today 17:00". No utilization reads "usage not reported" (and the
- * window draws no meter); no reset time reads "no reset time"; a reset the kernel could only recheck reads "reset
- * unknown · rechecked <time>".
- */
-export function capCaption(window: Pick<CapWindow, "utilization" | "resets_at" | "reset_source">, now: Date): string {
-  const percent = utilizationPercent(window.utilization);
-  const used = percent === null ? "usage not reported" : `${percent}% used`;
-  let reset: string;
-  if (window.reset_source === "recheck") reset = window.resets_at === null ? "reset unknown" : `reset unknown · rechecked ${resetLabel(window.resets_at, now)}`;
-  else if (window.resets_at === null) reset = "no reset time";
-  else reset = `resets ${resetLabel(window.resets_at, now)}`;
-  return `${used} · ${reset}`;
-}
-
 export function capMeterLabel(type: string, percent: number): string {
   return `${percent} percent of the ${safe(type)} window used`;
-}
-
-/**
- * The account shown over a cap entry. The route labels `account` with the provider id (a contributed route has no
- * auth-provider list); `GET /status` labels it from the provider, so the live store's entry for the same provider wins.
- */
-export function capAccountLabel(entry: Pick<BudgetCapState[number], "account" | "provider">, status: BudgetCapState | undefined): string {
-  const labelled = status?.find((s) => s.provider === entry.provider);
-  return safe(labelled !== undefined && labelled.account.trim() !== "" ? labelled.account : entry.account);
-}
-
-/** The note under the windows. */
-export function capNote(cap: BudgetCapState): string {
-  if (cap.length === 0) return "No cap state has been reported yet.";
-  const rejected = cap.some((entry) => entry.limits.some((l) => l.status === "rejected"));
-  return rejected ? "A window is rejected, so sessions wait on the cap until it resets." : "No window is rejected, so nothing is parked on the cap.";
 }
 
 // ---- The audit log ---------------------------------------------------------------------------------------------
@@ -392,7 +363,7 @@ export function latestQuery(limit: number = LATEST_COUNT): Record<string, string
   return { limit: String(limit) };
 }
 
-// ---- Paging (keyset: no total) ----------------------------------------------------------------------------------
+// ---- Paging (keyset cursor, with the route's counts) ------------------------------------------------------------
 
 /**
  * The cursors that opened the pages visited, oldest first: page 1 has none (`undefined`). "Older" pushes the page's
@@ -426,50 +397,45 @@ export function pageNewer(paging: Paging): Paging {
   return isFirstPage(paging) ? FIRST_PAGE : { cursors: paging.cursors.slice(0, -1) };
 }
 
-/** "Showing rows 9–16 · page 2 · newest first", or "0 events · newest first". */
-export function footerText(page: number, shown: number, pageSize: number = AUDIT_PAGE_SIZE): string {
+/** A count the kernel sent: a non-negative whole number, else `undefined` (an older kernel sends none). */
+export function countOf(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/** The badge beside "Audit log": "20 of 20 events". `undefined` (no badge) when the kernel sent no counts. */
+export function countBadge(page: Pick<Partial<AuditResponse>, "matching" | "total"> | undefined): string | undefined {
+  const matching = countOf(page?.matching);
+  const total = countOf(page?.total);
+  if (matching === undefined || total === undefined) return undefined;
+  return `${formatTokens(matching)} of ${formatTokens(total)} ${total === 1 ? "event" : "events"}`;
+}
+
+/**
+ * The pager's words. With the route's `matching` count: "Showing 1–8 of 20 · page 1 of 3 · newest first" (or "0 events ·
+ * newest first"). Without it (an older kernel): "Showing rows 9–16 · page 2 · newest first".
+ */
+export function footerText(page: number, shown: number, matching?: number, pageSize: number = AUDIT_PAGE_SIZE): string {
   if (shown <= 0) return "0 events · newest first";
   const from = (page - 1) * pageSize + 1;
-  return `Showing rows ${from}–${from + shown - 1} · page ${page} · newest first`;
+  const to = from + shown - 1;
+  const known = countOf(matching);
+  if (known === undefined) return `Showing rows ${from}–${to} · page ${page} · newest first`;
+  return `Showing ${from}–${to} of ${known} · page ${page} of ${Math.max(1, Math.ceil(known / pageSize), page)} · newest first`;
 }
 
 // ---- An event as a row -----------------------------------------------------------------------------------------
-
-const SUMMARY_MAX = 160;
 
 function record(value: unknown): Readonly<Record<string, unknown>> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Readonly<Record<string, unknown>>) : undefined;
 }
 
-function clip(text: string, max: number = SUMMARY_MAX): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
 /**
- * Who did it. `EventFrame` carries no actor (the stored one is `'kernel'` or `'api'` and the route does not send it), so
- * the screen never guesses: the payload's own `agent` string when it has one, else "—".
+ * Who did it, from the route's `actor`: the event's session's agent id (shown by its roster display name), "you" (the
+ * owner, through the API) or "kernel". An answer with no actor (an older kernel) reads "kernel": the screen never
+ * guesses an agent from the payload, and never shows "—".
  */
-export function actorOf(payload: unknown): string {
-  const agent = record(payload)?.agent;
-  return typeof agent === "string" && agent.trim() !== "" ? safe(agent) : "—";
-}
-
-/** A one-line summary of a payload: its `text`, `reason` or `message` string, else compact JSON, truncated. */
-export function summaryOf(payload: unknown): string {
-  if (payload === null || payload === undefined) return "";
-  if (typeof payload === "string") return clip(safe(payload));
-  const fields = record(payload);
-  if (fields !== undefined) {
-    for (const key of ["text", "reason", "message"]) {
-      const value = fields[key];
-      if (typeof value === "string" && value.trim() !== "") return clip(safe(value));
-    }
-  }
-  try {
-    return clip(safe(JSON.stringify(payload) ?? ""));
-  } catch {
-    return "";
-  }
+export function actorOf(actor: unknown, roster: readonly Pick<RosterEntry, "id" | "display_name">[] | undefined): string {
+  return typeof actor === "string" && actor.trim() !== "" ? agentName(actor, roster) : "kernel";
 }
 
 /** "task 9 · session 41 · playbook review-prs": the refs an event names. A playbook given as an id is shown when the roster of playbooks resolves it to a slug. */
@@ -489,12 +455,36 @@ export function refsOf(
   return refs.filter((r) => r !== "").join(" · ");
 }
 
+/** The playbooks the sentences may name: a slug or an id, with a name when the listing has one. */
+export type NamedPlaybook = Pick<PlaybookListing, "id" | "slug"> & Partial<Pick<PlaybookListing, "name">>;
+
+/** What a sentence may look up: playbook names, agent display names and times, as this screen writes them. */
+export function sentenceRefs(
+  event: { readonly task_id: number | null; readonly session_id: number | null },
+  playbooks: readonly NamedPlaybook[] | undefined,
+  roster: readonly Pick<RosterEntry, "id" | "display_name">[] | undefined,
+  now: Date,
+): SentenceRefs {
+  return {
+    taskId: event.task_id,
+    sessionId: event.session_id,
+    playbook: (value) => {
+      const found = typeof value === "string" ? playbooks?.find((p) => p.slug === value) : typeof value === "number" ? playbooks?.find((p) => p.id === value) : undefined;
+      if (found === undefined) return undefined;
+      return found.name !== undefined && found.name.trim() !== "" ? found.name : found.slug;
+    },
+    agent: (id) => agentName(id, roster),
+    time: (iso) => resetLabel(iso, now),
+  };
+}
+
 /** One audit row, ready to draw. */
 export interface AuditRow {
   readonly id: number;
   readonly at: string;
   readonly kind: string;
   readonly actor: string;
+  /** The Detail sentence (`./audit-sentences.ts`). */
   readonly summary: string;
   readonly refs: string;
 }
@@ -506,7 +496,12 @@ function isEvent(value: unknown): value is AuditResponse["events"][number] {
 }
 
 /** The page's events as rows, newest first, each id once; anything that is not an event is dropped. */
-export function auditRows(page: Partial<AuditResponse> | undefined, playbooks: readonly Pick<PlaybookListing, "id" | "slug">[] | undefined): AuditRow[] {
+export function auditRows(
+  page: Partial<AuditResponse> | undefined,
+  playbooks: readonly NamedPlaybook[] | undefined,
+  roster: readonly Pick<RosterEntry, "id" | "display_name">[] | undefined,
+  now: Date,
+): AuditRow[] {
   const listed: unknown = page?.events;
   if (!Array.isArray(listed)) return [];
   const seen = new Set<number>();
@@ -514,13 +509,14 @@ export function auditRows(page: Partial<AuditResponse> | undefined, playbooks: r
   for (const item of listed as unknown[]) {
     if (!isEvent(item) || seen.has(item.id)) continue;
     seen.add(item.id);
+    const ids = { task_id: item.task_id ?? null, session_id: item.session_id ?? null };
     rows.push({
       id: item.id,
       at: item.at,
       kind: safe(item.kind),
-      actor: actorOf(item.payload),
-      summary: summaryOf(item.payload),
-      refs: refsOf({ task_id: item.task_id ?? null, session_id: item.session_id ?? null, payload: item.payload }, playbooks),
+      actor: actorOf(item.actor, roster),
+      summary: auditSentence(item.kind, item.payload, sentenceRefs(ids, playbooks, roster, now)),
+      refs: refsOf({ ...ids, payload: item.payload }, playbooks),
     });
   }
   return rows.sort((a, b) => b.id - a.id);

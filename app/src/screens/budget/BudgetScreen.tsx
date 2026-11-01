@@ -11,8 +11,10 @@
 // its `status`; this screen edits no shared store file. A refetch keeps the rows on screen until the
 // answer lands (no skeleton, rows keyed by day, agent id, playbook slug or event id, fixed row
 // heights), so a live update moves nothing already shown. A status 0 answer is "kernel unreachable",
-// never "no usage": the screen keeps its last data, marks it "last known" and disables every control
-// that needs the kernel; the shell draws the shared band above it.
+// never "no usage": the screen keeps its last data (also across a leave and return, `./last-usage.ts`),
+// marks it "last known" and disables every control that needs the kernel; the shell draws the one shared
+// band above it. "Status unknown" is only for a screen that has never had data. The overview's count line
+// is the title bar's subtitle (`./Subtitle.tsx`), published from here (`./subtitle-state.ts`).
 //
 // Policy. The screen only shows limits; setting one is Team's (an agent's) and Playbooks' (a
 // playbook's). "At limit" is the figure reaching its limit, nothing more.
@@ -27,6 +29,8 @@ import type { StudioBridge } from "../../api/contract";
 import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { Button } from "../../components/Button/Button";
+import { KernelBand } from "../../shell/KernelStates";
+import { useKernelReach } from "../../shell/last-known";
 import { useLiveStore, useResource } from "../../store/react";
 import { AuditLog } from "./AuditLog";
 import { BUDGET_OWNER, budgetCommands } from "./commands";
@@ -49,11 +53,12 @@ import {
   latestQuery,
   newestEventId,
   playbookLimits,
-  summaryText,
   waitingAgents,
 } from "./model";
 import type { AuditFilter } from "./model";
+import { heldUsage, holdUsage } from "./last-usage";
 import { HistoryGlyph, Skeleton, WarnGlyph } from "./parts";
+import { setSubtitleState } from "./subtitle-state";
 import { AgentTable, DayTable, Inspector, Latest, PlaybookTable } from "./Tables";
 import { useAudit } from "./useAudit";
 import { useFeedRefetch, useUsageRead } from "./useUsage";
@@ -79,6 +84,7 @@ export interface BudgetScreenProps {
 
 export function BudgetScreen({ api, registry = commandRegistry, now = () => new Date(), liveThrottleMs = LIVE_THROTTLE_MS }: BudgetScreenProps) {
   const { connection, eventLog, status } = useLiveStore(api);
+  const reach = useKernelReach(api);
   const agentsRes = useResource("agents", api);
   const playbooksRes = useResource("playbooks", api);
   const { read, refetch: refetchUsage } = useUsageRead(api);
@@ -96,7 +102,7 @@ export function BudgetScreen({ api, registry = commandRegistry, now = () => new 
   const retried = useRef(false);
 
   const live = connection.state === "live";
-  const connectionDown = connection.state === "reconnecting" || connection.state === "unreachable" || connection.state === "not_installed";
+  const connectionDown = reach.offline;
   const offline = connectionDown || read.latest?.kind === "unreachable" || (view === "overview" && latestView.latest?.kind === "unreachable");
 
   // A live event reads the usage again, and what the current view shows of the log (the overview's three events; the audit view follows itself).
@@ -182,17 +188,37 @@ export function BudgetScreen({ api, registry = commandRegistry, now = () => new 
   };
 
   const nowDate = now();
-  const usage = read.lastOk;
-  const hasData = usage !== undefined;
-  const failed = read.latest !== undefined && (read.latest.kind === "refused" || read.latest.kind === "failed") ? read.latest : undefined;
-  const empty = hasData && isEmptyUsage(usage);
+  // What was last read: this mount's own answer, else the one an earlier mount of this window held.
+  const lastRead = read.lastOk ?? heldUsage(api);
+  const hasData = lastRead !== undefined;
+  // The shell's band is up: the screen keeps what it last read, marked "last known", and "Status unknown" is
+  // for a screen that has never had data.
+  const keepLastData = hasData && reach.shellBand;
+  const usage = read.lastOk ?? (keepLastData ? lastRead : undefined);
+  const shown = usage !== undefined;
+  // While the shell's band explains the outage, a failed read's request text is not shown.
+  const failed = !reach.shellBand && read.latest !== undefined && (read.latest.kind === "refused" || read.latest.kind === "failed") ? read.latest : undefined;
+  const empty = usage !== undefined && isEmptyUsage(usage);
+
+  const answered = read.lastOk;
+  useEffect(() => {
+    if (answered !== undefined) holdUsage(api, answered);
+  }, [api, answered]);
 
   useEffect(() => {
-    if (!retried.current || !hasData) return;
+    if (!retried.current || !shown) return;
     retried.current = false;
     const focused = document.activeElement;
     if (focused === null || focused === document.body) root.current?.focus({ preventScroll: true });
-  }, [hasData]);
+  }, [shown]);
+
+  // The title bar's count line: the overview's figure for today (once there is usage to count), or the audit view's name.
+  const todayTokens = usage === undefined ? null : (daySeries(usage.rows, nowDate)[0]?.counted ?? 0);
+  const subtitleView = view === "audit" ? "audit" : shown && !empty ? "overview" : undefined;
+  useEffect(() => {
+    setSubtitleState(subtitleView === undefined ? null : { view: subtitleView, todayTokens: subtitleView === "audit" ? null : todayTokens, lastKnown: subtitleView === "overview" && offline });
+  }, [subtitleView, todayTokens, offline]);
+  useEffect(() => () => setSubtitleState(null), []);
 
   let content: ReactNode;
   if (view === "audit") {
@@ -213,7 +239,7 @@ export function BudgetScreen({ api, registry = commandRegistry, now = () => new 
         kindRef={kindSelect}
       />
     );
-  } else if (!hasData) {
+  } else if (usage === undefined) {
     if (failed !== undefined) {
       content = (
         <div className="budget-fail" role="alert" data-testid={IDS.error}>
@@ -241,7 +267,7 @@ export function BudgetScreen({ api, registry = commandRegistry, now = () => new 
           </div>
         </div>
       );
-    } else if (read.latest?.kind === "unreachable" || (read.latest === undefined && connectionDown)) {
+    } else if (read.latest?.kind === "unreachable" || reach.shellBand || (read.latest === undefined && connectionDown)) {
       content = (
         <div className="budget-empty" data-testid={IDS.unknown}>
           <h2 className="budget-title">Status unknown</h2>
@@ -301,7 +327,7 @@ export function BudgetScreen({ api, registry = commandRegistry, now = () => new 
               <DayTable days={days} />
               <AgentTable limits={agentLimits(usage)} roster={roster} />
               <PlaybookTable limits={playbookLimits(usage)} playbooks={playbooks} roster={roster} />
-              <Latest rows={auditRows(latestView.shown?.page, playbooks).slice(0, LATEST_COUNT)} loading={latestView.shown === undefined} offline={offline} now={nowDate} onOpen={() => openAudit()} />
+              <Latest rows={auditRows(latestView.shown?.page, playbooks, roster, nowDate).slice(0, LATEST_COUNT)} loading={latestView.shown === undefined} offline={offline} now={nowDate} onOpen={() => openAudit()} />
             </div>
           </div>
           <Inspector
@@ -318,17 +344,12 @@ export function BudgetScreen({ api, registry = commandRegistry, now = () => new 
     );
   }
 
-  const showTools = view === "overview" && hasData && !empty;
-  const todayTokens = hasData ? (daySeries(usage.rows, nowDate)[0]?.counted ?? 0) : 0;
+  const showTools = view === "overview" && shown && !empty;
   return (
     <div className="budget" ref={root} tabIndex={-1} data-testid={IDS.screen} data-offline={offline ? "true" : undefined} data-view={view} onKeyDown={onKeyDown}>
+      {offline && !reach.shellBand ? <KernelBand testId={IDS.kernelBand} /> : null}
       {view === "overview" ? (
         <div className="budget-tbar">
-          {showTools ? (
-            <span className="budget-cap" data-testid={IDS.summary}>
-              {summaryText(todayTokens, offline)}
-            </span>
-          ) : null}
           <span className="budget-spacer" />
           {showTools ? (
             <Button size="row" variant="secondary" icon={<HistoryGlyph />} disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={() => openAudit()} data-opener="toolbar" data-testid={IDS.auditButton}>
