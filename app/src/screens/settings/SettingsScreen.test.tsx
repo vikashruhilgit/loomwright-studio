@@ -20,6 +20,7 @@ import { liveStoreFor } from "../../store/react";
 import { SETTINGS_OWNER } from "./commands";
 import { SETTINGS_TEST_IDS as IDS } from "./model";
 import { SettingsScreen } from "./SettingsScreen";
+import { SettingsSubtitleView } from "./SettingsSubtitle";
 
 afterEach(() => {
   cleanup();
@@ -118,6 +119,15 @@ function emit(kernel: Kernel, kind: string, payload: unknown = {}): void {
 const reads = (kernel: Kernel): ApiRequest[] => kernel.fake.requestsTo("GET /settings").map((r) => r.req);
 const text = (testId: string): string => screen.getByTestId(testId).textContent ?? "";
 const button = (testId: string): HTMLButtonElement => screen.getByTestId(testId) as HTMLButtonElement;
+/** The title bar's subtitle slot (`Titlebar.tsx`) around the screen's `Subtitle`, rendered beside the screen over the same bridge. */
+function renderSubtitle(kernel: Kernel): void {
+  render(
+    <span data-testid="titlebar-subtitle">
+      <SettingsSubtitleView api={kernel.fake.bridge} />
+    </span>,
+  );
+}
+const subtitle = (): string => text("titlebar-subtitle");
 const SWITCHES = [IDS.login, IDS.notifications] as const;
 
 // ---- The states ---------------------------------------------------------------------------------------------
@@ -542,9 +552,13 @@ describe("This app", () => {
 describe("the kernel unreachable", () => {
   it("keeps the last data marked last known, disables Reveal, and leaves the app's own controls working; nothing throws", async () => {
     const kernel = await start();
+    renderSubtitle(kernel);
     kernel.settings = () => UNREACHABLE;
     emit(kernel, "auth_token_expiring");
-    await waitFor(() => expect(screen.getAllByTestId(IDS.lastKnown)).toHaveLength(2));
+    // "last known" moved from the two section heads to the title bar's subtitle, which follows the shell's reach (the feed), not this screen's own read.
+    act(() => kernel.fake.emit({ type: "closed", code: 1006, reason: "" }));
+    await waitFor(() => expect(subtitle()).toBe("last known"));
+    expect(screen.queryAllByTestId(IDS.lastKnown)).toHaveLength(0);
     expect(text(IDS.provider)).toBe("subscription-token");
     expect(text(IDS.health)).toBe("ok");
     expect(text(IDS.dataDir)).toContain("/Users/owner/.loomwright-studio");
@@ -564,13 +578,24 @@ describe("the kernel unreachable", () => {
 
   it("recovers by itself when the next event brings an answer", async () => {
     const kernel = await start();
+    renderSubtitle(kernel);
     kernel.settings = () => UNREACHABLE;
     emit(kernel, "auth_token_expiring");
+    act(() => kernel.fake.emit({ type: "closed", code: 1006, reason: "" }));
     await waitFor(() => expect(button(IDS.reveal).disabled).toBe(true));
+    await waitFor(() => expect(subtitle()).toBe("last known"));
     kernel.settings = () => ok(settingsBody({ dataDir: "/moved" }));
     emit(kernel, "loomwright_contract_changed");
-    await waitFor(() => expect(button(IDS.reveal).disabled).toBe(false));
+    // The feed comes back (the store retries after its backoff and a frame proves it open): the band's reach clears, the subtitle with it, and Reveal works again.
+    await waitFor(
+      () => {
+        act(() => kernel.fake.emit({ type: "heartbeat", latest_id: 0 }));
+        expect(button(IDS.reveal).disabled).toBe(false);
+      },
+      { timeout: 5000 },
+    );
     expect(text(IDS.dataDir)).toContain("/moved");
+    expect(subtitle()).toBe("");
     expect(screen.queryAllByTestId(IDS.lastKnown)).toHaveLength(0);
   });
 });

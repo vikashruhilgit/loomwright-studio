@@ -216,10 +216,14 @@
   border-radius: var(--radius-sm);
   background: var(--surface-sunken);
 }
+/* One line each, whatever the width: a long command scrolls sideways instead of wrapping (Copy still copies it all). */
 .settings-cmdline code {
   flex: 1;
   min-width: 0;
   color: var(--ink);
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
 }
 .settings-copied {
   flex: none;

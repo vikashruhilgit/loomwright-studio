@@ -818,7 +818,7 @@ const CASES = {
       init: { unreachable: true },
       check: async (page) => {
         await expect(byId(page, BAND)).toContainText("Couldn't reach the kernel");
-        await expect(byId(page, SETTINGS.lastKnown)).toHaveCount(2);
+        await expect(page.getByTestId("titlebar-subtitle")).toHaveText("last known");
         await expect(page.getByRole("button", { name: "Reveal in Finder" })).toBeDisabled();
       },
     },

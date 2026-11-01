@@ -16,8 +16,9 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
+import { formatHomePath } from "../../shell/home-path";
 import { SETUP_STEPS } from "../../shell/KernelStates";
-import { KEYCHAIN_ITEM, NOTIFIER_CAPTION, SETTINGS_TEST_IDS as IDS, type SettingsView, commandsHeading, hasToken, healthView, tokenLife } from "./model";
+import { KEYCHAIN_ITEM, NOTIFIER_CAPTION, SETTINGS_TEST_IDS as IDS, type SettingsView, accountLabel, commandsHeading, hasToken, healthView, tokenLife } from "./model";
 import { Dot } from "./parts";
 
 function Row({ term, children, testId }: { readonly term: string; readonly children: ReactNode; readonly testId?: string }) {
@@ -29,18 +30,13 @@ function Row({ term, children, testId }: { readonly term: string; readonly child
   );
 }
 
-function SectionHead({ id, title, badge, lastKnown }: { readonly id: string; readonly title: string; readonly badge?: string; readonly lastKnown?: boolean }) {
+function SectionHead({ id, title, badge }: { readonly id: string; readonly title: string; readonly badge?: string }) {
   return (
     <div className="settings-sech">
       <h2 className="settings-label" id={id}>
         {title}
       </h2>
       {badge === undefined ? null : <Badge>{badge}</Badge>}
-      {lastKnown === true ? (
-        <span className="settings-cap" data-testid={IDS.lastKnown}>
-          last known
-        </span>
-      ) : null}
     </div>
   );
 }
@@ -52,11 +48,10 @@ export interface AuthSectionProps {
   readonly view: SettingsView | undefined;
   /** What to draw in the section while there is no view: the loading skeleton, the failure card or the "status unknown" note. */
   readonly placeholder: ReactNode;
-  readonly offline: boolean;
   readonly now: Date;
 }
 
-export function AuthSection({ view, placeholder, offline, now }: AuthSectionProps) {
+export function AuthSection({ view, placeholder, now }: AuthSectionProps) {
   let body: ReactNode = placeholder;
   if (view !== undefined) {
     const { provider } = view;
@@ -69,7 +64,7 @@ export function AuthSection({ view, placeholder, offline, now }: AuthSectionProp
           <code className="settings-mono">{provider.id}</code>
         </Row>
         <Row term="Account" testId={IDS.account}>
-          {provider.account ?? "none recorded"}
+          {accountLabel(provider)}
         </Row>
         <Row term="Health" testId={IDS.health}>
           <Dot tone={health.tone} />
@@ -108,7 +103,7 @@ export function AuthSection({ view, placeholder, offline, now }: AuthSectionProp
   }
   return (
     <section className="settings-blk" aria-labelledby="settings-h-auth">
-      <SectionHead id="settings-h-auth" title="Auth provider" badge="read-only" lastKnown={offline && view !== undefined} />
+      <SectionHead id="settings-h-auth" title="Auth provider" badge="read-only" />
       {body}
     </section>
   );
@@ -139,6 +134,9 @@ function copySelection(node: HTMLElement): boolean {
   }
 }
 
+// A command too long for its line scrolls sideways (`settings.css`). The browser would make such a block a tab stop of
+// its own, which would put a stop that comes and goes with the window's width into the Tab order the e2e specs pin
+// (Copy, Copy, Copy, Reveal, ...); `tabIndex={-1}` keeps it out. The text stays selectable and Copy copies all of it.
 export function CommandsSection({ view }: { readonly view: SettingsView | undefined }) {
   const [copied, setCopied] = useState<{ readonly command: string; readonly ok: boolean } | undefined>(undefined);
   const timer = useRef<number | undefined>(undefined);
@@ -173,7 +171,7 @@ export function CommandsSection({ view }: { readonly view: SettingsView | undefi
             <div>
               <span>{step.what}</span>
               <div className="settings-cmdline">
-                <code className="settings-mono" data-testid={IDS.command}>
+                <code className="settings-mono" data-testid={IDS.command} tabIndex={-1}>
                   {step.command}
                 </code>
                 <Button size="row" variant="ghost" aria-label={`Copy command: ${step.command}`} data-testid={IDS.copy} onClick={(event) => void copy(step.command, event.currentTarget.parentElement?.querySelector("code") ?? null)}>
@@ -195,6 +193,8 @@ export function CommandsSection({ view }: { readonly view: SettingsView | undefi
 
 export interface KernelSectionProps {
   readonly view: SettingsView;
+  /** The owner's home folder (`useHomeDir`), so paths under it read `~/…`; `undefined` shows them in full. */
+  readonly home: string | undefined;
   readonly offline: boolean;
   /** The preferences bridge exists (Reveal goes through it). */
   readonly canReveal: boolean;
@@ -203,13 +203,13 @@ export interface KernelSectionProps {
   readonly revealFailed: boolean;
 }
 
-export function KernelSection({ view, offline, canReveal, onReveal, revealFailed }: KernelSectionProps) {
+export function KernelSection({ view, home, offline, canReveal, onReveal, revealFailed }: KernelSectionProps) {
   return (
     <section className="settings-blk" aria-labelledby="settings-h-kern">
-      <SectionHead id="settings-h-kern" title="Kernel" badge="read-only" lastKnown={offline} />
+      <SectionHead id="settings-h-kern" title="Kernel" badge="read-only" />
       <dl className="settings-kv" data-testid={IDS.kernel}>
         <Row term="Data location" testId={IDS.dataDir}>
-          <code className="settings-mono">{view.dataDir}</code>
+          <code className="settings-mono">{formatHomePath(view.dataDir, home)}</code>
           <Button size="row" variant="ghost" disabled={offline || !canReveal} title={offline ? "Needs the kernel" : undefined} data-testid={IDS.reveal} onClick={onReveal}>
             Reveal in Finder
           </Button>
@@ -225,7 +225,7 @@ export function KernelSection({ view, offline, canReveal, onReveal, revealFailed
         </Row>
         <Row term="Loomwright" testId={IDS.loomwright}>
           {view.loomwright.ok ? (
-            <code className="settings-mono">{view.loomwright.installPath}</code>
+            <code className="settings-mono">{formatHomePath(view.loomwright.installPath, home)}</code>
           ) : (
             <>
               <span data-tone="danger">error</span>
