@@ -82,3 +82,9 @@ app/src/screens/schedules
 kernel/src/gui/schedules.ts
 kernel/test/gui-schedules.test.ts
 app/e2e/schedules.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-01T13:53:14Z
+- **Brief:** .supervisor/jobs/done/2026-11-01-schedules-firing-history-and-playbook-off-triggers.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/200
