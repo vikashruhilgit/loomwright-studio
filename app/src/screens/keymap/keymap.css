@@ -102,17 +102,9 @@
 .keymap-c2 {
   width: 150px;
 }
-.keymap-tbl td .keymap-kbd + .keymap-kbd {
-  margin-left: var(--space-1);
-}
-.keymap-kbd {
+.keymap-tbl td .kbd {
   padding: 0 var(--space-1);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-xs);
-  background: var(--surface-sunken);
-  color: var(--ink-secondary);
-  font-family: var(--type-kbd-family);
-  font-size: var(--type-kbd-size);
-  line-height: var(--type-kbd-line);
-  font-weight: var(--type-kbd-weight);
+}
+.keymap-tbl td .kbd + .kbd {
+  margin-left: var(--space-1);
 }

@@ -8,6 +8,7 @@ import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { groupCommands } from "../../components/CommandPalette/fuzzy";
 import { Button } from "../../components/Button/Button";
+import { Kbd } from "../../components/Badge/Badge";
 import { useScreens } from "../../shell/ScreensContext";
 import { openerHash } from "./opener";
 
@@ -25,7 +26,6 @@ export function KeymapSubtitle() {
   return <>every shortcut and palette command</>;
 }
 
-const Kbd = ({ children }: { readonly children: ReactNode }) => <kbd className="keymap-kbd">{children}</kbd>;
 
 /** The "Anywhere" rows: the keys that work on every screen. `⌘K` and `⌘⇧K` are `RESERVED_SHORTCUTS`. */
 const ANYWHERE: readonly { readonly id: string; readonly keys: ReactNode; readonly does: string }[] = [
