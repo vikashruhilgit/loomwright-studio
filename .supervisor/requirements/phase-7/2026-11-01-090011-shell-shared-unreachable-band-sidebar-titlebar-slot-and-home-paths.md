@@ -102,3 +102,9 @@ app/src/screens/types.ts
 app/src/screens/integrations/IntegrationsView.tsx
 app/e2e/fixture-kernel.ts
 app/e2e/shell.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-01T07:10:45Z
+- **Brief:** .supervisor/jobs/done/2026-11-01-shell-shared-unreachable-band-sidebar-titlebar-slot-and-home-paths.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/192
