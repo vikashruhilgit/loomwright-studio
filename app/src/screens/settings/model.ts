@@ -36,6 +36,7 @@ export const SETTINGS_TEST_IDS = {
   account: "settings-account",
   health: "settings-health",
   healthNote: "settings-health-note",
+  healthLastKnown: "settings-health-last-known",
   tokenCreated: "settings-token-created",
   tokenLife: "settings-token-life",
   renewSoon: "settings-renew-soon",
@@ -204,6 +205,16 @@ export function healthView(health: HealthState): HealthView {
     default:
       return { label: health.word, tone: "neutral", note: undefined };
   }
+}
+
+/**
+ * The Health row while the kernel is unreachable and the screen holds a last view: the last word and its caption stay,
+ * but the tone is neutral for every state, because a held "ok" (or "expiring", or "missing") is only what was true when
+ * the kernel last answered. Live (`offline` false) it is `healthView` unchanged.
+ */
+export function healthViewOf(health: HealthState, offline: boolean): HealthView {
+  const view = healthView(health);
+  return offline ? { ...view, tone: "neutral" } : view;
 }
 
 // ---- The token's life -------------------------------------------------------------------------------------

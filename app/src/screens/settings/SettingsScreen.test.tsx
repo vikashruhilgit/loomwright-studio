@@ -509,7 +509,9 @@ describe("the kernel unreachable", () => {
     await waitFor(() => expect(subtitle()).toBe("last known"));
     expect(screen.queryAllByTestId(IDS.lastKnown)).toHaveLength(0);
     expect(text(IDS.provider)).toBe("subscription-token");
-    expect(text(IDS.health)).toBe("ok");
+    // The Health row now carries its own "last known" mark while offline (item 27), so its text is the word plus the mark.
+    await waitFor(() => expect(text(IDS.health)).toBe("oklast known"));
+    expect(text(IDS.healthLastKnown)).toBe("last known");
     expect(text(IDS.dataDir)).toContain("/Users/owner/.loomwright-studio");
     expect(screen.queryByTestId(IDS.unknown)).toBeNull();
     expect(screen.queryByTestId(IDS.error)).toBeNull();

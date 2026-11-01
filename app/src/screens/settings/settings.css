@@ -176,6 +176,12 @@
   border-radius: var(--radius-full);
   background: var(--idle);
 }
+/* Neutral is the mockup's `.dot.idle`: a ring, never a filled colour, so a held value reads as not-live (8x8 in all). */
+.settings-dot[data-tone="neutral"] {
+  background: transparent;
+  border: 2px solid var(--idle);
+  box-sizing: border-box;
+}
 .settings-dot[data-tone="ok"] {
   background: var(--ok);
 }

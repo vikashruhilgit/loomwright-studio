@@ -18,7 +18,8 @@ import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import { formatHomePath } from "../../shell/home-path";
 import { SETUP_STEPS } from "../../shell/KernelStates";
-import { KEYCHAIN_ITEM, NOTIFIER_CAPTION, SETTINGS_TEST_IDS as IDS, type SettingsView, accountLabel, commandsHeading, hasToken, healthView, tokenLife } from "./model";
+import { LAST_KNOWN } from "../../shell/last-known";
+import { KEYCHAIN_ITEM, NOTIFIER_CAPTION, SETTINGS_TEST_IDS as IDS, type SettingsView, accountLabel, commandsHeading, hasToken, healthViewOf, tokenLife } from "./model";
 import { Dot } from "./parts";
 
 function Row({ term, children, testId }: { readonly term: string; readonly children: ReactNode; readonly testId?: string }) {
@@ -49,13 +50,15 @@ export interface AuthSectionProps {
   /** What to draw in the section while there is no view: the loading skeleton, the failure card or the "status unknown" note. */
   readonly placeholder: ReactNode;
   readonly now: Date;
+  /** The kernel is unreachable (the screen's own flag, the one that disables Reveal): a held Health is drawn neutral and marked last known. */
+  readonly offline: boolean;
 }
 
-export function AuthSection({ view, placeholder, now }: AuthSectionProps) {
+export function AuthSection({ view, placeholder, now, offline }: AuthSectionProps) {
   let body: ReactNode = placeholder;
   if (view !== undefined) {
     const { provider } = view;
-    const health = healthView(provider.health);
+    const health = healthViewOf(provider.health, offline);
     const life = provider.tokenCreatedAt === null ? undefined : tokenLife(provider.tokenCreatedAt, now);
     const token = hasToken(provider.health);
     body = (
@@ -74,6 +77,11 @@ export function AuthSection({ view, placeholder, now }: AuthSectionProps) {
               {health.note}
             </span>
           )}
+          {offline ? (
+            <span className="settings-cap" data-testid={IDS.healthLastKnown}>
+              {LAST_KNOWN}
+            </span>
+          ) : null}
         </Row>
         {token ? (
           <Row term="Token created" testId={IDS.tokenCreated}>
