@@ -85,3 +85,9 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 ## Touches
 app/src/screens/settings
 app/e2e/settings.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-01T14:18:07Z
+- **Brief:** .supervisor/jobs/done/2026-11-01-settings-last-known-data-account-name-and-polish.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/199
