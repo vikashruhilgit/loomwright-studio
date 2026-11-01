@@ -902,6 +902,25 @@ describe("the ⌘K commands", () => {
   });
 });
 
+describe("the 'Created in' link while the kernel is away", () => {
+  it("drops the link to plain text, with the creator's session number still shown, and never wires Stop", async () => {
+    const created = card("task", 13, "waiting on owner", { agent: null, creator_agent: "wright", creator_session: 44 });
+    const { fake } = await mount({ items: [...board(), created], output: new Map([[44, [outRow(44, 1)]]]) });
+    await openCard("task:13");
+    expect(within(screen.getByTestId("task-facts")).getByTestId("task-created-in")).toBeTruthy();
+    fake.route(TASKS, () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } }));
+    await act(async () => {
+      fake.emit(event("task_updated", null, 13));
+    });
+    await waitFor(() => expect(screen.getByTestId("tasks-kernel-band")).toBeTruthy());
+    const facts = screen.getByTestId("task-facts");
+    expect(within(facts).queryByTestId("task-created-in")).toBeNull();
+    expect(within(facts).getByText("session #44")).toBeTruthy();
+    expect(screen.getByTestId("task-detail").getAttribute("data-card-key")).toBe("task:13");
+    expect(screen.queryByRole("button", { name: /^Stop/ })).toBeNull();
+  });
+});
+
 describe("the keys", () => {
   function press(key: string, init: KeyboardEventInit = {}): void {
     fireEvent.keyDown(document.body, { key, ...init });
