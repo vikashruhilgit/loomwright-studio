@@ -11,8 +11,8 @@
 //      click-through the screen's own spec covers (checked by reading that spec's test titles), or a named gap.
 //
 // What this proves is the screens on fixture data, together. It does not prove them on the owner's real store or
-// the packaged app: that is the live run in `docs/evidence/phase-7-exit-runbook.md`. The shell mounts neither the
-// keyboard map nor the command palette (App.tsx), so no ⌘ key is pressed here. The app starts only through
+// the packaged app: that is the live run in `docs/evidence/phase-7-exit-runbook.md`. The ⌘ keys, ⌘K and `?` (the
+// shell's `KeyboardHost`) are pinned in `e2e/keyboard.spec.ts`, so no ⌘ key is pressed here. The app starts only through
 // `launchApp` (`e2e/electron-harness.ts`), every launch gets a throwaway prefs dir and the fake OS (the main
 // process's unpackaged-only seams, as `settings.spec.ts`), `shell.openExternal` is replaced before any click, and
 // no screenshot is taken: this spec writes nothing under `docs/evidence/`. It asserts behaviour, never pixels.
@@ -936,12 +936,12 @@ test("AC2: integrations: the token, the switch's two steps and its failure, the 
 // ---- the coverage of the mockup ---------------------------------------------------------------------------------------------------
 
 /**
- * Mockup views with no screen in the app, found by this check and not fixed in it: the Keyboard map (`keymap`) has no
- * screen in `app/src`, and the shell mounts no global keyboard map or command palette (`App.tsx`), so the sidebar's ⌘ labels
- * and ⌘K do nothing in a launched window. Both are findings for new phase 7 items, recorded in the "Phase 7 exit: live run"
- * entry of `docs/OPEN_QUESTIONS.md`.
+ * Mockup views with no screen in the app, found by this check and not fixed in it. None remain: the Keyboard map
+ * (`keymap`) was the one, found by the 2026-11-01 live run together with the unmounted ⌘ shortcuts and ⌘K, and phase 7
+ * item 13 closed it (`#/keymap`, the shell's `KeyboardHost`, `e2e/keyboard.spec.ts`). A new gap is named here again
+ * and in the "Phase 7 exit: live run" entry of `docs/OPEN_QUESTIONS.md`.
  */
-const KNOWN_GAPS: readonly string[] = ["keymap"];
+const KNOWN_GAPS: readonly string[] = [];
 
 /** Click-through views: not a shared state AC2 walks, but a test in the screen's own spec covers it (found by its title prefix). */
 const CLICK_THROUGH: Readonly<Record<string, { readonly spec: string; readonly title: string }>> = {
@@ -955,6 +955,7 @@ const CLICK_THROUGH: Readonly<Record<string, { readonly spec: string; readonly t
   "memory-conflict": { spec: "memory.spec.ts", title: "AC8: an agent's write after the file was opened makes a save a conflict" },
   "budget-audit": { spec: "budget.spec.ts", title: "AC4: the audit log pages Older and Newer" },
   "budget-audit-filtered": { spec: "budget.spec.ts", title: "AC4: choosing Agent and Playbook" },
+  keymap: { spec: "keyboard.spec.ts", title: "AC4: ? opens the Keyboard map" },
 };
 
 /** The views the AC2 tests walk: `<screen>-<state>` for each state in `CASES` and in the Integrations walk. */
@@ -997,10 +998,10 @@ test("AC3: every view in the mockup README is a state the walk covers, a click-t
   expect.soft(clicked.filter((id) => !views.includes(id)), "mapped views that are not views in the README").toEqual([]);
   expect.soft(walked.filter((id) => !views.includes(id)), "walked states that are not views in the README").toEqual([]);
 
-  // The one gap is the Keyboard map.
-  expect.soft(KNOWN_GAPS, "the known gaps are exactly the Keyboard map").toEqual(["keymap"]);
+  // No view is a gap any more: the Keyboard map is a click-through (item 13).
+  expect.soft(KNOWN_GAPS, "there are no known gaps").toEqual([]);
   expect.soft(walked, "40 states are walked").toHaveLength(40);
-  expect.soft(clicked, "10 views are mapped to a click-through").toHaveLength(10);
+  expect.soft(clicked, "11 views are mapped to a click-through").toHaveLength(11);
 });
 
 test("AC3: each click-through view's test exists, by its title prefix, in the spec that covers it", () => {

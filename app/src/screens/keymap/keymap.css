@@ -1,0 +1,110 @@
+/* The Keyboard map (phase 7 item 13): docs/design/mockups/gui-v2.html (`keymapScreen`, and the .crumb, .blk, .tbl,
+   .km and .kbd rules of its style) on the tokens. Colour comes only from tokens.css custom properties
+   (contrast.test.ts fails on a literal colour). Focus keeps the shell's ring (`:focus-visible` in app.css):
+   nothing here removes it. */
+
+.keymap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  color: var(--ink);
+}
+.keymap-pad {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 760px;
+  padding: var(--space-5);
+}
+.keymap-crumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-tertiary);
+}
+.keymap-crumb .btn {
+  margin-left: calc(var(--space-2) * -1);
+}
+.keymap-text {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.keymap-blk {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.keymap-sech {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height);
+}
+.keymap-label {
+  margin: 0;
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.keymap-cap {
+  margin: 0;
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  letter-spacing: var(--type-caption-tracking);
+}
+.keymap-dim {
+  color: var(--ink-tertiary);
+}
+.keymap-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.keymap-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.keymap-tbl th {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--hairline);
+  text-align: left;
+  font-family: var(--type-label-family);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-line);
+  font-weight: var(--type-label-weight);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.keymap-tbl td {
+  padding: var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.keymap-c1 {
+  width: 210px;
+}
+.keymap-c2 {
+  width: 150px;
+}
+.keymap-tbl td .kbd {
+  padding: 0 var(--space-1);
+}
+.keymap-tbl td .kbd + .kbd {
+  margin-left: var(--space-1);
+}

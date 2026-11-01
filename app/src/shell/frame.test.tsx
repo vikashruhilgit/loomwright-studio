@@ -90,8 +90,8 @@ describe("the title bar", () => {
     expect(container.querySelector("header")?.children).toHaveLength(1);
   });
 
-  it("only the screens whose item moved their count line declare one (Memory so far)", () => {
-    expect(SCREENS.filter((s) => s.Subtitle !== undefined).map((s) => s.id)).toEqual(["memory"]);
+  it("only the screens whose item moved their count line declare one", () => {
+    expect(SCREENS.filter((s) => s.Subtitle !== undefined).map((s) => s.id)).toEqual(["memory", "keymap"]);
   });
 });
 
