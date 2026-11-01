@@ -6,6 +6,7 @@ import {
   KEYCHAIN_ITEM,
   SETTINGS_TEST_IDS,
   TOKEN_LIFETIME_DAYS,
+  accountLabel,
   bandOf,
   commandsHeading,
   dateLabel,
@@ -16,6 +17,7 @@ import {
   loginNote,
   newestSettingsEventId,
   parseSettings,
+  themeDescription,
   tokenLife,
   viewReply,
 } from "./model";
@@ -242,5 +244,43 @@ describe("the feed's events that make the screen read again", () => {
         { id: 4, kind: "message" },
       ]),
     ).toBe(3);
+  });
+});
+
+describe("accountLabel", () => {
+  const subscription = (account: string | null) => ({ id: "subscription-token", account });
+
+  it("reads 'personal subscription' when the account is the provider's id (the kernel's no-label fallback), never the id", () => {
+    expect(accountLabel(subscription("subscription-token"))).toBe("personal subscription");
+  });
+
+  it("reads 'personal subscription' for the subscription provider when no account came at all", () => {
+    expect(accountLabel(subscription(null))).toBe("personal subscription");
+    expect(accountLabel(subscription(""))).toBe("personal subscription");
+  });
+
+  it("shows a recorded label unchanged", () => {
+    expect(accountLabel(subscription("Vikash"))).toBe("Vikash");
+    expect(accountLabel(subscription("personal subscription"))).toBe("personal subscription");
+    const parsed = parseSettings(body({ provider: { id: "subscription-token", account: "a\u202eb", health: { status: "ok" }, token_created_at: null } }));
+    expect(accountLabel((parsed as SettingsView).provider)).toBe("a\\u202eb");
+  });
+
+  it("another provider with no label reads 'none recorded'", () => {
+    expect(accountLabel({ id: "api-key", account: null })).toBe("none recorded");
+    expect(accountLabel({ id: "api-key", account: "api-key" })).toBe("none recorded");
+    expect(accountLabel({ id: "api-key", account: "Work key" })).toBe("Work key");
+  });
+});
+
+describe("themeDescription", () => {
+  it("says what the pressed theme does", () => {
+    expect(themeDescription("system")).toBe("System follows your Mac.");
+    expect(themeDescription("light")).toBe("Always light, whatever your Mac uses.");
+    expect(themeDescription("dark")).toBe("Always dark, whatever your Mac uses.");
+  });
+
+  it("says the System text until the preferences have answered", () => {
+    expect(themeDescription(undefined)).toBe("System follows your Mac.");
   });
 });

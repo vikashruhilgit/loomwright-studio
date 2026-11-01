@@ -216,10 +216,26 @@
   border-radius: var(--radius-sm);
   background: var(--surface-sunken);
 }
+/* One line each, whatever the width: a long command scrolls sideways instead of wrapping (Copy still copies it all). */
 .settings-cmdline code {
   flex: 1;
   min-width: 0;
   color: var(--ink);
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+  /* A cue that the command goes on: an edge shade at each side that still has text past it. The "local" layers are
+     solid covers that travel with the text and hide the "scroll" shade once that end is in view, so a command that
+     fits shows none. Token colours only. */
+  background-image:
+    linear-gradient(to right, var(--surface-sunken), var(--surface-sunken)),
+    linear-gradient(to left, var(--surface-sunken), var(--surface-sunken)),
+    linear-gradient(to right, var(--border), var(--surface-sunken)),
+    linear-gradient(to left, var(--border), var(--surface-sunken));
+  background-position: left center, right center, left center, right center;
+  background-size: 12px 100%;
+  background-repeat: no-repeat;
+  background-attachment: local, local, scroll, scroll;
 }
 .settings-copied {
   flex: none;

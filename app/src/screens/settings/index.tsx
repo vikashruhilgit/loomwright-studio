@@ -9,6 +9,7 @@ import { getBridge } from "../../api/bridge";
 import type { ScreenDefinition } from "../types";
 import { SETTINGS_TEST_IDS } from "./model";
 import { SettingsScreen } from "./SettingsScreen";
+import { SettingsSubtitle } from "./SettingsSubtitle";
 import "./settings.css";
 
 /**
@@ -35,4 +36,5 @@ export const screen: ScreenDefinition = {
   title: "Settings",
   nav: { label: "Settings", order: 11, shortcut: "⌘," },
   Component: SettingsRoute,
+  Subtitle: SettingsSubtitle,
 };

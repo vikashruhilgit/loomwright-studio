@@ -4,9 +4,11 @@
 // relaunch and an honest "needs approval" (AC4), the theme changing at once through the main
 // process and kept on relaunch (AC5), Reveal in Finder opening the main process's own data dir
 // and the notifications preference kept on relaunch (AC6), the kernel going away while the
-// screen holds data (AC7), the keyboard (AC8), a live update that moves nothing already shown
-// (AC9), the accessible names (AC10), and a light and a dark screenshot of every state the
-// mockup shows (AC11). Run `npm run build` first.
+// screen holds data (AC7: `fixture.stop()`, "last known" in the title bar, the last data kept
+// across leaving Settings and coming back, `fixture.restart()` clearing it), the keyboard (AC8),
+// a live update that moves nothing already shown (AC9), the accessible names (AC10), and a light
+// and a dark screenshot of every state the mockup shows (AC11). Phase 7 item 18 adds `~/…` paths,
+// the account's words, one-line commands and the theme row's help text. Run `npm run build` first.
 //
 // Every launch sets `STUDIO_APP_PREFS_DIR` to a temp dir and `STUDIO_APP_FAKE_OS=1` (the main
 // process's unpackaged-only seams, `electron/settings.ts`): `prefs.json` and the fake OS's
@@ -30,10 +32,11 @@ import { expect, test } from "@playwright/test";
 import type { ElectronApplication, Locator, Page, TestInfo } from "@playwright/test";
 import { launchApp } from "./electron-harness";
 import { startFixtureKernel } from "./fixture-kernel";
-import type { FixtureKernel } from "./fixture-kernel";
+import type { FixtureAnswer, FixtureKernel, FixtureRequest } from "./fixture-kernel";
 import { FIXTURE_SECRET, settingsFixture } from "./fixtures/settings";
 import type { SettingsFixture, SettingsFixtureOptions } from "./fixtures/settings";
 import { SETTINGS_TEST_IDS as IDS } from "../src/screens/settings/model";
+import { BACKOFF_CAP_MS, SETTLE_MS } from "../src/store/store";
 
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-7-polish/settings/", import.meta.url));
 const README = join(EVIDENCE_DIR, "README.md");
@@ -47,6 +50,13 @@ const COMMANDS = ["claude setup-token", "security add-generic-password -a loomwr
 /** The main process's test seams (`electron/settings.ts`: `PREFS_DIR_ENV`, `FAKE_OS_ENV`, `PREFS_FILENAME`, `OS_CALLS_FILENAME`). */
 const PREFS_DIR_ENV = "STUDIO_APP_PREFS_DIR";
 const FAKE_OS_ENV = "STUDIO_APP_FAKE_OS";
+
+/** How long the shell takes to notice the kernel is back (`shell.spec.ts` uses the same bound). */
+const STATE_TIMEOUT_MS = BACKOFF_CAP_MS + SETTLE_MS + 3_000;
+/** The title bar's subtitle slot (`Titlebar.tsx`). */
+const SUBTITLE = "titlebar-subtitle";
+/** The shell's band for an unreachable or reconnecting kernel. */
+const KERNEL_BAND = '[data-testid="kernel-unreachable-band"], [data-testid="kernel-reconnecting-band"]';
 
 /** When this run began, for the guard that the tracked evidence dir is untouched without `SETTINGS_EVIDENCE`. */
 const RUN_START = Date.now();
@@ -155,6 +165,9 @@ async function screenshots(page: Page, state: (typeof STATES)[number], testInfo:
     return { width, height };
   });
   await settle(page);
+  // A committed screenshot must not publish the machine's user name: the home folder reads `~`, never in full.
+  const home = await homeOf();
+  expect(await page.evaluate(() => document.body.innerText), "no home path in the text the screenshot shows").not.toContain(home);
   await page.emulateMedia({ reducedMotion: "reduce" });
   const grounds: string[] = [];
   for (const theme of THEMES) {
@@ -177,6 +190,25 @@ async function screenshots(page: Page, state: (typeof STATES)[number], testInfo:
 /** The text of the element with `id`, trimmed. */
 async function textOf(page: Page, id: string): Promise<string> {
   return ((await byId(page, id).textContent()) ?? "").trim();
+}
+
+/** The app's home folder as the main process sees it (what the screen shortens to `~`). */
+async function homeOf(): Promise<string> {
+  return (await app?.evaluate(({ app: electronApp }) => electronApp.getPath("home"))) as string;
+}
+
+/**
+ * Make the fixture kernel serve its data location and Loomwright install under the app's own home folder, so the
+ * screen (and every screenshot) reads `~/…` and publishes no user name. Spec-local: the fixture file is not edited.
+ */
+async function serveUnderHome(fx: SettingsFixture, page: Page): Promise<void> {
+  const home = await homeOf();
+  fx.update({
+    data_dir: `${home}/.loomwright-studio`,
+    loomwright: { status: "ok", install_path: `${home}/.claude/plugins/cache/atelier/loomwright/17.22.0`, plugin_version: "17.22.0", contract_schema_version: 1, host_switch: true },
+  });
+  await expect(byId(page, IDS.dataDir)).toContainText("~/.loomwright-studio");
+  await expect(byId(page, IDS.loomwright)).toHaveText("~/.claude/plugins/cache/atelier/loomwright/17.22.0");
 }
 
 /** Each element's bounding box with `id`, in document order. */
@@ -211,6 +243,11 @@ test("AC2: the provider, its account, health, token created and life, the three 
   // The shell draws the one heading; the screen's own are h2 and below.
   expect(await page.locator("h1").allTextContents()).toEqual(["Settings"]);
   await expect(page.getByRole("button", { name: /^Settings/ })).toHaveAttribute("aria-current", "page");
+  // Populated has no subtitle: the title alone (the mockup's `R.sub` is ''); "last known" is only for the unreachable view.
+  expect(await textOf(page, SUBTITLE)).toBe("");
+  await expect(byId(page, IDS.lastKnown)).toHaveCount(0);
+  // The paths above are outside the app's home folder, so they read in full; under it, the shot reads `~/…`.
+  await serveUnderHome(fx, page);
   await screenshots(page, "populated", testInfo);
 });
 
@@ -219,10 +256,15 @@ test("Copy puts the command on the clipboard and says so", async () => {
   await page.getByRole("button", { name: `Copy command: ${COMMANDS[0]}` }).click();
   await expect(byId(page, IDS.copied).first()).toHaveText("Copied");
   expect(await app?.evaluate(({ clipboard }) => clipboard.readText())).toBe(COMMANDS[0]);
+  // The longest command is copied whole, however it is drawn.
+  await page.getByRole("button", { name: `Copy command: ${COMMANDS[1]}` }).click();
+  await expect(byId(page, IDS.copied).nth(1)).toHaveText("Copied");
+  expect(await app?.evaluate(({ clipboard }) => clipboard.readText())).toBe(COMMANDS[1]);
 });
 
 test("the empty state (missing): a danger band as an alert, no token rows, the set-up heading over the three commands", async ({}, testInfo) => {
-  const page = await open(settingsFixture({ state: "missing" }));
+  const fx = settingsFixture({ state: "missing" });
+  const page = await open(fx);
   const band = byId(page, IDS.band);
   await expect(band).toBeVisible();
   await expect(band).toHaveAttribute("role", "alert");
@@ -233,11 +275,13 @@ test("the empty state (missing): a danger band as an alert, no token rows, the s
   await expect(page.getByRole("region", { name: "Set it up in your terminal" })).toBeVisible();
   await expect(byId(page, IDS.command)).toHaveCount(3);
   await expect(byId(page, IDS.login)).toBeEnabled();
+  await serveUnderHome(fx, page);
   await screenshots(page, "empty", testInfo);
 });
 
 test("the waiting state (expiring): an attention band naming the days, a renew soon badge and the days left beside the dot", async ({}, testInfo) => {
-  const page = await open(settingsFixture({ state: "expiring" }));
+  const fx = settingsFixture({ state: "expiring" });
+  const page = await open(fx);
   const band = byId(page, IDS.band);
   await expect(band).toBeVisible();
   await expect(band).toHaveAttribute("role", "status");
@@ -245,6 +289,7 @@ test("the waiting state (expiring): an attention band naming the days, a renew s
   expect(await textOf(page, IDS.health)).toBe("expiring18 days left");
   await expect(byId(page, IDS.renewSoon)).toHaveText("renew soon");
   await expect(byId(page, IDS.tokenLife)).toContainText("18 days left");
+  await serveUnderHome(fx, page);
   await screenshots(page, "waiting", testInfo);
 });
 
@@ -387,16 +432,26 @@ test("AC6: Reveal in Finder opens the main process's own data dir (never one the
 
 // ---- AC7: the kernel unreachable ----------------------------------------------------------------------------------------------
 
-test("AC7: when the kernel goes away the shared band shows, the screen keeps its last data marked last known, Reveal is disabled, the app's own controls still work and nothing throws", async ({}, testInfo) => {
-  const { page } = await openPopulated();
-  const before = { provider: await textOf(page, IDS.provider), dataDir: await textOf(page, IDS.dataDir), health: await textOf(page, IDS.health) };
-  await fixture?.close();
-  await expect(page.locator('[data-testid="kernel-unreachable-band"], [data-testid="kernel-reconnecting-band"]').first()).toBeVisible({ timeout: 20_000 });
-  await expect(byId(page, IDS.lastKnown)).toHaveCount(2);
-  expect({ provider: await textOf(page, IDS.provider), dataDir: await textOf(page, IDS.dataDir), health: await textOf(page, IDS.health) }, "the rows are the last read").toEqual(before);
+test("AC7: when the kernel stops the shared band shows over the last data, 'last known' sits in the title bar, Reveal is disabled, the data survives leaving Settings and coming back, the app's own controls still work, and restarting clears it", async ({}, testInfo) => {
+  test.setTimeout(120_000);
+  const { fx, page } = await openPopulated();
+  await serveUnderHome(fx, page);
+  const rows = async () => ({ provider: await textOf(page, IDS.provider), account: await textOf(page, IDS.account), health: await textOf(page, IDS.health), dataDir: await textOf(page, IDS.dataDir), loomwright: await textOf(page, IDS.loomwright) });
+  const before = await rows();
+  expect(await textOf(page, SUBTITLE), "populated: no subtitle").toBe("");
+
+  await (fixture as FixtureKernel).stop();
+  await expect(page.locator(KERNEL_BAND).first()).toBeVisible({ timeout: 20_000 });
+  await expect(byId(page, SUBTITLE)).toHaveText("last known");
+  await expect(byId(page, IDS.lastKnown), "the section heads carry no mark").toHaveCount(0);
+  expect(await rows(), "the rows are the last read").toEqual(before);
   await expect(byId(page, IDS.unknown)).toHaveCount(0);
   await expect(byId(page, IDS.error)).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Reveal in Finder" })).toBeDisabled();
+  await expect(byId(page, IDS.notice)).toHaveCount(0);
+  await expect(page.getByText("GET /settings")).toHaveCount(0);
+  const reveal = page.getByRole("button", { name: "Reveal in Finder" });
+  await expect(reveal).toBeDisabled();
+  await expect(reveal).toHaveAttribute("title", "Needs the kernel");
   // What needs only the app stays usable: the preferences are the main process's.
   for (const id of [IDS.login, IDS.notifications, IDS.themeSystem, IDS.themeLight, IDS.themeDark]) await expect(byId(page, id)).toBeEnabled();
   await switchNamed(page, "Launch at login is off").click();
@@ -405,6 +460,134 @@ test("AC7: when the kernel goes away the shared band shows, the screen keeps its
   await expect(byId(page, IDS.themeDark)).toHaveAttribute("aria-pressed", "true");
   expect(osCalls()?.calls.filter((c) => c.op === "reveal"), "a disabled Reveal opened nothing").toEqual([]);
   await screenshots(page, "unreachable", testInfo);
+
+  // Leave Settings and come back while the kernel is still down: a new mount that starts from the last data, never 'Status unknown'.
+  await page.evaluate(() => {
+    window.location.hash = "#/tasks";
+  });
+  await expect(byId(page, IDS.screen)).toHaveCount(0);
+  await expect(page.locator("h1")).toHaveText("Tasks");
+  await page.evaluate(() => {
+    window.location.hash = "#/settings";
+  });
+  await expect(byId(page, IDS.auth)).toBeVisible();
+  await expect(byId(page, IDS.unknown), "a remount while the kernel is down is not 'Status unknown'").toHaveCount(0);
+  await expect(byId(page, IDS.error)).toHaveCount(0);
+  await expect(byId(page, SUBTITLE)).toHaveText("last known");
+  expect(await rows(), "the remounted rows are the last read").toEqual(before);
+  await expect(reveal).toBeDisabled();
+  await expect(reveal).toHaveAttribute("title", "Needs the kernel");
+
+  // The listener is back on the same port with the same state: the band goes, the subtitle clears, Reveal works again.
+  await (fixture as FixtureKernel).restart();
+  await expect(page.locator(KERNEL_BAND)).toHaveCount(0, { timeout: STATE_TIMEOUT_MS });
+  await expect(byId(page, SUBTITLE)).toHaveText("");
+  await expect(reveal).toBeEnabled({ timeout: STATE_TIMEOUT_MS });
+  expect(await rows()).toEqual(before);
+});
+
+test("item 18 AC1: with the kernel down from the start and no data ever read, 'Status unknown' stays and there is no subtitle", async () => {
+  test.setTimeout(120_000);
+  const fx = settingsFixture();
+  fixture = await startFixtureKernel(fx.options);
+  fx.attach(fixture);
+  prefsDir = mkdtempSync(join(tmpdir(), "studio-app-prefs-"));
+  await fixture.stop();
+  app = await launchApp({ ...fixture.env, [PREFS_DIR_ENV]: prefsDir, [FAKE_OS_ENV]: "1" });
+  const page = await app.firstWindow();
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.evaluate(() => {
+    window.location.hash = "#/settings";
+  });
+  await expect(byId(page, IDS.unknown)).toBeVisible({ timeout: 20_000 });
+  await expect(byId(page, IDS.health)).toHaveCount(0);
+  expect(await textOf(page, SUBTITLE)).toBe("");
+});
+
+// ---- Item 18: `~` paths, the account, one-line commands, the theme's words ----------------------------------------------------
+
+test("item 18 AC3: a data location and a Loomwright install under the app's home read ~/…, a path outside it reads in full, and Reveal still opens the main process's own dir", async () => {
+  const { fx, page } = await openPopulated();
+  const home = await homeOf();
+  // The fixture's own paths are outside the home folder: in full.
+  expect(await textOf(page, IDS.dataDir)).toContain(fx.dataDir);
+  expect(await textOf(page, IDS.loomwright)).toBe("/Users/owner/.claude/plugins/cache/atelier/loomwright/17.22.0");
+  fx.update({
+    data_dir: `${home}/.loomwright-studio`,
+    loomwright: { status: "ok", install_path: `${home}/.claude/plugins/loomwright`, plugin_version: "17.23.0", contract_schema_version: 1, host_switch: true },
+  });
+  await expect(byId(page, IDS.dataDir)).toContainText("~/.loomwright-studio");
+  await expect(byId(page, IDS.loomwright)).toHaveText("~/.claude/plugins/loomwright");
+  expect(await page.evaluate(() => document.body.innerText), "the home folder is never printed in full").not.toContain(home);
+  // The commands are not paths: untouched.
+  expect(await byId(page, IDS.command).allTextContents()).toEqual([...COMMANDS]);
+  await page.getByRole("button", { name: "Reveal in Finder" }).click();
+  await expect.poll(() => osCalls()?.calls).toEqual([{ op: "reveal", path: (fixture as FixtureKernel).dataDir }]);
+});
+
+test("item 18 AC4: an account equal to the provider's id reads 'personal subscription', never the id", async () => {
+  const fx = settingsFixture();
+  const routes = fx.options.routes as Record<string, (req: FixtureRequest) => Promise<FixtureAnswer>>;
+  const inner = routes["GET /settings"] as (req: FixtureRequest) => Promise<FixtureAnswer>;
+  // What the real kernel answers when no label is recorded: the account is the provider's id.
+  routes["GET /settings"] = async (req) => {
+    const answer = await inner(req);
+    const body = answer.body as { provider: { id: string } };
+    return answer.status !== 200 ? answer : { ...answer, body: { ...body, provider: { ...body.provider, account: body.provider.id } } };
+  };
+  const page = await open(fx);
+  await expect(byId(page, IDS.auth)).toBeVisible();
+  expect(await textOf(page, IDS.provider)).toBe("subscription-token");
+  expect(await textOf(page, IDS.account)).toBe("personal subscription");
+});
+
+test("item 18 AC5: each command block is one line at the default window size and at the smallest, and scrolls sideways rather than wrapping", async () => {
+  const { page } = await openPopulated();
+  const measure = () =>
+    byId(page, IDS.command).evaluateAll((codes) =>
+      codes.map((code) => {
+        const style = getComputedStyle(code);
+        const block = code.parentElement as HTMLElement;
+        return {
+          height: code.getBoundingClientRect().height,
+          line: Number.parseFloat(style.lineHeight),
+          blockHeight: block.getBoundingClientRect().height,
+          whiteSpace: style.whiteSpace,
+          overflowWrap: style.overflowWrap,
+          overflowX: style.overflowX,
+          overflows: code.scrollWidth > code.clientWidth,
+        };
+      }),
+    );
+  const size = await app?.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getSize());
+  expect(size, "the default window size (main.ts)").toEqual([1180, 760]);
+  for (const width of [1180, 900]) {
+    await app?.evaluate(({ BrowserWindow }, w) => BrowserWindow.getAllWindows()[0]?.setSize(w, 760), width);
+    await settle(page);
+    const blocks = await measure();
+    expect(blocks).toHaveLength(3);
+    for (const block of blocks) {
+      expect(block.height, `a command is one line at ${width}px`).toBeLessThanOrEqual(block.line + 1);
+      expect(block.whiteSpace).toBe("pre");
+      expect(block.overflowWrap).toBe("normal");
+      // Scrolling is allowed only because the block says so.
+      if (block.overflows) expect(block.overflowX).toBe("auto");
+    }
+    expect(new Set(blocks.map((b) => Math.round(b.blockHeight))).size, `the three command blocks are equally tall at ${width}px`).toBe(1);
+  }
+});
+
+test("item 18 AC6: the theme row's help text describes the pressed theme and changes when another is pressed", async () => {
+  const { page } = await openPopulated();
+  const help = async (): Promise<string> => ((await page.locator("#settings-theme-label + span").textContent()) ?? "").trim();
+  expect(await help()).toBe("System follows your Mac.");
+  await byId(page, IDS.themeDark).click();
+  await expect(byId(page, IDS.themeDark)).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(help).toBe("Always dark, whatever your Mac uses.");
+  await byId(page, IDS.themeLight).click();
+  await expect.poll(help).toBe("Always light, whatever your Mac uses.");
+  await byId(page, IDS.themeSystem).click();
+  await expect.poll(help).toBe("System follows your Mac.");
 });
 
 // ---- AC8: the keyboard -----------------------------------------------------------------------------------------------------------
@@ -419,7 +602,7 @@ test("AC8: every action is reached by Tab in order and done with Enter or Space:
     await page.keyboard.press("Tab");
     seen.push(await focused());
   }
-  // Two more Copy buttons, Reveal, both switches, then the three theme buttons.
+  // Two more Copy buttons, Reveal, both switches, then the three theme buttons: a command that scrolls is not a tab stop.
   expect(seen).toEqual([IDS.copy, IDS.copy, IDS.reveal, IDS.login, IDS.notifications, IDS.themeSystem, IDS.themeLight, IDS.themeDark]);
 
   // Enter on a theme button, Space on a switch.

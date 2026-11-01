@@ -10,7 +10,7 @@
 // built app by `e2e/settings.spec.ts`.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ApiRequest, ApiResult, AppPreferences, AuthHealth, StatusBody } from "../../api/contract";
+import type { ApiRequest, ApiResult, AppPreferences, AuthHealth } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { SETUP_STEPS } from "../../shell/KernelStates";
@@ -20,6 +20,7 @@ import { liveStoreFor } from "../../store/react";
 import { SETTINGS_OWNER } from "./commands";
 import { SETTINGS_TEST_IDS as IDS } from "./model";
 import { SettingsScreen } from "./SettingsScreen";
+import { STATUS, UNREACHABLE, daysAgo, mountSubtitle, settingsBody } from "./test-support";
 
 afterEach(() => {
   cleanup();
@@ -29,54 +30,11 @@ afterEach(() => {
 
 // ---- A scripted kernel --------------------------------------------------------------------------------------
 
-const STATUS: StatusBody = {
-  kernel: { version: "1.0.0", uptime_s: 1, pid: 7 },
-  kill_switch: { engaged: false, since: null },
-  auth: [],
-  sessions: [],
-  kill_unconfirmed: [],
-  orphaned: [],
-  queue: { pending: 0, events: [] },
-  wakeups: { pending: 0, items: [] },
-  tokens_today: { day: "2026-10-30", agents: [] },
-  cap_state: [],
-};
-
-const UNREACHABLE: ApiResult<unknown> = { ok: false, status: 0, connection: { state: "unreachable", reason: "daemon_not_running" } };
 const refused = (status: number, body: { readonly error: string } & Record<string, unknown>): ApiResult<unknown> => ({ ok: false, status, body });
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-/** Slightly less than `n` days ago, so the whole days left are exactly 365 - n however long the test takes to run. */
-const daysAgo = (n: number): string => new Date(Date.now() - n * 86_400_000 + 3_600_000).toISOString();
 
 /** A token that must appear nowhere: the test plants it where a careless screen would show or keep it. */
 const SECRET = "sk-ant-oat01-NOT-A-REAL-TOKEN-0123456789abcdef";
-
-interface Body {
-  readonly health?: AuthHealth;
-  readonly created?: string | null;
-  readonly account?: string | null;
-  readonly dataDir?: string;
-  readonly notifier?: string;
-  readonly loomwright?: unknown;
-  /** Extra fields a kernel might add, at the top and in the provider. */
-  readonly extra?: Record<string, unknown>;
-}
-
-function settingsBody(o: Body = {}): Record<string, unknown> {
-  return {
-    provider: {
-      id: "subscription-token",
-      account: o.account === undefined ? "personal subscription" : o.account,
-      health: o.health ?? { status: "ok" },
-      token_created_at: o.created === undefined ? daysAgo(100) : o.created,
-      ...o.extra,
-    },
-    data_dir: o.dataDir ?? "/Users/owner/.loomwright-studio",
-    notifier: o.notifier ?? "osascript",
-    loomwright: o.loomwright ?? { status: "ok", install_path: "/Users/owner/.claude/plugins/loomwright", plugin_version: "17.22.0", contract_schema_version: 1, host_switch: true },
-    ...o.extra,
-  };
-}
 
 type Answer = ApiResult<unknown> | Promise<ApiResult<unknown>>;
 
@@ -118,6 +76,7 @@ function emit(kernel: Kernel, kind: string, payload: unknown = {}): void {
 const reads = (kernel: Kernel): ApiRequest[] => kernel.fake.requestsTo("GET /settings").map((r) => r.req);
 const text = (testId: string): string => screen.getByTestId(testId).textContent ?? "";
 const button = (testId: string): HTMLButtonElement => screen.getByTestId(testId) as HTMLButtonElement;
+const subtitle = (): string => text("titlebar-subtitle");
 const SWITCHES = [IDS.login, IDS.notifications] as const;
 
 // ---- The states ---------------------------------------------------------------------------------------------
@@ -542,9 +501,13 @@ describe("This app", () => {
 describe("the kernel unreachable", () => {
   it("keeps the last data marked last known, disables Reveal, and leaves the app's own controls working; nothing throws", async () => {
     const kernel = await start();
+    mountSubtitle(kernel.fake.bridge);
     kernel.settings = () => UNREACHABLE;
     emit(kernel, "auth_token_expiring");
-    await waitFor(() => expect(screen.getAllByTestId(IDS.lastKnown)).toHaveLength(2));
+    // "last known" moved from the two section heads to the title bar's subtitle, which follows the shell's reach (the feed), not this screen's own read.
+    act(() => kernel.fake.emit({ type: "closed", code: 1006, reason: "" }));
+    await waitFor(() => expect(subtitle()).toBe("last known"));
+    expect(screen.queryAllByTestId(IDS.lastKnown)).toHaveLength(0);
     expect(text(IDS.provider)).toBe("subscription-token");
     expect(text(IDS.health)).toBe("ok");
     expect(text(IDS.dataDir)).toContain("/Users/owner/.loomwright-studio");
@@ -564,13 +527,24 @@ describe("the kernel unreachable", () => {
 
   it("recovers by itself when the next event brings an answer", async () => {
     const kernel = await start();
+    mountSubtitle(kernel.fake.bridge);
     kernel.settings = () => UNREACHABLE;
     emit(kernel, "auth_token_expiring");
+    act(() => kernel.fake.emit({ type: "closed", code: 1006, reason: "" }));
     await waitFor(() => expect(button(IDS.reveal).disabled).toBe(true));
+    await waitFor(() => expect(subtitle()).toBe("last known"));
     kernel.settings = () => ok(settingsBody({ dataDir: "/moved" }));
     emit(kernel, "loomwright_contract_changed");
-    await waitFor(() => expect(button(IDS.reveal).disabled).toBe(false));
+    // The feed comes back (the store retries after its backoff and a frame proves it open): the band's reach clears, the subtitle with it, and Reveal works again.
+    await waitFor(
+      () => {
+        act(() => kernel.fake.emit({ type: "heartbeat", latest_id: 0 }));
+        expect(button(IDS.reveal).disabled).toBe(false);
+      },
+      { timeout: 5000 },
+    );
     expect(text(IDS.dataDir)).toContain("/moved");
+    expect(subtitle()).toBe("");
     expect(screen.queryAllByTestId(IDS.lastKnown)).toHaveLength(0);
   });
 });
