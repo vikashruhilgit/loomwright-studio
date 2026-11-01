@@ -2,12 +2,14 @@
 // their limits, the subscription cap with its resets, and the full audit log. No shortcut: the
 // mockup reaches it by the palette only. The screen is `./BudgetScreen.tsx`; this module's one
 // export is the screen the shell discovers (`import.meta.glob("./screens/*/index.tsx")` in
-// App.tsx) and it keeps the id, title and nav entry the placeholder had.
+// App.tsx) and it keeps the id, title and nav entry the placeholder had. Its count line is the
+// `Subtitle` slot in the title bar (`./Subtitle.tsx`), beside the title, not a line of the screen.
 import type { StudioBridge } from "../../api/contract";
 import { getBridge } from "../../api/bridge";
 import type { ScreenDefinition } from "../types";
 import { BUDGET_TEST_IDS } from "./model";
 import { BudgetScreen } from "./BudgetScreen";
+import { Subtitle } from "./Subtitle";
 import "./budget.css";
 
 /**
@@ -33,4 +35,5 @@ export const screen: ScreenDefinition = {
   title: "Budget & audit",
   nav: { label: "Budget & audit", order: 10 },
   Component: BudgetRoute,
+  Subtitle,
 };

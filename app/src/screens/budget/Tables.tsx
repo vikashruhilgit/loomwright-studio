@@ -6,7 +6,7 @@
 // refetch that changes a figure changes text inside a row and moves nothing. The first row of each
 // table is the one tab stop; J and K move between the rest (`BudgetScreen.tsx`'s key handler).
 // Every name, slug and payload string is untrusted: a React text child, never markup.
-import type { BudgetCapState, BudgetLimitUsage, PlaybookListing, RosterEntry } from "../../api/contract";
+import type { BudgetCapState, BudgetLimitUsage, BudgetUsageCapState, PlaybookListing, RosterEntry } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
 import type { AvatarState } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
@@ -16,21 +16,17 @@ import {
   BUDGET_TEST_IDS as IDS,
   busiestMeterLabel,
   busiestShare,
-  capAccountLabel,
-  capCaption,
   capMeterLabel,
-  capNote,
-  capStatusView,
   formatTokens,
   limitFigure,
   agentName,
   playbookName,
   safe,
   sessionsLabel,
-  utilizationPercent,
   whenText,
 } from "./model";
 import type { AuditRow, DayFigure } from "./model";
+import { capAccountLabel, capNote, capWindowView } from "./cap";
 import { LimitCell, Meter } from "./parts";
 
 const rowTab = (first: boolean): number => (first ? 0 : -1);
@@ -210,7 +206,7 @@ export function Latest({
         </Button>
       </div>
       {rows.length === 0 ? (
-        <p className="budget-cap budget-latest-note">{loading ? "Loading the latest events…" : "Nothing has been written to the log yet."}</p>
+        <p className="budget-cap budget-latest-note">{loading ? (offline ? "The latest events need the kernel." : "Loading the latest events…") : "Nothing has been written to the log yet."}</p>
       ) : (
         <ul className="budget-evs" aria-labelledby="budget-latest-h" data-nav-group="latest">
           {rows.map((r, index) => (
@@ -241,7 +237,7 @@ export function Inspector({
   lastKnown,
   now,
 }: {
-  readonly cap: BudgetCapState;
+  readonly cap: BudgetUsageCapState;
   readonly statusCap: BudgetCapState | undefined;
   readonly todayTokens: number;
   readonly todayCost: number | null;
@@ -262,27 +258,31 @@ export function Inspector({
           <div key={`${entry.provider}:${entry.account}`} className="budget-blk">
             <span className="budget-cap">{`${capAccountLabel(entry, statusCap)}${lastKnown ? " · last known" : ""}`}</span>
             {entry.limits.map((w) => {
-              const status = capStatusView(w.status);
-              const percent = utilizationPercent(w.utilization);
+              const view = capWindowView(w, now);
               return (
-                <div key={w.rate_limit_type} className="budget-blk budget-window" data-testid={IDS.capWindow} data-window={w.rate_limit_type}>
+                <div key={w.rate_limit_type} className="budget-blk budget-window" data-testid={IDS.capWindow} data-window={w.rate_limit_type} data-stale={view.stale ? "true" : undefined}>
                   <div className="budget-sech">
                     <b className="budget-mono">{safe(w.rate_limit_type)}</b>
                     <span className="budget-spacer" />
                     <span data-testid={IDS.capStatus}>
-                      <Badge tone={status.tone}>{status.label}</Badge>
+                      <Badge tone={view.status.tone}>{view.status.label}</Badge>
                     </span>
+                    {view.stale ? (
+                      <span data-testid={IDS.capStale}>
+                        <Badge tone="neutral">stale</Badge>
+                      </span>
+                    ) : null}
                   </div>
-                  {percent === null ? null : <Meter percent={percent} label={capMeterLabel(w.rate_limit_type, percent)} />}
+                  {view.percent === null ? null : <Meter percent={view.percent} label={capMeterLabel(w.rate_limit_type, view.percent)} />}
                   <span className="budget-cap budget-tn" data-testid={IDS.capText}>
-                    {capCaption(w, now)}
+                    {view.caption}
                   </span>
                 </div>
               );
             })}
           </div>
         ))}
-        <span className="budget-cap">{capNote(cap)}</span>
+        <span className="budget-cap">{capNote(cap, now)}</span>
       </section>
       <section className="budget-blk" aria-labelledby="budget-now-h" data-testid={IDS.today}>
         <h2 className="budget-label" id="budget-now-h">

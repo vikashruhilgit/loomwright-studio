@@ -3,8 +3,9 @@
 // no layout shift). The same hook serves the overview's three latest events (one fixed page, no
 // paging) and the full log (filters, 8 rows a page).
 //
-// Keyset paging has no total, so the only state is the cursor stack (`./model.ts` `Paging`):
-// "Older" pushes the shown page's `next_before`, "Newer" pops. A change of filter (`key`) starts
+// Paging is by keyset cursor, so the only paging state is the cursor stack (`./model.ts` `Paging`; the
+// route's `matching` / `total` counts ride on the page held and only label it): "Older" pushes the shown
+// page's `next_before`, "Newer" pops. A change of filter (`key`) starts
 // at the first page. An answer older than the latest request is dropped, and a failed read never
 // drops the page held: the screen shows it as the last known log.
 import { useCallback, useEffect, useRef, useState } from "react";
