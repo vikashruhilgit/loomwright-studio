@@ -274,6 +274,74 @@ describe("AC1: the screen's reads repeat when the kernel returns", () => {
     // The same row: nothing was remounted.
     expect(rowOf("Review PRs")).toBe(row);
   });
+
+  // Each screen-local read repeats on its own: these three fail if the return-to-live repeat is removed from its hook.
+  const LATER = "2026-11-03T15:30:00.000Z";
+
+  it("the list's Last run repeats: a newer run that started while the kernel was away shows after it returns", async () => {
+    const fake = fakeBridge();
+    const kernel = standard();
+    let started = AT;
+    wire(fake, kernel);
+    fake.route("GET /playbooks/:id/runs", (req) => (kernel.away ? AWAY : ok({ runs: req.params?.id === 3 ? [] : [run(11, 1, { started })], next_before: null })));
+    show(fake);
+    const root = screen.getByTestId(IDS.screen);
+    await waitFor(() => expect(root.textContent).not.toContain("reading…"));
+    await waitFor(() => expect(screen.getAllByTestId(IDS.row)).toHaveLength(3));
+    const timeOf = (): string | null | undefined => cell("Review PRs", 6).querySelector("time")?.textContent;
+    const before = timeOf();
+    expect(before).toBeTruthy();
+    await goAway(fake, kernel, "keep");
+    await waitFor(() => expect(root.dataset.offline).toBe("true"));
+    started = LATER;
+    await comeBack(fake, kernel);
+    await waitFor(() => expect(root.dataset.offline).toBeUndefined());
+    await waitFor(() => expect(timeOf()).not.toBe(before));
+    expect(cell("Review PRs", 6).querySelector("time")?.getAttribute("datetime")).toBe(LATER);
+  });
+
+  it("an open playbook's Recent runs repeat: a run that started while the kernel was away shows after it returns", async () => {
+    const fake = fakeBridge();
+    const kernel = standard();
+    let started = AT;
+    wire(fake, kernel);
+    fake.route("GET /playbooks/:id/runs", (req) => (kernel.away ? AWAY : ok({ runs: req.params?.id === 3 ? [] : [run(11, 1, { started })], next_before: null })));
+    show(fake);
+    const root = screen.getByTestId(IDS.screen);
+    await waitFor(() => expect(screen.getAllByTestId(IDS.row)).toHaveLength(3));
+    fireEvent.click(within(rowOf("Review PRs")).getByTestId(IDS.open));
+    await screen.findByTestId(IDS.detail);
+    const stamp = (): string | null | undefined => screen.getByTestId(IDS.runs).querySelector("time")?.getAttribute("datetime");
+    await waitFor(() => expect(stamp()).toBe(AT));
+    await goAway(fake, kernel, "keep");
+    await waitFor(() => expect(root.dataset.offline).toBe("true"));
+    started = LATER;
+    await comeBack(fake, kernel);
+    await waitFor(() => expect(root.dataset.offline).toBeUndefined());
+    await waitFor(() => expect(stamp()).toBe(LATER));
+  });
+
+  it("the version history repeats: a version saved while the kernel was away shows after it returns", async () => {
+    const fake = fakeBridge();
+    const kernel = standard();
+    const versions = [{ playbook: 1, version: 1, snapshot: { name: "Review PRs" }, created_at: AT }];
+    wire(fake, kernel);
+    fake.route("GET /playbooks/:id/versions", () => (kernel.away ? AWAY : ok({ versions: [...versions] })));
+    show(fake);
+    const root = screen.getByTestId(IDS.screen);
+    await waitFor(() => expect(screen.getAllByTestId(IDS.row)).toHaveLength(3));
+    fireEvent.click(within(rowOf("Review PRs")).getByTestId(IDS.open));
+    await screen.findByTestId(IDS.detail);
+    fireEvent.click(screen.getByTestId(IDS.history));
+    await screen.findByTestId(IDS.historyView);
+    await waitFor(() => expect(screen.getAllByTestId(IDS.version)).toHaveLength(1));
+    await goAway(fake, kernel, "keep");
+    await waitFor(() => expect(root.dataset.offline).toBe("true"));
+    versions.unshift({ playbook: 1, version: 2, snapshot: { name: "Review PRs" }, created_at: LATER });
+    await comeBack(fake, kernel);
+    await waitFor(() => expect(root.dataset.offline).toBeUndefined());
+    await waitFor(() => expect(screen.getAllByTestId(IDS.version).map((o) => o.dataset.version)).toEqual(["2", "1"]));
+  });
 });
 
 describe("AC3: the title-bar subtitle", () => {
