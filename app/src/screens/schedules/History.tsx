@@ -13,7 +13,7 @@
 //
 // Rows are a fixed height and keyed by their oldest fire's id, so a refetch that
 // changes a group's count changes text inside the row and moves nothing.
-import { type ReactNode, type Ref, useEffect, useRef } from "react";
+import { type ReactNode, type Ref, type RefObject, useEffect, useRef } from "react";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import type { Trigger } from "../../api/contract";
@@ -58,13 +58,29 @@ export function caption(trigger: Pick<Trigger, "kind">, group: Pick<FireGroup, "
   return `${safe(trigger.kind)}${due}${session}`;
 }
 
-function Row({ trigger, name, group, first, now }: { readonly trigger: Trigger; readonly name: string; readonly group: FireGroup; readonly first: boolean; readonly now: Date }) {
+export interface FireRowProps {
+  readonly trigger: Pick<Trigger, "kind">;
+  readonly name: string;
+  /** One trigger's `FireGroup`; the all-triggers table's groups satisfy it structurally. */
+  readonly group: FireGroup;
+  readonly first: boolean;
+  readonly now: Date;
+  /** The row's test id (`IDS.fire` for one trigger's table, `IDS.allFire` for all triggers'). */
+  readonly testId: string;
+  /** Set only by the all-triggers table: the row's trigger id (`data-trigger`) and a test id on its name. */
+  readonly triggerId?: number;
+  readonly nameTestId?: string;
+}
+
+/** One fire row, shared by this trigger's table and the all-triggers table (`./AllHistory.tsx`) so the two cannot drift. */
+export function FireRow({ trigger, name, group, first, now, testId, triggerId, nameTestId }: FireRowProps) {
   const result = fireView(group.newest);
   const missed = group.kind === "trigger_missed";
   return (
     <tr
       className="schedules-fire"
-      data-testid={IDS.fire}
+      data-testid={testId}
+      data-trigger={triggerId}
       data-kind={group.kind}
       data-reason={group.reason ?? ""}
       data-count={group.count}
@@ -75,7 +91,7 @@ function Row({ trigger, name, group, first, now }: { readonly trigger: Trigger; 
         <time dateTime={group.newest.at}>{fireTime(group.newest.at, now)}</time>
       </td>
       <td>
-        <b className="schedules-clip" title={name}>
+        <b className="schedules-clip" data-testid={nameTestId} title={name}>
           {name}
         </b>
         <span className="schedules-cap schedules-clip">{caption(trigger, group, now)}</span>
@@ -107,18 +123,50 @@ function Row({ trigger, name, group, first, now }: { readonly trigger: Trigger; 
   );
 }
 
-export function History({ trigger, name, view, filter, onFilter, offline, now, missedChipRef }: HistoryProps) {
-  const { history, latest } = view;
-  const fires = history?.fires ?? [];
-  const groups = filterGroups(groupFires(fires), filter);
-  const more = history?.cursor !== null && history?.cursor !== undefined;
-  // "50+" while older pages exist: the count is of what is loaded.
-  const countText = (f: HistoryFilter) => `${countFires(fires, f)}${more ? "+" : ""}`;
+/** The When · Trigger · Result table around its rows. Shared with the all-triggers table. */
+export function FireTable({ children }: { readonly children: ReactNode }) {
+  return (
+    <table className="schedules-table" data-testid={IDS.table} data-nav-group="history">
+      <caption className="schedules-sr-only">Firing history</caption>
+      <colgroup>
+        <col className="schedules-c1" />
+        <col />
+        <col className="schedules-c3" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th scope="col">When</th>
+          <th scope="col">Trigger</th>
+          <th scope="col">Result</th>
+        </tr>
+      </thead>
+      <tbody>{children}</tbody>
+    </table>
+  );
+}
+
+/** The "All · N" / "Not fired · N" chips. Shared with the all-triggers table. */
+export function FilterChips({ filter, onFilter, countText, missedChipRef }: { readonly filter: HistoryFilter; readonly onFilter: (filter: HistoryFilter) => void; readonly countText: (filter: HistoryFilter) => string; readonly missedChipRef?: Ref<HTMLButtonElement> }) {
+  return (
+    <span className="schedules-chips" role="group" aria-label="Filter history">
+      <button type="button" className="schedules-chip" aria-pressed={filter === "all"} onClick={() => onFilter("all")} data-testid={IDS.filterAll}>
+        {`All · ${countText("all")}`}
+      </button>
+      <button type="button" className="schedules-chip" aria-pressed={filter === "missed"} onClick={() => onFilter("missed")} ref={missedChipRef} data-testid={IDS.filterMissed}>
+        {`Not fired · ${countText("missed")}`}
+      </button>
+    </span>
+  );
+}
+
+/**
+ * "Load older" unmounts at the last page; when that click was the user's, focus moves to the first row it added
+ * (else the pressed filter chip) instead of falling to the page. Armed only by the click (`arm(rowsShown)`), so a live
+ * refetch never moves focus. Shared with the all-triggers table.
+ */
+export function useLoadOlderFocus(busy: boolean, more: boolean): { readonly section: RefObject<HTMLElement | null>; readonly arm: (rowsShown: number) => void } {
   const section = useRef<HTMLElement>(null);
-  // "Load older" unmounts at the last page; when that click was the user's, focus moves to the first row it added
-  // (else the pressed filter chip) instead of falling to the page. Armed only by the click, so a live refetch never moves focus.
   const resume = useRef<number | undefined>(undefined);
-  const busy = view.olderBusy;
   useEffect(() => {
     if (busy || resume.current === undefined) return;
     const before = resume.current;
@@ -130,6 +178,23 @@ export function History({ trigger, name, view, filter, onFilter, offline, now, m
     const added = root?.querySelectorAll<HTMLElement>("[data-nav-row]")[before];
     (added ?? root?.querySelector<HTMLElement>('.schedules-chip[aria-pressed="true"]'))?.focus();
   }, [busy, more]);
+  return {
+    section,
+    arm: (rowsShown) => {
+      resume.current = rowsShown;
+    },
+  };
+}
+
+export function History({ trigger, name, view, filter, onFilter, offline, now, missedChipRef }: HistoryProps) {
+  const { history, latest } = view;
+  const fires = history?.fires ?? [];
+  const groups = filterGroups(groupFires(fires), filter);
+  const more = history?.cursor !== null && history?.cursor !== undefined;
+  // "50+" while older pages exist: the count is of what is loaded.
+  const countText = (f: HistoryFilter) => `${countFires(fires, f)}${more ? "+" : ""}`;
+  const busy = view.olderBusy;
+  const { section, arm } = useLoadOlderFocus(busy, more);
   const failed = latest !== undefined && (latest.kind === "refused" || latest.kind === "failed") ? latest : undefined;
 
   let body: ReactNode;
@@ -156,26 +221,11 @@ export function History({ trigger, name, view, filter, onFilter, offline, now, m
     );
   } else {
     body = (
-      <table className="schedules-table" data-testid={IDS.table} data-nav-group="history">
-        <caption className="schedules-sr-only">Firing history</caption>
-        <colgroup>
-          <col className="schedules-c1" />
-          <col />
-          <col className="schedules-c3" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th scope="col">When</th>
-            <th scope="col">Trigger</th>
-            <th scope="col">Result</th>
-          </tr>
-        </thead>
-        <tbody>
-          {groups.map((group, index) => (
-            <Row key={group.key} trigger={trigger} name={name} group={group} first={index === 0} now={now} />
-          ))}
-        </tbody>
-      </table>
+      <FireTable>
+        {groups.map((group, index) => (
+          <FireRow key={group.key} trigger={trigger} name={name} group={group} first={index === 0} now={now} testId={IDS.fire} />
+        ))}
+      </FireTable>
     );
   }
 
@@ -186,14 +236,7 @@ export function History({ trigger, name, view, filter, onFilter, offline, now, m
           Firing history
         </h3>
         <span className="schedules-spacer" />
-        <span className="schedules-chips" role="group" aria-label="Filter history">
-          <button type="button" className="schedules-chip" aria-pressed={filter === "all"} onClick={() => onFilter("all")} data-testid={IDS.filterAll}>
-            {`All · ${countText("all")}`}
-          </button>
-          <button type="button" className="schedules-chip" aria-pressed={filter === "missed"} onClick={() => onFilter("missed")} ref={missedChipRef} data-testid={IDS.filterMissed}>
-            {`Not fired · ${countText("missed")}`}
-          </button>
-        </span>
+        <FilterChips filter={filter} onFilter={onFilter} countText={countText} missedChipRef={missedChipRef} />
       </div>
       {failed !== undefined && history !== undefined ? (
         <p className="schedules-notice" data-tone="danger" role="alert" data-testid={IDS.historyError}>
@@ -204,7 +247,7 @@ export function History({ trigger, name, view, filter, onFilter, offline, now, m
       {more ? (
         <div className="schedules-more">
           <Button size="row" variant="secondary" loading={view.olderBusy} disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={() => {
-              resume.current = groups.length;
+              arm(groups.length);
               view.loadOlder();
             }}
             data-testid={IDS.loadOlder}>
