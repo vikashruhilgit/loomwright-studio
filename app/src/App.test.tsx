@@ -3,8 +3,8 @@
 // Integrations, then phase 7's Tasks, Playbooks, Schedules & triggers, Memory, Budget &
 // audit and Settings, plus the Crew group), routing to each screen, the
 // "kernel unreachable" band and the "kernel not installed" state with the
-// setup commands, and each sidebar entry registered as a palette command.
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+// setup commands, each sidebar entry registered as a palette command, and the shell's own "Keyboard map" command.
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { App, SCREENS } from "./App";
 import type { KernelConnectionState, StudioBridge } from "./api/contract";
@@ -89,9 +89,11 @@ describe("the shell", () => {
     expect(screen.queryByTestId("screen-chat")).toBeNull();
   });
 
-  it("registers each sidebar entry as a palette command", async () => {
+  it("registers each sidebar entry as a palette command, and the shell's Keyboard map command (display-only ?)", async () => {
     const registry = await renderApp({ state: "connected", port: 1 });
     expect(registry.list().map((c) => [c.id, c.group, c.shortcut])).toEqual([
+      // The host is a child of App, so its effect registers first.
+      ["shell.keymap", "Help", "?"],
       ["screens.chat", "Screens", "⌘1"],
       ["screens.team", "Screens", "⌘2"],
       ["screens.approvals", "Screens", "⌘3"],
@@ -104,5 +106,22 @@ describe("the shell", () => {
       ["screens.budget", "Screens", undefined],
       ["screens.settings", "Screens", "⌘,"],
     ]);
+  });
+
+  it("mounts the keys once: ⌘3 opens Approvals, ⌘K the palette, and ? the Keyboard map, which is no sidebar entry", async () => {
+    await renderApp({ state: "connected", port: 1 });
+    fireEvent.keyDown(document.body, { key: "3", metaKey: true });
+    await waitFor(() => expect(screen.getByTestId("screen-approvals")).toBeTruthy());
+    expect(window.location.hash).toBe("#/approvals");
+
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    expect(screen.getByTestId("command-palette")).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Command" }), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("command-palette")).toBeNull());
+
+    fireEvent.keyDown(document.body, { key: "?", shiftKey: true });
+    await waitFor(() => expect(screen.getByTestId("screen-keymap")).toBeTruthy());
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Keyboard map");
+    expect(within(screen.getByTestId("sidebar")).queryByRole("button", { name: /Keyboard map/ })).toBeNull();
   });
 });
