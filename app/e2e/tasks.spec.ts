@@ -363,7 +363,8 @@ test("AC7: when the kernel goes away the board keeps its last data (last known),
   await started.close();
   fixture = undefined;
 
-  await expect(page.getByTestId("kernel-reconnecting-band")).toBeVisible({ timeout: 20_000 });
+  // The store reads `reconnecting` (it was live); the shell shows the one shared red band for it, not the old small line.
+  await expect(page.getByTestId("kernel-unreachable-band")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByTestId("tasks-subtitle")).toHaveText("8 cards · 3 working · last known");
   await expect(page.getByTestId("screen-tasks")).toHaveAttribute("data-state", "populated");
   await expect(page.getByTestId("tasks-empty")).toHaveCount(0);

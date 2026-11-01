@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // The sidebar's Crew group: specialists only (never Wright), each a button
-// with its avatar, last line, time and unread dot; the empty line with no
+// with its avatar, name, one last line and unread dot; the empty line with no
 // button; and both Chat components rendering with no bridge or storage.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -38,18 +38,20 @@ describe("crew", () => {
     expect(within(crew()).getByRole("heading", { name: "Crew" }).id).toBe("nav-crew");
   });
 
-  it("a row shows the avatar with its state, the last line, the time and an unread dot", async () => {
+  it("a row shows the avatar with its state, one last line and an unread dot, and no time", async () => {
     const k = kit({ roster: [agent("wright"), agent("pim", { sessions_running: 1 })], messages: [PIM_ROW], threads: { wright: thread([]) } });
     await renderChat(k);
     const row = await within(crew()).findByRole("button", { name: "Pim, unread" });
     expect(row.textContent?.startsWith("Pim")).toBe(true);
     expect(within(row).getByRole("img").getAttribute("aria-label")).toContain("working");
     expect(row.querySelector(".chat-crew-last")?.textContent).toBe("Two PRs need you. Second line.");
-    expect(row.querySelector("time")?.getAttribute("dateTime")).toBe("2026-10-22T08:30:00.000Z");
+    // The mockup's row is the avatar, the name and one last line: no time element.
+    expect(row.querySelector("time")).toBeNull();
+    expect(row.querySelectorAll(".chat-crew-last")).toHaveLength(1);
     expect(within(row).getByTestId("crew-unread")).toBeTruthy();
   });
 
-  it("a row's name is its agent, and its time and last line are its description", async () => {
+  it("a row's name is its agent, and its last line is its description", async () => {
     const k = kit({ messages: [PIM_ROW], threads: { wright: thread([]) } });
     await renderChat(k);
     const row = await within(crew()).findByRole("button", { name: "Pim, unread" });
@@ -57,9 +59,7 @@ describe("crew", () => {
       .split(" ")
       .map((id) => document.getElementById(id)?.textContent ?? "")
       .join(" ");
-    expect(described).toContain("Two PRs need you. Second line.");
-    expect(described).toContain(row.querySelector("time")?.textContent ?? "missing");
-    expect(row.querySelector("time")?.textContent).not.toBe("");
+    expect(described).toBe("Two PRs need you. Second line.");
   });
 
   it("a Crew row opened from another thread focuses the new thread's composer", async () => {

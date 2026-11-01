@@ -513,7 +513,8 @@ test("unreachable: when the kernel goes away mid-read the last answer stays, the
   // The next read gets no answer (the kernel closes under it), which the bridge reports as status 0.
   fx.dropNextRead();
   fx.change("connected");
-  const band = byId(page, IDS.band);
+  // Exactly one red band is on screen: the shell's once the store reads reconnecting, else the screen's own.
+  const band = page.locator('[data-testid="kernel-unreachable-band"], [data-testid="integrations-band"]');
   await expect(band).toBeVisible();
   await expect(band).toContainText("Couldn't reach the kernel");
   await expect(byId(page, IDS.listMeta)).toHaveText("status unknown · kernel unreachable");
@@ -907,7 +908,8 @@ test("unreachable (App): when the kernel goes away mid-read the last App data st
 
   fx.dropNextRead();
   fx.change("app-connected");
-  const band = byId(page, IDS.band);
+  // Exactly one red band is on screen: the shell's once the store reads reconnecting, else the screen's own.
+  const band = page.locator('[data-testid="kernel-unreachable-band"], [data-testid="integrations-band"]');
   await expect(band).toContainText("Couldn't reach the kernel");
   await expect(byId(page, IDS.listMeta)).toHaveText("status unknown · kernel unreachable");
   await expect(byId(page, IDS.empty)).toHaveCount(0);

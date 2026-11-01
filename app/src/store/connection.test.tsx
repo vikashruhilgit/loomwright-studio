@@ -2,15 +2,16 @@
 // The shell's designed kernel states, driven by the live store, rendered as
 // `<App api={fakeBridge}>` in fake time: no api.json -> the setup commands
 // (AC3a), a dead port -> the unreachable band (AC3b), both retrying until a
-// kernel answers; a feed that closes after live -> the reconnecting band with
-// the last-updated time, every loaded resource stale until live again (AC4).
+// kernel answers; a feed that closes after live -> the same one red band (the
+// store reads `reconnecting`, no small reconnecting line), every loaded
+// resource stale until live again (AC4).
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import type { Approval, StatusBody } from "../api/contract";
 import { createCommandRegistry } from "../commands/registry";
-import { ReconnectingBand, SETUP_STEPS, formatLastUpdated } from "../shell/KernelStates";
+import { KERNEL_BAND_COPY, SETUP_STEPS } from "../shell/KernelStates";
 import { fakeBridge, ok } from "./fake-bridge";
 import type { FakeBridge } from "./fake-bridge";
 import { liveStoreFor, useResource } from "./react";
@@ -119,7 +120,7 @@ describe("the shell's kernel states, from the live store", () => {
     expect(screen.queryByTestId("kernel-unreachable-band")).toBeNull();
   });
 
-  it("live, then the feed closes: the reconnecting band with the last-updated time, data stale until live again", async () => {
+  it("live, then the feed closes: the one red band (store reads reconnecting), data stale until live again", async () => {
     const fake = fakeBridge();
     fake.route("GET /status", () => ok(STATUS));
     fake.route("GET /approvals", () => ok({ approvals: [APPROVAL] }));
@@ -136,22 +137,24 @@ describe("the shell's kernel states, from the live store", () => {
 
     await advance(7_000);
     emit(fake, { type: "closed", code: 1006, reason: "" });
-    const band = screen.getByTestId("kernel-reconnecting-band");
-    expect(band.getAttribute("role")).toBe("status");
-    expect(band.className).toBe("band");
-    expect(band.textContent).toBe(`Reconnecting to the kernel… Last updated ${formatLastUpdated(lastUpdated)}.`);
-    expect(formatLastUpdated(lastUpdated)).toMatch(/^\d{2}:\d{2}:\d{2}$/);
-    expect(band.querySelector("time")?.getAttribute("dateTime")).toBe(new Date(lastUpdated).toISOString());
-    expect(screen.queryByTestId("kernel-unreachable-band")).toBeNull();
+    expect(store.getSnapshot().connection.state).toBe("reconnecting");
+    // The shell shows the one shared band for `reconnecting` too (owner decision 3): alert, the fixed copy, nothing else.
+    const band = screen.getByTestId("kernel-unreachable-band");
+    expect(band.getAttribute("role")).toBe("alert");
+    expect(band.textContent).toBe(KERNEL_BAND_COPY);
+    expect(band.querySelector("time")).toBeNull();
+    expect(screen.getAllByTestId("kernel-unreachable-band")).toHaveLength(1);
+    expect(screen.queryByTestId("kernel-reconnecting-band")).toBeNull();
     expect(screen.getByTestId("screen-chat")).toBeTruthy();
     expect(store.resource("approvals")).toMatchObject({ stale: true, data: { approvals: [APPROVAL] } });
     expect(store.resource("status")?.stale).toBe(true);
 
-    // Still down on the next attempt: still reconnecting, never the unreachable band.
+    // Still down on the next attempt: the store still reads reconnecting, and the one band stays.
     fake.connectionAnswer = { state: "unreachable", reason: "connection_failed" };
     await advance(BACKOFF_INITIAL_MS);
-    expect(screen.getByTestId("kernel-reconnecting-band")).toBeTruthy();
-    expect(screen.queryByTestId("kernel-unreachable-band")).toBeNull();
+    expect(store.getSnapshot().connection.state).toBe("reconnecting");
+    expect(screen.getAllByTestId("kernel-unreachable-band")).toHaveLength(1);
+    expect(screen.queryByTestId("kernel-reconnecting-band")).toBeNull();
     expect(store.resource("approvals")?.stale).toBe(true);
 
     fake.connectionAnswer = { state: "connected", port: 1 };
@@ -159,16 +162,10 @@ describe("the shell's kernel states, from the live store", () => {
     await advance(BACKOFF_INITIAL_MS * 2);
     emit(fake, { type: "heartbeat", latest_id: 0 });
     await advance(REFETCH_THROTTLE_MS * 4);
+    expect(screen.queryByTestId("kernel-unreachable-band")).toBeNull();
     expect(screen.queryByTestId("kernel-reconnecting-band")).toBeNull();
     expect(store.resource("approvals")?.stale).toBe(false);
     expect(fake.requestsTo("GET /approvals").length).toBe(approvalsBefore + 1);
-  });
-
-  it("the reconnecting band with no data ever received says no last-updated time", () => {
-    render(<ReconnectingBand lastUpdated={null} />);
-    const band = screen.getByTestId("kernel-reconnecting-band");
-    expect(band.textContent).toBe("Reconnecting to the kernel…");
-    expect(band.querySelector("time")).toBeNull();
   });
 
   it("under <StrictMode>, App and a useResource probe share one store: one listener, one subscribe, live; nothing left after unmount", async () => {

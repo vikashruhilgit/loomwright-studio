@@ -308,7 +308,7 @@
   margin-bottom: var(--space-2);
 }
 
-/* The Crew group's rows (List's crew row, as buttons: each opens a thread). */
+/* The Crew group's rows (the mockup's crew row, as buttons: each opens a thread): avatar, name, one last line. */
 .chat-crew {
   display: flex;
   flex-direction: column;
@@ -373,13 +373,13 @@
   gap: var(--space-1);
 }
 .chat-crew-name {
+  color: var(--ink);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 .chat-crew-name.unread {
   font-weight: 600;
-  color: var(--ink);
 }
 .chat-crew-unread {
   flex: none;
@@ -388,12 +388,6 @@
   border-radius: var(--radius-full);
   background: var(--accent);
 }
-.chat-crew-time {
-  margin-left: auto;
-  font-size: var(--type-caption-size);
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-tertiary);
-}
 .chat-crew-last {
   overflow: hidden;
   white-space: nowrap;
@@ -401,6 +395,12 @@
   font-size: var(--type-caption-size);
   line-height: var(--type-caption-line);
   color: var(--ink-tertiary);
+}
+/* On the current thread's accent-soft row the tertiary ink is under 4.5:1 in one theme: step up to secondary. */
+.chat-crew-row.selected .chat-crew-last,
+.chat-crew-row.selected .chat-crew-off,
+.chat-crew-row.selected .chat-crew-id {
+  color: var(--ink-secondary);
 }
 .chat-crew-notice {
   overflow-wrap: anywhere;

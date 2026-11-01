@@ -7,8 +7,10 @@
 // the previous feed is closed before a new one opens, frames from a
 // superseded socket are dropped, and every `after` is recorded.
 //
-// AC4 is an Electron launch: close the fixture and the reconnecting band
-// appears; restart it in place and the band goes. Run `npm run build` first.
+// AC4 is an Electron launch: close the fixture and the shell's one red band
+// appears (the store reads `reconnecting`, and the shell shows the same band as
+// for `unreachable`, owner decision 3 of the shell item); restart it in place
+// and the band goes. Run `npm run build` first.
 import { expect, test } from "@playwright/test";
 import type { ElectronApplication } from "@playwright/test";
 import { createKernelConnection } from "../electron/kernel-connection";
@@ -192,7 +194,7 @@ test("AC2: a fixture restart mid-stream resumes from the last id, exactly once",
   expect(current.resource("status")?.stale).toBe(false);
 });
 
-test("AC4: the window shows the reconnecting band while the fixture is down, and drops it when it is back", async () => {
+test("AC4: the window shows the shared red band while the fixture is down, and drops it when it is back", async () => {
   test.setTimeout(60_000);
   const dataDir = tempDataDir();
   fixture = await startFixture({ dataDir, events: events(1, 3) });
@@ -204,17 +206,20 @@ test("AC4: the window shows the reconnecting band while the fixture is down, and
   await expect.poll(() => kernel.requests.some((r) => r.path === "/events/stream"), { timeout: STATE_TIMEOUT_MS }).toBe(true);
   // The replayed events make the store live at once; SETTLE_MS more guarantees it with no frame at all.
   await page.waitForTimeout(SETTLE_MS + 500);
-  await expect(page.getByTestId("kernel-reconnecting-band")).toHaveCount(0);
+  await expect(page.getByTestId("kernel-unreachable-band")).toHaveCount(0);
 
   await fixture.close();
   fixture = undefined;
-  const band = page.getByTestId("kernel-reconnecting-band");
+  // Pin moved from the small `kernel-reconnecting-band` (`role="status"`, "Reconnecting to the kernel… Last updated …")
+  // to the one shared band: the store still reads `reconnecting` here (it was live), and the shell now shows the same
+  // red band for it as for `unreachable`, with no second reconnecting line.
+  const band = page.getByTestId("kernel-unreachable-band");
   await expect(band).toBeVisible({ timeout: STATE_TIMEOUT_MS });
-  await expect(band).toHaveAttribute("role", "status");
-  await expect(band).toContainText(/Reconnecting to the kernel… Last updated \d{2}:\d{2}:\d{2}\./);
-  await expect(page.getByTestId("kernel-unreachable-band")).toHaveCount(0);
+  await expect(band).toHaveAttribute("role", "alert");
+  await expect(band).toHaveText("Couldn't reach the kernel. It may be restarting; this window reconnects on its own.");
+  await expect(page.getByTestId("kernel-reconnecting-band")).toHaveCount(0);
 
   fixture = await startFixture({ dataDir, port, events: events(1, 4) });
   await expect(band).toHaveCount(0, { timeout: STATE_TIMEOUT_MS });
-  await expect(page.getByTestId("kernel-unreachable-band")).toHaveCount(0);
+  await expect(page.getByTestId("kernel-reconnecting-band")).toHaveCount(0);
 });

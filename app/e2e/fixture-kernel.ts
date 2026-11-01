@@ -86,6 +86,14 @@ export interface FixtureKernel {
   readonly requests: readonly { readonly method: string; readonly path: string }[];
   /** Append an event: subscribed feed clients receive it at once. */
   appendEvent(event: EventFrame): void;
+  /**
+   * The kernel going away under an open window while the fixture stays in the test: the listener closes, every
+   * socket and feed client is destroyed, and nothing answers. `routes`, `events`, `requests`, `dataDir` and `api.json`
+   * are kept, and the feed server is not closed (a `restart()` reuses it). Idempotent.
+   */
+  stop(): Promise<void>;
+  /** After `stop()`: listen again on the same `port` with the same state; `api.json` is unchanged. Throws while listening. */
+  restart(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -240,7 +248,7 @@ export async function startFixtureKernel(options: FixtureKernelOptions = {}): Pr
   const subscribers = new Map<WebSocket, number>();
   const sockets = new Set<Socket>();
 
-  const server: Server = createServer((req, res) => {
+  const handle = (req: IncomingMessage, res: ServerResponse): void => {
     if (!authorized(req)) {
       req.resume();
       send(res, 401, { error: "unauthorized" }, { "WWW-Authenticate": "Bearer" });
@@ -262,14 +270,10 @@ export async function startFixtureKernel(options: FixtureKernelOptions = {}): Pr
       }
       send(res, 404, { error: "not_found" });
     })();
-  });
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-  });
+  };
 
   const feed = new WebSocketServer({ noServer: true });
-  server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
+  const upgrade = (req: IncomingMessage, socket: Socket, head: Buffer): void => {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
     if (!authorized(req) || path !== "/events/stream") {
       socket.end("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
@@ -295,12 +299,30 @@ export async function startFixtureKernel(options: FixtureKernelOptions = {}): Pr
       });
       client.on("close", () => subscribers.delete(client));
     });
-  });
+  };
 
-  const port = await new Promise<number>((done, fail) => {
-    server.once("error", fail);
-    server.listen(options.port ?? 0, FIXTURE_HOST, () => done((server.address() as AddressInfo).port));
-  });
+  /** A new, not yet listening server over the same routes, events and feed: `restart()` makes one after `stop()`. */
+  const makeServer = (): Server => {
+    const created = createServer(handle);
+    created.on("connection", (socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+    });
+    created.on("upgrade", upgrade);
+    return created;
+  };
+  const listen = (created: Server, at: number): Promise<number> =>
+    new Promise<number>((done, fail) => {
+      created.once("error", fail);
+      created.listen(at, FIXTURE_HOST, () => {
+        created.off("error", fail);
+        done((created.address() as AddressInfo).port);
+      });
+    });
+
+  let server = makeServer();
+  let listening = true;
+  const port = await listen(server, options.port ?? 0);
   writeApiInfo(dataDir, port);
 
   return {
@@ -312,7 +334,31 @@ export async function startFixtureKernel(options: FixtureKernelOptions = {}): Pr
       events.push(event);
       for (const client of subscribers.keys()) client.send(JSON.stringify(event));
     },
+    async stop() {
+      if (!listening) return;
+      listening = false;
+      for (const client of feed.clients) client.terminate();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((done) => server.close(() => done()));
+    },
+    async restart() {
+      if (listening) throw new Error("the fixture kernel is already listening");
+      const next = makeServer();
+      // The old listener's port can take a moment to come free: retry the same port, never another one.
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await listen(next, port);
+          break;
+        } catch (err) {
+          if ((err as { code?: unknown }).code !== "EADDRINUSE" || attempt >= 20) throw err;
+          await new Promise((done) => setTimeout(done, 100));
+        }
+      }
+      server = next;
+      listening = true;
+    },
     async close() {
+      listening = false;
       for (const client of feed.clients) client.terminate();
       feed.close();
       for (const socket of sockets) socket.destroy();

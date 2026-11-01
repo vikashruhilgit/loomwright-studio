@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // The shell: the sidebar's eleven entries (Chat, Team, Approvals, Sessions,
-// Integrations, then phase 7's Tasks, Playbooks, Schedules, Memory, Budget &
+// Integrations, then phase 7's Tasks, Playbooks, Schedules & triggers, Memory, Budget &
 // audit and Settings, plus the Crew group), routing to each screen, the
 // "kernel unreachable" band and the "kernel not installed" state with the
 // setup commands, and each sidebar entry registered as a palette command.
@@ -43,7 +43,7 @@ describe("the shell", () => {
       "Integrations⌘5",
       "Tasks⌘6",
       "Playbooks⌘7",
-      "Schedules⌘8",
+      "Schedules & triggers⌘8",
       "Memory⌘9",
       "Budget & audit",
       "Settings⌘,",

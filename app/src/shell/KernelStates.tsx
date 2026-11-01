@@ -1,8 +1,10 @@
 // The shell's designed kernel states (DESIGN.md: every screen has an error
-// state, the "kernel unreachable" band): the band over the current screen, and
-// the "kernel not installed" state with the exact terminal setup commands.
-// Setup stays in the owner's own terminal (D27, invariant 6): the app never
-// runs a login flow and never asks for the token.
+// state, the "kernel unreachable" band): the one red band over the current screen
+// for a kernel that is unreachable or reconnecting, and the "kernel not
+// installed" state with the exact terminal setup commands. Setup stays in the
+// owner's own terminal (D27, invariant 6): the app never runs a login flow and
+// never asks for the token.
+import { WarnGlyph } from "../components/Glyph";
 
 /** The setup steps, in order: each is a command the owner runs in his own terminal. */
 export const SETUP_STEPS: readonly { readonly what: string; readonly command: string }[] = [
@@ -14,37 +16,19 @@ export const SETUP_STEPS: readonly { readonly what: string; readonly command: st
   { what: "Install and start the kernel service", command: "studio service install" },
 ];
 
-/** Over the current screen while `api.json` exists but the kernel does not answer. */
-export function UnreachableBand() {
-  return (
-    <div className="band band-danger" role="alert" data-testid="kernel-unreachable-band">
-      <span className="band-dot" aria-hidden="true" />
-      Couldn't reach the kernel. It may be restarting; this window reconnects on its own.
-    </div>
-  );
-}
-
-/** `lastUpdated` (ms since the epoch) as `HH:MM:SS` in the owner's locale. */
-export function formatLastUpdated(lastUpdated: number): string {
-  return new Date(lastUpdated).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
-}
+/** The band's one fixed copy: no request text, no connection state, no port (a kernel string is never rendered here). */
+export const KERNEL_BAND_COPY = "Couldn't reach the kernel. It may be restarting; this window reconnects on its own.";
 
 /**
- * Over the current screen while the store was live and the feed is not: a
- * restart is not an error yet (the plain band, `role="status"`). The data on
- * screen is marked stale until the store is live again.
+ * The one red band for a kernel that does not answer (`reconnecting` or `unreachable`). The shell draws it once
+ * above the screen; a screen draws it itself only when its own read answered status 0 before the store noticed
+ * (`!useKernelReach(api).shellBand`), so exactly one is ever on screen. It carries no prop that holds text.
  */
-export function ReconnectingBand({ lastUpdated }: { readonly lastUpdated: number | null }) {
+export function KernelBand({ testId = "kernel-unreachable-band" }: { readonly testId?: string }) {
   return (
-    <div className="band" role="status" data-testid="kernel-reconnecting-band">
-      <span className="band-dot" aria-hidden="true" />
-      Reconnecting to the kernel…
-      {lastUpdated === null ? null : (
-        <>
-          {" "}
-          Last updated <time dateTime={new Date(lastUpdated).toISOString()}>{formatLastUpdated(lastUpdated)}</time>.
-        </>
-      )}
+    <div className="band band-danger" role="alert" data-testid={testId}>
+      <WarnGlyph className="band-glyph" />
+      <span>{KERNEL_BAND_COPY}</span>
     </div>
   );
 }

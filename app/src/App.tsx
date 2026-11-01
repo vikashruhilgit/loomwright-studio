@@ -1,14 +1,18 @@
 // The window's shell: the approved layout (DESIGN.md "What the mockups commit
-// phase 5 to"): a `--sidebar-width` vibrancy sidebar, a `--titlebar-height`
-// title bar, and the main column, routing to one screen per item. Screens are
-// discovered from `src/screens/<id>/index.tsx`, so no item edits this file.
+// phase 5 to"): a `--sidebar-width` vibrancy sidebar (`shell/Sidebar.tsx`), a
+// `--titlebar-height` title bar (`shell/Titlebar.tsx`), and the main column,
+// routing to one screen per item. Screens are discovered from
+// `src/screens/<id>/index.tsx`, so no item edits this file.
 import { useEffect, useMemo, useState } from "react";
 import type { StudioBridge } from "./api/contract";
 import { getBridge } from "./api/bridge";
 import { commandRegistry } from "./commands/registry";
 import type { CommandRegistry } from "./commands/registry";
 import type { ScreenDefinition, ScreenModule } from "./screens/types";
-import { NotInstalledState, ReconnectingBand, UnreachableBand } from "./shell/KernelStates";
+import { KernelBand, NotInstalledState } from "./shell/KernelStates";
+import { useKernelReach } from "./shell/last-known";
+import { Sidebar } from "./shell/Sidebar";
+import { Titlebar } from "./shell/Titlebar";
 import { useKernelConnection } from "./store/connection";
 
 const modules = import.meta.glob<ScreenModule>("./screens/*/index.tsx", { eager: true });
@@ -68,37 +72,18 @@ export interface AppProps {
 export function App({ api, registry = commandRegistry }: AppProps) {
   const bridge = useMemo(() => api ?? getBridge(), [api]);
   const connection = useKernelConnection(bridge);
+  const reach = useKernelReach(bridge);
   const current = useHashScreen();
   useScreenCommands(registry);
   const Screen = current.Component;
 
   return (
     <div className="window">
-      <aside className="sidebar" data-testid="sidebar">
-        <div className="sidebar-titlebar" />
-        <nav className="nav" aria-label="Screens">
-          {SCREENS.filter((s) => s.nav !== undefined).map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              className={s.id === current.id ? "nav-item selected" : "nav-item"}
-              aria-current={s.id === current.id ? "page" : undefined}
-              onClick={() => go(s.id)}
-            >
-              <span className="nav-text">{s.nav?.label}</span>
-              {s.nav?.shortcut === undefined ? null : <span className="nav-key">{s.nav.shortcut}</span>}
-            </button>
-          ))}
-        </nav>
-        {SCREENS.map((s) => (s.SidebarSection === undefined ? null : <s.SidebarSection key={s.id} />))}
-      </aside>
+      <Sidebar api={bridge} screens={SCREENS} currentId={current.id} onGo={go} />
       <main className="main">
-        <header className="titlebar">
-          <h1 className="titlebar-title">{current.title}</h1>
-        </header>
+        <Titlebar screen={current} />
         <div className="content">
-          {connection.state === "unreachable" ? <UnreachableBand /> : null}
-          {connection.state === "reconnecting" ? <ReconnectingBand lastUpdated={connection.lastUpdated} /> : null}
+          {reach.shellBand ? <KernelBand /> : null}
           {connection.state === "not_installed" ? <NotInstalledState dataDir={connection.dataDir} /> : <Screen />}
         </div>
       </main>

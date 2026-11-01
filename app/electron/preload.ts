@@ -34,6 +34,8 @@ const api: StudioBridge = {
     onFrame: (listener: (frame: FeedRelayFrame) => void) => listen(CHANNELS.feedFrame, listener),
   },
   openExternal: (url: string) => ipcRenderer.invoke(CHANNELS.openExternal, url) as Promise<boolean>,
+  // No argument: the main process answers its own home folder.
+  homeDir: () => ipcRenderer.invoke(CHANNELS.homeDir) as Promise<string>,
   onNavigate: (listener: (route: string) => void) => listen(CHANNELS.navigate, listener),
   prefs: {
     get: () => ipcRenderer.invoke(CHANNELS.prefsGet) as Promise<AppPreferences>,
