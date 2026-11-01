@@ -117,6 +117,11 @@ function handleBridge(kernel: KernelConnection, prefs: Preferences, owner: () =>
     if (!fromOwner(event)) throw new Error("refused");
     return prefs.revealDataDir();
   });
+  // Read-only and argument-free: the main process answers its own home folder, never a path from the renderer.
+  ipcMain.handle(CHANNELS.homeDir, async (event) => {
+    if (!fromOwner(event)) throw new Error("refused");
+    return app.getPath("home");
+  });
 }
 
 /** The renderer may never navigate away, open a window, or be granted a permission. */
