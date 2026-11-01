@@ -24,6 +24,7 @@ const electron = vi.hoisted(() => {
     trays,
     trayThrows: false,
     reducedMotion: false,
+    motionReads: 0,
     app: { isPackaged: false, quit: (): void => undefined },
     dialog: { showMessageBox: async (_options: Record<string, unknown>): Promise<{ response: number }> => ({ response: 0 }) },
   };
@@ -60,13 +61,18 @@ vi.mock("electron", () => {
         return image;
       },
     },
-    systemPreferences: { getAnimationSettings: () => ({ prefersReducedMotion: electron.reducedMotion }) },
+    systemPreferences: {
+      getAnimationSettings: () => {
+        electron.motionReads += 1;
+        return { prefersReducedMotion: electron.reducedMotion };
+      },
+    },
     app: electron.app,
     dialog: electron.dialog,
   };
 });
 
-const { createTray, KILL_CONFIRM_BUTTONS, TRAY_FEED_THROTTLE_MS, TRAY_POLL_MS } = await import("./tray");
+const { createTray, KILL_CONFIRM_BUTTONS, TRAY_FEED_THROTTLE_MS, TRAY_MOTION_RECHECK_MS, TRAY_POLL_MS } = await import("./tray");
 const { GLYPH_FRAME_MS } = await import("./tray-glyph");
 
 // ---- a fake kernel ------------------------------------------------------------------
@@ -234,7 +240,7 @@ describe("what the tray shows", () => {
   });
 
   it("redraws every frame while working, and holds one still frame under reduce motion", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const { kernel } = fakeKernel({ sessions: 1 });
     await start(kernel);
     expect(model().state).toBe("working");
@@ -249,8 +255,28 @@ describe("what the tray shows", () => {
     expect(lastTray()?.image).toBe(still);
   });
 
+  it("under reduce motion re-checks the setting once a second, not every frame, and moves again when it is off", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    electron.reducedMotion = true;
+    const { kernel } = fakeKernel({ sessions: 1 });
+    await start(kernel);
+    expect(model().state).toBe("working");
+    electron.motionReads = 0;
+    vi.advanceTimersByTime(TRAY_MOTION_RECHECK_MS - 1);
+    expect(electron.motionReads).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(electron.motionReads).toBe(1);
+    const still = lastTray()?.image;
+    electron.reducedMotion = false;
+    vi.advanceTimersByTime(TRAY_MOTION_RECHECK_MS);
+    expect(lastTray()?.image).not.toBe(still);
+    const moving = lastTray()?.image;
+    vi.advanceTimersByTime(GLYPH_FRAME_MS);
+    expect(lastTray()?.image).not.toBe(moving);
+  });
+
   it("draws a still state once, with no frames after it", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const { kernel } = fakeKernel();
     await start(kernel);
     const idle = lastTray()?.image;

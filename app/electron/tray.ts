@@ -42,6 +42,9 @@ export interface TrayDeps {
 /** How often the tray re-reads, and retries its feed, while the feed is down. */
 export const TRAY_POLL_MS = 10_000;
 
+/** How often a moving glyph held still by reduce motion re-checks the setting. */
+export const TRAY_MOTION_RECHECK_MS = 1000;
+
 /** At most one re-read per this many ms from feed frames (the window store's `REFETCH_THROTTLE_MS`). */
 export const TRAY_FEED_THROTTLE_MS = 250;
 
@@ -150,7 +153,7 @@ export function createTray(deps: TrayDeps): void {
   // ---- the glyph: drawn once per change, or every frame while it moves ----
 
   let glyph: GlyphState | undefined;
-  let animation: ReturnType<typeof setInterval> | undefined;
+  let animation: ReturnType<typeof setTimeout> | undefined;
   let animationStart = 0;
   /** The frame on screen is the reduced-motion one: nothing to redraw until the setting changes. */
   let drawnStill = false;
@@ -170,13 +173,20 @@ export function createTray(deps: TrayDeps): void {
     glyph = next;
     drawnStill = false;
     animationStart = performance.now();
-    if (animation !== undefined) clearInterval(animation);
+    if (animation !== undefined) clearTimeout(animation);
     animation = undefined;
     drawGlyph();
-    if (isAnimated(next)) {
-      animation = setInterval(drawGlyph, GLYPH_FRAME_MS);
+    if (!isAnimated(next)) return;
+    // Every frame while it moves; under reduce motion only a slow re-check, so a
+    // held still frame costs one wakeup a second, not fifteen.
+    const tick = (): void => {
+      animation = setTimeout(() => {
+        drawGlyph();
+        tick();
+      }, drawnStill ? TRAY_MOTION_RECHECK_MS : GLYPH_FRAME_MS);
       animation.unref();
-    }
+    };
+    tick();
   };
 
   let rendered = "";
