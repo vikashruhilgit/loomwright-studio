@@ -87,3 +87,9 @@ app/src/screens/budget
 kernel/src/gui/budget-audit.ts
 kernel/test/gui-budget-audit.test.ts
 app/e2e/budget.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-01T13:54:25Z
+- **Brief:** .supervisor/jobs/done/2026-11-01-budget-and-audit-readable-log-and-honest-cap.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/197
