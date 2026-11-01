@@ -89,3 +89,9 @@ kernel/test/gui-tasks.test.ts
 app/src/screens/tasks
 app/e2e/tasks.spec.ts
 docs/design/mockups/gui-v2.html
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-01T13:50:45Z
+- **Brief:** .supervisor/jobs/done/2026-11-01-tasks-board-words-other-group-history.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/198
