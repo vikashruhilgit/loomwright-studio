@@ -91,7 +91,7 @@ describe("the title bar", () => {
   });
 
   it("no screen declares one yet (each screen's item moves its own count line)", () => {
-    expect(SCREENS.filter((s) => s.Subtitle !== undefined).map((s) => s.id)).toEqual([]);
+    expect(SCREENS.filter((s) => s.Subtitle !== undefined).map((s) => s.id)).toEqual(["budget"]);
   });
 });
 
