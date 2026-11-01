@@ -137,11 +137,9 @@ body {
   background: var(--danger-soft);
   color: var(--danger);
 }
-.band-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-full);
-  background: currentColor;
+.band-glyph {
+  width: 16px;
+  height: 16px;
   flex: none;
 }
 
