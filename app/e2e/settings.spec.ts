@@ -549,7 +549,9 @@ test("item 18 AC5: each command block is one line at the default window size and
         const style = getComputedStyle(code);
         const block = code.parentElement as HTMLElement;
         return {
-          height: code.getBoundingClientRect().height,
+          // The content box, never the scrollbar: a block that scrolls sideways gets a classic scrollbar on
+          // Linux and Windows (overlay on macOS), which adds height without adding a line.
+          height: code.clientHeight - Number.parseFloat(style.paddingTop) - Number.parseFloat(style.paddingBottom),
           line: Number.parseFloat(style.lineHeight),
           blockHeight: block.getBoundingClientRect().height,
           whiteSpace: style.whiteSpace,
