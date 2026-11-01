@@ -13,7 +13,8 @@ export type MenubarState = "idle" | "working" | "waiting" | "cap" | "paused" | "
 /**
  * The `StatusDot` state each menubar state renders as. A subset of
  * `StatusState` in `app/src/components/StatusDot/StatusDot.tsx`, restated here
- * because that module is React (the main process cannot load it).
+ * because that module is React (the main process cannot load it). The OS tray
+ * maps it on to a glyph (`app/electron/tray.ts`, `GLYPHS`) and draws no dot.
  */
 export type MenubarDotState = "idle" | "working" | "waiting" | "paused" | "failed";
 

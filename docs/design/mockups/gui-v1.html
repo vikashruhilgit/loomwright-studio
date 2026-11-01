@@ -68,12 +68,9 @@ svg.i.xs{width:12px;height:12px;stroke-width:2}
 .mbar .r .clock{font-variant-numeric:tabular-nums}
 .mbi{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 6px;border-radius:4px;background:none;border:0;color:#fff}
 .mbi:hover,.mbi.open{background:#ffffff26}
-.mbi .ring{width:10px;height:10px;border-radius:50%;border:2px solid #fff;box-sizing:border-box}
-.mbi .ring.working{border:0;background:var(--accent);animation:pulse var(--d-pulse) ease-in-out infinite}
-.mbi .ring.waiting{border:0;background:#f0b429}
-.mbi .ring.parked{border:0;background:#b39ff0;position:relative}
-.mbi .ring.parked::after{content:"";position:absolute;top:2px;bottom:2px;left:4px;width:2px;background:#26283b}
-.mbi .cnt{font-size:11px;font-weight:600;min-width:16px;height:16px;padding:0 5px;border-radius:9999px;background:#f0b429;color:#1a1200;display:grid;place-items:center}
+/* the menu-bar icon is the MenubarGlyph: a template image, so it takes the bar's colour, and the count is plain title text */
+.mbi .glyph{display:block;color:#fff}
+.mbi .cnt{font-size:13px;font-weight:500;color:#fff;font-variant-numeric:tabular-nums}
 .mbmenu{position:absolute;right:14px;top:32px;width:300px;background:var(--surface-raised);color:var(--ink);border-radius:var(--r-lg);box-shadow:var(--shadow-3);padding:6px;z-index:40;transform-origin:top right;animation:pop var(--d-base) var(--ease-enter)}
 .mbmenu .st{display:flex;align-items:center;gap:8px;padding:8px 10px}
 .mbmenu .st .meta{color:var(--ink-tertiary);font-size:11px;line-height:14px}
@@ -408,7 +405,7 @@ svg.i.xs{width:12px;height:12px;stroke-width:2}
       <span class="apple" aria-label="Apple menu"></span><span class="app">Loomwright Studio</span><span>File</span><span>Edit</span><span>View</span><span>Agents</span><span>Window</span><span>Help</span>
       <span class="sp"></span>
       <div class="r">
-        <button class="mbi" id="mbi" aria-haspopup="menu" aria-expanded="false" aria-label="Loomwright Studio status"><span class="ring" id="mbring"></span><span class="cnt" id="mbcnt" hidden>0</span></button>
+        <button class="mbi" id="mbi" aria-haspopup="menu" aria-expanded="false" aria-label="Loomwright Studio status"><span class="glyph" id="mbglyph"></span><span class="cnt" id="mbcnt" hidden>0</span></button>
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 9a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16a5 5 0 0 1 6 0M12 19.5h.01"/></svg><svg aria-hidden="true" width="24" height="16" viewBox="0 0 30 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="24" height="12" rx="3"/><rect x="3" y="4" width="17" height="8" rx="1.5" fill="currentColor" stroke="none"/><path d="M27 6v4" stroke-linecap="round"/></svg><span class="clock" id="clock">Mon 14:06</span>
       </div>
     </div>
@@ -580,6 +577,35 @@ function currentAction(a){
   return '';
 }
 
+/* The menu-bar glyph, as SVG (the app draws the same geometry as a bitmap: app/electron/tray-glyph.ts).
+   mobiusGlyph(state, px) -> <svg>; state: idle | working | waiting | paused | killed. One colour (currentColor) plus alpha. */
+const mobiusGlyph=(()=>{
+  const NS='http://www.w3.org/2000/svg',R=8.2,A=1.2,W=1.9,SQ=0.9,PSI=1.5*Math.PI,TH0=-Math.PI/6,TURN=4*Math.PI,N=360,TOP=Math.PI/2;
+  const raw=(k,t)=>{const cx=R*Math.cos(t)+A*Math.cos(PSI-2*t),cy=R*Math.sin(t)+A*Math.sin(PSI-2*t),dx=-R*Math.sin(t)+2*A*Math.sin(PSI-2*t),dy=R*Math.cos(t)-2*A*Math.cos(PSI-2*t),l=Math.hypot(dx,dy),w=k*W*Math.cos(1.5*(t-TH0));return[cx+dy/l*w,-(cy-dx/l*w)*SQ];};
+  const FIT=(()=>{let x0=1/0,x1=-1/0,y0=1/0,y1=-1/0;for(let i=0;i<=2*N;i++){const[x,y]=raw(1,TURN*i/(2*N));x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);}const s=21/Math.max(x1-x0,y1-y0);return{s,ox:12-(x0+x1)/2*s,oy:12-(y0+y1)/2*s+.4};})();
+  const pt=(k,t)=>{const[x,y]=raw(k,t);return[x*FIT.s+FIT.ox,y*FIT.s+FIT.oy];};
+  const path=k=>{let d='';for(let i=0;i<=2*N;i++){const[x,y]=pt(k,TURN*i/(2*N));d+=(i?'L':'M')+x.toFixed(2)+' '+y.toFixed(2);}return d+'Z';};
+  const spread=n=>Array.from({length:n},(_,i)=>-.82+1.64*i/(n-1));
+  const EDGE=path(1),cache={};const tp=k=>cache[k]??=path(k);
+  const el=(n,a,p)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);p.appendChild(e);return e;};
+  const LOOK={rest:[.06,.4,.65,6,.22],working:[.06,.32,.5,14,.12],full:[.25,1,1,6,.22],faded:[.04,.22,.4,6,.22]};
+  const ribbon=(g,[tint,th,edge,count,w])=>{el('path',{d:EDGE,fill:'currentColor','fill-rule':'evenodd',opacity:tint},g);for(const k of spread(count))el('path',{d:tp(k),fill:'none',stroke:'currentColor','stroke-width':w,opacity:th},g);el('path',{d:EDGE,fill:'none',stroke:'currentColor','stroke-width':.55,'stroke-linejoin':'round',opacity:edge},g);};
+  const reduced=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const rays=[];let id=0,clock=0,last=null;
+  function drawRay(r){const head=r.phase+clock*r.speed,S=28,L=1,pts=[];for(let j=0;j<=S;j++)pts.push(pt(r.k,head-L+L*j/S));const le=[],ri=[];let tx=0,ty=0,h=0;for(let j=0;j<=S;j++){const a=pts[Math.max(j-1,0)],b=pts[Math.min(j+1,S)],l=Math.hypot(b[0]-a[0],b[1]-a[1])||1;tx=(b[0]-a[0])/l;ty=(b[1]-a[1])/l;h=r.W/2*Math.pow(j/S,.9);const[x,y]=pts[j];le.push([x-ty*h,y+tx*h]);ri.push([x+ty*h,y-tx*h]);}const f=p=>p[0].toFixed(3)+' '+p[1].toFixed(3),c=h*1.33,Le=le[S],Re=ri[S];let d='M'+f(le[0]);for(let j=1;j<=S;j++)d+='L'+f(le[j]);d+='C'+f([Le[0]+tx*c,Le[1]+ty*c])+' '+f([Re[0]+tx*c,Re[1]+ty*c])+' '+f(Re);for(let j=S-1;j>=0;j--)d+='L'+f(ri[j]);r.p.setAttribute('d',d+'Z');r.g.setAttribute('x1',pts[0][0]);r.g.setAttribute('y1',pts[0][1]);r.g.setAttribute('x2',pts[S][0]+tx*h);r.g.setAttribute('y2',pts[S][1]+ty*h);}
+  function frame(now){if(last!==null&&!reduced())clock+=Math.min(now-last,50);last=now;for(const r of rays)if(r.p.isConnected)drawRay(r);requestAnimationFrame(frame);}
+  requestAnimationFrame(frame);
+  return function(state,px){
+    const svg=document.createElementNS(NS,'svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('width',px);svg.setAttribute('height',px);svg.setAttribute('aria-hidden','true');svg.style.overflow='visible';svg.style.display='block';
+    if(state==='idle')ribbon(svg,LOOK.rest);
+    if(state==='working'){ribbon(svg,LOOK.working);const defs=el('defs',{},svg);spread(14).forEach((k,i)=>{const gid='mg-ray-'+(id++),g=el('linearGradient',{id:gid,gradientUnits:'userSpaceOnUse'},defs);[[0,0],[.65,.55],[1,1]].forEach(([o,a])=>el('stop',{offset:o,'stop-color':'currentColor','stop-opacity':a},g));const r={p:el('path',{fill:`url(#${gid})`},svg),g,k,W:px>40?.34:.55,phase:(i*.618%1)*TURN,speed:TURN/(2*(5200+(i*37%5)*380))};rays.push(r);drawRay(r);});}
+    if(state==='waiting'){const g=el('g',{},svg);ribbon(g,LOOK.full);const a=g.animate([{opacity:.35},{opacity:1},{opacity:.35}],{duration:2200,iterations:1/0,easing:'ease-in-out'});const hold=()=>{if(reduced()){a.pause();a.currentTime=1100;}else a.play();};hold();matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change',hold);}
+    if(state==='paused'){ribbon(svg,LOOK.faded);for(const x of[10.5,12.7])el('line',{x1:x,y1:11,x2:x,y2:15.4,stroke:'currentColor','stroke-width':.85,'stroke-linecap':'round'},svg);}
+    if(state==='killed'){const mid='mg-cut-'+(id++),m=el('mask',{id:mid,maskUnits:'userSpaceOnUse',x:0,y:0,width:24,height:24},el('defs',{},svg));el('rect',{x:0,y:0,width:24,height:24,fill:'#fff'},m);el('line',{x1:20.5,y1:3.5,x2:3.5,y2:20.5,stroke:'#000','stroke-width':2.4},m);ribbon(el('g',{mask:`url(#${mid})`},svg),LOOK.faded);el('line',{x1:20.5,y1:3.5,x2:3.5,y2:20.5,stroke:'currentColor','stroke-width':.75,'stroke-linecap':'round'},svg);}
+    return svg;
+  };
+})();
+
 /* ---------- Render root ---------- */
 function render(){
   document.documentElement.dataset.theme=S.theme; if(!S.theme) delete document.documentElement.dataset.theme;
@@ -589,7 +615,8 @@ function render(){
   const ks=kernelState();
   $('#footdot').className='dot '+(ks==='offline'?'danger':ks);
   $('#foottext').textContent=stateWord[ks];
-  $('#mbring').className='ring '+(ks==='offline'?'':ks);
+  const g={working:'working',waiting:'waiting',parked:'paused'}[ks]||'idle';
+  if($('#mbglyph').dataset.state!==g){$('#mbglyph').dataset.state=g;$('#mbglyph').replaceChildren(mobiusGlyph(g,18));}
   $('#mbcnt').hidden=!n; $('#mbcnt').textContent=n;
   const crew=S.agents.filter(a=>a.id!=='wright');
   $('#crewnav').innerHTML=crew.length?crew.map(a=>{const st=agentState(a.id);const sel=S.screen==='chat'&&S.chatWith===a.id;const un=S.unread[a.id]&&!sel;const L=lastLine(a);return `<button class="nav crew ${sel?'sel':''}" data-agent="${a.id}" aria-label="Chat with ${esc(a.name)}${un?', unread':''}">${avatarHTML(a,st,24,currentAction(a))}<span class="txt"><span class="nm" style="${un?'font-weight:600':''}">${esc(a.name)}${un?'<span class="un" aria-hidden="true"></span>':''}<time>${L.t}</time></span><span class="last">${esc(L.text)}</span></span></button>`}).join(''):`<div style="padding:4px 8px;font-size:11px;line-height:14px;color:var(--ink-tertiary)">No specialists yet. Wright proposes one when a duty needs it.</div>`;

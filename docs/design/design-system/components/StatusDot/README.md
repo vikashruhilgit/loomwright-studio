@@ -1,4 +1,4 @@
-An 8px dot plus a word. It is the same mark in the menu bar, the sidebar, agent cards, session rows and badges, so the user learns it once. Four kernel states and two verified outcomes:
+An 8px dot plus a word. It is the same mark in the sidebar, agent cards, session rows and badges, so the user learns it once. The menu bar is the one exception: it shows the MenubarGlyph, a template image that cannot carry colour. Four kernel states and two verified outcomes:
 
 | State | Mark | Colour |
 |---|---|---|
@@ -9,7 +9,7 @@ An 8px dot plus a word. It is the same mark in the menu bar, the sidebar, agent 
 | verified ok | filled | `ok` |
 | failed / killed / denied | filled | `danger` |
 
-**Use:** always with the state word next to it (or an `aria-label` carrying it when space forbids, as in the menu bar). Add the meta that makes it actionable in `caption`: the count, the reset time, the verification time.
+**Use:** always with the state word next to it (or an `aria-label` carrying it when space forbids). Add the meta that makes it actionable in `caption`: the count, the reset time, the verification time.
 
 **Honest status:** `ok` is set only from a kernel-verified fact and its meta names the verification time. A guess is `ink-tertiary` text with no dot.
 

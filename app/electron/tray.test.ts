@@ -23,6 +23,8 @@ const electron = vi.hoisted(() => {
   return {
     trays,
     trayThrows: false,
+    reducedMotion: false,
+    motionReads: 0,
     app: { isPackaged: false, quit: (): void => undefined },
     dialog: { showMessageBox: async (_options: Record<string, unknown>): Promise<{ response: number }> => ({ response: 0 }) },
   };
@@ -53,13 +55,25 @@ vi.mock("electron", () => {
   return {
     Tray,
     Menu: { buildFromTemplate: (template: TemplateItem[]) => ({ template }) },
-    nativeImage: { createFromBitmap: (buffer: Buffer, options: unknown) => ({ buffer, options }) },
+    nativeImage: {
+      createFromBitmap: (buffer: Buffer, options: unknown) => {
+        const image = { buffer, options, template: false, setTemplateImage: (on: boolean) => void (image.template = on) };
+        return image;
+      },
+    },
+    systemPreferences: {
+      getAnimationSettings: () => {
+        electron.motionReads += 1;
+        return { prefersReducedMotion: electron.reducedMotion };
+      },
+    },
     app: electron.app,
     dialog: electron.dialog,
   };
 });
 
-const { createTray, dotBitmap, KILL_CONFIRM_BUTTONS, TRAY_FEED_THROTTLE_MS, TRAY_POLL_MS } = await import("./tray");
+const { createTray, KILL_CONFIRM_BUTTONS, TRAY_FEED_THROTTLE_MS, TRAY_MOTION_RECHECK_MS, TRAY_POLL_MS } = await import("./tray");
+const { GLYPH_FRAME_MS } = await import("./tray-glyph");
 
 // ---- a fake kernel ------------------------------------------------------------------
 
@@ -175,6 +189,7 @@ beforeEach(() => {
   vi.stubEnv(TRAY_SEAM_ENV, "1");
   electron.app.isPackaged = false;
   electron.trayThrows = false;
+  electron.reducedMotion = false;
   electron.trays.length = 0;
   electron.app.quit = vi.fn();
   electron.dialog.showMessageBox = vi.fn(async () => ({ response: 0 }));
@@ -218,19 +233,55 @@ describe("what the tray shows", () => {
     expect(item("resume")?.enabled).toBe(false);
   });
 
-  it("draws a coloured dot per state, in code", () => {
-    const pixel = (dot: Parameters<typeof dotBitmap>[0], x: number, y: number) => {
-      const { buffer, size } = dotBitmap(dot);
-      const at = (y * size + x) * 4;
-      return [...buffer.subarray(at, at + 4)];
-    };
-    // BGRA: the kill switch's red at the centre, a transparent corner.
-    expect(pixel("failed", 16, 16)).toEqual([0x2a, 0x32, 0xb8, 255]);
-    expect(pixel("failed", 0, 0)).toEqual([0, 0, 0, 0]);
-    // Idle is a ring: its centre is transparent, its edge is not.
-    expect(pixel("idle", 16, 16)[3]).toBe(0);
-    expect(pixel("idle", 16, 3)[3]).toBeGreaterThan(0);
-    expect(dotBitmap("working").size).toBe(32);
+  it("draws the glyph as a template image", async () => {
+    const { kernel } = fakeKernel();
+    await start(kernel);
+    expect(lastTray()?.image).toMatchObject({ template: true, options: { width: 36, height: 36, scaleFactor: 2 } });
+  });
+
+  it("redraws every frame while working, and holds one still frame under reduce motion", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { kernel } = fakeKernel({ sessions: 1 });
+    await start(kernel);
+    expect(model().state).toBe("working");
+    const first = lastTray()?.image;
+    vi.advanceTimersByTime(GLYPH_FRAME_MS);
+    const second = lastTray()?.image;
+    expect(second).not.toBe(first);
+    electron.reducedMotion = true;
+    vi.advanceTimersByTime(GLYPH_FRAME_MS);
+    const still = lastTray()?.image;
+    vi.advanceTimersByTime(GLYPH_FRAME_MS * 5);
+    expect(lastTray()?.image).toBe(still);
+  });
+
+  it("under reduce motion re-checks the setting once a second, not every frame, and moves again when it is off", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    electron.reducedMotion = true;
+    const { kernel } = fakeKernel({ sessions: 1 });
+    await start(kernel);
+    expect(model().state).toBe("working");
+    electron.motionReads = 0;
+    vi.advanceTimersByTime(TRAY_MOTION_RECHECK_MS - 1);
+    expect(electron.motionReads).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(electron.motionReads).toBe(1);
+    const still = lastTray()?.image;
+    electron.reducedMotion = false;
+    vi.advanceTimersByTime(TRAY_MOTION_RECHECK_MS);
+    expect(lastTray()?.image).not.toBe(still);
+    const moving = lastTray()?.image;
+    vi.advanceTimersByTime(GLYPH_FRAME_MS);
+    expect(lastTray()?.image).not.toBe(moving);
+  });
+
+  it("draws a still state once, with no frames after it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { kernel } = fakeKernel();
+    await start(kernel);
+    const idle = lastTray()?.image;
+    vi.advanceTimersByTime(GLYPH_FRAME_MS * 5);
+    expect(lastTray()?.image).toBe(idle);
   });
 
   it("re-renders the icon when the state changes", async () => {

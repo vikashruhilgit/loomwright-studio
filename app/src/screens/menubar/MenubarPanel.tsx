@@ -2,8 +2,9 @@
 // dropdown (`docs/design/mockups/gui-v1.html`, `.mbmenu`) rendered in the
 // window, from the kernel's own `GET /status` and `GET /approvals`:
 //
-// - the state's `StatusDot` and word (`./state.ts`, the same model the tray
-//   uses), then "N running · N waiting on you";
+// - the state's `StatusDot` and word (`./state.ts`, the same state model the
+//   tray reads; the tray draws that state as the MenubarGlyph, a template
+//   image, not as this dot), then "N running · N waiting on you";
 // - Approvals with the pending count (-> `#/approvals`);
 // - Pause all / Unpause, Kill switch… (the confirm, through the host) and
 //   Resume, enabled by the same rules as the ⌘K commands (`actionEnabled`);
