@@ -83,3 +83,9 @@ app/src/screens/playbooks
 kernel/src/gui/playbook-history.ts
 kernel/test/gui-playbook-history.test.ts
 app/e2e/playbooks.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-01T13:52:17Z
+- **Brief:** .supervisor/jobs/done/2026-11-01-playbooks-table-tokens-today-and-short-model-names.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/195
