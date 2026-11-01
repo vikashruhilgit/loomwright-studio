@@ -1,8 +1,10 @@
 /* Schedules & triggers (phase 7 item 05): docs/design/mockups/gui-v2.html (`schedulesScreen`, and the
    "Timeline (Schedules)" block of its style) on the tokens. Colour comes only from tokens.css custom properties.
    Focus keeps the shell's ring (`:focus-visible` in app.css): nothing here removes it.
-   Row heights are fixed (a line of text clips with an ellipsis), so a refetch that changes a name,
-   a count or a time changes text inside a row and moves nothing. */
+   History rows are a fixed height (a line of text clips with an ellipsis), so a refetch that changes a count
+   or a time changes text inside a row and moves nothing. A title (an upcoming entry's, a trigger row's) wraps to
+   two lines and is clamped with an ellipsis after that (`.schedules-clamp`; the element carries its full text as
+   a `title`); its row is as tall as its content, which a refetch does not change. */
 
 .schedules {
   display: flex;
@@ -53,6 +55,15 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* A title: up to two lines, then an ellipsis. It sits after `.schedules-clip`, so it replaces its one-line cut. */
+.schedules-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .schedules-glyph {
   flex: none;
@@ -150,11 +161,21 @@
   min-width: 0;
   padding: var(--space-5) var(--space-6);
 }
-.schedules-lsec > p.schedules-pad {
+.schedules-lsec > p.schedules-pad,
+.schedules-tlr > p.schedules-pad {
   padding: var(--space-1) var(--space-3);
 }
 
-/* Upcoming: the timeline. */
+/* Upcoming: the timeline, "Upcoming · Today" (the heading above) and then "Later" in the same region. */
+.schedules-tlr {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.schedules-tlr > .schedules-label {
+  padding: var(--space-3) var(--space-3) var(--space-1);
+}
 .schedules-tl {
   list-style: none;
   margin: 0;
@@ -202,7 +223,7 @@
   flex-direction: column;
   justify-content: center;
   min-width: 0;
-  height: calc(var(--type-body-line) + var(--type-caption-line) + var(--space-4) + 2px);
+  min-height: calc(var(--type-body-line) + var(--type-caption-line) + var(--space-4) + 2px);
   padding: 0 var(--space-3);
   overflow: hidden;
   border: 1px solid var(--hairline);
@@ -225,8 +246,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  height: var(--space-12);
-  padding: 0 var(--space-3);
+  min-height: var(--space-12);
+  padding: var(--space-1) var(--space-3);
 }
 .schedules-box > li + li {
   border-top: 1px solid var(--hairline);
@@ -243,6 +264,13 @@
   flex: 1 1 auto;
   flex-direction: column;
   min-width: 0;
+}
+/* "playbook off: fires are skipped": a badge under a trigger row's or an upcoming entry's spec line. */
+.schedules-offnote {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: var(--space-1);
 }
 .schedules-select {
   padding: 0;

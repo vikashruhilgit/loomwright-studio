@@ -3,12 +3,13 @@
 // `./SchedulesScreen.tsx`; this module's one export is the screen the shell
 // discovers (`import.meta.glob("./screens/*/index.tsx")` in App.tsx). The sidebar
 // label is "Schedules & triggers", as the mockup's sidebar says (and as the title
-// bar, which is this `title`, does).
+// bar, which is this `title`, does). The count line beside the title is `Subtitle`.
 import type { StudioBridge } from "../../api/contract";
 import { getBridge } from "../../api/bridge";
 import type { ScreenDefinition } from "../types";
 import { SCHEDULES_TEST_IDS } from "./model";
 import { SchedulesScreen } from "./SchedulesScreen";
+import { Subtitle } from "./Subtitle";
 import "./schedules.css";
 
 /**
@@ -35,4 +36,5 @@ export const screen: ScreenDefinition = {
   title: "Schedules & triggers",
   nav: { label: "Schedules & triggers", order: 8, shortcut: "⌘8" },
   Component: SchedulesRoute,
+  Subtitle,
 };
