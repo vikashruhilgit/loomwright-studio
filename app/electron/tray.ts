@@ -114,8 +114,12 @@ function reducedMotion(): boolean {
 /** Held so the native tray is never garbage-collected (which would remove it). */
 let tray: Tray | undefined;
 
-/** Creates the tray and starts reading the kernel. Never throws: a tray the platform cannot show still keeps its model. */
-export function createTray(deps: TrayDeps): void {
+/**
+ * Creates the tray and starts reading the kernel. Never throws: a tray the platform cannot show still keeps its model.
+ * Returns a stop that ends its timers and feed (the app keeps its tray for its lifetime; a test stops each one, or a
+ * moving glyph's frame loop outlives it and draws onto the next test's tray).
+ */
+export function createTray(deps: TrayDeps): () => void {
   const { kernel } = deps;
   // Reasons only: never a token, never a response body. A repeated reason is logged once.
   const lastLogged = new Map<string, string>();
@@ -189,8 +193,10 @@ export function createTray(deps: TrayDeps): void {
     tick();
   };
 
+  let stopped = false;
   let rendered = "";
   const render = (): void => {
+    if (stopped) return;
     const current = model();
     const key = JSON.stringify(current);
     if (key === rendered || tray === undefined) return;
@@ -440,4 +446,18 @@ export function createTray(deps: TrayDeps): void {
 
   openFeed();
   void refresh();
+
+  return () => {
+    // A read still in flight renders nothing after this, so no new frame loop starts.
+    stopped = true;
+    if (animation !== undefined) clearTimeout(animation);
+    animation = undefined;
+    if (feedWindow !== undefined) clearTimeout(feedWindow);
+    feedWindow = undefined;
+    clearInterval(poll);
+    // A feed still opening closes its handle when it lands; an open one is closed now.
+    feedGeneration += 1;
+    feed?.close();
+    feed = undefined;
+  };
 }
