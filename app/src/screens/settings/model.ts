@@ -154,6 +154,23 @@ export function viewReply(reply: Reply<SettingsResponse>): Reply<SettingsView> {
   return view === undefined ? { kind: "failed", message: "the settings answer was not understood" } : { kind: "ok", status: reply.status, body: view };
 }
 
+// ---- The account ------------------------------------------------------------------------------------
+
+/** The provider the mockup's "personal subscription" wording belongs to (`subscription-token` in the kernel). */
+const SUBSCRIPTION_PROVIDER = "subscription-token";
+
+/**
+ * The Account row's words. The kernel answers `account` as the provider's id when no label is recorded
+ * (`kernel/src/auth/subscription-token.ts`), so an account that is null, empty or equal to the id is no label:
+ * the subscription provider reads "personal subscription" (the mockup's wording), any other "none recorded".
+ * A recorded label is returned unchanged.
+ */
+export function accountLabel(provider: Pick<SettingsView["provider"], "id" | "account">): string {
+  const { id, account } = provider;
+  if (account !== null && account !== "" && account !== id) return account;
+  return id === SUBSCRIPTION_PROVIDER ? "personal subscription" : "none recorded";
+}
+
 // ---- Health -----------------------------------------------------------------------------------------
 
 export type Tone = "ok" | "attention" | "danger" | "neutral";
@@ -271,7 +288,19 @@ export function loginNote(launchAtLogin: AppPreferences["launchAtLogin"], refuse
 export const LOGIN_DESCRIPTION = "Open Studio when you log in to this Mac.";
 /** Says only what the switch does: it is the app's own preference, which the kernel's notifier does not read (a departure from the mockup's caption, recorded in the evidence README). */
 export const NOTIFICATIONS_DESCRIPTION = "Kept as this app's own preference. The kernel's macOS notifications don't follow it yet.";
-export const THEME_DESCRIPTION = "System follows your Mac.";
+
+/** What the Theme row says under its title for the theme in force. */
+const THEME_DESCRIPTIONS: Readonly<Record<AppPreferences["theme"], string>> = {
+  system: "System follows your Mac.",
+  light: "Always light, whatever your Mac uses.",
+  dark: "Always dark, whatever your Mac uses.",
+};
+
+/** The Theme row's help text for the pressed theme; the System text while the preferences have not answered. */
+export function themeDescription(theme: AppPreferences["theme"] | undefined): string {
+  return THEME_DESCRIPTIONS[theme ?? "system"];
+}
+
 export const NOTIFIER_CAPTION = "terminal-notifier if installed, else osascript, else none";
 
 // ---- Live: the feed's events that make the screen read again ----------------------------------------------

@@ -16,8 +16,13 @@
 // - Live: a `memory_updated` or `session_status` event reads the tree again. The kernel records
 //   `memory_updated` for the owner's own writes only: an agent's write shows when a session
 //   ends (`session_status`) or on the next read, and a save over it is refused by the hash.
-// - The kernel going away: the screen keeps its last data (subtitle "last known"), Edit, Save
-//   and the conflict's actions are off, the draft stays, and it never falls back to the empty state.
+// - The kernel going away: the screen keeps its last data (the title-bar count line reads "last known"), Edit,
+//   Save and the conflict's actions are off, the draft stays, and it never falls back to the empty state. The
+//   last tree and `data_dir` live in `held.ts`, so a screen mounted while the kernel is away draws them too. One
+//   band is on screen: the shell's, or this screen's own when only its read noticed. A request nobody answered
+//   shows no request text.
+// - The count line goes to the title bar through `held.ts` (`index.tsx`'s `Subtitle`); paths under the home
+//   folder read `~/…`.
 // - The keys: J / K and the arrows move between files, Enter opens one, Esc leaves a file view
 //   (focus on that file's button) or an unchanged editor. ⌘K: `memory.open:<path>` and `memory.edit`.
 //
@@ -30,7 +35,10 @@ import type { CommandRegistry } from "../../commands/registry";
 import { ToastStack } from "../../components/Toast/Toast";
 import type { ToastItem } from "../../components/Toast/Toast";
 import { useLiveStore } from "../../store/react";
+import { useKernelReach, withLastKnown } from "../../shell/last-known";
+import { useHomeDir } from "../../shell/useHomeDir";
 import { useMemoryCommands } from "./commands";
+import { heldDataDir, heldTree, holdDataDir, holdTree, setMemorySubtitle } from "./held";
 import {
   MEMORY_TEST_IDS as IDS,
   contentToSend,
@@ -86,9 +94,13 @@ export interface MemoryScreenProps {
 
 export function MemoryScreen({ api, registry = commandRegistry }: MemoryScreenProps) {
   const { connection, eventLog } = useLiveStore(api);
-  const [tree, setTree] = useState<MemoryTreeResponse | undefined>();
+  const reach = useKernelReach(api);
+  const home = useHomeDir(api);
+  // Seeded from what answered earlier in this session (`held.ts`), so a screen mounted while the kernel does not
+  // answer draws the last-known tree, not the skeleton or an error card.
+  const [tree, setTree] = useState<MemoryTreeResponse | undefined>(heldTree);
   const [treeError, setTreeError] = useState<Refusal | undefined>();
-  const [dataDir, setDataDir] = useState<string | undefined>();
+  const [dataDir, setDataDir] = useState<string | undefined>(heldDataDir);
   const [now, setNow] = useState(() => Date.now());
   const [openPath, setOpenPath] = useState<string | null>(null);
   const [file, setFile] = useState<MemoryFileResponse | undefined>();
@@ -127,6 +139,7 @@ export function MemoryScreen({ api, registry = commandRegistry }: MemoryScreenPr
     if (!mounted.current || mine !== treeSeq.current) return;
     // A read the kernel did not answer (or refused) never replaces what is on screen.
     setTree((last) => (result.status === 0 ? last : result.ok ? result.body : last));
+    if (result.ok) holdTree(result.body);
     setTreeError(refusalOf(result));
     setNow(Date.now());
   }, [api]);
@@ -139,7 +152,9 @@ export function MemoryScreen({ api, registry = commandRegistry }: MemoryScreenPr
   useEffect(() => {
     if (dataDir !== undefined) return;
     void readSettings(api).then((result) => {
-      if (mounted.current && result.ok) setDataDir(result.body.data_dir);
+      if (!mounted.current || !result.ok) return;
+      holdDataDir(result.body.data_dir);
+      setDataDir(result.body.data_dir);
     });
   }, [api, connection.state, dataDir]);
 
@@ -166,7 +181,21 @@ export function MemoryScreen({ api, registry = commandRegistry }: MemoryScreenPr
     if (openPath !== null && !editing) void refetchFile(openPath);
   }, [refetchFile, openPath, editing, feedMark]);
 
-  const offline = connection.state === "reconnecting" || connection.state === "unreachable" || connection.state === "not_installed" || treeError?.status === 0;
+  // The kernel cannot be asked: the store says so (`reach.offline`), or the tree's own read got no answer.
+  const noAnswer = treeError?.status === 0;
+  const offline = reach.offline || noAnswer;
+  // Exactly one band on screen: the shell's when it shows one, else this screen's own for a read nobody answered.
+  const ownBand = noAnswer && !reach.shellBand;
+
+  // The count line belongs to the title bar: it goes to `held.ts`, which `MemorySubtitle` (index.tsx) reads. Nothing
+  // is shown until a tree has answered; the line is cleared when the screen goes, so no other screen inherits it.
+  const subtitleLine =
+    tree === undefined ? "" : fileCount(tree) === 0 ? countText(0) : draft !== undefined ? (conflict !== undefined ? "Changed since you opened it" : "Edit") : countText(fileCount(tree));
+  const subtitle = subtitleLine === "" ? "" : withLastKnown(subtitleLine, offline);
+  useLayoutEffect(() => {
+    setMemorySubtitle(subtitle);
+  }, [subtitle]);
+  useLayoutEffect(() => () => setMemorySubtitle(""), []);
 
   // ---- moving between views -------------------------------------------------------------------------------------
 
@@ -375,11 +404,12 @@ export function MemoryScreen({ api, registry = commandRegistry }: MemoryScreenPr
 
   if (tree === undefined) {
     if (treeError === undefined) return <MemoryLoading announcement={announcement} offline={offline} />;
-    return <MemoryFailure error={treeError} announcement={announcement} offline={offline} onRetry={() => void refetchTree()} />;
+    return <MemoryFailure error={treeError} announcement={announcement} offline={offline} band={ownBand} onRetry={() => void refetchTree()} />;
   }
-  if (fileCount(tree) === 0) return <MemoryEmpty dataDir={dataDir} announcement={announcement} offline={offline} onAsk={() => { window.location.hash = "#/chat"; }} />;
+  if (fileCount(tree) === 0) {
+    return <MemoryEmpty dataDir={dataDir} home={home} announcement={announcement} offline={offline} band={ownBand} onAsk={() => { window.location.hash = "#/chat"; }} />;
+  }
 
-  const lastKnown = offline ? " · last known" : "";
   const stale =
     treeError === undefined || treeError.status === 0 ? null : (
       <p className="memory-stale" role="status" data-testid={IDS.stale}>
@@ -390,7 +420,7 @@ export function MemoryScreen({ api, registry = commandRegistry }: MemoryScreenPr
 
   if (draft !== undefined && conflict !== undefined) {
     return (
-      <MemoryFrame state="conflict" subtitle={`Changed since you opened it${lastKnown}`} announcement={announcement} offline={offline} rootRef={rootRef}>
+      <MemoryFrame state="conflict" announcement={announcement} offline={offline} band={ownBand} rootRef={rootRef}>
         <ConflictView draft={draft} conflict={conflict} openedAt={openedAt} offline={offline} now={now} onBack={backToEditing} onDiscard={discardMine} onCopy={() => void copyMine()} onEditOnTop={editOnTop} />
         {toastStack}
       </MemoryFrame>
@@ -398,11 +428,12 @@ export function MemoryScreen({ api, registry = commandRegistry }: MemoryScreenPr
   }
   if (draft !== undefined) {
     return (
-      <MemoryFrame state="edit" subtitle={`Edit${lastKnown}`} announcement={announcement} offline={offline} rootRef={rootRef}>
+      <MemoryFrame state="edit" announcement={announcement} offline={offline} band={ownBand} rootRef={rootRef}>
         {stale}
         <MemoryEditor
           draft={draft}
           dataDir={dataDir}
+          home={home}
           version={versionOf(draft.baseHash)}
           saving={saving}
           offline={offline}
@@ -423,18 +454,19 @@ export function MemoryScreen({ api, registry = commandRegistry }: MemoryScreenPr
   const state: MemoryState = openPath === null ? "populated" : "file";
   const tabPath = activePath !== null && paths.includes(activePath) ? activePath : openPath !== null && paths.includes(openPath) ? openPath : paths[0];
   return (
-    <MemoryFrame state={state} subtitle={`${countText(fileCount(tree))}${lastKnown}`} announcement={announcement} offline={offline} rootRef={rootRef}>
+    <MemoryFrame state={state} announcement={announcement} offline={offline} band={ownBand} rootRef={rootRef}>
       {stale}
       <div className="memory-split">
-        <MemoryTree tree={tree} dataDir={dataDir} openPath={openPath ?? undefined} tabPath={tabPath} offline={offline} now={now} onOpen={open} onFocused={setActivePath} />
+        <MemoryTree tree={tree} dataDir={dataDir} home={home} openPath={openPath ?? undefined} tabPath={tabPath} offline={offline} now={now} onOpen={open} onFocused={setActivePath} />
         <div className="memory-pane">
           {openPath === null ? (
-            <MemoryOverview tree={tree} dataDir={dataDir} />
+            <MemoryOverview tree={tree} dataDir={dataDir} home={home} />
           ) : (
             <FileView
               key={openPath}
               path={openPath}
               dataDir={dataDir}
+              home={home}
               entry={entryOf(tree, openPath)}
               file={file}
               readError={fileError}

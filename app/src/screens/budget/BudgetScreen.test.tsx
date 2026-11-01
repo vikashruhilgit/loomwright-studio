@@ -7,7 +7,7 @@
 // `kernel/test/gui-budget-audit.test.ts`; the built app by `e2e/budget.spec.ts`.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ApiRequest, ApiResult, BudgetCapState, BudgetLimitUsage, BudgetUsageResponse, BudgetUsageRow, EventFrame, PlaybookListing, RosterEntry, StatusBody } from "../../api/contract";
+import type { ApiRequest, ApiResult, AuditEvent, BudgetCapState, BudgetLimitUsage, BudgetUsageResponse, BudgetUsageRow, PlaybookListing, RosterEntry, StatusBody } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
@@ -15,6 +15,7 @@ import type { FakeBridge } from "../../store/fake-bridge";
 import { BudgetScreen } from "./BudgetScreen";
 import { BUDGET_OWNER } from "./commands";
 import { BUDGET_TEST_IDS as IDS } from "./model";
+import { Subtitle } from "./Subtitle";
 
 afterEach(() => {
   cleanup();
@@ -134,35 +135,38 @@ function waitingUsage(): BudgetUsageResponse {
   };
 }
 
-function ev(id: number, kind: string, payload: unknown = {}, o: Partial<EventFrame> = {}): EventFrame {
+function ev(id: number, kind: string, payload: unknown = {}, o: Partial<AuditEvent> = {}): AuditEvent {
   return { type: "event", id, at: new Date(2026, 9, 30, 14, 20 - (400 - id)).toISOString(), kind, session_id: null, task_id: null, payload, ...o };
 }
 
-/** 20 events, ids 400 down to 381: Mason's review events, Ada's, kernel ones that name no agent, and three refused starts. */
-function auditEvents(): EventFrame[] {
-  const kinds: [string, unknown][] = [
-    ["memory_updated", { agent: "mason", playbook: "review-prs", text: "path: memory/mason/lessons.md" }],
-    ["draft_output_recorded", { agent: "mason", playbook: "review-prs", text: "Draft review recorded for studio-sandbox #3." }],
-    ["playbook_dry_run", { agent: "ada", playbook: "weekly-changelog", text: "Dry run of Weekly changelog draft v1 started" }],
-    ["trigger_fired", { agent: "mason", playbook: "review-prs", text: "Poll found PR #3" }],
-    ["admission_refused", { agent: "mason", reason: "agent_sessions_at_once" }],
-    ["session_status", { agent: "ada", text: "Session 39 ended failed:auth." }],
-    ["cap_warning", { reason: "rate_limit_type: seven_day · utilization 0.83" }],
-    ["session_status", { agent: "mason", playbook: "review-prs", text: "Session 37 ended completed" }],
-    ["admission_refused", { agent: "mason", reason: "agent_daily_limit" }],
-    ["kill_switch_released", { text: "The kill switch was released." }],
-    ["session_status", { agent: "mason", playbook: "review-prs", text: "Session 35 ended failed" }],
-    ["trigger_missed", { text: "Rotate the sandbox token", reason: "kill_switch" }],
-    ["playbook_updated", { agent: "mason", playbook: "review-prs", text: "v3 · priority low to normal" }],
-    ["admission_refused", { agent: "ada", reason: "agent_sessions_at_once" }],
-    ["playbook_updated", { agent: "ada", playbook: "weekly-changelog", text: "v2 · model sonnet to haiku" }],
-    ["session_status", { agent: "mason", playbook: "review-prs", text: "Session 30 ended completed" }],
-    ["playbook_updated", { agent: "mason", playbook: "review-prs", text: "v2 · intent" }],
-    ["playbook_created", { agent: "mason", playbook: "review-prs", text: "v1 · Review PRs on studio-sandbox" }],
-    ["task_created", { agent: "wright", text: "Pick the repos Mason reviews first" }],
-    ["notify", { agent: "ada", text: "a notice" }],
+/**
+ * 20 events, ids 400 down to 381, shaped as the kernel writes them: Mason's, Ada's, kernel ones, and one the owner caused
+ * through the API (`actor: "you"`). The route names the actor, so the payloads need not.
+ */
+function auditEvents(): AuditEvent[] {
+  const kinds: [string, unknown, string][] = [
+    ["memory_updated", { playbook: "review-prs", path: "memory/mason/lessons.md", by: "owner", size: 12 }, "mason"],
+    ["draft_output_recorded", { playbook: "review-prs", draft_output_id: 3, tool: "gh pr review", summary: "gh pr review studio-sandbox #3" }, "mason"],
+    ["playbook_dry_run", { playbook: "weekly-changelog", playbook_id: 2, version: 1, status: "done" }, "ada"],
+    ["trigger_fired", { playbook: "review-prs", trigger_id: 5, items: 1 }, "mason"],
+    ["admission_refused", { kind: "start", agent: "mason", reason: "agent_sessions_at_once" }, "mason"],
+    ["session_status", { from: "running", to: "failed:auth", reason: "auth_failed" }, "ada"],
+    ["cap_warning", { rate_limit_type: "seven_day", utilization: 0.83 }, "kernel"],
+    ["session_status", { playbook: "review-prs", from: "running", to: "completed", reason: "result_success" }, "mason"],
+    ["admission_refused", { kind: "start", agent: "mason", reason: "agent_daily_limit" }, "mason"],
+    ["kill_switch_released", {}, "you"],
+    ["session_status", { playbook: "review-prs", from: "running", to: "failed", reason: "result_error" }, "mason"],
+    ["trigger_missed", { trigger_id: 6, reason: "kill_switch" }, "kernel"],
+    ["playbook_updated", { playbook: "review-prs", version: 3, fields: ["priority"], by: "owner" }, "mason"],
+    ["admission_refused", { kind: "start", agent: "ada", reason: "agent_sessions_at_once" }, "ada"],
+    ["playbook_updated", { playbook: "weekly-changelog", version: 2, fields: ["model"], by: "owner" }, "ada"],
+    ["session_status", { playbook: "review-prs", from: "running", to: "completed", reason: "result_success" }, "mason"],
+    ["playbook_updated", { playbook: "review-prs", version: 2, fields: ["intent"], by: "owner" }, "mason"],
+    ["playbook_created", { playbook: "review-prs", by: "wright" }, "mason"],
+    ["task_created", { title: "Pick the repos Mason reviews first", state: "waiting" }, "wright"],
+    ["notify", { reason: "auth_failed" }, "ada"],
   ];
-  return kinds.map(([kind, payload], i) => ev(400 - i, kind, payload, i === 0 ? { task_id: 9, session_id: 41 } : {}));
+  return kinds.map(([kind, payload, actor], i) => ev(400 - i, kind, payload, { actor, ...(i === 0 ? { task_id: 9, session_id: 41 } : {}) }));
 }
 
 type Answer = ApiResult<unknown> | Promise<ApiResult<unknown>>;
@@ -171,7 +175,7 @@ interface Kernel {
   readonly fake: FakeBridge;
   readonly registry: CommandRegistry;
   usage: BudgetUsageResponse;
-  events: EventFrame[];
+  events: AuditEvent[];
   roster: RosterEntry[];
   playbooks: PlaybookListing[];
   statusBody: StatusBody;
@@ -181,7 +185,9 @@ interface Kernel {
 
 interface Setup {
   readonly usage?: BudgetUsageResponse;
-  readonly events?: EventFrame[];
+  readonly events?: AuditEvent[];
+  /** An older kernel: `GET /audit` answers without `matching` and `total`. */
+  readonly noCounts?: boolean;
   readonly usageRoute?: Kernel["usageRoute"];
   readonly auditRoute?: Kernel["auditRoute"];
 }
@@ -204,16 +210,17 @@ function createKernel(setup: Setup = {}): Kernel {
         const q = req.query ?? {};
         const size = Number(q.limit ?? 50);
         const before = q.before === undefined ? Infinity : Number(q.before);
-        const payload = (e: EventFrame): { agent?: unknown; playbook?: unknown } => (typeof e.payload === "object" && e.payload !== null ? (e.payload as object) : {});
-        const list = kernel.events
-          .filter((e) => e.id < before)
+        const payload = (e: AuditEvent): { playbook?: unknown } => (typeof e.payload === "object" && e.payload !== null ? (e.payload as object) : {});
+        const filtered = kernel.events
           .filter((e) => q.kind === undefined || e.kind === q.kind)
-          .filter((e) => q.agent === undefined || payload(e).agent === q.agent)
+          .filter((e) => q.agent === undefined || e.actor === q.agent)
           .filter((e) => q.playbook === undefined || payload(e).playbook === q.playbook)
           .sort((a, b) => b.id - a.id);
-        const page = list.slice(0, size);
+        const page = filtered.filter((e) => e.id < before).slice(0, size);
         const last = page[page.length - 1];
-        return ok({ events: page, next_before: page.length === size && last !== undefined ? String(last.id) : null });
+        const next_before = page.length === size && last !== undefined ? String(last.id) : null;
+        // `matching`: the events under the filters, the cursor not counted; `total`: every event.
+        return ok(setup.noCounts === true ? { events: page, next_before } : { events: page, next_before, matching: filtered.length, total: kernel.events.length });
       }),
   };
   fake.route("GET /status", () => ok(kernel.statusBody));
@@ -227,7 +234,12 @@ function createKernel(setup: Setup = {}): Kernel {
 const THROTTLE = 40;
 
 function view(kernel: Kernel) {
-  return <BudgetScreen api={kernel.fake.bridge} registry={kernel.registry} now={() => NOW} liveThrottleMs={THROTTLE} />;
+  return (
+    <>
+      <Subtitle />
+      <BudgetScreen api={kernel.fake.bridge} registry={kernel.registry} now={() => NOW} liveThrottleMs={THROTTLE} />
+    </>
+  );
 }
 
 /** Render the screen over `kernel` and wait until the usage's first answer (or its failure) is on it. */
@@ -571,7 +583,10 @@ describe("latest in the audit log", () => {
     await waitFor(() => expect(screen.getAllByTestId(IDS.latestCard)).toHaveLength(3));
     expect(screen.getAllByTestId(IDS.latestCard).map((c) => c.getAttribute("data-id"))).toEqual(["400", "399", "398"]);
     expect(screen.getAllByTestId(IDS.latestCard)[0]?.textContent).toContain("memory_updated");
-    expect(screen.getAllByTestId(IDS.latestCard)[0]?.textContent).toContain("mason");
+    const first = screen.getAllByTestId(IDS.latestCard)[0] as HTMLElement;
+    expect(first.textContent).toContain("Mason");
+    expect(first.textContent).toContain("memory/mason/lessons.md was updated by owner.");
+    expect(first.textContent).not.toMatch(/[{}]/);
     expect(reads(kernel, "GET /audit")[0]?.query).toEqual({ limit: "3" });
   });
 });
@@ -591,15 +606,34 @@ describe("the audit log", () => {
     expect(document.querySelector("h1")).toBeNull();
   });
 
-  it("Actor is the payload's agent, else '—'; Detail is the payload's text with the task, session and playbook refs", async () => {
+  it("Actor is the route's actor by display name, 'you' or 'kernel', never '—'; Detail is a sentence with the task, session and playbook refs", async () => {
     await start();
     await openLog();
     const actors = texts(IDS.auditActor);
-    expect(actors[0]).toBe("mason");
-    expect(actors[6]).toBe("—");
+    expect(actors[0]).toBe("Mason");
+    expect(actors[2]).toBe("Ada");
+    expect(actors[6]).toBe("kernel");
+    expect(actors[7]).toBe("Mason");
+    expect(actors).not.toContain("—");
     const first = screen.getAllByTestId(IDS.auditRow)[0] as HTMLElement;
-    expect(within(first).getByTestId(IDS.auditDetail).textContent).toBe("path: memory/mason/lessons.md");
+    expect(within(first).getByTestId(IDS.auditDetail).textContent).toBe("memory/mason/lessons.md was updated by owner.");
     expect(first.textContent).toContain("task 9 · session 41 · playbook review-prs");
+    expect(texts(IDS.auditDetail)[1]).toBe("Draft review recorded for studio-sandbox #3. Recorded, not sent.");
+    expect(texts(IDS.auditDetail)[6]).toBe("The seven_day window is near its cap at 83%.");
+  });
+
+  it("an event the owner caused through the API reads 'you'", async () => {
+    await start({ events: auditEvents().slice(9) });
+    await openLog();
+    expect(texts(IDS.auditActor)[0]).toBe("you");
+    expect(texts(IDS.auditDetail)[0]).toBe("The kill switch was released.");
+  });
+
+  it("no row shows a JSON object, and a kind with no sentence reads 'no description yet'", async () => {
+    await start({ events: [ev(500, "made_up_kind", { secret: "x", nested: { a: 1 } }), ...auditEvents().slice(0, 7)] });
+    await openLog();
+    expect(texts(IDS.auditDetail)[0]).toBe("made_up_kind · no description yet");
+    for (const detail of texts(IDS.auditDetail)) expect(detail).not.toMatch(/[{}]/);
   });
 
   it("asks for a page of 8 with a 7 day since and no other filter, and shows no 'filtered' badge", async () => {
@@ -619,7 +653,7 @@ describe("the audit log", () => {
     const kernel = await start();
     await openLog();
     fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "mason" } });
-    await waitFor(() => expect(screen.getAllByTestId(IDS.auditActor).every((a) => a.textContent === "mason")).toBe(true));
+    await waitFor(() => expect(screen.getAllByTestId(IDS.auditActor).every((a) => a.textContent === "Mason")).toBe(true));
     expect(screen.getByTestId(IDS.filtered).textContent).toBe("filtered");
     expect((screen.getByTestId(IDS.clear) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.change(screen.getByLabelText("Playbook"), { target: { value: "review-prs" } });
@@ -630,7 +664,7 @@ describe("the audit log", () => {
     await waitFor(() => expect(screen.getAllByTestId(IDS.auditRow).every((r) => (r.textContent ?? "").includes("playbook review-prs"))).toBe(true));
     fireEvent.click(screen.getByTestId(IDS.clear));
     await waitFor(() => expect(screen.queryByTestId(IDS.filtered)).toBeNull());
-    await waitFor(() => expect(texts(IDS.auditActor)).toContain("—"));
+    await waitFor(() => expect(texts(IDS.auditActor)).toContain("kernel"));
     expect((screen.getByLabelText("Agent") as HTMLSelectElement).value).toBe("");
     expect(document.activeElement).toBe(screen.getByLabelText("Kind"));
   });
@@ -685,33 +719,40 @@ describe("the audit log", () => {
   it("pages Older and Newer by cursor: Older sends before=next_before, Newer pops, nothing overlaps or is skipped, the last page disables Older", async () => {
     const kernel = await start();
     await openLog();
-    expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing rows 1–8 · page 1 · newest first");
+    expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing 1–8 of 20 · page 1 of 3 · newest first");
     expect((screen.getByTestId(IDS.newer) as HTMLButtonElement).disabled).toBe(true);
     const ids = (): string[] => texts(IDS.auditId).map(String);
 
     fireEvent.click(screen.getByTestId(IDS.older));
-    await waitFor(() => expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing rows 9–16 · page 2 · newest first"));
+    await waitFor(() => expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing 9–16 of 20 · page 2 of 3 · newest first"));
     expect(ids()).toEqual(["392", "391", "390", "389", "388", "387", "386", "385"]);
     expect(reads(kernel, "GET /audit").at(-1)?.query?.before).toBe("393");
 
     fireEvent.click(screen.getByTestId(IDS.older));
-    await waitFor(() => expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing rows 17–20 · page 3 · newest first"));
+    await waitFor(() => expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing 17–20 of 20 · page 3 of 3 · newest first"));
     expect(ids()).toEqual(["384", "383", "382", "381"]);
     expect(reads(kernel, "GET /audit").at(-1)?.query?.before).toBe("385");
     expect((screen.getByTestId(IDS.older) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(screen.getByTestId(IDS.newer));
-    await waitFor(() => expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing rows 9–16 · page 2 · newest first"));
+    await waitFor(() => expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing 9–16 of 20 · page 2 of 3 · newest first"));
     expect(reads(kernel, "GET /audit").at(-1)?.query?.before).toBe("393");
     fireEvent.click(screen.getByTestId(IDS.newer));
-    await waitFor(() => expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing rows 1–8 · page 1 · newest first"));
+    await waitFor(() => expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing 1–8 of 20 · page 1 of 3 · newest first"));
     expect(reads(kernel, "GET /audit").at(-1)?.query).not.toHaveProperty("before");
     expect((screen.getByTestId(IDS.newer) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("a full last page's Older leads to an empty page that says 'No older events.', and Newer returns", async () => {
-    // Exactly 8 events: the kernel sends a cursor on a full page, and the page after it is empty.
+  it("a full last page's Older is off when the kernel counts the events", async () => {
     await start({ events: auditEvents().slice(0, 8) });
+    await openLog();
+    expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing 1–8 of 8 · page 1 of 1 · newest first");
+    expect((screen.getByTestId(IDS.older) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("an older kernel (no counts): a full last page's Older leads to an empty page that says 'No older events.', and Newer returns", async () => {
+    // Exactly 8 events: the kernel sends a cursor on a full page, and the page after it is empty.
+    await start({ events: auditEvents().slice(0, 8), noCounts: true });
     await openLog();
     fireEvent.click(screen.getByTestId(IDS.older));
     const empty = await screen.findByTestId(IDS.auditEmpty);
@@ -722,10 +763,24 @@ describe("the audit log", () => {
     await waitFor(() => expect(screen.getAllByTestId(IDS.auditRow)).toHaveLength(8));
   });
 
-  it("the footer never shows a total", async () => {
+  it("the badge beside the title reads 'N of M events', a filter narrows 'matching' and 'total' stays", async () => {
     await start();
     await openLog();
-    expect(screen.getByTestId(IDS.footer).textContent).not.toMatch(/\bof\b/);
+    expect(screen.getByTestId(IDS.auditCount).textContent).toBe("20 of 20 events");
+    expect(screen.getByRole("heading", { level: 2, name: "Audit log" }).parentElement?.textContent).toContain("20 of 20 events");
+    fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "ada" } });
+    await waitFor(() => expect(screen.getByTestId(IDS.auditCount).textContent).toBe("5 of 20 events"));
+    expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing 1–5 of 5 · page 1 of 1 · newest first");
+    expect(screen.getByTestId(IDS.filtered)).toBeTruthy();
+  });
+
+  it("an older kernel sends no counts: no badge, and the footer keeps rows and page", async () => {
+    await start({ noCounts: true });
+    await openLog();
+    expect(screen.queryByTestId(IDS.auditCount)).toBeNull();
+    expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing rows 1–8 · page 1 · newest first");
+    fireEvent.click(screen.getByTestId(IDS.older));
+    await waitFor(() => expect(screen.getByTestId(IDS.footer).textContent).toBe("Showing rows 9–16 · page 2 · newest first"));
   });
 
   it("a failed read says which request, keeps the rows already shown", async () => {
@@ -881,29 +936,35 @@ describe("untrusted text", () => {
 
   it("shows an event's payload, an agent name and a playbook name literally, never as markup", async () => {
     const kernel = createKernel({
-      events: [ev(10, `kind${hostile}`, { agent: hostile, text: hostile, playbook: hostile }), ev(9, "x", { text: "a‮\u001b[31mb" })],
+      events: [
+        ev(11, `kind${hostile}`, { agent: hostile, text: hostile, playbook: hostile }, { actor: "mason" }),
+        ev(10, "task_created", { title: hostile, state: "a‮\u001b[31mb" }, { actor: "mason" }),
+        ev(9, "playbook_created", { playbook: "review-prs", by: hostile }, { actor: "mason" }),
+      ],
     });
     kernel.roster = [agent("mason", hostile, "shark", "crew-teal")];
     kernel.playbooks = [playbook(1, "review-prs", hostile, "mason")];
     await mount(kernel);
-    await waitFor(() => expect(screen.getAllByTestId(IDS.latestCard)).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByTestId(IDS.latestCard)).toHaveLength(3));
     await openLog();
     const first = screen.getAllByTestId(IDS.auditRow)[0] as HTMLElement;
-    expect(within(first).getByTestId(IDS.auditDetail).textContent).toBe(hostile);
+    expect(within(first).getByTestId(IDS.auditDetail).textContent).toBe(`kind${hostile} · no description yet`);
     expect(within(first).getByTestId(IDS.auditActor).textContent).toBe(hostile);
     expect(within(first).getByTestId(IDS.auditKind).textContent).toBe(`kind${hostile}`);
     expect(screen.getByTestId(IDS.screen).querySelector("img[src='x']")).toBeNull();
     expect(screen.getByTestId(IDS.screen).querySelector("b")).toBeNull();
     expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
     // A control character and a bidi override are written out, not interpreted.
-    expect(texts(IDS.auditDetail)[1]).toBe("a\\u202e\\x1b[31mb");
+    expect(texts(IDS.auditDetail)[1]).toBe(`A task was created: ${hostile} · state a\\u202e\\x1b[31mb.`);
+    // A playbook's name and a payload's "by" are text too.
+    expect(texts(IDS.auditDetail)[2]).toBe(`Playbook ${hostile} was created by ${hostile}.`);
   });
 
-  it("an unparseable payload (passed through as a string) is shown as text", async () => {
-    await start({ events: [ev(10, "weird", "not json {")] });
+  it("an unparseable payload (passed through as a string) is shown as text, and the row has a kernel actor", async () => {
+    await start({ events: [ev(10, "weird", "not json {"), ev(9, "task_created", "not json {")] });
     await openLog();
-    expect(texts(IDS.auditDetail)).toEqual(["not json {"]);
-    expect(texts(IDS.auditActor)).toEqual(["—"]);
+    expect(texts(IDS.auditDetail)).toEqual(["weird · no description yet", "A task was created."]);
+    expect(texts(IDS.auditActor)).toEqual(["kernel", "kernel"]);
   });
 });
 

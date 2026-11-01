@@ -4,10 +4,13 @@
 // App.tsx).
 import type { ScreenDefinition } from "../types";
 import { PlaybooksScreen } from "./PlaybooksScreen";
+import { PlaybooksSubtitle } from "./subtitle";
 
 export const screen: ScreenDefinition = {
   id: "playbooks",
   title: "Playbooks",
   nav: { label: "Playbooks", order: 7, shortcut: "⌘7" },
   Component: PlaybooksScreen,
+  // The title bar's count line on the list ("3 playbooks · 2 on") and the slug on a playbook's detail.
+  Subtitle: PlaybooksSubtitle,
 };

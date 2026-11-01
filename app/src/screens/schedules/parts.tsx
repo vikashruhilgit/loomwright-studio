@@ -3,7 +3,8 @@
 // trigger's kind is known) and two small glyphs. Each is decorative (`aria-hidden`):
 // the text beside it names the thing.
 import type { ReactNode } from "react";
-import type { TriggerIcon } from "./model";
+import { Badge } from "../../components/Badge/Badge";
+import { PLAYBOOK_OFF_TEXT, SCHEDULES_TEST_IDS as IDS, type TriggerIcon } from "./model";
 
 function Glyph({ children }: { readonly children: ReactNode }) {
   return (
@@ -52,11 +53,31 @@ export const WarnGlyph = () => (
   </Glyph>
 );
 
+export const BackGlyph = () => (
+  <Glyph>
+    <path d="M15 6l-6 6 6 6" />
+  </Glyph>
+);
+
 export const RefreshGlyph = () => (
   <Glyph>
     <path d="M3 12a9 9 0 0 1 15.5-6.2L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.5 6.2L3 16M3 21v-5h5" />
   </Glyph>
 );
+
+/**
+ * "playbook off: fires are skipped", on a trigger row and an upcoming entry whose playbook is off. The words carry the
+ * meaning (the attention colour and the glyph are extra); the id lets a screen reader's description and the specs find it.
+ */
+export function PlaybookOffNote({ id }: { readonly id?: string }) {
+  return (
+    <span id={id} className="schedules-offnote" data-testid={IDS.playbookOff}>
+      <Badge tone="attention" icon={<WarnGlyph />}>
+        {PLAYBOOK_OFF_TEXT}
+      </Badge>
+    </span>
+  );
+}
 
 /** Four placeholder rows while a read is in flight; `what` is the status text's object ("Loading the schedule"). */
 export function Skeleton({ testId, what }: { readonly testId: string; readonly what: string }) {

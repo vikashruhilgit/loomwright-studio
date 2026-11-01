@@ -615,8 +615,10 @@ function avatarHTML(a,size){
    Every field below is a column of a kernel table (tasks, sessions, playbooks, playbook_versions, playbook_runs, triggers, wakeups, events, budget)
    or a shape item 01 declares; the evidence README's field map names each one. */
 
-/* Tasks board. tasks.state is free text the agent sets (kernel_task_create), not a closed set; the board groups the distinct values into four columns the screen fixes.
-   OPEN POINT for the owner: whether the kernel closes the set. A session or a playbook run is its own card only when no task owns it; w:1 marks a card shown only in the "waiting on you" view. */
+/* Tasks board. tasks.state is free text the agent sets (kernel_task_create), not a closed set; the board reads four words (waiting, working, parked, done) into four columns the screen fixes.
+   Any other word (such as "waiting on owner") is never guessed into a column: the card shows in an "Other" group, with its raw word, that appears only when a card is in it. No synonym is mapped.
+   OPEN POINT for the owner: whether the kernel closes the set. A session or a playbook run is its own card only when no task owns it; w:1 marks a card shown only in the "waiting on you" view; o:1 marks a card shown only in the "Other group" view.
+   ag:null is a card with neither an assignee nor a creator agent recorded: it says "No agent recorded". */
 const COLS=[{g:'wait',label:'Waiting on you',none:'Nothing waits on you.'},{g:'work',label:'Working',none:'Nothing is running.'},{g:'park',label:'Parked',none:'Nothing is parked.'},{g:'done',label:'Done today',none:'Nothing finished yet.'}];
 const CARDS=[
   {key:'t12',kind:'task',id:12,w:1,grp:'wait',ag:'wright',st:'waiting',title:'Pick the repos Mason reviews first',meta:'asked 13:41',tkind:'question',created:'13:41',upd:'13:41',
@@ -646,8 +648,11 @@ const CARDS=[
    l:[['11:42','tool','read   PR #1'],['11:43','err','GitHub answered 502; the run stopped without a draft']]},
   {key:'s40',kind:'session',id:40,grp:'done',ag:'mason',st:'stopped',title:'Mason · direct thread',meta:'12:40',model:'sonnet',started:'12:31',ended:'12:40',
    h:[['12:31','session','mason','Session 40 started · sonnet'],['12:40','session','you','Session 40 stopped by you']],
-   l:[['12:31','out','You asked Mason how the retry loop handles a timeout.'],['12:40','out','stopped by you']]}
+   l:[['12:31','out','You asked Mason how the retry loop handles a timeout.'],['12:40','out','stopped by you']]},
+  {key:'t13',kind:'task',id:13,o:1,grp:'other',ag:null,st:'waiting on owner',title:'Decide how often Mason checks studio-sandbox',meta:'since 14:02',tkind:'question',created:'14:02',upd:'14:02',
+   h:[['14:02','task_created','kernel','Decide how often Mason checks studio-sandbox · state waiting on owner']]}
 ];
+const OTHER_COL={g:'other',label:'Other'};
 const STATE_BADGE={waiting:'att','failed:auth':'dng',working:'acc',running:'acc',parked:'prk',interrupted:'prk',done:'ok',completed:'ok',failed:'dng',stopped:'neu'};
 
 /* Playbooks: one row of playbooks (013 and 017) with each policy field's *_set_by. mode is draft or live (017). The trigger comes from the triggers table (011); last run and tokens from playbook_runs and budget. */
@@ -819,6 +824,7 @@ const VIEWS={
   'tasks-loading':{scr:'tasks',st:'loading',label:'Loading',grp:'tasks'},
   'tasks-populated':{scr:'tasks',st:'populated',label:'Populated',grp:'tasks'},
   'tasks-waiting':{scr:'tasks',st:'waiting',label:'Waiting on you',grp:'tasks'},
+  'tasks-other':{scr:'tasks',st:'other',label:'Other group',grp:'tasks'},
   'tasks-error':{scr:'tasks',st:'error',label:'Error',grp:'tasks'},
   'tasks-unreachable':{scr:'tasks',st:'unreachable',label:'Kernel unreachable',grp:'tasks'},
   'tasks-history':{scr:'tasks',st:'history',label:'Click-through: history and log',grp:'tasks'},
@@ -918,12 +924,14 @@ const KIND_LABEL={task:'Task',run:'Playbook run',session:'Session'};
 const KIND_ICON2={task:I.list,run:I.book,session:I.term};
 function cardHTML(c,D){
   const a=AGENTS[c.ag];
-  return `<li><button class="tcard${c.w?' wait':''}" data-act="open-card" data-key="${c.key}" data-nav aria-label="${esc(KIND_LABEL[c.kind]+' '+c.id+': '+c.title+', '+c.st)}"${D}><span class="k cap">${KIND_ICON2[c.kind]}${KIND_LABEL[c.kind]} #${c.id}<span class="sp"></span>${badgeFor(c.st)}</span><span class="ttl">${esc(c.title)}</span>${c.why?`<span class="why">${esc(c.why)}</span>`:''}<span class="by cap">${avatarHTML(a,20)}${esc(a.name)} · ${esc(c.meta)}</span></button></li>`;
+  return `<li><button class="tcard${c.w?' wait':''}" data-act="open-card" data-key="${c.key}" data-nav aria-label="${esc(KIND_LABEL[c.kind]+' '+c.id+': '+c.title+', '+c.st)}"${D}><span class="k cap">${KIND_ICON2[c.kind]}${KIND_LABEL[c.kind]} #${c.id}<span class="sp"></span>${badgeFor(c.st)}</span><span class="ttl">${esc(c.title)}</span>${c.why?`<span class="why">${esc(c.why)}</span>`:''}<span class="by cap">${a?avatarHTML(a,20)+esc(a.name):'No agent recorded'} · ${esc(c.meta)}</span></button></li>`;
 }
-const COL_DOT={wait:'waiting',work:'working',park:'parked',done:'ok'};
-function boardHTML(waiting,D){
-  const cs=CARDS.filter(c=>waiting||!c.w);
-  return `<div class="scroll"><div class="board">${COLS.map(col=>{
+const COL_DOT={wait:'waiting',work:'working',park:'parked',done:'ok',other:'idle'};
+function boardHTML(waiting,D,other){
+  const cs=CARDS.filter(c=>(waiting||!c.w)&&(other||!c.o));
+  /* The Other group is not a fifth fixed column: it is drawn only when a card is in it. */
+  const cols=cs.some(c=>c.grp==='other')?[...COLS,OTHER_COL]:COLS;
+  return `<div class="scroll"><div class="board">${cols.map(col=>{
     const it=cs.filter(c=>c.grp===col.g);
     return `<section class="bcol${col.g==='wait'&&it.length?' wait':''}" aria-labelledby="bc-${col.g}"><div class="hd"><span class="dot ${COL_DOT[col.g]}" aria-hidden="true"></span><h2 class="label" id="bc-${col.g}">${col.label}</h2><span class="badge neu">${it.length}</span></div>${it.length?`<ul>${it.map(c=>cardHTML(c,D)).join('')}</ul>`:`<p class="none cap">${col.none}</p>`}</section>`;
   }).join('')}</div></div>`;
@@ -936,17 +944,17 @@ function tasksScreen(st){
   else if(st==='loading'){ R.html=loadingHTML('tasks',`<div class="board">${COLS.map(c=>`<div class="bcol"><div class="hd"><span class="label">${c.label}</span></div>${skel(2)}</div>`).join('')}</div>`); }
   else if(st==='error'){ R.html=failHTML('tasks','tasks request'); }
   else {
-    const w=st==='waiting', cs=CARDS.filter(c=>w||!c.w);
+    const w=st==='waiting', ot=st==='other', cs=CARDS.filter(c=>(w||!c.w)&&(ot||!c.o));
     R.sub=`${cs.length} cards · ${cs.filter(c=>c.grp==='work').length} working`+(st==='unreachable'?' · last known':'');
     if(w) R.band=`<div class="band att" role="status">${I.warn}<span>${cs.filter(c=>c.w).length} things wait on you: a question from Wright and a session paused on an expired token.</span></div>`;
-    R.html=boardHTML(w,D);
+    R.html=boardHTML(w,D,ot);
   }
   return R;
 }
 function factHTML(rows){ return `<div class="facts">${rows.filter(r=>r[1]!=null&&r[1]!=='').map(r=>`<div><span class="cap">${r[0]}</span><span>${r[1]}</span></div>`).join('')}</div>`; }
 function tasksHistory(){
   const c=CARDS.find(x=>x.key===S.card)||CARDS.find(x=>x.key==='t9'), a=AGENTS[c.ag];
-  const who=`<span class="by" style="display:inline-flex;align-items:center;gap:var(--space-2)">${avatarHTML(a,20)}${esc(a.name)}</span>`;
+  const who=a?`<span class="by" style="display:inline-flex;align-items:center;gap:var(--space-2)">${avatarHTML(a,20)}${esc(a.name)}</span>`:'<span class="by">No agent recorded</span>';
   const mono=t=>t?`<span class="mono">${esc(t)}</span>`:'';
   const facts=c.kind==='task'?[['State',badgeFor(c.st)],['Assignee',who],['Kind',mono(c.tkind)],['Dedupe key',mono(c.dedupe)],['Next check',c.next?'today '+c.next:''],['Created','today '+c.created],['Updated','today '+c.upd]]
     :c.kind==='run'?[['Playbook',esc(c.pb)],['Run kind',mono(c.rkind)],['Status',badgeFor(c.st)],['Version','v'+c.ver],['Tokens',fmt(c.tok)],['Dedupe key',mono(c.dedupe)],['Started','today '+c.started],['Ended',c.ended?'today '+c.ended:'still running']]

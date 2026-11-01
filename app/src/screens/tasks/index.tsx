@@ -1,10 +1,11 @@
-// Tasks (phase 7 item 03): today's work as a board of four columns, each card
+// Tasks (phase 7 item 03): today's work as a board of four columns (and an Other group), each card
 // opening to its history and its session's log. The view is `./TasksScreen.tsx`;
 // this module's one export is the screen the shell discovers
 // (`import.meta.glob("./screens/*/index.tsx")` in App.tsx).
 import type { StudioBridge } from "../../api/contract";
 import { getBridge } from "../../api/bridge";
 import type { ScreenDefinition } from "../types";
+import { useSubtitleLine } from "./subtitle";
 import { TasksScreen } from "./TasksScreen";
 import { TasksNoKernel } from "./TasksViews";
 
@@ -19,9 +20,19 @@ function TasksRoute() {
   return <TasksScreen api={api} />;
 }
 
+/**
+ * The count line the title bar shows beside the title ("8 cards · 3 working"; " · last known" while the kernel
+ * is away). The screen writes it (`./subtitle.ts`); this only draws it.
+ */
+function TasksSubtitle() {
+  const line = useSubtitleLine();
+  return <span data-testid="tasks-subtitle">{line}</span>;
+}
+
 export const screen: ScreenDefinition = {
   id: "tasks",
   title: "Tasks",
   nav: { label: "Tasks", order: 6, shortcut: "⌘6" },
   Component: TasksRoute,
+  Subtitle: TasksSubtitle,
 };

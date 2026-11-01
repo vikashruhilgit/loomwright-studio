@@ -9,8 +9,10 @@
 // so a body's extra field is never shown or kept, and it edits no shared store file. A refetch
 // keeps the rows on screen until the answer lands (no skeleton, fixed rows), so a live update
 // moves nothing already shown. A status 0 answer is "kernel unreachable", never "nothing to
-// show": the screen keeps its last data, marks it "last known" and disables Reveal; the shell
-// draws the shared band above it.
+// show": the screen keeps its last data and disables Reveal; the shell draws the shared band above
+// it and "last known" in the title bar (`./SettingsSubtitle.tsx`). The last `ok` view outlives the
+// screen (`./lastKnown.ts`), so going away and back while the kernel is down shows it again, not
+// "Status unknown".
 //
 // The app's own preferences are the main process's (`window.api.prefs`), not the kernel's: they
 // work while the kernel is down. Launch at login shows what the OS reports on every read; a
@@ -24,6 +26,7 @@ import type { StudioBridge, ThemePreference } from "../../api/contract";
 import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { Button } from "../../components/Button/Button";
+import { useHomeDir } from "../../shell/useHomeDir";
 import { useLiveStore } from "../../store/react";
 import { failureDetail } from "../schedules/model";
 import { useFeedRefetch } from "../schedules/useSchedule";
@@ -33,10 +36,10 @@ import {
   LOGIN_DESCRIPTION,
   NOTIFICATIONS_DESCRIPTION,
   SETTINGS_TEST_IDS as IDS,
-  THEME_DESCRIPTION,
   bandOf,
   loginNote,
   newestSettingsEventId,
+  themeDescription,
 } from "./model";
 import { Skeleton, Switch, WarnGlyph } from "./parts";
 import { useSettingsRead, usePreferences } from "./useSettings";
@@ -58,6 +61,7 @@ export function SettingsScreen({ api, registry = commandRegistry }: SettingsScre
   const { connection, eventLog } = useLiveStore(api);
   const { read, refetch } = useSettingsRead(api);
   const preferences = usePreferences(api);
+  const home = useHomeDir(api);
   const [revealFailed, setRevealFailed] = useState(false);
 
   const connectionDown = connection.state === "reconnecting" || connection.state === "unreachable" || connection.state === "not_installed";
@@ -161,10 +165,10 @@ export function SettingsScreen({ api, registry = commandRegistry }: SettingsScre
         </p>
       ) : null}
       <div className="settings-pad">
-        <AuthSection view={view} placeholder={placeholder} offline={offline} now={now} />
+        <AuthSection view={view} placeholder={placeholder} now={now} />
         {failed !== undefined && view === undefined ? null : <CommandsSection view={view} />}
         {showKernelSection ? (
-          <KernelSection view={view} offline={offline} canReveal={preferences.available} onReveal={() => void reveal()} revealFailed={revealFailed} />
+          <KernelSection view={view} home={home} offline={offline} canReveal={preferences.available} onReveal={() => void reveal()} revealFailed={revealFailed} />
         ) : showKernelSkeleton ? (
           <section className="settings-blk" aria-labelledby="settings-h-kern">
             <div className="settings-sech">
@@ -222,7 +226,7 @@ export function SettingsScreen({ api, registry = commandRegistry }: SettingsScre
             <li>
               <span className="settings-ttext">
                 <b id="settings-theme-label">Theme</b>
-                <span className="settings-cap">{THEME_DESCRIPTION}</span>
+                <span className="settings-cap">{themeDescription(prefs?.theme)}</span>
               </span>
               <span className="settings-chips" role="group" aria-labelledby="settings-theme-label" data-testid={IDS.themeGroup}>
                 {THEMES.map(({ theme, label, testId }) => (

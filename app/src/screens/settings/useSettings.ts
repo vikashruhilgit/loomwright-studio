@@ -5,10 +5,12 @@
 // The kernel's answer is a `Reply` (`../schedules/model.ts`): the bridge's "kernel
 // unreachable" (status 0) stays apart from a refusal, because an unreachable kernel is
 // never "nothing to show". A thrown IPC call is a `failed` reply, never an exception. The
-// last `ok` view is kept until a newer one lands, so a refetch never empties the screen.
+// last `ok` view is kept until a newer one lands, so a refetch never empties the screen, and it is remembered
+// per bridge (`./lastKnown.ts`) so a screen that mounts again while the kernel is down starts from it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppPreferences, AppPreferencesPatch, SettingsResponse, StudioBridge } from "../../api/contract";
 import { NO_ANSWER_TEXT, NOT_READ, type Read, type Reply, nextRead, replyOf } from "../schedules/model";
+import { getLastView, setLastView } from "./lastKnown";
 import { type SettingsView, viewReply } from "./model";
 
 /** `GET /settings`, as a reply holding the view of its known fields. */
@@ -21,16 +23,25 @@ export async function readSettings(api: StudioBridge): Promise<Reply<SettingsVie
   }
 }
 
-/** `GET /settings`: on mount and on demand. The last `ok` view is kept until a newer one lands; an answer older than the latest request is dropped. */
+/**
+ * `GET /settings`: on mount and on demand. The last `ok` view is kept until a newer one lands; an answer older than the
+ * latest request is dropped. A mount starts from the last `ok` view this window read (`lastOk` only, `latest` stays
+ * undefined, so the mount still reads), and every `ok` answer that lands is remembered for the next mount.
+ */
 export function useSettingsRead(api: StudioBridge): { readonly read: Read<SettingsView>; readonly refetch: () => void } {
-  const [read, setRead] = useState<Read<SettingsView>>(NOT_READ);
+  const [read, setRead] = useState<Read<SettingsView>>(() => {
+    const remembered = getLastView(api);
+    return remembered === undefined ? NOT_READ : { latest: undefined, lastOk: remembered };
+  });
   const generation = useRef(0);
 
   const refetch = useCallback(() => {
     generation.current += 1;
     const mine = generation.current;
     void readSettings(api).then((reply) => {
-      if (generation.current === mine) setRead((prev) => nextRead(prev, reply));
+      if (generation.current !== mine) return;
+      if (reply.kind === "ok") setLastView(api, reply.body);
+      setRead((prev) => nextRead(prev, reply));
     });
   }, [api]);
 

@@ -2,7 +2,8 @@
 // phase 5 to"): a `--sidebar-width` vibrancy sidebar (`shell/Sidebar.tsx`), a
 // `--titlebar-height` title bar (`shell/Titlebar.tsx`), and the main column,
 // routing to one screen per item. Screens are discovered from
-// `src/screens/<id>/index.tsx`, so no item edits this file.
+// `src/screens/<id>/index.tsx`, so no item edits this file. `shell/KeyboardHost.tsx` mounts the ⌘ keys, the
+// ⌘K palette and `?`, through this file's one `go`.
 import { useEffect, useMemo, useState } from "react";
 import type { StudioBridge } from "./api/contract";
 import { getBridge } from "./api/bridge";
@@ -10,7 +11,9 @@ import { commandRegistry } from "./commands/registry";
 import type { CommandRegistry } from "./commands/registry";
 import type { ScreenDefinition, ScreenModule } from "./screens/types";
 import { KernelBand, NotInstalledState } from "./shell/KernelStates";
+import { KeyboardHost } from "./shell/KeyboardHost";
 import { useKernelReach } from "./shell/last-known";
+import { ScreensContext } from "./shell/ScreensContext";
 import { Sidebar } from "./shell/Sidebar";
 import { Titlebar } from "./shell/Titlebar";
 import { useKernelConnection } from "./store/connection";
@@ -78,15 +81,18 @@ export function App({ api, registry = commandRegistry }: AppProps) {
   const Screen = current.Component;
 
   return (
-    <div className="window">
-      <Sidebar api={bridge} screens={SCREENS} currentId={current.id} onGo={go} />
-      <main className="main">
-        <Titlebar screen={current} />
-        <div className="content">
-          {reach.shellBand ? <KernelBand /> : null}
-          {connection.state === "not_installed" ? <NotInstalledState dataDir={connection.dataDir} /> : <Screen />}
-        </div>
-      </main>
-    </div>
+    <ScreensContext.Provider value={SCREENS}>
+      <div className="window">
+        <Sidebar api={bridge} screens={SCREENS} currentId={current.id} onGo={go} />
+        <main className="main">
+          <Titlebar screen={current} />
+          <div className="content">
+            {reach.shellBand ? <KernelBand /> : null}
+            {connection.state === "not_installed" ? <NotInstalledState dataDir={connection.dataDir} /> : <Screen />}
+          </div>
+        </main>
+      </div>
+      <KeyboardHost registry={registry} onGo={go} />
+    </ScreensContext.Provider>
   );
 }

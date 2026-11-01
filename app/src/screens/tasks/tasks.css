@@ -17,22 +17,6 @@
   min-height: 0;
 }
 
-.tasks-bar {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--row-height);
-  padding: var(--space-2) var(--space-5);
-  border-bottom: 1px solid var(--hairline);
-}
-.tasks-subtitle {
-  color: var(--ink-tertiary);
-  font-size: var(--type-caption-size);
-  line-height: var(--type-caption-line);
-  font-variant-numeric: tabular-nums;
-}
-
 /* The attention band: "Waiting on you" is not empty. */
 .tasks-band {
   display: flex;
@@ -71,7 +55,7 @@
   overflow-wrap: anywhere;
 }
 
-/* The board: four columns, always, in the mockup's order. */
+/* The board: four columns, always, in the mockup's order; the Other group follows them only while a card is in it. */
 .tasks-scroll {
   flex: 1;
   min-height: 0;
@@ -125,6 +109,10 @@
 }
 .tasks-dot[data-column="park"] {
   background: var(--parked);
+}
+/* Other: a state word the board does not read. Neutral, like the "Done today" dot: it says nothing about the state. */
+.tasks-dot[data-column="other"] {
+  background: var(--ink-tertiary);
 }
 .tasks-none {
   margin: 0;
@@ -349,6 +337,22 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
+/* A fact that opens another card (the creator session): text that reads as a link, aligned with the other facts. */
+.tasks-link {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.tasks-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 .tasks-split {
   display: grid;
   flex: 1;
@@ -412,9 +416,9 @@
 .tasks-event-text {
   margin: 0;
   color: var(--ink);
-  font-family: var(--type-mono-small-family);
-  font-size: var(--type-mono-small-size);
-  line-height: var(--type-mono-small-line);
+  font-family: var(--type-body-family);
+  font-size: var(--type-body-size);
+  line-height: var(--type-body-line);
   overflow-wrap: anywhere;
 }
 .tasks-side {

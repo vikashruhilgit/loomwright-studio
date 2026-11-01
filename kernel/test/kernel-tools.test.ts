@@ -97,6 +97,30 @@ describe("the kernel server", () => {
   });
 });
 
+describe("the task tools name the board's words", () => {
+  const description = (name: string): string => {
+    const sid = insertSession(env.store, "wright");
+    const ctx: KernelToolContext = { store: env.store, sessions: fakeSessions(env.store), sessionId: sid };
+    return kernelToolDefinitions(ctx).find((d) => d.name === name)?.description ?? "";
+  };
+
+  it.each(["kernel_task_create", "kernel_task_update"])("%s names waiting, working, parked and done, and says any other word shows under Other", (name) => {
+    const text = description(name);
+    for (const word of ["waiting", "working", "parked", "done"]) expect(text).toContain(word);
+    expect(text).toMatch(/any other word[^.]*under Other/i);
+    expect(text).toContain("free text");
+  });
+
+  it("both tools still accept any state word: a task in 'waiting on owner' is created and updated", async () => {
+    const sid = insertSession(env.store, "wright");
+    const { handlers } = tools(env.store, sid);
+    const created = value(await handlers.kernel_task_create({ title: "Pick repos", state: "waiting on owner", idempotency_key: "w-1" }));
+    expect(created).toMatchObject({ title: "Pick repos", state: "waiting on owner" });
+    const updated = value(await handlers.kernel_task_update({ id: created.id, state: "still waiting on owner", idempotency_key: "w-2" }));
+    expect(updated).toMatchObject({ id: created.id, state: "still waiting on owner" });
+  });
+});
+
 describe("kernel_task_create / update / list / get", () => {
   it("creates a task with free-text state and an audit row; the same key in the same session returns the first result", async () => {
     const sid = insertSession(env.store, "wright");

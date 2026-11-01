@@ -2,15 +2,17 @@
 // Playbook, Time range, Clear filters), a table of the events newest first (Id · When · Kind ·
 // Actor · Detail) and "Newer" / "Older" paging by the route's `next_before` cursor, 8 rows a page.
 //
-// Paging is keyset, so there is no total: the footer reads "Showing rows a–b · page N · newest
-// first" where the mockup's reads "of 20" (a recorded departure). On the first page a new event
-// on the live feed reads the page again, keeping the rows on screen until the answer lands; an
-// older page does not move. While the kernel cannot be asked the rows stay as last read and the
-// filters and paging are disabled.
+// Paging is by keyset cursor, and the route also answers `matching` (the events under the filters)
+// and `total` (every event): the badge beside the title reads "20 of 20 events" and the footer
+// "Showing 1–8 of 20 · page 1 of 3 · newest first", as the mockup does. A kernel that sends no
+// counts gets the older footer ("Showing rows a–b · page N · newest first") and no badge. On the
+// first page a new event on the live feed reads the page again, keeping the rows on screen until
+// the answer lands; an older page does not move. While the kernel cannot be asked the rows stay as
+// last read and the filters and paging are disabled.
 //
-// Actor is the payload's own `agent` or "—": `EventFrame` carries no actor, and the stored one
-// is `'kernel'` or `'api'`, so the screen never guesses. Every payload string is untrusted data:
-// a React text child, never markup.
+// Detail is a sentence (`./audit-sentences.ts`) and Actor is the route's `actor`: the event's
+// session's agent (by its roster display name), "you" or "kernel". Every payload string is
+// untrusted data: a React text child, never markup.
 import { type ReactNode, type Ref, useEffect, useRef } from "react";
 import type { PlaybookListing, RosterEntry, StudioBridge } from "../../api/contract";
 import { Badge } from "../../components/Badge/Badge";
@@ -22,8 +24,10 @@ import {
   RANGES,
   auditQuery,
   auditRows,
+  countBadge,
   failureDetail,
   filterActive,
+  countOf,
   filterKey,
   footerText,
   isAuditRange,
@@ -67,7 +71,11 @@ export function AuditLog({ api, filter, onFilter, onClear, roster, playbooks, of
   const { shown, latest } = view;
   // The kernel cannot be asked: the store says so, or this log's own read found it gone.
   const down = offline || latest?.kind === "unreachable";
-  const rows = auditRows(shown?.page, playbooks);
+  const rows = auditRows(shown?.page, playbooks, roster, now);
+  const badge = countBadge(shown?.page);
+  // With the route's count, the last page is known: Older ends there even when that page was full.
+  const matching = countOf(shown?.page.matching);
+  const lastPage = matching !== undefined && shown !== undefined && shown.number * AUDIT_PAGE_SIZE >= matching;
   const active = filterActive(filter);
 
   // The first page follows the feed; an older page does not move under the owner.
@@ -229,6 +237,11 @@ export function AuditLog({ api, filter, onFilter, onClear, roster, playbooks, of
         </div>
         <div className="budget-dhead">
           <h2 className="budget-title">Audit log</h2>
+          {badge === undefined ? null : (
+            <span data-testid={IDS.auditCount}>
+              <Badge tone="neutral">{badge}</Badge>
+            </span>
+          )}
           {active ? (
             <span data-testid={IDS.filtered}>
               <Badge tone="accent">filtered</Badge>
@@ -279,7 +292,7 @@ export function AuditLog({ api, filter, onFilter, onClear, roster, playbooks, of
             Clear filters
           </Button>
         </div>
-        {failed !== undefined && shown !== undefined ? (
+        {failed !== undefined && shown !== undefined && !offline ? (
           <p className="budget-notice" data-tone="danger" role="alert" data-testid={IDS.auditError}>
             {`Couldn't refresh the audit log: ${failureDetail("GET /audit", failed)}. The rows below are the last read.`}
           </p>
@@ -289,13 +302,13 @@ export function AuditLog({ api, filter, onFilter, onClear, roster, playbooks, of
         {body}
         <div className="budget-pager">
           <span className="budget-cap budget-tn" data-testid={IDS.footer}>
-            {`${footerText(shown?.number ?? view.paging.cursors.length, rows.length)}${down ? " · last known" : ""}`}
+            {`${footerText(shown?.number ?? view.paging.cursors.length, rows.length, shown?.page.matching)}${down ? " · last known" : ""}`}
           </span>
           <span className="budget-spacer" />
           <Button ref={newerRef} size="row" variant="secondary" disabled={down || view.moving || view.firstPage} onClick={view.newer} data-testid={IDS.newer}>
             Newer
           </Button>
-          <Button ref={olderRef} size="row" variant="secondary" disabled={down || view.moving || view.next === null} onClick={view.older} data-testid={IDS.older}>
+          <Button ref={olderRef} size="row" variant="secondary" disabled={down || view.moving || view.next === null || lastPage} onClick={view.older} data-testid={IDS.older}>
             Older
           </Button>
         </div>

@@ -13,11 +13,17 @@
 // dirties the tracked PNGs. A final test holds the README and the committed folder to
 // the same twenty names.
 //
+// Item 15 adds: the Tokens today column against each playbook's daily limit, short model names at the window's
+// minimum width, the owner by avatar and name, the count line and slug in the title bar, and the shell's band with
+// "last known" cells that survive leaving the screen and coming back while the kernel is away (the fixture kernel's
+// `stop()` and `restart()`, not a full close).
+//
 // Run `npm run build` first; then `npx playwright test e2e/playbooks.spec.ts`.
 import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 import type { ElectronApplication, Locator, Page, TestInfo } from "@playwright/test";
+import type { BudgetUsageResponse, RosterEntry } from "../src/api/contract";
 import { APP_DIR, launchApp } from "./electron-harness";
 import { appEnv, startFixtureKernel, unreachableDataDir } from "./fixture-kernel";
 import type { FixtureKernel } from "./fixture-kernel";
@@ -60,23 +66,68 @@ interface Opened {
   readonly page: Page;
   readonly fx: PlaybooksFixture;
   readonly kernel: FixtureKernel;
+  /** The counted tokens each playbook has used today, by slug: what the spec's `GET /budget/usage` answers. Change a figure to change the kernel's answer. */
+  readonly today: Record<string, number>;
 }
+
+/** The Model and Tokens today figures the spec's fixture overrides give the three playbooks. */
+const REVIEW_MODEL = "claude-sonnet-5-5";
+const FIGURES = { [REVIEW.slug]: 38200, [WEEKLY.slug]: 12400, [PLAYBOOKS.morning.slug]: 3210 } as const;
+const MINIMUM_WIDTH = 900;
+
+function rosterEntry(id: string, display_name: string, shape: string, hue: string): RosterEntry {
+  return {
+    id,
+    display_name,
+    avatar: { shape, hue },
+    status: "on",
+    created_by: id === "wright" ? null : "owner",
+    approval_id: null,
+    model: null,
+    settings_error: null,
+    tokens_today: 0,
+    tokens_per_day: null,
+    sessions_running: 0,
+    sessions_at_once: null,
+  };
+}
+
+/** The roster the owner column reads: the fixture file lists only Wright, so the spec adds the two owners it names. */
+const ROSTER: readonly RosterEntry[] = [rosterEntry("wright", "Wright", "whale", "crew-teal"), rosterEntry("mason", "Mason", "octopus", "crew-sky"), rosterEntry("ada", "Ada", "turtle", "crew-olive")];
 
 /** Launch the app against a fixture kernel in `init`'s state, open Playbooks, and size the window for the shots. */
 async function open(init: PlaybooksFixtureInit = {}): Promise<Opened> {
   const fx = playbooksFixture(init);
-  const started = await startFixtureKernel(fx.options);
+  // Spec-local overrides (the fixture file `fixtures/playbooks.ts` is outside this item's lanes): the review playbook
+  // carries a full model id, the weekly one has no daily limit, `GET /budget/usage` answers tokens today per slug, and
+  // `GET /agents` lists the owners.
+  fx.kernel.playbooks = fx.kernel.playbooks.map((p) =>
+    p.id === REVIEW.id ? { ...p, model: REVIEW_MODEL } : p.id === WEEKLY.id ? { ...p, token_limit_per_day: null, token_limit_set_by: null } : p,
+  );
+  const today: Record<string, number> = { ...FIGURES };
+  const usage = (): { readonly status: number; readonly body: BudgetUsageResponse } => ({
+    status: 200,
+    body: {
+      rows: [],
+      limits: fx.kernel.playbooks.map((p) => ({ scope: "playbook", id: p.slug, tokens_today: today[p.slug] ?? 0, tokens_per_day: p.token_limit_per_day, sessions_running: 0, sessions_at_once: null })),
+      cap_state: [],
+    },
+  });
+  const started = await startFixtureKernel({ ...fx.options, routes: { ...fx.options.routes, "GET /budget/usage": usage, "GET /agents": () => ({ status: 200, body: { agents: ROSTER } }) } });
   fixture = started;
   let id = 100;
   fx.kernel.onChange = (kind) => started.appendEvent(playbookEvent((id += 1), kind, REVIEW.id));
   app = await launchApp(started.env);
   const page = await app.firstWindow();
   await expect(page.getByTestId("sidebar")).toBeVisible();
+  // The detail's owner avatar and the shell's own marks animate without end: the screenshots and the contrast checks
+  // are taken still, as under the owner's reduced-motion setting.
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await app.evaluate(({ BrowserWindow }, size) => {
     for (const win of BrowserWindow.getAllWindows()) win.setContentSize(size.width, size.height);
   }, SHOT_SIZE);
   await goToPlaybooks(page);
-  return { page, fx, kernel: started };
+  return { page, fx, kernel: started, today };
 }
 
 async function goToPlaybooks(page: Page): Promise<void> {
@@ -124,6 +175,14 @@ function fieldOf(page: Page, key: string): Locator {
   return page.getByTestId("playbook-field").and(page.locator(`[data-field="${key}"]`));
 }
 
+/** Wait for the animations that end (a theme change runs the controls' colour transitions); one that never ends (a mark's loop) is not waited on. */
+async function settled(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const ending = document.getAnimations().filter((a) => a.effect?.getComputedTiming().iterations !== Infinity);
+    await Promise.all(ending.map((a) => a.finished.catch(() => undefined)));
+  });
+}
+
 async function setTheme(page: Page, theme: Theme): Promise<void> {
   await page.evaluate((t) => {
     document.documentElement.dataset.theme = t;
@@ -141,13 +200,16 @@ function postsTo(fx: PlaybooksFixture, path: string) {
 test("AC4: the list shows every field of the mockup, the poll spec and dedupe key in full, who set each value, and no dollar figure", async () => {
   const { page } = await openLoaded();
   await expect(page.getByTestId("playbooks-count")).toHaveText("3 playbooks · 2 on");
+  await expect(page.getByRole("columnheader", { name: "Tokens today" })).toBeVisible();
   const review = rowOf(page, REVIEW.name);
   await expect(review).toContainText("When a PR opens or gets a new commit on studio-sandbox, read it and save a draft review for me.");
   await expect(review).toContainText("poll every 600s · vikashruhilgit/studio-sandbox · state=open");
   await expect(review).toContainText("item.id, item.revision");
   await expect(review).toContainText("sonnet");
-  // The newest run is still running: it has no counted tokens yet, and the cell says so rather than inventing a figure.
-  await expect(review).toContainText("not counted yet");
+  // Tokens counted today against the playbook's own daily limit, compact; one without a limit says so.
+  await expect(review.locator("td").nth(7)).toHaveText("38.2k of 200k");
+  await expect(rowOf(page, WEEKLY.name).locator("td").nth(7)).toHaveText("12.4kno limit set");
+  await expect(rowOf(page, PLAYBOOKS.morning.name).locator("td").nth(7)).toHaveText("3.2k of 50k");
   await expect(review).toContainText("set by you");
   await expect(review).toContainText("proposed by Wright");
   await expect(review.getByRole("switch", { name: `${REVIEW.name} is on` })).toHaveAttribute("aria-checked", "true");
@@ -341,16 +403,79 @@ test("AC8: Run now sends POST /playbooks/:id/run once, and the kernel's refusal 
 
 // ---- the kernel going away ----------------------------------------------------------------------------------------
 
-test("AC9: when the kernel goes away the shared band shows and the screen keeps its last data, marked last known, with its writes off", async () => {
-  const { page } = await openLoaded();
-  await closeKernel();
+/** The one red band over the screen: the shell's, or the screen's own while the shell has none. */
+function bands(page: Page): Locator {
+  return page.locator(".band-danger");
+}
+
+test("AC1: when the kernel goes away one band shows, the rows stay with every last value marked last known, the writes are off, and everything refreshes when it returns", async () => {
+  const { page, kernel, today } = await openLoaded();
+  await expect(rowOf(page, REVIEW.name).locator("td").nth(7)).toHaveText("38.2k of 200k");
+  await kernel.stop();
   await expect(screenOf(page)).toHaveAttribute("data-offline", "true");
+  // Exactly one red band (the shell's), with the fixed copy and no request text.
+  await expect(bands(page)).toHaveCount(1);
   await expect(page.locator('[data-testid="kernel-unreachable-band"], [data-testid="kernel-reconnecting-band"]')).toBeVisible();
+  await expect(bands(page)).toHaveText("Couldn't reach the kernel. It may be restarting; this window reconnects on its own.");
   await expect(page.getByTestId("playbooks-count")).toHaveText("3 playbooks · 2 on · last known");
   await expect(page.getByTestId("playbook-row")).toHaveCount(3);
   await expect(rowOf(page, REVIEW.name)).toContainText("item.id, item.revision");
+  // Each Last run and Tokens today cell keeps its last value, captioned "last known", never "unknown · could not be read".
+  await expect(rowOf(page, REVIEW.name).locator("td").nth(7)).toHaveText("38.2k of 200klast known");
+  await expect(rowOf(page, WEEKLY.name).locator("td").nth(7)).toHaveText("12.4klast known");
+  for (const name of [REVIEW.name, WEEKLY.name, PLAYBOOKS.morning.name]) await expect(rowOf(page, name).locator("td").nth(6)).toContainText("last known");
+  await expect(screenOf(page)).not.toContainText("could not be read");
+  await expect(screenOf(page)).not.toContainText("unknown");
   for (const sw of await page.getByRole("switch").all()) await expect(sw).toBeDisabled();
   await expect(page.getByRole("button", { name: "Ask Wright for a playbook" })).toBeDisabled();
+
+  // The kernel's figure changes while it is away. No read was asked or failed meanwhile (the list stayed put), so only the
+  // connection coming back can refresh it: the band goes and the cell shows the new figure, in the same row.
+  await rowOf(page, REVIEW.name).evaluate((el) => el.setAttribute("data-mark", "same-row"));
+  today[REVIEW.slug] = 51500;
+  await kernel.restart();
+  await expect(bands(page)).toHaveCount(0, { timeout: 20_000 });
+  await expect(screenOf(page)).not.toHaveAttribute("data-offline", "true");
+  await expect(rowOf(page, REVIEW.name).locator("td").nth(7)).toHaveText("51.5k of 200k");
+  await expect(page.getByTestId("playbooks-count")).toHaveText("3 playbooks · 2 on");
+  await expect(rowOf(page, REVIEW.name)).toHaveAttribute("data-mark", "same-row");
+});
+
+test("AC1: a playbook opened while the kernel is away shows its last data, with Run now and Edit in English off", async () => {
+  const { page, kernel } = await openLoaded();
+  await kernel.stop();
+  await expect(screenOf(page)).toHaveAttribute("data-offline", "true");
+  await expect(bands(page)).toHaveCount(1);
+  await openDetail(page, REVIEW.name);
+  await expect(page.getByTestId("playbook-run-now")).toBeDisabled();
+  await expect(page.getByTestId("playbook-edit-english")).toBeDisabled();
+  await expect(page.getByTestId("playbook-owner")).toHaveText("Mason");
+  await expect(bands(page)).toHaveCount(1);
+});
+
+test("AC2: leaving Playbooks and coming back while the kernel is away keeps every last value marked last known", async () => {
+  const { page, kernel, today } = await openLoaded();
+  await kernel.stop();
+  await expect(screenOf(page)).toHaveAttribute("data-offline", "true");
+  await page.evaluate(() => {
+    window.location.hash = "#/chat";
+  });
+  await expect(screenOf(page)).toHaveCount(0);
+  await goToPlaybooks(page);
+  await expect(page.getByTestId("playbook-row")).toHaveCount(3);
+  await expect(bands(page)).toHaveCount(1);
+  await expect(rowOf(page, REVIEW.name).locator("td").nth(7)).toHaveText("38.2k of 200klast known");
+  await expect(rowOf(page, PLAYBOOKS.morning.name).locator("td").nth(7)).toHaveText("3.2k of 50klast known");
+  await expect(rowOf(page, REVIEW.name).locator("td").nth(6)).toContainText("last known");
+  await expect(screenOf(page)).not.toContainText("unknown");
+  await expect(screenOf(page)).not.toContainText("could not be read");
+  await expect(page.getByTestId("playbooks-count")).toHaveText("3 playbooks · 2 on · last known");
+
+  // Back: the screen mounted while the kernel was away reads again and shows the kernel's current answers.
+  today[REVIEW.slug] = 60000;
+  await kernel.restart();
+  await expect(bands(page)).toHaveCount(0, { timeout: 20_000 });
+  await expect(rowOf(page, REVIEW.name).locator("td").nth(7)).toHaveText("60k of 200k");
 });
 
 test("AC9: with the kernel unreachable from the start the band shows over the screen's error state, and Try again is offered", async () => {
@@ -370,6 +495,98 @@ test("AC9: a failing first read shows the error state with the kernel's refusal 
   await expect(page.getByTestId("playbooks-error")).toContainText("GET /playbooks · 500 · store_unreadable · the kernel could not read its store");
   await expect(page.locator('[data-testid="kernel-unreachable-band"]')).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+});
+
+// ---- the title bar, the owner and the narrow table ----------------------------------------------------------------------
+
+test("AC3: the count line is in the title bar beside the title, the detail shows the playbook's slug there, and the edit and history views show none", async () => {
+  const { page } = await openLoaded();
+  const subtitle = page.getByTestId("titlebar-subtitle");
+  await expect(subtitle).toBeVisible();
+  await expect(subtitle.getByTestId("playbooks-count")).toHaveText("3 playbooks · 2 on");
+  // The screen draws no count line of its own, and Ask Wright stays in its toolbar row.
+  await expect(screenOf(page).getByTestId("playbooks-count")).toHaveCount(0);
+  await expect(screenOf(page).getByRole("button", { name: "Ask Wright for a playbook" })).toBeVisible();
+
+  await openDetail(page, REVIEW.name);
+  await expect(subtitle.getByTestId("playbooks-slug")).toHaveText(REVIEW.slug);
+  await expect(subtitle.getByTestId("playbooks-count")).toHaveCount(0);
+  await expect(page.locator(".pb-head")).not.toContainText(REVIEW.slug);
+  await expect(page.locator(".pb-head h2")).toHaveText(REVIEW.name);
+
+  await page.getByTestId("playbook-edit-fields").click();
+  await expect(page.getByTestId("playbook-edit")).toBeVisible();
+  await expect(subtitle).toHaveText("");
+  await backButton(page).click();
+  await page.getByTestId("playbook-history").click();
+  await expect(page.getByTestId("playbook-version-diff")).toBeVisible();
+  await expect(subtitle).toHaveText("");
+
+  await backButton(page).click();
+  await backButton(page).click();
+  await expect(subtitle.getByTestId("playbooks-count")).toHaveText("3 playbooks · 2 on");
+});
+
+test("AC6: the detail's Owner is the owning agent's avatar beside its name; an owner the roster does not list shows the id, with no avatar", async () => {
+  const { page, fx, kernel } = await openLoaded();
+  await openDetail(page, REVIEW.name);
+  const owner = page.getByTestId("playbook-owner");
+  await expect(owner).toHaveText("Mason");
+  await expect(owner.getByRole("img", { name: "Mason · idle" })).toBeVisible();
+  const box = await owner.getByRole("img", { name: "Mason · idle" }).boundingBox();
+  expect(box?.width).toBe(20);
+  expect(box?.height).toBe(20);
+  await backButton(page).click();
+
+  // An owner the roster does not list: the raw id, as the kernel sent it, and no avatar.
+  fx.kernel.playbooks = fx.kernel.playbooks.map((p) => (p.id === WEEKLY.id ? { ...p, owning_agent: "gone-agent" } : p));
+  kernel.appendEvent(playbookEvent(600, "playbook_updated", WEEKLY.id));
+  await openDetail(page, WEEKLY.name);
+  await expect(owner).toHaveText("gone-agent");
+  await expect(owner.locator('[role="img"]')).toHaveCount(0);
+});
+
+/** For each row, how many lines the Model value and the Tokens today value are set in (a text range has one client rect per line). */
+async function valueLines(page: Page): Promise<{ readonly model: number[]; readonly tokens: number[] }> {
+  return page.evaluate(() => {
+    const lines = (el: Element | null): number => {
+      if (el === null) return 0;
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      return range.getClientRects().length;
+    };
+    const rows = [...document.querySelectorAll('[data-testid="playbook-row"]')];
+    return {
+      model: rows.map((row) => lines(row.querySelectorAll("td")[4]?.querySelector(".pb-cell > span") ?? null)),
+      tokens: rows.map((row) => lines(row.querySelectorAll("td")[7]?.querySelector(".pb-tn") ?? null)),
+    };
+  });
+}
+
+test("AC5: at the window's minimum width the Model shows the short name on one line (full id in its title) and Tokens today is one line, with nothing clipped", async () => {
+  const { page } = await openLoaded();
+  await app?.evaluate(({ BrowserWindow }, width) => {
+    for (const win of BrowserWindow.getAllWindows()) win.setContentSize(width, 800);
+  }, MINIMUM_WIDTH);
+  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(MINIMUM_WIDTH);
+  const review = rowOf(page, REVIEW.name);
+  const model = review.locator("td").nth(4).locator(".pb-cell > span").first();
+  await expect(model).toHaveText("sonnet");
+  await expect(model).toHaveAttribute("title", REVIEW_MODEL);
+  // The detail shows the id in full.
+  const lines = await valueLines(page);
+  expect(lines.model).toEqual([1, 1, 1]);
+  expect(lines.tokens).toEqual([1, 1, 1]);
+  // Rows are one height whatever their text, and no cell is clipped or ends in an ellipsis.
+  const clipped = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>(".pb-table td *")]
+      .filter((el) => el.children.length === 0 && (el.textContent ?? "").trim() !== "" && !el.classList.contains("pb-intent"))
+      .filter((el) => el.scrollWidth > el.clientWidth + 1 || getComputedStyle(el).textOverflow === "ellipsis")
+      .map((el) => el.textContent),
+  );
+  expect(clipped).toEqual([]);
+  await openDetail(page, REVIEW.name);
+  await expect(page.getByTestId("playbook-field").and(page.locator('[data-field="Model"]'))).toContainText(REVIEW_MODEL);
 });
 
 // ---- the keyboard and the live feed ---------------------------------------------------------------------------------
@@ -412,7 +629,7 @@ async function loadingSeen(page: Page): Promise<number> {
 }
 
 test("AC11: a live event updates the rows and the open detail in place: the rows keep their size and nothing is replaced by a loading line", async () => {
-  const { page, fx, kernel } = await openLoaded();
+  const { page, fx, kernel, today } = await openLoaded();
   const heights = async (): Promise<number[]> => page.getByTestId("playbook-row").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().height)));
   const before = await heights();
   const widths = await page.getByTestId("playbook-row").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().width)));
@@ -420,9 +637,10 @@ test("AC11: a live event updates the rows and the open detail in place: the rows
   const rows = fx.kernel.runs.get(REVIEW.id) ?? [];
   fx.kernel.runs.set(REVIEW.id, [{ ...(rows[0] as (typeof rows)[number]), id: 18, status: "done", tokens: 4321, ended: rows[0]?.started ?? null }, ...rows]);
   fx.kernel.playbooks = fx.kernel.playbooks.map((p) => (p.id === REVIEW.id ? { ...p, model: "opus", model_set_by: "owner" } : p));
+  today[REVIEW.slug] = 45000;
   kernel.appendEvent({ type: "event", id: 500, at: "2026-10-30T15:00:00.000Z", kind: "session_status", session_id: 40, task_id: null, payload: {} });
   kernel.appendEvent(playbookEvent(501, "playbook_updated", REVIEW.id));
-  await expect(rowOf(page, REVIEW.name)).toContainText("4,321 tokens");
+  await expect(rowOf(page, REVIEW.name)).toContainText("45k of 200k");
   await expect(rowOf(page, REVIEW.name)).toContainText("opus");
   expect(await heights()).toEqual(before);
   expect(await page.getByTestId("playbook-row").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().width)))).toEqual(widths);
@@ -450,9 +668,7 @@ test("AC11: a live event updates the rows and the open detail in place: the rows
  */
 async function contrastFailures(page: Page): Promise<string[]> {
   // A theme change runs the controls' colour transitions: measure once they have settled, never mid-fade.
-  await page.evaluate(async () => {
-    await Promise.all(document.getAnimations().map((a) => a.finished.catch(() => undefined)));
-  });
+  await settled(page);
   return page.evaluate(() => {
     type Rgba = readonly [number, number, number, number];
     const parse = (value: string): Rgba | undefined => {
@@ -564,9 +780,7 @@ async function shoot(page: Page, state: State, dir: string, ready: () => Promise
     await setTheme(page, theme);
     await ready();
     // The controls fade between themes: capture once they have settled, never mid-fade.
-    await page.evaluate(async () => {
-      await Promise.all(document.getAnimations().map((a) => a.finished.catch(() => undefined)));
-    });
+    await settled(page);
     await page.screenshot({ path: join(dir, shotName(state, theme)), scale: "css" });
   }
 }

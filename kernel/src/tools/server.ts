@@ -157,9 +157,12 @@ const shapes = {
 
 const REPEAT = "Repeating a call with the same idempotency_key in this session returns the first result, even if other arguments differ.";
 
+/** The words the Tasks board reads as a task's state (the app owns the grouping; the kernel still stores any word). */
+const BOARD_WORDS = "The Tasks board reads four state words: waiting (needs the owner), working, parked, done. Any other word you choose is kept and shows under Other with that exact word.";
+
 const descriptions: Record<KernelToolName, string> = {
-  kernel_task_create: `Create a task row. state is free text you choose; the kernel defines no states. ${REPEAT}`,
-  kernel_task_update: `Update the given fields of a task (null clears an optional field). With an idempotency_key: ${REPEAT}`,
+  kernel_task_create: `Create a task row. state is free text you choose; the kernel defines no states. ${BOARD_WORDS} ${REPEAT}`,
+  kernel_task_update: `Update the given fields of a task (null clears an optional field). state is free text. ${BOARD_WORDS} With an idempotency_key: ${REPEAT}`,
   kernel_task_list: `List tasks in id order, filtered by state, assignee_agent or parent_task_id (limit 1-${MAX_LIST}, default ${DEFAULT_LIST}).`,
   kernel_task_get: "Get one task by id.",
   kernel_schedule_wakeup: `Schedule a wake-up at an ISO-8601 instant with a time zone (a past time fires on the next tick). The reason is free text, except that ${RESERVED_WAKEUP_REASON_PREFIXES.join(" and ")} are reserved for the kernel. ${REPEAT}`,

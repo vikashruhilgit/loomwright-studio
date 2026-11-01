@@ -11,15 +11,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiRequest, ApiResult, MemoryFileEntry, MemoryTreeResponse, MemoryWriteBody, StatusBody } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
+import { Titlebar } from "../../shell/Titlebar";
 import { fakeBridge, ok } from "../../store/fake-bridge";
 import type { FakeBridge } from "../../store/fake-bridge";
+import type { StudioBridge } from "../../api/contract";
 import { MEMORY_OWNER } from "./commands";
+import { resetHeldMemory } from "./held";
 import { MEMORY_TEST_IDS as IDS } from "./model";
 import { MemoryScreen } from "./MemoryScreen";
 import { screen as memoryScreenDefinition } from "./index";
 
 afterEach(() => {
   cleanup();
+  resetHeldMemory();
   window.location.hash = "";
   vi.restoreAllMocks();
 });
@@ -119,15 +123,31 @@ function createKernel(initial?: Record<string, string>): Kernel {
   return kernel;
 }
 
+const BAND = "kernel-unreachable-band";
+const HOME = "/Users/me";
+
+/** The window around the screen: the shell's title bar (which draws the screen's `Subtitle`) above the screen itself. */
+function Window({ api, registry }: { readonly api: StudioBridge; readonly registry: CommandRegistry }) {
+  return (
+    <>
+      <Titlebar screen={memoryScreenDefinition} />
+      <MemoryScreen api={api} registry={registry} />
+    </>
+  );
+}
+
+/** `kernel`'s bridge, with the main process's `homeDir` when `home` is given (the fake has none). */
+const bridgeOf = (kernel: Kernel, home?: string): StudioBridge => (home === undefined ? kernel.fake.bridge : { ...kernel.fake.bridge, homeDir: async () => home });
+
 /** Render the screen over `kernel` and wait until the tree (or its failure) is on it. */
-async function mount(kernel: Kernel): Promise<void> {
-  render(<MemoryScreen api={kernel.fake.bridge} registry={kernel.registry} />);
+async function mount(kernel: Kernel, home?: string): Promise<void> {
+  render(<Window api={bridgeOf(kernel, home)} registry={kernel.registry} />);
   await waitFor(() => expect(screen.queryByTestId(IDS.loading)).toBeNull());
 }
 
-async function start(initial?: Record<string, string>): Promise<Kernel> {
+async function start(initial?: Record<string, string>, home?: string): Promise<Kernel> {
   const kernel = createKernel(initial);
-  await mount(kernel);
+  await mount(kernel, home);
   return kernel;
 }
 
@@ -180,7 +200,7 @@ describe("the states", () => {
     });
     const kernel = createKernel();
     kernel.tree = () => held;
-    render(<MemoryScreen api={kernel.fake.bridge} registry={kernel.registry} />);
+    render(<Window api={kernel.fake.bridge} registry={kernel.registry} />);
     const loading = await screen.findByTestId(IDS.loading);
     expect(loading.getAttribute("aria-busy")).toBe("true");
     expect(within(loading).getByRole("status").textContent).toBe("Loading memory");
@@ -230,14 +250,92 @@ describe("the states", () => {
     expect(text(IDS.errorDetail)).toBe("GET /memory · 200 · invalid_response");
   });
 
-  it("with no data and the kernel not answering it says so, never 'nothing remembered yet'", async () => {
+  it("with no data and the kernel not answering it says so, never 'nothing remembered yet', and shows no request text", async () => {
     const kernel = createKernel();
     kernel.tree = () => UNREACHABLE;
     await mount(kernel);
     expect(await screen.findByTestId(IDS.error)).toBeTruthy();
     expect(screen.getByTestId(IDS.screen).getAttribute("data-offline")).toBe("true");
     expect(screen.queryByTestId(IDS.empty)).toBeNull();
-    expect(text(IDS.errorDetail)).toBe("GET /memory · no answer · daemon_not_running");
+    // Status 0: no request line, no "no answer", no connection code anywhere in the window.
+    expect(screen.queryByTestId(IDS.errorDetail)).toBeNull();
+    expectNoRequestText();
+    expect(text(IDS.error)).toContain("The kernel isn't answering");
+    // The title bar has no count line to show before a tree has answered.
+    expect(text(IDS.subtitle)).toBe("");
+  });
+});
+
+/** AC4: the page text names no request, no "no answer" and no connection code. */
+function expectNoRequestText(): void {
+  const page = document.body.textContent ?? "";
+  for (const forbidden of ["GET /memory", "GET /memory/file", "no answer", "not_installed", "daemon_not_running", "connection_failed"]) expect(page, forbidden).not.toContain(forbidden);
+}
+
+// ---- the title bar -----------------------------------------------------------------------------------------------
+
+describe("the count line", () => {
+  it("is in the title bar beside the heading, and the screen draws no bar of its own", async () => {
+    await start();
+    const bar = screen.getByTestId("titlebar-subtitle");
+    const line = within(bar).getByTestId(IDS.subtitle);
+    expect(line.textContent).toBe("6 files");
+    expect(bar.previousElementSibling?.tagName).toBe("H1");
+    const root = screen.getByTestId(IDS.screen);
+    expect(root.contains(line)).toBe(false);
+    expect(root.querySelector(".memory-bar")).toBeNull();
+    expect(root.querySelector(`[data-testid="${IDS.subtitle}"]`)).toBeNull();
+  });
+
+  it("reads 'Edit' in the editor, in the title bar", async () => {
+    await start();
+    await openEditor();
+    expect(within(screen.getByTestId("titlebar-subtitle")).getByTestId(IDS.subtitle).textContent).toBe("Edit");
+  });
+
+  it("is cleared when the screen goes, so the next mount never shows the last one's line", async () => {
+    await start();
+    expect(text(IDS.subtitle)).toBe("6 files");
+    cleanup();
+    render(<Titlebar screen={memoryScreenDefinition} />);
+    expect(text(IDS.subtitle)).toBe("");
+  });
+});
+
+// ---- ~ paths ---------------------------------------------------------------------------------------------------------
+
+describe("paths under the home folder", () => {
+  it("read ~/… in the root and in a file's Path when the data folder is under home", async () => {
+    await start(undefined, HOME);
+    await waitFor(() => expect(text(IDS.root)).toBe("~/.loomwright-studio/memory/"));
+    await openFile(PATH);
+    expect(text(IDS.filePath)).toBe(`~/.loomwright-studio/memory/${PATH}`);
+    expect(text(IDS.fileView)).not.toContain(HOME);
+  });
+
+  it("read in full when home is unknown (the bridge has no homeDir)", async () => {
+    await start();
+    await waitFor(() => expect(text(IDS.root)).toBe(`${DATA_DIR}/memory/`));
+    await openFile(PATH);
+    expect(text(IDS.filePath)).toBe(`${DATA_DIR}/memory/${PATH}`);
+  });
+
+  it("read in full when the data folder is outside home", async () => {
+    const kernel = createKernel();
+    kernel.settings = () => ok({ provider: { id: "x", account: "x", health: { status: "ok" }, token_created_at: null }, data_dir: "/fixture/studio-data", notifier: "none", loomwright: {} });
+    await mount(kernel, HOME);
+    await waitFor(() => expect(text(IDS.root)).toBe("/fixture/studio-data/memory/"));
+  });
+
+  it("read ~/… in the editor's note and the empty state too", async () => {
+    await start(undefined, HOME);
+    await waitFor(() => expect(text(IDS.root)).toBe("~/.loomwright-studio/memory/"));
+    await openEditor();
+    expect(document.getElementById("memory-editor-help")?.textContent).toContain(`saved to ~/.loomwright-studio/memory/${PATH}.`);
+    cleanup();
+    resetHeldMemory();
+    await start({}, HOME);
+    await waitFor(() => expect(text(IDS.empty)).toContain("under ~/.loomwright-studio/memory/."));
   });
 });
 
@@ -280,7 +378,9 @@ describe("the tree", () => {
     release(ok({ data_dir: DATA_DIR }));
     await waitFor(() => expect(text(IDS.root)).toBe(`${DATA_DIR}/memory/`));
     expect(text(IDS.filePath)).toBe(`${DATA_DIR}/memory/mason/lessons.md`);
+    // A new session: the data folder the first mount learnt is forgotten.
     cleanup();
+    resetHeldMemory();
 
     const failing = createKernel();
     failing.settings = () => refused(500, { error: "store_unreadable" });
@@ -586,6 +686,75 @@ describe("the kernel unreachable", () => {
     expect(reads(kernel, "GET /memory/file")).toHaveLength(before);
   });
 
+  it("shows no request text when the tree read gets no answer, and draws exactly one band (its own, while the shell's is not up)", async () => {
+    const kernel = await start();
+    expect(screen.queryAllByTestId(BAND)).toHaveLength(0);
+    kernel.tree = () => UNREACHABLE;
+    emit(kernel, "memory_updated");
+    await waitFor(() => expect(text(IDS.subtitle)).toBe("6 files · last known"));
+    expect(screen.getAllByTestId(BAND)).toHaveLength(1);
+    expect(screen.getByTestId(IDS.screen).contains(screen.getByTestId(BAND))).toBe(true);
+    expect(screen.queryByTestId(IDS.stale)).toBeNull();
+    expectNoRequestText();
+  });
+
+  it("draws no band of its own while the shell's is up (the store reads unreachable)", async () => {
+    const kernel = createKernel();
+    kernel.fake.connectionAnswer = { state: "unreachable", reason: "daemon_not_running" };
+    kernel.tree = () => UNREACHABLE;
+    await mount(kernel);
+    await screen.findByTestId(IDS.error);
+    await waitFor(() => expect(screen.queryAllByTestId(BAND)).toHaveLength(0));
+    expect(screen.getByTestId(IDS.screen).getAttribute("data-offline")).toBe("true");
+    expectNoRequestText();
+  });
+
+  it("a file read that gets no answer keeps the text and names no request", async () => {
+    const kernel = await start();
+    await openFile(PATH);
+    kernel.file = () => UNREACHABLE;
+    emit(kernel, "memory_updated");
+    const note = await screen.findByTestId(IDS.fileError);
+    expect(note.textContent).toContain("Couldn't read this file again");
+    expect(screen.getByTestId(IDS.contents).textContent).toBe(LESSONS);
+    expectNoRequestText();
+  });
+
+  it("a screen mounted again while the kernel does not answer draws the last-known tree, never the skeleton or the error card", async () => {
+    const kernel = await start();
+    await waitFor(() => expect(text(IDS.root)).toBe(`${DATA_DIR}/memory/`));
+    const order = screen.getAllByTestId(IDS.fileButton).map((b) => b.getAttribute("data-path"));
+    cleanup();
+
+    kernel.tree = () => UNREACHABLE;
+    render(<Window api={kernel.fake.bridge} registry={kernel.registry} />);
+    // Drawn at once from what answered earlier: no loading state, no error card, the same files in the same order.
+    expect(screen.queryByTestId(IDS.loading)).toBeNull();
+    expect(screen.queryByTestId(IDS.error)).toBeNull();
+    expect(screen.getAllByTestId(IDS.fileButton).map((b) => b.getAttribute("data-path"))).toEqual(order);
+    expect(text(IDS.root)).toBe(`${DATA_DIR}/memory/`);
+    await waitFor(() => expect(text(IDS.subtitle)).toBe("6 files · last known"));
+    expect(screen.queryByTestId(IDS.loading)).toBeNull();
+    expect(screen.queryByTestId(IDS.error)).toBeNull();
+    expect(screen.queryByTestId(IDS.empty)).toBeNull();
+    expect(screen.getAllByTestId(IDS.fileButton).map((b) => b.getAttribute("data-path"))).toEqual(order);
+    expect(fileButton(PATH).getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getAllByTestId(BAND)).toHaveLength(1);
+    expectNoRequestText();
+  });
+
+  it("a screen mounted again with the kernel back draws the held tree at once, without a last-known mark, then the new read", async () => {
+    const kernel = await start();
+    cleanup();
+    kernel.files.set("mason/people.md", "# People\n");
+    render(<Window api={kernel.fake.bridge} registry={kernel.registry} />);
+    expect(screen.queryByTestId(IDS.loading)).toBeNull();
+    expect(screen.getAllByTestId(IDS.fileButton)).toHaveLength(6);
+    expect(screen.getByTestId(IDS.screen).getAttribute("data-offline")).toBeNull();
+    await waitFor(() => expect(screen.getAllByTestId(IDS.fileButton)).toHaveLength(7));
+    expect(text(IDS.subtitle)).toBe("7 files");
+  });
+
   it("recovers by itself when the next event brings an answer", async () => {
     const kernel = await start();
     kernel.tree = () => UNREACHABLE;
@@ -594,6 +763,7 @@ describe("the kernel unreachable", () => {
     kernel.tree = () => ok(treeOf(kernel.files));
     emit(kernel, "memory_updated");
     await waitFor(() => expect(text(IDS.subtitle)).toBe("6 files"));
+    expect(screen.queryAllByTestId(BAND)).toHaveLength(0);
   });
 
   it("the editor keeps its text and turns Save off; the conflict view keeps both versions and turns its actions off", async () => {

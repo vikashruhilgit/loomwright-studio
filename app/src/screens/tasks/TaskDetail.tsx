@@ -3,9 +3,12 @@
 // events, oldest first) beside its session's log. The log is `StreamingLog`,
 // which carries Stop and Kill; Kill asks first (the screen's Dialog).
 //
-// A card with no session shows the mockup's "no log yet" note. Every string
-// here (a title, an agent, an event payload, an approval's action) is untrusted
-// data and is rendered as a text child only.
+// A card with no session shows the mockup's "no log yet" note. The history reads
+// as sentences with actors (`./history.ts`), never as the stored JSON. A task's
+// "Created in" fact links the session that created it (its own card, when the
+// board has one); that session's Stop and Kill are never wired to the task.
+// Every string here (a title, an agent, an event's words, an approval's action)
+// is untrusted data and is rendered as a text child only.
 import { useEffect, useRef } from "react";
 import type { Approval, PlaybookRun, SessionSummary, TaskBoardItem } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
@@ -15,7 +18,8 @@ import { Button } from "../../components/Button/Button";
 import { StreamingLog } from "../../components/StreamingLog/StreamingLog";
 import { printable } from "../approvals/printable";
 import { elapsedText, statusLine, statusView, taskText } from "../sessions/model";
-import { KIND_LABEL, agentText, cardTitle, eventLine, factsOf, toneOf } from "./model";
+import { historyLine } from "./history";
+import { KIND_LABEL, agentText, cardTitle, factsOf, toneOf } from "./model";
 import type { OpenCard } from "./useOpenCard";
 
 export interface TaskDetailProps {
@@ -28,6 +32,8 @@ export interface TaskDetailProps {
   readonly avatar: AvatarAgent;
   readonly avatarState: AvatarState;
   readonly onBack: () => void;
+  /** Opens the creator session's own card; `undefined` when it is not on the board (or the kernel is away): the fact is plain text. */
+  readonly onOpenCreator?: (() => void) | undefined;
   /** Kill never kills here: the screen asks first (its confirm), then sends. */
   readonly onKillRequest: () => void;
 }
@@ -56,7 +62,7 @@ function ApprovalRow({ approval }: { readonly approval: Approval }) {
   );
 }
 
-export function TaskDetail({ item, card, now, offline, avatar, avatarState, onBack, onKillRequest }: TaskDetailProps) {
+export function TaskDetail({ item, card, now, offline, avatar, avatarState, onBack, onOpenCreator, onKillRequest }: TaskDetailProps) {
   const { history, session, sessionId } = card;
   const regionRef = useRef<HTMLElement>(null);
   // The card the owner opened has left the DOM: focus lands here, so Tab reaches Back first.
@@ -66,7 +72,7 @@ export function TaskDetail({ item, card, now, offline, avatar, avatarState, onBa
 
   const title = cardTitle(item);
   const facts = factsOf(item, now, session, history?.runs.find((r) => item.kind === "playbook_run" && r.id === item.id));
-  const events = (history?.events ?? []).map(eventLine);
+  const events = (history?.events ?? []).map((event) => historyLine(event, { sessions: history?.sessions ?? [], card: item }));
   const runs = item.kind === "playbook_run" ? [] : (history?.runs ?? []);
   const approvals = history?.approvals ?? [];
 
@@ -105,7 +111,17 @@ export function TaskDetail({ item, card, now, offline, avatar, avatarState, onBa
           {facts.map((fact) => (
             <div key={fact.label} className="tasks-fact">
               <dt>{fact.label}</dt>
-              <dd>{fact.tone === undefined ? fact.text : <Badge tone={fact.tone}>{fact.text}</Badge>}</dd>
+              <dd>
+                {fact.session !== undefined && onOpenCreator !== undefined ? (
+                  <button type="button" className="tasks-link" onClick={onOpenCreator} data-testid="task-created-in">
+                    {fact.text}
+                  </button>
+                ) : fact.tone === undefined ? (
+                  fact.text
+                ) : (
+                  <Badge tone={fact.tone}>{fact.text}</Badge>
+                )}
+              </dd>
             </div>
           ))}
         </dl>
@@ -140,9 +156,12 @@ export function TaskDetail({ item, card, now, offline, avatar, avatarState, onBa
                 <li key={event.id} className="tasks-event">
                   <div className="tasks-event-top">
                     <b>{event.kind}</b>
+                    <span data-testid="task-event-actor">{event.actor}</span>
                     <time>{event.time}</time>
                   </div>
-                  {event.text === "" ? null : <p className="tasks-event-text">{event.text}</p>}
+                  <p className="tasks-event-text" data-testid="task-event-sentence">
+                    {event.sentence}
+                  </p>
                 </li>
               ))}
             </ol>

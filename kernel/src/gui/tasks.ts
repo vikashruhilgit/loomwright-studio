@@ -23,6 +23,7 @@ import { eventFrameOf } from "../console/events.js";
 import type { EventRow } from "../console/events.js";
 import type { ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
 import { positiveIntegerOf } from "./query.js";
+import type { Store } from "../store/index.js";
 import type { GuiPart } from "./types.js";
 
 /** `GET /tasks`' `limit`: default and ceiling. */
@@ -36,8 +37,8 @@ const MAX_HISTORY_EVENTS = 500;
 const KINDS = ["playbook_run", "session", "task"] as const;
 type BoardKind = (typeof KINDS)[number];
 
-/** One card, as the union query reads it (the contract's `TaskBoardItem`, in its field order). */
-interface BoardRow {
+/** One card as the union query reads it: the contract's `TaskBoardItem` up to `updated`, in its field order. */
+interface SelectedRow {
   readonly kind: BoardKind;
   readonly id: number;
   readonly title: string | null;
@@ -50,6 +51,17 @@ interface BoardRow {
   readonly started: string | null;
   readonly ended: string | null;
   readonly updated: string;
+}
+
+/**
+ * One card as served (the contract's `TaskBoardItem`, in its field order): the
+ * selected columns, then the creator of a task. Not columns of the union: they
+ * are read once per request for the page's tasks (`withCreators`), `null` for a
+ * run and a session.
+ */
+interface BoardRow extends SelectedRow {
+  readonly creator_agent: string | null;
+  readonly creator_session: number | null;
 }
 
 /** The columns every source SELECT answers, in `BoardRow`'s order. */
@@ -90,7 +102,7 @@ interface Cursor {
 }
 
 /** The cursor naming `row` (the last row of a page), or null for none. */
-function cursorOf(row: BoardRow | undefined): string | null {
+function cursorOf(row: SelectedRow | undefined): string | null {
   if (row === undefined) return null;
   return Buffer.from(JSON.stringify([row.updated, row.kind, row.id]), "utf8").toString("base64url");
 }
@@ -109,6 +121,39 @@ function parseCursor(text: string): Cursor | undefined {
   if (typeof updated !== "string" || typeof kind !== "string" || !isKind(kind)) return undefined;
   if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 1) return undefined;
   return { updated, kind, id };
+}
+
+// ---- The creator of a task ---------------------------------------------------------
+
+/**
+ * The creators of `rows`' tasks, merged in: `creator_agent` / `creator_session`
+ * are the agent / session of the task's FIRST `task_created` event (lowest
+ * `events.id`), and `null` for a run, a session, a task with no such event, an
+ * event with no session, or a session row that is gone. The store has no index
+ * on `events.task_id`, so this is ONE query per request for the page's task ids,
+ * never a subquery per row. The creator is a fact about the card only: its
+ * session never joins a history's `sessions`, and its events never join the
+ * task's history.
+ */
+function withCreators(store: Store, rows: readonly SelectedRow[]): BoardRow[] {
+  const taskIds = rows.filter((row) => row.kind === "task").map((row) => row.id);
+  const creators = new Map<number, { agent: string | null; session: number | null }>();
+  if (taskIds.length > 0) {
+    const found = store
+      .prepare<[string], { task_id: number; session_id: number | null; agent: string | null }>(
+        `SELECT e.task_id AS task_id, e.session_id AS session_id, s.agent AS agent
+           FROM events e LEFT JOIN sessions s ON s.id = e.session_id
+          WHERE e.id IN (SELECT min(id) FROM events
+                          WHERE kind = 'task_created' AND task_id IN (SELECT value FROM json_each(?))
+                          GROUP BY task_id)`,
+      )
+      .all(JSON.stringify(taskIds));
+    for (const row of found) creators.set(row.task_id, { agent: row.agent, session: row.session_id });
+  }
+  return rows.map((row) => {
+    const creator = row.kind === "task" ? creators.get(row.id) : undefined;
+    return { ...row, creator_agent: creator?.agent ?? null, creator_session: creator?.session ?? null };
+  });
 }
 
 // ---- GET /tasks ----------------------------------------------------------------
@@ -130,7 +175,7 @@ function listHandler(req: ContributedRouteRequest): Promise<ContributedRouteResp
   // The keyset for `updated DESC, kind ASC, id DESC`: the rows after the cursor's.
   const after = cursor === undefined ? "" : "WHERE updated < ? OR (updated = ? AND kind > ?) OR (updated = ? AND kind = ? AND id < ?)";
   const rows = req.store
-    .prepare<unknown[], BoardRow>(
+    .prepare<unknown[], SelectedRow>(
       `SELECT * FROM (
          ${TASK_SELECT}
          UNION ALL
@@ -141,7 +186,8 @@ function listHandler(req: ContributedRouteRequest): Promise<ContributedRouteResp
        ORDER BY updated DESC, kind, id DESC LIMIT ${limit + 1}`,
     )
     .all(...(cursor === undefined ? [] : [cursor.updated, cursor.updated, cursor.kind, cursor.updated, cursor.kind, cursor.id]));
-  const page = rows.slice(0, limit);
+  const selected = rows.slice(0, limit);
+  const page = withCreators(req.store, selected);
   // Rows are already newest first; a state's group opens where its first row appears.
   const byState = new Map<string, BoardRow[]>();
   const groups: { state: string; items: BoardRow[] }[] = [];
@@ -159,7 +205,7 @@ function listHandler(req: ContributedRouteRequest): Promise<ContributedRouteResp
     status: 200,
     body: {
       groups,
-      next_before: rows.length > limit ? cursorOf(page[page.length - 1]) : null,
+      next_before: rows.length > limit ? cursorOf(selected[selected.length - 1]) : null,
     },
   });
 }
@@ -199,8 +245,9 @@ function historyHandler(req: ContributedRouteRequest): Promise<ContributedRouteR
   const { store } = req;
   const source = kind === "task" ? TASK_SELECT : kind === "playbook_run" ? RUN_SELECT : SESSION_SELECT;
   const alias = kind === "task" ? "t" : kind === "playbook_run" ? "r" : "s";
-  const item = store.prepare<[number], BoardRow>(`${source} WHERE ${alias}.id = ?`).get(id);
-  if (item === undefined) return Promise.resolve({ status: 404, body: { error: "not_found" } });
+  const selectedItem = store.prepare<[number], SelectedRow>(`${source} WHERE ${alias}.id = ?`).get(id);
+  if (selectedItem === undefined) return Promise.resolve({ status: 404, body: { error: "not_found" } });
+  const item = withCreators(store, [selectedItem])[0];
 
   const sessions =
     kind === "task"

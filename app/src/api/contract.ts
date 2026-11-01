@@ -959,6 +959,13 @@ export interface TaskBoardItem {
   readonly ended: IsoTime | null;
   /** When the row last changed; the board orders newest first by it. */
   readonly updated: IsoTime;
+  /**
+   * The agent of the session named by the task's first `task_created` event (`events.session_id` joined to `sessions.agent`);
+   * `null` for a run, a session, or when it is not recorded (no such event, no session on it, or the session row is gone).
+   */
+  readonly creator_agent: string | null;
+  /** The `session_id` of the task's first `task_created` event; `null` for a run, a session, or when not recorded. */
+  readonly creator_session: number | null;
 }
 
 /** One state's cards: the board groups by the source's `state`, in the page's order. */
@@ -1222,10 +1229,22 @@ export interface BudgetLimitUsage {
 /** The per-account cap state with its reset times, as `GET /status` shows it. */
 export type BudgetCapState = StatusBody["cap_state"];
 
+/**
+ * One account's cap state as `GET /budget/usage` answers it: `GET /status`'s shape
+ * (`BudgetCapState`), with each window also carrying `updated_at`. Optional, so an
+ * older kernel's answer still type-checks (and reads as having no last-read time).
+ */
+export type BudgetUsageCapState = readonly (Omit<BudgetCapState[number], "limits"> & {
+  readonly limits: readonly (BudgetCapState[number]["limits"][number] & {
+    /** When the kernel last recorded this window (`cap_state.updated_at`): its status is what was last read then. */
+    readonly updated_at?: IsoTime;
+  })[];
+})[];
+
 export interface BudgetUsageResponse {
   readonly rows: readonly BudgetUsageRow[];
   readonly limits: readonly BudgetLimitUsage[];
-  readonly cap_state: BudgetCapState;
+  readonly cap_state: BudgetUsageCapState;
 }
 
 export interface AuditQuery {
@@ -1243,10 +1262,24 @@ export interface AuditQuery {
   readonly limit?: string;
 }
 
+/**
+ * One `GET /audit` event: an `EventFrame` plus who did it. `actor` is the event's
+ * session's agent id, else `you` (stored by the owner through the API), else
+ * `kernel`. Optional, so an older kernel's answer still type-checks. `EventFrame`
+ * itself is unchanged: `GET /events` and the feed carry no `actor`.
+ */
+export interface AuditEvent extends EventFrame {
+  readonly actor?: string;
+}
+
 /** `GET /audit`: events, newest first. Every string in a `payload` is untrusted. */
 export interface AuditResponse {
-  readonly events: readonly EventFrame[];
+  readonly events: readonly AuditEvent[];
   readonly next_before: string | null;
+  /** The events under the same filters, ignoring `before` and `limit`. Absent from an older kernel. */
+  readonly matching?: number;
+  /** Every event, whatever the filters. Absent from an older kernel. */
+  readonly total?: number;
 }
 
 // ---- Phase 7 item 08: GET /settings ------------------------------------------------------
