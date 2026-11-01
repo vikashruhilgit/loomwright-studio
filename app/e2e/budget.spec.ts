@@ -1,10 +1,16 @@
-// The Budget & audit screen (phase 7 item 07) in the built app against the fixture kernel
-// (`./fixtures/budget.ts`): tokens per day, per agent and per playbook against their limits, an agent at
-// its limit with the band that says so and the one dollar figure labelled "at API rates" (AC2), the cap
-// windows (AC3), the audit log filtered by agent and playbook and paged Older and Newer (AC4), the kernel
-// going away while the screen holds data (AC5), the keyboard walk (AC6), a live update that moves nothing
-// already shown (AC7), the accessible names and the tokens-only stylesheet (AC8), and a light and a dark
-// screenshot of every state the mockup shows (AC9). Run `npm run build` first.
+// The Budget & audit screen (phase 7 item 07, readable log and honest cap from item 17) in the built app against
+// the fixture kernel (`./fixtures/budget.ts`): tokens per day, per agent and per playbook against their limits, an
+// agent at its limit with the band that says so and the one dollar figure labelled "at API rates", the cap windows,
+// the audit log filtered by agent and playbook and paged Older and Newer, the kernel going away while the screen
+// holds data, the keyboard walk, a live update that moves nothing already shown, the accessible names and the
+// tokens-only stylesheet, and a light and a dark screenshot of every state the mockup shows.
+//
+// Item 17's checks carry its acceptance-criteria numbers: AC1 the kernel stopped (the shared band over last-known
+// data, then restarted), AC2 the count line in the title bar, AC3 the audit rows as sentences with a named actor,
+// AC5 the "N of M events" count and the paging, AC6 a cap window whose reset has passed reads stale, AC7 the cap
+// account's display name; AC9 is the evidence. The older checks are named for what they check, except the two
+// "AC4:" audit-log titles (item 07's numbering), which `phase-7-exit.spec.ts` pins by title prefix.
+// Run `npm run build` first.
 //
 // Screenshots: with `BUDGET_EVIDENCE=1` they are written to the committed evidence dir
 // `docs/evidence/phase-7-polish/budget/`; otherwise to Playwright's per-test output dir, so CI never
@@ -30,8 +36,8 @@ import { BUDGET_TEST_IDS as IDS } from "../src/screens/budget/model";
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-7-polish/budget/", import.meta.url));
 const README = join(EVIDENCE_DIR, "README.md");
 const THEMES = ["light", "dark"] as const;
-/** The mockup's states (`budget-<state>`), as the file names have them. */
-const STATES = ["empty", "loading", "populated", "waiting", "error", "unreachable", "audit", "audit-filtered"] as const;
+/** The mockup's states (`budget-<state>`), as the file names have them; `populated-stale` is item 17's, with no mockup view of its own. */
+const STATES = ["empty", "loading", "populated", "populated-stale", "waiting", "error", "unreachable", "audit", "audit-filtered"] as const;
 
 /** When this run began, for the guard that the tracked evidence dir is untouched without `BUDGET_EVIDENCE`. */
 const RUN_START = Date.now();
@@ -40,11 +46,16 @@ let app: ElectronApplication | undefined;
 let fixture: FixtureKernel | undefined;
 const pageErrors: string[] = [];
 
-test.afterEach(async () => {
+/** Close the window and the fixture kernel (a test that opens a second app does this between them). */
+async function shutdown(): Promise<void> {
   await app?.close();
   app = undefined;
   await fixture?.close();
   fixture = undefined;
+}
+
+test.afterEach(async () => {
+  await shutdown();
   // Drained per test, so an error is reported against the test that caused it.
   expect(pageErrors.splice(0), "the window logged no uncaught page errors").toEqual([]);
 });
@@ -133,7 +144,7 @@ const auditIds = (page: Page): Promise<string[]> => texts(page, IDS.auditId);
 
 // ---- The overview: AC2, AC3 -----------------------------------------------------------------------------------------
 
-test("populated: seven days today first with zero days, the agents and playbooks against their limits, and the cap windows (AC3)", async ({}, testInfo) => {
+test("populated: seven days today first with zero days, the agents and playbooks against their limits, and the cap windows", async ({}, testInfo) => {
   const { page } = await openPopulated();
   // The shell draws the one heading; the screen's own are h2 and below.
   expect(await page.locator("h1").allTextContents()).toEqual(["Budget & audit"]);
@@ -146,7 +157,8 @@ test("populated: seven days today first with zero days, the agents and playbooks
   // Today: Mason 47,844 + Wright 12,380 + Ada 61,900. A day with no rows (five days back) is 0.
   await expect(days.first().getByRole("cell").nth(1)).toHaveText(/^\s*122,124/);
   await expect(days.nth(5).getByRole("cell").nth(1)).toHaveText(/^\s*0/);
-  await expect(byId(page, IDS.summary)).toHaveText("122,124 tokens today");
+  // The count line is the title bar's subtitle, beside the title; the screen draws none of its own.
+  await expect(page.getByTestId("titlebar-subtitle").getByTestId(IDS.summary)).toHaveText("122,124 tokens today");
 
   await expect(byId(page, IDS.agentName)).toHaveText(["Wright", "Mason", "Ada"]);
   await expect(byId(page, IDS.agentLimit)).toHaveText(["12,380no limit set", "47,844 of 150,000", "61,900 of 100,000"]);
@@ -157,7 +169,7 @@ test("populated: seven days today first with zero days, the agents and playbooks
   await expect(byId(page, IDS.playbookLimit).first()).toHaveText("47,844 of 60,000");
   await expect(byId(page, IDS.band)).toHaveCount(0);
 
-  // AC3: each window shows its type, its status badge and 'N% used · resets <time>'.
+  // Each window shows its type, its status badge and 'N% used · resets <time>'.
   await expect(byId(page, IDS.capWindow)).toHaveCount(2);
   expect(await texts(page, IDS.capStatus)).toEqual(["allowed", "warning"]);
   const caps = await texts(page, IDS.capText);
@@ -165,11 +177,12 @@ test("populated: seven days today first with zero days, the agents and playbooks
   expect(caps[1]).toMatch(/^83% used · resets [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2} 09:00$/);
   await expect(byId(page, IDS.cap)).toContainText("personal subscription");
   await expect(byId(page, IDS.cap)).toContainText("No window is rejected");
+  await expect(byId(page, IDS.capStale)).toHaveCount(0);
   await expect(byId(page, IDS.latestCard)).toHaveCount(3);
   await screenshots(page, "populated", testInfo);
 });
 
-test("AC2: an agent at its limit shows 'N of N' with an 'at limit' badge and a full meter, the band names it, and the only dollar figure is the 'at API rates' estimate", async ({}, testInfo) => {
+test("at limit: an agent at its limit shows 'N of N' with an 'at limit' badge and a full meter, the band names it, and the only dollar figure is the 'at API rates' estimate", async ({}, testInfo) => {
   const { page } = await openPopulated({ state: "waiting" });
   const ada = agentRow(page, "ada");
   await expect(ada.getByTestId(IDS.agentLimit)).toHaveText("100,000 of 100,000at limit");
@@ -254,31 +267,100 @@ test("the error state: a route-failure card that names the usage request and its
   await expect(card).toHaveCount(0);
 });
 
-// ---- The audit log: AC4 ----------------------------------------------------------------------------------------------
+// ---- The audit log: AC2, AC3, AC5 ----------------------------------------------------------------------------------
+
+/** The text of every audit row's Detail, in order. */
+const details = (page: Page): Promise<string[]> => texts(page, IDS.auditDetail);
+
+test("AC2: the count line is in the title bar beside the title, the screen draws none under it, and the audit view's subtitle reads 'Audit log'", async () => {
+  const { page } = await openPopulated();
+  const subtitle = page.getByTestId("titlebar-subtitle");
+  await expect(subtitle).toHaveText("122,124 tokens today");
+  // Beside the title: the same title bar, the title first, on one line.
+  const title = await page.locator("h1").boundingBox();
+  const line = await subtitle.boundingBox();
+  expect(title).not.toBeNull();
+  expect(line).not.toBeNull();
+  if (title !== null && line !== null) {
+    expect(line.x, "the subtitle follows the title").toBeGreaterThanOrEqual(title.x + title.width - 1);
+    expect(Math.abs(line.y + line.height / 2 - (title.y + title.height / 2)), "on the title's line").toBeLessThan(title.height);
+  }
+  // The screen's own tree holds no count line, and its toolbar keeps only the Audit log button.
+  await expect(byId(page, IDS.screen).getByTestId(IDS.summary)).toHaveCount(0);
+  await expect(byId(page, IDS.screen).locator(".budget-tbar").getByRole("button")).toHaveText(["Audit log"]);
+
+  await openLog(page);
+  await expect(subtitle).toHaveText("Audit log");
+  await expect(byId(page, IDS.screen).getByTestId(IDS.summary)).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(subtitle).toHaveText("122,124 tokens today");
+});
+
+test("AC3: every audit row's Detail is a sentence and its Actor is a name, never JSON or a dash", async () => {
+  const { page } = await openPopulated();
+  await openLog(page);
+  // Page 1, newest first: one sentence per event kind the fixture holds, in the kernel's own payload shapes.
+  await expect(byId(page, IDS.auditRow)).toHaveCount(8);
+  const first = await details(page);
+  expect(first).toEqual([
+    "memory/mason/lessons.md was updated.",
+    "Draft review recorded for studio-sandbox #3. Recorded, not sent.",
+    "Dry run of playbook Weekly changelog draft v1 started.",
+    "Trigger 4 fired for Review PRs on studio-sandbox · 1 item found.",
+    expect.stringMatching(/^Wake-up #5 is due (today )?\d{2}:\d{2}: PR #3 review may be ready\.$/) as unknown as string,
+    "Session 39 went from running to failed (auth).",
+    "Task 12 was created: Pick repos for Mason to review · state waiting.",
+    "Session 37 went from running to completed (result success).",
+  ]);
+  // The actor is the route's: the session's agent by its roster name, "you" for an owner action, "kernel" otherwise.
+  const firstActors = await texts(page, IDS.auditActor);
+  expect(firstActors).toEqual(["Mason", "Mason", "Ada", "kernel", "Mason", "Ada", "Wright", "Mason"]);
+
+  // Page 2 holds the owner's kill switch: its actor reads "you".
+  await byId(page, IDS.older).click();
+  await expect.poll(() => auditIds(page)).toEqual(["392", "391", "390", "389", "388", "387", "386", "385"]);
+  const engaged = byId(page, IDS.auditRow).and(page.locator('[data-kind="kill_switch_engaged"]'));
+  await expect(engaged.getByTestId(IDS.auditActor)).toHaveText("you");
+  await expect(engaged.getByTestId(IDS.auditDetail)).toHaveText("The kill switch was engaged. No trigger fires while it is on.");
+  const seen: string[] = [...first, ...(await details(page))];
+  const actors: string[] = [...firstActors, ...(await texts(page, IDS.auditActor))];
+  await byId(page, IDS.older).click();
+  await expect.poll(() => auditIds(page)).toEqual(["384", "383", "382", "381"]);
+  seen.push(...(await details(page)));
+  actors.push(...(await texts(page, IDS.auditActor)));
+
+  // Every row on every page: no JSON object, no dash for an actor, no raw `undefined`.
+  expect(seen).toHaveLength(20);
+  for (const detail of seen) {
+    expect(detail, "a sentence, not JSON").not.toMatch(/[{}]/);
+    expect(detail).not.toContain("undefined");
+    expect(detail.endsWith("."), detail).toBe(true);
+  }
+  expect(actors).toHaveLength(20);
+  expect(actors).not.toContain("—");
+  expect(new Set(actors)).toEqual(new Set(["Mason", "Ada", "Wright", "kernel", "you"]));
+});
 
 test("AC4: the audit log pages Older and Newer by cursor without overlap, to the last page", async ({}, testInfo) => {
   const { fx, page } = await openPopulated();
   await openLog(page);
-  await expect(byId(page, IDS.footer)).toHaveText("Showing rows 1–8 · page 1 · newest first");
   expect(await auditIds(page)).toEqual(["400", "399", "398", "397", "396", "395", "394", "393"]);
   await expect(byId(page, IDS.filtered)).toHaveCount(0);
   await expect(byId(page, IDS.newer)).toBeDisabled();
   await screenshots(page, "audit", testInfo);
 
   await byId(page, IDS.older).click();
-  await expect(byId(page, IDS.footer)).toHaveText("Showing rows 9–16 · page 2 · newest first");
-  expect(await auditIds(page)).toEqual(["392", "391", "390", "389", "388", "387", "386", "385"]);
+  await expect.poll(() => auditIds(page)).toEqual(["392", "391", "390", "389", "388", "387", "386", "385"]);
   await byId(page, IDS.older).click();
-  await expect(byId(page, IDS.footer)).toHaveText("Showing rows 17–20 · page 3 · newest first");
-  expect(await auditIds(page)).toEqual(["384", "383", "382", "381"]);
+  await expect.poll(() => auditIds(page)).toEqual(["384", "383", "382", "381"]);
   await expect(byId(page, IDS.older)).toBeDisabled();
   // After the last Older, focus did not fall to the page.
   await expect(byId(page, IDS.newer)).toBeFocused();
 
   await byId(page, IDS.newer).click();
-  await expect(byId(page, IDS.footer)).toHaveText("Showing rows 9–16 · page 2 · newest first");
+  await expect.poll(() => auditIds(page)).toEqual(["392", "391", "390", "389", "388", "387", "386", "385"]);
   await byId(page, IDS.newer).click();
-  await expect(byId(page, IDS.footer)).toHaveText("Showing rows 1–8 · page 1 · newest first");
+  await expect.poll(() => auditIds(page)).toEqual(["400", "399", "398", "397", "396", "395", "394", "393"]);
   await expect(byId(page, IDS.newer)).toBeDisabled();
   // Page 1 (the overview's three, then the log's page), then Older with each cursor, then Newer re-reading the cursors it came by.
   const log = fx.auditReads.filter((q) => q.limit === "8");
@@ -286,7 +368,26 @@ test("AC4: the audit log pages Older and Newer by cursor without overlap, to the
   expect(log.every((q) => q.since !== undefined)).toBe(true);
 });
 
-test("AC4: choosing Agent and Playbook shows only Mason's review events with the 'filtered' badge; a full last page's Older says there are none; Clear filters restores the log", async ({}, testInfo) => {
+test("AC5: the audit log shows the 'N of M events' count and pages Older and Newer", async () => {
+  const { page } = await openPopulated();
+  await openLog(page);
+  await expect(byId(page, IDS.auditCount)).toHaveText("20 of 20 events");
+  await expect(byId(page, IDS.footer)).toHaveText("Showing 1–8 of 20 · page 1 of 3 · newest first");
+  await byId(page, IDS.older).click();
+  await expect(byId(page, IDS.footer)).toHaveText("Showing 9–16 of 20 · page 2 of 3 · newest first");
+  await byId(page, IDS.older).click();
+  await expect(byId(page, IDS.footer)).toHaveText("Showing 17–20 of 20 · page 3 of 3 · newest first");
+  await expect(byId(page, IDS.older)).toBeDisabled();
+  await expect(byId(page, IDS.auditCount)).toHaveText("20 of 20 events");
+  await byId(page, IDS.newer).click();
+  await expect(byId(page, IDS.footer)).toHaveText("Showing 9–16 of 20 · page 2 of 3 · newest first");
+  await byId(page, IDS.newer).click();
+  await expect(byId(page, IDS.footer)).toHaveText("Showing 1–8 of 20 · page 1 of 3 · newest first");
+  await expect(byId(page, IDS.newer)).toBeDisabled();
+  await expect(byId(page, IDS.auditCount)).toHaveText("20 of 20 events");
+});
+
+test("AC4: choosing Agent and Playbook shows only Mason's review events with the 'filtered' badge and the narrowed count; a filter that matches nothing says so and Clear filters restores the log", async ({}, testInfo) => {
   const { fx, page } = await openPopulated();
   await openLog(page);
   await page.getByLabel("Agent").selectOption({ label: "Mason" });
@@ -294,51 +395,163 @@ test("AC4: choosing Agent and Playbook shows only Mason's review events with the
   await page.getByLabel("Playbook").selectOption({ label: "Review PRs on studio-sandbox" });
   await expect.poll(() => fx.auditReads.at(-1)).toMatchObject({ agent: "mason", playbook: "review-prs", limit: "8" });
   await expect.poll(() => auditIds(page)).toEqual(["400", "399", "397", "393", "391", "385", "382", "381"]);
-  for (const actor of await texts(page, IDS.auditActor)) expect(actor).toBe("mason");
+  expect(await texts(page, IDS.auditActor)).toEqual(["Mason", "Mason", "kernel", "Mason", "Mason", "you", "Wright", "Wright"]);
   for (const row of await byId(page, IDS.auditRow).all()) await expect(row).toContainText("playbook review-prs");
-  await expect(byId(page, IDS.footer)).toHaveText("Showing rows 1–8 · page 1 · newest first");
+  // `matching` follows the filters and `total` does not; eight match, so there is one page.
+  await expect(byId(page, IDS.auditCount)).toHaveText("8 of 20 events");
+  await expect(byId(page, IDS.footer)).toHaveText("Showing 1–8 of 8 · page 1 of 1 · newest first");
+  await expect(byId(page, IDS.older), "the count says this is the last page, though it is full").toBeDisabled();
   await expect(byId(page, IDS.clear)).toBeEnabled();
   await screenshots(page, "audit-filtered", testInfo);
 
-  // The page is full, so the kernel sent a cursor; the page after it is empty.
-  await byId(page, IDS.older).click();
-  await expect(byId(page, IDS.auditEmpty)).toHaveText("No older events.");
-  expect(fx.auditReads.at(-1)).toMatchObject({ before: "381", agent: "mason", playbook: "review-prs" });
-  await byId(page, IDS.newer).click();
-  await expect.poll(() => auditIds(page)).toHaveLength(8);
-
-  // Kind narrows further to nothing, and says so.
+  // Kind narrows further to nothing, and says so; the total stays.
   await page.getByLabel("Kind").selectOption("admission_refused");
   await expect(byId(page, IDS.auditEmpty)).toContainText("No events match.");
+  await expect(byId(page, IDS.auditCount)).toHaveText("0 of 20 events");
   await byId(page, IDS.auditEmpty).getByRole("button", { name: "Clear filters" }).click();
   await expect(byId(page, IDS.filtered)).toHaveCount(0);
   await expect.poll(() => auditIds(page)).toHaveLength(8);
+  await expect(byId(page, IDS.auditCount)).toHaveText("20 of 20 events");
   await expect(page.getByLabel("Agent")).toHaveValue("");
 });
 
-// ---- AC5: the kernel unreachable -----------------------------------------------------------------------------------------
-
-test("AC5: when the kernel goes away the shared band shows, the screen keeps its last data marked last known, and Audit log and Open the full log are disabled", async ({}, testInfo) => {
+test("AC5: a filter narrows the count and the pages while the total stays", async () => {
   const { page } = await openPopulated();
+  await openLog(page);
+  // Agent alone matches more than a page: ten of the twenty, over two pages.
+  await page.getByLabel("Agent").selectOption({ label: "Mason" });
+  await expect(byId(page, IDS.auditCount)).toHaveText("10 of 20 events");
+  await expect(byId(page, IDS.footer)).toHaveText("Showing 1–8 of 10 · page 1 of 2 · newest first");
+  await byId(page, IDS.older).click();
+  await expect(byId(page, IDS.footer)).toHaveText("Showing 9–10 of 10 · page 2 of 2 · newest first");
+  await expect(byId(page, IDS.auditCount)).toHaveText("10 of 20 events");
+  await expect(byId(page, IDS.older)).toBeDisabled();
+  await byId(page, IDS.newer).click();
+  await expect(byId(page, IDS.footer)).toHaveText("Showing 1–8 of 10 · page 1 of 2 · newest first");
+  await byId(page, IDS.clear).click();
+  await expect(byId(page, IDS.auditCount)).toHaveText("20 of 20 events");
+  await expect(byId(page, IDS.footer)).toHaveText("Showing 1–8 of 20 · page 1 of 3 · newest first");
+});
+
+// ---- AC1: the kernel unreachable ----------------------------------------------------------------------------------------
+
+test("AC1: when the kernel goes away the shared band shows over the screen's last data, marked last known, with the controls off; when it is back the screen refreshes on its own", async ({}, testInfo) => {
+  test.setTimeout(90_000);
+  const { fx, page } = await openPopulated();
   const days = await texts(page, IDS.dayRow);
   const agents = await texts(page, IDS.agentLimit);
   expect(days).toHaveLength(7);
-  await fixture?.close();
-  await expect(page.locator('[data-testid="kernel-unreachable-band"], [data-testid="kernel-reconnecting-band"]').first()).toBeVisible({ timeout: 20_000 });
-  await expect(byId(page, IDS.summary)).toContainText("last known");
+  const band = page.locator('[data-testid="kernel-unreachable-band"], [data-testid="kernel-reconnecting-band"]');
+  await expect(band).toHaveCount(0);
+  const readsBefore = fx.usageReads.length;
+
+  // The listener stops under the open window; the window and the fixture stay.
+  await fixture?.stop();
+  await expect(band.first()).toBeVisible({ timeout: 20_000 });
+  // One band, the shell's: the screen draws none of its own.
+  await expect(band).toHaveCount(1);
+  await expect(byId(page, IDS.kernelBand)).toHaveCount(0);
+  await expect(byId(page, IDS.screen).getByRole("alert")).toHaveCount(0);
+  await expect(page.getByTestId("titlebar-subtitle")).toContainText("last known");
   await expect(byId(page, IDS.cap)).toContainText("last known");
   expect(await texts(page, IDS.dayRow), "the days are the last read").toEqual(days);
   expect(await texts(page, IDS.agentLimit), "the limits are the last read").toEqual(agents);
+  // Data, not "Status unknown", and no raw request text (method, path, reason).
+  await expect(byId(page, IDS.unknown)).toHaveCount(0);
   await expect(byId(page, IDS.empty)).toHaveCount(0);
   await expect(byId(page, IDS.error)).toHaveCount(0);
-  await expect(byId(page, IDS.auditButton)).toBeDisabled();
-  await expect(byId(page, IDS.openLog)).toBeDisabled();
+  await expect(byId(page, IDS.errorDetail)).toHaveCount(0);
+  await expect(byId(page, IDS.screen)).not.toContainText("Status unknown");
+  await expect(byId(page, IDS.screen)).not.toContainText("GET /");
+  await expect(byId(page, IDS.screen)).not.toContainText("/budget/usage");
+  // Every control that needs the kernel is off, with the reason as its title.
+  for (const id of [IDS.auditButton, IDS.openLog]) {
+    await expect(byId(page, id)).toBeDisabled();
+    await expect(byId(page, id)).toHaveAttribute("title", "Needs the kernel");
+  }
   await screenshots(page, "unreachable", testInfo);
+
+  // While it is down the kernel records more work (a session of Mason's ends); the listener is then back on its port.
+  // The band goes and the screen reads again without a click, so the new total appears by itself.
+  const before = fx.todayTokens();
+  fx.liveUpdate();
+  await fixture?.restart();
+  await expect(band).toHaveCount(0, { timeout: 30_000 });
+  await expect(byId(page, IDS.auditButton)).toBeEnabled({ timeout: 30_000 });
+  await expect(byId(page, IDS.openLog)).toBeEnabled();
+  await expect(page.getByTestId("titlebar-subtitle")).toHaveText(`${tokens(fx.todayTokens())} tokens today`, { timeout: 30_000 });
+  expect(fx.todayTokens()).toBe(before + 4_456);
+  await expect(byId(page, IDS.cap)).not.toContainText("last known");
+  expect(fx.usageReads.length, "the screen read the usage again by itself").toBeGreaterThan(readsBefore);
 });
 
-// ---- AC6: the keyboard ------------------------------------------------------------------------------------------------------
+test("AC1: the audit log opened when the kernel goes away keeps its rows under the band with the filters and the paging off", async () => {
+  test.setTimeout(90_000);
+  const { page } = await openPopulated();
+  await openLog(page);
+  await expect(byId(page, IDS.auditCount)).toHaveText("20 of 20 events");
+  const rows = await auditIds(page);
+  await fixture?.stop();
+  await expect(page.getByTestId("kernel-unreachable-band").or(page.getByTestId("kernel-reconnecting-band")).first()).toBeVisible({ timeout: 20_000 });
+  expect(await auditIds(page), "the rows are the last read").toEqual(rows);
+  await expect(byId(page, IDS.auditCount)).toHaveText("20 of 20 events");
+  await expect(byId(page, IDS.footer)).toContainText("last known");
+  for (const id of [IDS.filterKind, IDS.filterAgent, IDS.filterPlaybook, IDS.filterRange, IDS.older, IDS.newer, IDS.clear]) await expect(byId(page, id), id).toBeDisabled();
+  await expect(byId(page, IDS.screen)).not.toContainText("Status unknown");
+  await expect(page.getByTestId("titlebar-subtitle")).toHaveText("Audit log");
+  await fixture?.restart();
+  await expect(page.getByTestId("kernel-unreachable-band").or(page.getByTestId("kernel-reconnecting-band"))).toHaveCount(0, { timeout: 30_000 });
+  await expect(byId(page, IDS.older)).toBeEnabled({ timeout: 30_000 });
+  await expect(byId(page, IDS.filterAgent)).toBeEnabled();
+});
 
-test("AC6: the audit log is walked by Tab, Enter, Space, type-ahead, J, K and Escape, and focus returns to the control that opened it", async () => {
+// ---- AC6, AC7: the cap card -------------------------------------------------------------------------------------------
+
+test("AC6: a cap window whose reset has passed reads stale with its last-read time, never 'resets' a past time, and the note still says nothing is parked", async ({}, testInfo) => {
+  const { page } = await openPopulated({ staleCap: true });
+  await expect(byId(page, IDS.capWindow)).toHaveCount(2);
+  const five = page.locator('[data-testid="budget-cap-window"][data-window="five_hour"]');
+  const seven = page.locator('[data-testid="budget-cap-window"][data-window="seven_day"]');
+  // The live window is as before.
+  await expect(five).not.toHaveAttribute("data-stale", "true");
+  await expect(five.getByTestId(IDS.capStale)).toHaveCount(0);
+  await expect(five.getByTestId(IDS.capText)).toHaveText(/^41% used · resets (today 17:00|[A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2} 17:00)$/);
+  // The ended window keeps its last-read word in a neutral tone with a "stale" mark, and says when it was read.
+  await expect(seven).toHaveAttribute("data-stale", "true");
+  await expect(seven.getByTestId(IDS.capStatus)).toHaveText("warning");
+  await expect(seven.getByTestId(IDS.capStale)).toHaveText("stale");
+  const text = (await seven.getByTestId(IDS.capText).textContent()) ?? "";
+  expect(text).toMatch(/^last read [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2} \d{2}:\d{2} · window ended [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2} 00:30$/);
+  expect(text, "a past reset is never shown as current").not.toContain("resets");
+  expect(text).not.toContain("% used");
+  await expect(seven.getByRole("img")).toHaveCount(0);
+  // Nothing is parked: only an unexpired rejected window parks work.
+  await expect(byId(page, IDS.cap)).toContainText("No window is rejected, so nothing is parked on the cap.");
+  await screenshots(page, "populated-stale", testInfo);
+});
+
+test("AC7: the cap card labels the subscription by the status label when there is one, else 'personal subscription', never the provider id", async () => {
+  // No label on GET /status: the provider's display name.
+  const bare = await openPopulated({ statusAccount: "" });
+  await expect(byId(bare.page, IDS.cap)).toContainText("personal subscription");
+  await expect(byId(bare.page, IDS.cap)).not.toContainText("subscription-token");
+  await shutdown();
+
+  // The label equal to the provider id is no label either.
+  const same = await openPopulated({ statusAccount: "subscription-token" });
+  await expect(byId(same.page, IDS.cap)).toContainText("personal subscription");
+  await expect(byId(same.page, IDS.cap)).not.toContainText("subscription-token");
+  await shutdown();
+
+  // A provider with an account label reads that label.
+  const named = await openPopulated({ statusAccount: "Studio sandbox plan" });
+  await expect(byId(named.page, IDS.cap)).toContainText("Studio sandbox plan");
+  await expect(byId(named.page, IDS.cap)).not.toContainText("subscription-token");
+});
+
+// ---- The keyboard ------------------------------------------------------------------------------------------------------
+
+test("keyboard: the audit log is walked by Tab, Enter, Space, type-ahead, J, K and Escape, and focus returns to the control that opened it", async () => {
   const { page } = await openPopulated();
 
   // J and K move between a table's rows.
@@ -403,9 +616,9 @@ test("AC6: the audit log is walked by Tab, Enter, Space, type-ahead, J, K and Es
   await expect(byId(page, IDS.openLog)).toBeFocused();
 });
 
-// ---- AC7: live updates -----------------------------------------------------------------------------------------------------
+// ---- Live updates -----------------------------------------------------------------------------------------------------
 
-test("AC7: a budget_limit_reached event updates the totals, the agent row and the latest events with no reload, no loading state, and no row already shown moving", async () => {
+test("live: a budget_limit_reached event updates the totals, the agent row and the latest events with no reload, no loading state, and no row already shown moving", async () => {
   // Ada has used her whole limit, so the band is already up: what is measured is the rows, not the band's own arrival.
   const { fx, page } = await openPopulated({ state: "waiting" });
   await settle(page);
@@ -458,9 +671,9 @@ test("AC7: a budget_limit_reached event updates the totals, the agent row and th
   expect(seen.loading, "the screen never flashed a loading state").toBe(false);
 });
 
-// ---- AC8: names, and tokens only -----------------------------------------------------------------------------------------------
+// ---- Names, and tokens only -----------------------------------------------------------------------------------------------
 
-test("AC8: every select, button, meter, badge, table and group has an accessible name", async () => {
+test("names: every select, button, meter, badge, table and group has an accessible name", async () => {
   const { page } = await openPopulated({ state: "waiting" });
   const root = byId(page, IDS.screen);
 
@@ -488,7 +701,7 @@ test("AC8: every select, button, meter, badge, table and group has an accessible
   expect(await page.locator("h1").allTextContents(), "the shell's heading is the only h1").toEqual(["Budget & audit"]);
 });
 
-test("AC8: the screen's stylesheet takes every colour from the design tokens", () => {
+test("tokens: the screen's stylesheet takes every colour from the design tokens", () => {
   const css = readFileSync(fileURLToPath(new URL("../src/screens/budget/budget.css", import.meta.url)), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(css.match(/#[0-9a-fA-F]{3,8}\b/g) ?? [], "no hex colour").toEqual([]);
   expect(css.match(/\b(?:rgb|rgba|hsl|hsla|oklch|oklab|color-mix)\(/g) ?? [], "no colour function").toEqual([]);
