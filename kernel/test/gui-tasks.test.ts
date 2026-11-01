@@ -55,6 +55,8 @@ interface Card {
   started: string | null;
   ended: string | null;
   updated: string;
+  creator_agent: string | null;
+  creator_session: number | null;
 }
 interface Board {
   groups: { state: string; items: Card[] }[];
@@ -163,18 +165,18 @@ describe("GET /tasks: the union (AC1)", () => {
     const byKey = new Map(b.groups.flatMap((g) => g.items).map((c) => [`${c.kind}:${c.id}`, c]));
     expect(byKey.get(`task:${task}`)).toEqual({
       kind: "task", id: task, title: "Ship it", state: "waiting", agent: "wright", playbook: null, item_ref: null, session: null, tokens: null,
-      started: at(2), ended: null, updated: at(7),
+      started: at(2), ended: null, updated: at(7), creator_agent: null, creator_session: null,
     });
     expect(byKey.get(`playbook_run:${run}`)).toEqual({
       kind: "playbook_run", id: run, title: "Review PRs", state: "done", agent: "ada", playbook, item_ref: "github:o/r#4", session: null, tokens: 120,
-      started: at(3), ended: at(9), updated: at(9),
+      started: at(3), ended: at(9), updated: at(9), creator_agent: null, creator_session: null,
     });
     expect(byKey.get(`session:${session}`)).toEqual({
       kind: "session", id: session, title: null, state: "completed", agent: "bo", playbook, item_ref: null, session: null, tokens: 17,
-      started: at(4), ended: at(6), updated: at(6),
+      started: at(4), ended: at(6), updated: at(6), creator_agent: null, creator_session: null,
     });
     expect(Object.keys(byKey.get(`task:${task}`) ?? {})).toEqual(
-      ["kind", "id", "title", "state", "agent", "playbook", "item_ref", "session", "tokens", "started", "ended", "updated"],
+      ["kind", "id", "title", "state", "agent", "playbook", "item_ref", "session", "tokens", "started", "ended", "updated", "creator_agent", "creator_session"],
     );
   });
 
@@ -203,6 +205,69 @@ describe("GET /tasks: the union (AC1)", () => {
     const found = (await board()).groups.flatMap((g) => g.items).find((c) => c.id === task && c.kind === "task");
     expect(found?.title).toBe(nasty);
     expect(found?.state).toBe(nasty);
+  });
+});
+
+describe("GET /tasks: the creator of a task (AC7)", () => {
+  const cardOf = async (kind: string, id: number): Promise<Card | undefined> => (await board()).groups.flatMap((g) => g.items).find((c) => c.kind === kind && c.id === id);
+
+  it("a task created in Wright's session with no assignee names that agent and session, and its assignee stays null", async () => {
+    const wright = addSession({ agent: "wright" });
+    const task = addTask({ agent: null, state: "waiting on owner" });
+    addEvent("task_created", { session: wright, task });
+    const card = await cardOf("task", task);
+    expect(card).toMatchObject({ agent: null, session: null, creator_agent: "wright", creator_session: wright });
+    expect(Object.keys(card ?? {}).slice(-2)).toEqual(["creator_agent", "creator_session"]);
+  });
+
+  it("the creator is the FIRST task_created event, and the assignee stays the assignee", async () => {
+    const first = addSession({ agent: "wright" });
+    const later = addSession({ agent: "ada" });
+    const task = addTask({ agent: "mason" });
+    addEvent("task_updated", { session: later, task }, {}, at(1));
+    addEvent("task_created", { session: first, task }, {}, at(2));
+    addEvent("task_created", { session: later, task }, {}, at(3));
+    expect(await cardOf("task", task)).toMatchObject({ agent: "mason", creator_agent: "wright", creator_session: first });
+  });
+
+  it("is null for a task with no task_created event, one with no session, and one whose session row is gone", async () => {
+    const none = addTask();
+    const noSession = addTask();
+    addEvent("task_created", { task: noSession });
+    const gone = addTask();
+    const ghost = addSession({ agent: "ada" });
+    addEvent("task_created", { session: ghost, task: gone });
+    store.pragma("foreign_keys = OFF");
+    store.prepare("DELETE FROM sessions WHERE id = ?").run(ghost);
+    expect(await cardOf("task", none)).toMatchObject({ creator_agent: null, creator_session: null });
+    expect(await cardOf("task", noSession)).toMatchObject({ creator_agent: null, creator_session: null });
+    const goneCard = await cardOf("task", gone);
+    expect(goneCard?.creator_agent).toBeNull();
+  });
+
+  it("is null for a playbook run and a session, even when a task_created event shares their id", async () => {
+    const playbook = addPlaybook();
+    const run = addRun({ playbook });
+    const session = addSession({ agent: "ada" });
+    addEvent("task_created", { session, task: run });
+    addEvent("task_created", { session, task: session });
+    expect(await cardOf("playbook_run", run)).toMatchObject({ creator_agent: null, creator_session: null });
+    expect(await cardOf("session", session)).toMatchObject({ creator_agent: null, creator_session: null });
+  });
+
+  it("is resolved in one events query for the page, never one per row", async () => {
+    const wright = addSession({ agent: "wright" });
+    for (let i = 0; i < 5; i++) addEvent("task_created", { session: wright, task: addTask() });
+    const seen: string[] = [];
+    const prepare = store.prepare.bind(store) as (sql: string) => unknown;
+    (store as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      seen.push(sql);
+      return prepare(sql);
+    };
+    const cards = (await board()).groups.flatMap((g) => g.items).filter((c) => c.kind === "task");
+    expect(cards).toHaveLength(5);
+    expect(cards.every((c) => c.creator_agent === "wright")).toBe(true);
+    expect(seen.filter((sql) => sql.includes("task_created"))).toHaveLength(1);
   });
 });
 
@@ -456,6 +521,19 @@ describe("GET /tasks/:kind/:id: the history (AC2)", () => {
     expect(h.runs).toEqual([
       { id: run, playbook, version: 1, kind: "fire", status: "done", item_ref: null, item_revision: null, tokens: 7, session: sub, started: at(2), ended: at(3) },
     ]);
+  });
+
+  it("a task's history item carries its creator, but the creator's session and events are not in the history", async () => {
+    const wright = addSession({ agent: "wright" });
+    const task = addTask({ agent: null, owner: null });
+    const created = addEvent("task_created", { session: wright, task }, { title: "t" }, at(1));
+    addEvent("session_started", { session: wright }, {}, at(2));
+    const h = await historyOf("task", task);
+    expect(h.item).toMatchObject({ kind: "task", id: task, agent: null, session: null, creator_agent: "wright", creator_session: wright });
+    expect(Object.keys(h.item).slice(-2)).toEqual(["creator_agent", "creator_session"]);
+    expect(h.sessions).toEqual([]);
+    expect(h.events.map((e) => e.id)).toEqual([created]);
+    expect((await historyOf("session", wright)).item).toMatchObject({ creator_agent: null, creator_session: null });
   });
 
   it("a playbook run: its own row, its session, and that session's events and approvals", async () => {

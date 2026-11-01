@@ -7,12 +7,13 @@ import type { EventFrame, SessionSummary, TaskBoardItem, TaskBoardKind, Truncate
 import { isLive } from "../sessions/model";
 import {
   BOARD_COLUMNS,
+  NO_AGENT,
   buildBoard,
+  cardAgent,
   cardLabel,
   cardOrder,
   cardTitle,
   columnOf,
-  eventLine,
   factsOf,
   isToday,
   logSessionOf,
@@ -33,7 +34,7 @@ const NOW = new Date(2026, 9, 30, 14, 22, 0).getTime();
 const at = (h: number, m: number, day = 30): string => new Date(2026, 9, day, h, m, 0).toISOString();
 
 function item(kind: TaskBoardKind, id: number, state: string, overrides: Partial<TaskBoardItem> = {}): TaskBoardItem {
-  return { kind, id, title: kind === "session" ? null : `Title ${id}`, state, agent: "mason", playbook: null, item_ref: null, session: null, tokens: null, started: at(13, 0), ended: null, updated: at(14, 0), ...overrides };
+  return { kind, id, title: kind === "session" ? null : `Title ${id}`, state, agent: "mason", playbook: null, item_ref: null, session: null, tokens: null, started: at(13, 0), ended: null, updated: at(14, 0), creator_agent: null, creator_session: null, ...overrides };
 }
 
 describe("the columns", () => {
@@ -73,22 +74,24 @@ describe("columnOf: the state -> column table, row by row", () => {
     expect(columnOf({ kind, state })).toBe(column);
   });
 
-  it("puts an unknown task state in Working, never hidden", () => {
-    expect(columnOf({ kind: "task", state: "Waiting On Review" })).toBe("work");
-    expect(columnOf({ kind: "task", state: "" })).toBe("work");
+  it("puts an unknown task state in Other, never hidden and never guessed into a column", () => {
+    expect(columnOf({ kind: "task", state: "Waiting On Review" })).toBe("other");
+    expect(columnOf({ kind: "task", state: "" })).toBe("other");
     // Case matters: the state is the kernel's own word.
-    expect(columnOf({ kind: "task", state: "Done" })).toBe("work");
+    expect(columnOf({ kind: "task", state: "Done" })).toBe("other");
+    // No synonym is guessed: `waiting on owner` is not `waiting`.
+    expect(columnOf({ kind: "task", state: "waiting on owner" })).toBe("other");
   });
 
   it("treats a word that is a property of every object as an unknown state", () => {
     for (const state of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
-      for (const kind of ["task", "playbook_run", "session"] as const) expect(columnOf({ kind, state })).toBe("work");
+      for (const kind of ["task", "playbook_run", "session"] as const) expect(columnOf({ kind, state })).toBe("other");
     }
   });
 
-  it("puts a run or session status a newer kernel adds in Working too", () => {
-    expect(columnOf({ kind: "playbook_run", state: "queued" })).toBe("work");
-    expect(columnOf({ kind: "session", state: "resuming" })).toBe("work");
+  it("puts a run or session status a newer kernel adds in Other too, never Working", () => {
+    expect(columnOf({ kind: "playbook_run", state: "queued" })).toBe("other");
+    expect(columnOf({ kind: "session", state: "resuming" })).toBe("other");
   });
 });
 
@@ -181,6 +184,26 @@ describe("buildBoard", () => {
     expect(board.working).toBe(0);
   });
 
+  it("adds the Other group after the four columns only while a card is in it, with the card's own word", () => {
+    const board = buildBoard([{ state: "waiting on owner", items: [item("task", 13, "waiting on owner")] }, { state: "working", items: [item("task", 2, "working")] }], NOW);
+    expect(board.columns.map((c) => c.column.id)).toEqual(["wait", "work", "park", "done", "other"]);
+    expect(board.columns[4]?.column.label).toBe("Other");
+    expect(board.columns[4]?.cards.map((c) => c.key)).toEqual(["task:13"]);
+    // Not in Working, not hidden, and counted on the board; it neither waits on you nor works.
+    expect(board.columns[1]?.cards.map((c) => c.key)).toEqual(["task:2"]);
+    expect(board.total).toBe(2);
+    expect(board.working).toBe(1);
+    expect(board.waiting).toBe(0);
+    expect(cardOrder(board).map((c) => c.key)).toEqual(["task:2", "task:13"]);
+    expect(buildBoard([{ state: "working", items: [item("task", 2, "working")] }], NOW).columns.map((c) => c.column.id)).toEqual(["wait", "work", "park", "done"]);
+  });
+
+  it("counts a task in state waiting under Waiting on you", () => {
+    const board = buildBoard([{ state: "waiting", items: [item("task", 12, "waiting")] }], NOW);
+    expect(board.waiting).toBe(1);
+    expect(board.columns[0]?.cards.map((c) => c.key)).toEqual(["task:12"]);
+  });
+
   it("merges the kernel's per-state groups into columns, newest first, then kind, then id descending", () => {
     const board = buildBoard(
       [
@@ -266,8 +289,15 @@ describe("the words on a card", () => {
 
   it("names a session by its agent and what it ran from; an unnamed row by its kind and id", () => {
     expect(cardTitle(item("session", 44, "running", { agent: "wright" }))).toBe("wright · ad hoc session");
-    expect(cardTitle(item("session", 44, "running", { agent: null }))).toBe("unknown agent · ad hoc session");
+    expect(cardTitle(item("session", 44, "running", { agent: null }))).toBe("No agent recorded · ad hoc session");
     expect(cardTitle(item("task", 5, "done", { title: "  " }))).toBe("Task #5");
+  });
+
+  it("names the assignee, else the agent whose session created the task, else says No agent recorded", () => {
+    expect(NO_AGENT).toBe("No agent recorded");
+    expect(cardAgent(item("task", 1, "waiting", { agent: "mason", creator_agent: "wright" }))).toBe("mason");
+    expect(cardAgent(item("task", 1, "waiting", { agent: null, creator_agent: "wright" }))).toBe("wright");
+    expect(cardAgent(item("task", 1, "waiting", { agent: null, creator_agent: null }))).toBeNull();
   });
 
   it("shows every untrusted string escaped: the title, the agent and the state word", () => {
@@ -316,6 +346,15 @@ describe("facts", () => {
     expect(bare.map((f) => f.label)).not.toContain("Session");
   });
 
+  it("adds a 'Created in' fact naming the creator session, only for a task that has one; Assignee stays the assignee", () => {
+    const made = factsOf(item("task", 13, "waiting on owner", { agent: null, creator_agent: "wright", creator_session: 81 }), NOW);
+    expect(made.map((f) => f.label)).toEqual(["State", "Created in", "Created", "Updated"]);
+    expect(made.find((f) => f.label === "Created in")).toEqual({ label: "Created in", text: "session #81", session: 81 });
+    expect(made.map((f) => f.label)).not.toContain("Assignee");
+    expect(factsOf(item("task", 9, "working", { creator_session: null }), NOW).map((f) => f.label)).not.toContain("Created in");
+    expect(factsOf(item("session", 81, "running", { creator_session: 5 }), NOW).map((f) => f.label)).not.toContain("Created in");
+  });
+
   it("takes the run kind, version and revision from the run's own row, and the model from the session", () => {
     const summary: SessionSummary = { id: 41, agent: "mason", status: "running", model: "sonnet", started: at(14, 10), ended: null, tokens: 5, cwd: null, playbook: null };
     const session = factsOf(item("session", 41, "running", { title: null }), NOW, summary);
@@ -338,27 +377,6 @@ describe("facts", () => {
     expect(run.find((f) => f.label === "Version")?.text).toBe("v3");
     expect(run.find((f) => f.label === "Revision")?.text).toBe("a1b2c3d");
     expect(run.find((f) => f.label === "Status")?.tone).toBe("ok");
-  });
-});
-
-describe("history events", () => {
-  const event = (payload: unknown, kind = "task_updated"): EventFrame => ({ type: "event", id: 5, at: "2026-10-30T12:00:00.000Z", kind, session_id: null, task_id: 9, payload });
-
-  it("shows the payload as escaped data on one line, and nothing for an empty one", () => {
-    expect(eventLine(event({})).text).toBe("");
-    expect(eventLine(event(null)).text).toBe("");
-    const line = eventLine(event({ note: `hi${ESC}[31m${RLO}`, n: 1 }, `kind${ESC}`));
-    expect(line.kind).toBe("kind\\x1b");
-    expect(line.text).not.toContain("\n");
-    expect(line.text).toContain("hi\\x1b[31m\\u202e");
-    // eslint-disable-next-line no-control-regex
-    expect(line.text).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e]/);
-  });
-
-  it("cuts a long payload", () => {
-    const line = eventLine(event({ blob: "x".repeat(1000) }));
-    expect(line.text.length).toBeLessThan(300);
-    expect(line.text.endsWith("… (cut)")).toBe(true);
   });
 });
 

@@ -959,6 +959,13 @@ export interface TaskBoardItem {
   readonly ended: IsoTime | null;
   /** When the row last changed; the board orders newest first by it. */
   readonly updated: IsoTime;
+  /**
+   * The agent of the session named by the task's first `task_created` event (`events.session_id` joined to `sessions.agent`);
+   * `null` for a run, a session, or when it is not recorded (no such event, no session on it, or the session row is gone).
+   */
+  readonly creator_agent: string | null;
+  /** The `session_id` of the task's first `task_created` event; `null` for a run, a session, or when not recorded. */
+  readonly creator_session: number | null;
 }
 
 /** One state's cards: the board groups by the source's `state`, in the page's order. */

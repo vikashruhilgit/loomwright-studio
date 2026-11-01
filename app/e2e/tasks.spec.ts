@@ -23,6 +23,11 @@
 // mutation, `--ink` -> `--ink-tertiary` on the title, stays green because
 // `--ink-tertiary` on `--surface` is itself above 4.5:1 in both themes.
 //
+// The board words item adds: the Other group for a state word the board does not
+// read, the creator on a card, the history as sentences with actors, the creator
+// link, the shared band over the last board with the fixture's listener stopped
+// and restarted, and the count line in the title bar.
+//
 // Screenshots (AC11): with `TASKS_EVIDENCE=1` every designed state, light and
 // dark, is written to the committed `docs/evidence/phase-7-polish/tasks/`;
 // otherwise to Playwright's per-test output dir, so CI and other lanes' e2e runs
@@ -44,8 +49,8 @@ const EVIDENCE = process.env.TASKS_EVIDENCE === "1";
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-7-polish/tasks/", import.meta.url));
 const THEMES = ["light", "dark"] as const;
 type Theme = (typeof THEMES)[number];
-/** The mockup's seven Tasks views, in the README's order: `tasks-<state>`. */
-const STATES = ["empty", "loading", "populated", "waiting", "error", "unreachable", "history"] as const;
+/** The mockup's eight Tasks views, in the README's order: `tasks-<state>`. */
+const STATES = ["empty", "loading", "populated", "waiting", "other", "error", "unreachable", "history"] as const;
 type State = (typeof STATES)[number];
 
 let app: ElectronApplication | undefined;
@@ -114,9 +119,10 @@ async function openWith(started: FixtureKernel, state: "empty" | "populated" = "
 }
 
 const card = (page: Page, key: string): Locator => page.getByTestId(`task-card-${key}`);
-const column = (page: Page, id: "wait" | "work" | "park" | "done"): Locator => page.getByTestId(`tasks-col-${id}`);
+type ColumnId = "wait" | "work" | "park" | "done" | "other";
+const column = (page: Page, id: ColumnId): Locator => page.getByTestId(`tasks-col-${id}`);
 
-async function keysIn(page: Page, id: "wait" | "work" | "park" | "done"): Promise<string[]> {
+async function keysIn(page: Page, id: ColumnId): Promise<string[]> {
   return column(page, id)
     .locator("[data-card-key]")
     .evaluateAll((els) => els.map((el) => el.getAttribute("data-card-key") ?? ""));
@@ -201,9 +207,15 @@ function reviewInit(items = populatedItems()): TasksKernelInit {
   };
 }
 
+/** `reviewInit` with task 9 created in Wright's session 44 (a card on the board): its first event is Wright's. */
+function createdInit(): TasksKernelInit {
+  const init = reviewInit(populatedItems().map((i) => (i.kind === "task" && i.id === 9 ? { ...i, creator_agent: "wright", creator_session: 44 } : i)));
+  return { ...init, events: new Map([["task:9", reviewHistory().map((e) => (e.id === 102 ? { ...e, session_id: 44 } : e))]]) };
+}
+
 const YESTERDAY = new Date(Date.now() - 36 * 3_600_000).toISOString();
 
-test("AC4: four columns in the mockup's order; every state is the kernel's word; green only for done / done / completed; an unknown task state sits in Working", async () => {
+test("AC4: four columns in the mockup's order; every state is the kernel's word; green only for done / done / completed; an unknown task state sits in Other", async () => {
   const items = [
     ...waitingItems(),
     item("playbook_run", 17, "done", { title: "Morning digest", agent: "wright", playbook: 3, ended: stamp(95), updated: stamp(95) }),
@@ -216,10 +228,11 @@ test("AC4: four columns in the mockup's order; every state is the kernel's word;
   const { fixture: started } = await startKernel({ items, sessions: runningSessions() });
   const page = await openWith(started);
 
-  await expect(page.getByTestId("tasks-board").getByRole("heading", { level: 2 })).toHaveText(["Waiting on you", "Working", "Parked", "Done today"]);
-  for (const label of ["Waiting on you", "Working", "Parked", "Done today"]) await expect(page.getByRole("region", { name: label })).toBeVisible();
+  await expect(page.getByTestId("tasks-board").getByRole("heading", { level: 2 })).toHaveText(["Waiting on you", "Working", "Parked", "Done today", "Other"]);
+  for (const label of ["Waiting on you", "Working", "Parked", "Done today", "Other"]) await expect(page.getByRole("region", { name: label })).toBeVisible();
   expect((await keysIn(page, "wait")).sort()).toEqual(["session:39", "task:12"]);
-  expect((await keysIn(page, "work")).sort()).toEqual(["playbook_run:18", "session:44", "task:50", "task:9"]);
+  expect((await keysIn(page, "work")).sort()).toEqual(["playbook_run:18", "session:44", "task:9"]);
+  expect(await keysIn(page, "other")).toEqual(["task:50"]);
   expect((await keysIn(page, "park")).sort()).toEqual(["session:38", "task:7"]);
   expect((await keysIn(page, "done")).sort()).toEqual(["playbook_run:16", "playbook_run:17", "session:31", "session:40", "task:5"]);
   await expect(card(page, "session:30")).toHaveCount(0);
@@ -244,11 +257,11 @@ test("AC4: four columns in the mockup's order; every state is the kernel's word;
   expect(byKey.get("session:40")).toEqual({ tone: "neutral", word: "stopped" });
   expect(byKey.get("task:12")).toEqual({ tone: "attention", word: "waiting" });
   expect(byKey.get("task:7")).toEqual({ tone: "parked", word: "parked" });
-  // The unknown word is shown as the kernel wrote it, neutral, never green and never hidden.
+  // The unknown word is shown as the kernel wrote it, in Other, neutral, never green and never hidden.
   expect(byKey.get("task:50")).toEqual({ tone: "neutral", word: "Waiting On Review" });
 
   await expect(page.getByTestId("tasks-attention-band")).toHaveText("2 things wait on you.");
-  await expect(page.getByTestId("tasks-subtitle")).toHaveText("13 cards · 4 working");
+  await expect(page.getByTestId("tasks-subtitle")).toHaveText("13 cards · 3 working");
 });
 
 test("the fixture refuses what the kernel route refuses: limit and id outside the rules answer 400, an unknown card 404", async () => {
@@ -265,6 +278,61 @@ test("the fixture refuses what the kernel route refuses: limit and id outside th
   expect(await history("nope", "1")).toBe(400);
   for (const id of ["0", "-1", "1.5", "abc", "01"]) expect(await history("task", id), `id=${id}`).toBe(400);
   expect(await history("task", "999999")).toBe(404);
+});
+
+test("the Other group: a task in state `waiting on owner` shows under Other with its raw word, a creator on the card, and the group is absent when empty", async () => {
+  const noOne = item("task", 14, "needs a human", { title: "Nobody recorded", agent: null, updated: stamp(9) });
+  const made = item("task", 13, "waiting on owner", { title: "Decide how often Mason checks", agent: null, creator_agent: "wright", creator_session: 44, started: stamp(8), updated: stamp(8) });
+  const { fixture: started } = await startKernel({ items: [...waitingItems(), made, noOne], sessions: runningSessions() });
+  const page = await openWith(started);
+
+  await expect(page.getByTestId("tasks-board").getByRole("heading", { level: 2 })).toHaveText(["Waiting on you", "Working", "Parked", "Done today", "Other"]);
+  expect((await keysIn(page, "other")).sort()).toEqual(["task:13", "task:14"]);
+  expect(await keysIn(page, "work")).not.toContain("task:13");
+  expect(await keysIn(page, "wait")).not.toContain("task:13");
+  await expect(card(page, "task:13").getByTestId("task-card-state")).toHaveText("waiting on owner");
+  await expect(card(page, "task:13").locator(".badge")).toHaveAttribute("data-tone", "neutral");
+  // The creator is named when there is no assignee; with neither, the card says so.
+  await expect(card(page, "task:13").locator(".tasks-card-meta")).toContainText(/wright/i);
+  await expect(card(page, "task:14").locator(".tasks-card-meta")).toContainText("No agent recorded");
+  await expect(page.getByTestId("tasks-board")).not.toContainText("unknown agent");
+  // Waiting is its own word: the band counts the two that wait, never the Other card.
+  await expect(page.getByTestId("tasks-attention-band")).toHaveText("2 things wait on you.");
+  await expect(page.getByTestId("tasks-subtitle")).toHaveText("12 cards · 3 working");
+
+  // The group is absent when no card is in it.
+  await closeAll(started);
+  const { fixture: plain } = await startKernel({ items: waitingItems(), sessions: runningSessions() });
+  const again = await openWith(plain);
+  await expect(column(again, "other")).toHaveCount(0);
+  await expect(again.getByTestId("tasks-board").getByRole("heading", { level: 2 })).toHaveText(["Waiting on you", "Working", "Parked", "Done today"]);
+});
+
+test("the title bar draws the count line beside the title, and the screen draws no band of its own for it", async () => {
+  const { fixture: started } = await startKernel(reviewInit());
+  const page = await openWith(started);
+  const subtitle = page.getByTestId("titlebar-subtitle");
+  await expect(subtitle).toHaveText("8 cards · 3 working");
+  await expect(subtitle.getByTestId("tasks-subtitle")).toHaveText("8 cards · 3 working");
+  await expect(page.getByTestId("screen-tasks").getByTestId("tasks-subtitle")).toHaveCount(0);
+  await expect(page.locator(".tasks-bar")).toHaveCount(0);
+  // Beside the title: the bar's h1 first, then the line.
+  await expect(page.locator("header.titlebar > h1 + [data-testid=titlebar-subtitle]")).toHaveCount(1);
+});
+
+test("the cap line shows only when the board holds the cap: 201 rows leave 'Showing the newest 200 cards'; fewer rows show none", async () => {
+  test.setTimeout(60_000);
+  const many = Array.from({ length: 201 }, (_, i) => item("task", i + 1, "working", { title: `Task ${i + 1}`, updated: stamp(i % 90) }));
+  const { fixture: started } = await startKernel({ items: many });
+  const page = await openWith(started);
+  await expect(page.getByTestId("tasks-more")).toHaveText("Showing the newest 200 cards; older ones are not shown.");
+  await expect(page.getByTestId("tasks-subtitle")).toHaveText("200 cards · 200 working");
+
+  await closeAll(started);
+  const { fixture: few } = await startKernel({ items: many.slice(0, 20) });
+  const again = await openWith(few);
+  await expect(again.getByTestId("tasks-subtitle")).toHaveText("20 cards · 20 working");
+  await expect(again.getByTestId("tasks-more")).toHaveCount(0);
 });
 
 test("AC5: with no rows the designed empty state shows, never an empty board", async () => {
@@ -300,6 +368,14 @@ test("AC6: a card opens with its facts, its history and its session's log; Stop 
   await expect(events.first()).toContainText("trigger_fired");
   await expect(events.last()).toContainText("draft_output_recorded");
   await expect(page.getByTestId("task-history")).toContainText("History · 4");
+  // Each entry is a sentence and an actor, never the stored JSON.
+  await expect(events.nth(1).getByTestId("task-event-sentence")).toHaveText("Created “Review PR #3 on studio-sandbox” · state working");
+  await expect(events.nth(1).getByTestId("task-event-actor")).toHaveText("kernel");
+  await expect(events.nth(2).getByTestId("task-event-actor")).toHaveText("mason");
+  await expect(events.first().getByTestId("task-event-sentence")).toHaveText("trigger_fired recorded");
+  const history = (await page.getByTestId("task-history").textContent()) ?? "";
+  expect(history).not.toContain("{");
+  expect(history).not.toContain('"title":');
 
   // The log: StreamingLog, read from the kernel; a running session shows live.
   const log = page.getByRole("log", { name: "Session output" });
@@ -396,6 +472,64 @@ test("AC7: with the kernel unreachable the shell's band shows over the screen, w
   await expect(gone.getByTestId("screen-tasks")).toHaveAttribute("data-state", "error");
   await expect(gone.getByTestId("tasks-error")).toContainText("The kernel isn't answering");
   await expect(gone.getByTestId("tasks-empty")).toHaveCount(0);
+});
+
+test("the creator: a task's detail shows 'Created in' as a link to the creator session's own card; its history names Wright; the task's own log note stays", async () => {
+  const items = [...populatedItems(), item("task", 13, "waiting on owner", { title: "Decide how often Mason checks", agent: null, creator_agent: "wright", creator_session: 44, started: stamp(8), updated: stamp(8) })];
+  const events = new Map([["task:13", [feedEvent(201, "task_created", { task: 13, session: 44 }, { title: "Decide how often Mason checks", state: "waiting on owner" })]]]);
+  const { kernel, fixture: started } = await startKernel({ items, sessions: runningSessions(), events, output: new Map([[44, reviewLog(44)]]) });
+  const page = await openWith(started);
+
+  await card(page, "task:13").click();
+  const facts = page.getByTestId("task-facts");
+  await expect(facts).toContainText("Created in");
+  await expect(facts).not.toContainText("Assignee");
+  // The creator is an actor in the history; the task has no session of its own, so its log note stays and Stop / Kill are not offered.
+  const first = page.getByRole("list", { name: "History" }).getByRole("listitem").first();
+  await expect(first.getByTestId("task-event-sentence")).toHaveText("Created “Decide how often Mason checks” · state waiting on owner");
+  await expect(first.getByTestId("task-event-actor")).toHaveText("wright");
+  await expect(page.getByTestId("task-nolog")).toContainText("No session is attached to this task.");
+  await expect(page.getByRole("button", { name: /^Stop/ })).toHaveCount(0);
+  expect(kernel.sessions.outputReads.filter((r) => r.id === 44)).toEqual([]);
+
+  // The link opens session 44's own card (its log), where Stop and Kill belong to that session.
+  await facts.getByTestId("task-created-in").click();
+  await expect(page.getByTestId("task-detail")).toHaveAttribute("data-card-key", "session:44");
+  await expect(page.getByTestId("task-log")).toHaveAttribute("data-session-id", "44");
+  await expect(page.getByTestId("task-log-status")).toHaveText("running");
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByTestId("screen-tasks")).toHaveAttribute("data-state", "populated");
+});
+
+test("AC1: stopping the fixture's listener keeps the last board under the shell's one band, writes off, no request text; restarting reads the board again", async () => {
+  test.setTimeout(90_000);
+  const { fixture: started } = await startKernel(reviewInit());
+  const page = await openWith(started);
+  await expect(page.getByTestId("kernel-unreachable-band")).toHaveCount(0);
+  await expect(card(page, "task:9")).toBeEnabled();
+  const base = await settled(started);
+
+  await started.stop();
+  const band = page.getByTestId("kernel-unreachable-band");
+  await expect(band).toBeVisible({ timeout: 20_000 });
+  await expect(band).toHaveCount(1);
+  // The screen's own band is for a read that failed before the shell noticed: the shell's is the only one.
+  await expect(page.getByTestId("tasks-kernel-band")).toHaveCount(0);
+  await expect(page.getByTestId("screen-tasks")).toHaveAttribute("data-state", "populated");
+  await expect(page.getByTestId("tasks-subtitle")).toHaveText("8 cards · 3 working · last known");
+  await expect(card(page, "task:9")).toBeVisible();
+  await expect(card(page, "task:9")).toBeDisabled();
+  await expect(page.getByTestId("tasks-empty")).toHaveCount(0);
+  await expect(page.getByTestId("tasks-error")).toHaveCount(0);
+  const text = (await page.getByTestId("screen-tasks").textContent()) ?? "";
+  expect(text).not.toMatch(/GET \/tasks|connection_failed|ECONNREFUSED|\b50[0-9]\b/);
+  expect((await band.textContent()) ?? "").not.toMatch(/GET|\/tasks|ECONN|status/);
+
+  await started.restart();
+  await expect(page.getByTestId("kernel-unreachable-band")).toHaveCount(0, { timeout: 30_000 });
+  await expect(page.getByTestId("tasks-subtitle")).toHaveText("8 cards · 3 working", { timeout: 30_000 });
+  await expect(card(page, "task:9")).toBeEnabled();
+  expect(boardReads(started)).toBeGreaterThan(base);
 });
 
 /** Replace the running app with one launched on `dataDir`, on Tasks. */
@@ -601,6 +735,22 @@ test("AC11: every designed state, in light and dark", async ({}, testInfo) => {
     await closeAll(started);
   }
 
+  // Other: the populated board plus a task in state `waiting on owner` (a word the board does not read) and no agent
+  // recorded for it, as the mockup's `tasks-other` view. It is not in Working and not hidden.
+  {
+    const made = item("task", 13, "waiting on owner", { title: "Decide how often Mason checks studio-sandbox", agent: null, started: stamp(8), updated: stamp(8) });
+    const { fixture: started } = await startKernel(reviewInit([...populatedItems(), made]));
+    const page = await openWith(started);
+    await expect(page.getByRole("heading", { level: 2, name: "Other" })).toBeVisible();
+    await expect(column(page, "other").getByTestId("task-card-state")).toHaveText("waiting on owner");
+    await expect(column(page, "other").locator(".tasks-card-meta")).toContainText("No agent recorded");
+    await expect(page.getByTestId("tasks-attention-band")).toHaveCount(0);
+    await expect(page.getByTestId("tasks-subtitle")).toHaveText("9 cards · 3 working");
+    await blur(page);
+    await shoot(page, "other", testInfo);
+    await closeAll(started);
+  }
+
   // Error: the kernel answers, but the tasks request fails: the failure card inside the screen, no band.
   {
     const { fixture: started } = await startKernel(reviewInit(), { "GET /tasks": () => ({ status: 500, body: { error: "store_unreadable", message: "the kernel could not read its store" } }) });
@@ -627,12 +777,13 @@ test("AC11: every designed state, in light and dark", async ({}, testInfo) => {
     await closeAll(started);
   }
 
-  // History: the click-through of the working task, its history beside its session's live log.
+  // History: the click-through of the working task, its history as sentences with actors beside its session's live log.
   {
-    const { fixture: started } = await startKernel(reviewInit());
+    const { fixture: started } = await startKernel(createdInit());
     const page = await openWith(started);
     await card(page, "task:9").click();
     await expect(page.getByRole("list", { name: "History" }).getByRole("listitem")).toHaveCount(4);
+    await expect(page.getByTestId("task-facts")).toContainText("Created in");
     await expect(page.getByRole("log", { name: "Session output" })).toContainText("writing the summary comment");
     await expect(page.getByTestId("task-log-status")).toHaveText("running");
     await blur(page);
@@ -645,12 +796,12 @@ test("AC11: every designed state, in light and dark", async ({}, testInfo) => {
 test("the evidence README lists every state's screenshot in both themes, and the folder holds nothing else", () => {
   const readme = readFileSync(join(EVIDENCE_DIR, "README.md"), "utf8");
   const expected = STATES.flatMap((s) => THEMES.map((t) => `${s}-${t}.png`)).sort();
-  expect(expected).toHaveLength(14);
+  expect(expected).toHaveLength(16);
   const listed = [...new Set(readme.match(/\b[a-z]+-(?:light|dark)\.png/g) ?? [])].sort();
   expect(listed).toEqual(expected);
   // Each pair is named against its mockup view id.
   for (const state of STATES) expect(readme, `tasks-${state}`).toContain(`tasks-${state}`);
-  // Nothing else in the folder: the fourteen PNGs and the README.
+  // Nothing else in the folder: the sixteen PNGs and the README.
   const onDisk = readdirSync(EVIDENCE_DIR).sort();
   expect(onDisk).toEqual([...expected, "README.md"].sort());
 });

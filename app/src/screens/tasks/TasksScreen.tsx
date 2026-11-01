@@ -9,8 +9,15 @@
 //   board, so a card moves without a reload. Cards are keyed `kind:id`, column
 //   order is fixed, and nothing else re-renders wholesale, so an unchanged card
 //   and the column headers keep their place.
-// - The kernel going away: the screen keeps its last data (subtitle "last known")
-//   with the cards and Stop / Kill off, and never falls back to the empty state.
+// - The kernel going away: the screen keeps its last data under the shell's one
+//   band (`KernelBand`; the screen draws its own only when its read got no answer
+//   before the store noticed, `!useKernelReach(api).shellBand`) with the cards and
+//   Stop / Kill off and the count line "last known", and never falls back to the
+//   empty state.
+// - The count line ("8 cards · 3 working") is the title bar's, not the screen's:
+//   the screen writes it to `./subtitle.ts` and `index.tsx`'s `Subtitle` draws it.
+// - Any task state the board does not read (`waiting on owner`) is in the Other
+//   group with its own word; it is never guessed into a column.
 // - The keys: J / K and the arrows move between cards across the columns, Enter
 //   opens one, Esc (or Back) returns with focus on the card that opened it.
 // - ⌘K: `tasks.stop` and `tasks.kill`, registered only while a card with a live
@@ -24,11 +31,14 @@ import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { Button } from "../../components/Button/Button";
 import { Dialog } from "../../components/Dialog/Dialog";
+import { KernelBand } from "../../shell/KernelStates";
+import { useKernelReach, withLastKnown } from "../../shell/last-known";
 import { useLiveStore, useResource } from "../../store/react";
 import { printable } from "../approvals/printable";
 import { TaskDetail } from "./TaskDetail";
-import { KIND_LABEL, agentText, buildBoard, cardOrder, refetchMark } from "./model";
-import type { BoardCard } from "./model";
+import { KIND_LABEL, agentText, buildBoard, cardAgent, cardOrder, refetchMark } from "./model";
+import type { Board, BoardCard } from "./model";
+import { setSubtitleLine } from "./subtitle";
 import { useOpenCard } from "./useOpenCard";
 import type { OpenTarget } from "./useOpenCard";
 import { BoardView, TasksEmpty, TasksFailure, TasksFrame, TasksLoading, avatarAgent, avatarState } from "./TasksViews";
@@ -71,6 +81,26 @@ function useNow(): [number, () => void] {
     return () => window.clearInterval(timer);
   }, []);
   return [now, useCallback(() => setNow(Date.now()), [])];
+}
+
+// ---- the count line ---------------------------------------------------------------------------------
+
+interface SubtitleInput {
+  /** The first read answered: there is a board. */
+  readonly loaded: boolean;
+  readonly failed: boolean;
+  readonly offline: boolean;
+  /** The open card (or, before its row is known, its target). */
+  readonly open: { readonly kind: keyof typeof KIND_LABEL; readonly id: number } | undefined;
+  readonly board: Board | undefined;
+}
+
+/** The line the title bar shows: the mockup's count line, or the open card's name; " · last known" while the kernel is away. */
+function subtitleOf({ loaded, failed, offline, open, board }: SubtitleInput): string {
+  if (!loaded || board === undefined) return failed ? "tasks" : "";
+  if (open !== undefined) return withLastKnown(`${KIND_LABEL[open.kind]} #${open.id}`, offline);
+  if (board.total === 0) return "0 tasks";
+  return withLastKnown(`${board.total} ${board.total === 1 ? "card" : "cards"} · ${board.working} working`, offline);
 }
 
 // ---- the screen -----------------------------------------------------------------------------------
@@ -122,7 +152,9 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
   useEffect(() => { void refetch(); }, [refetch, feedMark]);
 
   const board = useMemo(() => (data === undefined ? undefined : buildBoard(data.groups, now)), [data, now]);
-  const offline = connection.state === "unreachable" || connection.state === "reconnecting" || readError?.kind === "connection";
+  // The shell's contract for a kernel that does not answer (`shell/last-known.ts`): keep the last data, writes off.
+  const reach = useKernelReach(api);
+  const offline = reach.offline || readError?.kind === "connection";
   const boardItem = open === null ? undefined : board === undefined ? undefined : cardOrder(board).find((c) => c.item.kind === open.kind && c.item.id === open.id)?.item;
   const card = useOpenCard(api, open, boardItem, eventLog, feedMark, refetch);
   const openItem = card.history?.item ?? boardItem;
@@ -241,6 +273,15 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [closeCard]);
 
+  // ---- the title bar's count line -------------------------------------------------------------------------
+
+  const subtitle = subtitleOf({ loaded: data !== undefined && board !== undefined, failed: readError !== undefined, offline, open: open === null ? undefined : (openItem ?? open), board });
+  useLayoutEffect(() => {
+    setSubtitleLine(subtitle);
+  }, [subtitle]);
+  // The line belongs to this screen: it goes with it.
+  useLayoutEffect(() => () => setSubtitleLine(""), []);
+
   // ---- render --------------------------------------------------------------------------------------------
 
   if (data === undefined || board === undefined) {
@@ -248,7 +289,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
     return <TasksFailure error={readError} onRetry={() => void refetch()} />;
   }
 
-  const lastKnown = offline ? " · last known" : "";
+  const band = offline && !reach.shellBand ? <KernelBand testId="tasks-kernel-band" /> : null;
   const stale =
     readError === undefined || readError.kind === "connection" ? null : (
       <p className="tasks-stale" role="status" data-testid="tasks-stale">
@@ -259,7 +300,8 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
   if (open !== null && openItem === undefined) {
     // The card left the board before its history answered: nothing to show but the way back.
     return (
-      <TasksFrame state="detail" subtitle={`${KIND_LABEL[open.kind]} #${open.id}${lastKnown}`} rootRef={rootRef}>
+      <TasksFrame state="detail" rootRef={rootRef}>
+        {band}
         <div className="tasks-detail" data-testid="task-detail" data-card-key={`${open.kind}:${open.id}`}>
           <div className="tasks-crumb">
             <Button variant="ghost" size="row" onClick={closeCard} data-testid="task-back">
@@ -276,8 +318,14 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
 
   if (open !== null && openItem !== undefined) {
     const column = board.columns.find((c) => c.cards.some((k) => k.item.kind === openItem.kind && k.item.id === openItem.id))?.column.id ?? "work";
+    // The task's creator session opens its own card when that card is on the board. It is only a link: this task's
+    // log, Stop and Kill stay keyed on the task's own session (`card.sessionId`), never on the creator's.
+    const creatorId = openItem.kind === "task" ? openItem.creator_session : null;
+    const creatorCard = creatorId === null ? undefined : cardOrder(board).find((c) => c.item.kind === "session" && c.item.id === creatorId);
+    const creator = creatorCard === undefined || offline ? undefined : () => openCard(creatorCard);
     return (
-      <TasksFrame state="detail" subtitle={`${KIND_LABEL[openItem.kind]} #${openItem.id}${lastKnown}`} rootRef={rootRef}>
+      <TasksFrame state="detail" rootRef={rootRef}>
+        {band}
         {stale}
         <TaskDetail
           key={`${openItem.kind}:${openItem.id}`}
@@ -285,9 +333,10 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
           card={card}
           now={now}
           offline={offline}
-          avatar={avatarAgent(openItem.agent, roster)}
+          avatar={avatarAgent(cardAgent(openItem), roster)}
           avatarState={avatarState(openItem, column)}
           onBack={closeCard}
+          onOpenCreator={creator}
           onKillRequest={requestKill}
         />
         {killOpen && card.sessionId !== null ? (
@@ -316,9 +365,9 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
 
   if (board.total === 0) return <TasksEmpty />;
 
-  const count = `${board.total} ${board.total === 1 ? "card" : "cards"} · ${board.working} working${lastKnown}`;
   return (
-    <TasksFrame state="populated" subtitle={count} rootRef={rootRef}>
+    <TasksFrame state="populated" rootRef={rootRef}>
+      {band}
       {board.waiting > 0 ? (
         <div className="tasks-band" role="status" data-testid="tasks-attention-band">
           <span className="tasks-band-dot" aria-hidden="true" />
@@ -326,7 +375,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
         </div>
       ) : null}
       {stale}
-      {data.next_before === null ? null : (
+      {data.next_before === null || board.total < Number(TASKS_LIMIT) ? null : (
         <p className="tasks-stale" data-testid="tasks-more">
           Showing the newest {TASKS_LIMIT} cards; older ones are not shown.
         </p>

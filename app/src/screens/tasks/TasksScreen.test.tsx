@@ -7,6 +7,7 @@
 // the token-only stylesheet.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import type { ComponentType } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../App";
@@ -45,7 +46,7 @@ function stamp(minutes: number): string {
 }
 
 function card(kind: TaskBoardItem["kind"], id: number, state: string, overrides: Partial<TaskBoardItem> = {}): TaskBoardItem {
-  return { kind, id, title: kind === "session" ? null : `Title ${id}`, state, agent: "mason", playbook: null, item_ref: null, session: null, tokens: null, started: stamp(30), ended: null, updated: stamp(5), ...overrides };
+  return { kind, id, title: kind === "session" ? null : `Title ${id}`, state, agent: "mason", playbook: null, item_ref: null, session: null, tokens: null, started: stamp(30), ended: null, updated: stamp(5), creator_agent: null, creator_session: null, ...overrides };
 }
 
 function summary(id: number, overrides: Partial<SessionSummary> = {}): SessionSummary {
@@ -87,7 +88,11 @@ function groupsOf(items: readonly TaskBoardItem[]): TaskBoardGroup[] {
 
 interface Kernel {
   items: TaskBoardItem[];
+  /** The cursor `GET /tasks` answers with; `null` (the default) when the page holds every row. */
+  next_before: string | null;
   sessions: SessionSummary[];
+  /** The crew roster `GET /agents` answers with. */
+  agents: RosterEntry[];
   output: Map<number, SessionOutputRow[]>;
   events: Map<string, EventFrame[]>;
 }
@@ -136,11 +141,11 @@ interface Mounted {
 }
 
 async function mount(initial: Partial<Kernel> = {}, registry: CommandRegistry = createCommandRegistry(), connection?: FakeBridge["connectionAnswer"]): Promise<Mounted> {
-  const kernel: Kernel = { items: board(), sessions: [summary(41), summary(42), summary(44, { agent: "wright" })], output: new Map(), events: new Map(), ...initial };
+  const kernel: Kernel = { items: board(), next_before: null, agents: [roster("mason"), roster("ada"), roster("wright")], sessions: [summary(41), summary(42), summary(44, { agent: "wright" })], output: new Map(), events: new Map(), ...initial };
   const fake = fakeBridge(connection);
-  fake.route(TASKS, () => ok({ groups: groupsOf(kernel.items), next_before: null }));
+  fake.route(TASKS, () => ok({ groups: groupsOf(kernel.items), next_before: kernel.next_before }));
   fake.route(HISTORY, (req) => history(kernel, req));
-  fake.route("GET /agents", () => ok({ agents: [roster("mason"), roster("ada"), roster("wright")] }));
+  fake.route("GET /agents", () => ok({ agents: kernel.agents }));
   fake.route("GET /status", () => ok({}));
   fake.route(OUTPUT, (req) => {
     const id = Number(req.params?.id);
@@ -148,7 +153,14 @@ async function mount(initial: Partial<Kernel> = {}, registry: CommandRegistry = 
     return ok({ rows: (kernel.output.get(id) ?? []).filter((r) => r.seq > after) });
   });
   setApi(fake.bridge);
-  const view = render(<TasksScreen api={fake.bridge} registry={registry} />);
+  // The count line is the title bar's (`ScreenDefinition.Subtitle`): the shell draws it beside the title, here beside the screen.
+  const Subtitle = tasksScreen.Subtitle as ComponentType;
+  const view = render(
+    <>
+      <Subtitle />
+      <TasksScreen api={fake.bridge} registry={registry} />
+    </>,
+  );
   await waitFor(() => expect(screen.getByTestId("screen-tasks").dataset.state).not.toBe("loading"));
   return { fake, kernel, registry, unmount: view.unmount };
 }
@@ -236,10 +248,11 @@ describe("the board", () => {
     expect(tone("playbook_run:16")).toBe("danger");
     expect(tone("session:39")).toBe("danger");
     expect(tone("session:40")).toBe("neutral");
-    // An unknown task state: Working, neutral, and the kernel's own words (not lower-cased).
+    // An unknown task state: Other, neutral, and the kernel's own words (not lower-cased).
     expect(word("task:50")).toBe("Waiting On Review");
     expect(tone("task:50")).toBe("neutral");
-    expect(keysIn("work")).toContain("task:50");
+    expect(keysIn("other")).toContain("task:50");
+    expect(keysIn("work")).not.toContain("task:50");
   });
 
   it("leaves a terminal card that ended before today off the board, and keeps an old parked one", async () => {
@@ -283,6 +296,134 @@ describe("the board", () => {
     const { fake } = await mount();
     expect(reads(fake, TASKS)).toHaveLength(1);
     expect(reads(fake, TASKS)[0]?.query).toEqual({ limit: "200" });
+  });
+});
+
+describe("the Other group", () => {
+  const owner = (): TaskBoardItem => card("task", 13, "waiting on owner", { agent: null, title: "Decide how often Mason checks", updated: stamp(8) });
+
+  it("shows a task in state `waiting on owner` under Other with that exact word, a neutral badge, and not in Working", async () => {
+    await mount({ items: [...board(), owner()] });
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Waiting on you", "Working", "Parked", "Done today", "Other"]);
+    expect(screen.getByRole("region", { name: "Other" })).toBe(column("other"));
+    expect(keysIn("other")).toEqual(["task:13"]);
+    expect(keysIn("work")).not.toContain("task:13");
+    expect(keysIn("wait")).not.toContain("task:13");
+    const badge = within(cardEl("task:13")).getByTestId("task-card-state");
+    expect(badge.textContent).toBe("waiting on owner");
+    expect(badge.querySelector(".badge")?.getAttribute("data-tone")).toBe("neutral");
+    expect(screen.getByTestId("tasks-subtitle").textContent).toBe("11 cards · 3 working");
+    // It does not wait on the owner as far as the board knows: the band counts the two that do.
+    expect(screen.getByTestId("tasks-attention-band").textContent).toBe("2 things wait on you.");
+  });
+
+  it("is absent when no card is in it", async () => {
+    await mount();
+    expect(screen.queryByTestId("tasks-col-other")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Other" })).toBeNull();
+  });
+
+  it("holds a playbook run or session status this app does not know, never Working", async () => {
+    await mount({ items: [...board(), card("playbook_run", 30, "queued", { title: "Queued run" }), card("session", 60, "resuming", { agent: "ada" })] });
+    expect(keysIn("other").sort()).toEqual(["playbook_run:30", "session:60"]);
+    expect(keysIn("work")).not.toContain("playbook_run:30");
+    expect(keysIn("work")).not.toContain("session:60");
+  });
+
+  it("escapes the raw word", async () => {
+    await mount({ items: [card("task", 14, `owner${ESC}[31m${RLO}`)] });
+    expect(within(cardEl("task:14")).getByTestId("task-card-state").textContent).toBe("owner\\x1b[31m\\u202e");
+  });
+
+  it("counts a task in state `waiting` under Waiting on you and in the attention band", async () => {
+    await mount({ items: [card("task", 12, "waiting")] });
+    expect(keysIn("wait")).toEqual(["task:12"]);
+    expect(screen.getByTestId("tasks-attention-band").textContent).toBe("1 thing waits on you.");
+  });
+});
+
+describe("the agent on a card", () => {
+  it("names the assignee, else the agent whose session created the task (the roster's display name), else says No agent recorded", async () => {
+    const items = [
+      card("task", 20, "working", { agent: "mason", creator_agent: "wright", creator_session: 81 }),
+      card("task", 21, "working", { agent: null, creator_agent: "wright", creator_session: 81 }),
+      card("task", 22, "working", { agent: null }),
+    ];
+    await mount({ items, agents: [{ ...roster("wright"), display_name: "Wright" }, roster("mason")] });
+    const meta = (key: string): string => cardEl(key).querySelector(".tasks-card-meta")?.textContent ?? "";
+    expect(meta("task:20")).toMatch(/^mason · /);
+    expect(meta("task:22")).toMatch(/^No agent recorded · /);
+    await waitFor(() => expect(meta("task:21")).toMatch(/^Wright · /));
+    expect(document.body.textContent).not.toContain("unknown agent");
+  });
+});
+
+describe("the cap line", () => {
+  const many = (n: number): TaskBoardItem[] => Array.from({ length: n }, (_, i) => card("task", i + 1, "working", { updated: stamp(i % 50) }));
+
+  it("is absent with fewer cards than the cap, even when next_before is set", async () => {
+    await mount({ items: many(5), next_before: "2026-10-30T10:00:00.000Z|task|1" });
+    expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated");
+    expect(screen.queryByTestId("tasks-more")).toBeNull();
+    expect(screen.queryByText(/Showing the newest/)).toBeNull();
+  });
+
+  it("shows when the board holds the cap and next_before is set", async () => {
+    await mount({ items: many(200), next_before: "2026-10-30T10:00:00.000Z|task|1" });
+    expect(screen.getByTestId("tasks-more").textContent).toBe("Showing the newest 200 cards; older ones are not shown.");
+  });
+
+  it("is absent at the cap when nothing is older (next_before null)", async () => {
+    await mount({ items: many(200) });
+    expect(screen.queryByTestId("tasks-more")).toBeNull();
+  });
+});
+
+describe("the title bar's count line", () => {
+  it("is drawn by the shell's Subtitle, not by a band inside the screen, and goes with the screen", async () => {
+    const { unmount } = await mount();
+    expect(screen.getByTestId("tasks-subtitle").textContent).toBe("10 cards · 3 working");
+    expect(document.querySelector(".tasks-bar")).toBeNull();
+    expect(within(screen.getByTestId("screen-tasks")).queryByTestId("tasks-subtitle")).toBeNull();
+    unmount();
+    cleanup();
+    const Subtitle = tasksScreen.Subtitle as ComponentType;
+    render(<Subtitle />);
+    expect(screen.getByTestId("tasks-subtitle").textContent).toBe("");
+  });
+
+  it("says Task #9 while a card is open", async () => {
+    await mount();
+    await openCard("task:9");
+    expect(screen.getByTestId("tasks-subtitle").textContent).toBe("Task #9");
+  });
+
+  it("is empty while the first read is pending, and 'tasks' while the failure card shows (as before the title bar drew it), then the count once a retry answers", async () => {
+    const fake = fakeBridge();
+    let release: ((r: ApiResult<unknown>) => void) | undefined;
+    fake.route(TASKS, () => new Promise((done) => (release = done)));
+    const Subtitle = tasksScreen.Subtitle as ComponentType;
+    render(
+      <>
+        <Subtitle />
+        <TasksScreen api={fake.bridge} registry={createCommandRegistry()} />
+      </>,
+    );
+    await waitFor(() => expect(screen.getByTestId("screen-tasks").dataset.state).toBe("loading"));
+    expect(screen.getByTestId("tasks-subtitle").textContent).toBe("");
+    await act(async () => release?.({ ok: false, status: 500, body: { error: "store_unreadable" } }));
+    await waitFor(() => expect(screen.getByTestId("screen-tasks").dataset.state).toBe("error"));
+    expect(screen.getByTestId("tasks-subtitle").textContent).toBe("tasks");
+    fake.route(TASKS, () => ok({ groups: groupsOf(board()), next_before: null }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    });
+    await waitFor(() => expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated"));
+    expect(screen.getByTestId("tasks-subtitle").textContent).toBe("10 cards · 3 working");
+  });
+
+  it("is declared by the Tasks screen definition", () => {
+    expect(tasksScreen.Subtitle).toBeDefined();
   });
 });
 
@@ -374,6 +515,74 @@ describe("the open card", () => {
     await openCard("task:12");
     expect(screen.getByTestId("task-nolog").textContent).toContain("No session is attached to this task. Nothing has run for it, so there is no log yet.");
     expect(screen.queryByRole("log")).toBeNull();
+  });
+
+  it("reads the history as sentences with actors, never as JSON", async () => {
+    const created = card("task", 13, "waiting on owner", { agent: null, creator_agent: "wright", creator_session: 81 });
+    const at = "2026-10-30T12:00:00.000Z";
+    const events = new Map([
+      [
+        "task:13",
+        [
+          { type: "event" as const, id: 1, at, kind: "task_created", session_id: 81, task_id: 13, payload: { title: "Decide how often Mason checks", state: "waiting on owner" } },
+          { type: "event" as const, id: 2, at, kind: "task_updated", session_id: null, task_id: 13, payload: { fields: ["state", "title"], state: "parked" } },
+          { type: "event" as const, id: 3, at, kind: "draft_output_recorded", session_id: 99, task_id: 13, payload: { note: "Draft", deep: { a: 1 } } },
+        ],
+      ],
+    ]);
+    await mount({ items: [...board(), created], events });
+    await openCard("task:13");
+    await waitFor(() => expect(screen.getByTestId("task-history").textContent).toContain("History · 3"));
+    const lines = within(screen.getByTestId("task-history"))
+      .getAllByRole("listitem")
+      .map((li) => [li.querySelector("b")?.textContent, within(li).getByTestId("task-event-actor").textContent, within(li).getByTestId("task-event-sentence").textContent]);
+    expect(lines).toEqual([
+      ["task_created", "wright", "Created “Decide how often Mason checks” · state waiting on owner"],
+      ["task_updated", "kernel", "Changed state, title · state parked"],
+      ["draft_output_recorded", "session #99", "draft_output_recorded recorded"],
+    ]);
+    const shown = screen.getByTestId("task-history").textContent ?? "";
+    expect(shown).not.toContain("{");
+    expect(shown).not.toContain('"title":');
+  });
+
+  it("shows 'Created in' with the creator session as a link to its own card when it is on the board", async () => {
+    const created = card("task", 13, "waiting on owner", { agent: null, creator_agent: "wright", creator_session: 44 });
+    await mount({ items: [...board(), created], output: new Map([[44, [outRow(44, 1, "wright's own line")]]]) });
+    await openCard("task:13");
+    const facts = screen.getByTestId("task-facts");
+    expect(within(facts).getByText("Created in")).toBeTruthy();
+    // The task keeps its own "no session is attached" note: the creator's log is not the task's.
+    expect(screen.getByTestId("task-nolog").textContent).toContain("No session is attached to this task.");
+    expect(screen.queryByRole("log")).toBeNull();
+    expect(within(facts).queryByText("Assignee")).toBeNull();
+    const link = within(facts).getByTestId("task-created-in");
+    expect(link.textContent).toBe("session #44");
+    await act(async () => {
+      fireEvent.click(link);
+    });
+    await waitFor(() => expect(screen.getByTestId("task-detail").getAttribute("data-card-key")).toBe("session:44"));
+    await screen.findByRole("log", { name: "Session output" });
+    expect(screen.getByTestId("task-log").getAttribute("data-session-id")).toBe("44");
+  });
+
+  it("shows 'Created in' as plain text when the creator session has no card on the board, and never wires its log to the task", async () => {
+    const created = card("task", 13, "working", { agent: "mason", creator_agent: "wright", creator_session: 99 });
+    const { fake } = await mount({ items: [...board(), created] });
+    await openCard("task:13");
+    const facts = screen.getByTestId("task-facts");
+    expect(within(facts).getByText("session #99")).toBeTruthy();
+    expect(within(facts).queryByTestId("task-created-in")).toBeNull();
+    expect(screen.getByTestId("task-nolog")).toBeTruthy();
+    expect(screen.queryByRole("log")).toBeNull();
+    expect(reads(fake, OUTPUT)).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /^Stop/ })).toBeNull();
+  });
+
+  it("leaves 'Created in' out for a task with no creator session", async () => {
+    await mount();
+    await openCard("task:12");
+    expect(screen.getByTestId("task-facts").textContent).not.toContain("Created in");
   });
 
   it("opens with Enter on the focused card", async () => {
@@ -502,6 +711,13 @@ describe("the kernel going away", () => {
     await waitFor(() => expect(screen.getByTestId("tasks-subtitle").textContent).toBe("10 cards · 3 working · last known"));
     expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated");
     expect(screen.queryByTestId("tasks-empty")).toBeNull();
+    // The read got no answer before the store noticed (it still reads live): the screen draws the shared band itself,
+    // once, with fixed words and no request text.
+    const band = screen.getByTestId("tasks-kernel-band");
+    expect(screen.getAllByRole("alert")).toEqual([band]);
+    expect(band.textContent).toContain("Couldn't reach the kernel");
+    expect(document.body.textContent).not.toMatch(/GET \/tasks|unreachable|connection_failed|\b0\b.*status/);
+    expect(screen.queryByTestId("tasks-stale")).toBeNull();
     expect(keysIn("work")).toContain("task:9");
     for (const el of document.querySelectorAll<HTMLElement>("[data-card-key]")) expect(el.getAttribute("aria-disabled")).toBe("true");
     // A disabled card does not open.
@@ -511,9 +727,11 @@ describe("the kernel going away", () => {
     expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated");
   });
 
-  it("does the same when the bridge says the kernel is unreachable, without throwing", async () => {
+  it("does the same when the bridge says the kernel is unreachable, without throwing, and leaves the band to the shell", async () => {
     const { fake } = await mount({}, createCommandRegistry(), { state: "unreachable", reason: "daemon_not_running" });
     await waitFor(() => expect(screen.getByTestId("tasks-subtitle").textContent).toContain("last known"));
+    // The shell draws its band over the screen (`App.tsx`): the screen draws none, so exactly one is ever on screen.
+    expect(screen.queryByTestId("tasks-kernel-band")).toBeNull();
     expect(fake.requestsTo(TASKS).length).toBeGreaterThan(0);
     expect(keysIn("work")).toContain("task:9");
   });
@@ -681,6 +899,25 @@ describe("the ⌘K commands", () => {
       fake.emit(event("task_updated", null, 9));
     });
     await waitFor(() => expect(registry.get(TASKS_COMMANDS.stop)?.enabled?.()).toBe(false));
+  });
+});
+
+describe("the 'Created in' link while the kernel is away", () => {
+  it("drops the link to plain text, with the creator's session number still shown, and never wires Stop", async () => {
+    const created = card("task", 13, "waiting on owner", { agent: null, creator_agent: "wright", creator_session: 44 });
+    const { fake } = await mount({ items: [...board(), created], output: new Map([[44, [outRow(44, 1)]]]) });
+    await openCard("task:13");
+    expect(within(screen.getByTestId("task-facts")).getByTestId("task-created-in")).toBeTruthy();
+    fake.route(TASKS, () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } }));
+    await act(async () => {
+      fake.emit(event("task_updated", null, 13));
+    });
+    await waitFor(() => expect(screen.getByTestId("tasks-kernel-band")).toBeTruthy());
+    const facts = screen.getByTestId("task-facts");
+    expect(within(facts).queryByTestId("task-created-in")).toBeNull();
+    expect(within(facts).getByText("session #44")).toBeTruthy();
+    expect(screen.getByTestId("task-detail").getAttribute("data-card-key")).toBe("task:13");
+    expect(screen.queryByRole("button", { name: /^Stop/ })).toBeNull();
   });
 });
 

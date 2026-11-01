@@ -1,7 +1,8 @@
 // The Tasks screen's views (phase 7 item 03): the frame every state is drawn in,
 // the loading, error, empty and no-bridge states, and the board with its
 // cards. Pure drawing: the data, the keys and the palette commands are
-// `TasksScreen.tsx`'s. Every string a card carries (a title, an agent, a state
+// `TasksScreen.tsx`'s, and so is the count line, which the shell's title bar draws
+// (`./subtitle.ts`). Every string a card carries (a title, an agent, a state
 // word) is untrusted and passes through `./model.ts`'s escaping.
 import { useCallback, useId } from "react";
 import type { ReactNode, Ref } from "react";
@@ -11,7 +12,7 @@ import type { AvatarAgent, AvatarState } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import { printable } from "../approvals/printable";
-import { KIND_LABEL, agentText, cardLabel, cardOrder, cardTitle, metaText, reasonText, stateText, toneOf } from "./model";
+import { KIND_LABEL, NO_AGENT, cardAgent, cardLabel, cardOrder, cardTitle, metaText, reasonText, stateText, toneOf } from "./model";
 import type { Board, BoardCard, ColumnId } from "./model";
 import "./tasks.css";
 
@@ -26,13 +27,13 @@ export type ReadError = { readonly kind: "connection" } | { readonly kind: "refu
 
 /** The avatar's agent: the roster's shape and hue when the agent is on it; a neutral one otherwise. */
 export function avatarAgent(agent: string | null, roster: readonly RosterEntry[] | undefined): AvatarAgent {
-  if (agent === null) return { id: "unknown-agent", name: "unknown agent" };
+  if (agent === null) return { id: "unknown-agent", name: NO_AGENT };
   const entry = roster?.find((a) => a.id === agent);
   const name = entry === undefined ? printable(agent) : printable(entry.display_name);
   return entry === undefined ? { id: agent, name } : { id: agent, name, shape: entry.avatar.shape, hue: entry.avatar.hue };
 }
 
-const COLUMN_AVATAR: Readonly<Record<ColumnId, AvatarState>> = { wait: "waiting", work: "working", park: "parked", done: "idle" };
+const COLUMN_AVATAR: Readonly<Record<ColumnId, AvatarState>> = { wait: "waiting", work: "working", park: "parked", done: "idle", other: "idle" };
 
 export function avatarState(item: TaskBoardItem, column: ColumnId): AvatarState {
   const tone = toneOf(item.kind, item.state);
@@ -46,20 +47,14 @@ export function avatarState(item: TaskBoardItem, column: ColumnId): AvatarState 
 
 interface FrameProps {
   readonly state: "loading" | "error" | "empty" | "populated" | "detail";
-  readonly subtitle: string;
   readonly rootRef?: Ref<HTMLDivElement>;
   readonly children: ReactNode;
 }
 
-/** The screen's root (`screen-tasks`) and its bar: every state is drawn inside it. */
-export function TasksFrame({ state, subtitle, rootRef, children }: FrameProps) {
+/** The screen's root (`screen-tasks`): every state is drawn inside it. The count line is the title bar's, not the screen's. */
+export function TasksFrame({ state, rootRef, children }: FrameProps) {
   return (
     <div className="tasks" data-testid="screen-tasks" data-state={state} ref={rootRef}>
-      <div className="tasks-bar">
-        <span className="tasks-subtitle" data-testid="tasks-subtitle">
-          {subtitle}
-        </span>
-      </div>
       {children}
     </div>
   );
@@ -67,7 +62,7 @@ export function TasksFrame({ state, subtitle, rootRef, children }: FrameProps) {
 
 export function TasksEmpty() {
   return (
-    <TasksFrame state="empty" subtitle="0 tasks">
+    <TasksFrame state="empty">
       <div className="tasks-empty" data-testid="tasks-empty">
         <h2 className="tasks-empty-title">{EMPTY_TITLE}</h2>
         <p className="tasks-empty-note">{EMPTY_NOTE}</p>
@@ -86,7 +81,7 @@ export function TasksEmpty() {
 
 export function TasksLoading() {
   return (
-    <TasksFrame state="loading" subtitle="">
+    <TasksFrame state="loading">
       <div className="tasks-scroll" aria-busy="true">
         <span className="tasks-vh" role="status">
           Loading tasks
@@ -115,7 +110,7 @@ export function TasksLoading() {
 export function TasksFailure({ error, onRetry }: { readonly error: ReadError | undefined; readonly onRetry: () => void }) {
   const connection = error?.kind === "connection";
   return (
-    <TasksFrame state="error" subtitle="tasks">
+    <TasksFrame state="error">
       <div className="tasks-fail" role="alert" data-testid="tasks-error">
         <h2 className="tasks-fail-title">Couldn't load tasks</h2>
         <p className="tasks-fail-note">
@@ -206,7 +201,7 @@ function CardView({ card, agent, offline, tabbable, onOpen, onFocused, onFocusLo
         <span className="tasks-card-meta">
           <Avatar agent={agent} state={avatarState(item, column)} size={20} />
           <span>
-            {agentText(item.agent)} · {metaText(card)}
+            {agent.name} · {metaText(card)}
           </span>
         </span>
       </button>
@@ -256,7 +251,7 @@ export function BoardView({ board, roster, offline, activeKey, onOpen, onFocused
                     <CardView
                       key={card.key}
                       card={card}
-                      agent={avatarAgent(card.item.agent, roster)}
+                      agent={avatarAgent(cardAgent(card.item), roster)}
                       offline={offline}
                       tabbable={card.key === tabKey}
                       onOpen={onOpen}
