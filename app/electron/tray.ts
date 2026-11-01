@@ -1,6 +1,7 @@
-// The menu-bar tray (item 17): a dot for the kernel's state, the pending
-// approval count beside it, and a menu with the status line, Open, Pause all
-// (or Unpause), Kill switch… (confirmed), Resume and Quit.
+// The menu-bar tray (item 17): a glyph for the kernel's state (the app icon's
+// Möbius ribbon, drawn by `tray-glyph.ts`), the pending approval count beside
+// it, and a menu with the status line, Open, Pause all (or Unpause), Kill
+// switch… (confirmed), Resume and Quit.
 //
 // The lifecycle the owner chose: closing the window leaves the tray running,
 // Quit is in the tray, and there is no autostart. Quit only quits the app: the
@@ -10,7 +11,7 @@
 // What it shows is only what the kernel said. State is re-read (`GET /status`,
 // `GET /approvals`) on start, after each action's answer, on each frame of the
 // tray's own feed, and on a slow poll while that feed is down. An action's
-// answer never sets the state (no optimistic flip): the dot reads `paused`
+// answer never sets the state (no optimistic flip): the glyph reads `paused`
 // only after a `GET /status` says `paused: true`.
 //
 // Every answer is an untrusted shape: a body that fails its check is a failed
@@ -22,12 +23,14 @@
 // Feed frames are throttled: at most one re-read per `TRAY_FEED_THROTTLE_MS`
 // (the first frame reads at once, later ones fold into one trailing read), and
 // a heartbeat that does not advance the cursor reads nothing.
-import { Menu, Tray, app, dialog, nativeImage } from "electron";
+import { Menu, Tray, app, dialog, nativeImage, systemPreferences } from "electron";
 import type { MenuItemConstructorOptions, NativeImage } from "electron";
 import type { ApiResult, FeedRelayFrame, StatusBody } from "../src/api/contract";
 import { MENUBAR_DOTS, MENUBAR_WORDS, TRAY_SEAM_ENV, TRAY_SEAM_GLOBAL, menubarState } from "../src/screens/menubar/state";
 import type { MenubarDotState, TrayItemId, TrayModel, TrayModelItem, TrayModelState, TraySeam } from "../src/screens/menubar/state";
 import type { FeedHandle, KernelConnection } from "./kernel-connection";
+import { GLYPH_FRAME_MS, GLYPH_SCALE, glyphBitmap, isAnimated } from "./tray-glyph";
+import type { GlyphState } from "./tray-glyph";
 
 export interface TrayDeps {
   /** The main process's kernel connection (the tray's calls go through it, like every call). */
@@ -77,51 +80,30 @@ function failure(result: ApiResult<unknown>): string {
 
 // ---- the icon --------------------------------------------------------------------------
 
-/** The dot's colours (light-theme tokens in `src/styles/tokens.css`), as RGB. */
-const DOT_RGB: Readonly<Record<MenubarDotState, readonly [number, number, number]>> = {
-  idle: [0x66, 0x66, 0x7c],
-  working: [0x46, 0x50, 0xc8],
-  waiting: [0x99, 0x57, 0x0a],
-  paused: [0x6d, 0x5a, 0xa8],
-  failed: [0xb8, 0x32, 0x2a],
+/** The glyph each dot state draws as. The kill switch is a stop, so `failed` is the cut ribbon. */
+const GLYPHS: Readonly<Record<MenubarDotState, GlyphState>> = {
+  idle: "idle",
+  working: "working",
+  waiting: "waiting",
+  paused: "paused",
+  failed: "killed",
 };
 
-const ICON_POINTS = 16;
-const ICON_SCALE = 2;
-
-/**
- * A dot drawn in code (no asset files), as a premultiplied BGRA bitmap (the
- * byte order `NativeImage.toBitmap` uses). `idle` is a ring, `paused` carries
- * a bar, as `StatusDot` draws them.
- */
-export function dotBitmap(dot: MenubarDotState): { readonly buffer: Buffer; readonly size: number } {
-  const size = ICON_POINTS * ICON_SCALE;
-  const buffer = Buffer.alloc(size * size * 4);
-  const [r, g, b] = DOT_RGB[dot];
-  const centre = size / 2;
-  const radius = 7 * ICON_SCALE;
-  const ring = 2 * ICON_SCALE;
-  const clamp = (n: number): number => Math.min(1, Math.max(0, n));
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const d = Math.hypot(x + 0.5 - centre, y + 0.5 - centre);
-      let cover = clamp(radius + 0.5 - d);
-      if (dot === "idle") cover *= clamp(d - (radius - ring) + 0.5);
-      if (dot === "paused" && Math.abs(x + 0.5 - centre) < 1.5 * ICON_SCALE && Math.abs(y + 0.5 - centre) < 3.5 * ICON_SCALE) cover = 0;
-      const a = Math.round(cover * 255);
-      const at = (y * size + x) * 4;
-      buffer[at] = Math.round((b * a) / 255);
-      buffer[at + 1] = Math.round((g * a) / 255);
-      buffer[at + 2] = Math.round((r * a) / 255);
-      buffer[at + 3] = a;
-    }
-  }
-  return { buffer, size };
+/** The glyph as a template image: black with alpha, which macOS recolours for the bar and the highlight. */
+function glyphImage(state: GlyphState, timeMs: number, still: boolean): NativeImage {
+  const { buffer, size } = glyphBitmap(state, timeMs, still);
+  const image = nativeImage.createFromBitmap(buffer, { width: size, height: size, scaleFactor: GLYPH_SCALE });
+  image.setTemplateImage(true);
+  return image;
 }
 
-function dotImage(dot: MenubarDotState): NativeImage {
-  const { buffer, size } = dotBitmap(dot);
-  return nativeImage.createFromBitmap(buffer, { width: size, height: size, scaleFactor: ICON_SCALE });
+/** The system's reduce-motion setting, read each frame so a change applies without a restart. */
+function reducedMotion(): boolean {
+  try {
+    return systemPreferences.getAnimationSettings().prefersReducedMotion;
+  } catch {
+    return false;
+  }
 }
 
 // ---- the tray --------------------------------------------------------------------------
@@ -165,6 +147,38 @@ export function createTray(deps: TrayDeps): void {
     return { state, stale: state !== "unknown" && staleRead, count: pending, title: pending > 0 ? String(pending) : "", tooltip: `Loomwright Studio: ${word}`, items };
   };
 
+  // ---- the glyph: drawn once per change, or every frame while it moves ----
+
+  let glyph: GlyphState | undefined;
+  let animation: ReturnType<typeof setInterval> | undefined;
+  let animationStart = 0;
+  /** The frame on screen is the reduced-motion one: nothing to redraw until the setting changes. */
+  let drawnStill = false;
+  const drawGlyph = (): void => {
+    if (tray === undefined || glyph === undefined) return;
+    const still = !isAnimated(glyph) || reducedMotion();
+    if (still && drawnStill) return;
+    drawnStill = still;
+    try {
+      tray.setImage(glyphImage(glyph, performance.now() - animationStart, still));
+    } catch (err) {
+      log("render", `could not update the menu-bar icon (${err instanceof Error ? err.name : "error"})`);
+    }
+  };
+  const showGlyph = (next: GlyphState): void => {
+    if (next === glyph) return;
+    glyph = next;
+    drawnStill = false;
+    animationStart = performance.now();
+    if (animation !== undefined) clearInterval(animation);
+    animation = undefined;
+    drawGlyph();
+    if (isAnimated(next)) {
+      animation = setInterval(drawGlyph, GLYPH_FRAME_MS);
+      animation.unref();
+    }
+  };
+
   let rendered = "";
   const render = (): void => {
     const current = model();
@@ -172,8 +186,7 @@ export function createTray(deps: TrayDeps): void {
     if (key === rendered || tray === undefined) return;
     rendered = key;
     try {
-      const dot: MenubarDotState = current.state === "unknown" ? "idle" : MENUBAR_DOTS[current.state];
-      tray.setImage(dotImage(dot));
+      showGlyph(GLYPHS[current.state === "unknown" ? "idle" : MENUBAR_DOTS[current.state]]);
       tray.setTitle(current.title);
       tray.setToolTip(current.tooltip);
       const template: MenuItemConstructorOptions[] = [];
@@ -402,7 +415,7 @@ export function createTray(deps: TrayDeps): void {
   // ---- start ----
 
   try {
-    tray = new Tray(dotImage("idle"));
+    tray = new Tray(glyphImage("idle", 0, true));
   } catch (err) {
     // A platform that cannot show a tray (a headless CI) keeps the model and the seam.
     tray = undefined;

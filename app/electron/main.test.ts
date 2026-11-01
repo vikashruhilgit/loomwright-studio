@@ -119,7 +119,8 @@ vi.mock("electron", () => {
       setContextMenu(): void {}
     },
     Menu: { buildFromTemplate: (template: unknown) => ({ template }) },
-    nativeImage: { createFromBitmap: () => ({}) },
+    nativeImage: { createFromBitmap: () => ({ setTemplateImage: (): void => undefined }) },
+    systemPreferences: { getAnimationSettings: () => ({ prefersReducedMotion: false }) },
     dialog: { showMessageBox: async () => ({ response: 0 }) },
     nativeTheme: {
       get themeSource() {
