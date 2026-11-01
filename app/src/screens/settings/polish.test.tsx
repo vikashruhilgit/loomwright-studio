@@ -5,7 +5,7 @@
 // rest of the screen is `SettingsScreen.test.tsx`; the built app is `e2e/settings.spec.ts`.
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ApiResult, StatusBody, StudioBridge } from "../../api/contract";
+import type { ApiResult, StudioBridge } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
 import type { FakeBridge } from "../../store/fake-bridge";
@@ -13,7 +13,7 @@ import { getLastView, resetLastViews, setLastView, subscribeLastView } from "./l
 import { SETTINGS_TEST_IDS as IDS, parseSettings } from "./model";
 import type { SettingsView } from "./model";
 import { SettingsScreen } from "./SettingsScreen";
-import { SettingsSubtitleView } from "./SettingsSubtitle";
+import { STATUS, UNREACHABLE, mountSubtitle, settingsBody } from "./test-support";
 
 afterEach(() => {
   cleanup();
@@ -21,42 +21,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const STATUS: StatusBody = {
-  kernel: { version: "1.0.0", uptime_s: 1, pid: 7 },
-  kill_switch: { engaged: false, since: null },
-  auth: [],
-  sessions: [],
-  kill_unconfirmed: [],
-  orphaned: [],
-  queue: { pending: 0, events: [] },
-  wakeups: { pending: 0, items: [] },
-  tokens_today: { day: "2026-10-30", agents: [] },
-  cap_state: [],
-};
-
-const UNREACHABLE: ApiResult<unknown> = { ok: false, status: 0, connection: { state: "unreachable", reason: "daemon_not_running" } };
 const HOME = "/Users/owner";
-
-interface BodyOptions {
-  readonly id?: string;
-  readonly account?: string | null;
-  readonly dataDir?: string;
-  readonly installPath?: string;
-}
-
-function settingsBody(o: BodyOptions = {}): Record<string, unknown> {
-  return {
-    provider: {
-      id: o.id ?? "subscription-token",
-      account: o.account === undefined ? "personal subscription" : o.account,
-      health: { status: "ok" },
-      token_created_at: new Date(Date.now() - 100 * 86_400_000 + 3_600_000).toISOString(),
-    },
-    data_dir: o.dataDir ?? `${HOME}/.loomwright-studio`,
-    notifier: "osascript",
-    loomwright: { status: "ok", install_path: o.installPath ?? `${HOME}/.claude/plugins/loomwright`, plugin_version: "17.22.0", contract_schema_version: 1, host_switch: true },
-  };
-}
 
 interface Kernel {
   readonly fake: FakeBridge;
@@ -75,13 +40,6 @@ function kernelOf(answer: () => ApiResult<unknown> = () => ok(settingsBody()), h
 
 const registry = createCommandRegistry();
 const mountScreen = (api: StudioBridge) => render(<SettingsScreen api={api} registry={registry} />);
-/** The title bar's subtitle slot (`Titlebar.tsx`) around the screen's `Subtitle`, over the same bridge as the screen. */
-const mountSubtitle = (api: StudioBridge) =>
-  render(
-    <span data-testid="titlebar-subtitle">
-      <SettingsSubtitleView api={api} />
-    </span>,
-  );
 const text = (testId: string): string => screen.getByTestId(testId).textContent ?? "";
 const subtitle = (): string => text("titlebar-subtitle");
 const button = (testId: string): HTMLButtonElement => screen.getByTestId(testId) as HTMLButtonElement;
