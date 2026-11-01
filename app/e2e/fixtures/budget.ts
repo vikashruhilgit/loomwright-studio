@@ -17,8 +17,8 @@
 // The state is mutable and the fixture is a script for a spec: `holdUsage` keeps the next usage read open
 // (the loading state), `failUsage` answers it 500 (the route-failure card), and `liveUpdate` changes the data
 // AND appends the events the kernel would (`session_status`, `budget_limit_reached`), which is how the screen
-// learns. Times and days are relative to the moment the fixture is made, so "today" and "17:00 today" hold
-// whenever the spec runs. The three states: `populated` (nobody at a limit), `waiting` (Ada has used her whole
+// learns. Times and days are relative to the moment the fixture is made, so "today" holds whenever the spec
+// runs, and the five-hour reset is always a 17:00 still ahead (today, or tomorrow late in the day). The three states: `populated` (nobody at a limit), `waiting` (Ada has used her whole
 // daily limit), and `empty` (nothing used, nothing logged). `staleCap` ends the seven-day window two days ago
 // (the kernel last recorded it as `allowed_warning` before that), as a store the kernel has not touched since
 // would answer; every audit payload follows the shape the kernel writes, so the screen's sentences read them.
@@ -167,8 +167,8 @@ function makeLimits(state: BudgetState, rows: readonly BudgetUsageRow[]): Budget
 }
 
 /**
- * Two windows of the mockup's `budget-populated`: the five-hour one resets at 17:00 today, the seven-day one in three days at
- * 09:00. Each carries `updated_at`, when the kernel last recorded it. With `stale` the seven-day window ended two days ago at
+ * Two windows of the mockup's `budget-populated`: the five-hour one resets at 17:00 today (17:00 tomorrow from 16:30 on, so
+ * a run late in the day never reads a live window as stale), the seven-day one in three days at 09:00. Each carries `updated_at`, when the kernel last recorded it. With `stale` the seven-day window ended two days ago at
  * 00:30 and was last recorded two hours and a half before that, still `allowed_warning`: nothing has touched it since.
  */
 function makeCap(state: BudgetState, stale: boolean): BudgetUsageResponse["cap_state"] {
@@ -176,12 +176,13 @@ function makeCap(state: BudgetState, stale: boolean): BudgetUsageResponse["cap_s
   const now = new Date();
   const at = (days: number, h: number, m: number): Date => new Date(now.getFullYear(), now.getMonth(), now.getDate() + days, h, m);
   const sevenReset = stale ? at(-2, 0, 30) : at(3, 9, 0);
+  const fiveReset = now < at(0, 16, 30) ? at(0, 17, 0) : at(1, 17, 0);
   return [
     {
       account: "subscription-token",
       provider: "subscription-token",
       limits: [
-        { rate_limit_type: "five_hour", status: "allowed", resets_at: at(0, 17, 0).toISOString(), utilization: 0.41, reset_source: null, updated_at: new Date(now.getTime() - 14 * MINUTE).toISOString() },
+        { rate_limit_type: "five_hour", status: "allowed", resets_at: fiveReset.toISOString(), utilization: 0.41, reset_source: null, updated_at: new Date(now.getTime() - 14 * MINUTE).toISOString() },
         {
           rate_limit_type: "seven_day",
           status: "allowed_warning",
