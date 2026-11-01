@@ -156,6 +156,12 @@ Each of these needs a probe of the real SDK or CLI, with the finding recorded.
   - **The per-spec e2e helpers** (`setTheme`, `screenshots`, the evidence-dir checks) are copied into each spec (19 and 9 copies); one shared helper module would remove them, and would edit specs outside item 13.
   - **The Keyboard map lists the commands the registry holds now**, so a screen's own commands (Memory's "Open memory/…", Budget's "Open the audit log") show only while that screen is open; the mockup lists every one at all times. A static per-screen list would drift from the keys, so it was not built.
 
+  Three findings of the live re-run at `59275c8`, **all fixed by** this item (2026-11-01-keyboard-focus-after-the-palette-and-the-keyboard-map):
+  - **After a `⌘K` palette command opened a screen, focus stayed on the previous sidebar entry (fixed).** The old entry kept its focus ring. `app/src/shell/KeyboardHost.tsx` now wraps the palette's registry view (`trackPaletteRuns`), so a command that changes the hash moves focus into the opened screen (`focusOpenedScreen`) after the next `hashchange`. `app/src/shell/KeyboardHost.test.tsx` and `app/e2e/keyboard.spec.ts` pin it.
+    - **Known limit:** the wrapper compares the hash synchronously around `command.run()`, so a future async command that navigates after an `await` would not move focus. No registered command does so today.
+  - **The Keyboard map opened at the previous screen's scroll position, not its top (fixed).** `app/src/screens/keymap/KeymapScreen.tsx` resets `.content`'s `scrollTop` before paint.
+  - **While the Keyboard map was open, the sidebar marked no screen (fixed).** The mockup marks the screen it was opened from; the sidebar now does too, through `openerScreenId()` (`app/src/screens/keymap/opener.ts`) in `app/src/shell/Sidebar.tsx`.
+
 ## Deferred decisions
 
 - ~~Whether Loomwright should publish a machine-readable `capabilities.json` per release (proposed in D13).~~ **Decided in D32 (2026-10-06):** yes. **Published:** vikashruhilgit/loomwright#412 (merged 2026-10-07) generates `loomwright/capabilities.json` at `contract_schema_version` 1 (fields: `plugin_name`, `plugin_version`, `generated_by`, `agents`, `commands`, `skills`, `result_schemas`, `hooks`, `host_switch`); #468 added the host switch.
