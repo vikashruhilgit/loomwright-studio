@@ -1,0 +1,94 @@
+# 24 — Playbooks: short model name in the detail, the Schedules & triggers link, aligned provenance chips, button icons, the shared crumb
+
+## Status: ready
+
+**Priority:** MVP (polish) · ROADMAP phase 7 · D9
+
+**As** the owner,
+**I want** a playbook's detail to read like the mockup: the short model name, a link to its trigger's schedule, provenance chips that line up, and the icons on its buttons,
+**so that** Playbooks passes its polish gate.
+
+## Problem
+
+Live re-run 2026-11-01, `playbooks-populated` and `playbooks-detail` in light and dark:
+
+- **Model reads as the full id in the detail.** The Policy table's Model row shows `claude-sonnet-5-5`; the table and the mockup show `sonnet` (item 15's short-name rule reaches the table, not the detail).
+- **No Schedules & triggers link.** The detail's Trigger section has no link to Schedules & triggers; the mockup puts one at the section's right.
+- **Provenance chips sit inline.** "set by you" / "proposed by Wright" follow each value on the same line; the mockup right-aligns them in the row.
+- **No icons on the buttons.** "Ask Wright for a playbook", "Edit in English", "Edit fields" and "Version history" have no icon; the mockup draws chat, chat, pencil and history icons. The screen's source draws no icon at all.
+- **Back control.** The detail's crumb is a "Playbooks" button followed by "/ <name>", not the shared "‹ Playbooks / <name>" (item 21).
+
+## Owner decisions (2026-10-30, binding)
+
+Recorded 2026-10-30 in the phase 7 product-owner session, over two rounds of AskUserQuestion. The owner chose the proposed option every time. Each item carries this copy. D3, D4, D9, D12, D22, D24, D26, D27, D28, D29, D34, D36 and invariants 1–9 stay as they are. Phase 5 and phase 6 decisions (in their items) still hold.
+
+- **Hooks is deferred to phase 9.** The Hooks screen is built with the hook-management mechanism it shows (propose, apply with backup, verified to fire, rollback; ROADMAP phase 9). `hooks_installed` does not exist yet (`kernel/src/store/migrations/001_initial.ts:9`), so phase 7 builds no Hooks screen. UI.md and DESIGN.md get a note recording this, as phase 6 did for Integrations.
+- **Tasks shows today's kernel data.** The board groups tasks, playbook runs and sessions by state and clicks through to their history and session logs. Linked PRs and tickets, approvals counts and CI state join in phase 8 (acceptance test 2), which the UI.md card example describes.
+- **Integrations is polish only.** No new connector: Slack, Calendar and Mail stay in phase 9. Known gap from the 2026-10-30 live run: a token connection has no path to the GitHub App without Disconnect (`TokenDetail` offers only Replace and Disconnect).
+- **One GUI v2 mockup first (D9).** One clickable file, `docs/design/mockups/gui-v2.html`, holds every phase 7 screen and every state (empty, loading, error, waiting on you, kernel unreachable), light and dark, with its token block the verbatim output of `node app/scripts/tokens.mjs`. The owner approves it by merging its PR. Every screen item depends on it, and its polish gate matches it. This mirrors phase 0.
+- **Each screen's kernel routes ride with that screen's item.** Tasks, Memory, Budget & audit, playbook run history and trigger firing history have no read route today (the API serves `/playbooks`, `/triggers`, `/events`, `/status` and the phase 5–6 routes). Each screen item adds the routes it reads, in its own feature part, against the contract item 01 declares. Memory's write route is guarded (below).
+- **Settings shows the auth provider read-only.** Settings shows the active provider, its health and its token's state, plus the terminal commands that change it (`claude setup-token`, `studio auth …`), as phase 5 does. No secret entry in Settings, and never a claude.ai sign-in (invariant 6).
+
+## Owner decisions (2026-11-01, binding)
+
+Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuestion, one round). The owner chose the proposed option every time. Each finding item carries this copy.
+
+- **Source.** These items come from the phase 7 exit live run on 2026-11-01 (item 10's runbook, packaged app opened from Finder at `d754f83`, the owner's real store, light and dark, the kernel stopped for the unreachable state, run by the agent with the owner's word per D33/D35). It failed the polish gate. The screenshots stay outside the repo (the owner's 2026-10-31 screenshot decision); none is committed by these items.
+- **Task states stay free text (D3).** `kernel_task_create`'s description names the four words the board sorts (`waiting`, `working`, `parked`, `done`) for Wright to use. The board shows any other state in its own visible "Other" group with the raw word, never silently in Working. No closed list in the kernel, no guessed synonyms.
+- **"On" vs "on" is explained in Schedules.** A trigger whose playbook is off says so on its row and in the upcoming list (its fires are skipped, `playbook_not_enabled`). No separate item.
+- **The login-item note is out of scope.** "macOS can't find this app's login item" is the designed honest note for a build run from `app/release/`; the re-run checks Settings from an installed copy.
+- **Nothing is patched outside an item's Touches.** A lane that needs another file stops and says so.
+
+## Owner decisions (2026-11-01 re-run, binding)
+
+Recorded 2026-11-01 in the phase 7 re-run findings product-owner session (AskUserQuestion, one round). The owner chose the proposed option every time. Each item from this round carries this copy.
+
+- **Source.** These items come from the phase 7 exit live re-run on 2026-11-01 (item 19's runbook, packaged app opened from Finder at `59275c8`, the owner's real store, light and dark, the kernel booted out for the unreachable state, the global keys checked in the foreground, run by the agent with the owner's word and the owner watching per D33/D35). It failed the polish gate. The screenshots stay outside the repo (the owner's 2026-10-31 screenshot decision); none is committed by these items.
+- **Tasks history keeps the session viewer.** The session log in a task's history keeps the phase 6 viewer's header (Read latest, Stop, Kill); it is accepted as built, not a mismatch, and no item changes it.
+- **Settings Health is marked last known.** While the kernel is unreachable, Settings shows Health's last value with a "last known" mark and no green dot. `gui-v2.html`'s `settings-unreachable` view changes first (D9).
+- **Kernel log reveals the service's own log.** The band's "Kernel log" action reveals the kernel service's log file (`<dataDir>/logs/kernel.err.log`, where `studio service install` points launchd's stderr) in Finder, through a main-process channel that takes no path from the renderer, as Reveal data dir does. It works with the kernel down, which is when the band shows.
+- **One Back control.** Every click-through view uses one shared crumb from the shell, drawn as the mockup draws it: "‹ Parent / Current" (for example "‹ Tasks / Task #9"), without the word "Back". Each screen adopts it in its own item.
+- **Nothing is patched outside an item's Touches.** A lane that needs another file stops and says so.
+
+## Scope
+
+1. **Short model name in the detail.** The Policy table's Model row shows the same short name the table does (`sonnet`, `opus`, `haiku`), as `playbooks-detail` draws it.
+2. **Schedules & triggers link.** The Trigger section carries a "Schedules & triggers" link at its right that opens Schedules & triggers.
+3. **Provenance chips.** Each Policy row's provenance chip is right-aligned in its row, as the mockup draws it.
+4. **Button icons.** The four buttons carry their icons from item 21's set.
+5. **The shared crumb.** The detail uses item 21's crumb: "‹ Playbooks / <name>".
+6. **Polish gate.** The PR commits screenshots from the running app (fixture kernel, through `app/e2e/electron-harness.ts`), light and dark, of every mockup state the item changes, each named against its `gui-v2.html` view. The owner's approval of the PR is the gate (D9).
+
+## Non-goals
+
+- Changing what the Model row stores or writes: the full id stays the stored value; only the label is shortened.
+
+## Acceptance criteria
+
+- [ ] Given a playbook whose model is `claude-sonnet-5-5`, then its detail's Model row reads `sonnet`, matching `playbooks-detail`.
+- [ ] Given the detail, then the Trigger section shows a "Schedules & triggers" link at its right that opens Schedules & triggers.
+- [ ] Given the Policy table, then every provenance chip is right-aligned in its row, light and dark.
+- [ ] Given Playbooks, then "Ask Wright for a playbook" shows its icon, and in the detail "Edit in English", "Edit fields" and "Version history" show theirs, matching `playbooks-populated` and `playbooks-detail`.
+- [ ] Given the detail, then the crumb reads "‹ Playbooks / <name>" and returns to the table with focus on that row.
+- [ ] The polish-gate screenshots are in the PR body, each named against its mockup view.
+
+## Validation (must pass before merge)
+
+- `cd app && npm ci && npm run typecheck && npm test && npm run build && npm run e2e`
+- `bash scripts/check-docs.sh`
+
+## Assumptions
+
+- Item 21's crumb and icon set exist when this item starts.
+- The short-name mapping item 15 added for the table is reusable for the detail.
+
+## Risks
+
+- A model id with no known short name must still show something honest (the full id), never a blank.
+
+## Depends on
+2026-11-01-090021-shell-one-back-crumb-and-the-in-content-icon-set.md
+
+## Touches
+app/src/screens/playbooks
+app/e2e/playbooks.spec.ts
