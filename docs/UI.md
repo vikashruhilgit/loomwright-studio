@@ -47,7 +47,7 @@
 | **Settings** | Auth provider, data location, launch at login, notifications, theme |
 
 **Menu-bar icon:**
-- a status dot: idle / working / waiting on you / paused at cap
+- the MenubarGlyph (the app icon's Möbius ribbon as a template image, not a status dot): idle / working / waiting on you / paused at cap / killed, told apart by shape, strength and motion; see the design system's MenubarGlyph component
 - the approval count
 - quick actions: Open, **Pause all**, **Kill switch**
 
