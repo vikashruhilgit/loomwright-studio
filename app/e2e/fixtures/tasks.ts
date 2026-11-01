@@ -63,6 +63,8 @@ export function item(kind: TaskBoardKind, id: number, state: string, overrides: 
     started: stamp(30),
     ended: null,
     updated: stamp(5),
+    creator_agent: null,
+    creator_session: null,
     ...overrides,
   };
 }
