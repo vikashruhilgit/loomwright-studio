@@ -398,6 +398,30 @@ describe("the title bar's count line", () => {
     expect(screen.getByTestId("tasks-subtitle").textContent).toBe("Task #9");
   });
 
+  it("is empty while the first read is pending, and 'tasks' while the failure card shows (as before the title bar drew it), then the count once a retry answers", async () => {
+    const fake = fakeBridge();
+    let release: ((r: ApiResult<unknown>) => void) | undefined;
+    fake.route(TASKS, () => new Promise((done) => (release = done)));
+    const Subtitle = tasksScreen.Subtitle as ComponentType;
+    render(
+      <>
+        <Subtitle />
+        <TasksScreen api={fake.bridge} registry={createCommandRegistry()} />
+      </>,
+    );
+    await waitFor(() => expect(screen.getByTestId("screen-tasks").dataset.state).toBe("loading"));
+    expect(screen.getByTestId("tasks-subtitle").textContent).toBe("");
+    await act(async () => release?.({ ok: false, status: 500, body: { error: "store_unreadable" } }));
+    await waitFor(() => expect(screen.getByTestId("screen-tasks").dataset.state).toBe("error"));
+    expect(screen.getByTestId("tasks-subtitle").textContent).toBe("tasks");
+    fake.route(TASKS, () => ok({ groups: groupsOf(board()), next_before: null }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    });
+    await waitFor(() => expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated"));
+    expect(screen.getByTestId("tasks-subtitle").textContent).toBe("10 cards · 3 working");
+  });
+
   it("is declared by the Tasks screen definition", () => {
     expect(tasksScreen.Subtitle).toBeDefined();
   });
