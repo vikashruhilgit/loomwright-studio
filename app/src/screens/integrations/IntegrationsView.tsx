@@ -35,6 +35,8 @@ import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { Button } from "../../components/Button/Button";
 import { Dialog } from "../../components/Dialog/Dialog";
+import { KernelBand } from "../../shell/KernelStates";
+import { useKernelReach } from "../../shell/last-known";
 import { useLiveStore, useResource } from "../../store/react";
 import { REFETCH_THROTTLE_MS } from "../../store/store";
 import { disconnectGithub, fetchRepos, readConnectors } from "./actions";
@@ -393,7 +395,11 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
   const { connection, eventLog } = useLiveStore(api);
   const { read, refetch } = useGithubConnectors(api, newestConnectorEventId(eventLog), connection.state === "live");
   const agents = useResource("agents", api);
-  const view = viewOf(read);
+  // The shared contract (`shell/last-known.ts`): while the kernel does not answer, the last good row stays and
+  // every consumer of `view` (the list row, the detail panes, the sheets) reads it as unreachable, writes off.
+  const reach = useKernelReach(api);
+  const answered = viewOf(read);
+  const view: View = reach.offline && answered.phase === "ready" ? { ...answered, phase: "unreachable", message: undefined } : answered;
   const now = new Date();
   const offline = isOffline(view);
   const tokenInUse = hasToken(view);
@@ -629,12 +635,7 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
           1 connector · all optional
         </span>
       </div>
-      {offline ? (
-        <div className="integrations-band" data-tone="danger" role="alert" data-testid={IDS.band}>
-          <WarnGlyph />
-          <span>Couldn't reach the kernel. It may be restarting; this window reconnects on its own.</span>
-        </div>
-      ) : null}
+      {offline && !reach.shellBand ? <KernelBand testId={IDS.band} /> : null}
       {view.phase === "error" ? (
         <p className="integrations-notice" data-tone="danger" role="alert" data-testid={IDS.readError}>
           {`Couldn't read the connectors: ${view.message ?? "no answer"}`}

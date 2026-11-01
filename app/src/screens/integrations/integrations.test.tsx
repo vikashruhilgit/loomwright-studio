@@ -392,6 +392,28 @@ describe("live updates", () => {
     expect(screen.getByTestId(IDS.account).textContent).toBe("octo-owner");
   });
 
+  it("while the shell shows its band (the store was live and lost its feed), the last row stays as unreachable with writes off and no band of its own; it lifts when live again", async () => {
+    const kernel = await startScreen();
+    expect(rowWords()).toBe("connected · octo-owner");
+    act(() => kernel.fake.emit({ type: "heartbeat", latest_id: 0 }));
+    act(() => kernel.fake.emit({ type: "closed", code: 1006, reason: "" }));
+    // The read never failed (no refetch): the screen folds the shared contract's `offline` into its view once.
+    await waitFor(() => expect(rowWords()).toBe("status unknown · kernel unreachable"));
+    expect(screen.queryByTestId(IDS.band)).toBeNull();
+    expect(screen.getByTestId(IDS.status).textContent).toContain("Unknown while the kernel is unreachable");
+    expect(screen.getByTestId(IDS.account).textContent).toBe("octo-owner");
+    for (const id of [IDS.replace, IDS.disconnect, IDS.refresh]) {
+      const button = screen.getByTestId(id) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect(button.title).toBe("Needs the kernel");
+    }
+    // The store reconnects (the fake bridge answers the retry): the fold lifts and the last `ok` read shows again.
+    await waitFor(() => expect(kernel.fake.subscribeCalls.length).toBeGreaterThan(1), { timeout: 3_000 });
+    act(() => kernel.fake.emit({ type: "heartbeat", latest_id: 0 }));
+    await waitFor(() => expect(rowWords()).toBe("connected · octo-owner"));
+    for (const id of [IDS.replace, IDS.disconnect, IDS.refresh]) expect((screen.getByTestId(id) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("a refused read says so, keeps the last answer, and is not 'not connected'", async () => {
     const kernel = await startScreen();
     kernel.connectors = () => refused(500, { error: "connector_failed", message: "the connector could not answer" });
