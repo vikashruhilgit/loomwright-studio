@@ -6,23 +6,26 @@
 // the three vocabularies differ: `tasks.state` is free text (the kernel defines
 // no states), a playbook run has `PLAYBOOK_RUN_STATUSES` and a session has
 // `SessionStatus`. The board fixes four columns (the mockup's `COLS`) and this
-// module maps every state onto one of them. A badge is green (`ok`) only for
-// task `done`, run `done` and session `completed`: every other word is shown as
-// the kernel wrote it and is never green. An unknown state is never hidden and
-// never green: it sits in Working with a neutral badge and its own word.
+// module maps every word it knows onto one of them. A badge is green (`ok`) only
+// for task `done`, run `done` and session `completed`: every other word is shown
+// as the kernel wrote it and is never green. A word this module does not know
+// (a task's `waiting on owner`, a status a newer kernel adds) is never hidden,
+// never green and never guessed into a column: it sits in the "Other" group,
+// drawn only while a card is in it, with a neutral badge and its own word.
 //
-// Every string a row carries (a title, an agent, an item ref, an event payload)
-// is untrusted: it passes through `printable` (the kernel's own escaping,
-// imported read-only from the Approvals screen) before it is shown.
+// Every string a row carries (a title, an agent, an item ref) is untrusted: it
+// passes through `printable` (the kernel's own escaping, imported read-only from
+// the Approvals screen) before it is shown. The history's sentences are
+// `./history.ts`'s.
 //
 // Plain TypeScript: no React.
 import type { EventFrame, PlaybookRun, SessionSummary, TaskBoardGroup, TaskBoardItem, TaskBoardKind, TruncatedEventFrame } from "../../api/contract";
 import type { BadgeTone } from "../../components/Badge/Badge";
-import { payloadText, printable } from "../approvals/printable";
+import { printable } from "../approvals/printable";
 
 // ---- columns -----------------------------------------------------------------------------
 
-export type ColumnId = "wait" | "work" | "park" | "done";
+export type ColumnId = "wait" | "work" | "park" | "done" | "other";
 
 export interface BoardColumn {
   readonly id: ColumnId;
@@ -40,12 +43,18 @@ export const BOARD_COLUMNS: readonly BoardColumn[] = [
   { id: "done", label: "Done today", none: "Nothing finished yet." },
 ];
 
+/**
+ * The Other group: where a state word this module has not heard of is shown. It is not one of the four fixed
+ * columns (`BOARD_COLUMNS`): `buildBoard` adds it only while a card is in it.
+ */
+export const OTHER_COLUMN: BoardColumn = { id: "other", label: "Other", none: "" };
+
 /** A table with no prototype: a state word like `constructor` or `__proto__` is just an unknown word. */
 function table<V>(entries: Readonly<Record<string, V>>): Readonly<Record<string, V>> {
   return Object.freeze(Object.assign(Object.create(null) as Record<string, V>, entries));
 }
 
-/** `tasks.state` (free text). Anything not listed goes to Working. */
+/** `tasks.state` (free text). Anything not listed goes to Other, never guessed into a column. */
 const TASK_COLUMNS = table<ColumnId>({ waiting: "wait", working: "work", parked: "park", done: "done" });
 
 /** `PLAYBOOK_RUN_STATUSES`. */
@@ -74,15 +83,15 @@ const SESSION_COLUMNS = table<ColumnId>({
 /**
  * The column a card sits in: the one mapping table above. A state this app has
  * not heard of (a task's free text; a run or session status a newer kernel adds)
- * goes to Working, shown verbatim with a neutral badge.
+ * goes to Other, shown verbatim with a neutral badge. No synonym is guessed.
  */
 export function columnOf(item: Pick<TaskBoardItem, "kind" | "state">): ColumnId {
   const { kind, state } = item;
   if (kind === "task") {
-    return TASK_COLUMNS[state] ?? "work";
+    return TASK_COLUMNS[state] ?? "other";
   }
-  if (kind === "playbook_run") return RUN_COLUMNS[state] ?? "work";
-  return SESSION_COLUMNS[state] ?? "work";
+  if (kind === "playbook_run") return RUN_COLUMNS[state] ?? "other";
+  return SESSION_COLUMNS[state] ?? "other";
 }
 
 // ---- tones -----------------------------------------------------------------------------------
@@ -133,7 +142,7 @@ export interface BoardColumnView {
 }
 
 export interface Board {
-  /** The four columns, always, in order. */
+  /** The four columns, always, in order, then the Other group only while a card is in it. */
   readonly columns: readonly BoardColumnView[];
   /** The cards on the board (a card that finished before today is not one). */
   readonly total: number;
@@ -162,13 +171,13 @@ function newestFirst(a: TaskBoardItem, b: TaskBoardItem): number {
 }
 
 /**
- * The response's groups as the four columns. Every card lands in one column; a
+ * The response's groups as the four columns, plus Other while a card is in it. Every card lands in one; a
  * terminal card that ended before today (local time) is not on the board. Each
  * column is newest first, as the kernel orders the rows.
  */
 export function buildBoard(groups: readonly TaskBoardGroup[], now: number): Board {
   const seen = new Set<string>();
-  const byColumn = new Map<ColumnId, BoardCard[]>(BOARD_COLUMNS.map((c) => [c.id, []]));
+  const byColumn = new Map<ColumnId, BoardCard[]>([...BOARD_COLUMNS, OTHER_COLUMN].map((c) => [c.id, []]));
   for (const group of groups) {
     for (const item of group.items) {
       const key = cardKey(item);
@@ -179,10 +188,9 @@ export function buildBoard(groups: readonly TaskBoardGroup[], now: number): Boar
       byColumn.get(column)?.push({ key, item, column });
     }
   }
-  const columns = BOARD_COLUMNS.map((column) => ({
-    column,
-    cards: [...(byColumn.get(column.id) ?? [])].sort((a, b) => newestFirst(a.item, b.item)),
-  }));
+  const sorted = (column: BoardColumn): BoardColumnView => ({ column, cards: [...(byColumn.get(column.id) ?? [])].sort((a, b) => newestFirst(a.item, b.item)) });
+  const other = sorted(OTHER_COLUMN);
+  const columns = [...BOARD_COLUMNS.map(sorted), ...(other.cards.length === 0 ? [] : [other])];
   const count = (id: ColumnId): number => columns.find((c) => c.column.id === id)?.cards.length ?? 0;
   return { columns, total: columns.reduce((sum, c) => sum + c.cards.length, 0), working: count("work"), waiting: count("wait") };
 }
@@ -196,9 +204,17 @@ export function cardOrder(board: Board): BoardCard[] {
 
 export const KIND_LABEL: Readonly<Record<TaskBoardKind, string>> = { task: "Task", playbook_run: "Playbook run", session: "Session" };
 
-/** The agent, escaped, or `unknown agent`. */
+/** The words for a card with neither an assignee nor a creator agent (the mockup's own). */
+export const NO_AGENT = "No agent recorded";
+
+/** The agent, escaped, or `No agent recorded`. */
 export function agentText(agent: string | null): string {
-  return agent === null ? "unknown agent" : printable(agent);
+  return agent === null ? NO_AGENT : printable(agent);
+}
+
+/** The agent a card names: the assignee, else the agent whose session created the task, else none. */
+export function cardAgent(item: Pick<TaskBoardItem, "agent" | "creator_agent">): string | null {
+  return item.agent ?? item.creator_agent;
 }
 
 /** What the card is called: a task's title, a run's playbook name, else (a session has none) its agent and what it ran from. */
@@ -262,9 +278,14 @@ export interface Fact {
   readonly label: string;
   /** Escaped text. */
   readonly text: string;
+  /** When set the value is a link to this session's own card (the creator's), if the screen can open it. */
+  readonly session?: number;
   /** When set the value is shown as a badge of this tone (the state). */
   readonly tone?: BadgeTone;
 }
+
+/** The label of the fact naming the session that created a task. */
+export const CREATED_IN = "Created in";
 
 /**
  * The facts for the open card, from its row and what its history carries (the
@@ -280,6 +301,7 @@ export function factsOf(item: TaskBoardItem, now: number, session?: SessionSumma
     add("State", stateText(item), toneOf(item.kind, item.state));
     add("Assignee", item.agent === null ? null : printable(item.agent));
     add("Session", item.session === null ? null : `#${item.session}`);
+    if (item.creator_session !== null) facts.push({ label: CREATED_IN, text: `session #${item.creator_session}`, session: item.creator_session });
     add("Created", whenText(item.started, now));
     add("Updated", whenText(item.updated, now));
   } else if (item.kind === "playbook_run") {
@@ -303,35 +325,6 @@ export function factsOf(item: TaskBoardItem, now: number, session?: SessionSumma
     add("Ended", item.ended === null ? (item.state === "running" || item.state === "starting" ? "still running" : null) : whenText(item.ended, now));
   }
   return facts;
-}
-
-// ---- the history's events -----------------------------------------------------------------------
-
-export interface EventLine {
-  readonly id: number;
-  /** The event kind, escaped. */
-  readonly kind: string;
-  readonly time: string;
-  /** The payload as escaped data on one line, cut to size; empty when there is nothing in it. */
-  readonly text: string;
-}
-
-const EVENT_TEXT_LIMIT = 240;
-
-/** `HH:MM:SS` in the owner's locale; empty when not a time. */
-function secondsText(iso: string): string {
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return "";
-  return at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
-}
-
-/** One event as a history line. The payload is the stored JSON, untrusted: shown as escaped data, never interpreted. */
-export function eventLine(event: EventFrame): EventLine {
-  const payload = event.payload;
-  const empty = payload === null || payload === undefined || (typeof payload === "object" && Object.keys(payload as object).length === 0);
-  const flat = empty ? "" : payloadText(payload).split("\n").map((l) => l.trim()).join(" ");
-  const text = flat.length > EVENT_TEXT_LIMIT ? `${flat.slice(0, EVENT_TEXT_LIMIT)} … (cut)` : flat;
-  return { id: event.id, kind: printable(event.kind), time: secondsText(event.at), text };
 }
 
 // ---- the feed -------------------------------------------------------------------------------------
