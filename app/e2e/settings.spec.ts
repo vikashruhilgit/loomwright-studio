@@ -549,16 +549,23 @@ test("item 18 AC5: each command block is one line at the default window size and
         const style = getComputedStyle(code);
         const block = code.parentElement as HTMLElement;
         // A command that scrolls sideways gets a classic scrollbar on Linux and Windows (overlay on macOS), which
-        // adds height without adding a line. Every height below leaves it out; padding and borders still count.
-        const scrollbar = (code as HTMLElement).offsetHeight - code.clientHeight - Number.parseFloat(style.borderTopWidth) - Number.parseFloat(style.borderBottomWidth);
+        // adds height without adding a line. Both heights below leave it out: the code's content box, and the block
+        // read with the scrollbar briefly not drawn (the Copy button can be the row's tallest child, so subtracting
+        // the scrollbar's height would under-count the block).
+        const el = code as HTMLElement;
+        const overflowX = style.overflowX;
+        const overflows = el.scrollWidth > el.clientWidth;
+        el.style.overflowX = "hidden";
+        const blockHeight = block.getBoundingClientRect().height;
+        el.style.overflowX = "";
         return {
-          height: code.clientHeight - Number.parseFloat(style.paddingTop) - Number.parseFloat(style.paddingBottom),
+          height: el.clientHeight - Number.parseFloat(style.paddingTop) - Number.parseFloat(style.paddingBottom),
           line: Number.parseFloat(style.lineHeight),
-          blockHeight: block.getBoundingClientRect().height - scrollbar,
+          blockHeight,
           whiteSpace: style.whiteSpace,
           overflowWrap: style.overflowWrap,
-          overflowX: style.overflowX,
-          overflows: code.scrollWidth > code.clientWidth,
+          overflowX,
+          overflows,
         };
       }),
     );
