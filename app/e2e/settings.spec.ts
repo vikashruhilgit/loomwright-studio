@@ -550,7 +550,7 @@ test("item 18 AC5: each command block is one line at the default window size and
         const block = code.parentElement as HTMLElement;
         // A command that scrolls sideways gets a classic scrollbar on Linux and Windows (overlay on macOS), which
         // adds height without adding a line. Every height below leaves it out; padding and borders still count.
-        const scrollbar = code.offsetHeight - code.clientHeight - Number.parseFloat(style.borderTopWidth) - Number.parseFloat(style.borderBottomWidth);
+        const scrollbar = (code as HTMLElement).offsetHeight - code.clientHeight - Number.parseFloat(style.borderTopWidth) - Number.parseFloat(style.borderBottomWidth);
         return {
           height: code.clientHeight - Number.parseFloat(style.paddingTop) - Number.parseFloat(style.paddingBottom),
           line: Number.parseFloat(style.lineHeight),
