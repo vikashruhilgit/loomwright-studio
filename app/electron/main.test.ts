@@ -90,7 +90,7 @@ vi.mock("electron", () => {
     app: {
       isPackaged: false,
       getAppPath: () => "/the/app",
-      getPath: () => electron.prefsDir,
+      getPath: (name: string) => (name === "home" ? "/Users/o" : electron.prefsDir),
       getLoginItemSettings: () => ({ ...electron.os.login }),
       setLoginItemSettings: (settings: { openAtLogin: boolean }) => {
         electron.os.loginSets.push(settings);
@@ -181,6 +181,7 @@ describe("the main window", () => {
       "studio:connection",
       "studio:feed:subscribe",
       "studio:feed:unsubscribe",
+      "studio:home-dir",
       "studio:open-external",
       "studio:prefs:get",
       "studio:prefs:set",
@@ -331,6 +332,20 @@ describe("the preferences channels", () => {
     await expect(call("studio:reveal-data-dir", owner())).resolves.toBe(true);
     await expect(call("studio:reveal-data-dir", owner(), "/Users/o/.ssh")).resolves.toBe(true);
     expect(electron.os.opened).toEqual(["/the/data", "/the/data"]);
+  });
+});
+
+describe("the home-dir channel", () => {
+  const owner = () => ({ sender: electron.windows[0]?.contents });
+  const call = (event: unknown, ...args: unknown[]) => Promise.resolve(electron.handlers.get("studio:home-dir")?.(event, ...args));
+
+  it("answers the main process's home folder, with or without an argument", async () => {
+    await expect(call(owner())).resolves.toBe("/Users/o");
+    await expect(call(owner(), "userData")).resolves.toBe("/Users/o");
+  });
+
+  it("refuses a caller that is not the window", async () => {
+    for (const sender of [{}, undefined]) await expect(call({ sender })).rejects.toThrow("refused");
   });
 });
 

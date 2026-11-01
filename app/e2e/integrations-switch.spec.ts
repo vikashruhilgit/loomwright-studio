@@ -476,7 +476,8 @@ test("AC4: with the kernel unreachable the band shows, the token's last data sta
   await expect(byId(page, IDS.detail)).toHaveAttribute("data-state", "connected");
   fx.dropNextRead();
   fx.change("connected");
-  const band = byId(page, IDS.band);
+  // Exactly one red band is on screen: the shell's once the store reads reconnecting, else the screen's own.
+  const band = page.locator('[data-testid="kernel-unreachable-band"], [data-testid="integrations-band"]');
   await expect(band).toBeVisible();
   await expect(band).toContainText("Couldn't reach the kernel");
   await expect(byId(page, IDS.listMeta)).toHaveText("status unknown · kernel unreachable");

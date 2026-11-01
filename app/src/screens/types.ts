@@ -13,6 +13,8 @@ export interface ScreenDefinition {
   readonly Component: ComponentType;
   /** A sidebar group the screen owns, shown after the entries (Chat's Crew group). */
   readonly SidebarSection?: ComponentType;
+  /** A count line the title bar shows beside the title ("12 tasks"); a screen without one shows the title alone. */
+  readonly Subtitle?: ComponentType;
 }
 
 /** A screen module: `export const screen: ScreenDefinition`. */
