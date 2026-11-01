@@ -178,9 +178,11 @@ const menuItem = (id: string) => lastTray()?.menu?.template.find((i) => i.id ===
 
 const showWindow = vi.fn();
 let warn: MockInstance<typeof console.warn>;
+/** Every tray a test started. Each is stopped after the test: a moving glyph left running would draw onto the next test's tray. */
+const stops: (() => void)[] = [];
 
 async function start(kernel: KernelConnection): Promise<void> {
-  createTray({ kernel, showWindow });
+  stops.push(createTray({ kernel, showWindow }));
   await settle();
 }
 
@@ -198,6 +200,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Before the real timers return, so a tray's fake-clock timers are cleared on the clock that holds them.
+  for (const stop of stops.splice(0)) stop();
   vi.unstubAllEnvs();
   vi.useRealTimers();
   warn.mockRestore();
@@ -282,6 +286,19 @@ describe("what the tray shows", () => {
     const idle = lastTray()?.image;
     vi.advanceTimersByTime(GLYPH_FRAME_MS * 5);
     expect(lastTray()?.image).toBe(idle);
+  });
+
+  it("a stopped tray draws no more frames and reads the motion setting no more", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { kernel } = fakeKernel({ sessions: 1 });
+    await start(kernel);
+    stops.splice(0).forEach((stop) => stop());
+    const stopped = lastTray()?.image;
+    electron.motionReads = 0;
+    vi.advanceTimersByTime(TRAY_MOTION_RECHECK_MS * 3);
+    await settle();
+    expect(lastTray()?.image).toBe(stopped);
+    expect(electron.motionReads).toBe(0);
   });
 
   it("re-renders the icon when the state changes", async () => {
