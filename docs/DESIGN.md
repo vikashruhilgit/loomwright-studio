@@ -6,7 +6,7 @@ Phase 0 is done: the owner approved the design system and the GUI v1 mockups on 
 
 | Artefact | Where | Notes |
 |---|---|---|
-| Design system (tokens, brand book, 16 components with live previews) | https://claude.ai/artifact/CR6rcJB17wFroMmtsXyRfd (private) | Source of truth for tokens and component rules. Sources mirrored under `docs/design/` |
+| Design system (tokens, brand book, 17 components with live previews, including the MenubarGlyph) | https://claude.ai/artifact/CR6rcJB17wFroMmtsXyRfd (private) | Source of truth for tokens and component rules. Sources mirrored under `docs/design/` |
 | GUI v1 mockups (menu bar, Chat, Team, Approvals, Sessions), clickable | https://claude.ai/artifact/1Kw9eisGsAnUekWyStnmEc (private) | One HTML file, no build. Source: `docs/design/mockups/gui-v1.html` |
 | Tokens | `docs/design/tokens.json` | Colour (light + dark), type, spacing, radius, shadow, duration, easing |
 | Brand book | `docs/design/brand-book.md` | Voice, colour, type, layout, keyboard, motion, states, presence, limits |
