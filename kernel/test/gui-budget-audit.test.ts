@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startApiServer } from "../src/api/index.js";
 import type { ApiServer } from "../src/api/index.js";
-import { localDay } from "../src/budget/internal.js";
+import { activeParks, localDay } from "../src/budget/internal.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { GUI_PARTS, budgetAuditPart, budgetAuditRoutes } from "../src/gui/index.js";
 import { appendEvent } from "../src/loop/internal.js";
@@ -95,10 +95,11 @@ function crewMember(id: string): void {
     .run(id, id);
 }
 
-function cap(account: string, type: string, status: string, resetsAt: string | null, utilization: number | null, source: string | null): void {
+/** A stored cap window; `updatedAt` is when the kernel last recorded it (the table's default clock when omitted). */
+function cap(account: string, type: string, status: string, resetsAt: string | null, utilization: number | null, source: string | null, updatedAt?: string): void {
   env.store
-    .prepare("INSERT INTO cap_state (account, rate_limit_type, status, resets_at, utilization, reset_source) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(account, type, status, resetsAt, utilization, source);
+    .prepare("INSERT INTO cap_state (account, rate_limit_type, status, resets_at, utilization, reset_source, updated_at) VALUES (?, ?, ?, ?, ?, ?, coalesce(?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))")
+    .run(account, type, status, resetsAt, utilization, source, updatedAt ?? null);
 }
 
 describe("the budget-audit part (phase 7 item 07)", () => {
@@ -259,32 +260,66 @@ describe("GET /budget/usage: limits", () => {
 
 describe("GET /budget/usage: cap_state", () => {
   it("groups the stored windows by provider, with every field as stored", async () => {
-    cap("stub-provider", "seven_day", "allowed_warning", "2026-10-20T00:00:00.000Z", 0.85, "event");
-    cap("stub-provider", "five_hour", "allowed", "2026-10-14T15:00:00.000Z", 0.4, "event");
-    cap("other-provider", "five_hour", "rejected", "2026-10-14T13:00:00.000Z", null, "recheck");
+    cap("stub-provider", "seven_day", "allowed_warning", "2026-10-20T00:00:00.000Z", 0.85, "event", "2026-10-14T11:30:00.000Z");
+    cap("stub-provider", "five_hour", "allowed", "2026-10-14T15:00:00.000Z", 0.4, "event", "2026-10-14T11:45:00.000Z");
+    cap("other-provider", "five_hour", "rejected", "2026-10-14T13:00:00.000Z", null, "recheck", "2026-10-14T11:50:00.000Z");
     const { body } = await get("/budget/usage");
     expect(body.cap_state).toEqual([
       {
         account: "other-provider",
         provider: "other-provider",
-        limits: [{ rate_limit_type: "five_hour", status: "rejected", resets_at: "2026-10-14T13:00:00.000Z", utilization: null, reset_source: "recheck" }],
+        limits: [{ rate_limit_type: "five_hour", status: "rejected", resets_at: "2026-10-14T13:00:00.000Z", utilization: null, reset_source: "recheck", updated_at: "2026-10-14T11:50:00.000Z" }],
       },
       {
         account: "stub-provider",
         provider: "stub-provider",
         limits: [
-          { rate_limit_type: "five_hour", status: "allowed", resets_at: "2026-10-14T15:00:00.000Z", utilization: 0.4, reset_source: "event" },
-          { rate_limit_type: "seven_day", status: "allowed_warning", resets_at: "2026-10-20T00:00:00.000Z", utilization: 0.85, reset_source: "event" },
+          { rate_limit_type: "five_hour", status: "allowed", resets_at: "2026-10-14T15:00:00.000Z", utilization: 0.4, reset_source: "event", updated_at: "2026-10-14T11:45:00.000Z" },
+          { rate_limit_type: "seven_day", status: "allowed_warning", resets_at: "2026-10-20T00:00:00.000Z", utilization: 0.85, reset_source: "event", updated_at: "2026-10-14T11:30:00.000Z" },
         ],
       },
     ]);
   });
 
-  it("answers the same windows GET /status does (labels aside)", async () => {
+  it("answers the same windows GET /status does (labels and updated_at aside)", async () => {
     cap("stub-provider", "five_hour", "allowed", "2026-10-14T15:00:00.000Z", 0.4, "event");
-    const status = (await get("/status")).body.cap_state as { provider: string; limits: unknown }[];
-    const usage = (await get("/budget/usage")).body.cap_state as { provider: string; limits: unknown }[];
-    expect(usage.map((c) => ({ provider: c.provider, limits: c.limits }))).toEqual(status.map((c) => ({ provider: c.provider, limits: c.limits })));
+    type Window = Record<string, unknown>;
+    const status = (await get("/status")).body.cap_state as { provider: string; limits: Window[] }[];
+    const usage = (await get("/budget/usage")).body.cap_state as { provider: string; limits: Window[] }[];
+    // `updated_at` is the budget route's own extra field: `GET /status` carries none.
+    const withoutUpdatedAt = (limits: Window[]): Window[] => limits.map(({ updated_at: _updatedAt, ...rest }) => rest);
+    expect(usage.map((c) => ({ provider: c.provider, limits: withoutUpdatedAt(c.limits) }))).toEqual(
+      status.map((c) => ({ provider: c.provider, limits: withoutUpdatedAt(c.limits) })),
+    );
+  });
+
+  it("carries each window's updated_at: when the kernel last recorded it", async () => {
+    cap("stub-provider", "five_hour", "allowed", "2026-10-14T15:00:00.000Z", 0.4, "event", "2026-10-14T09:15:00.000Z");
+    cap("stub-provider", "seven_day", "allowed_warning", "2026-10-20T00:00:00.000Z", 0.85, "event", "2026-10-13T08:00:00.000Z");
+    const windows = (await get("/budget/usage")).body.cap_state[0].limits as { rate_limit_type: string; updated_at: string }[];
+    expect(windows.map((w) => [w.rate_limit_type, w.updated_at])).toEqual([
+      ["five_hour", "2026-10-14T09:15:00.000Z"],
+      ["seven_day", "2026-10-13T08:00:00.000Z"],
+    ]);
+  });
+
+  it("leaves an expired allowed_warning with its stored status and updated_at, and it is not a park", async () => {
+    // The clock is 2026-10-14T12:00Z. Both windows are `allowed_warning`: one over (reset passed), one still ahead.
+    cap("stub-provider", "seven_day", "allowed_warning", "2026-10-12T00:30:00.000Z", 0.85, "event", "2026-10-11T22:00:00.000Z");
+    cap("stub-provider", "five_hour", "allowed_warning", "2026-10-14T15:00:00.000Z", 0.9, "event", "2026-10-14T11:00:00.000Z");
+    const windows = (await get("/budget/usage")).body.cap_state[0].limits as { rate_limit_type: string; status: string; resets_at: string; updated_at: string }[];
+    expect(windows.find((w) => w.rate_limit_type === "seven_day")).toMatchObject({
+      status: "allowed_warning",
+      resets_at: "2026-10-12T00:30:00.000Z",
+      updated_at: "2026-10-11T22:00:00.000Z",
+    });
+    // Neither an expired nor an unexpired allowed_warning parks admission: only a `rejected` row does.
+    expect(activeParks(env.store, "stub-provider", NOW)).toEqual([]);
+    // A rejected row with the reset still ahead does park, so the empty answer above is the status clause at work.
+    cap("stub-provider", "opus", "rejected", "2026-10-14T13:00:00.000Z", null, "event");
+    expect(activeParks(env.store, "stub-provider", NOW).map((p) => p.rate_limit_type)).toEqual(["opus"]);
+    // And a rejected window whose reset has passed is over too.
+    expect(activeParks(env.store, "stub-provider", "2026-10-14T13:00:00.001Z")).toEqual([]);
   });
 });
 
@@ -326,13 +361,13 @@ describe("GET /audit: filters", () => {
     expect(status).toBe(200);
     expect(ids(body)).toEqual([e.e7, e.e6, e.e5, e.e4, e.e3, e.e2, e.e1]);
     expect(body.next_before).toBeNull();
-    expect(body.events.at(-1)).toEqual({ type: "event", id: e.e1, at: "2026-10-08T09:00:00.000Z", kind: "notify", session_id: 1, task_id: null, payload: { text: "one" } });
+    expect(body.events.at(-1)).toEqual({ type: "event", id: e.e1, at: "2026-10-08T09:00:00.000Z", kind: "notify", session_id: 1, task_id: null, payload: { text: "one" }, actor: "wright" });
     // a payload that is not JSON is passed on as the stored text, never a throw
     expect(body.events.find((f: { id: number }) => f.id === e.e6).payload).toBe("not json{");
   });
 
   it("answers an empty page for an empty log", async () => {
-    expect(await get("/audit")).toEqual({ status: 200, body: { events: [], next_before: null } });
+    expect(await get("/audit")).toEqual({ status: 200, body: { events: [], next_before: null, matching: 0, total: 0 } });
   });
 
   it("filters by kind, exactly", async () => {
@@ -366,9 +401,9 @@ describe("GET /audit: filters", () => {
     expect(ids((await get("/audit?playbook=triage")).body)).toEqual([e.e5, e.e3]);
   });
 
-  it("answers an empty page for an unknown playbook slug", async () => {
+  it("answers an empty page for an unknown playbook slug, matching 0 and the real total", async () => {
     seedEvents();
-    expect(await get("/audit?playbook=nope")).toEqual({ status: 200, body: { events: [], next_before: null } });
+    expect(await get("/audit?playbook=nope")).toEqual({ status: 200, body: { events: [], next_before: null, matching: 0, total: 7 } });
   });
 
   it("combines filters with AND", async () => {
@@ -394,8 +429,73 @@ describe("GET /audit: filters", () => {
   it("treats a hostile filter value as data", async () => {
     seedEvents();
     for (const q of ["kind=%27%20OR%201%3D1%20--", "agent=%27)%20OR%201%3D1%20--", "playbook=%27%20OR%201%3D1%20--"]) {
-      expect(await get(`/audit?${q}`)).toEqual({ status: 200, body: { events: [], next_before: null } });
+      expect(await get(`/audit?${q}`)).toEqual({ status: 200, body: { events: [], next_before: null, matching: 0, total: 7 } });
     }
+  });
+});
+
+describe("GET /audit: actor", () => {
+  it("names the session's agent, else you for an API-stored event, else kernel", async () => {
+    const s1 = session("scout", "completed");
+    const insert = (kind: string, actor: string, sessionId: number | null): number =>
+      Number(env.store.prepare("INSERT INTO events (at, kind, actor, session_id, payload_json) VALUES (?, ?, ?, ?, '{}')").run(NOW, kind, actor, sessionId).lastInsertRowid);
+    const viaAgent = insert("note", "kernel", s1);
+    const viaApi = insert("note", "api", null);
+    const viaKernel = insert("note", "kernel", null);
+    // the session's agent wins over the stored actor, even for an API-stored event
+    const agentOverApi = insert("note", "api", s1);
+    // a session with an empty agent falls through to the stored actor
+    const blank = session("", "completed");
+    const blankApi = insert("note", "api", blank);
+    const blankKernel = insert("note", "kernel", blank);
+    const actors = new Map<number, string>((await get("/audit")).body.events.map((e: { id: number; actor: string }) => [e.id, e.actor]));
+    expect(actors.get(viaAgent)).toBe("scout");
+    expect(actors.get(viaApi)).toBe("you");
+    expect(actors.get(viaKernel)).toBe("kernel");
+    expect(actors.get(agentOverApi)).toBe("scout");
+    expect(actors.get(blankApi)).toBe("you");
+    expect(actors.get(blankKernel)).toBe("kernel");
+  });
+
+  it("gives every event an actor, whatever its payload", async () => {
+    seedEvents();
+    const { events } = (await get("/audit")).body as { events: { actor: unknown }[] };
+    expect(events.every((e) => typeof e.actor === "string" && e.actor !== "")).toBe(true);
+  });
+});
+
+describe("GET /audit: matching and total", () => {
+  it("counts the events under the filters as matching, and every event as total", async () => {
+    seedEvents();
+    const all = (await get("/audit")).body;
+    expect([all.matching, all.total]).toEqual([7, 7]);
+    const notify = (await get("/audit?kind=notify")).body;
+    expect([notify.matching, notify.total]).toEqual([3, 7]);
+    const scout = (await get("/audit?agent=scout&kind=notify")).body;
+    expect([scout.matching, scout.total]).toEqual([1, 7]);
+    const none = (await get("/audit?kind=nope")).body;
+    expect([none.matching, none.total]).toEqual([0, 7]);
+    const since = (await get("/audit?since=2026-10-12T09:00:00Z")).body;
+    expect([since.matching, since.total]).toEqual([3, 7]);
+  });
+
+  it("counts the whole filtered set on every page: the cursor and the limit are not counted", async () => {
+    const e = seedEvents();
+    const first = (await get("/audit?limit=3")).body;
+    expect([ids(first).length, first.matching, first.total]).toEqual([3, 7, 7]);
+    const second = (await get(`/audit?limit=3&before=${first.next_before}`)).body;
+    expect(ids(second)).toEqual([e.e4, e.e3, e.e2]);
+    expect([second.matching, second.total]).toEqual([7, 7]);
+    const filtered = (await get("/audit?kind=notify&limit=1")).body;
+    const filteredNext = (await get(`/audit?kind=notify&limit=1&before=${filtered.next_before}`)).body;
+    expect([filtered.matching, filteredNext.matching, filteredNext.total]).toEqual([3, 3, 7]);
+  });
+
+  it("counts a joined-session filter once per event", async () => {
+    seedEvents();
+    // e1 and e6 are session 1's: the LEFT JOIN yields one row per event, so the count matches the page
+    const body = (await get("/audit?agent=wright")).body;
+    expect([body.events.length, body.matching]).toEqual([2, 2]);
   });
 });
 
@@ -428,7 +528,7 @@ describe("GET /audit: paging", () => {
     const full = (await get("/audit?limit=7")).body;
     expect(ids(full)).toHaveLength(7);
     expect(full.next_before).toBe(String(e.e1));
-    expect(await get(`/audit?limit=7&before=${full.next_before}`)).toEqual({ status: 200, body: { events: [], next_before: null } });
+    expect(await get(`/audit?limit=7&before=${full.next_before}`)).toEqual({ status: 200, body: { events: [], next_before: null, matching: 7, total: 7 } });
   });
 
   it("takes limit 1 to 200 and defaults to 50", async () => {

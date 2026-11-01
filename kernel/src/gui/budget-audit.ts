@@ -8,11 +8,13 @@
 //                               and playbook, every limit against today's use,
 //                               and the subscription cap's windows
 //   GET /audit[?kind=&agent=&playbook=&since=&until=&before=&limit=]
-//                               {events, next_before}: events, newest first
+//                               {events, next_before, matching, total}: events,
+//                               newest first, each with the `actor` that did it
 //
 // The shapes mirror `app/src/api/contract.ts` (`BudgetUsageResponse`,
 // `AuditResponse`); `docs/architecture/budget.md` "Reading usage" is the
-// reference for the semantics. Tokens are counted per D26 through the
+// reference for the semantics. Each cap window carries `updated_at` (when the
+// kernel last recorded it), which `GET /status` does not. Tokens are counted per D26 through the
 // `budget.counted_tokens` generated column (cache reads are reported beside,
 // never added). An event payload is untrusted JSON (invariant 3): it is
 // returned as stored, never interpreted, and a malformed one never raises.
@@ -74,6 +76,7 @@ interface CapRow {
   readonly resets_at: string | null;
   readonly utilization: number | null;
   readonly reset_source: string | null;
+  readonly updated_at: string;
 }
 
 interface PlaybookRow {
@@ -139,10 +142,13 @@ function limitsOf(req: ContributedRouteRequest, now: Date): LimitUsage[] {
   return [...agents, ...playbooks];
 }
 
-/** The cap windows grouped by `account` (which holds the provider id since migration 9), as `readStatus` groups them. */
+/**
+ * The cap windows grouped by `account` (which holds the provider id since migration 9), as `readStatus` groups them,
+ * each with `updated_at`: when the kernel last recorded it (`GET /status` does not carry it).
+ */
 function capStateOf(req: ContributedRouteRequest): { account: string; provider: string; limits: Omit<CapRow, "account">[] }[] {
   const rows = req.store
-    .prepare<[], CapRow>("SELECT account, rate_limit_type, status, resets_at, utilization, reset_source FROM cap_state ORDER BY account, rate_limit_type")
+    .prepare<[], CapRow>("SELECT account, rate_limit_type, status, resets_at, utilization, reset_source, updated_at FROM cap_state ORDER BY account, rate_limit_type")
     .all();
   const byKey = new Map<string, Omit<CapRow, "account">[]>();
   for (const { account: key, ...limit } of rows) {
@@ -164,6 +170,16 @@ function usage(req: ContributedRouteRequest): Promise<ContributedRouteResponse> 
 
 // ---- GET /audit --------------------------------------------------------------------
 
+/** An `events` row with who did it. */
+interface AuditRow extends EventRow {
+  readonly actor: string;
+}
+
+/** The count of every event, whatever the filters. */
+function totalOf(req: ContributedRouteRequest): number {
+  return req.store.prepare<[], number>("SELECT COUNT(*) FROM events").pluck().get() ?? 0;
+}
+
 /**
  * `GET /audit`: every filter optional, combined with AND; events newest first by id.
  *
@@ -174,6 +190,11 @@ function usage(req: ContributedRouteRequest): Promise<ContributedRouteResponse> 
  * - `since` / `until`: inclusive ISO-8601 instants, compared as text with `events.at`
  *   (both `%Y-%m-%dT%H:%M:%fZ`).
  * - `before`: an event id; only ids below it.
+ *
+ * Each event carries `actor`: its session's agent when it has one, else `you`
+ * when the stored `events.actor` is `api` (the owner, through the API), else
+ * `kernel`. The answer also carries `matching` (events under the same filters,
+ * ignoring `before` and `limit`) and `total` (every event).
  *
  * `json_extract` raises on malformed JSON, so each payload condition is guarded
  * with `json_valid`: such a row never matches a payload condition but still
@@ -212,7 +233,7 @@ function audit(req: ContributedRouteRequest): Promise<ContributedRouteResponse> 
   }
   if (slug !== undefined) {
     const id = req.store.prepare<[string], number>("SELECT id FROM playbooks WHERE slug = ?").pluck().get(slug);
-    if (id === undefined) return Promise.resolve({ status: 200, body: { events: [], next_before: null } });
+    if (id === undefined) return Promise.resolve({ status: 200, body: { events: [], next_before: null, matching: 0, total: totalOf(req) } });
     where.push("(s.playbook = ? OR CASE WHEN json_valid(e.payload_json) THEN json_extract(e.payload_json, '$.playbook') END IN (?, ?))");
     params.push(id, id, slug);
   }
@@ -224,13 +245,17 @@ function audit(req: ContributedRouteRequest): Promise<ContributedRouteResponse> 
     where.push("e.at <= ?");
     params.push(until);
   }
+  // The count runs over the filters only: no `before` cursor and no limit.
+  const filterWhere = [...where];
+  const filterParams = [...params];
   if (before !== undefined) {
     where.push("e.id < ?");
     params.push(before);
   }
   const rows = req.store
-    .prepare<(string | number)[], EventRow>(
-      `SELECT e.id AS id, e.at AS at, e.kind AS kind, e.session_id AS session_id, e.task_id AS task_id, e.payload_json AS payload_json
+    .prepare<(string | number)[], AuditRow>(
+      `SELECT e.id AS id, e.at AS at, e.kind AS kind, e.session_id AS session_id, e.task_id AS task_id, e.payload_json AS payload_json,
+              CASE WHEN s.agent IS NOT NULL AND s.agent <> '' THEN s.agent WHEN e.actor = 'api' THEN 'you' ELSE 'kernel' END AS actor
          FROM events e LEFT JOIN sessions s ON s.id = e.session_id
         ${where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`}
         ORDER BY e.id DESC LIMIT ?`,
@@ -238,9 +263,22 @@ function audit(req: ContributedRouteRequest): Promise<ContributedRouteResponse> 
     .all(...params, limit);
   // The cursor is the last id on a full page; a short page is the last one.
   const last = rows.at(-1);
+  const matching =
+    req.store
+      .prepare<(string | number)[], number>(
+        `SELECT COUNT(*) FROM events e LEFT JOIN sessions s ON s.id = e.session_id
+        ${filterWhere.length === 0 ? "" : `WHERE ${filterWhere.join(" AND ")}`}`,
+      )
+      .pluck()
+      .get(...filterParams) ?? 0;
   return Promise.resolve({
     status: 200,
-    body: { events: rows.map(eventFrameOf), next_before: rows.length === limit && last !== undefined ? String(last.id) : null },
+    body: {
+      events: rows.map((row) => ({ ...eventFrameOf(row), actor: row.actor })),
+      next_before: rows.length === limit && last !== undefined ? String(last.id) : null,
+      matching,
+      total: totalOf(req),
+    },
   });
 }
 
