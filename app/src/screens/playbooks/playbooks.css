@@ -196,6 +196,9 @@
 }
 .pb-table {
   width: 100%;
+  /* The fixed columns below (732px) plus 160px for the playbook's name: at the window's 900px minimum the table
+     scrolls sideways inside .pb-tablewrap rather than squeezing the name column to nothing. */
+  min-width: 892px;
   border-collapse: collapse;
   table-layout: fixed;
 }
@@ -227,14 +230,15 @@
   color: var(--ink-secondary);
 }
 .pb-table .pb-c-trigger {
-  width: 116px;
+  width: 108px;
 }
 .pb-table .pb-c-dedupe {
-  width: 120px;
+  width: 112px;
 }
 .pb-table .pb-c-priority {
   width: 76px;
 }
+/* "sonnet", "opus", "haiku" and "fable" fit on one line; an id that is not shortened wraps. */
 .pb-table .pb-c-model {
   width: 80px;
 }
@@ -244,8 +248,9 @@
 .pb-table .pb-c-last {
   width: 112px;
 }
+/* Wide enough for "38.2k of 200k" on one line, with room for the "no limit set" and "last known: none" captions. */
 .pb-table .pb-c-tokens {
-  width: 96px;
+  width: 120px;
 }
 .pb-table .pb-c-on {
   width: 48px;
@@ -486,6 +491,11 @@
 .pb-kv dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+.pb-owner {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 .pb-actions {
   display: flex;

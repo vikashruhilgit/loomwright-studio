@@ -52,12 +52,21 @@ export const PLAYBOOKS_TEST_IDS = {
   versionList: "playbook-versions",
   version: "playbook-version",
   versionDiff: "playbook-version-diff",
+  slug: "playbooks-slug",
+  owner: "playbook-owner",
+  kernelBand: "playbooks-kernel-band",
 } as const;
 
 export const NOT_SET = "not set";
 export const UNKNOWN = "unknown";
 export const NOT_COUNTED = "not counted yet";
 export const NO_RUNS = "no runs yet";
+/** The caption of a list cell whose read was refused while the kernel answers. */
+export const COULD_NOT_READ = "could not be read";
+/** The caption of a list cell the kernel was never asked successfully, while it does not answer. */
+export const LAST_KNOWN_NONE = "last known: none";
+/** The caption of a Tokens today figure for a playbook with no daily limit. */
+export const NO_LIMIT_SET = "no limit set";
 
 /** Kernel text as inert, single-line text. */
 export function safe(text: string): string {
@@ -151,6 +160,48 @@ export function tokenFigure(tokens: number): string {
 /** The token limit per day, or "not set". */
 export function limitText(limit: number | null): string {
   return limit === null ? NOT_SET : tokenFigure(limit);
+}
+
+/** `tenths` (a whole number of tenths) as text, without a trailing ".0": 382 is "38.2", 2000 is "200". */
+function tenthsText(tenths: number): string {
+  return tenths % 10 === 0 ? String(tenths / 10) : (tenths / 10).toFixed(1);
+}
+
+/**
+ * A token count for a narrow cell, after the mockup's `tk` (`docs/design/mockups/gui-v2.html`): below 1,000 as it is;
+ * from 1,000 one decimal with "k" (38,200 is "38.2k"); from 1,000,000 one decimal with "M" ("1.5M"). A trailing
+ * ".0" is dropped (200,000 is "200k"), and a figure that would round to "1000k" moves up a tier (999,950 is "1M").
+ * There is no tier above M: a billion tokens reads "1000M".
+ * Tokens, never dollars: D26.
+ */
+export function compactTokens(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens < 1000) return String(tokens);
+  const thousandsTenths = Math.round(tokens / 100);
+  if (thousandsTenths < 10_000) return `${tenthsText(thousandsTenths)}k`;
+  return `${tenthsText(Math.round(tokens / 100_000))}M`;
+}
+
+/**
+ * The list's Tokens today cell for a playbook the kernel's usage answer lists: `<today> of <limit>` for a playbook with
+ * a daily limit, else `<today>` with the caption "no limit set". The limit is the playbook's own `token_limit_per_day`;
+ * nothing is predicted or defaulted.
+ */
+export function tokensTodayText(today: number, limit: number | null): { readonly value: string; readonly caption: string } {
+  if (limit === null) return { value: compactTokens(today), caption: NO_LIMIT_SET };
+  return { value: `${compactTokens(today)} of ${compactTokens(limit)}`, caption: "" };
+}
+
+/** The families whose ids the list shortens (`claude-<family>-…`). Any other id is shown as stored. */
+const MODEL_FAMILIES = ["opus", "sonnet", "haiku", "fable"] as const;
+
+/**
+ * A model for the list's narrow Model cell: the family word of `claude-<family>-…` (`claude-sonnet-5-5` is "sonnet"),
+ * any other id as stored (through `safe`), and "not set" for none. It never invents a family for an id it does not know.
+ */
+export function shortModel(model: string | null | undefined): string {
+  if (model === null || model === undefined) return NOT_SET;
+  for (const family of MODEL_FAMILIES) if (model.startsWith(`claude-${family}-`)) return family;
+  return valueOrNotSet(model);
 }
 
 // ---- trigger ----------------------------------------------------------------------------------

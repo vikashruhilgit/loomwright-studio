@@ -2,9 +2,10 @@
 // its runs and versions, and per-field edits, built to the approved GUI v2 mockup
 // (`docs/design/mockups/gui-v2.html`, the Playbooks views).
 //
-// Data: the live store's `playbooks`, `triggers` and `approvals` resources, plus two
-// screen-local reads (`./useHistory.ts`): each playbook's newest run for the list, and
-// the open playbook's runs and versions. No resource is added to the store. A feed
+// Data: the live store's `playbooks`, `triggers`, `approvals` and `agents` resources, plus
+// screen-local reads (`./useHistory.ts`): each playbook's newest run and the tokens counted
+// today for the list, and the open playbook's runs and versions. No resource is added to
+// the store. The title bar's count line and slug are `./subtitle.tsx`. A feed
 // event of a kind this screen shows (`playbook_*`, `session_*`, `event_*`) refreshes
 // them in place: every read keeps the last answer until a newer one lands, so rows keep
 // their size and no spinner replaces loaded content.
@@ -28,35 +29,35 @@ import type { CommandRegistry } from "../../commands/registry";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import type { KernelPolicyField } from "../../components/PlaybookPolicy/PlaybookPolicy";
+import { KernelBand } from "../../shell/KernelStates";
+import { useKernelReach } from "../../shell/last-known";
 import { liveStoreFor, useLiveStore, useResource } from "../../store/react";
 import { handOffComposerText } from "../chat/handoff";
-import { WRIGHT, inFlightGuard, navigate, requestComposerFocus, threadHash, when, write } from "../chat/model";
+import { WRIGHT, agentAvatarState, inFlightGuard, navigate, requestComposerFocus, threadHash, write } from "../chat/model";
 import type { InFlightGuard, WriteOutcome } from "../chat/model";
 import { usePlaybooksCommands } from "./commands";
+import { LastRunCell, TokensTodayCell } from "./cells";
 import {
-  NO_RUNS,
   PLAYBOOKS_TEST_IDS as IDS,
-  countText,
   dedupeText,
   draftsOf,
   handoffLine,
   newestRelevantEventId,
   pendingEnableApproval,
   readError,
-  runKindWord,
-  runTokensText,
   safe,
   safeBlock,
+  shortModel,
   stateOf,
   triggerText,
   setValueOrNotSet,
-  valueOrNotSet,
 } from "./model";
-import { Breakable, type Notice, type PlaybookActions, PlaybookSwitch, RunStatus, SetBy, Skeleton, TurnOnNote } from "./parts";
+import { Breakable, type Notice, type PlaybookActions, PlaybookSwitch, SetBy, Skeleton, TurnOnNote } from "./parts";
 import { PlaybookDetail } from "./PlaybookDetail";
 import { PlaybookEdit } from "./PlaybookEdit";
 import { PlaybookHistory } from "./PlaybookHistory";
-import { type LastRun, useLastRuns, useRuns, useVersions } from "./useHistory";
+import { usePublishSubtitle } from "./subtitle";
+import { type LastRun, type Read, useLastRuns, useRuns, useTokensToday, useVersions } from "./useHistory";
 import "./playbooks.css";
 
 type View = { readonly kind: "list" } | { readonly kind: "detail" | "edit" | "history"; readonly id: number };
@@ -86,38 +87,19 @@ export function PlaybooksScreen({ api, registry = commandRegistry }: PlaybooksSc
   return <PlaybooksView api={bridge} registry={registry} />;
 }
 
-/** The list's Last run and Tokens cells for one playbook: two lines each, reserved before the answer arrives. */
-function LastRunCells({ read }: { readonly read: LastRun | undefined }): { readonly last: ReactNode; readonly tokens: ReactNode } {
-  const cell = (value: ReactNode, caption: ReactNode) => (
-    <div className="pb-cell">
-      <span className="pb-tn">{value}</span>
-      <span className="pb-cap">{caption}</span>
-    </div>
-  );
-  if (read === undefined || !read.settled) return { last: cell("reading…", ""), tokens: cell("reading…", "") };
-  if (read.data === undefined) return { last: cell("unknown", "could not be read"), tokens: cell("unknown", "could not be read") };
-  if (read.data === null) return { last: cell(NO_RUNS, ""), tokens: cell(NO_RUNS, "") };
-  const run = read.data;
-  return {
-    last: cell(
-      <time dateTime={run.started}>{when(run.started)}</time>,
-      <>
-        {runKindWord(run.kind)} · <RunStatus status={run.status} />
-      </>,
-    ),
-    tokens: cell(runTokensText(run), "last run"),
-  };
-}
-
 interface ListProps {
   readonly playbooks: readonly PlaybookListing[];
   readonly lastRuns: ReadonlyMap<number, LastRun>;
+  /** Tokens counted today, by slug. */
+  readonly tokensToday: Read<ReadonlyMap<string, number>>;
+  /** The kernel cannot be asked: a cell keeps its last answer, marked "last known". */
+  readonly offline: boolean;
   readonly actions: PlaybookActions;
   readonly triggerOf: (playbook: PlaybookListing) => Trigger | undefined;
   readonly onOpen: (playbook: PlaybookListing) => void;
 }
 
-function PlaybookTable({ playbooks, lastRuns, actions, triggerOf, onOpen }: ListProps) {
+function PlaybookTable({ playbooks, lastRuns, tokensToday, offline, actions, triggerOf, onOpen }: ListProps) {
   return (
     <div className="pb-tablewrap">
       <table className="pb-table" data-testid={IDS.list}>
@@ -142,14 +124,13 @@ function PlaybookTable({ playbooks, lastRuns, actions, triggerOf, onOpen }: List
             <th scope="col">Model</th>
             <th scope="col">Mode</th>
             <th scope="col">Last run</th>
-            <th scope="col">Tokens</th>
+            <th scope="col">Tokens today</th>
             <th scope="col">On</th>
           </tr>
         </thead>
         <tbody data-nav-group="">
           {playbooks.map((playbook) => {
             const state = stateOf(playbook);
-            const cells = LastRunCells({ read: lastRuns.get(playbook.id) });
             return (
               <tr key={playbook.id} data-nav-row="" data-testid={IDS.row} data-playbook={playbook.id} data-state={state}>
                 <td>
@@ -182,7 +163,7 @@ function PlaybookTable({ playbooks, lastRuns, actions, triggerOf, onOpen }: List
                 </td>
                 <td>
                   <div className="pb-cell">
-                    <span>{valueOrNotSet(playbook.model)}</span>
+                    <span title={playbook.model === null ? undefined : safe(playbook.model)}>{shortModel(playbook.model)}</span>
                     <SetBy compact setBy={playbook.model === null ? null : playbook.model_set_by} />
                   </div>
                 </td>
@@ -194,8 +175,12 @@ function PlaybookTable({ playbooks, lastRuns, actions, triggerOf, onOpen }: List
                     <SetBy compact setBy={playbook.mode_set_by} />
                   </div>
                 </td>
-                <td>{cells.last}</td>
-                <td>{cells.tokens}</td>
+                <td>
+                  <LastRunCell read={lastRuns.get(playbook.id)} offline={offline} />
+                </td>
+                <td>
+                  <TokensTodayCell playbook={playbook} read={tokensToday} offline={offline} />
+                </td>
                 <td>
                   <PlaybookSwitch playbook={playbook} actions={actions} />
                 </td>
@@ -294,15 +279,18 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
   const playbooksRead = useResource("playbooks", api);
   const triggersRead = useResource("triggers", api);
   const approvalsRead = useResource("approvals", api);
-  const connection = snapshot.connection.state;
-  // `connecting` is the first attempt, not a loss: only a kernel that stopped answering is "last known".
-  const offline = connection === "reconnecting" || connection === "unreachable" || connection === "not_installed";
-  const live = connection === "live";
+  const agentsRead = useResource("agents", api);
+  // The shell's contract (`shell/last-known.ts`): the shell draws the one band while the kernel does not answer, and
+  // `connecting` is the first attempt, not a loss. The screen keeps its last data under the band and turns writes off.
+  const reach = useKernelReach(api);
+  const offline = reach.offline;
+  const live = snapshot.connection.state === "live";
   const eventId = newestRelevantEventId(snapshot.eventLog);
 
   const playbooks = playbooksRead?.data?.playbooks;
   const triggers = triggersRead?.data?.triggers;
   const approvals = approvalsRead?.data?.approvals;
+  const roster = agentsRead?.data?.agents;
   const triggerOf = (playbook: PlaybookListing): Trigger | undefined => (playbook.trigger_id === null ? undefined : triggers?.find((t) => t.id === playbook.trigger_id));
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -312,6 +300,10 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
   const runs = useRuns(api, openId, eventId, live);
   const versions = useVersions(api, openId, eventId, live);
   const lastRuns = useLastRuns(api, view.kind === "list" ? (playbooks ?? []).map((p) => p.id) : [], eventId, live);
+  const tokensToday = useTokensToday(api, eventId, live, view.kind === "list");
+  const owner = current === undefined ? undefined : roster?.find((agent) => agent.id === current.owning_agent);
+  // The title bar shows the count line on the list and the slug on a playbook's detail; the other views show nothing.
+  usePublishSubtitle(view.kind === "list" ? { kind: "list" } : view.kind === "detail" && current !== undefined ? { kind: "detail", slug: current.slug } : { kind: "none" });
 
   const [turnOn, setTurnOn] = useState<number | undefined>(undefined);
   const [offNotice, setOffNotice] = useState<Tagged | undefined>(undefined);
@@ -433,6 +425,7 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
         <PlaybookDetail
           playbook={current}
           trigger={triggerOf(current)}
+          owner={owner === undefined ? undefined : { agent: owner, state: agentAvatarState(owner, approvals) }}
           approval={pendingEnableApproval(approvals, current)}
           runs={runs}
           actions={actions}
@@ -474,7 +467,7 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
     body = (
       <>
         <WaitingBand drafts={drafts} onReview={open} />
-        <PlaybookTable playbooks={playbooks} lastRuns={lastRuns} actions={actions} triggerOf={triggerOf} onOpen={open} />
+        <PlaybookTable playbooks={playbooks} lastRuns={lastRuns} tokensToday={tokensToday} offline={offline} actions={actions} triggerOf={triggerOf} onOpen={open} />
         {offNotice === undefined ? null : (
           <p className="pb-notice" data-tone={offNotice.notice.tone} role="alert" data-testid={IDS.notice}>
             {offNotice.notice.text}
@@ -488,17 +481,13 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
   const showToolbar = view.kind === "list" && playbooks !== undefined && playbooks.length > 0;
   return (
     <div className="playbooks" ref={rootRef} data-testid={IDS.screen} data-state={state} data-offline={offline ? "true" : undefined}>
-      {view.kind === "list" ? (
+      {offline && !reach.shellBand ? <KernelBand testId={IDS.kernelBand} /> : null}
+      {view.kind === "list" && showToolbar ? (
         <div className="pb-tbar">
-          <span className="pb-cap" data-testid={IDS.count}>
-            {playbooks === undefined ? "" : countText(playbooks, offline)}
-          </span>
           <span className="pb-spacer" />
-          {showToolbar ? (
-            <Button variant="secondary" size="standalone" data-testid={IDS.askWright} disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={askWright}>
-              Ask Wright for a playbook
-            </Button>
-          ) : null}
+          <Button variant="secondary" size="standalone" data-testid={IDS.askWright} disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={askWright}>
+            Ask Wright for a playbook
+          </Button>
         </div>
       ) : null}
       {body}

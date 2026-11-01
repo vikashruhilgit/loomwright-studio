@@ -3,7 +3,9 @@
 // Edit in English, Edit fields, Version history and Run now. Every value is the
 // kernel's own answer (the live store and the screen's two reads); nothing here is
 // predicted or defaulted, and an unset value reads "not set".
-import type { Approval, PlaybookListing, PlaybookRun, Trigger } from "../../api/contract";
+import type { Approval, PlaybookListing, PlaybookRun, RosterEntry, Trigger } from "../../api/contract";
+import { Avatar } from "../../components/Avatar/Avatar";
+import type { AvatarState } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
 import type { BadgeTone } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
@@ -39,6 +41,8 @@ export const RECENT_RUNS = 10;
 export interface PlaybookDetailProps {
   readonly playbook: PlaybookListing;
   readonly trigger: Trigger | undefined;
+  /** The owning agent from the roster and its avatar state; `undefined` when the roster does not list it (or is not read yet). */
+  readonly owner: { readonly agent: RosterEntry; readonly state: AvatarState } | undefined;
   /** The pending enable approval that names this playbook, if any. */
   readonly approval: Approval | undefined;
   readonly runs: Read<readonly PlaybookRun[]>;
@@ -144,7 +148,7 @@ function TokensSection({ playbook, runs }: { readonly playbook: PlaybookListing;
   );
 }
 
-export function PlaybookDetail({ playbook, trigger, approval, runs, actions, turnOnOpen, offNotice, runNotice, onBack, onEdit, onHistory }: PlaybookDetailProps) {
+export function PlaybookDetail({ playbook, trigger, owner, approval, runs, actions, turnOnOpen, offNotice, runNotice, onBack, onEdit, onHistory }: PlaybookDetailProps) {
   const state = stateOf(playbook);
   const on = isOn(playbook);
   const nextFire = playbook.next_fire_at ?? trigger?.next_fire_at ?? null;
@@ -158,7 +162,6 @@ export function PlaybookDetail({ playbook, trigger, approval, runs, actions, tur
           <Badge tone={STATE_TONE[state] ?? "neutral"}>{state === "on" ? "on" : state === "draft" ? "draft" : "off"}</Badge>
           <Badge>{`v${playbook.version}`}</Badge>
           {playbook.mode_set_by === null ? null : <Badge>{safe(playbook.mode)}</Badge>}
-          <span className="pb-cap pb-mono">{safe(playbook.slug)}</span>
         </div>
         <div className="pb-actions">
           <Button variant="primary" size="standalone" data-testid={IDS.editEnglish} disabled={actions.offline} onClick={() => actions.editInEnglish(playbook)}>
@@ -215,7 +218,16 @@ export function PlaybookDetail({ playbook, trigger, approval, runs, actions, tur
             <dt>Last result</dt>
             <dd>{trigger === undefined ? "none" : trigger.last_result === null ? "none yet" : safe(trigger.last_result)}</dd>
             <dt>Owner</dt>
-            <dd>{safe(playbook.owning_agent)}</dd>
+            <dd data-testid={IDS.owner}>
+              {owner === undefined ? (
+                safe(playbook.owning_agent)
+              ) : (
+                <span className="pb-owner">
+                  <Avatar agent={{ id: owner.agent.id, name: safe(owner.agent.display_name), shape: owner.agent.avatar.shape, hue: owner.agent.avatar.hue }} state={owner.state} size={20} />
+                  <span>{safe(owner.agent.display_name)}</span>
+                </span>
+              )}
+            </dd>
           </dl>
         </section>
       </div>
