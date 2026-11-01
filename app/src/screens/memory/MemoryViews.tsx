@@ -14,6 +14,7 @@ import type { MemoryConflictError, MemoryFileEntry, MemoryFileResponse, MemoryTr
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import { DiffView } from "../../components/DiffView/DiffView";
+import { KernelBand } from "../../shell/KernelStates";
 import { printable } from "../approvals/printable";
 import {
   MEMORY_TEST_IDS as IDS,
@@ -48,23 +49,23 @@ export type MemoryState = "loading" | "error" | "empty" | "populated" | "file" |
 
 interface FrameProps {
   readonly state: MemoryState;
-  readonly subtitle: string;
   /** The polite live region's text: what a save, a refusal or a copy just did. */
   readonly announcement: string;
   readonly offline: boolean;
+  /** Draw the kernel band here: the screen's own read got no answer before the shell's band showed (never both). */
+  readonly band?: boolean;
   readonly rootRef?: Ref<HTMLDivElement>;
   readonly children: ReactNode;
 }
 
-/** The screen's root (`screen-memory`) and its bar: every state is drawn inside it. */
-export function MemoryFrame({ state, subtitle, announcement, offline, rootRef, children }: FrameProps) {
+/**
+ * The screen's root (`screen-memory`): every state is drawn inside it. The count line is not drawn here: the
+ * title bar shows it (`index.tsx`'s `MemorySubtitle`, fed by `held.ts`).
+ */
+export function MemoryFrame({ state, announcement, offline, band, rootRef, children }: FrameProps) {
   return (
     <div className="memory" data-testid={IDS.screen} data-state={state} data-offline={offline ? "true" : undefined} ref={rootRef}>
-      <div className="memory-bar">
-        <span className="memory-subtitle" data-testid={IDS.subtitle}>
-          {subtitle}
-        </span>
-      </div>
+      {band === true ? <KernelBand /> : null}
       {children}
       <p className="memory-sr" role="status" aria-live="polite" data-testid={IDS.live}>
         {announcement}
@@ -87,7 +88,7 @@ export function MemoryNoKernel() {
 
 export function MemoryLoading({ announcement, offline }: { readonly announcement: string; readonly offline: boolean }) {
   return (
-    <MemoryFrame state="loading" subtitle="" announcement={announcement} offline={offline}>
+    <MemoryFrame state="loading" announcement={announcement} offline={offline}>
       <div className="memory-split" aria-busy="true" data-testid={IDS.loading}>
         <div className="memory-tree">
           <span className="memory-sr" role="status">
@@ -117,10 +118,22 @@ export function MemoryLoading({ announcement, offline }: { readonly announcement
   );
 }
 
-export function MemoryFailure({ error, announcement, offline, onRetry }: { readonly error: Refusal | undefined; readonly announcement: string; readonly offline: boolean; readonly onRetry: () => void }) {
+export function MemoryFailure({
+  error,
+  announcement,
+  offline,
+  band,
+  onRetry,
+}: {
+  readonly error: Refusal | undefined;
+  readonly announcement: string;
+  readonly offline: boolean;
+  readonly band: boolean;
+  readonly onRetry: () => void;
+}) {
   const noAnswer = error === undefined || error.status === 0;
   return (
-    <MemoryFrame state="error" subtitle="memory" announcement={announcement} offline={offline}>
+    <MemoryFrame state="error" announcement={announcement} offline={offline} band={band}>
       <div className="memory-fail" role="alert" data-testid={IDS.error}>
         <h2 className="memory-fail-title">Couldn't load memory</h2>
         <p className="memory-fail-note">
@@ -128,7 +141,8 @@ export function MemoryFailure({ error, announcement, offline, onRetry }: { reado
             ? "The kernel isn't answering, so memory can't be read until it is back. This screen reads again on its own."
             : "The kernel answered, but the memory request failed. Nothing on this screen was changed."}
         </p>
-        {error === undefined ? null : (
+        {/* A request nobody answered has no request line to show (the band says the kernel is away); a refusal names its request and status. */}
+        {noAnswer ? null : (
           <p className="memory-fail-detail" data-testid={IDS.errorDetail}>
             {refusalLine("GET /memory", error)}
           </p>
@@ -143,13 +157,27 @@ export function MemoryFailure({ error, announcement, offline, onRetry }: { reado
   );
 }
 
-export function MemoryEmpty({ dataDir, announcement, offline, onAsk }: { readonly dataDir: string | undefined; readonly announcement: string; readonly offline: boolean; readonly onAsk: () => void }) {
+export function MemoryEmpty({
+  dataDir,
+  home,
+  announcement,
+  offline,
+  band,
+  onAsk,
+}: {
+  readonly dataDir: string | undefined;
+  readonly home: string | undefined;
+  readonly announcement: string;
+  readonly offline: boolean;
+  readonly band: boolean;
+  readonly onAsk: () => void;
+}) {
   return (
-    <MemoryFrame state="empty" subtitle="0 files" announcement={announcement} offline={offline}>
+    <MemoryFrame state="empty" announcement={announcement} offline={offline} band={band}>
       <div className="memory-state" data-testid={IDS.empty}>
         <h2 className="memory-state-title">{EMPTY_TITLE}</h2>
         <p className="memory-state-note">
-          Memory is plain markdown files under <span className="memory-mono">{memoryRoot(dataDir)}</span>. Wright creates its own the first time you talk to it, and a crew member's appear when you create the member.
+          Memory is plain markdown files under <span className="memory-mono">{memoryRoot(dataDir, home)}</span>. Wright creates its own the first time you talk to it, and a crew member's appear when you create the member.
           Nothing here is hidden in a database.
         </p>
         <Button variant="primary" data-testid={IDS.askWright} onClick={onAsk}>
@@ -165,6 +193,8 @@ export function MemoryEmpty({ dataDir, announcement, offline, onAsk }: { readonl
 interface TreeProps {
   readonly tree: MemoryTreeResponse;
   readonly dataDir: string | undefined;
+  /** The owner's home folder, when known: a root under it reads `~/…`. */
+  readonly home: string | undefined;
   /** The file whose view is open (marked current). */
   readonly openPath: string | undefined;
   /** The one file button in the tab order (the others are reached with J, K and the arrows). */
@@ -176,11 +206,11 @@ interface TreeProps {
 }
 
 /** The memory root above the tree, then each folder's files: a `nav` labelled "Memory files". */
-export function MemoryTree({ tree, dataDir, openPath, tabPath, offline, now, onOpen, onFocused }: TreeProps) {
+export function MemoryTree({ tree, dataDir, home, openPath, tabPath, offline, now, onOpen, onFocused }: TreeProps) {
   return (
     <nav className="memory-tree" aria-label="Memory files" data-testid={IDS.tree}>
       <p className="memory-root" data-testid={IDS.root}>
-        {memoryRoot(dataDir)}
+        {memoryRoot(dataDir, home)}
       </p>
       {groupsOf(tree).map((group) => (
         <div key={group.folder} className="memory-group" role="group" aria-label={`${group.label} files`}>
@@ -218,7 +248,7 @@ export function MemoryTree({ tree, dataDir, openPath, tabPath, offline, now, onO
 }
 
 /** "Pick a file": what the pane says before a file is open (the mockup's `memoryOverview`). */
-export function MemoryOverview({ tree, dataDir }: { readonly tree: MemoryTreeResponse; readonly dataDir: string | undefined }) {
+export function MemoryOverview({ tree, dataDir, home }: { readonly tree: MemoryTreeResponse; readonly dataDir: string | undefined; readonly home: string | undefined }) {
   return (
     <div className="memory-pad" data-testid={IDS.overview}>
       <div className="memory-head">
@@ -226,7 +256,7 @@ export function MemoryOverview({ tree, dataDir }: { readonly tree: MemoryTreeRes
         <Badge>{countText(fileCount(tree))}</Badge>
       </div>
       <p className="memory-text">
-        Every file is plain markdown on your disk, under <span className="memory-mono">{memoryRoot(dataDir)}</span>. Read it here, edit it and save. Agents write their lessons during sessions, so a save is checked against what is on disk.
+        Every file is plain markdown on your disk, under <span className="memory-mono">{memoryRoot(dataDir, home)}</span>. Read it here, edit it and save. Agents write their lessons during sessions, so a save is checked against what is on disk.
       </p>
       <ul className="memory-box">
         {groupsOf(tree).map((group) => (
@@ -248,6 +278,7 @@ export function MemoryOverview({ tree, dataDir }: { readonly tree: MemoryTreeRes
 interface FileViewProps {
   readonly path: string;
   readonly dataDir: string | undefined;
+  readonly home: string | undefined;
   /** The tree's row for the file, when it has one: its size and modified time are the kernel's. */
   readonly entry: MemoryFileEntry | undefined;
   /** The file as last read; `undefined` until the first read answers. */
@@ -261,7 +292,7 @@ interface FileViewProps {
   readonly onRetry: () => void;
 }
 
-export function FileView({ path, dataDir, entry, file, readError, offline, now, editRef, onEdit, onRetry }: FileViewProps) {
+export function FileView({ path, dataDir, home, entry, file, readError, offline, now, editRef, onEdit, onRetry }: FileViewProps) {
   const folder = folderOf(path);
   const size = entry === undefined ? (file === undefined ? undefined : bytesOf(file.content)) : entry.size;
   return (
@@ -279,7 +310,7 @@ export function FileView({ path, dataDir, entry, file, readError, offline, now, 
       <dl className="memory-kv">
         <dt>Path</dt>
         <dd className="memory-mono" data-testid={IDS.filePath}>
-          {fullPath(dataDir, path)}
+          {fullPath(dataDir, path, home)}
         </dd>
         <dt>Size</dt>
         <dd className="memory-tn" data-testid={IDS.fileSize}>
@@ -297,7 +328,8 @@ export function FileView({ path, dataDir, entry, file, readError, offline, now, 
       </dl>
       {readError === undefined ? null : (
         <p className="memory-note" data-tone="danger" role="alert" data-testid={IDS.fileError}>
-          {file === undefined ? "Couldn't open this file" : "Couldn't read this file again; the text below is from the last read that answered"} ({refusalLine("GET /memory/file", readError)}).{" "}
+          {file === undefined ? "Couldn't open this file" : "Couldn't read this file again; the text below is from the last read that answered"} (
+          {readError.status === 0 ? "the kernel isn't answering" : refusalLine("GET /memory/file", readError)}).{" "}
           <button type="button" className="memory-link" onClick={onRetry}>
             Try again
           </button>
@@ -334,6 +366,7 @@ export function FileView({ path, dataDir, entry, file, readError, offline, now, 
 interface EditorProps {
   readonly draft: MemoryDraft;
   readonly dataDir: string | undefined;
+  readonly home: string | undefined;
   readonly version: string;
   readonly saving: boolean;
   readonly offline: boolean;
@@ -345,7 +378,7 @@ interface EditorProps {
   readonly onSave: () => void;
 }
 
-export function MemoryEditor({ draft, dataDir, version, saving, offline, saveError, textareaRef, onChange, onCancel, onSave }: EditorProps) {
+export function MemoryEditor({ draft, dataDir, home, version, saving, offline, saveError, textareaRef, onChange, onCancel, onSave }: EditorProps) {
   const dirty = isDirty(draft);
   const hunks = useMemo(() => lineDiff(draft.baseText, draft.text), [draft.baseText, draft.text]);
   const name = printable(fileName(draft.path));
@@ -382,7 +415,7 @@ export function MemoryEditor({ draft, dataDir, version, saving, offline, saveErr
             />
           </div>
           <span className="memory-cap" id="memory-editor-help">
-            Plain markdown, saved to <span className="memory-mono">{fullPath(dataDir, draft.path)}</span>. Lessons files can change under you: agents write them during sessions.
+            Plain markdown, saved to <span className="memory-mono">{fullPath(dataDir, draft.path, home)}</span>. Lessons files can change under you: agents write them during sessions.
           </span>
         </div>
       </div>

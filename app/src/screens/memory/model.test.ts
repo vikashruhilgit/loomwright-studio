@@ -294,6 +294,25 @@ describe("the tree", () => {
     expect(fullPath(undefined, "mason/lessons.md")).toBe("memory/mason/lessons.md");
   });
 
+  it("shows a root under the owner's home as ~/…, and any other root, or one with home unknown, in full", () => {
+    const dataDir = "/Users/me/.loomwright-studio";
+    expect(memoryRoot(dataDir, "/Users/me")).toBe("~/.loomwright-studio/memory/");
+    expect(memoryRoot(`${dataDir}///`, "/Users/me/")).toBe("~/.loomwright-studio/memory/");
+    expect(fullPath(dataDir, "mason/lessons.md", "/Users/me")).toBe("~/.loomwright-studio/memory/mason/lessons.md");
+    // Home unknown: today's behaviour, in full.
+    expect(memoryRoot(dataDir, undefined)).toBe("/Users/me/.loomwright-studio/memory/");
+    expect(fullPath(dataDir, "mason/lessons.md", undefined)).toBe("/Users/me/.loomwright-studio/memory/mason/lessons.md");
+    expect(memoryRoot(dataDir, "")).toBe("/Users/me/.loomwright-studio/memory/");
+    // Outside home, and a home that only shares a prefix with the folder, read in full.
+    expect(memoryRoot("/fixture/studio-data", "/Users/me")).toBe("/fixture/studio-data/memory/");
+    expect(fullPath("/fixture/studio-data", "mason/lessons.md", "/Users/me")).toBe("/fixture/studio-data/memory/mason/lessons.md");
+    expect(memoryRoot("/Users/o2/.loomwright-studio", "/Users/o")).toBe("/Users/o2/.loomwright-studio/memory/");
+    expect(fullPath("/Users/o2/.loomwright-studio", "mason/lessons.md", "/Users/o")).toBe("/Users/o2/.loomwright-studio/memory/mason/lessons.md");
+    // No data folder yet: nothing to shorten, whatever home is.
+    expect(memoryRoot(undefined, "/Users/me")).toBe("memory/");
+    expect(fullPath(undefined, "mason/lessons.md", "/Users/me")).toBe("memory/mason/lessons.md");
+  });
+
   it("writes a control character in a path as an escape, so a name cannot hide what it is", () => {
     expect(fullPath("/data", "mason/a\u001b[2Jb.md")).toBe("/data/memory/mason/a\\x1b[2Jb.md");
     expect(fileLabel({ path: "mason/a‮b.md", size: 3, modified: "2026-10-30T09:00:00.000Z" }, Date.parse("2026-10-30T12:00:00.000Z"))).toContain("a\\u202eb.md");

@@ -13,6 +13,7 @@
 // file's text is shown as written (it is the thing the owner is reading and editing), in a
 // `<pre>` or a `<textarea>`, which are text.
 import type { ApiResult, EventFrame, MemoryConflictError, MemoryFileEntry, MemoryFileResponse, MemoryTreeResponse, TruncatedEventFrame } from "../../api/contract";
+import { formatHomePath } from "../../shell/home-path";
 import { printable } from "../approvals/printable";
 
 /** The ids the unit tests and the e2e spec target. */
@@ -298,14 +299,17 @@ export function folderOf(path: string): string {
   return at < 0 ? "" : path.slice(0, at);
 }
 
-/** The memory root as shown: `<data_dir>/memory/`, or `memory/` until `GET /settings` has answered. */
-export function memoryRoot(dataDir: string | undefined): string {
-  return dataDir === undefined || dataDir === "" ? "memory/" : `${printable(dataDir).replace(/\/+$/, "")}/memory/`;
+/**
+ * The memory root as shown: `<data_dir>/memory/`, or `memory/` until `GET /settings` has answered. A root under
+ * `home` (the owner's home folder) reads `~/…`; with `home` unknown, or a root outside it, it reads in full.
+ */
+export function memoryRoot(dataDir: string | undefined, home?: string): string {
+  return dataDir === undefined || dataDir === "" ? "memory/" : formatHomePath(`${printable(dataDir).replace(/\/+$/, "")}/memory/`, home);
 }
 
-/** A file's full path as shown: the root, then its path under `memory/`. */
-export function fullPath(dataDir: string | undefined, path: string): string {
-  return `${memoryRoot(dataDir)}${printable(path)}`;
+/** A file's full path as shown: the root (`~/…` under `home`), then its path under `memory/`. */
+export function fullPath(dataDir: string | undefined, path: string, home?: string): string {
+  return `${memoryRoot(dataDir, home)}${printable(path)}`;
 }
 
 // ---- size, time, version -----------------------------------------------------------------------------------

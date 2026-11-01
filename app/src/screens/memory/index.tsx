@@ -4,6 +4,8 @@
 import type { StudioBridge } from "../../api/contract";
 import { getBridge } from "../../api/bridge";
 import type { ScreenDefinition } from "../types";
+import { useMemorySubtitle } from "./held";
+import { MEMORY_TEST_IDS } from "./model";
 import { MemoryScreen } from "./MemoryScreen";
 import { MemoryNoKernel } from "./MemoryViews";
 
@@ -18,9 +20,15 @@ function MemoryRoute() {
   return <MemoryScreen api={api} />;
 }
 
+/** The count line the shell's title bar draws beside "Memory" (`ScreenDefinition.Subtitle`, prop-less): the text is `held.ts`'s. */
+function MemorySubtitle() {
+  return <span data-testid={MEMORY_TEST_IDS.subtitle}>{useMemorySubtitle()}</span>;
+}
+
 export const screen: ScreenDefinition = {
   id: "memory",
   title: "Memory",
   nav: { label: "Memory", order: 9, shortcut: "⌘9" },
   Component: MemoryRoute,
+  Subtitle: MemorySubtitle,
 };
