@@ -85,3 +85,9 @@ app/src/screens/keymap
 app/e2e/keyboard.spec.ts
 app/e2e/phase-7-exit.spec.ts
 docs/OPEN_QUESTIONS.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-01T13:49:35Z
+- **Brief:** .supervisor/jobs/done/2026-11-01-keyboard-map-palette-screen-shortcuts.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/194
