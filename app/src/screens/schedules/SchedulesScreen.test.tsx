@@ -16,6 +16,7 @@ import type { FakeBridge } from "../../store/fake-bridge";
 import { SCHEDULES_OWNER } from "./commands";
 import { SCHEDULES_TEST_IDS as IDS } from "./model";
 import { SchedulesScreen } from "./SchedulesScreen";
+import { SubtitleFor } from "./Subtitle";
 
 afterEach(() => {
   cleanup();
@@ -169,10 +170,30 @@ function createKernel(setup: Setup = {}): Kernel {
   return kernel;
 }
 
-/** Render the screen over `kernel` and wait until the schedule's first answer (or its failure) is on it. */
+/**
+ * Render the screen over `kernel`, with the title bar's count line beside it (the shell draws it, outside the screen,
+ * from `./Subtitle.tsx`), and wait until the schedule's first answer (or its failure) is on it.
+ */
 async function mount(kernel: Kernel): Promise<void> {
-  render(<SchedulesScreen api={kernel.fake.bridge} registry={kernel.registry} />);
+  render(
+    <>
+      <SubtitleFor api={kernel.fake.bridge} />
+      <SchedulesScreen api={kernel.fake.bridge} registry={kernel.registry} />
+    </>,
+  );
   await waitFor(() => expect(screen.queryByTestId(IDS.loading)).toBeNull());
+}
+
+/** The default pane is the firing history of every trigger; this opens trigger `index`'s own detail and history from the list. */
+async function openTrigger(index = 0): Promise<void> {
+  fireEvent.click((await screen.findAllByTestId(IDS.select))[index] as HTMLElement);
+  await screen.findByTestId(IDS.detail);
+}
+
+/** `openTrigger`, then wait for that trigger's own history rows. */
+async function openOwnHistory(index = 0): Promise<void> {
+  await openTrigger(index);
+  await screen.findAllByTestId(IDS.fire);
 }
 
 async function start(setup: Setup = {}): Promise<Kernel> {
@@ -272,16 +293,18 @@ describe("the states", () => {
     expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("false");
   });
 
-  it("populated: the timeline, 'Triggers · N', the open trigger's detail and its firing history; no h1 of its own", async () => {
+  it("populated: the timeline, 'Triggers · N' and the firing history of every trigger with no trigger open; no h1 and no count line of its own", async () => {
     const { container } = render(<SchedulesScreen api={createKernel(populated()).fake.bridge} />);
     await screen.findByTestId(IDS.timeline);
     await screen.findByTestId(IDS.triggers);
     expect(container.querySelector("h1")).toBeNull();
-    expect(screen.getByRole("heading", { level: 2, name: "Upcoming" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "Upcoming · Today" })).toBeTruthy();
     expect(screen.getByTestId(IDS.triggersHeading).textContent).toBe("Triggers · 4");
-    expect(screen.getByTestId(IDS.summary).textContent).toBe("4 upcoming · 3 triggers on");
+    // The count line is the title bar's (`Subtitle`), not the screen body's.
+    expect(screen.queryByTestId(IDS.summary)).toBeNull();
     expect(screen.getByRole("heading", { level: 3, name: "Firing history" })).toBeTruthy();
-    expect(screen.getByTestId(IDS.detailName).textContent).toBe("Review PRs on studio-sandbox");
+    expect(screen.queryByTestId(IDS.detail)).toBeNull();
+    expect(screen.getAllByTestId(IDS.select).every((b) => b.getAttribute("aria-current") === null)).toBe(true);
   });
 
   it("a route failure with no data: a card naming the schedule request and its status, distinct from the band; Try again reads once more", async () => {
@@ -361,8 +384,9 @@ describe("the upcoming timeline", () => {
 
   it("is a labelled list; a trigger's kind and spec come from its own row, a wake-up shows its reason", async () => {
     await start(populated());
-    const list = await screen.findByRole("list", { name: "Upcoming" });
-    expect(within(list).getAllByRole("listitem")).toHaveLength(4);
+    // "Upcoming · Today" and, when some entry is due on a later day, "Later": one region holds every entry.
+    await screen.findByRole("heading", { level: 2, name: "Upcoming · Today" });
+    expect(within(screen.getByTestId(IDS.timeline)).getAllByRole("listitem")).toHaveLength(4);
     await waitFor(() => expect(names(IDS.entrySpec)[1]).toBe("poll · every 10 min · studio-sandbox"));
     const specs = names(IDS.entrySpec);
     // 300 minutes ahead may be tomorrow, so either form of the moment is right.
@@ -558,7 +582,7 @@ describe("the firing history", () => {
 
   it("shows each missed fire's recorded reason verbatim beneath its label, newest first; a fired one has no reason line", async () => {
     await start(withHistory());
-    await screen.findByTestId(IDS.table);
+    await openOwnHistory();
     expect(rows().map((r) => r.getAttribute("data-kind"))).toEqual(["trigger_missed", "trigger_fired", "trigger_missed", "trigger_missed"]);
     expect(reasons()).toEqual(["paused", "connector_missing", "rate_limited"]);
     const badges = screen.getAllByTestId(IDS.fireBadge).map((b) => b.textContent);
@@ -567,7 +591,7 @@ describe("the firing history", () => {
 
   it("shows a reason it does not know verbatim, with a neutral 'missed' badge", async () => {
     await start(withHistory());
-    await screen.findByTestId(IDS.table);
+    await openOwnHistory();
     fireEvent.click(screen.getByTestId(IDS.loadOlder));
     await waitFor(() => expect(reasons()).toContain("brand_new_code"));
     const odd = rows().find((r) => r.getAttribute("data-reason") === "brand_new_code");
@@ -588,7 +612,7 @@ describe("the firing history", () => {
 
   it("groups consecutive repeats into one row with a count and the first and last time", async () => {
     await start(withHistory());
-    await screen.findByTestId(IDS.table);
+    await openOwnHistory();
     const first = rows()[0] as HTMLElement;
     expect(first.getAttribute("data-count")).toBe("3");
     expect(first.textContent).toContain("×3");
@@ -600,23 +624,21 @@ describe("the firing history", () => {
 
   it("'Load older' fetches the next page with next_before, continues a repeat across the pages, and goes away at the last page", async () => {
     const kernel = await start(withHistory());
-    await screen.findByTestId(IDS.table);
+    await openOwnHistory();
     const rate = () => rows().find((r) => r.getAttribute("data-reason") === "rate_limited") as HTMLElement;
     expect(rate().getAttribute("data-count")).toBe("1");
     fireEvent.click(screen.getByTestId(IDS.loadOlder));
     await waitFor(() => expect(rows()).toHaveLength(8));
     expect(rate().getAttribute("data-count")).toBe("2");
-    expect(reads(kernel, "GET /triggers/:id/fires").map((r) => [r.params, r.query])).toEqual([
-      [{ id: 1 }, undefined],
-      [{ id: 1 }, { before: "6" }],
-    ]);
+    // The first pages (one per trigger, and the open trigger's own) carry no cursor; the one older page does.
+    expect(reads(kernel, "GET /triggers/:id/fires").filter((r) => r.query !== undefined).map((r) => [r.params, r.query])).toEqual([[{ id: 1 }, { before: "6" }]]);
     expect(screen.queryByTestId(IDS.loadOlder)).toBeNull();
     expect(reasons()).toEqual(["paused", "connector_missing", "rate_limited", "playbook_not_enabled", "kill_switch", "already_done", "brand_new_code"]);
   });
 
   it("'Load older' unmounting at the last page hands focus to the first row it added, not to the page", async () => {
     await start(withHistory());
-    await screen.findByTestId(IDS.table);
+    await openOwnHistory();
     const button = screen.getByTestId(IDS.loadOlder);
     button.focus();
     expect(document.activeElement).toBe(button);
@@ -629,7 +651,7 @@ describe("the firing history", () => {
 
   it("'Load older' does not move focus when the user has moved on, nor when a refetch lands", async () => {
     const kernel = await start(withHistory());
-    await screen.findByTestId(IDS.table);
+    await openOwnHistory();
     const button = screen.getByTestId(IDS.loadOlder);
     button.focus();
     fireEvent.click(button);
@@ -644,7 +666,7 @@ describe("the firing history", () => {
 
   it("filters to 'Not fired' with counts of the fires loaded, '+' while older pages exist", async () => {
     await start(withHistory());
-    await screen.findByTestId(IDS.table);
+    await openOwnHistory();
     expect(screen.getByTestId(IDS.filterAll).textContent).toBe("All · 6+");
     expect(screen.getByTestId(IDS.filterMissed).textContent).toBe("Not fired · 5+");
     expect(screen.getByTestId(IDS.filterAll).getAttribute("aria-pressed")).toBe("true");
@@ -694,7 +716,7 @@ describe("the kernel unreachable", () => {
     emit(kernel, "trigger_fired");
     await waitFor(() => expect(screen.getByTestId(IDS.summary).textContent).toBe("4 upcoming · 3 triggers on · last known"));
     expect(screen.getAllByTestId(IDS.entry)).toHaveLength(4);
-    expect(screen.getAllByTestId(IDS.fire)).toHaveLength(4);
+    expect(screen.getAllByTestId(IDS.allFire)).toHaveLength(4);
     expect(screen.queryByTestId(IDS.empty)).toBeNull();
     expect(screen.queryByTestId(IDS.error)).toBeNull();
     for (const sw of screen.getAllByRole("switch")) expect((sw as HTMLButtonElement).disabled).toBe(true);
@@ -763,8 +785,8 @@ describe("live updates", () => {
     const kernel = await start(withHistory());
     await screen.findByTestId(IDS.table);
     fireEvent.click(screen.getByTestId(IDS.loadOlder));
-    await waitFor(() => expect(screen.getAllByTestId(IDS.fire)).toHaveLength(8));
-    const before = screen.getAllByTestId(IDS.fire);
+    await waitFor(() => expect(screen.getAllByTestId(IDS.allFire)).toHaveLength(8));
+    const before = screen.getAllByTestId(IDS.allFire);
     // The route answers slowly this time: the rows on screen must stay until it does.
     let release: (value: ApiResult<unknown>) => void = () => undefined;
     kernel.schedule = () =>
@@ -781,11 +803,11 @@ describe("live updates", () => {
     await waitFor(() => expect(screen.getAllByTestId(IDS.entry)).toHaveLength(5));
     expect(names(IDS.entryName).at(-1)).toBe("Wake-up #9");
     // The top group took the new fire (same row, count 4); the second page's rows are still loaded.
-    await waitFor(() => expect(screen.getAllByTestId(IDS.fire)[0]?.getAttribute("data-count")).toBe("4"));
-    expect(screen.getAllByTestId(IDS.fire)).toHaveLength(8);
+    await waitFor(() => expect(screen.getAllByTestId(IDS.allFire)[0]?.getAttribute("data-count")).toBe("4"));
+    expect(screen.getAllByTestId(IDS.allFire)).toHaveLength(8);
     // Rows already shown were updated in place, not remounted.
-    expect(screen.getAllByTestId(IDS.fire)[0]).toBe(before[0]);
-    expect(screen.getAllByTestId(IDS.fire)[1]).toBe(before[1]);
+    expect(screen.getAllByTestId(IDS.allFire)[0]).toBe(before[0]);
+    expect(screen.getAllByTestId(IDS.allFire)[1]).toBe(before[1]);
   });
 });
 
@@ -869,7 +891,7 @@ describe("the keyboard", () => {
   it("J and K move between the history's rows, and are left alone with a modifier", async () => {
     await start(withHistory());
     await screen.findByTestId(IDS.table);
-    const rows = screen.getAllByTestId(IDS.fire);
+    const rows = screen.getAllByTestId(IDS.allFire);
     expect(rows[0]?.getAttribute("tabindex")).toBe("0");
     expect(rows[1]?.getAttribute("tabindex")).toBe("-1");
     rows[0]?.focus();
@@ -914,21 +936,23 @@ describe("the ⌘K commands", () => {
     });
     expect(screen.getByTestId(IDS.filterMissed).getAttribute("aria-pressed")).toBe("true");
     expect(document.activeElement).toBe(screen.getByTestId(IDS.filterMissed));
-    expect(screen.getAllByTestId(IDS.fire).every((r) => r.getAttribute("data-kind") === "trigger_missed")).toBe(true);
+    expect(screen.getAllByTestId(IDS.allFire).every((r) => r.getAttribute("data-kind") === "trigger_missed")).toBe(true);
   });
 
-  it("Refresh schedule reads the schedule and the open history again, and is disabled while the kernel is unreachable", async () => {
+  it("Refresh schedule reads the schedule and every trigger's history again, and is disabled while the kernel is unreachable", async () => {
     const kernel = await start(withHistory());
     await screen.findByTestId(IDS.table);
     const refresh = command(kernel, "schedules.refresh");
     expect(refresh.enabled?.()).toBe(true);
     const schedules = reads(kernel, "GET /schedule").length;
-    const fires = reads(kernel, "GET /triggers/:id/fires").length;
+    const firesOfOne = () => reads(kernel, "GET /triggers/:id/fires").filter((r) => r.params?.id === 1).length;
+    const fires = firesOfOne();
     await act(async () => {
       await refresh.run();
     });
     await waitFor(() => expect(reads(kernel, "GET /schedule")).toHaveLength(schedules + 1));
-    await waitFor(() => expect(reads(kernel, "GET /triggers/:id/fires")).toHaveLength(fires + 1));
+    // Every trigger's first page is read again (one request each); trigger 1's is one of them.
+    await waitFor(() => expect(firesOfOne()).toBe(fires + 1));
     kernel.schedule = () => UNREACHABLE;
     emit(kernel, "trigger_fired");
     await waitFor(() => expect(screen.getByTestId(IDS.summary).textContent).toContain("last known"));

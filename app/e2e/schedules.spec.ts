@@ -1,11 +1,14 @@
-// The Schedules & triggers screen (phase 7 item 05) in the built app against the
-// fixture kernel (`./fixtures/schedules.ts`): the upcoming timeline in the order
-// the route sends (AC1), every missed fire's recorded reason and the repeats
-// grouped across "Load older" (AC2, AC3), the switches and the confirm for a past
-// `once` trigger, by keyboard (AC4, AC6), the kernel going away while the screen
-// holds data (AC5), a live update that moves nothing already shown (AC7), the
-// accessible names (AC8), and a light and a dark screenshot of every state the
-// mockup shows (AC9). Run `npm run build` first.
+// The Schedules & triggers screen (phase 7 items 05 and 16) in the built app against
+// the fixture kernel (`./fixtures/schedules.ts`): the upcoming timeline in the order
+// the route sends (AC1), the firing history of every trigger merged newest first and
+// paged to the end without a gap or a repeat, one trigger's own history with every
+// missed fire's recorded reason and the repeats grouped across "Load older" (AC2,
+// AC3), the switches and the confirm for a past `once` trigger, by keyboard (AC4,
+// AC6), the kernel stopping and restarting under the screen (AC5, and item 16's AC1),
+// a live update that moves nothing already shown (AC7), the accessible names (AC8),
+// and a light and a dark screenshot of every state the mockup shows (AC9). The count
+// line is the title bar's (item 16's AC2); the playbook-off note is on trigger 2
+// (AC5). Run `npm run build` first.
 //
 // Screenshots: with `SCHEDULES_EVIDENCE=1` they are written to the committed
 // evidence dir `docs/evidence/phase-7-polish/schedules/`; otherwise to
@@ -26,7 +29,7 @@ import type { ElectronApplication, Locator, Page, TestInfo } from "@playwright/t
 import { launchApp } from "./electron-harness";
 import { startFixtureKernel } from "./fixture-kernel";
 import type { FixtureKernel } from "./fixture-kernel";
-import { PAST_ONCE_ID, POLL_ID, schedulesFixture } from "./fixtures/schedules";
+import { PAST_ONCE_ID, PLAYBOOK_OFF_ID, POLL_ID, ROTATE_ID, WRAPUP_ID, schedulesFixture } from "./fixtures/schedules";
 import type { SchedulesFixture, SchedulesFixtureOptions } from "./fixtures/schedules";
 import { SCHEDULES_TEST_IDS as IDS } from "../src/screens/schedules/model";
 
@@ -69,7 +72,7 @@ async function open(fx: SchedulesFixture): Promise<Page> {
   return page;
 }
 
-/** `open` for a fixture made from `options`, once the populated screen (timeline and the open history) is up. */
+/** `open` for a fixture made from `options`, once the populated screen (timeline and the all-triggers history) is up. */
 async function openPopulated(options: SchedulesFixtureOptions = {}): Promise<{ readonly fx: SchedulesFixture; readonly page: Page }> {
   const fx = schedulesFixture(options);
   const page = await open(fx);
@@ -146,11 +149,62 @@ test("AC1: the upcoming timeline shows the once, cron and poll triggers and the 
 
   await expect(byId(page, IDS.triggersHeading)).toHaveText("Triggers · 6");
   await expect(byId(page, IDS.summary)).toHaveText("5 upcoming · 4 triggers on");
-  await expect(page.getByRole("list", { name: "Upcoming" })).toBeVisible();
+  // The list is headed "Upcoming · Today"; the weekly trigger is a week away, so it is always under "Later" in the same region.
+  await expect(byId(page, IDS.todayHeading)).toHaveText("Upcoming · Today");
+  await expect(byId(page, IDS.timeline)).toHaveCount(1);
+  await expect(byId(page, IDS.laterHeading)).toHaveText("Later");
+  await expect(page.getByRole("list", { name: "Later" }).getByTestId(IDS.entryName)).toHaveText(["Weekly changelog draft"]);
   // The shell draws the one heading; the screen's own are h2 and below.
   expect(await page.locator("h1").allTextContents()).toEqual(["Schedules & triggers"]);
   await expect(page.getByRole("button", { name: /^Schedules/ })).toHaveAttribute("aria-current", "page");
   await screenshots(page, "populated", testInfo);
+});
+
+test("AC2 (item 16): the count line sits in the title bar beside the title, and the screen draws none of its own", async () => {
+  const { page } = await openPopulated();
+  const subtitle = byId(page, "titlebar-subtitle");
+  await expect(subtitle).toHaveText("5 upcoming · 4 triggers on");
+  await expect(subtitle.getByTestId(IDS.summary)).toHaveCount(1);
+  await expect(byId(page, IDS.screen).getByTestId(IDS.summary)).toHaveCount(0);
+  // Beside the title: the same bar, right after the one h1.
+  expect(await page.locator("h1").evaluate((h1) => h1.nextElementSibling?.getAttribute("data-testid"))).toBe("titlebar-subtitle");
+});
+
+test("AC5 (item 16): the playbook-off note is on the row and the upcoming entry of the trigger that is on whose playbook is off, and on no other", async ({}, testInfo) => {
+  const { page } = await openPopulated();
+  const note = "playbook off: fires are skipped";
+  const rowOf = (id: number) => byId(page, IDS.trigger).and(page.locator(`[data-id="${id}"]`));
+  const entryOf = (id: number) => byId(page, IDS.entry).and(page.locator(`[data-id="${id}"]`));
+  await expect(rowOf(PLAYBOOK_OFF_ID).getByTestId(IDS.playbookOff)).toHaveText(note);
+  await expect(entryOf(PLAYBOOK_OFF_ID).getByTestId(IDS.playbookOff)).toHaveText(note);
+  // The enabled playbook (the poll) and the triggers with no playbook show none; nor does a trigger that is off.
+  await expect(byId(page, IDS.playbookOff)).toHaveCount(2);
+  await expect(rowOf(POLL_ID).getByTestId(IDS.playbookOff)).toHaveCount(0);
+  await expect(rowOf(WRAPUP_ID).getByTestId(IDS.playbookOff)).toHaveCount(0);
+  await expect(entryOf(POLL_ID).getByTestId(IDS.playbookOff)).toHaveCount(0);
+  // The skipped fires the poll's history recorded read the same way, with the recorded code beneath.
+  const skipped = byId(page, IDS.allFire).and(page.locator('[data-reason="playbook_not_enabled"]'));
+  for (const shown of ["All · 23+", "All · 36+"]) {
+    await byId(page, IDS.loadOlder).click();
+    await expect(byId(page, IDS.filterAll)).toHaveText(shown);
+  }
+  await expect(skipped.first().getByTestId(IDS.fireBadge)).toHaveText(note);
+  await expect(skipped.first().getByTestId(IDS.fireReason)).toHaveText("playbook_not_enabled");
+  await page.screenshot({ path: testInfo.outputPath("playbook-off.png") });
+});
+
+test("AC4 (item 16): an upcoming title and a trigger-row title wrap to at most two lines, clamped with an ellipsis, and carry their full text as a tooltip", async () => {
+  const { page } = await openPopulated();
+  for (const id of [IDS.entryName, IDS.select]) {
+    const titles = await byId(page, id).all();
+    expect(titles.length).toBeGreaterThan(0);
+    for (const title of titles) {
+      await expect(title).toHaveAttribute("title", /\S/);
+      expect((await title.getAttribute("title")) ?? "", "the tooltip is the title's own text").toBe((await title.textContent())?.trim());
+      const clamp = await title.evaluate((el) => getComputedStyle(el).getPropertyValue("-webkit-line-clamp"));
+      expect(clamp, "two lines, then an ellipsis").toBe("2");
+    }
+  }
 });
 
 test("the empty state: 'Nothing is scheduled.' with one action, Ask Wright to schedule something", async ({}, testInfo) => {
@@ -201,12 +255,100 @@ test("the error state: a route-failure card that names the schedule request and 
 
 // ---- AC2, AC3: the firing history -----------------------------------------------------------------------------
 
-test("AC2/AC3: every missed fire shows its recorded reason, repeats are one row with a count, Load older pages without overlap to the last page, and a connector_missing row links to Integrations", async ({}, testInfo) => {
+/** A row's `<trigger>:<kind>:<reason>:<count>`, in document order, for the rows `id` marks. */
+async function rowKinds(page: Page, id: string): Promise<string[]> {
+  return byId(page, id).evaluateAll((els) => els.map((el) => `${el.getAttribute("data-trigger") ?? ""}:${el.getAttribute("data-kind")}:${el.getAttribute("data-reason")}:${el.getAttribute("data-count")}`));
+}
+
+test("AC3 (item 16): the firing history of every trigger is merged newest first, filters, folds a repeat only within one trigger, and every interleaved fire appears exactly once after paging to the end", async ({}, testInfo) => {
   const { fx, page } = await openPopulated();
+  const rows = byId(page, IDS.allFire);
+  const T = String(WRAPUP_ID);
+  const P = String(POLL_ID);
+  const U = String(ROTATE_ID);
+
+  // The fixture has 46 fires (the poll's 28, "Friday wrap-up"'s 12 and "Rotate the sandbox token"'s 6, ids interleaved); the first pages
+  // hold ten of each trigger that has that many. The merge shows down to the horizon, the newest of the unfinished triggers' oldest
+  // loaded fires: "Friday wrap-up"'s tenth (id 28), so 19 fires, and "Rotate the sandbox token"'s older fires wait below it.
+  await expect(byId(page, IDS.filterAll)).toHaveText("All · 19+");
+  await expect(byId(page, IDS.filterMissed)).toHaveText("Not fired · 7+");
+  expect(await rowKinds(page, IDS.allFire)).toEqual([
+    `${P}:trigger_fired::1`,
+    `${T}:trigger_fired::2`,
+    `${P}:trigger_fired::1`,
+    `${T}:trigger_missed:paused:1`,
+    `${T}:trigger_fired::1`,
+    `${U}:trigger_missed:already_done:1`,
+    `${P}:trigger_missed:rate_limited:1`,
+    `${T}:trigger_fired::2`,
+    // The poll's four polls missed while paused are three rows: the other triggers' fires sit between them, and a repeat never folds across two triggers.
+    `${P}:trigger_missed:paused:1`,
+    `${T}:trigger_fired::2`,
+    `${P}:trigger_missed:paused:1`,
+    `${T}:trigger_fired::1`,
+    `${U}:trigger_fired::1`,
+    `${P}:trigger_missed:paused:2`,
+    `${T}:trigger_fired::1`,
+  ]);
+  // Each row names its trigger; a trigger is named by its playbook, else its text.
+  const names = await texts(page, IDS.fireTrigger);
+  expect(names.slice(0, 6)).toEqual(["Review PRs on studio-sandbox", "Friday wrap-up", "Review PRs on studio-sandbox", "Friday wrap-up", "Friday wrap-up", "Rotate the sandbox token"]);
+  await expect(byId(page, IDS.table)).toHaveCount(1);
+  await expect(byId(page, IDS.detail)).toHaveCount(0);
+
+  // The filter keeps the missed rows; the screenshot is of this view.
+  await byId(page, IDS.filterMissed).click();
+  await expect(byId(page, IDS.filterMissed)).toHaveAttribute("aria-pressed", "true");
+  // Seven missed fires, in six rows (the last two paused polls are one).
+  expect(await rows.evaluateAll((els) => els.map((el) => el.getAttribute("data-kind")))).toEqual(Array(6).fill("trigger_missed"));
+  await screenshots(page, "not-fired", testInfo);
+  await byId(page, IDS.filterAll).click();
+
+  // "Load older" three times: each click reads the next page of the trigger holding the horizon, so the list grows from 19 to 23, 36 and 46, and nothing is skipped or repeated.
+  const step = async (all: string, missed: string) => {
+    await byId(page, IDS.loadOlder).click();
+    await expect(byId(page, IDS.filterAll)).toHaveText(all);
+    await expect(byId(page, IDS.filterMissed)).toHaveText(missed);
+  };
+  await step("All · 23+", "Not fired · 9+");
+  await step("All · 36+", "Not fired · 19+");
+  // The poll's connector repeat folds across its first two pages, in one row.
+  await expect(page.locator(`[data-testid="${IDS.allFire}"][data-reason="connector_missing"]`)).toHaveAttribute("data-count", "2");
+  await step("All · 46", "Not fired · 23");
+  await expect(byId(page, IDS.loadOlder)).toHaveCount(0);
+
+  // 46 fires, each once: the counts of the rows add up per trigger to the fixture's 28, 12 and 6.
+  const perTrigger = await rows.evaluateAll((els) => {
+    const total: Record<string, number> = {};
+    for (const el of els) total[el.getAttribute("data-trigger") ?? ""] = (total[el.getAttribute("data-trigger") ?? ""] ?? 0) + Number(el.getAttribute("data-count"));
+    return total;
+  });
+  expect(perTrigger).toEqual({ [P]: 28, [T]: 12, [U]: 6 });
+  // One first page for each of the six triggers (the fan-out, in no fixed order), then the pages the horizon asked for: "Friday wrap-up" first, then the poll twice.
+  const reads = fx.fireReads.map((r) => [r.id, r.before] as const);
+  expect(reads.slice(0, 6).map(([id]) => id).sort()).toEqual(["1", "2", "3", "4", "5", "6"]);
+  expect(reads.slice(0, 6).every(([, before]) => before === undefined)).toBe(true);
+  expect(reads.slice(6)).toEqual([
+    [T, "28"],
+    [P, "24"],
+    [P, "11"],
+  ]);
+  // Only the missing connector links to Integrations.
+  const links = byId(page, IDS.fireLink);
+  await expect(links).toHaveCount(1);
+  await expect(links).toHaveAttribute("href", "#/integrations");
+});
+
+test("AC2/AC3: one trigger's own history shows every missed fire's recorded reason, repeats are one row with a count, Load older pages without overlap to the last page, and a connector_missing row links to Integrations", async () => {
+  const { fx, page } = await openPopulated();
+  await page.getByTestId(IDS.select).filter({ hasText: "Review PRs on studio-sandbox" }).click();
+  await expect(byId(page, IDS.detailName)).toHaveText("Review PRs on studio-sandbox");
   const rows = byId(page, IDS.fire);
   const kinds = async () => rows.evaluateAll((els) => els.map((el) => `${el.getAttribute("data-kind")}:${el.getAttribute("data-reason")}:${el.getAttribute("data-count")}`));
+  await expect(rows.first()).toBeVisible();
+  await expect(byId(page, IDS.allFire)).toHaveCount(0);
 
-  // Page one (ids 28 to 19): two fired in a row, a rate limit, four polls missed while paused, a fire, a kill switch, a missing connector.
+  // Page one (the poll's ten newest): two fired in a row, a rate limit, four polls missed while paused, a fire, a kill switch, a missing connector.
   expect(await kinds()).toEqual([
     "trigger_fired::2",
     "trigger_missed:rate_limited:1",
@@ -222,11 +364,9 @@ test("AC2/AC3: every missed fire shows its recorded reason, repeats are one row 
   await expect(byId(page, IDS.filterAll)).toHaveText("All · 10+");
   await expect(byId(page, IDS.filterMissed)).toHaveText("Not fired · 7+");
 
-  // The filter keeps the missed groups; the screenshot is of this view.
   await byId(page, IDS.filterMissed).click();
   await expect(byId(page, IDS.filterMissed)).toHaveAttribute("aria-pressed", "true");
   expect(await rows.evaluateAll((els) => els.map((el) => el.getAttribute("data-kind")))).toEqual(Array(4).fill("trigger_missed"));
-  await screenshots(page, "not-fired", testInfo);
   await byId(page, IDS.filterAll).click();
 
   // Load older twice: the connector repeat runs across the first two pages, and nothing repeats or is skipped.
@@ -234,20 +374,23 @@ test("AC2/AC3: every missed fire shows its recorded reason, repeats are one row 
   await expect(byId(page, IDS.filterAll)).toHaveText("All · 20+");
   await expect(rows.nth(5)).toHaveAttribute("data-count", "2");
   await expect(rows.nth(5)).toHaveAttribute("data-reason", "connector_missing");
-  // A reason the screen has no label for is shown verbatim with a neutral 'missed'.
+  // A reason the screen has no label for is shown verbatim with a neutral 'missed'; a playbook that was off reads as such.
   const unknown = page.locator('tr[data-reason="queue_overflow"]');
   await expect(unknown).toHaveCount(1);
   await expect(unknown.getByTestId(IDS.fireReason)).toHaveText("queue_overflow");
   await expect(unknown.locator(".badge")).toHaveText("missed");
   await expect(unknown.locator(".badge")).toHaveAttribute("data-tone", "neutral");
+  const off = page.locator('tr[data-reason="playbook_not_enabled"]');
+  await expect(off.getByTestId(IDS.fireBadge)).toHaveText("playbook off: fires are skipped");
+  await expect(off.getByTestId(IDS.fireReason)).toHaveText("playbook_not_enabled");
   await byId(page, IDS.loadOlder).click();
   await expect(byId(page, IDS.loadOlder)).toHaveCount(0);
   await expect(byId(page, IDS.filterAll)).toHaveText("All · 28");
   await expect(byId(page, IDS.filterMissed)).toHaveText("Not fired · 19");
-  expect(fx.fireReads.map((r) => [r.id, r.before])).toEqual([
-    [String(POLL_ID), undefined],
-    [String(POLL_ID), "19"],
-    [String(POLL_ID), "9"],
+  // The poll's own pages carry the cursors of its own ids: the tenth and the twentieth of its fires.
+  expect(fx.fireReads.filter((r) => r.before !== undefined).map((r) => [r.id, r.before])).toEqual([
+    [String(POLL_ID), "24"],
+    [String(POLL_ID), "11"],
   ]);
   // 28 fires in 10 + 10 + 8: the counts of the rows add up to every fire once.
   const counts = await rows.evaluateAll((els) => els.map((el) => Number(el.getAttribute("data-count"))));
@@ -260,13 +403,20 @@ test("AC2/AC3: every missed fire shows its recorded reason, repeats are one row 
   await expect(links.locator("xpath=ancestor::tr")).toHaveAttribute("data-reason", "connector_missing");
 });
 
-test("a trigger without fires says so, and the history follows the trigger chosen in the list", async () => {
+test("choosing a trigger in the list opens its detail and its own history, a trigger without fires says so, and 'All triggers' returns to the history of every trigger", async () => {
   const { page } = await openPopulated();
-  await page.getByTestId(IDS.select).filter({ hasText: "Friday wrap-up" }).click();
-  await expect(byId(page, IDS.detailName)).toHaveText("Friday wrap-up");
+  await expect(byId(page, IDS.allTriggers)).toHaveCount(0);
+  await page.getByTestId(IDS.select).filter({ hasText: "Weekly changelog draft" }).click();
+  await expect(byId(page, IDS.detailName)).toHaveText("Weekly changelog draft");
   await expect(byId(page, IDS.historyEmpty)).toHaveText("Nothing has fired or been missed yet.");
   await expect(byId(page, IDS.table)).toHaveCount(0);
-  await expect(page.getByTestId(IDS.select).filter({ hasText: "Friday wrap-up" })).toHaveAttribute("aria-current", "true");
+  await expect(page.getByTestId(IDS.select).filter({ hasText: "Weekly changelog draft" })).toHaveAttribute("aria-current", "true");
+  await byId(page, IDS.allTriggers).click();
+  await expect(byId(page, IDS.detail)).toHaveCount(0);
+  await expect(byId(page, IDS.table)).toBeVisible();
+  await expect(byId(page, IDS.allFire).first()).toBeVisible();
+  await expect(page.getByTestId(IDS.select).filter({ hasText: "Weekly changelog draft" })).toBeFocused();
+  await expect(page.getByTestId(IDS.select).filter({ hasText: "Weekly changelog draft" })).not.toHaveAttribute("aria-current", "true");
 });
 
 // ---- AC4, AC6: the switches and the confirm, by keyboard -----------------------------------------------------------
@@ -351,34 +501,75 @@ test("AC6: J and K move between the triggers and between the history's rows, and
   await expect(page.getByTestId("screen-integrations")).toBeVisible();
 });
 
-// ---- AC5: the kernel unreachable -----------------------------------------------------------------------------------
+// ---- AC5, and item 16's AC1: the kernel stopping and restarting ---------------------------------------------------
 
-test("AC5: when the kernel goes away the shared band shows, the screen keeps its last data marked last known, every kernel control is disabled and nothing throws", async ({}, testInfo) => {
+const bands = (page: Page): Locator => page.locator('[data-testid="kernel-unreachable-band"], [data-testid="kernel-reconnecting-band"]');
+
+test("AC1 (item 16): when the kernel stops the shared band shows and the screen keeps its timeline, trigger list and firing history as last read, marked last known, with every kernel control disabled; after restart it reads again by itself", async ({}, testInfo) => {
   const { page } = await openPopulated();
   const timeline = await texts(page, IDS.entryName);
-  const history = await texts(page, IDS.fireReason);
+  const triggers = await texts(page, IDS.select);
+  const history = await rowKinds(page, IDS.allFire);
   expect(timeline).toHaveLength(5);
-  await fixture?.close();
-  await expect(page.locator('[data-testid="kernel-unreachable-band"], [data-testid="kernel-reconnecting-band"]').first()).toBeVisible({ timeout: 20_000 });
-  await expect(byId(page, IDS.summary)).toContainText("last known");
+  expect(triggers).toHaveLength(6);
+  await fixture?.stop();
+  await expect(bands(page).first()).toBeVisible({ timeout: 20_000 });
+  await expect(bands(page)).toHaveCount(1);
+  await expect(byId(page, "titlebar-subtitle")).toHaveText("5 upcoming · 4 triggers on · last known");
   expect(await texts(page, IDS.entryName), "the timeline is the last read").toEqual(timeline);
-  expect(await texts(page, IDS.fireReason), "the history is the last read").toEqual(history);
+  expect(await texts(page, IDS.select), "the trigger list is the last read").toEqual(triggers);
+  expect(await rowKinds(page, IDS.allFire), "the firing history is the last read").toEqual(history);
   await expect(byId(page, IDS.empty)).toHaveCount(0);
   await expect(byId(page, IDS.error)).toHaveCount(0);
-  for (const sw of await page.getByRole("switch").all()) await expect(sw).toBeDisabled();
+  await expect(byId(page, IDS.unknown)).toHaveCount(0);
+  // Every control that needs the kernel is off and says why.
+  for (const sw of await page.getByRole("switch").all()) {
+    await expect(sw).toBeDisabled();
+    await expect(sw).toHaveAttribute("title", "Needs the kernel");
+  }
   await expect(byId(page, IDS.loadOlder)).toBeDisabled();
+  await expect(byId(page, IDS.loadOlder)).toHaveAttribute("title", "Needs the kernel");
   await expect(page.getByRole("button", { name: "Refresh" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Refresh" })).toHaveAttribute("title", "Needs the kernel");
+  // No raw request text: no method, path or connection state in the screen.
+  expect(await byId(page, IDS.screen).innerText()).not.toMatch(/\b(GET|POST)\b|\/schedule|\/triggers|reconnecting|unreachable|ECONN/i);
   // What only changes the view of data held stays usable.
   await expect(byId(page, IDS.filterMissed)).toBeEnabled();
   await byId(page, IDS.filterMissed).click();
   await expect(byId(page, IDS.filterMissed)).toHaveAttribute("aria-pressed", "true");
   await byId(page, IDS.filterAll).click();
   await screenshots(page, "unreachable", testInfo);
+
+  // Leaving the screen and coming back while the kernel is stopped still shows the last data: the answers are held per bridge.
+  await page.evaluate(() => {
+    window.location.hash = "#/chat";
+  });
+  await expect(byId(page, IDS.screen)).toHaveCount(0);
+  await page.evaluate(() => {
+    window.location.hash = "#/schedules";
+  });
+  await expect(byId(page, IDS.screen)).toBeVisible();
+  expect(await texts(page, IDS.entryName), "the timeline survives a remount").toEqual(timeline);
+  expect(await rowKinds(page, IDS.allFire), "the history survives a remount").toEqual(history);
+  await expect(byId(page, IDS.unknown)).toHaveCount(0);
+  await expect(byId(page, "titlebar-subtitle")).toHaveText("5 upcoming · 4 triggers on · last known");
+  await expect(bands(page)).toHaveCount(1);
+
+  // The kernel comes back: the screen reads again by itself (no click, no event) and the mark goes away.
+  const reads = () => fixture?.requests.filter((r) => r.method === "GET" && r.path === "/schedule").length ?? 0;
+  const before = reads();
+  await fixture?.restart();
+  await expect(bands(page)).toHaveCount(0, { timeout: 30_000 });
+  await expect.poll(reads, { timeout: 30_000 }).toBeGreaterThan(before);
+  await expect(byId(page, "titlebar-subtitle")).toHaveText("5 upcoming · 4 triggers on");
+  for (const sw of await page.getByRole("switch").all()) await expect(sw).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
+  await expect(byId(page, IDS.loadOlder)).toBeEnabled();
 });
 
 // ---- AC7: live updates ---------------------------------------------------------------------------------------------
 
-test("AC7: a trigger_fired and a wakeup_scheduled event update the timeline and the open history with no reload, no loading state, and no row already shown moving", async () => {
+test("AC7: a trigger_fired and a wakeup_scheduled event update the timeline and the firing history with no reload, no loading state, and no row already shown moving", async () => {
   const { fx, page } = await openPopulated();
   await settle(page);
   // A marker (a reload would drop it) and a watcher for either skeleton (a flash would set it).
@@ -396,12 +587,11 @@ test("AC7: a trigger_fired and a wakeup_scheduled event update the timeline and 
   const shown = async () => ({
     entries: await boxes(page, IDS.entry),
     triggers: await boxes(page, IDS.trigger),
-    fires: await boxes(page, IDS.fire),
-    detail: await byId(page, IDS.detail).boundingBox(),
+    fires: await boxes(page, IDS.allFire),
   });
   const before = await shown();
   expect(before.entries, "five timeline entries have a box").toHaveLength(5);
-  expect(before.fires, "six history rows have a box").toHaveLength(6);
+  expect(before.fires, "fifteen history rows have a box").toHaveLength(15);
   expect([...before.entries, ...before.triggers, ...before.fires].every((b) => b !== null)).toBe(true);
   const reads = () => fixture?.requests.filter((r) => r.method === "GET" && r.path === "/schedule").length ?? 0;
   const readsBefore = reads();
@@ -409,7 +599,8 @@ test("AC7: a trigger_fired and a wakeup_scheduled event update the timeline and 
   fx.fireOnPoll();
   fx.scheduleWakeup();
   await expect(byId(page, IDS.entry)).toHaveCount(6);
-  await expect(byId(page, IDS.fire).first()).toHaveAttribute("data-count", "3");
+  // The poll's new fire joins the top group (a fired row of the same trigger): the same row, one more in its count.
+  await expect(byId(page, IDS.allFire).first()).toHaveAttribute("data-count", "2");
   await expect(byId(page, IDS.summary)).toHaveText("6 upcoming · 4 triggers on");
   expect(await texts(page, IDS.entryName)).toContain("Wake-up #9 · task #12");
   await settle(page);
@@ -419,7 +610,6 @@ test("AC7: a trigger_fired and a wakeup_scheduled event update the timeline and 
   expect(after.entries.slice(0, 5), "the timeline entries already shown did not move or resize").toEqual(before.entries);
   expect(after.triggers, "the trigger rows did not move or resize").toEqual(before.triggers);
   expect(after.fires, "the history rows did not move or resize (the new fire joined the top group)").toEqual(before.fires);
-  expect(after.detail, "the detail did not move").toEqual(before.detail);
   const seen = await page.evaluate(() => ({ marker: (window as unknown as { __marker?: string }).__marker, loading: (window as unknown as { __loadingSeen?: boolean }).__loadingSeen }));
   expect(seen.marker, "the window was not reloaded").toBe("same-window");
   expect(seen.loading, "the screen never flashed a loading state").toBe(false);
@@ -453,7 +643,8 @@ test("AC8: every switch, chip, button, badge, list and table has an accessible n
   await expect(screenRoot.getByRole("button", { name: /^Not fired · \d+\+?$/ })).toHaveAttribute("aria-pressed", "false");
   await expect(screenRoot.getByRole("button", { name: "Load older" })).toBeVisible();
   await expect(screenRoot.getByRole("button", { name: "Refresh" })).toBeVisible();
-  await expect(screenRoot.getByRole("list", { name: "Upcoming" })).toBeVisible();
+  await expect(screenRoot.getByRole("list", { name: "Later" })).toBeVisible();
+  await expect(screenRoot.getByRole("heading", { level: 2, name: "Upcoming · Today" })).toBeVisible();
   await expect(screenRoot.getByRole("list", { name: "Triggers" })).toBeVisible();
   await expect(screenRoot.getByRole("table", { name: "Firing history" })).toBeVisible();
   await expect(screenRoot.getByRole("columnheader")).toHaveText(["When", "Trigger", "Result"]);

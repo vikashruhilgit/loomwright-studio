@@ -90,8 +90,8 @@ describe("the title bar", () => {
     expect(container.querySelector("header")?.children).toHaveLength(1);
   });
 
-  it("no screen declares one yet (each screen's item moves its own count line)", () => {
-    expect(SCREENS.filter((s) => s.Subtitle !== undefined).map((s) => s.id)).toEqual([]);
+  it("the screens that declare a count line (each screen's item moves its own)", () => {
+    expect(SCREENS.filter((s) => s.Subtitle !== undefined).map((s) => s.id)).toEqual(["schedules"]);
   });
 });
 
