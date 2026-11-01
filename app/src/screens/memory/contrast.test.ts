@@ -36,7 +36,6 @@ function colorOf(declarations: string): string | undefined {
 /** [selector in memory.css, foreground token, background token, where it is used]. */
 const TEXT: readonly (readonly [string, string, string, string])[] = [
   [".memory", "ink", "ground", "the screen's own text"],
-  [".memory-subtitle", "ink-tertiary", "ground", "the count line in the bar"],
   [".memory-root", "ink-tertiary", "ground", "the memory root above the tree"],
   [".memory-folder-name", "ink-tertiary", "ground", "a folder's name in the tree"],
   [".memory-cap", "ink-tertiary", "ground", "captions on the page ground"],

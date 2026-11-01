@@ -21,22 +21,6 @@
   color: var(--ink);
 }
 
-.memory-bar {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--row-height);
-  padding: var(--space-2) var(--space-5);
-  border-bottom: 1px solid var(--hairline);
-}
-.memory-subtitle {
-  color: var(--ink-tertiary);
-  font-size: var(--type-caption-size);
-  line-height: var(--type-caption-line);
-  font-variant-numeric: tabular-nums;
-}
-
 .memory-sr {
   position: absolute;
   width: 1px;

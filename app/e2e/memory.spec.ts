@@ -4,8 +4,10 @@
 // agent's write causes and the ways out of it, with the draft kept (AC8), the kernel going away
 // while the screen holds data or a draft (AC9), the keyboard (AC10), a live update that moves
 // nothing already shown and never touches a draft (AC11), the accessible names and the tokens
-// (AC12), and a light and a dark screenshot of each state the mockup shows (AC13). Run
-// `npm run build` first.
+// (AC12), and a light and a dark screenshot of each state the mockup shows (AC13). The count line is
+// the title bar's (`titlebar-subtitle`), the kernel stopping and coming back is the fixture's
+// `stop()` / `restart()`, a screen opened again while the kernel is away keeps its last-known tree,
+// and a data folder under the owner's home reads `~/…`. Run `npm run build` first.
 //
 // Screenshots: with `MEMORY_EVIDENCE=1` they are written to the committed evidence dir
 // `docs/evidence/phase-7-polish/memory/`; otherwise to Playwright's per-test output dir, so CI
@@ -18,16 +20,18 @@
 // arrows and Escape. The screen's two palette commands are pinned in `MemoryScreen.test.tsx`
 // (jsdom).
 import { mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import type { ElectronApplication, Locator, Page, TestInfo } from "@playwright/test";
 import { launchApp } from "./electron-harness";
 import { startFixtureKernel } from "./fixture-kernel";
-import type { FixtureKernel } from "./fixture-kernel";
+import type { FixtureKernel, FixtureRoute } from "./fixture-kernel";
 import { LESSONS_AGENT, LESSONS_AGENT_LINE, LESSONS_BASE, LESSONS_MINE, LESSONS_MINE_LINE, LESSONS_PATH, hashOf, memoryFixture } from "./fixtures/memory";
 import type { MemoryFixture, MemoryFixtureOptions } from "./fixtures/memory";
 import { MEMORY_TEST_IDS as IDS } from "../src/screens/memory/model";
+import type { SettingsResponse } from "../src/api/contract";
 
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-7-polish/memory/", import.meta.url));
 const README = join(EVIDENCE_DIR, "README.md");
@@ -35,6 +39,11 @@ const THEMES = ["light", "dark"] as const;
 /** The mockup's eight Memory states (`memory-<state>`), as the file names have them. */
 const STATES = ["empty", "loading", "populated", "file", "edit", "conflict", "error", "unreachable"] as const;
 const DATA_DIR = "/fixture/studio-data";
+/** A data folder under the owner's home: the app's `homeDir` (main's `app.getPath("home")`) answers the same `HOME`. */
+const HOME_DATA_DIR = join(homedir(), ".loomwright-studio");
+const BAND_IDS = ["kernel-unreachable-band", "kernel-reconnecting-band"] as const;
+/** What no window may show while the kernel does not answer: a request line, "no answer" or a connection code. */
+const REQUEST_TEXT = ["GET /memory", "GET /memory/file", "no answer", "not_installed", "daemon_not_running", "connection_failed"] as const;
 
 /** When this run began, for the guard that the tracked evidence dir is untouched without `MEMORY_EVIDENCE`. */
 const RUN_START = Date.now();
@@ -55,9 +64,20 @@ test.afterEach(async () => {
 const byId = (page: Page, id: string): Locator => page.getByTestId(id);
 const fileButton = (page: Page, path: string): Locator => page.locator(`[data-testid="${IDS.fileButton}"][data-path="${path}"]`);
 
-/** Launch the built app on a fixture kernel serving `fx`, and open Memory by its hash. */
-async function open(fx: MemoryFixture): Promise<Page> {
-  fixture = await startFixtureKernel(fx.options);
+/** `GET /settings` as the fixture serves it, with `data_dir` set (the fixture merges `routes` over its defaults). */
+const settingsAt = (dataDir: string): FixtureRoute => () => ({
+  status: 200,
+  body: {
+    provider: { id: "subscription-token", account: "fixture", health: { status: "ok" }, token_created_at: null },
+    data_dir: dataDir,
+    notifier: "none",
+    loomwright: { status: "ok", install_path: "/fixture/loomwright", plugin_version: "0.0.0-fixture", contract_schema_version: 1, host_switch: false },
+  } satisfies SettingsResponse,
+});
+
+/** Launch the built app on a fixture kernel serving `fx`, and open Memory by its hash. `home`: its `data_dir` is under the owner's home. */
+async function open(fx: MemoryFixture, home = false): Promise<Page> {
+  fixture = await startFixtureKernel(home ? { ...fx.options, routes: { ...fx.options.routes, "GET /settings": settingsAt(HOME_DATA_DIR) } } : fx.options);
   fx.attach(fixture);
   app = await launchApp(fixture.env);
   const page = await app.firstWindow();
@@ -71,9 +91,9 @@ async function open(fx: MemoryFixture): Promise<Page> {
 }
 
 /** `open` for a fixture made from `options`, once the tree is up. */
-async function openPopulated(options: MemoryFixtureOptions = {}): Promise<{ readonly fx: MemoryFixture; readonly page: Page }> {
+async function openPopulated(options: MemoryFixtureOptions = {}, home = false): Promise<{ readonly fx: MemoryFixture; readonly page: Page }> {
   const fx = memoryFixture(options);
-  const page = await open(fx);
+  const page = await open(fx, home);
   await expect(byId(page, IDS.tree)).toBeVisible();
   return { fx, page };
 }
@@ -145,11 +165,22 @@ async function tabTo(page: Page, target: Locator, max = 12): Promise<void> {
 }
 
 const bannerLocator = (page: Page): Locator => page.locator('[data-testid="kernel-unreachable-band"], [data-testid="kernel-reconnecting-band"]').first();
+/** Every kernel band in the window: the shell's one, or the screen's own, never both. */
+const allBands = (page: Page): Locator => page.locator(BAND_IDS.map((id) => `[data-testid="${id}"]`).join(", "));
+
+/** The window shows no request text at all (AC4). */
+async function expectNoRequestText(page: Page): Promise<void> {
+  const text = await page.locator("body").innerText();
+  for (const forbidden of REQUEST_TEXT) expect(text, `the window shows no "${forbidden}"`).not.toContain(forbidden);
+}
+
+/** The count line, which the title bar draws beside the heading. */
+const titlebarLine = (page: Page): Locator => byId(page, "titlebar-subtitle");
 
 // ---- AC6: the tree and the paths -----------------------------------------------------------------------------------------
 
 test("AC6: the tree lists every agent's files and the shared files under their folder with sizes, the memory root is above it, and the overview reads 'Pick a file'", async ({}, testInfo) => {
-  const { fx, page } = await openPopulated();
+  const { fx, page } = await openPopulated({}, true);
   const nav = page.getByRole("navigation", { name: "Memory files" });
   await expect(nav).toBeVisible();
   expect(await texts(page, IDS.folder)).toEqual(["Wrightwright/", "Adaada/", "Masonmason/", "Sharedshared/"]);
@@ -164,10 +195,14 @@ test("AC6: the tree lists every agent's files and the shared files under their f
     const bytes = Buffer.byteLength(fx.contentOf(path) as string);
     await expect(fileButton(page, path).locator(".memory-file-size")).toHaveText(bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`);
   }
-  // The root comes from GET /settings: the fixture's canned data dir.
-  await expect(byId(page, IDS.root)).toHaveText(`${DATA_DIR}/memory/`);
+  // The root comes from GET /settings (a data folder under home here) and reads `~/…` (AC5).
+  await expect(byId(page, IDS.root)).toHaveText("~/.loomwright-studio/memory/");
   await expect(byId(page, IDS.overview).getByRole("heading", { level: 2 })).toHaveText("Pick a file");
-  await expect(byId(page, IDS.subtitle)).toHaveText("14 files");
+  // The count line is the title bar's (AC3): beside the heading, and the screen draws no bar of its own.
+  await expect(titlebarLine(page)).toHaveText("14 files");
+  await expect(titlebarLine(page).getByTestId(IDS.subtitle)).toHaveText("14 files");
+  await expect(byId(page, IDS.screen).getByTestId(IDS.subtitle)).toHaveCount(0);
+  await expect(page.locator(".memory-bar")).toHaveCount(0);
   // The shell draws the one heading; the screen's own are h2 and below.
   expect(await page.locator("h1").allTextContents()).toEqual(["Memory"]);
   await expect(page.getByRole("button", { name: /^Memory/ })).toHaveAttribute("aria-current", "page");
@@ -175,9 +210,9 @@ test("AC6: the tree lists every agent's files and the shared files under their f
 });
 
 test("AC6: opening a file shows its full path, size, modified time, version and its text in a focusable <pre>", async ({}, testInfo) => {
-  const { fx, page } = await openPopulated();
+  const { fx, page } = await openPopulated({}, true);
   await openFile(page, LESSONS_PATH);
-  await expect(byId(page, IDS.filePath)).toHaveText(`${DATA_DIR}/memory/${LESSONS_PATH}`);
+  await expect(byId(page, IDS.filePath)).toHaveText(`~/.loomwright-studio/memory/${LESSONS_PATH}`);
   await expect(byId(page, IDS.fileSize)).toHaveText(`${Buffer.byteLength(LESSONS_BASE)} B`);
   await expect(byId(page, IDS.fileModified)).toHaveText(/^today \d\d:\d\d$/);
   await expect(byId(page, IDS.fileVersion)).toHaveText(hashOf(LESSONS_BASE).slice(0, 8));
@@ -188,6 +223,36 @@ test("AC6: opening a file shows its full path, size, modified time, version and 
   await expect(fileButton(page, LESSONS_PATH)).toHaveAttribute("aria-current", "true");
   expect(fx.fileReads).toEqual([LESSONS_PATH]);
   await screenshots(page, "file", testInfo);
+});
+
+test("AC5: a data folder outside home reads in full, in the root and in a file's Path", async () => {
+  const { page } = await openPopulated();
+  await expect(byId(page, IDS.root)).toHaveText(`${DATA_DIR}/memory/`);
+  await openFile(page, LESSONS_PATH);
+  await expect(byId(page, IDS.filePath)).toHaveText(`${DATA_DIR}/memory/${LESSONS_PATH}`);
+});
+
+test("AC5: the editor's note reads the path as ~/… under home, and the title bar's line follows the view", async () => {
+  const { page } = await openPopulated({}, true);
+  await openFile(page, LESSONS_PATH);
+  await byId(page, IDS.edit).click();
+  await expect(byId(page, IDS.editor)).toContainText(`saved to ~/.loomwright-studio/memory/${LESSONS_PATH}.`);
+  await expect(titlebarLine(page)).toHaveText("Edit");
+});
+
+test("AC6: Edit then Cancel with nothing typed writes nothing, returns the same file view, and puts focus back on Edit", async () => {
+  const { fx, page } = await openPopulated({}, true);
+  await openFile(page, LESSONS_PATH);
+  const before = { text: await byId(page, IDS.contents).innerText(), version: await byId(page, IDS.fileVersion).innerText(), path: await byId(page, IDS.filePath).innerText() };
+  await byId(page, IDS.edit).click();
+  await expect(byId(page, IDS.textarea)).toBeFocused();
+  await byId(page, IDS.cancel).click();
+  await expect(byId(page, IDS.fileView)).toBeVisible();
+  expect(fx.puts, "no PUT /memory/file reached the kernel").toEqual([]);
+  await expect(byId(page, IDS.contents)).toHaveText(before.text);
+  await expect(byId(page, IDS.fileVersion)).toHaveText(before.version);
+  await expect(byId(page, IDS.filePath)).toHaveText(before.path);
+  await expect(byId(page, IDS.edit)).toBeFocused();
 });
 
 test("the empty state: 'Nothing remembered yet.' with the note and one action, Ask Wright, never an empty tree", async ({}, testInfo) => {
@@ -369,20 +434,59 @@ test("AC8: a save that gets no answer keeps the draft and says so", async () => 
 
 // ---- AC9: the kernel unreachable ----------------------------------------------------------------------------------------------
 
-test("AC9: when the kernel goes away the shared band shows, the screen keeps its last data marked last known, Edit is disabled and nothing throws", async ({}, testInfo) => {
-  const { page } = await openPopulated();
+test("AC9: when the kernel stops the one shared band shows, the screen keeps its last data marked last known, Edit is disabled, no request text shows, and it recovers when the kernel restarts", async ({}, testInfo) => {
+  const { fx, page } = await openPopulated({}, true);
   const paths = await byId(page, IDS.fileButton).evaluateAll((els) => els.map((el) => el.getAttribute("data-path")));
   await openFile(page, LESSONS_PATH);
-  await page.keyboard.press("Escape");
-  await expect(byId(page, IDS.overview)).toBeVisible();
-  await fixture?.close();
+  await expect(allBands(page)).toHaveCount(0);
+  await fixture?.stop();
   await expect(bannerLocator(page)).toBeVisible({ timeout: 20_000 });
-  await expect(byId(page, IDS.subtitle)).toHaveText("14 files · last known");
+  // Exactly one band, the tree is the last read, and the file view is kept but off.
+  await expect(allBands(page)).toHaveCount(1);
+  await expect(titlebarLine(page)).toHaveText("14 files · last known");
   expect(await byId(page, IDS.fileButton).evaluateAll((els) => els.map((el) => el.getAttribute("data-path"))), "the tree is the last read").toEqual(paths);
+  for (const button of await byId(page, IDS.fileButton).all()) await expect(button).toHaveAttribute("aria-disabled", "true");
+  await expect(byId(page, IDS.edit)).toBeDisabled();
   await expect(byId(page, IDS.empty)).toHaveCount(0);
   await expect(byId(page, IDS.error)).toHaveCount(0);
-  await expect(fileButton(page, LESSONS_PATH)).toHaveAttribute("aria-disabled", "true");
+  await expectNoRequestText(page);
+
+  // The overview, as the mockup's `memory-unreachable` view shows it.
+  await page.keyboard.press("Escape");
+  await expect(byId(page, IDS.overview)).toBeVisible();
   await screenshots(page, "unreachable", testInfo);
+
+  // The kernel comes back: the band goes, the mark goes, and the tree is read again.
+  const readsBefore = fx.treeReads();
+  await fixture?.restart();
+  await expect(allBands(page)).toHaveCount(0, { timeout: 30_000 });
+  await expect(titlebarLine(page)).toHaveText("14 files", { timeout: 30_000 });
+  await expect.poll(() => fx.treeReads(), { timeout: 30_000 }).toBeGreaterThan(readsBefore);
+  await expect(fileButton(page, LESSONS_PATH)).not.toHaveAttribute("aria-disabled", "true");
+});
+
+test("AC2: leaving Memory and coming back while the kernel is stopped shows the last-known tree under the one band, never the skeleton or the error card, and no request text", async () => {
+  const { page } = await openPopulated({}, true);
+  const paths = await byId(page, IDS.fileButton).evaluateAll((els) => els.map((el) => el.getAttribute("data-path")));
+  await fixture?.stop();
+  await expect(bannerLocator(page)).toBeVisible({ timeout: 20_000 });
+  await page.evaluate(() => {
+    window.location.hash = "#/chat";
+  });
+  await expect(byId(page, IDS.screen)).toHaveCount(0);
+  await page.evaluate(() => {
+    window.location.hash = "#/memory";
+  });
+  await expect(byId(page, IDS.screen)).toBeVisible();
+  await expect(byId(page, IDS.tree)).toBeVisible();
+  expect(await byId(page, IDS.fileButton).evaluateAll((els) => els.map((el) => el.getAttribute("data-path"))), "the same files in the same order").toEqual(paths);
+  await expect(titlebarLine(page)).toHaveText("14 files · last known");
+  await expect(byId(page, IDS.loading)).toHaveCount(0);
+  await expect(byId(page, IDS.error)).toHaveCount(0);
+  await expect(byId(page, IDS.empty)).toHaveCount(0);
+  await expect(allBands(page)).toHaveCount(1);
+  await expect(byId(page, IDS.root)).toHaveText("~/.loomwright-studio/memory/");
+  await expectNoRequestText(page);
 });
 
 test("AC9: the editor and the conflict view keep the draft through an outage, with Save and the conflict's actions disabled", async () => {
