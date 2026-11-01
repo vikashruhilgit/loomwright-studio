@@ -332,7 +332,7 @@ const TOUR: readonly TourStop[] = [
   },
   {
     id: "schedules",
-    nav: "Schedules",
+    nav: "Schedules & triggers",
     title: "Schedules & triggers",
     populated: async (page) => {
       // Names are not read: the composed `GET /playbooks` is the Playbooks fixture's, so a trigger shows its text, not its playbook's name.
@@ -450,7 +450,7 @@ test("AC1: one launch, the seven screens by keyboard only, each populated in lig
 
   // The app opens on Chat, not on a phase 7 screen, and no click or hash change below reaches a screen.
   await expect(page.locator("header h1.titlebar-title")).toHaveText("Chat");
-  expect(TOUR.map((stop) => stop.nav)).toEqual(["Integrations", "Tasks", "Playbooks", "Schedules", "Memory", "Budget & audit", "Settings"]);
+  expect(TOUR.map((stop) => stop.nav)).toEqual(["Integrations", "Tasks", "Playbooks", "Schedules & triggers", "Memory", "Budget & audit", "Settings"]);
   const hashes: string[] = [];
   await page.evaluate(() => {
     window.addEventListener("hashchange", () => ((window as unknown as { __hashes?: string[] }).__hashes ??= []).push(window.location.hash));
@@ -923,7 +923,8 @@ test("AC2: integrations: the token, the switch's two steps and its failure, the 
   gone.exit.integrations.dropNextRead();
   gone.exit.integrations.change("connected");
   await inBothThemes(gone.page, async () => {
-    await expect(byId(gone.page, INTEGRATIONS.band)).toContainText("Couldn't reach the kernel");
+    // The shell's one band (`kernel-unreachable-band`) now replaces Integrations' own once the feed notices the kernel gone.
+    await expect(byId(gone.page, "kernel-unreachable-band")).toContainText("Couldn't reach the kernel");
     await expect(byId(gone.page, INTEGRATIONS.listMeta)).toHaveText("status unknown · kernel unreachable");
     await expect(byId(gone.page, INTEGRATIONS.detail)).toHaveAttribute("data-state", "connected");
     await expect(byId(gone.page, INTEGRATIONS.status)).toContainText("Unknown while the kernel is unreachable");

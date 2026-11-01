@@ -73,11 +73,25 @@ body {
   color: var(--accent);
   font-weight: 500;
 }
+.nav-glyph {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.nav-divider {
+  flex: none;
+  margin: var(--space-2);
+  border: 0;
+  border-top: 1px solid var(--hairline);
+}
 .nav-key {
   margin-left: auto;
   font-family: var(--type-kbd-family);
   font-size: var(--type-kbd-size);
   color: var(--ink-tertiary);
+}
+.nav-item.selected .nav-key {
+  color: var(--accent);
 }
 .nav-group {
   margin-top: var(--space-4);
@@ -100,6 +114,37 @@ body {
   color: var(--ink-tertiary);
 }
 
+/* The bottom row (the mockup's `.side .foot`): the kernel's state word with its dot, and the ⌘K hint. */
+.sidebar-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  margin-top: auto;
+  padding: var(--space-2);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  color: var(--ink-tertiary);
+}
+.sidebar-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+}
+.sidebar-kbd {
+  padding: 0 var(--space-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  font-family: var(--type-kbd-family);
+  font-size: var(--type-kbd-size);
+  line-height: var(--type-kbd-line);
+  font-weight: var(--type-kbd-weight);
+  color: var(--ink-tertiary);
+}
+
 .main {
   display: grid;
   grid-template-rows: var(--titlebar-height) 1fr;
@@ -109,6 +154,7 @@ body {
 .titlebar {
   display: flex;
   align-items: center;
+  gap: var(--space-2);
   padding: 0 var(--space-5);
   border-bottom: 1px solid var(--hairline);
   -webkit-app-region: drag;
@@ -119,6 +165,11 @@ body {
   line-height: var(--type-title-1-line);
   font-weight: var(--type-title-1-weight);
   letter-spacing: var(--type-title-1-tracking);
+}
+.titlebar-subtitle {
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  color: var(--ink-tertiary);
 }
 .content {
   min-height: 0;

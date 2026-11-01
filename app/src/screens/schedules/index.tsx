@@ -2,8 +2,8 @@
 // its on/off switches and each trigger's firing history, on ⌘8. The screen is
 // `./SchedulesScreen.tsx`; this module's one export is the screen the shell
 // discovers (`import.meta.glob("./screens/*/index.tsx")` in App.tsx). The sidebar
-// label stays "Schedules" (the mockup's sidebar says "Schedules & triggers"; the
-// title bar, which is this `title`, carries the full name).
+// label is "Schedules & triggers", as the mockup's sidebar says (and as the title
+// bar, which is this `title`, does).
 import type { StudioBridge } from "../../api/contract";
 import { getBridge } from "../../api/bridge";
 import type { ScreenDefinition } from "../types";
@@ -33,6 +33,6 @@ function SchedulesRoute() {
 export const screen: ScreenDefinition = {
   id: "schedules",
   title: "Schedules & triggers",
-  nav: { label: "Schedules", order: 8, shortcut: "⌘8" },
+  nav: { label: "Schedules & triggers", order: 8, shortcut: "⌘8" },
   Component: SchedulesRoute,
 };
