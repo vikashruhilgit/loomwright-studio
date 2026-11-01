@@ -1399,6 +1399,12 @@ export interface StudioBridge {
    */
   openExternal?(url: string): Promise<boolean>;
   /**
+   * The owner's home folder (the main process answers `app.getPath("home")`; no argument), so a screen can
+   * show a path as `~/…` through `formatHomePath`. Read-only. Optional so a bridge without it (a test fake)
+   * compiles; a caller treats a missing member as "home unknown" and shows the path in full.
+   */
+  homeDir?(): Promise<string>;
+  /**
    * The app's own preferences, kept by the main process (never in the kernel's store): launch at login
    * (read from the OS on every call), notifications and the theme, plus Reveal in Finder for the data
    * folder. Optional so a bridge without it (a test fake) compiles; a caller treats a missing member as

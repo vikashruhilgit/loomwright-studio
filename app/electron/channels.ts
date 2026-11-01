@@ -13,6 +13,8 @@ export const CHANNELS = Object.freeze({
   prefsSet: "studio:prefs:set",
   /** Renderer -> main: open the main process's own resolved data dir in Finder. Carries no argument. */
   revealDataDir: "studio:reveal-data-dir",
+  /** Renderer -> main: the owner's home folder, read-only, so paths can read `~/…`. Carries no argument. */
+  homeDir: "studio:home-dir",
   /** Main -> renderer: one `FeedRelayFrame`. */
   feedFrame: "studio:feed:frame",
   /** Main -> renderer: an app route a deep link asked for (item 17). */
@@ -29,4 +31,5 @@ export const INVOKE_CHANNELS: readonly string[] = [
   CHANNELS.prefsGet,
   CHANNELS.prefsSet,
   CHANNELS.revealDataDir,
+  CHANNELS.homeDir,
 ];
