@@ -2,7 +2,7 @@
 // screen it was opened from, "Go to a screen" (each sidebar screen with its shortcut, read from the screens the
 // shell discovered), "Anywhere" (the keys that work on every screen) and "Palette commands by screen" (read
 // from the command registry, so the table cannot drift from the commands). The shell draws the one `h1`.
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
 import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
@@ -81,12 +81,24 @@ export function KeymapScreen({ registry = commandRegistry, onBack = goBack }: Ke
 
   // Opening the map puts focus on Back, as the mockup does; Esc from the palette returns it here.
   const back = useRef<HTMLButtonElement>(null);
+  // `.content` is one scrolling element shared by every screen, so the map would open at the previous screen's
+  // offset. Reset the nearest scrolling ancestor before paint, so the map's first frame is its top.
+  const top = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    for (let el = top.current?.parentElement ?? null; el !== null; el = el.parentElement) {
+      const { overflowY } = getComputedStyle(el);
+      if (overflowY === "auto" || overflowY === "scroll") {
+        el.scrollTop = 0;
+        return;
+      }
+    }
+  }, []);
   useEffect(() => {
     back.current?.focus({ preventScroll: true });
   }, []);
 
   return (
-    <div className="keymap" data-testid={KEYMAP_TEST_IDS.screen}>
+    <div ref={top} className="keymap" data-testid={KEYMAP_TEST_IDS.screen}>
       <div className="keymap-pad">
         <div className="keymap-crumb">
           <Button ref={back} variant="ghost" size="row" data-testid={KEYMAP_TEST_IDS.back} onClick={onBack}>

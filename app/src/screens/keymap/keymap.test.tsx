@@ -8,9 +8,11 @@ import { SCREENS } from "../../App";
 import { RESERVED_SHORTCUTS } from "../../commands/keyboard";
 import { createCommandRegistry } from "../../commands/registry";
 import { ScreensContext } from "../../shell/ScreensContext";
+import { Sidebar } from "../../shell/Sidebar";
+import { fakeBridge } from "../../store/fake-bridge";
 import { screen as keymapScreen } from "./index";
 import { KEYMAP_TEST_IDS, KeymapScreen, KeymapSubtitle } from "./KeymapScreen";
-import { FALLBACK_HASH, installOpenerTracker, openerHash } from "./opener";
+import { FALLBACK_HASH, installOpenerTracker, openerHash, openerScreenId } from "./opener";
 
 let stop: (() => void) | undefined;
 
@@ -135,6 +137,23 @@ describe("Back", () => {
     expect(document.activeElement).toBe(screen.getByTestId(KEYMAP_TEST_IDS.back));
   });
 
+  it("opens at the top: the scrolling element above it (the shell's .content) is reset to scrollTop 0", () => {
+    const content = document.createElement("div");
+    // `overflow-y`, since jsdom does not expand the `overflow` shorthand into the computed `overflowY`.
+    content.style.overflowY = "auto";
+    content.scrollTop = 240;
+    expect(content.scrollTop, "the stand-in scrolls").toBe(240);
+    document.body.append(content);
+    render(
+      <ScreensContext.Provider value={SCREENS}>
+        <KeymapScreen registry={createCommandRegistry()} />
+      </ScreensContext.Provider>,
+      { container: content.appendChild(document.createElement("div")) },
+    );
+    expect(content.scrollTop).toBe(0);
+    content.remove();
+  });
+
   it("returns to the screen the map was opened from, whichever screen that was", () => {
     window.location.hash = "#/tasks";
     stop = installOpenerTracker();
@@ -186,5 +205,73 @@ describe("the opener tracker", () => {
     window.dispatchEvent(new HashChangeEvent("hashchange"));
     expect(openerHash()).toBe("#/team");
     stop = installOpenerTracker();
+  });
+});
+
+describe("the screen the map was opened from (openerScreenId)", () => {
+  it("reads the opener's hash as a screen id; no hash is the default screen, Chat", () => {
+    window.location.hash = "";
+    stop = installOpenerTracker();
+    expect(openerScreenId()).toBe("chat");
+    window.location.hash = "#/memory";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    expect(openerScreenId()).toBe("memory");
+    window.location.hash = "#/budget?x=1";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    expect(openerScreenId()).toBe("budget");
+  });
+
+  it("is Settings when the window opened on the map itself (a deep link)", () => {
+    window.location.hash = "#/keymap";
+    stop = installOpenerTracker();
+    expect(openerScreenId()).toBe("settings");
+  });
+});
+
+describe("the sidebar while the map is open", () => {
+  const marked = async (currentId: string): Promise<string[]> => {
+    const fake = fakeBridge();
+    render(<Sidebar api={fake.bridge} screens={SCREENS} currentId={currentId} onGo={() => undefined} />);
+    await act(async () => undefined);
+    const nav = screen.getByRole("navigation", { name: "Screens" });
+    const current = [...nav.querySelectorAll('[aria-current="page"]')].map((b) => b.querySelector(".nav-text")?.textContent ?? "");
+    const selected = [...nav.querySelectorAll(".nav-item.selected")].map((b) => b.querySelector(".nav-text")?.textContent ?? "");
+    expect(selected, "the selected class and aria-current mark the same entry").toEqual(current);
+    return current;
+  };
+
+  it("marks the entry of the screen it was opened from, whichever that was", async () => {
+    window.location.hash = "#/settings";
+    stop = installOpenerTracker();
+    window.location.hash = "#/tasks";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    window.location.hash = "#/settings";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    window.location.hash = "#/keymap";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    expect(await marked("keymap")).toEqual(["Settings"]);
+    cleanup();
+    window.location.hash = "#/tasks";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    window.location.hash = "#/keymap";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    expect(await marked("keymap")).toEqual(["Tasks"]);
+  });
+
+  it("marks Settings for a deep link onto the map, and Chat when the map was opened from the default screen", async () => {
+    window.location.hash = "#/keymap";
+    stop = installOpenerTracker();
+    expect(await marked("keymap")).toEqual(["Settings"]);
+    cleanup();
+    stop?.();
+    window.location.hash = "";
+    stop = installOpenerTracker();
+    expect(await marked("keymap")).toEqual(["Chat"]);
+  });
+
+  it("outside the map the marked entry is still exactly the current screen", async () => {
+    window.location.hash = "#/settings";
+    stop = installOpenerTracker();
+    expect(await marked("tasks")).toEqual(["Tasks"]);
   });
 });
