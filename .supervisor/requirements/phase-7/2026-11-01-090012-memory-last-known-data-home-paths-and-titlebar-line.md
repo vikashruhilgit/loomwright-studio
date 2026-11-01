@@ -76,3 +76,9 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 ## Touches
 app/src/screens/memory
 app/e2e/memory.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-01T13:47:23Z
+- **Brief:** .supervisor/jobs/done/2026-11-01-memory-last-known-home-paths-titlebar.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/196
