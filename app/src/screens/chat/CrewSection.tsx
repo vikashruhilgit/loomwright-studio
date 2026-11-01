@@ -1,9 +1,10 @@
 // The sidebar's Crew group: one row per specialist (never Wright, D25), each a
-// button opening that agent's thread, with its avatar and state, the time and
-// text of its newest message, and an unread dot. Off members sort last, dimmed
-// and saying "off" (their threads stay open to read, D34); a member whose name
-// collides with another's shows its id. It is always mounted, so it also
-// registers Chat's ⌘K commands (and unregisters them on unmount).
+// button opening that agent's thread, as the mockup draws it (gui-v2.html): its
+// avatar and state, its name and one line of its newest message, plus an unread
+// dot. Off members sort last, dimmed and saying "off" (their threads stay open
+// to read, D34); a member whose name collides with another's shows its id. It
+// is always mounted, so it also registers Chat's ⌘K commands (and unregisters
+// them on unmount).
 import { useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
 import type { BrainMessage, RosterEntry, StudioBridge } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
@@ -13,7 +14,7 @@ import type { CommandRegistry } from "../../commands/registry";
 import { useResource } from "../../store/react";
 import { sharedNames } from "../team/model";
 import { buildChatCommands } from "./commands";
-import { WRIGHT, agentAvatarState, clock, hashAgent, navigate, readSeen, requestComposerFocus, resolveBridge, seenSnapshot, specialists, subscribeSeen, threadHash } from "./model";
+import { WRIGHT, agentAvatarState, hashAgent, navigate, readSeen, requestComposerFocus, resolveBridge, seenSnapshot, specialists, subscribeSeen, threadHash } from "./model";
 import "./chat.css";
 
 export interface CrewSectionProps {
@@ -104,8 +105,7 @@ export function CrewSection({ api: apiProp, registry = commandRegistry }: CrewSe
             const off = agent.status === "off";
             const idShown = shared.has(agent.id);
             // The name stays "<display name>[ (<id>)][, unread][, off]" (it must never start with a screen's
-            // name); the time and last line, which a label would hide, are the row's description.
-            const timeId = `${rowIds}-${index}-time`;
+            // name); the last line, which a label would hide, is the row's description.
             const lastId = `${rowIds}-${index}-last`;
             return (
               <li key={agent.id}>
@@ -115,7 +115,7 @@ export function CrewSection({ api: apiProp, registry = commandRegistry }: CrewSe
                   aria-current={selected ? "page" : undefined}
                   aria-label={`${agent.display_name}${idShown ? ` (${agent.id})` : ""}${unread ? ", unread" : ""}${off ? ", off" : ""}`}
                   title={agent.id}
-                  aria-describedby={newest === undefined ? undefined : `${timeId} ${lastId}`}
+                  aria-describedby={newest === undefined ? undefined : lastId}
                   data-agent={agent.id}
                   onClick={() => {
                     navigate(threadHash(agent.id));
@@ -128,9 +128,6 @@ export function CrewSection({ api: apiProp, registry = commandRegistry }: CrewSe
                       <span className={unread ? "chat-crew-name unread" : "chat-crew-name"}>{agent.display_name}</span>
                       {off ? <span className="chat-crew-off" data-testid="crew-off">off</span> : null}
                       {unread ? <span className="chat-crew-unread" data-testid="crew-unread" aria-hidden="true" /> : null}
-                      <time className="chat-crew-time" id={timeId} dateTime={newest?.created_at}>
-                        {clock(newest?.created_at)}
-                      </time>
                     </span>
                     {idShown ? <span className="chat-crew-id" data-testid="crew-id">{agent.id}</span> : null}
                     <span className="chat-crew-last" id={lastId}>

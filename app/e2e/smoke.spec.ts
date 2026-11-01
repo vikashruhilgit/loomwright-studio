@@ -30,7 +30,7 @@ test("against the fixture kernel, the window shows the sidebar's eleven entries,
   fixture = await startFixtureKernel();
   const page = await launch(fixture.env);
   const sidebar = page.getByTestId("sidebar");
-  for (const entry of ["Chat", "Team", "Approvals", "Sessions", "Integrations", "Tasks", "Playbooks", "Schedules", "Memory", "Budget & audit", "Settings"]) {
+  for (const entry of ["Chat", "Team", "Approvals", "Sessions", "Integrations", "Tasks", "Playbooks", "Schedules & triggers", "Memory", "Budget & audit", "Settings"]) {
     await expect(sidebar.getByRole("button", { name: new RegExp(`^${entry}`) })).toBeVisible();
   }
   // The screen entries in order, each with its shortcut: Integrations is the fifth, on ⌘5; Budget & audit, the tenth, has none.
@@ -42,7 +42,7 @@ test("against the fixture kernel, the window shows the sidebar's eleven entries,
     "Integrations⌘5",
     "Tasks⌘6",
     "Playbooks⌘7",
-    "Schedules⌘8",
+    "Schedules & triggers⌘8",
     "Memory⌘9",
     "Budget & audit",
     "Settings⌘,",
@@ -59,7 +59,7 @@ test("against the fixture kernel, the window shows the sidebar's eleven entries,
     require: typeof (window as unknown as { require?: unknown }).require,
     process: typeof (window as unknown as { process?: unknown }).process,
   }));
-  expect(exposed).toEqual({ api: ["connection", "feed", "onNavigate", "openExternal", "prefs", "request"], require: "undefined", process: "undefined" });
+  expect(exposed).toEqual({ api: ["connection", "feed", "homeDir", "onNavigate", "openExternal", "prefs", "request"], require: "undefined", process: "undefined" });
 });
 
 test("with no kernel answering, the window shows the kernel unreachable band", async () => {
