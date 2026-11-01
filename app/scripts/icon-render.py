@@ -4,6 +4,8 @@
 import sys, os
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ribbon_geometry import W, THREADS, CORD, frame, L, TONE_SETS
 
 S = 2048                       # render at 2x, downsample to 1024
 tilt, spin, roll = (float(a) for a in sys.argv[1:4]) if len(sys.argv) > 4 else (0.0, 0.0, 0.0)
@@ -16,28 +18,14 @@ def rot(tx, ty, tz):
     Z = np.array([[np.cos(tz), -np.sin(tz), 0], [np.sin(tz), np.cos(tz), 0], [0, 0, 1]])
     return Z @ Y @ X
 
-# --- the surface: a ribbon run round a rounded triangle with three half-twists, so it is a Möbius loop with one side
-TW = float(os.environ.get("ICON_TWIST0", "0"))      # where the twist sits along the loop
-W = 0.22                                              # ribbon half-width
+# --- the surface (geometry shared with the brand kit's mark: ribbon_geometry.py)
 t = np.linspace(0, 2 * np.pi, 14000, endpoint=False)[:, None]
 s = np.linspace(-W, W, 300)[None, :]
-def centre(t):
-    a = 0.22                                             # how triangular the loop is (0 = circle)
-    x, y = np.cos(t) + a * np.cos(2 * t), np.sin(t) - a * np.sin(2 * t)
-    return np.stack([y, -x, 0 * t], -1)                  # turned so one corner points up
-C = centre(t)[:, 0]
-T = np.gradient(C, axis=0); T /= np.linalg.norm(T, axis=-1, keepdims=True)
-up = np.array([0, 0, 1.0])
-N0 = up - (T * up).sum(-1)[:, None] * T; N0 /= np.linalg.norm(N0, axis=-1, keepdims=True)
-B0 = np.cross(T, N0)
-phi = 1.5 * t[:, 0] + TW                              # three half-turns, one per side: still one-sided
-Wd = np.cos(phi)[:, None] * B0 + np.sin(phi)[:, None] * N0
-Nr = np.cross(T, Wd); Nr /= np.linalg.norm(Nr, axis=-1, keepdims=True)   # ribbon normal
+C, T, Wd, Nr = frame(t)
 
 # The ribbon face, made of fine threads laid side by side.
 P_face = C[:, None, :] + s[..., None] * Wd[:, None, :]
 N_face = np.broadcast_to(Nr[:, None, :], P_face.shape)
-THREADS = int(os.environ.get("ICON_THREADS", "16"))
 q = (s / (2 * W) + 0.5) * THREADS
 fibre_face = (0.56 + 0.44 * np.sin(np.pi * (q % 1.0)) ** 0.7) * np.ones_like(t)
 
@@ -52,7 +40,6 @@ streak_face = np.where(f > 1 - TAIL, ((f - (1 - TAIL)) / TAIL) ** 3, 0.0) * np.s
 
 # A fine cord along each edge. A ribbon seen edge-on has no width, so at each twist the band would vanish;
 # the two cords cross there instead, so the loop stays visibly one piece all the way round.
-CORD = 0.015
 a_ = np.linspace(0, 2 * np.pi, 64, endpoint=False)[None, :]
 cords_P, cords_N = [], []
 for e in (-W, W):
@@ -61,8 +48,9 @@ for e in (-W, W):
 P_cord = np.concatenate(cords_P, 1); N_cord = np.concatenate(cords_N, 1)
 fibre_cord = np.tile(0.95 + 0.05 * np.cos(a_ * 6 + 40 * t), (1, 2))   # a slight twist in the cord
 
+TONES = TONE_SETS[os.environ.get("ICON_TONES", "tile")]
+
 M = rot(tilt, spin, roll)
-L = np.array([-0.45, -0.7, 0.55]); L /= np.linalg.norm(L)
 H = L + np.array([0, 0, 1.0]); H /= np.linalg.norm(H)
 
 def shade(P, N, fibre, tt, gloss, streak=0.0):
@@ -72,10 +60,10 @@ def shade(P, N, fibre, tt, gloss, streak=0.0):
     sp = np.clip((N * H).sum(-1), 0, 1); sp = gloss * (0.75 * sp ** 90 + 0.18 * sp ** 12)
     rim = (1 - np.abs(N[..., 2])) ** 2
     drift = (0.5 + 0.5 * np.cos(tt - 0.6)) * np.ones(N.shape[:-1])
-    dark = np.array([118, 126, 234]) * (1 - drift[..., None]) + np.array([160, 168, 250]) * drift[..., None]
-    lit = np.array([218, 222, 255]) * (1 - drift[..., None]) + np.array([242, 243, 255]) * drift[..., None]
+    dark = np.array(TONES["dark"][0]) * (1 - drift[..., None]) + np.array(TONES["dark"][1]) * drift[..., None]
+    lit = np.array(TONES["lit"][0]) * (1 - drift[..., None]) + np.array(TONES["lit"][1]) * drift[..., None]
     col = dark + (lit - dark) * (0.3 + 0.7 * ndl)[..., None]
-    col = col * fibre[..., None] + 255 * sp[..., None] + 40 * rim[..., None] + 170 * np.asarray(streak)[..., None]
+    col = col * fibre[..., None] + TONES["spec"] * sp[..., None] + 40 * rim[..., None] + 170 * np.asarray(streak)[..., None]
     st = np.broadcast_to(np.asarray(streak, float), N.shape[:-1])
     return P.reshape(-1, 3), np.clip(col, 0, 255).reshape(-1, 3), st.reshape(-1)
 
@@ -98,12 +86,17 @@ st_img = np.zeros(S * S); st_img[idx] = stk[order]
 img = img.reshape(S, S, 3); alpha = alpha.reshape(S, S)
 # the streaks glow a little past their thread, which sells them as moving light
 glow_l = np.asarray(Image.fromarray((st_img.reshape(S, S) * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(7)), float) / 255
-img = np.clip(img + glow_l[..., None] * np.array([150, 160, 255]) * 0.9, 0, 255)
+img = np.clip(img + glow_l[..., None] * np.array(TONES["glow"]) * 0.9, 0, 255)
 
 ribbon = Image.fromarray(np.dstack([img, alpha * 255]).astype(np.uint8))
 ribbon = ribbon.filter(ImageFilter.MedianFilter(3))   # close single-pixel splat gaps
 # centre the ribbon's bounding box in the tile
 bx0, by0, bx1, by1 = ribbon.getbbox()
+if os.environ.get("ICON_RIBBON_ONLY"):                # the ribbon alone, centred on a transparent square: the brand mark
+    side = int(max(bx1 - bx0, by1 - by0) * 1.06)
+    alone = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    alone.paste(ribbon.crop((bx0, by0, bx1, by1)), ((side - (bx1 - bx0)) // 2, (side - (by1 - by0)) // 2))
+    alone.save(out); print("wrote", out); sys.exit(0)
 dx, dy = S // 2 - (bx0 + bx1) // 2, S // 2 - (by0 + by1) // 2
 
 # --- tile: macOS grid (824 of 1024), indigo gradient, soft drop shadow, top sheen

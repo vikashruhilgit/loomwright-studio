@@ -7,6 +7,7 @@
 - [ ] **Lawyer review** of the PolyForm Shield choice and of the `Required Notice` / `Licensor Line of Business` lines, before selling anything. Also ask about the Claude Code "Authentication and credential use" clause (https://code.claude.com/docs/en/legal-and-compliance, read 2026-09-30) that D28 and D29 rest on: is the personal build's use of its own `setup-token` token through the Agent SDK "ordinary, individual usage", and does it stay acceptable while the build runs as an always-on daemon?
 - [ ] **AI-assisted code and copyright.** Much of the code is AI co-written, and how far copyright protects it is legally unsettled. Raise this with the lawyer.
 - [ ] **CLA** before accepting any outside contribution.
+- [ ] **SF Pro in brand images.** The brand kit (`docs/design/brand-kit/`) sets the name in SF Pro on the lockup PNGs, the README banner and the social card. Apple's SF Pro licence covers mock-ups of interfaces for Apple platforms; whether it covers marketing images that show the name is unread. Read the licence (or ask the lawyer); if it does not, re-render those PNGs in a licensed face. The in-app UI is unaffected (it uses the system font at runtime).
 - [x] **Loomwright PR vikashruhilgit/loomwright#289** (relicense to Shield). **Merged 2026-09-28**; the installed 17.2.0 `plugin.json` reads `LicenseRef-PolyForm-Shield-1.0.0` (checked 2026-10-14).
 
 ## Technical: verify, don't assume
