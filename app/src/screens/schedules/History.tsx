@@ -1,4 +1,5 @@
-// The open trigger's "Firing history" (phase 7 item 05): the mockup's When · Trigger ·
+// One trigger's own "Firing history" (phase 7 item 05), shown when a trigger is chosen in the list (the
+// default pane is all triggers: `./AllHistory.tsx`): the mockup's When · Trigger ·
 // Result table with its "All · N" / "Not fired · N" chips and a "Load older" control
 // driven by the route's `next_before` cursor. Consecutive repeats of one kind and
 // reason are one row with a count and the first and last time (a busy poll
@@ -48,8 +49,8 @@ export interface HistoryProps {
   readonly missedChipRef?: Ref<HTMLButtonElement>;
 }
 
-/** The Trigger cell's second line: one fire's due time and session, or a group's count and span. */
-function caption(trigger: Trigger, group: FireGroup, now: Date): string {
+/** The Trigger cell's second line: one fire's due time and session, or a group's count and span. Shared with the all-triggers table (`./AllHistory.tsx`). */
+export function caption(trigger: Pick<Trigger, "kind">, group: Pick<FireGroup, "count" | "oldest" | "newest">, now: Date): string {
   if (group.count > 1) return `${safe(trigger.kind)} · ${group.count} times, ${fireTime(group.oldest.at, now)} to ${fireTime(group.newest.at, now)}`;
   const fire = group.newest;
   const due = fire.scheduled_at === null ? "" : ` · due ${fireTime(fire.scheduled_at, now)}`;
@@ -74,7 +75,9 @@ function Row({ trigger, name, group, first, now }: { readonly trigger: Trigger; 
         <time dateTime={group.newest.at}>{fireTime(group.newest.at, now)}</time>
       </td>
       <td>
-        <b className="schedules-clip">{name}</b>
+        <b className="schedules-clip" title={name}>
+          {name}
+        </b>
         <span className="schedules-cap schedules-clip">{caption(trigger, group, now)}</span>
         {linksToIntegrations(group.newest) ? (
           <a className="schedules-link" href={INTEGRATIONS_HASH} data-testid={IDS.fireLink}>

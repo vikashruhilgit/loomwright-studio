@@ -11,6 +11,10 @@
 //                              so three pages show "Load older")
 //   POST /triggers/:id/on|off  the owner's toggle; a `once` whose time has passed answers
 //                              `409 needs_confirmation` until the body carries `{"confirm": true}`
+// The fires of three triggers are interleaved by id (the poll's 28, "Friday wrap-up"'s 12 and "Rotate the sandbox
+// token"'s 6), as the kernel's event ids are one sequence, so the screen's merged history has an order to show, and
+// paging it to the end reads every trigger's older pages. Trigger 2's playbook, `weekly-changelog`, is off (its status is
+// not "enabled"), so trigger 2, which is on, is the trigger whose playbook is off; it has no fires.
 // Every body a spec sends is recorded in `toggles`, so the spec can read what the main process posted.
 //
 // The state is mutable and the fixture is a script for a spec: `holdSchedule` keeps the next schedule read
@@ -26,11 +30,16 @@ import { cannedStatus } from "../fixture-kernel";
 
 const MINUTE = 60_000;
 
-/** Fires per page: small, so the fixture's 28 fires take three pages. */
+/** Fires per page: small, so the poll's 28 fires take three pages (and "Friday wrap-up"'s 12 take two). */
 export const PAGE_SIZE = 10;
 
-/** The trigger whose history the screen opens first (the poll on the sandbox repo). */
+/** The poll on the sandbox repo, the trigger with the longest history. */
 export const POLL_ID = 1;
+/** "Friday wrap-up" (a cron trigger, no playbook) and "Rotate the sandbox token" (a once trigger): the other two triggers with fires. */
+export const WRAPUP_ID = 3;
+export const ROTATE_ID = 4;
+/** The trigger that is on whose playbook is off (`weekly-changelog`): it has no fires. */
+export const PLAYBOOK_OFF_ID = 2;
 /** A `once` trigger whose time has passed: off, and turning it on asks first. */
 export const PAST_ONCE_ID = 6;
 
@@ -72,14 +81,14 @@ export interface SchedulesFixture {
 }
 
 /** A `PlaybookListing` for `slug`: the fields the screen reads, the rest at their defaults. */
-function playbook(id: number, slug: string, name: string): PlaybookListing {
+function playbook(id: number, slug: string, name: string, status = "enabled"): PlaybookListing {
   return {
     id,
     slug,
     name,
     owning_agent: "mason",
     intent: "",
-    status: "enabled",
+    status,
     version: 1,
     dedupe_key_spec: null,
     dedupe_key_set_by: null,
@@ -102,7 +111,8 @@ function playbook(id: number, slug: string, name: string): PlaybookListing {
   };
 }
 
-const PLAYBOOKS: readonly PlaybookListing[] = [playbook(1, "review-prs", "Review PRs on studio-sandbox"), playbook(2, "weekly-changelog", "Weekly changelog draft")];
+/** `weekly-changelog` is off: trigger 2 is on, and the kernel skips its fires as `playbook_not_enabled`. */
+const PLAYBOOKS: readonly PlaybookListing[] = [playbook(1, "review-prs", "Review PRs on studio-sandbox"), playbook(2, "weekly-changelog", "Weekly changelog draft", "disabled")];
 
 function trigger(id: number, o: Partial<Trigger>): Trigger {
   return {
@@ -152,39 +162,72 @@ function makeWakeup(): ScheduleEntry {
   return { kind: "wakeup", id: 5, at: at(60), agent: null, playbook: null, action: null, text: "PR #3 review may be ready", task_id: 7 };
 }
 
+/** The poll's reasons, newest first (`null`: it fired): 28 of them, ten to a page. */
+const POLL_REASONS: readonly (string | null)[] = [
+  // page one
+  null, null, "rate_limited", "paused", "paused", "paused", "paused", null, "kill_switch", "connector_missing",
+  // page two
+  "connector_missing", "source_error", "already_done", "queue_overflow", "playbook_not_enabled", "playbook_not_enabled", "playbook_not_enabled", "playbook_not_enabled", null, null,
+  // page three
+  "paused", "paused", null, "rate_limited", null, null, "source_error", null,
+];
+/** "Friday wrap-up"'s 12 and "Rotate the sandbox token"'s 6, newest first. */
+const WRAPUP_REASONS: readonly (string | null)[] = [null, null, "paused", null, null, null, null, null, null, null, null, "paused"];
+const ROTATE_REASONS: readonly (string | null)[] = ["already_done", null, null, "kill_switch", null, null];
+
 /**
- * The poll's 28 fires, newest first (ids 28 down to 1, ten minutes apart): a repeat of fired rows at the top,
- * four polls missed while paused, a connector repeat that runs across the first two pages, a reason the screen
- * does not know, and a last page of eight.
+ * Which trigger each fire belongs to, newest first (id 46 down to 1): P the poll, T "Friday wrap-up", U "Rotate the sandbox
+ * token". Built so that: "Friday wrap-up"'s tenth fire is newer than the poll's tenth, so the first "Load older" reads
+ * "Friday wrap-up"'s second page and not the poll's (the merge horizon); "Rotate the sandbox token" has one page, whose
+ * older fires stay hidden below the horizon until the poll's pages reach them; and no run of the poll's paused or
+ * connector rows stays unbroken, so a repeat is never folded across two triggers.
  */
-function makeFires(): TriggerFire[] {
-  const kinds: readonly (string | null)[] = [
-    // 28 .. 19: page one
-    null, null, "rate_limited", "paused", "paused", "paused", "paused", null, "kill_switch", "connector_missing",
-    // 18 .. 9: page two
-    "connector_missing", "source_error", "already_done", "queue_overflow", "playbook_not_enabled", "playbook_not_enabled", "playbook_not_enabled", "playbook_not_enabled", null, null,
-    // 8 .. 1: page three
-    "paused", "paused", null, "rate_limited", null, null, "source_error", null,
-  ];
-  return kinds.map((reason, index) => {
-    const id = 28 - index;
-    const when = new Date(Date.now() - (28 - id + 1) * 10 * MINUTE).toISOString();
-    return reason === null
-      ? { id, kind: "trigger_fired", at: when, scheduled_at: when, reason: null, session_id: 100 + id }
-      : { id, kind: "trigger_missed", at: when, scheduled_at: when, reason, session_id: null };
+const OWNERS = "PTTPTTUPTTPTTPTUPPTPPUPPPTPPUPPPTPPPUPPPPPPUPP";
+
+/** The fires of the three triggers by id, newest first, ids interleaved as `OWNERS` says. */
+function makeFires(): Map<number, TriggerFire[]> {
+  const total = OWNERS.length;
+  const reasons = { P: POLL_REASONS, T: WRAPUP_REASONS, U: ROTATE_REASONS } as const;
+  const seen = { P: 0, T: 0, U: 0 };
+  const byTrigger = new Map<number, TriggerFire[]>([
+    [POLL_ID, []],
+    [WRAPUP_ID, []],
+    [ROTATE_ID, []],
+  ]);
+  const ownerOf = { P: POLL_ID, T: WRAPUP_ID, U: ROTATE_ID } as const;
+  [...OWNERS].forEach((owner, index) => {
+    const key = owner as keyof typeof reasons;
+    const reason = reasons[key][seen[key]] ?? null;
+    seen[key] += 1;
+    const id = total - index;
+    // Ten minutes apart, newest first, so the id order is the time order.
+    const when = new Date(Date.now() - (index + 1) * 10 * MINUTE).toISOString();
+    byTrigger.get(ownerOf[key])?.push(
+      reason === null
+        ? { id, kind: "trigger_fired", at: when, scheduled_at: when, reason: null, session_id: 100 + id }
+        : { id, kind: "trigger_missed", at: when, scheduled_at: when, reason, session_id: null },
+    );
   });
+  // Every list is as long as its reasons: a wrong `OWNERS` is a mistake in this file, found when the module loads.
+  for (const [key, list] of Object.entries(reasons)) {
+    if (seen[key as keyof typeof seen] !== list.length) throw new Error(`the fixture's OWNERS has ${seen[key as keyof typeof seen]} ${key}, its reasons ${list.length}`);
+  }
+  return byTrigger;
 }
+
+/** The highest fire id the fixture makes: `nextFire` (the live fire) starts above it. */
+const LAST_FIXTURE_FIRE = OWNERS.length;
 
 export function schedulesFixture(options: SchedulesFixtureOptions = {}): SchedulesFixture {
   const empty = options.state === "empty";
   let triggers: Trigger[] = empty ? [] : makeTriggers();
   let wakeups: ScheduleEntry[] = empty ? [] : [makeWakeup()];
-  const fires = new Map<number, TriggerFire[]>(empty ? [] : [[POLL_ID, makeFires()]]);
+  const fires = empty ? new Map<number, TriggerFire[]>() : makeFires();
   const toggles: RecordedToggle[] = [];
   const fireReads: { id: string; before: string | undefined }[] = [];
   let kernel: FixtureKernel | undefined;
   let nextEvent = 1;
-  let nextFire = 29;
+  let nextFire = LAST_FIXTURE_FIRE + 1;
   let hold: Promise<void> | undefined;
   let release: (() => void) | undefined;
   let failing = false;

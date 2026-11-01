@@ -1,18 +1,24 @@
-// Schedules & triggers (phase 7 item 05), built to the approved mockup
-// (`docs/design/mockups/gui-v2.html`, `schedulesScreen`): the upcoming timeline and
-// the trigger list on the left, the open trigger's detail and its firing history
-// (`./History.tsx`) on the right.
+// Schedules & triggers (phase 7 items 05 and 16), built to the approved mockup
+// (`docs/design/mockups/gui-v2.html`, `schedulesScreen`): the upcoming timeline ("Upcoming ·
+// Today", then "Later") and the trigger list on the left; on the right the firing history of
+// every trigger (`./AllHistory.tsx`), or, once a trigger is chosen in the list, that trigger's
+// detail and its own history (`./History.tsx`), with a button back to all triggers. The count
+// line ("5 upcoming · 4 triggers on") is the title bar's, declared as `screen.Subtitle`
+// (`./Subtitle.tsx`); this screen draws none of its own.
 //
 // Data. `GET /schedule` is read here, on mount and again when a `trigger_*`,
 // `wakeup_*` or `playbook_*` event arrives on the live feed (throttled to one read
-// per `REFETCH_THROTTLE_MS`), together with the open trigger's first history page.
+// per `REFETCH_THROTTLE_MS`), together with the first history page of every trigger (one request per
+// trigger: no route serves every trigger's fires) and of the open trigger.
 // The trigger list is the live store's own `triggers` resource (`GET /triggers?all=1`,
-// disabled ones too) and playbook names come from its `playbooks` resource; this screen
-// edits no shared store file. A refetch keeps the rows on screen until the answer lands
-// (no skeleton, rows keyed by id, fixed row heights), so a live update moves nothing
-// already shown. A status 0 answer is "kernel unreachable", never "nothing scheduled":
-// the screen keeps its last data, marks it "last known" and disables every control that
-// needs the kernel; the shell draws the shared band above it.
+// disabled ones too) and playbook names and status come from its `playbooks` resource (`all=1`, the
+// ones that are off too); this screen edits no shared store file. A trigger whose playbook is off
+// (`isPlaybookOff`: the kernel's own gate) says so on its row and in the upcoming list. A refetch
+// keeps the rows on screen until the answer lands (no skeleton, rows keyed by id), so a live update
+// moves nothing already shown. A status 0 answer is "kernel unreachable", never "nothing
+// scheduled": the screen keeps its last data (held per bridge in `./last-read.ts`, so leaving and coming back
+// keeps it too), marks it "last known" and disables every control that needs the kernel; the shell
+// draws the shared band above it.
 //
 // Writes. A switch calls `POST /triggers/:id/on|off`. A `409 needs_confirmation` (a
 // `once` whose time has passed) asks first and resends with `{"confirm": true}` only
@@ -32,8 +38,11 @@ import type { CommandRegistry } from "../../commands/registry";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import { Dialog } from "../../components/Dialog/Dialog";
+import { KernelBand } from "../../shell/KernelStates";
+import { useKernelReach } from "../../shell/last-known";
 import { liveStoreFor, useLiveStore, useResource } from "../../store/react";
 import { setTriggerEnabled } from "./actions";
+import { AllHistory } from "./AllHistory";
 import { SCHEDULES_OWNER, schedulesCommands } from "./commands";
 import { History } from "./History";
 import {
@@ -42,10 +51,11 @@ import {
   entryName,
   failureDetail,
   iconOf,
+  isPlaybookOff,
   newestScheduleEventId,
   safe,
   specLine,
-  summaryText,
+  splitUpcoming,
   timelineTime,
   OFFLINE_TOGGLE_TEXT,
   toggleFailure,
@@ -54,7 +64,8 @@ import {
   whenLabel,
   wakeupNote,
 } from "./model";
-import { KindIcon, RefreshGlyph, Skeleton, WarnGlyph } from "./parts";
+import { BackGlyph, KindIcon, PlaybookOffNote, RefreshGlyph, Skeleton, WarnGlyph } from "./parts";
+import { useAllFires } from "./useAllFires";
 import { useFeedRefetch, useScheduleRead } from "./useSchedule";
 import { useHistory } from "./useHistory";
 import "./schedules.css";
@@ -65,13 +76,22 @@ function isEditable(target: HTMLElement): boolean {
 
 // ---- Parts ------------------------------------------------------------------------------------------
 
-function Timeline({ entries, triggers, playbooks, now }: { readonly entries: readonly ScheduleEntry[]; readonly triggers: readonly Trigger[] | undefined; readonly playbooks: readonly PlaybookListing[] | undefined; readonly now: Date }) {
+interface TimelineProps {
+  readonly entries: readonly ScheduleEntry[];
+  readonly triggers: readonly Trigger[] | undefined;
+  readonly playbooks: readonly PlaybookListing[] | undefined;
+  readonly now: Date;
+}
+
+/** One list of upcoming entries (the Today list or the Later one), named by the heading `labelledBy`. */
+function Entries({ entries, triggers, playbooks, now, labelledBy }: TimelineProps & { readonly labelledBy: string }) {
   return (
-    <ul className="schedules-tl" aria-labelledby="schedules-upcoming-h" data-testid={IDS.timeline}>
+    <ul className="schedules-tl" aria-labelledby={labelledBy}>
       {entries.map((entry) => {
         // A trigger entry's kind and spec come from the trigger's own row; until it is loaded, a generic icon and no spec.
         const row = entry.kind === "trigger" ? triggers?.find((t) => t.id === entry.id) : undefined;
         const spec = entry.kind === "wakeup" ? wakeupNote(entry) : row === undefined ? "" : specLine(row, now);
+        const name = entryName(entry, playbooks);
         return (
           <li key={`${entry.kind}-${entry.id}`} data-testid={IDS.entry} data-kind={entry.kind} data-id={entry.id}>
             <time className="schedules-cap schedules-tn" dateTime={entry.at}>
@@ -83,17 +103,46 @@ function Timeline({ entries, triggers, playbooks, now }: { readonly entries: rea
               </span>
             </span>
             <div className="schedules-item">
-              <b className="schedules-clip" data-testid={IDS.entryName}>
-                {entryName(entry, playbooks)}
+              {/* Up to two lines; one still too long ends in an ellipsis and carries its full text as a tooltip. */}
+              <b className="schedules-clip schedules-clamp" data-testid={IDS.entryName} title={name}>
+                {name}
               </b>
               <span className="schedules-cap schedules-clip" data-testid={IDS.entrySpec}>
                 {spec}
               </span>
+              {entry.kind === "trigger" && isPlaybookOff(entry.playbook, playbooks) ? <PlaybookOffNote /> : null}
             </div>
           </li>
         );
       })}
     </ul>
+  );
+}
+
+/**
+ * The region under the "Upcoming · Today" heading: the entries due on `now`'s local day, then, under "Later", the rest, so
+ * nothing the route sent is hidden. The region is the one `IDS.timeline` element; every entry is an `IDS.entry`.
+ */
+function Timeline(props: TimelineProps) {
+  const { today, later } = splitUpcoming(props.entries, props.now);
+  return (
+    <div className="schedules-tlr" data-testid={IDS.timeline}>
+      {today.length === 0 ? (
+        <p className="schedules-cap schedules-pad" data-testid={IDS.todayEmpty}>
+          Nothing else is due today.
+        </p>
+      ) : (
+        <Entries {...props} entries={today} labelledBy="schedules-upcoming-h" />
+      )}
+      {later.length === 0 ? null : (
+        <>
+          <h3 className="schedules-label" id="schedules-later-h" data-testid={IDS.laterHeading}>
+            Later
+          </h3>
+          <Entries {...props} entries={later} labelledBy="schedules-later-h" />
+        </>
+      )}
+    </div>
   );
 }
 
@@ -144,9 +193,11 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
 
   const triggers = triggersRes?.data?.triggers;
   const playbooks = playbooksRes?.data?.playbooks;
+  // No trigger is chosen by default: the right pane is the firing history of every trigger.
   const [selectedId, setSelectedId] = useState<number | undefined>(undefined);
-  const selected = triggers?.find((t) => t.id === selectedId) ?? triggers?.[0];
+  const selected = triggers?.find((t) => t.id === selectedId);
   const history = useHistory(api, selected?.id);
+  const allFires = useAllFires(api, triggers?.map((t) => t.id));
   const [filter, setFilter] = useState<HistoryFilter>("all");
 
   const [busy, setBusy] = useState<ReadonlySet<number>>(new Set());
@@ -154,39 +205,52 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
   const [confirm, setConfirm] = useState<Confirm | undefined>(undefined);
   const inFlight = useRef(new Set<number>());
   const switchRefs = useRef(new Map<number, HTMLButtonElement>());
+  const selectRefs = useRef(new Map<number, HTMLButtonElement>());
   const missedChip = useRef<HTMLButtonElement>(null);
   const refreshButton = useRef<HTMLButtonElement>(null);
   // "Try again" is replaced by the schedule when the read lands; focus follows to Refresh, only if that click armed it.
   const retried = useRef(false);
 
-  const connectionDown = connection.state === "reconnecting" || connection.state === "unreachable" || connection.state === "not_installed";
-  const offline = connectionDown || read.latest?.kind === "unreachable" || history.latest?.kind === "unreachable";
+  // The shell draws the one band while the store reads `reconnecting` or `unreachable`; this screen draws it only
+  // when its own read answered status 0 before the store noticed, so exactly one band is on screen.
+  const reach = useKernelReach(api);
+  const scheduleUnreachable = read.latest?.kind === "unreachable";
+  const offline = reach.offline || scheduleUnreachable || allFires.unreachable || history.latest?.kind === "unreachable";
 
   const refetchHistory = history.refetch;
+  const refetchFires = allFires.refetch;
   const refetchAll = useCallback(() => {
     refetchSchedule();
+    refetchFires();
     refetchHistory();
-  }, [refetchSchedule, refetchHistory]);
+  }, [refetchSchedule, refetchFires, refetchHistory]);
   const refetchRef = useRef(refetchAll);
   refetchRef.current = refetchAll;
 
-  // A live event refetches the schedule and the open history.
+  // A live event refetches the schedule, every trigger's history and the open one.
   useFeedRefetch(newestScheduleEventId(eventLog), refetchAll);
 
   // "It may be restarting; this window reconnects on its own": once the feed is live again, ask again.
   const live = connection.state === "live";
   const scheduleUnanswered = read.latest?.kind === "unreachable" || read.latest?.kind === "failed";
   const historyUnanswered = history.latest?.kind === "unreachable" || history.latest?.kind === "failed";
+  const firesUnanswered = allFires.unreachable || allFires.failure !== undefined;
   useEffect(() => {
     if (live && scheduleUnanswered) refetchSchedule();
   }, [live, scheduleUnanswered, refetchSchedule]);
   useEffect(() => {
     if (live && historyUnanswered) refetchHistory();
   }, [live, historyUnanswered, refetchHistory]);
+  useEffect(() => {
+    if (live && firesUnanswered) refetchFires();
+  }, [live, firesUnanswered, refetchFires]);
 
   // Palette commands: registered while mounted, read through a ref so they are registered once.
-  const commandState = useRef({ offline, selected });
-  commandState.current = { offline, selected };
+  const commandState = useRef({ offline });
+  commandState.current = { offline };
+  // "Show missed fires" goes back to the all-triggers history on the "Not fired" filter and focuses its chip; the chip
+  // of the pane it leaves is about to unmount, so the focus is also armed for after the commit.
+  const focusMissed = useRef(false);
   useEffect(
     () =>
       registry.register(
@@ -196,8 +260,8 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
           () => ({
             showMissed: () => {
               setFilter("missed");
-              const first = commandState.current.selected;
-              if (first !== undefined) setSelectedId(first.id);
+              setSelectedId(undefined);
+              focusMissed.current = true;
               missedChip.current?.focus();
             },
             refresh: () => refetchRef.current(),
@@ -206,6 +270,21 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
       ),
     [registry],
   );
+
+  useEffect(() => {
+    if (!focusMissed.current) return;
+    focusMissed.current = false;
+    missedChip.current?.focus();
+  });
+
+  // "All triggers" unmounts the button that was pressed: focus goes back to the row that opened that trigger.
+  const returnTo = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (selectedId !== undefined || returnTo.current === undefined) return;
+    const id = returnTo.current;
+    returnTo.current = undefined;
+    selectRefs.current.get(id)?.focus();
+  }, [selectedId]);
 
   // The confirm is gone: focus is back on the switch that opened it (the dialog restores it); if that is gone, on the trigger's switch.
   const confirmedId = useRef<number | undefined>(undefined);
@@ -295,7 +374,7 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
           </div>
         </div>
       );
-    } else if (latest?.kind === "unreachable" || (latest === undefined && connectionDown)) {
+    } else if (latest?.kind === "unreachable" || (latest === undefined && reach.offline)) {
       body = (
         <div className="schedules-empty" data-testid={IDS.unknown}>
           <h2 className="schedules-title">Status unknown</h2>
@@ -326,8 +405,8 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
         <div className="schedules-list" data-testid={IDS.list}>
           {/* Two regions of one height each, scrolling on their own: a timeline that gains an entry never pushes the trigger list. */}
           <div className="schedules-lsec">
-            <h2 className="schedules-label" id="schedules-upcoming-h">
-              Upcoming
+            <h2 className="schedules-label" id="schedules-upcoming-h" data-testid={IDS.todayHeading}>
+              Upcoming · Today
             </h2>
             {entries.length === 0 ? (
               <p className="schedules-cap schedules-pad" data-testid={IDS.timelineEmpty}>
@@ -355,17 +434,24 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
                   const name = triggerName(t, playbooks);
                   const rowError = rowErrors[t.id];
                   const onOff = t.enabled ? "on" : "off";
+                  // Off triggers fire nothing, so only a trigger that is on has fires to skip.
+                  const playbookOff = t.enabled && isPlaybookOff(t.playbook, playbooks);
                   return (
                     <li key={t.id} data-testid={IDS.trigger} data-id={t.id} data-enabled={t.enabled} data-selected={t.id === selected?.id} data-nav-row="">
                       <KindIcon kind={iconOf(t.kind)} />
                       <span className="schedules-ttext">
                         <button
                           type="button"
-                          className="schedules-select schedules-clip"
+                          className="schedules-select schedules-clip schedules-clamp"
                           aria-current={t.id === selected?.id ? "true" : undefined}
-                          aria-describedby={`schedules-spec-${t.id}`}
+                          aria-describedby={playbookOff ? `schedules-spec-${t.id} schedules-off-${t.id}` : `schedules-spec-${t.id}`}
+                          title={name}
                           data-nav-focus=""
                           data-testid={IDS.select}
+                          ref={(node) => {
+                            if (node) selectRefs.current.set(t.id, node);
+                            else selectRefs.current.delete(t.id);
+                          }}
                           onClick={() => setSelectedId(t.id)}
                         >
                           {name}
@@ -379,6 +465,7 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
                             {rowError}
                           </span>
                         )}
+                        {playbookOff ? <PlaybookOffNote id={`schedules-off-${t.id}`} /> : null}
                       </span>
                       <button
                         type="button"
@@ -405,9 +492,26 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
         </div>
         <div className="schedules-pane">
           {selected === undefined ? (
-            <p className="schedules-cap schedules-pad">Wake-ups appear in the timeline and have no firing history. Open a trigger to see when it fired and when it did not.</p>
+            <div className="schedules-pad">
+              <AllHistory triggers={triggers} triggersFailed={triggers === undefined && triggersRes?.error !== undefined} playbooks={playbooks} view={allFires} filter={filter} onFilter={setFilter} offline={offline} now={now} missedChipRef={missedChip} />
+              <p className="schedules-cap">Wake-ups appear in the timeline and have no firing history. Choose a trigger to see its own detail and history.</p>
+            </div>
           ) : (
             <div className="schedules-pad">
+              <div>
+                <Button
+                  size="row"
+                  variant="ghost"
+                  icon={<BackGlyph />}
+                  onClick={() => {
+                    returnTo.current = selected.id;
+                    setSelectedId(undefined);
+                  }}
+                  data-testid={IDS.allTriggers}
+                >
+                  All triggers
+                </Button>
+              </div>
               <Detail trigger={selected} name={selectedName} now={now} />
               <History trigger={selected} name={selectedName} view={history} filter={filter} onFilter={setFilter} offline={offline} now={now} missedChipRef={missedChip} />
             </div>
@@ -425,19 +529,10 @@ export function SchedulesScreen({ api, registry = commandRegistry }: SchedulesSc
     if (active === null || active === document.body) refreshButton.current?.focus();
   }, [hasData]);
 
-  const showTools = hasData && !nothingScheduled;
   return (
     <div className="schedules" data-testid={IDS.screen} data-offline={offline ? "true" : undefined} onKeyDown={onKeyDown}>
+      {scheduleUnreachable && !reach.shellBand ? <KernelBand testId={IDS.band} /> : null}
       <div className="schedules-tbar">
-        {showTools ? (
-          <span className="schedules-cap" data-testid={IDS.summary}>
-            {summaryText(entries.length, (triggers ?? []).filter((t) => t.enabled).length, offline)}
-          </span>
-        ) : nothingScheduled ? (
-          <span className="schedules-cap" data-testid={IDS.summary}>
-            nothing scheduled
-          </span>
-        ) : null}
         <span className="schedules-spacer" />
         {hasData ? (
           <Button ref={refreshButton} size="row" variant="ghost" icon={<RefreshGlyph />} disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={refetchAll}>

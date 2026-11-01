@@ -1,7 +1,7 @@
 // Schedules' view model: the reasons, the grouping of repeats, the paging of the
 // history, names and specs, times, the feed's kinds and the toggle's outcomes.
 import { describe, expect, it } from "vitest";
-import type { ScheduleEntry, Trigger, TriggerFire, TriggerFiresResponse } from "../../api/contract";
+import type { PlaybookListing, ScheduleEntry, Trigger, TriggerFire, TriggerFiresResponse } from "../../api/contract";
 import {
   SCHEDULES_TEST_IDS,
   appendOlderPage,
@@ -12,6 +12,7 @@ import {
   fireView,
   groupFires,
   iconOf,
+  isPlaybookOff,
   isScheduleKind,
   linksToIntegrations,
   mergeFirstPage,
@@ -21,6 +22,7 @@ import {
   replyOf,
   specLine,
   specSummary,
+  splitUpcoming,
   summaryText,
   timelineTime,
   toggleFailure,
@@ -54,7 +56,7 @@ describe("the reasons a fire did not happen", () => {
   it.each([
     ["paused", "missed · paused", "attention"],
     ["kill_switch", "missed · kill switch", "attention"],
-    ["playbook_not_enabled", "playbook not enabled", "attention"],
+    ["playbook_not_enabled", "playbook off: fires are skipped", "attention"],
     ["already_done", "already done", "neutral"],
     ["rate_limited", "rate limited", "attention"],
     ["connector_missing", "no connector", "danger"],
@@ -62,6 +64,11 @@ describe("the reasons a fire did not happen", () => {
   ] as const)("%s has the label %s and the tone %s", (reason, label, tone) => {
     expect(reasonView(reason)).toEqual({ label, tone });
     expect(fireView({ kind: "trigger_missed", reason })).toEqual({ label, tone });
+  });
+
+  it("labels playbook_not_enabled 'playbook off: fires are skipped', one label table for the history and the note", () => {
+    expect(reasonView("playbook_not_enabled").label).toBe("playbook off: fires are skipped");
+    expect(reasonView("playbook_not_enabled").label).not.toBe("playbook not enabled");
   });
 
   it("shows a reason the table does not know as a neutral 'missed', and a missing one the same", () => {
@@ -264,6 +271,28 @@ describe("specs", () => {
   });
 });
 
+// ---- Playbook off -------------------------------------------------------------------------------------
+
+describe("a trigger whose playbook is off", () => {
+  const listing = (slug: string, status: string): Pick<PlaybookListing, "slug" | "status"> => ({ slug, status }) as Pick<PlaybookListing, "slug" | "status">;
+
+  it("mirrors the kernel's gate: the slug is missing from the playbooks, or its status is not 'enabled'", () => {
+    const playbooks = [listing("on", "enabled"), listing("off", "disabled"), listing("draft", "draft")];
+    expect(isPlaybookOff("on", playbooks)).toBe(false);
+    expect(isPlaybookOff("off", playbooks)).toBe(true);
+    expect(isPlaybookOff("draft", playbooks)).toBe(true);
+    expect(isPlaybookOff("gone", playbooks)).toBe(true);
+    expect(isPlaybookOff("anything", [])).toBe(true);
+  });
+
+  it("is never so for a trigger with no playbook, and claims nothing while the playbooks have not loaded", () => {
+    expect(isPlaybookOff(null, [listing("off", "disabled")])).toBe(false);
+    expect(isPlaybookOff(null, [])).toBe(false);
+    expect(isPlaybookOff(null, undefined)).toBe(false);
+    expect(isPlaybookOff("off", undefined)).toBe(false);
+  });
+});
+
 // ---- Times --------------------------------------------------------------------------------------------
 
 describe("times", () => {
@@ -274,6 +303,16 @@ describe("times", () => {
     expect(timelineTime(local(2026, 9, 30, 15, 30), now)).toBe("15:30");
     expect(timelineTime(local(2026, 10, 6, 9, 0), now)).toBe("6 Nov");
     expect(timelineTime("not a time", now)).toBe("not a time");
+  });
+
+  it("splits the upcoming entries at the end of today: due today, and later, in the order the route sent them, nothing dropped", () => {
+    const entry = (id: number, when: string): ScheduleEntry => ({ kind: "trigger", id, at: when, agent: null, playbook: null, action: null, text: "", task_id: null });
+    const entries = [entry(1, local(2026, 9, 30, 15, 30)), entry(2, local(2026, 9, 30, 23, 59)), entry(3, local(2026, 9, 31, 0, 1)), entry(4, local(2026, 10, 6, 9, 0)), entry(5, "not a time")];
+    const { today, later } = splitUpcoming(entries, now);
+    expect(today.map((e) => e.id)).toEqual([1, 2]);
+    expect(later.map((e) => e.id)).toEqual([3, 4, 5]);
+    expect(splitUpcoming([], now)).toEqual({ today: [], later: [] });
+    expect(splitUpcoming([entry(6, local(2026, 9, 30, 0, 0))], now).today.map((e) => e.id)).toEqual([6]);
   });
 
   it("labels a moment 'today 17:00' or '6 Nov 09:00'", () => {

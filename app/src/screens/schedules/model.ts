@@ -60,6 +60,14 @@ export const SCHEDULES_TEST_IDS = {
   historyLoading: "schedules-history-loading",
   historyError: "schedules-history-error",
   loadOlder: "schedules-load-older",
+  band: "schedules-kernel-band",
+  todayHeading: "schedules-today-heading",
+  todayEmpty: "schedules-today-empty",
+  laterHeading: "schedules-later-heading",
+  allTriggers: "schedules-all-triggers",
+  allFire: "schedules-all-fire",
+  fireTrigger: "schedules-fire-trigger",
+  playbookOff: "schedules-playbook-off",
 } as const;
 
 // ---- One call's answer ------------------------------------------------------------------------------
@@ -118,6 +126,9 @@ export interface ReasonView {
   readonly tone: Tone;
 }
 
+/** The note on a trigger (row, upcoming entry) whose playbook is off: its fires are skipped as `playbook_not_enabled`. */
+export const PLAYBOOK_OFF_TEXT = "playbook off: fires are skipped";
+
 /**
  * The reasons the kernel records on a `trigger_missed` event (`kernel/src/triggers/store.ts` and `poll.ts`), with a
  * label and a tone. The code itself is always shown beneath the label, verbatim. The mockup's `missed_paused` and
@@ -126,12 +137,25 @@ export interface ReasonView {
 const KNOWN_REASONS: Readonly<Record<string, ReasonView>> = Object.freeze({
   paused: { label: "missed · paused", tone: "attention" },
   kill_switch: { label: "missed · kill switch", tone: "attention" },
-  playbook_not_enabled: { label: "playbook not enabled", tone: "attention" },
+  playbook_not_enabled: { label: PLAYBOOK_OFF_TEXT, tone: "attention" },
   already_done: { label: "already done", tone: "neutral" },
   rate_limited: { label: "rate limited", tone: "attention" },
   connector_missing: { label: "no connector", tone: "danger" },
   source_error: { label: "source error", tone: "danger" },
 });
+
+/**
+ * Whether a trigger's fires are skipped because its playbook is off. This mirrors the kernel's own gate
+ * (`kernel/src/triggers/fire-shared.ts` `linkedPlaybook`, looked up by `slug`, then `poll.ts`'s
+ * `linked === undefined || linked.status !== "enabled"`): a trigger with a playbook is off when that slug is missing
+ * from the playbooks or its status is not "enabled". A trigger with no playbook is never off, and while the playbooks
+ * have not loaded (`undefined`) the screen claims nothing.
+ */
+export function isPlaybookOff(playbook: string | null, playbooks: readonly Pick<PlaybookListing, "slug" | "status">[] | undefined): boolean {
+  if (playbook === null || playbooks === undefined) return false;
+  const linked = playbooks.find((p) => p.slug === playbook);
+  return linked === undefined || linked.status !== "enabled";
+}
 
 /** The words under a missed fire whose kernel recorded no reason. */
 export const NO_REASON_TEXT = "no reason recorded";
@@ -341,6 +365,21 @@ function clock(at: Date): string {
 
 function sameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+/**
+ * The upcoming entries (soonest first, as the route sends them) split at the end of `now`'s local day: the ones due
+ * today, and the later ones. Nothing is dropped; a time that does not parse reads as later, as `timelineTime` shows it raw.
+ */
+export function splitUpcoming(entries: readonly ScheduleEntry[], now: Date): { readonly today: ScheduleEntry[]; readonly later: ScheduleEntry[] } {
+  const today: ScheduleEntry[] = [];
+  const later: ScheduleEntry[] = [];
+  for (const entry of entries) {
+    const at = dateOf(entry.at);
+    if (at !== undefined && sameDay(at, now)) today.push(entry);
+    else later.push(entry);
+  }
+  return { today, later };
 }
 
 /** The timeline's time column: "14:30" for a time on `now`'s day, else "6 Nov" (local time). A time that does not parse is shown as it came. */
