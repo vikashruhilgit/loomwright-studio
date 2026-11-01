@@ -1,3 +1,5 @@
+<img src="docs/design/brand-kit/banner/readme-banner.png" alt="Loomwright Studio: the workshop where Wright directs the crew." width="100%">
+
 # Loomwright Studio
 
 > ⚠️ **Early development — not ready for use.**
