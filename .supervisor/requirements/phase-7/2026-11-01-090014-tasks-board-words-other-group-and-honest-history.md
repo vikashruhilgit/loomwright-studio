@@ -14,6 +14,8 @@ Live run 2026-11-01. The runbook's populate step asked Wright to create a task "
 
 Also seen on the same cards: both task cards read "unknown agent" (Wright created them in session 81); the task's history shows the raw event payload (`{ "title": "Pick the repos to review first", "state": "waiting on owner" }`) where the mockup's `tasks-history` view shows a sentence and its actor; and the session panel says "No session is attached to this task" although the audit log records `task_created` in session 81.
 
+**Kernel unreachable and the title bar (2026-11-01).** With the kernel stopped, Tasks replaced the board with a "Couldn't load tasks" error card; its count line sits under the title instead of beside it. The shell parts (the shared band, the titlebar subtitle slot, the `~` formatter) are item 11's; each screen item adopts them in its own folder, so the screen items run in parallel.
+
 ## Owner decisions (2026-10-30, binding)
 
 Recorded 2026-10-30 in the phase 7 product-owner session, over two rounds of AskUserQuestion. The owner chose the proposed option every time. Each item carries this copy. D3, D4, D9, D12, D22, D24, D26, D27, D28, D29, D34, D36 and invariants 1–9 stay as they are. Phase 5 and phase 6 decisions (in their items) still hold.
@@ -37,11 +39,12 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 
 ## Scope
 
-1. **Name the board words to Wright.** `kernel_task_create` (and `kernel_task_update`) descriptions list `waiting`, `working`, `parked`, `done` as the words the board sorts and say any other word shows under Other. The kernel still accepts any state (D3; owner decision 2026-11-01).
-2. **Other group.** The board shows a task whose state is none of the four in a visible "Other" group with its raw state word, never in Working. `gui-v2.html` gains the `tasks-other` view first (D9), in this item.
-3. **Who made it.** A task card names the agent of the session that created it when it has no assignee, instead of "unknown agent"; with neither, it says so in words the mockup uses.
-4. **Readable history.** Each history entry is a sentence plus its actor, as `tasks-history` shows; the raw payload is never the entry's text. The creating session is linked from the task when the store records it.
-5. **Polish gate.** The PR commits screenshots from the running app (fixture kernel, through `app/e2e/electron-harness.ts`), light and dark, of every mockup state the item changes, each named against its `gui-v2.html` view. The owner's approval of the PR is the gate (D9).
+1. **Adopt the shell (item 11).** Tasks keeps its last data under the shared band when the kernel is unreachable, matching `tasks-unreachable`, with no raw request text; and it hands its count line to the titlebar subtitle slot instead of drawing its own band. It also shows the cap line ("Showing the newest 200 cards…") only when the board actually hides cards.
+2. **Name the board words to Wright.** `kernel_task_create` (and `kernel_task_update`) descriptions list `waiting`, `working`, `parked`, `done` as the words the board sorts and say any other word shows under Other. The kernel still accepts any state (D3; owner decision 2026-11-01).
+3. **Other group.** The board shows a task whose state is none of the four in a visible "Other" group with its raw state word, never in Working. `gui-v2.html` gains the `tasks-other` view first (D9), in this item.
+4. **Who made it.** A task card names the agent of the session that created it when it has no assignee, instead of "unknown agent"; with neither, it says so in words the mockup uses.
+5. **Readable history.** Each history entry is a sentence plus its actor, as `tasks-history` shows; the raw payload is never the entry's text. The creating session is linked from the task when the store records it.
+6. **Polish gate.** The PR commits screenshots from the running app (fixture kernel, through `app/e2e/electron-harness.ts`), light and dark, of every mockup state the item changes, each named against its `gui-v2.html` view. The owner's approval of the PR is the gate (D9).
 
 ## Non-goals
 
@@ -50,6 +53,9 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 
 ## Acceptance criteria
 
+- [ ] Given Tasks loaded, when the fixture kernel's listener stops, then it keeps its data under the shared band with write controls disabled, matching `tasks-unreachable`, and refreshes when the listener restarts.
+- [ ] Given Tasks, then its count line sits beside the title in the title bar, matching `tasks-populated`.
+- [ ] Given fewer cards than the board's cap, then no cap line shows; given more, it does.
 - [ ] Given a task with state `waiting`, then it shows under "Waiting on you" and the count says so.
 - [ ] Given a task with state `waiting on owner` (any word outside the four), then it shows in the Other group with that word, not in Working, matching the new `tasks-other` view.
 - [ ] Given `kernel_task_create`'s and `kernel_task_update`'s tool descriptions, then they name the four board words and still accept any state (a kernel test pins both).
@@ -73,7 +79,7 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 - Changing a tool description changes what Wright writes from now on; rows created before it keep their words and land in Other, which is the honest outcome.
 
 ## Depends on
-2026-11-01-090012-shell-polish-sidebar-titlebar-subtitle-and-crew-rows.md
+2026-11-01-090011-shell-shared-unreachable-band-sidebar-titlebar-slot-and-home-paths.md
 
 ## Touches
 kernel/src/tools/server.ts

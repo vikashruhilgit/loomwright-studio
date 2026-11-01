@@ -65,14 +65,14 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 - A screen that matches on fixture data only. The live half exists to catch that.
 
 ## Depends on
-2026-11-01-090011-kernel-unreachable-band-over-last-known-data-on-every-screen.md
-2026-11-01-090012-shell-polish-sidebar-titlebar-subtitle-and-crew-rows.md
+2026-11-01-090011-shell-shared-unreachable-band-sidebar-titlebar-slot-and-home-paths.md
+2026-11-01-090012-memory-last-known-data-home-paths-and-titlebar-line.md
 2026-11-01-090013-keyboard-map-palette-and-screen-shortcuts.md
 2026-11-01-090014-tasks-board-words-other-group-and-honest-history.md
 2026-11-01-090015-playbooks-table-tokens-today-and-short-model-names.md
 2026-11-01-090016-schedules-firing-history-and-playbook-off-triggers.md
 2026-11-01-090017-budget-and-audit-readable-log-and-honest-cap.md
-2026-11-01-090018-settings-and-memory-home-paths-and-auth-polish.md
+2026-11-01-090018-settings-last-known-data-account-name-and-polish.md
 
 ## Touches
 docs/evidence/phase-7-exit-runbook.md

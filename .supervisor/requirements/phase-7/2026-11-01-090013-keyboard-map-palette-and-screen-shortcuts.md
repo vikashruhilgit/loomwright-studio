@@ -76,7 +76,7 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 - Electron's menu accelerators and the page's key handler can both fire on ⌘ keys; one owner of each key, pinned by a test.
 
 ## Depends on
-2026-11-01-090012-shell-polish-sidebar-titlebar-subtitle-and-crew-rows.md
+2026-11-01-090011-shell-shared-unreachable-band-sidebar-titlebar-slot-and-home-paths.md
 
 ## Touches
 app/src/App.tsx

@@ -17,6 +17,8 @@ Live run 2026-11-01, `playbooks-populated` and `playbooks-detail`, light and dar
 - Detail: Owner shows the id `wright` where the mockup shows the agent's avatar and name; the title bar carries no slug (the subtitle slot is item 12's, this item fills it).
 - The rest of the detail view matches.
 
+**Kernel unreachable and the title bar (2026-11-01).** With the kernel stopped, Playbooks kept its rows but turned Last run and Tokens to "unknown · could not be read", with no band; its count line sits under the title instead of beside it. The shell parts (the shared band, the titlebar subtitle slot, the `~` formatter) are item 11's; each screen item adopts them in its own folder, so the screen items run in parallel.
+
 ## Owner decisions (2026-10-30, binding)
 
 Recorded 2026-10-30 in the phase 7 product-owner session, over two rounds of AskUserQuestion. The owner chose the proposed option every time. Each item carries this copy. D3, D4, D9, D12, D22, D24, D26, D27, D28, D29, D34, D36 and invariants 1–9 stay as they are. Phase 5 and phase 6 decisions (in their items) still hold.
@@ -40,10 +42,11 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 
 ## Scope
 
-1. **Tokens today** per playbook against its daily limit ("no limit set" when unset), as the mockup shows; last-run tokens stay in the detail's Recent runs.
-2. **Short model names** in the table (`sonnet`, `opus`, `haiku`), the full id in the detail and a tooltip.
-3. **Owner by name and avatar** in the detail; the detail's slug in the title bar subtitle.
-4. **Polish gate.** The PR commits screenshots from the running app (fixture kernel, through `app/e2e/electron-harness.ts`), light and dark, of every mockup state the item changes, each named against its `gui-v2.html` view. The owner's approval of the PR is the gate (D9).
+1. **Adopt the shell (item 11).** Playbooks keeps its last data under the shared band when the kernel is unreachable, matching `playbooks-unreachable`, with no raw request text; and it hands its count line to the titlebar subtitle slot instead of drawing its own band. Last run and Tokens keep their last values marked last known, not "unknown · could not be read".
+2. **Tokens today** per playbook against its daily limit ("no limit set" when unset), as the mockup shows; last-run tokens stay in the detail's Recent runs.
+3. **Short model names** in the table (`sonnet`, `opus`, `haiku`), the full id in the detail and a tooltip.
+4. **Owner by name and avatar** in the detail; the detail's slug in the title bar subtitle.
+5. **Polish gate.** The PR commits screenshots from the running app (fixture kernel, through `app/e2e/electron-harness.ts`), light and dark, of every mockup state the item changes, each named against its `gui-v2.html` view. The owner's approval of the PR is the gate (D9).
 
 ## Non-goals
 
@@ -51,6 +54,8 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 
 ## Acceptance criteria
 
+- [ ] Given Playbooks loaded, when the fixture kernel's listener stops, then it keeps its data under the shared band with write controls disabled, matching `playbooks-unreachable`, and refreshes when the listener restarts.
+- [ ] Given Playbooks, then its count line sits beside the title in the title bar, matching `playbooks-populated`.
 - [ ] Given playbooks with and without a daily limit, then the table's last column reads "Tokens today" with "N of limit" or "no limit set", matching `playbooks-populated`.
 - [ ] Given a playbook on `claude-sonnet-5-5`, then the table shows `sonnet` on one line and the detail shows the full id.
 - [ ] Given a playbook's detail, then Owner shows the agent's avatar and name, matching `playbooks-detail`.
@@ -71,7 +76,7 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 - None beyond the table layout at narrow widths; the e2e checks one-line rows at the window's minimum width.
 
 ## Depends on
-2026-11-01-090012-shell-polish-sidebar-titlebar-subtitle-and-crew-rows.md
+2026-11-01-090011-shell-shared-unreachable-band-sidebar-titlebar-slot-and-home-paths.md
 
 ## Touches
 app/src/screens/playbooks

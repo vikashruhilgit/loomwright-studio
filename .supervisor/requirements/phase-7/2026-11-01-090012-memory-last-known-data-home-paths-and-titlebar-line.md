@@ -1,22 +1,21 @@
-# 18 — Settings and Memory: home paths as ~, the account name, and Settings polish
+# 12 — Memory: last-known data when the kernel is unreachable, ~ paths, and the titlebar line
 
 ## Status: ready
 
-**Priority:** MVP · ROADMAP phase 7 · D9, invariant 6
+**Priority:** MVP (bug + polish) · ROADMAP phase 7 · D9, invariant 8
 
 **As** the owner,
-**I want** paths under my home folder shown as `~/…` and Settings to show my account rather than the provider's id,
-**so that** screenshots of the app don't publish my user name, and Settings reads like the mockup.
+**I want** Memory to keep showing my files while the kernel restarts, and to show paths under my home folder as `~/…`,
+**so that** a restart never shows me a raw request error, and screenshots of Memory don't publish my user name.
 
 ## Problem
 
-Live run 2026-11-01, `memory-populated`, `memory-file`, `settings-populated`, light and dark. Memory's list and file view otherwise match; Settings mostly matches. Mismatches:
+Live run 2026-11-01, `memory-populated`, `memory-file` and `memory-unreachable`, light and dark. The list and the file view otherwise match.
 
-- **Home paths.** Memory's root (`/Users/<name>/.loomwright-studio/memory/`) and a file's Path, and Settings' Data location and Loomwright path, are absolute; the mockup shows `~/.loomwright-studio/…`. The repo is public, so live screenshots carry the user name (the owner's 2026-10-31 screenshot decision).
-- **Account** reads `subscription-token` (the provider id); the mockup reads "personal subscription". Settings stays read-only for auth (invariant 6).
-- **Command blocks** wrap (`security add-generic-password … -w` breaks over two lines); the mockup's fit on one line.
-- **Theme help text** reads "System follows your Mac." even when Dark or Light is selected.
-- The login-item note is out of scope (owner decision 2026-11-01).
+- **Unreachable:** with the kernel stopped, Memory replaced its tree with an error card showing `GET /memory · no answer · not_installed`; the mockup keeps the tree under the shared band.
+- **Home paths:** the root (`/Users/<name>/.loomwright-studio/memory/`) and a file's Path are absolute; the mockup shows `~/.loomwright-studio/…`. The repo is public (the owner's 2026-10-31 screenshot decision).
+- **Count line** ("21 files") sits in a band under the title instead of beside it.
+- Memory's Edit-and-cancel was not exercised live; this item's e2e covers it and the re-run (19) checks it.
 
 ## Owner decisions (2026-10-30, binding)
 
@@ -41,24 +40,21 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 
 ## Scope
 
-1. **`~` for home paths** in Memory (root, file Path) and Settings (Data location, Loomwright), from one formatter; Reveal in Finder still opens the real path.
-2. **Account** shows the provider's account display name; when the provider has none, the mockup's wording.
-3. **Command blocks** fit one line at the window's default width, scrolling horizontally beyond it.
-4. **Theme help text** matches the selected theme.
-5. **Polish gate.** The PR commits screenshots from the running app (fixture kernel, through `app/e2e/electron-harness.ts`), light and dark, of every mockup state the item changes, each named against its `gui-v2.html` view. The owner's approval of the PR is the gate (D9).
+1. **Adopt the shell (item 11).** Memory keeps its last data under the shared band when the kernel is unreachable, matching `memory-unreachable`, with no raw request text; and it hands its count line to the titlebar subtitle slot instead of drawing its own band.
+2. **`~` paths** for the root and a file's Path, through item 11's formatter; Reveal in Finder (where shown) still opens the real path.
+3. **Polish gate.** The PR commits screenshots from the running app (fixture kernel, through `app/e2e/electron-harness.ts`), light and dark, of every mockup state the item changes, each named against its `gui-v2.html` view. The owner's approval of the PR is the gate (D9).
 
 ## Non-goals
 
-- The login-item note (owner decision 2026-11-01).
-- Any auth write from Settings (invariant 6).
+- Any change to Memory's guarded write or conflict flow.
 
 ## Acceptance criteria
 
-- [ ] Given a data directory under the home folder, then Memory and Settings show it as `~/…`, matching `memory-populated`, `memory-file` and `settings-populated`, and Reveal in Finder opens the real folder.
-- [ ] Given a data directory outside the home folder, then it shows in full.
-- [ ] Given the subscription provider, then Account shows its account name, not `subscription-token`.
-- [ ] Given the default window width, then each command block is one line.
-- [ ] Given Light, Dark or System selected, then the theme row's help text describes that choice.
+- [ ] Given Memory loaded, when the fixture kernel's listener stops, then it keeps its data under the shared band with write controls disabled, matching `memory-unreachable`, and refreshes when the listener restarts.
+- [ ] Given Memory, then its count line sits beside the title in the title bar, matching `memory-populated`.
+- [ ] Given that unreachable state, then no request text (`GET /memory`, `no answer`, `not_installed`) is visible.
+- [ ] Given a data directory under the home folder, then the root and a file's Path read `~/…`, matching `memory-populated` and `memory-file`; outside home, in full.
+- [ ] Given a file, when I open Edit and cancel, then nothing is written and the view returns unchanged.
 - [ ] The polish-gate screenshots are in the PR body, each named against its mockup view.
 
 ## Validation (must pass before merge)
@@ -68,18 +64,15 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 
 ## Assumptions
 
-- The home folder is known to the app (Electron's `app.getPath('home')`) without a new kernel route.
+- Item 11's band contract and formatter are merged first.
 
 ## Risks
 
-- A formatter applied in two screens; one unit test covers home, outside-home and a path that only starts with the home name.
+- None beyond adopting a shared contract; the e2e uses item 11's listener stop.
 
 ## Depends on
-2026-11-01-090012-shell-polish-sidebar-titlebar-subtitle-and-crew-rows.md
+2026-11-01-090011-shell-shared-unreachable-band-sidebar-titlebar-slot-and-home-paths.md
 
 ## Touches
-app/src/screens/settings
 app/src/screens/memory
-app/src/shell/home-path.ts
-app/e2e/settings.spec.ts
 app/e2e/memory.spec.ts

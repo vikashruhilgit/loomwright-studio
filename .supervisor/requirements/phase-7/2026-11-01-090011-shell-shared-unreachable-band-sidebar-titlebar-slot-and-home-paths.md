@@ -1,12 +1,12 @@
-# 11 — Kernel unreachable: the shared band over last-known data, on every phase 7 screen
+# 11 — Shell: the shared unreachable band, sidebar, titlebar subtitle slot and the ~ path formatter
 
 ## Status: ready
 
-**Priority:** MVP (bug) · ROADMAP phase 7 · D9, UI.md honest status
+**Priority:** MVP (bug + polish) · ROADMAP phase 7 · D9, UI.md honest status
 
 **As** the owner,
-**I want** every phase 7 screen to keep showing what it last read, under the one "Couldn't reach the kernel" band, while the kernel restarts,
-**so that** a kernel restart never blanks my screen or shows me a raw request error.
+**I want** the window's frame and its shared pieces (the "Couldn't reach the kernel" band, the sidebar, the title bar's count line, how home paths read) to match the approved mockup,
+**so that** every screen can adopt them in its own item, and the frame passes its polish gate.
 
 ## Problem
 
@@ -21,6 +21,14 @@ Live run 2026-11-01, kernel stopped with `launchctl bootout` after every screen 
 | Schedules & triggers, Budget & audit, Settings | content replaced by "Status unknown" | mismatch |
 
 Every screen also shows the small "Reconnecting to the kernel… Last updated" line (`app/src/shell/KernelStates.tsx:41`). After `launchctl bootstrap` all seven reconnected on their own (match). The item 03–09 acceptance criterion "the shared band shows and the screen keeps its last data" passed on fixture data but not live, so the fixture's unreachable path differs from the real one (a request that never answers versus a fixture flag).
+
+Live run 2026-11-01, compared with every `gui-v2.html` view (light and dark). The frame differs on all seven screens:
+
+- **Sidebar:** no icons beside the entries; no divider between the first group (Chat … Integrations) and the second (Tasks … Settings); the entry reads "Schedules" where the mockup reads "Schedules & triggers"; the bottom status row ("idle" dot and `⌘K`) is missing.
+- **Crew rows:** the app shows the agent id, "off", a time and a truncated last line on up to three lines; the mockup shows avatar, name and one last line.
+- **Title bar:** the mockup puts each screen's count line beside the title ("Tasks  8 cards · 3 working"); the app's title bar (`app/src/App.tsx:96-97`) renders the title only, and each screen draws its count line in a band under it.
+
+**Shaping (2026-11-01).** The shell parts (the shared band, the titlebar subtitle slot, the `~` formatter) are item 11's; each screen item adopts them in its own folder, so the screen items run in parallel. This item touches no screen folder except Integrations, the screen that already shows the band.
 
 ## Owner decisions (2026-10-30, binding)
 
@@ -45,22 +53,26 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 
 ## Scope
 
-1. **One shared behaviour.** Each phase 7 screen keeps its last successful read while the connection is `reconnecting`, `unreachable` or `not_installed`, renders the shared band (the one Integrations already shows) above it, marks values as last known as the mockup does, and disables write controls. A raw request line (method, path, connection state) is never shown to the owner.
-2. **Every screen:** Tasks, Playbooks, Schedules & triggers, Memory, Budget & audit, Settings and Integrations, against each one's `<screen>-unreachable` view.
-3. **Pin it the live way.** The e2e stops the fixture kernel's listener (requests then fail as they do live) after each screen has loaded, instead of a fixture flag, so the test fails the way the live run did.
-4. **Polish gate.** The PR commits screenshots from the running app (fixture kernel, through `app/e2e/electron-harness.ts`), light and dark, of every mockup state the item changes, each named against its `gui-v2.html` view. The owner's approval of the PR is the gate (D9).
+1. **Shared unreachable band.** One shell component and one connection-store contract that a screen uses to keep its last successful read while the connection is `reconnecting`, `unreachable` or `not_installed`: the band (the one Integrations already shows), "last known" marks and disabled write controls. A raw request line is never rendered by it. Integrations moves onto it.
+2. **Fixture: stop the listener.** `app/e2e/fixture-kernel.ts` gains a way to stop and restart its listener after a screen has loaded, so requests fail as they do live, for every screen item's e2e.
+3. **Sidebar** in `app/src/App.tsx`: an icon per entry (the mockup's glyphs, from `Glyph`), the divider between Chat … Integrations and Tasks … Settings, "Schedules & triggers", and the bottom status row (the kernel's state word and the `⌘K` hint; the palette itself is item 13). Crew rows as the mockup draws them (avatar, name, one last line).
+4. **Titlebar subtitle slot.** The title bar renders a screen's count line beside the title; a screen declares it through `app/src/screens/types.ts`. Screens move their own line in their own items; until then the slot is empty for them.
+5. **`~` formatter** (`app/src/shell/home-path.ts`): a path under the home folder reads `~/…`; outside it, in full; a path that only starts with the home folder's name is not shortened.
+6. **Polish gate.** The PR commits screenshots from the running app (fixture kernel, through `app/e2e/electron-harness.ts`), light and dark, of every mockup state the item changes, each named against its `gui-v2.html` view. The owner's approval of the PR is the gate (D9).
 
 ## Non-goals
 
-- Loading and error views for a first read that never succeeded (they stay as designed).
-- Any change to how the app detects the kernel's state.
+- Any screen folder but Integrations (each screen adopts the shell in its own item, 12 and 14–18).
+- The ⌘ shortcuts and the palette (item 13).
 
 ## Acceptance criteria
 
-- [ ] Given each of the seven screens loaded on the fixture kernel, when the kernel's listener stops, then the screen keeps its data, shows the shared band and its "last known" marks, and disables its write controls, as its `<screen>-unreachable` view shows, in light and dark.
-- [ ] Given that state on Memory, then no request text (`GET /memory`, `no answer`, `not_installed`) is visible anywhere on the screen.
-- [ ] Given the listener restarts, then every screen reconnects and refreshes without a reload.
-- [ ] Given a screen that never loaded before the kernel stopped, then its designed loading or error state shows (unchanged).
+- [ ] Given Integrations loaded, when the fixture kernel's listener stops, then the shared band shows over its last data with its write controls disabled, matching `integrations-unreachable`, and it reconnects when the listener restarts.
+- [ ] Given the shared band component, then a unit test pins that it never renders request text (method, path, connection state).
+- [ ] Given any screen, then the sidebar shows an icon per entry, the group divider, "Schedules & triggers" and the bottom status row; crew rows show avatar, name and one last line, as the mockup shows, light and dark.
+- [ ] Given a screen that declares a count line, then the title bar shows it beside the title; given one that doesn't, the title alone.
+- [ ] Given the `~` formatter, then unit tests cover a path under home, outside home, and one that only starts with the home folder's name.
+- [ ] Given VoiceOver, then every sidebar entry and the status row have labels; both themes meet WCAG 2.1 AA contrast.
 - [ ] The polish-gate screenshots are in the PR body, each named against its mockup view.
 
 ## Validation (must pass before merge)
@@ -70,23 +82,23 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 
 ## Assumptions
 
-- The Integrations screen's band is the reference behaviour; the other screens adopt it rather than a new pattern.
+- The Integrations screen's band is the reference behaviour.
+- The home folder is known to the app (Electron's `app.getPath('home')`) without a new kernel route.
 
 ## Risks
 
-- Seven screen directories in one PR. Each screen's change is small (keep data, render the band); the e2e covers all seven in one loop.
+- A shared contract that five screen items then adopt in parallel; its shape is fixed here and pinned by unit tests before they start.
 
 ## Depends on
 2026-10-30-140010-phase-7-exit-check.md
 
 ## Touches
-app/src/shell/KernelStates.tsx
+app/src/shell
 app/src/store/connection.ts
-app/src/screens/tasks/TasksScreen.tsx
-app/src/screens/playbooks/PlaybooksScreen.tsx
-app/src/screens/schedules/SchedulesScreen.tsx
-app/src/screens/memory/MemoryScreen.tsx
-app/src/screens/budget/BudgetScreen.tsx
-app/src/screens/settings/SettingsScreen.tsx
+app/src/App.tsx
+app/src/styles/app.css
+app/src/components/Glyph.tsx
+app/src/screens/types.ts
+app/src/screens/integrations/IntegrationsView.tsx
 app/e2e/fixture-kernel.ts
-app/e2e/kernel-unreachable.spec.ts
+app/e2e/shell.spec.ts

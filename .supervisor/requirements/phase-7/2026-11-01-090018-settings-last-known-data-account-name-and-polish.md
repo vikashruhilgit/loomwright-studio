@@ -1,21 +1,25 @@
-# 12 — Shell polish: sidebar icons and groups, titlebar subtitle, status row and crew rows
+# 18 — Settings: last-known data when the kernel is unreachable, ~ paths, the account name and polish
 
 ## Status: ready
 
-**Priority:** MVP · ROADMAP phase 7 · D9
+**Priority:** MVP (bug + polish) · ROADMAP phase 7 · D9, invariant 6
 
 **As** the owner,
-**I want** the window's frame (sidebar, title bar, crew list) to look like the approved mockup on every screen,
-**so that** the phase 7 screens read as one app and pass their polish gate.
+**I want** Settings to keep showing what it last read while the kernel restarts, show my account rather than the provider's id, and show home paths as `~/…`,
+**so that** Settings reads like the mockup and its screenshots don't publish my user name.
 
 ## Problem
 
-Live run 2026-11-01, compared with every `gui-v2.html` view (light and dark). The frame differs on all seven screens:
+Live run 2026-11-01, `settings-populated` and `settings-unreachable`, light and dark. Settings mostly matches. Mismatches:
 
-- **Sidebar:** no icons beside the entries; no divider between the first group (Chat … Integrations) and the second (Tasks … Settings); the entry reads "Schedules" where the mockup reads "Schedules & triggers"; the bottom status row ("idle" dot and `⌘K`) is missing.
-- **Crew rows:** the app shows the agent id, "off", a time and a truncated last line on up to three lines; the mockup shows avatar, name and one last line.
-- **Title bar:** the mockup puts each screen's count line beside the title ("Tasks  8 cards · 3 working"); the app's title bar (`app/src/App.tsx:96-97`) renders the title only, and each screen draws its count line in a band under it.
-- **Tasks:** "Showing the newest 200 cards; older ones are not shown." shows even with 4 cards; the mockup shows no such line until the cap is reached.
+- **Unreachable:** the auth section is replaced by "Status unknown"; the mockup keeps the last values under the shared band.
+- **Home paths:** Data location and the Loomwright path are absolute; the mockup shows `~/…` (the owner's 2026-10-31 screenshot decision).
+- **Account** reads `subscription-token` (the provider id); the mockup reads "personal subscription". Settings stays read-only for auth (invariant 6).
+- **Command blocks** wrap (`security add-generic-password … -w` breaks over two lines); the mockup's fit on one line.
+- **Theme help text** reads "System follows your Mac." even when Dark or Light is selected.
+- The login-item note is out of scope (owner decision 2026-11-01).
+
+The shell parts (the shared band, the titlebar subtitle slot, the `~` formatter) are item 11's; each screen item adopts them in its own folder, so the screen items run in parallel.
 
 ## Owner decisions (2026-10-30, binding)
 
@@ -40,24 +44,26 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 
 ## Scope
 
-1. **Sidebar** in `app/src/App.tsx` and its styles: an icon per entry (the mockup's glyphs, from the existing `Glyph` component), the group divider, "Schedules & triggers", and the bottom status row (the kernel's state word and the `⌘K` hint; the palette itself is item 13).
-2. **Crew rows** as the mockup draws them.
-3. **Titlebar subtitle slot.** The title bar renders a screen's count line beside the title; each phase 7 screen hands its line to the slot instead of drawing its own band. Screens touched for this only.
-4. **Tasks' cap line** shows only when the board actually hides cards.
-5. **Polish gate.** The PR commits screenshots from the running app (fixture kernel, through `app/e2e/electron-harness.ts`), light and dark, of every mockup state the item changes, each named against its `gui-v2.html` view. The owner's approval of the PR is the gate (D9).
+1. **Adopt the shell (item 11).** Settings keeps its last data under the shared band when the kernel is unreachable, matching `settings-unreachable`, with no raw request text; and it hands its count line to the titlebar subtitle slot instead of drawing its own band.
+2. **`~` paths** for Data location and Loomwright, through item 11's formatter; Reveal in Finder still opens the real path.
+3. **Account** shows the provider's account display name; when the provider has none, the mockup's wording.
+4. **Command blocks** fit one line at the window's default width, scrolling horizontally beyond it.
+5. **Theme help text** matches the selected theme.
+6. **Polish gate.** The PR commits screenshots from the running app (fixture kernel, through `app/e2e/electron-harness.ts`), light and dark, of every mockup state the item changes, each named against its `gui-v2.html` view. The owner's approval of the PR is the gate (D9).
 
 ## Non-goals
 
-- The ⌘ shortcuts and the palette (item 13).
-- Any screen body change beyond moving its count line.
+- The login-item note (owner decision 2026-11-01).
+- Any auth write from Settings (invariant 6).
 
 ## Acceptance criteria
 
-- [ ] Given any phase 7 screen, then the sidebar shows an icon per entry, the divider between the two groups, "Schedules & triggers", and the bottom status row, as the mockup shows, in light and dark.
-- [ ] Given crew members, then each row shows avatar, name and one last line, as the mockup shows.
-- [ ] Given each phase 7 screen, then its count line sits beside the title in the title bar, matching its `<screen>-populated` view.
-- [ ] Given fewer cards than the board's cap, then Tasks shows no cap line; given more, it shows it.
-- [ ] Given VoiceOver, then every sidebar entry and the status row have labels; both themes meet WCAG 2.1 AA contrast.
+- [ ] Given Settings loaded, when the fixture kernel's listener stops, then it keeps its data under the shared band with write controls disabled, matching `settings-unreachable`, and refreshes when the listener restarts.
+- [ ] Given Settings, then its count line sits beside the title in the title bar, matching `settings-populated`.
+- [ ] Given a data directory under the home folder, then Data location and Loomwright read `~/…`, matching `settings-populated`, and Reveal in Finder opens the real folder; outside home, in full.
+- [ ] Given the subscription provider, then Account shows its account name, not `subscription-token`.
+- [ ] Given the default window width, then each command block is one line.
+- [ ] Given Light, Dark or System selected, then the theme row's help text describes that choice.
 - [ ] The polish-gate screenshots are in the PR body, each named against its mockup view.
 
 ## Validation (must pass before merge)
@@ -67,25 +73,15 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 
 ## Assumptions
 
-- The mockup's sidebar glyphs exist in `app/src/components/Glyph.tsx` or are added there.
+- Item 11's band contract and formatter are merged first.
 
 ## Risks
 
-- Every screen hands over its count line; a screen that forgets keeps its old band. The e2e asserts the title bar text per screen.
+- None beyond adopting a shared contract.
 
 ## Depends on
-2026-11-01-090011-kernel-unreachable-band-over-last-known-data-on-every-screen.md
+2026-11-01-090011-shell-shared-unreachable-band-sidebar-titlebar-slot-and-home-paths.md
 
 ## Touches
-app/src/App.tsx
-app/src/styles/app.css
-app/src/components/Glyph.tsx
-app/src/screens/types.ts
-app/src/screens/tasks/TasksScreen.tsx
-app/src/screens/playbooks/PlaybooksScreen.tsx
-app/src/screens/schedules/SchedulesScreen.tsx
-app/src/screens/memory/MemoryScreen.tsx
-app/src/screens/budget/BudgetScreen.tsx
-app/src/screens/settings/SettingsScreen.tsx
-app/src/screens/integrations/IntegrationsView.tsx
-app/e2e/shell.spec.ts
+app/src/screens/settings
+app/e2e/settings.spec.ts
