@@ -83,3 +83,9 @@ Recorded 2026-11-01 in the phase 7 re-run findings product-owner session (AskUse
 ## Touches
 app/src/screens/memory
 app/e2e/memory.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-02T09:44:54Z
+- **Brief:** .supervisor/jobs/done/2026-11-02-memory-avatars-file-icons-long-folders.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/209
