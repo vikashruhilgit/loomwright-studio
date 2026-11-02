@@ -194,6 +194,7 @@ const UNCLEARABLE: readonly PlaybookPolicyField[] = Object.freeze(["priority", "
  * nullable field, and only when `allowClear` (the owner's `none`); `priority`
  * and `mode` cannot be cleared. `mode` `live` is refused
  * `live_mode_not_in_phase_6` on every path: each one calls this check.
+ * Phase 8 item 04 lifts that refusal; until it lands the code and this check are unchanged.
  */
 export function checkPolicyValue(field: PlaybookPolicyField, value: unknown, allowClear: boolean): ColumnValue {
   if (value === null && allowClear && !UNCLEARABLE.includes(field)) return null;
