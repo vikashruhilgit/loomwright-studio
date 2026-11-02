@@ -126,10 +126,19 @@ async function boxes(page: Page, id: string): Promise<(({ x: number; y: number; 
 
 const switchNamed = (page: Page, name: string): Locator => page.getByRole("switch", { name });
 
-/** Resize the already-launched window (the same path as `settings.spec.ts`) and wait until the page has that inner size. */
+/**
+ * The window's own size, from the main process (`BrowserWindow.getSize()`, the outer size `main.ts` sets): on Linux the frame
+ * and menu bar take about 27px of it, so the renderer's `innerHeight` is shorter than the window; on macOS they coincide.
+ */
+async function windowSize(): Promise<number[]> {
+  return (await app?.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getSize())) ?? [];
+}
+
+/** Resize the already-launched window (the same path as `settings.spec.ts`), wait until the window is that size and the page is that wide (the layout breakpoints read the width only). */
 async function resizeWindow(page: Page, width: number, height: number): Promise<void> {
   await app?.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0]?.setSize(size.width, size.height), { width, height });
-  await expect.poll(() => page.evaluate(() => [window.innerWidth, window.innerHeight]), { message: `the window is ${width}x${height}` }).toEqual([width, height]);
+  await expect.poll(windowSize, { message: `the window is ${width}x${height}` }).toEqual([width, height]);
+  await expect.poll(() => page.evaluate(() => window.innerWidth), { message: `the page is ${width}px wide` }).toBe(width);
   await settle(page);
 }
 
@@ -769,7 +778,8 @@ test("AC7: a trigger_fired and a wakeup_scheduled event update the timeline and 
 
 test("AC1 (item 25): at the default window size every Result chip shows its whole text inside its cell, light and dark, in the all-triggers table and in the poll's own history", async ({}, testInfo) => {
   const { page } = await openPopulated();
-  expect(await page.evaluate(() => [window.innerWidth, window.innerHeight]), "the default window size (main.ts)").toEqual([1180, 760]);
+  expect(await windowSize(), "the default window size (main.ts)").toEqual([1180, 760]);
+  expect(await page.evaluate(() => window.innerWidth), "the page is as wide as the window").toBe(1180);
   const skipped = await pageToSkipped(page);
   const skippedRows = await skipped.count();
   expect(skippedRows, "the history shows playbook_not_enabled rows").toBeGreaterThan(0);
@@ -920,6 +930,16 @@ test("AC3 (item 25): a row's height depends only on its chip label and reason li
       // The reference is each row with its own count and time as rendered; the variants only change text inside it.
       const base = await heights();
       expect(base.length, "the paged history has rows").toBeGreaterThan(15);
+      // The chips fit their rows in this font too (a wider font wraps a chip to more lines; its row must still hold them).
+      const report = await chipReport(page);
+      expect(report.skipped, `${where}: the playbook_not_enabled rows are measured`).toBeGreaterThan(0);
+      expect(report.problems, `${where}: no chip is clipped and no row outgrew its height`).toEqual([]);
+      if (width < 1140) {
+        const fit = await paneFit(page);
+        expect(fit.paneScroll, `${where}: the pane has no horizontal scroll`).toBeLessThanOrEqual(fit.paneClient);
+        expect(fit.tableWidth, `${where}: the table fits its parent`).toBeLessThanOrEqual(fit.parentClient);
+        expect(fit.triggerHead, `${where}: the Trigger column keeps a usable width`).toBeGreaterThanOrEqual(96);
+      }
       for (const [count, time] of [[null, "14:20"], ["×2", "14:20"], ["×999", "28 Sep 23:59"], ["×1000", "Wed 23:59"], ["×9999", "28 Sep 23:59"]] as const) {
         await setText(count, time);
         await settle(page);

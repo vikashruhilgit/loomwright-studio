@@ -589,8 +589,9 @@
 
 /* A narrow window (down to the 900px minimum): the list pane keeps its width, so the history table has about 250px.
    When shrinks (a time wraps to two lines), the Result column takes what the Trigger column (kept above 96px) leaves,
-   the detail pane's padding and the cells' padding are tighter, and the fixed row is tall enough for a chip of five
-   lines above its reason (the "×N" slot narrows the chip by 5ch). */
+   the detail pane's padding and the cells' padding are tighter, and the fixed row is tall enough for the chip of
+   "playbook off: fires are skipped" above its reason line: five lines (128px) in the default font, six (139px) in a
+   Verdana-width font, where the "×N" slot (5ch) narrows the chip; 144px holds both (the e2e height test checks both fonts). */
 @media (max-width: 1139px) {
   .schedules-pane > .schedules-pad {
     padding-left: var(--space-3);
@@ -607,7 +608,7 @@
     padding: var(--space-2) var(--space-1);
   }
   .schedules-fire {
-    height: 128px;
+    height: 144px;
   }
 }
 
