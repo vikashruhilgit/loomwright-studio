@@ -91,7 +91,35 @@
   height: var(--row-height);
   padding: var(--space-2) var(--space-3) var(--space-1);
 }
+/* The mark (an agent's avatar, or the shared icon) sits in a fixed 20px slot, so it never makes a row taller. */
+.memory-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: 20px;
+  height: 20px;
+  color: var(--ink-tertiary);
+}
+.memory-mark-icon {
+  width: 16px;
+  height: 16px;
+}
+/* A long folder name clips with an ellipsis inside the fixed-height header; the caption gives way first. */
+.memory-folder > .memory-cap {
+  flex: 0 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .memory-folder-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--ink-tertiary);
   font-family: var(--type-label-family);
   font-size: var(--type-label-size);
@@ -129,6 +157,11 @@
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 500;
+}
+.memory-file-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
 }
 .memory-file-name {
   min-width: 0;

@@ -10,12 +10,14 @@
 // `<textarea>`, which are text.
 import { useMemo } from "react";
 import type { ReactNode, Ref } from "react";
-import type { MemoryConflictError, MemoryFileEntry, MemoryFileResponse, MemoryTreeResponse } from "../../api/contract";
+import type { MemoryConflictError, MemoryFileEntry, MemoryFileResponse, MemoryTreeResponse, RosterEntry } from "../../api/contract";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import { DiffView } from "../../components/DiffView/DiffView";
+import { Icon } from "../../components/icons";
 import { KernelBand } from "../../shell/KernelStates";
 import { printable } from "../approvals/printable";
+import { FolderMark } from "./FolderMark";
 import {
   MEMORY_TEST_IDS as IDS,
   bytesOf,
@@ -201,12 +203,14 @@ interface TreeProps {
   readonly tabPath: string | undefined;
   readonly offline: boolean;
   readonly now: number;
+  /** The agents roster, for each folder's avatar; `undefined` until it answers (the avatars then fall back). */
+  readonly roster: readonly RosterEntry[] | undefined;
   readonly onOpen: (path: string) => void;
   readonly onFocused: (path: string) => void;
 }
 
 /** The memory root above the tree, then each folder's files: a `nav` labelled "Memory files". */
-export function MemoryTree({ tree, dataDir, home, openPath, tabPath, offline, now, onOpen, onFocused }: TreeProps) {
+export function MemoryTree({ tree, dataDir, home, openPath, tabPath, offline, now, roster, onOpen, onFocused }: TreeProps) {
   return (
     <nav className="memory-tree" aria-label="Memory files" data-testid={IDS.tree}>
       <p className="memory-root" data-testid={IDS.root}>
@@ -214,7 +218,8 @@ export function MemoryTree({ tree, dataDir, home, openPath, tabPath, offline, no
       </p>
       {groupsOf(tree).map((group) => (
         <div key={group.folder} className="memory-group" role="group" aria-label={`${group.label} files`}>
-          <div className="memory-folder" data-testid={IDS.folder}>
+          <div className="memory-folder" data-testid={IDS.folder} title={group.label}>
+            <FolderMark folder={group.folder} label={group.label} roster={roster} />
             <span className="memory-folder-name">{group.label}</span>
             <span className="memory-cap">{printable(group.folder)}/</span>
           </div>
@@ -236,6 +241,7 @@ export function MemoryTree({ tree, dataDir, home, openPath, tabPath, offline, no
                   if (!offline) onOpen(file.path);
                 }}
               >
+                <Icon name="file" className="memory-file-icon" />
                 <span className="memory-file-name">{printable(fileName(file.path))}</span>
                 <span className="memory-file-size">{sizeText(file.size)}</span>
               </button>
@@ -248,7 +254,17 @@ export function MemoryTree({ tree, dataDir, home, openPath, tabPath, offline, no
 }
 
 /** "Pick a file": what the pane says before a file is open (the mockup's `memoryOverview`). */
-export function MemoryOverview({ tree, dataDir, home }: { readonly tree: MemoryTreeResponse; readonly dataDir: string | undefined; readonly home: string | undefined }) {
+export function MemoryOverview({
+  tree,
+  dataDir,
+  home,
+  roster,
+}: {
+  readonly tree: MemoryTreeResponse;
+  readonly dataDir: string | undefined;
+  readonly home: string | undefined;
+  readonly roster: readonly RosterEntry[] | undefined;
+}) {
   return (
     <div className="memory-pad" data-testid={IDS.overview}>
       <div className="memory-head">
@@ -261,6 +277,7 @@ export function MemoryOverview({ tree, dataDir, home }: { readonly tree: MemoryT
       <ul className="memory-box">
         {groupsOf(tree).map((group) => (
           <li key={group.folder}>
+            <FolderMark folder={group.folder} label={group.label} roster={roster} />
             <span className="memory-box-text">
               <b>{group.label}</b>
               <span className="memory-cap">{group.files.map((f) => printable(fileName(f.path)).replace(/\.md$/, "")).join(", ")}</span>
