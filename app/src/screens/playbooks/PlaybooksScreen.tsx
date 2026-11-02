@@ -28,6 +28,7 @@ import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
+import { Icon } from "../../components/icons";
 import type { KernelPolicyField } from "../../components/PlaybookPolicy/PlaybookPolicy";
 import { KernelBand } from "../../shell/KernelStates";
 import { useKernelReach } from "../../shell/last-known";
@@ -52,7 +53,7 @@ import {
   triggerText,
   setValueOrNotSet,
 } from "./model";
-import { Breakable, type Notice, type PlaybookActions, PlaybookSwitch, SetBy, Skeleton, TurnOnNote } from "./parts";
+import { Breakable, type Notice, type PlaybookActions, PlaybookCrumb, PlaybookSwitch, SetBy, Skeleton, TurnOnNote } from "./parts";
 import { PlaybookDetail } from "./PlaybookDetail";
 import { PlaybookEdit } from "./PlaybookEdit";
 import { PlaybookHistory } from "./PlaybookHistory";
@@ -406,11 +407,7 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
     if (current === undefined) {
       body = (
         <div className="pb-main">
-          <div className="pb-crumb">
-            <Button variant="ghost" size="standalone" data-pb-back="" onClick={back}>
-              Playbooks
-            </Button>
-          </div>
+          <PlaybookCrumb parent="Playbooks" current={`playbook #${view.id}`} onBack={back} />
           {playbooks === undefined ? (
             <Skeleton rows={2} />
           ) : (
@@ -485,7 +482,7 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
       {view.kind === "list" && showToolbar ? (
         <div className="pb-tbar">
           <span className="pb-spacer" />
-          <Button variant="secondary" size="standalone" data-testid={IDS.askWright} disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={askWright}>
+          <Button variant="secondary" size="standalone" data-testid={IDS.askWright} icon={<Icon name="chat" className="pb-glyph" />} disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={askWright}>
             Ask Wright for a playbook
           </Button>
         </div>

@@ -7,8 +7,7 @@ import type { PlaybookListing, PlaybookVersion } from "../../api/contract";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import { when } from "../chat/model";
-import { Crumb } from "./PlaybookDetail";
-import { Skeleton } from "./parts";
+import { PlaybookCrumb, Skeleton } from "./parts";
 import { PLAYBOOKS_TEST_IDS as IDS, UNKNOWN, safe, versionActors, versionChanges, versionFieldLabel } from "./model";
 import type { Read } from "./useHistory";
 
@@ -78,7 +77,7 @@ export function PlaybookHistory({ playbook, versions, onBack }: PlaybookHistoryP
         if (event.key === "Escape" && !event.defaultPrevented) onBack();
       }}
     >
-      <Crumb label="Playbook" name={safe(playbook.name)} onBack={onBack} />
+      <PlaybookCrumb parent="Playbook" current={safe(playbook.name)} onBack={onBack} />
       <div className="pb-head">
         <h2>Version history</h2>
         {list === undefined ? null : <Badge>{`${list.length} ${list.length === 1 ? "version" : "versions"}`}</Badge>}

@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import type { Approval, PlaybookListing } from "../../api/contract";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
+import { Crumb } from "../../shell/Crumb";
 import { APPROVALS_HASH, type RunTone, PLAYBOOKS_TEST_IDS as IDS, isOn, runStatusWord, runTone, safe, setByWord, stateOf, switchName } from "./model";
 
 /** A line under a view's controls: a refusal, or a status. */
@@ -43,6 +44,16 @@ export function SetBy({ setBy, compact = false }: { readonly setBy: string | nul
       <Badge tone={setBy === "owner" ? "neutral" : "accent"}>{word}</Badge>
     </span>
   );
+}
+
+/** Marks the crumb's button as the view's one Back control: the screen's focus targets and the keyboard specs find it by `data-pb-back`. */
+function markBack(button: HTMLButtonElement | null): void {
+  button?.setAttribute("data-pb-back", "");
+}
+
+/** The shell's shared "‹ Parent / Current" crumb, with the Back button marked `data-pb-back` (the shared crumb forwards no data attribute). */
+export function PlaybookCrumb({ parent, current, onBack }: { readonly parent: string; readonly current: string; readonly onBack: () => void }) {
+  return <Crumb ref={markBack} className="pb-crumb" glyphClassName="pb-glyph" parent={parent} current={current} onBack={onBack} />;
 }
 
 /** A run's dot with its status in words beside it: the dot alone says nothing to a screen reader. */

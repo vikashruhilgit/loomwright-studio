@@ -372,15 +372,15 @@ describe("AC3: the title-bar subtitle", () => {
     await screen.findByTestId(IDS.edit);
     expect(screen.queryByTestId(IDS.slug)).toBeNull();
     expect(screen.queryByTestId(IDS.count)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Playbook" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to Playbook" }));
     await screen.findByTestId(IDS.detail);
     fireEvent.click(screen.getByTestId(IDS.history));
     await screen.findByTestId(IDS.historyView);
     expect(screen.queryByTestId(IDS.slug)).toBeNull();
     expect(screen.queryByTestId(IDS.count)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Playbook" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to Playbook" }));
     await screen.findByTestId(IDS.detail);
-    fireEvent.click(screen.getAllByRole("button", { name: "Playbooks" })[0] as HTMLElement);
+    fireEvent.click(screen.getByRole("button", { name: "Back to Playbooks" }));
     expect((await screen.findByTestId(IDS.count)).textContent).toBe("3 playbooks · 1 on");
   });
 
@@ -452,7 +452,7 @@ describe("AC6: the owner by avatar and name", () => {
 });
 
 describe("AC5: short model names", () => {
-  it("the table's Model cell shows the family word with the full id in its title; the detail shows the id in full", async () => {
+  it("the table's Model cell shows the family word with the full id in its title; the detail shows the short name with the id in its title", async () => {
     await mountLoaded();
     const model = cell("Review PRs", 4);
     expect(model.textContent).toContain("sonnet");
@@ -466,6 +466,8 @@ describe("AC5: short model names", () => {
     fireEvent.click(within(rowOf("Review PRs")).getByTestId(IDS.open));
     await screen.findByTestId(IDS.detail);
     const modelRow = screen.getAllByTestId(IDS.field).find((f) => f.dataset.field === "Model") as HTMLElement;
-    expect(modelRow.textContent).toContain("claude-sonnet-5-5");
+    expect(modelRow.textContent).toContain("sonnet");
+    expect(modelRow.textContent).not.toContain("claude-sonnet-5-5");
+    expect(modelRow.querySelector('[title="claude-sonnet-5-5"]')).not.toBeNull();
   });
 });

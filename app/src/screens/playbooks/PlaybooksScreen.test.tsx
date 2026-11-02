@@ -385,7 +385,7 @@ describe("AC4: every field, who set it, and 'not set'", () => {
     expect(runs[0]?.textContent).toContain("github:acme/widgets#42 @ 9f3c2a1");
     expect(within(detail).getByRole("switch", { name: "Review PRs is on" })).toBeTruthy();
     // A policy value nobody set reads "not set" in the detail too.
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Playbooks" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Back to Playbooks" })));
     await openDetail("Weekly changelog");
     expect(within(screen.getByTestId(IDS.detail)).getAllByText("not set").length).toBeGreaterThanOrEqual(3);
   });
@@ -441,9 +441,9 @@ describe("AC5: a field edit is one /set, and nothing changes until the kernel an
     expect(screen.getByText(/Any change makes this playbook a draft again, as the kernel does\./)).toBeTruthy();
     expect(screen.queryByText(/v4/)).toBeNull();
     expect(screen.queryByText(/Save as/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Playbook" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to Playbook" }));
     await screen.findByTestId(IDS.detail);
-    fireEvent.click(screen.getByRole("button", { name: "Playbooks" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to Playbooks" }));
     await openEdit("Weekly changelog");
     expect(screen.queryByText(/Any change makes this playbook a draft again/)).toBeNull();
   });
@@ -736,9 +736,9 @@ describe("AC10: the keyboard and the palette", () => {
     open.focus();
     fireEvent.click(open);
     await screen.findByTestId(IDS.detail);
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Playbooks" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Back to Playbooks" }));
     for (const id of [IDS.editEnglish, IDS.editFields, IDS.history, IDS.runNow]) expect(screen.getByTestId(id).tagName).toBe("BUTTON");
-    fireEvent.click(screen.getByRole("button", { name: "Playbooks" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to Playbooks" }));
     await waitFor(() => expect(document.activeElement).toBe(within(rowOf("Review PRs")).getByTestId(IDS.open)));
   });
 });
