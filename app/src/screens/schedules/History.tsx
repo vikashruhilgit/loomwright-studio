@@ -108,7 +108,7 @@ export function FireRow({ trigger, name, group, first, now, testId, triggerId, n
           </span>
           {group.count > 1 ? (
             <span className="schedules-count">
-              <span aria-hidden="true">{`×${group.count}`}</span>
+              <span aria-hidden="true" title={`${group.count} times`}>{`×${group.count}`}</span>
               <span className="schedules-sr-only">{`${group.count} times`}</span>
             </span>
           ) : null}

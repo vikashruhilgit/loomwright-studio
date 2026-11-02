@@ -466,10 +466,9 @@
   position: relative;
   /* The "×N" slot is reserved whether or not the row has a count (a row with none leaves it empty), so the chip's
      width, and with it the row's height, never depends on the count: a 1 -> 2 or a 99 -> 100 moves nothing. */
-  padding-right: calc(4ch + var(--space-2)); /* 4ch: "×999"; a wider count clips with an ellipsis inside its slot */
-}
-.schedules-table .schedules-result > span:first-child {
-  min-width: 0;
+  /* 5ch holds "×999" whole in the default font and in Verdana (the e2e height test checks both);
+     a count of "×1000" or more, or a font wider than Verdana, can clip the count with an ellipsis and its full value is the title. */
+  padding-right: calc(5ch + var(--space-2));
 }
 .schedules-table .schedules-result .badge {
   box-sizing: border-box;
@@ -485,7 +484,7 @@
   position: absolute;
   top: 0;
   right: 0;
-  width: 4ch;
+  width: 5ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -590,8 +589,8 @@
 
 /* A narrow window (down to the 900px minimum): the list pane keeps its width, so the history table has about 250px.
    When shrinks (a time wraps to two lines), the Result column takes what the Trigger column (kept above 96px) leaves,
-   the detail pane's padding and the cells' padding are tighter, and the fixed row is tall enough for a chip of four
-   lines above its reason. */
+   the detail pane's padding and the cells' padding are tighter, and the fixed row is tall enough for a chip of five
+   lines above its reason (the "×N" slot narrows the chip by 5ch). */
 @media (max-width: 1139px) {
   .schedules-pane > .schedules-pad {
     padding-left: var(--space-3);
@@ -608,7 +607,7 @@
     padding: var(--space-2) var(--space-1);
   }
   .schedules-fire {
-    height: 104px;
+    height: 128px;
   }
 }
 

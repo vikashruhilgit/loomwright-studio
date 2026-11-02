@@ -232,6 +232,28 @@ async function inEachTheme(page: Page, check: (theme: (typeof THEMES)[number]) =
   await setTheme(page, undefined);
 }
 
+/**
+ * The "×N" slot check on every history row with a count: the count is whole (its text does not overflow its box) and its box
+ * does not touch the Result chip's box, so the reserved slot (not luck) keeps the two apart. Returns the rows measured.
+ */
+async function countClearance(page: Page): Promise<{ readonly measured: number; readonly problems: string[] }> {
+  return page.evaluate(() => {
+    const problems: string[] = [];
+    let measured = 0;
+    for (const count of document.querySelectorAll<HTMLElement>(".schedules-table .schedules-result > .schedules-count")) {
+      const badge = count.parentElement?.querySelector<HTMLElement>(".badge");
+      if (badge === null || badge === undefined) continue;
+      measured += 1;
+      const name = `"${badge.textContent?.trim() ?? ""}" with ${count.textContent?.trim() ?? ""}`;
+      const a = count.getBoundingClientRect();
+      const b = badge.getBoundingClientRect();
+      if (count.scrollWidth > count.clientWidth) problems.push(`${name}: the count is cut (${count.scrollWidth} in ${count.clientWidth})`);
+      if (a.left < b.right + 0.5 && a.right > b.left && a.top < b.bottom && a.bottom > b.top) problems.push(`${name}: the count (${a.left}-${a.right}) touches the chip (${b.left}-${b.right})`);
+    }
+    return { measured, problems };
+  });
+}
+
 /** The pane and table fit checks of the minimum window: no horizontal scroll, the table inside its parent, and a Trigger column that still reads. */
 async function paneFit(page: Page): Promise<{ readonly paneScroll: number; readonly paneClient: number; readonly tableWidth: number; readonly parentClient: number; readonly triggerHead: number; readonly names: number[] }> {
   return page.evaluate((tableId) => {
@@ -756,6 +778,9 @@ test("AC1 (item 25): at the default window size every Result chip shows its whol
     expect(report.measured, `${theme}: every row of the all-triggers table has a chip to measure`).toBe(await byId(page, IDS.allFire).count());
     expect(report.skipped, `${theme}: the playbook_not_enabled rows are among those measured`).toBe(skippedRows);
     expect(report.problems, `${theme}: no chip is clipped`).toEqual([]);
+    const counts = await countClearance(page);
+    expect(counts.measured, `${theme}: rows with a count are measured`).toBeGreaterThan(0);
+    expect(counts.problems, `${theme}: every count is whole and clear of its chip`).toEqual([]);
     for (const row of await skipped.all()) await expect(row.getByTestId(IDS.fireReason), "the recorded reason is still under the chip").toHaveText("playbook_not_enabled");
   });
   expect(await columnMisalignments(page), "the columns line up with their headers").toEqual([]);
@@ -775,6 +800,9 @@ test("AC1 (item 25): at the default window size every Result chip shows its whol
     expect(report.measured, `${theme}: every row of the poll's table has a chip to measure`).toBe(await byId(page, IDS.fire).count());
     expect(report.skipped, `${theme}: the skipped row is among them`).toBe(1);
     expect(report.problems, `${theme}: no chip is clipped`).toEqual([]);
+    const counts = await countClearance(page);
+    expect(counts.measured, `${theme}: rows with a count are measured`).toBeGreaterThan(0);
+    expect(counts.problems, `${theme}: every count is whole and clear of its chip`).toEqual([]);
   });
   expect(await columnMisalignments(page), "the columns line up with their headers").toEqual([]);
 });
@@ -790,6 +818,9 @@ test("AC2 (item 25): at the minimum window size (900x560) no Result chip is clip
     expect(report.measured, `${theme}: every row of the all-triggers table has a chip to measure`).toBe(await byId(page, IDS.allFire).count());
     expect(report.skipped, `${theme}: the playbook_not_enabled rows are among those measured`).toBe(skippedRows);
     expect(report.problems, `${theme}: no chip is clipped`).toEqual([]);
+    const counts = await countClearance(page);
+    expect(counts.measured, `${theme}: rows with a count are measured`).toBeGreaterThan(0);
+    expect(counts.problems, `${theme}: every count is whole and clear of its chip`).toEqual([]);
     const fit = await paneFit(page);
     expect(fit.paneScroll, `${theme}: the pane has no horizontal scroll`).toBeLessThanOrEqual(fit.paneClient);
     expect(fit.tableWidth, `${theme}: the table fits its parent`).toBeLessThanOrEqual(fit.parentClient);
@@ -810,6 +841,9 @@ test("AC2 (item 25): at the minimum window size (900x560) no Result chip is clip
     const report = await chipReport(page);
     expect(report.skipped, `${theme}: the skipped row is measured`).toBe(1);
     expect(report.problems, `${theme}: no chip is clipped`).toEqual([]);
+    const counts = await countClearance(page);
+    expect(counts.measured, `${theme}: rows with a count are measured`).toBeGreaterThan(0);
+    expect(counts.problems, `${theme}: every count is whole and clear of its chip`).toEqual([]);
     const fit = await paneFit(page);
     expect(fit.paneScroll, `${theme}: the pane has no horizontal scroll`).toBeLessThanOrEqual(fit.paneClient);
     expect(fit.tableWidth, `${theme}: the table fits its parent`).toBeLessThanOrEqual(fit.parentClient);
@@ -886,13 +920,19 @@ test("AC3 (item 25): a row's height depends only on its chip label and reason li
       // The reference is each row with its own count and time as rendered; the variants only change text inside it.
       const base = await heights();
       expect(base.length, "the paged history has rows").toBeGreaterThan(15);
-      for (const [count, time] of [[null, "14:20"], ["×2", "14:20"], ["×100", "28 Sep 23:59"], ["×1000", "Wed 23:59"], ["×9999", "28 Sep 23:59"]] as const) {
+      for (const [count, time] of [[null, "14:20"], ["×2", "14:20"], ["×999", "28 Sep 23:59"], ["×1000", "Wed 23:59"], ["×9999", "28 Sep 23:59"]] as const) {
         await setText(count, time);
         await settle(page);
         const now = await heights();
         // Rows keep their height whatever their count; compare each row with the same row of the first variant.
         if (count === null) base.splice(0, base.length, ...now);
         expect(now, `${where}: count ${String(count)} and time ${time} change no row's height`).toEqual(base);
+        // A count up to ×999 is whole and clear of the chip in this font and size (a wider one clips, with the full value as its title).
+        if (count === "×2" || count === "×999" || count === "×1000") {
+          const clear = await countClearance(page);
+          const problems = count === "×1000" ? clear.problems.filter((p) => !p.includes("is cut")) : clear.problems;
+          expect(problems, `${where}: count ${count} is clear of its chip${count === "×1000" ? "" : " and whole"}`).toEqual([]);
+        }
       }
     }
     await page.evaluate(() => document.documentElement.style.removeProperty("--font-sans"));
