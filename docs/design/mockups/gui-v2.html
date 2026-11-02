@@ -1252,7 +1252,7 @@ function settingsScreen(st){
   const R={title:'Settings',sub:'',html:''}, off=st==='unreachable', last=off?' · last known':'';
   const v=st==='empty'?'missing':st==='waiting'?'expiring':'ok', t=SET[v==='missing'?'ok':v];
   const kv=(rows)=>`<dl class="kv">${rows.map(r=>`<dt>${r[0]}</dt><dd>${r[1]}</dd>`).join('')}</dl>`;
-  const health=v==='missing'?`<span class="dot danger" aria-hidden="true"></span>missing<span class="cap">no token in the Keychain item</span>`:v==='expiring'?`<span class="dot waiting" aria-hidden="true"></span>expiring<span class="cap">${t.left} days left</span>`:`<span class="dot ok" aria-hidden="true"></span>ok`;
+  const health=v==='missing'?`<span class="dot danger" aria-hidden="true"></span>missing<span class="cap">no token in the Keychain item</span>`:v==='expiring'?`<span class="dot waiting" aria-hidden="true"></span>expiring<span class="cap">${t.left} days left</span>`:off?`<span class="dot idle" aria-hidden="true"></span>ok<span class="cap">last known</span>`:`<span class="dot ok" aria-hidden="true"></span>ok`;
   const authRows=[['Provider',`<span class="mono">${SET.prov}</span>`],['Account',esc(SET.account)],['Health',health]];
   if(v!=='missing') authRows.push(['Token created',`<span class="tn">${t.created}</span>`],['Token life',`<span class="tn">365 days · ${t.left} days left · ends ${t.exp}</span>${v==='expiring'?'<span class="badge att">renew soon</span>':''}`]);
   authRows.push(['Token',`${v==='missing'?'Expected in':'Kept in'} the Keychain as <span class="mono">${SET.keychain}</span>. The value is never shown, and this app has no field for it.`]);

@@ -68,7 +68,8 @@ describe("the last view across a remount", () => {
     await waitFor(() => expect(kernel.fake.requestsTo("GET /settings")).toHaveLength(2));
     await waitFor(() => expect(button(IDS.reveal).disabled).toBe(true));
     expect(text(IDS.provider)).toBe("subscription-token");
-    expect(text(IDS.health)).toBe("ok");
+    // Offline, Health keeps its last word but carries its own "last known" mark (item 27).
+    expect(text(IDS.health)).toBe("oklast known");
     expect(text(IDS.dataDir)).toContain("~/.loomwright-studio");
     expect(screen.queryByTestId(IDS.unknown)).toBeNull();
     expect(screen.queryByTestId(IDS.error)).toBeNull();
@@ -128,6 +129,65 @@ describe("the last view across a remount", () => {
     await screen.findByTestId(IDS.notice);
     expect(getLastView(kernel.fake.bridge)).toBe(held);
     expect(text(IDS.provider)).toBe("subscription-token");
+  });
+});
+
+// ---- The Health row, marked last known while the kernel is unreachable (item 27) -------------------------------------
+
+/** The Health row's dot and word tones, in document order (the dot, then the word). */
+const healthTones = (): (string | null)[] => Array.from(screen.getByTestId(IDS.health).querySelectorAll("[data-tone]")).map((el) => el.getAttribute("data-tone"));
+
+describe("Health marked last known", () => {
+  it("offline with a held ok view: a neutral dot, a neutral word and the 'last known' mark", async () => {
+    const kernel = kernelOf();
+    mountScreen(kernel.fake.bridge);
+    await screen.findByTestId(IDS.auth);
+    expect(healthTones()).toEqual(["ok", "ok"]);
+    expect(screen.queryByTestId(IDS.healthLastKnown)).toBeNull();
+    cleanup();
+    kernel.answer = () => UNREACHABLE;
+    mountScreen(kernel.fake.bridge);
+    await waitFor(() => expect(button(IDS.reveal).disabled).toBe(true));
+    expect(healthTones()).toEqual(["neutral", "neutral"]);
+    expect(text(IDS.healthLastKnown)).toBe("last known");
+    expect(text(IDS.health)).toBe("oklast known");
+  });
+
+  it("offline with a held expiring view: still neutral, and '18 days left' stays beside the mark", async () => {
+    const kernel = kernelOf(() => ok(settingsBody({ health: { status: "expiring", days: 18 } })));
+    mountScreen(kernel.fake.bridge);
+    await screen.findByTestId(IDS.auth);
+    expect(healthTones()).toEqual(["attention", "attention"]);
+    cleanup();
+    kernel.answer = () => UNREACHABLE;
+    mountScreen(kernel.fake.bridge);
+    await waitFor(() => expect(button(IDS.reveal).disabled).toBe(true));
+    expect(healthTones()).toEqual(["neutral", "neutral"]);
+    expect(text(IDS.healthNote)).toBe("18 days left");
+    expect(text(IDS.healthLastKnown)).toBe("last known");
+    expect(text(IDS.health)).toBe("expiring18 days leftlast known");
+  });
+
+  it("an answer landing again brings the live tone back and removes the mark", async () => {
+    const kernel = kernelOf();
+    mountScreen(kernel.fake.bridge);
+    await screen.findByTestId(IDS.auth);
+    cleanup();
+    kernel.answer = () => UNREACHABLE;
+    mountScreen(kernel.fake.bridge);
+    await waitFor(() => expect(text(IDS.healthLastKnown)).toBe("last known"));
+    kernel.answer = () => ok(settingsBody());
+    // The screen reads again on a feed event of its own kinds; the feed's retry may take its backoff.
+    await waitFor(
+      () => {
+        act(() => kernel.fake.emit({ type: "event", id: Date.now(), at: new Date().toISOString(), kind: "auth_health_changed", session_id: null, task_id: null, payload: {} }));
+        expect(screen.queryByTestId(IDS.healthLastKnown)).toBeNull();
+      },
+      { timeout: 5000 },
+    );
+    expect(healthTones()).toEqual(["ok", "ok"]);
+    expect(text(IDS.health)).toBe("ok");
+    expect(button(IDS.reveal).disabled).toBe(false);
   });
 });
 
@@ -199,7 +259,9 @@ describe("the title bar's subtitle", () => {
     await feedLost(kernel.fake);
     await waitFor(() => expect(button(IDS.reveal).disabled).toBe(true));
     expect(screen.queryAllByTestId(IDS.lastKnown)).toHaveLength(0);
-    expect(document.body.textContent).not.toContain("last known");
+    // Offline, the one "last known" on the page is the Health row's own mark (item 27), not a heading's.
+    expect(document.body.textContent?.split("last known").length).toBe(2);
+    expect(text(IDS.health)).toContain("last known");
   });
 });
 

@@ -13,6 +13,7 @@ import {
   daysLeftText,
   hasToken,
   healthView,
+  healthViewOf,
   isSettingsEvent,
   loginNote,
   newestSettingsEventId,
@@ -124,6 +125,17 @@ describe("health", () => {
     [{ status: "unknown", word: "revoked" }, "revoked", "neutral", undefined],
   ] as const)("%j reads %s with a %s tone", (health, label, tone, note) => {
     expect(healthView(health)).toEqual({ label, tone, note });
+  });
+
+  it.each([
+    [{ status: "ok" }, "ok", undefined],
+    [{ status: "missing" }, "missing", "no token in the Keychain item"],
+    [{ status: "expiring", days: 18 }, "expiring", "18 days left"],
+    [{ status: "invalid_shape" }, "invalid_shape", "the Keychain item does not hold a whole token"],
+    [{ status: "error", reason: "keychain_unreadable" }, "error", "keychain_unreadable"],
+  ] as const)("%j while offline is neutral and keeps its word and caption; live it is healthView unchanged", (health, label, note) => {
+    expect(healthViewOf(health, true)).toEqual({ label, tone: "neutral", note });
+    expect(healthViewOf(health, false)).toEqual(healthView(health));
   });
 
   it("says days left in the singular and 'expired' for a negative count", () => {

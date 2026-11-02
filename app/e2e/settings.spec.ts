@@ -40,6 +40,8 @@ import { BACKOFF_CAP_MS, SETTLE_MS } from "../src/store/store";
 
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-7-polish/settings/", import.meta.url));
 const README = join(EVIDENCE_DIR, "README.md");
+const NO_FILL = "rgba(0, 0, 0, 0)";
+const MOCKUP = fileURLToPath(new URL("../../docs/design/mockups/gui-v2.html", import.meta.url));
 const THEMES = ["light", "dark"] as const;
 /** The mockup's states (`settings-<state>`), as the file names have them. */
 const STATES = ["empty", "loading", "populated", "waiting", "error", "unreachable"] as const;
@@ -436,8 +438,27 @@ test("AC7: when the kernel stops the shared band shows over the last data, 'last
   test.setTimeout(120_000);
   const { fx, page } = await openPopulated();
   await serveUnderHome(fx, page);
-  const rows = async () => ({ provider: await textOf(page, IDS.provider), account: await textOf(page, IDS.account), health: await textOf(page, IDS.health), dataDir: await textOf(page, IDS.dataDir), loomwright: await textOf(page, IDS.loomwright) });
+  // The four rows the kernel being down does not touch, and Health apart: while the kernel is down Health keeps its word but is marked (item 27).
+  const rows = async () => ({ provider: await textOf(page, IDS.provider), account: await textOf(page, IDS.account), dataDir: await textOf(page, IDS.dataDir), loomwright: await textOf(page, IDS.loomwright) });
+  const health = byId(page, IDS.health);
+  const healthDot = health.locator(".settings-dot");
+  const healthWord = health.locator("span:not(.settings-dot)[data-tone]");
+  const dotColour = (): Promise<string> => healthDot.evaluate((el) => getComputedStyle(el).backgroundColor);
   const before = await rows();
+  expect(await textOf(page, IDS.health), "live: the word alone").toBe("ok");
+  await expect(healthDot).toHaveAttribute("data-tone", "ok");
+  await expect(healthWord).toHaveAttribute("data-tone", "ok");
+  await expect(byId(page, IDS.healthLastKnown), "live: no mark").toHaveCount(0);
+  // The theme changes in the middle of this test (dark, below), so the live colour is read each time, never kept.
+  expect(await dotColour(), "live: the dot is filled").not.toBe(NO_FILL);
+  /** Health while the kernel is down: the last word, a neutral ring and word, the "last known" mark (matches the mockup's settings-unreachable). */
+  const expectHealthMarked = async (): Promise<void> => {
+    await expect(byId(page, IDS.healthLastKnown)).toHaveText("last known");
+    await expect(healthDot).toHaveAttribute("data-tone", "neutral");
+    await expect(healthWord).toHaveAttribute("data-tone", "neutral");
+    await expect(healthWord).toHaveText("ok");
+    await expect(healthDot, "a ring, not the --ok fill").toHaveCSS("background-color", NO_FILL);
+  };
   expect(await textOf(page, SUBTITLE), "populated: no subtitle").toBe("");
 
   await (fixture as FixtureKernel).stop();
@@ -452,6 +473,8 @@ test("AC7: when the kernel stops the shared band shows over the last data, 'last
   const reveal = page.getByRole("button", { name: "Reveal in Finder" });
   await expect(reveal).toBeDisabled();
   await expect(reveal).toHaveAttribute("title", "Needs the kernel");
+  // Reveal follows the same `offline` as the Health mark, so the mark is checked after it (the subtitle can lead the screen's own flag).
+  await expectHealthMarked();
   // What needs only the app stays usable: the preferences are the main process's.
   for (const id of [IDS.login, IDS.notifications, IDS.themeSystem, IDS.themeLight, IDS.themeDark]) await expect(byId(page, id)).toBeEnabled();
   await switchNamed(page, "Launch at login is off").click();
@@ -477,6 +500,7 @@ test("AC7: when the kernel stops the shared band shows over the last data, 'last
   expect(await rows(), "the remounted rows are the last read").toEqual(before);
   await expect(reveal).toBeDisabled();
   await expect(reveal).toHaveAttribute("title", "Needs the kernel");
+  await expectHealthMarked();
 
   // The listener is back on the same port with the same state: the band goes, the subtitle clears, Reveal works again.
   await (fixture as FixtureKernel).restart();
@@ -484,6 +508,22 @@ test("AC7: when the kernel stops the shared band shows over the last data, 'last
   await expect(byId(page, SUBTITLE)).toHaveText("");
   await expect(reveal).toBeEnabled({ timeout: STATE_TIMEOUT_MS });
   expect(await rows()).toEqual(before);
+  // Live again: the word and the dot are back to ok, filled, and the mark is gone.
+  await expect(byId(page, IDS.healthLastKnown)).toHaveCount(0);
+  await expect(healthDot).toHaveAttribute("data-tone", "ok");
+  await expect(healthWord).toHaveAttribute("data-tone", "ok");
+  expect(await dotColour(), "live again: filled, not a ring").not.toBe(NO_FILL);
+  expect(await textOf(page, IDS.health)).toBe("ok");
+});
+
+test("item 27 AC1: the mockup's settings-unreachable draws Health as a neutral ring with a 'last known' caption, and every other view still draws the green dot", () => {
+  const html = readFileSync(MOCKUP, "utf8");
+  const start = html.indexOf("function settingsScreen");
+  expect(start, "the mockup has settingsScreen").toBeGreaterThan(-1);
+  const next = html.indexOf("\nfunction ", start + 1);
+  const fn = html.slice(start, next === -1 ? undefined : next);
+  expect(fn, "the offline Health draws the idle ring and the caption").toContain('<span class="dot idle" aria-hidden="true"></span>ok<span class="cap">last known</span>');
+  expect(fn, "the live Health still draws the ok dot").toContain('<span class="dot ok" aria-hidden="true"></span>ok');
 });
 
 test("item 18 AC1: with the kernel down from the start and no data ever read, 'Status unknown' stays and there is no subtitle", async () => {
