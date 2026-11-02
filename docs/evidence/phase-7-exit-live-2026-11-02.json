@@ -1,0 +1,931 @@
+{
+  "test": "phase-7-exit-live",
+  "date": "2026-11-02",
+  "result": "passed — every screen compared matches its gui-v2 (or phase 6) view in light and dark, the unreachable state and the global keys match; no open mismatch",
+  "run_by": "Claude (Claude Code session) at the owner's request, with the owner watching (D33, D35). The owner named the clicks before the run: stopping and restarting the service, the theme buttons, full-screen control for the global keys, and Wright's task request only if Tasks was empty (it was not). The agent clicked nothing else: no Save, no switch, no Run now, no Connect GitHub.",
+  "commit": "6f5c903",
+  "commit_note": "main after PR #214 (phase 7 item 29). This is the third live run: the first (2026-11-01, d754f83) found items 11-18, the second (2026-11-01, 59275c8) found items 20-27, and an earlier run today (376cf6c) found item 29 (three click-through views without the shared crumb). Every fix was checked again live here.",
+  "dirty_worktree": false,
+  "machine": {
+    "macos": "26.6.2",
+    "node": "v24.11.1"
+  },
+  "service": {
+    "launchd_pid": 95777,
+    "after_restart_pid": 43048,
+    "restart_answered_after_s": 4
+  },
+  "app_opened_from": "Finder",
+  "screenshots": "All 42 are withheld (the owner's choice: the repo is public and they show the owner's real store); each entry records its file name and sha256, and the files are kept by the owner outside the repo.",
+  "screens": {
+    "integrations": {
+      "not-connected": {
+        "light": {
+          "view": "integrations-not-connected (phase 6, integrations.html)",
+          "outcome": "match",
+          "reason": "GitHub not connected: the row, 'Connect GitHub so a playbook can read your PRs.', Connect GitHub; gui-v2 draws only the token and App views, so the phase 6 view is the one compared",
+          "screenshot": {
+            "name": "integrations-not-connected-light.png",
+            "sha256": "9b5277d2bd1093518542192c6b027f8857d7292adabe48b77335207fac691434",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "integrations-not-connected (phase 6, integrations.html)",
+          "outcome": "match",
+          "reason": "GitHub not connected: the row, 'Connect GitHub so a playbook can read your PRs.', Connect GitHub; gui-v2 draws only the token and App views, so the phase 6 view is the one compared",
+          "screenshot": {
+            "name": "integrations-not-connected-dark.png",
+            "sha256": "35002cfe14a8456dea04f10cb049ee13806ee07978794d51742f859f79dec00c",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "token": {
+        "light": {
+          "view": "integrations-token",
+          "outcome": "not_exercised",
+          "reason": "GitHub is not connected on the owner's store and the owner chose not to connect it for this run",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "integrations-token",
+          "outcome": "not_exercised",
+          "reason": "GitHub is not connected on the owner's store and the owner chose not to connect it for this run",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        }
+      },
+      "app-connected": {
+        "light": {
+          "view": "integrations-app-connected",
+          "outcome": "not_exercised",
+          "reason": "GitHub is not connected on the owner's store and the owner chose not to connect it for this run",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "integrations-app-connected",
+          "outcome": "not_exercised",
+          "reason": "GitHub is not connected on the owner's store and the owner chose not to connect it for this run",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        }
+      },
+      "switch": {
+        "light": {
+          "view": "integrations-token-to-app, -install, -failed",
+          "outcome": "not_exercised",
+          "reason": "Switch to GitHub App needs a token connection and the owner named no Switch click",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "integrations-token-to-app, -install, -failed",
+          "outcome": "not_exercised",
+          "reason": "Switch to GitHub App needs a token connection and the owner named no Switch click",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        }
+      },
+      "unreachable": {
+        "light": {
+          "view": "integrations-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; the row reads 'status unknown · kernel unreachable', Connect GitHub disabled",
+          "screenshot": {
+            "name": "integrations-unreachable-light.png",
+            "sha256": "f0a23a925dc0148bcf0fb8c178a987c8d295289f542216bb4b64130d2860955c",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "integrations-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; the row reads 'status unknown · kernel unreachable'; opened after the stop, the detail reads 'Status unknown' (see owner.notes)",
+          "screenshot": {
+            "name": "integrations-unreachable-dark.png",
+            "sha256": "0cfd4444617b8f7a03740c6f6df8bfe63613fa1909e66a7166041a6f104a6a58",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      }
+    },
+    "tasks": {
+      "populated": {
+        "light": {
+          "view": "tasks-populated",
+          "outcome": "match",
+          "reason": "four columns plus the Other group for 'waiting on owner' (D3), kind icons on the cards, chips and avatars; J moves between cards",
+          "screenshot": {
+            "name": "tasks-populated-light.png",
+            "sha256": "d965e592847123a2f86a8dc3e0fa8c51f1baa9ba2057a679e1285cd24ec274a7",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "tasks-populated",
+          "outcome": "match",
+          "reason": "four columns plus the Other group for 'waiting on owner' (D3), kind icons on the cards, chips and avatars; J moves between cards",
+          "screenshot": {
+            "name": "tasks-populated-dark.png",
+            "sha256": "75d5e9fe0352444c3aba69b4522761eb5a4bd8e02c354433a0a0b1d1fde41b91",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "history": {
+        "light": {
+          "view": "tasks-history",
+          "outcome": "match",
+          "reason": "task #1 opened by click: crumb '‹ Tasks / Task #1', state and history; Esc returns to the board with focus on the card",
+          "screenshot": {
+            "name": "tasks-history-light.png",
+            "sha256": "e59857f07feb4d14208ba96e5d7c5c0e4ed59c1245b746c59b60c079acb113ff",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "tasks-history",
+          "outcome": "match",
+          "reason": "task #1 opened by click: crumb '‹ Tasks / Task #1', state and history; Esc returns to the board with focus on the card",
+          "screenshot": {
+            "name": "tasks-history-dark.png",
+            "sha256": "917b5c235d9c5b55e9969c5bcba2264638eb82c83d36df9330559bdaddb0d793",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "waiting": {
+        "light": {
+          "view": "tasks-waiting",
+          "outcome": "not_exercised",
+          "reason": "the owner's store has no task in a waiting state the board sorts into Waiting on you",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "tasks-waiting",
+          "outcome": "not_exercised",
+          "reason": "the owner's store has no task in a waiting state the board sorts into Waiting on you",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        }
+      },
+      "empty": {
+        "light": {
+          "view": "tasks-empty",
+          "outcome": "not_exercised",
+          "reason": "the owner's store has task rows",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "tasks-empty",
+          "outcome": "not_exercised",
+          "reason": "the owner's store has task rows",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        }
+      },
+      "unreachable": {
+        "light": {
+          "view": "tasks-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; the last-known board kept after the screen was opened again, '3 cards · 0 working · last known'",
+          "screenshot": {
+            "name": "tasks-unreachable-light.png",
+            "sha256": "0395f919ac679d42e0579c0d82c4685253df8f84d9e2c7dd0218ac046a124051",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "tasks-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; the last-known board kept after the screen was opened again, '3 cards · 0 working · last known'",
+          "screenshot": {
+            "name": "tasks-unreachable-dark.png",
+            "sha256": "1e4738f01dceea0636bde4e465f66c866bb4f916b9b876decd561676dd41f4e0",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      }
+    },
+    "playbooks": {
+      "populated": {
+        "light": {
+          "view": "playbooks-populated",
+          "outcome": "match",
+          "reason": "every column, short model names, tokens counted with no dollars (D24), the chat icon on Ask Wright for a playbook",
+          "screenshot": {
+            "name": "playbooks-populated-light.png",
+            "sha256": "8abcb36274b07941debcb3892fd82642babb8baf84b2bf82afbc00f179483781",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "playbooks-populated",
+          "outcome": "match",
+          "reason": "every column, short model names, tokens counted with no dollars (D24), the chat icon on Ask Wright for a playbook",
+          "screenshot": {
+            "name": "playbooks-populated-dark.png",
+            "sha256": "51da60cd4b0e30c0a5a81d1746286edb8d1047e62b5a937e3f87c6ac55f9c729",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "detail": {
+        "light": {
+          "view": "playbooks-detail",
+          "outcome": "match",
+          "reason": "crumb '‹ Playbooks / …', icons on Edit in English, Edit fields and Version history, Model 'sonnet', the Schedules & triggers link, provenance chips right-aligned",
+          "screenshot": {
+            "name": "playbooks-detail-light.png",
+            "sha256": "011e8e14ea3b1d42df03ff4a0fe281067cd407f21d4e757bb75e89ea7a548dbf",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "playbooks-detail",
+          "outcome": "match",
+          "reason": "crumb '‹ Playbooks / …', icons on Edit in English, Edit fields and Version history, Model 'sonnet', the Schedules & triggers link, provenance chips right-aligned",
+          "screenshot": {
+            "name": "playbooks-detail-dark.png",
+            "sha256": "13b01f7247a07d9005d2085af24f58ba2d894a8416b1a24a9855193fe2aa5491",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "waiting": {
+        "light": {
+          "view": "playbooks-waiting",
+          "outcome": "not_exercised",
+          "reason": "no held approval on the owner's store",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "playbooks-waiting",
+          "outcome": "not_exercised",
+          "reason": "no held approval on the owner's store",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        }
+      },
+      "unreachable": {
+        "light": {
+          "view": "playbooks-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; last-known rows with '· last known', Ask Wright disabled",
+          "screenshot": {
+            "name": "playbooks-unreachable-light.png",
+            "sha256": "39445e7791bd57c7770983a3b77611371b12d9ab06e40e846d74528323e11ef5",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "playbooks-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; last-known rows with '· last known', Ask Wright disabled",
+          "screenshot": {
+            "name": "playbooks-unreachable-dark.png",
+            "sha256": "9b39af4c0488168f59e3f05d40fb7df29dfb1bb0347b94c01231dabb7435add7",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      }
+    },
+    "schedules": {
+      "populated": {
+        "light": {
+          "view": "schedules-populated",
+          "outcome": "match",
+          "reason": "upcoming and later timeline, triggers, firing history with All / Not fired; the 'playbook off: fires are skipped' result chip wraps inside its column",
+          "screenshot": {
+            "name": "schedules-populated-light.png",
+            "sha256": "04b4ba2582b68624d92dd874c4f0e2bd8a7b944f6f22fe0e972d4d88521c7fae",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "schedules-populated",
+          "outcome": "match",
+          "reason": "upcoming and later timeline, triggers, firing history with All / Not fired; the 'playbook off: fires are skipped' result chip wraps inside its column",
+          "screenshot": {
+            "name": "schedules-populated-dark.png",
+            "sha256": "52139e4b63643101d0cf8da8c4821147d5300b97f9db1af38c2b5cd3652e8eea",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "unreachable": {
+        "light": {
+          "view": "schedules-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; last-known timeline and history with '· last known', Refresh disabled",
+          "screenshot": {
+            "name": "schedules-unreachable-light.png",
+            "sha256": "0166dc0dce3536608d8b57b37569abb1bb61eb326b0e4b3bd616a394f5d1e235",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "schedules-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; last-known timeline and history with '· last known', Refresh disabled",
+          "screenshot": {
+            "name": "schedules-unreachable-dark.png",
+            "sha256": "da79901123397bb933e6eea8ec25ee1451c001d9ea4043bdee5bf1ebdbf438fc",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      }
+    },
+    "memory": {
+      "populated": {
+        "light": {
+          "view": "memory-populated",
+          "outcome": "match",
+          "reason": "the memory path, agent avatars on group headers and in Pick a file, a file icon on every row, the long PHASE4-EXIT-MVG8WLE4CF8F… folder on one line",
+          "screenshot": {
+            "name": "memory-populated-light.png",
+            "sha256": "6b851ced357252e4fad4f3ee83489fc53c0342df161d483c151dae2367662956",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "memory-populated",
+          "outcome": "match",
+          "reason": "the memory path, agent avatars on group headers and in Pick a file, a file icon on every row, the long PHASE4-EXIT-MVG8WLE4CF8F… folder on one line",
+          "screenshot": {
+            "name": "memory-populated-dark.png",
+            "sha256": "c380fb903d8d23d310d2cd96df17a307ca94dac7073ba1196b9a547834ad44c9",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "file": {
+        "light": {
+          "view": "memory-file",
+          "outcome": "match",
+          "reason": "wright/preferences.md: path, size, modified, version, contents",
+          "screenshot": {
+            "name": "memory-file-light.png",
+            "sha256": "c21594148196945c9b95537c0fca418b1a52d848c7593e0c6543ec74aac79d20",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "memory-file",
+          "outcome": "match",
+          "reason": "wright/preferences.md: path, size, modified, version, contents",
+          "screenshot": {
+            "name": "memory-file-dark.png",
+            "sha256": "fef14a7d0cac758b1f1d4135b86db9fadceda64bf82b49a82122111f9615c40c",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "edit": {
+        "light": {
+          "view": "memory-edit",
+          "outcome": "match",
+          "reason": "crumb '‹ preferences.md / Edit' with the chevron (item 29); opened at its version, Changes 'No changes', Save disabled; cancelled, nothing written",
+          "screenshot": {
+            "name": "memory-edit-light.png",
+            "sha256": "5bf00fdc28d8daec509acba2c938319753e93519d9f74f7785966b107a0872a5",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "memory-edit",
+          "outcome": "match",
+          "reason": "crumb '‹ preferences.md / Edit' with the chevron (item 29); opened at its version, Changes 'No changes', Save disabled; cancelled, nothing written",
+          "screenshot": {
+            "name": "memory-edit-dark.png",
+            "sha256": "2b7ce0893be1387607ac1cba46d80a7898a26c4845f236a8bd9e1440d95fd596",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "conflict": {
+        "light": {
+          "view": "memory-conflict",
+          "outcome": "not_exercised",
+          "reason": "needs a file changed on disk under an open edit; app/e2e/memory.spec.ts and the item 29 unit test cover it",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "memory-conflict",
+          "outcome": "not_exercised",
+          "reason": "needs a file changed on disk under an open edit; app/e2e/memory.spec.ts and the item 29 unit test cover it",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        }
+      },
+      "unreachable": {
+        "light": {
+          "view": "memory-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; last-known tree with '· last known'",
+          "screenshot": {
+            "name": "memory-unreachable-light.png",
+            "sha256": "a5f0007e1b8574e5196e3e9a73f86384daa02f9dc9093887b2749cd9acc6f013",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "memory-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; last-known tree with '· last known'",
+          "screenshot": {
+            "name": "memory-unreachable-dark.png",
+            "sha256": "129782b630dcca4bfced917dfae372fca57ef25e71cdc3a3d8d20b5a37626ea8",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      }
+    },
+    "budget": {
+      "populated": {
+        "light": {
+          "view": "budget-populated",
+          "outcome": "match",
+          "reason": "tokens per day with bars, cache reads not counted, by agent with avatars, the cap panel ('allowed · stale', 'usage not reported')",
+          "screenshot": {
+            "name": "budget-populated-light.png",
+            "sha256": "b3a35a4a84637802ee29a4cde6c28f507e5b87671303bf5faa99fb6f3ef2566e",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "budget-populated",
+          "outcome": "match",
+          "reason": "tokens per day with bars, cache reads not counted, by agent with avatars, the cap panel ('allowed · stale', 'usage not reported')",
+          "screenshot": {
+            "name": "budget-populated-dark.png",
+            "sha256": "56fb628efe68348b068ee70237d6bdc8c6350f3711f741b86a32179a0e09eaa6",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "audit": {
+        "light": {
+          "view": "budget-audit",
+          "outcome": "match",
+          "reason": "crumb '‹ Budget & audit / Audit log', readable sentences, four filters, the event count; Esc returns to Budget",
+          "screenshot": {
+            "name": "budget-audit-light.png",
+            "sha256": "05aaef9303a9a1328bfc4a1d31bb4811d71c24fbe22e802e1866322cdb00a960",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "budget-audit",
+          "outcome": "match",
+          "reason": "crumb '‹ Budget & audit / Audit log', readable sentences, four filters, the event count; Esc returns to Budget",
+          "screenshot": {
+            "name": "budget-audit-dark.png",
+            "sha256": "cfcf4a5735b62b2d90df50feb844156ceed21b0a8d5f41eff4c2800c730e1c03",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "waiting": {
+        "light": {
+          "view": "budget-waiting",
+          "outcome": "not_exercised",
+          "reason": "no agent at its limit on the owner's store",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "budget-waiting",
+          "outcome": "not_exercised",
+          "reason": "no agent at its limit on the owner's store",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        }
+      },
+      "unreachable": {
+        "light": {
+          "view": "budget-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; last-known figures with '· last known', Audit log disabled",
+          "screenshot": {
+            "name": "budget-unreachable-light.png",
+            "sha256": "7e05e98278fb3fe67f5094e7031d7988114abbe8a2de400d8b3a7463d1862184",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "budget-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; last-known figures with '· last known', Audit log disabled",
+          "screenshot": {
+            "name": "budget-unreachable-dark.png",
+            "sha256": "f258693fcb6545cce2f5f99bc31e771f06ede2a8c7355bbae5c9b7ce1c9c5521",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      }
+    },
+    "settings": {
+      "populated": {
+        "light": {
+          "view": "settings-populated",
+          "outcome": "match",
+          "reason": "the auth provider read-only (Account 'personal subscription', Token created 'not recorded'), the three terminal commands with Copy, the kernel block (top of the screen)",
+          "screenshot": {
+            "name": "settings-populated-light-top.png",
+            "sha256": "3bde87b9f2c9dbbd983c877be1ffca3103b14de2333dd29fd164c9310903dad1",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "settings-populated",
+          "outcome": "match",
+          "reason": "the auth provider read-only (Account 'personal subscription', Token created 'not recorded'), the three terminal commands with Copy, the kernel block (top of the screen)",
+          "screenshot": {
+            "name": "settings-populated-dark-top.png",
+            "sha256": "62df1fffccf746e30e565bc7623cbf80ae153c5a3fd9d490fdf78711edc00710",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "populated-bottom": {
+        "light": {
+          "view": "settings-populated",
+          "outcome": "match",
+          "reason": "This app: Launch at login (the expected note for a build run from app/release), Notifications, Theme with its three buttons",
+          "screenshot": {
+            "name": "settings-populated-light-bottom.png",
+            "sha256": "a5119990febfc023cadd854c9591bee668f17f655e0775f847440a7b94d47871",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "settings-populated",
+          "outcome": "match",
+          "reason": "This app: Launch at login (the expected note for a build run from app/release), Notifications, Theme with its three buttons",
+          "screenshot": {
+            "name": "settings-populated-dark-bottom.png",
+            "sha256": "2e4dd068b9d6b18789fbabccb11013707bf6126644150b7a8d132219882b2d2b",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      },
+      "waiting": {
+        "light": {
+          "view": "settings-waiting",
+          "outcome": "not_exercised",
+          "reason": "the token is not expiring",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "settings-waiting",
+          "outcome": "not_exercised",
+          "reason": "the token is not expiring",
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": null,
+            "notes": ""
+          }
+        }
+      },
+      "unreachable": {
+        "light": {
+          "view": "settings-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; Health '○ ok · last known' with no green dot (item 27), Reveal in Finder disabled",
+          "screenshot": {
+            "name": "settings-unreachable-light.png",
+            "sha256": "635975dc267c37fd54db40a90f374af9b060f15f0137404389d66d9c318942b2",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        },
+        "dark": {
+          "view": "settings-unreachable",
+          "outcome": "match",
+          "reason": "the shared band with its Kernel log link, the footer 'kernel unreachable'; Health '○ ok · last known' with no green dot (item 27), Reveal in Finder disabled",
+          "screenshot": {
+            "name": "settings-unreachable-dark.png",
+            "sha256": "3833d805f4cbf6afb22afff81b852313ee06f2bf84797d97d947071f4fea9feb",
+            "withheld": "private"
+          },
+          "run_by": "the agent, on the owner's word",
+          "owner": {
+            "seen": true,
+            "notes": ""
+          }
+        }
+      }
+    },
+    "loading-and-error": {
+      "light": {
+        "view": "<screen>-loading, <screen>-error",
+        "outcome": "not_exercised",
+        "reason": "not reachable on a real store on demand; app/e2e/phase-7-exit.spec.ts walks it in both themes",
+        "run_by": "the agent, on the owner's word",
+        "owner": {
+          "seen": null,
+          "notes": ""
+        }
+      },
+      "dark": {
+        "view": "<screen>-loading, <screen>-error",
+        "outcome": "not_exercised",
+        "reason": "not reachable on a real store on demand; app/e2e/phase-7-exit.spec.ts walks it in both themes",
+        "run_by": "the agent, on the owner's word",
+        "owner": {
+          "seen": null,
+          "notes": ""
+        }
+      }
+    }
+  },
+  "global_keys": [
+    {
+      "id": "shortcuts-and-palette",
+      "outcome": "match",
+      "reason": "⌘1-⌘9 and ⌘, open their screens (⌘5-⌘9 and ⌘, while the kernel was down too); ⌘K lists screens, agents and playbook commands, 'mem' filters Memory first, Enter opened Memory with focus on its first file row, Esc closes and returns focus there; only a screen command was run; in Chat's box j, k and ? type and nothing navigates"
+    },
+    {
+      "id": "keymap",
+      "outcome": "match",
+      "reason": "? opens the Keyboard map at its top with its opener marked in the sidebar and focus on the crumb, '‹ Settings / Keyboard map' from Settings and '‹ Memory / Keyboard map' from Memory (item 29); the crumb returns to the opener; light and dark",
+      "screenshot": [
+        {
+          "name": "keymap-light.png",
+          "sha256": "780ba43231f25cb7a32fb84440ca3274047dafdf3efc245231946ce801258953",
+          "withheld": "private"
+        },
+        {
+          "name": "keymap-dark.png",
+          "sha256": "0d80ea811c1188d9c73b5d1df6ce48a2dec894109737de431b0197b03a4a87e9",
+          "withheld": "private"
+        }
+      ]
+    },
+    {
+      "id": "kernel-log",
+      "outcome": "match",
+      "reason": "with the kernel down, the band's Kernel log opened Finder on <dataDir>/logs/ (item 20)"
+    }
+  ],
+  "findings": [],
+  "owner": {
+    "every_decision_made_by": "the owner",
+    "notes": "Observation, not a mismatch: with the kernel down, Integrations on a store with GitHub not connected keeps the not-connected detail (Connect disabled) when the screen was open before the stop, and reads 'Status unknown' when opened after it; no gui-v2 or phase 6 view draws this case, and both texts are honest."
+  },
+  "cleanup": "No tasks created (the store already had the two rows). Memory edits opened and cancelled, nothing written; Chat's box typed in and cleared, nothing sent. Theme set back to Dark (the owner's setting before the run). Service running (pid 43048). Finder's logs window closed."
+}
