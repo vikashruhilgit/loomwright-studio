@@ -7,7 +7,7 @@ import type { StatusBody, StudioBridge } from "../api/contract";
 import { Glyph } from "../components/Glyph";
 import { StatusDot } from "../components/StatusDot/StatusDot";
 import type { StatusState } from "../components/StatusDot/StatusDot";
-import { openerScreenId } from "../screens/keymap/opener";
+import { openerScreen } from "../screens/keymap/opener";
 import type { ScreenDefinition } from "../screens/types";
 import { useLiveStore } from "../store/react";
 import type { LiveConnection } from "../store/store";
@@ -117,7 +117,7 @@ export function Sidebar({ api, screens, currentId, onGo }: SidebarProps) {
   const dividerAfter = entries.findIndex((s) => s.id === NAV_GROUP_END);
   // The Keyboard map has no entry of its own: while it is open the entry of the screen it was opened from is marked,
   // as the mockup's `navHTML` marks the map's parent. Everywhere else the marked entry is `currentId`.
-  const markedId = currentId === KEYMAP_SCREEN ? openerScreenId() : currentId;
+  const markedId = currentId === KEYMAP_SCREEN ? openerScreen(screens)?.id : currentId;
   return (
     <aside className="sidebar" data-testid="sidebar">
       <div className="sidebar-titlebar" />

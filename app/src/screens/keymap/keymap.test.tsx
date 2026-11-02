@@ -300,6 +300,14 @@ describe("the sidebar while the map is open", () => {
     expect(await marked("keymap")).toEqual(["Chat"]);
   });
 
+  it("marks Chat, the screen the app shows and the crumb names, when the map was opened from a hash that names no screen", async () => {
+    window.location.hash = "#/no-such-screen";
+    stop = installOpenerTracker();
+    window.location.hash = "#/keymap";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    expect(await marked("keymap")).toEqual(["Chat"]);
+  });
+
   it("outside the map the marked entry is still exactly the current screen", async () => {
     window.location.hash = "#/settings";
     stop = installOpenerTracker();
