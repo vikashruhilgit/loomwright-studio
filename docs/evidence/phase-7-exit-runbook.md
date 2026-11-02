@@ -57,7 +57,7 @@ A screen the real store has no rows for cannot be compared in its populated stat
 
 For each screen, open it in the packaged app, find its view in the mockup (`gui-v2.html#view=<view>&theme=<light|dark>`, or the review strip under the window), and compare in **light and dark** (macOS System Settings, Appearance; or the Settings screen's theme buttons, which write the app's `prefs.json`, so set System again at the end). Compare the layout, the words, the order of the sections, the states of the controls and the colours' meaning (a state is never colour alone). Use the keyboard wherever the mockup shows a key. Record each as **`match`** or **`mismatch`**, with a **one-line reason** and a **screenshot**.
 
-| Screen | Views to compare (`#view=`) | Keys to try (no ⌘ keys: see [the known mismatches](#the-known-mismatches-to-expect)) |
+| Screen | Views to compare (`#view=`) | Keys to try (the ⌘ keys and `?` from any screen: see [the global keys](#the-global-keys-and-the-keyboard-map)) |
 |---|---|---|
 | Integrations | `integrations-token` or `integrations-app-connected`, whichever the real store holds | Tab through the row, Replace token, Switch to GitHub App, Disconnect and Refresh. Do not press them |
 | Tasks | `tasks-populated`; `tasks-waiting` and `tasks-empty` where the store shows them; `tasks-history` by opening a card | J / K between cards, Enter opens, Esc returns with focus on the card |
@@ -88,12 +88,12 @@ node kernel/dist/cli/index.js status
 
 The `loading` and `error` views cannot be shown on a real store on demand (a read that is slow, or one the kernel refuses). Record them `not_exercised` with that reason; the fixture spec covers them. The Integrations switch dialog (`integrations-token-to-app`, `-install`, `-failed`) opens a real GitHub App setup in your browser: compare those views only if the owner named the Switch click before the run; otherwise record them `not_exercised`.
 
-## The known mismatches to expect
+## The global keys and the Keyboard map
 
-Two are known before the run (`KNOWN_GAPS` in `app/e2e/phase-7-exit.spec.ts`, and the entry "Phase 7 exit: live run (item 10, owner)" in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md)). Record each as a `mismatch`; do not skip it:
+No mismatch is known before the run: `KNOWN_GAPS` in `app/e2e/phase-7-exit.spec.ts` is empty. The 2026-11-01 run's two known mismatches, the ⌘ shortcuts with the ⌘K palette and the missing Keyboard map view, were fixed by phase 7 item 13 (the entry "Phase 7 exit: live run (item 10, owner)" in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md) records both). Check them live as part of the walk, in the packaged app, and record each as `match` or `mismatch`:
 
-1. **The ⌘ shortcuts and ⌘K do nothing.** The sidebar labels Integrations `⌘5` through Memory `⌘9` and Settings `⌘,`, and the mockup has a ⌘K palette, but the shell mounts no global keyboard map and no command palette (`app/src/App.tsx`). Pressing them in the packaged app does nothing; reach each screen with the sidebar.
-2. **There is no Keyboard map view.** The mockup's `keymap` view (opened from Settings with `?`) has no screen in the app.
+1. **⌘1 to ⌘9, ⌘, and ⌘K.** From any screen, each ⌘ key the sidebar shows opens that screen, and ⌘K opens the palette: it lists the screens and the current screen's commands, filters as you type, and closes on Esc. Run only a screen-opening command from it, never one that writes, and never press ⌘⇧K (the kill switch). In a text field (Chat, Memory's Edit), J, K and `?` type and nothing navigates.
+2. **The Keyboard map.** `?` outside a text field, or the palette's "Keyboard map" command, opens it. Compare it with the `keymap` view in light and dark; its Back returns to the screen it was opened from.
 
 Anything else you see that differs is a new finding.
 
@@ -147,9 +147,9 @@ The repo is public and the screenshots show real data, so:
       }
     }
   },
-  "known_mismatches": [
-    { "id": "shortcuts-and-palette", "outcome": "mismatch", "reason": "<what pressing ⌘5 … ⌘, and ⌘K did>", "finding": "<the new item's file name>" },
-    { "id": "keymap", "outcome": "mismatch", "reason": "<no Keyboard map view>", "finding": "<the new item's file name>" }
+  "global_keys": [
+    { "id": "shortcuts-and-palette", "outcome": "match | mismatch", "reason": "<what pressing ⌘1 … ⌘9, ⌘, and ⌘K did>", "finding": "<the new item's file name, on a mismatch>" },
+    { "id": "keymap", "outcome": "match | mismatch", "reason": "<what ? opened, light and dark>", "finding": "<the new item's file name, on a mismatch>" }
   ],
   "findings": [],
   "owner": { "every_decision_made_by": "", "notes": "" },
@@ -161,7 +161,7 @@ The repo is public and the screenshots show real data, so:
 
 ## Findings
 
-**Every mismatch becomes a new phase 7 requirement item** under `.supervisor/requirements/phase-7/` (its file name goes in the entry's `finding`). **Nothing is patched during the run**, and not in the PR that adds this check. Phase 7 stays not done until a re-run has no open mismatch. The two known mismatches above are findings for new items before the run starts, and they keep phase 7 open until those items land.
+**Every mismatch becomes a new phase 7 requirement item** under `.supervisor/requirements/phase-7/` (its file name goes in the entry's `finding`). **Nothing is patched during the run**, and not in the PR that adds this check. Phase 7 stays not done until a re-run has no open mismatch. The 2026-11-01 run's findings are items 11 to 18, all merged; the 2026-11-01 re-run's findings are items 20 to 27, all merged (wave PRs #208 and #212). This re-run checks what they fixed like any other view.
 
 ## Closing phase 7
 
