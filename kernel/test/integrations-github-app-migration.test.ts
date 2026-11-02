@@ -11,6 +11,7 @@ import { checkAfterMigrating } from "../src/store/integrity.js";
 import { DB_FILENAME, Store, migrations } from "../src/store/index.js";
 import { connectorPermissionsSource } from "../src/store/migrations/018_connector_permissions_source.js";
 import { connectorApp } from "../src/store/migrations/019_connector_app.js";
+import { phase8Foundation } from "../src/store/migrations/020_phase_8_foundation.js";
 
 const T0 = "2026-10-30T10:00:00.000Z";
 const NEW_COLUMNS = ["method", "app_slug", "installation_id"] as const;
@@ -54,11 +55,12 @@ describe("migration 19: connector_app (AC7)", () => {
   const info = (s: Store, column: string): unknown =>
     s.prepare(`SELECT type, "notnull", dflt_value FROM pragma_table_info('connectors') WHERE name = ?`).get(column);
 
-  it("is version 19, named connector_app, appended last after 18, and the list is contiguous from 1", () => {
+  it("is version 19, named connector_app, directly after 18 (and directly below 20, phase_8_foundation, the last), and the list is contiguous from 1", () => {
     expect([connectorApp.version, connectorApp.name]).toEqual([19, "connector_app"]);
-    expect(migrations.at(-1)).toBe(connectorApp);
-    expect(migrations.at(-2)).toBe(connectorPermissionsSource);
-    expect(migrations.map((m) => m.version)).toEqual(Array.from({ length: 19 }, (_, i) => i + 1));
+    expect(migrations.at(-2)).toBe(connectorApp);
+    expect(migrations.at(-3)).toBe(connectorPermissionsSource);
+    expect(migrations.at(-1)).toBe(phase8Foundation);
+    expect(migrations.map((m) => m.version)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
   });
 
   it("a fresh store has the three columns, after 18's, nullable with no default", () => {
@@ -81,7 +83,7 @@ describe("migration 19: connector_app (AC7)", () => {
     v18.close();
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([19, "connector_app"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
     expect(store.prepare("SELECT account_login, permissions_json, reachable_repos_json, verified_at, permissions_source, permissions_declared_at, method, app_slug, installation_id FROM connectors").all()).toEqual([
       {
         account_login: "someone",
@@ -115,17 +117,18 @@ describe("migration 19: connector_app (AC7)", () => {
     ]);
   });
 
-  it("is safe to re-run: with its record deleted, migration 19 runs again as a no-op and every row stays", () => {
+  it("is safe to re-run: with its record deleted (and 20's, which sits above it), migration 19 runs again as a no-op and every row stays", () => {
     const first = open();
     first.prepare("INSERT INTO connectors (kind, status, method, app_slug, installation_id) VALUES ('github', 'connected', 'app', 'studio-reader', 12345)").run();
     first.close();
 
     const db = new Database(join(dir, DB_FILENAME));
-    db.exec("DELETE FROM schema_migrations WHERE version = 19");
+    // Deleting 19 alone would leave 20 above a gap: 19 and 20 re-run together.
+    db.exec("DELETE FROM schema_migrations WHERE version >= 19");
     db.close();
 
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([19, "connector_app"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
     expect(rerun.prepare("SELECT method, app_slug, installation_id FROM connectors").all()).toEqual([
       { method: "app", app_slug: "studio-reader", installation_id: 12345 },
     ]);
