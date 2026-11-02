@@ -137,8 +137,8 @@ const PLAIN_TOOL = defineTool({
 // ---------------------------------------------------------------------------
 
 describe("connector closed sets", () => {
-  it("CONNECTOR_KINDS is exactly github, frozen", () => {
-    expect(CONNECTOR_KINDS).toEqual(["github"]);
+  it("CONNECTOR_KINDS is exactly github, jira and clickup, frozen", () => {
+    expect(CONNECTOR_KINDS).toEqual(["github", "jira", "clickup"]);
     expect(Object.isFrozen(CONNECTOR_KINDS)).toBe(true);
   });
 

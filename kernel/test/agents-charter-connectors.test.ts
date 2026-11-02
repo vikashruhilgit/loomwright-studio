@@ -134,7 +134,7 @@ const ENFORCED = "enforced: never: git_push; tools: Read; bash prefixes: none";
 
 describe("the charter's optional connectors key", () => {
   it("is a closed set of the connector kinds (CONNECTOR_KINDS), published as a charter field, and a repeat, an unknown kind or a non-list is refused naming connectors", () => {
-    expect(CONNECTOR_KINDS).toEqual(["github"]);
+    expect(CONNECTOR_KINDS).toEqual(["github", "jira", "clickup"]);
     expect(validated(charter({ connectors: ["github"] })).connectors).toEqual(["github"]);
     for (const bad of [["github", "github"], ["gitlab"], "github", [1], [null]]) {
       const r = validateCharter(charter({ connectors: bad }), { dataDir, homeDir: home });
