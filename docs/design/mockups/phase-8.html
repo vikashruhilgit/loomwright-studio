@@ -879,7 +879,7 @@ function setView(v,keep){
   if(x.scr==='integrations') intEnter(x,keep);
   if(!keep){
     /* A forced view shows its named state whatever was clicked before: drop every decision and edit, then apply what the entry names. */
-    S.dec={}; S.enable='none'; S.pb=1; S.ap='ap7'; PB=mkPB();
+    S.dec={}; S.enable='none'; S.back=''; S.pb=1; S.ap='ap7'; PB=mkPB();
     if(x.ap) S.ap=x.ap;
     if(x.pb) S.pb=x.pb;
     if('dec' in x) S.dec[x.ap]=x.dec;
