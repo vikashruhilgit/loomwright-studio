@@ -1,0 +1,2 @@
+/* The icon set carries no CSS of its own: the caller passes the class its screen styles (`budget-glyph`), as with `Glyph`.
+   This file exists only because `components/Toast/Toast.test.tsx` expects every `components/<dir>/` to hold `<dir>.css`; it is not imported. */

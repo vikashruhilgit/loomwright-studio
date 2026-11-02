@@ -18,6 +18,7 @@ import type { PlaybookListing, RosterEntry, StudioBridge } from "../../api/contr
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import { SelectField } from "../../components/Input/Input";
+import { Crumb } from "../../shell/Crumb";
 import {
   AUDIT_PAGE_SIZE,
   BUDGET_TEST_IDS as IDS,
@@ -36,7 +37,7 @@ import {
   whenText,
 } from "./model";
 import type { AuditFilter } from "./model";
-import { BackGlyph, Skeleton, WarnGlyph } from "./parts";
+import { Skeleton, WarnGlyph } from "./parts";
 import { useAudit } from "./useAudit";
 import { useFeedRefetch } from "./useUsage";
 
@@ -226,15 +227,7 @@ export function AuditLog({ api, filter, onFilter, onClear, roster, playbooks, of
   return (
     <div className="budget-auditview" data-testid={IDS.audit}>
       <div className="budget-pad budget-tight">
-        <div className="budget-crumb">
-          <Button ref={backRef} size="row" variant="ghost" icon={<BackGlyph />} onClick={onBack} data-testid={IDS.back}>
-            Back
-          </Button>
-          <span aria-hidden="true">·</span>
-          <span>Budget &amp; audit</span>
-          <span aria-hidden="true">/</span>
-          <span>Audit log</span>
-        </div>
+        <Crumb ref={backRef} className="budget-crumb" glyphClassName="budget-glyph" parent="Budget & audit" current="Audit log" onBack={onBack} testId={IDS.back} />
         <div className="budget-dhead">
           <h2 className="budget-title">Audit log</h2>
           {badge === undefined ? null : (

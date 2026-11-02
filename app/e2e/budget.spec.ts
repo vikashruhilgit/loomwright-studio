@@ -564,11 +564,17 @@ test("keyboard: the audit log is walked by Tab, Enter, Space, type-ahead, J, K a
   await page.keyboard.press("k");
   await expect(agents.nth(1)).toBeFocused();
 
-  // Open the log from the toolbar button with Enter: focus goes to Back.
+  // Open the log from the toolbar button with Enter: focus goes to the crumb, "‹ Budget & audit / Audit log" (item 21).
   await byId(page, IDS.auditButton).focus();
   await page.keyboard.press("Enter");
   await expect(byId(page, IDS.table)).toBeVisible();
   await expect(byId(page, IDS.back)).toBeFocused();
+  const crumb = byId(page, IDS.audit).locator(".budget-crumb");
+  await expect(crumb).toHaveText("Budget & audit/Audit log");
+  expect(await crumb.innerText(), "the crumb no longer draws the word Back").not.toContain("Back");
+  await expect(crumb.getByRole("button")).toHaveCount(1);
+  await expect(byId(page, IDS.back)).toHaveAccessibleName("Back to Budget & audit");
+  await expect(byId(page, IDS.back)).toHaveText("Budget & audit");
 
   // Tab reaches every filter, a row of the table and Older, in that order (Clear filters and Newer are disabled).
   const reached: string[] = [];
@@ -607,7 +613,16 @@ test("keyboard: the audit log is walked by Tab, Enter, Space, type-ahead, J, K a
   await expect(byId(page, IDS.audit)).toHaveCount(0);
   await expect(byId(page, IDS.auditButton)).toBeFocused();
 
-  // 'Open the full log' opens it too, and Back returns focus to it.
+  // Activating the crumb returns to the overview with focus on the Audit log button that opened the log.
+  await page.keyboard.press("Enter");
+  await expect(byId(page, IDS.table)).toBeVisible();
+  await expect(byId(page, IDS.back)).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(byId(page, IDS.dayTable)).toBeVisible();
+  await expect(byId(page, IDS.audit)).toHaveCount(0);
+  await expect(byId(page, IDS.auditButton)).toBeFocused();
+
+  // 'Open the full log' opens it too, and the crumb returns focus to it.
   await byId(page, IDS.openLog).focus();
   await page.keyboard.press("Enter");
   await expect(byId(page, IDS.table)).toBeVisible();
@@ -696,7 +711,7 @@ test("names: every select, button, meter, badge, table and group has an accessib
   for (const label of ["Kind", "Agent", "Playbook", "Time range"]) await expect(root.getByRole("combobox", { name: label }), label).toBeVisible();
   await expect(root.getByRole("table", { name: "Audit log, newest first" })).toBeVisible();
   await expect(root.getByRole("columnheader")).toHaveText(["Id", "When", "Kind", "Actor", "Detail"]);
-  for (const name of ["Back", "Clear filters", "Newer", "Older"]) await expect(root.getByRole("button", { name }), name).toBeVisible();
+  for (const name of ["Back to Budget & audit", "Clear filters", "Newer", "Older"]) await expect(root.getByRole("button", { name }), name).toBeVisible();
   await expect(root.getByRole("heading", { level: 2, name: "Audit log" })).toBeVisible();
   expect(await page.locator("h1").allTextContents(), "the shell's heading is the only h1").toEqual(["Budget & audit"]);
 });

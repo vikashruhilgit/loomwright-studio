@@ -1,5 +1,5 @@
 // Marks and small parts the Budget & audit screen draws: the meter, the limit cell, the loading
-// skeleton and three glyphs (the glyph frame, warning mark and skeleton are shared under components/;
+// skeleton and two glyphs (the glyph frame, warning mark and skeleton are shared under components/;
 // these wrappers pin the `budget` class prefix). The glyphs are decorative (`aria-hidden`): the text beside each one
 // names the thing. Every meter is in tokens (a share of a limit, the busiest day or a cap window),
 // never in dollars, and carries `role="img"` with an `aria-label` that says what it measures.
@@ -17,12 +17,6 @@ export const WarnGlyph = () => <SharedWarnGlyph className="budget-glyph" />;
 export const HistoryGlyph = () => (
   <BudgetGlyph>
     <path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2" />
-  </BudgetGlyph>
-);
-
-export const BackGlyph = () => (
-  <BudgetGlyph>
-    <path d="m15 18-6-6 6-6" />
   </BudgetGlyph>
 );
 
