@@ -87,3 +87,9 @@ Recorded 2026-11-01 in the phase 7 re-run findings product-owner session (AskUse
 ## Touches
 app/src/screens/tasks
 app/e2e/tasks.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-02T09:43:08Z
+- **Brief:** .supervisor/jobs/done/2026-11-02-tasks-last-known-board-kind-icons-and-crumb.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/210
