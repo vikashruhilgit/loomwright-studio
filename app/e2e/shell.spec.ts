@@ -5,9 +5,13 @@
 // `launchctl bootout`: the store reads `reconnecting`, the shell shows the one red band, and the screen
 // keeps its last data under it with its writes off. `fixture.restart()` (same port, same state) clears it.
 //
+// The band's "Kernel log" action sits at its right on every screen; pressed with no log on disk it says so and
+// reveals nothing (the spec never presses it while a log file exists: that would open the real Finder).
+//
 // AC3/AC4/AC6/AC7: the frame the mockup draws (sidebar glyphs, divider, "Schedules & triggers", crew rows, the
 // bottom status row and the ⌘K hint; the title bar), and its polish-gate screenshots of the mockup's
-// `integrations-token` and `integrations-unreachable` views in light and dark. With `SHELL_EVIDENCE=1` they are
+// `integrations-token` and `integrations-unreachable` views in light and dark, plus the band's "no log yet" note
+// (`integrations-unreachable-kernel-log-missing`, which the mockup has no view for). With `SHELL_EVIDENCE=1` they are
 // written to the committed `docs/evidence/phase-7-polish/shell/`; otherwise to Playwright's per-test output dir, so
 // CI never dirties tracked files, and a test asserts nothing under the tracked dir changed during the run and that
 // the evidence README names every file. The spec asserts behaviour, never pixels: fonts differ between macOS and CI.
@@ -27,7 +31,7 @@ const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-7-polish/s
 const README = join(EVIDENCE_DIR, "README.md");
 const THEMES = ["light", "dark"] as const;
 /** The mockup's views (`gui-v2.html`, `#view=<name>`), as the file names have them. */
-const VIEWS = ["integrations-token", "integrations-unreachable"] as const;
+const VIEWS = ["integrations-token", "integrations-unreachable", "integrations-unreachable-kernel-log-missing"] as const;
 /** When this run began, for the guard that the tracked evidence dir is untouched without `SHELL_EVIDENCE`. */
 const RUN_START = Date.now();
 
@@ -36,6 +40,9 @@ const STATE_TIMEOUT_MS = BACKOFF_CAP_MS + SETTLE_MS + 3_000;
 
 /** The band copy, exactly (`KERNEL_BAND_COPY` in `src/shell/KernelStates.tsx`). */
 const BAND_COPY = "Couldn't reach the kernel. It may be restarting; this window reconnects on its own.";
+/** The band's action, and what the band says when the press finds no log (`KERNEL_LOG_LABEL` and the note in `KernelStates.tsx`). */
+const KERNEL_LOG = "Kernel log";
+const NO_LOG_NOTE = "There is no kernel log yet.";
 
 /**
  * The screen's test ids, copied as `integrations.spec.ts` copies them (`model.ts` pulls in `.tsx` the e2e project's
@@ -80,7 +87,7 @@ async function expectOneSharedBand(page: Page): Promise<void> {
   await expect(band).toHaveCount(1);
   await expect(band).toBeVisible();
   await expect(band).toHaveAttribute("role", "alert");
-  await expect(band).toHaveText(BAND_COPY);
+  await expect(band).toHaveText(BAND_COPY + KERNEL_LOG);
   await expect(byId(page, "kernel-reconnecting-band")).toHaveCount(0);
   await expect(byId(page, IDS.band)).toHaveCount(0);
 }
@@ -122,6 +129,54 @@ test("AC1: stopping the fixture's listener shows the one shared band over Integr
   await expect(byId(page, IDS.band)).toHaveCount(0);
   await expect(byId(page, IDS.listMeta)).toHaveText(`connected · ${ACCOUNT}`);
   for (const id of writes) await expect(byId(page, id)).toBeEnabled();
+});
+
+/** The seven screens that draw the shared band themselves or under the shell's, by route and title. */
+const BAND_SCREENS = [
+  ["#/tasks", "Tasks"],
+  ["#/playbooks", "Playbooks"],
+  ["#/schedules", "Schedules & triggers"],
+  ["#/memory", "Memory"],
+  ["#/budget", "Budget & audit"],
+  ["#/settings", "Settings"],
+  ["#/integrations", "Integrations"],
+] as const;
+
+test("AC1: on each of seven screens the one band ends with a Kernel log button at its right, after the sentence", async () => {
+  test.setTimeout(120_000);
+  const fx = integrationsFixture();
+  fixture = await startFixtureKernel(fx.options);
+  fx.attach(fixture);
+  const kernel = fixture;
+  const page = await launch(kernel);
+  await kernel.stop();
+  for (const [route, title] of BAND_SCREENS) {
+    await page.evaluate((hash) => {
+      window.location.hash = hash;
+    }, route);
+    await expect(page.locator("h1"), `${route} is showing`).toHaveText(title);
+    const bands = page.locator(".band-danger");
+    await expect(bands, `${route} has exactly one band`).toHaveCount(1, { timeout: STATE_TIMEOUT_MS });
+    const action = bands.getByRole("button", { name: KERNEL_LOG });
+    await expect(action, `${route}'s band has the action`).toBeVisible();
+    await expect(bands).toHaveText(BAND_COPY + KERNEL_LOG);
+    // Geometry: the action's right edge is within the band's padding of the band's right edge, and it starts right of the sentence.
+    const box = await bands.evaluate((band) => {
+      const sentence = band.querySelector("span")?.getBoundingClientRect();
+      const button = band.querySelector("button")?.getBoundingClientRect();
+      return {
+        paddingRight: Number.parseFloat(getComputedStyle(band).paddingRight),
+        bandRight: band.getBoundingClientRect().right,
+        sentenceRight: sentence?.right ?? Number.NaN,
+        buttonLeft: button?.left ?? Number.NaN,
+        buttonRight: button?.right ?? Number.NaN,
+      };
+    });
+    expect(box.paddingRight, `${route}: the band has right padding`).toBeGreaterThan(0);
+    expect(box.bandRight - box.buttonRight, `${route}: the action's right edge is inside the band`).toBeGreaterThanOrEqual(-1);
+    expect(box.bandRight - box.buttonRight, `${route}: the action's right edge is within the band's padding`).toBeLessThanOrEqual(box.paddingRight + 1);
+    expect(box.buttonLeft, `${route}: the action starts right of the sentence`).toBeGreaterThan(box.sentenceRight);
+  }
 });
 
 test("AC1: the same band shows over any screen (Chat, the default) and goes when the listener is back", async () => {
@@ -266,7 +321,20 @@ test("AC3/AC4/AC6/AC7: the sidebar and title bar match the mockup, at rest and w
   await expect(gone).toBeVisible({ timeout: STATE_TIMEOUT_MS });
   await expect(gone).toHaveText("kernel unreachable");
   await expect(byId(page, IDS.listMeta)).toHaveText("status unknown · kernel unreachable");
+  // The action sits at the band's right (the full geometry is pinned on all seven screens above).
+  await expect(byId(page, "kernel-unreachable-band").getByRole("button", { name: KERNEL_LOG })).toBeVisible();
   await screenshots(page, "integrations-unreachable", testInfo);
+
+  // AC3: the fixture's data dir holds no kernel log, so the press reveals nothing and the band says so. Pressed only
+  // after asserting the file is absent: with one on disk it would open the real Finder.
+  expect(existsSync(join(kernel.dataDir, "logs", "kernel.err.log")), "the fixture's data dir has no kernel log").toBe(false);
+  await expect(byId(page, "kernel-log-note")).toHaveCount(0);
+  await byId(page, "kernel-unreachable-band").getByRole("button", { name: KERNEL_LOG }).click();
+  const note = byId(page, "kernel-log-note");
+  await expect(note).toHaveText(NO_LOG_NOTE);
+  await expect(note).toHaveAttribute("role", "status");
+  await expect(byId(page, "kernel-unreachable-band")).toHaveText(BAND_COPY + KERNEL_LOG + NO_LOG_NOTE);
+  await screenshots(page, "integrations-unreachable-kernel-log-missing", testInfo);
 
   // And back.
   await kernel.restart();

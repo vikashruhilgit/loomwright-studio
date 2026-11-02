@@ -416,7 +416,7 @@ test("AC1: when the kernel goes away one band shows, the rows stay with every la
   // Exactly one red band (the shell's), with the fixed copy and no request text.
   await expect(bands(page)).toHaveCount(1);
   await expect(page.locator('[data-testid="kernel-unreachable-band"], [data-testid="kernel-reconnecting-band"]')).toBeVisible();
-  await expect(bands(page)).toHaveText("Couldn't reach the kernel. It may be restarting; this window reconnects on its own.");
+  await expect(bands(page)).toHaveText("Couldn't reach the kernel. It may be restarting; this window reconnects on its own.Kernel log");
   await expect(page.getByTestId("playbooks-count")).toHaveText("3 playbooks · 2 on · last known");
   await expect(page.getByTestId("playbook-row")).toHaveCount(3);
   await expect(rowOf(page, REVIEW.name)).toContainText("item.id, item.revision");
