@@ -38,6 +38,8 @@ const TEXT: readonly (readonly [string, string, string, string])[] = [
   [".memory", "ink", "ground", "the screen's own text"],
   [".memory-root", "ink-tertiary", "ground", "the memory root above the tree"],
   [".memory-folder-name", "ink-tertiary", "ground", "a folder's name in the tree"],
+  [".memory-mark", "ink-tertiary", "ground", "the avatar slot and shared icon on a folder header in the tree"],
+  [".memory-mark", "ink-tertiary", "surface", "the shared icon on the overview's folder rows"],
   [".memory-cap", "ink-tertiary", "ground", "captions on the page ground"],
   [".memory-cap", "ink-tertiary", "surface", "captions in the overview's box and the Changes inspector"],
   [".memory-file", "ink-secondary", "ground", "a file's name in the tree"],
