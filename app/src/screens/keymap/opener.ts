@@ -5,7 +5,7 @@
 
 import type { ScreenDefinition } from "../types";
 
-const KEYMAP_HASH =/^#\/keymap(?![a-z0-9-])/;
+const KEYMAP_HASH = /^#\/keymap(?![a-z0-9-])/;
 
 /** Where Back goes when the window opened on the map itself (a deep link): the mockup's parent, Settings. */
 export const FALLBACK_HASH = "#/settings";
