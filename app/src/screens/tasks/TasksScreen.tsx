@@ -29,8 +29,8 @@ import type { ApiResult, StudioBridge, TasksResponse } from "../../api/contract"
 import { isComposingKey, isEditableTarget } from "../../commands/keyboard";
 import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
-import { Button } from "../../components/Button/Button";
 import { Dialog } from "../../components/Dialog/Dialog";
+import { Crumb } from "../../shell/Crumb";
 import { KernelBand } from "../../shell/KernelStates";
 import { useKernelReach, withLastKnown } from "../../shell/last-known";
 import { useLiveStore, useResource } from "../../store/react";
@@ -38,6 +38,7 @@ import { printable } from "../approvals/printable";
 import { TaskDetail } from "./TaskDetail";
 import { KIND_LABEL, agentText, buildBoard, cardAgent, cardOrder, refetchMark } from "./model";
 import type { Board, BoardCard } from "./model";
+import { getLastBoard, setLastBoard } from "./lastKnown";
 import { setSubtitleLine } from "./subtitle";
 import { useOpenCard } from "./useOpenCard";
 import type { OpenTarget } from "./useOpenCard";
@@ -117,7 +118,8 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
   const roster = agents?.data?.agents;
   const [now, touchNow] = useNow();
 
-  const [data, setData] = useState<TasksResponse | undefined>();
+  // A remount starts from the last board this window read (`./lastKnown.ts`); the first read still replaces it.
+  const [data, setData] = useState<TasksResponse | undefined>(() => getLastBoard(api));
   const [readError, setReadError] = useState<ReadError | undefined>();
   const [open, setOpen] = useState<OpenTarget | null>(null);
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -141,6 +143,8 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
     const mine = seq.current;
     const result = await readTasks(api);
     if (!mounted.current || mine !== seq.current) return;
+    // Only an answered board is remembered for the next mount.
+    if (result.ok) setLastBoard(api, result.body);
     // A read the kernel did not answer (or refused) never replaces what is on screen.
     setData((last) => (result.status === 0 ? last : result.ok ? result.body : last));
     setReadError(errorOf(result));
@@ -303,11 +307,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
       <TasksFrame state="detail" rootRef={rootRef}>
         {band}
         <div className="tasks-detail" data-testid="task-detail" data-card-key={`${open.kind}:${open.id}`}>
-          <div className="tasks-crumb">
-            <Button variant="ghost" size="row" onClick={closeCard} data-testid="task-back">
-              Back
-            </Button>
-          </div>
+          <Crumb className="tasks-crumb" glyphClassName="tasks-glyph" parent="Tasks" current={`${KIND_LABEL[open.kind]} #${open.id}`} onBack={closeCard} testId="task-back" />
           <p className="tasks-note" role="status" data-testid="task-gone">
             {KIND_LABEL[open.kind]} #{open.id} is no longer on the board. Back returns to it.
           </p>
