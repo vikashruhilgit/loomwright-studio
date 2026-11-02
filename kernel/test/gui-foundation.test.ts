@@ -1,9 +1,10 @@
 // Phase 7 foundation (item 01): the `gui` feature's seams. Six empty parts in a
 // fixed order, merged by the console's part merge under the name `gui`, and
-// registered tenth and last. Each phase 7 screen item (03-08) fills in one part
-// with routes only, and the generic pins below ("gui parts serve routes only")
+// registered tenth (phase 8 then registers `automate` after it). Each phase 7
+// screen item (03-08) fills in one part with routes only, and the generic pins below ("gui parts serve routes only")
 // hold for each without an edit here.
 import { describe, expect, it } from "vitest";
+import { automateContribution } from "../src/automate/index.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { GUI_NAME, GUI_PARTS, guiContribution, guiContributionOf } from "../src/gui/index.js";
 import type { GuiPart } from "../src/gui/index.js";
@@ -11,13 +12,14 @@ import type { GuiPart } from "../src/gui/index.js";
 const PART_NAMES = ["tasks", "playbook-history", "schedules", "memory", "budget-audit", "settings"];
 
 describe("the gui feature (phase 7 foundation)", () => {
-  it("is tenth and last in the registry, after integrations, and merges with no conflict", () => {
-    expect(SHIPPED_CONTRIBUTIONS).toHaveLength(10);
+  it("is tenth in the registry, after integrations and before automate (last), and merges with no conflict", () => {
+    expect(SHIPPED_CONTRIBUTIONS).toHaveLength(11);
     expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name).slice(8, 10)).toEqual(["integrations", GUI_NAME]);
     expect(SHIPPED_CONTRIBUTIONS[9]).toBe(guiContribution);
-    expect(SHIPPED_CONTRIBUTIONS.at(-1)).toBe(guiContribution);
+    expect(SHIPPED_CONTRIBUTIONS.at(-1)).toBe(automateContribution);
     expect(() => mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED)).not.toThrow();
-    expect(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).contributors.at(-1)).toBe("gui");
+    expect(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).contributors.at(-1)).toBe("automate");
+    expect(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).contributors.at(-2)).toBe("gui");
   });
 
   it("names its six parts in a fixed order: tasks, playbook-history, schedules, memory, budget-audit, settings", () => {

@@ -7,12 +7,13 @@
 //      literally below, each route once, so a route can't be added, dropped or
 //      renamed in the contract without this test saying so.
 //   2. Every route the contract marks existing (an origin that is not a phase 5
-//      `item-NN`, a phase 6 `p6-item-NN` or a phase 7 `p7-item-NN`) is one the
+//      `item-NN`, a phase 6 `p6-item-NN`, a phase 7 `p7-item-NN` or a phase 8
+//      `p8-item-NN`) is one the
 //      kernel serves today: a phase 1 route or a shipped contribution's route,
-//      same method and same declared path. The routes phase 5, phase 6 and
-//      phase 7 items add are not checked here; each item's own test pins its
-//      route against the contract. Phase 7's twelve are listed below as not yet
-//      served, and never counted as existing.
+//      same method and same declared path. The routes phase 5, phase 6, phase 7
+//      and phase 8 items add are not checked here; each item's own test pins its
+//      route against the contract. Phase 7's twelve and phase 8's seven are listed
+//      below as not yet served, and never counted as existing.
 //   3. The contract's `SessionOutputKind` union carries exactly the values of
 //      `SESSION_OUTPUT_KINDS` (`kernel/src/console/output.ts`).
 //   4. The shared playbook policy editor's `POLICY_FIELDS` and `READ_ONLY_POLICY_FIELDS`
@@ -82,7 +83,8 @@ function sessionOutputKindUnion(text: string): string[] {
  * `POST /agents/:id/set` to take `connectors`); `github-app` routes are the
  * GitHub App connect's two owner routes (D36), served by the setup flow: they
  * open and close the setup window; `p7-item-NN` routes are the twelve phase 7
- * items 03-08 add (the app's one `PUT`, the memory write, among them).
+ * items 03-08 add (the app's one `PUT`, the memory write, among them); `p8-item-NN`
+ * routes are the seven phase 8 item 01 declares for items 03, 06 and 08 (all GET or POST).
  */
 const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "GET", path: "/status", origin: "phase-1" },
@@ -143,10 +145,17 @@ const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "GET", path: "/budget/usage", origin: "p7-item-07" },
   { method: "GET", path: "/audit", origin: "p7-item-07" },
   { method: "GET", path: "/settings", origin: "p7-item-08" },
+  { method: "GET", path: "/connectors/github/app/upgrade", origin: "p8-item-03" },
+  { method: "POST", path: "/connectors/mcp/:kind/connect", origin: "p8-item-06" },
+  { method: "POST", path: "/connectors/mcp/:kind/connect/cancel", origin: "p8-item-06" },
+  { method: "POST", path: "/connectors/mcp/:kind/disconnect", origin: "p8-item-06" },
+  { method: "GET", path: "/repos/policy", origin: "p8-item-08" },
+  { method: "POST", path: "/repos/policy/:owner/:repo/detect", origin: "p8-item-08" },
+  { method: "POST", path: "/repos/policy/:owner/:repo", origin: "p8-item-08" },
 ];
 
-/** A route the contract says the kernel already serves: any origin but a phase 5 item's (`item-NN`), a phase 6 item's (`p6-item-NN`) or a phase 7 item's (`p7-item-NN`). */
-const isExisting = (entry: ContractEntry): boolean => !/^(p[67]-)?item-\d{2}$/.test(entry.origin);
+/** A route the contract says the kernel already serves: any origin but a phase 5 item's (`item-NN`), a phase 6 item's (`p6-item-NN`), a phase 7 item's (`p7-item-NN`) or a phase 8 item's (`p8-item-NN`). */
+const isExisting = (entry: ContractEntry): boolean => !/^(p[678]-)?item-\d{2}$/.test(entry.origin);
 
 const key = (r: { readonly method: string; readonly path: string }): string => `${r.method} ${r.path}`;
 
@@ -205,6 +214,21 @@ describe("the app contract's routes (app/src/api/contract.ts, read as text)", ()
       ["p7-item-08", "GET /settings"],
     ]);
     expect(phase7.filter(isExisting)).toEqual([]);
+  });
+
+  it("lists phase 8's seven routes as not yet served: items 03, 06 and 08 add them, each GET or POST", () => {
+    const phase8 = routes.filter((r) => r.origin.startsWith("p8-"));
+    expect(phase8.map((r) => [r.origin, key(r)])).toEqual([
+      ["p8-item-03", "GET /connectors/github/app/upgrade"],
+      ["p8-item-06", "POST /connectors/mcp/:kind/connect"],
+      ["p8-item-06", "POST /connectors/mcp/:kind/connect/cancel"],
+      ["p8-item-06", "POST /connectors/mcp/:kind/disconnect"],
+      ["p8-item-08", "GET /repos/policy"],
+      ["p8-item-08", "POST /repos/policy/:owner/:repo/detect"],
+      ["p8-item-08", "POST /repos/policy/:owner/:repo"],
+    ]);
+    expect(phase8.filter(isExisting)).toEqual([]);
+    expect(phase8.every((r) => r.method === "GET" || r.method === "POST")).toBe(true);
   });
 
   it("the feed route is the path the API server upgrades", () => {
