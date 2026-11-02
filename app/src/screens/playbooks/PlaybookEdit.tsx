@@ -17,8 +17,7 @@ import { Button } from "../../components/Button/Button";
 import { type KernelPolicyField, type PolicyRow, PolicyEditor, modePolicyRow, policyRows } from "../../components/PlaybookPolicy/PlaybookPolicy";
 import { focusLost } from "../chat/model";
 import type { WriteOutcome } from "../chat/model";
-import { Crumb } from "./PlaybookDetail";
-import { type PlaybookActions, SetBy } from "./parts";
+import { type PlaybookActions, PlaybookCrumb, SetBy } from "./parts";
 import { PLAYBOOKS_TEST_IDS as IDS, NOT_SET, dedupeText, isOn, limitText, safe, safeBlock, valueOrNotSet } from "./model";
 
 /** What a read-only field says about changing it. */
@@ -132,7 +131,7 @@ export function PlaybookEdit({ playbook, actions, onSet, onBack }: PlaybookEditP
         if (event.key === "Escape" && editing === null && !event.defaultPrevented) onBack();
       }}
     >
-      <Crumb label="Playbook" name={safe(playbook.name)} onBack={onBack} />
+      <PlaybookCrumb parent="Playbook" current={safe(playbook.name)} onBack={onBack} />
       <div className="pb-head">
         <h2>Edit fields</h2>
         <Badge>{`v${playbook.version} now`}</Badge>
