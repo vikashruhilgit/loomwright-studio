@@ -386,7 +386,7 @@ test("AC8: an agent's write after the file was opened makes a save a conflict: b
   expect(fx.puts).toHaveLength(1);
   await screenshots(page, "conflict", testInfo);
 
-  // Back to editing: the draft is still there.
+  // Back to Edit (the crumb): the draft is still there.
   await byId(page, IDS.backToEditing).click();
   await expect(byId(page, IDS.textarea)).toHaveValue(LESSONS_MINE);
   await byId(page, IDS.save).click();

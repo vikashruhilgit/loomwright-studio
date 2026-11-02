@@ -440,6 +440,18 @@ describe("the tree", () => {
 // ---- AC7: edit and save ----------------------------------------------------------------------------------------------
 
 describe("edit and save", () => {
+  it("draws the editor's crumb as the shared crumb '‹ lessons.md / Edit': one button named 'Back to lessons.md' that cancels the edit", async () => {
+    await start();
+    await openEditor();
+    const back = screen.getByRole("button", { name: "Back to lessons.md" });
+    expect(back.querySelector("svg")?.getAttribute("aria-hidden"), "the shared crumb's chevron").toBe("true");
+    const crumb = back.parentElement as HTMLElement;
+    expect(crumb.className).toBe("memory-crumb");
+    expect(crumb.textContent).toBe("lessons.md/Edit");
+    fireEvent.click(back);
+    await screen.findByTestId(IDS.fileView);
+  });
+
   it("Edit opens a textarea holding the text, labelled 'Contents of <path>', and a Changes inspector with a DiffView; Save is off until the text differs", async () => {
     await start();
     await openEditor();
@@ -618,6 +630,16 @@ describe("the conflict", () => {
     fireEvent.click(screen.getByTestId(IDS.backToEditing));
     await screen.findByTestId(IDS.editor);
     expect(textarea().value).toBe(MINE);
+  });
+
+  it("draws the shared crumb '‹ Edit / mason/lessons.md': one button named 'Back to Edit', with the chevron and no word 'Back'", async () => {
+    await conflict();
+    const back = screen.getByRole("button", { name: "Back to Edit" });
+    expect(back.getAttribute("data-testid")).toBe(IDS.backToEditing);
+    expect(back.querySelector("svg")?.getAttribute("aria-hidden"), "the shared crumb's chevron").toBe("true");
+    const crumb = back.parentElement as HTMLElement;
+    expect(crumb.className).toBe("memory-crumb");
+    expect(crumb.textContent).toBe(`Edit/${PATH}`);
   });
 
   it.each([

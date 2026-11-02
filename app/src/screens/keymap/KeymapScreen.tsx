@@ -7,10 +7,10 @@ import type { ReactNode } from "react";
 import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { groupCommands } from "../../components/CommandPalette/fuzzy";
-import { Button } from "../../components/Button/Button";
 import { Kbd } from "../../components/Badge/Badge";
+import { Crumb } from "../../shell/Crumb";
 import { useScreens } from "../../shell/ScreensContext";
-import { openerHash } from "./opener";
+import { openerHash, openerScreenId } from "./opener";
 
 /** The screen's test ids. */
 export const KEYMAP_TEST_IDS = {
@@ -78,6 +78,9 @@ export function KeymapScreen({ registry = commandRegistry, onBack = goBack }: Ke
   const commands = useSyncExternalStore(registry.subscribe, registry.list);
   const groups = useMemo(() => groupCommands(commands, ""), [commands]);
   const rows = screens.filter((s) => s.nav !== undefined);
+  // The crumb names where Back goes: the screen the map was opened from (Settings for a deep link onto the map).
+  const opener = screens.find((s) => s.id === openerScreenId());
+  const parent = opener?.nav?.label ?? opener?.title ?? "Settings";
 
   // Opening the map puts focus on Back, as the mockup does; Esc from the palette returns it here.
   const back = useRef<HTMLButtonElement>(null);
@@ -100,13 +103,7 @@ export function KeymapScreen({ registry = commandRegistry, onBack = goBack }: Ke
   return (
     <div ref={top} className="keymap" data-testid={KEYMAP_TEST_IDS.screen}>
       <div className="keymap-pad">
-        <div className="keymap-crumb">
-          <Button ref={back} variant="ghost" size="row" data-testid={KEYMAP_TEST_IDS.back} onClick={onBack}>
-            Back
-          </Button>
-          <span aria-hidden="true">/</span>
-          <span>Keyboard map</span>
-        </div>
+        <Crumb ref={back} className="keymap-crumb" glyphClassName="keymap-glyph" parent={parent} current="Keyboard map" onBack={onBack} testId={KEYMAP_TEST_IDS.back} />
         <p className="keymap-text">
           The shortcuts use <Kbd>⌘</Kbd>. Focus returns to the control that opened a dialog or the palette, or to a stable row if that control is gone.
         </p>

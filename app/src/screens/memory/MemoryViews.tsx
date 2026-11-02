@@ -15,6 +15,7 @@ import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import { DiffView } from "../../components/DiffView/DiffView";
 import { Icon } from "../../components/icons";
+import { Crumb } from "../../shell/Crumb";
 import { KernelBand } from "../../shell/KernelStates";
 import { printable } from "../approvals/printable";
 import { FolderMark } from "./FolderMark";
@@ -403,13 +404,7 @@ export function MemoryEditor({ draft, dataDir, home, version, saving, offline, s
     <div className="memory-edit" data-testid={IDS.editor} data-path={draft.path}>
       <div className="memory-scroll">
         <div className="memory-pad memory-tight">
-          <div className="memory-crumb">
-            <Button variant="ghost" size="row" aria-label={`Back to ${name}`} onClick={onCancel}>
-              {name}
-            </Button>
-            <span aria-hidden="true">/</span>
-            <span>Edit</span>
-          </div>
+          <Crumb className="memory-crumb" glyphClassName="memory-glyph" parent={name} current="Edit" onBack={onCancel} />
           <div className="memory-head">
             <h2 className="memory-h">Edit {printable(draft.path)}</h2>
             <Badge>
@@ -493,13 +488,7 @@ export function ConflictView({ draft, conflict, openedAt, offline, now, onBack, 
       </div>
       <div className="memory-scroll">
         <div className="memory-pad memory-tight">
-          <div className="memory-crumb">
-            <Button variant="ghost" size="row" data-testid={IDS.backToEditing} onClick={onBack}>
-              Back to editing
-            </Button>
-            <span aria-hidden="true">/</span>
-            <span>{path}</span>
-          </div>
+          <Crumb className="memory-crumb" glyphClassName="memory-glyph" parent="Edit" current={path} onBack={onBack} testId={IDS.backToEditing} />
           <div className="memory-head">
             <h2 className="memory-h">Changed since you opened it</h2>
             <Badge tone="attention">not saved</Badge>
