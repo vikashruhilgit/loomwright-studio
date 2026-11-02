@@ -78,9 +78,10 @@ export function KeymapScreen({ registry = commandRegistry, onBack = goBack }: Ke
   const commands = useSyncExternalStore(registry.subscribe, registry.list);
   const groups = useMemo(() => groupCommands(commands, ""), [commands]);
   const rows = screens.filter((s) => s.nav !== undefined);
-  // The crumb names where Back goes: the screen the map was opened from (Settings for a deep link onto the map).
-  const opener = screens.find((s) => s.id === openerScreenId());
-  const parent = opener?.nav?.label ?? opener?.title ?? "Settings";
+  // The crumb names where Back goes: the screen the map was opened from (Settings for a deep link onto the map). A
+  // hash that names no screen shows the default screen, Chat (`screenForHash` in `App.tsx`), so it names Chat too.
+  const opener = screens.find((s) => s.id === openerScreenId()) ?? screens.find((s) => s.id === "chat");
+  const parent = opener?.nav?.label ?? opener?.title ?? "Chat";
 
   // Opening the map puts focus on Back, as the mockup does; Esc from the palette returns it here.
   const back = useRef<HTMLButtonElement>(null);

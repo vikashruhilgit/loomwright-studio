@@ -186,6 +186,15 @@ describe("Back", () => {
     expect(crumb.textContent).toBe("Memory/Keyboard map");
   });
 
+  it("names Chat, the screen the app shows, when it was opened from a hash that names no screen", () => {
+    window.location.hash = "#/no-such-screen";
+    stop = installOpenerTracker();
+    window.location.hash = "#/keymap";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    renderMap();
+    expect(screen.getByRole("button", { name: "Back to Chat" }).parentElement?.textContent).toBe("Chat/Keyboard map");
+  });
+
   it("names Settings, its fallback parent, when the window opened on the map itself", () => {
     window.location.hash = "#/keymap";
     stop = installOpenerTracker();
