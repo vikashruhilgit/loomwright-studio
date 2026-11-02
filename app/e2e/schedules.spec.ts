@@ -847,6 +847,58 @@ test("AC3 (item 25): at the minimum window size a refetch that raises a shown ro
   expect(await boxes(page, IDS.allFire), "no history row already shown moved or resized").toEqual(before);
 });
 
+test("AC3 (item 25): a row's height depends only on its chip label and reason line, never on its count or its time, at 1180x760 and 900x560, in a default and a wide font", async () => {
+  const { page } = await openPopulated();
+  await pageToSkipped(page);
+  const heights = (): Promise<number[]> =>
+    page.evaluate((id) => [...document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`)].map((row) => row.getBoundingClientRect().height), IDS.allFire);
+  /** Put `count` (null: no count span) and `time` on every row's DOM, as a refetch would; the rows are shared with React only for text. */
+  const setText = (count: string | null, time: string): Promise<void> =>
+    page.evaluate(
+      ({ id, count, time }) => {
+        for (const row of document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`)) {
+          const result = row.querySelector<HTMLElement>(".schedules-result");
+          if (result === null) continue;
+          let span = result.querySelector<HTMLElement>(".schedules-count");
+          if (count === null) span?.remove();
+          else {
+            if (span === null) {
+              span = document.createElement("span");
+              span.className = "schedules-count";
+              span.append(document.createElement("span"));
+              result.append(span);
+            }
+            const shown = span.firstElementChild;
+            if (shown !== null) shown.textContent = count;
+          }
+          const stamp = row.querySelector("time");
+          if (stamp !== null) stamp.textContent = time;
+        }
+      },
+      { id: IDS.allFire, count, time },
+    );
+  for (const [width, height] of [[1180, 760], [900, 560]] as const) {
+    await resizeWindow(page, width, height);
+    for (const font of ["", "Verdana, sans-serif"]) {
+      await page.evaluate((family) => (family === "" ? document.documentElement.style.removeProperty("--font-sans") : document.documentElement.style.setProperty("--font-sans", family)), font);
+      await settle(page);
+      const where = `${width}px, font ${font === "" ? "default" : font}`;
+      // The reference is each row with its own count and time as rendered; the variants only change text inside it.
+      const base = await heights();
+      expect(base.length, "the paged history has rows").toBeGreaterThan(15);
+      for (const [count, time] of [[null, "14:20"], ["×2", "14:20"], ["×100", "28 Sep 23:59"], ["×1000", "Wed 23:59"], ["×9999", "28 Sep 23:59"]] as const) {
+        await setText(count, time);
+        await settle(page);
+        const now = await heights();
+        // Rows keep their height whatever their count; compare each row with the same row of the first variant.
+        if (count === null) base.splice(0, base.length, ...now);
+        expect(now, `${where}: count ${String(count)} and time ${time} change no row's height`).toEqual(base);
+      }
+    }
+    await page.evaluate(() => document.documentElement.style.removeProperty("--font-sans"));
+  }
+});
+
 // ---- AC8: names, and tokens only ---------------------------------------------------------------------------------------
 
 test("AC8: every switch, chip, button, badge, list and table has an accessible name", async () => {
