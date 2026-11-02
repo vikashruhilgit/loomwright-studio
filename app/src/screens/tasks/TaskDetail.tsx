@@ -1,5 +1,5 @@
-// The open card (phase 7 item 03), the mockup's `tasks-history` view: a crumb
-// with Back, the title, the card's facts, then its history (the response's
+// The open card (phase 7 item 03), the mockup's `tasks-history` view: the shell's
+// crumb ("‹ Tasks / Task #9", `../../shell/Crumb.tsx`), the title, the card's facts, then its history (the response's
 // events, oldest first) beside its session's log. The log is `StreamingLog`,
 // which carries Stop and Kill; Kill asks first (the screen's Dialog).
 //
@@ -16,6 +16,7 @@ import type { AvatarAgent, AvatarState } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
 import { StreamingLog } from "../../components/StreamingLog/StreamingLog";
+import { Crumb } from "../../shell/Crumb";
 import { printable } from "../approvals/printable";
 import { elapsedText, statusLine, statusView, taskText } from "../sessions/model";
 import { historyLine } from "./history";
@@ -92,17 +93,7 @@ export function TaskDetail({ item, card, now, offline, avatar, avatarState, onBa
       ref={regionRef}
     >
       <div className="tasks-detail-head">
-        <div className="tasks-crumb">
-          <Button variant="ghost" size="row" onClick={onBack} data-testid="task-back">
-            Back
-          </Button>
-          <span aria-hidden="true">/</span>
-          <span>Tasks</span>
-          <span aria-hidden="true">/</span>
-          <span>
-            {KIND_LABEL[item.kind]} #{item.id}
-          </span>
-        </div>
+        <Crumb className="tasks-crumb" glyphClassName="tasks-glyph" parent="Tasks" current={`${KIND_LABEL[item.kind]} #${item.id}`} onBack={onBack} testId="task-back" />
         <div className="tasks-detail-title">
           <Avatar agent={avatar} state={avatarState} size={24} />
           <h2 className="tasks-detail-h">{title}</h2>

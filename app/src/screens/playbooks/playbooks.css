@@ -389,6 +389,22 @@
   gap: var(--space-2);
   color: var(--ink-tertiary);
 }
+.pb-crumb .btn {
+  margin-left: calc(var(--space-2) * -1);
+}
+/* A 14px currentColor icon in a button or the crumb (the shared Icon takes its size from its screen's class). */
+.pb-glyph {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+/* A section's header row: the label, then a control pushed to the right by the spacer (the mockup's .sech). */
+.pb-sech {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height);
+}
 .pb-head {
   display: flex;
   align-items: center;
@@ -471,6 +487,18 @@
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
+}
+/* The detail's Policy table only (the edit view reuses .pb-row): label, value, then who set it at the row's right (the mockup's .pf). */
+.pb-rows-policy .pb-row {
+  grid-template-columns: 150px minmax(0, 1fr) auto;
+  align-items: center;
+}
+.pb-rows-policy .pb-row dt {
+  padding-top: 0;
+}
+.pb-rows-policy .pb-row dd.pb-chipcell {
+  flex-direction: row;
+  justify-content: flex-end;
 }
 .pb-value {
   display: flex;

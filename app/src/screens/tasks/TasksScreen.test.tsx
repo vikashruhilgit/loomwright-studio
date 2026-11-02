@@ -26,9 +26,12 @@ import type {
 import { installKeyboardMap } from "../../commands/keyboard";
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
+import { Icon } from "../../components/icons";
+import type { IconName } from "../../components/icons";
 import { fakeBridge, ok } from "../../store/fake-bridge";
 import type { FakeBridge } from "../../store/fake-bridge";
 import { screen as tasksScreen } from "./index";
+import { resetLastBoards } from "./lastKnown";
 import { EMPTY_TITLE } from "./TasksViews";
 import { TASKS_COMMANDS, TASKS_OWNER, TasksScreen } from "./TasksScreen";
 
@@ -198,6 +201,7 @@ async function openCard(key: string): Promise<void> {
 
 afterEach(() => {
   cleanup();
+  resetLastBoards();
   setApi(undefined);
   window.location.hash = "";
 });
@@ -599,7 +603,7 @@ describe("the open card", () => {
     await mount();
     await openCard("task:9");
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back" }));
+      fireEvent.click(screen.getByRole("button", { name: "Back to Tasks" }));
     });
     expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated");
     expect(document.activeElement).toBe(cardEl("task:9"));
@@ -622,7 +626,7 @@ describe("the open card", () => {
     });
     await waitFor(() => expect(screen.getByTestId("task-gone").textContent).toContain("Task #7 is no longer in the kernel's history"));
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back" }));
+      fireEvent.click(screen.getByRole("button", { name: "Back to Tasks" }));
     });
     expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated");
   });
@@ -759,7 +763,7 @@ describe("the kernel going away", () => {
     expect(screen.getByRole("button", { name: "Kill" }).getAttribute("aria-disabled")).toBe("true");
     expect(screen.getByTestId("tasks-subtitle").textContent).toBe("Task #9 · last known");
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back" }));
+      fireEvent.click(screen.getByRole("button", { name: "Back to Tasks" }));
     });
     expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated");
   });
@@ -844,7 +848,7 @@ describe("the ⌘K commands", () => {
     await openCard("task:12");
     expect(registry.list().filter((c) => c.owner === TASKS_OWNER)).toEqual([]);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back" }));
+      fireEvent.click(screen.getByRole("button", { name: "Back to Tasks" }));
     });
 
     await openCard("task:9");
@@ -858,7 +862,7 @@ describe("the ⌘K commands", () => {
     expect(registry.list().filter((c) => c.owner === TASKS_OWNER).map((c) => c.id)).toEqual(["tasks.stop", "tasks.kill"]);
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back" }));
+      fireEvent.click(screen.getByRole("button", { name: "Back to Tasks" }));
     });
     expect(registry.list().filter((c) => c.owner === TASKS_OWNER)).toEqual([]);
 
@@ -1003,5 +1007,180 @@ describe("the stylesheet", () => {
     expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(css).not.toMatch(/\brgba?\(/i);
     expect(css).not.toMatch(/\bhsla?\(/i);
+  });
+});
+
+// ---- the last board across a remount, the kind icons and the crumb (phase 7 item 23) -----------------------
+
+const NO_ANSWER: ApiResult<unknown> = { ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } };
+
+/** One scriptable bridge that outlives a mount: the screen is rendered on it, unmounted, and rendered again. */
+function boardBridge(): FakeBridge {
+  const kernel: Kernel = { items: board(), next_before: null, agents: [roster("mason"), roster("ada"), roster("wright")], sessions: [summary(41), summary(42), summary(44, { agent: "wright" })], output: new Map(), events: new Map() };
+  const fake = fakeBridge();
+  fake.route(TASKS, () => ok({ groups: groupsOf(kernel.items), next_before: null }));
+  fake.route(HISTORY, (req) => history(kernel, req));
+  fake.route("GET /agents", () => ok({ agents: kernel.agents }));
+  fake.route("GET /status", () => ok({}));
+  fake.route(OUTPUT, () => ok({ rows: [] }));
+  return fake;
+}
+
+function renderOn(fake: FakeBridge): () => void {
+  setApi(fake.bridge);
+  const Subtitle = tasksScreen.Subtitle as ComponentType;
+  const view = render(
+    <>
+      <Subtitle />
+      <TasksScreen api={fake.bridge} registry={createCommandRegistry()} />
+    </>,
+  );
+  return view.unmount;
+}
+
+describe("a remount keeps the last board", () => {
+  it("shows the board it read before, marked last known with every card disabled, when the first read of the new mount gets no answer", async () => {
+    const fake = boardBridge();
+    const unmount = renderOn(fake);
+    await waitFor(() => expect(screen.getByTestId("tasks-subtitle").textContent).toBe("10 cards · 3 working"));
+    unmount();
+    expect(screen.queryByTestId("screen-tasks")).toBeNull();
+
+    fake.route(TASKS, () => NO_ANSWER);
+    renderOn(fake);
+    await waitFor(() => expect(screen.getByTestId("tasks-subtitle").textContent).toBe("10 cards · 3 working · last known"));
+    expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated");
+    expect(screen.queryByTestId("tasks-error")).toBeNull();
+    expect(screen.queryByTestId("tasks-empty")).toBeNull();
+    expect(keysIn("work")).toContain("task:9");
+    for (const el of document.querySelectorAll<HTMLElement>("[data-card-key]")) expect(el.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => {
+      fireEvent.click(cardEl("task:9"));
+    });
+    expect(screen.queryByTestId("task-detail")).toBeNull();
+  });
+
+  it("replaces the remembered board with the next answered read, and drops the mark", async () => {
+    const fake = boardBridge();
+    const unmount = renderOn(fake);
+    await waitFor(() => expect(screen.getByTestId("tasks-subtitle").textContent).toBe("10 cards · 3 working"));
+    unmount();
+
+    const fewer = [card("task", 9, "working", { title: "Review PR #3", session: 41 })];
+    fake.route(TASKS, () => ok({ groups: groupsOf(fewer), next_before: null }));
+    renderOn(fake);
+    await waitFor(() => expect(screen.getByTestId("tasks-subtitle").textContent).toBe("1 card · 1 working"));
+    expect(document.querySelectorAll("[data-card-key]")).toHaveLength(1);
+    expect(cardEl("task:9").getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("keeps the remembered board, with the stale note and no error card, when the kernel refuses the first read of the new mount", async () => {
+    const fake = boardBridge();
+    const unmount = renderOn(fake);
+    await waitFor(() => expect(screen.getByTestId("tasks-subtitle").textContent).toBe("10 cards · 3 working"));
+    unmount();
+
+    fake.route(TASKS, () => ({ ok: false, status: 500, body: { error: "store_unreadable" } }));
+    renderOn(fake);
+    await waitFor(() => expect(screen.getByTestId("tasks-stale").textContent).toContain("GET /tasks · 500 · store_unreadable"));
+    expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated");
+    expect(screen.queryByTestId("tasks-error")).toBeNull();
+    expect(keysIn("work")).toContain("task:9");
+  });
+
+  it("shows the error card on a different bridge that never answered, never another bridge's board", async () => {
+    const first = boardBridge();
+    const unmount = renderOn(first);
+    await waitFor(() => expect(screen.getByTestId("tasks-subtitle").textContent).toBe("10 cards · 3 working"));
+    unmount();
+
+    const other = boardBridge();
+    other.route(TASKS, () => NO_ANSWER);
+    renderOn(other);
+    await waitFor(() => expect(screen.getByTestId("screen-tasks").dataset.state).toBe("error"));
+    expect(screen.getByTestId("tasks-error")).toBeTruthy();
+    expect(document.querySelectorAll("[data-card-key]")).toHaveLength(0);
+    expect(screen.getByTestId("tasks-subtitle").textContent).toBe("tasks");
+  });
+
+  it("shows the error card on the same bridge when no read ever answered", async () => {
+    const fake = boardBridge();
+    fake.route(TASKS, () => NO_ANSWER);
+    const unmount = renderOn(fake);
+    await waitFor(() => expect(screen.getByTestId("screen-tasks").dataset.state).toBe("error"));
+    unmount();
+    renderOn(fake);
+    await waitFor(() => expect(screen.getByTestId("screen-tasks").dataset.state).toBe("error"));
+    expect(screen.getByTestId("tasks-error")).toBeTruthy();
+  });
+});
+
+describe("the kind icons on a card", () => {
+  const KINDS: readonly (readonly [TaskBoardItem["kind"], string, IconName])[] = [
+    ["task", "task:9", "task"],
+    ["playbook_run", "playbook_run:18", "run"],
+    ["session", "session:44", "session"],
+  ];
+
+  it.each(KINDS)("starts a %s card's kind line with the %s set's icon, before the label", async (_kind, key, name) => {
+    await mount();
+    const host = document.createElement("div");
+    render(<Icon name={name} className="tasks-glyph" />, { container: host });
+    const expected = host.innerHTML;
+    expect(expected).toContain("<svg");
+
+    const kindLine = cardEl(key).querySelector(".tasks-card-kind") as HTMLElement;
+    const icons = kindLine.querySelectorAll('svg[aria-hidden="true"]');
+    expect(icons).toHaveLength(1);
+    expect((icons[0] as SVGElement).outerHTML).toBe(expected);
+    // The icon comes first in the line, ahead of the "Task #9" text.
+    expect(kindLine.querySelector(".tasks-card-label")?.firstElementChild).toBe(icons[0]);
+  });
+
+  it("draws one icon per card on the whole board, and leaves each card's accessible name as it was", async () => {
+    await mount();
+    const cards = [...document.querySelectorAll<HTMLElement>("[data-card-key]")];
+    expect(cards).toHaveLength(10);
+    for (const el of cards) {
+      expect(el.querySelectorAll('.tasks-card-kind svg[aria-hidden="true"]')).toHaveLength(1);
+      expect(el.getAttribute("aria-label")).toMatch(/^(Task|Playbook run|Session) \d+: .+, .+$/);
+    }
+    expect(cardEl("task:9").getAttribute("aria-label")).toBe("Task 9: Review PR #3, working");
+  });
+});
+
+describe("the crumb", () => {
+  /** The crumb row's text with its whitespace taken out: "Tasks/Task #9" for "‹ Tasks / Task #9". */
+  const crumbText = (back: HTMLElement): string => (back.parentElement?.textContent ?? "").replace(/\s+/g, " ").replace(/ ?\/ ?/, "/").trim();
+
+  it("reads 'Tasks / Task #9' in a card's detail, with the one Back button named for where it goes", async () => {
+    await mount();
+    await openCard("task:9");
+    const back = screen.getByRole("button", { name: "Back to Tasks" });
+    expect(back).toBe(screen.getByTestId("task-back"));
+    expect(back.textContent).toBe("Tasks");
+    expect(crumbText(back)).toBe("Tasks/Task #9");
+    expect(within(screen.getByTestId("task-detail")).queryByRole("button", { name: /^Back$/ })).toBeNull();
+    expect(back.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+  });
+
+  it("is the way back from the 'no longer on the board' view too", async () => {
+    const { fake, kernel } = await mount();
+    // The history never answers, so the card is known only from the board.
+    fake.route(HISTORY, () => new Promise(() => undefined));
+    await openCard("task:7");
+    kernel.items = kernel.items.filter((i) => !(i.kind === "task" && i.id === 7));
+    await act(async () => {
+      fake.emit(event("task_updated", null, 7));
+    });
+    await waitFor(() => expect(screen.getByTestId("task-gone").textContent).toContain("Task #7 is no longer on the board"));
+    const back = screen.getByRole("button", { name: "Back to Tasks" });
+    expect(back).toBe(screen.getByTestId("task-back"));
+    expect(crumbText(back)).toBe("Tasks/Task #7");
+    await act(async () => {
+      fireEvent.click(back);
+    });
+    expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated");
+    expect(screen.queryByTestId("task-detail")).toBeNull();
   });
 });

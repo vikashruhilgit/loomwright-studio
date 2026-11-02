@@ -11,6 +11,8 @@ import { Avatar } from "../../components/Avatar/Avatar";
 import type { AvatarAgent, AvatarState } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
+import { Icon } from "../../components/icons";
+import type { IconName } from "../../components/icons";
 import { printable } from "../approvals/printable";
 import { KIND_LABEL, NO_AGENT, cardAgent, cardLabel, cardOrder, cardTitle, metaText, reasonText, stateText, toneOf } from "./model";
 import type { Board, BoardCard, ColumnId } from "./model";
@@ -32,6 +34,9 @@ export function avatarAgent(agent: string | null, roster: readonly RosterEntry[]
   const name = entry === undefined ? printable(agent) : printable(entry.display_name);
   return entry === undefined ? { id: agent, name } : { id: agent, name, shape: entry.avatar.shape, hue: entry.avatar.hue };
 }
+
+/** The icon each kind's card starts with (the mockup's `KIND_ICON2`: list, book, terminal). */
+const KIND_ICON: Readonly<Record<TaskBoardItem["kind"], IconName>> = { task: "task", playbook_run: "run", session: "session" };
 
 const COLUMN_AVATAR: Readonly<Record<ColumnId, AvatarState>> = { wait: "waiting", work: "working", park: "parked", done: "idle", other: "idle" };
 
@@ -189,8 +194,9 @@ function CardView({ card, agent, offline, tabbable, onOpen, onFocused, onFocusLo
         }}
       >
         <span className="tasks-card-kind">
-          <span>
-            {KIND_LABEL[item.kind]} #{item.id}
+          <span className="tasks-card-label">
+            <Icon name={KIND_ICON[item.kind]} className="tasks-glyph" />
+            {`${KIND_LABEL[item.kind]} #${item.id}`}
           </span>
           <span className="tasks-card-state" data-testid="task-card-state">
             <Badge tone={toneOf(item.kind, item.state)}>{stateText(item)}</Badge>

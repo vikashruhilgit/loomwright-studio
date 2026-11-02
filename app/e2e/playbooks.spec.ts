@@ -573,7 +573,6 @@ test("AC5: at the window's minimum width the Model shows the short name on one l
   const model = review.locator("td").nth(4).locator(".pb-cell > span").first();
   await expect(model).toHaveText("sonnet");
   await expect(model).toHaveAttribute("title", REVIEW_MODEL);
-  // The detail shows the id in full.
   const lines = await valueLines(page);
   expect(lines.model).toEqual([1, 1, 1]);
   expect(lines.tokens).toEqual([1, 1, 1]);
@@ -586,7 +585,86 @@ test("AC5: at the window's minimum width the Model shows the short name on one l
   );
   expect(clipped).toEqual([]);
   await openDetail(page, REVIEW.name);
-  await expect(page.getByTestId("playbook-field").and(page.locator('[data-field="Model"]'))).toContainText(REVIEW_MODEL);
+  // The detail's Model row shows the short name too, with the full id in its title (item 24).
+  const detailModel = page.getByTestId("playbook-field").and(page.locator('[data-field="Model"]'));
+  await expect(detailModel).toContainText("sonnet");
+  await expect(detailModel).not.toContainText(REVIEW_MODEL);
+  await expect(detailModel.locator(`[title="${REVIEW_MODEL}"]`)).toHaveText("sonnet");
+});
+
+// ---- the detail's polish (item 24): link, chips, icons, crumb -------------------------------------------------------------
+
+test("item 24: the Trigger section's Schedules & triggers button (clock icon) opens the Schedules & triggers screen", async () => {
+  const { page } = await openLoaded();
+  await openDetail(page, REVIEW.name);
+  const link = page.getByTestId("playbook-schedules-link");
+  await expect(link).toHaveText("Schedules & triggers");
+  await expect(link.locator(".btn-icon svg")).toHaveCount(1);
+  // Same row as the Trigger heading, at the section's right.
+  const heading = await page.locator("#pb-h-trigger").boundingBox();
+  const button = await link.boundingBox();
+  const section = await page.locator('section[aria-labelledby="pb-h-trigger"]').boundingBox();
+  if (heading === null || button === null || section === null) throw new Error("no boxes");
+  expect(Math.abs(button.y + button.height / 2 - (heading.y + heading.height / 2))).toBeLessThan(8);
+  expect(button.x).toBeGreaterThan(heading.x + heading.width);
+  expect(Math.abs(button.x + button.width - (section.x + section.width))).toBeLessThanOrEqual(1);
+  await link.click();
+  await expect(page.getByTestId("screen-schedules")).toBeVisible();
+  expect(await page.evaluate(() => window.location.hash)).toBe("#/schedules");
+});
+
+test("item 24: every provenance chip sits at its Policy row's right edge, in light and dark; captions stay beside the value", async () => {
+  const { page } = await openLoaded();
+  await openDetail(page, REVIEW.name);
+  for (const theme of THEMES) {
+    await setTheme(page, theme);
+    const rows = await page.getByTestId("playbook-field").evaluateAll((els) =>
+      els.map((row) => {
+        const chip = row.querySelector(".pb-setby");
+        if (chip === null) return { field: (row as HTMLElement).dataset.field ?? "", chipRight: null, contentRight: 0, captionInChip: false };
+        const box = row.getBoundingClientRect();
+        return {
+          field: (row as HTMLElement).dataset.field ?? "",
+          chipRight: chip.getBoundingClientRect().right,
+          contentRight: box.right - parseFloat(getComputedStyle(row).paddingRight),
+          captionInChip: chip.closest(".pb-chipcell")?.querySelector(".pb-cap") !== null,
+        };
+      }),
+    );
+    const withChip = rows.filter((r) => r.chipRight !== null);
+    expect(withChip.length, `${theme}: rows with a chip`).toBeGreaterThan(0);
+    for (const row of withChip) {
+      expect(Math.abs((row.chipRight ?? 0) - row.contentRight), `${theme}: ${row.field}`).toBeLessThanOrEqual(1);
+      expect(row.captionInChip, `${theme}: ${row.field} caption`).toBe(false);
+    }
+  }
+  // Captions stay beside the value.
+  await expect(fieldOf(page, "Effort").locator(".pb-value")).toContainText("recorded only");
+  await expect(fieldOf(page, "Mode").locator(".pb-value")).toContainText("outward calls are recorded, never sent");
+});
+
+test("item 24: the toolbar and detail buttons carry their icons", async () => {
+  const { page } = await openLoaded();
+  await expect(page.getByTestId("playbooks-ask-wright").locator(".btn-icon svg")).toHaveCount(1);
+  await openDetail(page, REVIEW.name);
+  for (const id of ["playbook-edit-english", "playbook-edit-fields", "playbook-history"]) await expect(page.getByTestId(id).locator(".btn-icon svg")).toHaveCount(1);
+});
+
+test("item 24: the detail's crumb is the shared '‹ Playbooks / <name>'; opening focuses Back and Back returns focus to that playbook's row", async () => {
+  const { page } = await openLoaded();
+  await openDetail(page, WEEKLY.name);
+  const crumb = page.getByTestId("playbook-detail").locator(".pb-crumb");
+  await expect(crumb).toHaveText(`Playbooks/${WEEKLY.name}`);
+  await expect(crumb.getByRole("button")).toHaveCount(1);
+  await expect(crumb.getByRole("button", { name: "Back to Playbooks" })).toBeFocused();
+  await expect(crumb.locator("button svg")).toHaveCount(1);
+  await backButton(page).click();
+  await expect(rowOf(page, WEEKLY.name).getByTestId("playbook-open")).toBeFocused();
+  // The edit view reads "‹ Playbook / <name>" and Back returns to the detail's Edit fields.
+  await openEdit(page, REVIEW.name);
+  await expect(page.getByTestId("playbook-edit").locator(".pb-crumb")).toHaveText(`Playbook/${REVIEW.name}`);
+  await backButton(page).click();
+  await expect(page.getByTestId("playbook-edit-fields")).toBeFocused();
 });
 
 // ---- the keyboard and the live feed ---------------------------------------------------------------------------------

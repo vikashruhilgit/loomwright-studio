@@ -9,12 +9,14 @@ import type { AvatarState } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
 import type { BadgeTone } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
-import { when } from "../chat/model";
+import { Icon } from "../../components/icons";
+import { navigate, when } from "../chat/model";
 import {
   NOT_COUNTED,
   NOT_SET,
   NO_RUNS,
   PLAYBOOKS_TEST_IDS as IDS,
+  SCHEDULES_HASH,
   dedupeText,
   isOn,
   limitText,
@@ -23,6 +25,7 @@ import {
   runTokensText,
   safe,
   safeBlock,
+  shortModel,
   stateOf,
   tokenFigure,
   tokensOfRuns,
@@ -31,7 +34,7 @@ import {
   valueOrNotSet,
 } from "./model";
 import type { Read } from "./useHistory";
-import { type Notice, type PlaybookActions, PlaybookSwitch, RunStatus, SetBy, Skeleton, TurnOnNote } from "./parts";
+import { type Notice, type PlaybookActions, PlaybookCrumb, PlaybookSwitch, RunStatus, SetBy, Skeleton, TurnOnNote } from "./parts";
 
 const STATE_TONE: Readonly<Record<string, BadgeTone>> = { on: "ok", draft: "attention", off: "neutral" };
 
@@ -58,30 +61,24 @@ export interface PlaybookDetailProps {
   readonly onHistory: () => void;
 }
 
-/** The "Playbooks / name" line with its back button. */
-export function Crumb({ label, name, onBack }: { readonly label: string; readonly name: string; readonly onBack: () => void }) {
-  return (
-    <div className="pb-crumb">
-      <Button variant="ghost" size="standalone" data-pb-back="" onClick={onBack}>
-        {label}
-      </Button>
-      <span aria-hidden="true">/</span>
-      <span>{name}</span>
-    </div>
-  );
-}
-
-function PolicyRow({ label, value, setBy, mono = false, note }: { readonly label: string; readonly value: string; readonly setBy: string | null; readonly mono?: boolean; readonly note?: string }) {
+/**
+ * One policy row, drawn as the mockup's `.pf`: label, value (with its caption beside it), then who set it
+ * in the row's right column. `title` carries the full stored value when the shown text is shortened.
+ */
+function PolicyRow({ label, value, setBy, mono = false, note, title }: { readonly label: string; readonly value: string; readonly setBy: string | null; readonly mono?: boolean; readonly note?: string; readonly title?: string }) {
+  const chip = <SetBy setBy={value === NOT_SET ? null : setBy} />;
   return (
     <div className="pb-row" data-testid={IDS.field} data-field={label}>
       <dt>{label}</dt>
       <dd>
         <span className="pb-value">
-          <span className={mono ? "pb-mono" : undefined}>{value}</span>
-          <SetBy setBy={value === NOT_SET ? null : setBy} />
+          <span className={mono ? "pb-mono" : undefined} title={title}>
+            {value}
+          </span>
           {note === undefined ? null : <span className="pb-cap">{note}</span>}
         </span>
       </dd>
+      <dd className="pb-chipcell">{chip}</dd>
     </div>
   );
 }
@@ -156,7 +153,7 @@ export function PlaybookDetail({ playbook, trigger, owner, approval, runs, actio
   return (
     <div className="pb-split" data-testid={IDS.detail} data-playbook={playbook.id}>
       <div className="pb-main">
-        <Crumb label="Playbooks" name={safe(playbook.name)} onBack={onBack} />
+        <PlaybookCrumb parent="Playbooks" current={safe(playbook.name)} onBack={onBack} />
         <div className="pb-head">
           <h2>{safe(playbook.name)}</h2>
           <Badge tone={STATE_TONE[state] ?? "neutral"}>{state === "on" ? "on" : state === "draft" ? "draft" : "off"}</Badge>
@@ -164,13 +161,13 @@ export function PlaybookDetail({ playbook, trigger, owner, approval, runs, actio
           {playbook.mode_set_by === null ? null : <Badge>{safe(playbook.mode)}</Badge>}
         </div>
         <div className="pb-actions">
-          <Button variant="primary" size="standalone" data-testid={IDS.editEnglish} disabled={actions.offline} onClick={() => actions.editInEnglish(playbook)}>
+          <Button variant="primary" size="standalone" data-testid={IDS.editEnglish} icon={<Icon name="chat" className="pb-glyph" />} disabled={actions.offline} onClick={() => actions.editInEnglish(playbook)}>
             Edit in English
           </Button>
-          <Button variant="secondary" size="standalone" data-testid={IDS.editFields} onClick={onEdit}>
+          <Button variant="secondary" size="standalone" data-testid={IDS.editFields} icon={<Icon name="pencil" className="pb-glyph" />} onClick={onEdit}>
             Edit fields
           </Button>
-          <Button variant="ghost" size="standalone" data-testid={IDS.history} onClick={onHistory}>
+          <Button variant="ghost" size="standalone" data-testid={IDS.history} icon={<Icon name="history" className="pb-glyph" />} onClick={onHistory}>
             Version history
           </Button>
           <Button
@@ -194,10 +191,10 @@ export function PlaybookDetail({ playbook, trigger, owner, approval, runs, actio
         <section className="pb-block" aria-labelledby="pb-h-policy">
           <h3 id="pb-h-policy">Policy</h3>
           <span className="pb-cap">Every value shows who set it. A value nobody set reads "not set".</span>
-          <dl className="pb-rows">
+          <dl className="pb-rows pb-rows-policy">
             <PolicyRow label="Dedupe key" value={dedupeText(playbook.dedupe_key_spec)} setBy={playbook.dedupe_key_set_by} mono />
             <PolicyRow label="Priority" value={setValueOrNotSet(playbook.priority, playbook.priority_set_by)} setBy={playbook.priority_set_by} />
-            <PolicyRow label="Model" value={valueOrNotSet(playbook.model)} setBy={playbook.model_set_by} />
+            <PolicyRow label="Model" value={shortModel(playbook.model)} setBy={playbook.model_set_by} title={playbook.model === null ? undefined : safe(playbook.model)} />
             <PolicyRow label="Effort" value={valueOrNotSet(playbook.effort)} setBy={playbook.effort_set_by} note="recorded only" />
             <PolicyRow
               label="Token limit per day"
@@ -209,7 +206,13 @@ export function PlaybookDetail({ playbook, trigger, owner, approval, runs, actio
           </dl>
         </section>
         <section className="pb-block" aria-labelledby="pb-h-trigger">
-          <h3 id="pb-h-trigger">Trigger</h3>
+          <div className="pb-sech">
+            <h3 id="pb-h-trigger">Trigger</h3>
+            <span className="pb-spacer" />
+            <Button variant="ghost" size="row" data-testid={IDS.schedulesLink} icon={<Icon name="clock" className="pb-glyph" />} onClick={() => navigate(SCHEDULES_HASH)}>
+              Schedules &amp; triggers
+            </Button>
+          </div>
           <dl className="pb-kv">
             <dt>Fires on</dt>
             <dd>{triggerText(trigger, playbook)}</dd>

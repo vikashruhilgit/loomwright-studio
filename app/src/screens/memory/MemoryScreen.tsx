@@ -6,6 +6,8 @@
 //   hash) and `GET /settings` (only its `data_dir`, for the root shown above the tree). All
 //   three are screen-local reads; no resource is added to the live store. The tree is keyed by
 //   path and every read keeps the last answer until a newer one lands, so rows keep their place.
+//   The screen also reads the live store's existing `agents` resource, for the avatars on the folders
+//   only: a roster that has not answered or failed changes nothing else (the avatars fall back).
 // - Writes: Save is one `PUT /memory/file` with the hash the file was opened at as `base_hash`.
 //   The kernel checks it against the file on disk. A `409` is a conflict (both versions are
 //   shown, nothing was written); any other refusal, and a save nobody answered, keep the draft
@@ -34,7 +36,7 @@ import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { ToastStack } from "../../components/Toast/Toast";
 import type { ToastItem } from "../../components/Toast/Toast";
-import { useLiveStore } from "../../store/react";
+import { useLiveStore, useResource } from "../../store/react";
 import { useKernelReach, withLastKnown } from "../../shell/last-known";
 import { useHomeDir } from "../../shell/useHomeDir";
 import { useMemoryCommands } from "./commands";
@@ -96,6 +98,8 @@ export function MemoryScreen({ api, registry = commandRegistry }: MemoryScreenPr
   const { connection, eventLog } = useLiveStore(api);
   const reach = useKernelReach(api);
   const home = useHomeDir(api);
+  // The roster is read for the avatars on the folders only; until it answers (or if it fails) they fall back.
+  const roster = useResource("agents", api)?.data?.agents;
   // Seeded from what answered earlier in this session (`held.ts`), so a screen mounted while the kernel does not
   // answer draws the last-known tree, not the skeleton or an error card.
   const [tree, setTree] = useState<MemoryTreeResponse | undefined>(heldTree);
@@ -457,10 +461,10 @@ export function MemoryScreen({ api, registry = commandRegistry }: MemoryScreenPr
     <MemoryFrame state={state} announcement={announcement} offline={offline} band={ownBand} rootRef={rootRef}>
       {stale}
       <div className="memory-split">
-        <MemoryTree tree={tree} dataDir={dataDir} home={home} openPath={openPath ?? undefined} tabPath={tabPath} offline={offline} now={now} onOpen={open} onFocused={setActivePath} />
+        <MemoryTree tree={tree} dataDir={dataDir} home={home} openPath={openPath ?? undefined} tabPath={tabPath} offline={offline} now={now} roster={roster} onOpen={open} onFocused={setActivePath} />
         <div className="memory-pane">
           {openPath === null ? (
-            <MemoryOverview tree={tree} dataDir={dataDir} home={home} />
+            <MemoryOverview tree={tree} dataDir={dataDir} home={home} roster={roster} />
           ) : (
             <FileView
               key={openPath}

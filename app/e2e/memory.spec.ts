@@ -4,7 +4,9 @@
 // agent's write causes and the ways out of it, with the draft kept (AC8), the kernel going away
 // while the screen holds data or a draft (AC9), the keyboard (AC10), a live update that moves
 // nothing already shown and never touches a draft (AC11), the accessible names and the tokens
-// (AC12), and a light and a dark screenshot of each state the mockup shows (AC13). The count line is
+// (AC12), and a light and a dark screenshot of each state the mockup shows (AC13). The folders wear
+// their agent's avatar (the shared one the shared icon) and each file row the file icon, and a long folder
+// name clips to one line without making its header taller (phase 7 item 26). The count line is
 // the title bar's (`titlebar-subtitle`), the kernel stopping and coming back is the fixture's
 // `stop()` / `restart()`, a screen opened again while the kernel is away keeps its last-known tree,
 // and a data folder under the owner's home reads `~/…`. Run `npm run build` first.
@@ -31,7 +33,7 @@ import type { FixtureKernel, FixtureRoute } from "./fixture-kernel";
 import { LESSONS_AGENT, LESSONS_AGENT_LINE, LESSONS_BASE, LESSONS_MINE, LESSONS_MINE_LINE, LESSONS_PATH, hashOf, memoryFixture } from "./fixtures/memory";
 import type { MemoryFixture, MemoryFixtureOptions } from "./fixtures/memory";
 import { MEMORY_TEST_IDS as IDS } from "../src/screens/memory/model";
-import type { SettingsResponse } from "../src/api/contract";
+import type { RosterEntry, SettingsResponse } from "../src/api/contract";
 
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-7-polish/memory/", import.meta.url));
 const README = join(EVIDENCE_DIR, "README.md");
@@ -64,6 +66,31 @@ test.afterEach(async () => {
 const byId = (page: Page, id: string): Locator => page.getByTestId(id);
 const fileButton = (page: Page, path: string): Locator => page.locator(`[data-testid="${IDS.fileButton}"][data-path="${path}"]`);
 
+/** One `GET /agents` row; only the identity matters to Memory (the avatars). */
+const rosterEntry = (id: string, name: string, shape: string, hue: string): RosterEntry => ({
+  id,
+  display_name: name,
+  avatar: { shape, hue },
+  status: "active",
+  created_by: null,
+  approval_id: null,
+  model: null,
+  settings_error: null,
+  tokens_today: 0,
+  tokens_per_day: null,
+  sessions_running: 0,
+  sessions_at_once: null,
+});
+/** The roster the fixture answers (the fixture file `fixtures/memory.ts` is outside this item's lanes, so it is a `routes` override here). */
+const ROSTER: readonly RosterEntry[] = [rosterEntry("wright", "Wright", "whale", "accent"), rosterEntry("mason", "Mason", "octopus", "crew-berry"), rosterEntry("ada", "Ada", "turtle", "crew-olive")];
+/**
+ * An agent folder whose name does not fit the tree's width on any machine. The item's real folder
+ * (`phase4-exit-mvg8wle4cf8f26`) overflows only with macOS's SF Pro; with the Linux CI fallback font it fits
+ * once the caption gives way, so the name is extended until it overflows the 360px pane whatever the font.
+ */
+const LONG_FOLDER = "phase4-exit-mvg8wle4cf8f26-comment-only-reviewer-with-a-folder-name-far-wider-than-the-tree";
+const LONG_LABEL = "Phase4-exit-mvg8wle4cf8f26-comment-only-reviewer-with-a-folder-name-far-wider-than-the-tree";
+
 /** `GET /settings` as the fixture serves it, with `data_dir` set (the fixture merges `routes` over its defaults). */
 const settingsAt = (dataDir: string): FixtureRoute => () => ({
   status: 200,
@@ -77,7 +104,8 @@ const settingsAt = (dataDir: string): FixtureRoute => () => ({
 
 /** Launch the built app on a fixture kernel serving `fx`, and open Memory by its hash. `home`: its `data_dir` is under the owner's home. */
 async function open(fx: MemoryFixture, home = false): Promise<Page> {
-  fixture = await startFixtureKernel(home ? { ...fx.options, routes: { ...fx.options.routes, "GET /settings": settingsAt(HOME_DATA_DIR) } } : fx.options);
+  const routes = { ...fx.options.routes, "GET /agents": () => ({ status: 200, body: { agents: ROSTER } }) };
+  fixture = await startFixtureKernel({ ...fx.options, routes: home ? { ...routes, "GET /settings": settingsAt(HOME_DATA_DIR) } : routes });
   fx.attach(fixture);
   app = await launchApp(fixture.env);
   const page = await app.firstWindow();
@@ -619,6 +647,90 @@ test("AC11: a file view that is not being edited reads its file again; an editor
   // The save is still checked against the version the owner opened.
   await byId(page, IDS.save).click();
   await expect(byId(page, IDS.conflict)).toBeVisible();
+});
+
+// ---- phase 7 item 26: avatars, file icons and long folder names ---------------------------------------------------------------
+
+test("AC1: every agent folder wears that agent's avatar and Shared the shared icon, in the tree and in 'Pick a file'; every file row starts with the file icon; names are unchanged", async () => {
+  const { page } = await openPopulated();
+  const folders = byId(page, IDS.folder);
+  await expect(folders).toHaveCount(4);
+  // wright, ada, mason: an avatar in a decorative slot, shaped and hued by the roster entry with the folder's id.
+  const hues: Record<string, string> = { wright: "--accent", ada: "--crew-olive", mason: "--crew-berry" };
+  for (const [index, id] of ["wright", "ada", "mason"].entries()) {
+    const folder = folders.nth(index);
+    await expect(folder.locator(".memory-mark")).toHaveAttribute("aria-hidden", "true");
+    const bot = folder.locator(".memory-mark .bot");
+    await expect(bot, `${id}'s avatar`).toHaveCount(1);
+    await expect(bot).toHaveAttribute("style", new RegExp(`--bot: var\\(${hues[id]}\\)`));
+    await expect(folder.locator("svg.memory-mark-icon")).toHaveCount(0);
+  }
+  await expect(folders.nth(0).locator(".bot")).toHaveClass(/\blead\b/);
+  // Shared: the shared icon (two circles and a path), no avatar.
+  await expect(folders.nth(3).locator(".bot")).toHaveCount(0);
+  await expect(folders.nth(3).locator("svg.memory-mark-icon circle")).toHaveCount(2);
+  // The overview's rows wear the same marks.
+  const rows = byId(page, IDS.overview).locator("li");
+  await expect(rows).toHaveCount(4);
+  for (const index of [0, 1, 2]) await expect(rows.nth(index).locator(".memory-mark .bot")).toHaveCount(1);
+  await expect(rows.nth(3).locator("svg.memory-mark-icon")).toHaveCount(1);
+  await expect(rows.nth(3).locator(".bot")).toHaveCount(0);
+  // Every file row starts with the file icon (two paths, no circle), and its accessible name is still the file's.
+  const buttons = await byId(page, IDS.fileButton).all();
+  expect(buttons).toHaveLength(14);
+  for (const button of buttons) {
+    const icon = button.locator("svg.memory-file-icon");
+    await expect(icon).toHaveCount(1);
+    await expect(icon).toHaveAttribute("aria-hidden", "true");
+    await expect(icon.locator("circle")).toHaveCount(0);
+    expect(await button.evaluate((el) => el.firstElementChild?.classList.contains("memory-file-icon")), "the icon comes first in the row").toBe(true);
+    await expect(button).toHaveAccessibleName(/^[\w-]+\/[\w.-]+\.md, \d/);
+  }
+  // The group names the folder; the avatar's own "<Name> · idle" is not what names it.
+  await expect(page.getByRole("group", { name: "Mason files" })).toBeVisible();
+});
+
+test("AC2: a long agent folder name keeps its header on one line, the same height and the same gap to its first file row as a short header, with the full name on hover and to assistive tech", async () => {
+  const { fx, page } = await openPopulated();
+  fx.addFile(`${LONG_FOLDER}/role.md`, "# Phase 4 exit\n");
+  const group = page.getByRole("group", { name: `${LONG_LABEL} files` });
+  await expect(group).toBeVisible();
+  const longHeader = group.getByTestId(IDS.folder);
+  const shortHeader = page.getByRole("group", { name: "Ada files" }).getByTestId(IDS.folder);
+  await settle(page);
+
+  // The full name: on hover (title), to assistive tech (the group's label) and in the DOM (clipped, not cut).
+  await expect(longHeader).toHaveAttribute("title", LONG_LABEL);
+  await expect(longHeader.locator(".memory-folder-name")).toHaveText(LONG_LABEL);
+  await expect(longHeader.locator(".memory-cap")).toHaveText(`${LONG_FOLDER}/`);
+  // It really overflows here (else the checks below prove nothing) and clips with an ellipsis.
+  const clipped = await longHeader.locator(".memory-folder-name").evaluate((el) => ({ over: el.scrollWidth > el.clientWidth, overflow: getComputedStyle(el).textOverflow, wrap: getComputedStyle(el).whiteSpace }));
+  expect(clipped, "the long name does not fit its header").toEqual({ over: true, overflow: "ellipsis", wrap: "nowrap" });
+  // Nothing in the header leaves it sideways: the caption gives way first.
+  const inside = await longHeader.evaluate((el) => {
+    const bounds = el.getBoundingClientRect();
+    return [...el.children].every((child) => child.getBoundingClientRect().right <= bounds.right + 0.5);
+  });
+  expect(inside, "the name and caption stay inside the header").toBe(true);
+
+  // Height, and the gap to the first file row, equal a short header's.
+  const gap = async (header: Locator, path: string): Promise<{ height: number; gap: number }> => {
+    const h = await header.boundingBox();
+    const f = await fileButton(page, path).boundingBox();
+    expect(h, "header has a box").not.toBeNull();
+    expect(f, "file row has a box").not.toBeNull();
+    return { height: (h as NonNullable<Box>).height, gap: (f as NonNullable<Box>).y - ((h as NonNullable<Box>).y + (h as NonNullable<Box>).height) };
+  };
+  const short = await gap(shortHeader, "ada/role.md");
+  const long = await gap(longHeader, `${LONG_FOLDER}/role.md`);
+  expect(long, "the long header's height and gap to its first row equal a short header's").toEqual(short);
+  // One line: the name is as tall as a short name (a wrapped name is taller), and it ends inside its header,
+  // above the first file row (the header's own box is fixed, so a wrapped name would spill over the row instead).
+  const nameBox = async (header: Locator): Promise<NonNullable<Box>> => (await header.locator(".memory-folder-name").boundingBox()) as NonNullable<Box>;
+  const longName = await nameBox(longHeader);
+  expect(longName.height, "the long name is one line, like a short one").toBe((await nameBox(shortHeader)).height);
+  const longBox = (await longHeader.boundingBox()) as NonNullable<Box>;
+  expect(longName.y + longName.height, "the name ends inside its header").toBeLessThanOrEqual(longBox.y + longBox.height + 0.5);
 });
 
 // ---- AC12: names, and tokens only ------------------------------------------------------------------------------------------------------

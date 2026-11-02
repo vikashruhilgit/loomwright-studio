@@ -54,6 +54,7 @@ export const PLAYBOOKS_TEST_IDS = {
   versionDiff: "playbook-version-diff",
   slug: "playbooks-slug",
   owner: "playbook-owner",
+  schedulesLink: "playbook-schedules-link",
   kernelBand: "playbooks-kernel-band",
 } as const;
 
@@ -257,6 +258,9 @@ export function pendingEnableApproval(approvals: readonly Approval[] | undefined
 
 /** Where the held approval is decided. */
 export const APPROVALS_HASH = "#/approvals";
+
+/** Where the detail's Trigger section sends the owner: the Schedules & triggers screen. */
+export const SCHEDULES_HASH = "#/schedules";
 
 // ---- runs ----------------------------------------------------------------------------------------
 
