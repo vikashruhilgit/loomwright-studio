@@ -7,9 +7,11 @@ import type { StatusBody, StudioBridge } from "../api/contract";
 import { Glyph } from "../components/Glyph";
 import { StatusDot } from "../components/StatusDot/StatusDot";
 import type { StatusState } from "../components/StatusDot/StatusDot";
+import { openerScreenId } from "../screens/keymap/opener";
 import type { ScreenDefinition } from "../screens/types";
 import { useLiveStore } from "../store/react";
 import type { LiveConnection } from "../store/store";
+import { KEYMAP_SCREEN } from "./KeyboardHost";
 
 /** The divider sits after this entry, as the mockup's `NAV_ORDER` has it (Chat … Integrations, then Tasks … Settings). */
 export const NAV_GROUP_END = "integrations";
@@ -113,12 +115,15 @@ export function Sidebar({ api, screens, currentId, onGo }: SidebarProps) {
   const word = kernelWord(connection, status);
   const entries = screens.filter((s) => s.nav !== undefined);
   const dividerAfter = entries.findIndex((s) => s.id === NAV_GROUP_END);
+  // The Keyboard map has no entry of its own: while it is open the entry of the screen it was opened from is marked,
+  // as the mockup's `navHTML` marks the map's parent. Everywhere else the marked entry is `currentId`.
+  const markedId = currentId === KEYMAP_SCREEN ? openerScreenId() : currentId;
   return (
     <aside className="sidebar" data-testid="sidebar">
       <div className="sidebar-titlebar" />
       <nav className="nav" aria-label="Screens">
         {entries.map((s, index) => (
-          <NavEntry key={s.id} screen={s} selected={s.id === currentId} divider={index === dividerAfter && index < entries.length - 1} onGo={onGo} />
+          <NavEntry key={s.id} screen={s} selected={s.id === markedId} divider={index === dividerAfter && index < entries.length - 1} onGo={onGo} />
         ))}
       </nav>
       {screens.map((s) => (s.SidebarSection === undefined ? null : <s.SidebarSection key={s.id} />))}

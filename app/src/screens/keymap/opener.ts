@@ -28,3 +28,13 @@ export function installOpenerTracker(): () => void {
 export function openerHash(): string {
   return opener ?? FALLBACK_HASH;
 }
+
+/**
+ * The id of the screen the map was opened from, which the sidebar marks while the map is open (the mockup's
+ * `navHTML` marks the map's parent). The same `#/<id>` reading as `screenForHash` in `App.tsx`, which is not
+ * imported here (it would make an import cycle); a hash that names no screen is the default screen, `DEFAULT_SCREEN`
+ * there, which is `chat`. A deep link onto the map opens on `FALLBACK_HASH`, so Settings.
+ */
+export function openerScreenId(): string {
+  return /^#\/([a-z][a-z0-9-]*)/.exec(openerHash())?.[1] ?? "chat";
+}

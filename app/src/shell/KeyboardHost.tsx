@@ -6,6 +6,9 @@
 // map). `?` arrives as `key: "?"` with Shift held, and `parseShortcut("?")` has no Shift, so a command registered
 // with `shortcut: "?"` is display-only through the map and this listener owns the key.
 //
+// A palette run that opens a screen moves focus into it (`trackPaletteRuns`, `focusOpenedScreen`); any other
+// navigation (⌘1 … ⌘9, a sidebar click) leaves focus where it was.
+//
 // The kill confirm is the menu bar's (`menubarActions.askKill()`, rendered by `MenubarHost`), which also opens
 // without ⌘⇧K: from the palette's "Kill switch…" command and from the menu bar panel's button. So the hold
 // depends on `menubarActions.getSnapshot().confirmingKill`, never on which opener was used:
@@ -51,6 +54,71 @@ export function guardRegistry(registry: CommandRegistry, actions: MenubarActions
   };
 }
 
+/**
+ * A view of `registry` for the palette: every command is the registered one (same title, group, `enabled`, keys and
+ * order) except that its `run` calls `onNavigated` when the run changed `location.hash` before it returned, which is
+ * how a screen command (`go(id)`) reads. A run that changes no hash (Pause all, Kill switch…) calls nothing.
+ * Registering and subscribing go to the real registry. The list is cached on the registry's own snapshot, since the
+ * palette reads it through `useSyncExternalStore`.
+ */
+export function trackPaletteRuns(registry: CommandRegistry, onNavigated: () => void): CommandRegistry {
+  const wrap = (command: RegisteredCommand): RegisteredCommand => ({
+    ...command,
+    run: () => {
+      const before = window.location.hash;
+      try {
+        return command.run();
+      } finally {
+        if (window.location.hash !== before) onNavigated();
+      }
+    },
+  });
+  let seen: readonly RegisteredCommand[] | undefined;
+  let wrapped: readonly RegisteredCommand[] = [];
+  return {
+    register: (owner, commands) => registry.register(owner, commands),
+    list: () => {
+      const current = registry.list();
+      if (current !== seen) {
+        seen = current;
+        wrapped = current.map(wrap);
+      }
+      return wrapped;
+    },
+    get: (id) => {
+      const command = registry.get(id);
+      return command === undefined ? undefined : wrap(command);
+    },
+    subscribe: (listener) => registry.subscribe(listener),
+  };
+}
+
+/** What a control must match to take focus: the first of these inside the opened screen. */
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Moves focus into the screen on show (`.content`'s screen root, the `screen-<id>` test id every screen carries):
+ * its first focusable control, else the root itself (given `tabindex="-1"` here when it has none, since the shell's
+ * `<main>` is not this host's to change). Never the KernelBand's button, which precedes the root. Does nothing when
+ * focus is already inside `.content` (a screen that focused its own control, the Keyboard map's Back) or in a text field.
+ */
+function focusOpenedScreen(): void {
+  const content = document.querySelector(".content");
+  if (content === null) return;
+  const active = document.activeElement;
+  if (active instanceof Element && content.contains(active)) return;
+  if (isEditableTarget(active)) return;
+  const root = content.querySelector<HTMLElement>('[data-testid^="screen-"]');
+  if (root === null) return;
+  const control = [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].find((el) => el.closest("[hidden], [inert]") === null);
+  if (control !== undefined) {
+    control.focus({ preventScroll: true });
+    return;
+  }
+  if (!root.hasAttribute("tabindex")) root.setAttribute("tabindex", "-1");
+  root.focus({ preventScroll: true });
+}
+
 export interface KeyboardHostProps {
   /** Defaults to the app's one registry. */
   readonly registry?: CommandRegistry;
@@ -79,6 +147,33 @@ export function KeyboardHost({ registry = commandRegistry, onGo, actions = menub
   }, []);
 
   const guarded = useMemo(() => guardRegistry(registry, actions), [registry, actions]);
+
+  // Only a palette run that changed the hash arms the focus move; ⌘1 … ⌘9, a sidebar click and any other hash change
+  // never do. The move waits for the new screen to render (two animation frames after the `hashchange`).
+  const armed = useRef(false);
+  const paletteView = useMemo(
+    () =>
+      trackPaletteRuns(registry, () => {
+        armed.current = true;
+      }),
+    [registry],
+  );
+  useEffect(() => {
+    let frame = 0;
+    const onHashChange = (): void => {
+      if (!armed.current) return;
+      armed.current = false;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(focusOpenedScreen);
+      });
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => {
+      window.removeEventListener("hashchange", onHashChange);
+      cancelAnimationFrame(frame);
+    };
+  }, []);
 
   useEffect(
     () =>
@@ -183,5 +278,5 @@ export function KeyboardHost({ registry = commandRegistry, onGo, actions = menub
     };
   }, [guarded, actions, keyTarget, close]);
 
-  return <CommandPalette registry={registry} open={open} onClose={close} focusRequest={focusRequest} />;
+  return <CommandPalette registry={paletteView} open={open} onClose={close} focusRequest={focusRequest} />;
 }

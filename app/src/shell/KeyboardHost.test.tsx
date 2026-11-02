@@ -133,6 +133,179 @@ describe("the palette (AC2)", () => {
   });
 });
 
+describe("focus after a palette run (AC1)", () => {
+  const teardown: (() => void)[] = [];
+  afterEach(() => {
+    for (const undo of teardown.splice(0)) undo();
+    window.location.hash = "";
+  });
+
+  /** Lets a hash change, the two animation frames after it and a late focus move all happen. */
+  const later = (): Promise<void> => act(async () => new Promise<void>((resolve) => setTimeout(resolve, 120)));
+
+  interface Shell {
+    readonly item: HTMLButtonElement;
+    readonly content: HTMLElement;
+  }
+
+  /**
+   * The shell's frame as `App` draws it: a sidebar item that holds focus, and `.content` where a hash change shows
+   * the screen (a root carrying `screen-<id>`; `controls` buttons inside it), after the KernelBand's own button.
+   */
+  function shell(controls: number): Shell {
+    const aside = document.createElement("aside");
+    const item = document.createElement("button");
+    item.className = "nav-item";
+    item.textContent = "Tasks";
+    aside.append(item);
+    const content = document.createElement("div");
+    content.className = "content";
+    const band = document.createElement("div");
+    const bandButton = document.createElement("button");
+    bandButton.textContent = "Retry";
+    band.append(bandButton);
+    content.append(band);
+    document.body.append(aside, content);
+    const show = (): void => {
+      const id = /^#\/([a-z]+)/.exec(window.location.hash)?.[1] ?? "chat";
+      const shown = content.querySelector('[data-testid^="screen-"]');
+      // A screen already on show stays (a stale hashchange from an earlier reset must not rebuild it).
+      if (shown?.getAttribute("data-testid") === `screen-${id}`) return;
+      shown?.remove();
+      const root = document.createElement("section");
+      root.setAttribute("data-testid", `screen-${id}`);
+      for (let n = 0; n < controls; n += 1) {
+        const button = document.createElement("button");
+        button.textContent = `${id} ${n}`;
+        root.append(button);
+      }
+      content.append(root);
+    };
+    window.addEventListener("hashchange", show);
+    teardown.push(() => window.removeEventListener("hashchange", show));
+    item.focus();
+    return { item, content };
+  }
+
+  /** The host over the usual registry plus Memory (a screen command) and Pause all (one that changes no hash). */
+  function mountWith(extra: Partial<Command> = {}): Mounted {
+    const m = mount();
+    m.registry.register("shell-test", [
+      { id: "screens.memory", title: "Memory", group: "Screens", shortcut: "⌘M", run: () => void (window.location.hash = "#/memory"), ...extra },
+      { id: "kernel.pause", title: "Pause all", group: "Kernel", run: () => undefined },
+    ]);
+    return m;
+  }
+
+  /** ⌘K, type `query`, Enter. */
+  async function runFromPalette(query: string): Promise<void> {
+    cmd("k");
+    fireEvent.change(paletteInput(), { target: { value: query } });
+    fireEvent.keyDown(paletteInput(), { key: "Enter" });
+    await flush();
+  }
+
+  it("a screen command run from the palette leaves focus on the first control inside the opened screen, not on the sidebar or the KernelBand", async () => {
+    const s = shell(2);
+    mountWith();
+    await runFromPalette("Memory");
+    await later();
+    expect(window.location.hash).toBe("#/memory");
+    const root = s.content.querySelector('[data-testid="screen-memory"]') as HTMLElement;
+    expect(document.activeElement).toBe(root.querySelector("button"));
+    expect(document.activeElement).not.toBe(s.item);
+  });
+
+  it("a screen with no focusable control takes focus on its root, which gets tabindex -1", async () => {
+    const s = shell(0);
+    mountWith();
+    await runFromPalette("Memory");
+    await later();
+    const root = s.content.querySelector('[data-testid="screen-memory"]') as HTMLElement;
+    expect(root.getAttribute("tabindex")).toBe("-1");
+    expect(document.activeElement).toBe(root);
+  });
+
+  it("a screen that focused its own field keeps it", async () => {
+    const s = shell(2);
+    mountWith({
+      run: () => {
+        window.location.hash = "#/memory";
+        const focusOwn = (): void => {
+          // A stale hashchange (the previous test's reset) must not stand in for this one.
+          if (window.location.hash !== "#/memory") return;
+          window.removeEventListener("hashchange", focusOwn);
+          queueMicrotask(() => (s.content.querySelectorAll("button")[2] as HTMLElement).focus());
+        };
+        window.addEventListener("hashchange", focusOwn);
+        teardown.push(() => window.removeEventListener("hashchange", focusOwn));
+      },
+    });
+    await runFromPalette("Memory");
+    await later();
+    expect(document.activeElement?.textContent).toBe("memory 1");
+  });
+
+  it("a text field that holds focus when the screen changes keeps it", async () => {
+    shell(2);
+    const input = document.createElement("input");
+    document.body.append(input);
+    mountWith({
+      run: () => {
+        window.location.hash = "#/memory";
+        input.focus();
+      },
+    });
+    await runFromPalette("Memory");
+    await later();
+    expect(window.location.hash).toBe("#/memory");
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("Esc closes the palette with focus back on the control that opened it, and nothing moves it later", async () => {
+    const s = shell(2);
+    mountWith();
+    cmd("k");
+    fireEvent.keyDown(paletteInput(), { key: "Escape" });
+    await flush();
+    await later();
+    expect(palette()).toBeNull();
+    expect(document.activeElement).toBe(s.item);
+  });
+
+  it("a palette command that changes no hash returns focus to the opener, and arms nothing for the next navigation", async () => {
+    const s = shell(2);
+    const m = mountWith();
+    await runFromPalette("Pause all");
+    await later();
+    expect(document.activeElement).toBe(s.item);
+    // The next hash change is not a palette run: focus stays where it was.
+    cmd("m");
+    expect(m.registry.get("screens.memory")).toBeDefined();
+    await later();
+    expect(window.location.hash).toBe("#/memory");
+    expect(document.activeElement).toBe(s.item);
+  });
+
+  it("a navigation that is not a palette run (⌘ shortcut, sidebar click) leaves focus where it was", async () => {
+    const s = shell(2);
+    mountWith();
+    cmd("m");
+    await later();
+    expect(window.location.hash).toBe("#/memory");
+    expect(document.activeElement).toBe(s.item);
+    window.location.hash = "#/tasks";
+    await later();
+    expect(document.activeElement).toBe(s.item);
+    // A click on the focused sidebar item that changes the hash, as `Sidebar`'s onClick does.
+    s.item.addEventListener("click", () => void (window.location.hash = "#/budget"));
+    fireEvent.click(s.item);
+    await later();
+    expect(window.location.hash).toBe("#/budget");
+    expect(document.activeElement).toBe(s.item);
+  });
+});
+
 describe("text fields keep their keys (AC3)", () => {
   it.each(["input", "textarea"] as const)("J, K, / and ? typed into a %s are left alone: nothing opens, navigates or is prevented", (tag) => {
     const m = mount();

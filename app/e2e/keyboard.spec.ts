@@ -33,7 +33,7 @@ const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-7-polish/k
 const README = join(EVIDENCE_DIR, "README.md");
 const THEMES = ["light", "dark"] as const;
 /** The mockup's views the shots are taken of (`gui-v2.html`), as the file names have them. */
-const VIEWS = ["keymap", "tasks-populated-palette"] as const;
+const VIEWS = ["keymap", "tasks-populated-palette", "memory-populated"] as const;
 /** When this run began, for the guard that the tracked evidence dir is untouched without `KEYBOARD_EVIDENCE`. */
 const RUN_START = Date.now();
 
@@ -258,10 +258,13 @@ test("AC4: ? opens the Keyboard map from Tasks, its three tables match the keys,
   await expect(titleOf(page)).toHaveText("Keyboard map");
   await expect(byId(page, "titlebar-subtitle")).toHaveText("every shortcut and palette command");
   await expect(byId(page, KEYMAP.back)).toBeFocused();
-  // It is no sidebar entry: eleven buttons, none current.
+  // It is no sidebar entry: eleven buttons, and the one marked is the screen it was opened from, Tasks.
   const nav = byId(page, "sidebar").getByRole("navigation", { name: "Screens" });
   await expect(nav.getByRole("button")).toHaveCount(11);
-  await expect(nav.locator('[aria-current="page"]')).toHaveCount(0);
+  await expect(nav.locator('[aria-current="page"]')).toHaveCount(1);
+  await expect(nav.getByRole("button", { name: "Tasks", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(nav.getByRole("button", { name: "Tasks", exact: true })).toHaveClass(/selected/);
+  await expect(nav.locator(".nav-item.selected")).toHaveCount(1);
 
   // "Go to a screen": the sidebar's own labels and keys, in order, and none / palette only for Budget & audit.
   const sidebarKeys = await nav.getByRole("button").evaluateAll((buttons) =>
@@ -317,6 +320,101 @@ test("AC4: the palette's Keyboard map command opens it, ? opens it once from a s
   await page.keyboard.press("Escape");
   await byId(page, KEYMAP.back).click();
   await expect(byId(page, "screen-budget")).toBeVisible();
+});
+
+/** Which sidebar entries are marked (`aria-current="page"` and class `selected`), by label. */
+async function markedEntries(page: Page): Promise<{ current: string[]; selected: string[] }> {
+  const nav = byId(page, "sidebar").getByRole("navigation", { name: "Screens" });
+  const labels = (selector: string): Promise<string[]> =>
+    nav.locator(selector).evaluateAll((els) => els.map((el) => (el.querySelector(".nav-text")?.textContent ?? "").trim()));
+  return { current: await labels('[aria-current="page"]'), selected: await labels(".nav-item.selected") };
+}
+
+test("AC4: the map opened by ? from a scrolled Settings is at its top, Settings is marked in the sidebar, and Back returns to Settings", async () => {
+  test.setTimeout(90_000);
+  const page = await launch();
+  await page.keyboard.press("Meta+,");
+  await expect(byId(page, "screen-settings")).toBeVisible();
+  // `.content` is one scrolling element shared by every screen: scroll it down on Settings.
+  const scrolled = await page.evaluate(() => {
+    const content = document.querySelector(".content") as HTMLElement;
+    content.scrollTop = 400;
+    return content.scrollTop;
+  });
+  expect(scrolled, "Settings is tall enough to scroll in the default window").toBeGreaterThan(0);
+
+  await page.keyboard.press("?");
+  await expect(byId(page, KEYMAP.screen)).toBeVisible();
+  await expect(byId(page, KEYMAP.back)).toBeFocused();
+  expect(await page.evaluate(() => (document.querySelector(".content") as HTMLElement).scrollTop), "the map opens at its top").toBe(0);
+  await expect(byId(page, KEYMAP.back)).toBeInViewport();
+  expect(await markedEntries(page)).toEqual({ current: ["Settings"], selected: ["Settings"] });
+
+  await byId(page, KEYMAP.back).click();
+  await expect(byId(page, "screen-settings")).toBeVisible();
+  expect(await hashOf(page)).toBe("#/settings");
+  expect(await markedEntries(page)).toEqual({ current: ["Settings"], selected: ["Settings"] });
+});
+
+// ---- AC1 (focus): the palette moves focus into the screen it opens ---------------------------------------------------------------------
+
+/** The focused element's place: inside a screen root (its id), on a sidebar entry (its label), or elsewhere. */
+function focusPlace(page: Page): Promise<{ screen: string | null; nav: string | null }> {
+  return page.evaluate(() => {
+    const active = document.activeElement;
+    return {
+      screen: active?.closest('.content [data-testid^="screen-"]')?.getAttribute("data-testid") ?? null,
+      nav: active?.closest(".nav-item")?.querySelector(".nav-text")?.textContent?.trim() ?? null,
+    };
+  });
+}
+
+test("AC1: a screen command run from the palette (Memory, from the focused Tasks entry) leaves focus inside Memory and on no sidebar entry", async () => {
+  test.setTimeout(90_000);
+  const page = await launch();
+  const sidebar = byId(page, "sidebar");
+  // The reported case: the focus ring is on the previous screen's sidebar entry.
+  await sidebar.getByRole("button", { name: "Tasks", exact: true }).click();
+  await expect(byId(page, "screen-tasks")).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "Tasks", exact: true })).toBeFocused();
+
+  await page.keyboard.press("Meta+k");
+  await expect(paletteInput(page)).toBeFocused();
+  await page.keyboard.type("Memory");
+  await expect(paletteOf(page).locator('.cp-row[aria-selected="true"] .cp-label')).toHaveText("Memory");
+  await page.keyboard.press("Enter");
+  await expect(paletteOf(page)).toHaveCount(0);
+  await expect(byId(page, "screen-memory")).toBeVisible();
+  await expect.poll(() => focusPlace(page), { message: "focus lands inside the opened screen" }).toEqual({ screen: "screen-memory", nav: null });
+  await expect(page.locator(".nav-item:focus")).toHaveCount(0);
+  await expect(page.locator(".nav-item:focus-visible")).toHaveCount(0);
+  // It is still Memory (the move came after the screen rendered), and the keys still work from there.
+  expect(await hashOf(page)).toBe("#/memory");
+});
+
+test("AC1: Esc closes the palette with focus back on the control that opened it, and a navigation that is not a palette run moves no focus", async () => {
+  test.setTimeout(90_000);
+  const page = await launch();
+  const sidebar = byId(page, "sidebar");
+  const playbooks = sidebar.getByRole("button", { name: "Playbooks", exact: true });
+  await playbooks.focus();
+  await page.keyboard.press("Meta+k");
+  await expect(paletteInput(page)).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(paletteOf(page)).toHaveCount(0);
+  await expect(playbooks).toBeFocused();
+
+  // Enter on the focused sidebar entry opens its screen, and the entry keeps focus.
+  await page.keyboard.press("Enter");
+  await expect(byId(page, "screen-playbooks")).toBeVisible();
+  await settle(page);
+  await expect(playbooks).toBeFocused();
+  // ⌘9 opens Memory; focus stays on the Playbooks entry.
+  await page.keyboard.press("Meta+9");
+  await expect(byId(page, "screen-memory")).toBeVisible();
+  await settle(page);
+  await expect(playbooks).toBeFocused();
+  expect(await focusPlace(page)).toEqual({ screen: null, nav: "Playbooks" });
 });
 
 // ---- AC5: J / K / Enter / Esc ---------------------------------------------------------------------------------------------------------
@@ -490,7 +588,7 @@ async function screenshots(page: Page, view: (typeof VIEWS)[number], testInfo: T
   await page.emulateMedia({ reducedMotion: "no-preference" });
 }
 
-test("AC8: the Keyboard map, and the palette open over Tasks, in light and dark", async ({}, testInfo) => {
+test("AC8: the Keyboard map (from a scrolled Settings), Memory opened by the palette, and the palette open over Tasks, in light and dark", async ({}, testInfo) => {
   test.setTimeout(120_000);
   const page = await launch();
   // The store is live (the status row has left "connecting") before anything is shot.
@@ -505,13 +603,37 @@ test("AC8: the Keyboard map, and the palette open over Tasks, in light and dark"
   await page.keyboard.press("Escape");
   await expect(paletteOf(page)).toHaveCount(0);
 
-  // Tall enough that the map's three tables are mostly in view.
-  await (app as ElectronApplication).evaluate(({ BrowserWindow }) => {
-    for (const win of BrowserWindow.getAllWindows()) win.setContentSize(1180, 1500);
+  // Memory opened by the palette: focus is inside it and no sidebar entry holds the focus ring.
+  await page.keyboard.press("Meta+k");
+  await expect(paletteInput(page)).toBeFocused();
+  await page.keyboard.type("Memory");
+  await expect(paletteOf(page).locator('.cp-row[aria-selected="true"] .cp-label')).toHaveText("Memory");
+  await page.keyboard.press("Enter");
+  await expect(paletteOf(page)).toHaveCount(0);
+  await expect(byId(page, MEMORY.tree)).toBeVisible();
+  await expect.poll(() => focusPlace(page)).toEqual({ screen: "screen-memory", nav: null });
+  await settle(page);
+  await screenshots(page, "memory-populated", testInfo);
+
+  // The map opened by `?` from a scrolled Settings: at its top, Settings marked. The window is made tall afterwards
+  // (the map's three tables are then mostly in view), so Settings is scrolled at the default size.
+  await page.keyboard.press("Meta+,");
+  await expect(byId(page, "screen-settings")).toBeVisible();
+  const scrolled = await page.evaluate(() => {
+    const content = document.querySelector(".content") as HTMLElement;
+    content.scrollTop = 400;
+    return content.scrollTop;
   });
+  expect(scrolled, "Settings is scrolled down before the map opens").toBeGreaterThan(0);
   await page.keyboard.press("?");
   await expect(byId(page, KEYMAP.screen)).toBeVisible();
   await expect(byId(page, KEYMAP.back)).toBeFocused();
+  await (app as ElectronApplication).evaluate(({ BrowserWindow }) => {
+    for (const win of BrowserWindow.getAllWindows()) win.setContentSize(1180, 1500);
+  });
+  await settle(page);
+  expect(await page.evaluate(() => (document.querySelector(".content") as HTMLElement).scrollTop), "the map is at its top").toBe(0);
+  expect(await markedEntries(page)).toEqual({ current: ["Settings"], selected: ["Settings"] });
   await screenshots(page, "keymap", testInfo);
 });
 
