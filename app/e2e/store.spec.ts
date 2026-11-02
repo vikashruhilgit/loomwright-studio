@@ -216,7 +216,7 @@ test("AC4: the window shows the shared red band while the fixture is down, and d
   const band = page.getByTestId("kernel-unreachable-band");
   await expect(band).toBeVisible({ timeout: STATE_TIMEOUT_MS });
   await expect(band).toHaveAttribute("role", "alert");
-  await expect(band).toHaveText("Couldn't reach the kernel. It may be restarting; this window reconnects on its own.");
+  await expect(band).toHaveText("Couldn't reach the kernel. It may be restarting; this window reconnects on its own.Kernel log");
   await expect(page.getByTestId("kernel-reconnecting-band")).toHaveCount(0);
 
   fixture = await startFixture({ dataDir, port, events: events(1, 4) });

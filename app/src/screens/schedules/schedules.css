@@ -1,8 +1,8 @@
 /* Schedules & triggers (phase 7 item 05): docs/design/mockups/gui-v2.html (`schedulesScreen`, and the
    "Timeline (Schedules)" block of its style) on the tokens. Colour comes only from tokens.css custom properties.
    Focus keeps the shell's ring (`:focus-visible` in app.css): nothing here removes it.
-   History rows are a fixed height (a line of text clips with an ellipsis), so a refetch that changes a count
-   or a time changes text inside a row and moves nothing. A title (an upcoming entry's, a trigger row's) wraps to
+   History rows are a fixed height (a line of text clips with an ellipsis, a Result chip wraps to as many lines as the
+   height holds), so a refetch that changes a count or a time changes text inside a row and moves nothing. A title (an upcoming entry's, a trigger row's) wraps to
    two lines and is clamped with an ellipsis after that (`.schedules-clamp`; the element carries its full text as
    a `title`); its row is as tall as its content, which a refetch does not change. */
 
@@ -419,7 +419,7 @@
   width: 96px;
 }
 .schedules-c3 {
-  width: 176px;
+  width: 248px;
 }
 .schedules-table th {
   padding: var(--space-2);
@@ -433,7 +433,7 @@
   color: var(--ink-tertiary);
 }
 .schedules-fire {
-  height: 64px;
+  height: 72px;
 }
 .schedules-fire:focus-visible {
   outline-offset: -2px;
@@ -458,6 +458,37 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+/* The Result chip wraps inside its cell instead of being cut off by it: the badge never wraps on its own (`Badge.css`
+   is shared and stays as it is), so this override is scoped to the history table. The chip wraps inside a width that
+   excludes the "×N" slot, so the count never changes the chip's lines, and the row keeps its fixed height. */
+.schedules-table .schedules-result {
+  position: relative;
+  /* The "×N" slot is reserved whether or not the row has a count (a row with none leaves it empty), so the chip's
+     width, and with it the row's height, never depends on the count: a 1 -> 2 or a 99 -> 100 moves nothing. */
+  /* 5ch holds "×999" whole in the default font and in Verdana (the e2e height test checks both);
+     a count of "×1000" or more, or a font wider than Verdana, can clip the count with an ellipsis and its full value is the title. */
+  padding-right: calc(5ch + var(--space-2));
+}
+.schedules-table .schedules-result .badge {
+  box-sizing: border-box;
+  height: auto;
+  min-height: 20px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.schedules-table .schedules-result > .schedules-count {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 5ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 20px;
 }
 .schedules-count {
   color: var(--ink-secondary);
@@ -554,6 +585,31 @@
 }
 .schedules-skel i:nth-child(3) {
   width: 40%;
+}
+
+/* A narrow window (down to the 900px minimum): the list pane keeps its width, so the history table has about 250px.
+   When shrinks (a time wraps to two lines), the Result column takes what the Trigger column (kept above 96px) leaves,
+   the detail pane's padding and the cells' padding are tighter, and the fixed row is tall enough for the chip of
+   "playbook off: fires are skipped" above its reason line: five lines (128px) in the default font, six (139px) in a
+   Verdana-width font, where the "×N" slot (5ch) narrows the chip; 144px holds both (the e2e height test checks both fonts). */
+@media (max-width: 1139px) {
+  .schedules-pane > .schedules-pad {
+    padding-left: var(--space-3);
+    padding-right: var(--space-3);
+  }
+  .schedules-c1 {
+    width: 52px;
+  }
+  .schedules-c3 {
+    width: 112px;
+  }
+  .schedules-table th,
+  .schedules-fire td {
+    padding: var(--space-2) var(--space-1);
+  }
+  .schedules-fire {
+    height: 144px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,6 +1,7 @@
 // Glyph and WarnGlyph: the 24px line-icon frame and the warning triangle that screens draw beside
 // a message. Decorative (`aria-hidden`): the text beside each one names the thing. The component
 // carries no CSS of its own; the caller passes the class its screen styles (`budget-glyph`).
+// The mockup's in-content icons are the shared set in `components/icons/`, drawn through `Glyph`.
 import type { ReactNode } from "react";
 
 export interface GlyphProps {

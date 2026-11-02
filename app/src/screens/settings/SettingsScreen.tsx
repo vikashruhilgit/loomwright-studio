@@ -165,7 +165,7 @@ export function SettingsScreen({ api, registry = commandRegistry }: SettingsScre
         </p>
       ) : null}
       <div className="settings-pad">
-        <AuthSection view={view} placeholder={placeholder} now={now} />
+        <AuthSection view={view} placeholder={placeholder} now={now} offline={offline} />
         {failed !== undefined && view === undefined ? null : <CommandsSection view={view} />}
         {showKernelSection ? (
           <KernelSection view={view} home={home} offline={offline} canReveal={preferences.available} onReveal={() => void reveal()} revealFailed={revealFailed} />

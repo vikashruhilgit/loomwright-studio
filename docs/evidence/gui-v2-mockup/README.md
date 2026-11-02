@@ -78,7 +78,7 @@ Each image is the full page: the intro line, the 1180×760 window, and the revie
 | `settings-populated` | The auth provider read-only (provider, account, health `ok`, token created, token life, the Keychain item, never the value), the three terminal commands with Copy, the kernel (data location, notifier, Loomwright), and the app's own settings (launch at login, notifications, theme, keyboard map) | [gui-v2-settings-populated-light.png](gui-v2-settings-populated-light.png) | [gui-v2-settings-populated-dark.png](gui-v2-settings-populated-dark.png) |
 | `settings-waiting` | The token expires in 18 days: an `attention` dot, a "renew soon" Badge and a band that points to the commands below | [gui-v2-settings-waiting-light.png](gui-v2-settings-waiting-light.png) | [gui-v2-settings-waiting-dark.png](gui-v2-settings-waiting-dark.png) |
 | `settings-error` | A route failure card inside the auth provider section; the commands and the kernel sections are left out | [gui-v2-settings-error-light.png](gui-v2-settings-error-light.png) | [gui-v2-settings-error-dark.png](gui-v2-settings-error-dark.png) |
-| `settings-unreachable` | The shared band over the last-known settings | [gui-v2-settings-unreachable-light.png](gui-v2-settings-unreachable-light.png) | [gui-v2-settings-unreachable-dark.png](gui-v2-settings-unreachable-dark.png) |
+| `settings-unreachable` | The shared band over the last-known settings; Health marked last known with a neutral dot | [gui-v2-settings-unreachable-light.png](gui-v2-settings-unreachable-light.png) | [gui-v2-settings-unreachable-dark.png](gui-v2-settings-unreachable-dark.png) |
 
 ### Integrations (the token-to-App path)
 

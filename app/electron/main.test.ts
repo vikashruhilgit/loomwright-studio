@@ -21,12 +21,16 @@ const electron = vi.hoisted(() => {
   const prefsDir = fs.mkdtempSync(`${process.getBuiltinModule("node:os").tmpdir()}/studio-main-test-`);
   fs.writeFileSync(`${prefsDir}/prefs.json`, JSON.stringify({ notifications: true, theme: "dark" }));
   process.env.STUDIO_APP_PREFS_DIR = prefsDir;
-  // What the mocked OS holds and was asked: the login item, the theme and the folders `shell.openPath` was handed.
-  const os = { login: { openAtLogin: false, status: "not-registered" }, loginSets: [] as unknown[], themeSource: "system", opened: [] as string[] };
+  // The main process's resolved data dir, a real throwaway dir so the kernel-log channel can find (or not find) a file in it.
+  const dataDir = fs.mkdtempSync(`${process.getBuiltinModule("node:os").tmpdir()}/studio-main-data-`);
+  // What the mocked OS holds and was asked: the login item, the theme, the folders `shell.openPath` was handed
+  // and the paths `shell.showItemInFolder` was handed.
+  const os = { login: { openAtLogin: false, status: "not-registered" }, loginSets: [] as unknown[], themeSource: "system", opened: [] as string[], shown: [] as string[] };
   return {
     windows,
     handlers,
     prefsDir,
+    dataDir,
     os,
     permission: undefined as undefined | ((c: unknown, p: string, decide: (ok: boolean) => void) => void),
   };
@@ -44,7 +48,7 @@ const kernel = vi.hoisted(() => {
 
 vi.mock("./kernel-connection", () => ({
   API_HOST: "127.0.0.1",
-  resolveDataDir: () => "/the/data",
+  resolveDataDir: () => electron.dataDir,
   tokenReaderFor: () => async () => undefined,
   createKernelConnection: () => ({
     connection: async () => kernel.where.current,
@@ -138,6 +142,9 @@ vi.mock("electron", () => {
         electron.os.opened.push(path);
         return "";
       },
+      showItemInFolder: (path: string) => {
+        electron.os.shown.push(path);
+      },
     },
   };
 });
@@ -149,6 +156,7 @@ beforeAll(async () => {
 
 afterAll(() => {
   process.getBuiltinModule("node:fs").rmSync(electron.prefsDir, { recursive: true, force: true });
+  process.getBuiltinModule("node:fs").rmSync(electron.dataDir, { recursive: true, force: true });
 });
 
 describe("the main window", () => {
@@ -187,6 +195,7 @@ describe("the main window", () => {
       "studio:prefs:set",
       "studio:request",
       "studio:reveal-data-dir",
+      "studio:reveal-kernel-log",
     ]);
     const handler = electron.handlers.get("studio:request");
     await expect(Promise.resolve(handler?.({ sender: {} }, { method: "GET", path: "/status" }))).rejects.toThrow("refused");
@@ -331,7 +340,7 @@ describe("the preferences channels", () => {
   it("reveals the main process's own data dir and ignores any argument the renderer sends", async () => {
     await expect(call("studio:reveal-data-dir", owner())).resolves.toBe(true);
     await expect(call("studio:reveal-data-dir", owner(), "/Users/o/.ssh")).resolves.toBe(true);
-    expect(electron.os.opened).toEqual(["/the/data", "/the/data"]);
+    expect(electron.os.opened).toEqual([electron.dataDir, electron.dataDir]);
   });
 });
 
@@ -346,6 +355,65 @@ describe("the home-dir channel", () => {
 
   it("refuses a caller that is not the window", async () => {
     for (const sender of [{}, undefined]) await expect(call({ sender })).rejects.toThrow("refused");
+  });
+});
+
+describe("the kernel-log channel", () => {
+  const fs = process.getBuiltinModule("node:fs");
+  const path = process.getBuiltinModule("node:path");
+  const owner = () => ({ sender: electron.windows[0]?.contents });
+  const call = (event: unknown, ...args: unknown[]) => Promise.resolve(electron.handlers.get("studio:reveal-kernel-log")?.(event, ...args));
+  const logsDir = () => path.join(electron.dataDir, "logs");
+  const logFile = () => path.join(logsDir(), "kernel.err.log");
+
+  beforeEach(() => {
+    electron.os.shown.length = 0;
+    fs.rmSync(logsDir(), { recursive: true, force: true });
+  });
+  afterEach(() => {
+    fs.rmSync(logsDir(), { recursive: true, force: true });
+  });
+
+  it("reveals <dataDir>/logs/kernel.err.log and ignores any argument the renderer sends", async () => {
+    fs.mkdirSync(logsDir());
+    fs.writeFileSync(logFile(), "boot\n");
+    await expect(call(owner())).resolves.toBe("revealed");
+    await expect(call(owner(), "/Users/o/.ssh")).resolves.toBe("revealed");
+    await expect(call(owner(), { path: "/etc/passwd" })).resolves.toBe("revealed");
+    expect(electron.os.shown).toEqual([logFile(), logFile(), logFile()]);
+  });
+
+  it("refuses a caller that is not the window, and reveals nothing", async () => {
+    fs.mkdirSync(logsDir());
+    fs.writeFileSync(logFile(), "boot\n");
+    for (const sender of [{}, undefined]) await expect(call({ sender })).rejects.toThrow("refused");
+    expect(electron.os.shown).toEqual([]);
+  });
+
+  it("answers missing, and reveals nothing, when there is no log, no logs folder, or the path is not a file", async () => {
+    await expect(call(owner())).resolves.toBe("missing");
+    fs.mkdirSync(logsDir());
+    await expect(call(owner())).resolves.toBe("missing");
+    fs.mkdirSync(logFile());
+    await expect(call(owner())).resolves.toBe("missing");
+    fs.rmSync(logsDir(), { recursive: true });
+    fs.writeFileSync(logsDir(), "a file where the folder should be");
+    await expect(call(owner())).resolves.toBe("missing");
+    expect(electron.os.shown).toEqual([]);
+  });
+
+  it("answers failed, and reveals nothing, when the log cannot be read for any other reason, without leaking the path", async () => {
+    fs.mkdirSync(logsDir());
+    // A link that points at itself: stat fails with ELOOP, not ENOENT.
+    fs.symlinkSync(logFile(), logFile());
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await expect(call(owner())).resolves.toBe("failed");
+      expect(warn.mock.calls.flat().join(" ")).not.toContain(electron.dataDir);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(electron.os.shown).toEqual([]);
   });
 });
 

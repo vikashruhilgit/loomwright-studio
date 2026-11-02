@@ -12,6 +12,7 @@ import type {
   AppPreferencesPatch,
   FeedRelayFrame,
   KernelConnectionState,
+  KernelLogReveal,
   StudioBridge,
   ThemePreference,
 } from "../api/contract";
@@ -43,6 +44,10 @@ export interface FakeBridge {
   reveals: number;
   /** What `prefs.revealDataDir` answers next. */
   revealAnswer: boolean;
+  /** How many times `revealKernelLog` was called. */
+  kernelLogReveals: number;
+  /** What `revealKernelLog` answers next. */
+  kernelLogAnswer: KernelLogReveal;
 }
 
 const THEME_PREFERENCES: readonly ThemePreference[] = ["system", "light", "dark"];
@@ -82,6 +87,8 @@ export function fakeBridge(initial: KernelConnectionState = { state: "connected"
     prefsSets: [],
     reveals: 0,
     revealAnswer: true,
+    kernelLogReveals: 0,
+    kernelLogAnswer: "revealed",
     connectionAnswer: initial,
     subscribeAnswer: initial,
     closeAfterSubscribe: 0,
@@ -135,6 +142,10 @@ export function fakeBridge(initial: KernelConnectionState = { state: "connected"
         },
       },
       onNavigate: () => () => undefined,
+      revealKernelLog: async () => {
+        fake.kernelLogReveals += 1;
+        return fake.kernelLogAnswer;
+      },
       prefs,
     },
   };
