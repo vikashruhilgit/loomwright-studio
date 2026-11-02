@@ -87,3 +87,9 @@ app/src/components/Glyph.tsx
 app/src/components/icons
 app/src/screens/budget/AuditLog.tsx
 app/e2e/budget.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-02T05:06:17Z
+- **Brief:** .supervisor/jobs/done/2026-11-01-shell-one-back-crumb-and-icon-set.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/205
