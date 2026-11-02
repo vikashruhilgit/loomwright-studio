@@ -83,9 +83,13 @@ const rosterEntry = (id: string, name: string, shape: string, hue: string): Rost
 });
 /** The roster the fixture answers (the fixture file `fixtures/memory.ts` is outside this item's lanes, so it is a `routes` override here). */
 const ROSTER: readonly RosterEntry[] = [rosterEntry("wright", "Wright", "whale", "accent"), rosterEntry("mason", "Mason", "octopus", "crew-berry"), rosterEntry("ada", "Ada", "turtle", "crew-olive")];
-/** An agent folder whose name does not fit the tree's width. */
-const LONG_FOLDER = "phase4-exit-mvg8wle4cf8f26";
-const LONG_LABEL = "Phase4-exit-mvg8wle4cf8f26";
+/**
+ * An agent folder whose name does not fit the tree's width on any machine. The item's real folder
+ * (`phase4-exit-mvg8wle4cf8f26`) overflows only with macOS's SF Pro; with the Linux CI fallback font it fits
+ * once the caption gives way, so the name is extended until it overflows the 360px pane whatever the font.
+ */
+const LONG_FOLDER = "phase4-exit-mvg8wle4cf8f26-comment-only-reviewer-with-a-folder-name-far-wider-than-the-tree";
+const LONG_LABEL = "Phase4-exit-mvg8wle4cf8f26-comment-only-reviewer-with-a-folder-name-far-wider-than-the-tree";
 
 /** `GET /settings` as the fixture serves it, with `data_dir` set (the fixture merges `routes` over its defaults). */
 const settingsAt = (dataDir: string): FixtureRoute => () => ({
