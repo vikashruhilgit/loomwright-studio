@@ -532,6 +532,120 @@ test("AC1: stopping the fixture's listener keeps the last board under the shell'
   expect(boardReads(started)).toBeGreaterThan(base);
 });
 
+test("AC1: opening Tasks again with the listener stopped shows the last board, marked last known, cards disabled; restarting the listener reads it again (AC2)", async () => {
+  test.setTimeout(90_000);
+  const { fixture: started } = await startKernel(reviewInit());
+  const page = await openWith(started);
+  await expect(page.getByTestId("tasks-subtitle")).toHaveText("8 cards · 3 working");
+  const base = await settled(started);
+
+  await started.stop();
+  const band = page.getByTestId("kernel-unreachable-band");
+  await expect(band).toBeVisible({ timeout: 20_000 });
+
+  // Leave Tasks (the screen really unmounts), then open it again with the kernel still away.
+  await page.evaluate(() => {
+    window.location.hash = "#/chat";
+  });
+  await expect(page.getByTestId("screen-tasks")).toHaveCount(0);
+  await page.evaluate(() => {
+    window.location.hash = "#/tasks";
+  });
+  await expect(page.getByTestId("screen-tasks")).toBeVisible();
+
+  await expect(page.getByTestId("screen-tasks")).toHaveAttribute("data-state", "populated");
+  await expect(page.getByTestId("tasks-subtitle")).toHaveText("8 cards · 3 working · last known");
+  await expect(card(page, "task:9")).toBeVisible();
+  await expect(card(page, "task:9")).toBeDisabled();
+  // A disabled card opens nothing, so no Stop or Kill is reachable.
+  await card(page, "task:9").click({ force: true });
+  await expect(page.getByTestId("task-detail")).toHaveCount(0);
+  await expect(page.getByTestId("tasks-error")).toHaveCount(0);
+  await expect(page.getByTestId("tasks-empty")).toHaveCount(0);
+  await expect(band).toHaveCount(1);
+
+  // AC2: the listener comes back; the next read replaces the remembered board and the mark goes.
+  await started.restart();
+  await expect(page.getByTestId("kernel-unreachable-band")).toHaveCount(0, { timeout: 30_000 });
+  await expect(page.getByTestId("tasks-subtitle")).toHaveText("8 cards · 3 working", { timeout: 30_000 });
+  await expect(card(page, "task:9")).toBeEnabled();
+  expect(boardReads(started)).toBeGreaterThan(base);
+});
+
+test("kind icons: every card's kind line starts with its kind icon, ahead of the label text, and the card's name is unchanged", async () => {
+  const { fixture: started } = await startKernel(reviewInit());
+  const page = await openWith(started);
+  const rows = await page.locator("[data-card-key]").evaluateAll((els) =>
+    els.map((el) => {
+      const line = el.querySelector(".tasks-card-kind") as HTMLElement;
+      const svgs = [...line.querySelectorAll("svg")];
+      const label = line.querySelector(".tasks-card-label") as HTMLElement;
+      const text = [...label.childNodes].find((n) => n.nodeType === Node.TEXT_NODE) as Text;
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      const words = range.getBoundingClientRect();
+      const icon = svgs[0]?.getBoundingClientRect();
+      return {
+        key: el.getAttribute("data-card-key"),
+        icons: svgs.length,
+        hidden: svgs[0]?.getAttribute("aria-hidden"),
+        markup: svgs[0]?.innerHTML ?? "",
+        text: text.textContent,
+        width: icon?.width ?? 0,
+        before: icon === undefined ? false : icon.right <= words.left,
+        name: el.getAttribute("aria-label") ?? "",
+      };
+    }),
+  );
+  expect(rows).toHaveLength(8);
+  for (const row of rows) {
+    expect(row.icons, `${row.key}: one icon`).toBe(1);
+    expect(row.hidden, `${row.key}: decorative`).toBe("true");
+    expect(row.width, `${row.key}: drawn`).toBeGreaterThan(0);
+    expect(row.before, `${row.key}: icon before the text`).toBe(true);
+    expect(row.text).toMatch(/^(Task|Playbook run|Session) #\d+$/);
+    expect(row.name).toMatch(/^(Task|Playbook run|Session) \d+: .+, .+$/);
+  }
+  expect(rows.find((r) => r.key === "task:9")?.text).toBe("Task #9");
+  // The icon matches the kind: one drawing per kind, shared by its cards and different from the other kinds'.
+  const byKind = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const kind = (row.key ?? "").split(":")[0] ?? "";
+    byKind.set(kind, (byKind.get(kind) ?? new Set()).add(row.markup));
+  }
+  expect([...byKind.keys()].sort()).toEqual(["playbook_run", "session", "task"]);
+  for (const [kind, drawings] of byKind) expect(drawings.size, `${kind}: one icon drawing`).toBe(1);
+  expect(new Set([...byKind.values()].map((d) => [...d][0])).size, "three kinds, three drawings").toBe(3);
+});
+
+test("the crumb: a card's detail draws the shell's crumb, ‹ Tasks / Task #9, and activating it returns to the board with focus on the card", async () => {
+  const { fixture: started } = await startKernel(reviewInit());
+  const page = await openWith(started);
+  await card(page, "task:9").click();
+  const back = page.getByTestId("task-back");
+  await expect(back).toHaveAccessibleName("Back to Tasks");
+  await expect(back).toHaveText("Tasks");
+  const row = back.locator("xpath=..");
+  const visible = (await row.evaluate((el) => (el as HTMLElement).innerText)).replace(/\s+/g, "");
+  expect(visible).toBe("Tasks/Task#9");
+  expect(visible).not.toContain("Back");
+  // The chevron is inside the one button and sits before the word.
+  const chevron = await back.evaluate((el) => {
+    const svgs = el.querySelectorAll("svg");
+    // The label sits in the Button's own wrapper, so walk to its text node.
+    const text = document.createTreeWalker(el, NodeFilter.SHOW_TEXT).nextNode() as Text;
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    return { icons: svgs.length, width: svgs[0]?.getBoundingClientRect().width ?? 0, before: (svgs[0]?.getBoundingClientRect().right ?? Infinity) <= range.getBoundingClientRect().left };
+  });
+  expect(chevron.icons).toBe(1);
+  expect(chevron.width).toBeGreaterThan(0);
+  expect(chevron.before).toBe(true);
+  await back.click();
+  await expect(page.getByTestId("screen-tasks")).toHaveAttribute("data-state", "populated");
+  await expect(card(page, "task:9")).toBeFocused();
+});
+
 /** Replace the running app with one launched on `dataDir`, on Tasks. */
 async function launchSecond(dataDir: string): Promise<Page> {
   await app?.close();
@@ -570,7 +684,7 @@ test("AC8: J / K and the arrows move between cards across the columns, Enter ope
   await card(page, "session:44").focus();
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("task-detail")).toBeFocused();
-  await tabTo(page, /^Back$/);
+  await tabTo(page, /^Back to Tasks$/);
   await expect(page.getByRole("button", { name: "Back" })).toBeFocused();
   await tabTo(page, /^Stop/);
   await expect(page.getByRole("button", { name: /^Stop/ })).toBeFocused();
