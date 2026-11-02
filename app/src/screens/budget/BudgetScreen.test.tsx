@@ -330,7 +330,8 @@ describe("the states", () => {
     expect(screen.getByRole("table", { name: "Tokens counted per day" })).toBeTruthy();
     expect(within(days[0] as HTMLElement).getAllByRole("cell")[2]?.textContent).toBe("205,300");
     expect(document.querySelector("h1")).toBeNull();
-    expect(screen.getByTestId(IDS.summary).textContent).toBe("61,924 tokens today");
+    // The screen publishes the count line from an effect after the rows render, so it is waited for, as below.
+    await waitFor(() => expect(screen.getByTestId(IDS.summary).textContent).toBe("61,924 tokens today"));
   });
 
   it("each day's meter is a share of the busiest day", async () => {

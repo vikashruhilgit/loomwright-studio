@@ -3,6 +3,8 @@
 // remembers the last hash that was not its own instead of depending on who navigated. `index.tsx` installs the
 // tracker when the module is first loaded (screens are eager-imported, so before the first hash change).
 
+import type { ScreenDefinition } from "../types";
+
 const KEYMAP_HASH = /^#\/keymap(?![a-z0-9-])/;
 
 /** Where Back goes when the window opened on the map itself (a deep link): the mockup's parent, Settings. */
@@ -37,4 +39,14 @@ export function openerHash(): string {
  */
 export function openerScreenId(): string {
   return /^#\/([a-z][a-z0-9-]*)/.exec(openerHash())?.[1] ?? "chat";
+}
+
+/**
+ * The screen the map was opened from, as the window shows it: `screenForHash` in `App.tsx` shows the default
+ * screen, Chat, for a hash that names no screen, so that is the one returned too. The sidebar marks it and the
+ * map's crumb names it; both read it here so they can never disagree.
+ */
+export function openerScreen(screens: readonly ScreenDefinition[]): ScreenDefinition | undefined {
+  const id = openerScreenId();
+  return screens.find((s) => s.id === id) ?? screens.find((s) => s.id === "chat");
 }

@@ -167,8 +167,39 @@ describe("Back", () => {
   it("calls onBack when given one", () => {
     const onBack = vi.fn();
     renderMap({ onBack });
-    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.click(screen.getByTestId(KEYMAP_TEST_IDS.back));
     expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("is the shared crumb '‹ Memory / Keyboard map' naming the screen that opened it: one button named 'Back to Memory', with the chevron and no word 'Back'", () => {
+    window.location.hash = "#/memory";
+    stop = installOpenerTracker();
+    window.location.hash = "#/keymap";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    renderMap();
+    const back = screen.getByRole("button", { name: "Back to Memory" });
+    expect(back.getAttribute("data-testid")).toBe(KEYMAP_TEST_IDS.back);
+    expect(document.activeElement).toBe(back);
+    expect(back.querySelector("svg")?.getAttribute("aria-hidden"), "the shared crumb's chevron").toBe("true");
+    const crumb = back.parentElement as HTMLElement;
+    expect(crumb.className).toBe("keymap-crumb");
+    expect(crumb.textContent).toBe("Memory/Keyboard map");
+  });
+
+  it("names Chat, the screen the app shows, when it was opened from a hash that names no screen", () => {
+    window.location.hash = "#/no-such-screen";
+    stop = installOpenerTracker();
+    window.location.hash = "#/keymap";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    renderMap();
+    expect(screen.getByRole("button", { name: "Back to Chat" }).parentElement?.textContent).toBe("Chat/Keyboard map");
+  });
+
+  it("names Settings, its fallback parent, when the window opened on the map itself", () => {
+    window.location.hash = "#/keymap";
+    stop = installOpenerTracker();
+    renderMap();
+    expect(screen.getByRole("button", { name: "Back to Settings" }).parentElement?.textContent).toBe("Settings/Keyboard map");
   });
 });
 
@@ -266,6 +297,14 @@ describe("the sidebar while the map is open", () => {
     stop?.();
     window.location.hash = "";
     stop = installOpenerTracker();
+    expect(await marked("keymap")).toEqual(["Chat"]);
+  });
+
+  it("marks Chat, the screen the app shows and the crumb names, when the map was opened from a hash that names no screen", async () => {
+    window.location.hash = "#/no-such-screen";
+    stop = installOpenerTracker();
+    window.location.hash = "#/keymap";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
     expect(await marked("keymap")).toEqual(["Chat"]);
   });
 

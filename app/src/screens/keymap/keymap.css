@@ -27,6 +27,11 @@
 .keymap-crumb .btn {
   margin-left: calc(var(--space-2) * -1);
 }
+.keymap-glyph {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
 .keymap-text {
   margin: 0;
   color: var(--ink-secondary);
