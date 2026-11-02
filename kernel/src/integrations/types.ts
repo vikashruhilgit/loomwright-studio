@@ -13,7 +13,7 @@ import type { Store } from "../store/store.js";
 // ---- Connectors --------------------------------------------------------------
 
 /** Every connector kind the kernel knows, closed in code (no SQL CHECK on `connectors.kind`). */
-export const CONNECTOR_KINDS = Object.freeze(["github"] as const);
+export const CONNECTOR_KINDS = Object.freeze(["github", "jira", "clickup"] as const);
 
 /** One of `CONNECTOR_KINDS`. */
 export type ConnectorKind = (typeof CONNECTOR_KINDS)[number];

@@ -276,6 +276,8 @@ export function validateCharter(input: unknown, options: ValidateCharterOptions)
     return invalid(path.length === 0 ? "the charter" : path.join("."), issue?.message ?? "invalid");
   }
   const charter = parsed.data as Charter;
+  const unbuilt = charter.connectors?.find((kind) => kind === "jira" || kind === "clickup");
+  if (unbuilt !== undefined) return invalid("connectors", `connector_not_built: the ${unbuilt} connector is not built yet; remove it from connectors`);
   const homeDir = options.homeDir ?? homedir();
   for (const [i, workspace] of charter.workspaces.entries()) {
     const problem = workspaceProblem(workspace, options.dataDir, homeDir);
@@ -291,7 +293,7 @@ export function validateCharter(input: unknown, options: ValidateCharterOptions)
 
 /** A bulleted markdown list, or `- None stated.` for an empty one. */
 /** How `role.md` names each connector kind. */
-const CONNECTOR_LABELS: Record<ConnectorKind, string> = { github: "GitHub" };
+const CONNECTOR_LABELS: Record<ConnectorKind, string> = { github: "GitHub", jira: "Jira", clickup: "ClickUp" };
 
 function bullets(items: readonly string[]): string {
   return items.length === 0 ? "- None stated." : items.map((item) => `- ${item}`).join("\n");

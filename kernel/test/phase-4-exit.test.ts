@@ -385,7 +385,7 @@ const runRows = (store: Store): { kind: string; status: string; session_id: numb
 
 describe("phase 4 exit: a comment-only reviewer created from chat can't push, every scope step in order (AC1)", () => {
   it("mason's never list holds every PR/issue write but the comment, and the push", () => {
-    expect(MASON_NEVER).toEqual(["git_push", "gh_pr_create", "gh_pr_review", "gh_pr_edit", "gh_pr_close", "gh_issue_create", "gh_issue_comment", "gh_issue_edit", "gh_issue_close", "gh_api_write"]);
+    expect(MASON_NEVER).toEqual(["git_push", "gh_pr_create", "gh_pr_review", "gh_pr_edit", "gh_pr_close", "gh_pr_request_reviewers", "gh_pr_comment_reply", "gh_issue_create", "gh_issue_comment", "gh_issue_edit", "gh_issue_close", "gh_api_write"]);
   });
 
   it("ask → held charter → approve once → mason's push denied agent_boundary (remote unchanged), comment held and denied → delegation and its depth limit → sessions at once → daily tokens → crew playbook → off", async () => {
