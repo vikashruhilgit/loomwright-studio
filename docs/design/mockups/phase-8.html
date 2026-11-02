@@ -878,6 +878,9 @@ function setView(v,keep){
   if(x.ap) S.ap=x.ap;
   if(x.scr==='integrations') intEnter(x,keep);
   if(!keep){
+    /* A forced view shows its named state whatever was clicked before: drop every decision and edit, then apply what the entry names. */
+    S.dec={}; S.enable='none'; S.pb=1; S.ap='ap7'; PB=mkPB();
+    if(x.ap) S.ap=x.ap;
     if(x.pb) S.pb=x.pb;
     if('dec' in x) S.dec[x.ap]=x.dec;
     if('en' in x) S.enable=x.en;
@@ -1602,7 +1605,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='/'&&!open){ e.preventDefault(); palette(); return; }
   if(e.key==='?'&&!open){ e.preventDefault(); note('The keyboard map is in gui-v2.html.'); return; }
   if(open) return;
-  if(!mod&&V().scr==='approvals'&&(e.key==='a'||e.key==='d')){ e.preventDefault(); decide(S.ap,e.key==='a'?'allowed':'denied'); return; }
+  if(!mod&&V().scr==='approvals'&&V().st==='detail'&&(e.key==='a'||e.key==='d')){ e.preventDefault(); decide(S.ap,e.key==='a'?'allowed':'denied'); return; }
   if(!mod&&(e.key==='j'||e.key==='ArrowDown')){ e.preventDefault(); stepNav(1); }
   else if(!mod&&(e.key==='k'||e.key==='ArrowUp')){ e.preventDefault(); stepNav(-1); }
 });

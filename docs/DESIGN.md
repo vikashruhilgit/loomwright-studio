@@ -250,7 +250,7 @@ Every group has an empty, a loading, an error and a `Kernel unreachable` view (t
 
 ### Open points for the owner (phase 8)
 
-The mockup's copy and layout are proposals the owner can change on this PR, as with the earlier mockups. These need a decision, or the owner's word that the proposal stands. Points 1–7 are fields with no declared source (the [field map](evidence/phase-8-mockup/README.md#field-map-ac6) marks each); 8–13 are where the mockup differs from what an item's requirement describes.
+The mockup's copy and layout are proposals the owner can change on this PR, as with the earlier mockups. These need a decision, or the owner's word that the proposal stands. Points 1–4 are fields with no declared source (the [field map](evidence/phase-8-mockup/README.md#field-map-ac6) marks each); 5–7 are rule and route differences; 8–13 are sample-data and layout differences.
 
 1. **The comment triage tally and the `comment_routed` history rows have no stored source.** Item 10's tracker records a PR's state, approvals, CI, owner and run file, and appends `pr_state_changed`; nothing records how a comment was classified or routed. Items 01 and 10 add it (a count on `pr_tracks`, or an event kind), or the card drops the tally and the history drops the rows. Affects items 01, 10 and 11.
 2. **Safe mode per repo has no declared storage.** Item 08's route takes a policy kind and `trust_unprotected`, and `repo_policies` has no safe-mode field. Say whether Safe mode is a fourth value of the policy kind, or the same as "No policy: PRs park" with a recorded choice. Affects items 01, 08 and 12.
