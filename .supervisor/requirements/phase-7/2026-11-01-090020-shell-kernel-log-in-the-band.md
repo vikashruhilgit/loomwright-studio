@@ -88,3 +88,9 @@ app/electron/main.ts
 app/electron/preload.ts
 app/electron/main.test.ts
 app/e2e/shell.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-02T05:05:16Z
+- **Brief:** .supervisor/jobs/done/2026-11-01-shell-kernel-log-in-the-band.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/206
