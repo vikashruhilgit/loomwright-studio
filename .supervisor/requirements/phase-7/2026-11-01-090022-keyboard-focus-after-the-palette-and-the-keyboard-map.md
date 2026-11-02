@@ -89,3 +89,9 @@ app/src/shell/Sidebar.tsx
 app/src/components/CommandPalette
 app/src/screens/keymap
 app/e2e/keyboard.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-02T05:07:04Z
+- **Brief:** .supervisor/jobs/done/2026-11-01-keyboard-focus-after-the-palette-and-the-keyboard-map.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/204
