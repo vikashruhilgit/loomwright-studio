@@ -8,7 +8,7 @@ To regenerate the screenshots (macOS):
 cd app && npm run build && KEYBOARD_EVIDENCE=1 npx playwright test e2e/keyboard.spec.ts --workers=1
 ```
 
-Without `KEYBOARD_EVIDENCE=1` the spec writes its screenshots to Playwright's per-test output directory, so CI never changes these files, and one of its tests fails if any file in this directory is newer than the run's start. Another test fails if this README stops naming a light and a dark file for a view, or if a file here is not named. The spec checks behaviour and never compares pixels, because fonts differ between macOS and the Ubuntu CI run. All 6 files were captured on macOS on 2026-11-01. In the dark shots the sidebar reads grey: it is translucent over the window's vibrancy, which a headless capture does not have.
+Without `KEYBOARD_EVIDENCE=1` the spec writes its screenshots to Playwright's per-test output directory, so CI never changes these files, and one of its tests fails if any file in this directory is newer than the run's start. Another test fails if this README stops naming a light and a dark file for a view, or if a file here is not named. The spec checks behaviour and never compares pixels, because fonts differ between macOS and the Ubuntu CI run. All 6 files were captured on macOS on 2026-11-01. Phase 7 item 29 (the shared Back crumb) changed `keymap`, so `keymap-light.png` and `keymap-dark.png` were taken again for it on macOS on 2026-11-02; the other four are unchanged. In the dark shots the sidebar reads grey: it is translucent over the window's vibrancy, which a headless capture does not have.
 
 ## Screenshots
 
