@@ -282,7 +282,7 @@ Every data field a view shows, and its source. A source is a kernel column at th
 
 | Item | File |
 |---|---|
-| 01 | `2026-11-02-160001-phase-8-foundation-decisions-contract-seams-and-probes.md` (Scope 3 closed sets, Scope 5 migration 020: `repo_policies`, `pr_tracks`, `mcp_connections`; Scope 7 the app contract) |
+| 01 | `2026-11-02-160001-phase-8-foundation-decisions-contract-seams-and-probes.md` (Scope 3 closed sets, Scope 5 migration 020: `repo_policies`, `pr_tracks`, `mcp_connections`; Scope 7 the app contract). Its PR #216 records D38, D39 and D40 in `docs/DECISIONS.md` and merges before this mockup's PR. |
 | 03 | `2026-11-02-160003-github-app-every-permission-and-down-scoped-session-tokens.md` |
 | 04 | `2026-11-02-160004-live-mode-and-github-write-in-sessions.md` |
 | 06 | `2026-11-02-160006-mcp-connector-mechanism-with-oauth.md` |
