@@ -81,3 +81,9 @@ none
 docs/design/mockups/gui-v2.html
 app/src/screens/settings
 app/e2e/settings.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-02T05:08:24Z
+- **Brief:** .supervisor/jobs/done/2026-11-01-settings-health-marked-last-known-when-unreachable.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/203
