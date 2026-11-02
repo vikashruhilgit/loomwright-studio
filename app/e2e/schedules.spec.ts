@@ -36,8 +36,8 @@ import { SCHEDULES_TEST_IDS as IDS } from "../src/screens/schedules/model";
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-7-polish/schedules/", import.meta.url));
 const README = join(EVIDENCE_DIR, "README.md");
 const THEMES = ["light", "dark"] as const;
-/** The mockup's states (`schedules-<state>`) and the two this screen adds to them, as the file names have them. */
-const STATES = ["empty", "loading", "populated", "not-fired", "confirm", "error", "unreachable"] as const;
+/** The mockup's states (`schedules-<state>`) and the ones this screen adds to them (the confirm, and the skipped fires' chip at the default and the minimum window size), as the file names have them. */
+const STATES = ["empty", "loading", "populated", "populated-skipped", "populated-skipped-min", "not-fired", "confirm", "error", "unreachable"] as const;
 
 /** When this run began, for the guard that the tracked evidence dir is untouched without `SCHEDULES_EVIDENCE`. */
 const RUN_START = Date.now();
@@ -125,6 +125,160 @@ async function boxes(page: Page, id: string): Promise<(({ x: number; y: number; 
 }
 
 const switchNamed = (page: Page, name: string): Locator => page.getByRole("switch", { name });
+
+/**
+ * The window's own size, from the main process (`BrowserWindow.getSize()`, the outer size `main.ts` sets): on Linux the frame
+ * and menu bar take about 27px of it, so the renderer's `innerHeight` is shorter than the window; on macOS they coincide.
+ */
+async function windowSize(): Promise<number[]> {
+  return (await app?.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getSize())) ?? [];
+}
+
+/** Resize the already-launched window (the same path as `settings.spec.ts`), wait until the window is that size and the page is that wide (the layout breakpoints read the width only). */
+async function resizeWindow(page: Page, width: number, height: number): Promise<void> {
+  await app?.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0]?.setSize(size.width, size.height), { width, height });
+  await expect.poll(windowSize, { message: `the window is ${width}x${height}` }).toEqual([width, height]);
+  await expect.poll(() => page.evaluate(() => window.innerWidth), { message: `the page is ${width}px wide` }).toBe(width);
+  await settle(page);
+}
+
+/** Page the all-triggers history twice, so the poll's four `playbook_not_enabled` misses (page two of the fixture) are rows. */
+async function pageToSkipped(page: Page): Promise<Locator> {
+  for (const shown of ["All · 23+", "All · 36+"]) {
+    await byId(page, IDS.loadOlder).click();
+    await expect(byId(page, IDS.filterAll)).toHaveText(shown);
+  }
+  const skipped = byId(page, IDS.allFire).and(page.locator('[data-reason="playbook_not_enabled"]'));
+  await expect(skipped.first().getByTestId(IDS.fireBadge)).toHaveText("playbook off: fires are skipped");
+  return skipped;
+}
+
+interface ChipReport {
+  /** The `.badge` elements measured (one per `IDS.fireBadge`). */
+  readonly measured: number;
+  /** Of those, the ones on a `playbook_not_enabled` row. */
+  readonly skipped: number;
+  readonly problems: string[];
+}
+
+/**
+ * The chip checks on the `.badge` inside every `IDS.fireBadge` on screen (both tables): the badge shows its whole text
+ * (no scroll overflow, no ellipsis, the text's `Range` and the badge's box inside the `td`'s box), its `td` ends inside the
+ * window, its row is no taller than the table's shortest (rows keep their fixed height), and the recorded-reason line under it (when there is one) is inside the same cell and does not overlap the badge.
+ */
+async function chipReport(page: Page): Promise<ChipReport> {
+  return page.evaluate(
+    ({ badgeId, reasonId }) => {
+      const problems: string[] = [];
+      let measured = 0;
+      let skipped = 0;
+      const within = (inner: DOMRect, outer: DOMRect) => inner.left >= outer.left - 0.5 && inner.right <= outer.right + 0.5 && inner.top >= outer.top - 0.5 && inner.bottom <= outer.bottom + 0.5;
+      for (const wrapper of document.querySelectorAll(`[data-testid="${badgeId}"]`)) {
+        const badge = wrapper.querySelector<HTMLElement>(".badge");
+        const cell = wrapper.closest("td");
+        const row = wrapper.closest("tr");
+        if (badge === null || cell === null || row === null) {
+          problems.push("a fire badge has no .badge, td or tr");
+          continue;
+        }
+        measured += 1;
+        const reason = row.getAttribute("data-reason") ?? "";
+        if (reason === "playbook_not_enabled") skipped += 1;
+        const name = `${row.getAttribute("data-kind")}/${reason || "-"} "${badge.textContent?.trim() ?? ""}"`;
+        const box = badge.getBoundingClientRect();
+        const cellBox = cell.getBoundingClientRect();
+        if (badge.scrollWidth > badge.clientWidth || badge.scrollHeight > badge.clientHeight) problems.push(`${name}: the badge scrolls (${badge.scrollWidth}x${badge.scrollHeight} in ${badge.clientWidth}x${badge.clientHeight})`);
+        if (getComputedStyle(badge).textOverflow === "ellipsis") problems.push(`${name}: the badge ends its text in an ellipsis`);
+        const range = document.createRange();
+        range.selectNodeContents(badge);
+        if (!within(range.getBoundingClientRect(), cellBox)) problems.push(`${name}: the text is outside its cell`);
+        if (!within(box, cellBox)) problems.push(`${name}: the badge is outside its cell`);
+        if (cellBox.right > window.innerWidth + 0.5) problems.push(`${name}: the cell ends at ${cellBox.right}, past the window's ${window.innerWidth}`);
+        // Rows are a fixed height (a row is only as tall as that height unless its content outgrows it), so a row taller than the shortest in its table is a chip that did not fit its row.
+        const rowHeights = [...(row.closest("tbody")?.querySelectorAll("tr") ?? [])].map((r) => r.getBoundingClientRect().height);
+        if (row.getBoundingClientRect().height > Math.min(...rowHeights) + 0.5) problems.push(`${name}: the row is ${row.getBoundingClientRect().height}px tall, taller than the table's shortest row (${Math.min(...rowHeights)}px)`);
+        const line = row.querySelector<HTMLElement>(`[data-testid="${reasonId}"]`);
+        if (line !== null) {
+          const lineBox = line.getBoundingClientRect();
+          if (!within(lineBox, cellBox)) problems.push(`${name}: the reason line is outside its cell`);
+          if (lineBox.top < box.bottom - 0.5 && lineBox.bottom > box.top + 0.5 && lineBox.left < box.right && lineBox.right > box.left) problems.push(`${name}: the reason line overlaps the badge`);
+        }
+      }
+      return { measured, skipped, problems };
+    },
+    { badgeId: IDS.fireBadge, reasonId: IDS.fireReason },
+  );
+}
+
+/** What each header cell shares with its column: for each of When, Trigger and Result, every cell's left and right x differ from the header's by no more than half a pixel. */
+async function columnMisalignments(page: Page): Promise<string[]> {
+  return page.evaluate((tableId) => {
+    const table = document.querySelector(`[data-testid="${tableId}"]`);
+    const problems: string[] = [];
+    const heads = [...(table?.querySelectorAll("thead th") ?? [])];
+    if (heads.length !== 3) return [`the table has ${heads.length} header cells, not 3`];
+    const rows = [...(table?.querySelectorAll("tbody tr") ?? [])];
+    if (rows.length === 0) return ["the table has no rows"];
+    heads.forEach((th, column) => {
+      const head = th.getBoundingClientRect();
+      for (const row of rows) {
+        const cell = row.children[column]?.getBoundingClientRect();
+        if (cell === undefined) problems.push(`a row has no cell ${column}`);
+        else if (Math.abs(cell.left - head.left) > 0.5 || Math.abs(cell.right - head.right) > 0.5) problems.push(`${th.textContent}: header ${head.left}-${head.right}, cell ${cell.left}-${cell.right}`);
+      }
+    });
+    return problems;
+  }, IDS.table);
+}
+
+/** The `Page`'s two themes, one after the other (reset to the app's own afterwards), each `settle`d. */
+async function inEachTheme(page: Page, check: (theme: (typeof THEMES)[number]) => Promise<void>): Promise<void> {
+  for (const theme of THEMES) {
+    await setTheme(page, theme);
+    await settle(page);
+    await check(theme);
+  }
+  await setTheme(page, undefined);
+}
+
+/**
+ * The "×N" slot check on every history row with a count: the count is whole (its text does not overflow its box) and its box
+ * does not touch the Result chip's box, so the reserved slot (not luck) keeps the two apart. Returns the rows measured.
+ */
+async function countClearance(page: Page): Promise<{ readonly measured: number; readonly problems: string[] }> {
+  return page.evaluate(() => {
+    const problems: string[] = [];
+    let measured = 0;
+    for (const count of document.querySelectorAll<HTMLElement>(".schedules-table .schedules-result > .schedules-count")) {
+      const badge = count.parentElement?.querySelector<HTMLElement>(".badge");
+      if (badge === null || badge === undefined) continue;
+      measured += 1;
+      const name = `"${badge.textContent?.trim() ?? ""}" with ${count.textContent?.trim() ?? ""}`;
+      const a = count.getBoundingClientRect();
+      const b = badge.getBoundingClientRect();
+      if (count.scrollWidth > count.clientWidth) problems.push(`${name}: the count is cut (${count.scrollWidth} in ${count.clientWidth})`);
+      if (a.left < b.right + 0.5 && a.right > b.left && a.top < b.bottom && a.bottom > b.top) problems.push(`${name}: the count (${a.left}-${a.right}) touches the chip (${b.left}-${b.right})`);
+    }
+    return { measured, problems };
+  });
+}
+
+/** The pane and table fit checks of the minimum window: no horizontal scroll, the table inside its parent, and a Trigger column that still reads. */
+async function paneFit(page: Page): Promise<{ readonly paneScroll: number; readonly paneClient: number; readonly tableWidth: number; readonly parentClient: number; readonly triggerHead: number; readonly names: number[] }> {
+  return page.evaluate((tableId) => {
+    const table = document.querySelector<HTMLElement>(`[data-testid="${tableId}"]`);
+    const pane = table?.closest<HTMLElement>(".schedules-pane");
+    if (table === null || table === undefined || pane === null || pane === undefined || table.parentElement === null) throw new Error("no table in a .schedules-pane");
+    return {
+      paneScroll: pane.scrollWidth,
+      paneClient: pane.clientWidth,
+      tableWidth: table.offsetWidth,
+      parentClient: table.parentElement.clientWidth,
+      triggerHead: table.querySelectorAll("thead th")[1]?.getBoundingClientRect().width ?? 0,
+      names: [...table.querySelectorAll("tbody tr td:nth-child(2) b")].map((b) => b.getBoundingClientRect().width),
+    };
+  }, IDS.table);
+}
 
 // ---- AC1: the timeline ---------------------------------------------------------------------------------------
 
@@ -618,6 +772,191 @@ test("AC7: a trigger_fired and a wakeup_scheduled event update the timeline and 
   fx.toggleElsewhere(5);
   await expect(switchNamed(page, "Morning digest trigger is on")).toHaveAttribute("aria-checked", "true");
   await expect(byId(page, IDS.entry)).toHaveCount(7);
+});
+
+// ---- The Result chip fits its column (phase 7 polish, item 25) ---------------------------------------------------------
+
+test("AC1 (item 25): at the default window size every Result chip shows its whole text inside its cell, light and dark, in the all-triggers table and in the poll's own history", async ({}, testInfo) => {
+  const { page } = await openPopulated();
+  expect(await windowSize(), "the default window size (main.ts)").toEqual([1180, 760]);
+  expect(await page.evaluate(() => window.innerWidth), "the page is as wide as the window").toBe(1180);
+  const skipped = await pageToSkipped(page);
+  const skippedRows = await skipped.count();
+  expect(skippedRows, "the history shows playbook_not_enabled rows").toBeGreaterThan(0);
+  await inEachTheme(page, async (theme) => {
+    const report = await chipReport(page);
+    expect(report.measured, `${theme}: every row of the all-triggers table has a chip to measure`).toBe(await byId(page, IDS.allFire).count());
+    expect(report.skipped, `${theme}: the playbook_not_enabled rows are among those measured`).toBe(skippedRows);
+    expect(report.problems, `${theme}: no chip is clipped`).toEqual([]);
+    const counts = await countClearance(page);
+    expect(counts.measured, `${theme}: rows with a count are measured`).toBeGreaterThan(0);
+    expect(counts.problems, `${theme}: every count is whole and clear of its chip`).toEqual([]);
+    for (const row of await skipped.all()) await expect(row.getByTestId(IDS.fireReason), "the recorded reason is still under the chip").toHaveText("playbook_not_enabled");
+  });
+  expect(await columnMisalignments(page), "the columns line up with their headers").toEqual([]);
+  await skipped.first().scrollIntoViewIfNeeded();
+  await screenshots(page, "populated-skipped", testInfo);
+
+  // The poll's own history: its four skipped polls are one row with a count, "×4", beside the chip.
+  await page.getByTestId(IDS.select).filter({ hasText: "Review PRs on studio-sandbox" }).click();
+  await expect(byId(page, IDS.detailName)).toHaveText("Review PRs on studio-sandbox");
+  await byId(page, IDS.loadOlder).click();
+  await expect(byId(page, IDS.filterAll)).toHaveText("All · 20+");
+  const own = byId(page, IDS.fire).and(page.locator('[data-reason="playbook_not_enabled"]'));
+  await expect(own).toHaveCount(1);
+  await expect(own).toContainText("×4");
+  await inEachTheme(page, async (theme) => {
+    const report = await chipReport(page);
+    expect(report.measured, `${theme}: every row of the poll's table has a chip to measure`).toBe(await byId(page, IDS.fire).count());
+    expect(report.skipped, `${theme}: the skipped row is among them`).toBe(1);
+    expect(report.problems, `${theme}: no chip is clipped`).toEqual([]);
+    const counts = await countClearance(page);
+    expect(counts.measured, `${theme}: rows with a count are measured`).toBeGreaterThan(0);
+    expect(counts.problems, `${theme}: every count is whole and clear of its chip`).toEqual([]);
+  });
+  expect(await columnMisalignments(page), "the columns line up with their headers").toEqual([]);
+});
+
+test("AC2 (item 25): at the minimum window size (900x560) no Result chip is clipped, the table fits its pane, and the Trigger column keeps a usable width, light and dark", async ({}, testInfo) => {
+  const { page } = await openPopulated();
+  await resizeWindow(page, 900, 560);
+  const skipped = await pageToSkipped(page);
+  const skippedRows = await skipped.count();
+  expect(skippedRows, "the history shows playbook_not_enabled rows").toBeGreaterThan(0);
+  await inEachTheme(page, async (theme) => {
+    const report = await chipReport(page);
+    expect(report.measured, `${theme}: every row of the all-triggers table has a chip to measure`).toBe(await byId(page, IDS.allFire).count());
+    expect(report.skipped, `${theme}: the playbook_not_enabled rows are among those measured`).toBe(skippedRows);
+    expect(report.problems, `${theme}: no chip is clipped`).toEqual([]);
+    const counts = await countClearance(page);
+    expect(counts.measured, `${theme}: rows with a count are measured`).toBeGreaterThan(0);
+    expect(counts.problems, `${theme}: every count is whole and clear of its chip`).toEqual([]);
+    const fit = await paneFit(page);
+    expect(fit.paneScroll, `${theme}: the pane has no horizontal scroll`).toBeLessThanOrEqual(fit.paneClient);
+    expect(fit.tableWidth, `${theme}: the table fits its parent`).toBeLessThanOrEqual(fit.parentClient);
+    expect(fit.triggerHead, `${theme}: the Trigger column keeps a usable width`).toBeGreaterThanOrEqual(96);
+    expect(fit.names.length).toBeGreaterThan(0);
+    for (const width of fit.names) expect(width, `${theme}: a trigger name has width`).toBeGreaterThan(0);
+  });
+  await skipped.first().scrollIntoViewIfNeeded();
+  await screenshots(page, "populated-skipped-min", testInfo);
+
+  // The poll's own history at this size: the "×4" row, chip and count side by side.
+  await page.getByTestId(IDS.select).filter({ hasText: "Review PRs on studio-sandbox" }).click();
+  await expect(byId(page, IDS.detailName)).toHaveText("Review PRs on studio-sandbox");
+  await byId(page, IDS.loadOlder).click();
+  await expect(byId(page, IDS.filterAll)).toHaveText("All · 20+");
+  await expect(byId(page, IDS.fire).and(page.locator('[data-reason="playbook_not_enabled"]'))).toContainText("×4");
+  await inEachTheme(page, async (theme) => {
+    const report = await chipReport(page);
+    expect(report.skipped, `${theme}: the skipped row is measured`).toBe(1);
+    expect(report.problems, `${theme}: no chip is clipped`).toEqual([]);
+    const counts = await countClearance(page);
+    expect(counts.measured, `${theme}: rows with a count are measured`).toBeGreaterThan(0);
+    expect(counts.problems, `${theme}: every count is whole and clear of its chip`).toEqual([]);
+    const fit = await paneFit(page);
+    expect(fit.paneScroll, `${theme}: the pane has no horizontal scroll`).toBeLessThanOrEqual(fit.paneClient);
+    expect(fit.tableWidth, `${theme}: the table fits its parent`).toBeLessThanOrEqual(fit.parentClient);
+    expect(fit.triggerHead, `${theme}: the Trigger column keeps a usable width`).toBeGreaterThanOrEqual(96);
+    for (const width of fit.names) expect(width, `${theme}: a trigger name has width`).toBeGreaterThan(0);
+  });
+});
+
+test("AC3 (item 25): each header cell shares its left and right x with its column's cells at the default and the minimum window size, with a skipped row shown", async () => {
+  const { page } = await openPopulated();
+  await pageToSkipped(page);
+  for (const [width, height] of [[1180, 760], [900, 560]] as const) {
+    await resizeWindow(page, width, height);
+    await inEachTheme(page, async (theme) => {
+      expect(await columnMisalignments(page), `${theme} at ${width}px: the columns line up with their headers`).toEqual([]);
+    });
+  }
+});
+
+test("AC3 (item 25): at the minimum window size a refetch that raises a shown row's count moves no row already shown, a skipped row included", async () => {
+  const { fx, page } = await openPopulated();
+  await resizeWindow(page, 900, 560);
+  await pageToSkipped(page);
+  await settle(page);
+  const before = await boxes(page, IDS.allFire);
+  expect(before.length, "the paged history has rows with boxes").toBeGreaterThan(15);
+  expect(before.every((b) => b !== null)).toBe(true);
+  const top = byId(page, IDS.allFire).first();
+  await expect(top).toHaveAttribute("data-count", "1");
+  fx.fireOnPoll();
+  // The poll's new fire joins the top fired row: its count goes 1 -> 2 and its "×2" appears.
+  await expect(top).toHaveAttribute("data-count", "2");
+  await expect(top).toContainText("×2");
+  await settle(page);
+  expect(await boxes(page, IDS.allFire), "no history row already shown moved or resized").toEqual(before);
+});
+
+test("AC3 (item 25): a row's height depends only on its chip label and reason line, never on its count or its time, at 1180x760 and 900x560, in a default and a wide font", async () => {
+  const { page } = await openPopulated();
+  await pageToSkipped(page);
+  const heights = (): Promise<number[]> =>
+    page.evaluate((id) => [...document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`)].map((row) => row.getBoundingClientRect().height), IDS.allFire);
+  /** Put `count` (null: no count span) and `time` on every row's DOM, as a refetch would; the rows are shared with React only for text. */
+  const setText = (count: string | null, time: string): Promise<void> =>
+    page.evaluate(
+      ({ id, count, time }) => {
+        for (const row of document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`)) {
+          const result = row.querySelector<HTMLElement>(".schedules-result");
+          if (result === null) continue;
+          let span = result.querySelector<HTMLElement>(".schedules-count");
+          if (count === null) span?.remove();
+          else {
+            if (span === null) {
+              span = document.createElement("span");
+              span.className = "schedules-count";
+              span.append(document.createElement("span"));
+              result.append(span);
+            }
+            const shown = span.firstElementChild;
+            if (shown !== null) shown.textContent = count;
+          }
+          const stamp = row.querySelector("time");
+          if (stamp !== null) stamp.textContent = time;
+        }
+      },
+      { id: IDS.allFire, count, time },
+    );
+  for (const [width, height] of [[1180, 760], [900, 560]] as const) {
+    await resizeWindow(page, width, height);
+    for (const font of ["", "Verdana, sans-serif"]) {
+      await page.evaluate((family) => (family === "" ? document.documentElement.style.removeProperty("--font-sans") : document.documentElement.style.setProperty("--font-sans", family)), font);
+      await settle(page);
+      const where = `${width}px, font ${font === "" ? "default" : font}`;
+      // The reference is each row with its own count and time as rendered; the variants only change text inside it.
+      const base = await heights();
+      expect(base.length, "the paged history has rows").toBeGreaterThan(15);
+      // The chips fit their rows in this font too (a wider font wraps a chip to more lines; its row must still hold them).
+      const report = await chipReport(page);
+      expect(report.skipped, `${where}: the playbook_not_enabled rows are measured`).toBeGreaterThan(0);
+      expect(report.problems, `${where}: no chip is clipped and no row outgrew its height`).toEqual([]);
+      if (width < 1140) {
+        const fit = await paneFit(page);
+        expect(fit.paneScroll, `${where}: the pane has no horizontal scroll`).toBeLessThanOrEqual(fit.paneClient);
+        expect(fit.tableWidth, `${where}: the table fits its parent`).toBeLessThanOrEqual(fit.parentClient);
+        expect(fit.triggerHead, `${where}: the Trigger column keeps a usable width`).toBeGreaterThanOrEqual(96);
+      }
+      for (const [count, time] of [[null, "14:20"], ["×2", "14:20"], ["×999", "28 Sep 23:59"], ["×1000", "Wed 23:59"], ["×9999", "28 Sep 23:59"]] as const) {
+        await setText(count, time);
+        await settle(page);
+        const now = await heights();
+        // Rows keep their height whatever their count; compare each row with the same row of the first variant.
+        if (count === null) base.splice(0, base.length, ...now);
+        expect(now, `${where}: count ${String(count)} and time ${time} change no row's height`).toEqual(base);
+        // A count up to ×999 is whole and clear of the chip in this font and size (a wider one clips, with the full value as its title).
+        if (count === "×2" || count === "×999" || count === "×1000") {
+          const clear = await countClearance(page);
+          const problems = count === "×1000" ? clear.problems.filter((p) => !p.includes("is cut")) : clear.problems;
+          expect(problems, `${where}: count ${count} is clear of its chip${count === "×1000" ? "" : " and whole"}`).toEqual([]);
+        }
+      }
+    }
+    await page.evaluate(() => document.documentElement.style.removeProperty("--font-sans"));
+  }
 });
 
 // ---- AC8: names, and tokens only ---------------------------------------------------------------------------------------
