@@ -48,7 +48,7 @@ import type { GitHubConnector, GitHubConnectorDeps } from "../src/integrations/g
 import { githubRoutes, githubRoutesPart } from "../src/integrations/github/routes.js";
 import { draftsPart, githubToolsPart, integrationsContributionOf } from "../src/integrations/index.js";
 import { CONNECTOR_STATUSES } from "../src/integrations/types.js";
-import type { ConnectorStatus, GitHubFailure } from "../src/integrations/types.js";
+import type { ConnectorStatus, GitHubClient, GitHubFailure } from "../src/integrations/types.js";
 import type { Store } from "../src/store/index.js";
 import { FAKE_RATE_LIMIT, FakeGitHubClient } from "./fixtures/github-fake.js";
 import type { FakeGitHubData } from "./fixtures/github-fake.js";
@@ -961,6 +961,70 @@ describe("needs_permissions (D39)", () => {
     expect(res.status).toBe(422);
     expect(rowNow()?.["status"]).toBe("needs_permissions");
     expect(statusEvents()).toEqual([{ connector_id: rowNow()?.["id"], kind: "github", status: "needs_permissions", refused: "token_write_scoped" }]);
+  });
+
+  describe("Refresh picks up permissions the owner accepted on github.com", () => {
+    /** A holder that reports `granted` only on a mint after `invalidate()`; the held (stale) token reports `stale`. */
+    function staleHolder(stale: Record<string, string>, granted: Record<string, string>): GitHubAppTokens & { invalidated: number; mints: number } {
+      let reported: Record<string, string> | undefined = stale;
+      const h = {
+        invalidated: 0,
+        mints: 0,
+        configured: () => true,
+        current: async () => {
+          if (reported === undefined) {
+            h.mints += 1;
+            reported = granted;
+          }
+          return { ok: true as const, token: "tok", expires_at: "2099-01-01T00:00:00.000Z", permissions: reported };
+        },
+        mintScoped: async () => ({ ok: false as const, error: "no_credentials" as const }),
+        invalidate: () => {
+          h.invalidated += 1;
+          reported = undefined;
+        },
+        get lastMintFailure() {
+          return undefined;
+        },
+        get lastReportedPermissions() {
+          return reported;
+        },
+        clearMintFailure: () => {},
+      };
+      return h as unknown as GitHubAppTokens & { invalidated: number; mints: number };
+    }
+    const refreshWith = (tokens: GitHubAppTokens): Promise<ContributedRouteResponse> => {
+      const client = { listReachableRepos: async () => { await tokens.current(); return { ok: true as const, data: [{ full_name: "owner-one/studio-sandbox", private: true }] }; } };
+      const c = createGitHubConnector({ keychain, writer: keychain, deleter: keychain, tokens, clientFor: () => client as unknown as GitHubClient });
+      return call(c, "GET", "/connectors/github/repos", undefined, { refresh: "1" });
+    };
+
+    it("a needs_permissions App row forgets the held token, mints afresh and reads connected: one event", async () => {
+      appRow("needs_permissions", { metadata: "read" });
+      const h = staleHolder({ metadata: "read" }, { ...FULL });
+      const res = await refreshWith(h);
+      expect(res.status).toBe(200);
+      expect(h.invalidated).toBe(1);
+      expect(h.mints).toBe(1);
+      expect(rowNow()?.["status"]).toBe("connected");
+      expect(statusEvents()).toEqual([{ connector_id: rowNow()?.["id"], kind: "github", status: "connected" }]);
+      expect(await urlNow()).toBeNull();
+    });
+
+    it("still short on GitHub: the row stays needs_permissions with no event", async () => {
+      appRow("needs_permissions", { metadata: "read" });
+      await refreshWith(staleHolder({ metadata: "read" }, { metadata: "read", contents: "write" }));
+      expect(rowNow()?.["status"]).toBe("needs_permissions");
+      expect(statusEvents()).toEqual([]);
+    });
+
+    it("a connected App row is not invalidated by a refresh", async () => {
+      appRow("connected");
+      const h = staleHolder({ ...FULL }, { ...FULL });
+      await refreshWith(h);
+      expect(h.invalidated).toBe(0);
+      expect(statusEvents()).toEqual([]);
+    });
   });
 
   describe("GET /connectors/github/app/upgrade", () => {

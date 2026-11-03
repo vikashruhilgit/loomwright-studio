@@ -106,7 +106,7 @@ The Integrations screen (`app/src/screens/integrations/`) offers the GitHub App 
 - a `connector_status` event, arriving after the setup call was answered, whose payload has no `refused` (a `refused` that is absent, `null` or `""` is no refusal);
 - the GitHub row becoming an App connection (`method: "app"`) with a well-formed `app_slug` and no `installation_id`, with its `updated_at` changed since the dialog opened.
 
-Events from before the dialog opened are ignored (the dialog remembers the newest event id when it mounts), and so are non-refusal events that arrive before the setup call is answered. A signal the dialog does not recognise leaves it on step 1; it never crashes. The dialog closes when the connector reads `connected` or `expiring` with `method: "app"`.
+Events from before the dialog opened are ignored (the dialog remembers the newest event id when it mounts), and so are non-refusal events that arrive before the setup call is answered. A signal the dialog does not recognise leaves it on step 1; it never crashes. The dialog closes when the connector reads `connected`, `expiring` or `needs_permissions` with `method: "app"`.
 
 **The `refused` reading.** A refusal is read from the `refused` field of a `connector_status` event's payload (the shape the token path's events already use), or from the error code of a refusal of the setup route. The value is only ever checked against the closed list (`GitHubAppSetupRefusal`), never rendered:
 

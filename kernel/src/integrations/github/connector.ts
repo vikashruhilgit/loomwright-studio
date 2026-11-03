@@ -45,6 +45,10 @@
 // reads `needs_permissions` (D39: the credential still works and is in use; the
 // owner accepts the rest on github.com, `GET /connectors/github/app/upgrade`
 // answers where), and returns to `connected` once a later mint reports them all.
+// The holder mints only on the daemon's own calls and reuses its token until near
+// expiry, so that mint is not prompt by itself: Refresh (`refreshRepos`) on a
+// `needs_permissions` App row forgets the held token, reads with a fresh mint and
+// applies what it reported, which is how the owner's fix is picked up at once.
 // The token path stays read-only: only a PAT is refused `token_write_scoped`.
 //
 // The connector and the App port change the same Keychain items, row columns
@@ -640,16 +644,23 @@ export function createGitHubConnector(deps: GitHubConnectorDeps = {}): GitHubCon
       present = false;
     }
     if (!present) return failure("keychain_failed", MESSAGES.keychain_missing, before);
+    // An App row short of its permissions may have been fixed on github.com since the holder
+    // last minted, and the holder reuses its token until near expiry. Forget it, so the read
+    // below mints a fresh one and reports the permissions GitHub holds now; they are applied
+    // to the row after the read (never inside a store transaction, and no mint of its own).
+    const reconcile = before.method === "app" && before.status === "needs_permissions";
+    if (reconcile) tokens.invalidate();
     // The client resolves the credential itself, fresh on each call: the PAT item, else the App's token.
     const repos = await clientFor(undefined).listReachableRepos();
     if (!repos.ok) return githubFailure(store, repos, now().toISOString(), false);
     const at = now().toISOString();
-    const row = store.transaction(() => {
+    store.transaction(() => {
       store
         .prepare("UPDATE connectors SET reachable_repos_json = ?, verified_at = ?, updated_at = ? WHERE id = ?")
         .run(JSON.stringify(repos.data.map((r) => r.full_name)), at, at, before.id);
-      return githubConnectorRow(store) as ConnectorRow;
     });
+    if (reconcile) applyGitHubAppMintFailure(store, now(), tokens);
+    const row = githubConnectorRow(store) as ConnectorRow;
     return { ok: true, connector: connectorView(row) };
   }
 
