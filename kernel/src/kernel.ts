@@ -24,8 +24,10 @@ import type { AgentLimitsLookup } from "./budget/index.js";
 import { recordSessionOutput } from "./console/output.js";
 import { isPaused } from "./console/pause.js";
 import { PHASE1_RESERVED, mergeContributions } from "./features/contribution.js";
-import type { FeatureContribution, MergedContributions } from "./features/contribution.js";
+import type { ContributedTool, FeatureContribution, MergedContributions } from "./features/contribution.js";
 import { SHIPPED_CONTRIBUTIONS } from "./features/index.js";
+import { mcpProxyTools } from "./integrations/mcp/tools.js";
+import type { McpToolGrants } from "./integrations/mcp/tools.js";
 import { toolsForConnectors } from "./integrations/tool-filter.js";
 import type { ConnectorKind, GitHubClient } from "./integrations/types.js";
 import { EventLoop } from "./loop/loop.js";
@@ -225,6 +227,26 @@ export function githubWriteFor(dataDir: string): (agent: string) => boolean {
 }
 
 /**
+ * The MCP tool grants of `agent`, as the kernel wires them (phase 8 item 06):
+ * the server tools the owner named under `jira` / `clickup` in the agent's own
+ * settings file (`connectors: {jira: ["<tool>"]}`), through the one reader, read
+ * afresh at every launch (a start and a resume). Any refusal (a missing, invalid
+ * or model-less file, an id that names no file, no agent at all) or a read that
+ * throws grants none: a session lists fewer tools, never more.
+ */
+export function mcpToolGrantsFor(dataDir: string): (agent: string | null) => McpToolGrants {
+  return (agent) => {
+    if (agent === null) return {};
+    try {
+      const r = readAgentSettings(dataDir, agent);
+      return r.ok ? (r.settings.mcpGrants ?? {}) : {};
+    } catch {
+      return {};
+    }
+  };
+}
+
+/**
  * The budget's `agentLimits` lookup, as the kernel wires it: each agent's
  * `limits.tokens_per_day` and `limits.sessions_at_once` from its own settings
  * file, `<dataDir>/config/agents/<id>.json`, through the one reader
@@ -340,6 +362,15 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     const budget = new Budget({ store, authProvider, agentLimits: agentLimitsFor(dataDir) }, { now });
     // The client the loop's due work gets, also given to a contributed tool's context (a poll playbook's dry run); absent stays absent.
     const githubOf = deps.githubClient === undefined ? {} : { github: deps.githubClient };
+    const mcpGrantsOf = mcpToolGrantsFor(dataDir);
+    // A proxy tool that can't be built (a name clash, a broken row) is not listed: a session lists fewer tools, never more.
+    const proxyToolsOf = (from: Store, grants: McpToolGrants): readonly ContributedTool[] => {
+      try {
+        return mcpProxyTools(from, grants);
+      } catch {
+        return [];
+      }
+    };
     const manager = new SessionManager(
       {
         store,
@@ -356,9 +387,17 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         // The owner's GitHub write grant, read the same way. No `sessionTokenMint` is wired here (a later item wires item 03's): a live, write-granted session is refused.
         githubWriteFor: githubWriteFor(dataDir),
         // Each session lists only the contributed tools its agent's grants allow (`requiresConnector`): it only narrows.
-        mcpServers: ({ sessionId, connectors }) => ({
-          [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now, ...githubOf }, toolsForConnectors(contributions.tools, connectors)),
-        }),
+        // An MCP connector's proxy tools are built per launch from the agent's per-tool grant and the connector's stored tool list;
+        // the filter keeps only the granted ones, and the pre-hold check below still sees only the contributed tools.
+        mcpServers: ({ sessionId, agent, connectors }) => {
+          const grants = mcpGrantsOf(agent);
+          return {
+            [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer(
+              { store, sessions: manager, sessionId, now, ...githubOf },
+              toolsForConnectors([...contributions.tools, ...proxyToolsOf(store, grants)], connectors, grants),
+            ),
+          };
+        },
         // The gate's pre-hold check, from the same contributed tools the server registers (it can only narrow).
         heldToolCheck: heldToolCheckOf(contributions.tools, (sessionId) => ({ store, sessions: manager, sessionId, now, ...githubOf })),
       },

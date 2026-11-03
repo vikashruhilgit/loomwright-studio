@@ -153,6 +153,7 @@ describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
       "gh_issue_edit",
       "gh_issue_close",
       "gh_api_write",
+      "mcp_write",
       "settings_write",
       "hooks_write",
     ]);
@@ -187,6 +188,8 @@ describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
     ["Bash", { command: "gh api -X POST repos/o/r/issues" }, "gh api POST", ["gh_api_write"]],
     ["Bash", { command: "gh api -X DELETE repos/o/r/x" }, "gh api DELETE", ["gh_api_write"]],
     ["Bash", { command: "gh api -Z repos/o/r" }, "gh api (flag unread)", ["gh_api_write"]],
+    // An MCP connector's non-read-only proxy tool (phase 8 item 06): the kernel fixed the `kernel_mcp_w_` name from its stored row.
+    ["mcp__kernel__kernel_mcp_w_jira_create_issue", { arguments_json: '{"summary":"x"}' }, "mcp_write", ["mcp_write"]],
     ["Bash", { command: "cat /home/o/.claude/CLAUDE.md" }, "Bash naming ~/.claude/", ["settings_write"]],
     ["Bash", { command: "cat settings.local.json" }, "Bash naming a settings*.json file", ["settings_write"]],
     ["Bash", { command: "chmod +x .git/hooks/pre-push" }, "Bash naming a hooks file", ["hooks_write"]],
@@ -211,6 +214,30 @@ describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
     // Phase 8 item 01 accepts these 2 with no rail label; item 05 adds their matcher, then this exemption goes.
     const NO_MATCHER_YET = ["gh_pr_request_reviewers", "gh_pr_comment_reply"];
     expect(NEVER_CATEGORIES.filter((c) => !reached.has(c) && !NO_MATCHER_YET.includes(c))).toEqual([]);
+  });
+
+  it("holds every MCP proxy tool that is not provably read-only as mcp_write, and lets only kernel_mcp_r_ through", () => {
+    const payload = (tool: string, input: unknown) => ({ tool, input, cwd: "/work" });
+    // The `w` prefix, and every other `kernel_mcp_` name (the rail fails closed on the prefix, not on a `w`).
+    for (const name of ["kernel_mcp_w_jira_create_issue", "kernel_mcp_w_clickup_x", "kernel_mcp_jira_create_issue", "kernel_mcp_x_jira_a", "kernel_mcp_", "kernel_mcp_R_jira_a", "kernel_mcp_read_jira_a"]) {
+      const full = `mcp__kernel__${name}`;
+      expect(classifyToolCall(full, { arguments_json: "{}" }, rail), name).toEqual({ kind: "outward", action: "mcp_write", payload: payload(full, { arguments_json: "{}" }) });
+    }
+    // A read-only proxy (the server's hint, kept in the kernel's row) and a tool of another namespace stay ordinary.
+    for (const name of ["mcp__kernel__kernel_mcp_r_jira_get_issue", "mcp__kernel__kernel_mcp_r_clickup_x", "mcp__other__kernel_mcp_w_jira_x", "kernel_mcp_w_jira_x", "mcp__kernel__kernel_github_pr_get"]) {
+      expect(classifyToolCall(name, {}, rail), name).toEqual({ kind: "ordinary" });
+    }
+    // Not an always-held tool: the owner's per-playbook "always" may cover it, so it is in no ALWAYS_HELD list.
+    expect(ALWAYS_HELD_TOOLS.some((t) => t.includes("kernel_mcp_"))).toBe(false);
+  });
+
+  it("denies an mcp_write call agent_boundary when the policy's never lists it, and holds it otherwise", () => {
+    const c = classifyToolCall("mcp__kernel__kernel_mcp_w_jira_create_issue", {}, rail);
+    if (c.kind !== "outward") throw new Error("not outward");
+    expect(boundaryDecision({ allowedTools: [], allowedBashPrefixes: [], never: ["mcp_write"] }, c)).toEqual({ kind: "boundary", category: "mcp_write" });
+    expect(boundaryDecision({ allowedTools: [], allowedBashPrefixes: [], never: ["git_push", "gh_api_write"] }, c)).toEqual({ kind: "none" });
+    expect(boundaryDecision({ allowedTools: [], allowedBashPrefixes: [] }, c)).toEqual({ kind: "none" });
+    expect(boundaryDenyReason("mcp_write")).toContain("mcp_write is in this agent's never list");
   });
 
   it("maps the ALWAYS_HELD_TOOLS actions, a merge and any other text to no category", () => {

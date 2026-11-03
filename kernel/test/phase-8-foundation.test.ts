@@ -13,6 +13,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agentSettingsPath, readAgentSettings, validateCharter } from "../src/agents/index.js";
+import { mergeConnectorsGrant, parseConnectorsGrant, parseMcpGrantValue } from "../src/agents/settings.js";
 import { AUTOMATE_NAME, AUTOMATE_PARTS, automateContribution, automateContributionOf } from "../src/automate/index.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { INTEGRATIONS_PARTS, githubAppRoutesPart, integrationsContribution, mcpPart, repoPolicyPart } from "../src/integrations/index.js";
@@ -170,26 +171,44 @@ describe("agent settings connectors grants", () => {
     }
   });
 
-  it("a jira or clickup entry in the array is connector_not_built (settings_invalid, field connectors), and writes nothing", () => {
+  it("a jira or clickup entry in the array is refused: its grant names tools (settings_invalid, field connectors), and nothing is written", () => {
     for (const kind of ["jira", "clickup"]) {
       write("mason", { ...BASE, connectors: ["github", kind] });
       const before = readFileSync(agentSettingsPath(tmp, "mason"), "utf8");
       const r = readAgentSettings(tmp, "mason");
       expect(r, kind).toMatchObject({ ok: false, error: "settings_invalid", field: "connectors" });
-      expect(r.ok ? "" : r.message).toContain("connector_not_built");
+      const message = r.ok ? "" : r.message;
+      expect(message).toContain(`the ${kind} grant names its tools`);
+      expect(message).not.toContain("connector_not_built");
       expect(readFileSync(agentSettingsPath(tmp, "mason"), "utf8")).toBe(before);
     }
     write("wright", { ...BASE, connectors: ["clickup"] });
     expect(readAgentSettings(tmp, "wright")).toMatchObject({ ok: false, error: "settings_invalid", field: "connectors" });
   });
 
-  it("a jira or clickup key in the object form is connector_not_built", () => {
+  it("a jira or clickup key in the object form reads ok with tool names, and is refused for anything else", () => {
     for (const kind of ["jira", "clickup"]) {
-      write("mason", { ...BASE, connectors: { [kind]: "read" } });
+      for (const bad of ["read", "write", [], ["a", ""], ["a", 1], [""], "x", null, {}, ["a\u0000b"], [`${"x".repeat(201)}`]]) {
+        write("mason", { ...BASE, connectors: { [kind]: bad } });
+        const r = readAgentSettings(tmp, "mason");
+        expect(r, `${kind} ${JSON.stringify(bad)}`).toMatchObject({ ok: false, error: "settings_invalid", field: "connectors" });
+        expect(r.ok ? "" : r.message).not.toContain("connector_not_built");
+      }
+      write("mason", { ...BASE, connectors: { [kind]: ["get_issue", "create_issue"] } });
       const r = readAgentSettings(tmp, "mason");
-      expect(r, kind).toMatchObject({ ok: false, error: "settings_invalid", field: "connectors" });
-      expect(r.ok ? "" : r.message).toContain("connector_not_built");
+      expect(r.ok && [r.settings.connectors, r.settings.mcpGrants, r.settings.githubWrite], kind).toEqual([[kind], { [kind]: ["get_issue", "create_issue"] }, undefined]);
     }
+  });
+
+  it("any mix of github, jira and clickup in the object form reads ok, github first; Wright reads it too", () => {
+    for (const id of ["wright", "mason"]) {
+      write(id, { ...BASE, connectors: { clickup: ["t"], github: "write", jira: ["a", "a", "b"] } });
+      const r = readAgentSettings(tmp, id);
+      expect(r.ok && [r.settings.connectors, r.settings.githubWrite, r.settings.mcpGrants], id).toEqual([["github", "jira", "clickup"], true, { jira: ["a", "b"], clickup: ["t"] }]);
+    }
+    write("mason", { ...BASE, connectors: { github: "read", jira: ["a"] } });
+    const r = readAgentSettings(tmp, "mason");
+    expect(r.ok && [r.settings.connectors, r.settings.githubWrite]).toEqual([["github", "jira"], undefined]);
   });
 
   it('connectors: {github: "write"} reads ok with connectors [github] and githubWrite true, for Wright and a crew member', () => {
@@ -217,14 +236,40 @@ describe("agent settings connectors grants", () => {
     expect(r).toMatchObject({ ok: false, error: "settings_invalid", field: "connectors" });
     expect(r.ok ? "" : r.message).not.toContain("github_write_not_built");
     write("mason", { ...BASE, connectors: { github: "write", jira: "read" } });
-    expect((readAgentSettings(tmp, "mason") as { message: string }).message).toContain("connector_not_built");
+    const mixed = readAgentSettings(tmp, "mason") as { message: string };
+    expect(mixed).toMatchObject({ ok: false, error: "settings_invalid", field: "connectors" });
+    expect(mixed.message).toContain("jira must be a non-empty array of tool names");
+    expect(mixed.message).not.toContain("connector_not_built");
   });
 
-  it("any other object form is refused too, never read as no grant", () => {
+  it('{github: "read"} reads ok, as ["github"] with no write; any other object form is refused too, never read as no grant', () => {
     write("mason", { ...BASE, connectors: { github: "read" } });
+    const r = readAgentSettings(tmp, "mason");
+    expect(r.ok && [r.settings.connectors, r.settings.githubWrite, r.settings.mcpGrants]).toEqual([["github"], undefined, undefined]);
+    for (const bad of [{}, { github: "admin" }, { github: true }, { github: ["github"] }, { slack: "read" }, { github: "read", slack: ["x"] }]) {
+      write("mason", { ...BASE, connectors: bad });
+      expect(readAgentSettings(tmp, "mason"), JSON.stringify(bad)).toMatchObject({ ok: false, error: "settings_invalid", field: "connectors" });
+    }
+    // A `__proto__` key is an unknown key (JSON.parse makes it an own property), never read.
+    writeFileSync(agentSettingsPath(tmp, "mason"), JSON.stringify(BASE).replace(/}$/, ',"connectors":{"__proto__":["x"]}}'));
     expect(readAgentSettings(tmp, "mason")).toMatchObject({ ok: false, error: "settings_invalid", field: "connectors" });
-    write("mason", { ...BASE, connectors: {} });
-    expect(readAgentSettings(tmp, "mason")).toMatchObject({ ok: false, error: "settings_invalid", field: "connectors" });
+  });
+
+  it("connector_not_built is emitted nowhere", () => {
+    for (const connectors of [["jira"], { jira: "read" }, { slack: "x" }, { github: "write", jira: "read" }]) {
+      write("mason", { ...BASE, connectors });
+      expect((readAgentSettings(tmp, "mason") as { message: string }).message).not.toContain("connector_not_built");
+    }
+  });
+
+  it("parseConnectorsGrant reads both forms and refuses by name", () => {
+    expect(parseConnectorsGrant(["github"])).toMatchObject({ ok: true, grant: { connectors: ["github"], githubWrite: false, mcp: {} } });
+    expect(parseConnectorsGrant({ github: "write", jira: ["a"] })).toMatchObject({ ok: true, grant: { connectors: ["github", "jira"], githubWrite: true, mcp: { jira: ["a"] } } });
+    for (const bad of [undefined, null, "github", 3, [], [""], ["slack"], ["jira"], {}, { github: "x" }]) {
+      const r = parseConnectorsGrant(bad);
+      // An empty array is the one empty grant that reads ok.
+      expect(r.ok, JSON.stringify(bad)).toBe(Array.isArray(bad) && bad.length === 0);
+    }
   });
 
   it("an unknown kind keeps its entry path, and another bad field is still reported before the object form", () => {
@@ -235,7 +280,7 @@ describe("agent settings connectors grants", () => {
   });
 });
 
-describe("set connectors github:write (the owner's route)", () => {
+describe("set connectors (the owner's route)", () => {
   const BASE = { model: "claude-haiku-4-5", permission_mode: "default", tool_policy: { allowedTools: [], allowedBashPrefixes: [] } };
   const NOW = new Date("2026-11-03T10:00:00.000Z");
   let store: Store;
@@ -276,6 +321,61 @@ describe("set connectors github:write (the owner's route)", () => {
     expect("connectors" in fileJson()).toBe(false);
   });
 
+  it("jira:<tool>,<tool> writes that kind's key and keeps the others; jira:none drops only that key; none clears all", async () => {
+    await set("github:write");
+    const r = await set("jira:get_issue,create_issue");
+    expect(r.body).toMatchObject({ field: "connectors", old: { github: "write" }, new: { github: "write", jira: ["get_issue", "create_issue"] }, changed: true });
+    expect(fileJson().connectors).toEqual({ github: "write", jira: ["get_issue", "create_issue"] });
+    await set("clickup:list_tasks");
+    expect(fileJson().connectors).toEqual({ github: "write", jira: ["get_issue", "create_issue"], clickup: ["list_tasks"] });
+    // The same list again is no change; a new list replaces only that kind's.
+    expect((await set("clickup:list_tasks")).body).toMatchObject({ changed: false });
+    await set("jira:get_issue");
+    expect(fileJson().connectors).toEqual({ github: "write", jira: ["get_issue"], clickup: ["list_tasks"] });
+    const read = readAgentSettings(tmp, "wright");
+    expect(read.ok && [read.settings.connectors, read.settings.githubWrite, read.settings.mcpGrants]).toEqual([["github", "jira", "clickup"], true, { jira: ["get_issue"], clickup: ["list_tasks"] }]);
+    // github changes only github's level, and keeps the MCP keys.
+    await set("github");
+    expect(fileJson().connectors).toEqual({ github: "read", jira: ["get_issue"], clickup: ["list_tasks"] });
+    expect((await set("jira:none")).body).toMatchObject({ changed: true });
+    expect(fileJson().connectors).toEqual({ github: "read", clickup: ["list_tasks"] });
+    expect((await set("jira:none")).body).toMatchObject({ changed: false });
+    await set("clickup:none");
+    expect(fileJson().connectors).toEqual(["github"]);
+    await set("jira:a");
+    expect((await set("none")).body).toMatchObject({ new: null, changed: true });
+    expect("connectors" in fileJson()).toBe(false);
+    // Dropping the last key of a file with no github removes the key.
+    await set("jira:a");
+    await set("jira:none");
+    expect("connectors" in fileJson()).toBe(false);
+    const logged = store.prepare<[], string>("SELECT payload_json FROM events WHERE kind = 'agent_settings_set' ORDER BY id").pluck().all().map((p) => JSON.parse(p) as { new: unknown });
+    expect(logged[1]?.new).toEqual({ github: "write", jira: ["get_issue", "create_issue"] });
+  });
+
+  it("a malformed jira: or clickup: value gets its own message naming the <kind>:<tool> form, and writes nothing", async () => {
+    for (const value of ["jira:", "jira:a,", "jira:,a", "jira:a,,b", "clickup:", `jira:${"x".repeat(201)}`, "jira:a\u0000b"]) {
+      const r = await set(value);
+      expect([r.status, r.body], value).toMatchObject([400, { error: "invalid_input", field: "connectors", message: expect.stringContaining("<kind>:<tool>[,<tool>…]") }]);
+      expect((r.body as { message: string }).message).not.toBe("connectors must be github or none");
+    }
+    expect("connectors" in fileJson()).toBe(false);
+  });
+
+  it("parseMcpGrantValue and mergeConnectorsGrant: pure forms", () => {
+    expect(parseMcpGrantValue("github")).toBeUndefined();
+    expect(parseMcpGrantValue("slack:x")).toBeUndefined();
+    expect(parseMcpGrantValue("jira:a,b")).toEqual({ change: { kind: "jira", tools: ["a", "b"] } });
+    expect(parseMcpGrantValue("clickup:none")).toEqual({ change: { kind: "clickup", tools: null } });
+    expect(mergeConnectorsGrant(undefined, { kind: "github", level: "read" })).toEqual(["github"]);
+    expect(mergeConnectorsGrant(["github"], { kind: "github", level: "write" })).toEqual({ github: "write" });
+    expect(mergeConnectorsGrant({ github: "write" }, { kind: "github", level: "read" })).toEqual(["github"]);
+    expect(mergeConnectorsGrant(undefined, { kind: "jira", tools: ["a"] })).toEqual({ jira: ["a"] });
+    expect(mergeConnectorsGrant(["github"], { kind: "jira", tools: ["a"] })).toEqual({ github: "read", jira: ["a"] });
+    expect(mergeConnectorsGrant({ jira: ["a"] }, { kind: "jira", tools: null })).toBeNull();
+    expect(mergeConnectorsGrant(undefined, { kind: "jira", tools: null })).toBeNull();
+  });
+
   it("other values stay refused with the one message", async () => {
     for (const value of ["github:read", "github:", "GITHUB:write", "github:write "]) {
       const r = await set(value);
@@ -285,7 +385,7 @@ describe("set connectors github:write (the owner's route)", () => {
   });
 });
 
-describe("a charter naming a connector not built", () => {
+describe("a charter naming an owner-only MCP connector", () => {
   const charter = (connectors: unknown): Record<string, unknown> => ({
     id: "reviewer",
     display_name: "Reviewer",
@@ -301,13 +401,15 @@ describe("a charter naming a connector not built", () => {
     connectors,
   });
 
-  it("connectors [github] stays ok; jira or clickup is connector_not_built (charter_invalid, field connectors)", () => {
+  it("connectors [github] stays ok; jira or clickup is owner-only (charter_invalid, field connectors)", () => {
     const opts = { dataDir: join(tmp, "data"), homeDir: join(tmp, "home") };
     expect(validateCharter(charter(["github"]), opts)).toMatchObject({ ok: true });
     for (const kind of ["jira", "clickup"]) {
       const r = validateCharter(charter([kind]), opts);
       expect(r, kind).toMatchObject({ ok: false, error: "charter_invalid", field: "connectors" });
-      expect(r.ok ? "" : r.message).toContain("connector_not_built");
+      const message = r.ok ? "" : r.message;
+      expect(message).toContain(`the ${kind} grant is owner-only: set it with studio agents set reviewer connectors ${kind}:<tool>`);
+      expect(message).not.toContain("connector_not_built");
     }
     expect(validateCharter(charter(["github", "jira"]), opts)).toMatchObject({ ok: false, error: "charter_invalid", field: "connectors" });
   });
@@ -419,18 +521,26 @@ describe("the automate feature (phase_8_foundation)", () => {
 });
 
 describe("the integrations parts mcp and repo-policy (phase_8_foundation)", () => {
-  it("sit before github-app-routes, which stays last, and are empty", () => {
+  it("sit before github-app-routes, which stays last; repo-policy is empty and mcp is filled (phase 8 item 06)", () => {
     expect(INTEGRATIONS_PARTS.map((p) => p.name).slice(-3)).toEqual(["mcp", "repo-policy", "github-app-routes"]);
     expect(INTEGRATIONS_PARTS.at(-1)).toBe(githubAppRoutesPart);
     for (const part of [mcpPart, repoPolicyPart]) {
       expect(INTEGRATIONS_PARTS).toContain(part);
       expect(Object.isFrozen(part), part.name).toBe(true);
       expect(part.tools, part.name).toEqual([]);
-      expect(part.routes, part.name).toEqual([]);
       expect(part.handlers, part.name).toEqual({});
-      expect(part.dueWork ?? [], part.name).toEqual([]);
       expect(part.subcommands ?? [], part.name).toEqual([]);
     }
+    // `repo-policy` stays empty until item 08.
+    expect(repoPolicyPart.routes).toEqual([]);
+    expect(repoPolicyPart.dueWork ?? []).toEqual([]);
+    // `mcp` is filled: its three owner routes and the token renewal.
+    expect(mcpPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual([
+      "POST /connectors/mcp/:kind/connect",
+      "POST /connectors/mcp/:kind/connect/cancel",
+      "POST /connectors/mcp/:kind/disconnect",
+    ]);
+    expect(mcpPart.dueWork).toHaveLength(1);
   });
 
   it("claim no handler kind, so the shipped integrations contribution still merges and keeps its name", () => {

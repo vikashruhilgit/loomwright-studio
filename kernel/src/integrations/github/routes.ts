@@ -2,8 +2,9 @@
 // owner's four connector routes, on the loopback API (bearer token, like
 // every route), over the connector in `connector.ts`.
 //
-//   GET  /connectors                     {connectors}: every row in the contract's `Connector` shape, [] when none; it carries `method` (`token` or `app`),
-//                                        `app_slug` and `installation_id` (the GitHub App's, null for a token) beside the reach list
+//   GET  /connectors                     {connectors, mcp_connections}: `connectors` is every row in the contract's `Connector` shape, [] when none; it carries `method` (`token` or `app`),
+//                                        `app_slug` and `installation_id` (the GitHub App's, null for a token) beside the reach list. `mcp_connections` (phase 8 item 06) is one
+//                                        `McpConnection` per MCP connector row (`mcp/connector.ts`'s `listMcpConnections`), with the server's tool names and no token
 //   POST /connectors/github/token        body {token, declared_read_only?}: validate, then store it; {connector}, never the token.
 //                                        `declared_read_only: true` is the owner declaring that every permission they gave a
 //                                        fine-grained token is Read (used only when GitHub reports none); a non-boolean is 400
@@ -22,6 +23,7 @@
 // the connector: never the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the registry's module graph).
 import type { ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../../features/contribution.js";
+import { listMcpConnections } from "../mcp/connector.js";
 import type { IntegrationsPart } from "../types.js";
 import { connectorView, githubConnector, githubConnectorRow, listConnectors } from "./connector.js";
 import type { ConnectorErrorCode, ConnectorOutcome, GitHubConnector } from "./connector.js";
@@ -67,7 +69,7 @@ export function githubRoutes(connector: GitHubConnector = githubConnector): read
     {
       method: "GET",
       path: "/connectors",
-      handler: (req: ContributedRouteRequest) => total(async () => ({ status: 200, body: { connectors: listConnectors(req.store) } })),
+      handler: (req: ContributedRouteRequest) => total(async () => ({ status: 200, body: { connectors: listConnectors(req.store), mcp_connections: listMcpConnections(req.store) } })),
     },
     {
       method: "POST",

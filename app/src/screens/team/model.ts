@@ -52,6 +52,7 @@ export const NEVER_CATEGORIES: readonly string[] = Object.freeze([
   "gh_issue_edit",
   "gh_issue_close",
   "gh_api_write",
+  "mcp_write",
   "settings_write",
   "hooks_write",
 ]);

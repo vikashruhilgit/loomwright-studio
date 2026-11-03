@@ -1074,7 +1074,7 @@ describe("needs_permissions (D39)", () => {
 describe("the four routes (AC11)", () => {
   it("GET /connectors answers [] with none, then every row in the Connector shape", async () => {
     const c = connector();
-    expect(await call(c, "GET", "/connectors")).toEqual({ status: 200, body: { connectors: [] } });
+    expect(await call(c, "GET", "/connectors")).toEqual({ status: 200, body: { connectors: [], mcp_connections: [] } });
     await call(c, "POST", "/connectors/github/token", { token: GOOD });
     const res = await call(c, "GET", "/connectors");
     const list = (res.body as { connectors: Record<string, unknown>[] }).connectors;
@@ -1180,8 +1180,10 @@ describe("the four routes (AC11)", () => {
     expect(item07).toEqual(["GET /drafts", "GET /drafts/:id"]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     // The GitHub App's owner routes (D36) live under /connectors/github/app/ and are pinned by the contract test, not here.
+    // The `mcp` part's three owner routes (phase 8 item 06) are served by the same feature, after the drafts routes.
+    const mcp = ["POST /connectors/mcp/:kind/connect", "POST /connectors/mcp/:kind/connect/cancel", "POST /connectors/mcp/:kind/disconnect"];
     const served = merged.routes.filter((r) => r.owner === "integrations" && !r.path.startsWith("/connectors/github/app/")).map((r) => `${r.method} ${r.path}`);
-    expect(served).toEqual([...item03, ...item07]);
+    expect(served).toEqual([...item03, ...item07, ...mcp]);
     expect(githubRoutesPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual(item03);
   });
 });

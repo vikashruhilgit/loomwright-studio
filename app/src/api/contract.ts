@@ -787,7 +787,7 @@ export interface ThreadResponse {
 
 // ---- Phase 6 item 03: GET /connectors, POST /connectors/github/token, POST /connectors/github/disconnect, GET /connectors/github/repos ----
 
-/** The connector kinds: `CONNECTOR_KINDS` in `kernel/src/integrations/types.ts` (GitHub since phase 6; `jira` and `clickup` are named in phase 8 and refused `connector_not_built` until their items land). */
+/** The connector kinds: `CONNECTOR_KINDS` in `kernel/src/integrations/types.ts` (GitHub since phase 6; `jira` and `clickup` are the phase 8 MCP connectors, D38, with an owner-only per-tool grant in an agent's settings). */
 export type ConnectorKind = "github" | "jira" | "clickup";
 
 /** A connector's status, as the kernel sets it (item 03): a token is checked, refused, removed, close to its expiry or past it. */
@@ -843,6 +843,12 @@ export interface Connector {
 /** `GET /connectors`: every connector row, none when nothing is connected. */
 export interface ConnectorsResponse {
   readonly connectors: readonly Connector[];
+  /**
+   * The MCP connectors (phase 8 item 06): one per `mcp_connections` row, with no token field.
+   * Optional so a response from before item 06, and the fixtures that build `{ connectors }`
+   * alone, still typecheck; the kernel always sends it (`[]` when none).
+   */
+  readonly mcp_connections?: readonly McpConnection[];
 }
 
 /**
@@ -1317,7 +1323,8 @@ export interface SettingsResponse {
 
 // ---- Phase 8: the App upgrade, MCP connectors, the repo merge policy and PR tracks ----------
 // Declared by phase 8 item 01 and served by the item named in each route's origin
-// (`p8-item-NN`); none is served yet. A later item that needs another shape adds it itself.
+// (`p8-item-NN`): a route is served once its item lands (items 03 and 06 have; item 08's are not yet).
+// A later item that needs another shape adds it itself.
 
 /**
  * `GET /connectors/github/app/upgrade` (item 03): the github.com URL where the owner
@@ -1335,8 +1342,9 @@ export type McpConnectionKind = Exclude<ConnectorKind, "github">;
 
 /**
  * An `mcp_connections` row, as the routes show it (item 06). It never carries a token,
- * which lives only in the Keychain. `granted_tools` are the tool names the server listed
- * after connect, untrusted text from the server.
+ * which lives only in the Keychain. `granted_tools` are the names of the server's tools the
+ * kernel kept after connect (a tool it dropped is counted in the connect's event, not listed),
+ * untrusted text from the server.
  */
 export interface McpConnection {
   readonly kind: McpConnectionKind;

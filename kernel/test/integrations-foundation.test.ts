@@ -28,6 +28,7 @@ import {
 } from "../src/integrations/index.js";
 import type { GitHubClient, GitHubPull, IntegrationsPart } from "../src/integrations/index.js";
 import { checkGitHubAppMint, githubExpiryDueWork } from "../src/integrations/github/connector.js";
+import { mcpRefreshDueWork } from "../src/integrations/mcp/connector.js";
 import { DB_FILENAME, Store, migrations } from "../src/store/index.js";
 import type { Migration } from "../src/store/index.js";
 import { startKernel } from "../src/kernel.js";
@@ -215,6 +216,10 @@ describe("the integrations feature (AC2)", () => {
       "integrations GET /connectors/github/repos",
       "integrations GET /drafts",
       "integrations GET /drafts/:id",
+      // The `mcp` part's three owner routes (phase 8 item 06).
+      "integrations POST /connectors/mcp/:kind/connect",
+      "integrations POST /connectors/mcp/:kind/connect/cancel",
+      "integrations POST /connectors/mcp/:kind/disconnect",
     ]);
     const appRoutes = merged.routes.filter(isApp);
     expect(appRoutes.every((r) => r.owner === "integrations")).toBe(true);
@@ -225,6 +230,8 @@ describe("the integrations feature (AC2)", () => {
     expect(merged.dueWork).toEqual([
       { owner: "integrations", run: githubExpiryDueWork },
       { owner: "integrations", run: checkGitHubAppMint },
+      // The `mcp` part's token renewal (phase 8 item 06).
+      { owner: "integrations", run: mcpRefreshDueWork },
     ]);
   });
 
@@ -243,7 +250,7 @@ describe("the integrations feature (AC2)", () => {
     // The GitHub App's modules (`github/app-*.ts`: the port stub, the routes and the setup flow, then the tokens item's own) are matched by pattern, so a new one does not edit this pin.
     const isAppModule = (f: string): boolean => /^github[\\/]app-[^\\/]+\.ts$/.test(f);
     expect(files.filter((f) => !isAppModule(f)).sort()).toEqual(
-      ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/credential-lock.ts", "github/routes.ts", "github/tools.ts", "index.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
+      ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/credential-lock.ts", "github/routes.ts", "github/tools.ts", "index.ts", "mcp/client.ts", "mcp/connector.ts", "mcp/credential.ts", "mcp/oauth.ts", "mcp/routes.ts", "mcp/rows.ts", "mcp/tools.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
     );
     expect(files).toEqual(expect.arrayContaining([join("github/app-port.ts"), join("github/app-routes.ts")]));
     for (const f of files) {
