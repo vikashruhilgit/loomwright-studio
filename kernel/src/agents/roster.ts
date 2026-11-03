@@ -15,9 +15,12 @@
 // The connectors grant (phase 6 item 08) is the one list field `set` takes:
 // `connectors github` writes `connectors: ["github"]`, `connectors github:write`
 // writes the write grant `connectors: {"github": "write"}` (phase 8 item 04),
-// `connectors none` removes the key, for a crew member and for Wright, through the same write
-// path. Only this owner route and verb set it: `kernel_agent_update` refuses it
-// and the protected-path rail refuses a session's write to the file.
+// `connectors jira:<tool>[,<tool>…]` (or `clickup:`) grants that MCP kind's named
+// tools (phase 8 item 06) and `connectors jira:none` drops that one key, each
+// keeping the other keys; `connectors none` removes the whole key, for a crew
+// member and for Wright, through the same write path. Only this owner route and
+// verb set it: `kernel_agent_update` refuses it and the protected-path rail
+// refuses a session's write to the file.
 //
 // Mechanism only (invariant 1): `set` writes the one value the owner typed and
 // nothing else; the kernel picks no model, limit or workspace. Wright is not a
@@ -59,7 +62,8 @@ import {
 import type { AgentAuditKind } from "./charter-files.js";
 import { getAgent, listAgents } from "./registry.js";
 import type { AgentRow } from "./registry.js";
-import { agentSettingsPath, readAgentSettings } from "./settings.js";
+import { agentSettingsPath, mergeConnectorsGrant, parseMcpGrantValue, readAgentSettings } from "./settings.js";
+import type { ConnectorsGrantChange, ConnectorsObjectGrant } from "./settings.js";
 import { isValidAgentId } from "./types.js";
 import type { AgentPart, AgentVerb, AgentStatus } from "./types.js";
 
@@ -310,20 +314,22 @@ function statusRoute(status: AgentStatus): (req: ContributedRouteRequest) => Pro
   };
 }
 
-/** A value `set` writes: a scalar, the connectors list, the write grant `{github: "write"}`, or null (clears the key). */
-type SetValue = string | number | readonly string[] | { readonly github: "write" } | null;
+/** A value `set` writes: a scalar, the connectors list, the connectors object form (`{github: "write", jira: [...]}`), or null (clears the key). */
+type SetValue = string | number | readonly string[] | ConnectorsObjectGrant | null;
 
 /** What `set` changes: a scalar field, or the connectors grant. */
 type SettableField = AgentSetField | typeof CONNECTORS_FIELD;
 
 /** `raw` (as typed on the CLI) as `field`'s value: null clears; a message when it is refused. */
-function parseSetValue(field: SettableField, raw: string): { readonly value: SetValue } | { readonly message: string } {
+function parseSetValue(field: SettableField, raw: string): { readonly value: SetValue } | { readonly change: ConnectorsGrantChange } | { readonly message: string } {
   if (field === CONNECTORS_FIELD) {
     if (raw === CLEAR_VALUE) return { value: null };
-    // The closed list of grantable kinds is one today; the exact spelling is the contract's.
-    // `github:write` is the owner's write grant (phase 8 item 04), stored as the object form.
-    if (raw === "github:write") return { value: { github: "write" } };
-    return raw === "github" ? { value: ["github"] satisfies ConnectorKind[] } : { message: CONNECTORS_VALUE_MESSAGE };
+    // A change to one kind's key: `set` merges it into the file's current grant (every other key is kept).
+    // `github:write` is the owner's write grant (phase 8 item 04); `jira:` / `clickup:` name MCP tools (item 06).
+    if (raw === "github:write") return { change: { kind: "github", level: "write" } };
+    if (raw === "github") return { change: { kind: "github", level: "read" } };
+    // A malformed `jira:` / `clickup:` value is the parser's own message; any other text is the one connectors message.
+    return parseMcpGrantValue(raw) ?? { message: CONNECTORS_VALUE_MESSAGE };
   }
   if (field === "model") {
     if (raw === CLEAR_VALUE) return { message: "model can't be cleared: the kernel never picks one" };
@@ -345,7 +351,7 @@ function parseSetValue(field: SettableField, raw: string): { readonly value: Set
 function valueAt(json: Body, field: SettableField): unknown {
   if (field === CONNECTORS_FIELD) {
     const list = json[CONNECTORS_FIELD];
-    // The write grant is the object `{github: "write"}`; the reader refused any other object form before `set` reads this.
+    // The object form (`{github: "write", jira: [...]}`); the reader refused any malformed one before `set` reads this.
     if (isBodyObject(list)) return list;
     return Array.isArray(list) && list.length > 0 ? list : null;
   }
@@ -448,9 +454,11 @@ async function set(req: ContributedRouteRequest): Promise<ContributedRouteRespon
     return refusal(409, "settings_changed", `${file} changed while it was read; try again`, { file });
   }
   const old = valueAt(json, field);
+  // A connectors change replaces only its own kind's key in the grant the file holds now (the same read as the `old` above).
+  const next = "change" in parsed ? (mergeConnectorsGrant(json[CONNECTORS_FIELD], parsed.change) as SetValue) : parsed.value;
   // Scalars compare by value; the connectors list by content (a stored `[]` is the same as no grant: `valueAt` reads it null).
-  if (JSON.stringify(old) === JSON.stringify(parsed.value)) return { status: 200, body: { agent: agentOf(), field, old, new: parsed.value, changed: false } };
-  const text = `${JSON.stringify(withValue(json, field, parsed.value), null, 2)}\n`;
+  if (JSON.stringify(old) === JSON.stringify(next)) return { status: 200, body: { agent: agentOf(), field, old, new: next, changed: false } };
+  const text = `${JSON.stringify(withValue(json, field, next), null, 2)}\n`;
   if (Buffer.byteLength(text) > MAX_SETTINGS_BYTES) return refusal(409, "settings_invalid", `${file}: the change would make it over ${MAX_SETTINGS_BYTES} bytes`, { file, field: "the file" });
 
   // A temporary sibling, then a rename over the file (atomic on one file system): a reader
@@ -465,7 +473,7 @@ async function set(req: ContributedRouteRequest): Promise<ContributedRouteRespon
     req.store.transaction(() => {
       // Re-read just before the rename: an owner's hand edit since the first read wins.
       if (!readFileSync(file).equals(base)) throw new ConcurrentEditError();
-      appendEvent(req.store, "agent_settings_set" satisfies AgentAuditKind, NO_REF, { id, field, old, new: parsed.value, ...eventBy }, req.now().toISOString());
+      appendEvent(req.store, "agent_settings_set" satisfies AgentAuditKind, NO_REF, { id, field, old, new: next, ...eventBy }, req.now().toISOString());
       renameSync(temp, file);
     });
   } catch (err) {
@@ -477,7 +485,7 @@ async function set(req: ContributedRouteRequest): Promise<ContributedRouteRespon
     if (err instanceof ConcurrentEditError) return refusal(409, "settings_changed", `${file} changed while it was being set; nothing was written; try again`, { file });
     throw err;
   }
-  return { status: 200, body: { agent: agentOf(), field, old, new: parsed.value, changed: true } };
+  return { status: 200, body: { agent: agentOf(), field, old, new: next, changed: true } };
 }
 
 export const rosterRoutes: readonly ContributedRoute[] = Object.freeze([
@@ -522,6 +530,12 @@ function rosterLine(e: EntryLike): string {
     `${field(e.id)} "${shown(String(e.display_name ?? ""))}" ${field(avatar.shape)} ${field(avatar.hue)}: ${field(e.status)}; ${model}; ` +
     `tokens today ${against(e.tokens_today, e.tokens_per_day)}; sessions ${against(e.sessions_running, e.sessions_at_once)}; created by ${field(e.created_by)}`
   );
+}
+
+/** A connectors object form for a terminal, as the owner types it: `github:write jira:a,b`. Every part is escaped (the tool names are the owner's, but stored). */
+function connectorsText(grant: Body): string {
+  const parts = Object.entries(grant).map(([kind, value]) => (Array.isArray(value) ? `${field(kind)}:${value.map(field).join(",")}` : `${field(kind)}:${field(value)}`));
+  return parts.length === 0 ? "no connectors" : parts.join(" ");
 }
 
 /** The roster: one line per agent, Wright first. */
@@ -693,7 +707,7 @@ const setVerb: AgentVerb = {
   async run(args, client, out) {
     const [id, name, value, ...rest] = args;
     if (!idArg(id) || name === undefined || value === undefined || rest.length > 0) {
-      return usage(out, ROSTER_VERB_HELP.set, ` (field: ${AGENT_SET_FIELDS.join(", ")}, ${CONNECTORS_FIELD} (github or ${CLEAR_VALUE}), or ${CONNECTORS_FIELD} github:write for the GitHub write level; ${CLEAR_VALUE} clears effort or a limit)`);
+      return usage(out, ROSTER_VERB_HELP.set, ` (field: ${AGENT_SET_FIELDS.join(", ")}, ${CONNECTORS_FIELD} (github or ${CLEAR_VALUE}), ${CONNECTORS_FIELD} github:write for the GitHub write level, or ${CONNECTORS_FIELD} jira:<tool>[,<tool>…] / clickup:<tool>[,<tool>…] for an MCP connector's tools (jira:${CLEAR_VALUE} drops one); ${CLEAR_VALUE} clears effort, a limit or all connectors)`);
     }
     const path = `/agents/${encodeURIComponent(id)}/set`;
     const res = await client.request("POST", path, { field: name, value });
@@ -705,7 +719,7 @@ const setVerb: AgentVerb = {
             ? "no connectors"
             : "not set"
         : name === CONNECTORS_FIELD && isBodyObject(v)
-          ? "github:write"
+          ? connectorsText(v)
           : field(v);
     return report(
       res,

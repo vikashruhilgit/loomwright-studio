@@ -547,9 +547,11 @@ describe("the kernel's names and the grant reader (AC2, AC5)", () => {
     write("writer", { ...BASE, connectors: { github: "write" } });
     write("reader", { ...BASE, connectors: ["github"] });
     write("plain", BASE);
-    write("broken", { ...BASE, connectors: { github: "read" } });
+    // `{github: "read"}` is a valid read grant (phase 8 item 06): it reads ok and never grants write.
+    write("objreader", { ...BASE, connectors: { github: "read" } });
+    write("broken", { ...BASE, connectors: { github: "admin" } });
     const grant = githubWriteFor(tmp);
-    expect([grant("writer"), grant("reader"), grant("plain"), grant("broken"), grant("nobody")]).toEqual([true, false, false, false, false]);
+    expect([grant("writer"), grant("reader"), grant("objreader"), grant("plain"), grant("broken"), grant("nobody")]).toEqual([true, false, false, false, false, false]);
   });
 });
 

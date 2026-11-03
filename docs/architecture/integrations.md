@@ -6,7 +6,7 @@ Part of [Phase 6 features](../ARCHITECTURE.md#phase-6-features). Built and docum
 
 | Route | Answers |
 |---|---|
-| `GET /connectors` | `{connectors}`: every `connectors` row in the `Connector` shape, `[]` when nothing was ever set up |
+| `GET /connectors` | `{connectors, mcp_connections}`: `connectors` is every `connectors` row in the `Connector` shape, `[]` when nothing was ever set up; `mcp_connections` is one `McpConnection` per MCP connector row, `[]` when none ([MCP connectors](mcp-connectors.md)) |
 | `POST /connectors/github/token` | body `{token, declared_read_only?}`; `declared_read_only`, when present, must be a boolean (else 400 `invalid_body`), and only `true` declares; validates the token, then stores it; `{connector}`, the row after the change, never the token |
 | `POST /connectors/github/disconnect` | deletes every GitHub credential Keychain item (the token's and the GitHub App's, [below](#the-credential-lifecycle)); `{connector}`, the row after the change |
 | `GET /connectors/github/repos[?refresh=1]` | `{repos, verified_at}`: the repos the token reaches, as `owner/name` (`[]` and `null` with no row); `refresh=1` re-reads them from GitHub first |

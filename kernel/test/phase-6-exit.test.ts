@@ -63,6 +63,7 @@ import {
   githubToolsPart,
   integrationsContribution,
   integrationsContributionOf,
+  mcpPart,
 } from "../src/integrations/index.js";
 import { connectorsSubcommand } from "../src/integrations/cli.js";
 import { GITHUB_APP_SERVICES } from "../src/integrations/github/connector.js";
@@ -401,7 +402,7 @@ describe("phase 6 exit: a poll playbook reviews the owner's PRs, skips the uncha
       ...githubToolsPart,
       tools: [...createGitHubTools({ client: () => github }), ...createGitHubWriteTools({ client: () => github })],
     };
-    const integrations = integrationsContributionOf([githubConnectorPart, routesPart, toolsPart, draftsPart, githubAppRoutesPart]);
+    const integrations = integrationsContributionOf([githubConnectorPart, routesPart, toolsPart, draftsPart, mcpPart, githubAppRoutesPart]);
     // The CLI's copy differs only in where `studio connectors github set` reads the token from (a test stdin).
     let secret: SecretRead = { ok: true, token: READ_ONLY_TOKEN };
     const cliIntegrations = integrationsContributionOf([
@@ -409,6 +410,7 @@ describe("phase 6 exit: a poll playbook reviews the owner's PRs, skips the uncha
       routesPart,
       toolsPart,
       draftsPart,
+      mcpPart,
       githubAppRoutesPart,
     ]);
 

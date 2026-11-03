@@ -41,6 +41,7 @@ The kernel's one `PreToolUse` hook decides every call in order:
    - `gh api …` with a non-GET method: `-X`/`--method` (also `-XPOST`, `--method=POST`) other than GET, or, with no explicit method, any `-f`, `-F`, `--field`, `--raw-field` or `--input` (gh sends those as POST), or a flag the rail cannot account for (`gh api (flag unread)`). A single-dash word is read as pflag reads it, a group of short flags: `-i` is a bool, and the first of `X`/`f`/`F`/`H`/`p`/`q`/`t` takes the rest of the word (after an optional `=`) or, for `X`/`f`/`F`, the next word, so `-iX PUT`, `-iXPUT`, `-X=PUT`, `-if body=x` and `-iF query=@f` are all read. A group holding any other character (a glob, an unknown letter) is unread;
    - a Write, Edit or NotebookEdit to, or a Bash command naming or globbing, anything under `~/.claude/`, any `settings*.json`, any `hooks.json`, or anything under a `.git/hooks/` dir or a `hooks` dir inside a `.claude` dir. A `*` could expand to a `settings.json` in the cwd, so `ls sub/*` is held too (`*.ts` is not), and a bare `ls *` is denied (see [relative paths](#relative-paths-fail-closed));
    - a call to one of the four GitHub write tools, by name (phase 8 item 05): `mcp__kernel__kernel_github_pr_reply`, `…_pr_comment`, `…_issue_comment` and `…_pr_request_reviewers`, whatever the input (action: the name without `mcp__kernel__`; payload `{tool, input, cwd}`, as for an always-held tool). They are not in `ALWAYS_HELD_TOOLS` and not in the kernel-applied set, so the owner's per-playbook "always" may cover a call, and an approved-once call is run by the agent repeating it: the repeat consumes the grant (`approval_granted`) and the handler sends the one request. In a draft playbook the call is recorded as a draft (step 6), and in a dry run it is a `dry_run` would-do; neither sends anything.
+   - a call to an MCP connector's proxy tool that is not read-only: any `mcp__kernel__kernel_mcp_…` name outside `mcp__kernel__kernel_mcp_r_…` (action `mcp_write`; phase 8 item 06, see [MCP connectors](mcp-connectors.md#the-mcp_write-rail)). Not an always-held tool.
 9. Anything else runs as the policy says.
 
 Every call still records exactly one `tool_decision` event (with `approval_id` when one was held or used, `category` on an `agent_boundary` deny, and `draft_output_id` on a `draft_mode` deny). The gate fails closed: if creating the approval, consuming a grant or recording the decision throws, the whole transaction rolls back and the call is denied with `kernel_gate_error`.
@@ -56,7 +57,7 @@ A session policy may carry `never`: categories from the closed `NEVER_CATEGORIES
 
 A call the rail reads as several outward forms is denied when any of them is in `never`: a gh flag read both ways (`gh pr -b create comment 3` is a comment or a create), an inline alias beside a push (`git -c alias.x=y push`), a push naming a path under `~/.claude/`, or a Write to `~/.claude/hooks/x.sh` (both `~/.claude/` and a hooks file). The event names the first matching category in the table's order. The approval and its action are unchanged: the extra forms are only read by the boundary.
 
-The categories use the rail's own matchers (step 8 and [the forms below](#which-command-forms-the-matcher-recognises)) and, for the four GitHub write tools, the tool's name (`GITHUB_WRITE_TOOLS` in `kernel/src/sessions/policy.ts`); no new matcher is written:
+The categories use the rail's own matchers (step 8 and [the forms below](#which-command-forms-the-matcher-recognises)) and, for the four GitHub write tools, the tool's name (`GITHUB_WRITE_TOOLS` in `kernel/src/sessions/policy.ts`); no new matcher is written, except `mcp_write`, which is the rail's one name-prefix form:
 
 | Category | The rail forms it covers |
 |---|---|
@@ -74,6 +75,7 @@ The categories use the rail's own matchers (step 8 and [the forms below](#which-
 | `gh_issue_edit` | `gh issue edit` |
 | `gh_issue_close` | `gh issue close` |
 | `gh_api_write` | `gh api` with a non-GET method (`gh api POST`, `PUT`, `DELETE`, …), and `gh api (flag unread)` |
+| `mcp_write` | a call to an MCP connector's proxy tool that is not read-only (`mcp__kernel__kernel_mcp_w_<kind>_<tool>`; any `kernel_mcp_` name outside `kernel_mcp_r_` counts, so the rail fails closed). The tool's read-only flag is the kernel's own, from the connector's stored tool list, never the session's. Not in `ALWAYS_HELD_TOOLS`: a per-playbook "always" can cover it, while `never` still wins. See [MCP connectors](mcp-connectors.md) |
 | `settings_write` | a Write, Edit or NotebookEdit to, or a Bash command naming or globbing, anything under `~/.claude/` or any `settings*.json` |
 | `hooks_write` | the same for any `hooks.json`, or anything under a `.git/hooks/` dir or a `hooks` dir inside a `.claude` dir |
 

@@ -225,6 +225,10 @@ export const ALWAYS_HELD_TOOLS: readonly string[] = Object.freeze([
  *   `gh_pr_comment_reply` is `kernel_github_pr_reply` (`GITHUB_WRITE_TOOLS`,
  *   phase 8 item 05). The two have no `gh` form in the rail, so these tools
  *   are the only calls they cover.
+ * - `mcp_write`: a call to an MCP connector's proxy tool that is not read-only
+ *   (`mcp__kernel__kernel_mcp_w_<kind>_<tool>`, phase 8 item 06): the rail
+ *   treats any `kernel_mcp_` name that is not `kernel_mcp_r_` the same, so it
+ *   fails closed.
  * - `settings_write`: the `~/.claude/` and `a settings*.json file` targets,
  *   both the Bash form (`Bash naming …`) and the Write/Edit/NotebookEdit form.
  * - `hooks_write`: the `a hooks file` target, both forms.
@@ -249,6 +253,7 @@ export const NEVER_CATEGORIES = Object.freeze([
   "gh_issue_edit",
   "gh_issue_close",
   "gh_api_write",
+  "mcp_write",
   "settings_write",
   "hooks_write",
 ] as const);
@@ -327,6 +332,7 @@ export function neverCategoriesOf(action: string): readonly NeverCategory[] {
   for (const [, sub] of GH_ISSUE_OUTWARD) if (action === `gh issue ${sub}`) return NEVER_CATEGORIES.filter((c) => c === `gh_issue_${sub}`);
   // `gh api <METHOD>` (any non-GET method) and `gh api (flag unread)`.
   if (action.startsWith("gh api ")) return ["gh_api_write"];
+  if (action === MCP_WRITE_ACTION) return ["mcp_write"];
   for (const [label, category] of OUTWARD_PATH_CATEGORIES) {
     if (action === `Bash naming ${label}` || Object.keys(WRITE_TOOLS).some((tool) => action === `${tool} ${label}`)) return [category];
   }
@@ -342,6 +348,20 @@ const OUTWARD_PATH_CATEGORIES: readonly (readonly [string, NeverCategory])[] = [
 
 /** The kernel MCP server's tool-name prefix, dropped from an always-held tool's approval action. */
 const KERNEL_TOOL_PREFIX = "mcp__kernel__";
+
+/**
+ * The session names of an MCP connector's proxy tools (`integrations/mcp/tools.ts`
+ * fixes the names): `kernel_mcp_r_<kind>_<tool>` for a tool the server hinted
+ * read-only, `kernel_mcp_w_<kind>_<tool>` for every other. The rail trusts the
+ * prefix because the kernel built the name from its own stored row, never from
+ * session input; every name under `MCP_PROXY_PREFIX` that is not under
+ * `MCP_READ_PROXY_PREFIX` is a write (it fails closed).
+ */
+const MCP_PROXY_PREFIX = `${KERNEL_TOOL_PREFIX}kernel_mcp_`;
+const MCP_READ_PROXY_PREFIX = `${MCP_PROXY_PREFIX}r_`;
+
+/** The `outward` action of a non-read-only MCP proxy tool call (the `mcp_write` category). */
+const MCP_WRITE_ACTION = "mcp_write";
 
 /** The tools whose path argument is a write. */
 const WRITE_TOOLS: Readonly<Record<string, string>> = { Write: "file_path", Edit: "file_path", NotebookEdit: "notebook_path" };
@@ -445,7 +465,12 @@ const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge|enqueueP
  *    `.git/hooks` or `.claude/…/hooks` dir; and every call to a tool in
  *    `ALWAYS_HELD_TOOLS` or `GITHUB_WRITE_TOOLS`, whatever its input (action:
  *    the name without its `mcp__kernel__` prefix, e.g. `kernel_playbook_enable`
- *    or `kernel_github_pr_reply`; payload `{tool, input, cwd}`).
+ *    or `kernel_github_pr_reply`; payload `{tool, input, cwd}`); and every call
+ *    to an MCP connector's proxy tool that is not read-only (a
+ *    `mcp__kernel__kernel_mcp_` name outside `kernel_mcp_r_`; action:
+ *    `mcp_write`; payload `{tool, input, cwd}`). It is not in
+ *    `ALWAYS_HELD_TOOLS`, so the owner's per-playbook "always" can cover it; a
+ *    `never` list with `mcp_write` still denies it first.
  *
  * Bash recognition is argv-shaped: the command is split into shell words
  * (`shellWords`), and only the program's basename (case-folded) and the words
@@ -501,6 +526,11 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
   if (ALWAYS_HELD_TOOLS.includes(toolName) || Object.prototype.hasOwnProperty.call(GITHUB_WRITE_TOOLS, toolName)) {
     const action = toolName.startsWith(KERNEL_TOOL_PREFIX) ? toolName.slice(KERNEL_TOOL_PREFIX.length) : toolName;
     return { kind: "outward", action, payload: { tool: toolName, input: toolInput, cwd: payloadCwd } };
+  }
+
+  // A connector proxy tool that is not provably read-only is an outward write (fail closed on the prefix).
+  if (toolName.startsWith(MCP_PROXY_PREFIX) && !toolName.startsWith(MCP_READ_PROXY_PREFIX)) {
+    return { kind: "outward", action: MCP_WRITE_ACTION, payload: { tool: toolName, input: toolInput, cwd: payloadCwd } };
   }
 
   const field = Object.prototype.hasOwnProperty.call(WRITE_TOOLS, toolName) ? WRITE_TOOLS[toolName] : undefined;
