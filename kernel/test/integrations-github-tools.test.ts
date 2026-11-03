@@ -148,9 +148,15 @@ describe("the tools are offered only to an agent granted GitHub (AC1)", () => {
     for (const name of NAMES) expect(ungranted).not.toContain(name);
   });
 
-  it("the part keeps its name and shape: the four tools, frozen, and no route, subcommand, handler or due work", () => {
+  it("the part keeps its name and shape: the four read tools then the four write tools, frozen, and no route, subcommand, handler or due work", () => {
     expect(githubToolsPart.name).toBe("github-tools");
-    expect(githubToolsPart.tools.map((t) => t.name)).toEqual([...NAMES]);
+    expect(githubToolsPart.tools.map((t) => t.name)).toEqual([
+      ...NAMES,
+      "kernel_github_pr_reply",
+      "kernel_github_pr_comment",
+      "kernel_github_issue_comment",
+      "kernel_github_pr_request_reviewers",
+    ]);
     expect([githubToolsPart.routes, githubToolsPart.subcommands, githubToolsPart.handlers, githubToolsPart.dueWork]).toEqual([[], [], {}, []]);
     expect(Object.isFrozen(githubToolsPart)).toBe(true);
     expect(Object.isFrozen(githubToolsPart.tools)).toBe(true);

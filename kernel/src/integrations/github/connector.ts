@@ -95,7 +95,7 @@ import {
 } from "./app-token.js";
 import type { GitHubAppTokens, WritePermission } from "./app-token.js";
 import { GITHUB_KEYCHAIN_SERVICE, createGitHubClient, resolveGitHubTokenProvider } from "./client.js";
-import type { GitHubClientDeps } from "./client.js";
+import type { GitHubAppTokenSource, GitHubClientDeps, InstallationTokenScope } from "./client.js";
 import { githubCredentialLock } from "./credential-lock.js";
 import type { GitHubCredentialLock } from "./credential-lock.js";
 
@@ -397,18 +397,47 @@ export function setStatus(store: Store, status: ConnectorStatus, at: string): Co
 export function createResolvingGitHubClient(deps: GitHubClientDeps = {}, tokens?: GitHubAppTokens): GitHubClient {
   if (deps.readToken !== undefined || deps.tokenProvider !== undefined) return createGitHubClient(deps);
   const keychain = deps.keychain ?? securityCliKeychain();
-  const holder =
-    tokens ??
-    (deps.keychain === undefined && deps.fetch === undefined
-      ? githubAppTokens
-      : createGitHubAppTokens({
-          keychain,
-          ...(deps.fetch !== undefined ? { fetch: deps.fetch } : {}),
-          ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
-          ...(deps.maxBodyBytes !== undefined ? { maxBodyBytes: deps.maxBodyBytes } : {}),
-          ...(deps.now !== undefined ? { now: deps.now } : {}),
-        }));
-  return createGitHubClient({ ...deps, keychain, tokenProvider: resolveGitHubTokenProvider(keychain, holder) });
+  return createGitHubClient({ ...deps, keychain, tokenProvider: resolveGitHubTokenProvider(keychain, holderFor(deps, keychain, tokens)) });
+}
+
+/**
+ * A GitHub client like `createResolvingGitHubClient` whose App credential is a
+ * token down-scoped to `scope` (`mintScoped`: the named repos and permissions,
+ * within `SESSION_TOKEN_PERMISSIONS`), minted fresh for each client call and
+ * never held, never the holder's full-permission token (D39). The write tools
+ * use one per write. The method rule is unchanged: with the PAT item present a
+ * write sends nothing (`unreachable`), and a mint that fails is no token, so the
+ * call sends nothing and answers `unreachable`. A 401 mints once more (the
+ * client's one renewal). The holder is the one `createResolvingGitHubClient`
+ * would pick over the same `deps` and `tokens`.
+ */
+export function createScopedGitHubClient(
+  scope: InstallationTokenScope,
+  deps: Omit<GitHubClientDeps, "readToken" | "tokenProvider"> = {},
+  tokens?: GitHubAppTokens,
+): GitHubClient {
+  const keychain = deps.keychain ?? securityCliKeychain();
+  const holder = holderFor(deps, keychain, tokens);
+  const scoped: GitHubAppTokenSource = {
+    configured: () => holder.configured(),
+    current: () => holder.mintScoped(scope),
+    // Nothing is held, so there is nothing to forget; the shared holder's own token is left alone.
+    invalidate: () => undefined,
+  };
+  return createGitHubClient({ ...deps, keychain, tokenProvider: resolveGitHubTokenProvider(keychain, scoped) });
+}
+
+/** `tokens`, else the process-wide holder when no Keychain or `fetch` is injected, else a holder of its own over `deps`. */
+function holderFor(deps: GitHubClientDeps, keychain: KeychainReader, tokens: GitHubAppTokens | undefined): GitHubAppTokens {
+  if (tokens !== undefined) return tokens;
+  if (deps.keychain === undefined && deps.fetch === undefined) return githubAppTokens;
+  return createGitHubAppTokens({
+    keychain,
+    ...(deps.fetch !== undefined ? { fetch: deps.fetch } : {}),
+    ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
+    ...(deps.maxBodyBytes !== undefined ? { maxBodyBytes: deps.maxBodyBytes } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
+  });
 }
 
 // ---- Validation -------------------------------------------------------------------

@@ -199,12 +199,21 @@ describe("the integrations feature (AC2)", () => {
     expect(Object.isFrozen(drafts)).toBe(true);
   });
 
-  it("contributes the github parts and the drafts routes: the four GitHub PR tools, six token/drafts routes plus the App's routes under /connectors/github/app/, one subcommand and two due works (the expiry check, then the App's mint check), no handlers", () => {
+  it("contributes the github parts and the drafts routes: the four read and four write GitHub PR tools, six token/drafts routes plus the App's routes under /connectors/github/app/, one subcommand and two due works (the expiry check, then the App's mint check), no handlers", () => {
     expect(Object.keys(integrationsContribution).sort()).toEqual(["dueWork", "name", "routes", "subcommands", "tools"]);
     expect(Object.isFrozen(integrationsContribution)).toBe(true);
     const merged = mergeContributions([integrationsContribution]);
     expect(merged.contributors).toEqual(["integrations"]);
-    expect(merged.tools.map((t) => t.name)).toEqual(["kernel_github_pr_get", "kernel_github_pr_diff", "kernel_github_pr_files", "kernel_github_pr_comments"]);
+    expect(merged.tools.map((t) => t.name)).toEqual([
+      "kernel_github_pr_get",
+      "kernel_github_pr_diff",
+      "kernel_github_pr_files",
+      "kernel_github_pr_comments",
+      "kernel_github_pr_reply",
+      "kernel_github_pr_comment",
+      "kernel_github_issue_comment",
+      "kernel_github_pr_request_reviewers",
+    ]);
     expect(merged.handlers).toEqual({});
     // The six token/drafts routes are exact; the App's routes are matched by prefix, so the setup item can add its own without editing this pin.
     const isApp = (r: { readonly path: string }): boolean => r.path.startsWith("/connectors/github/app/");
@@ -243,7 +252,7 @@ describe("the integrations feature (AC2)", () => {
     // The GitHub App's modules (`github/app-*.ts`: the port stub, the routes and the setup flow, then the tokens item's own) are matched by pattern, so a new one does not edit this pin.
     const isAppModule = (f: string): boolean => /^github[\\/]app-[^\\/]+\.ts$/.test(f);
     expect(files.filter((f) => !isAppModule(f)).sort()).toEqual(
-      ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/credential-lock.ts", "github/routes.ts", "github/tools.ts", "index.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
+      ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/credential-lock.ts", "github/routes.ts", "github/tools.ts", "github/write-tools.ts", "index.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
     );
     expect(files).toEqual(expect.arrayContaining([join("github/app-port.ts"), join("github/app-routes.ts")]));
     for (const f of files) {

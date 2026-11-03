@@ -11,9 +11,18 @@ import type { ConnectorKind } from "./types.js";
 /**
  * The tools a session whose agent holds `connectors` may list: every tool
  * without `requiresConnector`, and each tool whose required connector is
- * granted. A new list, in `tools`' order; `tools` is never mutated. It only
- * narrows: a tool a session never lists can't be called.
+ * granted, except a write-level tool (`requiresConnectorLevel: "write"`),
+ * which is listed only when `githubWrite` is true (the agent's `github:
+ * write` grant, not the playbook's mode). A new list, in `tools`' order;
+ * `tools` is never mutated. It only narrows: a tool a session never lists
+ * can't be called.
  */
-export function toolsForConnectors(tools: readonly ContributedTool[], connectors: readonly ConnectorKind[]): readonly ContributedTool[] {
-  return tools.filter((t) => t.requiresConnector === undefined || connectors.includes(t.requiresConnector));
+export function toolsForConnectors(
+  tools: readonly ContributedTool[],
+  connectors: readonly ConnectorKind[],
+  githubWrite = false,
+): readonly ContributedTool[] {
+  return tools.filter(
+    (t) => (t.requiresConnector === undefined || connectors.includes(t.requiresConnector)) && (t.requiresConnectorLevel !== "write" || githubWrite),
+  );
 }

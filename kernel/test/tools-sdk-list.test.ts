@@ -122,6 +122,10 @@ const CLOSED_VALUE_SETS: Readonly<Record<string, readonly ClosedValueSet[]>> = {
   kernel_github_pr_diff: [{ path: "max_bytes", positiveInteger: true }],
   kernel_github_pr_files: [],
   kernel_github_pr_comments: [],
+  kernel_github_pr_reply: [],
+  kernel_github_pr_comment: [],
+  kernel_github_issue_comment: [],
+  kernel_github_pr_request_reviewers: [],
 };
 
 type Json = Record<string, unknown>;
@@ -189,9 +193,9 @@ afterEach(() => {
 });
 
 describe("the shipped kernel tools list through the Agent SDK", () => {
-  it("(a) every name of kernelToolNames is listed (26 in all), each with an object input schema", async () => {
+  it("(a) every name of kernelToolNames is listed (30 in all), each with an object input schema", async () => {
     const expected = kernelToolNames(SHIPPED);
-    expect(expected).toHaveLength(26);
+    expect(expected).toHaveLength(30);
     const listed = await listKernelTools(SHIPPED);
     expect(listed.map((t) => t.name).sort()).toEqual([...expected].sort());
     for (const t of listed) expect((t.inputSchema as { type?: unknown }).type, t.name).toBe("object");
@@ -243,8 +247,8 @@ describe("the shipped kernel tools list through the Agent SDK", () => {
     expect(() => LISTING_CTX.store.dataDir).toThrow("tool listing only");
     expect(() => LISTING_CTX.sessions.getSession(1)).toThrow("tool listing only");
     expect(() => LISTING_CTX.sessions.stopSession(1)).toThrow("tool listing only");
-    expect(kernelToolDefinitions(LISTING_CTX, SHIPPED)).toHaveLength(26);
-    await expect(listKernelTools(SHIPPED)).resolves.toHaveLength(26);
+    expect(kernelToolDefinitions(LISTING_CTX, SHIPPED)).toHaveLength(30);
+    await expect(listKernelTools(SHIPPED)).resolves.toHaveLength(30);
   });
 });
 

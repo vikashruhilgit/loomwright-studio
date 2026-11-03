@@ -66,6 +66,7 @@ import {
 } from "../src/integrations/index.js";
 import { connectorsSubcommand } from "../src/integrations/cli.js";
 import { GITHUB_APP_SERVICES } from "../src/integrations/github/connector.js";
+import { createGitHubWriteTools } from "../src/integrations/github/write-tools.js";
 import type { SecretRead } from "../src/integrations/cli.js";
 import type { GitHubPull } from "../src/integrations/types.js";
 import { startKernel } from "../src/kernel.js";
@@ -396,7 +397,10 @@ describe("phase 6 exit: a poll playbook reviews the owner's PRs, skips the uncha
       clientFor: (readToken, kc) => ((readToken !== undefined ? readToken() : kc.read(GITHUB_KEYCHAIN_SERVICE)) === WRITE_TOKEN ? writeScoped : github),
     });
     const routesPart = { ...githubRoutesPart, routes: githubRoutes(connector) };
-    const toolsPart = { ...githubToolsPart, tools: createGitHubTools({ client: () => github }) };
+    const toolsPart = {
+      ...githubToolsPart,
+      tools: [...createGitHubTools({ client: () => github }), ...createGitHubWriteTools({ client: () => github })],
+    };
     const integrations = integrationsContributionOf([githubConnectorPart, routesPart, toolsPart, draftsPart, githubAppRoutesPart]);
     // The CLI's copy differs only in where `studio connectors github set` reads the token from (a test stdin).
     let secret: SecretRead = { ok: true, token: READ_ONLY_TOKEN };

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PROPOSED_ALLOWED_TOOLS } from "../src/brain/index.js";
 import { decideToolUse, freezePolicy } from "../src/sessions/index.js";
 import { DRAFT_PAYLOAD_KINDS, MAX_DRAFT_TEXT_CHARS, draftDecision, draftPayloadOf, githubCliDecision } from "../src/sessions/draft-mode.js";
-import { ALWAYS_HELD_TOOLS, MAX_RAIL_COMMAND_LENGTH, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf, programCouldBe } from "../src/sessions/policy.js";
+import { ALWAYS_HELD_TOOLS, GITHUB_WRITE_TOOLS, MAX_RAIL_COMMAND_LENGTH, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf, programCouldBe } from "../src/sessions/policy.js";
 import type { NeverCategory } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
 
@@ -199,18 +199,46 @@ describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
     ["NotebookEdit", { notebook_path: "/home/o/.claude/x.ipynb" }, "NotebookEdit ~/.claude/", ["settings_write"]],
     ["NotebookEdit", { notebook_path: "/work/settings.json" }, "NotebookEdit a settings*.json file", ["settings_write"]],
     ["NotebookEdit", { notebook_path: "/work/.git/hooks/x.ipynb" }, "NotebookEdit a hooks file", ["hooks_write"]],
+    // The kernel's GitHub write tools (phase 8 item 05): outward by name, the action is the name without `mcp__kernel__`.
+    ["mcp__kernel__kernel_github_pr_reply", { repo: "o/r", pr: 3, comment_id: 9, body: "x" }, "kernel_github_pr_reply", ["gh_pr_comment_reply"]],
+    ["mcp__kernel__kernel_github_pr_comment", { repo: "o/r", pr: 3, body: "x" }, "kernel_github_pr_comment", ["gh_pr_comment"]],
+    ["mcp__kernel__kernel_github_issue_comment", { repo: "o/r", issue: 3, body: "x" }, "kernel_github_issue_comment", ["gh_issue_comment"]],
+    ["mcp__kernel__kernel_github_pr_request_reviewers", { repo: "o/r", pr: 3, reviewers: ["a"] }, "kernel_github_pr_request_reviewers", ["gh_pr_request_reviewers"]],
   ];
 
-  it("maps every outward label the rail emits for Bash, Write, Edit and NotebookEdit to its categories, and every category is reachable", () => {
+  it("maps every outward label the rail emits for Bash, Write, Edit and NotebookEdit, and the four GitHub write tools, to its categories, and every category is reachable", () => {
     for (const [tool, input, action, categories] of LABELS) {
       const c = classifyToolCall(tool, input, rail);
       expect(c, JSON.stringify(input)).toMatchObject({ kind: "outward", action });
       expect(neverCategoriesOf(action), action).toEqual(categories);
     }
     const reached = new Set(LABELS.flatMap(([, , action]) => neverCategoriesOf(action)));
-    // Phase 8 item 01 accepts these 2 with no rail label; item 05 adds their matcher, then this exemption goes.
-    const NO_MATCHER_YET = ["gh_pr_request_reviewers", "gh_pr_comment_reply"];
-    expect(NEVER_CATEGORIES.filter((c) => !reached.has(c) && !NO_MATCHER_YET.includes(c))).toEqual([]);
+    expect(NEVER_CATEGORIES.filter((c) => !reached.has(c))).toEqual([]);
+  });
+
+  it("classifies each GitHub write tool outward with the tool's own payload, and not as an always-held tool", () => {
+    expect(Object.keys(GITHUB_WRITE_TOOLS)).toEqual([
+      "mcp__kernel__kernel_github_pr_reply",
+      "mcp__kernel__kernel_github_pr_comment",
+      "mcp__kernel__kernel_github_issue_comment",
+      "mcp__kernel__kernel_github_pr_request_reviewers",
+    ]);
+    expect(Object.isFrozen(GITHUB_WRITE_TOOLS)).toBe(true);
+    const input = { repo: "o/r", pr: 3, reviewers: ["alice"] };
+    for (const name of Object.keys(GITHUB_WRITE_TOOLS)) {
+      expect(ALWAYS_HELD_TOOLS, name).not.toContain(name);
+      expect(classifyToolCall(name, input, rail), name).toEqual({
+        kind: "outward",
+        action: name.replace("mcp__kernel__", ""),
+        payload: { tool: name, input, cwd: "/work" },
+      });
+    }
+    // The read tools and a look-alike name are ordinary, whatever their input.
+    for (const name of ["mcp__kernel__kernel_github_pr_get", "mcp__kernel__kernel_github_pr_comments", "mcp__kernel__kernel_github_pr_reply_x", "kernel_github_pr_reply"]) {
+      expect(classifyToolCall(name, input, rail).kind, name).toBe("ordinary");
+    }
+    // Inherited property names are not tool names.
+    expect(classifyToolCall("constructor", input, rail).kind).toBe("ordinary");
   });
 
   it("maps the ALWAYS_HELD_TOOLS actions, a merge and any other text to no category", () => {
@@ -219,7 +247,7 @@ describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
       expect(c.kind, tool).toBe("outward");
       if (c.kind === "outward") expect(neverCategoriesOf(c.action), tool).toEqual([]);
     }
-    for (const text of ["kernel_playbook_enable", "kernel_agent_create", "kernel_agent_update", "gh pr merge", "git", "gh api", "Read ~/.claude/", ""]) {
+    for (const text of ["kernel_playbook_enable", "kernel_agent_create", "kernel_agent_update", "mcp__kernel__kernel_github_pr_reply", "kernel_github_pr_get", "gh pr merge", "git", "gh api", "Read ~/.claude/", ""]) {
       expect(neverCategoriesOf(text), text).toEqual([]);
     }
   });
