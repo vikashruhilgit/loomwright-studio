@@ -777,9 +777,50 @@ describe("mintInstallationToken and convertManifest (AC12, AC13)", () => {
     expect(await mintInstallationToken(42, JWT, { fetch: fakeFetch(() => json(mintBody(), 201)).fetch, maxBodyBytes: 10 })).toEqual({ ok: false, error: "unreachable" });
   });
 
-  it("mint: the permissions are reported as GitHub gives them, write levels included (the caller refuses those)", async () => {
+  it("mint: the permissions are reported as GitHub gives them, write levels included (the caller compares them)", async () => {
     const { fetch } = fakeFetch(() => json(mintBody({ permissions: { metadata: "read", pull_requests: "write" } }), 201));
     expect(await mintInstallationToken(42, JWT, { fetch })).toMatchObject({ ok: true, permissions: { pull_requests: "write" } });
+  });
+
+  it("mint: the optional scope is sent as a JSON body with a content type, and only when it narrows something", async () => {
+    const scoped = fakeFetch(() => json(mintBody(), 201));
+    const res = await mintInstallationToken(42, JWT, { fetch: scoped.fetch }, { repositories: ["studio-sandbox"], permissions: { pull_requests: "write", contents: "write" } });
+    expect(res.ok).toBe(true);
+    const [c] = scoped.calls;
+    expect(c?.url).toBe("https://api.github.com/app/installations/42/access_tokens");
+    expect(c?.init.method).toBe("POST");
+    expect(c?.init.redirect).toBe("manual");
+    expect(headerOf(c, "content-type")).toBe("application/json");
+    expect(headerOf(c, "authorization")).toBe(`Bearer ${JWT}`);
+    expect(JSON.parse(String(c?.init.body))).toEqual({ repositories: ["studio-sandbox"], permissions: { pull_requests: "write", contents: "write" } });
+    // Without a scope, or with one that narrows nothing, the request is the unscoped one: no body, no content type.
+    for (const scope of [undefined, {}, { repositories: undefined, permissions: undefined }]) {
+      const plain = fakeFetch(() => json(mintBody(), 201));
+      await mintInstallationToken(42, JWT, { fetch: plain.fetch }, scope);
+      expect(plain.calls[0]?.init.body).toBeUndefined();
+      expect(headerOf(plain.calls[0], "content-type")).toBeNull();
+    }
+  });
+
+  it("mint: only the two known scope fields are ever sent, and the scope is copied, not shared", async () => {
+    const { fetch, calls } = fakeFetch(() => json(mintBody(), 201));
+    const repositories = ["a"];
+    const scope = { repositories, permissions: { contents: "read" }, repository_ids: [1], extra: "x" } as unknown as Parameters<typeof mintInstallationToken>[3];
+    await mintInstallationToken(42, JWT, { fetch }, scope);
+    repositories.push("b");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ repositories: ["a"], permissions: { contents: "read" } });
+  });
+
+  it("mint: a scoped mint stays on the one allowed request (same method, origin and path) and never throws", async () => {
+    const { fetch, calls } = fakeFetch(() => json({ message: `no ${JWT}` }, 422));
+    const res = await mintInstallationToken(42, JWT, { fetch }, { repositories: ["r"], permissions: { contents: "write" } });
+    expect(res).toEqual({ ok: false, error: "http_error", status: 422 });
+    expect(JSON.stringify(res)).not.toContain(JWT);
+    expect(calls.map((c) => `${c.init.method} ${c.url}`)).toEqual(["POST https://api.github.com/app/installations/42/access_tokens"]);
+    // A scope that cannot be serialised is unreachable, with no request.
+    const none = fakeFetch(() => json(mintBody(), 201));
+    expect(await mintInstallationToken(42, JWT, { fetch: none.fetch }, { permissions: { toJSON: () => { throw new Error("x"); } } as unknown as Record<string, string> })).toEqual({ ok: false, error: "unreachable" });
+    expect(none.calls).toEqual([]);
   });
 
   it("mint: the result is frozen where it carries the permissions, and holds nothing else of the response", async () => {
