@@ -45,6 +45,8 @@ export const NEVER_CATEGORIES: readonly string[] = Object.freeze([
   "gh_pr_review",
   "gh_pr_edit",
   "gh_pr_close",
+  "gh_pr_request_reviewers",
+  "gh_pr_comment_reply",
   "gh_issue_create",
   "gh_issue_comment",
   "gh_issue_edit",

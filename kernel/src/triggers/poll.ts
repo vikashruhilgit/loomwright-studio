@@ -49,7 +49,7 @@
 // `../notifications/record.js` and `../integrations/types.js` type-only, so
 // the `studio` CLI's module graph is unchanged.
 import { isKillSwitchEngaged } from "../api/kill-switch.js";
-import type { GitHubClient, GitHubPullSummary, PollSpec, SourceItem } from "../integrations/types.js";
+import type { GitHubClient, PollSpec, SourceItem } from "../integrations/types.js";
 import { appendEvent, clip, errorMessage } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
 import type { EnqueueParams } from "../loop/queue.js";
@@ -58,10 +58,15 @@ import { InvalidNotificationError, MAX_NOTIFICATION_TITLE, recordNotification } 
 import type { Store } from "../store/store.js";
 import { TriggerError, fireStepKey, inKillSwitchWindow, inPauseWindow, killSwitchWindows, linkedPlaybook, pauseWindows } from "./fire-shared.js";
 import type { LinkedPlaybook } from "./fire-shared.js";
+import { fetchGithubPulls } from "./sources/github-pulls.js";
 import type { TriggerResult } from "./store.js";
 
-/** The sources a poll can list, closed in code. */
-export const POLL_SOURCES = ["github.pulls"] as const;
+/**
+ * The sources a poll can list, closed in code. Only `github.pulls` is built;
+ * the other four are refused by `parsePollSpec` (code `invalid_spec`) until
+ * their phase 8 items land.
+ */
+export const POLL_SOURCES = ["github.pulls", "github.issues", "github.pr_comments", "jira.issues", "clickup.tasks"] as const;
 
 /** The filter keys a `github.pulls` poll takes: `state` and `author` strings, `draft` a boolean. */
 export const POLL_FILTER_KEYS = ["state", "draft", "author"] as const;
@@ -149,6 +154,9 @@ export function parsePollSpec(text: string): PollSpec {
   const extra = Object.keys(parsed).filter((key) => !(POLL_SPEC_FIELDS as readonly string[]).includes(key));
   if (extra.length > 0) throw invalid(`a poll spec has unknown field ${extra.map(shown).join(", ")}; its fields are ${POLL_SPEC_FIELDS.join(", ")}`);
   if (!(POLL_SOURCES as readonly unknown[]).includes(parsed.source)) throw invalid(`a poll spec's source must be one of ${POLL_SOURCES.join(", ")} (got ${shown(parsed.source)})`);
+  if (parsed.source !== "github.pulls") {
+    throw invalid(`poll_source_not_built: the poll source ${shown(parsed.source)} is not built yet; only github.pulls polls`);
+  }
   const repos = checkRepos(parsed.repos);
   const filters = checkFilters(parsed.filters);
   const interval = parsed.interval_seconds;
@@ -291,54 +299,16 @@ export type Fetched =
   | { readonly ok: false; readonly error: "rate_limited"; readonly repo: string; readonly resets_at: string }
   | { readonly ok: false; readonly error: "http_error" | "unreachable" | "client_error"; readonly repo: string; readonly status?: number; readonly message?: string };
 
-/** Whether pull `p` passes `filters` in the kernel (the client's filtering is not the only one). The listing is open pulls only. */
-function matches(p: GitHubPullSummary, filters: PollSpec["filters"]): boolean {
-  if (filters.state !== undefined && filters.state !== "open") return false;
-  if (filters.draft !== undefined && p.draft !== filters.draft) return false;
-  if (filters.author !== undefined && p.author !== filters.author) return false;
-  return true;
-}
-
-/** A listed pull the kernel can name: a positive whole number and a head SHA. Anything else from the source is dropped. */
-function isNameable(p: unknown): p is GitHubPullSummary {
-  const q = p as Partial<GitHubPullSummary> | null;
-  return typeof q === "object" && q !== null && Number.isSafeInteger(q.number) && (q.number as number) > 0 && typeof q.head_sha === "string" && q.head_sha !== "";
-}
-
-function itemOf(repo: string, p: GitHubPullSummary): SourceItem {
-  const text = (v: unknown): string => (typeof v === "string" ? v : "");
-  return { ref: `github:${repo}#${p.number}`, revision: p.head_sha, title: text(p.title), url: text(p.url), updated_at: text(p.updated_at) };
-}
-
 /**
- * Phase A's fetch: each repo once, in spec order, one after the other. The
- * first failure stops it (nothing is queued for the instant); a client that
- * throws, or answers data that is not a list, is a `client_error`. Items are
- * repos in spec order, pulls by ascending number, at most `MAX_POLL_ITEMS`.
+ * Phase A's fetch: dispatches by `spec.source` to `./sources/<source>.ts`
+ * (only `github.pulls` parses, so it is the only one built). Items are
+ * repos in spec order, pulls by ascending number, at most `MAX_POLL_ITEMS`;
+ * `found` counts them before the cap. The first failure stops it.
  */
 export async function fetchPollItems(github: GitHubClient, spec: PollSpec): Promise<Fetched> {
-  const items: SourceItem[] = [];
-  for (const repo of spec.repos) {
-    let res: Awaited<ReturnType<GitHubClient["listOpenPulls"]>>;
-    try {
-      res = await github.listOpenPulls(repo, spec.filters);
-    } catch (err) {
-      return { ok: false, error: "client_error", repo, message: clip(errorMessage(err), 500) };
-    }
-    if (!res.ok) {
-      if (res.error === "rate_limited") return { ok: false, error: "rate_limited", repo, resets_at: res.resets_at };
-      return res.error === "http_error" ? { ok: false, error: "http_error", repo, status: res.status } : { ok: false, error: "unreachable", repo };
-    }
-    if (!Array.isArray(res.data)) return { ok: false, error: "client_error", repo, message: "the listing is not a list" };
-    const seen = new Set<number>();
-    const pulls = (res.data as readonly unknown[]).filter(isNameable).filter((p) => matches(p, spec.filters));
-    for (const p of [...pulls].sort((a, b) => a.number - b.number)) {
-      if (seen.has(p.number)) continue;
-      seen.add(p.number);
-      items.push(itemOf(repo, p));
-    }
-  }
-  return { ok: true, items: items.slice(0, MAX_POLL_ITEMS), found: items.length };
+  const fetched = await fetchGithubPulls(github, spec);
+  if (!fetched.ok) return fetched;
+  return { ok: true, items: fetched.items.slice(0, MAX_POLL_ITEMS), found: fetched.items.length };
 }
 
 /** Whether a due poll may fetch now, or which miss its instant is. */

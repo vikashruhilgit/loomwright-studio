@@ -1,6 +1,7 @@
 // The feature registry: every shipped feature's contribution (the five phase
 // 2 features, then phase 3's `playbooks`, then phase 4's `agents`, then phase
-// 5's `console`, then phase 6's `integrations`, then phase 7's `gui`), in a
+// 5's `console`, then phase 6's `integrations`, then phase 7's `gui`, then phase 8's
+// `automate`), in a
 // fixed order. Each is empty until the item that builds it fills it in
 // (invariant 1: nothing is preinstalled). `startKernel` and the `studio` CLI
 // merge `SHIPPED_CONTRIBUTIONS` by default. The CLI imports this module, so neither
@@ -8,6 +9,7 @@
 // `kernel.ts` (pinned in `kernel/test/feature-seams.test.ts`).
 import { agentsContribution } from "../agents/index.js";
 import { approvalsContribution } from "../approvals/index.js";
+import { automateContribution } from "../automate/index.js";
 import { brainContribution } from "../brain/index.js";
 import { consoleContribution } from "../console/index.js";
 import { guiContribution } from "../gui/index.js";
@@ -29,6 +31,7 @@ export const SHIPPED_CONTRIBUTIONS: readonly FeatureContribution[] = Object.free
   consoleContribution,
   integrationsContribution,
   guiContribution,
+  automateContribution,
 ]);
 
 export {

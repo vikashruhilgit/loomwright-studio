@@ -213,10 +213,10 @@ describe("migration 18: connector_permissions_source (AC6)", () => {
 
   const columnsOf = (db: Store): string[] => db.prepare<[], string>("SELECT name FROM pragma_table_info('connectors')").pluck().all();
 
-  it("is version 18 (second to last: migration 19 sits above it), and the shipped list is contiguous from 1", () => {
-    expect(migrations.at(-2)).toBe(connectorPermissionsSource);
+  it("is version 18 (third to last: migrations 19 and 20 sit above it), and the shipped list is contiguous from 1", () => {
+    expect(migrations.at(-3)).toBe(connectorPermissionsSource);
     expect([connectorPermissionsSource.version, connectorPermissionsSource.name]).toEqual([18, "connector_permissions_source"]);
-    expect(migrations.map((m) => m.version)).toEqual(Array.from({ length: 19 }, (_, i) => i + 1));
+    expect(migrations.map((m) => m.version)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
   });
 
   it("upgrades a v17 store: both columns are added (nullable TEXT, no default, no CHECK), the existing row keeps its values and reads null for both, and the integrity check passes", () => {

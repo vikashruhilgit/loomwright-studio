@@ -44,6 +44,7 @@ import { checkAfterMigrating, checkBeforeMigrating } from "../src/store/integrit
 import { phase6Foundation } from "../src/store/migrations/017_phase_6_foundation.js";
 import { connectorPermissionsSource } from "../src/store/migrations/018_connector_permissions_source.js";
 import { connectorApp } from "../src/store/migrations/019_connector_app.js";
+import { phase8Foundation } from "../src/store/migrations/020_phase_8_foundation.js";
 import { contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolContext, KernelToolResult } from "../src/tools/server.js";
 import { TRIGGER_KINDS, TriggerError, registerTrigger, triggersContribution, updateTriggerSpec } from "../src/triggers/index.js";
@@ -137,8 +138,8 @@ const PLAIN_TOOL = defineTool({
 // ---------------------------------------------------------------------------
 
 describe("connector closed sets", () => {
-  it("CONNECTOR_KINDS is exactly github, frozen", () => {
-    expect(CONNECTOR_KINDS).toEqual(["github"]);
+  it("CONNECTOR_KINDS is exactly github, jira and clickup, frozen", () => {
+    expect(CONNECTOR_KINDS).toEqual(["github", "jira", "clickup"]);
     expect(Object.isFrozen(CONNECTOR_KINDS)).toBe(true);
   });
 
@@ -158,8 +159,8 @@ describe("the integrations feature (AC2)", () => {
     expect(SHIPPED_CONTRIBUTIONS[8]).toBe(integrationsContribution);
   });
 
-  it("merges its five parts in a fixed order: github-connector, github-routes (item 03), github-tools (item 06), drafts (item 07), github-app-routes (D36)", () => {
-    expect(INTEGRATIONS_PARTS.map((p) => p.name)).toEqual(["github-connector", "github-routes", "github-tools", "drafts", "github-app-routes"]);
+  it("merges its seven parts in a fixed order: github-connector, github-routes (item 03), github-tools (item 06), drafts (item 07), mcp and repo-policy (phase 8, empty), github-app-routes (D36)", () => {
+    expect(INTEGRATIONS_PARTS.map((p) => p.name)).toEqual(["github-connector", "github-routes", "github-tools", "drafts", "mcp", "repo-policy", "github-app-routes"]);
     expect(Object.isFrozen(INTEGRATIONS_PARTS)).toBe(true);
   });
 
@@ -290,18 +291,20 @@ describe("toolsForConnectors", () => {
 describe("migration 17: phase_6_foundation (AC1)", () => {
   const V16 = migrations.slice(0, 16);
 
-  it("is version 17, and migration 18 (connector_permissions_source, its own tests in integrations-github-declared.test.ts) and 19 (connector_app, in integrations-github-app-migration.test.ts) sit above it, 19 last", () => {
+  it("is version 17, and migration 18 (connector_permissions_source, its own tests in integrations-github-declared.test.ts) and 19 (connector_app, in integrations-github-app-migration.test.ts) sit above it, 19 directly below 20 (phase_8_foundation, last)", () => {
     expect(migrations.at(16)).toBe(phase6Foundation);
     expect([phase6Foundation.version, phase6Foundation.name]).toEqual([17, "phase_6_foundation"]);
-    expect(migrations.at(-2)).toBe(connectorPermissionsSource);
+    expect(migrations.at(-3)).toBe(connectorPermissionsSource);
     expect([connectorPermissionsSource.version, connectorPermissionsSource.name]).toEqual([18, "connector_permissions_source"]);
-    expect(migrations.at(-1)).toBe(connectorApp);
+    expect(migrations.at(-2)).toBe(connectorApp);
     expect([connectorApp.version, connectorApp.name]).toEqual([19, "connector_app"]);
+    expect(migrations.at(-1)).toBe(phase8Foundation);
+    expect([phase8Foundation.version, phase8Foundation.name]).toEqual([20, "phase_8_foundation"]);
   });
 
   it("on a fresh store creates connectors and draft_outputs with exactly their columns, and adds playbooks.mode / mode_set_by and playbook_runs.item_ref / item_revision", () => {
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([19, "connector_app"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
     // Migration 17's columns, then the two migration 18 adds, then the three migration 19 adds at the end.
     expect(columnsOf(store, "connectors")).toEqual([
       "id",
@@ -378,7 +381,7 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     expect(before.tables).not.toContain("draft_outputs");
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([19, "connector_app"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
     expect(store.prepare("SELECT mode, mode_set_by FROM playbooks WHERE id = 1").get()).toEqual({ mode: "draft", mode_set_by: null });
     expect(store.prepare("SELECT item_ref, item_revision FROM playbook_runs WHERE id = 1").get()).toEqual({ item_ref: null, item_revision: null });
     store.close();
@@ -393,7 +396,9 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
       }
       const altered = (o: { name: string }): boolean => o.name === "playbooks" || o.name === "playbook_runs";
       const named = (o: { name: string }): boolean => before.objects.some((b) => b.name === o.name);
-      const after = objectsOf(db);
+      // Migration 20 (phase_8_foundation, its own tests in phase-8-foundation.test.ts) adds its three tables and their unique indexes on top of 17's.
+      const phase8 = (o: { name: string }): boolean => /repo_policies|pr_tracks|mcp_connections/.test(o.name);
+      const after = objectsOf(db).filter((o) => !phase8(o));
       expect(after.filter((o) => named(o) && !altered(o))).toEqual(before.objects.filter((o) => !altered(o)));
       expect(after.filter((o) => !named(o)).map((o) => [o.type, o.name])).toEqual([
         ["table", "connectors"],
@@ -425,7 +430,7 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     db.exec("DELETE FROM schema_migrations WHERE version >= 17");
     db.close();
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([19, "connector_app"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
     rerun.close();
     expect(snap()).toEqual(before);
   });
