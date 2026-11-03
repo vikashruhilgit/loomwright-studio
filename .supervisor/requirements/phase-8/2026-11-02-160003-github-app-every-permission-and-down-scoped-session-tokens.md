@@ -88,3 +88,9 @@ kernel/test/integrations-github-connector.test.ts
 kernel/test/fixtures/github-fake.ts
 docs/architecture/github-app-setup.md
 docs/architecture/integrations.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-03T07:38:28Z
+- **Brief:** .supervisor/jobs/done/2026-11-03-github-app-permissions-session-tokens.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/220
