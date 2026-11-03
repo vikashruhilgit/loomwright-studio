@@ -106,3 +106,9 @@ kernel/test/sessions-policy.test.ts
 docs/architecture/draft-mode.md
 docs/architecture/approvals.md
 docs/architecture/agents.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-03T07:39:11Z
+- **Brief:** .supervisor/jobs/done/2026-11-03-live-mode-and-github-write-in-sessions.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/219
