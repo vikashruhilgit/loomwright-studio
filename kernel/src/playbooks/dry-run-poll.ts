@@ -58,6 +58,9 @@ type DedupeError = "dedupe_spec_invalid" | "dedupe_zone_invalid";
 /** Longest title a result keeps: it is the PR author's text (untrusted data), shown for a reader's orientation only. */
 const MAX_TITLE_CHARS = 200;
 
+/** Longest text (an issue's or a comment's body) a result keeps: its author's text (untrusted data), shown for a reader's orientation only. */
+const MAX_TEXT_CHARS = 1_000;
+
 /** The summary names at most this many items (then how many more), each key cut to `SUMMARY_KEY_CHARS`. */
 const SUMMARY_ITEMS = 10;
 const SUMMARY_KEY_CHARS = 160;
@@ -75,6 +78,8 @@ export interface PollPreviewItem {
   readonly revision: string;
   /** The PR's title: its author's text, untrusted data, control characters made spaces, cut to `MAX_TITLE_CHARS`. */
   readonly title: string;
+  /** The issue's or comment's body (`github.issues`, `github.pr_comments`): its author's text, untrusted data, control characters made spaces, cut to `MAX_TEXT_CHARS`. Absent for a pull request. */
+  readonly text?: string;
   readonly would: PollWould;
   /** The evaluated key (`{"item.id":"github:o/r#7","item.revision":"abc123"}`), or `null` with no dedupe spec or an unreadable one. */
   readonly dedupe_key: string | null;
@@ -186,7 +191,7 @@ export async function previewPoll(
   const scheduledAt = trigger.next_fire_at ?? now.toISOString();
   const timeZone = hostTimeZone();
   const items: PollPreviewItem[] = fetched.items.map((item) => {
-    const shown = { ref: item.ref, revision: item.revision, title: inline(item.title, MAX_TITLE_CHARS) };
+    const shown = { ref: item.ref, revision: item.revision, title: inline(item.title, MAX_TITLE_CHARS), ...(item.text === undefined ? {} : { text: inline(item.text, MAX_TEXT_CHARS) }) };
     if (row.dedupe_key_spec === null) return { ...shown, would: "run", dedupe_key: null };
     const key = evaluateDedupeKey(row.dedupe_key_spec, { playbook: row.id, version: row.version, triggerId: trigger.id, scheduledAt, item: { ref: item.ref, revision: item.revision } }, timeZone);
     if (!key.ok) return { ...shown, would: "skip", dedupe_key: null, dedupe_error: key.error };
@@ -249,6 +254,7 @@ function isItem(value: unknown): value is PollPreviewItem {
     typeof v.ref === "string" &&
     typeof v.revision === "string" &&
     typeof v.title === "string" &&
+    (v.text === undefined || typeof v.text === "string") &&
     (POLL_WOULD as readonly unknown[]).includes(v.would) &&
     (v.dedupe_key === null || typeof v.dedupe_key === "string")
   );
@@ -276,10 +282,11 @@ export function pollOf(value: unknown): PollDryRun | undefined {
 
 /**
  * `poll` as the tool result shows it to the model: the same shape, with every
- * field that carries a PR author's or the model's text (an item's `title`, a
- * draft's `target` and `body`) wrapped as untrusted data, as every kernel
- * GitHub tool wraps its text (invariant 3). A title is wrapped from its own
- * item's ref; a draft's text from the reviewed item's. The stored
+ * field that carries a PR, issue or comment author's or the model's text (an
+ * item's `title`, and its `text` when it has one, a draft's `target` and
+ * `body`) wrapped as untrusted data, as every kernel GitHub tool wraps its
+ * text (invariant 3). A title and a text are wrapped from their own item's
+ * ref; a draft's text from the reviewed item's. The stored
  * `result_json` keeps the raw text: readers other than the model render it
  * themselves.
  */
@@ -287,7 +294,7 @@ export function wrapPollForModel(poll: PollDryRun): PollDryRun {
   const draftSource = poll.reviewed ?? "dry_run";
   return {
     ...poll,
-    items: poll.items.map((i) => ({ ...i, title: wrapUntrusted(i.ref, i.title) })),
+    items: poll.items.map((i) => ({ ...i, title: wrapUntrusted(i.ref, i.title), ...(i.text === undefined ? {} : { text: wrapUntrusted(i.ref, i.text) }) })),
     drafts: poll.drafts.map((d) => ({
       ...d,
       target: d.target === null ? null : wrapUntrusted(draftSource, d.target),
@@ -323,6 +330,14 @@ function inline(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+/** What the summary calls one item of `source` (a stored result of another shape reads as a pull request). */
+function itemNoun(source: string, n: number): string {
+  const plural = n === 1 ? "" : "s";
+  if (source === "github.issues") return `issue${plural}`;
+  if (source === "github.pr_comments") return `PR comment${plural}`;
+  return `open pull request${plural}`;
+}
+
 /**
  * The poll's part of a dry run's summary (appended to the phase 3 text only
  * for a poll playbook): the preview's incompleteness and why, the items and
@@ -334,14 +349,14 @@ export function formatPollSummary(poll: PollDryRun): string {
   if (poll.preview_incomplete !== undefined) {
     return `Poll preview incomplete (${poll.preview_incomplete.reason}): ${inline(poll.preview_incomplete.fix, 400)} No session started; the enable stays possible, and a real run parks until this is fixed.`;
   }
-  if (poll.items.length === 0) return "The poll found no open pull requests, so no review session started.";
+  if (poll.items.length === 0) return `The poll found no ${itemNoun(poll.spec.source, 0)}, so no review session started.`;
   const run = poll.items.filter((i) => i.would === "run").length;
   const shown = poll.items.slice(0, SUMMARY_ITEMS).map((i) => {
     if (i.dedupe_error !== undefined) return `${i.ref} would skip (${i.dedupe_error})`;
     return i.would === "run" ? `${i.ref} would run` : `${i.ref} would skip (key ${inline(i.dedupe_key ?? "none", SUMMARY_KEY_CHARS)})`;
   });
   const more = poll.items.length - shown.length;
-  const found = `The poll found ${poll.items.length} open pull request${poll.items.length === 1 ? "" : "s"}: ${run} would run, ${poll.items.length - run} would skip: ${shown.join("; ")}${more > 0 ? `; and ${more} more` : ""}.`;
+  const found = `The poll found ${poll.items.length} ${itemNoun(poll.spec.source, poll.items.length)}: ${run} would run, ${poll.items.length - run} would skip: ${shown.join("; ")}${more > 0 ? `; and ${more} more` : ""}.`;
   if (poll.reviewed === null) return `${found} No review session started: the dedupe key could not be evaluated.`;
   const drafted =
     poll.drafts.length === 0

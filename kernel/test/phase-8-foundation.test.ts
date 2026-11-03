@@ -47,7 +47,7 @@ describe("phase 8 closed sets", () => {
     expect(Object.isFrozen(CONNECTOR_KINDS)).toBe(true);
   });
 
-  it("POLL_SOURCES lists github.pulls and the four sources not built yet", () => {
+  it("POLL_SOURCES lists the three GitHub sources and the two not built yet (jira.issues, clickup.tasks)", () => {
     expect(POLL_SOURCES).toEqual(["github.pulls", "github.issues", "github.pr_comments", "jira.issues", "clickup.tasks"]);
   });
 
@@ -65,7 +65,7 @@ describe("phase 8 closed sets", () => {
 const REPOS = ["acme/widgets"];
 
 describe("a poll source not built is refused poll_source_not_built (invalid_spec)", () => {
-  for (const source of ["github.issues", "github.pr_comments", "jira.issues", "clickup.tasks"]) {
+  for (const source of ["jira.issues", "clickup.tasks"]) {
     it(source, () => {
       const text = JSON.stringify({ source, repos: REPOS, filters: {}, interval_seconds: 300 });
       let thrown: unknown;
@@ -79,6 +79,12 @@ describe("a poll source not built is refused poll_source_not_built (invalid_spec
       expect((thrown as TriggerError).message.startsWith("poll_source_not_built:")).toBe(true);
     });
   }
+
+  it("the three GitHub sources parse (github.issues and github.pr_comments since phase 8 item 05)", () => {
+    for (const source of ["github.pulls", "github.issues", "github.pr_comments"]) {
+      expect(parsePollSpec(JSON.stringify({ source, repos: REPOS, filters: {}, interval_seconds: 300 })).source).toBe(source);
+    }
+  });
 
   it("a source outside the closed list keeps the existing invalid_spec membership message, and github.pulls still parses", () => {
     expect(() => parsePollSpec(JSON.stringify({ source: "gitlab.mrs", repos: REPOS, interval_seconds: 300 }))).toThrow(/source must be one of/);

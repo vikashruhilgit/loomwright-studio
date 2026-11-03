@@ -66,7 +66,7 @@ One trigger's failure never stops the others. A trigger whose stored spec the ke
 
 ## Poll triggers
 
-A `poll` trigger (phase 6 item 04) lists a source at the interval the user set and queues one playbook `message` per item it finds, so a review duty sees each open pull request without a model deciding when to look, and a quiet poll costs no tokens. Code: `kernel/src/triggers/poll.ts`. The interval, the repos and the filters are the user's, stored as given (invariant 1); the kernel adds only the safety bounds below. The deterministic kernel decides when to look (invariant 2).
+A `poll` trigger (phase 6 item 04) lists a source at the interval the user set and queues one playbook `message` per item it finds, so a review duty sees each open pull request, issue or new PR comment without a model deciding when to look, and a quiet poll costs no tokens. Code: `kernel/src/triggers/poll.ts`, with one file per source under `kernel/src/triggers/sources/`. The interval, the repos and the filters are the user's, stored as given (invariant 1); the kernel adds only the safety bounds below. The deterministic kernel decides when to look (invariant 2).
 
 ### Spec and validation
 
@@ -76,10 +76,18 @@ A poll belongs to a playbook: `registerTrigger` / `updateTriggerSpec` with `kind
 {"source": "github.pulls", "repos": ["owner/name"], "filters": {"draft": false, "author": "alice"}, "interval_seconds": 300}
 ```
 
+The sources `POLL_SOURCES` names are `github.pulls`, `github.issues`, `github.pr_comments`, `jira.issues` and `clickup.tasks`. The first three are built (see [Sources](#sources)). `jira.issues` and `clickup.tasks` are refused `poll_source_not_built` until their items land; they come from the Jira and ClickUp connectors ([MCP connectors](mcp-connectors.md)). Each source takes its own filter keys:
+
+| Source | Filter keys |
+|---|---|
+| `github.pulls` | `state`, `author` (strings of 1-200 characters), `draft` (a boolean) |
+| `github.issues` | `state`, `assignee` (strings of 1-200 characters), `labels` (a non-empty array of strings of 1-200 characters) |
+| `github.pr_comments` | none |
+
 It is stored normalized as `{source, repos, filters, interval_seconds}`, with repos and filter values exactly as given (an absent `filters` is stored as `{}`), so re-saving the same spec is no change. Every refusal comes before any write:
 
-- `invalid_spec`: not a JSON object, an unknown field, a `source` other than `github.pulls`, `repos` empty or not `owner/name` strings (neither part `.` or `..`) or listing one twice (case-insensitively), a filter value of the wrong type (`state` and `author` are strings of 1-200 characters, `draft` a boolean), `interval_seconds` not a whole number, or a `tz`.
-- `poll_filter_unknown`: a filter key other than `state`, `draft` or `author`, naming it.
+- `invalid_spec`: not a JSON object, an unknown field, a `source` outside `POLL_SOURCES` or one not built (`jira.issues`, `clickup.tasks`: the message starts `poll_source_not_built:`), `repos` empty or not `owner/name` strings (neither part `.` or `..`) or listing one twice (case-insensitively), a filter value of the wrong type (see the table above), `interval_seconds` not a whole number, or a `tz`.
+- `poll_filter_unknown`: a filter key the spec's source does not take (the table above; any key at all for `github.pr_comments`), naming it.
 - `poll_interval_below_floor`: `interval_seconds` under the 60 second floor (a kernel safety bound, not a default: there is no default interval).
 - `poll_connector_missing`: no usable GitHub connector.
 - `poll_repo_not_reachable`: a repo the connector does not reach, naming every such repo.
@@ -92,10 +100,22 @@ Registration, a re-schedule and turning a poll on all set `next_fire_at = now + 
 
 Each due poll is fired in two phases, because the GitHub client is asynchronous and a work step is one synchronous transaction:
 
-1. **Phase A writes nothing.** It decides whether to fetch, then lists every repo in spec order, one after the other, outside any transaction, through `GitHubClient.listOpenPulls(repo, filters)`. It fetches nothing when the instant's step is already done, the linked playbook is not `enabled`, the instant falls in a kill-switch window, the kernel is paused or the instant falls in a pause window, or the connector is missing or no client is wired.
+1. **Phase A writes nothing.** It decides whether to fetch, then lists every repo in spec order, one after the other, outside any transaction, through the source's listing (`GitHubClient.listOpenPulls`, `listIssues` or `listOpenPullComments`). It fetches nothing when the instant's step is already done, the linked playbook is not `enabled`, the instant falls in a kill-switch window, the kernel is paused or the instant falls in a pause window, or the connector is missing or no client is wired.
 2. **Phase B is one `runStep` keyed `trigger:<id>:<instant>`**, the same key as every fire. It re-reads the row (still enabled and due at the instant, else `skipped` with nothing written for it), and re-checks the kill switch, the playbook, the windows and the connector. Then it writes the effect, the bookkeeping and the events in one transaction.
 
 So a `kill -9` during Phase A leaves nothing on disk, and the next tick fetches the same instant again. During Phase B it commits all or nothing. After it, the done step replays, and a due poll whose step was already done is moved past the instant (`trigger_missed`, `reason: already_done`) without fetching. `enqueueEvent`'s per-`source_ref` idempotency makes a second queue row for an item impossible. When the kill switch is engaged during the fetch, or the instant becomes fetchable after Phase A decided not to fetch, the step is rolled back with nothing written (`deferred`) and the next tick redoes it.
+
+### Sources
+
+`fetchPollItems` dispatches by `spec.source` to one file per source, and applies `MAX_POLL_ITEMS` to what it returns. None has a default filter, interval or dedupe key (invariant 1): what counts as "already done" is the playbook's dedupe key, which may name `item.id` and `item.revision`. Every source maps a failure as `github.pulls` does (see [misses](#misses-backoff-and-parking)).
+
+- **`github.pulls`** (`sources/github-pulls.ts`): open pull requests. The ref is `github:<owner>/<repo>#<n>` and the revision is the head SHA (see Items below).
+- **`github.issues`** (`sources/github-issues.ts`): each repo's issues, with `state`, `labels` and `assignee` passed to GitHub as given. A pull request is never an item: GitHub's issues listing includes them, and the client drops each entry that carries a `pull_request` key. The ref is `github:<owner>/<repo>#<number>`, the revision is the issue's `updated_at`, `title` is its title, and `text` is its body. `author` is its author's login. An entry without a positive whole number or an `updated_at` is dropped. Issues come by ascending number.
+- **`github.pr_comments`** (`sources/github-pr-comments.ts`): for each repo, every conversation comment, review comment and review on its open pull requests. It takes no filter. The ref is `github:<owner>/<repo>#<pr>:<kind>:<comment id>`, where `<kind>` is `issue_comment`, `review_comment` or `review`. GitHub numbers the three separately, so the kind is part of the ref and two comments never share one; the comment id is the item id. The revision is the comment's `updated_at` (a review's `submitted_at`; a pending review, which has none, is skipped), so an edited comment is a new revision of the same item, and a dedupe key naming `item.id` and `item.revision` runs it once more, while an unchanged comment is skipped (`poll_item_skipped`). The item carries `pr`, `author`, `kind` and `text` (the comment's body). `title` is the kernel's own label (`<kind> on <owner>/<repo>#<pr>`), never the comment's words. Comments come by pull request number, then kind (conversation, review comment, review), then id. The kernel does not skip a comment by its author or age: the playbook's key and intent decide what to do with its own bot's replies.
+
+The ticket sources `jira.issues` and `clickup.tasks` are the Jira and ClickUp connectors' tickets as the same item shape; see [MCP connectors](mcp-connectors.md).
+
+An item's `text` and `author` (and `title`) are author-controlled: data, never instructions. They reach a model only inside the item's one `<untrusted-data source="<ref>">` block, in a run's prompt (`itemPromptBlock`, `text` cut at 8 000 characters) and in a dry run's tool result (`wrapPollForModel`); the stored queue payload and dry-run result keep the raw text. The ref itself prints outside the wrapper, so it must match `GITHUB_ITEM_REF` (the two shapes above) or the run is refused.
 
 **Items.** Each listed pull request passes the spec's filters again in the kernel, so the client's filtering is never the only one: `draft` and `author` match exactly, and `state` is compared to `open` (the listing returns open pull requests only, so any other `state` matches nothing). An entry without a positive whole number and a head SHA is dropped. An item is a `SourceItem` `{ref: "github:<owner>/<repo>#<n>", revision: <head SHA>, title, url, updated_at}`; `title` is author-controlled text, data and never instructions. Items come in spec repo order, pull requests by ascending number, at most `MAX_POLL_ITEMS` (100) per instant. That cap is a kernel safety bound like the 10 000 counted instants: beyond it the rest are dropped, and `trigger_fired` carries `items_capped: true` and `items_found`.
 

@@ -219,9 +219,12 @@ export const ALWAYS_HELD_TOOLS: readonly string[] = Object.freeze([
  *   `gh_issue_review` category.
  * - `gh_api_write`: `gh api <VERB>` for a method other than GET, and
  *   `gh api (flag unread)`.
- * - `gh_pr_request_reviewers`, `gh_pr_comment_reply`: accepted in a `never`
- *   list (phase 8 item 01) with no matcher yet, so they deny nothing extra
- *   until phase 8 item 05 maps the rail's labels to them.
+ * - `gh_pr_comment` and `gh_issue_comment` also cover the kernel's GitHub write
+ *   tools `kernel_github_pr_comment` and `kernel_github_issue_comment`;
+ *   `gh_pr_request_reviewers` is `kernel_github_pr_request_reviewers` and
+ *   `gh_pr_comment_reply` is `kernel_github_pr_reply` (`GITHUB_WRITE_TOOLS`,
+ *   phase 8 item 05). The two have no `gh` form in the rail, so these tools
+ *   are the only calls they cover.
  * - `settings_write`: the `~/.claude/` and `a settings*.json file` targets,
  *   both the Bash form (`Bash naming …`) and the Write/Edit/NotebookEdit form.
  * - `hooks_write`: the `a hooks file` target, both forms.
@@ -251,6 +254,24 @@ export const NEVER_CATEGORIES = Object.freeze([
 ] as const);
 
 export type NeverCategory = (typeof NEVER_CATEGORIES)[number];
+
+/**
+ * The kernel's GitHub write tools (full names), each with the `NeverCategory`
+ * its calls are in (`neverCategoriesOf`). `classifyToolCall` answers `outward`
+ * for each, so a live call is held as an approval (the agent repeats it once
+ * the owner allows it, and the repeat consumes the grant and runs the handler),
+ * a draft-mode call is recorded as a draft, a dry run lists it as would-do and a
+ * `never` category denies it `agent_boundary`. They are NOT in
+ * `ALWAYS_HELD_TOOLS` (the owner's per-playbook "always" may cover them) and
+ * NOT in `KERNEL_APPLIED_ACTIONS` (a POST cannot be awaited inside the
+ * decision's transaction). Closed: a name is added only by a kernel change.
+ */
+export const GITHUB_WRITE_TOOLS: Readonly<Record<string, NeverCategory>> = Object.freeze({
+  "mcp__kernel__kernel_github_pr_reply": "gh_pr_comment_reply",
+  "mcp__kernel__kernel_github_pr_comment": "gh_pr_comment",
+  "mcp__kernel__kernel_github_issue_comment": "gh_issue_comment",
+  "mcp__kernel__kernel_github_pr_request_reviewers": "gh_pr_request_reviewers",
+});
 
 /**
  * Whether an outward call crosses the session policy's `never` boundary. The
@@ -292,9 +313,12 @@ export function boundaryDenyReason(category: NeverCategory): string {
 /**
  * The `NeverCategory` values an outward action label (`classifyToolCall`'s
  * `action`, or a form in `alsoReads`) is in, from the rail's own label
- * tables; none for an `ALWAYS_HELD_TOOLS` action or any other text. Pure.
+ * tables and the GitHub write tools' names (`GITHUB_WRITE_TOOLS`, the action
+ * being the name without its `mcp__kernel__` prefix); none for an
+ * `ALWAYS_HELD_TOOLS` action or any other text. Pure.
  */
 export function neverCategoriesOf(action: string): readonly NeverCategory[] {
+  for (const [name, category] of Object.entries(GITHUB_WRITE_TOOLS)) if (action === name.slice(KERNEL_TOOL_PREFIX.length)) return [category];
   if (action === "git p4 submit" || GIT_OUTWARD.some(([, label]) => label === action)) return ["git_push"];
   // An inline alias or autocorrect can run a push (`git -c alias.p=push p`): that is why the rail holds it.
   if (action === "git alias") return ["git_push", "alias_define"];
@@ -419,9 +443,9 @@ const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge|enqueueP
  *    POST); a write to, or a Bash command naming or globbing, anything under
  *    `~/.claude/`, any `settings*.json`, any `hooks.json`, or anything under a
  *    `.git/hooks` or `.claude/…/hooks` dir; and every call to a tool in
- *    `ALWAYS_HELD_TOOLS`, whatever its input (action: the name without its
- *    `mcp__kernel__` prefix, e.g. `kernel_playbook_enable`; payload
- *    `{tool, input, cwd}`).
+ *    `ALWAYS_HELD_TOOLS` or `GITHUB_WRITE_TOOLS`, whatever its input (action:
+ *    the name without its `mcp__kernel__` prefix, e.g. `kernel_playbook_enable`
+ *    or `kernel_github_pr_reply`; payload `{tool, input, cwd}`).
  *
  * Bash recognition is argv-shaped: the command is split into shell words
  * (`shellWords`), and only the program's basename (case-folded) and the words
@@ -474,7 +498,7 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
     return action === undefined ? { kind: "ordinary" } : outwardClass(action, others, payload);
   }
 
-  if (ALWAYS_HELD_TOOLS.includes(toolName)) {
+  if (ALWAYS_HELD_TOOLS.includes(toolName) || Object.prototype.hasOwnProperty.call(GITHUB_WRITE_TOOLS, toolName)) {
     const action = toolName.startsWith(KERNEL_TOOL_PREFIX) ? toolName.slice(KERNEL_TOOL_PREFIX.length) : toolName;
     return { kind: "outward", action, payload: { tool: toolName, input: toolInput, cwd: payloadCwd } };
   }

@@ -196,12 +196,18 @@ export interface ContributedToolContext {
  * granted that connector (`connectors` in its enforced settings): the kernel
  * MCP server a session gets lists it only then (`toolsForConnectors`,
  * `src/integrations/tool-filter.ts`). Absent: every session gets it.
+ *
+ * `requiresConnectorLevel` (optional, with `requiresConnector`) narrows that
+ * further: `"write"` offers the tool only when the agent's grant is the
+ * connector's write level (`connectors: {github: "write"}` in its enforced
+ * settings), never on the read grant alone. Absent: the read grant suffices.
  */
 export interface ContributedTool<S extends z.ZodRawShape = z.ZodRawShape> {
   readonly name: string;
   readonly description: string;
   readonly shape: S;
   readonly requiresConnector?: ConnectorKind;
+  readonly requiresConnectorLevel?: "write";
   handler(args: z.infer<z.ZodObject<S>>, ctx: ContributedToolContext): unknown;
   beforeHold?(args: z.infer<z.ZodObject<S>>, ctx: ContributedToolContext): HeldToolVerdict;
   applyOnApproval?(args: z.infer<z.ZodObject<S>>, ctx: { readonly store: Store; readonly now: () => Date; readonly approval: AppliedApproval }): ApprovalApplyOutcome;

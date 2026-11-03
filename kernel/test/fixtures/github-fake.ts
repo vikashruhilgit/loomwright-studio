@@ -3,7 +3,11 @@
 // 03, 04 and 06 code against `GitHubClient` and test against this.
 import type {
   GitHubClient,
+  GitHubCommentResult,
   GitHubFailure,
+  GitHubIssueFilters,
+  GitHubIssueSummary,
+  GitHubPrComment,
   GitHubPull,
   GitHubPullComment,
   GitHubPullDiff,
@@ -40,6 +44,10 @@ export interface FakeGitHubData {
   readonly files?: Readonly<Record<string, readonly GitHubPullFile[]>>;
   /** Comments by `<owner>/<repo>#<n>`. */
   readonly comments?: Readonly<Record<string, readonly GitHubPullComment[]>>;
+  /** Issues by `<owner>/<repo>`: `listIssues` answers them (every entry is an issue, never a pull request). */
+  readonly issues?: Readonly<Record<string, readonly GitHubIssueSummary[]>>;
+  /** Comments and reviews on open pulls by `<owner>/<repo>`: `listOpenPullComments` answers them. */
+  readonly prComments?: Readonly<Record<string, readonly GitHubPrComment[]>>;
   readonly rateLimit?: GitHubRateLimit;
   /** A method answering this failure instead of data (e.g. `rate_limited`). */
   readonly failures?: Partial<Record<GitHubCallName, GitHubFailure>>;
@@ -112,5 +120,47 @@ export class FakeGitHubClient implements GitHubClient {
 
   listPullComments(repo: string, number: number): Promise<GitHubResponse<readonly GitHubPullComment[]>> {
     return this.#answer("listPullComments", [repo, number], () => this.#data.comments?.[`${repo}#${number}`] ?? []);
+  }
+
+  /** Filters are recorded as given; `labels` is applied (an issue must carry every one), `state` and `assignee` are not (an issue summary has neither). */
+  listIssues(repo: string, filters: GitHubIssueFilters): Promise<GitHubResponse<readonly GitHubIssueSummary[]>> {
+    return this.#answer("listIssues", [repo, filters], () =>
+      (this.#data.issues?.[repo] ?? []).filter((i) => (filters.labels ?? []).every((l) => i.labels.includes(l))),
+    );
+  }
+
+  listOpenPullComments(repo: string): Promise<GitHubResponse<readonly GitHubPrComment[]>> {
+    return this.#answer("listOpenPullComments", [repo], () => this.#data.prComments?.[repo] ?? []);
+  }
+
+  // The writes are recorded in `calls` with their arguments as given (a test asserts "exactly that request" or "nothing sent"); none reaches a network.
+
+  replyToReviewComment(repo: string, pull: number, commentId: number, body: string): Promise<GitHubResponse<GitHubCommentResult>> {
+    return this.#answer("replyToReviewComment", [repo, pull, commentId, body], () => this.#created(repo, `pull/${pull}#discussion_r`));
+  }
+
+  createPullComment(repo: string, pull: number, body: string): Promise<GitHubResponse<GitHubCommentResult>> {
+    return this.#answer("createPullComment", [repo, pull, body], () => this.#created(repo, `pull/${pull}#issuecomment-`));
+  }
+
+  createIssueComment(repo: string, issue: number, body: string): Promise<GitHubResponse<GitHubCommentResult>> {
+    return this.#answer("createIssueComment", [repo, issue, body], () => this.#created(repo, `issues/${issue}#issuecomment-`));
+  }
+
+  requestReviewers(repo: string, pull: number, reviewers: readonly string[]): Promise<GitHubResponse<{ readonly pull: number }>> {
+    return this.#answer("requestReviewers", [repo, pull, reviewers], () => ({ pull }));
+  }
+
+  /** The calls to `method`, in order. */
+  callsTo(method: GitHubCallName): GitHubCall[] {
+    return this.calls.filter((c) => c.method === method);
+  }
+
+  #nextId = 5000;
+
+  /** A new comment's canned answer: ids count up from 5000. */
+  #created(repo: string, tail: string): GitHubCommentResult {
+    const id = this.#nextId++;
+    return { id, url: `https://github.com/${repo}/${tail}${id}` };
   }
 }

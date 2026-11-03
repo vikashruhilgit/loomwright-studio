@@ -225,6 +225,21 @@ export function githubWriteFor(dataDir: string): (agent: string) => boolean {
 }
 
 /**
+ * Whether `agent` holds the GitHub write grant, for the session's tool list
+ * (`toolsForConnectors`): `githubWriteFor` read for this one launch. No agent
+ * (a session of no crew member) and a throw grant none (fail closed: the write
+ * tools are not listed).
+ */
+function writeGrantOf(dataDir: string, agent: string | null): boolean {
+  if (agent === null) return false;
+  try {
+    return githubWriteFor(dataDir)(agent);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The budget's `agentLimits` lookup, as the kernel wires it: each agent's
  * `limits.tokens_per_day` and `limits.sessions_at_once` from its own settings
  * file, `<dataDir>/config/agents/<id>.json`, through the one reader
@@ -355,9 +370,13 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         connectorsFor: connectorsFor(dataDir),
         // The owner's GitHub write grant, read the same way. No `sessionTokenMint` is wired here (a later item wires item 03's): a live, write-granted session is refused.
         githubWriteFor: githubWriteFor(dataDir),
-        // Each session lists only the contributed tools its agent's grants allow (`requiresConnector`): it only narrows.
-        mcpServers: ({ sessionId, connectors }) => ({
-          [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now, ...githubOf }, toolsForConnectors(contributions.tools, connectors)),
+        // Each session lists only the contributed tools its agent's grants allow (`requiresConnector`, and `requiresConnectorLevel` for the
+        // write tools: the agent's `github: write` grant, read by the same reader as above; none for no agent or a throw): it only narrows.
+        mcpServers: ({ sessionId, agent, connectors }) => ({
+          [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer(
+            { store, sessions: manager, sessionId, now, ...githubOf },
+            toolsForConnectors(contributions.tools, connectors, writeGrantOf(dataDir, agent)),
+          ),
         }),
         // The gate's pre-hold check, from the same contributed tools the server registers (it can only narrow).
         heldToolCheck: heldToolCheckOf(contributions.tools, (sessionId) => ({ store, sessions: manager, sessionId, now, ...githubOf })),

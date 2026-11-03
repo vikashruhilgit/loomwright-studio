@@ -8,10 +8,13 @@
 // connector parks the run `needs_github` with one notification per outage.
 //
 // The payload contract (item 04 queues it): `item` is `{ref, revision,
-// title?, url?, updated_at?}` (`SourceItem` with the display fields
-// optional). `ref` matches `GITHUB_ITEM_REF` (at most 512 characters): it
-// becomes the wrapper's source, which the frame prints raw outside the
-// wrapper, so a ref that could carry words is refused, never wrapped.
+// title?, url?, updated_at?, text?, author?, kind?, pr?}` (`SourceItem` with
+// the display fields optional; `text`, `author`, `kind` and `pr` are the issue
+// and comment sources'). `ref` matches `GITHUB_ITEM_REF` (at most 512
+// characters): it becomes the wrapper's source, which the frame prints raw
+// outside the wrapper, so a ref that could carry words is refused, never
+// wrapped. Every author-controlled field (`title`, `text`, `author`) is shown
+// inside that one wrapper, and nowhere else.
 //
 // Called only from `./runs.ts`, inside its work steps, so a redelivery
 // replays the stored decision and writes no second row, event or
@@ -31,10 +34,18 @@ import type { Store } from "../store/store.js";
 // ---- The payload's item ----------------------------------------------------------
 
 /** The item an item-carrying playbook message is about: `SourceItem` with the display fields optional. */
-export type RunItem = Pick<SourceItem, "ref" | "revision"> & Partial<Pick<SourceItem, "title" | "url" | "updated_at">>;
+export type RunItem = Pick<SourceItem, "ref" | "revision"> & Partial<Pick<SourceItem, "title" | "url" | "updated_at" | "text" | "author" | "kind" | "pr">>;
 
-/** A GitHub item's ref, `github:<owner>/<repo>#<n>`: the only shape a ref may have (the only source kind is `github.pulls`). */
-export const GITHUB_ITEM_REF = /^github:[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+#[1-9][0-9]{0,9}$/;
+/**
+ * A GitHub item's ref: `github:<owner>/<repo>#<n>` (a pull request or an
+ * issue), or `github:<owner>/<repo>#<pr>:<kind>:<comment id>` for a PR comment,
+ * where `<kind>` is `issue_comment`, `review_comment` or `review` (three GitHub
+ * id spaces, so the kind is part of the ref). The only shapes a ref may have.
+ */
+export const GITHUB_ITEM_REF = /^github:[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+#[1-9][0-9]{0,9}(?::(?:issue_comment|review_comment|review):[1-9][0-9]{0,18})?$/;
+
+/** The kinds a PR comment item has (`SourceItem.kind`), as `GITHUB_ITEM_REF` names them. */
+const ITEM_KINDS: readonly string[] = ["issue_comment", "review_comment", "review"];
 
 export const MAX_ITEM_REF_CHARS = 512;
 export const MAX_ITEM_REVISION_CHARS = 200;
@@ -42,6 +53,10 @@ export const MAX_ITEM_URL_CHARS = 2_000;
 export const MAX_ITEM_UPDATED_AT_CHARS = 64;
 /** The title has no bound in the payload; the prompt shows at most this many characters of it. */
 export const MAX_ITEM_TITLE_PROMPT_CHARS = 1_000;
+/** The text (an issue's or a comment's body) has no bound in the payload; the prompt shows at most this many characters of it. */
+export const MAX_ITEM_TEXT_PROMPT_CHARS = 8_000;
+/** The author (a login) has no bound in the payload; the prompt shows at most this many characters of it. */
+export const MAX_ITEM_AUTHOR_PROMPT_CHARS = 200;
 
 /** C0 and C1 control characters (DEL included). */
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
@@ -55,9 +70,9 @@ export function runItemOf(eventId: number, value: unknown): RunItem | null {
   if (value === undefined) return null;
   const bad = (what: string): TypeError => new TypeError(`event ${eventId}: a playbook message needs ${what}`);
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw bad("item, absent or an object");
-  const { ref, revision, title, url, updated_at: updatedAt } = value as Record<string, unknown>;
+  const { ref, revision, title, url, updated_at: updatedAt, text, author, kind, pr } = value as Record<string, unknown>;
   if (typeof ref !== "string" || ref.length > MAX_ITEM_REF_CHARS || !GITHUB_ITEM_REF.test(ref)) {
-    throw bad(`item.ref, github:<owner>/<repo>#<n> of at most ${MAX_ITEM_REF_CHARS} characters`);
+    throw bad(`item.ref, github:<owner>/<repo>#<n> (or …#<n>:<kind>:<id> for a PR comment) of at most ${MAX_ITEM_REF_CHARS} characters`);
   }
   if (typeof revision !== "string" || revision === "" || revision.length > MAX_ITEM_REVISION_CHARS || CONTROL.test(revision)) {
     throw bad(`item.revision, a non-empty string of at most ${MAX_ITEM_REVISION_CHARS} characters with no control characters`);
@@ -69,12 +84,20 @@ export function runItemOf(eventId: number, value: unknown): RunItem | null {
   if (updatedAt !== undefined && (typeof updatedAt !== "string" || updatedAt.length > MAX_ITEM_UPDATED_AT_CHARS)) {
     throw bad(`item.updated_at, absent or a string of at most ${MAX_ITEM_UPDATED_AT_CHARS} characters`);
   }
+  if (text !== undefined && typeof text !== "string") throw bad("item.text, absent or a string");
+  if (author !== undefined && typeof author !== "string") throw bad("item.author, absent or a string");
+  if (kind !== undefined && (typeof kind !== "string" || !ITEM_KINDS.includes(kind))) throw bad(`item.kind, absent or one of ${ITEM_KINDS.join(", ")}`);
+  if (pr !== undefined && (typeof pr !== "number" || !Number.isSafeInteger(pr) || pr < 1)) throw bad("item.pr, absent or a positive whole number");
   return {
     ref,
     revision,
     ...(title !== undefined ? { title } : {}),
     ...(url !== undefined ? { url } : {}),
     ...(updatedAt !== undefined ? { updated_at: updatedAt } : {}),
+    ...(text !== undefined ? { text } : {}),
+    ...(author !== undefined ? { author } : {}),
+    ...(kind !== undefined ? { kind: kind as RunItem["kind"] } : {}),
+    ...(pr !== undefined ? { pr } : {}),
   };
 }
 
@@ -203,9 +226,32 @@ function renderItemBlock(ref: string, fields: string): string {
   return `## The item\n\n${wrapUntrusted(ref, fields)}\n\n`;
 }
 
-function itemFields(ref: string, revision: string, title: string, url: string): string {
-  return `ref: ${ref}\nrevision: ${revision}\ntitle: ${title}\nurl: ${url}`;
+/** The optional fields of an item block, each already cut: the issue and comment sources' author, kind, pull request and text. */
+interface ItemExtras {
+  readonly author?: string;
+  readonly kind?: string;
+  readonly pr?: string;
+  readonly text?: string;
 }
+
+/**
+ * The fields inside the wrapper: the four every item has, then the optional
+ * `author`, `kind`, `pr` and `text` when the item carries them (an item
+ * without them renders as before). `text` comes last: it is the longest and
+ * may span lines.
+ */
+function itemFields(ref: string, revision: string, title: string, url: string, extras: ItemExtras = {}): string {
+  const lines = [`ref: ${ref}`, `revision: ${revision}`, `title: ${title}`, `url: ${url}`];
+  if (extras.author !== undefined) lines.push(`author: ${extras.author}`);
+  if (extras.kind !== undefined) lines.push(`kind: ${extras.kind}`);
+  if (extras.pr !== undefined) lines.push(`pr: ${extras.pr}`);
+  if (extras.text !== undefined) lines.push(`text: ${extras.text}`);
+  return lines.join("\n");
+}
+
+/** The longest kind (`review_comment`) and pull request number (ten digits) an item can show. */
+const MAX_ITEM_KIND_CHARS = 14;
+const MAX_ITEM_PR_CHARS = 10;
 
 /**
  * The longest item block: the frame and labels around a ref at its bound,
@@ -213,16 +259,35 @@ function itemFields(ref: string, revision: string, title: string, url: string): 
  * `<untrusted-data` becomes 18: at most 1.2 times).
  */
 export const MAX_ITEM_BLOCK_CHARS =
-  renderItemBlock("x".repeat(MAX_ITEM_REF_CHARS), itemFields("", "", "", "")).length +
-  Math.ceil((MAX_ITEM_REF_CHARS + MAX_ITEM_REVISION_CHARS + MAX_ITEM_TITLE_PROMPT_CHARS + MAX_ITEM_URL_CHARS) * 1.2);
+  renderItemBlock("x".repeat(MAX_ITEM_REF_CHARS), itemFields("", "", "", "", { author: "", kind: "", pr: "", text: "" })).length +
+  Math.ceil(
+    (MAX_ITEM_REF_CHARS +
+      MAX_ITEM_REVISION_CHARS +
+      MAX_ITEM_TITLE_PROMPT_CHARS +
+      MAX_ITEM_URL_CHARS +
+      MAX_ITEM_AUTHOR_PROMPT_CHARS +
+      MAX_ITEM_KIND_CHARS +
+      MAX_ITEM_PR_CHARS +
+      MAX_ITEM_TEXT_PROMPT_CHARS) *
+      1.2,
+  );
 
 /**
  * The prompt's item block (both playbook prompts, after the instruction):
  * `## The item`, then the item's ref, revision, title (cut at
  * `MAX_ITEM_TITLE_PROMPT_CHARS`) and URL, an absent one shown as `(none)`,
- * wrapped as untrusted data from the ref. At most `MAX_ITEM_BLOCK_CHARS`.
+ * then, only when the item has them, its author (cut at
+ * `MAX_ITEM_AUTHOR_PROMPT_CHARS`), kind, pull request and text (cut at
+ * `MAX_ITEM_TEXT_PROMPT_CHARS`), all wrapped as untrusted data from the ref:
+ * nothing author-controlled goes outside the wrapper. At most `MAX_ITEM_BLOCK_CHARS`.
  */
 export function itemPromptBlock(item: RunItem): string {
   const title = item.title === undefined ? "(none)" : cutChars(item.title, MAX_ITEM_TITLE_PROMPT_CHARS);
-  return renderItemBlock(item.ref, itemFields(item.ref, item.revision, title, item.url ?? "(none)"));
+  const extras: ItemExtras = {
+    ...(item.author === undefined ? {} : { author: cutChars(item.author, MAX_ITEM_AUTHOR_PROMPT_CHARS) }),
+    ...(item.kind === undefined ? {} : { kind: item.kind }),
+    ...(item.pr === undefined ? {} : { pr: String(item.pr) }),
+    ...(item.text === undefined ? {} : { text: cutChars(item.text, MAX_ITEM_TEXT_PROMPT_CHARS) }),
+  };
+  return renderItemBlock(item.ref, itemFields(item.ref, item.revision, title, item.url ?? "(none)", extras));
 }
