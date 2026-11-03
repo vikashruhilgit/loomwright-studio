@@ -453,6 +453,8 @@ export function createMcpConnector(deps: McpConnectorDeps = {}): McpConnector {
     if (credential === undefined) return expire(store, row, now);
     if (credential.refresh_token === undefined) {
       if (pastExpiry) expire(store, row, now);
+      // Not yet lapsed: look again after the back-off, not on every tick (each look is a blocking Keychain read). A connect clears this.
+      else retryAt.set(row.kind, nowMs + retryMs);
       return;
     }
 

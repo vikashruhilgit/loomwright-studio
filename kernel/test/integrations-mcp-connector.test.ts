@@ -752,6 +752,27 @@ describe("the refresh (AC4, AC7)", () => {
     expect(notifications().map((n) => n.source)).toEqual([mcpExpiredSource("jira"), mcpExpiredSource("clickup")]);
   });
 
+  it("a sign-in with no refresh token is looked at once per back-off inside the window, not on every tick, and still expires at its time", async () => {
+    const r = await rig({ refreshTokens: false });
+    await connectKind(r);
+    nearExpiry();
+    const reads = (): number => r.kc.calls.filter((call) => call.startsWith("read")).length;
+    const before = reads();
+    for (let i = 0; i < 20; i++) {
+      await r.connector.refreshDue(env.store, env.now());
+      env.advance(1000);
+    }
+    expect(reads() - before).toBe(1);
+    // After the back-off it looks again once; the row is still connected until the token lapses.
+    env.advance(60 * 1000);
+    await r.connector.refreshDue(env.store, env.now());
+    expect(reads() - before).toBe(2);
+    expect(mcpRow(env.store, "jira")?.status).toBe("connected");
+    env.advance(5 * 60 * 1000);
+    await r.connector.refreshDue(env.store, env.now());
+    expect(mcpRow(env.store, "jira")?.status).toBe("expired");
+  });
+
   it("a renewal whose Keychain write does not stick puts the old sign-in back and tries again later", async () => {
     const r = await rig();
     await connectKind(r);
