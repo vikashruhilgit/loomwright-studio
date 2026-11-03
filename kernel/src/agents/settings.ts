@@ -69,9 +69,9 @@ const shape = {
   permission_mode: permissionMode,
   tool_policy: z.object(toolPolicyShape),
   never: z.array(z.enum(NEVER_CATEGORIES)).optional(),
-  // The owner's connector grants (edited in the file; `set` does not take them until phase 6 item 08).
+  // The owner's connector grants (the owner's `set` writes them, or the owner edits the file).
   // The array form only: the object form `{github: "write"}` is checked apart
-  // (`refuseUnbuiltConnectors`), and the `jira`/`clickup` kinds parse here but are refused there.
+  // (`unbuiltConnectorsProblem`), and the `jira`/`clickup` kinds parse here but are refused there.
   connectors: z.array(z.enum(CONNECTOR_KINDS)).optional(),
   // Strict: a misspelt limit is refused, never silently unenforced.
   limits: z.object({ tokens_per_day: limit.optional(), sessions_at_once: limit.optional(), delegation_depth: limit.optional() }).strict().optional(),
@@ -95,13 +95,25 @@ const crewSchema = z.object({ ...shape, tool_policy: z.object(toolPolicyShape).s
 const UNBUILT_CONNECTORS: readonly string[] = ["jira", "clickup"];
 
 /**
- * Phase 8 item 01 grows `CONNECTOR_KINDS` and plans the GitHub write grant
- * (`connectors: {github: "write"}`), but nothing applies either yet, so a file
- * that sets one is refused by name, never read and silently not applied:
- * `connector_not_built` for a `jira`/`clickup` grant (an array entry or an
- * object key), `github_write_not_built` for `github: "write"`. Any other
- * object form is refused too (`connectors` is an array of kinds). Returns the
- * refusal text, or undefined when the grant is the array form of built kinds.
+ * The object form of `connectors` has one built value, `{github: "write"}`
+ * (phase 8 item 04: the owner's GitHub write grant, which also grants the read
+ * tools). True for exactly that object, nothing else in it.
+ */
+function isGithubWriteGrant(raw: unknown): boolean {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+  const grant = raw as Record<string, unknown>;
+  const keys = Object.keys(grant);
+  return keys.length === 1 && keys[0] === "github" && grant.github === "write";
+}
+
+/**
+ * Refuses by name a `connectors` grant that nothing applies, never reading it
+ * and silently not applying it: `connector_not_built` for a `jira`/`clickup`
+ * grant (an array entry or an object key). The object form is built only as
+ * `{github: "write"}` (`isGithubWriteGrant`); any other object form, `{github:
+ * "read"}` included, is refused too (`connectors` is an array of kinds, or
+ * that one object). Returns the refusal text, or undefined when the grant is
+ * the array form of built kinds or the write grant.
  */
 function unbuiltConnectorsProblem(raw: unknown, arrayForm: readonly string[] | undefined): string | undefined {
   if (arrayForm !== undefined) {
@@ -112,8 +124,8 @@ function unbuiltConnectorsProblem(raw: unknown, arrayForm: readonly string[] | u
   const grant = raw as Record<string, unknown>;
   const unbuilt = Object.keys(grant).find((kind) => UNBUILT_CONNECTORS.includes(kind));
   if (unbuilt !== undefined) return `connector_not_built: the ${unbuilt} connector is not built yet; remove it from connectors`;
-  if (grant.github === "write") return "github_write_not_built: the GitHub write grant is not built yet; use connectors: [\"github\"] for the read grant";
-  return 'connectors must be an array of connector kinds (the object form {github: "write"} is not built yet)';
+  if (isGithubWriteGrant(grant)) return undefined;
+  return 'connectors must be an array of connector kinds, or the object {"github": "write"}';
 }
 
 /** The enforced limits an agent's file may set; each absent key is unset (the kernel picks none). */
@@ -138,6 +150,12 @@ export interface AgentSettings {
   readonly workspaces?: readonly string[];
   /** The connectors the owner granted this agent: its sessions list the contributed tools that require one of them. */
   readonly connectors?: readonly ConnectorKind[];
+  /**
+   * True only when the file's `connectors` is the object `{github: "write"}`
+   * (the owner's GitHub write grant; `connectors` is then `["github"]`). Absent
+   * otherwise: the array form never grants write.
+   */
+  readonly githubWrite?: boolean;
 }
 
 export type AgentSettingsRefusal =
@@ -304,7 +322,11 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
       ...(s.never !== undefined ? { never: Object.freeze([...s.never]) } : {}),
       ...(s.limits !== undefined ? { limits: Object.freeze({ ...s.limits }) } : {}),
       ...(s.workspaces !== undefined ? { workspaces: Object.freeze([...s.workspaces]) } : {}),
-      ...(s.connectors !== undefined ? { connectors: Object.freeze([...s.connectors]) } : {}),
+      ...(isGithubWriteGrant(objectGrant)
+        ? { connectors: Object.freeze(["github"] as const satisfies readonly ConnectorKind[]), githubWrite: true }
+        : s.connectors !== undefined
+          ? { connectors: Object.freeze([...s.connectors]) }
+          : {}),
     },
   };
 }

@@ -760,7 +760,6 @@ describe("the owner: studio playbooks list | show | set | off and the /playbooks
       [["token_limit", "0"], "studio playbooks set: token_limit must be a positive whole number of tokens per day\n"],
       [["dedupe_key", "date,repo"], 'studio playbooks set: dedupe_key: unknown field "repo" (the fields are playbook.id, playbook.version, trigger.id, trigger.scheduled_at, date, item.id, item.revision)\n'],
       [["model", "two words"], "studio playbooks set: model must be 1-200 characters with no whitespace, NUL or other control character\n"],
-      [["mode", "live"], "studio playbooks set: live_mode_not_in_phase_6: mode live is not available in phase 6; a playbook runs in draft mode\n"],
       [["mode", "none"], "studio playbooks set: mode cannot be cleared: it is one of draft, live\n"],
     ];
     for (const [rest, stderr] of refused) {
@@ -771,6 +770,13 @@ describe("the owner: studio playbooks list | show | set | off and the /playbooks
     }
     expect(paths).toEqual([]);
     expect(row(id).version).toBe(5);
+    // mode live passes the CLI's own check and is the kernel's to refuse: the playbook is not enabled.
+    const live = studio();
+    expect(await live.run("playbooks", "set", String(id), "mode", "live")).toBe(1);
+    expect(live.stderr()).toMatch(new RegExp(`^studio: playbook ${id} not changed: live_needs_enable: mode live needs playbook ${id} to be enabled`));
+    expect(live.stdout()).toBe("");
+    expect(paths).toEqual([`/playbooks/${id}/set`]);
+    expect(row(id)).toMatchObject({ mode: "draft", version: 5 });
     // The route refuses the same values itself, naming the field.
     const res = await api("POST", `/playbooks/${id}/set`, { field: "priority", value: "urgent" });
     expect(res.status).toBe(400);

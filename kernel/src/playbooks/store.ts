@@ -62,10 +62,13 @@ export const CLEAR_VALUE = "none";
  * about, or names the problem. `crew_cannot_draft`: a registered crew
  * member's session called a drafting tool (Wright drafts a crew member's
  * playbooks). `agent_off`: the crew member a playbook is for is `off`.
- * `live_mode_not_in_phase_6`: `mode` `live` was asked for, from any path
- * (the owner's `set`, Wright's create or update); phase 6 runs only `draft`.
+ * `live_mode_owner_only`: Wright or a crew member gave `mode` `live` on a
+ * create or an update; only the owner's `set` can make a playbook live.
+ * `live_needs_enable`: the owner's `set` of `mode` `live` on a playbook that is
+ * not `enabled` (an enable needs a done dry run at that version, so `enabled`
+ * is the evidence of both).
  */
-export type PlaybookErrorCode = "invalid_input" | "not_found" | "not_owner" | "owner_off" | "crew_cannot_draft" | "agent_off" | "live_mode_not_in_phase_6";
+export type PlaybookErrorCode = "invalid_input" | "not_found" | "not_owner" | "owner_off" | "crew_cannot_draft" | "agent_off" | "live_mode_owner_only" | "live_needs_enable";
 
 export class PlaybookError extends Error {
   readonly code: PlaybookErrorCode;
@@ -192,9 +195,11 @@ const UNCLEARABLE: readonly PlaybookPolicyField[] = Object.freeze(["priority", "
  * `value` for policy field `field` as its column stores it, or a refusal
  * (`invalid_input`, message starting with the field name). `null` clears a
  * nullable field, and only when `allowClear` (the owner's `none`); `priority`
- * and `mode` cannot be cleared. `mode` `live` is refused
- * `live_mode_not_in_phase_6` on every path: each one calls this check.
- * Phase 8 item 04 lifts that refusal; until it lands the code and this check are unchanged.
+ * and `mode` cannot be cleared. `allowClear` is the owner's call (`set`, the
+ * CLI's check); an agent's create or update passes `false`. `mode` `live` is
+ * refused `live_mode_owner_only` when `allowClear` is false, on every agent
+ * path: each one calls this check. The owner's `live` passes here and meets
+ * `live_needs_enable` in `setPlaybookPolicy`, which reads the row.
  */
 export function checkPolicyValue(field: PlaybookPolicyField, value: unknown, allowClear: boolean): ColumnValue {
   if (value === null && allowClear && !UNCLEARABLE.includes(field)) return null;
@@ -224,7 +229,7 @@ export function checkPolicyValue(field: PlaybookPolicyField, value: unknown, all
       return value;
     case "mode":
       if (!isOneOf(PLAYBOOK_MODES, value)) throw invalid(`mode must be one of ${PLAYBOOK_MODES.join(", ")} (got ${shown(value)})`);
-      if (value === "live") throw new PlaybookError("live_mode_not_in_phase_6", "live_mode_not_in_phase_6: mode live is not available in phase 6; a playbook runs in draft mode");
+      if (value === "live" && !allowClear) throw new PlaybookError("live_mode_owner_only", "live_mode_owner_only: only the owner can set mode live (studio playbooks set <id> mode live); an agent proposes draft");
       return value;
   }
 }
@@ -637,8 +642,13 @@ export interface SetPlaybookPolicyParams {
 /**
  * The owner sets one policy field of any playbook (`*_set_by = 'owner'`) as
  * its next version, in one transaction; a `disabled` playbook stays disabled.
- * The same value the owner already set ⇒ `changed: false`. Throws
- * `PlaybookError`: `invalid_input` naming the field; `not_found`.
+ * The same value the owner already set ⇒ `changed: false` (checked first, so
+ * re-setting an owner-set `live` is never refused). Throws `PlaybookError`:
+ * `invalid_input` naming the field; `not_found`; `live_needs_enable` for `mode`
+ * `live` on a playbook that is not `enabled` at its current version (an enable
+ * pins the version and needs its done dry run). The live value is stored as the
+ * next version, which returns the playbook to `draft`: it runs live only after
+ * that version's own dry run and held enable.
  */
 export function setPlaybookPolicy(store: Store, params: SetPlaybookPolicyParams, now: Date): PlaybookChange {
   if (!isOneOf(PLAYBOOK_POLICY_FIELDS, params.field)) throw invalid(`field must be one of ${PLAYBOOK_POLICY_FIELDS.join(", ")} (got ${shown(params.field)})`);
@@ -650,6 +660,9 @@ export function setPlaybookPolicy(store: Store, params: SetPlaybookPolicyParams,
     if (row === undefined) throw new PlaybookError("not_found", `no playbook ${params.id}`);
     const { value: column, setBy } = POLICY_COLUMNS[field];
     const unchanged = row[column] === value && row[setBy] === OWNER;
+    if (field === "mode" && value === "live" && !unchanged && row.status !== "enabled") {
+      throw new PlaybookError("live_needs_enable", `live_needs_enable: mode live needs playbook ${row.id} to be enabled at version ${row.version} (a done dry run, then the held enable); it is ${row.status}`);
+    }
     const sets = new Map<string, ColumnValue>([
       [column, value],
       [setBy, OWNER],
