@@ -62,6 +62,7 @@ const IDS = {
   appOpenAgain: "integrations-app-open-again",
   appOutcome: "integrations-app-outcome",
   appPasteToken: "integrations-app-paste-token",
+  appSessionScope: "integrations-app-session-scope",
   appSetUpAgain: "integrations-app-set-up-again",
   appSetup: "integrations-app-setup",
   appStep1: "integrations-app-step-1",
@@ -683,7 +684,7 @@ test("AC1, AC2, AC6: Install GitHub App makes one setup call and opens the setup
   const { fx, page: opening } = launchWith();
   const page = await opening;
   const home = page.url();
-  await expect(byId(page, IDS.empty)).toContainText("a GitHub App you install or a token you create");
+  await expect(byId(page, IDS.empty)).toContainText("a GitHub App you install, which holds the permissions you accept on GitHub, or a read-only token you create");
 
   // Connect GitHub opens the choice, and choosing nothing calls nothing.
   await byId(page, IDS.emptyConnect).click();
@@ -746,8 +747,10 @@ test("AC1, AC2, AC6: Install GitHub App makes one setup call and opens the setup
   await expect(byId(page, IDS.appAccess)).toContainText(/expires (today|\d+ \w+) \d\d:\d\d/);
   await expect(byId(page, IDS.appAccess)).toContainText("renews automatically");
   await expect(detail.getByRole("heading", { level: 3, name: "Permissions" })).toBeVisible();
-  await expect(byId(page, IDS.appChecked)).toHaveText("Read-only, checked by GitHub.");
-  await expect(byId(page, IDS.permissions).getByRole("listitem")).toHaveText([/^Metadata\s*Read-only$/, /^Pull requests\s*Read-only$/, /^Contents\s*Read-only$/]);
+  await expect(byId(page, IDS.detailHeader), "only a token is read-only (D39)").not.toContainText("read-only");
+  await expect(byId(page, IDS.appChecked)).toHaveText("As GitHub reports them for this App.");
+  await expect(byId(page, IDS.permissions).getByRole("listitem")).toHaveText([/^Metadata\s*Read-only$/, /^Pull requests\s*Read and write$/, /^Contents\s*Read and write$/]);
+  await expect(byId(page, IDS.appSessionScope)).toContainText("Pull requests, Contents, Issues and Checks");
   await expect(byId(page, IDS.reposHeading)).toHaveText(`Repos chosen at install · ${APP_REPOS.length}`);
   await expect(byId(page, IDS.repos).getByRole("listitem"), "exactly the row's reachable_repos").toHaveText([...APP_REPOS]);
   await expect(byId(page, IDS.replace), "an App has no Replace token").toHaveCount(0);

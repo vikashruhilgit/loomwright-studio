@@ -162,7 +162,7 @@ function EmptyDetail({ offline, onConnect }: { readonly offline: boolean; readon
     <div className="integrations-detail" data-testid={IDS.detail} data-state="none">
       <div className="integrations-empty" data-testid={IDS.empty}>
         <h2>Connect GitHub so a playbook can read your PRs.</h2>
-        <p>Studio works with no connectors. GitHub is read-only here: a GitHub App you install or a token you create, limited to the personal repos you choose, kept in the Keychain.</p>
+        <p>Studio works with no connectors. GitHub connects through a GitHub App you install, which holds the permissions you accept on GitHub, or a read-only token you create. Either is limited to the personal repos you choose and kept in the Keychain.</p>
         <Button variant="primary" disabled={offline} title={offline ? "Needs the kernel" : undefined} onClick={onConnect} data-testid={IDS.emptyConnect}>
           Connect GitHub
         </Button>
