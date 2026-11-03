@@ -36,8 +36,9 @@ export type PolicySetter = (typeof POLICY_SETTERS)[number];
 
 /**
  * `playbooks.mode` (migration 17, default `draft`): `draft` records each outward
- * call instead of sending it; `live` sends. Phase 6 refuses `live`
- * (`live_mode_not_in_phase_6`, `./store.ts`).
+ * call instead of sending it; `live` sends. Only the owner sets `live`
+ * (an agent's is refused `live_mode_owner_only`), and only on an enabled
+ * playbook (`live_needs_enable`), both in `./store.ts`.
  */
 export const PLAYBOOK_MODES = Object.freeze(["draft", "live"] as const);
 export type PlaybookMode = (typeof PLAYBOOK_MODES)[number];

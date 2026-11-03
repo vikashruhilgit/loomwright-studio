@@ -99,9 +99,9 @@ export interface NeedsGithub {
   readonly settings_error?: string;
 }
 
-/** A connector that counts: `connected`, or `expiring` (verified, and its token expires soon). */
+/** A connector that counts: `connected`, `expiring` (its token expires soon) or `needs_permissions` (the App is installed; GitHub has yet to accept every permission). */
 function connectorUsable(status: string | null): boolean {
-  return status === "connected" || status === "expiring";
+  return status === "connected" || status === "expiring" || status === "needs_permissions";
 }
 
 /**

@@ -208,6 +208,23 @@ export function connectorsFor(dataDir: string): (agent: string) => readonly Conn
 }
 
 /**
+ * The session manager's `githubWriteFor`, as the kernel wires it: whether the
+ * owner granted `agent` GitHub write in its own settings file (`connectors:
+ * {github: "write"}`), through the one reader, read afresh at every start and
+ * resume. Any refusal (missing, invalid or model-less file, an id that names no
+ * file) grants no write: a session gets fewer rights, never more. The
+ * kernel wires no token minter yet (item 03's is wired by a later item), so
+ * until then a live session with the write grant is refused
+ * `github_token_unavailable`.
+ */
+export function githubWriteFor(dataDir: string): (agent: string) => boolean {
+  return (agent) => {
+    const r = readAgentSettings(dataDir, agent);
+    return r.ok && r.settings.githubWrite === true;
+  };
+}
+
+/**
  * The budget's `agentLimits` lookup, as the kernel wires it: each agent's
  * `limits.tokens_per_day` and `limits.sessions_at_once` from its own settings
  * file, `<dataDir>/config/agents/<id>.json`, through the one reader
@@ -336,6 +353,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         admission: admissionFor(budget, authProvider.id, () => isPaused(store)),
         // The owner's connector grants, read afresh at each start and resume; the manager fills `ToolPolicy.connectors` from them.
         connectorsFor: connectorsFor(dataDir),
+        // The owner's GitHub write grant, read the same way. No `sessionTokenMint` is wired here (a later item wires item 03's): a live, write-granted session is refused.
+        githubWriteFor: githubWriteFor(dataDir),
         // Each session lists only the contributed tools its agent's grants allow (`requiresConnector`): it only narrows.
         mcpServers: ({ sessionId, connectors }) => ({
           [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer({ store, sessions: manager, sessionId, now, ...githubOf }, toolsForConnectors(contributions.tools, connectors)),

@@ -36,6 +36,7 @@ import type { ContributedRoute, ContributedRouteRequest, ContributedRouteRespons
 import { NO_REF, appendEvent } from "../../loop/internal.js";
 import { GITHUB_APP_SETUP_REFUSALS } from "../types.js";
 import type { GitHubAppConversion, GitHubAppPort, GitHubAppPortError, GitHubAppPortResult, GitHubAppSetupRefusal } from "../types.js";
+import { GITHUB_APP_PERMISSIONS } from "./app-token.js";
 import { GITHUB_API_VERSION } from "./client.js";
 import { githubConnectorRow } from "./connector.js";
 
@@ -268,7 +269,7 @@ export function createGitHubAppSetup(deps: GitHubAppSetupDeps): GitHubAppSetup {
       setup_url: `${req.origin}${INSTALLED_PATH}`,
       setup_on_update: false,
       public: false,
-      default_permissions: { pull_requests: "read", contents: "read", metadata: "read" },
+      default_permissions: GITHUB_APP_PERMISSIONS,
       default_events: [],
       request_oauth_on_install: false,
     };
@@ -276,7 +277,7 @@ export function createGitHubAppSetup(deps: GitHubAppSetupDeps): GitHubAppSetup {
     return browserPage(
       200,
       `<!doctype html><meta charset="utf-8"><title>Set up GitHub for Studio</title><body style="font-family:system-ui;margin:3rem">` +
-        `<p>Sending you to GitHub to create Studio's GitHub App (read-only). Click Create there, then pick the repos and click Install.</p>` +
+        `<p>Sending you to GitHub to create Studio's GitHub App. Click Create there, then pick the repos and click Install.</p>` +
         `<form id="f" method="post" action="${escapeHtml(action)}"><input type="hidden" name="manifest" value="${escapeHtml(JSON.stringify(manifest))}">` +
         `<button type="submit">Continue to GitHub</button></form><script>document.getElementById("f").submit()</script></body>`,
     );

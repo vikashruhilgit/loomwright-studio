@@ -230,7 +230,7 @@ describe("a poll is validated when it is registered or re-scheduled (AC1-AC3)", 
     expect(thrown(() => registerTrigger(store, { agent: "wright", kind: "poll", spec: spec(), action: "wake_agent", text: "t", playbook: "review" }, NOW)).code).toBe("poll_repo_not_reachable");
   });
 
-  it("AC3: no github connector, or one disconnected / expired / rejected, is refused poll_connector_missing; expiring is usable", () => {
+  it("AC3: no github connector, or one disconnected / expired / rejected, is refused poll_connector_missing; expiring and needs_permissions are usable", () => {
     const store = open();
     const register = (): unknown => registerTrigger(store, { agent: "wright", kind: "poll", spec: spec(), action: "wake_agent", text: "t", playbook: "review" }, NOW);
     expect(thrown(register).code).toBe("poll_connector_missing");
@@ -245,6 +245,8 @@ describe("a poll is validated when it is registered or re-scheduled (AC1-AC3)", 
     expect(count(store, "SELECT count(*) FROM events")).toBe(0);
     setConnector(store, "expiring");
     expect(register()).toMatchObject({ id: 1 });
+    setConnector(store, "needs_permissions");
+    expect(register()).toMatchObject({ id: 2 });
   });
 
   it("AC3: an unknown filter key is refused poll_filter_unknown naming the key; a poll with no playbook is refused invalid_input; nothing written", () => {

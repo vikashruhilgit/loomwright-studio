@@ -156,7 +156,7 @@ export function connectorRow(state: Exclude<ConnectorState, "none" | AppState>):
 /**
  * The GitHub row of an App connection. `app-created`: Create is done, so the App's slug is known and nothing is installed
  * (a `rejected` row without an installation, which the screen reads as not connected). `app-connected`: installed, with
- * the permissions GitHub reported, the two repos chosen at install and an access token that expires within the hour.
+ * the permissions GitHub reported (D39's levels), the two repos chosen at install and an access token that expires within the hour.
  * `app-revoked`: GitHub refused the key after the install (`rejected`, slug and installation kept, the last read kept).
  */
 export function appConnectorRow(state: AppState): Connector {
@@ -166,7 +166,8 @@ export function appConnectorRow(state: AppState): Connector {
     kind: "github",
     status: statusOf(state),
     account_login: created ? null : ACCOUNT,
-    permissions: created ? null : { metadata: "read", pull_requests: "read", contents: "read" },
+    // D39: the App holds every repository permission at write, except Metadata (read).
+    permissions: created ? null : { metadata: "read", pull_requests: "write", contents: "write" },
     permissions_source: created ? null : "reported",
     permissions_declared_at: null,
     method: "app",

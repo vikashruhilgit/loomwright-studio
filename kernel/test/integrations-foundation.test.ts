@@ -35,7 +35,7 @@ import type { Kernel } from "../src/kernel.js";
 import { previewDedupeKey } from "../src/playbooks/dry-run.js";
 import { playbooksContribution } from "../src/playbooks/index.js";
 import { evaluateDedupeKey } from "../src/playbooks/runs.js";
-import { PlaybookError, createPlaybook, getPlaybook, setPlaybookPolicy, updatePlaybook } from "../src/playbooks/store.js";
+import { PlaybookError, createPlaybook, disablePlaybook, enablePlaybook, getPlaybook, setPlaybookPolicy, updatePlaybook } from "../src/playbooks/store.js";
 import { DEDUPE_KEY_FIELDS, PLAYBOOK_MODES } from "../src/playbooks/types.js";
 import { SessionManager } from "../src/sessions/manager.js";
 import { decideToolUse } from "../src/sessions/policy.js";
@@ -143,8 +143,8 @@ describe("connector closed sets", () => {
     expect(Object.isFrozen(CONNECTOR_KINDS)).toBe(true);
   });
 
-  it("CONNECTOR_STATUSES is exactly the five statuses, frozen", () => {
-    expect(CONNECTOR_STATUSES).toEqual(["connected", "rejected", "disconnected", "expiring", "expired"]);
+  it("CONNECTOR_STATUSES is exactly the six statuses, frozen (needs_permissions: a working App install short of the permissions it asks for)", () => {
+    expect(CONNECTOR_STATUSES).toEqual(["connected", "rejected", "disconnected", "expiring", "expired", "needs_permissions"]);
     expect(Object.isFrozen(CONNECTOR_STATUSES)).toBe(true);
   });
 });
@@ -164,11 +164,14 @@ describe("the integrations feature (AC2)", () => {
     expect(Object.isFrozen(INTEGRATIONS_PARTS)).toBe(true);
   });
 
-  it("item 03 filled the github parts: github-connector has the connectors subcommand and the expiry due work, github-routes the four /connectors routes", () => {
+  it("item 03 filled the github parts: github-connector has the connectors subcommand, the expiry due work and the App upgrade route, github-routes the four /connectors routes", () => {
     const [connector, routes] = INTEGRATIONS_PARTS;
     expect(connector?.name).toBe("github-connector");
     expect(connector?.tools).toEqual([]);
-    expect(connector?.routes).toEqual([]);
+    // The App's upgrade route (D39), authenticated: the one route this part serves.
+    expect(connector?.routes.map((r) => ({ method: r.method, path: r.path, unauthenticated: r.unauthenticated }))).toEqual([
+      { method: "GET", path: "/connectors/github/app/upgrade", unauthenticated: undefined },
+    ]);
     expect(connector?.handlers).toEqual({});
     expect(connector?.subcommands?.map((s) => [s.name, s.help])).toEqual([[CONNECTORS_SUBCOMMAND, CONNECTORS_HELP]]);
     expect(connector?.dueWork).toEqual([githubExpiryDueWork, checkGitHubAppMint]);
@@ -625,18 +628,39 @@ describe("playbook mode (AC3, AC5)", () => {
     expect([playbook.mode, playbook.mode_set_by]).toEqual(["draft", null]);
   });
 
-  it("the owner's mode live is refused live_mode_not_in_phase_6 (route 409, store), nothing written", async () => {
+  it("the owner's mode live on a playbook that is not enabled is refused live_needs_enable (route 409, store), nothing written", async () => {
     const store = open();
     const { playbook } = createPlaybook(store, { agent: "wright", name: "Review", intent: "review PRs", trigger: CRON }, NOW);
     const before = written(store);
     const set = (playbooksContribution.routes ?? []).find((r) => r.method === "POST" && r.path === "/playbooks/:id/set") as ContributedRoute;
     const res = await set.handler({ params: { id: String(playbook.id) }, query: {}, body: { field: "mode", value: "live" }, store, now: () => NOW });
     expect(res.status).toBe(409);
-    expect(res.body).toMatchObject({ error: "live_mode_not_in_phase_6" });
+    expect(res.body).toMatchObject({ error: "live_needs_enable" });
     const err = thrown(() => setPlaybookPolicy(store, { id: playbook.id, field: "mode", value: "live" }, NOW));
-    expect((err as PlaybookError).code).toBe("live_mode_not_in_phase_6");
+    expect((err as PlaybookError).code).toBe("live_needs_enable");
     expect(written(store)).toEqual(before);
     expect(getPlaybook(store, playbook.id)?.mode).toBe("draft");
+    // A disabled playbook is not enabled either.
+    disablePlaybook(store, { id: playbook.id, by: "owner" }, NOW);
+    expect((thrown(() => setPlaybookPolicy(store, { id: playbook.id, field: "mode", value: "live" }, NOW)) as PlaybookError).code).toBe("live_needs_enable");
+  });
+
+  it("the owner's mode live on an enabled playbook is stored (mode_set_by owner) as the next version, back to draft; re-setting it is the no-op", async () => {
+    const store = open();
+    const { playbook } = createPlaybook(store, { agent: "wright", name: "Review", intent: "review PRs", trigger: CRON }, NOW);
+    enablePlaybook(store, { id: playbook.id, version: playbook.version, sessionId: null, approvalId: 1 }, NOW);
+    expect(getPlaybook(store, playbook.id)?.status).toBe("enabled");
+    const set = (playbooksContribution.routes ?? []).find((r) => r.method === "POST" && r.path === "/playbooks/:id/set") as ContributedRoute;
+    const res = await set.handler({ params: { id: String(playbook.id) }, query: {}, body: { field: "mode", value: "live" }, store, now: () => NOW });
+    expect(res.status).toBe(200);
+    expect(getPlaybook(store, playbook.id)).toMatchObject({ mode: "live", mode_set_by: "owner", status: "draft", version: playbook.version + 1 });
+    const before = written(store);
+    // Already owner-set live: the unchanged short-circuit runs before the enable check (the playbook is a draft now).
+    const again = setPlaybookPolicy(store, { id: playbook.id, field: "mode", value: "live" }, NOW);
+    expect(again.changed).toBe(false);
+    expect(written(store)).toEqual(before);
+    // The owner may always go back to draft.
+    expect(setPlaybookPolicy(store, { id: playbook.id, field: "mode", value: "draft" }, NOW).playbook.mode).toBe("draft");
   });
 
   it("the owner's mode draft is stored with mode_set_by owner; a later agent edit of mode (kernel_playbook_update) is refused like every owner-locked field", async () => {
@@ -656,19 +680,19 @@ describe("playbook mode (AC3, AC5)", () => {
     expect(written(store)).toEqual(before);
   });
 
-  it("Wright's create or update with mode live is refused live_mode_not_in_phase_6, nothing written", async () => {
+  it("Wright's create or update with mode live is refused live_mode_owner_only, nothing written", async () => {
     const store = open();
     const err = thrown(() => createPlaybook(store, { agent: "wright", name: "Review", intent: "review PRs", trigger: CRON, mode: "live" }, NOW));
-    expect((err as PlaybookError).code).toBe("live_mode_not_in_phase_6");
+    expect((err as PlaybookError).code).toBe("live_mode_owner_only");
     expect(written(store)).toEqual(NOTHING);
     const created = await callTool(store, playbooksContribution, "kernel_playbook_create", { name: "Review", intent: "review PRs", trigger: CRON, mode: "live", idempotency_key: "k1" });
-    expect(textOf(created)).toMatch(/^kernel_playbook_create: live_mode_not_in_phase_6: /);
+    expect(textOf(created)).toMatch(/^kernel_playbook_create: live_mode_owner_only: /);
     expect(written(store)).toEqual(NOTHING);
 
     const { playbook } = createPlaybook(store, { agent: "wright", name: "Review", intent: "review PRs", trigger: CRON }, NOW);
     const before = written(store);
     const updated = await callTool(store, playbooksContribution, "kernel_playbook_update", { id: playbook.id, changes: { mode: "live" }, idempotency_key: "k3" });
-    expect(textOf(updated)).toMatch(/^kernel_playbook_update: live_mode_not_in_phase_6: /);
+    expect(textOf(updated)).toMatch(/^kernel_playbook_update: live_mode_owner_only: /);
     expect(written(store)).toEqual(before);
   });
 

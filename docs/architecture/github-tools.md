@@ -37,7 +37,7 @@ Wrapping makes the text safer for the model, not safe. The hard guards are elsew
 
 Each is an error result whose message starts with a fixed code, then kernel values only (the validated repo, a status, `resets_at`), never text from GitHub or from the PR (`GITHUB_TOOL_REFUSALS`). The first two happen before any request, in this order:
 
-- **`connector_missing`**: no GitHub connector, or its status is not `connected` or `expiring` (`disconnected`, `rejected`, `expired`). The message names the status.
+- **`connector_missing`**: no GitHub connector, or its status is not `connected`, `expiring` or `needs_permissions` (`disconnected`, `rejected`, `expired`). The message names the status.
 - **`repo_not_reachable`**: the repo is not among the repos the connector reaches (`reachable_repos`, matched case-insensitively, as the [poll trigger](triggers.md#poll-triggers) does). A connector with no readable list reaches nothing.
 - **`rate_limited`**: GitHub's rate limit is spent. The message carries `resets_at`; the tool does not retry, so the agent decides whether to wait.
 - **`github_http_error`**: GitHub answered another non-success status, named in the message (`404` for a PR that doesn't exist).

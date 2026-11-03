@@ -21,10 +21,12 @@ export type ConnectorKind = (typeof CONNECTOR_KINDS)[number];
 /**
  * Every `connectors.status`, closed in code: `connected` (verified),
  * `rejected` (the last token offered was refused), `disconnected` (the owner
- * removed it), `expiring` (verified, and its token expires soon) and
- * `expired`.
+ * removed it), `expiring` (verified, and its token expires soon),
+ * `expired`, and `needs_permissions` (a GitHub App install that works but
+ * reports fewer permissions than the App asks for: the owner accepts them on
+ * github.com; the credential is still in use).
  */
-export const CONNECTOR_STATUSES = Object.freeze(["connected", "rejected", "disconnected", "expiring", "expired"] as const);
+export const CONNECTOR_STATUSES = Object.freeze(["connected", "rejected", "disconnected", "expiring", "expired", "needs_permissions"] as const);
 
 /** One of `CONNECTOR_STATUSES`. */
 export type ConnectorStatus = (typeof CONNECTOR_STATUSES)[number];
@@ -252,9 +254,10 @@ export interface GitHubClient {
  * `state` is not the open window's single-use one), `setup_expired` (the window
  * is past its short life), `conversion_failed` (GitHub's manifest conversion
  * did not answer a usable app), `install_failed` (the installation or its first
- * token could not be recorded) and `token_write_scoped` (an installation token
- * carries a write permission: Studio stays read-only). A new list, apart from
- * the token path's `GITHUB_TOKEN_REFUSALS`.
+ * token could not be recorded) and `token_write_scoped` (kept in the closed
+ * set; the App path no longer answers it, because the App may write, D39: only
+ * the token path refuses a write). A new list, apart from the token path's
+ * `GITHUB_TOKEN_REFUSALS`.
  */
 export const GITHUB_APP_SETUP_REFUSALS = Object.freeze([
   "setup_not_open",
@@ -301,7 +304,7 @@ export type GitHubAppPortResult<T> = { readonly ok: true; readonly value: T } | 
 export interface GitHubAppPort {
   /** Store the converted app (its `pem` goes to the Keychain, never to the store) and record it on the connector row. */
   storeApp(store: Store, conversion: GitHubAppConversion, pem: string, now: () => Date): Promise<GitHubAppPortResult<ConnectorRow>>;
-  /** Record the installation, mint the first installation token and verify its permissions are read-only. */
+  /** Record the installation, mint the first installation token and record the permissions GitHub reports: `connected` when it holds every `GITHUB_APP_PERMISSIONS`, else `needs_permissions`. */
   recordInstallation(store: Store, installationId: number, now: () => Date): Promise<GitHubAppPortResult<ConnectorRow>>;
   /** Remove the App connect: delete its Keychain item; the row reads `disconnected`. */
   removeApp(store: Store, now: () => Date): Promise<GitHubAppPortResult<ConnectorRow>>;

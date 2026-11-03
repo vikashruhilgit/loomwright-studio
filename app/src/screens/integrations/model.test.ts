@@ -82,6 +82,7 @@ describe("the designed state of each status", () => {
     ["connected", "connected"],
     ["expiring", "expiring"],
     ["expired", "expired"],
+    ["needs_permissions", "connected"],
     ["rejected", "none"],
     ["disconnected", "none"],
   ] as const)("a %s row is the %s state", (status, state) => {
@@ -214,11 +215,12 @@ describe("expiry and time text", () => {
 });
 
 describe("permissions", () => {
-  it("humanises GitHub's keys and shows read as Read-only, other levels as reported", () => {
+  it("humanises GitHub's keys and shows read as Read-only, write as Read and write, other levels as reported", () => {
     expect(permissionLabel("pull_requests")).toBe("Pull requests");
     expect(permissionLabel("metadata")).toBe("Metadata");
     expect(levelLabel("read")).toBe("Read-only");
-    expect(levelLabel("write")).toBe("write");
+    expect(levelLabel("write")).toBe("Read and write");
+    expect(levelLabel("admin")).toBe("admin");
     expect(permissionLines({ metadata: "read", pull_requests: "read" })).toEqual([
       { label: "Metadata", level: "Read-only" },
       { label: "Pull requests", level: "Read-only" },

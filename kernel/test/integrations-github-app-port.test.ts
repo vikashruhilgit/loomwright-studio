@@ -19,13 +19,15 @@ import {
   GITHUB_APP_ID_SERVICE,
   GITHUB_APP_INSTALLATION_SERVICE,
   GITHUB_APP_KEY_SERVICE,
+  GITHUB_APP_PERMISSIONS,
   GITHUB_APP_SLUG_SERVICE,
+  SESSION_TOKEN_PERMISSIONS,
   createGitHubAppTokens,
   decodeAppKey,
   encodeAppKey,
 } from "../src/integrations/github/app-token.js";
 import type { GitHubAppTokens } from "../src/integrations/github/app-token.js";
-import { createGitHubAppPort, githubAppPort } from "../src/integrations/github/app-port.js";
+import { createGitHubAppPort, githubAppPort, mintSessionToken } from "../src/integrations/github/app-port.js";
 import { GITHUB_KEYCHAIN_SERVICE, createGitHubClient } from "../src/integrations/github/client.js";
 import {
   GITHUB_APP_REJECTED_SOURCE,
@@ -58,6 +60,8 @@ const KEY = generateKeyPairSync("rsa", { modulusLength: 2048, publicKeyEncoding:
 const PEM = KEY.privateKey;
 const ENCODED = encodeAppKey(PEM) ?? "";
 const READ_ONLY = { metadata: "read", contents: "read", pull_requests: "read" };
+/** What a fully upgraded install reports (D39): the whole pinned constant. */
+const FULL: Record<string, string> = { ...GITHUB_APP_PERMISSIONS };
 
 const CONVERSION: GitHubAppConversion = {
   app_id: APP_ID,
@@ -111,6 +115,10 @@ interface World {
   calls: Array<{ method: string; path: string; bearer: string }>;
   jwts: string[];
   issued: string[];
+  /** Every mint request's body (`undefined` when it sent none) and content type. */
+  mintRequests: Array<{ body: string | undefined; contentType: string | null }>;
+  /** What a down-scoped mint (one that sends `permissions`) reports; default the requested set plus `metadata: read`. */
+  scopedReport: Record<string, string> | undefined;
   /** What the next mints report. */
   permissions: Record<string, string>;
   /** Mints answer this status instead of 201, when set. */
@@ -136,7 +144,9 @@ function makeWorld(): World {
     calls: [] as World["calls"],
     jwts: [] as string[],
     issued: [] as string[],
-    permissions: { ...READ_ONLY },
+    mintRequests: [] as World["mintRequests"],
+    scopedReport: undefined as Record<string, string> | undefined,
+    permissions: { ...FULL },
     mintStatus: undefined as number | undefined,
     reposStatus: undefined as number | undefined,
     fetchThrows: undefined as Error | undefined,
@@ -153,6 +163,8 @@ function makeWorld(): World {
     const mint = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(url.pathname);
     if (method === "POST" && mint !== null) {
       world.jwts.push(bearer);
+      const sent = typeof init?.body === "string" ? init.body : undefined;
+      world.mintRequests.push({ body: sent, contentType: new Headers(init?.headers).get("content-type") });
       const [header, claims, signature] = bearer.split(".");
       const iss = (JSON.parse(Buffer.from(claims ?? "", "base64url").toString("utf8")) as { iss?: string }).iss;
       if (header === undefined || signature === undefined || iss !== String(APP_ID)) return json({ message: "A JSON web token could not be decoded" }, 401);
@@ -160,7 +172,9 @@ function makeWorld(): World {
       if (mint[1] !== String(INSTALLATION)) return json({ message: "Not Found" }, 404);
       const token = `ghs_${String(world.issued.length + 1).padStart(36, "x")}`;
       world.issued.push(token);
-      return json({ token, expires_at: new Date(env.now().getTime() + HOUR).toISOString(), permissions: world.permissions, repository_selection: "selected" }, 201);
+      const requested = sent === undefined ? undefined : (JSON.parse(sent) as { permissions?: Record<string, string> }).permissions;
+      const reported = requested === undefined ? world.permissions : (world.scopedReport ?? { ...requested, metadata: "read" });
+      return json({ token, expires_at: new Date(env.now().getTime() + HOUR).toISOString(), permissions: reported, repository_selection: "selected" }, 201);
     }
     const authorised = world.issued.includes(bearer) || bearer === PAT;
     if (!authorised) return json({ message: "Bad credentials" }, 401);
@@ -364,7 +378,7 @@ describe("recordInstallation (AC1)", () => {
       expires_at: new Date(Date.parse(T0) + HOUR).toISOString(),
       verified_at: T0,
     });
-    expect(JSON.parse(row.permissions_json ?? "null")).toEqual(READ_ONLY);
+    expect(JSON.parse(row.permissions_json ?? "null")).toEqual(FULL);
     expect(JSON.parse(row.reachable_repos_json ?? "null")).toEqual(["owner-one/studio-sandbox", "owner-one/loomwright"]);
     expect(w.keychain.items.get(GITHUB_APP_INSTALLATION_SERVICE)?.secret).toBe(String(INSTALLATION));
     // One mint, then the reach list through that token: `/installation/repositories`, never `/user/repos`.
@@ -385,7 +399,7 @@ describe("recordInstallation (AC1)", () => {
       method: "app",
       app_slug: SLUG,
       installation_id: INSTALLATION,
-      permissions: READ_ONLY,
+      permissions: FULL,
       permissions_source: "reported",
       reachable_repos: ["owner-one/studio-sandbox", "owner-one/loomwright"],
     });
@@ -503,90 +517,65 @@ describe("the App replaces the token (AC5)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// AC9: a write permission is refused
+// D39: the App may write; short of GITHUB_APP_PERMISSIONS it reads needs_permissions
 // ---------------------------------------------------------------------------
 
-describe("a mint reporting a write permission (AC9)", () => {
-  it("is token_write_scoped, names the permission, removes every App item, and connects nothing", async () => {
+describe("a mint reporting write permissions is accepted (D39)", () => {
+  const APP_ITEMS = [GITHUB_APP_ID_SERVICE, GITHUB_APP_SLUG_SERVICE, GITHUB_APP_INSTALLATION_SERVICE, GITHUB_APP_KEY_SERVICE];
+
+  it("the whole pinned set connects the App: the Keychain items are kept, the reach list is read, one connected event, no refusal", async () => {
     ok(await w.port.storeApp(store(), CONVERSION, PEM, w.env.now));
-    w.permissions = { metadata: "read", pull_requests: "write", contents: "admin", issues: "none" };
-    const result = await w.port.recordInstallation(store(), INSTALLATION, w.env.now);
-    expect(result).toMatchObject({ ok: false, error: "token_write_scoped" });
-    if (result.ok) throw new Error("unreachable");
-    expect(result.message).toContain("pull_requests: write");
-    expect(result.message).toContain("contents: admin");
-    expect(result.message).not.toContain("metadata");
-    expect(result.message).not.toContain("issues");
-    for (const s of [GITHUB_APP_ID_SERVICE, GITHUB_APP_SLUG_SERVICE, GITHUB_APP_INSTALLATION_SERVICE, GITHUB_APP_KEY_SERVICE]) expect(w.keychain.has(s)).toBe(false);
-    expect(rowNow()).toMatchObject({ status: "rejected", app_slug: null, installation_id: null, permissions_json: null });
-    expect(rowNow()?.["status"]).not.toBe("connected");
-    // The reach list is never read with a write-scoped token, and the held token is gone.
-    expect(w.calls.map((c) => c.path)).not.toContain("/installation/repositories");
-    expect((await w.tokens.current()).ok).toBe(false);
-    expect(statusEvents().at(-1)).toEqual({ connector_id: rowNow()?.["id"], kind: "github", status: "rejected", refused: "token_write_scoped" });
-    expectNoSecret(result);
+    const row = ok(await w.port.recordInstallation(store(), INSTALLATION, w.env.now));
+    expect(row).toMatchObject({ status: "connected", method: "app", app_slug: SLUG, installation_id: INSTALLATION });
+    for (const s of APP_ITEMS) expect(w.keychain.has(s)).toBe(true);
+    expect(w.calls.map((c) => c.path)).toContain("/installation/repositories");
+    expect(statusEvents().at(-1)).toEqual({ connector_id: row.id, kind: "github", status: "connected", permissions_source: "reported" });
+    expect(statusEvents().some((e) => "refused" in e)).toBe(false);
+    expect(await w.tokens.current()).toMatchObject({ ok: true, permissions: FULL });
   });
 
-  it("an unknown level is write-scoped too (fail closed)", async () => {
+  it("a level above the pinned one (an admin where the constant has write) still counts as holding it", async () => {
     ok(await w.port.storeApp(store(), CONVERSION, PEM, w.env.now));
-    w.permissions = { metadata: "read", contents: "maintain" };
-    expect(await w.port.recordInstallation(store(), INSTALLATION, w.env.now)).toMatchObject({ ok: false, error: "token_write_scoped" });
+    w.permissions = { ...FULL, repository_projects: "admin", contents: "admin" };
+    expect(ok(await w.port.recordInstallation(store(), INSTALLATION, w.env.now))).toMatchObject({ status: "connected" });
   });
 
-  it("a PAT in use stays as it is: its item, its row and its status", async () => {
+  it("a read-only install is recorded needs_permissions: one event, the App's items kept, the reach list read, the PAT replaced", async () => {
     seedPat();
     ok(await w.port.storeApp(store(), CONVERSION, PEM, w.env.now));
-    w.permissions = { metadata: "read", pull_requests: "write" };
-    const result = await w.port.recordInstallation(store(), INSTALLATION, w.env.now);
-    expect(result).toMatchObject({ ok: false, error: "token_write_scoped" });
-    expect(w.keychain.items.get(GITHUB_KEYCHAIN_SERVICE)?.secret).toBe(PAT);
-    expect(rowNow()).toMatchObject({ status: "connected", method: "token", account_login: "pat-user", app_slug: null, installation_id: null });
-    expect(JSON.parse(String(rowNow()?.["reachable_repos_json"]))).toEqual(["pat-user/repo"]);
-    for (const s of [GITHUB_APP_ID_SERVICE, GITHUB_APP_SLUG_SERVICE, GITHUB_APP_INSTALLATION_SERVICE, GITHUB_APP_KEY_SERVICE]) expect(w.keychain.has(s)).toBe(false);
+    w.permissions = { ...READ_ONLY };
+    const row = ok(await w.port.recordInstallation(store(), INSTALLATION, w.env.now));
+    expect(row).toMatchObject({ status: "needs_permissions", method: "app", app_slug: SLUG, installation_id: INSTALLATION, permissions_source: "reported" });
+    expect(JSON.parse(row.permissions_json ?? "null")).toEqual(READ_ONLY);
+    for (const s of APP_ITEMS) expect(w.keychain.has(s)).toBe(true);
+    expect(w.keychain.has(GITHUB_KEYCHAIN_SERVICE)).toBe(false);
+    expect(JSON.parse(row.reachable_repos_json ?? "null")).toEqual(["owner-one/studio-sandbox", "owner-one/loomwright"]);
+    expect(statusEvents().filter((e) => e["status"] === "needs_permissions")).toEqual([
+      { connector_id: row.id, kind: "github", status: "needs_permissions", permissions_source: "reported" },
+    ]);
+    expect(listConnectors(store())[0]).toMatchObject({ status: "needs_permissions", method: "app" });
+    expectNoSecret(row);
   });
 
-  // The real holder refuses a write-scoped mint itself, so these two drive the port's own check
-  // (defence in depth) with a holder that hands one out as ok.
-  function portWithLaxHolder(permissions: Record<string, string>): GitHubAppPort {
-    const lax: GitHubAppTokens = {
-      configured: () => true,
-      current: async () => ({ ok: true, token: "ghs_" + "y".repeat(36), expires_at: new Date(w.env.now().getTime() + HOUR).toISOString(), permissions }),
-      invalidate: () => undefined,
-      lastMintFailure: undefined,
-      clearMintFailure: () => undefined,
-    } as unknown as GitHubAppTokens;
-    return createGitHubAppPort({
-      keychain: w.keychain,
-      writer: w.keychain,
-      deleter: w.keychain,
-      tokens: lax,
-      clientFor: (tokenProvider) => createGitHubClient({ tokenProvider, fetch: w.fetch, now: w.env.now }),
-    });
-  }
-
-  it("the port refuses a write permission even from a holder that returns ok (defence in depth)", async () => {
+  it.each([
+    ["a name missing", () => Object.fromEntries(Object.entries(FULL).filter(([name]) => name !== "workflows"))],
+    ["read where the constant has write", () => ({ ...FULL, pull_requests: "read" })],
+    ["a level this code does not know where the constant has write", () => ({ ...FULL, contents: "maintain" })],
+  ])("%s: needs_permissions", async (_name, permissions) => {
     ok(await w.port.storeApp(store(), CONVERSION, PEM, w.env.now));
-    const port = portWithLaxHolder({ metadata: "read", pull_requests: "write" });
-    const result = await port.recordInstallation(store(), INSTALLATION, w.env.now);
-    expect(result).toMatchObject({ ok: false, error: "token_write_scoped" });
-    if (result.ok) throw new Error("unreachable");
-    expect(result.message).toContain("pull_requests: write");
-    for (const s of [GITHUB_APP_ID_SERVICE, GITHUB_APP_SLUG_SERVICE, GITHUB_APP_INSTALLATION_SERVICE, GITHUB_APP_KEY_SERVICE]) expect(w.keychain.has(s)).toBe(false);
-    expect(rowNow()).toMatchObject({ status: "rejected", app_slug: null, installation_id: null });
-    expect(w.calls.map((c) => c.path)).not.toContain("/installation/repositories");
+    w.permissions = permissions();
+    expect(ok(await w.port.recordInstallation(store(), INSTALLATION, w.env.now))).toMatchObject({ status: "needs_permissions" });
   });
 
-  it("the port's own refusal leaves a PAT in use unchanged", async () => {
-    seedPat();
+  it("installing again once GitHub reports the whole set moves needs_permissions to connected", async () => {
     ok(await w.port.storeApp(store(), CONVERSION, PEM, w.env.now));
-    const port = portWithLaxHolder({ metadata: "read", contents: "admin" });
-    expect(await port.recordInstallation(store(), INSTALLATION, w.env.now)).toMatchObject({ ok: false, error: "token_write_scoped" });
-    expect(w.keychain.items.get(GITHUB_KEYCHAIN_SERVICE)?.secret).toBe(PAT);
-    expect(rowNow()).toMatchObject({ status: "connected", method: "token", account_login: "pat-user", app_slug: null, installation_id: null });
-    for (const s of [GITHUB_APP_ID_SERVICE, GITHUB_APP_SLUG_SERVICE, GITHUB_APP_INSTALLATION_SERVICE, GITHUB_APP_KEY_SERVICE]) expect(w.keychain.has(s)).toBe(false);
+    w.permissions = { ...READ_ONLY };
+    expect(ok(await w.port.recordInstallation(store(), INSTALLATION, w.env.now))).toMatchObject({ status: "needs_permissions" });
+    w.permissions = { ...FULL };
+    expect(ok(await w.port.recordInstallation(store(), INSTALLATION, w.env.now))).toMatchObject({ status: "connected" });
   });
 
-  it("a mint reporting no permissions at all cannot be proven read-only: install_failed, nothing connected", async () => {
+  it("a mint reporting no permissions at all cannot be compared: install_failed, nothing connected", async () => {
     ok(await w.port.storeApp(store(), CONVERSION, PEM, w.env.now));
     w.permissions = {};
     const result = await w.port.recordInstallation(store(), INSTALLATION, w.env.now);
@@ -741,24 +730,15 @@ describe("a revoked key or an uninstalled App reads rejected, with one notificat
     expectNoSecret(notifications());
   });
 
-  it("a renewal that turns write-scoped marks the row rejected and notifies once, with no secret", async () => {
+  it("a renewal that reports write permissions is no failure: nothing is recorded, the row stays connected, no notification", async () => {
     await installApp();
     w.env.advance(HOUR - 60_000);
-    w.permissions = { metadata: "read", pull_requests: "write" };
-    expect(await w.tokens.current()).toMatchObject({ ok: false, error: "write_scoped" });
-    expect(rowNow()?.["status"]).toBe("connected");
-    applyGitHubAppMintFailure(store(), w.env.now(), w.tokens);
-    expect(rowNow()).toMatchObject({ status: "rejected", method: "app" });
-    expect(notifications().map((n) => n.source)).toEqual([GITHUB_APP_REJECTED_SOURCE]);
-    expect(notifications()[0]?.body).toContain("pull_requests: write");
-    expect(statusEvents().filter((e) => e["status"] === "rejected")).toHaveLength(1);
+    w.permissions = { ...FULL, contents: "admin" };
+    expect((await w.tokens.current()).ok).toBe(true);
     expect(w.tokens.lastMintFailure).toBeUndefined();
-    // A later write-scoped mint on the already rejected row changes nothing more.
-    await w.tokens.current();
     applyGitHubAppMintFailure(store(), w.env.now(), w.tokens);
-    expect(notifications()).toHaveLength(1);
-    expect(statusEvents().filter((e) => e["status"] === "rejected")).toHaveLength(1);
-    expectNoSecret([notifications(), rowNow()]);
+    expect(rowNow()).toMatchObject({ status: "connected", method: "app" });
+    expect(notifications()).toEqual([]);
   });
 
   it("a failure other than 401 or 404 (a 500, the network) does not reject the row", async () => {
@@ -809,6 +789,205 @@ describe("a revoked key or an uninstalled App reads rejected, with one notificat
     await mintFails(401);
     applyGitHubAppMintFailure(store(), w.env.now(), w.tokens);
     expect(listConnectors(store())[0]).toMatchObject({ status: "rejected", method: "app" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D39: mintSessionToken, a down-scoped token for a session
+// ---------------------------------------------------------------------------
+
+describe("mintSessionToken (D39)", () => {
+  const REPO = "vikashruhilgit/studio-sandbox";
+  const rows = (): Record<string, unknown>[] => store().prepare("SELECT * FROM connectors").all() as Record<string, unknown>[];
+  const mint = (repos: readonly string[]): ReturnType<typeof mintSessionToken> => mintSessionToken(store(), repos, { tokens: w.tokens });
+
+  /** An installed App whose account owns the sandbox repo. */
+  async function installForSandbox(): Promise<void> {
+    w.repos = [REPO, "vikashruhilgit/loomwright"];
+    await installApp();
+    w.calls.length = 0;
+    w.mintRequests.length = 0;
+  }
+
+  it("is exported by name with the frozen session permissions (Pin: the mint body carries exactly these four)", () => {
+    expect(SESSION_TOKEN_PERMISSIONS).toEqual({ pull_requests: "write", contents: "write", issues: "write", checks: "write" });
+    expect(Object.isFrozen(SESSION_TOKEN_PERMISSIONS)).toBe(true);
+  });
+
+  it("sends one mint carrying exactly SESSION_TOKEN_PERMISSIONS and the one repo's name, and answers {ok, token, expires_at}", async () => {
+    await installForSandbox();
+    const result = await mint([REPO]);
+    expect(w.calls.map((c) => `${c.method} ${c.path}`)).toEqual([`POST /app/installations/${INSTALLATION}/access_tokens`]);
+    expect(w.mintRequests).toHaveLength(1);
+    expect(w.mintRequests[0]?.contentType).toBe("application/json");
+    expect(JSON.parse(w.mintRequests[0]?.body ?? "null")).toEqual({
+      permissions: { pull_requests: "write", contents: "write", issues: "write", checks: "write" },
+      repositories: ["studio-sandbox"],
+    });
+    expect(Object.keys(JSON.parse(w.mintRequests[0]?.body ?? "{}") as object).sort()).toEqual(["permissions", "repositories"]);
+    expect(result).toEqual({ ok: true, token: w.issued.at(-1), expires_at: new Date(w.env.now().getTime() + HOUR).toISOString() });
+    // The bearer was the App's JWT, not a held installation token.
+    expect(w.calls[0]?.bearer).toBe(w.jwts.at(-1));
+  });
+
+  it("the token is in no events, connectors or notifications row, in no console output, and is never held by the holder", async () => {
+    await installForSandbox();
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => undefined));
+    const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const result = await mint([REPO]);
+      if (!result.ok) throw new Error("expected a token");
+      const token = result.token;
+      const tables = ["events", "connectors", "notifications"] as const;
+      for (const t of tables) expect(JSON.stringify(store().prepare(`SELECT * FROM ${t}`).all()).includes(token), `${t} holds the token`).toBe(false);
+      expect(everythingStored().includes(token)).toBe(false);
+      expect(w.keychain.calls.join("\n").includes(token)).toBe(false);
+      for (const spy of [...spies, out, err]) expect(spy).not.toHaveBeenCalled();
+      // Not cached: the holder's own token is another mint, and its reported permissions are the App's, not the session's.
+      expect(w.tokens.lastReportedPermissions).toEqual(FULL);
+      const own = await w.tokens.current();
+      expect(own.ok && own.token).not.toBe(token);
+    } finally {
+      for (const spy of [...spies, out, err]) spy.mockRestore();
+    }
+  });
+
+  it("matches the repo case-insensitively and sends the name as the reach list spells it; a repeated repo is sent once", async () => {
+    await installForSandbox();
+    const result = await mint(["VikashRuhilGit/Studio-Sandbox", REPO, "vikashruhilgit/loomwright"]);
+    expect(result.ok).toBe(true);
+    expect(JSON.parse(w.mintRequests[0]?.body ?? "null").repositories).toEqual(["studio-sandbox", "loomwright"]);
+  });
+
+  it.each([
+    ["a repo the installation does not list", ["vikashruhilgit/not-installed"]],
+    ["one listed and one not", [REPO, "vikashruhilgit/not-installed"]],
+    ["an owner other than the installation's account", ["someone-else/studio-sandbox"]],
+    ["no repo at all (an unscoped mint would reach every repo)", []],
+    ["a name that is not owner/name", ["studio-sandbox"]],
+    ["a name with extra segments", ["vikashruhilgit/studio-sandbox/x"]],
+    ["a name that is not a string", [5 as unknown as string]],
+  ])("%s: repo_not_reached, no request sent", async (_name, repos) => {
+    await installForSandbox();
+    expect(await mint(repos)).toEqual({ ok: false, error: "repo_not_reached" });
+    expect(w.calls).toEqual([]);
+  });
+
+  it("a row with no account reaches nothing, and more than 100 repos are refused before any lookup", async () => {
+    await installForSandbox();
+    store().prepare("UPDATE connectors SET account_login = NULL").run();
+    expect(await mint([REPO])).toEqual({ ok: false, error: "repo_not_reached" });
+    store().prepare("UPDATE connectors SET account_login = 'vikashruhilgit'").run();
+    const many = Array.from({ length: 101 }, (_, i) => `vikashruhilgit/r${i}`);
+    expect(await mint(many)).toEqual({ ok: false, error: "repo_not_reached" });
+    expect(await mintSessionToken(store(), "vikashruhilgit/studio-sandbox" as unknown as string[], { tokens: w.tokens })).toEqual({ ok: false, error: "repo_not_reached" });
+    expect(w.calls).toEqual([]);
+  });
+
+  it("a row with no reach list reaches nothing: repo_not_reached", async () => {
+    await installForSandbox();
+    store().prepare("UPDATE connectors SET reachable_repos_json = NULL").run();
+    expect(await mint([REPO])).toEqual({ ok: false, error: "repo_not_reached" });
+    expect(w.calls).toEqual([]);
+  });
+
+  it.each([
+    ["read where a session permission needs write", () => ({ ...FULL, checks: "read" })],
+    ["a session permission missing", () => Object.fromEntries(Object.entries(FULL).filter(([name]) => name !== "issues"))],
+    ["a read-only install", () => ({ ...READ_ONLY })],
+  ])("%s: needs_permissions, no request sent", async (_name, permissions) => {
+    w.permissions = permissions();
+    await installForSandbox();
+    expect(await mint([REPO])).toEqual({ ok: false, error: "needs_permissions" });
+    expect(w.calls).toEqual([]);
+  });
+
+  it("a session mint needs only the four session permissions on the row, not the whole App set", async () => {
+    w.permissions = { metadata: "read", pull_requests: "write", contents: "write", issues: "write", checks: "write" };
+    await installForSandbox();
+    expect(rowNow()?.["status"]).toBe("needs_permissions");
+    expect((await mint([REPO])).ok).toBe(true);
+  });
+
+  it("a row without reported permissions is needs_permissions", async () => {
+    await installForSandbox();
+    store().prepare("UPDATE connectors SET permissions_json = NULL").run();
+    expect(await mint([REPO])).toEqual({ ok: false, error: "needs_permissions" });
+    expect(w.calls).toEqual([]);
+  });
+
+  it.each([
+    ["no connector row", () => store().prepare("DELETE FROM connectors").run()],
+    ["a token connection", () => store().prepare("UPDATE connectors SET method = 'token'").run()],
+    ["a rejected App", () => store().prepare("UPDATE connectors SET status = 'rejected'").run()],
+    ["a disconnected App", () => store().prepare("UPDATE connectors SET status = 'disconnected'").run()],
+  ])("%s: no_credentials, no request sent", async (_name, change) => {
+    await installForSandbox();
+    change();
+    expect(await mint([REPO])).toEqual({ ok: false, error: "no_credentials" });
+    expect(w.calls).toEqual([]);
+  });
+
+  it("a down-scoped token that comes back reporting more than the session permissions is refused and not returned", async () => {
+    await installForSandbox();
+    w.scopedReport = { ...FULL };
+    const result = await mint([REPO]);
+    expect(result).toEqual({ ok: false, error: "scope_exceeded" });
+    expect(JSON.stringify(result).includes(w.issued.at(-1) ?? "none")).toBe(false);
+  });
+
+  it("GitHub's implicit metadata: read is not an excess", async () => {
+    await installForSandbox();
+    w.scopedReport = { ...SESSION_TOKEN_PERMISSIONS, metadata: "read" };
+    expect((await mint([REPO])).ok).toBe(true);
+  });
+
+  it("GitHub answering an error is a typed failure with its status; a network failure is unreachable; neither throws", async () => {
+    await installForSandbox();
+    w.mintStatus = 422;
+    expect(await mint([REPO])).toEqual({ ok: false, error: "http_error", status: 422 });
+    w.mintStatus = undefined;
+    w.fetchThrows = new Error(`connect ECONNREFUSED ${ENCODED}`);
+    const result = await mint([REPO]);
+    expect(result).toEqual({ ok: false, error: "unreachable" });
+    expectNoSecret(result);
+  });
+
+  it("a mint failing 401 or 404 does not mark the row rejected (only the holder's own mint does)", async () => {
+    await installForSandbox();
+    w.mintStatus = 404;
+    await mint([REPO]);
+    expect(w.tokens.lastMintFailure).toBeUndefined();
+    expect(rows()[0]).toMatchObject({ status: "connected" });
+  });
+
+  it("with the App's Keychain items gone, it is no_credentials (a fixed value, no secret)", async () => {
+    await installForSandbox();
+    w.keychain.items.delete(GITHUB_APP_KEY_SERVICE);
+    const result = await mint([REPO]);
+    expect(result).toEqual({ ok: false, error: "no_credentials" });
+    expect(w.calls).toEqual([]);
+  });
+
+  it("runs on the shared credential lock, and a store that throws is a closed failure, not a rejection", async () => {
+    await installForSandbox();
+    const run = vi.fn(<T>(fn: () => Promise<T>) => fn());
+    const lock: GitHubCredentialLock = { run: run as GitHubCredentialLock["run"] };
+    expect((await mintSessionToken(store(), [REPO], { tokens: w.tokens, lock })).ok).toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+    const broken = { prepare: () => { throw new Error("db down"); } } as unknown as Parameters<typeof mintSessionToken>[0];
+    expect(await mintSessionToken(broken, [REPO], { tokens: w.tokens, lock })).toEqual({ ok: false, error: "unreachable" });
+  });
+
+  it("given only a Keychain (no holder), it mints through a holder over that Keychain", async () => {
+    await installForSandbox();
+    vi.stubGlobal("fetch", w.fetch);
+    try {
+      expect((await mintSessionToken(store(), [REPO], { keychain: w.keychain })).ok).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

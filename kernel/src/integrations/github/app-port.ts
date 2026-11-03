@@ -1,7 +1,10 @@
-// The GitHub App connect's port (D36): stores the converted App's credentials,
-// records its installation (minting the first installation token and proving it
-// read-only), and removes the App. The setup flow (GitHub App 3) calls it with
-// what GitHub's manifest conversion returned.
+// The GitHub App connect's port (D36, D39): stores the converted App's credentials,
+// records its installation (minting the first installation token and recording
+// what GitHub reports for it: the row reads `needs_permissions` until that is
+// the whole `GITHUB_APP_PERMISSIONS`), and removes the App. The setup flow
+// (GitHub App 3) calls it with what GitHub's manifest conversion returned.
+// `mintSessionToken` is the one other export: a down-scoped, one-hour token for a
+// session, never held, stored or logged here.
 // Never throws or rejects, whatever it is given: every method resolves a typed result.
 //
 // Where each secret lives (`app-token.ts` has the full account):
@@ -14,8 +17,7 @@
 //   - the store holds the App's slug, its installation id and what GitHub
 //     reported (permissions, repos): never the `pem`, a JWT or a token.
 // `client_secret` is not a parameter anywhere; a failure's message is a fixed
-// sentence (plus the permission names GitHub reported, for a write scope), so
-// no caught error's text, and no secret, reaches a result.
+// sentence, so no caught error's text, and no secret, reaches a result.
 //
 // One credential is current at a time (the PAT item first, else the App's
 // items: `resolveGitHubTokenProvider`). `recordInstallation` makes the App
@@ -38,12 +40,15 @@ import {
   GITHUB_APP_ID_SERVICE,
   GITHUB_APP_INSTALLATION_SERVICE,
   GITHUB_APP_KEY_SERVICE,
+  GITHUB_APP_PERMISSIONS,
   GITHUB_APP_SLUG_SERVICE,
+  SESSION_TOKEN_PERMISSIONS,
   encodeAppKey,
   createGitHubAppTokens,
   githubAppTokens,
+  holdsPermissions,
 } from "./app-token.js";
-import type { GitHubAppTokens } from "./app-token.js";
+import type { GitHubAppTokenError, GitHubAppTokens } from "./app-token.js";
 import { GITHUB_KEYCHAIN_SERVICE, createGitHubClient } from "./client.js";
 import type { GitHubTokenProvider, GitHubTokenProviderResolver } from "./client.js";
 import { githubCredentialLock } from "./credential-lock.js";
@@ -52,11 +57,11 @@ import {
   GITHUB_APP_SERVICES,
   GITHUB_KEYCHAIN_ACCOUNT,
   changeStatus,
+  connectorView,
   ensureRow,
   githubConnectorRow,
   isCredentialInUse,
   statusEvent,
-  writePermissionsOf,
 } from "./connector.js";
 
 /** What the port reads, writes and calls. Every default resolves only when a call needs it, so building the shipped port touches nothing. */
@@ -91,7 +96,7 @@ const MESSAGES = {
   mint_credentials: "the stored GitHub App credentials are missing or unreadable, so no installation token could be minted",
   mint_rejected: "GitHub did not accept the App's key, or does not know this installation, so no installation token could be minted",
   mint_unreachable: "GitHub could not be reached, or answered something unreadable, so no installation token could be minted",
-  no_permissions: "GitHub reported no permissions for the installation token, so Studio cannot check that they are read-only",
+  no_permissions: "GitHub reported no permissions for the installation token, so Studio cannot tell which ones the App holds",
   reach_failed: "GitHub did not list the installation's repositories",
   pat_kept: "the token connection could not be replaced: its Keychain item is still there, so the token stays in use",
   remove_keychain: "the GitHub App's Keychain items could not all be deleted",
@@ -132,6 +137,14 @@ function accountOf(repos: readonly { readonly full_name: string }[]): string | n
   return owner === "" ? null : owner;
 }
 
+/**
+ * The installation-token holder for `deps`: an injected one, else (with an injected Keychain) a holder
+ * of its own over that reader, since the process-wide one reads the real Keychain, else the process-wide one.
+ */
+function holderOf(deps: GitHubAppPortDeps): GitHubAppTokens {
+  return deps.tokens ?? (deps.keychain !== undefined ? createGitHubAppTokens({ keychain: deps.keychain }) : githubAppTokens);
+}
+
 /** Builds the port over `deps`. Nothing is read, written or called until a method runs. */
 export function createGitHubAppPort(deps: GitHubAppPortDeps = {}): GitHubAppPort {
   let reader: KeychainReader | undefined = deps.keychain;
@@ -139,7 +152,7 @@ export function createGitHubAppPort(deps: GitHubAppPortDeps = {}): GitHubAppPort
   let deleter: KeychainDeleter | undefined = deps.deleter;
   // An injected Keychain gets its own holder (as `createResolvingGitHubClient` does): the
   // process-wide one reads the real Keychain, which a caller that injected one never meant.
-  const tokens = deps.tokens ?? (deps.keychain !== undefined ? createGitHubAppTokens({ keychain: deps.keychain }) : githubAppTokens);
+  const tokens = holderOf(deps);
   const keychain = (): KeychainReader => (reader ??= securityCliKeychain());
   const clientFor = deps.clientFor ?? ((tokenProvider: GitHubTokenProviderResolver): GitHubClient => createGitHubClient({ tokenProvider }));
 
@@ -208,26 +221,6 @@ export function createGitHubAppPort(deps: GitHubAppPortDeps = {}): GitHubAppPort
     return res.error === "http_error" && (res.status === 401 || res.status === 404) ? MESSAGES.mint_rejected : MESSAGES.mint_unreachable;
   }
 
-  /**
-   * A refusal for a write scope: the App's items are removed, the row's App
-   * fields cleared, and a row with no credential in use reads `rejected`. One
-   * `connector_status` event with `refused`, as for a refused token. A PAT in
-   * use stays connected, unchanged.
-   */
-  function refuseWriteScoped(store: Store, at: string): void {
-    store.transaction(() => {
-      let row = ensureRow(store, "rejected", at);
-      store.prepare("UPDATE connectors SET app_slug = NULL, installation_id = NULL WHERE id = ?").run(row.id);
-      row = githubConnectorRow(store) as ConnectorRow;
-      const patInUse = row.method !== "app" && isCredentialInUse(row.status);
-      if (!patInUse && row.status !== "rejected") {
-        store.prepare("UPDATE connectors SET status = 'rejected', updated_at = ? WHERE id = ?").run(at, row.id);
-        row = githubConnectorRow(store) as ConnectorRow;
-      }
-      statusEvent(store, row, at, "token_write_scoped");
-    });
-  }
-
   async function storeApp(store: Store, conversion: GitHubAppConversion, pem: string, now: () => Date): Promise<GitHubAppPortResult<ConnectorRow>> {
     const at = now().toISOString();
     githubConnectorRow(store);
@@ -285,21 +278,11 @@ export function createGitHubAppPort(deps: GitHubAppPortDeps = {}): GitHubAppPort
     // 2. The first installation token, minted fresh for this installation.
     tokens.invalidate();
     const minted = await tokens.current();
-    if (!minted.ok && minted.error !== "write_scoped") return abandon(mintMessage(minted));
+    if (!minted.ok) return abandon(mintMessage(minted));
 
-    // 3. Read-only is GitHub's word, not ours: the permissions it reports for the token (the holder refuses a write-scoped one).
-    if (minted.ok && Object.keys(minted.permissions).length === 0) return abandon(MESSAGES.no_permissions);
-    const writes = minted.ok ? writePermissionsOf(minted.permissions) : (minted.write_permissions ?? []);
-    if (writes.length > 0) {
-      dropItems(GITHUB_APP_SERVICES);
-      tokens.invalidate();
-      refuseWriteScoped(store, at);
-      return fail(
-        "token_write_scoped",
-        `the GitHub App can write; change each of these App permissions to read-only on GitHub and install it again: ${writes.map((w) => `${w.permission}: ${w.level} → set to read`).join("; ")}`,
-      );
-    }
-    if (!minted.ok) return abandon(MESSAGES.mint_unreachable);
+    // 3. The permissions are GitHub's word, not ours: what it reports for the token. The App may write (D39), so
+    // nothing is refused here; an install short of `GITHUB_APP_PERMISSIONS` is recorded as `needs_permissions` below.
+    if (Object.keys(minted.permissions).length === 0) return abandon(MESSAGES.no_permissions);
 
     // 4. The repos the installation reaches (`GET /installation/repositories`), through the App's token alone.
     const provider = appProvider(tokens);
@@ -313,16 +296,18 @@ export function createGitHubAppPort(deps: GitHubAppPortDeps = {}): GitHubAppPort
       return fail("install_failed", MESSAGES.pat_kept);
     }
 
-    // 6. The row: what GitHub reported, then one event.
+    // 6. The row: what GitHub reported, then one event. `connected` when it reports the whole
+    // `GITHUB_APP_PERMISSIONS`, else `needs_permissions` (the owner accepts the rest on github.com).
+    const status = holdsPermissions(minted.permissions, GITHUB_APP_PERMISSIONS) ? "connected" : "needs_permissions";
     const row = store.transaction(() => {
-      const r = ensureRow(store, "connected", at);
+      const r = ensureRow(store, status, at);
       store
         .prepare(
-          `UPDATE connectors SET status = 'connected', account_login = ?, permissions_json = ?, reachable_repos_json = ?,
+          `UPDATE connectors SET status = ?, account_login = ?, permissions_json = ?, reachable_repos_json = ?,
              expires_at = ?, verified_at = ?, permissions_source = 'reported', permissions_declared_at = NULL,
              method = 'app', app_slug = ?, installation_id = ?, updated_at = ? WHERE id = ?`,
         )
-        .run(accountOf(repos.data), JSON.stringify(minted.permissions), JSON.stringify(repos.data.map((x) => x.full_name)), minted.expires_at, at, slug, installationId, at, r.id);
+        .run(status, accountOf(repos.data), JSON.stringify(minted.permissions), JSON.stringify(repos.data.map((x) => x.full_name)), minted.expires_at, at, slug, installationId, at, r.id);
       const updated = githubConnectorRow(store) as ConnectorRow;
       statusEvent(store, updated, at, undefined, "reported");
       return updated;
@@ -361,3 +346,74 @@ export function createGitHubAppPort(deps: GitHubAppPortDeps = {}): GitHubAppPort
 
 /** The shipped port: real Keychain, GitHub and the process-wide token holder, each resolved only when a method runs. */
 export const githubAppPort: GitHubAppPort = Object.freeze(createGitHubAppPort());
+
+// ---- A session's token (D39) ----------------------------------------------------------
+
+/**
+ * Why `mintSessionToken` gave no token: `repo_not_reached` (no repo named, a name
+ * that is not `owner/name`, an owner other than the installation's account, or a
+ * repo the installation does not list), `needs_permissions` (the row does not
+ * report every `SESSION_TOKEN_PERMISSIONS` entry at write), or the holder's own
+ * failure (`no_credentials` when no App is in use, `http_error` with its status,
+ * and so on). A closed set; none carries a message.
+ */
+export type GitHubSessionTokenError = "repo_not_reached" | "needs_permissions" | GitHubAppTokenError;
+
+/** The answer: a one-hour installation token and its expiry (ISO-8601 UTC), or a typed failure. The token is a secret: use it once, never log or store it. */
+export type GitHubSessionTokenResult =
+  | { readonly ok: true; readonly token: string; readonly expires_at: string }
+  | { readonly ok: false; readonly error: GitHubSessionTokenError; readonly status?: number };
+
+/** `owner/name`, as GitHub spells them: an owner of letters, digits and hyphens, a name of those plus `.` and `_`. */
+const FULL_NAME = /^([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})$/;
+
+/** The most repos one session token may name. */
+const MAX_SESSION_REPOS = 100;
+
+const NOT_REACHED: GitHubSessionTokenResult = Object.freeze({ ok: false, error: "repo_not_reached" });
+const NEEDS_PERMISSIONS: GitHubSessionTokenResult = Object.freeze({ ok: false, error: "needs_permissions" });
+const NO_APP: GitHubSessionTokenResult = Object.freeze({ ok: false, error: "no_credentials" });
+
+/**
+ * Mints a down-scoped installation token for a session: `POST
+ * /app/installations/{id}/access_tokens` with `permissions` exactly
+ * `SESSION_TOKEN_PERMISSIONS` and `repositories` the named repos' names (GitHub
+ * takes no owner there, so every repo must belong to the row's `account_login`).
+ * Nothing is sent unless the row is an App in use, every repo is in its reach
+ * list (case-insensitive) and it reports every session permission at write. An
+ * empty list is refused (a mint with no `repositories` would reach every repo).
+ * The token is returned once: never stored, held, logged or put in an event or a
+ * row. Runs on the shared credential lock. Never throws or rejects.
+ */
+export function mintSessionToken(store: Store, repos: readonly string[], deps: GitHubAppPortDeps = {}): Promise<GitHubSessionTokenResult> {
+  const lock = deps.lock ?? githubCredentialLock;
+  const unreachable: GitHubSessionTokenResult = { ok: false, error: "unreachable" };
+  const guarded = async (): Promise<GitHubSessionTokenResult> => {
+    try {
+      if (!Array.isArray(repos) || repos.length === 0 || repos.length > MAX_SESSION_REPOS) return NOT_REACHED;
+      const row = githubConnectorRow(store);
+      if (row === undefined || row.method !== "app" || !isCredentialInUse(row.status)) return NO_APP;
+      const view = connectorView(row);
+      const account = view.account_login?.toLowerCase();
+      const reach = new Map((view.reachable_repos ?? []).map((full) => [full.toLowerCase(), full]));
+      const names: string[] = [];
+      for (const repo of repos as readonly unknown[]) {
+        if (typeof repo !== "string") return NOT_REACHED;
+        const parts = FULL_NAME.exec(repo);
+        if (parts === null) return NOT_REACHED;
+        const owner = parts[1] as string;
+        const canonical = reach.get(repo.toLowerCase());
+        if (account === undefined || owner.toLowerCase() !== account || canonical === undefined) return NOT_REACHED;
+        const name = canonical.slice(canonical.indexOf("/") + 1);
+        if (!names.includes(name)) names.push(name);
+      }
+      if (view.permissions === null || !holdsPermissions(view.permissions, SESSION_TOKEN_PERMISSIONS)) return NEEDS_PERMISSIONS;
+      const res = await holderOf(deps).mintScoped({ repositories: names, permissions: SESSION_TOKEN_PERMISSIONS });
+      return res.ok ? { ok: true, token: res.token, expires_at: res.expires_at } : res.status === undefined ? { ok: false, error: res.error } : { ok: false, error: res.error, status: res.status };
+    } catch {
+      // Whatever threw, its message is dropped: it may carry a secret.
+      return unreachable;
+    }
+  };
+  return lock.run(guarded).catch(() => unreachable);
+}

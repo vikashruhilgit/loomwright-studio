@@ -1,7 +1,7 @@
 // Phase 6 item 09 (Wright drafts a PR-review duty): `kernel_playbook_create` and
 // `kernel_playbook_update` take a structured `trigger.poll` (the `PollSpec` as an
 // object), the mirror shows the mode and a readable poll schedule as proposed,
-// item 04's refusals come back by their own reasons, `live` is refused, and a
+// item 04's refusals come back by their own reasons, an agent's `live` is refused, and a
 // value the owner set is not Wright's to change. A temp data dir and a fixed
 // clock; the tools run through the tool server's own `contributedToolHandler`
 // (no SDK launch, no model); the `connectors` row is seeded raw, as the poll
@@ -188,8 +188,8 @@ describe("item 04's refusals come back by their own reasons (AC2)", () => {
 });
 
 describe("mode and the owner's values (AC3, AC5)", () => {
-  it("mode live is refused live_mode_not_in_phase_6 and nothing is written", async () => {
-    expect(errorText(await create({ mode: "live" }))).toContain("live_mode_not_in_phase_6");
+  it("mode live is refused live_mode_owner_only and nothing is written", async () => {
+    expect(errorText(await create({ mode: "live" }))).toContain("live_mode_owner_only");
     nothingWritten();
   });
 

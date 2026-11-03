@@ -18,7 +18,7 @@
 // as GitHub-verified. It is consulted only when GitHub reported no
 // permissions: a reported write permission is refused `token_write_scoped`
 // with or without it.
-// A refusal while a good token is in use (`connected` or `expiring`) leaves
+// A refusal while a good token is in use (`connected`, `expiring` or `needs_permissions`) leaves
 // the row and the Keychain item unchanged; otherwise the row reads `rejected`.
 // Replace is validate, then delete the old item, add the new one (never an
 // overwrite), and read it back: only a read-back that matches is `connected`.
@@ -40,7 +40,16 @@
 // the PAT item, and a disconnect deletes every GitHub credential item. An
 // `app` row raises no expiry warning (the installation token renews silently
 // every hour); a mint that GitHub answers 401 or 404 makes the row read
-// `rejected`, with one notification (`checkGitHubAppMint`).
+// `rejected`, with one notification (`checkGitHubAppMint`). An `app` row whose
+// installation token reports fewer permissions than `GITHUB_APP_PERMISSIONS`
+// reads `needs_permissions` (D39: the credential still works and is in use; the
+// owner accepts the rest on github.com, `GET /connectors/github/app/upgrade`
+// answers where), and returns to `connected` once a later mint reports them all.
+// The holder mints only on the daemon's own calls and reuses its token until near
+// expiry, so that mint is not prompt by itself: Refresh (`refreshRepos`) on a
+// `needs_permissions` App row forgets the held token, reads with a fresh mint and
+// applies what it reported, which is how the owner's fix is picked up at once.
+// The token path stays read-only: only a PAT is refused `token_write_scoped`.
 //
 // The connector and the App port change the same Keychain items, row columns
 // and token holder, so both run on one queue (`credential-lock.ts`): a token
@@ -56,7 +65,7 @@
 // (`kernel/test/feature-seams.test.ts` pins the registry's module graph).
 import { WRITE_ARG, securityCliKeychain, securityCliKeychainDeleter, securityCliKeychainWriter } from "../../auth/keychain.js";
 import type { KeychainDeleter, KeychainReader, KeychainWriter } from "../../auth/keychain.js";
-import type { DueWorkFn } from "../../features/contribution.js";
+import type { ContributedRoute, ContributedRouteRequest, DueWorkFn } from "../../features/contribution.js";
 import { appendEvent } from "../../loop/internal.js";
 import { recordNotification } from "../../notifications/record.js";
 import type { Store } from "../../store/store.js";
@@ -76,10 +85,12 @@ import {
   GITHUB_APP_ID_SERVICE,
   GITHUB_APP_INSTALLATION_SERVICE,
   GITHUB_APP_KEY_SERVICE,
+  GITHUB_APP_PERMISSIONS,
   GITHUB_APP_SLUG_SERVICE,
   READ_ONLY_LEVELS,
   createGitHubAppTokens,
   githubAppTokens,
+  holdsPermissions,
   writePermissionsOf,
 } from "./app-token.js";
 import type { GitHubAppTokens, WritePermission } from "./app-token.js";
@@ -145,10 +156,13 @@ export type ConnectorErrorCode =
 /** The longest token accepted (GitHub's fine-grained tokens are ~93 characters). */
 export const MAX_GITHUB_TOKEN_LENGTH = 255;
 
-/** The statuses whose credential is in use: a refusal leaves them unchanged, and `?refresh=1` reads with it. */
-const TOKEN_IN_USE: readonly ConnectorStatus[] = ["connected", "expiring"];
+/**
+ * The statuses whose credential is in use: a refusal leaves them unchanged, and `?refresh=1` reads with it.
+ * `needs_permissions` is a working App install that has not yet accepted every permission.
+ */
+const TOKEN_IN_USE: readonly ConnectorStatus[] = ["connected", "expiring", "needs_permissions"];
 
-/** Whether a row in `status` has a credential in use (`connected` or `expiring`). */
+/** Whether a row in `status` has a credential in use (`connected`, `expiring` or `needs_permissions`). */
 export function isCredentialInUse(status: ConnectorStatus): boolean {
   return TOKEN_IN_USE.includes(status);
 }
@@ -630,16 +644,23 @@ export function createGitHubConnector(deps: GitHubConnectorDeps = {}): GitHubCon
       present = false;
     }
     if (!present) return failure("keychain_failed", MESSAGES.keychain_missing, before);
+    // An App row short of its permissions may have been fixed on github.com since the holder
+    // last minted, and the holder reuses its token until near expiry. Forget it, so the read
+    // below mints a fresh one and reports the permissions GitHub holds now; they are applied
+    // to the row after the read (never inside a store transaction, and no mint of its own).
+    const reconcile = before.method === "app" && before.status === "needs_permissions";
+    if (reconcile) tokens.invalidate();
     // The client resolves the credential itself, fresh on each call: the PAT item, else the App's token.
     const repos = await clientFor(undefined).listReachableRepos();
     if (!repos.ok) return githubFailure(store, repos, now().toISOString(), false);
     const at = now().toISOString();
-    const row = store.transaction(() => {
+    store.transaction(() => {
       store
         .prepare("UPDATE connectors SET reachable_repos_json = ?, verified_at = ?, updated_at = ? WHERE id = ?")
         .run(JSON.stringify(repos.data.map((r) => r.full_name)), at, at, before.id);
-      return githubConnectorRow(store) as ConnectorRow;
     });
+    if (reconcile) applyGitHubAppMintFailure(store, now(), tokens);
+    const row = githubConnectorRow(store) as ConnectorRow;
     return { ok: true, connector: connectorView(row) };
   }
 
@@ -722,44 +743,99 @@ export function checkGitHubExpiry(store: Store, now: Date): void {
 /** The expiry check as due work, on the loop's clock. */
 export const githubExpiryDueWork: DueWorkFn = (ctx) => checkGitHubExpiry(ctx.store, ctx.now());
 
-// ---- A rejected App ------------------------------------------------------------------
+// ---- A rejected App, an App short of permissions ---------------------------------------
+
+/** The upgrade route: where the owner accepts the App's permissions on github.com (D39). */
+export const GITHUB_APP_UPGRADE_PATH = "/connectors/github/app/upgrade";
+
+/** An App slug, as GitHub makes it: checked before it is put in an address. */
+const APP_SLUG = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
 
 /**
- * Applies a mint failure the holder recorded (`lastMintFailure`: GitHub answered
- * 401, the App's key is revoked, or 404, the installation is gone, or a renewed
- * token reports a write permission) to the row. A
- * `method: app` row in use becomes `rejected` (one `connector_status` event)
- * and the owner is notified once (`GITHUB_APP_REJECTED_SOURCE`), on that
- * transition only: a row already `rejected` or `disconnected`, or one that is
- * not `app`, is left as it is. The failure is cleared whether or not it applied,
- * so it is acted on once. Reads and writes the store only.
+ * The github.com page where the App's owner edits its permissions
+ * (`https://github.com/settings/apps/{app_slug}/permissions`), or `null` unless
+ * the row is `needs_permissions` and has a usable `app_slug`. The manifest flow
+ * posts to `github.com/settings/apps/new`, so the App is always the user's own and
+ * the `/organizations/{org}/...` form never applies. Editing them is step one;
+ * step two is accepting them on the installation (NEEDS VERIFICATION until the
+ * live run, `docs/architecture/github-app-setup.md`).
+ */
+export function githubAppUpgradeUrl(row: ConnectorRow | undefined): string | null {
+  if (row === undefined || row.status !== "needs_permissions" || row.app_slug === null || row.app_slug === undefined) return null;
+  return APP_SLUG.test(row.app_slug) ? `https://github.com/settings/apps/${row.app_slug}/permissions` : null;
+}
+
+/** Whether two permission maps hold the same names at the same levels. */
+function samePermissions(a: Readonly<Record<string, string>> | null, b: Readonly<Record<string, string>>): boolean {
+  if (a === null) return false;
+  const left = Object.entries(a);
+  return left.length === Object.keys(b).length && left.every(([name, level]) => Object.prototype.hasOwnProperty.call(b, name) && b[name] === level);
+}
+
+/**
+ * Applies what the holder recorded to the GitHub row. Reads and writes the store
+ * only.
+ *
+ * A mint failure (`lastMintFailure`: GitHub answered 401, the App's key is
+ * revoked, or 404, the installation is gone) wins: a `method: app` row in use
+ * becomes `rejected` (one `connector_status` event) and the owner is notified
+ * once (`GITHUB_APP_REJECTED_SOURCE`), on that transition only: a row already
+ * `rejected` or `disconnected`, or one that is not `app`, is left as it is. The
+ * failure is cleared whether or not it applied, so it is acted on once.
+ *
+ * With no failure, the permissions GitHub reported on the latest mint
+ * (`lastReportedPermissions`) are compared with `GITHUB_APP_PERMISSIONS` for a
+ * `method: app` row that is `connected` or `needs_permissions`: short of them the row
+ * reads `needs_permissions`, holding them all it reads `connected` (one event per
+ * change), and the row's `permissions_json` follows what GitHub reported. Nothing
+ * is applied before a mint has reported.
  */
 export function applyGitHubAppMintFailure(store: Store, now: Date, tokens: GitHubAppTokens = githubAppTokens): void {
   const failure = tokens.lastMintFailure;
-  if (failure === undefined) return;
+  const reported = tokens.lastReportedPermissions;
+  if (failure === undefined && reported === undefined) return;
   const at = now.toISOString();
   store.transaction(() => {
     const row = githubConnectorRow(store);
-    tokens.clearMintFailure();
-    if (row === undefined || row.method !== "app" || !TOKEN_IN_USE.includes(row.status)) return;
+    if (failure !== undefined) tokens.clearMintFailure();
+    if (row === undefined || row.method !== "app") return;
+    if (failure === undefined) {
+      if (reported === undefined || (row.status !== "connected" && row.status !== "needs_permissions")) return;
+      if (!samePermissions(permissionsOf(row.permissions_json), reported)) {
+        store.prepare("UPDATE connectors SET permissions_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(reported), at, row.id);
+      }
+      changeStatus(store, githubConnectorRow(store) as ConnectorRow, holdsPermissions(reported, GITHUB_APP_PERMISSIONS) ? "connected" : "needs_permissions", at);
+      return;
+    }
+    if (!TOKEN_IN_USE.includes(row.status)) return;
     changeStatus(store, row, "rejected", at);
     recordNotification(
       store,
       {
         source: GITHUB_APP_REJECTED_SOURCE,
         title: "GitHub no longer accepts Studio's GitHub App",
-        body:
-          "status" in failure
-            ? `GitHub refused to give Studio an access token for its GitHub App (HTTP ${failure.status}): the App's key was revoked, or the App was uninstalled. Studio cannot read GitHub until you set the App up again in Integrations.`
-            : `GitHub's access token for Studio's GitHub App can now write (${failure.write_permissions.map((w) => `${w.permission}: ${w.level}`).join("; ")}), and Studio only reads. Studio refused the token. Set each of these App permissions back to read-only on GitHub, then set the App up again in Integrations.`,
+        body: `GitHub refused to give Studio an access token for its GitHub App (HTTP ${failure.status}): the App's key was revoked, or the App was uninstalled. Studio cannot read GitHub until you set the App up again in Integrations.`,
       },
       now,
     );
   });
 }
 
-/** The mint-failure check as due work, on the loop's clock, over the process-wide holder. */
+/** The mint check as due work, on the loop's clock, over the process-wide holder. */
 export const checkGitHubAppMint: DueWorkFn = (ctx) => applyGitHubAppMintFailure(ctx.store, ctx.now());
+
+/** `GET /connectors/github/app/upgrade` (the owner's token): `{url}`, the page to accept the App's permissions on, or `{url: null}` when the row needs none. */
+const githubAppUpgradeRoute: ContributedRoute = Object.freeze({
+  method: "GET",
+  path: GITHUB_APP_UPGRADE_PATH,
+  handler: (req: ContributedRouteRequest) => {
+    try {
+      return Promise.resolve({ status: 200, body: { url: githubAppUpgradeUrl(githubConnectorRow(req.store)) } });
+    } catch {
+      return Promise.resolve({ status: 500, body: { error: "connector_failed", message: MESSAGES.connector_failed } });
+    }
+  },
+});
 
 // ---- The part --------------------------------------------------------------------
 
@@ -769,7 +845,7 @@ export const githubConnector: GitHubConnector = createGitHubConnector();
 export const githubConnectorPart: IntegrationsPart = Object.freeze({
   name: "github-connector",
   tools: Object.freeze([]),
-  routes: Object.freeze([]),
+  routes: Object.freeze([githubAppUpgradeRoute]),
   subcommands: Object.freeze([connectorsSubcommand()]),
   handlers: Object.freeze({}),
   dueWork: Object.freeze([

@@ -18,7 +18,10 @@ import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../s
 import { INTEGRATIONS_PARTS, githubAppRoutesPart, integrationsContribution, mcpPart, repoPolicyPart } from "../src/integrations/index.js";
 import { CONNECTOR_KINDS } from "../src/integrations/types.js";
 import type { GitHubClient, GitHubPullSummary, PollSpec } from "../src/integrations/types.js";
-import { PlaybookError, checkPolicyValue } from "../src/playbooks/index.js";
+import { rosterRoutes } from "../src/agents/roster.js";
+import type { ContributedRouteResponse } from "../src/features/index.js";
+import { PlaybookError, checkPolicyValue, createPlaybook, getPlaybook, setPlaybookPolicy, updatePlaybook } from "../src/playbooks/index.js";
+import { enablePlaybook } from "../src/playbooks/store.js";
 import { NEVER_CATEGORIES } from "../src/sessions/policy.js";
 import { MAX_POLL_ITEMS, POLL_SOURCES, fetchPollItems, parsePollSpec } from "../src/triggers/index.js";
 import { DB_FILENAME, Store, migrations } from "../src/store/index.js";
@@ -88,8 +91,28 @@ describe("a poll source not built is refused poll_source_not_built (invalid_spec
   });
 });
 
-describe("a playbook mode live is still refused live_mode_not_in_phase_6", () => {
-  it("checkPolicyValue refuses live, with the code unchanged", () => {
+describe("a playbook mode live is the owner's, and only on an enabled playbook", () => {
+  const NOW = new Date("2026-11-03T10:00:00.000Z");
+  const CRON = { kind: "cron", spec: "0 9 * * *", tz: "UTC" };
+  const stores: Store[] = [];
+  const open = (): Store => {
+    const s = new Store({ dataDir: tmp });
+    stores.push(s);
+    return s;
+  };
+  afterEach(() => {
+    for (const s of stores.splice(0)) s.close();
+  });
+  const codeOf = (fn: () => unknown): string | undefined => {
+    try {
+      fn();
+    } catch (err) {
+      return err instanceof PlaybookError ? err.code : `not a PlaybookError: ${String(err)}`;
+    }
+    return undefined;
+  };
+
+  it("checkPolicyValue refuses an agent's live live_mode_owner_only, and lets the owner's through", () => {
     let thrown: unknown;
     try {
       checkPolicyValue("mode", "live", false);
@@ -97,7 +120,36 @@ describe("a playbook mode live is still refused live_mode_not_in_phase_6", () =>
       thrown = err;
     }
     expect(thrown).toBeInstanceOf(PlaybookError);
-    expect((thrown as PlaybookError).code).toBe("live_mode_not_in_phase_6");
+    expect((thrown as PlaybookError).code).toBe("live_mode_owner_only");
+    expect(checkPolicyValue("mode", "live", true)).toBe("live");
+    expect(checkPolicyValue("mode", "draft", false)).toBe("draft");
+  });
+
+  it("an agent's create or update with live is refused live_mode_owner_only and writes nothing", () => {
+    const store = open();
+    expect(codeOf(() => createPlaybook(store, { agent: "wright", name: "Review", intent: "review PRs", trigger: CRON, mode: "live" }, NOW))).toBe("live_mode_owner_only");
+    expect(store.prepare("SELECT count(*) FROM playbooks").pluck().get()).toBe(0);
+    const { playbook } = createPlaybook(store, { agent: "wright", name: "Review", intent: "review PRs", trigger: CRON }, NOW);
+    expect(codeOf(() => updatePlaybook(store, { id: playbook.id, agent: "wright", changes: { mode: "live" } }, NOW))).toBe("live_mode_owner_only");
+    expect(getPlaybook(store, playbook.id)).toMatchObject({ mode: "draft", version: 1 });
+  });
+
+  it("the owner's live is refused live_needs_enable until the playbook is enabled; then it is stored as the next version, back to draft", () => {
+    const store = open();
+    const { playbook } = createPlaybook(store, { agent: "wright", name: "Review", intent: "review PRs", trigger: CRON }, NOW);
+    expect(codeOf(() => setPlaybookPolicy(store, { id: playbook.id, field: "mode", value: "live" }, NOW))).toBe("live_needs_enable");
+    expect(getPlaybook(store, playbook.id)).toMatchObject({ mode: "draft", version: 1 });
+
+    enablePlaybook(store, { id: playbook.id, version: 1, sessionId: null, approvalId: 1 }, NOW);
+    const changed = setPlaybookPolicy(store, { id: playbook.id, field: "mode", value: "live" }, NOW);
+    expect(changed.changed).toBe(true);
+    expect(getPlaybook(store, playbook.id)).toMatchObject({ mode: "live", mode_set_by: "owner", status: "draft", version: 2 });
+
+    // Re-setting an owner-set live is the existing no-op, not a refusal, though the playbook is a draft again.
+    expect(setPlaybookPolicy(store, { id: playbook.id, field: "mode", value: "live" }, NOW).changed).toBe(false);
+    expect(getPlaybook(store, playbook.id)?.version).toBe(2);
+    // The owner may always set draft; a later agent edit of the owner's mode stays refused.
+    expect(setPlaybookPolicy(store, { id: playbook.id, field: "mode", value: "draft" }, NOW).playbook.mode).toBe("draft");
   });
 });
 
@@ -140,13 +192,32 @@ describe("agent settings connectors grants", () => {
     }
   });
 
-  it('connectors: {github: "write"} is github_write_not_built (settings_invalid, field connectors), for Wright and a crew member', () => {
+  it('connectors: {github: "write"} reads ok with connectors [github] and githubWrite true, for Wright and a crew member', () => {
     for (const id of ["wright", "mason"]) {
       write(id, { ...BASE, connectors: { github: "write" } });
       const r = readAgentSettings(tmp, id);
-      expect(r, id).toMatchObject({ ok: false, error: "settings_invalid", field: "connectors" });
-      expect(r.ok ? "" : r.message).toContain("github_write_not_built");
+      expect(r.ok && r.settings.connectors, id).toEqual(["github"]);
+      expect(r.ok && r.settings.githubWrite, id).toBe(true);
     }
+  });
+
+  it("the array form [github] reads as before, with no write", () => {
+    write("mason", { ...BASE, connectors: ["github"] });
+    const r = readAgentSettings(tmp, "mason");
+    expect(r.ok && r.settings.connectors).toEqual(["github"]);
+    expect(r.ok && "githubWrite" in r.settings).toBe(false);
+    write("mason", { ...BASE });
+    const none = readAgentSettings(tmp, "mason");
+    expect(none.ok && none.settings.githubWrite).toBeUndefined();
+  });
+
+  it('an object form with {github: "write"} plus another key is refused too, and github_write_not_built no longer exists', () => {
+    write("mason", { ...BASE, connectors: { github: "write", extra: "x" } });
+    const r = readAgentSettings(tmp, "mason");
+    expect(r).toMatchObject({ ok: false, error: "settings_invalid", field: "connectors" });
+    expect(r.ok ? "" : r.message).not.toContain("github_write_not_built");
+    write("mason", { ...BASE, connectors: { github: "write", jira: "read" } });
+    expect((readAgentSettings(tmp, "mason") as { message: string }).message).toContain("connector_not_built");
   });
 
   it("any other object form is refused too, never read as no grant", () => {
@@ -161,6 +232,56 @@ describe("agent settings connectors grants", () => {
     expect(readAgentSettings(tmp, "mason")).toMatchObject({ ok: false, error: "settings_invalid", field: "connectors.1" });
     write("mason", { ...BASE, permission_mode: "nope", connectors: { github: "write" } });
     expect(readAgentSettings(tmp, "mason")).toMatchObject({ ok: false, error: "settings_invalid", field: "permission_mode" });
+  });
+});
+
+describe("set connectors github:write (the owner's route)", () => {
+  const BASE = { model: "claude-haiku-4-5", permission_mode: "default", tool_policy: { allowedTools: [], allowedBashPrefixes: [] } };
+  const NOW = new Date("2026-11-03T10:00:00.000Z");
+  let store: Store;
+  beforeEach(() => {
+    const file = agentSettingsPath(tmp, "wright");
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, `${JSON.stringify(BASE, null, 2)}\n`);
+    store = new Store({ dataDir: tmp });
+  });
+  afterEach(() => store.close());
+  const set = async (value: string): Promise<ContributedRouteResponse> => {
+    const route = rosterRoutes.find((r) => r.method === "POST" && r.path === "/agents/:id/set");
+    if (route === undefined) throw new Error("no set route");
+    return route.handler({ params: { id: "wright" }, query: {}, body: { field: "connectors", value }, store, now: () => NOW });
+  };
+  const fileJson = (): Record<string, unknown> => JSON.parse(readFileSync(agentSettingsPath(tmp, "wright"), "utf8")) as Record<string, unknown>;
+
+  it("writes {github: write} to the file, which the reader then reads as githubWrite true; the event carries the object", async () => {
+    const r = await set("github:write");
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ field: "connectors", old: null, new: { github: "write" }, changed: true });
+    expect(fileJson().connectors).toEqual({ github: "write" });
+    const read = readAgentSettings(tmp, "wright");
+    expect(read.ok && [read.settings.connectors, read.settings.githubWrite]).toEqual([["github"], true]);
+    const logged = store.prepare<[], string>("SELECT payload_json FROM events WHERE kind = 'agent_settings_set'").pluck().all().map((p) => JSON.parse(p) as unknown);
+    expect(logged).toEqual([{ id: "wright", field: "connectors", old: null, new: { github: "write" }, by: "owner" }]);
+  });
+
+  it("setting it again is changed:false; github downgrades to the array form; none removes the key", async () => {
+    await set("github:write");
+    expect((await set("github:write")).body).toMatchObject({ old: { github: "write" }, changed: false });
+    expect((await set("github")).body).toMatchObject({ old: { github: "write" }, new: ["github"], changed: true });
+    expect(fileJson().connectors).toEqual(["github"]);
+    const back = readAgentSettings(tmp, "wright");
+    expect(back.ok && back.settings.githubWrite).toBeUndefined();
+    await set("github:write");
+    expect((await set("none")).body).toMatchObject({ old: { github: "write" }, new: null, changed: true });
+    expect("connectors" in fileJson()).toBe(false);
+  });
+
+  it("other values stay refused with the one message", async () => {
+    for (const value of ["github:read", "github:", "GITHUB:write", "github:write "]) {
+      const r = await set(value);
+      expect([r.status, r.body]).toMatchObject([400, { error: "invalid_input", message: "connectors must be github or none" }]);
+    }
+    expect("connectors" in fileJson()).toBe(false);
   });
 });
 

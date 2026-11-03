@@ -324,7 +324,7 @@ test("AC1, AC3, AC6: Switch to GitHub App opens the dialog over the token with o
   await expect(byId(page, IDS.appName)).toHaveText(APP_SLUG);
   await expect(byId(page, IDS.appInstallation)).toHaveText(String(APP_INSTALLATION));
   await expect(byId(page, IDS.appAccess)).toContainText("renews automatically");
-  await expect(byId(page, IDS.appChecked)).toHaveText("Read-only, checked by GitHub.");
+  await expect(byId(page, IDS.appChecked)).toHaveText("As GitHub reports them for this App.");
   await expect(byId(page, IDS.reposHeading)).toHaveText(`Repos chosen at install · ${APP_REPOS.length}`);
   await expect(byId(page, IDS.repos).getByRole("listitem")).toHaveText([...APP_REPOS]);
   await expect(byId(page, IDS.switchToApp), "an App has no Switch").toHaveCount(0);
