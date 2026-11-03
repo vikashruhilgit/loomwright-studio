@@ -11,8 +11,14 @@
 //   - The handlers: connector and reach checks before any request, kernel values
 //     only in every result, bodies sent exactly as given.
 //
-// Everything runs on a temp store with `FakeGitHubClient`: no network, no
-// Keychain, no real `gh`, never the real SDK, a model or a real process.
+//   - The credential: each write mints its own token, down-scoped to the target
+//     repo and the endpoint's one permission (never the shared holder's
+//     full-permission token), and a mint failure sends nothing.
+//
+// Everything runs on a temp store with `FakeGitHubClient`, or the real scoped
+// client over a fake Keychain and `fetch`: no network, no real Keychain, no
+// real `gh`, never the real SDK, a model or a real process.
+import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,8 +31,13 @@ import { decideApproval } from "../src/approvals/index.js";
 import { defaultWrightSettingsJson } from "../src/brain/index.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { ContributedTool } from "../src/features/index.js";
+import type { KeychainReader } from "../src/auth/keychain.js";
+import { GITHUB_APP_ID_SERVICE, GITHUB_APP_INSTALLATION_SERVICE, GITHUB_APP_KEY_SERVICE, SESSION_TOKEN_PERMISSIONS, encodeAppKey } from "../src/integrations/github/app-token.js";
+import { GITHUB_KEYCHAIN_SERVICE } from "../src/integrations/github/client.js";
+import type { InstallationTokenScope } from "../src/integrations/github/client.js";
+import { createScopedGitHubClient } from "../src/integrations/github/connector.js";
 import { GITHUB_TOOL_REFUSALS } from "../src/integrations/github/tools.js";
-import { createGitHubWriteTools } from "../src/integrations/github/write-tools.js";
+import { WRITE_PERMISSIONS, createGitHubWriteTools } from "../src/integrations/github/write-tools.js";
 import { toolsForConnectors } from "../src/integrations/index.js";
 import type { GitHubFailure } from "../src/integrations/index.js";
 import { startKernel } from "../src/kernel.js";
@@ -597,16 +608,22 @@ describe("the handlers", () => {
 // ---- The client the tools use by default -------------------------------------------------
 
 describe("the default client", () => {
-  it("is built lazily, on first use, and not at import or at createGitHubWriteTools", async () => {
+  it("is a scoped client built per write, not at import or at createGitHubWriteTools, and never the shared resolving client", async () => {
     vi.resetModules();
-    const spy = vi.fn();
+    const scopes: InstallationTokenScope[] = [];
+    const resolving = vi.fn();
+    const fake = new FakeGitHubClient();
     vi.doMock("../src/integrations/github/connector.js", async (original) => {
       const actual = await original<typeof import("../src/integrations/github/connector.js")>();
       return {
         ...actual,
         createResolvingGitHubClient: (...args: Parameters<typeof actual.createResolvingGitHubClient>) => {
-          spy();
+          resolving();
           return actual.createResolvingGitHubClient(...args);
+        },
+        createScopedGitHubClient: (scope: InstallationTokenScope) => {
+          scopes.push(scope);
+          return fake;
         },
       };
     });
@@ -614,11 +631,128 @@ describe("the default client", () => {
       const mod = await import("../src/integrations/github/write-tools.js");
       const tools = mod.createGitHubWriteTools();
       expect(tools).toHaveLength(4);
-      expect(spy).not.toHaveBeenCalled();
+      expect(scopes).toEqual([]);
+      const store = open();
+      connect(store);
+      expect((await run(store, tools, "kernel_github_issue_comment", CASES[2].input)).isError).toBe(false);
+      expect((await run(store, tools, "kernel_github_pr_comment", CASES[1].input)).isError).toBe(false);
+      expect(scopes).toEqual([
+        { repositories: ["r"], permissions: { issues: "write" } },
+        { repositories: ["r"], permissions: { pull_requests: "write" } },
+      ]);
+      expect(resolving).not.toHaveBeenCalled();
     } finally {
       vi.doUnmock("../src/integrations/github/connector.js");
       vi.resetModules();
     }
+  });
+});
+
+// ---- The credential: a per-write, down-scoped installation token ----------------------------
+
+describe("the down-scoped credential", () => {
+  const KEY = generateKeyPairSync("rsa", { modulusLength: 2048, publicKeyEncoding: { type: "spki", format: "pem" }, privateKeyEncoding: { type: "pkcs1", format: "pem" } });
+  const ENCODED = encodeAppKey(KEY.privateKey) ?? "";
+  const INSTALLATION = 4242;
+  const EXPECTED = {
+    kernel_github_pr_reply: { pull_requests: "write" },
+    kernel_github_pr_comment: { pull_requests: "write" },
+    kernel_github_issue_comment: { issues: "write" },
+    kernel_github_pr_request_reviewers: { pull_requests: "write" },
+  } as const;
+  const WRITE_PATHS = {
+    kernel_github_pr_reply: "/repos/o/r/pulls/7/comments/31/replies",
+    kernel_github_pr_comment: "/repos/o/r/issues/7/comments",
+    kernel_github_issue_comment: "/repos/o/r/issues/3/comments",
+    kernel_github_pr_request_reviewers: "/repos/o/r/pulls/7/requested_reviewers",
+  } as const;
+
+  /** A fake Keychain holding the App's items (and the PAT, when `pat`), and a fake GitHub that records every request. */
+  function github(opts: { pat?: boolean; mintStatus?: number; report?: Record<string, string> } = {}) {
+    const items = new Map<string, string>([
+      [GITHUB_APP_ID_SERVICE, "987654"],
+      [GITHUB_APP_INSTALLATION_SERVICE, String(INSTALLATION)],
+      [GITHUB_APP_KEY_SERVICE, ENCODED],
+    ]);
+    if (opts.pat === true) items.set(GITHUB_KEYCHAIN_SERVICE, "github_pat_11PATPATPAT0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd");
+    const keychain: KeychainReader = { read: (service) => items.get(service) };
+    const calls: { method: string; path: string; authorization: string | null; body: string | undefined }[] = [];
+    let minted = 0;
+    const json = (body: unknown, status: number): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const fetch = (async (input: unknown, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const body = typeof init?.body === "string" ? init.body : undefined;
+      calls.push({ method: init?.method ?? "GET", path: url.pathname, authorization: new Headers(init?.headers).get("authorization"), body });
+      if (url.pathname === `/app/installations/${INSTALLATION}/access_tokens`) {
+        if (opts.mintStatus !== undefined) return json({ message: "no" }, opts.mintStatus);
+        minted += 1;
+        const asked = (JSON.parse(body ?? "{}") as { permissions?: Record<string, string> }).permissions ?? {};
+        return json({ token: `ghs_scoped${minted}abcdef`, expires_at: new Date(NOW.getTime() + 3_600_000).toISOString(), permissions: opts.report ?? { ...asked, metadata: "read" } }, 201);
+      }
+      if (url.pathname.endsWith("/requested_reviewers")) return json({ number: 7 }, 201);
+      return json({ id: 5000, html_url: "https://github.com/o/r/pull/7#issuecomment-5000" }, 201);
+    }) as typeof globalThis.fetch;
+    const scopes: InstallationTokenScope[] = [];
+    const tools = createGitHubWriteTools({
+      scopedClient: (scope) => {
+        scopes.push(scope);
+        return createScopedGitHubClient(scope, { keychain, fetch });
+      },
+    });
+    const store = open();
+    connect(store);
+    return { store, tools, calls, scopes };
+  }
+
+  it("every write permission is within the session token's ceiling", () => {
+    expect(WRITE_PERMISSIONS).toEqual(EXPECTED);
+    for (const perms of Object.values(WRITE_PERMISSIONS)) {
+      for (const [name, level] of Object.entries(perms)) expect(SESSION_TOKEN_PERMISSIONS[name], name).toBe(level);
+    }
+  });
+
+  it.each(CASES)("$name: mints a token for the one repo and its one permission, then sends the write with that token, once", async ({ name, input }) => {
+    const { store, tools, calls } = github();
+    expect((await run(store, tools, name, input)).isError).toBe(false);
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([`POST /app/installations/${INSTALLATION}/access_tokens`, `POST ${WRITE_PATHS[name]}`]);
+    // Never an unscoped mint: the body names the repo and the permission.
+    expect(JSON.parse(calls[0]?.body ?? "null")).toEqual({ repositories: ["r"], permissions: EXPECTED[name] });
+    expect(calls[1]?.authorization).toBe("Bearer ghs_scoped1abcdef");
+  });
+
+  it("each write mints its own token: nothing is held between calls", async () => {
+    const { store, tools, calls } = github();
+    await run(store, tools, "kernel_github_pr_comment", CASES[1].input);
+    await run(store, tools, "kernel_github_pr_comment", CASES[1].input);
+    expect(calls.filter((c) => c.path.endsWith("/access_tokens"))).toHaveLength(2);
+    expect(calls.filter((c) => !c.path.endsWith("/access_tokens")).map((c) => c.authorization)).toEqual(["Bearer ghs_scoped1abcdef", "Bearer ghs_scoped2abcdef"]);
+  });
+
+  it.each([
+    ["GitHub refuses the mint (403)", { mintStatus: 403 }],
+    ["GitHub cannot mint (500)", { mintStatus: 500 }],
+    ["the token reports more than a session may hold (scope_exceeded)", { report: { pull_requests: "write", issues: "write", administration: "write" } }],
+  ])("%s: github_unreachable, and no write is sent", async (_, opts) => {
+    for (const { name, input } of CASES) {
+      const { store, tools, calls } = github(opts);
+      expect(await run(store, tools, name, input)).toEqual({ isError: true, text: "github_unreachable: GitHub could not be reached, or answered something unreadable" });
+      expect(calls.map((c) => c.path)).toEqual([`/app/installations/${INSTALLATION}/access_tokens`]);
+    }
+  });
+
+  it("with the owner's token (PAT) in the Keychain nothing is minted or sent: github_unreachable", async () => {
+    for (const { name, input } of CASES) {
+      const { store, tools, calls } = github({ pat: true });
+      expect((await run(store, tools, name, input)).text).toBe("github_unreachable: GitHub could not be reached, or answered something unreadable");
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it("a refusal before the request (repo not reached) mints nothing", async () => {
+    const { store, tools, calls, scopes } = github();
+    expect((await run(store, tools, "kernel_github_pr_comment", { repo: "x/y", pr: 7, body: "x" })).text).toMatch(/^repo_not_reachable: /);
+    expect(scopes).toEqual([]);
+    expect(calls).toEqual([]);
   });
 });
 

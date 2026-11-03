@@ -28,6 +28,14 @@
 // only with an App installation credential: with the owner's token (PAT) it
 // sends nothing and answers `unreachable`, which is `github_unreachable` here.
 //
+// That credential is never the shared holder's full-permission token (D39: the
+// App holds every repository permission at write). Each write builds its own
+// client over a token down-scoped to the one target repo and the one permission
+// its endpoint needs (`createScopedGitHubClient`, `WRITE_PERMISSIONS`), minted
+// for that call and never held. A mint that fails, or answers more than a
+// session token may hold (`scope_exceeded`), is no token: nothing is sent and
+// the call is `github_unreachable`. The read tools and polls keep the holder.
+//
 // `tools.ts` composes these into `githubToolsPart` and this file reuses its
 // `requireReach`, `dataOf`, `refusal` and `repoShape`, so the two import each
 // other. That is safe because nothing runs at import on either side: `tools.ts`
@@ -45,19 +53,37 @@ import { defineTool } from "../../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../../features/contribution.js";
 import type { GitHubClient } from "../types.js";
 import { GITHUB_MAX_COMMENT_CHARS, GITHUB_MAX_REVIEWERS, NAME_SEGMENT } from "./client.js";
-import { createResolvingGitHubClient } from "./connector.js";
+import type { InstallationTokenScope } from "./client.js";
+import { createScopedGitHubClient } from "./connector.js";
 import { dataOf, repoShape, requireReach } from "./tools.js";
 import type { GitHubToolsDeps } from "./tools.js";
 
-/** The four write tools over `deps` (`maxDiffBytes` is a read tool's and is ignored). Nothing is read or requested until a handler runs. */
-export function createGitHubWriteTools(deps: GitHubToolsDeps = {}): readonly ContributedTool[] {
-  let built: GitHubClient | undefined;
-  const client = (): GitHubClient => (deps.client !== undefined ? deps.client() : (built ??= createResolvingGitHubClient()));
+/**
+ * The one permission each write's endpoint needs, all within
+ * `SESSION_TOKEN_PERMISSIONS`. A pull request's conversation comment goes
+ * through the issues endpoint, which GitHub accepts with Pull requests write.
+ */
+export const WRITE_PERMISSIONS = Object.freeze({
+  kernel_github_pr_reply: Object.freeze({ pull_requests: "write" }),
+  kernel_github_pr_comment: Object.freeze({ pull_requests: "write" }),
+  kernel_github_issue_comment: Object.freeze({ issues: "write" }),
+  kernel_github_pr_request_reviewers: Object.freeze({ pull_requests: "write" }),
+} as const satisfies Record<string, Readonly<Record<string, string>>>);
 
-  /** The checks every handler starts with (connector, then reach), then the client to write through. */
-  const open = (ctx: ContributedToolContext, repo: string): GitHubClient => {
+export interface GitHubWriteToolsDeps extends GitHubToolsDeps {
+  /** The client one write goes through, over a token down-scoped to `scope`. Default: `createScopedGitHubClient(scope)`. A given `client` wins over it. */
+  readonly scopedClient?: (scope: InstallationTokenScope) => GitHubClient;
+}
+
+/** The four write tools over `deps` (`maxDiffBytes` is a read tool's and is ignored). Nothing is read or requested until a handler runs. */
+export function createGitHubWriteTools(deps: GitHubWriteToolsDeps = {}): readonly ContributedTool[] {
+  /** The checks every handler starts with (connector, then reach), then a client over a token for `repo` and `tool`'s permission only. */
+  const open = (ctx: ContributedToolContext, repo: string, tool: keyof typeof WRITE_PERMISSIONS): GitHubClient => {
     requireReach(ctx.store, repo);
-    return client();
+    if (deps.client !== undefined) return deps.client();
+    // `repoShape` has passed, so `repo` is `<owner>/<name>`; the mint takes the name alone.
+    const scope: InstallationTokenScope = { repositories: [repo.slice(repo.indexOf("/") + 1)], permissions: WRITE_PERMISSIONS[tool] };
+    return (deps.scopedClient ?? createScopedGitHubClient)(scope);
   };
 
   const body = z
@@ -75,7 +101,7 @@ export function createGitHubWriteTools(deps: GitHubToolsDeps = {}): readonly Con
     requiresConnector: "github",
     requiresConnectorLevel: "write",
     async handler(args, ctx) {
-      const made = dataOf(await open(ctx, args.repo).replyToReviewComment(args.repo, args.pr, args.comment_id, args.body));
+      const made = dataOf(await open(ctx, args.repo, "kernel_github_pr_reply").replyToReviewComment(args.repo, args.pr, args.comment_id, args.body));
       return `posted reply ${made.id} in the thread of review comment ${args.comment_id} on ${args.repo}#${args.pr}: ${made.url}`;
     },
   });
@@ -88,7 +114,7 @@ export function createGitHubWriteTools(deps: GitHubToolsDeps = {}): readonly Con
     requiresConnector: "github",
     requiresConnectorLevel: "write",
     async handler(args, ctx) {
-      const made = dataOf(await open(ctx, args.repo).createPullComment(args.repo, args.pr, args.body));
+      const made = dataOf(await open(ctx, args.repo, "kernel_github_pr_comment").createPullComment(args.repo, args.pr, args.body));
       return `posted comment ${made.id} on ${args.repo}#${args.pr}: ${made.url}`;
     },
   });
@@ -101,7 +127,7 @@ export function createGitHubWriteTools(deps: GitHubToolsDeps = {}): readonly Con
     requiresConnector: "github",
     requiresConnectorLevel: "write",
     async handler(args, ctx) {
-      const made = dataOf(await open(ctx, args.repo).createIssueComment(args.repo, args.issue, args.body));
+      const made = dataOf(await open(ctx, args.repo, "kernel_github_issue_comment").createIssueComment(args.repo, args.issue, args.body));
       return `posted comment ${made.id} on ${args.repo}#${args.issue}: ${made.url}`;
     },
   });
@@ -122,7 +148,7 @@ export function createGitHubWriteTools(deps: GitHubToolsDeps = {}): readonly Con
     requiresConnector: "github",
     requiresConnectorLevel: "write",
     async handler(args, ctx) {
-      const made = dataOf(await open(ctx, args.repo).requestReviewers(args.repo, args.pr, args.reviewers));
+      const made = dataOf(await open(ctx, args.repo, "kernel_github_pr_request_reviewers").requestReviewers(args.repo, args.pr, args.reviewers));
       return `requested ${args.reviewers.length} reviewer${args.reviewers.length === 1 ? "" : "s"} on ${args.repo}#${made.pull}`;
     },
   });
