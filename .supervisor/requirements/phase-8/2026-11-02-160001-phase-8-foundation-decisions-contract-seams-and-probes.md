@@ -136,3 +136,9 @@ kernel/test/console-contract.test.ts
 kernel/test/feature-seams.test.ts
 app/src/api/contract.ts
 app/e2e/fixture-kernel.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-03T01:44:24Z
+- **Brief:** .supervisor/jobs/done/2026-11-02-phase-8-foundation-seams-and-probes.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/216
