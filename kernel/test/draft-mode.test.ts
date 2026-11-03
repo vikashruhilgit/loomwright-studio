@@ -16,7 +16,7 @@ import { draftsPart, recordDraftOutput } from "../src/integrations/index.js";
 import type { ConnectorKind } from "../src/integrations/index.js";
 import { SessionManager } from "../src/sessions/index.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
-import { GITHUB_CLI_DENY_REASON, MAX_DRAFT_TEXT_CHARS, draftDenyReason } from "../src/sessions/draft-mode.js";
+import { GITHUB_CLI_DENY_REASON, MAX_DRAFT_TEXT_CHARS, draftDenyReason, githubCliDecision } from "../src/sessions/draft-mode.js";
 import { Store } from "../src/store/index.js";
 import { count, events } from "./loop-helpers.js";
 import { fakeSessions, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
@@ -291,6 +291,26 @@ describe("the GitHub CLI deny (AC4)", () => {
     const s = await t.session(GH, { playbook: t.playbook("live") });
     expect((await s.bash(COMMENT)).permissionDecisionReason).toBe(GITHUB_CLI_DENY_REASON);
     expect(t.approvals()).toBe(0);
+  });
+});
+
+describe("githubWrite exempts gh only in a live, write-granted policy (phase 8 item 04)", () => {
+  const base: ToolPolicy = { allowedTools: [], allowedBashPrefixes: ["gh"], connectors: ["github"] };
+
+  it("githubCliDecision: githubWrite true lets gh through; a draft or dry-run policy without it is still denied", () => {
+    expect(githubCliDecision({ ...base, mode: "live", githubWrite: true }, "Bash", { command: "gh pr view 1" })).toBeUndefined();
+    expect(githubCliDecision({ ...base, githubWrite: true }, "Bash", { command: "/usr/bin/gh pr merge 1" })).toBeUndefined();
+    expect(githubCliDecision({ ...base, mode: "draft" }, "Bash", { command: "gh pr view 1" })).toEqual({ kind: "deny" });
+    expect(githubCliDecision({ ...base, mode: "live" }, "Bash", { command: "gh pr view 1" })).toEqual({ kind: "deny" });
+    expect(githubCliDecision(base, "Bash", { command: "gh pr view 1" })).toEqual({ kind: "deny" });
+  });
+
+  it("a draft-mode session's own draft step still wins: no write grant is applied to a draft playbook", async () => {
+    // The manager sets githubWrite only for a live playbook's real run, so a caller's own claim is dropped and the draft is recorded.
+    const t = setup(["github"]);
+    const s = await t.session({ ...GH, githubWrite: true } as ToolPolicy, { playbook: t.playbook() });
+    expect(await s.bash(COMMENT)).toEqual(denied(draftDenyReason(1)));
+    expect(t.decisions().map((d) => d["reason"])).toEqual(["draft_mode"]);
   });
 });
 

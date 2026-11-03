@@ -81,6 +81,10 @@ export const CREDENTIAL_ENV_VARS: readonly string[] = Object.freeze([
   // (github.com) and GH_ENTERPRISE_TOKEN / GITHUB_ENTERPRISE_TOKEN (GitHub
   // Enterprise Server). Stored logins (gh's keychain/hosts.yml, git credential
   // helpers) are not env and are not covered by this strip.
+  // A live, write-granted session's token is never one of these names: the
+  // kernel writes it to a file in a per-session directory after this strip
+  // (`sessions/github-session-auth.ts`, which sets `GH_CONFIG_DIR` and git's
+  // `GIT_CONFIG_*` credential helper), so no name leaves this list for it.
   "GH_TOKEN",
   "GITHUB_TOKEN",
   "GH_ENTERPRISE_TOKEN",
