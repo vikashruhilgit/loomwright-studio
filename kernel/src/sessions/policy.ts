@@ -219,6 +219,9 @@ export const ALWAYS_HELD_TOOLS: readonly string[] = Object.freeze([
  *   `gh_issue_review` category.
  * - `gh_api_write`: `gh api <VERB>` for a method other than GET, and
  *   `gh api (flag unread)`.
+ * - `gh_pr_request_reviewers`, `gh_pr_comment_reply`: accepted in a `never`
+ *   list (phase 8 item 01) with no matcher yet, so they deny nothing extra
+ *   until phase 8 item 05 maps the rail's labels to them.
  * - `settings_write`: the `~/.claude/` and `a settings*.json file` targets,
  *   both the Bash form (`Bash naming …`) and the Write/Edit/NotebookEdit form.
  * - `hooks_write`: the `a hooks file` target, both forms.
@@ -236,6 +239,8 @@ export const NEVER_CATEGORIES = Object.freeze([
   "gh_pr_review",
   "gh_pr_edit",
   "gh_pr_close",
+  "gh_pr_request_reviewers",
+  "gh_pr_comment_reply",
   "gh_issue_create",
   "gh_issue_comment",
   "gh_issue_edit",

@@ -48,6 +48,9 @@ export type RouteOrigin =
   | "p7-item-06"
   | "p7-item-07"
   | "p7-item-08"
+  | "p8-item-03"
+  | "p8-item-06"
+  | "p8-item-08"
   | "github-app";
 
 export interface ContractRoute {
@@ -141,6 +144,13 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/budget/usage", origin: "p7-item-07" },
   { method: "GET", path: "/audit", origin: "p7-item-07" },
   { method: "GET", path: "/settings", origin: "p7-item-08" },
+  { method: "GET", path: "/connectors/github/app/upgrade", origin: "p8-item-03" },
+  { method: "POST", path: "/connectors/mcp/:kind/connect", origin: "p8-item-06" },
+  { method: "POST", path: "/connectors/mcp/:kind/connect/cancel", origin: "p8-item-06" },
+  { method: "POST", path: "/connectors/mcp/:kind/disconnect", origin: "p8-item-06" },
+  { method: "GET", path: "/repos/policy", origin: "p8-item-08" },
+  { method: "POST", path: "/repos/policy/:owner/:repo/detect", origin: "p8-item-08" },
+  { method: "POST", path: "/repos/policy/:owner/:repo", origin: "p8-item-08" },
 ]);
 
 // ---- Shared shapes -------------------------------------------------------------
@@ -777,8 +787,8 @@ export interface ThreadResponse {
 
 // ---- Phase 6 item 03: GET /connectors, POST /connectors/github/token, POST /connectors/github/disconnect, GET /connectors/github/repos ----
 
-/** The connector kinds: `CONNECTOR_KINDS` in `kernel/src/integrations/types.ts` (phase 6 is GitHub only). */
-export type ConnectorKind = "github";
+/** The connector kinds: `CONNECTOR_KINDS` in `kernel/src/integrations/types.ts` (GitHub since phase 6; `jira` and `clickup` are named in phase 8 and refused `connector_not_built` until their items land). */
+export type ConnectorKind = "github" | "jira" | "clickup";
 
 /** A connector's status, as the kernel sets it (item 03): a token is checked, refused, removed, close to its expiry or past it. */
 export type ConnectorStatus = "connected" | "rejected" | "disconnected" | "expiring" | "expired";
@@ -1305,6 +1315,102 @@ export interface SettingsResponse {
   readonly loomwright: LoomwrightAdapterStatus;
 }
 
+// ---- Phase 8: the App upgrade, MCP connectors, the repo merge policy and PR tracks ----------
+// Declared by phase 8 item 01 and served by the item named in each route's origin
+// (`p8-item-NN`); none is served yet. A later item that needs another shape adds it itself.
+
+/**
+ * `GET /connectors/github/app/upgrade` (item 03): the github.com URL where the owner
+ * accepts the App's new permissions (D39). The kernel has no write path to GitHub here:
+ * nothing changes until GitHub reports the new permissions. `url` comes from the kernel,
+ * never from the renderer.
+ */
+export interface GitHubAppUpgradeResponse {
+  /** Where the owner accepts the new permissions; `null` when the install needs none. */
+  readonly url: string | null;
+}
+
+/** The MCP connector kinds (D38): the `ConnectorKind`s that are not GitHub. */
+export type McpConnectionKind = Exclude<ConnectorKind, "github">;
+
+/**
+ * An `mcp_connections` row, as the routes show it (item 06). It never carries a token,
+ * which lives only in the Keychain. `granted_tools` are the tool names the server listed
+ * after connect, untrusted text from the server.
+ */
+export interface McpConnection {
+  readonly kind: McpConnectionKind;
+  readonly server_url: string | null;
+  readonly status: ConnectorStatus;
+  readonly granted_tools: readonly string[];
+  readonly token_expiry: IsoTime | null;
+}
+
+/**
+ * `POST /connectors/mcp/:kind/connect` (item 06): opens the one setup window (like the
+ * GitHub App's) and answers the URL the owner opens in the browser, with when the window closes.
+ */
+export interface McpConnectResponse {
+  readonly authorize_url: string;
+  readonly expires_at: IsoTime;
+}
+
+/**
+ * A repo's merge policy kind (D40; `repo_policies.policy_kind`, closed in code): `solo`
+ * (met when CI is green), `studio_approval` (the owner approves in Studio) or `reviews`
+ * (N GitHub reviews). A playbook may only be stricter.
+ */
+export type RepoPolicyKind = "solo" | "studio_approval" | "reviews";
+
+/** One repo's merge policy with what the kernel detected (item 08). `kind` is `null` while no policy is set (PRs park). */
+export interface RepoPolicy {
+  /** `owner/name`. */
+  readonly repo: string;
+  readonly kind: RepoPolicyKind | null;
+  /** The approvals `reviews` needs; `null` for the other kinds. */
+  readonly required_reviews: number | null;
+  /** The owner trusts a repo whose branch GitHub cannot or does not protect. */
+  readonly trust_unprotected: boolean;
+  /** The last detection (branch protection, required reviews and checks, who can push), as read from GitHub; `null` before the first. */
+  readonly detected: Readonly<Record<string, unknown>> | null;
+  readonly set_by: string | null;
+  readonly set_at: IsoTime | null;
+}
+
+/** `GET /repos/policy`: every reached repo with its detection and set policy. */
+export interface RepoPoliciesResponse {
+  readonly repos: readonly RepoPolicy[];
+}
+
+/** `POST /repos/policy/:owner/:repo` (item 08): sets the repo's policy; the owner's, never an agent's. */
+export interface RepoPolicySetBody {
+  readonly kind: RepoPolicyKind;
+  readonly required?: number;
+  readonly trust_unprotected?: boolean;
+}
+
+/** Who holds a tracked PR (items 10 and 11): an `/automate` run live or parked, the owner, or someone else. */
+export type PrOwnerKind = "automate_live" | "automate_parked" | "owner" | "other";
+
+/** A `pr_tracks` row (items 10 and 11): a PR followed through its states. The values of `state` and `ci_state` are closed in code by item 10. */
+export interface PrTrack {
+  /** `owner/name`. */
+  readonly repo: string;
+  readonly number: number;
+  readonly head_sha: string | null;
+  readonly state: string;
+  readonly ticket_ref: string | null;
+  readonly approvals: number;
+  readonly required: number | null;
+  readonly ci_state: string | null;
+  readonly owner_kind: PrOwnerKind | null;
+  readonly run_file: string | null;
+  readonly item_id: string | null;
+  /** Loomwright's gate merged it. The kernel never merges (D40). */
+  readonly merged_by_gate: boolean;
+  readonly updated: IsoTime;
+}
+
 // ---- The route map: method + path -> query, body, response -------------------------
 
 interface Route<Q, B, R> {
@@ -1376,6 +1482,13 @@ export interface ContractRouteMap {
   "GET /budget/usage": Route<BudgetUsageQuery, undefined, BudgetUsageResponse>;
   "GET /audit": Route<AuditQuery, undefined, AuditResponse>;
   "GET /settings": Route<NoQuery, undefined, SettingsResponse>;
+  "GET /connectors/github/app/upgrade": Route<NoQuery, undefined, GitHubAppUpgradeResponse>;
+  "POST /connectors/mcp/:kind/connect": Route<NoQuery, undefined, McpConnectResponse>;
+  "POST /connectors/mcp/:kind/connect/cancel": Route<NoQuery, undefined, GitHubAppSetupCancelResponse>;
+  "POST /connectors/mcp/:kind/disconnect": Route<NoQuery, undefined, ConnectorChangeResponse>;
+  "GET /repos/policy": Route<NoQuery, undefined, RepoPoliciesResponse>;
+  "POST /repos/policy/:owner/:repo/detect": Route<NoQuery, undefined, RepoPolicy>;
+  "POST /repos/policy/:owner/:repo": Route<NoQuery, RepoPolicySetBody, RepoPolicy>;
 }
 
 export type RouteKey = keyof ContractRouteMap;

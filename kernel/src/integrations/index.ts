@@ -13,6 +13,9 @@
 // routes served by `github/app-setup.ts`; `github/app-port.ts` is the App port
 // (stores the App's credentials, records the installation, mints installation
 // tokens through `github/app-token.ts`), built by the App tokens item.
+// Phase 8 adds two empty parts, `mcp` (item 06: MCP connectors with OAuth 2.1,
+// D38) and `repo-policy` (item 08: the per-repo merge policy, D40), defined here
+// because they have no files of their own yet; each is empty until its item fills it in.
 // Integrations are optional (invariant 5): Studio works with none connected.
 // Mechanism only (invariant 1). `startKernel` and `runCli` merge it through
 // `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`), ninth, after
@@ -24,6 +27,7 @@
 // registry's module graph).
 import { consoleContributionOf } from "../console/index.js";
 import type { FeatureContribution } from "../features/contribution.js";
+import { emptyConsolePart } from "../console/types.js";
 import { draftsPart } from "./drafts.js";
 import { githubAppRoutesPart } from "./github/app-routes.js";
 import { githubConnectorPart } from "./github/connector.js";
@@ -34,8 +38,17 @@ import type { IntegrationsPart } from "./types.js";
 /** The contribution's name. */
 export const INTEGRATIONS_NAME = "integrations";
 
-/** Every part, in merge order: tools, routes, subcommands and due work keep this order. */
-export const INTEGRATIONS_PARTS: readonly IntegrationsPart[] = Object.freeze([githubConnectorPart, githubRoutesPart, githubToolsPart, draftsPart, githubAppRoutesPart]);
+/** The `mcp` part (phase 8 item 06): MCP connectors with OAuth 2.1 (D38). Empty and claims no handler kind until its item fills it in. */
+export const mcpPart: IntegrationsPart = emptyConsolePart("mcp");
+
+/** The `repo-policy` part (phase 8 item 08): the per-repo merge policy (D40). Empty and claims no handler kind until its item fills it in. */
+export const repoPolicyPart: IntegrationsPart = emptyConsolePart("repo-policy");
+
+/**
+ * Every part, in merge order: tools, routes, subcommands and due work keep this order.
+ * `githubAppRoutesPart` stays last (`integrations-github-app-contract.test.ts` pins it).
+ */
+export const INTEGRATIONS_PARTS: readonly IntegrationsPart[] = Object.freeze([githubConnectorPart, githubRoutesPart, githubToolsPart, draftsPart, mcpPart, repoPolicyPart, githubAppRoutesPart]);
 
 /**
  * The contribution `parts` make: `name` always, and only the non-empty keys

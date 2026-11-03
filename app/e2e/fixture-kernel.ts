@@ -24,10 +24,12 @@ import type {
   ConnectorsResponse,
   DraftsResponse,
   EventFrame,
+  GitHubAppUpgradeResponse,
   MemoryFileResponse,
   MemoryTreeResponse,
   PlaybookRunsResponse,
   PlaybookVersionsResponse,
+  RepoPoliciesResponse,
   RouteKey,
   ScheduleResponse,
   SettingsResponse,
@@ -167,6 +169,8 @@ const DEFAULT_ROUTES: Partial<Record<RouteKey, FixtureRoute>> = {
   }),
   "GET /budget/usage": () => ({ status: 200, body: { rows: [], limits: [], cap_state: [] } satisfies BudgetUsageResponse }),
   "GET /audit": () => ({ status: 200, body: { events: [], next_before: null } satisfies AuditResponse }),
+  "GET /connectors/github/app/upgrade": () => ({ status: 200, body: { url: null } satisfies GitHubAppUpgradeResponse }),
+  "GET /repos/policy": () => ({ status: 200, body: { repos: [] } satisfies RepoPoliciesResponse }),
   "GET /settings": () => ({
     status: 200,
     body: {

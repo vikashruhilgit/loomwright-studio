@@ -70,6 +70,8 @@ const shape = {
   tool_policy: z.object(toolPolicyShape),
   never: z.array(z.enum(NEVER_CATEGORIES)).optional(),
   // The owner's connector grants (edited in the file; `set` does not take them until phase 6 item 08).
+  // The array form only: the object form `{github: "write"}` is checked apart
+  // (`refuseUnbuiltConnectors`), and the `jira`/`clickup` kinds parse here but are refused there.
   connectors: z.array(z.enum(CONNECTOR_KINDS)).optional(),
   // Strict: a misspelt limit is refused, never silently unenforced.
   limits: z.object({ tokens_per_day: limit.optional(), sessions_at_once: limit.optional(), delegation_depth: limit.optional() }).strict().optional(),
@@ -88,6 +90,31 @@ const wrightSchema = z.object(shape);
  * `tool_policy.never`) is refused, never read as ok and silently not applied.
  */
 const crewSchema = z.object({ ...shape, tool_policy: z.object(toolPolicyShape).strict() }).strict();
+
+/** The connector kinds whose grant is refused until phase 8's later items land (`connector_not_built`). */
+const UNBUILT_CONNECTORS: readonly string[] = ["jira", "clickup"];
+
+/**
+ * Phase 8 item 01 grows `CONNECTOR_KINDS` and plans the GitHub write grant
+ * (`connectors: {github: "write"}`), but nothing applies either yet, so a file
+ * that sets one is refused by name, never read and silently not applied:
+ * `connector_not_built` for a `jira`/`clickup` grant (an array entry or an
+ * object key), `github_write_not_built` for `github: "write"`. Any other
+ * object form is refused too (`connectors` is an array of kinds). Returns the
+ * refusal text, or undefined when the grant is the array form of built kinds.
+ */
+function unbuiltConnectorsProblem(raw: unknown, arrayForm: readonly string[] | undefined): string | undefined {
+  if (arrayForm !== undefined) {
+    const unbuilt = arrayForm.find((kind) => UNBUILT_CONNECTORS.includes(kind));
+    return unbuilt === undefined ? undefined : `connector_not_built: the ${unbuilt} connector is not built yet; remove it from connectors`;
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const grant = raw as Record<string, unknown>;
+  const unbuilt = Object.keys(grant).find((kind) => UNBUILT_CONNECTORS.includes(kind));
+  if (unbuilt !== undefined) return `connector_not_built: the ${unbuilt} connector is not built yet; remove it from connectors`;
+  if (grant.github === "write") return "github_write_not_built: the GitHub write grant is not built yet; use connectors: [\"github\"] for the read grant";
+  return 'connectors must be an array of connector kinds (the object form {github: "write"} is not built yet)';
+}
 
 /** The enforced limits an agent's file may set; each absent key is unset (the kernel picks none). */
 export interface AgentLimits {
@@ -214,7 +241,17 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
   } catch {
     return invalid("the file", "not JSON");
   }
-  const parsed = (isWright ? wrightSchema : crewSchema).safeParse(json);
+  // The object form of `connectors` is set apart so the schema (array form) still reports every other field first.
+  const objectGrant =
+    typeof json === "object" && json !== null && !Array.isArray(json) && typeof (json as { connectors?: unknown }).connectors === "object" && (json as { connectors?: unknown }).connectors !== null && !Array.isArray((json as { connectors?: unknown }).connectors)
+      ? (json as { connectors: unknown }).connectors
+      : undefined;
+  let toParse = json;
+  if (objectGrant !== undefined) {
+    const { connectors: _objectForm, ...rest } = json as Record<string, unknown>;
+    toParse = rest;
+  }
+  const parsed = (isWright ? wrightSchema : crewSchema).safeParse(toParse);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     const where = issue === undefined || issue.path.length === 0 ? "the file" : issue.path.join(".");
@@ -236,6 +273,8 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
       if (s[field] !== undefined) return invalid(field, `${field}: not supported for Wright yet (the kernel does not apply it to Wright's sessions); remove it`);
     }
   }
+  const unbuilt = unbuiltConnectorsProblem(objectGrant, objectGrant === undefined ? s.connectors : undefined);
+  if (unbuilt !== undefined) return invalid("connectors", `connectors: ${unbuilt}`);
   if (s.workspaces !== undefined) {
     const homeDir = options.homeDir ?? homedir();
     for (const [i, workspace] of s.workspaces.entries()) {

@@ -146,6 +146,8 @@ describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
       "gh_pr_review",
       "gh_pr_edit",
       "gh_pr_close",
+      "gh_pr_request_reviewers",
+      "gh_pr_comment_reply",
       "gh_issue_create",
       "gh_issue_comment",
       "gh_issue_edit",
@@ -206,7 +208,9 @@ describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
       expect(neverCategoriesOf(action), action).toEqual(categories);
     }
     const reached = new Set(LABELS.flatMap(([, , action]) => neverCategoriesOf(action)));
-    expect(NEVER_CATEGORIES.filter((c) => !reached.has(c))).toEqual([]);
+    // Phase 8 item 01 accepts these 2 with no rail label; item 05 adds their matcher, then this exemption goes.
+    const NO_MATCHER_YET = ["gh_pr_request_reviewers", "gh_pr_comment_reply"];
+    expect(NEVER_CATEGORIES.filter((c) => !reached.has(c) && !NO_MATCHER_YET.includes(c))).toEqual([]);
   });
 
   it("maps the ALWAYS_HELD_TOOLS actions, a merge and any other text to no category", () => {

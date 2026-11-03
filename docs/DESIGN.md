@@ -15,6 +15,7 @@ Phase 0 is done: the owner approved the design system and the GUI v1 mockups on 
 | Avatar system | `docs/design/avatar/avatar.css`, `avatar.js` | The stitched sea creatures and their motion, as used by the mockup |
 | Integrations mockup (phase 6): the Integrations screen, the Connect GitHub sheet, every state in light and dark, clickable | `docs/design/mockups/integrations.html` | One HTML file, no build. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. The owner approves it by merging the PR that adds it (D9). Screenshots and the token audit: [evidence](evidence/phase-6-integrations-mockup/README.md). The GitHub App views (D36) are in the same file: [evidence](evidence/github-app-mockup/README.md) |
 | GUI v2 mockup (phase 7): Tasks, Playbooks, Schedules & triggers, Memory, Budget & audit, Settings and the Integrations token-to-App path, every state in light and dark, clickable | `docs/design/mockups/gui-v2.html` | One HTML file, no build. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. The owner approves it by merging the PR that adds it (D9). Screenshots, the token audit and the field map: [evidence](evidence/gui-v2-mockup/README.md). What it commits items 03–09 to: [Phase 7: GUI v2](#phase-7-gui-v2) |
+| Phase 8 mockup (phase 8): the Tasks ticket → PR card and its history, the "Approve in Studio" merge approval card, the playbook mode editor with its live-enable confirm, and Integrations' GitHub App permission upgrade, repo policy card and Jira and ClickUp connect, every state in light and dark, clickable | `docs/design/mockups/phase-8.html` | One HTML file, no build. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. Pending: the owner approves it by merging the PR that adds it (D9). Screenshots, the token audit and the field map: [evidence](evidence/phase-8-mockup/README.md). What it commits items 11–13 to: [Phase 8: Tickets to PRs](#phase-8-tickets-to-prs) |
 
 The artefact links are private to the owner; the repo copies are the reviewable record. When the design system changes, update the artefact first, then re-copy here in the same commit.
 
@@ -198,6 +199,76 @@ The mockup's copy and layout are proposals the owner can change on this PR, as w
 11. **The audit log needs two derivations.** The existing `GET /events` omits `actor`, and `events` has no agent or playbook column, so item 07's `GET /audit` returns the actor and derives the Agent and Playbook filters from the session or the payload.
 12. **The App's display name** is not a `connectors` column (only `app_slug`). The approved App views already show it, and this mockup copies them.
 13. **Departures from component READMEs:** the switch is 32×18 (Table README: 26×16); the usage meter is 4px (Card README: 3px) and turns `attention` only at the limit (Card README: from 80%); table cells wrap (Table README: truncate); a toast stays 4s in the mock (Toast README: 6s). Say which side moves.
+
+## Phase 8: Tickets to PRs
+
+Phase 8 turns tickets into PRs through Loomwright's `/automate` and shows it in four places: the Tasks card for a ticket → PR task, Integrations (the GitHub App permission upgrade, the repo policy card, and Jira and ClickUp connect), the merge approval card in Approvals, and the playbook `mode` editor. As D9 requires, the mockup comes before any screen code: `design/mockups/phase-8.html`, one HTML file with every new view and every designed state, in light and dark. Its screenshots (65 views, 130 images, in [the screenshot table](evidence/phase-8-mockup/README.md#screenshots)), its token audit and the map from every field to a kernel column, a route or a shape a phase 8 requirement declares are in [the evidence folder](evidence/phase-8-mockup/README.md). Open the file in a browser and use the review strip, or force a view with the URL hash (`#view=merge-card&theme=dark`). The owner approves the design by merging the PR that adds it. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. The mockup adds no route and no code: items 11–13 build the screens to it, and the foundation, App, MCP, policy and tracker items (01, 03, 06, 07, 08, 10) supply what it shows. It reuses [Phase 7: GUI v2](#phase-7-gui-v2)'s window, review strip, `Kernel unreachable` band and URL-hash hook. The screens it does not draw (Team, Sessions, Schedules & triggers, Memory, Budget & audit and Settings) stay in the sidebar and say they live in `gui-v1.html` or `gui-v2.html`.
+
+### What the owner changed
+
+The 2026-11-02 phase 8 decisions that the views show:
+
+These decisions are recorded as D38, D39 and D40 in `docs/DECISIONS.md` by PR #216 (phase 8 item 01, the foundation). This PR cites them and does not add the rows. #216 merges before this PR, so DESIGN.md never cites a decision that main's ledger lacks.
+
+- **Tickets come from GitHub Issues, Jira and ClickUp, each its own optional connector** on Integrations (invariant 5, D12). Studio works with none.
+- **Jira and ClickUp connect as MCP connectors** (D38). Studio is an MCP client to the vendor's hosted server (Atlassian `https://mcp.atlassian.com/v1/mcp`, ClickUp `https://mcp.clickup.com/mcp`), runs the OAuth 2.1 consent in the system browser, keeps the tokens in the Keychain, and lists to each crew member only the tools the owner grants (the grant is set in Team). It is a vendor consent, not a claude.ai sign-in (invariant 6).
+- **Jira is the owner's work account, stub only:** never exercised live, and every Jira view says so. ClickUp is the owner's personal account. Every site, key, person and ticket on screen is invented.
+- **The GitHub App is raised to every repository permission at write** (D39; Metadata stays read-only; GitHub fixes it). D39 supersedes D36's "Read-only still" for the App only; the token path stays read-only. The owner accepts the new permissions on github.com, and nothing changes until GitHub reports them. **Session tokens are down-scoped** to Pull requests, Contents, Issues and Checks (D39).
+- **Merge approvals are the user's policy, per repo** (D40): Solo, Approve in Studio, or N GitHub reviews (Wright suggests 2 for a team repo). A playbook may only be stricter. A repo with no policy never merges: its PRs park. The kernel ships no number (invariant 1), so every policy value on screen carries who set it ("detected from GitHub", "proposed by Wright", "set by you").
+- **Repo policy is detect and propose, one click.** Studio reads branch protection, required reviews and checks and who can push, and proposes a card the owner accepts or changes. Studio never changes GitHub's branch protection; when it is missing, the card shows what to set and a link.
+- **A repo GitHub can't protect** (private on Free): the card says so and offers Make public or Upgrade (links to GitHub), "Trust this repo unprotected" (an explicit, recorded click, passed to Loomwright as `--trust-unprotected`, which waives condition 4 only and never the high-risk park) and Safe mode. None is picked silently.
+- **Merging is Loomwright's gate** (invariant 4, D40). The kernel never merges and `gh pr merge` stays blocked. The merge card approves; Loomwright's `--auto-merge` gate merges. No control in the mockup merges a PR.
+- **Who owns a PR:** a live `/automate` run, a parked `/automate` item, you or the App, or someone else; the card says which, because it decides how a fix runs.
+- **Live writes:** each outward kind is held the first time and the owner may grant "Always for this playbook" per kind; `never` still wins. A playbook goes `live` only after its dry run and a held enable.
+
+### The views
+
+Every group has an empty, a loading, an error and a `Kernel unreachable` view (the error view is a route failure card in the body, distinct from the band), plus its own states. The evidence README lists each view's light and dark screenshot and says what "empty" means for each group.
+
+- **Tasks:** populated, waiting on you (the parked PR with its approval), and the click-through for a PR (facts, history, session log); the unreachable view keeps the last-known cards with their mark.
+- **Approvals:** the merge approval card, after Allow once, after Deny, and the held live-enable approval.
+- **Playbooks:** the mode editor (draft), with no dry run yet, the live-enable confirm, live requested (held), and live (approved); and Chat's draft card with `mode` read-only.
+- **GitHub App:** needs new permissions, waiting on GitHub, and upgraded.
+- **Repo policy:** the detected state with Wright's proposal, N edited by the owner, a policy set, no policy (PRs park), GitHub can't enforce protection, the Trust unprotected confirm, trusted, and Safe mode.
+- **Jira and ClickUp:** not connected, the connect sheet, the browser-consent wait with Cancel, refused, connected with the tools and the crew grants, expired, and the Disconnect confirm.
+
+### What the mockup commits items 11–13 to
+
+- **Tasks card and history (item 11):**
+  - A card shows the ticket's source and id, the PR number and state (open, draft, ready, parked, merged, closed), the repo policy chip (`n/N approvals`, Solo, Approve in Studio or No policy), the CI chip, the comment tally (fix, reply, answer), who owns the PR, and its assignee. A parked PR with no policy offers "Open repo policy".
+  - Honest status: CI is green only when the kernel recorded it, with the time; pending is neutral with a hollow dot; `n/N` is green only when `n` reached `N`.
+  - A PR that needs the owner (an approval, or an `awaiting_merge` park) is in Waiting on you with an `attention` edge and a footer that opens that approval; the band says so.
+  - The history shows the facts, the rows (`task_created`, the PR's sessions, `pr_state_changed`, its approvals, its comments' routes) and the session log, reached through the shared crumb.
+  - While the kernel is unreachable the board keeps the last-known cards, each marked "Last known · read HH:MM" and disabled.
+- **Integrations (item 12):**
+  - Jira and ClickUp: Connect names the vendor and opens its consent in the browser; the wait has Cancel; connected shows the site or workspace, the server's tools and which crew member is granted which (set in Team); expired and refused have their own copy; Disconnect confirms and says what stays the owner's. The three palette commands are `integrations.connect-jira`, `integrations.connect-clickup` and `integrations.repo-policy`.
+  - The App upgrade: "Needs new permissions" with Accept on GitHub, which opens github.com and waits (Cancel, Check now), the view of now against after, and the down-scoped session tokens.
+  - The repo policy card: what GitHub enforces with the time it was read and Re-detect; Wright's proposal; the three presets with an editable N; Accept proposal, or Set policy when the owner changed a value; "No policy: PRs park" with what to set on GitHub; the can't-enforce state with Make public and Upgrade as links to GitHub, a Trust unprotected confirm that names what it waives, and Safe mode.
+  - Every policy value shows who set it, and a repo with no proposal has no preset picked and no number.
+- **Merge approval card and the mode editor (item 13):**
+  - The merge card shows the repo, the PR link, the head commit, CI with its time, Loomwright's READY time and the repo's policy; it offers Allow once and Deny, never "Always for this playbook"; and it says approving does not merge and Loomwright's gate merges.
+  - `mode` is editable in the Playbooks mode editor. Live is a request, not a save: the editor offers "Review live enable…", the confirm says live acts on GitHub through the approval gate and lists the dry run and the held enable, and nothing is live until the owner allows the enable in Approvals. A playbook with no dry run cannot pick live. Chat's draft card keeps `mode` read-only.
+  - A dry run reads "finished", not "passed", because the kernel does not judge a dry run.
+
+### Open points for the owner (phase 8)
+
+The mockup's copy and layout are proposals the owner can change on this PR, as with the earlier mockups. These need a decision, or the owner's word that the proposal stands. Points 1–4 are fields with no declared source (the [field map](evidence/phase-8-mockup/README.md#field-map-ac6) marks each); 5–7 are rule and route differences; 8–13 are sample-data and layout differences.
+
+1. **The comment triage tally and the `comment_routed` history rows have no stored source.** Item 10's tracker records a PR's state, approvals, CI, owner and run file, and appends `pr_state_changed`; nothing records how a comment was classified or routed. Items 01 and 10 add it (a count on `pr_tracks`, or an event kind), or the card drops the tally and the history drops the rows. Affects items 01, 10 and 11.
+2. **Safe mode per repo has no declared storage.** Item 08's route takes a policy kind and `trust_unprotected`, and `repo_policies` has no safe-mode field. Say whether Safe mode is a fourth value of the policy kind, or the same as "No policy: PRs park" with a recorded choice. Affects items 01, 08 and 12.
+3. **Four MCP fields have no declared column:** the account line ("alex.rivera@example.com"), the "verified" and "listed" times and the time of a failed refresh, and each tool's read-only flag (the "Read" and "Changes things" badges). Item 01's `mcp_connections` lists kind, server URL, status, granted tools and token expiry. Keep each and have items 06 and 07 record it, or remove it. Affects items 06, 07 and 12.
+4. **The repo visibility badge (public, private) and a collaborator's role word** ("admin", "write") are not in item 08's detection. Keep them and add them to `detected_json`, or drop them. Affects items 08 and 12.
+5. **Disconnect drops the crew's grants for Jira and ClickUp** in the mockup ("Deletes the tokens… and drops every crew grant on them"). Phase 6's GitHub Disconnect keeps the grants. Pick one rule for MCP connectors. Affects items 06 and 12.
+6. **Who files the held live enable.** The mockup's "Request live enable" creates the approval (requested by the owner, allowed by the owner). Phase 7's decision is that a screen never calls an enable path, and `kernel_playbook_enable` is Wright's tool. No requirement declares an owner route that files it. Either the editor asks Wright to request it, or item 13 adds an owner route. Affects items 04 and 13.
+7. **"2" for a team repo is Wright's, over GitHub's own 1.** The mockup shows Wright suggesting 2 reviews on `team-service` (where GitHub asks for 1), per the owner's decision. Item 08's proposal function takes N from GitHub, so the "2" is a rule in code that ships a number (the proposal is still only a suggestion the owner changes, labelled "proposed by Wright"). Decide whether the proposal function suggests 2 for a repo others can push to. Affects item 08.
+8. **The sample data puts several policies on `studio-sandbox`.** The Tasks cards show Approve in Studio, Solo and `0/2 approvals` for one repo, and the policy card shows Approve in Studio set by the owner. A repo has one policy; the data does this so every chip is drawn. The `0/2` cards show an N the owner has already set, since the 2 is only Wright's proposal. Items 11 and 12 read real data. Affects items 11 and 12.
+9. **No Jira card in Tasks.** Jira is stub only, so no fixture ticket is from Jira. The source chip is generic (the ticket's source and id); item 11 draws a Jira chip by the same rule, undrawn here. Affects item 11.
+10. **Chat's draft card is one view,** filed in the Playbooks group of the review strip; Chat has no empty, loading, error or unreachable view here because Chat is approved in `gui-v1.html`. Affects item 13.
+11. **There is no separate playbook detail page.** A Playbooks row opens the mode editor, which edits priority, model, token limit and mode; name, intent, dedupe key and effort stay as in GUI v2 (phase 7's per-field edit). Affects item 13.
+12. **A live-enable approval card is new in Approvals.** Item 13's scope asks for the merge card; the held enable (change, dry run, what live means) needs its own card, drawn as approval #8. Affects item 13.
+13. **The Integrations list shows four rows** (GitHub App, Repo policy, Jira, ClickUp) so every new view has a place. In the app, GitHub's row is the existing one from `integrations.html` and takes the upgrade state; Repo policy, Jira and ClickUp are new rows. Affects item 12.
+
+Departures from the component READMEs carried unchanged from [Phase 7](#open-points-for-the-owner-on-this-pr-1), open point 13 (the 32×18 switch, table cells that wrap, a 4s toast), still stand; the evidence README's [token audit](evidence/phase-8-mockup/README.md#token-audit) lists them and every new class.
 
 ## Not in v1 (deferred to GUI v2 or later)
 
