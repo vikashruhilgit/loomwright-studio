@@ -45,6 +45,14 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
   - **Walk:** **"Full loop, two policies (Recommended)"**. One GitHub issue and one personal ClickUp task become two PRs through `/automate`; a fix, a question and a remark on one PR are triaged; a reviewer is re-requested; PR A merges through the gate under Solo, and PR B under Approve in Studio. Jira is `not_exercised`. Never `vendsy/*` or any Tray system.
 - **Nothing is patched outside an item's Touches.** A lane that needs another file stops and says so.
 
+## Owner decisions (2026-11-03, binding)
+
+Recorded 2026-11-03 in the phase 8 product-owner Touches re-trace (AskUserQuestion). Tracing item 09 against `main` at `20684c8` showed that a kernel tool can't start a session. Sessions start only from the event loop (the closed `EVENT_KINDS`, `message` and `wakeup`), and an approval decision only enqueues a `message` to the agent (`kernel/src/approvals/store.ts`), which runs as a plain agent session with no playbook and so no GitHub token. The owner chose **"The playbook's own session runs it (Recommended)"**:
+- **No new session machinery.** The live playbook's own run session runs `/automate --backlog … --inline-phases` (safe mode) itself. That session is already kernel-owned, has Loomwright loaded and has the token injected.
+- **Kernel tools only help and check.** They write the ticket items, read Loomwright's run state (single drain; Loomwright's own run lock also refuses a second run), check the repo policy, and record a held merge approval that the merge-when-ready playbook reads on its next fire.
+- **Fixes and `/review-pr` run the same way,** in the triage playbook's own session.
+- **The owner's 2026-11-02 choices are unchanged.**
+
 ## Scope
 
 1. **`app/e2e/phase-8-exit.spec.ts`** drives the walk in CI: the built app against a real kernel started in-process, a fake GitHub, a fake MCP ClickUp, stand-in sessions for `/automate` and `/review-pr` that write recorded run files, and one injected clock. Each step's effect is checked in the store.
@@ -70,6 +78,8 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
      - the evidence JSON records every click as D35 requires, with `owner` fields holding only what the owner reports seeing;
      - screenshots stay outside the repo unless the owner approves each.
 3. **Close on a pass.** The evidence JSON, ROADMAP's phase 8 row ✓ and OPEN_QUESTIONS in one commit. Any mismatch becomes a new phase 8 item, and nothing is patched in this PR.
+
+**Touches traced from the code (2026-11-03, `main` at `20684c8`):** the 2026-11-02 list named only this item's new files. Items 05 and 06 each stopped at Launch Pad because the existing seam files they must edit (where item 01's refusals and empty parts live, and the tests that pin them) were missing. Each shared file below is listed because an acceptance criterion changes it: `app/e2e/fixture-kernel.ts` (the in-process kernel walk needs the fake GitHub and fake MCP wired in), plus an in-process kernel test `kernel/test/phase-8-exit.test.ts` beside the live one, as phase 6 and 7 did.
 
 ## Non-goals
 
@@ -103,7 +113,9 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
 
 ## Touches
 app/e2e/phase-8-exit.spec.ts
-app/e2e/fixtures/
+app/e2e/fixtures/phase-8-exit.ts
+app/e2e/fixture-kernel.ts
+kernel/test/phase-8-exit.test.ts
 kernel/test/phase-8-exit-live.test.ts
 docs/evidence/phase-8-exit-runbook.md
 docs/ROADMAP.md

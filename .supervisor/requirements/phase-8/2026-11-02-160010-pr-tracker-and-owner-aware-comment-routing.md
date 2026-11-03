@@ -6,11 +6,11 @@
 
 **As** the owner,
 **I want** the kernel to track every PR my playbooks touch through its states (approvals against the repo's policy, CI, who owns it), and to tell a triage playbook where a "fix" comment must go,
-**so that** Tasks shows each ticket's PR truthfully and a fix never starts a second drain or pushes to someone else's branch.
+**so that** Tasks shows each ticket's PR truthfully, and a fix never starts a second drain or pushes to someone else's branch.
 
 ## Problem
 
-The `tasks` table has a `links_json` column but nothing fills it with PR state. Nothing reads approvals or CI, nothing knows whether a PR belongs to a live `/automate` run, a parked item, the owner or someone else, and nothing starts `/review-pr` for a PR outside `/automate`. The done-when needs "a PR is tracked through its states" and triage that routes fixes correctly.
+The `tasks` table has a `links_json` column but nothing fills it with PR state. Nothing reads approvals or CI, nothing knows whether a PR belongs to a live `/automate` run, a parked item, the owner or someone else, and nothing tells a playbook whether `/review-pr` may run for a PR outside `/automate`. The done-when needs "a PR is tracked through its states" and triage that routes fixes correctly.
 
 ## Owner decisions (2026-11-02, binding)
 
@@ -41,6 +41,14 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
   - **Walk:** **"Full loop, two policies (Recommended)"**. One GitHub issue and one personal ClickUp task become two PRs through `/automate`; a fix, a question and a remark on one PR are triaged; a reviewer is re-requested; PR A merges through the gate under Solo, and PR B under Approve in Studio. Jira is `not_exercised`. Never `vendsy/*` or any Tray system.
 - **Nothing is patched outside an item's Touches.** A lane that needs another file stops and says so.
 
+## Owner decisions (2026-11-03, binding)
+
+Recorded 2026-11-03 in the phase 8 product-owner Touches re-trace (AskUserQuestion). Tracing item 09 against `main` at `20684c8` showed that a kernel tool can't start a session. Sessions start only from the event loop (the closed `EVENT_KINDS`, `message` and `wakeup`), and an approval decision only enqueues a `message` to the agent (`kernel/src/approvals/store.ts`), which runs as a plain agent session with no playbook and so no GitHub token. The owner chose **"The playbook's own session runs it (Recommended)"**:
+- **No new session machinery.** The live playbook's own run session runs `/automate --backlog … --inline-phases` (safe mode) itself. That session is already kernel-owned, has Loomwright loaded and has the token injected.
+- **Kernel tools only help and check.** They write the ticket items, read Loomwright's run state (single drain; Loomwright's own run lock also refuses a second run), check the repo policy, and record a held merge approval that the merge-when-ready playbook reads on its next fire.
+- **Fixes and `/review-pr` run the same way,** in the triage playbook's own session.
+- **The owner's 2026-11-02 choices are unchanged.**
+
 ## Scope
 
 1. **The tracker** (`kernel/src/automate/tracker.ts`, due work and on each relevant poll fire). For every PR a playbook opened, or a ticket links to, it fills `pr_tracks`:
@@ -59,15 +67,18 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
    - `{route: "automate_fix", item}` for a parked item;
    - `{route: "review_pr"}` for a PR not from `/automate`, authored by the owner or the App;
    - `{route: "reply_only"}` for a PR authored by anyone else.
-4. **`kernel_pr_fix(repo, pr, comment_ids[])`**, for a live playbook session with `github: write`. It acts on the route:
-   - `automate_fix` starts one kernel session running Loomwright's fix-now or `/review-pr <pr>` for that parked item;
-   - `review_pr` starts one kernel session running `/review-pr <pr>` (heals, never merges);
-   - `automate_drain` and `reply_only` are refused with the route name.
+4. **No fix tool starts a session** (owner decision 2026-11-03). The triage playbook's own live session acts on the route itself:
+   - **`automate_fix`:** it runs Loomwright's fix-now or `/review-pr <pr>` for that parked item;
+   - **`review_pr`:** it runs `/review-pr <pr>` (heals, never merges);
+   - **`automate_drain` and `reply_only`:** it only replies or answers.
 
-   It always re-checks that no run is live first.
+   `kernel_pr_route` re-reads the run state on every call, so a run that went live since the last call answers `automate_drain`. The answer's text says so and names the exact command for each route. A `git push` to a branch the route doesn't allow is still held for the owner, as every push is.
+
 5. **Wright's guidance.** The new tools' descriptions name the three triage outcomes and the routing, so Wright can draft the triage playbook from a sentence. Nothing is preinstalled (D3).
 6. **The gui `tasks` part** (`kernel/src/gui/tasks.ts`) returns the links and PR fields on `GET /tasks` and the PR's state history on `GET /tasks/:kind/:id`, per item 01's contract.
 7. **Docs:** `docs/architecture/automate.md` (tracker and routing).
+
+**Touches traced from the code (2026-11-03, `main` at `20684c8`):** the 2026-11-02 list named only this item's new files. Items 05 and 06 each stopped at Launch Pad because the existing seam files they must edit (where item 01's refusals and empty parts live, and the tests that pin them) were missing. Each shared file below is listed because an acceptance criterion changes it: `automate/index.ts` (the empty `trackerPart` and `routingPart`); `app/src/api/contract.ts` (`TaskBoardItem` has no ticket, PR, approvals, CI or owner field; item 01's contract says a later item adds the shapes it needs) with the e2e fixtures that build `TaskBoardItem` (`app/e2e/fixtures/tasks.ts`, `phase-7-exit.ts`); `brain/templates.ts` (routing guidance); the pins in `gui-tasks.test.ts`, `phase-8-foundation.test.ts`, `console-contract.test.ts`, `tools-sdk-list.test.ts` and `brain.test.ts`.
 
 ## Non-goals
 
@@ -79,7 +90,7 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
 
 - [ ] Given a fake PR moving open → ready → parked `awaiting_merge` → merged, then `pr_tracks` and the linked task record each state once, with one `pr_state_changed` event each.
 - [ ] Given a `reviews: 2` repo with one approving review, then the task's links read approvals 1/2; given a Solo repo, then they read `solo`.
-- [ ] Given a PR owned by a live run, then `kernel_pr_route` answers `automate_drain` and `kernel_pr_fix` is refused; given a parked item, then `automate_fix`, and one fix session starts.
+- [ ] Given a PR owned by a live run, then `kernel_pr_route` answers `automate_drain`; given a parked item, then `automate_fix` with Loomwright's fix command for that item.
 - [ ] Given a PR by another person, then the route is `reply_only` and no session pushes to it.
 - [ ] Given `GET /tasks`, then a ticket-to-PR task carries ticket, PR, approvals, CI and owner kind as the contract declares.
 
@@ -93,11 +104,19 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
 2026-11-02-160009-automate-runner-tickets-to-prs-and-merge-when-ready.md
 
 ## Touches
+kernel/src/automate/index.ts
 kernel/src/automate/tracker.ts
 kernel/src/automate/routing.ts
-kernel/src/automate/fix.ts
 kernel/src/gui/tasks.ts
+kernel/src/brain/templates.ts
+app/src/api/contract.ts
+app/e2e/fixtures/tasks.ts
+app/e2e/fixtures/phase-7-exit.ts
 kernel/test/automate-tracker.test.ts
 kernel/test/automate-routing.test.ts
 kernel/test/gui-tasks.test.ts
+kernel/test/phase-8-foundation.test.ts
+kernel/test/console-contract.test.ts
+kernel/test/tools-sdk-list.test.ts
+kernel/test/brain.test.ts
 docs/architecture/automate.md

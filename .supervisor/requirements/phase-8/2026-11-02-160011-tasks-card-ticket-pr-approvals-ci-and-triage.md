@@ -57,6 +57,8 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
 3. **Last-known data while unreachable,** as phase 7 item 23 built it.
 4. **The polish gate:** screenshots from the running app (fixture kernel) of every new card and history state, light and dark, under `docs/evidence/phase-8-polish/`, matched against `phase-8.html`.
 
+**Touches traced from the code (2026-11-03, `main` at `20684c8`):** the 2026-11-02 list named only this item's new files. Items 05 and 06 each stopped at Launch Pad because the existing seam files they must edit (where item 01's refusals and empty parts live, and the tests that pin them) were missing. Each shared file below is listed because an acceptance criterion changes it: `app/e2e/fixtures/tasks.ts` (the board fixture gains ticket → PR cards) beside its own screen folder and spec.
+
 ## Non-goals
 
 - Editing or creating tasks from the board (still read-only).
@@ -83,4 +85,5 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
 ## Touches
 app/src/screens/tasks/
 app/e2e/tasks.spec.ts
+app/e2e/fixtures/tasks.ts
 docs/evidence/phase-8-polish/

@@ -56,6 +56,8 @@ As `phase-8.html` draws them (`app/src/screens/integrations/`):
 4. **The palette:** commands for each new action (`integrations.connect-jira`, `integrations.connect-clickup`, `integrations.repo-policy`).
 5. **The polish gate:** screenshots of every new view, light and dark, under `docs/evidence/phase-8-polish/`.
 
+**Touches traced from the code (2026-11-03, `main` at `20684c8`):** the 2026-11-02 list named only this item's new files. Items 05 and 06 each stopped at Launch Pad because the existing seam files they must edit (where item 01's refusals and empty parts live, and the tests that pin them) were missing. Each shared file below is listed because an acceptance criterion changes it: `app/src/screens/team/Connectors.tsx` and `actions.ts` (the per-tool MCP grant is set where phase 6's `connectors` grant is); `app/e2e/fixture-kernel.ts` and `app/e2e/fixtures/integrations.ts` (the connect, cancel, disconnect, upgrade and repo-policy routes need fixture answers). New views go in new files (`McpConnect.tsx`, `AppUpgrade.tsx`, `RepoPolicyCard.tsx`) and the existing view only mounts them.
+
 ## Non-goals
 
 - Changing GitHub branch protection from the app (never).
@@ -83,7 +85,20 @@ As `phase-8.html` draws them (`app/src/screens/integrations/`):
 2026-11-02-160008-repo-merge-policy-detect-and-propose.md
 
 ## Touches
-app/src/screens/integrations/
-app/e2e/integrations.spec.ts
+app/src/screens/integrations/IntegrationsView.tsx
+app/src/screens/integrations/McpConnect.tsx
+app/src/screens/integrations/AppUpgrade.tsx
+app/src/screens/integrations/RepoPolicyCard.tsx
+app/src/screens/integrations/AppDetail.tsx
+app/src/screens/integrations/model.ts
+app/src/screens/integrations/actions.ts
+app/src/screens/integrations/commands.ts
+app/src/screens/integrations/integrations.css
+app/src/screens/integrations/phase-8.test.tsx
+app/src/screens/team/Connectors.tsx
+app/src/screens/team/actions.ts
+app/src/screens/team/connectors.test.tsx
 app/e2e/integrations-phase-8.spec.ts
+app/e2e/fixture-kernel.ts
+app/e2e/fixtures/integrations.ts
 docs/evidence/phase-8-polish/

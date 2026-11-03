@@ -53,6 +53,8 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
 4. **Tests:** both run against item 06's fake MCP server, with recorded tool shapes. Jira is never called live (owner: work account).
 5. **Docs:** `mcp-connectors.md`, for the two definitions and their sources. `triggers.md` only links there, a line item 05 adds; this item leaves it alone so the two items share no file.
 
+**Touches traced from the code (2026-11-03, `main` at `20684c8`):** the 2026-11-02 list named only this item's new files. Items 05 and 06 each stopped at Launch Pad because the existing seam files they must edit (where item 01's refusals and empty parts live, and the tests that pin them) were missing. Each shared file below is listed because an acceptance criterion changes it: `triggers/poll.ts` (lift `poll_source_not_built` for `jira.issues` and `clickup.tasks`, filters, dispatch); `integrations/types.ts` (`PollSpec` sources and filters); `playbooks/items.ts` (`GITHUB_ITEM_REF` accepts only `github:` refs, so `jira:` and `clickup:` item refs need it); `playbooks/dry-run-poll.ts`; `agents/settings.ts` and `agents/charter-files.ts` (only if item 06 left `connector_not_built` for a `jira` or `clickup` grant); the pins in `phase-8-foundation.test.ts`, `triggers-poll.test.ts`, `playbooks-runs-items.test.ts` and `playbooks-dry-run-poll.test.ts`; and item 06's `integrations/mcp/` folder for the two definitions. Depends on 05 as well as 06, because 05 edits `poll.ts`, `items.ts` and `types.ts` first.
+
 ## Non-goals
 
 - Writing back to Jira or ClickUp (no status change, no comment; ticket write-back was not chosen).
@@ -71,13 +73,23 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
 - `bash scripts/check-docs.sh`
 
 ## Depends on
+2026-11-02-160005-github-write-tools-and-the-issue-and-comment-poll-sources.md
 2026-11-02-160006-mcp-connector-mechanism-with-oauth.md
 
 ## Touches
-kernel/src/integrations/mcp/jira.ts
-kernel/src/integrations/mcp/clickup.ts
+kernel/src/integrations/mcp/
+kernel/src/integrations/types.ts
+kernel/src/triggers/poll.ts
 kernel/src/triggers/sources/jira-issues.ts
 kernel/src/triggers/sources/clickup-tasks.ts
+kernel/src/playbooks/items.ts
+kernel/src/playbooks/dry-run-poll.ts
+kernel/src/agents/settings.ts
+kernel/src/agents/charter-files.ts
 kernel/test/integrations-mcp-trackers.test.ts
 kernel/test/fixtures/mcp-trackers/
+kernel/test/phase-8-foundation.test.ts
+kernel/test/triggers-poll.test.ts
+kernel/test/playbooks-runs-items.test.ts
+kernel/test/playbooks-dry-run-poll.test.ts
 docs/architecture/mcp-connectors.md

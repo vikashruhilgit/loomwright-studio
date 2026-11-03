@@ -68,8 +68,11 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
    - `reviews` → met when GitHub's `reviewDecision` is `APPROVED` with N or more approvals.
 
    A playbook's own requirement may only add to it (stricter). A playbook asking for less is refused `playbook_looser_than_repo` at enable.
+4b. **The playbook's own requirement field.** `merge_requirement` (none / `studio_approval` / `reviews: N`) is a new playbook policy field in `PLAYBOOK_POLICY_FIELDS`. The owner sets it and Wright may only propose it; it is owner-locked like the others, with no default (invariant 1). It is added in the same PR to the contract's playbook policy types and to the app's shared `PlaybookPolicy` editor, because `console-contract.test.ts` pins the editor's fields equal to the kernel's. Item 13 then builds on that editor.
 5. **`trust_unprotected`** is recorded with who set it and when, and is passed to Loomwright as `--trust-unprotected` for that repo only.
 6. **Docs:** `docs/architecture/repo-policy.md`.
+
+**Touches traced from the code (2026-11-03, `main` at `20684c8`):** the 2026-11-02 list named only this item's new files. Items 05 and 06 each stopped at Launch Pad because the existing seam files they must edit (where item 01's refusals and empty parts live, and the tests that pin them) were missing. Each shared file below is listed because an acceptance criterion changes it: `integrations/index.ts` (the empty `repoPolicyPart` is defined there, so filling it edits that file); `integrations/github/client.ts`, `integrations/types.ts` and `test/fixtures/github-fake.ts` (the `GitHubClient` gains the branch-protection and collaborators reads); the playbook's own stricter requirement is a new playbook policy field, so `playbooks/types.ts`, `store.ts` (`PLAYBOOK_POLICY_FIELDS`), `drafts.ts` (Wright's draft fields) and `enable.ts` (`playbook_looser_than_repo`); `console-contract.test.ts` pins the app editor's `POLICY_FIELDS` equal to `PLAYBOOK_POLICY_FIELDS`, so the app's `PlaybookPolicy` editor and the contract gain the field in the same PR; `console-contract.test.ts` and `phase-8-foundation.test.ts` pin the three `p8-item-08` routes as not served and the part as empty. Depends on 05 (which edits `client.ts`, `types.ts` and the fake first) and 06 (which edits `integrations/index.ts` first).
 
 ## Non-goals
 
@@ -85,17 +88,38 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
 - [ ] Given `reviews: 2` and one approval, then `policyMet` is false; at two, true; after a new push (head moved), it re-reads.
 - [ ] Given a playbook whose own requirement is looser than its repo's, then its enable is refused `playbook_looser_than_repo`.
 - [ ] Given an agent session, then no tool sets or changes a repo policy.
+- [ ] Given `PLAYBOOK_POLICY_FIELDS` with `merge_requirement`, then the app editor shows it and `console-contract.test.ts`'s field pin passes.
 
 ## Validation (must pass before merge)
 
 - `cd kernel && npm ci && npm run typecheck && npm test`
+- `cd app && npm ci && npm run typecheck && npm test`
 - `bash scripts/check-docs.sh`
 
 ## Depends on
-2026-11-02-160001-phase-8-foundation-decisions-contract-seams-and-probes.md
+2026-11-02-160005-github-write-tools-and-the-issue-and-comment-poll-sources.md
+2026-11-02-160006-mcp-connector-mechanism-with-oauth.md
 
 ## Touches
 kernel/src/integrations/github/repo-policy.ts
 kernel/src/integrations/github/repo-policy-routes.ts
+kernel/src/integrations/github/client.ts
+kernel/src/integrations/types.ts
+kernel/src/integrations/index.ts
+kernel/src/playbooks/types.ts
+kernel/src/playbooks/store.ts
+kernel/src/playbooks/drafts.ts
+kernel/src/playbooks/enable.ts
+app/src/api/contract.ts
+app/src/components/PlaybookPolicy/PlaybookPolicy.tsx
+app/src/components/PlaybookPolicy/PlaybookPolicy.test.tsx
 kernel/test/integrations-github-repo-policy.test.ts
+kernel/test/integrations-github-client.test.ts
+kernel/test/fixtures/github-fake.ts
+kernel/test/console-contract.test.ts
+kernel/test/phase-8-foundation.test.ts
+kernel/test/integrations-foundation.test.ts
+kernel/test/playbooks-drafts.test.ts
+kernel/test/playbooks-foundation.test.ts
 docs/architecture/repo-policy.md
+docs/architecture/playbooks.md

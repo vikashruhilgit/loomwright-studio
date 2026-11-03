@@ -47,6 +47,8 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
 2. **Approvals:** a merge-approval card drawn from the approval's payload (repo, PR link, head SHA short form, CI state, Loomwright's READY time, the repo's policy) with Allow once / Deny. "Always for this playbook" is not offered for a merge approval.
 3. **The polish gate:** screenshots, light and dark, under `docs/evidence/phase-8-polish/`.
 
+**Touches traced from the code (2026-11-03, `main` at `20684c8`):** the 2026-11-02 list named only this item's new files. Items 05 and 06 each stopped at Launch Pad because the existing seam files they must edit (where item 01's refusals and empty parts live, and the tests that pin them) were missing. Each shared file below is listed because an acceptance criterion changes it: `app/src/screens/playbooks/PlaybookEdit.tsx` (it hosts the editor and the live confirm); the merge card in a new `approvals/MergeApprovalCard.tsx`, mounted from `ApprovalsScreen.tsx` and keyed by `subject.ts`; `kernel/test/console-contract.test.ts` (it pins `READ_ONLY_POLICY_FIELDS`, which loses `mode` on the Playbooks screen); `app/e2e/fixtures/approvals.ts` and `playbooks.ts`. Depends on 08, which adds the playbook's merge field to the same `PlaybookPolicy` files first.
+
 ## Non-goals
 
 - New kernel routes (the contract has the shapes, item 01).
@@ -68,12 +70,21 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
 ## Depends on
 2026-11-02-160002-the-phase-8-mockup.md
 2026-11-02-160004-live-mode-and-github-write-in-sessions.md
+2026-11-02-160008-repo-merge-policy-detect-and-propose.md
 
 ## Touches
 app/src/components/PlaybookPolicy/PlaybookPolicy.tsx
 app/src/components/PlaybookPolicy/PlaybookPolicy.test.tsx
 app/src/components/PlaybookPolicy/PlaybookPolicy.css
-app/src/screens/approvals/
+app/src/screens/playbooks/PlaybookEdit.tsx
+app/src/screens/playbooks/PlaybooksScreen.test.tsx
+app/src/screens/approvals/ApprovalsScreen.tsx
+app/src/screens/approvals/MergeApprovalCard.tsx
+app/src/screens/approvals/subject.ts
+app/src/screens/approvals/approvals.css
+app/src/screens/approvals/ApprovalsScreen.test.tsx
 app/e2e/approvals.spec.ts
 app/e2e/playbooks.spec.ts
+app/e2e/fixtures/approvals.ts
+kernel/test/console-contract.test.ts
 docs/evidence/phase-8-polish/

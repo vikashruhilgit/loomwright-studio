@@ -1,11 +1,11 @@
-# 09 — The /automate runner: tickets to PRs in kernel sessions, and "merge when ready" through Loomwright's gate
+# 09 — The /automate runner tools: tickets to PRs in the playbook's own session, and "merge when ready" through Loomwright's gate
 
 ## Status: ready
 
 **Priority:** MVP · ROADMAP phase 8 · invariants 2, 3, 4 · D32, D40 (item 01)
 
 **As** the owner,
-**I want** a playbook to hand tickets to Loomwright's `/automate` in a kernel-owned session, and an opt-in playbook to have Loomwright merge a ready PR through its own gate once the repo's policy is met,
+**I want** a live playbook's own session to hand tickets to Loomwright's `/automate`, and an opt-in playbook to have Loomwright merge a ready PR through its own gate once the repo's policy is met,
 **so that** tickets become PRs and merge with Studio owning the lifecycle, while the merge itself stays Loomwright's.
 
 ## Problem
@@ -43,37 +43,49 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
   - **Walk:** **"Full loop, two policies (Recommended)"**. One GitHub issue and one personal ClickUp task become two PRs through `/automate`; a fix, a question and a remark on one PR are triaged; a reviewer is re-requested; PR A merges through the gate under Solo, and PR B under Approve in Studio. Jira is `not_exercised`. Never `vendsy/*` or any Tray system.
 - **Nothing is patched outside an item's Touches.** A lane that needs another file stops and says so.
 
+## Owner decisions (2026-11-03, binding)
+
+Recorded 2026-11-03 in the phase 8 product-owner Touches re-trace (AskUserQuestion). Tracing item 09 against `main` at `20684c8` showed that a kernel tool can't start a session. Sessions start only from the event loop (the closed `EVENT_KINDS`, `message` and `wakeup`), and an approval decision only enqueues a `message` to the agent (`kernel/src/approvals/store.ts`), which runs as a plain agent session with no playbook and so no GitHub token. The owner chose **"The playbook's own session runs it (Recommended)"**:
+- **No new session machinery.** The live playbook's own run session runs `/automate --backlog … --inline-phases` (safe mode) itself. That session is already kernel-owned, has Loomwright loaded and has the token injected.
+- **Kernel tools only help and check.** They write the ticket items, read Loomwright's run state (single drain; Loomwright's own run lock also refuses a second run), check the repo policy, and record a held merge approval that the merge-when-ready playbook reads on its next fire.
+- **Fixes and `/review-pr` run the same way,** in the triage playbook's own session.
+- **The owner's 2026-11-02 choices are unchanged.**
+
 ## Scope
 
-1. **`kernel_automate_run(repo, tickets[])`,** a kernel tool for a live playbook session whose agent holds `github: write`. It:
-   - writes one requirement item per ticket into the repo checkout's `.supervisor/requirements/studio/` (gitignored by Loomwright). Each item carries the ticket's title and link, its body quoted as untrusted data, and the dedupe ref, plus a `_BACKLOG` naming them;
-   - starts **one** kernel session (the playbook's agent, Loomwright in host mode, cwd the repo checkout outside a protected folder per D31) whose prompt runs `/automate --backlog <that file> --inline-phases`, in **safe mode** (no `--auto-merge`), with the playbook's model and the agent's limits.
+**Gate first.** Probes p14 and p15 (item 01) must have a recorded answer in `docs/OPEN_QUESTIONS.md`. On 2026-11-03 both still read "Not yet run". If either is unrecorded, or p14 answers that Loomwright has no supported single-item merge, stop at Launch Pad and say so; build nothing.
 
-   The workspace is the agent's configured workspace for that repo; it is refused `no_workspace` without one.
-2. **Single drain.** Before starting, the runner reads Loomwright's structured run state for that checkout (run files and locks, never prose; D32). A live `/automate` run there refuses `automate_run_live`, and the tickets wait for the next fire. Never `--parallel`.
-3. **`kernel_automate_merge_item(repo, pr)`,** for the owner's opt-in "merge when ready" playbook:
-   - **Checks first:** the item is parked `awaiting_merge` at the PR's current head (Loomwright's run file); no run is live on that checkout; and `policyMet` (item 08). `no_policy` refuses and the PR stays parked.
-   - **Approve in Studio:** first records a held approval (repo, PR, head SHA, CI, Loomwright's READY). The owner's allow is for that head SHA only, so a new push needs a new approval.
-   - **Then** it starts one kernel session that runs p14's invocation for that one item with `--auto-merge`, plus `--trust-unprotected` only when the repo's policy records it.
+Every tool below is called by a **live playbook's own run session**, which the kernel already owns (Stop / Kill, budget, the cap, the kill switch and the approval gate apply), whose agent holds `github: write` (so the session has the down-scoped token, item 04), and which runs Loomwright's commands itself. No tool starts a session.
 
-   The kernel itself never calls a merge API, and `gh pr merge` stays `merge_blocked` in every session. Loomwright's seven conditions decide. A park is reported as Loomwright reports it.
-4. **Stop and Kill:** these sessions are ordinary kernel sessions (Sessions screen, Stop / Kill, budget, cap parking, the kill switch). A killed run resumes through Loomwright's own smart resume on the next fire, never by the kernel editing run files.
-5. **Docs:** `docs/architecture/automate.md` (runner and merge-item).
+1. **`kernel_automate_prepare(repo, tickets[])`.** For each ticket the kernel writes one requirement item into the repo checkout's `.supervisor/requirements/studio/` (the agent's workspace for that repo, outside protected folders per D31; refused `no_workspace` without one), plus a `_BACKLOG` naming them. Each item carries the ticket's title, link and dedupe ref, with its body quoted as untrusted data. The answer is the backlog path and the exact invocation the session should run: `/automate --backlog <path> --inline-phases`, safe mode, no `--auto-merge`, no `--parallel`.
+2. **`kernel_automate_state(repo)`, read-only.** Loomwright's structured run state for that checkout (run files, run lock, each item's state and its PR), read from the place p15 records: the repo or the host-mode state dir. It answers `live` (with its run id), `parked` (items with reason and PR) or `idle`. A playbook is told not to start a run while one is `live`; Loomwright's own run lock refuses a second run in any case (single drain, invariant 4).
+3. **`kernel_automate_merge_check(repo, pr)`, read-only.** It answers `go` with p14's exact single-item invocation (plus `--trust-unprotected` only when the repo's policy records it), or `wait` / `park` with the reason. It answers `go` only when:
+   - the item is parked `awaiting_merge` at the PR's current head;
+   - no run is live;
+   - `policyMet` (item 08) holds. For `studio_approval`, that means an approved merge approval exists for that PR at that head SHA.
+4. **`kernel_merge_approval_request(repo, pr, head_sha)`,** always held (`ALWAYS_HELD_TOOLS`), never covered by an "always" grant. Its payload is repo, PR, head SHA, CI state and Loomwright's READY time. The approval is only a record: the decision's message to the agent does nothing by itself, and the merge-when-ready playbook's next fire sees it through `kernel_automate_merge_check`. A new push makes it stale.
+5. **The merge itself is Loomwright's.** The kernel never calls a merge API, and `gh pr merge` stays `merge_blocked` in every session. Loomwright's seven gate conditions decide, and a park is reported as Loomwright reports it.
+6. **Wright's guidance** (`brain/templates.ts`) names these tools and the two playbook shapes they serve (tickets → `/automate`, merge when ready), so Wright can draft them from a sentence. Nothing is preinstalled (D3).
+7. **Docs:** `docs/architecture/automate.md` (runner and merge check) and `approvals.md` (the merge approval).
+
+**Touches traced from the code (2026-11-03, `main` at `20684c8`):** the 2026-11-02 list named only this item's new files. Items 05 and 06 each stopped at Launch Pad because the existing seam files they must edit (where item 01's refusals and empty parts live, and the tests that pin them) were missing. Each shared file below is listed because an acceptance criterion changes it: `automate/index.ts` (the empty `runnerPart` is defined there); `sessions/policy.ts` (`ALWAYS_HELD_TOOLS`: the merge-approval tool is always held, never covered by an always grant); `brain/templates.ts` (Wright's tool guidance names the new tools); the pins in `phase-8-foundation.test.ts` (part empty), `tools-sdk-list.test.ts`, `brain.test.ts` and `sessions-policy.test.ts`.
 
 ## Non-goals
 
-- Tracking PR state, routing comments, starting fixes (item 10).
+- Tracking PR state, routing comments (item 10).
 - Writing the playbooks (Wright authors them from the owner's sentence; none ships, D3).
+- A new event kind, or a tool or approval that starts a session (owner decision 2026-11-03).
 - Lanes or `--parallel`.
 
 ## Acceptance criteria
 
-- [ ] Given a live playbook session calling `kernel_automate_run` with two fake tickets, then two requirement items and one backlog exist in the checkout, ticket bodies quoted as untrusted data, and one kernel session runs `/automate --backlog … --inline-phases` with no `--auto-merge`.
-- [ ] Given Loomwright reports a live run on that checkout, then the call is refused `automate_run_live` and no session starts.
-- [ ] Given a parked item on a Solo repo with CI green, when `kernel_automate_merge_item` runs, then one session runs p14's invocation with `--auto-merge` and no kernel merge call is made.
-- [ ] Given an Approve in Studio repo, then a held merge approval names the head SHA; after a new push, the old approval does not authorize the merge.
-- [ ] Given no repo policy, then the call is refused `no_policy` and nothing starts.
-- [ ] Given a running `/automate` session, when the owner presses Kill, then it stops like any session, and the next fire resumes it through Loomwright.
+- [ ] Given p14 or p15 has no recorded answer in OPEN_QUESTIONS, then the item stops at Launch Pad and builds nothing.
+- [ ] Given a live playbook session calling `kernel_automate_prepare` with two fake tickets, then two requirement items and one backlog exist in the checkout, ticket bodies quoted as untrusted data, and the answer's invocation carries `--inline-phases` and no `--auto-merge`.
+- [ ] Given a fixture run file showing a live run, then `kernel_automate_state` answers `live` and `kernel_automate_merge_check` answers `wait`.
+- [ ] Given a parked item on a Solo repo with CI green, then `kernel_automate_merge_check` answers `go` with p14's invocation, and nothing in the kernel calls a merge API.
+- [ ] Given an Approve in Studio repo, then `kernel_merge_approval_request` is held with the head SHA; once approved, `merge_check` answers `go` for that head and `wait` after a new push.
+- [ ] Given no repo policy, then `merge_check` answers `park: no_policy`.
+- [ ] Given a session of a draft playbook, or of an agent without `github: write`, then the tools are not listed or are refused.
 
 ## Validation (must pass before merge)
 
@@ -83,18 +95,27 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
 ## Risks
 
 - **p14 may show that a Loomwright change is needed.** This item then waits on it (another repo, Loomwright's release).
-- **`/automate` may ask the owner a question** (`AskUserQuestion`). p15 records how it surfaces in an SDK session; it must reach the owner as a held approval or a thread message, never hang.
+- **The kernel can't make a session use the right flags.** The playbook session invokes `/automate` itself, so the kernel can't force `--inline-phases` or forbid `--auto-merge`. `merge_check` and Loomwright's own gate are the guard. Recorded in OPEN_QUESTIONS as a known limit.
+- **`/automate` may ask the owner a question.** p15 records how its `AskUserQuestion` surfaces in an SDK session; it must reach the owner, never hang.
 
 ## Depends on
 2026-11-02-160004-live-mode-and-github-write-in-sessions.md
 2026-11-02-160008-repo-merge-policy-detect-and-propose.md
 
 ## Touches
+kernel/src/automate/index.ts
 kernel/src/automate/runner.ts
-kernel/src/automate/merge-item.ts
 kernel/src/automate/run-state.ts
 kernel/src/automate/tickets-to-items.ts
+kernel/src/automate/merge-check.ts
+kernel/src/sessions/policy.ts
+kernel/src/brain/templates.ts
 kernel/test/automate-runner.test.ts
-kernel/test/automate-merge-item.test.ts
+kernel/test/automate-merge-check.test.ts
 kernel/test/fixtures/loomwright-run-files/
+kernel/test/phase-8-foundation.test.ts
+kernel/test/tools-sdk-list.test.ts
+kernel/test/brain.test.ts
+kernel/test/sessions-policy.test.ts
 docs/architecture/automate.md
+docs/architecture/approvals.md
