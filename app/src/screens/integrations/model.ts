@@ -133,6 +133,7 @@ export const STATE_OF_STATUS: Readonly<Record<ConnectorStatus, DesignedState>> =
   connected: "connected",
   expiring: "expiring",
   expired: "expired",
+  needs_permissions: "connected",
   rejected: "none",
   disconnected: "none",
 });

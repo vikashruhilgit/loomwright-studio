@@ -14,7 +14,7 @@
 // `poll_connector_missing` and `poll_repo_not_reachable`. The connector is
 // read with raw SQL over `connectors` (migration 17), never through the
 // integrations feature's values: usable means a `github` row whose status is
-// `connected` or `expiring`, and the repos it reaches are its
+// `connected`, `expiring` or `needs_permissions`, and the repos it reaches are its
 // `reachable_repos_json`, a JSON array of `owner/name` strings compared
 // case-insensitively (unparseable: none).
 //
@@ -190,7 +190,7 @@ export function storedPollIdentity(specJson: string): string | undefined {
 
 /** What the kernel knows of the GitHub connector, from the `connectors` table. */
 export interface ConnectorState {
-  /** A `github` row whose status is `connected` or `expiring`. */
+  /** A `github` row whose status is `connected`, `expiring` or `needs_permissions`. */
   readonly usable: boolean;
   /** The newest `github` row's status, or `null` when there is none. */
   readonly status: string | null;
@@ -208,7 +208,7 @@ export function githubConnectorState(store: Store): ConnectorState {
   const rows = store
     .prepare<[], { status: string; reachable_repos_json: string | null }>("SELECT status, reachable_repos_json FROM connectors WHERE kind = 'github' ORDER BY id DESC")
     .all();
-  const usable = rows.find((r) => r.status === "connected" || r.status === "expiring");
+  const usable = rows.find((r) => r.status === "connected" || r.status === "expiring" || r.status === "needs_permissions");
   const reachable = new Set<string>();
   if (usable !== undefined && usable.reachable_repos_json !== null) {
     try {

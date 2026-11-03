@@ -36,7 +36,7 @@ import type { ContributedTool, ContributedToolContext } from "../../features/con
 import type { Store } from "../../store/store.js";
 import type { GitHubClient, GitHubResponse, IntegrationsPart } from "../types.js";
 import { GITHUB_DEFAULT_MAX_BODY_BYTES } from "./client.js";
-import { connectorView, createResolvingGitHubClient, githubConnectorRow } from "./connector.js";
+import { connectorView, createResolvingGitHubClient, githubConnectorRow, isCredentialInUse } from "./connector.js";
 
 /** The diff bound when a call names none: 256 KiB. */
 export const GITHUB_PR_DIFF_DEFAULT_MAX_BYTES = 256 * 1024;
@@ -70,13 +70,13 @@ function refusal(code: GitHubToolRefusal, detail: string): Error {
 }
 
 /**
- * Refuses unless the GitHub connector has a token in use (`connected` or
- * `expiring`, as the poll trigger reads it) and lists `repo` among the repos it
+ * Refuses unless the GitHub connector has a token in use (`connected`,
+ * `expiring` or `needs_permissions`, as the poll trigger reads it) and lists `repo` among the repos it
  * reaches (case-insensitive). Reads the store only.
  */
 function requireReach(store: Store, repo: string): void {
   const row = githubConnectorRow(store);
-  if (row === undefined || !(row.status === "connected" || row.status === "expiring")) {
+  if (row === undefined || !isCredentialInUse(row.status)) {
     throw refusal("connector_missing", `no connected GitHub connector (status ${row?.status ?? "none"}); connect GitHub first`);
   }
   const reachable = new Set((connectorView(row).reachable_repos ?? []).map((r) => r.toLowerCase()));

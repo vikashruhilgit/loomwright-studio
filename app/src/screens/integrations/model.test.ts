@@ -82,6 +82,7 @@ describe("the designed state of each status", () => {
     ["connected", "connected"],
     ["expiring", "expiring"],
     ["expired", "expired"],
+    ["needs_permissions", "connected"],
     ["rejected", "none"],
     ["disconnected", "none"],
   ] as const)("a %s row is the %s state", (status, state) => {
