@@ -553,7 +553,7 @@ describe("a GitHub item whose agent lacks the grant or a usable connector parks 
     expect(sessions.starts).toEqual([]);
   });
 
-  it("AC9: with the grant, an absent, disconnected, expired or rejected connector parks missing connector; connected or expiring starts", async () => {
+  it("AC9: with the grant, an absent, disconnected, expired or rejected connector parks missing connector; connected, expiring or needs_permissions starts", async () => {
     setWright();
     const p = playbook({ dedupe: BY_REVISION });
     const sessions = stubSessions({ ending: "held" });
@@ -570,12 +570,12 @@ describe("a GitHub item whose agent lacks the grant or a usable connector parks 
     expect(needsGithubNotifications()).toHaveLength(1);
     expect(needsGithubNotifications()[0]?.body).toContain("Connect GitHub (the github connector is absent).");
 
-    for (const [i, status] of ["connected", "expiring"].entries()) {
+    for (const [i, status] of ["connected", "expiring", "needs_permissions"].entries()) {
       connector(status);
       await poll(p, [pr(1, `b${i}`)], `2026-10-14T08:1${i}:00.000Z`, sessions);
       expect(runs().at(-1), status).toMatchObject({ status: "running", session_id: i + 1 });
     }
-    expect(sessions.starts).toHaveLength(2);
+    expect(sessions.starts).toHaveLength(3);
     // The newest row counts: an expired one after a connected one parks again.
     connector("expired");
     expect(needsGithub(store, "wright")).toEqual({ reason: "needs_github", missing: "connector", connector_status: "expired" });

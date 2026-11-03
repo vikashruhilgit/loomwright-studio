@@ -73,6 +73,7 @@ export const INTEGRATIONS_TEST_IDS = {
   appKey: "integrations-app-key",
   appAccess: "integrations-app-access",
   appChecked: "integrations-app-checked",
+  appSessionScope: "integrations-app-session-scope",
   appSetUpAgain: "integrations-app-set-up-again",
   appConfirm: "integrations-app-confirm",
   appConfirmInstalled: "integrations-app-confirm-installed",
@@ -133,6 +134,7 @@ export const STATE_OF_STATUS: Readonly<Record<ConnectorStatus, DesignedState>> =
   connected: "connected",
   expiring: "expiring",
   expired: "expired",
+  needs_permissions: "connected",
   rejected: "none",
   disconnected: "none",
 });
@@ -295,9 +297,15 @@ export function permissionLabel(key: string): string {
   return spaced === "" ? key : spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
-/** GitHub's level as reported; `read` is the mockup's "Read-only". */
+/**
+ * GitHub's level as reported, in the mockups' words: `read` is "Read-only" and
+ * `write` is "Read and write" (`phase-8.html`, D39's App). Any other level is shown
+ * as GitHub sent it, so nothing is ever called read-only unless GitHub said `read`.
+ */
 export function levelLabel(level: string): string {
-  return level === "read" ? "Read-only" : level;
+  if (level === "read") return "Read-only";
+  if (level === "write") return "Read and write";
+  return level;
 }
 
 export interface PermissionLine {

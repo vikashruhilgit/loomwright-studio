@@ -21,12 +21,16 @@ import {
   GITHUB_APP_JWT_LIFETIME_SECONDS,
   GITHUB_APP_JWT_SKEW_SECONDS,
   GITHUB_APP_KEY_SERVICE,
+  GITHUB_APP_PERMISSIONS,
   GITHUB_APP_SLUG_SERVICE,
   GITHUB_APP_TOKEN_RENEW_MS,
+  SESSION_TOKEN_PERMISSIONS,
   createGitHubAppTokens,
   decodeAppKey,
   encodeAppKey,
+  exceedsPermissions,
   githubAppTokens,
+  holdsPermissions,
   signAppJwt,
 } from "../src/integrations/github/app-token.js";
 import type { GitHubAppTokens } from "../src/integrations/github/app-token.js";
@@ -69,6 +73,10 @@ interface Env {
   hold: Promise<void> | undefined;
   /** The permissions a mint reports. */
   permissions: Record<string, string>;
+  /** Every mint request's JSON body (`undefined` when it sent none). */
+  mintBodies: Array<string | undefined>;
+  /** What a mint that sends `permissions` reports, when set (else the requested set plus `metadata: read`). */
+  scopedReport: Record<string, string> | undefined;
   /** The public key the fake GitHub verifies a JWT against. */
   publicKey: string;
   /** The Keychain reader. */
@@ -101,6 +109,8 @@ function makeEnv(): Env {
     hold: undefined as Promise<void> | undefined,
     permissions: { metadata: "read", contents: "read", pull_requests: "read" } as Record<string, string>,
     publicKey: KEY.publicKey,
+    mintBodies: [] as Env["mintBodies"],
+    scopedReport: undefined as Record<string, string> | undefined,
   } as unknown as Env;
   env.reader = {
     read(service: string): string | undefined {
@@ -121,6 +131,8 @@ function makeEnv(): Env {
     if (init?.method === "POST" && mint !== null) {
       const jwt = (authorization ?? "").replace(/^Bearer /, "");
       env.jwts.push(jwt);
+      const sent = typeof init?.body === "string" ? init.body : undefined;
+      env.mintBodies.push(sent);
       if (env.hold !== undefined) await env.hold;
       if (env.mintStatus !== undefined) return json({ message: "no" }, env.mintStatus);
       // GitHub's check of the App JWT.
@@ -144,7 +156,9 @@ function makeEnv(): Env {
       const token = `ghs_${String(env.tokens.length + 1).padStart(36, "x")}`;
       env.tokens.push(token);
       env.valid.add(token);
-      return json({ token, expires_at: new Date(ghNowMs() + HOUR).toISOString(), permissions: env.permissions, repository_selection: "selected" }, 201);
+      const requested = sent === undefined ? undefined : (JSON.parse(sent) as { permissions?: Record<string, string> }).permissions;
+      const reported = requested === undefined ? env.permissions : (env.scopedReport ?? { ...requested, metadata: "read" });
+      return json({ token, expires_at: new Date(ghNowMs() + HOUR).toISOString(), permissions: reported, repository_selection: "selected" }, 201);
     }
     if (url.pathname === "/installation/repositories") {
       if (![...env.valid].some((t) => authorization === `Bearer ${t}`)) return json({ message: "Bad credentials" }, 401);
@@ -180,6 +194,74 @@ describe("the App's Keychain items and constants", () => {
     const all = [GITHUB_KEYCHAIN_SERVICE, GITHUB_APP_ID_SERVICE, GITHUB_APP_SLUG_SERVICE, GITHUB_APP_INSTALLATION_SERVICE, GITHUB_APP_KEY_SERVICE];
     expect(new Set(all).size).toBe(5);
     for (const s of all) expect(WRITE_ARG.test(s)).toBe(true);
+  });
+
+  it("GITHUB_APP_PERMISSIONS is the frozen every-repository-permission set: write each, except metadata at read", () => {
+    expect(Object.isFrozen(GITHUB_APP_PERMISSIONS)).toBe(true);
+    expect(GITHUB_APP_PERMISSIONS).toEqual({
+      actions: "write",
+      administration: "write",
+      artifact_metadata: "write",
+      attestations: "write",
+      checks: "write",
+      code_quality: "write",
+      codespaces: "write",
+      contents: "write",
+      dependabot_secrets: "write",
+      deployments: "write",
+      discussions: "write",
+      environments: "write",
+      issues: "write",
+      merge_queues: "write",
+      metadata: "read",
+      packages: "write",
+      pages: "write",
+      pull_requests: "write",
+      repository_custom_properties: "write",
+      repository_hooks: "write",
+      repository_projects: "write",
+      secret_scanning_alerts: "write",
+      secrets: "write",
+      security_events: "write",
+      statuses: "write",
+      vulnerability_alerts: "write",
+      workflows: "write",
+    });
+    expect(Object.entries(GITHUB_APP_PERMISSIONS).filter(([, level]) => level !== "write")).toEqual([["metadata", "read"]]);
+    // `single_file` needs a list of paths a manifest cannot give, so it is not asked for.
+    expect(Object.keys(GITHUB_APP_PERMISSIONS)).not.toContain("single_file");
+  });
+
+  it("SESSION_TOKEN_PERMISSIONS is the frozen four at write, a subset of the App's, with no administration, secrets, workflows or settings", () => {
+    expect(Object.isFrozen(SESSION_TOKEN_PERMISSIONS)).toBe(true);
+    expect(SESSION_TOKEN_PERMISSIONS).toEqual({ pull_requests: "write", contents: "write", issues: "write", checks: "write" });
+    expect(holdsPermissions(GITHUB_APP_PERMISSIONS, SESSION_TOKEN_PERMISSIONS)).toBe(true);
+    for (const name of ["administration", "secrets", "workflows", "repository_hooks", "dependabot_secrets"]) expect(Object.keys(SESSION_TOKEN_PERMISSIONS)).not.toContain(name);
+  });
+
+  it("holdsPermissions: a missing name or a lower level fails, an equal or higher level holds, an unknown level never does", () => {
+    const need = { contents: "write", metadata: "read" };
+    expect(holdsPermissions({ contents: "write", metadata: "read" }, need)).toBe(true);
+    expect(holdsPermissions({ contents: "admin", metadata: "write", extra: "write" }, need)).toBe(true);
+    expect(holdsPermissions({ contents: "write" }, need)).toBe(false);
+    expect(holdsPermissions({ contents: "read", metadata: "read" }, need)).toBe(false);
+    expect(holdsPermissions({ contents: "maintain", metadata: "read" }, need)).toBe(false);
+    expect(holdsPermissions({}, {})).toBe(true);
+    // A required level this code does not know can never be shown held.
+    expect(holdsPermissions({ contents: "write" }, { contents: "bogus" })).toBe(false);
+    // A prototype name is not a permission.
+    expect(holdsPermissions({}, { constructor: "read" })).toBe(false);
+  });
+
+  it("exceedsPermissions: anything above the ceiling, a name outside it or an unknown level exceeds; metadata: read does not", () => {
+    expect(exceedsPermissions({ contents: "write", metadata: "read" }, SESSION_TOKEN_PERMISSIONS)).toBe(false);
+    expect(exceedsPermissions({ contents: "read", issues: "none" }, SESSION_TOKEN_PERMISSIONS)).toBe(false);
+    expect(exceedsPermissions({}, SESSION_TOKEN_PERMISSIONS)).toBe(false);
+    expect(exceedsPermissions({ contents: "admin" }, SESSION_TOKEN_PERMISSIONS)).toBe(true);
+    expect(exceedsPermissions({ workflows: "write" }, SESSION_TOKEN_PERMISSIONS)).toBe(true);
+    expect(exceedsPermissions({ secrets: "read" }, SESSION_TOKEN_PERMISSIONS)).toBe(true);
+    expect(exceedsPermissions({ metadata: "write" }, SESSION_TOKEN_PERMISSIONS)).toBe(true);
+    expect(exceedsPermissions({ contents: "maintain" }, SESSION_TOKEN_PERMISSIONS)).toBe(true);
   });
 
   it("skew is 60 seconds, the JWT's life is 600 and a token is renewed with 5 minutes left", () => {
@@ -498,39 +580,133 @@ describe("createGitHubAppTokens (AC3, AC11)", () => {
     expect(await odd.current()).toEqual({ ok: false, error: "unreachable" });
   });
 
-  it("a mint that reports a write permission is refused write_scoped, naming the permissions, and nothing is held", async () => {
-    env.permissions = { metadata: "read", pull_requests: "write" };
+  it("a mint that reports write permissions is accepted (D39): held, handed out, and what GitHub reported is kept; no failure is recorded", async () => {
+    env.permissions = { ...GITHUB_APP_PERMISSIONS };
+    expect(env.tokens_.lastReportedPermissions).toBeUndefined();
     const res = await env.tokens_.current();
-    expect(res).toEqual({ ok: false, error: "write_scoped", write_permissions: [{ permission: "pull_requests", level: "write" }] });
-    expect(JSON.stringify(res)).not.toContain(env.tokens[0] ?? "ghs_");
-    expect(env.tokens_.lastMintFailure).toMatchObject({ write_permissions: [{ permission: "pull_requests", level: "write" }] });
-    // Nothing was held: the next call mints again.
-    env.permissions = { metadata: "read" };
-    const ok = await env.tokens_.current();
-    expect(ok.ok && ok.token).toBe(env.tokens[1]);
+    expect(res).toEqual({ ok: true, token: env.tokens[0], expires_at: new Date(START + HOUR).toISOString(), permissions: GITHUB_APP_PERMISSIONS });
+    expect(env.tokens_.lastReportedPermissions).toEqual(GITHUB_APP_PERMISSIONS);
     expect(env.tokens_.lastMintFailure).toBeUndefined();
+    // Held: the next call is the same token, with no second mint.
+    const again = await env.tokens_.current();
+    expect(again.ok && again.token).toBe(env.tokens[0]);
+    expect(env.calls).toHaveLength(1);
   });
 
-  it("a renewal that turns write-scoped is refused, the held read-only token is dropped, and the failure is recorded", async () => {
-    const first = await env.tokens_.current();
-    expect(first.ok).toBe(true);
+  it("a renewal that reports a different set replaces the held token and lastReportedPermissions; invalidate() forgets them", async () => {
+    await env.tokens_.current();
+    expect(env.tokens_.lastReportedPermissions).toEqual({ metadata: "read", contents: "read", pull_requests: "read" });
     env.nowMs += HOUR - 60_000;
     env.permissions = { metadata: "read", contents: "write", pull_requests: "write" };
     const res = await env.tokens_.current();
-    expect(res).toEqual({
-      ok: false,
-      error: "write_scoped",
-      write_permissions: [
-        { permission: "contents", level: "write" },
-        { permission: "pull_requests", level: "write" },
-      ],
+    expect(res).toMatchObject({ ok: true, token: env.tokens[1] });
+    expect(env.tokens_.lastReportedPermissions).toEqual({ metadata: "read", contents: "write", pull_requests: "write" });
+    expect(env.tokens_.lastMintFailure).toBeUndefined();
+    env.tokens_.invalidate();
+    expect(env.tokens_.lastReportedPermissions).toBeUndefined();
+  });
+
+  it("a renewal answered 401 drops the held token and the reported permissions, and records the failure", async () => {
+    await env.tokens_.current();
+    env.nowMs += HOUR - 60_000;
+    env.mintStatus = 401;
+    expect(await env.tokens_.current()).toEqual({ ok: false, error: "http_error", status: 401 });
+    expect(env.tokens_.lastMintFailure).toMatchObject({ status: 401 });
+    expect(env.tokens_.lastReportedPermissions).toBeUndefined();
+  });
+
+  describe("mintScoped (D39)", () => {
+    const REQUEST = { repositories: ["studio-sandbox"], permissions: SESSION_TOKEN_PERMISSIONS };
+
+    it("sends the repositories and permissions as the JSON body and returns the token without holding it", async () => {
+      const res = await env.tokens_.mintScoped(REQUEST);
+      expect(res).toEqual({
+        ok: true,
+        token: env.tokens[0],
+        expires_at: new Date(START + HOUR).toISOString(),
+        permissions: { pull_requests: "write", contents: "write", issues: "write", checks: "write", metadata: "read" },
+      });
+      expect(JSON.parse(env.mintBodies[0] ?? "null")).toEqual({
+        repositories: ["studio-sandbox"],
+        permissions: { pull_requests: "write", contents: "write", issues: "write", checks: "write" },
+      });
+      // Not held, and nothing the holder reports moved: the next current() is its own, unscoped mint.
+      expect(env.tokens_.lastReportedPermissions).toBeUndefined();
+      expect(env.tokens_.lastMintFailure).toBeUndefined();
+      const own = await env.tokens_.current();
+      expect(own.ok && own.token).toBe(env.tokens[1]);
+      expect(env.mintBodies[1]).toBeUndefined();
     });
-    expect(JSON.stringify([res, env.tokens_.lastMintFailure])).not.toContain(env.tokens[1] ?? "ghs_");
-    expect(env.tokens_.lastMintFailure).toBeDefined();
-    // The old token is gone too: a following call mints (and is refused) again, never serves a held token.
-    const again = await env.tokens_.current();
-    expect(again).toMatchObject({ ok: false, error: "write_scoped" });
-    expect(env.calls).toHaveLength(3);
+
+    it("never changes what the holder holds: a held token and its reported permissions survive a scoped mint", async () => {
+      const held = await env.tokens_.current();
+      await env.tokens_.mintScoped(REQUEST);
+      expect(env.tokens_.lastReportedPermissions).toEqual({ metadata: "read", contents: "read", pull_requests: "read" });
+      const again = await env.tokens_.current();
+      expect(again.ok && held.ok && again.token).toBe(held.ok && held.token);
+    });
+
+    it("two scoped mints are two requests: no sharing, no cache", async () => {
+      const [a, b] = await Promise.all([env.tokens_.mintScoped(REQUEST), env.tokens_.mintScoped(REQUEST)]);
+      expect(a.ok && b.ok && a.token !== b.token).toBe(true);
+      expect(env.calls.filter((c) => c.method === "POST")).toHaveLength(2);
+    });
+
+    it.each([
+      ["a token reporting a permission outside the session set", { ...SESSION_TOKEN_PERMISSIONS, workflows: "write" }],
+      ["a token reporting a session permission above write", { ...SESSION_TOKEN_PERMISSIONS, contents: "admin" }],
+      ["a token reporting the installation's whole set (the body was ignored)", { ...GITHUB_APP_PERMISSIONS }],
+    ])("%s is refused scope_exceeded and the token is dropped", async (_name, report) => {
+      env.scopedReport = report;
+      const res = await env.tokens_.mintScoped(REQUEST);
+      expect(res).toEqual({ ok: false, error: "scope_exceeded" });
+      expectNoSecret(res, secretsOf(env), "the refusal");
+    });
+
+    it("a mint with no permissions in its scope gets the installation's whole set back and is refused", async () => {
+      env.permissions = { ...GITHUB_APP_PERMISSIONS };
+      const res = await env.tokens_.mintScoped({ repositories: ["studio-sandbox"] });
+      expect(JSON.parse(env.mintBodies[0] ?? "null")).toEqual({ repositories: ["studio-sandbox"] });
+      expect(res).toEqual({ ok: false, error: "scope_exceeded" });
+    });
+
+    it("a 401, a 404 or a 422 is a typed http_error with its status, and records no mint failure", async () => {
+      for (const status of [401, 404, 422]) {
+        env.mintStatus = status;
+        expect(await env.tokens_.mintScoped(REQUEST)).toEqual({ ok: false, error: "http_error", status });
+      }
+      expect(env.tokens_.lastMintFailure).toBeUndefined();
+    });
+
+    it.each([
+      ["no installation", GITHUB_APP_INSTALLATION_SERVICE],
+      ["no key", GITHUB_APP_KEY_SERVICE],
+      ["no App id", GITHUB_APP_ID_SERVICE],
+    ])("%s: no_credentials, and no request", async (_name, service) => {
+      env.keychain.delete(service);
+      expect(await env.tokens_.mintScoped(REQUEST)).toEqual({ ok: false, error: "no_credentials" });
+      expect(env.calls).toEqual([]);
+    });
+
+    it("a Keychain that throws (quoting the key) is keychain_failed with no secret, and never throws", async () => {
+      env.throwOnRead = true;
+      const res = await env.tokens_.mintScoped(REQUEST);
+      expect(res).toEqual({ ok: false, error: "keychain_failed" });
+      expectNoSecret(res, secretsOf(env), "the failure");
+    });
+
+    it("a fetch that throws is unreachable and carries nothing of the error", async () => {
+      const throwing = createGitHubAppTokens({
+        keychain: env.reader,
+        now: env.now,
+        fetch: (async () => {
+          throw new Error(`boom ${ENCODED}`);
+        }) as typeof fetch,
+      });
+      const res = await throwing.mintScoped(REQUEST);
+      expect(res).toEqual({ ok: false, error: "unreachable" });
+      expectNoSecret(res, secretsOf(env), "the failure");
+    });
   });
 
   describe("no credentials", () => {

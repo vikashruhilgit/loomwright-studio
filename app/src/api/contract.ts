@@ -791,7 +791,7 @@ export interface ThreadResponse {
 export type ConnectorKind = "github" | "jira" | "clickup";
 
 /** A connector's status, as the kernel sets it (item 03): a token is checked, refused, removed, close to its expiry or past it. */
-export type ConnectorStatus = "connected" | "rejected" | "disconnected" | "expiring" | "expired";
+export type ConnectorStatus = "connected" | "rejected" | "disconnected" | "expiring" | "expired" | "needs_permissions";
 
 /**
  * Who vouched for a connector's permissions: `reported` (GitHub listed them) or

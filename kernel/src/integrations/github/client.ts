@@ -9,7 +9,9 @@
 // installation token and converting an App Manifest. `isAllowedGitHubRequest`
 // is the one authority for what may be sent, checked with the origin before
 // every request. Every request, GET or POST, goes through the one `sendRequest`
-// below (timeout, rate limit, bounded read, no redirects).
+// below (timeout, rate limit, bounded read, no redirects). The mint may carry a
+// JSON body (`repositories`, `permissions`: a down-scoped token); no other
+// request has one.
 //
 // The `studio` CLI loads the feature registry, which loads this feature, so
 // this file imports only types and the Keychain module: never the Agent SDK,
@@ -451,7 +453,10 @@ type RequestDeps = Pick<GitHubClientDeps, "fetch" | "timeoutMs" | "maxBodyBytes"
  * URL's origin and the method are checked (`isAllowedGitHubRequest`) before the
  * request. Redirects are never followed, so no request (and no token) goes
  * anywhere but `GITHUB_API_ORIGIN`. `bearer` is the caller's already-checked
- * credential; with none, no `authorization` header is sent at all. Never throws.
+ * credential; with none, no `authorization` header is sent at all. `jsonBody`,
+ * when given, is sent as the request's JSON body with `content-type:
+ * application/json`; with none, no body and no content type are sent at all.
+ * Never throws.
  */
 async function sendRequest(
   deps: RequestDeps,
@@ -460,6 +465,7 @@ async function sendRequest(
   accept: string,
   maxBytes: number,
   bearer: string | undefined,
+  jsonBody?: string,
 ): Promise<Answer> {
   try {
     const url = new URL(path, GITHUB_API_ORIGIN);
@@ -472,9 +478,11 @@ async function sendRequest(
       headers: {
         accept,
         ...(bearer === undefined ? {} : { authorization: `Bearer ${bearer}` }),
+        ...(jsonBody === undefined ? {} : { "content-type": "application/json" }),
         "user-agent": "loomwright-studio",
         "x-github-api-version": GITHUB_API_VERSION,
       },
+      ...(jsonBody === undefined ? {} : { body: jsonBody }),
       signal: AbortSignal.timeout(deps.timeoutMs ?? GITHUB_DEFAULT_TIMEOUT_MS),
     });
     const at = (deps.now ?? (() => new Date()))();
@@ -508,19 +516,46 @@ export type InstallationTokenResult =
   | GitHubSetupFailure;
 
 /**
+ * What narrows a mint: `repositories` (repo names without the owner) and
+ * `permissions` (name to level). With neither, the mint is unscoped and sends no
+ * body: the token gets everything the installation holds.
+ */
+export interface InstallationTokenScope {
+  readonly repositories?: readonly string[];
+  readonly permissions?: Readonly<Record<string, string>>;
+}
+
+/** The JSON body of a scoped mint, or `undefined` when `scope` narrows nothing. Only the two known fields are ever sent. */
+function scopeBody(scope: InstallationTokenScope | undefined): string | undefined {
+  if (scope === undefined) return undefined;
+  const body: { repositories?: readonly string[]; permissions?: Readonly<Record<string, string>> } = {};
+  if (scope.repositories !== undefined) body.repositories = [...scope.repositories];
+  if (scope.permissions !== undefined) body.permissions = { ...scope.permissions };
+  return Object.keys(body).length === 0 ? undefined : JSON.stringify(body);
+}
+
+/**
  * `POST /app/installations/{id}/access_tokens`, authenticated by the App's own
  * `jwt` (as its bearer, checked by shape: three base64url segments, not the
- * PAT's 255-character bound). The answer must carry a token of an acceptable
- * shape, a valid `expires_at` and a `permissions` object of strings, or the
- * result is `unreachable`. A 401 or 404 arrives as `http_error` with its
- * status. Never throws; nothing in the result but `token` is a secret.
+ * PAT's 255-character bound). `scope`, when it narrows anything, is sent as the
+ * request's JSON body (`repositories`, `permissions`); without it the request
+ * carries no body, byte-identical to an unscoped mint. The answer must carry a
+ * token of an acceptable shape, a valid `expires_at` and a `permissions` object
+ * of strings, or the result is `unreachable`. A 401 or 404 arrives as
+ * `http_error` with its status. Never throws; nothing in the result but `token`
+ * is a secret.
  */
-export async function mintInstallationToken(installationId: number, jwt: string, deps: RequestDeps = {}): Promise<InstallationTokenResult> {
+export async function mintInstallationToken(
+  installationId: number,
+  jwt: string,
+  deps: RequestDeps = {},
+  scope?: InstallationTokenScope,
+): Promise<InstallationTokenResult> {
   try {
     if (!Number.isSafeInteger(installationId) || installationId < 1 || !isAppJwtShape(jwt)) return SETUP_UNREACHABLE;
     const maxBytes = deps.maxBodyBytes ?? GITHUB_DEFAULT_MAX_BODY_BYTES;
     const path = `${MINT_REQUEST.prefix}${installationId}${MINT_REQUEST.suffix}`;
-    const answer = await sendRequest(deps, "POST", path, "application/vnd.github+json", maxBytes, jwt);
+    const answer = await sendRequest(deps, "POST", path, "application/vnd.github+json", maxBytes, jwt, scopeBody(scope));
     if (answer.kind === "failure") return setupFailure(answer.failure);
     if (answer.over) return SETUP_UNREACHABLE;
     const body = record(JSON.parse(Buffer.from(answer.body).toString("utf8")) as unknown);

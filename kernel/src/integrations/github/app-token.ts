@@ -10,7 +10,8 @@
 //   - the JWT is built, sent as one bearer and dropped;
 //   - the installation token lives in the holder's memory for its hour (never in
 //     the store, a file, an event or a log), shared by the polls, tools and
-//     routes of the daemon process (`githubAppTokens`).
+//     routes of the daemon process (`githubAppTokens`). A down-scoped session
+//     token (`mintScoped`) is never held at all: it is handed to the caller once.
 // Nothing here logs, and no failure carries a message: a result names its
 // failure as a closed value (and an HTTP status), never as text built from an
 // error, so no secret can ride in one. Every function and method here resolves
@@ -23,7 +24,7 @@ import { createPrivateKey, createSign } from "node:crypto";
 import { securityCliKeychain, WRITE_ARG } from "../../auth/keychain.js";
 import type { KeychainReader } from "../../auth/keychain.js";
 import { mintInstallationToken } from "./client.js";
-import type { GitHubAppTokenSource, GitHubClientDeps } from "./client.js";
+import type { GitHubAppTokenSource, GitHubClientDeps, InstallationTokenScope } from "./client.js";
 
 // The Keychain items (generic passwords, account `GITHUB_KEYCHAIN_ACCOUNT`).
 // The PAT's own item is `GITHUB_KEYCHAIN_SERVICE` (`client.ts`).
@@ -52,6 +53,87 @@ export const GITHUB_APP_JWT_LIFETIME_SECONDS = 600;
 
 /** A held installation token with this much life left or less is renewed before it is handed out. */
 export const GITHUB_APP_TOKEN_RENEW_MS = 5 * 60_000;
+
+/**
+ * Every repository permission the Studio GitHub App holds (D39), and the manifest
+ * asks for (`app-setup.ts`): each at `write`, except `metadata`, which GitHub
+ * only grants at `read`. The list is GitHub's repository permissions for Apps
+ * (`app-permissions` in GitHub's REST description, API version 2022-11-28),
+ * without `single_file` (it needs a list of paths a manifest cannot give); the
+ * source is cited in `docs/architecture/github-app-setup.md`. An install whose
+ * minted token reports less than this reads `needs_permissions`.
+ */
+export const GITHUB_APP_PERMISSIONS: Readonly<Record<string, string>> = Object.freeze({
+  actions: "write",
+  administration: "write",
+  artifact_metadata: "write",
+  attestations: "write",
+  checks: "write",
+  code_quality: "write",
+  codespaces: "write",
+  contents: "write",
+  dependabot_secrets: "write",
+  deployments: "write",
+  discussions: "write",
+  environments: "write",
+  issues: "write",
+  merge_queues: "write",
+  metadata: "read",
+  packages: "write",
+  pages: "write",
+  pull_requests: "write",
+  repository_custom_properties: "write",
+  repository_hooks: "write",
+  repository_projects: "write",
+  secret_scanning_alerts: "write",
+  secrets: "write",
+  security_events: "write",
+  statuses: "write",
+  vulnerability_alerts: "write",
+  workflows: "write",
+});
+
+/**
+ * What a session's installation token may hold (D39): Pull requests, Contents,
+ * Issues and Checks, each at write. Never administration, secrets, workflows or
+ * settings, although the App holds them. `mintScoped` refuses a token that
+ * reports more than this.
+ */
+export const SESSION_TOKEN_PERMISSIONS: Readonly<Record<string, string>> = Object.freeze({
+  pull_requests: "write",
+  contents: "write",
+  issues: "write",
+  checks: "write",
+});
+
+/** GitHub's access levels, lowest first. A level not in this list ranks `-1` and never satisfies or fits anything. */
+const LEVEL_RANK: readonly string[] = ["none", "read", "write", "admin"];
+
+function ownLevel(permissions: Readonly<Record<string, string>>, name: string): string {
+  return Object.prototype.hasOwnProperty.call(permissions, name) ? (permissions[name] as string) : "none";
+}
+
+/** Whether `reported` holds every permission in `required` at that level or higher (a missing name is `none`). */
+export function holdsPermissions(reported: Readonly<Record<string, string>>, required: Readonly<Record<string, string>>): boolean {
+  return Object.entries(required).every(([name, level]) => {
+    const need = LEVEL_RANK.indexOf(level);
+    const have = LEVEL_RANK.indexOf(ownLevel(reported, name));
+    return need >= 0 && have >= need;
+  });
+}
+
+/**
+ * Whether `reported` holds anything beyond `ceiling`: a name above its level in
+ * `ceiling` (a name not in `ceiling` has none), or a level not known here
+ * (fail-closed). GitHub's implicit `metadata: read` is ignored.
+ */
+export function exceedsPermissions(reported: Readonly<Record<string, string>>, ceiling: Readonly<Record<string, string>>): boolean {
+  return Object.entries(reported).some(([name, level]) => {
+    if (name === "metadata" && level === "read") return false;
+    const have = LEVEL_RANK.indexOf(level);
+    return have < 0 || have > LEVEL_RANK.indexOf(ownLevel(ceiling, name));
+  });
+}
 
 /** The access levels that cannot write: `none` (no access) and `read`. Any other level, a level unknown here included, is write-scoped (fail-closed). */
 export const READ_ONLY_LEVELS: readonly string[] = Object.freeze(["read", "none"]);
@@ -138,32 +220,43 @@ export function signAppJwt(appId: number | string, pem: string, now: Date): stri
  * Why the holder has no token: `no_credentials` (the App's items are not all in
  * the Keychain), `keychain_failed` (a read threw), `bad_key` (the stored key does
  * not decode or sign), or the mint's own failure (`unreachable`, `rate_limited`,
- * `http_error` with its `status`), or `write_scoped` (GitHub reports a write
- * permission for the minted token: it is refused and dropped, and the failure
- * names the permissions as `write_permissions`).
+ * `http_error` with its `status`), or `scope_exceeded` (a down-scoped mint
+ * (`mintScoped`) came back reporting more than `SESSION_TOKEN_PERMISSIONS`: the
+ * token is dropped, never returned). The App's own token may write (D39), so a
+ * write is no failure of `current()`.
  */
-export type GitHubAppTokenError = "no_credentials" | "keychain_failed" | "bad_key" | "unreachable" | "rate_limited" | "http_error" | "write_scoped";
+export type GitHubAppTokenError = "no_credentials" | "keychain_failed" | "bad_key" | "unreachable" | "rate_limited" | "http_error" | "scope_exceeded";
 
 /** The holder's answer: a token with its expiry and the permissions GitHub reports for it, or a typed failure. */
 export type GitHubAppTokenResult =
   | { readonly ok: true; readonly token: string; readonly expires_at: string; readonly permissions: Readonly<Record<string, string>> }
-  | { readonly ok: false; readonly error: GitHubAppTokenError; readonly status?: number; readonly write_permissions?: readonly WritePermission[] };
+  | { readonly ok: false; readonly error: GitHubAppTokenError; readonly status?: number };
 
 /**
  * A mint the connector must read the App as `rejected` for, with when it was
  * seen (`at`, ISO-8601 UTC): GitHub answered 401 (the key is revoked) or 404
- * (the installation is gone), or the minted token reports a write permission
- * (`write_permissions`, never read-only). No other failure is recorded: a
- * network error or a 5xx may pass.
+ * (the installation is gone). No other failure is recorded: a network error or
+ * a 5xx may pass.
  */
-export type GitHubAppMintFailure =
-  | { readonly status: 401 | 404; readonly at: string }
-  | { readonly write_permissions: readonly WritePermission[]; readonly at: string };
+export interface GitHubAppMintFailure {
+  readonly status: 401 | 404;
+  readonly at: string;
+}
 
 export interface GitHubAppTokens extends GitHubAppTokenSource {
   current(): Promise<GitHubAppTokenResult>;
-  /** The latest mint answered 401 or 404, or reported a write permission, and no mint has succeeded since, else `undefined`. */
+  /**
+   * A down-scoped installation token for `scope` (its `repositories` and
+   * `permissions` are sent as the mint's body). It is returned once and never
+   * held, cached or recorded; one that reports more than `SESSION_TOKEN_PERMISSIONS`
+   * is refused (`scope_exceeded`). It touches neither `lastMintFailure` nor
+   * `lastReportedPermissions`. Never throws.
+   */
+  mintScoped(scope: InstallationTokenScope): Promise<GitHubAppTokenResult>;
+  /** The latest mint answered 401 or 404 and no mint has succeeded since, else `undefined`. */
   readonly lastMintFailure: GitHubAppMintFailure | undefined;
+  /** The permissions GitHub reported on the latest successful (unscoped) mint, until `invalidate()` or a rejected mint; else `undefined`. */
+  readonly lastReportedPermissions: Readonly<Record<string, string>> | undefined;
   /** Forgets `lastMintFailure` (once the connector has acted on it). */
   clearMintFailure(): void;
 }
@@ -191,11 +284,14 @@ interface Held {
  * or less left, or the Keychain's installation is not the one it was minted for
  * (one Keychain read on every call; the key is read only to mint). Concurrent
  * calls share one mint. A failed renewal is returned as a failure and keeps the
- * held token unless GitHub answered 401 or 404, or the renewed token reports a write
- * permission (both drop it and set `lastMintFailure`).
+ * held token unless GitHub answered 401 or 404 (it drops it and sets
+ * `lastMintFailure`). A successful mint is accepted whatever it reports, write
+ * permissions included (D39), and its permissions are kept as
+ * `lastReportedPermissions`, for the connector to compare.
  * `invalidate()` forgets the token and any mint in flight (a result that arrives
- * after it is not kept) and clears `lastMintFailure`. Nothing is read when it is
- * built, and the token is never written anywhere.
+ * after it is not kept) and clears `lastMintFailure` and
+ * `lastReportedPermissions`. Nothing is read when it is built, and the token is
+ * never written anywhere.
  */
 export function createGitHubAppTokens(deps: GitHubAppTokenDeps = {}): GitHubAppTokens {
   const now = deps.now ?? (() => new Date());
@@ -204,6 +300,7 @@ export function createGitHubAppTokens(deps: GitHubAppTokenDeps = {}): GitHubAppT
   let inFlight: { readonly installation: number; readonly promise: Promise<GitHubAppTokenResult> } | undefined;
   let generation = 0;
   let failure: GitHubAppMintFailure | undefined;
+  let reported: Readonly<Record<string, string>> | undefined;
 
   type Item = { readonly ok: true; readonly value: string } | { readonly ok: false; readonly result: GitHubAppTokenResult };
 
@@ -224,38 +321,55 @@ export function createGitHubAppTokens(deps: GitHubAppTokenDeps = {}): GitHubAppT
     return NUMERIC_ID.test(item.value) ? { ok: true, id: Number(item.value) } : { ok: false, result: NO_CREDENTIALS };
   }
 
+  /** The App JWT for one mint (signed fresh, sent once, dropped), or why there is none. Never throws. */
+  function appJwt(): { readonly ok: true; readonly jwt: string } | { readonly ok: false; readonly result: GitHubAppTokenResult } {
+    const app = readId(GITHUB_APP_ID_SERVICE);
+    if (!app.ok) return app;
+    const encoded = readItem(GITHUB_APP_KEY_SERVICE);
+    if (!encoded.ok) return encoded;
+    const pem = decodeAppKey(encoded.value);
+    if (pem === undefined) return { ok: false, result: BAD_KEY };
+    const jwt = signAppJwt(app.id, pem, now());
+    return jwt === undefined ? { ok: false, result: BAD_KEY } : { ok: true, jwt };
+  }
+
   async function mint(installation: number, gen: number): Promise<GitHubAppTokenResult> {
     try {
-      const app = readId(GITHUB_APP_ID_SERVICE);
-      if (!app.ok) return app.result;
-      const encoded = readItem(GITHUB_APP_KEY_SERVICE);
-      if (!encoded.ok) return encoded.result;
-      const pem = decodeAppKey(encoded.value);
-      if (pem === undefined) return BAD_KEY;
-      const jwt = signAppJwt(app.id, pem, now());
-      if (jwt === undefined) return BAD_KEY;
-      const res = await mintInstallationToken(installation, jwt, deps);
+      const signed = appJwt();
+      if (!signed.ok) return signed.result;
+      const res = await mintInstallationToken(installation, signed.jwt, deps);
       if (!res.ok) {
         const rejected = res.error === "http_error" && (res.status === 401 || res.status === 404);
         if (rejected && gen === generation) {
           held = undefined;
+          reported = undefined;
           failure = { status: res.status as 401 | 404, at: now().toISOString() };
         }
         return res.status === undefined ? { ok: false, error: res.error } : { ok: false, error: res.error, status: res.status };
       }
-      // Read-only is GitHub's word on every mint, a renewal included: a token that reports a write is never held or handed out.
-      const writes = writePermissionsOf(res.permissions);
-      if (writes.length > 0) {
-        if (gen === generation) {
-          held = undefined;
-          failure = { write_permissions: writes, at: now().toISOString() };
-        }
-        return { ok: false, error: "write_scoped", write_permissions: writes };
-      }
+      // The App may write (D39): the token is accepted whatever GitHub reports for it, and what it reports is kept for the connector to compare.
       if (gen === generation) {
         held = { installation, token: res.token, expires_at: res.expires_at, expiresMs: Date.parse(res.expires_at), permissions: res.permissions };
+        reported = res.permissions;
         failure = undefined;
       }
+      return { ok: true, token: res.token, expires_at: res.expires_at, permissions: res.permissions };
+    } catch {
+      // Whatever threw, its message is dropped: it may carry the key or the JWT.
+      return { ok: false, error: "unreachable" };
+    }
+  }
+
+  async function mintScopedToken(scope: InstallationTokenScope): Promise<GitHubAppTokenResult> {
+    try {
+      const installation = readId(GITHUB_APP_INSTALLATION_SERVICE);
+      if (!installation.ok) return installation.result;
+      const signed = appJwt();
+      if (!signed.ok) return signed.result;
+      const res = await mintInstallationToken(installation.id, signed.jwt, deps, scope);
+      if (!res.ok) return res.status === undefined ? { ok: false, error: res.error } : { ok: false, error: res.error, status: res.status };
+      // Fail closed: a down-scoped token that reports more than a session may hold is dropped here, never handed out.
+      if (exceedsPermissions(res.permissions, SESSION_TOKEN_PERMISSIONS)) return { ok: false, error: "scope_exceeded" };
       return { ok: true, token: res.token, expires_at: res.expires_at, permissions: res.permissions };
     } catch {
       // Whatever threw, its message is dropped: it may carry the key or the JWT.
@@ -294,15 +408,22 @@ export function createGitHubAppTokens(deps: GitHubAppTokenDeps = {}): GitHubAppT
       }
     },
 
+    mintScoped: mintScopedToken,
+
     invalidate(): void {
       generation += 1;
       held = undefined;
       inFlight = undefined;
       failure = undefined;
+      reported = undefined;
     },
 
     get lastMintFailure(): GitHubAppMintFailure | undefined {
       return failure;
+    },
+
+    get lastReportedPermissions(): Readonly<Record<string, string>> | undefined {
+      return reported;
     },
 
     clearMintFailure(): void {

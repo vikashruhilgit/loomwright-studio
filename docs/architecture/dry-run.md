@@ -160,7 +160,7 @@ poll = { spec, items: [{ref, revision, title, would: "run" | "skip", dedupe_key,
 
 | `reason` | When | `fix` names |
 |---|---|---|
-| `connector_missing` | no `github` connector is `connected` or `expiring`, or the kernel has no GitHub client | connecting GitHub in Integrations, and the connector's status (or `absent`); with a connected connector but no client, that this kernel wires none |
+| `connector_missing` | no `github` connector is `connected`, `expiring` or `needs_permissions`, or the kernel has no GitHub client | connecting GitHub in Integrations, and the connector's status (or `absent`); with a connected connector but no client, that this kernel wires none |
 | `needs_github` | the owning agent lacks the `github` grant | adding `"github"` to `"connectors"` in the agent's settings file |
 | `rate_limited` | GitHub rate-limited a listing | the repo and when to try again |
 | `source_error` | a listing failed (`http_error`, `unreachable`, or a client that threw) | the repo and the failure |

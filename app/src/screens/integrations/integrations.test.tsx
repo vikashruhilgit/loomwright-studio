@@ -593,17 +593,21 @@ describe("mounting", () => {
 // ---- The GitHub App (GitHub App 4): detail pane, disconnect, ⌘K ------------------------------------------------
 
 describe("a connected GitHub App's detail pane", () => {
-  const appRows = withRows(appConnector("connected", { reachable_repos: ["octo-owner/site", "octo-owner/docs"] }));
+  // D39: the App holds every repository permission at write, except Metadata (read).
+  const appRows = withRows(appConnector("connected", { reachable_repos: ["octo-owner/site", "octo-owner/docs"], permissions: { metadata: "read", contents: "write", pull_requests: "write" } }));
 
-  it("says read-only, checked by GitHub, with the permissions GitHub reported, the slug, the installation and the renewing access token", async () => {
+  it("shows the permissions at the levels GitHub reported, checked by GitHub, the down-scoped session token, the slug, the installation and the renewing access token", async () => {
     await startScreen({ connectors: appRows });
     expect(rowWords()).toBe("connected · octo-owner · GitHub App");
     const header = screen.getByTestId(IDS.detailHeader).textContent ?? "";
-    expect(header).toContain("read-only");
+    expect(header).not.toContain("read-only");
     expect(header).toContain("GitHub App");
-    expect(screen.getByRole("region", { name: "Permissions" }).textContent).toContain("Read-only, checked by GitHub.");
-    expect(screen.getByRole("region", { name: "Permissions" }).textContent).not.toMatch(/declared by you/i);
-    expect(within(screen.getByTestId(IDS.permissions)).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["MetadataRead-only", "ContentsRead-only", "Pull requestsRead-only"]);
+    const region = screen.getByRole("region", { name: "Permissions" });
+    expect(region.textContent).toContain("checked by GitHub");
+    expect(screen.getByTestId(IDS.appChecked).textContent).toBe("As GitHub reports them for this App.");
+    expect(region.textContent).not.toMatch(/declared by you/i);
+    expect(within(screen.getByTestId(IDS.permissions)).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["MetadataRead-only", "ContentsRead and write", "Pull requestsRead and write"]);
+    expect(screen.getByTestId(IDS.appSessionScope).textContent).toContain("one-hour token is cut down to Pull requests, Contents, Issues and Checks");
     expect(screen.getByTestId(IDS.appName).textContent).toBe(APP_SLUG);
     expect(screen.getByTestId(IDS.appInstallation).textContent).toBe(String(APP_INSTALLATION));
     expect(screen.getByTestId(IDS.appKey).textContent).toBe("Kept in the Keychain. The value is never shown.");
@@ -627,10 +631,13 @@ describe("a connected GitHub App's detail pane", () => {
     expect(screen.queryByTestId(IDS.appSetUpAgain)).toBeNull();
   });
 
-  it("shows nothing as read-only when the row reports a permission above Read", async () => {
-    await startScreen({ connectors: withRows(appConnector("connected", { permissions: { contents: "write" } })) });
-    expect(screen.queryByTestId(IDS.appChecked)).toBeNull();
-    expect(screen.getByRole("region", { name: "Permissions" }).textContent).toContain("above Read");
+  it("shows a write-level App permission as Read and write, with no alert and no read-only claim (D39)", async () => {
+    await startScreen({ connectors: withRows(appConnector("connected", { permissions: { metadata: "read", contents: "write", workflows: "write" } })) });
+    const region = screen.getByRole("region", { name: "Permissions" });
+    expect(within(region).queryByRole("alert")).toBeNull();
+    expect(region.textContent).not.toMatch(/read-only access|above Read|refuses/i);
+    expect(screen.getByTestId(IDS.detailHeader).textContent).not.toContain("read-only");
+    expect(within(screen.getByTestId(IDS.permissions)).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["MetadataRead-only", "ContentsRead and write", "WorkflowsRead and write"]);
   });
 
   it("with the kernel unreachable keeps the last-read data with its time, and Disconnect and Refresh are off", async () => {
@@ -666,7 +673,7 @@ describe("a GitHub App GitHub no longer accepts (revoked)", () => {
     expect(screen.getByTestId(IDS.appAccess).textContent).toBe("None: GitHub refused the App's key");
     expect(screen.getByTestId(IDS.repos)).toBeTruthy();
     expect(screen.queryByTestId(IDS.replace)).toBeNull();
-    expect(screen.getByRole("region", { name: "Permissions" }).textContent).toContain("as last checked by GitHub");
+    expect(screen.getByRole("region", { name: "Permissions" }).textContent).toContain("As GitHub last reported them for this App.");
 
     fireEvent.click(screen.getByTestId(IDS.disconnect));
     expect(screen.getByRole("alertdialog")).toBeTruthy();
@@ -776,8 +783,8 @@ describe("⌘K with a GitHub App", () => {
 });
 
 describe("the empty state names both ways", () => {
-  it("says a GitHub App you install or a token you create", async () => {
+  it("says a GitHub App you install (the permissions you accept) or a read-only token you create", async () => {
     await startScreen({ connectors: withRows() });
-    expect(screen.getByTestId(IDS.empty).textContent).toContain("a GitHub App you install or a token you create");
+    expect(screen.getByTestId(IDS.empty).textContent).toContain("a GitHub App you install, which holds the permissions you accept on GitHub, or a read-only token you create");
   });
 });

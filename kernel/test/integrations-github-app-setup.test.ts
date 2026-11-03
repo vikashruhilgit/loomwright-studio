@@ -13,6 +13,7 @@ import { mergeContributions } from "../src/features/index.js";
 import type { ContributedRouteRequest } from "../src/features/index.js";
 import { GITHUB_APP_SETUP_STATUS, GITHUB_APP_SETUP_WINDOW_MS, createGitHubAppSetup } from "../src/integrations/github/app-setup.js";
 import { githubAppRoutes } from "../src/integrations/github/app-routes.js";
+import { GITHUB_APP_PERMISSIONS } from "../src/integrations/github/app-token.js";
 import { GITHUB_APP_SETUP_REFUSALS } from "../src/integrations/index.js";
 import type { ConnectorRow, GitHubAppPort, GitHubAppPortError, GitHubAppPortResult, GitHubAppSetupRefusal } from "../src/integrations/index.js";
 import { events, loopEnv } from "./loop-helpers.js";
@@ -267,12 +268,16 @@ describe("the happy path (AC1)", () => {
 });
 
 describe("the start page (AC2)", () => {
-  it("posts a manifest with no hook_attributes, exactly the three read permissions and return addresses on the loopback API's port", async () => {
+  it("posts a manifest with no hook_attributes, exactly the pinned every-permission set and return addresses on the loopback API's port", async () => {
     const f = await flow(fakePort().port, fakeGitHub());
     const { startState } = await f.open();
-    const { manifest } = formOf(await f.startPage(startState));
+    const page = await f.startPage(startState);
+    const { manifest } = formOf(page);
     expect("hook_attributes" in manifest).toBe(false);
-    expect(manifest["default_permissions"]).toEqual({ pull_requests: "read", contents: "read", metadata: "read" });
+    expect(manifest["default_permissions"]).toEqual(GITHUB_APP_PERMISSIONS);
+    // Write on each, except metadata, which GitHub only grants at read; the page no longer calls the App read-only.
+    expect(Object.entries(manifest["default_permissions"] as Record<string, string>).filter(([, level]) => level !== "write")).toEqual([["metadata", "read"]]);
+    expect(page.text).not.toContain("read-only");
     expect(manifest["default_events"]).toEqual([]);
     expect(manifest["public"]).toBe(false);
     expect(manifest["name"]).toMatch(/^loomwright-studio-[0-9a-f]{6}$/);

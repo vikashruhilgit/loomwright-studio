@@ -84,7 +84,7 @@ It is stored normalized as `{source, repos, filters, interval_seconds}`, with re
 - `poll_connector_missing`: no usable GitHub connector.
 - `poll_repo_not_reachable`: a repo the connector does not reach, naming every such repo.
 
-The four `poll_*` messages start with their code, so a playbook's `trigger: <message>` still names it. The connector is read with raw SQL over `connectors` (migration 17), never through the integrations feature: usable means a `kind = 'github'` row whose status is `connected` or `expiring` (the newest such row decides); anything else (no row, `disconnected`, `expired`, `rejected`) is missing. The repos it reaches are that row's `reachable_repos_json`, read as a JSON array of `owner/name` strings (the shape `GET /connectors/github/repos` answers) and compared case-insensitively; an unparseable value reaches no repo.
+The four `poll_*` messages start with their code, so a playbook's `trigger: <message>` still names it. The connector is read with raw SQL over `connectors` (migration 17), never through the integrations feature: usable means a `kind = 'github'` row whose status is `connected`, `expiring` or `needs_permissions` (the newest such row decides); anything else (no row, `disconnected`, `expired`, `rejected`) is missing. The repos it reaches are that row's `reachable_repos_json`, read as a JSON array of `owner/name` strings (the shape `GET /connectors/github/repos` answers) and compared case-insensitively; an unparseable value reaches no repo.
 
 Registration, a re-schedule and turning a poll on all set `next_fire_at = now + interval_seconds`.
 

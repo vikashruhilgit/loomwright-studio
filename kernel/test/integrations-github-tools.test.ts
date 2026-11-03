@@ -339,7 +339,7 @@ describe("refusals and failures (AC5)", () => {
     expect(client.calls).toEqual([]);
   });
 
-  it.each(["connected", "expiring"])("the %s connector reads", async (status) => {
+  it.each(["connected", "expiring", "needs_permissions"])("the %s connector reads", async (status) => {
     const { client, t, store } = setup({ pulls: { "o/r": [pull()] } }, status, ["o/r"]);
     expect((await call(store, t.kernel_github_pr_get, ARGS)).isError).toBe(false);
     expect(client.calls).toHaveLength(1);

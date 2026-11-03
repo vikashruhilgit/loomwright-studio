@@ -25,23 +25,30 @@ import {
   GITHUB_APP_ID_SERVICE,
   GITHUB_APP_INSTALLATION_SERVICE,
   GITHUB_APP_KEY_SERVICE,
+  GITHUB_APP_PERMISSIONS,
   GITHUB_APP_SLUG_SERVICE,
 } from "../src/integrations/github/app-token.js";
+import type { GitHubAppMintFailure, GitHubAppTokens } from "../src/integrations/github/app-token.js";
 import { GITHUB_KEYCHAIN_SERVICE, createGitHubClient } from "../src/integrations/github/client.js";
 import {
+  GITHUB_APP_REJECTED_SOURCE,
+  GITHUB_APP_UPGRADE_PATH,
   GITHUB_KEYCHAIN_ACCOUNT,
+  applyGitHubAppMintFailure,
   checkGitHubAppMint,
   checkGitHubExpiry,
   createGitHubConnector,
   githubConnectorPart,
   githubConnectorRow,
   githubExpiryDueWork,
+  isCredentialInUse,
   writeScopedMessage,
 } from "../src/integrations/github/connector.js";
 import type { GitHubConnector, GitHubConnectorDeps } from "../src/integrations/github/connector.js";
 import { githubRoutes, githubRoutesPart } from "../src/integrations/github/routes.js";
 import { draftsPart, githubToolsPart, integrationsContributionOf } from "../src/integrations/index.js";
-import type { GitHubFailure } from "../src/integrations/types.js";
+import { CONNECTOR_STATUSES } from "../src/integrations/types.js";
+import type { ConnectorStatus, GitHubClient, GitHubFailure } from "../src/integrations/types.js";
 import type { Store } from "../src/store/index.js";
 import { FAKE_RATE_LIMIT, FakeGitHubClient } from "./fixtures/github-fake.js";
 import type { FakeGitHubData } from "./fixtures/github-fake.js";
@@ -260,7 +267,7 @@ describe("a token set is the token method (GitHub App tokens, AC5)", () => {
 
   function countingTokens(): { tokens: NonNullable<GitHubConnectorDeps["tokens"]>; invalidated: () => number } {
     let n = 0;
-    const tokens = { configured: () => true, current: async () => ({ ok: false as const, error: "no_credentials" as const }), invalidate: () => void (n += 1), lastMintFailure: undefined, clearMintFailure: () => {} };
+    const tokens = { configured: () => true, current: async () => ({ ok: false as const, error: "no_credentials" as const }), invalidate: () => void (n += 1), mintScoped: async () => ({ ok: false as const, error: "no_credentials" as const }), lastMintFailure: undefined, lastReportedPermissions: undefined, clearMintFailure: () => {} };
     return { tokens, invalidated: () => n };
   }
 
@@ -628,7 +635,7 @@ describe("disconnect removes whichever method is current (GitHub App tokens, AC5
     appConnected();
     keychain.add(GITHUB_KEYCHAIN_SERVICE, GITHUB_KEYCHAIN_ACCOUNT, GOOD);
     let invalidated = 0;
-    const tokens = { configured: () => true, current: async () => ({ ok: false as const, error: "no_credentials" as const }), invalidate: () => void (invalidated += 1), lastMintFailure: undefined, clearMintFailure: () => {} };
+    const tokens = { configured: () => true, current: async () => ({ ok: false as const, error: "no_credentials" as const }), invalidate: () => void (invalidated += 1), mintScoped: async () => ({ ok: false as const, error: "no_credentials" as const }), lastMintFailure: undefined, lastReportedPermissions: undefined, clearMintFailure: () => {} };
     const res = await call(connector({ tokens }), "POST", "/connectors/github/disconnect");
     expect(res.status).toBe(200);
     expect([...keychain.items.keys()]).toEqual([]);
@@ -792,6 +799,271 @@ describe("connector_status events (AC10)", () => {
     ]);
     expect(events(env.store, "connector_status").every((e) => e.actor === "kernel" && e.session_id === null)).toBe(true);
     expectNoToken();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D39: needs_permissions, its transitions and the upgrade route
+// ---------------------------------------------------------------------------
+
+describe("needs_permissions (D39)", () => {
+  const FULL: Record<string, string> = { ...GITHUB_APP_PERMISSIONS };
+  const SLUG = "studio-reader";
+  const upgrade = githubConnectorPart.routes[0] as ContributedRoute;
+
+  function appRow(status: ConnectorStatus, permissions: Record<string, string> | null = FULL, over: { method?: string; app_slug?: string | null } = {}): void {
+    env.store
+      .prepare(
+        `INSERT INTO connectors (kind, status, account_login, permissions_json, reachable_repos_json, permissions_source, method, app_slug, installation_id, created_at, updated_at)
+         VALUES ('github', ?, 'owner-one', ?, '["owner-one/studio-sandbox"]', 'reported', ?, ?, 4242, ?, ?)`,
+      )
+      .run(status, permissions === null ? null : JSON.stringify(permissions), over.method ?? "app", over.app_slug === undefined ? SLUG : over.app_slug, T0, T0);
+  }
+
+  /** A holder that has minted: it reports `reported` (and `failure`, until it is cleared). */
+  function holder(reported: Record<string, string> | undefined, failure?: GitHubAppMintFailure): GitHubAppTokens & { cleared: number } {
+    let f = failure;
+    const h = {
+      cleared: 0,
+      configured: () => true,
+      current: async () => ({ ok: false as const, error: "no_credentials" as const }),
+      mintScoped: async () => ({ ok: false as const, error: "no_credentials" as const }),
+      invalidate: () => {},
+      get lastMintFailure() {
+        return f;
+      },
+      lastReportedPermissions: reported,
+      clearMintFailure() {
+        f = undefined;
+        h.cleared += 1;
+      },
+    };
+    return h;
+  }
+
+  const run = (tokens: GitHubAppTokens): void => applyGitHubAppMintFailure(env.store, env.now(), tokens);
+  const urlNow = async (): Promise<unknown> => ((await upgrade.handler({ params: {}, query: {}, body: undefined, store: env.store, now: env.now })).body as { url: unknown }).url;
+
+  it("is in use, like connected and expiring; rejected, disconnected and expired are not", () => {
+    expect(CONNECTOR_STATUSES.filter(isCredentialInUse)).toEqual(["connected", "expiring", "needs_permissions"]);
+  });
+
+  it("connected to needs_permissions when the latest mint reports less: one event, the row's permissions follow, the credential stays in use", () => {
+    appRow("connected", { metadata: "read", contents: "read", pull_requests: "read" });
+    const reported = { metadata: "read", contents: "write", pull_requests: "write" };
+    run(holder(reported));
+    expect(rowNow()).toMatchObject({ status: "needs_permissions", method: "app", app_slug: SLUG });
+    expect(JSON.parse(String(rowNow()?.["permissions_json"]))).toEqual(reported);
+    expect(statusEvents()).toEqual([{ connector_id: rowNow()?.["id"], kind: "github", status: "needs_permissions" }]);
+    // Again, with nothing new: no second event.
+    run(holder(reported));
+    expect(statusEvents()).toHaveLength(1);
+  });
+
+  it.each([
+    ["a name missing", () => Object.fromEntries(Object.entries(FULL).filter(([name]) => name !== "administration"))],
+    ["read where the constant has write", () => ({ ...FULL, issues: "read" })],
+    ["a level this code does not know", () => ({ ...FULL, checks: "maintain" })],
+    ["none where the constant has write", () => ({ ...FULL, statuses: "none" })],
+  ])("%s: a connected row reads needs_permissions", (_name, permissions) => {
+    appRow("connected");
+    run(holder(permissions()));
+    expect(rowNow()?.["status"]).toBe("needs_permissions");
+  });
+
+  it("needs_permissions back to connected once a later mint reports the whole set: one event, the row's permissions follow, the upgrade answers null", async () => {
+    appRow("needs_permissions", { metadata: "read", contents: "read" });
+    expect(await urlNow()).toBe(`https://github.com/settings/apps/${SLUG}/permissions`);
+    run(holder({ ...FULL, repository_projects: "admin" }));
+    expect(rowNow()).toMatchObject({ status: "connected" });
+    expect(JSON.parse(String(rowNow()?.["permissions_json"]))).toEqual({ ...FULL, repository_projects: "admin" });
+    expect(statusEvents()).toEqual([{ connector_id: rowNow()?.["id"], kind: "github", status: "connected" }]);
+    expect(await urlNow()).toBeNull();
+    run(holder(FULL));
+    expect(statusEvents()).toHaveLength(1);
+  });
+
+  it("a connected row that already holds everything is untouched: no event, no notification", () => {
+    appRow("connected");
+    const before = rowNow();
+    run(holder({ ...FULL }));
+    expect(rowNow()).toEqual(before);
+    expect(statusEvents()).toEqual([]);
+  });
+
+  it("a still short mint leaves needs_permissions as it is (no event) but keeps the stored permissions current", () => {
+    appRow("needs_permissions", { metadata: "read" });
+    run(holder({ metadata: "read", contents: "write" }));
+    expect(rowNow()?.["status"]).toBe("needs_permissions");
+    expect(JSON.parse(String(rowNow()?.["permissions_json"]))).toEqual({ metadata: "read", contents: "write" });
+    expect(statusEvents()).toEqual([]);
+  });
+
+  it("nothing reported yet (no mint since the daemon started): nothing changes, whatever the row reads", () => {
+    appRow("needs_permissions", { metadata: "read" });
+    run(holder(undefined));
+    expect(rowNow()?.["status"]).toBe("needs_permissions");
+    expect(statusEvents()).toEqual([]);
+    env.store.prepare("UPDATE connectors SET status = 'connected'").run();
+    run(holder(undefined));
+    expect(rowNow()?.["status"]).toBe("connected");
+  });
+
+  it.each([
+    ["a token connection", "connected", "token"],
+    ["a rejected App", "rejected", "app"],
+    ["a disconnected App", "disconnected", "app"],
+    ["an expired row", "expired", "app"],
+  ])("%s is left as it is, whatever a mint reported", (_name, status, method) => {
+    appRow(status as ConnectorStatus, { metadata: "read" }, { method });
+    const before = rowNow();
+    run(holder({ ...FULL }));
+    run(holder({ metadata: "read" }));
+    expect(rowNow()).toEqual(before);
+    expect(statusEvents()).toEqual([]);
+  });
+
+  it("no row: nothing happens and nothing throws", () => {
+    expect(() => run(holder({ ...FULL }))).not.toThrow();
+    expect(rowNow()).toBeUndefined();
+  });
+
+  it.each(["connected", "needs_permissions"] as const)("a recorded 401 wins over what was reported: a %s App row reads rejected, one notification, then the upgrade answers null", async (status) => {
+    appRow(status, { metadata: "read" });
+    const h = holder({ ...FULL }, { status: 401, at: T0 });
+    run(h);
+    expect(rowNow()?.["status"]).toBe("rejected");
+    expect(h.cleared).toBe(1);
+    expect(env.store.prepare("SELECT source FROM notifications").pluck().all()).toEqual([GITHUB_APP_REJECTED_SOURCE]);
+    expect(await urlNow()).toBeNull();
+    run(h);
+    expect(statusEvents()).toHaveLength(1);
+  });
+
+  it("a failure on a row that is not in use is cleared and changes nothing", () => {
+    appRow("disconnected", null);
+    const h = holder({ ...FULL }, { status: 404, at: T0 });
+    run(h);
+    expect(rowNow()?.["status"]).toBe("disconnected");
+    expect(h.lastMintFailure).toBeUndefined();
+    expect(env.store.prepare("SELECT count(*) FROM notifications").pluck().get()).toBe(0);
+  });
+
+  it("the shipped due work still runs over the process-wide holder; with nothing minted it changes nothing", () => {
+    appRow("needs_permissions", { metadata: "read" });
+    checkGitHubAppMint({ store: env.store, now: env.now });
+    expect(rowNow()?.["status"]).toBe("needs_permissions");
+  });
+
+  it("a token refused while the App is needs_permissions leaves the row as it is (in use), like a connected one", async () => {
+    appRow("needs_permissions", { metadata: "read" });
+    const res = await call(connector(), "POST", "/connectors/github/token", { token: WRITE });
+    expect(res.status).toBe(422);
+    expect(rowNow()?.["status"]).toBe("needs_permissions");
+    expect(statusEvents()).toEqual([{ connector_id: rowNow()?.["id"], kind: "github", status: "needs_permissions", refused: "token_write_scoped" }]);
+  });
+
+  describe("Refresh picks up permissions the owner accepted on github.com", () => {
+    /** A holder that reports `granted` only on a mint after `invalidate()`; the held (stale) token reports `stale`. */
+    function staleHolder(stale: Record<string, string>, granted: Record<string, string>): GitHubAppTokens & { invalidated: number; mints: number } {
+      let reported: Record<string, string> | undefined = stale;
+      const h = {
+        invalidated: 0,
+        mints: 0,
+        configured: () => true,
+        current: async () => {
+          if (reported === undefined) {
+            h.mints += 1;
+            reported = granted;
+          }
+          return { ok: true as const, token: "tok", expires_at: "2099-01-01T00:00:00.000Z", permissions: reported };
+        },
+        mintScoped: async () => ({ ok: false as const, error: "no_credentials" as const }),
+        invalidate: () => {
+          h.invalidated += 1;
+          reported = undefined;
+        },
+        get lastMintFailure() {
+          return undefined;
+        },
+        get lastReportedPermissions() {
+          return reported;
+        },
+        clearMintFailure: () => {},
+      };
+      return h as unknown as GitHubAppTokens & { invalidated: number; mints: number };
+    }
+    const refreshWith = (tokens: GitHubAppTokens): Promise<ContributedRouteResponse> => {
+      const client = { listReachableRepos: async () => { await tokens.current(); return { ok: true as const, data: [{ full_name: "owner-one/studio-sandbox", private: true }] }; } };
+      const c = createGitHubConnector({ keychain, writer: keychain, deleter: keychain, tokens, clientFor: () => client as unknown as GitHubClient });
+      return call(c, "GET", "/connectors/github/repos", undefined, { refresh: "1" });
+    };
+
+    it("a needs_permissions App row forgets the held token, mints afresh and reads connected: one event", async () => {
+      appRow("needs_permissions", { metadata: "read" });
+      const h = staleHolder({ metadata: "read" }, { ...FULL });
+      const res = await refreshWith(h);
+      expect(res.status).toBe(200);
+      expect(h.invalidated).toBe(1);
+      expect(h.mints).toBe(1);
+      expect(rowNow()?.["status"]).toBe("connected");
+      expect(statusEvents()).toEqual([{ connector_id: rowNow()?.["id"], kind: "github", status: "connected" }]);
+      expect(await urlNow()).toBeNull();
+    });
+
+    it("still short on GitHub: the row stays needs_permissions with no event", async () => {
+      appRow("needs_permissions", { metadata: "read" });
+      await refreshWith(staleHolder({ metadata: "read" }, { metadata: "read", contents: "write" }));
+      expect(rowNow()?.["status"]).toBe("needs_permissions");
+      expect(statusEvents()).toEqual([]);
+    });
+
+    it("a connected App row is not invalidated by a refresh", async () => {
+      appRow("connected");
+      const h = staleHolder({ ...FULL }, { ...FULL });
+      await refreshWith(h);
+      expect(h.invalidated).toBe(0);
+      expect(statusEvents()).toEqual([]);
+    });
+  });
+
+  describe("GET /connectors/github/app/upgrade", () => {
+    it("is one authenticated GET route on the connector part", () => {
+      expect(githubConnectorPart.routes).toHaveLength(1);
+      expect(upgrade).toMatchObject({ method: "GET", path: "/connectors/github/app/upgrade" });
+      expect(upgrade.path).toBe(GITHUB_APP_UPGRADE_PATH);
+      expect(upgrade.unauthenticated).toBeUndefined();
+      expect(Object.isFrozen(upgrade)).toBe(true);
+    });
+
+    it("answers 200 {url} with exactly the App's permissions page on github.com for a needs_permissions row", async () => {
+      appRow("needs_permissions", { metadata: "read" });
+      const res = await upgrade.handler({ params: {}, query: {}, body: undefined, store: env.store, now: env.now });
+      expect(res).toEqual({ status: 200, body: { url: "https://github.com/settings/apps/studio-reader/permissions" } });
+    });
+
+    it.each(["connected", "expiring", "rejected", "disconnected", "expired"] as const)("answers {url: null} for a %s row", async (status) => {
+      appRow(status);
+      expect(await urlNow()).toBeNull();
+    });
+
+    it("answers {url: null} with no row, or a row with no app_slug", async () => {
+      expect(await urlNow()).toBeNull();
+      appRow("needs_permissions", { metadata: "read" }, { app_slug: null });
+      expect(await urlNow()).toBeNull();
+    });
+
+    it.each(["has space", "a/../b", "x?y=1", "-leading", "a".repeat(101), "caf\u00e9"])("never builds an address from the slug %j", async (slug) => {
+      appRow("needs_permissions", { metadata: "read" }, { app_slug: slug });
+      expect(await urlNow()).toBeNull();
+    });
+
+    it("a store that throws is a fixed 500, with no message of it", async () => {
+      const broken = { prepare: () => { throw new Error("db down secret-xyz"); } } as unknown as Store;
+      const res = await upgrade.handler({ params: {}, query: {}, body: undefined, store: broken, now: env.now });
+      expect(res.status).toBe(500);
+      expect(JSON.stringify(res.body)).not.toContain("secret-xyz");
+    });
   });
 });
 

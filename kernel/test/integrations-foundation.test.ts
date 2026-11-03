@@ -143,8 +143,8 @@ describe("connector closed sets", () => {
     expect(Object.isFrozen(CONNECTOR_KINDS)).toBe(true);
   });
 
-  it("CONNECTOR_STATUSES is exactly the five statuses, frozen", () => {
-    expect(CONNECTOR_STATUSES).toEqual(["connected", "rejected", "disconnected", "expiring", "expired"]);
+  it("CONNECTOR_STATUSES is exactly the six statuses, frozen (needs_permissions: a working App install short of the permissions it asks for)", () => {
+    expect(CONNECTOR_STATUSES).toEqual(["connected", "rejected", "disconnected", "expiring", "expired", "needs_permissions"]);
     expect(Object.isFrozen(CONNECTOR_STATUSES)).toBe(true);
   });
 });
@@ -164,11 +164,14 @@ describe("the integrations feature (AC2)", () => {
     expect(Object.isFrozen(INTEGRATIONS_PARTS)).toBe(true);
   });
 
-  it("item 03 filled the github parts: github-connector has the connectors subcommand and the expiry due work, github-routes the four /connectors routes", () => {
+  it("item 03 filled the github parts: github-connector has the connectors subcommand, the expiry due work and the App upgrade route, github-routes the four /connectors routes", () => {
     const [connector, routes] = INTEGRATIONS_PARTS;
     expect(connector?.name).toBe("github-connector");
     expect(connector?.tools).toEqual([]);
-    expect(connector?.routes).toEqual([]);
+    // The App's upgrade route (D39), authenticated: the one route this part serves.
+    expect(connector?.routes.map((r) => ({ method: r.method, path: r.path, unauthenticated: r.unauthenticated }))).toEqual([
+      { method: "GET", path: "/connectors/github/app/upgrade", unauthenticated: undefined },
+    ]);
     expect(connector?.handlers).toEqual({});
     expect(connector?.subcommands?.map((s) => [s.name, s.help])).toEqual([[CONNECTORS_SUBCOMMAND, CONNECTORS_HELP]]);
     expect(connector?.dueWork).toEqual([githubExpiryDueWork, checkGitHubAppMint]);

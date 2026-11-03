@@ -1,10 +1,13 @@
 // The connected GitHub App's detail pane (GitHub App 4): the mockup's
 // `appDetailHTML()`, which is the token's pane with these differences. A
-// `GitHub App` badge beside `read-only`; rows for the App, the installation and the
-// key (kept in the Keychain, never shown); the access token's expiry with a "renews
-// automatically" badge and no expiry band (the owner does nothing); permissions
-// read "Read-only, checked by GitHub" with the list GitHub reported, never "declared
-// by you"; "Repos chosen at install". There is no Replace token. Revoked on GitHub
+// `GitHub App` badge and no `read-only` one (D39: the App holds every repository
+// permission at write; only a token is read-only); rows for the App, the installation
+// and the key (kept in the Keychain, never shown); the access token's expiry with a
+// "renews automatically" badge and no expiry band (the owner does nothing);
+// permissions "checked by GitHub" with the list and the levels GitHub reported (the
+// phase 8 mockup's "Read and write" / "Read-only"), never "declared by you", and the
+// down-scoped session token (`phase-8.html` `appPane`); "Repos chosen at install".
+// There is no Replace token. Revoked on GitHub
 // (`rejected`), the pane keeps the last-read data and Set up again is the primary.
 //
 // `Connector` carries no App name, so the App row shows the slug in the name's place
@@ -37,8 +40,6 @@ export function AppDetail({ view, row, repos, roster, rosterError, refreshing, n
   const dis = offline ? { disabled: true, title: "Needs the kernel" } : {};
   const verified = whenText(row.verified_at, now);
   const lines = permissionLines(row.permissions);
-  // A level above Read is never called read-only: the kernel refuses such an App, so this is GitHub or the row contradicting itself.
-  const writes = Object.values(row.permissions ?? {}).some((level) => level !== "read" && level !== "none");
   const stale = revoked || offline;
   const read = stale ? `last read ${verified}` : `read from GitHub ${verified}`;
   const slug = row.app_slug ?? "unknown";
@@ -49,9 +50,6 @@ export function AppDetail({ view, row, repos, roster, rosterError, refreshing, n
       <div className="integrations-dhead" data-testid={IDS.detailHeader}>
         <GitHubMark />
         <h2>GitHub</h2>
-        <span className="integrations-badge" data-tone="neutral">
-          read-only
-        </span>
         <span className="integrations-badge" data-tone="neutral">
           GitHub App
         </span>
@@ -136,15 +134,7 @@ export function AppDetail({ view, row, repos, roster, rosterError, refreshing, n
           </h3>
           <span className="integrations-cap">{stale ? read : `checked by GitHub ${verified}`}</span>
         </div>
-        {writes ? (
-          <p className="integrations-refusal" role="alert">
-            GitHub reports a permission above Read on this App. Studio takes only read-only access.
-          </p>
-        ) : (
-          <p data-testid={IDS.appChecked}>
-            <b>Read-only</b>, {stale ? "as last checked by GitHub" : "checked by GitHub"}.
-          </p>
-        )}
+        <p data-testid={IDS.appChecked}>{stale ? "As GitHub last reported them for this App." : "As GitHub reports them for this App."}</p>
         {lines.length === 0 ? (
           <p className="integrations-cap">No permissions reported.</p>
         ) : (
@@ -158,7 +148,9 @@ export function AppDetail({ view, row, repos, roster, rosterError, refreshing, n
             ))}
           </ul>
         )}
-        <p className="integrations-cap">If GitHub ever reports a write permission on the App, Studio refuses it.</p>
+        <p className="integrations-cap" data-testid={IDS.appSessionScope}>
+          A session never gets all of these: its one-hour token is cut down to <b>Pull requests, Contents, Issues and Checks</b>. Merging stays with Loomwright&apos;s gate.
+        </p>
       </section>
 
       <section className="integrations-sec" aria-labelledby={`${ids}-repos`}>
