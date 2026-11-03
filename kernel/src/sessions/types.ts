@@ -298,7 +298,14 @@ export type SessionErrorCode =
    * id, and its row is unchanged). Fail closed: the session never runs without
    * the token it was granted, and never with a broader one.
    */
-  | "github_token_unavailable";
+  | "github_token_unavailable"
+  /**
+   * `stopAll` (the kill switch or a graceful shutdown) ran while a start or
+   * resume was awaiting its GitHub token mint: refused after the mint, no row,
+   * no spawn, nothing installed (a resume's row unchanged), one
+   * `session_refused` event `{reason}`.
+   */
+  | "stopped_while_starting";
 
 /** A session request the kernel refused. `code` is stable; the message is for humans. */
 export class SessionError extends Error {

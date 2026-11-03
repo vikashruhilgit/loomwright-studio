@@ -647,4 +647,72 @@ describe("admission is asked again after the mint (check-then-await-then-act)", 
     expect(count(t.store, "SELECT count(*) FROM events")).toBe(events0);
     expect(existsSync(t.dirOf(h.id))).toBe(false);
   });
+
+  it("stopAll (the kill switch) during a start's mint refuses the start: no row, no spawn, no directory, no timer; a later start is fine", async () => {
+    let release!: (r: SessionTokenMintResult) => void;
+    let deferred = true;
+    const m = minter(() => (deferred ? new Promise<SessionTokenMintResult>((resolve) => (release = resolve)) : ok(2)));
+    const t = setup({ mint: m.fn });
+    const pb = t.playbook();
+    const p = t.start(pb).then(() => "ok", (e: unknown) => e as SessionError);
+    await flushAll();
+    expect(await t.manager.stopAll()).toEqual([]);
+    release(ok(1));
+    expect(await p).toMatchObject({ code: "stopped_while_starting" });
+    expect(count(t.store, "SELECT count(*) FROM sessions")).toBe(0);
+    expect(dirs(t)).toEqual([]);
+    expect(t.timers).toHaveLength(0);
+    expect(t.fakes.calls).toHaveLength(0);
+    expect(t.refusals().map((e) => e.payload)).toEqual([{ reason: "stopped_while_starting" }]);
+    // The stop does not refuse starts that begin after it.
+    deferred = false;
+    const later = await t.start(pb);
+    expect(t.manager.getSession(later.id)).toBeDefined();
+    expect(t.fakes.calls).toHaveLength(1);
+    expect(dirs(t)).toEqual([`session-${later.id}`]);
+    await t.manager.stopAll({ mode: "shutdown" });
+  });
+
+  it("stopAll in shutdown mode during a resume's mint refuses the resume; the row is unchanged and no directory or timer exists", async () => {
+    const releases: ((r: SessionTokenMintResult) => void)[] = [];
+    let first = true;
+    const m = minter(() => {
+      if (first) {
+        first = false;
+        return ok(0);
+      }
+      return new Promise<SessionTokenMintResult>((resolve) => releases.push(resolve));
+    });
+    const t = setup({ mint: m.fn });
+    const h = await t.start(t.playbook());
+    await t.manager.stopAll({ mode: "shutdown" });
+    await h.done;
+    const before = t.manager.getSession(h.id);
+    const callsBefore = t.fakes.calls.length;
+    const timersBefore = t.timers.length;
+    const p = t.manager.resumeSession(h.id, { permissionMode: "default", cwd: tmp, policy: LIVE_POLICY }).then(() => "ok", (e: unknown) => e as SessionError);
+    await flushAll();
+    await t.manager.stopAll({ mode: "shutdown" });
+    releases[0]?.(ok(1));
+    expect(await p).toMatchObject({ code: "stopped_while_starting" });
+    expect(t.manager.getSession(h.id)).toEqual(before);
+    expect(t.fakes.calls).toHaveLength(callsBefore);
+    expect(t.timers).toHaveLength(timersBefore);
+    expect(existsSync(t.dirOf(h.id))).toBe(false);
+    expect(t.refusals().filter((e) => e.session_id === h.id)).toHaveLength(1);
+  });
+});
+
+describe("the re-mint timer is bounded", () => {
+  it("arms at most 2^31-1 ms when the minter's expiry is a year out, and a re-mint re-arms the same way (no spin)", async () => {
+    const MAX = 2 ** 31 - 1;
+    const m = minter((n, now) => ({ ok: true, token: `ghs_token${n}abcdefgh`, expires_at: new Date(now.getTime() + 365 * 24 * HOUR).toISOString() }));
+    const t = setup({ mint: m.fn });
+    await t.start(t.playbook());
+    expect(t.timers.map((x) => x.ms)).toEqual([MAX]);
+    t.timers[0]?.fn();
+    await flushAll();
+    expect(t.timers.map((x) => x.ms)).toEqual([MAX, MAX]);
+    expect(m.asked).toHaveLength(2);
+  });
 });

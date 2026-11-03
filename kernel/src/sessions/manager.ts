@@ -682,6 +682,8 @@ export class SessionManager {
   readonly #snapshot: (() => Promise<ProcessTable>) | undefined;
 
   readonly #live = new Map<number, LiveSession>();
+  /** Incremented by every `stopAll`; a start or resume that awaited its token mint compares it to refuse after a stop. */
+  #stopEpoch = 0;
   /** The pending tool-group poll tick, if any. */
   #pollTimer: CancelTimer | undefined;
   /** The `ps -A` snapshot walk in flight (never more than one). Never rejects. */
@@ -822,7 +824,9 @@ export class SessionManager {
     // A live, write-granted session needs its down-scoped token: minted after admission, before any row exists (a refusal leaves none).
     let githubToken: MintedGithubToken | undefined;
     if (this.#githubWriteQualifies(params.agent, params.playbook ?? null, dryRun)) {
+      const epoch = this.#stopEpoch;
       githubToken = await this.#mintGithubToken(params.playbook as number, null);
+      this.#refuseIfStoppedSince(epoch, null);
       // The mint was awaited: admission (cap, budget, pause) and the grant are asked again, synchronously with the insert below. A refusal drops the in-memory token; nothing was written.
       this.#admit(startRequest);
       if (!this.#githubWriteQualifies(params.agent, params.playbook ?? null, dryRun)) githubToken = undefined;
@@ -950,6 +954,8 @@ export class SessionManager {
    */
   async stopAll(options: { readonly mode?: "stop" | "shutdown" } = {}): Promise<StopAllOutcome[]> {
     const mode = options.mode ?? "stop";
+    // Synchronously, before any await: a start or resume suspended on its token mint sees it change and refuses.
+    this.#stopEpoch++;
     const ids = [...this.#live.keys()];
     const results = await Promise.allSettled(ids.map((id) => this.#stopForAll(id, mode)));
     return results.map((result, i): StopAllOutcome => {
@@ -1112,7 +1118,9 @@ export class SessionManager {
     // A live, write-granted session needs its down-scoped token again: minted before the row is touched (a refusal leaves it as it was).
     let githubToken: MintedGithubToken | undefined;
     if (this.#githubWriteQualifies(row.agent, playbook, dryRun)) {
+      const epoch = this.#stopEpoch;
       githubToken = await this.#mintGithubToken(playbook as number, id);
+      this.#refuseIfStoppedSince(epoch, id);
       // The mint was awaited: another resume or a reap may have taken the row meanwhile.
       this.#recheckResumable(id, row);
       // Admission and the grant are asked again now that the mint is done; a refusal leaves the row as it was.
@@ -2984,6 +2992,18 @@ export class SessionManager {
       if (err instanceof GithubTokenUnavailableError) this.#recordSafely("session_refused", sessionId, { reason: err.code, detail: err.detail });
       throw err;
     }
+  }
+
+  /**
+   * After the token mint's await in a start or resume: `stopAll` (kill switch or
+   * shutdown) ran meanwhile, so the work is refused `stopped_while_starting`
+   * (one `session_refused` event; the in-memory token goes out of scope, nothing
+   * was written). `epoch` was read before the await, so a later start is unaffected.
+   */
+  #refuseIfStoppedSince(epoch: number, sessionId: number | null): void {
+    if (epoch === this.#stopEpoch) return;
+    this.#recordSafely("session_refused", sessionId, { reason: "stopped_while_starting" });
+    throw new SessionError("stopped_while_starting", "the sessions were stopped (kill switch or shutdown) while the GitHub token was being minted");
   }
 
   /** After an await in `resumeSession`: the session is still the idle row that was read (not running here, same status and group), else `not_resumable`. */

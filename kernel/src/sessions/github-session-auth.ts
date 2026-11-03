@@ -36,6 +36,9 @@ export const GITHUB_TOKEN_REMINT_MARGIN_MS = 5 * 60_000;
 /** A failed re-mint (or one that left less than this) is tried again after this long, so a failure never spins. */
 export const GITHUB_TOKEN_REMINT_RETRY_MS = 30_000;
 
+/** The longest delay `setTimeout` accepts (a signed 32-bit count of ms); longer fires after 1 ms. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
 /** The directory under the Studio data dir that holds one `session-<id>` directory per live, write-granted session. */
 export const GITHUB_SESSION_DIR = "session-github";
 
@@ -302,10 +305,15 @@ export class GithubSessionAuth {
     return `${process.pid}-${++this.#nonce}`;
   }
 
-  /** Renew `margin` before expiry, never sooner than the retry interval after now. */
+  /**
+   * Renew `margin` before expiry, never sooner than the retry interval after
+   * now, and never later than the longest delay a timer takes: the expiry is
+   * the minter's data, and a delay over 2^31-1 ms makes Node fire at once (a
+   * re-mint loop). A clamped timer renews early, then re-arms from the new expiry.
+   */
   #arm(entry: Entry): void {
     const wait = entry.expiresAtMs - GITHUB_TOKEN_REMINT_MARGIN_MS - this.#deps.now().getTime();
-    this.#after(entry, Math.max(GITHUB_TOKEN_REMINT_RETRY_MS, wait));
+    this.#after(entry, Math.min(Math.max(GITHUB_TOKEN_REMINT_RETRY_MS, wait), MAX_TIMER_MS));
   }
 
   #after(entry: Entry, ms: number): void {
