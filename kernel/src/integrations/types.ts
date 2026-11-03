@@ -110,23 +110,32 @@ export interface DraftOutputRow {
  * given (D4); the trigger validates it when it is created (item 04).
  */
 export interface PollSpec {
-  readonly source: "github.pulls";
+  /** The GitHub sources the kernel builds; `jira.issues` and `clickup.tasks` are not built (`poll_source_not_built`). */
+  readonly source: "github.pulls" | "github.issues" | "github.pr_comments";
   /** `<owner>/<repo>` names. */
   readonly repos: readonly string[];
+  /** Which keys a source takes is the poll's check (`parsePollSpec`): `github.pulls` takes `state`/`draft`/`author`, `github.issues` takes `state`/`labels`/`assignee`, `github.pr_comments` none. */
   readonly filters: {
     readonly state?: string;
     readonly draft?: boolean;
     /** A GitHub login. */
     readonly author?: string;
+    /** Label names an issue must all carry (`github.issues`). */
+    readonly labels?: readonly string[];
+    /** A GitHub login an issue is assigned to (`github.issues`). */
+    readonly assignee?: string;
   };
   readonly interval_seconds: number;
 }
 
 /**
  * One item a poll found: what a per-item playbook run is about. `ref` is
- * stable for the item (`github:<owner>/<repo>#<n>`) and `revision` changes
- * when it does (a PR's head SHA); they are the dedupe-key fields `item.id` and
- * `item.revision`. `title` is author-controlled text: untrusted data.
+ * stable for the item (`github:<owner>/<repo>#<n>`, or
+ * `…#<pr>:<kind>:<comment id>` for a PR comment) and `revision` changes when it
+ * does (a PR's head SHA, an issue's or a comment's `updated_at`); they are the
+ * dedupe-key fields `item.id` and `item.revision`. `title`, `text` (an issue's
+ * or a comment's body) and `author` are author-controlled text: untrusted data.
+ * `text`, `author`, `kind` and `pr` are set by the issue and comment sources only.
  */
 export interface SourceItem {
   readonly ref: string;
@@ -134,6 +143,14 @@ export interface SourceItem {
   readonly title: string;
   readonly url: string;
   readonly updated_at: string;
+  /** The issue's or comment's body: untrusted data. */
+  readonly text?: string;
+  /** The issue's or comment's author login: untrusted data. */
+  readonly author?: string;
+  /** A PR comment's kind (`github.pr_comments`). */
+  readonly kind?: GitHubPrComment["kind"];
+  /** The pull request a comment is on (`github.pr_comments`). */
+  readonly pr?: number;
 }
 
 // ---- The GitHub client ----------------------------------------------------------
@@ -227,14 +244,56 @@ export interface GitHubPullComment {
 /** The open-pull listing's filters: `PollSpec.filters`, applied as given. */
 export type GitHubPullFilters = PollSpec["filters"];
 
+/** The issue listing's filters (`state`, `labels`, `assignee`): the slice of `PollSpec.filters` a `github.issues` poll takes, passed to GitHub as given. */
+export type GitHubIssueFilters = Pick<PollSpec["filters"], "state" | "labels" | "assignee">;
+
+/** One issue as a listing shows it (a pull request is never one). `title`, `body`, `author` and `labels` are author-controlled: untrusted data. */
+export interface GitHubIssueSummary {
+  readonly number: number;
+  readonly title: string;
+  readonly body: string;
+  readonly author: string;
+  readonly labels: readonly string[];
+  readonly url: string;
+  readonly updated_at: string;
+}
+
 /**
- * The GitHub calls phase 6 makes, every one read-only: the token's user and
- * permissions and the repos it reaches (item 03), open pulls by repo and
- * filter (item 04), and a pull's detail, diff, files and comments (item 06).
- * Every response carries the rate limit it was served under. `repo` is
- * `<owner>/<repo>`. The real client is item 03's; tests use
- * `FakeGitHubClient` (`kernel/test/fixtures/github-fake.ts`), which never
- * reaches the network.
+ * One comment, or one review, on an open pull request, as the comment source
+ * reads it. The three kinds are three GitHub id spaces, so `id` is unique only
+ * within a `kind`. `updated_at` is the comment's own, and a review's
+ * `submitted_at` (a review has no `updated_at`). `author` and `body` are
+ * author-controlled: untrusted data.
+ */
+export interface GitHubPrComment {
+  readonly kind: "issue_comment" | "review_comment" | "review";
+  readonly id: number;
+  /** The pull request's number. */
+  readonly pr: number;
+  readonly author: string;
+  readonly body: string;
+  readonly url: string;
+  readonly updated_at: string;
+}
+
+/** What GitHub answers a created comment: kernel values only, the new comment's numeric id and its `html_url`. */
+export interface GitHubCommentResult {
+  readonly id: number;
+  readonly url: string;
+}
+
+/**
+ * The GitHub calls the kernel makes. The reads: the token's user and
+ * permissions and the repos it reaches (phase 6 item 03), open pulls by repo
+ * and filter (item 04), a pull's detail, diff, files and comments (item 06),
+ * and the issue and the open-PR comment listings the `github.issues` and
+ * `github.pr_comments` poll sources read (phase 8 item 05). The writes (the
+ * last four, phase 8 item 05) are sent only with a GitHub App installation
+ * credential: with the owner's token (PAT) they send nothing and answer
+ * `unreachable` (the token path stays read-only). Every response carries the
+ * rate limit it was served under. `repo` is `<owner>/<repo>`. The real client
+ * is item 03's; tests use `FakeGitHubClient`
+ * (`kernel/test/fixtures/github-fake.ts`), which never reaches the network.
  */
 export interface GitHubClient {
   getTokenInfo(): Promise<GitHubResponse<GitHubTokenInfo>>;
@@ -244,6 +303,18 @@ export interface GitHubClient {
   getPullDiff(repo: string, number: number, maxBytes: number): Promise<GitHubResponse<GitHubPullDiff>>;
   listPullFiles(repo: string, number: number): Promise<GitHubResponse<readonly GitHubPullFile[]>>;
   listPullComments(repo: string, number: number): Promise<GitHubResponse<readonly GitHubPullComment[]>>;
+  /** Issues (never pull requests) by repo, `state`/`labels`/`assignee` passed to GitHub as given. */
+  listIssues(repo: string, filters: GitHubIssueFilters): Promise<GitHubResponse<readonly GitHubIssueSummary[]>>;
+  /** For every open pull request: its conversation comments, its review comments and its reviews. */
+  listOpenPullComments(repo: string): Promise<GitHubResponse<readonly GitHubPrComment[]>>;
+  /** Write: reply in a review comment's thread. App credential only. */
+  replyToReviewComment(repo: string, pull: number, commentId: number, body: string): Promise<GitHubResponse<GitHubCommentResult>>;
+  /** Write: a conversation comment on a pull request. App credential only. */
+  createPullComment(repo: string, pull: number, body: string): Promise<GitHubResponse<GitHubCommentResult>>;
+  /** Write: a comment on an issue. App credential only. */
+  createIssueComment(repo: string, issue: number, body: string): Promise<GitHubResponse<GitHubCommentResult>>;
+  /** Write: ask for (or re-request) reviews from `reviewers` (logins). App credential only; answers the pull request's number. */
+  requestReviewers(repo: string, pull: number, reviewers: readonly string[]): Promise<GitHubResponse<{ readonly pull: number }>>;
 }
 
 // ---- The GitHub App connect (D36) ------------------------------------------------------

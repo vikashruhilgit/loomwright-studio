@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PROPOSED_ALLOWED_TOOLS } from "../src/brain/index.js";
 import { decideToolUse, freezePolicy } from "../src/sessions/index.js";
 import { DRAFT_PAYLOAD_KINDS, MAX_DRAFT_TEXT_CHARS, draftDecision, draftPayloadOf, githubCliDecision } from "../src/sessions/draft-mode.js";
-import { ALWAYS_HELD_TOOLS, MAX_RAIL_COMMAND_LENGTH, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf, programCouldBe } from "../src/sessions/policy.js";
+import { ALWAYS_HELD_TOOLS, GITHUB_WRITE_TOOLS, MAX_RAIL_COMMAND_LENGTH, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf, programCouldBe } from "../src/sessions/policy.js";
 import type { NeverCategory } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
 
@@ -153,6 +153,7 @@ describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
       "gh_issue_edit",
       "gh_issue_close",
       "gh_api_write",
+      "mcp_write",
       "settings_write",
       "hooks_write",
     ]);
@@ -187,6 +188,8 @@ describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
     ["Bash", { command: "gh api -X POST repos/o/r/issues" }, "gh api POST", ["gh_api_write"]],
     ["Bash", { command: "gh api -X DELETE repos/o/r/x" }, "gh api DELETE", ["gh_api_write"]],
     ["Bash", { command: "gh api -Z repos/o/r" }, "gh api (flag unread)", ["gh_api_write"]],
+    // An MCP connector's non-read-only proxy tool (phase 8 item 06): the kernel fixed the `kernel_mcp_w_` name from its stored row.
+    ["mcp__kernel__kernel_mcp_w_jira_create_issue", { arguments_json: '{"summary":"x"}' }, "mcp_write", ["mcp_write"]],
     ["Bash", { command: "cat /home/o/.claude/CLAUDE.md" }, "Bash naming ~/.claude/", ["settings_write"]],
     ["Bash", { command: "cat settings.local.json" }, "Bash naming a settings*.json file", ["settings_write"]],
     ["Bash", { command: "chmod +x .git/hooks/pre-push" }, "Bash naming a hooks file", ["hooks_write"]],
@@ -199,18 +202,70 @@ describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
     ["NotebookEdit", { notebook_path: "/home/o/.claude/x.ipynb" }, "NotebookEdit ~/.claude/", ["settings_write"]],
     ["NotebookEdit", { notebook_path: "/work/settings.json" }, "NotebookEdit a settings*.json file", ["settings_write"]],
     ["NotebookEdit", { notebook_path: "/work/.git/hooks/x.ipynb" }, "NotebookEdit a hooks file", ["hooks_write"]],
+    // The kernel's GitHub write tools (phase 8 item 05): outward by name, the action is the name without `mcp__kernel__`.
+    ["mcp__kernel__kernel_github_pr_reply", { repo: "o/r", pr: 3, comment_id: 9, body: "x" }, "kernel_github_pr_reply", ["gh_pr_comment_reply"]],
+    ["mcp__kernel__kernel_github_pr_comment", { repo: "o/r", pr: 3, body: "x" }, "kernel_github_pr_comment", ["gh_pr_comment"]],
+    ["mcp__kernel__kernel_github_issue_comment", { repo: "o/r", issue: 3, body: "x" }, "kernel_github_issue_comment", ["gh_issue_comment"]],
+    ["mcp__kernel__kernel_github_pr_request_reviewers", { repo: "o/r", pr: 3, reviewers: ["a"] }, "kernel_github_pr_request_reviewers", ["gh_pr_request_reviewers"]],
   ];
 
-  it("maps every outward label the rail emits for Bash, Write, Edit and NotebookEdit to its categories, and every category is reachable", () => {
+  it("maps every outward label the rail emits for Bash, Write, Edit and NotebookEdit, and the four GitHub write tools, to its categories, and every category is reachable", () => {
     for (const [tool, input, action, categories] of LABELS) {
       const c = classifyToolCall(tool, input, rail);
       expect(c, JSON.stringify(input)).toMatchObject({ kind: "outward", action });
       expect(neverCategoriesOf(action), action).toEqual(categories);
     }
     const reached = new Set(LABELS.flatMap(([, , action]) => neverCategoriesOf(action)));
-    // Phase 8 item 01 accepts these 2 with no rail label; item 05 adds their matcher, then this exemption goes.
-    const NO_MATCHER_YET = ["gh_pr_request_reviewers", "gh_pr_comment_reply"];
-    expect(NEVER_CATEGORIES.filter((c) => !reached.has(c) && !NO_MATCHER_YET.includes(c))).toEqual([]);
+    expect(NEVER_CATEGORIES.filter((c) => !reached.has(c))).toEqual([]);
+  });
+
+  it("classifies each GitHub write tool outward with the tool's own payload, and not as an always-held tool", () => {
+    expect(Object.keys(GITHUB_WRITE_TOOLS)).toEqual([
+      "mcp__kernel__kernel_github_pr_reply",
+      "mcp__kernel__kernel_github_pr_comment",
+      "mcp__kernel__kernel_github_issue_comment",
+      "mcp__kernel__kernel_github_pr_request_reviewers",
+    ]);
+    expect(Object.isFrozen(GITHUB_WRITE_TOOLS)).toBe(true);
+    const input = { repo: "o/r", pr: 3, reviewers: ["alice"] };
+    for (const name of Object.keys(GITHUB_WRITE_TOOLS)) {
+      expect(ALWAYS_HELD_TOOLS, name).not.toContain(name);
+      expect(classifyToolCall(name, input, rail), name).toEqual({
+        kind: "outward",
+        action: name.replace("mcp__kernel__", ""),
+        payload: { tool: name, input, cwd: "/work" },
+      });
+    }
+    // The read tools and a look-alike name are ordinary, whatever their input.
+    for (const name of ["mcp__kernel__kernel_github_pr_get", "mcp__kernel__kernel_github_pr_comments", "mcp__kernel__kernel_github_pr_reply_x", "kernel_github_pr_reply"]) {
+      expect(classifyToolCall(name, input, rail).kind, name).toBe("ordinary");
+    }
+    // Inherited property names are not tool names.
+    expect(classifyToolCall("constructor", input, rail).kind).toBe("ordinary");
+  });
+
+  it("holds every MCP proxy tool that is not provably read-only as mcp_write, and lets only kernel_mcp_r_ through", () => {
+    const payload = (tool: string, input: unknown) => ({ tool, input, cwd: "/work" });
+    // The `w` prefix, and every other `kernel_mcp_` name (the rail fails closed on the prefix, not on a `w`).
+    for (const name of ["kernel_mcp_w_jira_create_issue", "kernel_mcp_w_clickup_x", "kernel_mcp_jira_create_issue", "kernel_mcp_x_jira_a", "kernel_mcp_", "kernel_mcp_R_jira_a", "kernel_mcp_read_jira_a"]) {
+      const full = `mcp__kernel__${name}`;
+      expect(classifyToolCall(full, { arguments_json: "{}" }, rail), name).toEqual({ kind: "outward", action: "mcp_write", payload: payload(full, { arguments_json: "{}" }) });
+    }
+    // A read-only proxy (the server's hint, kept in the kernel's row) and a tool of another namespace stay ordinary.
+    for (const name of ["mcp__kernel__kernel_mcp_r_jira_get_issue", "mcp__kernel__kernel_mcp_r_clickup_x", "mcp__other__kernel_mcp_w_jira_x", "kernel_mcp_w_jira_x", "mcp__kernel__kernel_github_pr_get"]) {
+      expect(classifyToolCall(name, {}, rail), name).toEqual({ kind: "ordinary" });
+    }
+    // Not an always-held tool: the owner's per-playbook "always" may cover it, so it is in no ALWAYS_HELD list.
+    expect(ALWAYS_HELD_TOOLS.some((t) => t.includes("kernel_mcp_"))).toBe(false);
+  });
+
+  it("denies an mcp_write call agent_boundary when the policy's never lists it, and holds it otherwise", () => {
+    const c = classifyToolCall("mcp__kernel__kernel_mcp_w_jira_create_issue", {}, rail);
+    if (c.kind !== "outward") throw new Error("not outward");
+    expect(boundaryDecision({ allowedTools: [], allowedBashPrefixes: [], never: ["mcp_write"] }, c)).toEqual({ kind: "boundary", category: "mcp_write" });
+    expect(boundaryDecision({ allowedTools: [], allowedBashPrefixes: [], never: ["git_push", "gh_api_write"] }, c)).toEqual({ kind: "none" });
+    expect(boundaryDecision({ allowedTools: [], allowedBashPrefixes: [] }, c)).toEqual({ kind: "none" });
+    expect(boundaryDenyReason("mcp_write")).toContain("mcp_write is in this agent's never list");
   });
 
   it("maps the ALWAYS_HELD_TOOLS actions, a merge and any other text to no category", () => {
@@ -219,7 +274,7 @@ describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {
       expect(c.kind, tool).toBe("outward");
       if (c.kind === "outward") expect(neverCategoriesOf(c.action), tool).toEqual([]);
     }
-    for (const text of ["kernel_playbook_enable", "kernel_agent_create", "kernel_agent_update", "gh pr merge", "git", "gh api", "Read ~/.claude/", ""]) {
+    for (const text of ["kernel_playbook_enable", "kernel_agent_create", "kernel_agent_update", "mcp__kernel__kernel_github_pr_reply", "kernel_github_pr_get", "gh pr merge", "git", "gh api", "Read ~/.claude/", ""]) {
       expect(neverCategoriesOf(text), text).toEqual([]);
     }
   });

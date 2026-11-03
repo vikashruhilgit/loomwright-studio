@@ -35,7 +35,7 @@ import type { Store } from "../store/store.js";
 import { agentMemoryDir, ensureAgentMemoryFiles } from "./memory.js";
 import { getAgent } from "./registry.js";
 import type { AgentRow } from "./registry.js";
-import { agentSettingsPath, readAgentSettings } from "./settings.js";
+import { agentSettingsPath, mcpGrantKindOf, readAgentSettings } from "./settings.js";
 import { AGENT_CREATED_BY, AVATAR_HUES, AVATAR_SHAPES, RESERVED_AGENT_IDS, isValidAgentId } from "./types.js";
 import type { AgentCreatedBy, AvatarHue, AvatarShape } from "./types.js";
 
@@ -276,8 +276,9 @@ export function validateCharter(input: unknown, options: ValidateCharterOptions)
     return invalid(path.length === 0 ? "the charter" : path.join("."), issue?.message ?? "invalid");
   }
   const charter = parsed.data as Charter;
-  const unbuilt = charter.connectors?.find((kind) => kind === "jira" || kind === "clickup");
-  if (unbuilt !== undefined) return invalid("connectors", `connector_not_built: the ${unbuilt} connector is not built yet; remove it from connectors`);
+  // A jira or clickup grant names the MCP server's tools, and only the owner grants those (a charter can't carry one).
+  const ownerOnly = mcpGrantKindOf(charter.connectors ?? []);
+  if (ownerOnly !== undefined) return invalid("connectors", `the ${ownerOnly} grant is owner-only: set it with studio agents set ${charter.id} connectors ${ownerOnly}:<tool>`);
   const homeDir = options.homeDir ?? homedir();
   for (const [i, workspace] of charter.workspaces.entries()) {
     const problem = workspaceProblem(workspace, options.dataDir, homeDir);

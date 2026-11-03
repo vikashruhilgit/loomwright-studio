@@ -1,17 +1,21 @@
-// The real `GitHubClient` (phase 6, item 03): read-only GETs against
+// The real `GitHubClient` (phase 6, item 03): GETs against
 // `https://api.github.com` on Node's built-in `fetch` (and the GitHub App's two
-// setup POSTs, below). Items 04 and 06 only
+// setup POSTs and the three write POSTs, below). Items 04 and 06 only
 // call it; tests inject `fetch` (and the token source), so none reaches the
 // network or the Keychain.
 //
-// The client sends nothing but GETs and two allowlisted POSTs, both of which
-// are the GitHub App's own setup calls (`GITHUB_ALLOWED_NON_GET`): minting an
-// installation token and converting an App Manifest. `isAllowedGitHubRequest`
-// is the one authority for what may be sent, checked with the origin before
-// every request. Every request, GET or POST, goes through the one `sendRequest`
-// below (timeout, rate limit, bounded read, no redirects). The mint may carry a
-// JSON body (`repositories`, `permissions`: a down-scoped token); no other
-// request has one.
+// The client sends nothing but GETs and five allowlisted POSTs
+// (`GITHUB_ALLOWED_NON_GET`): the GitHub App's own two setup calls (minting an
+// installation token, converting an App Manifest) and the three writes (a reply
+// in a review thread, a comment on an issue or pull request, a reviewer
+// request). `isAllowedGitHubRequest` is the one authority for what may be sent,
+// checked with the origin before every request. Every request, GET or POST,
+// goes through the one `sendRequest` below (timeout, rate limit, bounded read,
+// no redirects). The mint may carry a JSON body (`repositories`, `permissions`:
+// a down-scoped token); the writes carry their own JSON body; no other request
+// has one. The writes are sent only with an App installation credential: the
+// owner's token (PAT) path stays read-only, so a write with it sends nothing
+// and answers `unreachable`.
 //
 // The `studio` CLI loads the feature registry, which loads this feature, so
 // this file imports only types and the Keychain module: never the Agent SDK,
@@ -48,7 +52,11 @@ import type {
   ConnectorMethod,
   GitHubAppConversion,
   GitHubClient,
+  GitHubCommentResult,
   GitHubFailure,
+  GitHubIssueFilters,
+  GitHubIssueSummary,
+  GitHubPrComment,
   GitHubPull,
   GitHubPullComment,
   GitHubPullDiff,
@@ -92,44 +100,69 @@ const MAX_APP_JWT_LENGTH = 2048;
 
 const APP_JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
-/** An owner or repository name segment: GitHub's characters, never `.` or `..`. */
-const NAME_SEGMENT = /^[A-Za-z0-9_.-]{1,100}$/;
+/** An owner or repository name segment: GitHub's characters, never `.` or `..`. Also the characters of a reviewer login. */
+export const NAME_SEGMENT = /^[A-Za-z0-9_.-]{1,100}$/;
+
+/** An owner or repository name as one allowlisted path segment: `NAME_SEGMENT`, and never `.` or `..`. */
+const NAME_PATH_SEGMENT = /^(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/;
+
+/** A positive number (an installation id, a pull request or issue number, a comment id) as one allowlisted path segment. */
+const NUMBER_PATH_SEGMENT = /^[1-9]\d{0,14}$/;
+
+/** The most characters of a comment body the client sends (GitHub's own limit). */
+export const GITHUB_MAX_COMMENT_CHARS = 65_536;
+
+/** The most reviewers one request names (GitHub's own limit is 15 users and 15 teams; the kernel allows the validated 100 and lets GitHub refuse the rest). */
+export const GITHUB_MAX_REVIEWERS = 100;
 
 /** The one method the allowlist names besides GET. */
 type PostMethod = "POST";
 
-/** What may be sent besides a GET: one entry per allowlisted request. */
+/**
+ * What may be sent besides a GET: one entry per allowlisted request. `path` is
+ * the request's whole path as its segments in order: a string is a literal
+ * segment, a `RegExp` is a variable one (an installation id, a manifest code, a
+ * repository name, a number) that must match in full.
+ */
 export interface GitHubAllowedRequest {
   readonly method: PostMethod;
-  /** The path up to the one variable segment. */
-  readonly prefix: string;
-  /** The shape of the variable segment (an installation id, a manifest code). */
-  readonly segment: RegExp;
-  /** The path after the variable segment. */
-  readonly suffix: string;
+  readonly path: readonly (string | RegExp)[];
 }
 
-const MINT_REQUEST: GitHubAllowedRequest = Object.freeze({
-  method: "POST",
-  prefix: "/app/installations/",
-  segment: /^[1-9]\d{0,14}$/,
-  suffix: "/access_tokens",
-});
+function allowed(path: readonly (string | RegExp)[]): GitHubAllowedRequest {
+  return Object.freeze({ method: "POST", path: Object.freeze([...path]) });
+}
 
-const CONVERT_REQUEST: GitHubAllowedRequest = Object.freeze({
-  method: "POST",
-  prefix: "/app-manifests/",
-  segment: /^[A-Za-z0-9_-]{1,128}$/,
-  suffix: "/conversions",
-});
+/** A manifest conversion's single-use code as one allowlisted path segment. */
+const MANIFEST_CODE = /^[A-Za-z0-9_-]{1,128}$/;
+
+const MINT_REQUEST: GitHubAllowedRequest = allowed(["app", "installations", NUMBER_PATH_SEGMENT, "access_tokens"]);
+
+const CONVERT_REQUEST: GitHubAllowedRequest = allowed(["app-manifests", MANIFEST_CODE, "conversions"]);
+
+/** `POST /repos/{owner}/{repo}/pulls/{n}/comments/{id}/replies`: a reply in a review comment's thread. */
+const REPLY_REQUEST: GitHubAllowedRequest = allowed(["repos", NAME_PATH_SEGMENT, NAME_PATH_SEGMENT, "pulls", NUMBER_PATH_SEGMENT, "comments", NUMBER_PATH_SEGMENT, "replies"]);
+
+/** `POST /repos/{owner}/{repo}/issues/{n}/comments`: a comment on an issue or (a pull request is an issue to this endpoint) on a pull request's conversation. */
+const COMMENT_REQUEST: GitHubAllowedRequest = allowed(["repos", NAME_PATH_SEGMENT, NAME_PATH_SEGMENT, "issues", NUMBER_PATH_SEGMENT, "comments"]);
+
+/** `POST /repos/{owner}/{repo}/pulls/{n}/requested_reviewers`: ask for (or re-request) reviews. */
+const REVIEWERS_REQUEST: GitHubAllowedRequest = allowed(["repos", NAME_PATH_SEGMENT, NAME_PATH_SEGMENT, "pulls", NUMBER_PATH_SEGMENT, "requested_reviewers"]);
 
 /**
  * Every request the client may send that is not a GET: minting an installation
- * token (`POST /app/installations/{id}/access_tokens`) and converting an App
- * Manifest (`POST /app-manifests/{code}/conversions`). Nothing else: no PUT,
- * PATCH or DELETE, and no other POST.
+ * token (`POST /app/installations/{id}/access_tokens`), converting an App
+ * Manifest (`POST /app-manifests/{code}/conversions`), and the three GitHub
+ * writes (a reply in a review thread, a comment on an issue or pull request,
+ * a reviewer request). Nothing else: no PUT, PATCH or DELETE, and no other POST.
  */
-export const GITHUB_ALLOWED_NON_GET: readonly GitHubAllowedRequest[] = Object.freeze([MINT_REQUEST, CONVERT_REQUEST]);
+export const GITHUB_ALLOWED_NON_GET: readonly GitHubAllowedRequest[] = Object.freeze([
+  MINT_REQUEST,
+  CONVERT_REQUEST,
+  REPLY_REQUEST,
+  COMMENT_REQUEST,
+  REVIEWERS_REQUEST,
+]);
 
 /**
  * Whether the client may send `method` to `url`: the URL's origin is
@@ -143,12 +176,13 @@ export function isAllowedGitHubRequest(method: string, url: string | URL): boole
     if (u.origin !== GITHUB_API_ORIGIN || u.username !== "" || u.password !== "") return false;
     if (method === "GET") return true;
     if (u.search !== "" || u.hash !== "") return false;
-    return GITHUB_ALLOWED_NON_GET.some((a) => {
-      const path = u.pathname;
-      if (a.method !== method || path.length < a.prefix.length + a.suffix.length) return false;
-      if (!path.startsWith(a.prefix) || !path.endsWith(a.suffix)) return false;
-      return a.segment.test(path.slice(a.prefix.length, path.length - a.suffix.length));
-    });
+    const segments = u.pathname.split("/");
+    // A path starts with "/", so its first segment is empty; a trailing slash leaves an empty last one, which no entry matches.
+    if (segments[0] !== "") return false;
+    const rest = segments.slice(1);
+    return GITHUB_ALLOWED_NON_GET.some(
+      (a) => a.method === method && a.path.length === rest.length && a.path.every((want, i) => (typeof want === "string" ? rest[i] === want : want.test(rest[i] as string))),
+    );
   } catch {
     return false;
   }
@@ -443,6 +477,46 @@ function commentOf(kind: "issue" | "review", v: unknown): GitHubPullComment {
   };
 }
 
+/** A label as the issues listing shows it: an object with a `name` (or, in older shapes, the name alone). */
+function labelNameOf(v: unknown): string {
+  return typeof v === "string" ? v : str(record(v)["name"]);
+}
+
+/** One entry of the issues listing, or `undefined` for a pull request (GitHub lists pull requests as issues; they carry a `pull_request` key). */
+function issueOf(v: unknown): GitHubIssueSummary | undefined {
+  const i = record(v);
+  if (Object.prototype.hasOwnProperty.call(i, "pull_request")) return undefined;
+  return {
+    number: int(i["number"]),
+    title: textOrEmpty(i["title"]),
+    body: textOrEmpty(i["body"]),
+    author: loginOf(i["user"]),
+    labels: list(i["labels"] ?? []).map(labelNameOf),
+    url: str(i["html_url"]),
+    updated_at: str(i["updated_at"]),
+  };
+}
+
+/**
+ * One comment or review on pull request `pr`. A review has no `updated_at`, so
+ * its `submitted_at` stands in for it; a review with none (a pending one, which
+ * only its author sees) is `undefined`, not a failure.
+ */
+function prCommentOf(kind: GitHubPrComment["kind"], pr: number, v: unknown): GitHubPrComment | undefined {
+  const c = record(v);
+  const at = kind === "review" ? c["submitted_at"] : c["updated_at"];
+  if (kind === "review" && (at === null || at === undefined)) return undefined;
+  return {
+    kind,
+    id: int(c["id"]),
+    pr,
+    author: loginOf(c["user"]),
+    body: textOrEmpty(c["body"]),
+    url: str(c["html_url"]),
+    updated_at: str(at),
+  };
+}
+
 type GitHubMethod = "GET" | PostMethod;
 
 /** The slice of `GitHubClientDeps` one request needs; `mintInstallationToken` and `convertManifest` take exactly this. */
@@ -554,7 +628,7 @@ export async function mintInstallationToken(
   try {
     if (!Number.isSafeInteger(installationId) || installationId < 1 || !isAppJwtShape(jwt)) return SETUP_UNREACHABLE;
     const maxBytes = deps.maxBodyBytes ?? GITHUB_DEFAULT_MAX_BODY_BYTES;
-    const path = `${MINT_REQUEST.prefix}${installationId}${MINT_REQUEST.suffix}`;
+    const path = `/app/installations/${installationId}/access_tokens`;
     const answer = await sendRequest(deps, "POST", path, "application/vnd.github+json", maxBytes, jwt, scopeBody(scope));
     if (answer.kind === "failure") return setupFailure(answer.failure);
     if (answer.over) return SETUP_UNREACHABLE;
@@ -585,9 +659,9 @@ export type ManifestConversionResult =
  */
 export async function convertManifest(code: string, deps: RequestDeps = {}): Promise<ManifestConversionResult> {
   try {
-    if (typeof code !== "string" || !CONVERT_REQUEST.segment.test(code)) return SETUP_UNREACHABLE;
+    if (typeof code !== "string" || !MANIFEST_CODE.test(code)) return SETUP_UNREACHABLE;
     const maxBytes = deps.maxBodyBytes ?? GITHUB_DEFAULT_MAX_BODY_BYTES;
-    const path = `${CONVERT_REQUEST.prefix}${code}${CONVERT_REQUEST.suffix}`;
+    const path = `/app-manifests/${code}/conversions`;
     const answer = await sendRequest(deps, "POST", path, "application/vnd.github+json", maxBytes, undefined);
     if (answer.kind === "failure") return setupFailure(answer.failure);
     if (answer.over) return SETUP_UNREACHABLE;
@@ -643,12 +717,13 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient {
   }
 
   /**
-   * One GET with the session's token. A 401 asks the provider to renew (when
-   * it can) and retries once: at most one renewal per client call, however
-   * many pages it reads. Never throws.
+   * One request with the session's token. A 401 asks the provider to renew
+   * (when it can) and retries once: at most one renewal per client call,
+   * however many pages it reads. A write follows the same rule (the retry
+   * carries the same body). Never throws.
    */
-  async function get(s: Session, path: string, accept: string, maxBytes: number): Promise<Answer> {
-    const first = await sendRequest(deps, "GET", path, accept, maxBytes, s.tok);
+  async function send(s: Session, method: GitHubMethod, path: string, accept: string, maxBytes: number, jsonBody?: string): Promise<Answer> {
+    const first = await sendRequest(deps, method, path, accept, maxBytes, s.tok, jsonBody);
     const unauthorized = first.kind === "failure" && first.failure.error === "http_error" && first.failure.status === 401;
     if (!unauthorized || s.renewed || s.provider.renew === undefined) return first;
     s.renewed = true;
@@ -660,8 +735,42 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient {
     }
     if (!isUsableFor(s.provider.method, fresh)) return first;
     s.tok = fresh;
-    return sendRequest(deps, "GET", path, accept, maxBytes, s.tok);
+    return sendRequest(deps, method, path, accept, maxBytes, s.tok, jsonBody);
   }
+
+  /** One GET with the session's token (see `send`). */
+  function get(s: Session, path: string, accept: string, maxBytes: number): Promise<Answer> {
+    return send(s, "GET", path, accept, maxBytes);
+  }
+
+  /**
+   * One JSON POST, mapped by `map`: only with an App installation credential
+   * (the token path stays read-only, so a PAT sends nothing and answers
+   * `unreachable`), and `path` must be one of `GITHUB_ALLOWED_NON_GET` (the
+   * request itself checks). A body over the bound or off the documented shape
+   * is `unreachable`.
+   */
+  async function postJson<T>(path: string, body: unknown, map: (body: unknown) => T): Promise<GitHubResponse<T>> {
+    const s = await begin();
+    if (s === undefined || s.provider.method !== "app") return unreachable();
+    const answer = await send(s, "POST", path, "application/vnd.github+json", maxBodyBytes, JSON.stringify(body));
+    if (answer.kind === "failure") return answer.failure;
+    if (answer.over) return unreachable();
+    try {
+      return { ok: true, data: map(JSON.parse(Buffer.from(answer.body).toString("utf8")) as unknown), rateLimit: answer.rateLimit };
+    } catch {
+      return unreachable();
+    }
+  }
+
+  /** The comment POSTs' answer: the new comment's id and `html_url`, nothing else of GitHub's. */
+  const commentResultOf = (body: unknown): GitHubCommentResult => {
+    const c = record(body);
+    return { id: int(c["id"]), url: str(c["html_url"]) };
+  };
+
+  /** Whether `body` is a comment body the client will send: a non-empty string within GitHub's limit. */
+  const isCommentBody = (body: unknown): body is string => typeof body === "string" && body.length > 0 && body.length <= GITHUB_MAX_COMMENT_CHARS;
 
   /** One JSON GET mapped by `map`. A body over the bound or off the documented shape is `unreachable`. */
   async function getJson<T>(path: string, map: (body: unknown, headers: Headers) => T): Promise<GitHubResponse<T>> {
@@ -784,6 +893,80 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient {
       const review = await getPages(`/repos/${r}/pulls/${number}/comments`, (c) => commentOf("review", c));
       if (!review.ok) return review;
       return { ok: true, data: [...issue.data, ...review.data], rateLimit: review.rateLimit };
+    },
+
+    async listIssues(repo: string, filters: GitHubIssueFilters): Promise<GitHubResponse<readonly GitHubIssueSummary[]>> {
+      const r = repoPath(repo);
+      if (r === undefined) return unreachable();
+      // `state`, `labels` (comma-separated) and `assignee` go to GitHub as given.
+      const query = new URLSearchParams();
+      if (filters.state !== undefined) query.set("state", filters.state);
+      if (filters.labels !== undefined && filters.labels.length > 0) query.set("labels", filters.labels.join(","));
+      if (filters.assignee !== undefined) query.set("assignee", filters.assignee);
+      const qs = query.toString();
+      // GitHub's issues listing includes pull requests (an entry with a `pull_request` key): those are dropped, so a page can yield fewer items than it read.
+      const res = await getPages(`/repos/${r}/issues${qs === "" ? "" : `?${qs}`}`, issueOf);
+      if (!res.ok) return res;
+      const data = res.data.filter((i): i is GitHubIssueSummary => i !== undefined);
+      return { ok: true, data, rateLimit: res.rateLimit };
+    },
+
+    async listOpenPullComments(repo: string): Promise<GitHubResponse<readonly GitHubPrComment[]>> {
+      const r = repoPath(repo);
+      if (r === undefined) return unreachable();
+      // One session for the whole walk: the token is read once and a renewal happens at most once.
+      const s = await begin();
+      if (s === undefined) return unreachable();
+      const pulls = await getPages(`/repos/${r}/pulls?state=open`, pullSummaryOf, list, s);
+      if (!pulls.ok) return pulls;
+      const out: GitHubPrComment[] = [];
+      let rateLimit = pulls.rateLimit;
+      for (const { number } of pulls.data) {
+        // The conversation's comments, the comments on files, then the reviews (a review's body is its summary).
+        const pages: [string, (item: unknown) => GitHubPrComment | undefined][] = [
+          [`/repos/${r}/issues/${number}/comments`, (c) => prCommentOf("issue_comment", number, c)],
+          [`/repos/${r}/pulls/${number}/comments`, (c) => prCommentOf("review_comment", number, c)],
+          [`/repos/${r}/pulls/${number}/reviews`, (c) => prCommentOf("review", number, c)],
+        ];
+        for (const [path, map] of pages) {
+          const res = await getPages(path, map, list, s);
+          if (!res.ok) return res;
+          rateLimit = res.rateLimit;
+          for (const c of res.data) if (c !== undefined) out.push(c);
+        }
+      }
+      return { ok: true, data: out, rateLimit };
+    },
+
+    async replyToReviewComment(repo: string, pull: number, commentId: number, body: string): Promise<GitHubResponse<GitHubCommentResult>> {
+      const r = repoPath(repo);
+      if (r === undefined || !isPullNumber(pull) || !isPullNumber(commentId) || !isCommentBody(body)) return unreachable();
+      return postJson(`/repos/${r}/pulls/${pull}/comments/${commentId}/replies`, { body }, commentResultOf);
+    },
+
+    async createPullComment(repo: string, pull: number, body: string): Promise<GitHubResponse<GitHubCommentResult>> {
+      const r = repoPath(repo);
+      if (r === undefined || !isPullNumber(pull) || !isCommentBody(body)) return unreachable();
+      // A pull request's conversation is its issue's comments.
+      return postJson(`/repos/${r}/issues/${pull}/comments`, { body }, commentResultOf);
+    },
+
+    async createIssueComment(repo: string, issue: number, body: string): Promise<GitHubResponse<GitHubCommentResult>> {
+      const r = repoPath(repo);
+      if (r === undefined || !isPullNumber(issue) || !isCommentBody(body)) return unreachable();
+      return postJson(`/repos/${r}/issues/${issue}/comments`, { body }, commentResultOf);
+    },
+
+    async requestReviewers(repo: string, pull: number, reviewers: readonly string[]): Promise<GitHubResponse<{ readonly pull: number }>> {
+      const r = repoPath(repo);
+      const valid =
+        Array.isArray(reviewers) && reviewers.length >= 1 && reviewers.length <= GITHUB_MAX_REVIEWERS && reviewers.every((l) => typeof l === "string" && NAME_SEGMENT.test(l));
+      if (r === undefined || !isPullNumber(pull) || !valid) return unreachable();
+      // The answer is the pull request itself; only its number is kept, and that is the one asked about.
+      return postJson(`/repos/${r}/pulls/${pull}/requested_reviewers`, { reviewers: [...reviewers] }, (b) => {
+        record(b);
+        return { pull };
+      });
     },
   };
 }

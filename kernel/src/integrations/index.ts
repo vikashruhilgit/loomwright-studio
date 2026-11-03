@@ -13,9 +13,11 @@
 // routes served by `github/app-setup.ts`; `github/app-port.ts` is the App port
 // (stores the App's credentials, records the installation, mints installation
 // tokens through `github/app-token.ts`), built by the App tokens item.
-// Phase 8 adds two empty parts, `mcp` (item 06: MCP connectors with OAuth 2.1,
-// D38) and `repo-policy` (item 08: the per-repo merge policy, D40), defined here
-// because they have no files of their own yet; each is empty until its item fills it in.
+// Phase 8 adds two parts. `mcp` (item 06: MCP connectors with OAuth 2.1, D38) is
+// filled: `mcp/connector.ts` builds it (the three `/connectors/mcp/:kind/…` owner
+// routes and the token renewal), with its session tools in `mcp/tools.ts`.
+// `repo-policy` (item 08: the per-repo merge policy, D40) is defined here because
+// it has no files of its own yet; it is empty until its item fills it in.
 // Integrations are optional (invariant 5): Studio works with none connected.
 // Mechanism only (invariant 1). `startKernel` and `runCli` merge it through
 // `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`), ninth, after
@@ -33,13 +35,11 @@ import { githubAppRoutesPart } from "./github/app-routes.js";
 import { githubConnectorPart } from "./github/connector.js";
 import { githubRoutesPart } from "./github/routes.js";
 import { githubToolsPart } from "./github/tools.js";
+import { mcpPart } from "./mcp/connector.js";
 import type { IntegrationsPart } from "./types.js";
 
 /** The contribution's name. */
 export const INTEGRATIONS_NAME = "integrations";
-
-/** The `mcp` part (phase 8 item 06): MCP connectors with OAuth 2.1 (D38). Empty and claims no handler kind until its item fills it in. */
-export const mcpPart: IntegrationsPart = emptyConsolePart("mcp");
 
 /** The `repo-policy` part (phase 8 item 08): the per-repo merge policy (D40). Empty and claims no handler kind until its item fills it in. */
 export const repoPolicyPart: IntegrationsPart = emptyConsolePart("repo-policy");
@@ -87,6 +87,10 @@ export type { ConnectorErrorCode, ConnectorOutcome, ConnectorView, GitHubConnect
 export { githubRoutes, githubRoutesPart } from "./github/routes.js";
 export { GITHUB_PR_DIFF_DEFAULT_MAX_BYTES, GITHUB_TOOL_REFUSALS, createGitHubTools, githubToolsPart } from "./github/tools.js";
 export type { GitHubToolRefusal, GitHubToolsDeps } from "./github/tools.js";
+export { MCP_SERVERS, createMcpConnector, listMcpConnections, mcpConnector, mcpConnectorGate, mcpPart } from "./mcp/connector.js";
+export type { McpConnector, McpConnectionView, McpGate, McpServerDefinition } from "./mcp/connector.js";
+export { mcpProxyTools } from "./mcp/tools.js";
+export type { McpProxyTool, McpToolGrants } from "./mcp/tools.js";
 export { toolsForConnectors } from "./tool-filter.js";
 export { CONNECTOR_KINDS, CONNECTOR_METHODS, CONNECTOR_PERMISSIONS_SOURCES, CONNECTOR_STATUSES, GITHUB_APP_SETUP_REFUSALS } from "./types.js";
 export type {

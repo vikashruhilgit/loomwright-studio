@@ -1,7 +1,7 @@
 // The `poll` trigger kind (phase 6 item 04): a playbook's trigger that lists
-// a source (GitHub open pull requests) on the user's repos, with the user's
-// filters, every `interval_seconds`, and queues one playbook `message` per
-// item it finds. Mechanism only (invariant 1): the interval, repos and
+// a source (GitHub open pull requests, issues or PR comments) on the user's
+// repos, with the user's filters, every `interval_seconds`, and queues one
+// playbook `message` per item it finds. Mechanism only (invariant 1): the interval, repos and
 // filters are the user's, stored as given; the kernel adds only the safety
 // bounds below (the 60 s floor, `MAX_POLL_ITEMS`), and an LLM never decides
 // when to look (invariant 2): the deterministic kernel fires it from the
@@ -10,7 +10,8 @@
 // Validation (`checkPollSpec`, called by `registerTrigger` /
 // `updateTriggerSpec` in `store.ts` before any write): the spec is the
 // `PollSpec` as JSON text, with no `tz`. Shape errors are `invalid_spec`; the
-// named refusals are `poll_filter_unknown`, `poll_interval_below_floor`,
+// named refusals are `poll_source_not_built` (an `invalid_spec` whose message
+// starts with it: `jira.issues`, `clickup.tasks`), `poll_filter_unknown`, `poll_interval_below_floor`,
 // `poll_connector_missing` and `poll_repo_not_reachable`. The connector is
 // read with raw SQL over `connectors` (migration 17), never through the
 // integrations feature's values: usable means a `github` row whose status is
@@ -58,18 +59,38 @@ import { InvalidNotificationError, MAX_NOTIFICATION_TITLE, recordNotification } 
 import type { Store } from "../store/store.js";
 import { TriggerError, fireStepKey, inKillSwitchWindow, inPauseWindow, killSwitchWindows, linkedPlaybook, pauseWindows } from "./fire-shared.js";
 import type { LinkedPlaybook } from "./fire-shared.js";
+import { fetchGithubIssues } from "./sources/github-issues.js";
+import { fetchGithubPrComments } from "./sources/github-pr-comments.js";
 import { fetchGithubPulls } from "./sources/github-pulls.js";
+import type { SourceFetch } from "./sources/github-pulls.js";
 import type { TriggerResult } from "./store.js";
 
 /**
- * The sources a poll can list, closed in code. Only `github.pulls` is built;
- * the other four are refused by `parsePollSpec` (code `invalid_spec`) until
+ * The sources a poll can list, closed in code. The three GitHub ones are
+ * built; `jira.issues` and `clickup.tasks` are refused by `parsePollSpec`
+ * (code `invalid_spec`, the message starting `poll_source_not_built:`) until
  * their phase 8 items land.
  */
 export const POLL_SOURCES = ["github.pulls", "github.issues", "github.pr_comments", "jira.issues", "clickup.tasks"] as const;
 
-/** The filter keys a `github.pulls` poll takes: `state` and `author` strings, `draft` a boolean. */
-export const POLL_FILTER_KEYS = ["state", "draft", "author"] as const;
+/** The sources that are built, in `POLL_SOURCES` order: the ones `PollSpec.source` names. */
+const BUILT_SOURCES = ["github.pulls", "github.issues", "github.pr_comments"] as const;
+type BuiltSource = (typeof BUILT_SOURCES)[number];
+
+/** The filter keys a poll can take, across every source: the union of `SOURCE_FILTER_KEYS` (`playbooks/drafts.ts` joins it as text). */
+export const POLL_FILTER_KEYS = ["state", "draft", "author", "labels", "assignee"] as const;
+
+/**
+ * The filter keys each built source takes (checked per source): `github.pulls`
+ * takes `state` and `author` (strings) and `draft` (a boolean); `github.issues`
+ * takes `state` and `assignee` (strings) and `labels` (a non-empty array of
+ * strings); `github.pr_comments` takes none.
+ */
+const SOURCE_FILTER_KEYS: Readonly<Record<BuiltSource, readonly (typeof POLL_FILTER_KEYS)[number][]>> = Object.freeze({
+  "github.pulls": ["state", "draft", "author"],
+  "github.issues": ["state", "labels", "assignee"],
+  "github.pr_comments": [],
+});
 
 /** The fields of a poll spec, in the order it is stored. */
 const POLL_SPEC_FIELDS = ["source", "repos", "filters", "interval_seconds"] as const;
@@ -81,7 +102,7 @@ const POLL_SPEC_FIELDS = ["source", "repos", "filters", "interval_seconds"] as c
  */
 export const MAX_POLL_ITEMS = 100;
 
-/** Longest filter string (`state`, `author`). */
+/** Longest filter string (`state`, `author`, `assignee`, and each of `labels`). */
 const MAX_FILTER_LENGTH = 200;
 
 /** `owner/name`, each part GitHub's own characters, neither `.` nor `..` (checked apart). */
@@ -90,6 +111,10 @@ const REPO_PATTERN = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 /** A value from the input, quoted and clipped for a refusal message. */
 function shown(value: unknown): string {
   return clip(JSON.stringify(value) ?? String(value), 80);
+}
+
+function isBuiltSource(source: string): source is BuiltSource {
+  return (BUILT_SOURCES as readonly string[]).includes(source);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -113,14 +138,16 @@ function checkRepos(value: unknown): string[] {
   return repos;
 }
 
-function checkFilters(value: unknown): PollSpec["filters"] {
+function checkFilters(value: unknown, source: BuiltSource): PollSpec["filters"] {
   if (value === undefined) return {};
   if (!isPlainObject(value)) throw new TriggerError("invalid_spec", "a poll spec's filters must be an object");
-  const unknown = Object.keys(value).filter((key) => !(POLL_FILTER_KEYS as readonly string[]).includes(key));
+  const allowed: readonly string[] = SOURCE_FILTER_KEYS[source];
+  const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
   if (unknown.length > 0) {
-    throw new TriggerError("poll_filter_unknown", `poll_filter_unknown: unknown poll filter ${unknown.map(shown).join(", ")}; the filters are ${POLL_FILTER_KEYS.join(", ")}`);
+    const takes = allowed.length === 0 ? "none" : allowed.join(", ");
+    throw new TriggerError("poll_filter_unknown", `poll_filter_unknown: unknown poll filter ${unknown.map(shown).join(", ")}; the filters of ${source} are ${takes}`);
   }
-  const text = (key: "state" | "author"): string | undefined => {
+  const text = (key: "state" | "author" | "assignee"): string | undefined => {
     const v = value[key];
     if (v === undefined) return undefined;
     if (typeof v !== "string" || v === "" || v.length > MAX_FILTER_LENGTH) {
@@ -132,14 +159,29 @@ function checkFilters(value: unknown): PollSpec["filters"] {
   const draft = value.draft;
   if (draft !== undefined && typeof draft !== "boolean") throw new TriggerError("invalid_spec", "poll filter draft must be true or false");
   const author = text("author");
-  return { ...(state === undefined ? {} : { state }), ...(draft === undefined ? {} : { draft }), ...(author === undefined ? {} : { author }) };
+  const assignee = text("assignee");
+  const labels = value.labels;
+  if (
+    labels !== undefined &&
+    (!Array.isArray(labels) || labels.length === 0 || labels.some((l) => typeof l !== "string" || l === "" || l.length > MAX_FILTER_LENGTH))
+  ) {
+    throw new TriggerError("invalid_spec", `poll filter labels must be a non-empty array of strings of 1-${MAX_FILTER_LENGTH} characters`);
+  }
+  return {
+    ...(state === undefined ? {} : { state }),
+    ...(draft === undefined ? {} : { draft }),
+    ...(author === undefined ? {} : { author }),
+    ...(labels === undefined ? {} : { labels: [...(labels as string[])] }),
+    ...(assignee === undefined ? {} : { assignee }),
+  };
 }
 
 /**
  * The `PollSpec` that JSON text `text` holds, normalized for storage
  * (`{source, repos, filters, interval_seconds}`, repos and filter values as
- * given). Throws `TriggerError`: `invalid_spec` for a shape error,
- * `poll_filter_unknown` naming an unknown filter key,
+ * given). Throws `TriggerError`: `invalid_spec` for a shape error (a source
+ * not built is one, its message starting `poll_source_not_built:`),
+ * `poll_filter_unknown` naming a filter key the spec's source does not take,
  * `poll_interval_below_floor` for an interval under 60 seconds.
  */
 export function parsePollSpec(text: string): PollSpec {
@@ -154,17 +196,18 @@ export function parsePollSpec(text: string): PollSpec {
   const extra = Object.keys(parsed).filter((key) => !(POLL_SPEC_FIELDS as readonly string[]).includes(key));
   if (extra.length > 0) throw invalid(`a poll spec has unknown field ${extra.map(shown).join(", ")}; its fields are ${POLL_SPEC_FIELDS.join(", ")}`);
   if (!(POLL_SOURCES as readonly unknown[]).includes(parsed.source)) throw invalid(`a poll spec's source must be one of ${POLL_SOURCES.join(", ")} (got ${shown(parsed.source)})`);
-  if (parsed.source !== "github.pulls") {
-    throw invalid(`poll_source_not_built: the poll source ${shown(parsed.source)} is not built yet; only github.pulls polls`);
+  const source = parsed.source as (typeof POLL_SOURCES)[number];
+  if (!isBuiltSource(source)) {
+    throw invalid(`poll_source_not_built: the poll source ${shown(source)} is not built yet; only ${BUILT_SOURCES.join(", ")} poll`);
   }
   const repos = checkRepos(parsed.repos);
-  const filters = checkFilters(parsed.filters);
+  const filters = checkFilters(parsed.filters, source);
   const interval = parsed.interval_seconds;
   if (typeof interval !== "number" || !Number.isSafeInteger(interval)) throw invalid(`a poll spec's interval_seconds must be a whole number of seconds (got ${shown(interval)})`);
   if (interval < 60) {
     throw new TriggerError("poll_interval_below_floor", `poll_interval_below_floor: interval_seconds ${interval} is below the 60 second floor`);
   }
-  return { source: "github.pulls", repos, filters, interval_seconds: interval };
+  return { source, repos, filters, interval_seconds: interval };
 }
 
 /** The next fire of a poll processed (or registered) at `now`: `now + interval_seconds`. Throws `invalid_spec` past the last date. */
@@ -299,14 +342,27 @@ export type Fetched =
   | { readonly ok: false; readonly error: "rate_limited"; readonly repo: string; readonly resets_at: string }
   | { readonly ok: false; readonly error: "http_error" | "unreachable" | "client_error"; readonly repo: string; readonly status?: number; readonly message?: string };
 
+/** The fetch of `spec.source`, from `./sources/<source>.ts`: the one dispatch on the source. */
+function fetchSource(github: GitHubClient, spec: PollSpec): Promise<SourceFetch> {
+  switch (spec.source) {
+    case "github.issues":
+      return fetchGithubIssues(github, spec);
+    case "github.pr_comments":
+      return fetchGithubPrComments(github, spec);
+    case "github.pulls":
+      return fetchGithubPulls(github, spec);
+  }
+}
+
 /**
  * Phase A's fetch: dispatches by `spec.source` to `./sources/<source>.ts`
- * (only `github.pulls` parses, so it is the only one built). Items are
- * repos in spec order, pulls by ascending number, at most `MAX_POLL_ITEMS`;
- * `found` counts them before the cap. The first failure stops it.
+ * (the three GitHub sources parse, so they are the ones built). Items are
+ * repos in spec order, then each source's own order (pulls and issues by
+ * ascending number, comments by pull request, kind and id), at most
+ * `MAX_POLL_ITEMS`; `found` counts them before the cap. The first failure stops it.
  */
 export async function fetchPollItems(github: GitHubClient, spec: PollSpec): Promise<Fetched> {
-  const fetched = await fetchGithubPulls(github, spec);
+  const fetched = await fetchSource(github, spec);
   if (!fetched.ok) return fetched;
   return { ok: true, items: fetched.items.slice(0, MAX_POLL_ITEMS), found: fetched.items.length };
 }

@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { engageKillSwitch, releaseKillSwitch } from "../src/api/index.js";
 import { engagePause } from "../src/console/pause.js";
-import type { GitHubClient, GitHubFailure, GitHubPull, GitHubPullFilters, GitHubPullSummary, GitHubResponse } from "../src/integrations/types.js";
+import type { GitHubClient, GitHubFailure, GitHubIssueFilters, GitHubPull, GitHubPullFilters, GitHubPullSummary, GitHubResponse } from "../src/integrations/types.js";
 import { EventLoop } from "../src/loop/loop.js";
 import { InvalidNotificationError } from "../src/notifications/record.js";
 import { createPlaybook } from "../src/playbooks/store.js";
@@ -144,6 +144,14 @@ class HookedClient implements GitHubClient {
   getPullDiff = (repo: string, n: number, max: number): ReturnType<GitHubClient["getPullDiff"]> => this.inner.getPullDiff(repo, n, max);
   listPullFiles = (repo: string, n: number): ReturnType<GitHubClient["listPullFiles"]> => this.inner.listPullFiles(repo, n);
   listPullComments = (repo: string, n: number): ReturnType<GitHubClient["listPullComments"]> => this.inner.listPullComments(repo, n);
+  listIssues = (repo: string, filters: GitHubIssueFilters): ReturnType<GitHubClient["listIssues"]> => this.inner.listIssues(repo, filters);
+  listOpenPullComments = (repo: string): ReturnType<GitHubClient["listOpenPullComments"]> => this.inner.listOpenPullComments(repo);
+  replyToReviewComment = (repo: string, n: number, id: number, body: string): ReturnType<GitHubClient["replyToReviewComment"]> =>
+    this.inner.replyToReviewComment(repo, n, id, body);
+  createPullComment = (repo: string, n: number, body: string): ReturnType<GitHubClient["createPullComment"]> => this.inner.createPullComment(repo, n, body);
+  createIssueComment = (repo: string, n: number, body: string): ReturnType<GitHubClient["createIssueComment"]> => this.inner.createIssueComment(repo, n, body);
+  requestReviewers = (repo: string, n: number, reviewers: readonly string[]): ReturnType<GitHubClient["requestReviewers"]> =>
+    this.inner.requestReviewers(repo, n, reviewers);
 }
 
 function listCalls(client: FakeGitHubClient): number {
@@ -268,7 +276,7 @@ describe("a poll is validated when it is registered or re-scheduled (AC1-AC3)", 
     const cases: [string, string | undefined][] = [
       ["every 5m", undefined],
       [JSON.stringify(["o/r"]), undefined],
-      [spec({ source: "github.issues" }), undefined],
+      [spec({ source: "jira.issues" }), undefined],
       [spec({ repos: [] }), undefined],
       [spec({ repos: ["just-a-name"] }), undefined],
       [spec({ repos: ["o/.."] }), undefined],

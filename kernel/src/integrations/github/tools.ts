@@ -21,9 +21,12 @@
 // `isError` result): a fixed code, then kernel values only (the validated
 // repo and number, a status, `resets_at`), never author-controlled text.
 //
-// Read-only (invariant 3): this file calls only `getPull`, `getPullDiff`,
-// `listPullFiles` and `listPullComments` on the client. The client itself
-// sends only read requests (`kernel/test/integrations-github-client.test.ts`).
+// The four tools above are read-only (invariant 3): they call only `getPull`,
+// `getPullDiff`, `listPullFiles` and `listPullComments` on the client. The four
+// write tools (`write-tools.ts`, held for the owner's approval and offered only
+// to an agent granted `github: write`) are composed into `githubToolsPart`
+// below and reuse this file's `requireReach`, `dataOf`, `refusal` and
+// `repoShape`; the two files import each other (see `write-tools.ts`).
 //
 // The `studio` CLI loads it, so it imports only types, the feature seam, the
 // wrapper, the client and the connector's row reader: never the Agent SDK, the
@@ -37,6 +40,7 @@ import type { Store } from "../../store/store.js";
 import type { GitHubClient, GitHubResponse, IntegrationsPart } from "../types.js";
 import { GITHUB_DEFAULT_MAX_BODY_BYTES } from "./client.js";
 import { connectorView, createResolvingGitHubClient, githubConnectorRow, isCredentialInUse } from "./connector.js";
+import { createGitHubWriteTools } from "./write-tools.js";
 
 /** The diff bound when a call names none: 256 KiB. */
 export const GITHUB_PR_DIFF_DEFAULT_MAX_BYTES = 256 * 1024;
@@ -61,11 +65,11 @@ export interface GitHubToolsDeps {
 /** `<owner>/<repo>`: two segments of GitHub's name characters, neither `.` nor `..`. */
 const REPO = /^(?!\.{1,2}\/)[A-Za-z0-9_.-]{1,100}\/(?!\.{1,2}$)[A-Za-z0-9_.-]{1,100}$/;
 
-const repoShape = z.string().min(3).max(201).regex(REPO).describe("The repository as <owner>/<name>; it must be one the GitHub connector reaches.");
+export const repoShape = z.string().min(3).max(201).regex(REPO).describe("The repository as <owner>/<name>; it must be one the GitHub connector reaches.");
 const numberShape = z.number().int().positive().describe("The pull request number.");
 
 /** A refusal or failure: the code, then a sentence made of kernel values only. */
-function refusal(code: GitHubToolRefusal, detail: string): Error {
+export function refusal(code: GitHubToolRefusal, detail: string): Error {
   return new Error(`${code}: ${detail}`);
 }
 
@@ -74,7 +78,7 @@ function refusal(code: GitHubToolRefusal, detail: string): Error {
  * `expiring` or `needs_permissions`, as the poll trigger reads it) and lists `repo` among the repos it
  * reaches (case-insensitive). Reads the store only.
  */
-function requireReach(store: Store, repo: string): void {
+export function requireReach(store: Store, repo: string): void {
   const row = githubConnectorRow(store);
   if (row === undefined || !isCredentialInUse(row.status)) {
     throw refusal("connector_missing", `no connected GitHub connector (status ${row?.status ?? "none"}); connect GitHub first`);
@@ -84,7 +88,7 @@ function requireReach(store: Store, repo: string): void {
 }
 
 /** The data of a client answer, or the failure as a thrown refusal. */
-function dataOf<T>(res: GitHubResponse<T>): T {
+export function dataOf<T>(res: GitHubResponse<T>): T {
   if (res.ok) return res.data;
   if (res.error === "rate_limited") throw refusal("rate_limited", `GitHub's rate limit is spent; resets_at ${res.resets_at}`);
   if (res.error === "http_error") throw refusal("github_http_error", `GitHub answered HTTP ${res.status}`);
@@ -184,9 +188,17 @@ export function createGitHubTools(deps: GitHubToolsDeps = {}): readonly Contribu
   return Object.freeze([prGet, prDiff, prFiles, prComments]);
 }
 
+/** The part's tools, composed on first read (below). */
+let composed: readonly ContributedTool[] | undefined;
+
 export const githubToolsPart: IntegrationsPart = Object.freeze({
   name: "github-tools",
-  tools: createGitHubTools(),
+  // The four read tools, then the four write tools (listed only to a write-granted agent, `toolsForConnectors`). Composed on first
+  // read, not when this module loads: `write-tools.ts` imports this file, so building its tools here at import could run
+  // before this file's own helpers exist, depending on which of the two loaded first.
+  get tools(): readonly ContributedTool[] {
+    return (composed ??= Object.freeze([...createGitHubTools(), ...createGitHubWriteTools()]));
+  },
   routes: Object.freeze([]),
   subcommands: Object.freeze([]),
   handlers: Object.freeze({}),
