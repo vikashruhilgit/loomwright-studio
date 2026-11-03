@@ -11,7 +11,9 @@
 // - `POST /playbooks/:id/set` takes ONE `{field, value}` (the five owner-settable
 //   fields, `parseOwnerPolicyValue`'s rules) and writes one version; an unchanged value
 //   answers `changed: false`, an enabled playbook becomes a draft again, a refused value
-//   answers 400 `invalid_input` with the kernel's own message.
+//   answers 400 `invalid_input` with the kernel's own message, and the owner's `mode live` on a
+//   playbook that is not enabled answers 409 `live_needs_enable` (on an enabled one it is stored as
+//   the next version, a draft again, as every Set is).
 // - `POST /playbooks/:id/off` disables; `POST /playbooks/:id/run` answers 409
 //   `not_enabled` for a playbook that is not on, and whatever `runRefusal` holds.
 //
@@ -322,7 +324,8 @@ function parsed(field: string, raw: string): { readonly patch: Partial<PlaybookL
   }
   if (field === "mode") {
     if (clear) return invalid("mode cannot be cleared: it is one of draft, live");
-    if (raw !== "draft") return invalid(`mode ${shown(raw)} is not accepted yet (live_mode_not_in_phase_6)`);
+    if (raw !== "draft" && raw !== "live") return invalid(`mode must be one of draft, live (got ${shown(raw)})`);
+    // The owner's `live` passes here; the set route refuses it `live_needs_enable` unless the row is enabled.
     return { patch: { mode: raw, mode_set_by: "owner" } };
   }
   if (field === "model") return { patch: { model: clear ? null : raw, model_set_by: "owner" } };
@@ -387,6 +390,14 @@ export function playbooksFixture(init: PlaybooksFixtureInit = {}): PlaybooksFixt
       if ("status" in result) return result;
       const changed = (Object.keys(result.patch) as (keyof PlaybookListing)[]).some((k) => found.row[k] !== result.patch[k]);
       if (!changed) return answer(200, { playbook: found.row, changed: false } satisfies PlaybookChangeResponse);
+      // `setPlaybookPolicy`: a changed `mode live` needs the playbook enabled at its version (409, as the kernel's
+      // drafts route answers a PlaybookError); an unchanged owner-set `live` answered above is never refused.
+      if (result.patch.mode === "live" && found.row.status !== "enabled") {
+        return answer(409, {
+          error: "live_needs_enable",
+          message: `live_needs_enable: mode live needs playbook ${found.row.id} to be enabled at version ${found.row.version} (a done dry run, then the held enable); it is ${found.row.status}`,
+        });
+      }
       // One version per Set; an enabled playbook is a draft again (the kernel's rule).
       const next: PlaybookListing = { ...found.row, ...result.patch, version: found.row.version + 1, status: found.row.status === "enabled" ? "draft" : found.row.status, updated_at: AT(30, 15, 0) };
       kernel.playbooks[found.index] = next;

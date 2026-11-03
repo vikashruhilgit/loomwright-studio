@@ -1,5 +1,7 @@
-// The variables the kernel itself sets in every session's environment, apart
-// from the auth provider's and the Loomwright host switch's. Dependency-free:
+// The variables the kernel itself may set in a session's environment, apart
+// from the auth provider's and the Loomwright host switch's: the tool deferral
+// switch in every session, and the GitHub names in a live, write-granted
+// session only (`github-session-auth.ts`). Dependency-free:
 // the contract validator (`loomwright/contract.ts`, loaded by the `studio`
 // CLI) imports it to refuse a host switch that names one of them.
 import type { ChildEnv } from "../auth/types.js";
@@ -18,10 +20,22 @@ import type { ChildEnv } from "../auth/types.js";
  */
 export const TOOL_DEFERRAL_OFF: Readonly<ChildEnv> = Object.freeze({ ENABLE_TOOL_SEARCH: "false" });
 
-/** Every name the kernel sets in every session's environment. A contract may never name one. */
-const KERNEL_SESSION_ENV_NAMES: ReadonlySet<string> = new Set(Object.keys(TOOL_DEFERRAL_OFF));
+/**
+ * The fixed names the kernel sets in a live, write-granted session's
+ * environment (phase 8 item 04), beside the `GIT_CONFIG_` family
+ * (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`): `gh`'s config
+ * dir, where the session's token file is read from, and the switch that stops
+ * git asking for a password on a terminal. Never `GH_TOKEN`.
+ */
+export const GITHUB_SESSION_ENV_NAMES: readonly string[] = Object.freeze(["GH_CONFIG_DIR", "GIT_TERMINAL_PROMPT"]);
 
-/** Whether the kernel sets `name` in every session's environment. */
+/** The prefix of the git config-from-env family the kernel sets in a live, write-granted session. */
+const GIT_CONFIG_ENV_PREFIX = "GIT_CONFIG_";
+
+/** Every name the kernel may set in a session's environment. A contract may never name one. */
+const KERNEL_SESSION_ENV_NAMES: ReadonlySet<string> = new Set([...Object.keys(TOOL_DEFERRAL_OFF), ...GITHUB_SESSION_ENV_NAMES]);
+
+/** Whether the kernel may set `name` in a session's environment (the tool deferral switch everywhere, the GitHub names in a live, write-granted session). */
 export function isKernelSessionEnvVar(name: string): boolean {
-  return KERNEL_SESSION_ENV_NAMES.has(name);
+  return KERNEL_SESSION_ENV_NAMES.has(name) || name.startsWith(GIT_CONFIG_ENV_PREFIX);
 }

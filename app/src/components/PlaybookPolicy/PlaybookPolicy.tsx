@@ -26,9 +26,10 @@ export function provenance(setBy: string | null): string {
  */
 export const POLICY_FIELDS = ["dedupe_key", "priority", "model", "token_limit"] as const;
 /**
- * Kernel policy fields the Chat card shows but does not edit. `mode`: phase 6 accepts only
- * `draft` (the kernel refuses `live` with `live_mode_not_in_phase_6`), so there is
- * nothing to choose yet. The Playbooks screen edits it through `modePolicyRow`.
+ * Kernel policy fields the Chat card shows but does not edit. `mode`: the kernel takes the
+ * owner's `live` only on a playbook enabled at its version (else `live_needs_enable`) and
+ * stores it as the next version, a draft again; an agent's `live` is refused
+ * `live_mode_owner_only`. The Playbooks screen edits it through `modePolicyRow`.
  */
 export const READ_ONLY_POLICY_FIELDS = ["mode"] as const;
 export type PolicyField = (typeof POLICY_FIELDS)[number];

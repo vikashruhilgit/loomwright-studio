@@ -32,6 +32,8 @@ import type { Store } from "../store/store.js";
 import { LoomwrightSessionError, readSessionLoomwright, resolveSessionLoomwright } from "./loomwright-path.js";
 import type { SessionLoomwright } from "./loomwright-path.js";
 import { TOOL_DEFERRAL_OFF } from "./kernel-env.js";
+import { GithubSessionAuth, GithubTokenUnavailableError } from "./github-session-auth.js";
+import type { MintedGithubToken } from "./github-session-auth.js";
 import { DRY_RUN_DENY_MESSAGE, classifyDryRunCall, dryRunUsage } from "./dry-run.js";
 import { GITHUB_CLI_DENY_REASON, draftDecision, draftDenyReason, draftPayloadOf, githubCliDecision } from "./draft-mode.js";
 import { latestOrphanReason } from "./orphans.js";
@@ -469,6 +471,8 @@ interface ResumeContext {
   readonly agent: string | null;
   readonly taskId: number | null;
   readonly playbook: number | null;
+  /** The live, write-granted session's GitHub env additions (`GithubSessionAuth.install`); `{}` for any other session. Every retry attempt launches with it. */
+  readonly githubEnv: ChildEnv;
 }
 
 /**
@@ -659,6 +663,9 @@ export class SessionManager {
   readonly #mcpServers: SessionManagerOptions["mcpServers"];
   readonly #heldToolCheck: HeldToolCheck | undefined;
   readonly #connectorsFor: SessionManagerOptions["connectorsFor"];
+  readonly #githubWriteFor: SessionManagerOptions["githubWriteFor"];
+  /** The GitHub token of each live, write-granted session (`github-session-auth.ts`). */
+  readonly #github: GithubSessionAuth;
 
   readonly #query: QueryFn;
   readonly #spawn: SpawnFn;
@@ -675,6 +682,8 @@ export class SessionManager {
   readonly #snapshot: (() => Promise<ProcessTable>) | undefined;
 
   readonly #live = new Map<number, LiveSession>();
+  /** Incremented by every `stopAll`; a start or resume that awaited its token mint compares it to refuse after a stop. */
+  #stopEpoch = 0;
   /** The pending tool-group poll tick, if any. */
   #pollTimer: CancelTimer | undefined;
   /** The `ps -A` snapshot walk in flight (never more than one). Never rejects. */
@@ -715,6 +724,8 @@ export class SessionManager {
     this.#now = deps.now ?? (() => new Date());
     this.#randomUUID = deps.randomUUID ?? nodeRandomUUID;
     this.#homeDir = deps.homeDir ?? homedir();
+    this.#githubWriteFor = options.githubWriteFor;
+    this.#github = new GithubSessionAuth({ dataDir: this.#store.dataDir, mint: options.sessionTokenMint, now: this.#now, schedule: this.#schedule });
   }
 
   /** The stored row, or `undefined`. */
@@ -758,6 +769,15 @@ export class SessionManager {
    * its row and runs as a dry run (`#gate`, `SessionHandle.dryRun`). The row
    * (the `failed:auth` one too) records the cwd's realpath (`resolvedPath`) in
    * `sessions.cwd`, in the insert that creates it; the SDK gets `cwd` as given.
+   *
+   * A live playbook's real session whose agent holds `github: write` gets a
+   * down-scoped GitHub token (phase 8 item 04, `github-session-auth.ts`),
+   * minted after admission and before the row insert; its files and env
+   * (`GH_CONFIG_DIR`, git's credential helper) are written after the insert and
+   * before the spawn. When no token can be had (no minter wired, no repos, a
+   * failed mint) the start is refused `github_token_unavailable`: one
+   * `session_refused` event `{reason, detail}`, no row, no spawn. A resume
+   * mints again on the same terms, and its refusal leaves the row unchanged.
    */
   async startSession(params: StartSessionParams): Promise<SessionHandle> {
     const permissionMode = checkPermissionMode(params.permissionMode);
@@ -779,7 +799,8 @@ export class SessionManager {
     );
     const loomwrightPath = loomwright.installPath;
 
-    this.#admit({ kind: "start", agent: params.agent, account: this.#auth.account, provider: this.#auth.id, task: params.task ?? null, ...playbookOf(params.playbook) });
+    const startRequest: AdmissionRequest = { kind: "start", agent: params.agent, account: this.#auth.account, provider: this.#auth.id, task: params.task ?? null, ...playbookOf(params.playbook) };
+    this.#admit(startRequest);
 
     let env: ChildEnv;
     try {
@@ -797,10 +818,20 @@ export class SessionManager {
     const collision = hostSwitchCollision(env, loomwright.hostSwitch);
     if (collision !== undefined) this.#refuseLoomwright(hostSwitchCollisionError(loomwrightPath, collision), null);
 
-    const sdkSessionId = this.#randomUUID();
     const dryRun = params.dryRun === true;
     // `#checkPlaybookParams` refused a `forceDraft` without `dryRun: true`.
     const forceDraft = dryRun && params.forceDraft === true;
+    // A live, write-granted session needs its down-scoped token: minted after admission, before any row exists (a refusal leaves none).
+    let githubToken: MintedGithubToken | undefined;
+    if (this.#githubWriteQualifies(params.agent, params.playbook ?? null, dryRun)) {
+      const epoch = this.#stopEpoch;
+      githubToken = await this.#mintGithubToken(params.playbook as number, null);
+      this.#refuseIfStoppedSince(epoch, null);
+      // The mint was awaited: admission (cap, budget, pause) and the grant are asked again, synchronously with the insert below. A refusal drops the in-memory token; nothing was written.
+      this.#admit(startRequest);
+      if (!this.#githubWriteQualifies(params.agent, params.playbook ?? null, dryRun)) githubToken = undefined;
+    }
+    const sdkSessionId = this.#randomUUID();
     const at = this.#nowIso();
     const id = this.#store.transaction(() => {
       const rowId = this.#insertRow(params, loomwrightPath, sdkSessionId, "starting", at);
@@ -810,18 +841,20 @@ export class SessionManager {
       return rowId;
     });
 
-    const live = this.#newLive(id, sdkSessionId, this.#sessionPolicy(policy, params.agent, params.playbook ?? null, forceDraft), "starting", dryRun, forceDraft);
+    const live = this.#newLive(id, sdkSessionId, this.#sessionPolicy(policy, params.agent, params.playbook ?? null, forceDraft, githubToken !== undefined), "starting", dryRun, forceDraft);
     let attempt: Attempt;
     try {
       // Before the spawn; a failure here is a spawn failure.
       const stateDir = this.#makeLoomwrightStateDir(id);
+      // The token's files and env, after the row exists and before the spawn. Spread over the auth env, so an inherited name cannot win.
+      const githubEnv = githubToken === undefined ? {} : this.#github.install(id, githubToken);
       attempt = this.#launch(live, {
         number: 1,
         prompt: params.prompt,
         model: params.model,
         permissionMode,
         cwd: params.cwd,
-        env: withHostSwitch(env, loomwright.hostSwitch, stateDir),
+        env: withHostSwitch({ ...env, ...githubEnv }, loomwright.hostSwitch, stateDir),
         loomwrightPath,
         closeInputOnResult: params.closeInputOnResult ?? true,
         sessionOptions: { sessionId: sdkSessionId },
@@ -921,6 +954,8 @@ export class SessionManager {
    */
   async stopAll(options: { readonly mode?: "stop" | "shutdown" } = {}): Promise<StopAllOutcome[]> {
     const mode = options.mode ?? "stop";
+    // Synchronously, before any await: a start or resume suspended on its token mint sees it change and refuses.
+    this.#stopEpoch++;
     const ids = [...this.#live.keys()];
     const results = await Promise.allSettled(ids.map((id) => this.#stopForAll(id, mode)));
     return results.map((result, i): StopAllOutcome => {
@@ -1077,7 +1112,21 @@ export class SessionManager {
     // Before the group check: a refused resume leaves the row and its events untouched.
     // The playbook it resumes for: the one this resume records (`#writePlaybook`), else the row's.
     const playbook = params.playbook ?? row.playbook;
-    this.#admit({ kind: "resume", agent: row.agent, account: this.#auth.account, provider: this.#auth.id, task: row.task_id, ...playbookOf(playbook), session: id });
+    const resumeRequest: AdmissionRequest = { kind: "resume", agent: row.agent, account: this.#auth.account, provider: this.#auth.id, task: row.task_id, ...playbookOf(playbook), session: id };
+    this.#admit(resumeRequest);
+
+    // A live, write-granted session needs its down-scoped token again: minted before the row is touched (a refusal leaves it as it was).
+    let githubToken: MintedGithubToken | undefined;
+    if (this.#githubWriteQualifies(row.agent, playbook, dryRun)) {
+      const epoch = this.#stopEpoch;
+      githubToken = await this.#mintGithubToken(playbook as number, id);
+      this.#refuseIfStoppedSince(epoch, id);
+      // The mint was awaited: another resume or a reap may have taken the row meanwhile.
+      this.#recheckResumable(id, row);
+      // Admission and the grant are asked again now that the mint is done; a refusal leaves the row as it was.
+      this.#admit(resumeRequest);
+      if (!this.#githubWriteQualifies(row.agent, playbook, dryRun)) githubToken = undefined;
+    }
 
     // Synchronous from here to the launch: no reap or other resume interleaves.
     let check: GroupCheck;
@@ -1101,6 +1150,14 @@ export class SessionManager {
     // The resume goes ahead: record the playbook it runs for, when given (an absent one keeps the row's value).
     this.#writePlaybook(id, params);
 
+    const live = this.#newLive(id, row.sdk_session_id, this.#sessionPolicy(policy, row.agent, playbook, forceDraft, githubToken !== undefined), "interrupted", dryRun, forceDraft);
+    let githubEnv: ChildEnv = {};
+    try {
+      if (githubToken !== undefined) githubEnv = this.#github.install(id, githubToken);
+    } catch (err) {
+      this.#settle(live);
+      throw err;
+    }
     const ctx: ResumeContext = {
       prompt: params.prompt ?? DEFAULT_RESUME_PROMPT,
       model: row.model,
@@ -1113,8 +1170,8 @@ export class SessionManager {
       agent: row.agent,
       taskId: row.task_id,
       playbook,
+      githubEnv,
     };
-    const live = this.#newLive(id, row.sdk_session_id, this.#sessionPolicy(policy, row.agent, playbook, forceDraft), "interrupted", dryRun, forceDraft);
 
     let first: Attempt;
     try {
@@ -1238,6 +1295,8 @@ export class SessionManager {
   }
 
   async #reapAll(): Promise<ReapResult[]> {
+    // Token directories no live session owns (a killed kernel's) go with the orphans they belonged to.
+    this.#github.sweep();
     const rows = this.#store
       .prepare<[], { id: number; pgid: number | null; status: string; leader_started_at: string | null }>(
         "SELECT id, pgid, status, leader_started_at FROM sessions WHERE status IN ('starting', 'running', 'orphaned') ORDER BY id",
@@ -1648,7 +1707,7 @@ export class SessionManager {
       model: ctx.model,
       permissionMode: ctx.permissionMode,
       cwd: ctx.cwd,
-      env: withHostSwitch(env, ctx.hostSwitch, stateDir),
+      env: withHostSwitch({ ...env, ...ctx.githubEnv }, ctx.hostSwitch, stateDir),
       loomwrightPath: ctx.loomwrightPath,
       closeInputOnResult: ctx.closeInputOnResult,
       sessionOptions: { resume: ctx.sdkSessionId },
@@ -2537,8 +2596,10 @@ export class SessionManager {
    * approval, so an `always` or once grant is not used. The GitHub CLI deny
    * (`githubCliDecision`) follows it: a Bash `gh` call in a session whose
    * agent holds the `github` grant is denied `use_kernel_github_tools`,
-   * whether or not the policy allowed it (it only denies). A rail deny wins
-   * over both.
+   * whether or not the policy allowed it (it only denies), unless the policy
+   * carries `githubWrite` (a live, write-granted session, phase 8 item 04),
+   * whose `gh` calls then go on to the policy, the rail and the hold like any
+   * other. A rail deny wins over both.
    */
   #gate(live: LiveSession): HookCallback {
     return async (input): Promise<HookJSONOutput> => {
@@ -2763,6 +2824,8 @@ export class SessionManager {
     if (live.settled) return;
     live.settled = true;
     this.#live.delete(live.id);
+    // The session's GitHub token (if it held one) stops renewing and its directory is removed, whatever status it ended in.
+    this.#github.release(live.id);
     live.resolveDone(live.status);
   }
 
@@ -2857,24 +2920,99 @@ export class SessionManager {
    * `mode` (draft mode) and `connectors` (the GitHub CLI deny) from the
    * policy (`draft-mode.ts`). A forced-draft dry run (`forceDraft`) gets
    * `mode: "draft"` whatever `playbooks.mode` says (a `live` playbook
-   * included); only the manager sets it, never a caller.
+   * included); only the manager sets it, never a caller. `githubWrite` (phase
+   * 8 item 04) is set only when `githubToken` says this session was minted its
+   * down-scoped token (`#githubWriteQualifies` decided that from the stored
+   * mode and the owner's grant) and the agent holds `github`; it is the only
+   * place the flag is ever set.
    */
-  #sessionPolicy(policy: ToolPolicy, agent: string | null, playbook: number | null, forceDraft = false): ToolPolicy {
-    let connectors: readonly ConnectorKind[] = [];
-    if (agent !== null && this.#connectorsFor !== undefined) {
-      try {
-        const granted: unknown = this.#connectorsFor(agent);
-        if (Array.isArray(granted)) connectors = (granted as unknown[]).filter((k): k is ConnectorKind => (CONNECTOR_KINDS as readonly unknown[]).includes(k));
-      } catch {
-        // Fail closed: no grant, so no connector's tool is listed.
-      }
-    }
+  #sessionPolicy(policy: ToolPolicy, agent: string | null, playbook: number | null, forceDraft = false, githubToken = false): ToolPolicy {
+    const connectors = this.#grantedConnectors(agent);
     let mode: PlaybookMode | undefined = forceDraft ? "draft" : undefined;
-    if (!forceDraft && playbook !== null) {
-      const stored = this.#store.prepare<[number], unknown>("SELECT mode FROM playbooks WHERE id = ?").pluck().get(playbook);
-      mode = (PLAYBOOK_MODES as readonly unknown[]).includes(stored) ? (stored as PlaybookMode) : "draft";
+    if (!forceDraft && playbook !== null) mode = this.#storedMode(playbook);
+    const githubWrite = githubToken && connectors.includes("github");
+    return Object.freeze({
+      ...policy,
+      ...(mode === undefined ? {} : { mode }),
+      connectors: Object.freeze([...new Set(connectors)]),
+      ...(githubWrite ? { githubWrite: true } : {}),
+    });
+  }
+
+  /** `connectorsFor(agent)`: the known kinds it answers, `[]` with no option, no agent, or a lookup that throws (fail closed). */
+  #grantedConnectors(agent: string | null): readonly ConnectorKind[] {
+    if (agent === null || this.#connectorsFor === undefined) return [];
+    try {
+      const granted: unknown = this.#connectorsFor(agent);
+      if (Array.isArray(granted)) return (granted as unknown[]).filter((k): k is ConnectorKind => (CONNECTOR_KINDS as readonly unknown[]).includes(k));
+    } catch {
+      // Fail closed: no grant, so no connector's tool is listed.
     }
-    return Object.freeze({ ...policy, ...(mode === undefined ? {} : { mode }), connectors: Object.freeze([...new Set(connectors)]) });
+    return [];
+  }
+
+  /** The playbook's stored `mode`; one outside `PLAYBOOK_MODES` reads as `draft`, the mode that sends nothing. */
+  #storedMode(playbook: number): PlaybookMode {
+    const stored = this.#store.prepare<[number], unknown>("SELECT mode FROM playbooks WHERE id = ?").pluck().get(playbook);
+    return (PLAYBOOK_MODES as readonly unknown[]).includes(stored) ? (stored as PlaybookMode) : "draft";
+  }
+
+  /**
+   * Whether a start or resume of `agent` for `playbook` gets a GitHub token and
+   * `githubWrite` (phase 8 item 04, D39): the playbook is live, the session is
+   * a real run (a dry run, forced-draft included, never is), the owner granted
+   * the agent `github: write` (`githubWriteFor`) and the agent holds the
+   * `github` connector. A chat session, a draft playbook, a dry run and an
+   * agent without the grant never qualify. Any throw while asking reads as no.
+   */
+  #githubWriteQualifies(agent: string | null, playbook: number | null, dryRun: boolean): boolean {
+    if (agent === null || playbook === null || dryRun || this.#githubWriteFor === undefined) return false;
+    try {
+      return (
+        this.#storedMode(playbook) === "live" &&
+        this.#githubWriteFor(agent) === true &&
+        this.#grantedConnectors(agent).includes("github")
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Mint the down-scoped token for `playbook`'s repos. A refusal
+   * (`GithubTokenUnavailableError`: no minter, no repos, a failed mint) appends
+   * one `session_refused` event `{reason, detail}` (`session_id` null for a
+   * start, the session's id for a resume) and is rethrown, before any row or
+   * spawn. The token is never in the event or the error.
+   */
+  async #mintGithubToken(playbook: number, sessionId: number | null): Promise<MintedGithubToken> {
+    try {
+      return await this.#github.mint(this.#store, playbook);
+    } catch (err) {
+      if (err instanceof GithubTokenUnavailableError) this.#recordSafely("session_refused", sessionId, { reason: err.code, detail: err.detail });
+      throw err;
+    }
+  }
+
+  /**
+   * After the token mint's await in a start or resume: `stopAll` (kill switch or
+   * shutdown) ran meanwhile, so the work is refused `stopped_while_starting`
+   * (one `session_refused` event; the in-memory token goes out of scope, nothing
+   * was written). `epoch` was read before the await, so a later start is unaffected.
+   */
+  #refuseIfStoppedSince(epoch: number, sessionId: number | null): void {
+    if (epoch === this.#stopEpoch) return;
+    this.#recordSafely("session_refused", sessionId, { reason: "stopped_while_starting" });
+    throw new SessionError("stopped_while_starting", "the sessions were stopped (kill switch or shutdown) while the GitHub token was being minted");
+  }
+
+  /** After an await in `resumeSession`: the session is still the idle row that was read (not running here, same status and group), else `not_resumable`. */
+  #recheckResumable(id: number, read: SessionRow): void {
+    if (this.#live.has(id)) throw new SessionError("not_resumable", `session ${id} is already running`);
+    const now = this.getSession(id);
+    if (now === undefined || now.status !== read.status || now.pgid !== read.pgid) {
+      throw new SessionError("not_resumable", `session ${id} changed while its GitHub token was being minted`);
+    }
   }
 
   /**

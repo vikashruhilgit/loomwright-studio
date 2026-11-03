@@ -12,6 +12,7 @@ import type { UsageTotals } from "../budget/types.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import type { PlaybookMode } from "../playbooks/types.js";
 import type { Store } from "../store/store.js";
+import type { SessionTokenMint } from "./github-session-auth.js";
 import type { NeverCategory } from "./policy.js";
 
 /**
@@ -92,9 +93,20 @@ export interface ToolPolicy {
    * (`SessionManagerOptions.connectorsFor`; `[]` without it). Filled by the
    * session manager alone, like `mode`. The gate reads it: with `github` in
    * it, every Bash `gh` call is denied `use_kernel_github_tools`
-   * (`githubCliDecision`, `draft-mode.ts`).
+   * (`githubCliDecision`, `draft-mode.ts`), except in a live, write-granted
+   * session (`githubWrite`, below).
    */
   readonly connectors?: readonly ConnectorKind[];
+  /**
+   * True only for a live playbook's real session whose agent holds
+   * `github: write` and which got a down-scoped GitHub token (phase 8 item 04):
+   * the gate then lets a Bash `gh` call through the `use_kernel_github_tools`
+   * deny (`githubCliDecision`). Filled by the session manager alone, like
+   * `mode` and `connectors` (a caller's value is dropped); absent everywhere
+   * else. The rail and the approval gate are unchanged by it: a push or a gh
+   * write is still held, and `gh pr merge` is still `merge_blocked`.
+   */
+  readonly githubWrite?: boolean;
 }
 
 /** Every permission mode except `bypassPermissions`, which the kernel never sets (D5). */
@@ -277,7 +289,23 @@ export type SessionErrorCode =
    * unchanged. A row with no recorded cwd (from before migration 15) is never
    * compared.
    */
-  | "cwd_changed";
+  | "cwd_changed"
+  /**
+   * A live playbook session whose agent holds `github: write` could not get its
+   * down-scoped GitHub token (no minter wired, the playbook's poll trigger names
+   * no repos, or the mint failed): refused before any spawn, one
+   * `session_refused` event `{reason, detail}` (a resume's carries the session's
+   * id, and its row is unchanged). Fail closed: the session never runs without
+   * the token it was granted, and never with a broader one.
+   */
+  | "github_token_unavailable"
+  /**
+   * `stopAll` (the kill switch or a graceful shutdown) ran while a start or
+   * resume was awaiting its GitHub token mint: refused after the mint, no row,
+   * no spawn, nothing installed (a resume's row unchanged), one
+   * `session_refused` event `{reason}`.
+   */
+  | "stopped_while_starting";
 
 /** A session request the kernel refused. `code` is stable; the message is for humans. */
 export class SessionError extends Error {
@@ -579,6 +607,20 @@ export interface SessionManagerOptions {
    * Absent: every session's grants are `[]`.
    */
   readonly connectorsFor?: (agent: string) => readonly ConnectorKind[];
+  /**
+   * Whether the owner granted `agent` GitHub write (`connectors: {github:
+   * "write"}` in its settings file; phase 8 item 04). Asked at each start and
+   * resume of a live playbook's real session; a throw grants none (fail
+   * closed). With the grant, the session needs a token from `sessionTokenMint`.
+   * Absent: no session is granted write.
+   */
+  readonly githubWriteFor?: (agent: string) => boolean;
+  /**
+   * The port that mints a live, write-granted session's down-scoped GitHub
+   * token (item 03's `mintSessionToken`). Absent: such a session is refused
+   * `github_token_unavailable` (the kernel wires none yet).
+   */
+  readonly sessionTokenMint?: SessionTokenMint;
 }
 
 /**

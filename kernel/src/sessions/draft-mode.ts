@@ -67,6 +67,9 @@ export function draftDecision(policy: ToolPolicy, rail: OutwardCall): DraftDecis
 /**
  * The gate's step 6 answer: the call is a Bash `gh` call in a session whose
  * agent holds the `github` grant. It only denies, so it never widens a policy.
+ * A live, write-granted session (`policy.githubWrite === true`, set by the
+ * manager alone after it minted the session's token) is exempt: its `gh` runs
+ * through the same policy, rail and approval gate as any outward call.
  * The program is read as the rail reads it (`programCouldBe`): `env gh …`,
  * `sh -c …` and a script are not recognised. A command longer than
  * `MAX_RAIL_COMMAND_LENGTH` is denied unread (the rail's own fail-closed size
@@ -74,6 +77,7 @@ export function draftDecision(policy: ToolPolicy, rail: OutwardCall): DraftDecis
  * Pure.
  */
 export function githubCliDecision(policy: ToolPolicy, toolName: string, toolInput: unknown): { readonly kind: "deny" } | undefined {
+  if (policy.githubWrite === true) return undefined;
   if (!(policy.connectors ?? []).includes("github") || toolName !== "Bash") return undefined;
   const command = bashCommandOf(toolInput);
   if (command === undefined) return undefined;

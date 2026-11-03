@@ -13,8 +13,9 @@
 //   verbs   studio agents list | show | create | rename | set | off | on   (each calls only its route)
 //
 // The connectors grant (phase 6 item 08) is the one list field `set` takes:
-// `connectors github` writes `connectors: ["github"]`, `connectors none`
-// removes the key, for a crew member and for Wright, through the same write
+// `connectors github` writes `connectors: ["github"]`, `connectors github:write`
+// writes the write grant `connectors: {"github": "write"}` (phase 8 item 04),
+// `connectors none` removes the key, for a crew member and for Wright, through the same write
 // path. Only this owner route and verb set it: `kernel_agent_update` refuses it
 // and the protected-path rail refuses a session's write to the file.
 //
@@ -309,8 +310,8 @@ function statusRoute(status: AgentStatus): (req: ContributedRouteRequest) => Pro
   };
 }
 
-/** A value `set` writes: a scalar, the connectors list, or null (clears the key). */
-type SetValue = string | number | readonly string[] | null;
+/** A value `set` writes: a scalar, the connectors list, the write grant `{github: "write"}`, or null (clears the key). */
+type SetValue = string | number | readonly string[] | { readonly github: "write" } | null;
 
 /** What `set` changes: a scalar field, or the connectors grant. */
 type SettableField = AgentSetField | typeof CONNECTORS_FIELD;
@@ -320,6 +321,8 @@ function parseSetValue(field: SettableField, raw: string): { readonly value: Set
   if (field === CONNECTORS_FIELD) {
     if (raw === CLEAR_VALUE) return { value: null };
     // The closed list of grantable kinds is one today; the exact spelling is the contract's.
+    // `github:write` is the owner's write grant (phase 8 item 04), stored as the object form.
+    if (raw === "github:write") return { value: { github: "write" } };
     return raw === "github" ? { value: ["github"] satisfies ConnectorKind[] } : { message: CONNECTORS_VALUE_MESSAGE };
   }
   if (field === "model") {
@@ -342,6 +345,8 @@ function parseSetValue(field: SettableField, raw: string): { readonly value: Set
 function valueAt(json: Body, field: SettableField): unknown {
   if (field === CONNECTORS_FIELD) {
     const list = json[CONNECTORS_FIELD];
+    // The write grant is the object `{github: "write"}`; the reader refused any other object form before `set` reads this.
+    if (isBodyObject(list)) return list;
     return Array.isArray(list) && list.length > 0 ? list : null;
   }
   if (!field.startsWith("limits.")) return json[field] ?? null;
@@ -688,11 +693,20 @@ const setVerb: AgentVerb = {
   async run(args, client, out) {
     const [id, name, value, ...rest] = args;
     if (!idArg(id) || name === undefined || value === undefined || rest.length > 0) {
-      return usage(out, ROSTER_VERB_HELP.set, ` (field: ${AGENT_SET_FIELDS.join(", ")}, ${CONNECTORS_FIELD} (github or ${CLEAR_VALUE}); ${CLEAR_VALUE} clears effort or a limit)`);
+      return usage(out, ROSTER_VERB_HELP.set, ` (field: ${AGENT_SET_FIELDS.join(", ")}, ${CONNECTORS_FIELD} (github or ${CLEAR_VALUE}), or ${CONNECTORS_FIELD} github:write for the GitHub write level; ${CLEAR_VALUE} clears effort or a limit)`);
     }
     const path = `/agents/${encodeURIComponent(id)}/set`;
     const res = await client.request("POST", path, { field: name, value });
-    const shownValue = (v: unknown): string => (v === null || v === undefined ? (name.startsWith("limits.") ? "no limit" : name === CONNECTORS_FIELD ? "no connectors" : "not set") : field(v));
+    const shownValue = (v: unknown): string =>
+      v === null || v === undefined
+        ? name.startsWith("limits.")
+          ? "no limit"
+          : name === CONNECTORS_FIELD
+            ? "no connectors"
+            : "not set"
+        : name === CONNECTORS_FIELD && isBodyObject(v)
+          ? "github:write"
+          : field(v);
     return report(
       res,
       "POST",

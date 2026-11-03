@@ -312,6 +312,22 @@ describe("decideToolUse and the fixed rail (approvals)", () => {
   });
 });
 
+describe("a live, write-granted policy gets the same rail answers (phase 8 item 04)", () => {
+  const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work" };
+  const liveWrite: ToolPolicy = { allowedTools: [], allowedBashPrefixes: ["git", "gh"], mode: "live", connectors: ["github"], githubWrite: true };
+
+  it("keeps git push outward and every gh pr merge form merge_blocked: githubWrite changes only the use_kernel_github_tools deny", () => {
+    expect(classifyToolCall("Bash", { command: "git push origin feature" }, rail)).toMatchObject({ kind: "outward", action: "git push" });
+    for (const merge of ["gh pr merge 1", "gh pr merge 1 --squash --delete-branch", "gh --repo a/b pr merge 1"]) {
+      expect(decideToolUse(liveWrite, "Bash", { command: merge }), merge).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+      expect(classifyToolCall("Bash", { command: merge }, rail), merge).toEqual({ kind: "deny", reason: "merge_blocked" });
+    }
+    expect(githubCliDecision(liveWrite, "Bash", { command: "gh pr view 1" })).toBeUndefined();
+    expect(githubCliDecision({ ...liveWrite, githubWrite: false }, "Bash", { command: "gh pr view 1" })).toEqual({ kind: "deny" });
+    expect(githubCliDecision({ ...liveWrite, githubWrite: undefined }, "Bash", { command: "gh pr view 1" })).toEqual({ kind: "deny" });
+  });
+});
+
 describe("ALWAYS_HELD_TOOLS (phase 3 foundation)", () => {
   const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work" };
 
