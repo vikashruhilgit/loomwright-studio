@@ -21,7 +21,7 @@ import type { SessionTokenMint, SessionTokenMintResult } from "../src/sessions/g
 import { GITHUB_SESSION_ENV_NAMES, isKernelSessionEnvVar } from "../src/sessions/kernel-env.js";
 import { GITHUB_CLI_DENY_REASON } from "../src/sessions/draft-mode.js";
 import { SessionError, SessionManager } from "../src/sessions/index.js";
-import type { ToolPolicy } from "../src/sessions/index.js";
+import type { AdmissionDecision, AdmissionRequest, ToolPolicy } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import { count, events } from "./loop-helpers.js";
 import { fakeSessions, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
@@ -69,6 +69,8 @@ interface Options {
   readonly baseEnv?: Record<string, string>;
   /** The manager's clock; share it with the minter so an expiry is measured on the same one. */
   readonly clock?: { at: Date };
+  /** The manager's admission check. */
+  readonly admission?: (request: AdmissionRequest) => AdmissionDecision;
 }
 
 function setup(o: Options = {}) {
@@ -107,6 +109,7 @@ function setup(o: Options = {}) {
       baseEnv: o.baseEnv ?? { PATH: "/usr/bin", GH_TOKEN: "gho_ownerstoredlogin", GITHUB_TOKEN: "gho_ownerother" },
       connectorsFor: () => o.connectors ?? ["github"],
       githubWriteFor: () => o.write ?? true,
+      ...(o.admission === undefined ? {} : { admission: o.admission }),
       ...(mint === undefined ? {} : { sessionTokenMint: mint }),
     },
     { ...fakes.deps, homeDir: home, now: () => clock.at, schedule },
@@ -547,5 +550,101 @@ describe("the kernel's names and the grant reader (AC2, AC5)", () => {
     write("broken", { ...BASE, connectors: { github: "read" } });
     const grant = githubWriteFor(tmp);
     expect([grant("writer"), grant("reader"), grant("plain"), grant("broken"), grant("nobody")]).toEqual([true, false, false, false, false]);
+  });
+});
+
+describe("admission is asked again after the mint (check-then-await-then-act)", () => {
+  const ok = (n: number): SessionTokenMintResult => ({ ok: true, token: `ghs_tok${n}abcdefgh`, expires_at: new Date(NOW0.getTime() + HOUR).toISOString() });
+  const dirs = (t: ReturnType<typeof setup>) => {
+    try {
+      return readdirSync(join(t.store.dataDir, "session-github"));
+    } catch {
+      return [];
+    }
+  };
+
+  it("two concurrent starts under a cap of 1 with a deferred mint: one runs, the other is admission_refused with no token directory", async () => {
+    const releases: ((r: SessionTokenMintResult) => void)[] = [];
+    const m = minter(() => new Promise<SessionTokenMintResult>((resolve) => releases.push(resolve)));
+    let t!: ReturnType<typeof setup>;
+    t = setup({
+      mint: m.fn,
+      admission: () =>
+        count(t.store, "SELECT count(*) FROM sessions") >= 1 ? { admitted: false, reason: "agent_sessions_at_once", retryAt: null } : { admitted: true },
+    });
+    const pb = t.playbook();
+    const settled = [t.start(pb), t.start(pb)].map((p) => p.then(() => "ok", (e: unknown) => (e as SessionError).code));
+    await flushAll();
+    expect(releases).toHaveLength(2);
+    releases[0]?.(ok(1));
+    releases[1]?.(ok(2));
+    expect((await Promise.all(settled)).sort()).toEqual(["admission_refused", "ok"]);
+    expect(count(t.store, "SELECT count(*) FROM sessions")).toBe(1);
+    expect(t.fakes.calls).toHaveLength(1);
+    // Only the admitted session has a directory, and its token is its own.
+    expect(dirs(t)).toEqual(["session-1"]);
+    expect(t.refusals()).toHaveLength(0);
+    expect(t.timers.filter((x) => !x.cancelled)).toHaveLength(1);
+  });
+
+  it("a pause set during the mint refuses the start; nothing is written and no timer is armed", async () => {
+    let release!: (r: SessionTokenMintResult) => void;
+    const m = minter(() => new Promise<SessionTokenMintResult>((resolve) => (release = resolve)));
+    let paused = false;
+    const t = setup({ mint: m.fn, admission: () => (paused ? { admitted: false, reason: "paused", retryAt: null } : { admitted: true }) });
+    const p = t.start(t.playbook()).then(() => "ok", (e: unknown) => e as SessionError);
+    await flushAll();
+    paused = true;
+    release(ok(1));
+    const err = await p;
+    expect(err).toMatchObject({ code: "admission_refused", reason: "paused" });
+    expect(count(t.store, "SELECT count(*) FROM sessions")).toBe(0);
+    expect(dirs(t)).toEqual([]);
+    expect(t.timers).toHaveLength(0);
+    expect(t.fakes.calls).toHaveLength(0);
+  });
+
+  it("a write grant revoked during the mint starts the session without the token", async () => {
+    let release!: (r: SessionTokenMintResult) => void;
+    const m = minter(() => new Promise<SessionTokenMintResult>((resolve) => (release = resolve)));
+    const t = setup({ mint: m.fn });
+    const pb = t.playbook();
+    const p = t.start(pb);
+    await flushAll();
+    t.store.prepare("UPDATE playbooks SET mode = 'draft' WHERE id = ?").run(pb);
+    release(ok(1));
+    await p;
+    expect(t.envOf()).not.toHaveProperty("GH_CONFIG_DIR");
+    expect(dirs(t)).toEqual([]);
+    expect(t.timers).toHaveLength(0);
+  });
+
+  it("a pause set during a resume's mint refuses the resume; the row is unchanged and no token directory exists", async () => {
+    const releases: ((r: SessionTokenMintResult) => void)[] = [];
+    let first = true;
+    const m = minter(() => {
+      if (first) {
+        first = false;
+        return ok(0);
+      }
+      return new Promise<SessionTokenMintResult>((resolve) => releases.push(resolve));
+    });
+    let paused = false;
+    const t = setup({ mint: m.fn, admission: () => (paused ? { admitted: false, reason: "paused", retryAt: null } : { admitted: true }) });
+    const h = await t.start(t.playbook());
+    await t.manager.stopAll({ mode: "shutdown" });
+    await h.done;
+    const before = t.manager.getSession(h.id);
+    const callsBefore = t.fakes.calls.length;
+    const events0 = count(t.store, "SELECT count(*) FROM events");
+    const p = t.manager.resumeSession(h.id, { permissionMode: "default", cwd: tmp, policy: LIVE_POLICY }).then(() => "ok", (e: unknown) => e as SessionError);
+    await flushAll();
+    paused = true;
+    releases[0]?.(ok(1));
+    expect(await p).toMatchObject({ code: "admission_refused", reason: "paused" });
+    expect(t.manager.getSession(h.id)).toEqual(before);
+    expect(t.fakes.calls).toHaveLength(callsBefore);
+    expect(count(t.store, "SELECT count(*) FROM events")).toBe(events0);
+    expect(existsSync(t.dirOf(h.id))).toBe(false);
   });
 });

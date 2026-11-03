@@ -797,7 +797,8 @@ export class SessionManager {
     );
     const loomwrightPath = loomwright.installPath;
 
-    this.#admit({ kind: "start", agent: params.agent, account: this.#auth.account, provider: this.#auth.id, task: params.task ?? null, ...playbookOf(params.playbook) });
+    const startRequest: AdmissionRequest = { kind: "start", agent: params.agent, account: this.#auth.account, provider: this.#auth.id, task: params.task ?? null, ...playbookOf(params.playbook) };
+    this.#admit(startRequest);
 
     let env: ChildEnv;
     try {
@@ -822,6 +823,9 @@ export class SessionManager {
     let githubToken: MintedGithubToken | undefined;
     if (this.#githubWriteQualifies(params.agent, params.playbook ?? null, dryRun)) {
       githubToken = await this.#mintGithubToken(params.playbook as number, null);
+      // The mint was awaited: admission (cap, budget, pause) and the grant are asked again, synchronously with the insert below. A refusal drops the in-memory token; nothing was written.
+      this.#admit(startRequest);
+      if (!this.#githubWriteQualifies(params.agent, params.playbook ?? null, dryRun)) githubToken = undefined;
     }
     const sdkSessionId = this.#randomUUID();
     const at = this.#nowIso();
@@ -1102,7 +1106,8 @@ export class SessionManager {
     // Before the group check: a refused resume leaves the row and its events untouched.
     // The playbook it resumes for: the one this resume records (`#writePlaybook`), else the row's.
     const playbook = params.playbook ?? row.playbook;
-    this.#admit({ kind: "resume", agent: row.agent, account: this.#auth.account, provider: this.#auth.id, task: row.task_id, ...playbookOf(playbook), session: id });
+    const resumeRequest: AdmissionRequest = { kind: "resume", agent: row.agent, account: this.#auth.account, provider: this.#auth.id, task: row.task_id, ...playbookOf(playbook), session: id };
+    this.#admit(resumeRequest);
 
     // A live, write-granted session needs its down-scoped token again: minted before the row is touched (a refusal leaves it as it was).
     let githubToken: MintedGithubToken | undefined;
@@ -1110,6 +1115,9 @@ export class SessionManager {
       githubToken = await this.#mintGithubToken(playbook as number, id);
       // The mint was awaited: another resume or a reap may have taken the row meanwhile.
       this.#recheckResumable(id, row);
+      // Admission and the grant are asked again now that the mint is done; a refusal leaves the row as it was.
+      this.#admit(resumeRequest);
+      if (!this.#githubWriteQualifies(row.agent, playbook, dryRun)) githubToken = undefined;
     }
 
     // Synchronous from here to the launch: no reap or other resume interleaves.
