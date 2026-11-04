@@ -98,3 +98,9 @@ kernel/test/integrations-mcp-connector.test.ts
 kernel/test/integrations-mcp-oauth.test.ts
 kernel/test/fixtures/mcp-fake.ts
 docs/architecture/mcp-connectors.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-04T16:42:11Z
+- **Brief:** .supervisor/jobs/done/2026-11-03-mcp-connector-mechanism-with-oauth.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/223
