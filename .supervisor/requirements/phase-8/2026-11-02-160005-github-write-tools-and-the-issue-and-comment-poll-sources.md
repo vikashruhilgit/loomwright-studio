@@ -99,3 +99,9 @@ kernel/test/integrations-github-write-tools.test.ts
 kernel/test/triggers-poll-github-sources.test.ts
 docs/architecture/github-tools.md
 docs/architecture/triggers.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-04T16:41:29Z
+- **Brief:** .supervisor/jobs/done/2026-11-03-github-write-tools-and-poll-sources.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/222
