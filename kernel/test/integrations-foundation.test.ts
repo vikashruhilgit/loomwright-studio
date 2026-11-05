@@ -264,7 +264,7 @@ describe("the integrations feature (AC2)", () => {
     // The GitHub App's modules (`github/app-*.ts`: the port stub, the routes and the setup flow, then the tokens item's own) are matched by pattern, so a new one does not edit this pin.
     const isAppModule = (f: string): boolean => /^github[\\/]app-[^\\/]+\.ts$/.test(f);
     expect(files.filter((f) => !isAppModule(f)).sort()).toEqual(
-      ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/credential-lock.ts", "github/repo-policy-routes.ts", "github/repo-policy.ts", "github/routes.ts", "github/tools.ts", "github/write-tools.ts", "index.ts", "mcp/client.ts", "mcp/connector.ts", "mcp/credential.ts", "mcp/oauth.ts", "mcp/routes.ts", "mcp/rows.ts", "mcp/tools.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
+      ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/credential-lock.ts", "github/repo-policy-routes.ts", "github/repo-policy.ts", "github/routes.ts", "github/tools.ts", "github/write-tools.ts", "index.ts", "mcp/client.ts", "mcp/connector.ts", "mcp/credential.ts", "mcp/oauth.ts", "mcp/routes.ts", "mcp/rows.ts", "mcp/tools.ts", "mcp/trackers.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
     );
     expect(files).toEqual(expect.arrayContaining([join("github/app-port.ts"), join("github/app-routes.ts")]));
     for (const f of files) {

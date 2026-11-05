@@ -1,23 +1,28 @@
 // The `poll` trigger kind (phase 6 item 04): a playbook's trigger that lists
-// a source (GitHub open pull requests, issues or PR comments) on the user's
-// repos, with the user's filters, every `interval_seconds`, and queues one
-// playbook `message` per item it finds. Mechanism only (invariant 1): the interval, repos and
-// filters are the user's, stored as given; the kernel adds only the safety
-// bounds below (the 60 s floor, `MAX_POLL_ITEMS`), and an LLM never decides
-// when to look (invariant 2): the deterministic kernel fires it from the
-// triggers contribution's due work.
+// a source (GitHub open pull requests, issues or PR comments on the user's
+// repos; Jira issues or ClickUp tasks through the owner's MCP connection), with
+// the user's filters, every `interval_seconds`, and queues one playbook
+// `message` per item it finds. Mechanism only (invariant 1): the interval,
+// repos and filters are the user's, stored as given; the kernel adds only the
+// safety bounds below (the 60 s floor, `MAX_POLL_ITEMS`), and an LLM never
+// decides when to look (invariant 2): the deterministic kernel fires it from
+// the triggers contribution's due work.
 //
 // Validation (`checkPollSpec`, called by `registerTrigger` /
 // `updateTriggerSpec` in `store.ts` before any write): the spec is the
 // `PollSpec` as JSON text, with no `tz`. Shape errors are `invalid_spec`; the
-// named refusals are `poll_source_not_built` (an `invalid_spec` whose message
-// starts with it: `jira.issues`, `clickup.tasks`), `poll_filter_unknown`, `poll_interval_below_floor`,
-// `poll_connector_missing` and `poll_repo_not_reachable`. The connector is
-// read with raw SQL over `connectors` (migration 17), never through the
-// integrations feature's values: usable means a `github` row whose status is
-// `connected`, `expiring` or `needs_permissions`, and the repos it reaches are its
-// `reachable_repos_json`, a JSON array of `owner/name` strings compared
-// case-insensitively (unparseable: none).
+// named refusals are `poll_filter_unknown`, `poll_interval_below_floor`,
+// `poll_connector_missing` and `poll_repo_not_reachable`. A GitHub spec names
+// `repos`; a `jira.issues` or `clickup.tasks` spec takes no `repos` and its
+// per-source checks live in `./sources/jira-issues.ts` and
+// `./sources/clickup-tasks.ts` (`docs/architecture/mcp-connectors.md`). The
+// GitHub connector is read with raw SQL over `connectors` (migration 17),
+// never through the integrations feature's values: usable means a `github` row
+// whose status is `connected`, `expiring` or `needs_permissions`, and the
+// repos it reaches are its `reachable_repos_json`, a JSON array of
+// `owner/name` strings compared case-insensitively (unparseable: none). A
+// tracker connection is read through `mcpConnectorGate`: usable means `open`,
+// and a tracker spec has no reachable-repo check.
 //
 // Firing (`firePollTriggers`) is two-phase, because `GitHubClient` is async
 // and `runStep` is one synchronous transaction:
@@ -47,10 +52,17 @@
 //
 // Imports: its own `fire-shared.ts` (never `store.ts` at runtime, so the two
 // form no cycle), `../loop/*`, `../api/kill-switch.js`,
-// `../notifications/record.js` and `../integrations/types.js` type-only, so
-// the `studio` CLI's module graph is unchanged.
+// `../notifications/record.js`, `../integrations/types.js` type-only, the
+// source files, and from the integrations feature `mcpConnectorGate`
+// (`../integrations/mcp/connector.js`) and the default ticket reader
+// (`../integrations/mcp/trackers.js`): the MCP SDK client may load in this
+// graph, the Agent SDK never.
 import { isKillSwitchEngaged } from "../api/kill-switch.js";
-import type { GitHubClient, PollSpec, SourceItem } from "../integrations/types.js";
+import { mcpConnectorGate } from "../integrations/mcp/connector.js";
+import type { McpKind } from "../integrations/mcp/rows.js";
+import { MCP_TRACKERS, createMcpTicketReader } from "../integrations/mcp/trackers.js";
+import type { McpTicketReader } from "../integrations/mcp/trackers.js";
+import type { GitHubClient, GithubPollSpec, PollSpec, SourceItem } from "../integrations/types.js";
 import { appendEvent, clip, errorMessage } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
 import type { EnqueueParams } from "../loop/queue.js";
@@ -59,41 +71,60 @@ import { InvalidNotificationError, MAX_NOTIFICATION_TITLE, recordNotification } 
 import type { Store } from "../store/store.js";
 import { TriggerError, fireStepKey, inKillSwitchWindow, inPauseWindow, killSwitchWindows, linkedPlaybook, pauseWindows } from "./fire-shared.js";
 import type { LinkedPlaybook } from "./fire-shared.js";
+import { checkClickupFilters, fetchClickupTasks } from "./sources/clickup-tasks.js";
 import { fetchGithubIssues } from "./sources/github-issues.js";
 import { fetchGithubPrComments } from "./sources/github-pr-comments.js";
 import { fetchGithubPulls } from "./sources/github-pulls.js";
 import type { SourceFetch } from "./sources/github-pulls.js";
+import { checkJiraFilters, fetchJiraIssues } from "./sources/jira-issues.js";
 import type { TriggerResult } from "./store.js";
 
 /**
- * The sources a poll can list, closed in code. The three GitHub ones are
- * built; `jira.issues` and `clickup.tasks` are refused by `parsePollSpec`
- * (code `invalid_spec`, the message starting `poll_source_not_built:`) until
- * their phase 8 items land.
+ * The sources a poll can list, closed in code. All five are built: the three
+ * GitHub ones, and `jira.issues` and `clickup.tasks` (phase 8 item 07, through
+ * the owner's MCP connection: `docs/architecture/mcp-connectors.md`).
  */
 export const POLL_SOURCES = ["github.pulls", "github.issues", "github.pr_comments", "jira.issues", "clickup.tasks"] as const;
 
-/** The sources that are built, in `POLL_SOURCES` order: the ones `PollSpec.source` names. */
-const BUILT_SOURCES = ["github.pulls", "github.issues", "github.pr_comments"] as const;
+/** The sources that are built, in `POLL_SOURCES` order: the ones `PollSpec.source` names (and `parsePollSpec` parses). */
+const BUILT_SOURCES = ["github.pulls", "github.issues", "github.pr_comments", "jira.issues", "clickup.tasks"] as const;
 type BuiltSource = (typeof BUILT_SOURCES)[number];
 
 /** The filter keys a poll can take, across every source: the union of `SOURCE_FILTER_KEYS` (`playbooks/drafts.ts` joins it as text). */
-export const POLL_FILTER_KEYS = ["state", "draft", "author", "labels", "assignee"] as const;
+export const POLL_FILTER_KEYS = ["state", "draft", "author", "labels", "assignee", "site", "project", "status", "list", "space", "tags"] as const;
 
 /**
  * The filter keys each built source takes (checked per source): `github.pulls`
  * takes `state` and `author` (strings) and `draft` (a boolean); `github.issues`
  * takes `state` and `assignee` (strings) and `labels` (a non-empty array of
- * strings); `github.pr_comments` takes none.
+ * strings); `github.pr_comments` takes none; `jira.issues` takes `site`
+ * (required), `project`, `status` and `assignee` (strings) and `labels`;
+ * `clickup.tasks` takes exactly one of `list` or `space`, and `status`,
+ * `assignee` and `tags` (a non-empty array of strings).
  */
 const SOURCE_FILTER_KEYS: Readonly<Record<BuiltSource, readonly (typeof POLL_FILTER_KEYS)[number][]>> = Object.freeze({
   "github.pulls": ["state", "draft", "author"],
   "github.issues": ["state", "labels", "assignee"],
   "github.pr_comments": [],
+  "jira.issues": ["site", "project", "status", "labels", "assignee"],
+  "clickup.tasks": ["list", "space", "status", "assignee", "tags"],
 });
 
-/** The fields of a poll spec, in the order it is stored. */
+/** The fields of a GitHub poll spec, in the order it is stored. */
 const POLL_SPEC_FIELDS = ["source", "repos", "filters", "interval_seconds"] as const;
+
+/** The fields of a tracker poll spec (`jira.issues`, `clickup.tasks`): no `repos`. */
+const TRACKER_SPEC_FIELDS = ["source", "filters", "interval_seconds"] as const;
+
+/** The two ticket sources: the MCP connector kind each reads through. A tracker poll has no repos and no GitHub connector. */
+const TRACKER_SOURCES: Readonly<Record<"jira.issues" | "clickup.tasks", McpKind>> = Object.freeze({ "jira.issues": "jira", "clickup.tasks": "clickup" });
+
+/** The tracker a poll `source` reads (`kind` and the owner's name for it), or `undefined` for a GitHub source. */
+export function trackerOf(source: string): { readonly kind: McpKind; readonly label: string } | undefined {
+  if (!Object.hasOwn(TRACKER_SOURCES, source)) return undefined;
+  const kind = TRACKER_SOURCES[source as keyof typeof TRACKER_SOURCES];
+  return { kind, label: MCP_TRACKERS[kind].label };
+}
 
 /**
  * The most items one instant queues: a kernel safety bound (like
@@ -138,7 +169,8 @@ function checkRepos(value: unknown): string[] {
   return repos;
 }
 
-function checkFilters(value: unknown, source: BuiltSource): PollSpec["filters"] {
+/** The filters object of a spec: `{}` when absent, an object whose every key `source` takes, else `invalid_spec` / `poll_filter_unknown`. */
+function filterObject(value: unknown, source: BuiltSource): Record<string, unknown> {
   if (value === undefined) return {};
   if (!isPlainObject(value)) throw new TriggerError("invalid_spec", "a poll spec's filters must be an object");
   const allowed: readonly string[] = SOURCE_FILTER_KEYS[source];
@@ -147,6 +179,10 @@ function checkFilters(value: unknown, source: BuiltSource): PollSpec["filters"] 
     const takes = allowed.length === 0 ? "none" : allowed.join(", ");
     throw new TriggerError("poll_filter_unknown", `poll_filter_unknown: unknown poll filter ${unknown.map(shown).join(", ")}; the filters of ${source} are ${takes}`);
   }
+  return value;
+}
+
+function checkGithubFilters(value: Record<string, unknown>): GithubPollSpec["filters"] {
   const text = (key: "state" | "author" | "assignee"): string | undefined => {
     const v = value[key];
     if (v === undefined) return undefined;
@@ -176,12 +212,24 @@ function checkFilters(value: unknown, source: BuiltSource): PollSpec["filters"] 
   };
 }
 
+/** `interval_seconds`: a whole number of seconds, at least the 60 s floor. */
+function checkInterval(interval: unknown): number {
+  if (typeof interval !== "number" || !Number.isSafeInteger(interval)) {
+    throw new TriggerError("invalid_spec", `a poll spec's interval_seconds must be a whole number of seconds (got ${shown(interval)})`);
+  }
+  if (interval < 60) {
+    throw new TriggerError("poll_interval_below_floor", `poll_interval_below_floor: interval_seconds ${interval} is below the 60 second floor`);
+  }
+  return interval;
+}
+
 /**
  * The `PollSpec` that JSON text `text` holds, normalized for storage
- * (`{source, repos, filters, interval_seconds}`, repos and filter values as
- * given). Throws `TriggerError`: `invalid_spec` for a shape error (a source
- * not built is one, its message starting `poll_source_not_built:`),
- * `poll_filter_unknown` naming a filter key the spec's source does not take,
+ * (`{source, repos, filters, interval_seconds}` for a GitHub source, repos and
+ * filter values as given; `{source, filters, interval_seconds}` for
+ * `jira.issues` and `clickup.tasks`, which take no `repos`). Throws
+ * `TriggerError`: `invalid_spec` for a shape error, `poll_filter_unknown`
+ * naming a filter key the spec's source does not take,
  * `poll_interval_below_floor` for an interval under 60 seconds.
  */
 export function parsePollSpec(text: string): PollSpec {
@@ -193,21 +241,23 @@ export function parsePollSpec(text: string): PollSpec {
     parsed = undefined;
   }
   if (!isPlainObject(parsed)) throw invalid("a poll spec must be JSON text of an object {source, repos, filters, interval_seconds}");
-  const extra = Object.keys(parsed).filter((key) => !(POLL_SPEC_FIELDS as readonly string[]).includes(key));
-  if (extra.length > 0) throw invalid(`a poll spec has unknown field ${extra.map(shown).join(", ")}; its fields are ${POLL_SPEC_FIELDS.join(", ")}`);
+  const fields: readonly string[] = typeof parsed.source === "string" && trackerOf(parsed.source) !== undefined ? TRACKER_SPEC_FIELDS : POLL_SPEC_FIELDS;
+  const extra = Object.keys(parsed).filter((key) => !fields.includes(key));
+  if (extra.length > 0) throw invalid(`a poll spec has unknown field ${extra.map(shown).join(", ")}; its fields are ${fields.join(", ")}`);
   if (!(POLL_SOURCES as readonly unknown[]).includes(parsed.source)) throw invalid(`a poll spec's source must be one of ${POLL_SOURCES.join(", ")} (got ${shown(parsed.source)})`);
   const source = parsed.source as (typeof POLL_SOURCES)[number];
-  if (!isBuiltSource(source)) {
-    throw invalid(`poll_source_not_built: the poll source ${shown(source)} is not built yet; only ${BUILT_SOURCES.join(", ")} poll`);
+  if (!isBuiltSource(source)) throw invalid(`a poll spec's source ${shown(source)} has no parser`);
+  if (source === "jira.issues") {
+    const filters = checkJiraFilters(filterObject(parsed.filters, source));
+    return { source, filters, interval_seconds: checkInterval(parsed.interval_seconds) };
+  }
+  if (source === "clickup.tasks") {
+    const filters = checkClickupFilters(filterObject(parsed.filters, source));
+    return { source, filters, interval_seconds: checkInterval(parsed.interval_seconds) };
   }
   const repos = checkRepos(parsed.repos);
-  const filters = checkFilters(parsed.filters, source);
-  const interval = parsed.interval_seconds;
-  if (typeof interval !== "number" || !Number.isSafeInteger(interval)) throw invalid(`a poll spec's interval_seconds must be a whole number of seconds (got ${shown(interval)})`);
-  if (interval < 60) {
-    throw new TriggerError("poll_interval_below_floor", `poll_interval_below_floor: interval_seconds ${interval} is below the 60 second floor`);
-  }
-  return { source, repos, filters, interval_seconds: interval };
+  const filters = checkGithubFilters(filterObject(parsed.filters, source));
+  return { source, repos, filters, interval_seconds: checkInterval(parsed.interval_seconds) };
 }
 
 /** The next fire of a poll processed (or registered) at `now`: `now + interval_seconds`. Throws `invalid_spec` past the last date. */
@@ -284,12 +334,25 @@ export interface CheckedPollSpec {
 
 /**
  * Validate a poll spec at `now` (see `parsePollSpec`), then the connector:
- * `poll_connector_missing` when no `github` connector is usable, and
- * `poll_repo_not_reachable` naming every repo it does not reach. `tz` must be
- * absent (`invalid_spec`). Reads only; the caller writes after it returns.
+ * `poll_connector_missing` when no `github` connector is usable (a tracker
+ * spec: when its kind's MCP row is not usable, named with its status), and
+ * `poll_repo_not_reachable` naming every repo it does not reach (a tracker
+ * spec has no repos to check). `tz` must be absent (`invalid_spec`). Reads
+ * only; the caller writes after it returns.
  */
 export function checkPollSpec(store: Store, spec: string, tz: string | undefined, now: Date): CheckedPollSpec {
   const parsed = checkPollShape(spec, tz);
+  if (parsed.source === "jira.issues" || parsed.source === "clickup.tasks") {
+    const kind = TRACKER_SOURCES[parsed.source];
+    const gate = mcpConnectorGate(store, kind);
+    if (gate.kind !== "open") {
+      throw new TriggerError(
+        "poll_connector_missing",
+        `poll_connector_missing: no connected ${kind} connector (status ${gate.status ?? "none"}); connect ${MCP_TRACKERS[kind].label} before creating a poll`,
+      );
+    }
+    return { spec: parsed, identity: pollIdentity(parsed), nextFireAt: nextPollFire(now, parsed.interval_seconds) };
+  }
   const connector = githubConnectorState(store);
   if (!connector.usable) {
     throw new TriggerError("poll_connector_missing", `poll_connector_missing: no connected GitHub connector (status ${connector.status ?? "none"}); connect GitHub before creating a poll`);
@@ -342,27 +405,44 @@ export type Fetched =
   | { readonly ok: false; readonly error: "rate_limited"; readonly repo: string; readonly resets_at: string }
   | { readonly ok: false; readonly error: "http_error" | "unreachable" | "client_error"; readonly repo: string; readonly status?: number; readonly message?: string };
 
+/** A GitHub source asked to fetch with no client: a fixed failure, never a throw. Callers gate on the client first, so this is a guard. */
+function noGithubClient(spec: GithubPollSpec): SourceFetch {
+  return { ok: false, error: "client_error", repo: spec.repos[0] ?? "", message: "no_github_client" };
+}
+
+/** A tracker source asked to fetch with no store to read its connection from: a fixed failure, never a throw. */
+function noStore(scope: string): SourceFetch {
+  return { ok: false, error: "client_error", repo: scope, message: "connector_missing" };
+}
+
 /** The fetch of `spec.source`, from `./sources/<source>.ts`: the one dispatch on the source. */
-function fetchSource(github: GitHubClient, spec: PollSpec): Promise<SourceFetch> {
+function fetchSource(github: GitHubClient | undefined, spec: PollSpec, tickets: McpTicketReader, store: Store | undefined): Promise<SourceFetch> {
   switch (spec.source) {
     case "github.issues":
-      return fetchGithubIssues(github, spec);
+      return github === undefined ? Promise.resolve(noGithubClient(spec)) : fetchGithubIssues(github, spec);
     case "github.pr_comments":
-      return fetchGithubPrComments(github, spec);
+      return github === undefined ? Promise.resolve(noGithubClient(spec)) : fetchGithubPrComments(github, spec);
     case "github.pulls":
-      return fetchGithubPulls(github, spec);
+      return github === undefined ? Promise.resolve(noGithubClient(spec)) : fetchGithubPulls(github, spec);
+    case "jira.issues":
+      return store === undefined ? Promise.resolve(noStore(`jira:${spec.filters.site}`)) : fetchJiraIssues(tickets, store, spec, MAX_POLL_ITEMS);
+    case "clickup.tasks":
+      return store === undefined ? Promise.resolve(noStore("clickup")) : fetchClickupTasks(tickets, store, spec);
   }
 }
 
 /**
- * Phase A's fetch: dispatches by `spec.source` to `./sources/<source>.ts`
- * (the three GitHub sources parse, so they are the ones built). Items are
- * repos in spec order, then each source's own order (pulls and issues by
- * ascending number, comments by pull request, kind and id), at most
- * `MAX_POLL_ITEMS`; `found` counts them before the cap. The first failure stops it.
+ * Phase A's fetch: dispatches by `spec.source` to `./sources/<source>.ts`.
+ * Items are repos in spec order, then each source's own order (pulls and
+ * issues by ascending number, comments by pull request, kind and id; tickets
+ * by updated time, then ref), at most `MAX_POLL_ITEMS`; `found` counts them
+ * before the cap. The first failure stops it. A GitHub source needs `github`
+ * (its callers gate on it first); a tracker source uses only `tickets` (the
+ * kernel's reader, default the real one, whose Keychain is read only when a
+ * fetch gets that far) and the `store` its connection row is read from.
  */
-export async function fetchPollItems(github: GitHubClient, spec: PollSpec): Promise<Fetched> {
-  const fetched = await fetchSource(github, spec);
+export async function fetchPollItems(github: GitHubClient | undefined, spec: PollSpec, tickets: McpTicketReader = createMcpTicketReader(), store?: Store): Promise<Fetched> {
+  const fetched = await fetchSource(github, spec, tickets, store);
   if (!fetched.ok) return fetched;
   return { ok: true, items: fetched.items.slice(0, MAX_POLL_ITEMS), found: fetched.items.length };
 }
@@ -372,20 +452,27 @@ type Gate =
   | { readonly kind: "playbook_not_enabled"; readonly status: string | null }
   | { readonly kind: "kill_switch" }
   | { readonly kind: "paused" }
-  | { readonly kind: "connector_missing"; readonly status: string | null; readonly client: boolean }
-  | { readonly kind: "open"; readonly playbook: LinkedPlaybook; readonly github: GitHubClient };
+  | { readonly kind: "connector_missing"; readonly status: string | null; readonly client: boolean; readonly tracker?: { readonly kind: McpKind; readonly label: string } }
+  | { readonly kind: "open"; readonly playbook: LinkedPlaybook; readonly github: GitHubClient | undefined };
 
 /**
  * The checks before a fetch, in order (the same in Phase A and Phase B): the
  * linked playbook is `enabled`; the instant is outside every kill-switch
  * window, then every pause window (or the kernel is not paused); a `github`
- * connector is usable and a client is wired.
+ * connector is usable and a client is wired (a tracker poll: its MCP
+ * connection is `open` in `mcpConnectorGate`, and no GitHub is involved).
  */
-function gateOf(store: Store, row: PollRow, scheduledAt: string, github: GitHubClient | undefined): Gate {
+function gateOf(store: Store, row: PollRow, spec: PollSpec, scheduledAt: string, github: GitHubClient | undefined): Gate {
   const linked = row.playbook === null ? undefined : linkedPlaybook(store, row.playbook);
   if (linked === undefined || linked.status !== "enabled") return { kind: "playbook_not_enabled", status: linked?.status ?? null };
   if (inKillSwitchWindow(killSwitchWindows(store), scheduledAt)) return { kind: "kill_switch" };
   if (inPauseWindow(pauseWindows(store), scheduledAt)) return { kind: "paused" };
+  if (spec.source === "jira.issues" || spec.source === "clickup.tasks") {
+    const kind = TRACKER_SOURCES[spec.source];
+    const mcp = mcpConnectorGate(store, kind);
+    if (mcp.kind !== "open") return { kind: "connector_missing", status: mcp.status, client: false, tracker: { kind, label: MCP_TRACKERS[kind].label } };
+    return { kind: "open", playbook: linked, github: undefined };
+  }
   const connector = githubConnectorState(store);
   if (!connector.usable || github === undefined) return { kind: "connector_missing", status: connector.status, client: github !== undefined };
   return { kind: "open", playbook: linked, github };
@@ -399,9 +486,9 @@ class PollDeferred extends Error {
   }
 }
 
-/** The `connector_missing` notification's title: clipped to `MAX_NOTIFICATION_TITLE`. */
-function missingTitle(id: number): string {
-  return clip(`Poll trigger ${id}: GitHub not connected`, MAX_NOTIFICATION_TITLE - 1);
+/** The `connector_missing` notification's title (`label` names the tracker; GitHub's text is unchanged): clipped to `MAX_NOTIFICATION_TITLE`. */
+function missingTitle(id: number, label: string = "GitHub"): string {
+  return clip(`Poll trigger ${id}: ${label} not connected`, MAX_NOTIFICATION_TITLE - 1);
 }
 
 /**
@@ -418,7 +505,7 @@ function recordInstant(store: Store, id: number, scheduledAt: string, spec: Poll
   if (isKillSwitchEngaged(store)) throw new PollDeferred("the kill switch was engaged during the fetch");
   const at = now.toISOString();
   const ref = { sessionId: null, taskId: null };
-  const gate = gateOf(store, row, scheduledAt, github);
+  const gate = gateOf(store, row, spec, scheduledAt, github);
   let next = nextPollFire(now, spec.interval_seconds);
   const missed = (result: TriggerResult | null, payload: Record<string, unknown>): PollFireOutcome => {
     // `playbook_not_enabled` leaves `last_result` as it was (as the cron path does).
@@ -434,9 +521,14 @@ function recordInstant(store: Store, id: number, scheduledAt: string, spec: Poll
   if (gate.kind === "connector_missing") {
     // Notify once per outage: only the first missing instant after any other result.
     let notification: { notification_id: number } | Record<string, never> = {};
-    const body = `Trigger ${id} (playbook ${row.playbook ?? "-"}) found ${gate.client ? "no connected GitHub connector" : "no GitHub client in the kernel"} at ${scheduledAt}. It fetches nothing and records each instant connector_missing until GitHub is connected again.`;
-    if (row.last_result !== "connector_missing") notification = { notification_id: recordNotification(store, { source: `trigger:${id}`, title: missingTitle(id), body }, now).id };
-    return missed("connector_missing", { reason: "connector_missing", connector_status: gate.status, client: gate.client, ...notification });
+    const label = gate.tracker?.label ?? "GitHub";
+    const body =
+      gate.tracker !== undefined
+        ? `Trigger ${id} (playbook ${row.playbook ?? "-"}) found no connected ${label} connector at ${scheduledAt}. It fetches nothing and records each instant connector_missing until ${label} is connected again.`
+        : `Trigger ${id} (playbook ${row.playbook ?? "-"}) found ${gate.client ? "no connected GitHub connector" : "no GitHub client in the kernel"} at ${scheduledAt}. It fetches nothing and records each instant connector_missing until GitHub is connected again.`;
+    if (row.last_result !== "connector_missing") notification = { notification_id: recordNotification(store, { source: `trigger:${id}`, title: missingTitle(id, label), body }, now).id };
+    const who = gate.tracker === undefined ? { client: gate.client } : { connector: gate.tracker.kind };
+    return missed("connector_missing", { reason: "connector_missing", connector_status: gate.status, ...who, ...notification });
   }
   // Open now, but Phase A decided not to fetch: fetch on the next tick rather than guess.
   if (fetched === undefined) throw new PollDeferred("the poll became fetchable after the fetch was decided");
@@ -551,7 +643,7 @@ function movePollAfterFailure(store: Store, id: number, scheduledAt: string, spe
 }
 
 /** Phase A then Phase B for one due poll. */
-async function fireOnePoll(store: Store, github: GitHubClient | undefined, row: PollRow, now: Date): Promise<PollFireOutcome> {
+async function fireOnePoll(store: Store, github: GitHubClient | undefined, row: PollRow, now: Date, tickets: McpTicketReader): Promise<PollFireOutcome> {
   const scheduledAt = row.next_fire_at as string;
   const key = fireStepKey(row.id, scheduledAt);
   let spec: PollSpec;
@@ -564,8 +656,8 @@ async function fireOnePoll(store: Store, github: GitHubClient | undefined, row: 
   // Phase A: no writes. An instant whose step is already done is never fetched again.
   let fetched: Fetched | undefined;
   if (getWorkStep(store, key) === undefined) {
-    const gate = gateOf(store, row, scheduledAt, github);
-    if (gate.kind === "open") fetched = await fetchPollItems(gate.github, spec);
+    const gate = gateOf(store, row, spec, scheduledAt, github);
+    if (gate.kind === "open") fetched = await fetchPollItems(gate.github, spec, tickets, store);
   }
   // Phase B: one transaction.
   let outcome: PollFireOutcome;
@@ -586,11 +678,17 @@ async function fireOnePoll(store: Store, github: GitHubClient | undefined, row: 
  * earliest first, each instant at most once (see the header). Nothing runs
  * while the kill switch is engaged. `github` is the kernel's client
  * (`DueWorkContext.github`); without one, a due poll records
- * `connector_missing` and never throws. One trigger's failure never stops the
+ * `connector_missing` and never throws. `tickets` is the kernel's reader of
+ * the Jira and ClickUp connections (default the real one). One trigger's failure never stops the
  * others: they all run, then the failures are thrown as one error naming
  * each (one `due_work_failed` from the loop).
  */
-export async function firePollTriggers(store: Store, github: GitHubClient | undefined, now: Date = new Date()): Promise<PollFireOutcome[]> {
+export async function firePollTriggers(
+  store: Store,
+  github: GitHubClient | undefined,
+  now: Date = new Date(),
+  tickets: McpTicketReader = createMcpTicketReader(),
+): Promise<PollFireOutcome[]> {
   if (isKillSwitchEngaged(store)) return [];
   const due = store
     .prepare<[string], PollRow>(
@@ -601,7 +699,7 @@ export async function firePollTriggers(store: Store, github: GitHubClient | unde
   const failures: string[] = [];
   for (const row of due) {
     try {
-      outcomes.push(await fireOnePoll(store, github, row, now));
+      outcomes.push(await fireOnePoll(store, github, row, now, tickets));
     } catch (err) {
       failures.push(`trigger ${row.id}: ${errorMessage(err)}`);
     }

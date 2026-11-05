@@ -9,10 +9,10 @@
 // `docs/architecture/mcp-connectors.md`.
 //
 // Mechanism only (invariant 1): the kernel connects, stores, refreshes and
-// warns. Which server a kind means, which agent may call which tool, and what
-// a poll reads are the owner's, never built in: this file hard-codes no
-// vendor address (`MCP_SERVERS` is empty until a ticket source's item names
-// them), and the grant is read elsewhere.
+// warns. Which agent may call which tool and what a poll reads are the
+// owner's, never built in. The two vendor addresses are data in `trackers.ts`
+// (`MCP_TRACKERS`), which `MCP_SERVERS` is filled from, and the grant is read
+// elsewhere.
 //
 // The row never holds a secret: only `token_expiry` (a time), the server's
 // address, the status and the kept tool list reach it. No token, code,
@@ -60,6 +60,7 @@ import { isUsableMcpStatus, mcpRow, mcpRows, storedToolsOf } from "./rows.js";
 import type { McpKind, McpRow } from "./rows.js";
 import { planProxyTools } from "./tools.js";
 import type { McpDropCounts } from "./tools.js";
+import { MCP_TRACKERS } from "./trackers.js";
 
 /** How long before the access token expires the connector renews it: the safety kernel's, fixed. */
 export const MCP_REFRESH_AHEAD_MS = 5 * 60 * 1000;
@@ -79,12 +80,16 @@ export interface McpServerDefinition {
 }
 
 /**
- * The servers built in, by kind. Empty on purpose: item 06 is the mechanism
- * and hard-codes no vendor address; item 07 (the Jira and ClickUp ticket
- * sources) fills this, and until it does a connect with no address on the row
- * is refused `server_not_configured`.
+ * The servers built in, by kind: the Jira (Atlassian Rovo) and ClickUp
+ * addresses, filled from `trackers.ts`'s `MCP_TRACKERS` (phase 8 item 07),
+ * which is also where each kind's ticket tool is named. A kind with no entry
+ * (none today) connects to the row's own `server_url`, else is refused
+ * `server_not_configured`.
  */
-export const MCP_SERVERS: Readonly<Partial<Record<McpKind, McpServerDefinition>>> = Object.freeze({});
+export const MCP_SERVERS: Readonly<Partial<Record<McpKind, McpServerDefinition>>> = Object.freeze({
+  jira: Object.freeze({ url: MCP_TRACKERS.jira.url }),
+  clickup: Object.freeze({ url: MCP_TRACKERS.clickup.url }),
+});
 
 /** Every code a connector call answers with when it does not succeed. */
 export type McpErrorCode = McpConnectRefusal | "no_connector" | "keychain_failed" | "connector_failed";

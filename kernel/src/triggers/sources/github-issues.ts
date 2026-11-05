@@ -16,7 +16,7 @@
 //
 // Imports: type-only from `../../integrations/types.js`, `./github-pulls.js` and
 // the loop helpers, so the `studio` CLI's module graph is unchanged.
-import type { GitHubClient, GitHubIssueFilters, GitHubIssueSummary, PollSpec, SourceItem } from "../../integrations/types.js";
+import type { GitHubClient, GitHubIssueFilters, GitHubIssueSummary, GithubPollSpec, SourceItem } from "../../integrations/types.js";
 import { clip, errorMessage } from "../../loop/internal.js";
 import type { SourceFetch } from "./github-pulls.js";
 
@@ -32,7 +32,7 @@ function itemOf(repo: string, i: GitHubIssueSummary): SourceItem {
 }
 
 /** The slice of the spec's filters an issue listing takes (`state`, `labels`, `assignee`), each only when the spec names it. */
-function filtersOf(spec: PollSpec): GitHubIssueFilters {
+function filtersOf(spec: GithubPollSpec): GitHubIssueFilters {
   const { state, labels, assignee } = spec.filters;
   return { ...(state === undefined ? {} : { state }), ...(labels === undefined ? {} : { labels }), ...(assignee === undefined ? {} : { assignee }) };
 }
@@ -43,7 +43,7 @@ function filtersOf(spec: PollSpec): GitHubIssueFilters {
  * client that throws, or answers data that is not a list, is a `client_error`.
  * Items are repos in spec order, issues by ascending number, uncapped.
  */
-export async function fetchGithubIssues(github: GitHubClient, spec: PollSpec): Promise<SourceFetch> {
+export async function fetchGithubIssues(github: GitHubClient, spec: GithubPollSpec): Promise<SourceFetch> {
   const items: SourceItem[] = [];
   for (const repo of spec.repos) {
     let res: Awaited<ReturnType<GitHubClient["listIssues"]>>;
