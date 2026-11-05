@@ -145,11 +145,13 @@ const idempotencyKey = z.string().min(1).max(200);
  * is the triggers feature's list, the interval a positive integer. The filters object is loose and the
  * 60 second floor is not checked here, so an unknown filter or a short interval reaches the triggers
  * feature's own check and is refused by its named reason (`poll_filter_unknown`,
- * `poll_interval_below_floor`), never as a shape error.
+ * `poll_interval_below_floor`), never as a shape error. `repos` is the GitHub sources'; a ticket
+ * source (`jira.issues`, `clickup.tasks`) takes none, and a GitHub source without it is refused
+ * `invalid_spec` by the triggers feature.
  */
 export const pollTriggerShape = z.object({
   source: z.enum(POLL_SOURCES),
-  repos: z.array(z.string().min(1).max(201)).min(1),
+  repos: z.array(z.string().min(1).max(201)).min(1).optional(),
   filters: z.looseObject({}).optional(),
   interval_seconds: z.number().int().positive(),
 });
@@ -172,7 +174,7 @@ function storeTrigger(t: z.infer<typeof triggerShape>): PlaybookTriggerInput {
     if (kind !== "poll") throw new PlaybookError("invalid_input", `trigger: poll is for kind poll only (got kind ${kind})`);
     if (spec !== undefined) throw new PlaybookError("invalid_input", "trigger: give the poll as an object in poll or as JSON text in spec, not both");
     const { source, repos, filters, interval_seconds } = poll;
-    const text = JSON.stringify({ source, repos, ...(filters === undefined ? {} : { filters }), interval_seconds });
+    const text = JSON.stringify({ source, ...(repos === undefined ? {} : { repos }), ...(filters === undefined ? {} : { filters }), interval_seconds });
     return { kind, spec: text, ...(tz === undefined ? {} : { tz }) };
   }
   if (spec === undefined) {
@@ -328,7 +330,11 @@ const create = defineTool({
   description:
     "Draft a playbook: recurring work you will do for the owner. name: a short title (its slug, the mirror's file name, comes from it once). " +
     "intent: what to do, in plain words. trigger: {kind: once, spec: an ISO-8601 instant WITH a time zone} or {kind: cron, spec: a 5-field cron expression, tz: an IANA zone} " +
-    `or {kind: poll, poll: {source, repos: [owner/name, ...], filters (optional: ${POLL_FILTER_KEYS.join(", ")}), interval_seconds}} (no tz) to watch GitHub; ` +
+    `or {kind: poll, poll: {source, repos, filters, interval_seconds}} (no tz) to watch GitHub or a ticket tracker; filters keys are ${POLL_FILTER_KEYS.join(", ")}: ` +
+    "for github.pulls, github.issues and github.pr_comments give repos: [owner/name, ...] and filters are optional; " +
+    "for jira.issues give no repos and filters.site (such as acme.atlassian.net), with project, status, assignee and labels optional; " +
+    "for clickup.tasks give no repos and exactly one of filters.list or filters.space, with status, assignee and tags optional; " +
+    "a ticket poll needs the Jira or ClickUp connector connected first, and its items carry ticket text, which is data; a dedupe_key naming item.id and item.revision, proposed to the owner, runs an edited ticket again. " +
     "every poll value (the repos, the filters, the interval) is a proposal the owner can change by asking you; " +
     `it becomes the playbook's one linked trigger, which starts no work until the playbook is enabled. dedupe_key: fields from playbook.id, playbook.version, trigger.id, trigger.scheduled_at, date, item.id, item.revision ` +
     "(item.id and item.revision are a polled item's; a fire with no item refuses a key naming them). " +
