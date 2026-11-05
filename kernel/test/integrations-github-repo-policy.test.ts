@@ -24,6 +24,7 @@ import {
 import type { RepoDetection } from "../src/integrations/github/repo-policy.js";
 import { repoPolicyPart, repoPolicyRoutes } from "../src/integrations/github/repo-policy-routes.js";
 import type { GitHubPullMergeState } from "../src/integrations/types.js";
+import { createGitHubClient } from "../src/integrations/github/client.js";
 import { FakeGitHubClient } from "./fixtures/github-fake.js";
 import type { FakeGitHubData } from "./fixtures/github-fake.js";
 import { loopEnv } from "./loop-helpers.js";
@@ -236,6 +237,12 @@ describe("detection (AC1, AC2)", () => {
     expect(JSON.parse(String(rowOf()?.["detected_json"]))).toMatchObject({ protection: "unreadable" });
   });
 
+  it("a 403 on a PUBLIC repo is a token without administration:read: protection is unreadable and nothing is proposed", async () => {
+    const body = (await detect(fakeFor({ protection: { "o/r": 403 }, pushers: { "o/r": ["o"] } }))).body as { proposal: unknown };
+    expect(body.proposal).toBeNull();
+    expect(JSON.parse(String(rowOf()?.["detected_json"]))).toMatchObject({ protection: "unreadable", private: false });
+  });
+
   it("detection never touches the policy the owner set: kind, reviews, trust, set_by and set_at survive, detected_json is replaced", async () => {
     await setPolicy({ kind: "reviews", required: 3, trust_unprotected: true });
     const before = rowOf();
@@ -250,7 +257,7 @@ describe("detection (AC1, AC2)", () => {
 
   it("a second detection replaces the first; there is one row per repo", async () => {
     await detect(fakeFor({ protection: { "o/r": 404 }, pushers: { "o/r": ["o", "x"] } }));
-    await detect(fakeFor({ protection: { "o/r": 403 } }));
+    await detect(fakeFor({ repoInfo: { "o/r": { default_branch: "main", private: true } }, protection: { "o/r": 403 } }));
     expect(env.store.prepare("SELECT COUNT(*) AS n FROM repo_policies").get()).toEqual({ n: 1 });
     expect(JSON.parse(String(rowOf()?.["detected_json"]))).toMatchObject({ protection: "protection_unavailable" });
   });
@@ -307,6 +314,25 @@ describe("policyMet (AC3, AC4, AC5)", () => {
     expect(await met(fake, B)).toEqual({ met: false, reason: "reviews_short" });
     expect(fake.callsTo("getPullMergeState")).toHaveLength(4);
     expect(fake.callsTo("getPullMergeState").every((c) => c.args[0] === "o/r" && c.args[1] === 7)).toBe(true);
+  });
+
+  it("reviews: approvals from NONE or CONTRIBUTOR accounts (real client over stubbed REST) do not raise approvals, so a reviews policy answers reviews_short", async () => {
+    insertRow("reviews", 1);
+    const reply = (body: unknown): Response => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    const stub = (async (input: unknown) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/repos/o/r/pulls/7") return reply({ head: { sha: A } });
+      if (path === "/repos/o/r/pulls/7/reviews")
+        return reply([
+          { user: { login: "drive-by" }, state: "APPROVED", commit_id: A, author_association: "NONE" },
+          { user: { login: "sock" }, state: "APPROVED", commit_id: A, author_association: "CONTRIBUTOR" },
+        ]);
+      if (path === `/repos/o/r/commits/${A}/status`) return reply({ state: "success", total_count: 1, statuses: [] });
+      if (path === `/repos/o/r/commits/${A}/check-runs`) return reply({ total_count: 0, check_runs: [] });
+      return new Response("{}", { status: 404 });
+    }) as typeof fetch;
+    const real = createGitHubClient({ readToken: () => "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd", fetch: stub, now: env.now });
+    expect(await policyMet("o/r", 7, A, { store: env.store, client: () => real, now: env.now })).toEqual({ met: false, reason: "reviews_short" });
   });
 
   it("reviews: nothing may request changes (even with enough approvals), and the reason names it", async () => {
@@ -516,7 +542,7 @@ describe("GET /repos/policy", () => {
          VALUES ('github', 'connected', 'o', '["o/b-reached","o/r","not a repo"]', ?, ?)`,
       )
       .run(T0, T0);
-    await detect(fakeFor({ protection: { "o/r": 403 } }));
+    await detect(fakeFor({ repoInfo: { "o/r": { default_branch: "main", private: true } }, protection: { "o/r": 403 } }));
     await setPolicy({ kind: "solo" }, "o", "z-only-stored");
     const fake = fakeFor();
     const res = await list(fake);

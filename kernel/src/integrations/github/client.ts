@@ -572,13 +572,28 @@ function protectionOf(v: unknown): GitHubBranchProtection {
 /** The deciding review states: a `COMMENTED` or `PENDING` review leaves a reviewer's earlier decision as it was. */
 const DECIDING_REVIEW_STATES: readonly string[] = ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"];
 
+/**
+ * The `author_association` values that count an APPROVED review toward `approvals`:
+ * accounts with a standing relationship to the repo. GitHub shows an approval from
+ * anyone on a public repo but counts only a write-access reviewer's toward required
+ * reviews. A missing or unknown value does not count (fail closed). A review is
+ * untrusted input, so the count never rests on the reviewer's say-so alone.
+ */
+const APPROVER_ASSOCIATIONS: readonly string[] = ["OWNER", "MEMBER", "COLLABORATOR"];
+
 /** One review, reduced to what the merge state needs; `undefined` for a review that does not decide (commented, pending). */
-function reviewOf(v: unknown): { readonly login: string; readonly state: string; readonly commit: string | null } | undefined {
+function reviewOf(v: unknown): { readonly login: string; readonly state: string; readonly commit: string | null; readonly trusted: boolean } | undefined {
   const r = record(v);
   const state = str(r["state"]).toUpperCase();
   if (!DECIDING_REVIEW_STATES.includes(state)) return undefined;
   const commit = r["commit_id"];
-  return { login: loginOf(r["user"]), state, commit: typeof commit === "string" ? commit : null };
+  const association = r["author_association"];
+  return {
+    login: loginOf(r["user"]),
+    state,
+    commit: typeof commit === "string" ? commit : null,
+    trusted: typeof association === "string" && APPROVER_ASSOCIATIONS.includes(association.toUpperCase()),
+  };
 }
 
 /** Check-run conclusions that count as passing. */
@@ -1065,13 +1080,15 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient & 
       const reviews = await getPages(`/repos/${r}/pulls/${number}/reviews`, reviewOf, list, s);
       if (!reviews.ok) return reviews;
       // Each reviewer's latest deciding review, in the order GitHub lists them (oldest first).
-      const latest = new Map<string, { readonly state: string; readonly commit: string | null }>();
+      // Only a trusted reviewer's approval counts; a change request from anyone still blocks
+      // (the safe direction: an outsider can hold a merge, never release one).
+      const latest = new Map<string, { readonly state: string; readonly commit: string | null; readonly trusted: boolean }>();
       for (const rev of reviews.data) if (rev !== undefined) latest.set(rev.login, rev);
       let approvals = 0;
       let changesRequested = false;
       for (const rev of latest.values()) {
         if (rev.state === "CHANGES_REQUESTED") changesRequested = true;
-        else if (rev.state === "APPROVED" && rev.commit === head) approvals += 1;
+        else if (rev.state === "APPROVED" && rev.trusted && rev.commit === head) approvals += 1;
       }
       const status = await getJsonOn(s, `/repos/${r}/commits/${head}/status`, (body) => {
         const b = record(body);

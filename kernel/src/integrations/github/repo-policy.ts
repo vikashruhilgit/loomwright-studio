@@ -14,10 +14,13 @@
 //
 // What `detected_json` records (`RepoDetection`): `protection` is `protected`,
 // `unprotected` (GitHub answered 404 for the default branch's protection),
-// `protection_unavailable` (403: GitHub cannot enforce protection here, a private
-// repo on GitHub Free) or `unreadable` (anything else); `required_reviews` and
+// `protection_unavailable` (403 on a repo whose info says `private`: GitHub cannot
+// enforce protection here, a private repo on GitHub Free; a 403 on a public repo is a
+// token lacking administration:read and reads `unreadable`) or `unreadable` (anything else); `required_reviews` and
 // `required_checks` from the protection; `pushers` (the push collaborators, `null`
-// when unreadable); `default_branch`, `private` and `read_at`. Honest limit: a 404
+// when unreadable); `default_branch`, `private` and `read_at`. Honest limits: a private
+// repo read with a permission-less token also answers 403, so it still reads
+// `protection_unavailable`; a 404
 // can also mean the token may not read protection at all, so `unprotected` is the
 // read, not a guarantee; it only changes a suggestion, never a policy.
 //
@@ -296,7 +299,8 @@ async function readDetection(repo: string, reads: GitHubRepoPolicyReads, at: Dat
       return { ...found, protection: "protected", required_reviews: protection.data.required_approving_review_count, required_checks: [...protection.data.required_checks] };
     }
     if (protection.error === "http_error" && protection.status === 404) return { ...found, protection: "unprotected" };
-    if (protection.error === "http_error" && protection.status === 403) return { ...found, protection: "protection_unavailable" };
+    // A 403 means "GitHub cannot enforce protection here" only on a private repo; on a public one it is a token without administration:read, so it stays unreadable.
+    if (protection.error === "http_error" && protection.status === 403 && info.data.private === true) return { ...found, protection: "protection_unavailable" };
     return found;
   } catch {
     return nothing;

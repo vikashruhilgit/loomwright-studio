@@ -23,7 +23,7 @@ Part of [Phase 8 features](../ARCHITECTURE.md#phase-8-features). Phase 8 item 08
 
 | Field | Meaning |
 |---|---|
-| `protection` | `protected`, `unprotected` (GitHub answered 404), `protection_unavailable` (403: a private repo on GitHub Free cannot be protected, studio-sandbox's case) or `unreadable` (anything else, including a repo that cannot be read) |
+| `protection` | `protected`, `unprotected` (GitHub answered 404), `protection_unavailable` (403 on a private repo: a private repo on GitHub Free cannot be protected, studio-sandbox's case; a 403 on a public repo is a token without administration:read and records `unreadable`, so no proposal) or `unreadable` (anything else, including a repo that cannot be read) |
 | `required_reviews`, `required_checks` | from the protection; empty when it was not read |
 | `pushers` | the push collaborators' logins, `null` when GitHub would not say |
 | `default_branch`, `private`, `read_at` | from the repo read |
@@ -77,7 +77,8 @@ The other reasons: `head_moved` (GitHub's head is not `head_sha`, checked before
 ## Honest limits
 
 - **Fake-tested only.** The four reads and their request shapes are tested against a fake `fetch` and `FakeGitHubClient`; no live GitHub call has verified the response shapes (the shape follows GitHub's documented REST API).
-- **Approvals are REST-derived.** `reviewDecision` is GraphQL, which the client does not send, so approvals are counted from the reviews at the head SHA. That is conservative (a stale approval never counts) and Loomwright's gate still re-checks `reviewDecision`.
+- **Approvals are REST-derived.** `reviewDecision` is GraphQL, which the client does not send, so approvals are counted from the reviews at the head SHA. That is conservative (a stale approval never counts) and Loomwright's gate still re-checks `reviewDecision`, which is `null` on an unprotected branch, so the count itself must not be gameable: only an approval whose `author_association` is OWNER, MEMBER or COLLABORATOR counts (anyone can post an approval on a public repo, but GitHub counts only write-access reviewers); a missing or unknown association does not count. A `CHANGES_REQUESTED` from any reviewer still sets `changes_requested`: an outsider can hold a merge, never release one. Limit: `COLLABORATOR` includes read-only collaborators, which the reviews API does not distinguish from write access.
+- **A 403 is ambiguous.** `protection_unavailable` needs the repo to read as private; a private repo read with a token lacking administration:read also answers 403 and still reads `protection_unavailable`.
 - **Safe mode has no storage.** It is offered as a `choice` only, and choosing it stores nothing: the repo stays `unset` and its PRs park. [DESIGN.md](../DESIGN.md) records the open point.
 - **Team number.** The kernel ships no number for a team repo; N comes from GitHub's protection, or Wright proposes one in a draft for the owner to change.
 - **Names are matched as written.** GitHub treats `Owner/Repo` case-insensitively; the kernel does not fold case, so a policy is found only under the name it was set with (a miss reads as `no_policy`, which fails closed).

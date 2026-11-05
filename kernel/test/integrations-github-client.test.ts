@@ -1627,7 +1627,13 @@ describe("the repo-policy reads (phase 8 item 08)", () => {
     ["getPullMergeState", (gh) => gh.getPullMergeState("o/r", 7)],
   ];
 
-  const review = (login: string, state: string, commit: string | null) => ({ user: user(login), state, commit_id: commit, submitted_at: "2026-10-26T10:00:00Z" });
+  const review = (login: string, state: string, commit: string | null, association: string | null = "COLLABORATOR") => ({
+    user: user(login),
+    state,
+    commit_id: commit,
+    submitted_at: "2026-10-26T10:00:00Z",
+    ...(association === null ? {} : { author_association: association }),
+  });
 
   /** A route for pull 7 at `HEAD` with the given reviews, combined status and check runs. */
   function mergeRoute(opts: { reviews?: unknown[]; status?: { state: string; total_count: number }; runs?: unknown[] }): Route {
@@ -1737,6 +1743,29 @@ describe("the repo-policy reads (phase 8 item 08)", () => {
 
   it("getPullMergeState: a reviewer whose latest deciding review requests changes sets changes_requested (even on an older commit)", async () => {
     const { gh } = policyClient(mergeRoute({ reviews: [review("alice", "APPROVED", HEAD), review("bob", "APPROVED", HEAD), review("bob", "CHANGES_REQUESTED", OLD)] }));
+    expect(await gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 1, changes_requested: true } });
+  });
+
+  it("getPullMergeState: only an OWNER, MEMBER or COLLABORATOR approval counts; NONE, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR and a missing association do not", async () => {
+    const { gh } = policyClient(
+      mergeRoute({
+        reviews: [
+          review("a", "APPROVED", HEAD, "OWNER"),
+          review("b", "APPROVED", HEAD, "MEMBER"),
+          review("c", "APPROVED", HEAD, "COLLABORATOR"),
+          review("d", "APPROVED", HEAD, "NONE"),
+          review("e", "APPROVED", HEAD, "CONTRIBUTOR"),
+          review("f", "APPROVED", HEAD, "FIRST_TIME_CONTRIBUTOR"),
+          review("g", "APPROVED", HEAD, null),
+          review("h", "APPROVED", HEAD, "SOMETHING_NEW"),
+        ],
+      }),
+    );
+    expect(await gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 3, changes_requested: false } });
+  });
+
+  it("getPullMergeState: a CHANGES_REQUESTED from a non-collaborator still sets changes_requested (an outsider can block, never release)", async () => {
+    const { gh } = policyClient(mergeRoute({ reviews: [review("a", "APPROVED", HEAD, "OWNER"), review("x", "CHANGES_REQUESTED", HEAD, "NONE")] }));
     expect(await gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 1, changes_requested: true } });
   });
 
