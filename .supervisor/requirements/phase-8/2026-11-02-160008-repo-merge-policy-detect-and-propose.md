@@ -123,3 +123,9 @@ kernel/test/playbooks-drafts.test.ts
 kernel/test/playbooks-foundation.test.ts
 docs/architecture/repo-policy.md
 docs/architecture/playbooks.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-05T03:30:12Z
+- **Brief:** .supervisor/jobs/done/2026-11-04-repo-merge-policy-detect-and-propose.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/226
