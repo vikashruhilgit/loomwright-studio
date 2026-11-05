@@ -141,7 +141,7 @@ A due ticket poll whose gate is not `open` is not a fetch at all: it records `co
 
 **No secret.** No token reaches a row, an event, a notification, an answer or a log from a ticket poll. A test scans for the fake token on every outcome.
 
-**NEEDS VERIFICATION: ClickUp's tool name and response shape.** The Jira tool is from Atlassian's supported-tools page. ClickUp's official MCP server's real tool names and result shapes were not found (a search turned up only third-party servers' names), so `get_workspace_tasks` and the argument names are authored, and the fixture says so. The parse is loose and drops an off-shape entry, and `tool_unavailable` names a wrong tool. The owner's live ClickUp run (phase 8 item 13) confirms or corrects both. Atlassian also documents a v2 endpoint (`https://mcp.atlassian.com/v2/mcp`); the v1 address is what ships, as data in one place, and v2 is NEEDS VERIFICATION.
+**NEEDS VERIFICATION: ClickUp's tool name and response shape.** The Jira tool is from Atlassian's supported-tools page. ClickUp's official MCP server's real tool names and result shapes were not found (a search turned up only third-party servers' names), so `get_workspace_tasks` and the argument names are authored, and the fixture says so. The parse is loose and drops an off-shape entry, and `tool_unavailable` names a wrong tool. The owner's live ClickUp run (phase 8 item 14) confirms or corrects both. Atlassian also documents a v2 endpoint (`https://mcp.atlassian.com/v2/mcp`); the v1 address is what ships, as data in one place, and v2 is NEEDS VERIFICATION.
 
 ## The proxy tools
 
@@ -191,5 +191,7 @@ No token, code, verifier, client secret or `state` reaches a row, an event, a no
 
 - **The model API's exact tool-name limit** is NEEDS VERIFICATION. The 64-character cap on `mcp__kernel__<proxy>` is conservative and was not probed.
 - **Vendor behaviour.** Nothing ran against Atlassian's or ClickUp's real server. Open points: whether each accepts a dynamically registered loopback redirect with an arbitrary port; whether each sets `readOnlyHint` (a tool without it is `kernel_mcp_w_…`, so it is held, which is the safe side); how long their tokens are against the 3800-character Keychain limit; and a December 2025 user report that ClickUp's OAuth metadata mismatched (unconfirmed whether fixed). A mismatch is a named refusal (`discovery_failed`), never a crash.
+- **ClickUp's ticket-source tool** is NEEDS VERIFICATION. `get_workspace_tasks`, its argument names and its result shape are authored, not taken from ClickUp's server ([ticket sources](#ticket-sources)). A wrong name is `tool_unavailable` and an off-shape entry is dropped.
+- **Atlassian's v2 endpoint.** Atlassian also documents `https://mcp.atlassian.com/v2/mcp`; the v1 address ships. Whether v2 should replace it is NEEDS VERIFICATION; Jira is not touched live, so this stays `not_exercised`.
 - **Jira is the owner's work (Tray) account**, so nothing touches it live: it is built and tested against the fake server, and its live check is recorded `not_exercised`. ClickUp is personal, so a live run may read it.
 - **The system browser.** The app opening `authorize_url` and the real browser's redirect to the loopback listener were not run; the tests play the browser with `fetch`.
