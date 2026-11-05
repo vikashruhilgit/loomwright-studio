@@ -155,6 +155,59 @@ export function pagedWrightThread(): FixtureRoute {
   };
 }
 
+export const KERNEL_MERGE_APPROVAL_REQUEST = "mcp__kernel__kernel_merge_approval_request";
+
+/** The 40-character head the merge card shortens to its first 7 (`1a2b3c4`). */
+export const MERGE_HEAD_SHA = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
+
+/** The payload fields a merge approval carries; item 09 (not on main) owns the last three, so any of them may be left out. */
+export interface MergeFields {
+  readonly repo?: string;
+  readonly pr?: number;
+  readonly head_sha?: string;
+  readonly ci?: string;
+  readonly ready_at?: string;
+  readonly policy?: string;
+}
+
+export interface MergeApprovalOptions {
+  /** `rail` (default): the rail's `{tool, input, cwd}`, held from a playbook session. `flat`: the fields at the payload's top level. */
+  readonly shape?: "rail" | "flat";
+  /** Replaces or drops a field: a key set to `undefined` is left out of the payload. */
+  readonly fields?: Partial<Record<keyof MergeFields, string | number | undefined>>;
+  readonly overrides?: Partial<Approval>;
+}
+
+/**
+ * #7: a `kernel_merge_approval_request`, held through the rail from playbook
+ * `tickets-to-prs`' session (so `alwaysRefusalFor` has nothing to say and only
+ * the merge card's own guard keeps `always` from being sent). The payload is
+ * the rail's `{tool, input, cwd}`; `shape: "flat"` puts the fields at the top.
+ */
+export function mergeApproval(id = 7, options: MergeApprovalOptions = {}): Approval {
+  const merged: Record<string, string | number | undefined> = {
+    repo: "studio-sandbox/studio-sandbox",
+    pr: 21,
+    head_sha: MERGE_HEAD_SHA,
+    ci: "green · 5 of 5 checks passed",
+    ready_at: "2026-10-22T08:20:00.000Z",
+    policy: "Approve in Studio · set by you",
+    ...options.fields,
+  };
+  const fields = Object.fromEntries(Object.entries(merged).filter(([, value]) => value !== undefined));
+  const payload =
+    options.shape === "flat" ? fields : { tool: KERNEL_MERGE_APPROVAL_REQUEST, input: fields, cwd: "/Users/owner/src/studio-sandbox" };
+  return approval(id, {
+    requesting_agent: "ada",
+    requesting_session: 14,
+    action: "kernel_merge_approval_request",
+    requested_at: at(11),
+    playbook: { id: 7, slug: "tickets-to-prs", version: 2 },
+    payload,
+    ...options.overrides,
+  });
+}
+
 /** #2: a rail-held Bash call from a playbook session, with its own cwd. */
 export function reviewApproval(id = 2): Approval {
   return approval(id, {
