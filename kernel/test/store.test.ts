@@ -51,7 +51,8 @@ const PHASE1_TABLES = [
 /**
  * Migration 13's tables' columns, in declared order (Design decision 1), then
  * the ones migration 17 adds at the end (`playbooks.mode` / `mode_set_by`,
- * `playbook_runs.item_ref` / `item_revision`): the default list's columns.
+ * `playbook_runs.item_ref` / `item_revision`) and migration 21's
+ * (`playbooks.merge_requirement` / `merge_requirement_set_by`): the default list's columns.
  */
 const PLAYBOOKS_COLUMNS = [
   "id",
@@ -77,6 +78,8 @@ const PLAYBOOKS_COLUMNS = [
   "updated_at",
   "mode",
   "mode_set_by",
+  "merge_requirement",
+  "merge_requirement_set_by",
 ];
 const PLAYBOOK_VERSIONS_COLUMNS = ["playbook", "version", "snapshot_json", "created_at"];
 const PLAYBOOK_RUNS_COLUMNS = [
@@ -252,7 +255,7 @@ describe("migrations", () => {
     expect(store.appliedMigrations().map((m) => [m.version, m.name])).toEqual([[1, "initial"]]);
   });
 
-  it("the default list adds auth_providers (migration 2), sessions.loomwright_path (migration 3), sessions.leader_started_at (migration 4), sessions.kill_incomplete_at (migration 5), the budget/cap_state details (migration 6), event_queue and the work_steps details (migration 7), the events explicit-id guard (migration 8), the cap keys on the provider id (migration 9), session_groups (migration 10), the phase 2 tables triggers, notifications, approvals and loomwright_contract_seen (migration 11), brain_messages (migration 12), the playbooks tables playbooks, playbook_versions, playbook_runs with sessions.playbook / playbook_version, approvals.playbook and event_queue.priority (migration 13) and the agents table with brain_messages.from_agent / depth / reply_to / workspace (migration 14) and sessions.cwd (migration 15) and session_output (migration 16) and the phase 6 tables connectors and draft_outputs with playbooks.mode / mode_set_by and playbook_runs.item_ref / item_revision (migration 17) and connectors.permissions_source / permissions_declared_at (migration 18) and connectors.method / app_slug / installation_id (migration 19) and the phase 8 tables repo_policies, pr_tracks and mcp_connections (migration 20)", () => {
+  it("the default list adds auth_providers (migration 2), sessions.loomwright_path (migration 3), sessions.leader_started_at (migration 4), sessions.kill_incomplete_at (migration 5), the budget/cap_state details (migration 6), event_queue and the work_steps details (migration 7), the events explicit-id guard (migration 8), the cap keys on the provider id (migration 9), session_groups (migration 10), the phase 2 tables triggers, notifications, approvals and loomwright_contract_seen (migration 11), brain_messages (migration 12), the playbooks tables playbooks, playbook_versions, playbook_runs with sessions.playbook / playbook_version, approvals.playbook and event_queue.priority (migration 13) and the agents table with brain_messages.from_agent / depth / reply_to / workspace (migration 14) and sessions.cwd (migration 15) and session_output (migration 16) and the phase 6 tables connectors and draft_outputs with playbooks.mode / mode_set_by and playbook_runs.item_ref / item_revision (migration 17) and connectors.permissions_source / permissions_declared_at (migration 18) and connectors.method / app_slug / installation_id (migration 19) and the phase 8 tables repo_policies, pr_tracks and mcp_connections (migration 20) and playbooks.merge_requirement / merge_requirement_set_by (migration 21)", () => {
     const store = open();
     expect(tableNames(store)).toEqual(
       [
@@ -301,6 +304,7 @@ describe("migrations", () => {
       [18, "connector_permissions_source"],
       [19, "connector_app"],
       [20, "phase_8_foundation"],
+      [21, "playbook_merge_requirement"],
     ]);
     expect(columns(store, "auth_providers")).toEqual(["id", "account", "token_created_at", "updated_at"]);
     expect(columns(store, "session_groups")).toEqual([
@@ -633,7 +637,7 @@ describe("events (append-only audit log)", () => {
     v7.close();
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(store.prepare(ROWS).raw().all()).toEqual(before);
   });
 });
@@ -681,7 +685,7 @@ describe("migration 9: cap keys on the provider id", () => {
     const before = inspect(tmp, (db) => db.prepare(EVENTS).raw().all());
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(store.prepare(CAP_ROWS).all()).toEqual([
       { account: "subscription-token", rate_limit_type: "five_hour", status: "rejected", resets_at: RESET, reset_source: "event", notified_resets_at: RESET, warned_resets_at: null },
       { account: "subscription-token", rate_limit_type: "seven_day", status: "allowed", resets_at: null, reset_source: "event", notified_resets_at: null, warned_resets_at: null },
@@ -860,7 +864,7 @@ describe("migration 9: cap keys on the provider id", () => {
     cap(first, "subscription-token", "five_hour", "rejected", "2026-10-02T16:20:00.000Z");
     first.close();
     const store = open();
-    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     expect(store.prepare("SELECT account, status FROM cap_state").all()).toEqual([{ account: "subscription-token", status: "rejected" }]);
   });
 });
@@ -983,7 +987,7 @@ describe("migration 11: the phase 2 tables", () => {
       });
     const before = snap();
     const reopened = open();
-    expect(reopened.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(reopened.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     reopened.close();
     expect(snap()).toEqual(before);
 
@@ -991,7 +995,7 @@ describe("migration 11: the phase 2 tables", () => {
     db.exec("DELETE FROM schema_migrations WHERE version >= 11");
     db.close();
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    expect(rerun.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
     rerun.close();
     expect(snap()).toEqual(before);
   });
@@ -1005,7 +1009,7 @@ describe("migration 12: brain_messages", () => {
     v11.close();
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([21, "playbook_merge_requirement"]);
     expect(store.prepare("SELECT count(*) FROM event_queue").pluck().get()).toBe(1);
     expect(store.prepare("SELECT count(*) FROM notifications").pluck().get()).toBe(1);
     expect(columns(store, "brain_messages")).toEqual([
@@ -1240,7 +1244,7 @@ describe("migration 13: playbooks", () => {
     db.exec("DELETE FROM schema_migrations WHERE version >= 13");
     db.close();
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([21, "playbook_merge_requirement"]);
     rerun.close();
     expect(snap()).toEqual(before);
   });
@@ -1436,7 +1440,7 @@ describe("migration 14: agents", () => {
     db.exec("DELETE FROM schema_migrations WHERE version >= 14");
     db.close();
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([21, "playbook_merge_requirement"]);
     rerun.close();
     expect(snap()).toEqual(before);
   });
@@ -1640,6 +1644,57 @@ describe("migration 16: session_output", () => {
   });
 });
 
+describe("migration 21: playbook_merge_requirement", () => {
+  const V20 = migrations.slice(0, 20);
+  const NEW = ["merge_requirement", "merge_requirement_set_by"];
+
+  it("upgrades a v20 store: both columns are added at the end of playbooks (nullable TEXT, no default, no CHECK), the row keeps its values and reads null for both, and the integrity check passes", () => {
+    const v20 = open({ migrations: V20 });
+    v20.prepare("INSERT INTO playbooks (slug, name, owning_agent, intent, mode, mode_set_by) VALUES ('review', 'Review', 'wright', 'review PRs', 'draft', 'owner')").run();
+    const before = columns(v20, "playbooks");
+    for (const c of NEW) expect(before).not.toContain(c);
+    v20.close();
+
+    const store = open();
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([21, "playbook_merge_requirement"]);
+    expect(columns(store, "playbooks")).toEqual([...before, ...NEW]);
+    expect(store.prepare("SELECT slug, mode, mode_set_by, merge_requirement, merge_requirement_set_by FROM playbooks").all()).toEqual([
+      { slug: "review", mode: "draft", mode_set_by: "owner", merge_requirement: null, merge_requirement_set_by: null },
+    ]);
+    for (const c of NEW) {
+      expect(store.prepare("SELECT type, \"notnull\", dflt_value FROM pragma_table_info('playbooks') WHERE name = ?").get(c)).toEqual({ type: "TEXT", notnull: 0, dflt_value: null });
+    }
+    // Closed in code: any text is storable, and no SQL CHECK or trigger came with it.
+    store.prepare("UPDATE playbooks SET merge_requirement = 'later_value', merge_requirement_set_by = 'later'").run();
+    const sql = store.prepare<[], string>("SELECT sql FROM sqlite_master WHERE name = 'playbooks'").pluck().get() ?? "";
+    expect(sql).not.toMatch(/CHECK/i);
+    expect(store.prepare("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name <> 'events'").pluck().get()).toBe(0);
+    store.close();
+    inspect(tmp, (db) => expect(() => checkAfterMigrating(db, tmp, migrations)).not.toThrow());
+  });
+
+  it("is safe to re-run: with its record deleted, migration 21 runs again as a no-op and every row and object stays", () => {
+    const first = open();
+    first.prepare("INSERT INTO playbooks (slug, name, owning_agent, intent, merge_requirement, merge_requirement_set_by) VALUES ('review', 'Review', 'wright', 'review PRs', 'reviews:2', 'owner')").run();
+    first.close();
+    const snap = (): unknown =>
+      inspect(tmp, (db) => {
+        const tables = tableNames(db).filter((t) => t !== "schema_migrations");
+        return { rows: rows(db, tables), objects: schema(db).objects };
+      });
+    const before = snap();
+
+    const db = new Database(join(tmp, DB_FILENAME));
+    db.exec("DELETE FROM schema_migrations WHERE version = 21");
+    db.close();
+    const rerun = open();
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([21, "playbook_merge_requirement"]);
+    expect(columns(rerun, "playbooks").filter((c) => NEW.includes(c))).toEqual(NEW);
+    rerun.close();
+    expect(snap()).toEqual(before);
+  });
+});
+
 describe("Store: integrity check at open", () => {
   const V7 = migrations.slice(0, 7);
 
@@ -1778,7 +1833,7 @@ describe("Store: integrity check at open", () => {
       open().close();
       tamper("DELETE FROM schema_migrations WHERE version = 1; DROP TRIGGER events_no_update;");
       expect(refusal(StoreIntegrityError).problems).toEqual([
-        "schema_migrations records versions 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, not a contiguous run from 1",
+        "schema_migrations records versions 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, not a contiguous run from 1",
         "trigger events_no_update is missing",
       ]);
     });
@@ -1787,7 +1842,7 @@ describe("Store: integrity check at open", () => {
       open().close();
       tamper("DELETE FROM schema_migrations WHERE version = 3");
       expect(refusal(StoreIntegrityError).problems).toEqual([
-        "schema_migrations records versions 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, not a contiguous run from 1",
+        "schema_migrations records versions 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, not a contiguous run from 1",
       ]);
     });
 
@@ -1816,7 +1871,7 @@ describe("Store: integrity check at open", () => {
       open().close();
       tamper("DELETE FROM schema_migrations WHERE version >= 8; DROP TRIGGER events_no_explicit_id;");
       const store = open();
-      expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+      expect(store.appliedMigrations().map((m) => m.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
       expect(() => store.prepare("INSERT INTO events (id, kind) VALUES (5, 'x')").run()).toThrow(/append-only/);
     });
   });
@@ -1827,7 +1882,7 @@ describe("Store: integrity check at open", () => {
     const err = refusal(StoreSchemaTooNewError);
     expect(err.code).toBe("STORE_SCHEMA_TOO_NEW");
     expect(err.unknownVersions).toEqual([99]);
-    expect(err.knownVersion).toBe(20);
+    expect(err.knownVersion).toBe(21);
     expect(err.message).toContain("99");
     inspect(tmp, (db) =>
       expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").pluck().all()).toEqual([

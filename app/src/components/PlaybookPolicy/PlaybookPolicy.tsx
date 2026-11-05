@@ -30,8 +30,11 @@ export const POLICY_FIELDS = ["dedupe_key", "priority", "model", "token_limit"] 
  * owner's `live` only on a playbook enabled at its version (else `live_needs_enable`) and
  * stores it as the next version, a draft again; an agent's `live` is refused
  * `live_mode_owner_only`. The Playbooks screen edits it through `modePolicyRow`.
+ * `merge_requirement` (migration 21): shown through `mergeRequirementPolicyRow`; the kernel takes
+ * it from the owner's `set` and refuses an enable looser than the playbook's repo, and the
+ * editor for it comes with phase 8 item 13.
  */
-export const READ_ONLY_POLICY_FIELDS = ["mode"] as const;
+export const READ_ONLY_POLICY_FIELDS = ["mode", "merge_requirement"] as const;
 export type PolicyField = (typeof POLICY_FIELDS)[number];
 /** Every field the kernel's `POST /playbooks/:id/set` takes: what a row can be for. */
 export type KernelPolicyField = PolicyField | (typeof READ_ONLY_POLICY_FIELDS)[number];
@@ -162,6 +165,27 @@ export function modePolicyRow(playbook: PlaybookListing): PolicyRow<"mode"> {
       { value: "draft", label: "draft" },
       { value: "live", label: "live (not available yet)", disabled: true },
     ],
+  };
+}
+
+/**
+ * The `merge_requirement` row (`none`, `studio_approval` or `reviews:<N>`): read-only for now, so
+ * the kernel's value is shown as it stands, "not set" when there is none (the kernel ships no
+ * default) and with its provenance ("proposed" / "set by owner") like every other row. Its
+ * editor text row is the one phase 8 item 13 wires.
+ */
+export function mergeRequirementPolicyRow(playbook: PlaybookListing): PolicyRow<"merge_requirement"> {
+  return {
+    field: "merge_requirement",
+    label: "Merge requirement",
+    name: "merge requirement",
+    shown: playbook.merge_requirement ?? "not set",
+    unset: playbook.merge_requirement === null,
+    setBy: playbook.merge_requirement_set_by,
+    mono: true,
+    draft: playbook.merge_requirement ?? "",
+    hint: "none, studio_approval or reviews:N; once set it is changed, never cleared",
+    options: null,
   };
 }
 

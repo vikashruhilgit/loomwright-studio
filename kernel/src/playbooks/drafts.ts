@@ -189,12 +189,14 @@ const policyShape = {
   model: z.string().max(400).optional(),
   token_limit: z.number().int().positive().optional(),
   mode: z.enum(PLAYBOOK_MODES).optional(),
+  // none, studio_approval or reviews:<N>: the N is free text, so the store's `checkPolicyValue` is the check.
+  merge_requirement: z.string().max(40).optional(),
 };
 
 const REPEAT = "Repeating a call with the same idempotency_key in this session returns the first result, even if other arguments differ.";
 
 const LIMITS =
-  "The playbook is a draft the owner reviews: every policy value you give (dedupe_key, priority, model, token_limit, mode) is a proposal the owner can change. " +
+  "The playbook is a draft the owner reviews: every policy value you give (dedupe_key, priority, model, token_limit, mode, merge_requirement) is a proposal the owner can change. " +
   "You cannot change a value the owner set, or a playbook the owner turned off (a repeat of this call then returns that error too). Enabling it is a separate step.";
 
 /** The calling session's agent: the owner of the playbooks it drafts. Shared with the dry-run and enable parts. */
@@ -330,7 +332,7 @@ const create = defineTool({
     "every poll value (the repos, the filters, the interval) is a proposal the owner can change by asking you; " +
     `it becomes the playbook's one linked trigger, which starts no work until the playbook is enabled. dedupe_key: fields from playbook.id, playbook.version, trigger.id, trigger.scheduled_at, date, item.id, item.revision ` +
     "(item.id and item.revision are a polled item's; a fire with no item refuses a key naming them). " +
-    `priority: low, normal or high. model: a model id. token_limit: tokens per day. mode: draft only in phase 6 (live is refused). ${LIMITS} ` +
+    `priority: low, normal or high. model: a model id. token_limit: tokens per day. mode: draft only in phase 6 (live is refused). merge_requirement: none, studio_approval or reviews:<N> (N a whole number of at least 1): what a PR needs before it may merge, never looser than its repo's own rule (an enable is refused if it is). ${LIMITS} ` +
     "agent (optional): the id of an active crew member to draft it for; it then belongs to that member, and its dry run and every fire run as that member " +
     "(its settings, policy and never list, its memory folder and its limits). Omitted: the playbook is yours. " +
     "Returns {id, slug, status: draft, version: 1, trigger_id, next_fire_at (UTC), mirror}: mirror is the markdown file (under the Studio data dir) the owner reads. " +
@@ -363,6 +365,7 @@ const create = defineTool({
                 model: a.model,
                 token_limit: a.token_limit,
                 mode: a.mode,
+                merge_requirement: a.merge_requirement,
                 sessionId: ctx.sessionId,
               },
               ctx.now(),
@@ -377,7 +380,7 @@ const create = defineTool({
 const update = defineTool({
   name: "kernel_playbook_update",
   description:
-    "Change a playbook you own, or (Wright) one of a registered crew member's: changes gives any of name, intent, trigger (once, cron or the poll form), dedupe_key, priority, model, token_limit, mode (same forms as kernel_playbook_create; at least one). " +
+    "Change a playbook you own, or (Wright) one of a registered crew member's: changes gives any of name, intent, trigger (once, cron or the poll form), dedupe_key, priority, model, token_limit, mode, merge_requirement (same forms as kernel_playbook_create; at least one). " +
     "A change makes a new version, and an enabled playbook goes back to draft for the owner to review. A trigger change re-schedules the same linked trigger. " +
     `${LIMITS} Returns {id, slug, status, version, trigger_id, next_fire_at, changed, mirror}. ${REPEAT}`,
   shape: {
@@ -620,6 +623,7 @@ export function formatPlaybook(body: { playbook?: PlaybookLike; versions?: unkno
     `  priority: ${policyText(shownOrNull(p.priority), p.priority_set_by)}`,
     `  model: ${policyText(shownOrNull(p.model), p.model_set_by)}`,
     `  token limit per day: ${policyText(shownOrNull(p.token_limit_per_day), p.token_limit_set_by)}`,
+    `  merge requirement: ${policyText(shownOrNull(p.merge_requirement), p.merge_requirement_set_by)}`,
     `  effort: ${policyText(shownOrNull(p.effort), p.effort_set_by)}`,
     `  api-key fallback: ${policyText(shownOrNull(p.api_key_fallback_json), p.api_key_fallback_set_by)}`,
     `  versions: ${versions.length === 0 ? "-" : versions.map((v) => `${bare(v.version)} (${time(v.created_at)})`).join(", ")}`,

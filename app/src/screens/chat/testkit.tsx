@@ -110,6 +110,8 @@ export function playbook(id: number, overrides: Partial<PlaybookListing> = {}): 
     api_key_fallback_set_by: null,
     mode: "draft",
     mode_set_by: null,
+    merge_requirement: null,
+    merge_requirement_set_by: null,
     created_at: T0,
     updated_at: T0,
     trigger_id: null,

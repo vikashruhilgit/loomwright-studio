@@ -64,6 +64,8 @@ function listing(overrides: Partial<PlaybookListing> = {}): PlaybookListing {
     api_key_fallback_set_by: null,
     mode: "draft",
     mode_set_by: null,
+    merge_requirement: null,
+    merge_requirement_set_by: null,
     created_at: AT,
     updated_at: AT,
     trigger_id: null,

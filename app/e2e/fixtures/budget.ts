@@ -107,6 +107,8 @@ function playbook(id: number, slug: string, name: string, owner: string, status:
     updated_at: AT,
     mode: "draft",
     mode_set_by: null,
+    merge_requirement: null,
+    merge_requirement_set_by: null,
     trigger_id: null,
     next_fire_at: null,
   };

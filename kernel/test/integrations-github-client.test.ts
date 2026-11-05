@@ -20,7 +20,7 @@ import {
   parseTokenExpiration,
 } from "../src/integrations/github/client.js";
 import type { GitHubClientDeps, GitHubTokenProvider } from "../src/integrations/github/client.js";
-import type { GitHubClient, GitHubResponse } from "../src/integrations/types.js";
+import type { GitHubClient, GitHubRepoPolicyReads, GitHubResponse } from "../src/integrations/types.js";
 import { FakeGitHubClient } from "./fixtures/github-fake.js";
 
 const TOKEN = "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd";
@@ -1603,5 +1603,274 @@ describe("the write methods (AC7)", () => {
       expect(new URL(c.url).origin).toBe("https://api.github.com");
       expect(isAllowedGitHubRequest("POST", c.url)).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The repo-policy reads (phase 8 item 08): GitHubRepoPolicyReads
+// ---------------------------------------------------------------------------
+
+describe("the repo-policy reads (phase 8 item 08)", () => {
+  const HEAD = "a".repeat(40);
+  const OLD = "b".repeat(40);
+
+  function policyClient(route: Route, extra: Partial<GitHubClientDeps> = {}): { gh: GitHubRepoPolicyReads; calls: Call[] } {
+    const { fetch, calls } = fakeFetch(route);
+    return { gh: createGitHubClient({ readToken: () => TOKEN, fetch, now: () => NOW, ...extra }), calls };
+  }
+
+  /** Every read, called with plain arguments. */
+  const READS: ReadonlyArray<readonly [keyof GitHubRepoPolicyReads, (gh: GitHubRepoPolicyReads) => Promise<GitHubResponse<unknown>>]> = [
+    ["getRepoInfo", (gh) => gh.getRepoInfo("o/r")],
+    ["getBranchProtection", (gh) => gh.getBranchProtection("o/r", "main")],
+    ["listPushCollaborators", (gh) => gh.listPushCollaborators("o/r")],
+    ["getPullMergeState", (gh) => gh.getPullMergeState("o/r", 7)],
+  ];
+
+  const review = (login: string, state: string, commit: string | null, association: string | null = "COLLABORATOR") => ({
+    user: user(login),
+    state,
+    commit_id: commit,
+    submitted_at: "2026-10-26T10:00:00Z",
+    ...(association === null ? {} : { author_association: association }),
+  });
+
+  /** A route for pull 7 at `HEAD` with the given reviews, combined status and check runs. */
+  function mergeRoute(opts: { reviews?: unknown[]; status?: { state: string; total_count: number }; runs?: unknown[] }): Route {
+    return (url) => {
+      if (url.pathname === "/repos/o/r/pulls/7") return json(apiPull(7, { head: { sha: HEAD, ref: "f" } }));
+      if (url.pathname === "/repos/o/r/pulls/7/reviews") return json(opts.reviews ?? []);
+      if (url.pathname === `/repos/o/r/commits/${HEAD}/status`) return json({ ...(opts.status ?? { state: "pending", total_count: 0 }), statuses: [] });
+      if (url.pathname === `/repos/o/r/commits/${HEAD}/check-runs`) return json({ total_count: (opts.runs ?? []).length, check_runs: opts.runs ?? [] });
+      return json({ message: "Not Found" }, 404);
+    };
+  }
+
+  it("getRepoInfo: GET /repos/o/r gives the default branch and privacy, and nothing else of the body", async () => {
+    const { gh, calls } = policyClient(() => json({ default_branch: "trunk", private: true, full_name: "o/r", description: "x" }));
+    expect(await gh.getRepoInfo("o/r")).toEqual({ ok: true, data: { default_branch: "trunk", private: true }, rateLimit: RATE_LIMIT });
+    expect(calls.map((c) => c.url)).toEqual([`${GITHUB_API_ORIGIN}/repos/o/r`]);
+    expect(await policyClient(() => json({ private: false })).gh.getRepoInfo("o/r")).toMatchObject({ ok: false, error: "unreachable" });
+  });
+
+  it("getBranchProtection: GET .../branches/{b}/protection reads the review count and the required check names (once each)", async () => {
+    const body = {
+      required_pull_request_reviews: { required_approving_review_count: 2 },
+      required_status_checks: { contexts: ["ci", "lint"], checks: [{ context: "ci", app_id: 1 }, { context: "lint", app_id: null }, { context: "ci", app_id: 2 }] },
+    };
+    const { gh, calls } = policyClient(() => json(body));
+    expect(await gh.getBranchProtection("o/r", "main")).toEqual({
+      ok: true,
+      data: { required_approving_review_count: 2, required_checks: ["ci", "lint"] },
+      rateLimit: RATE_LIMIT,
+    });
+    expect(calls.map((c) => c.url)).toEqual([`${GITHUB_API_ORIGIN}/repos/o/r/branches/main/protection`]);
+  });
+
+  it("getBranchProtection: no review rule reads null, the older `contexts` form is read, and a slashed branch keeps its slash", async () => {
+    const { gh, calls } = policyClient(() => json({ required_status_checks: { contexts: ["ci"] } }));
+    expect(await gh.getBranchProtection("o/r", "release/1.0")).toMatchObject({ ok: true, data: { required_approving_review_count: null, required_checks: ["ci"] } });
+    expect(calls[0]?.url).toBe(`${GITHUB_API_ORIGIN}/repos/o/r/branches/release/1.0/protection`);
+    expect(await policyClient(() => json({})).gh.getBranchProtection("o/r", "main")).toMatchObject({ ok: true, data: { required_approving_review_count: null, required_checks: [] } });
+  });
+
+  it.each([403, 404])("getBranchProtection: a %i arrives as http_error with its status (detection maps it)", async (status) => {
+    const { gh } = policyClient(() => json({ message: "Branch not protected" }, status));
+    expect(await gh.getBranchProtection("o/r", "main")).toEqual({ ok: false, error: "http_error", status, rateLimit: RATE_LIMIT });
+  });
+
+  it.each([
+    ["an empty branch", ""],
+    ["a dot-dot segment", "a/../b"],
+    ["a dot segment", "./main"],
+    ["a leading slash", "/main"],
+    ["a trailing slash", "main/"],
+    ["a control character", "ma\nin"],
+    ["a backslash", "ma\\in"],
+    ["a name over 255 characters", "x".repeat(256)],
+  ])("getBranchProtection: %s is unreachable, and no request is made", async (_, branch) => {
+    const { gh, calls } = policyClient(() => json({}));
+    expect(await gh.getBranchProtection("o/r", branch)).toEqual({ ok: false, error: "unreachable", rateLimit: null });
+    expect(calls).toEqual([]);
+  });
+
+  it("getBranchProtection: a branch name's query or fragment characters are percent-encoded, never sent as a query", async () => {
+    const { gh, calls } = policyClient(() => json({}));
+    await gh.getBranchProtection("o/r", "a?b#c");
+    expect(calls[0]?.url).toBe(`${GITHUB_API_ORIGIN}/repos/o/r/branches/a%3Fb%23c/protection`);
+  });
+
+  it("listPushCollaborators: GET .../collaborators?permission=push, paged, logins only", async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => ({ login: `user-${i}`, id: i, permissions: { push: true } }));
+    const { gh, calls } = policyClient((url) => json(url.searchParams.get("page") === "1" ? page1 : [{ login: "last" }]));
+    const res = await gh.listPushCollaborators("o/r");
+    expect(res.ok && res.data).toHaveLength(101);
+    expect(res.ok && res.data.at(-1)).toBe("last");
+    expect(calls.map((c) => new URL(c.url).search)).toEqual(["?permission=push&per_page=100&page=1", "?permission=push&per_page=100&page=2"]);
+    expect(await policyClient(() => json([{ id: 1 }])).gh.listPushCollaborators("o/r")).toMatchObject({ error: "unreachable" });
+  });
+
+  it("getPullMergeState: the head, the approvals AT the head (distinct reviewers, latest deciding review), no requested changes, CI green", async () => {
+    const { gh, calls } = policyClient(
+      mergeRoute({
+        reviews: [
+          review("alice", "APPROVED", HEAD),
+          review("alice", "COMMENTED", HEAD), // a comment does not undo alice's approval
+          review("bob", "APPROVED", OLD), // stale: made on an older commit
+          review("carol", "CHANGES_REQUESTED", OLD),
+          review("carol", "APPROVED", HEAD), // carol's latest decision is an approval at the head
+          review("dave", "APPROVED", HEAD),
+          review("dave", "DISMISSED", HEAD), // dismissed: no longer counts
+          { user: user("erin"), state: "PENDING", commit_id: HEAD, submitted_at: null },
+        ],
+        status: { state: "success", total_count: 1 },
+        runs: [{ status: "completed", conclusion: "success" }, { status: "completed", conclusion: "neutral" }, { status: "completed", conclusion: "skipped" }],
+      }),
+    );
+    expect(await gh.getPullMergeState("o/r", 7)).toEqual({
+      ok: true,
+      data: { head_sha: HEAD, approvals: 2, changes_requested: false, ci: "green" },
+      rateLimit: RATE_LIMIT,
+    });
+    expect(calls.map((c) => new URL(c.url).pathname)).toEqual([
+      "/repos/o/r/pulls/7",
+      "/repos/o/r/pulls/7/reviews",
+      `/repos/o/r/commits/${HEAD}/status`,
+      `/repos/o/r/commits/${HEAD}/check-runs`,
+    ]);
+    expect(calls.every((c) => c.init.method === "GET")).toBe(true);
+  });
+
+  it("getPullMergeState: a reviewer whose latest deciding review requests changes sets changes_requested (even on an older commit)", async () => {
+    const { gh } = policyClient(mergeRoute({ reviews: [review("alice", "APPROVED", HEAD), review("bob", "APPROVED", HEAD), review("bob", "CHANGES_REQUESTED", OLD)] }));
+    expect(await gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 1, changes_requested: true } });
+  });
+
+  it("getPullMergeState: only an OWNER, MEMBER or COLLABORATOR approval counts; NONE, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR and a missing association do not", async () => {
+    const { gh } = policyClient(
+      mergeRoute({
+        reviews: [
+          review("a", "APPROVED", HEAD, "OWNER"),
+          review("b", "APPROVED", HEAD, "MEMBER"),
+          review("c", "APPROVED", HEAD, "COLLABORATOR"),
+          review("d", "APPROVED", HEAD, "NONE"),
+          review("e", "APPROVED", HEAD, "CONTRIBUTOR"),
+          review("f", "APPROVED", HEAD, "FIRST_TIME_CONTRIBUTOR"),
+          review("g", "APPROVED", HEAD, null),
+          review("h", "APPROVED", HEAD, "SOMETHING_NEW"),
+        ],
+      }),
+    );
+    expect(await gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 3, changes_requested: false } });
+  });
+
+  it("getPullMergeState: a CHANGES_REQUESTED from a non-collaborator still sets changes_requested (an outsider can block, never release)", async () => {
+    const { gh } = policyClient(mergeRoute({ reviews: [review("a", "APPROVED", HEAD, "OWNER"), review("x", "CHANGES_REQUESTED", HEAD, "NONE")] }));
+    expect(await gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 1, changes_requested: true } });
+  });
+
+  it.each([
+    ["no check runs and no statuses", undefined, [], "none"],
+    ["a pending combined status with no statuses is still none", { state: "pending", total_count: 0 }, [], "none"],
+    ["a successful status alone", { state: "success", total_count: 2 }, [], "green"],
+    ["a running check run", { state: "success", total_count: 1 }, [{ status: "in_progress", conclusion: null }], "pending"],
+    ["a queued check run", undefined, [{ status: "queued", conclusion: null }], "pending"],
+    ["a pending status", { state: "pending", total_count: 1 }, [{ status: "completed", conclusion: "success" }], "pending"],
+    ["a failed check run", undefined, [{ status: "completed", conclusion: "failure" }, { status: "in_progress", conclusion: null }], "failing"],
+    ["a cancelled check run", undefined, [{ status: "completed", conclusion: "cancelled" }], "failing"],
+    ["an errored status", { state: "error", total_count: 1 }, [{ status: "completed", conclusion: "success" }], "failing"],
+    ["a failed status", { state: "failure", total_count: 1 }, [], "failing"],
+  ] as const)("getPullMergeState: CI with %s is %s", async (_, status, runs, ci) => {
+    const { gh } = policyClient(mergeRoute({ ...(status === undefined ? {} : { status }), runs: [...runs] }));
+    expect(await gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { ci } });
+  });
+
+  it("getPullMergeState: a failing step fails the read with that step's failure (a 404 pull, a 403 reviews, a rate limit mid-way)", async () => {
+    expect(await policyClient(() => json({ message: "Not Found" }, 404)).gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: false, error: "http_error", status: 404 });
+    const ok = mergeRoute({});
+    const reviews403 = policyClient((url) => (url.pathname.endsWith("/reviews") ? json({}, 403) : ok(url)));
+    expect(await reviews403.gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: false, error: "http_error", status: 403 });
+    const limited = policyClient((url) => (url.pathname.endsWith("/check-runs") ? json({}, 429) : ok(url)));
+    expect(await limited.gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: false, error: "rate_limited" });
+  });
+
+  it("getPullMergeState: a head that is not a hex SHA is never put in a path (unreachable, only the pull was read)", async () => {
+    const { gh, calls } = policyClient((url) => (url.pathname === "/repos/o/r/pulls/7" ? json(apiPull(7, { head: { sha: "../../x", ref: "f" } })) : json([])));
+    expect(await gh.getPullMergeState("o/r", 7)).toEqual({ ok: false, error: "unreachable", rateLimit: null });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("getPullMergeState: one token read and one session for all four requests", async () => {
+    let reads = 0;
+    const { gh } = policyClient(mergeRoute({}), {
+      readToken: () => {
+        reads += 1;
+        return TOKEN;
+      },
+    });
+    await gh.getPullMergeState("o/r", 7);
+    expect(reads).toBe(1);
+  });
+
+  it.each(READS)("%s: a 403 with x-ratelimit-remaining 0 is rate_limited, never a throw", async (_, call) => {
+    const { gh } = policyClient(() => json({ message: "API rate limit exceeded" }, 403, { "x-ratelimit-remaining": "0" }));
+    expect(await call(gh)).toMatchObject({ ok: false, error: "rate_limited", resets_at: RESET_ISO });
+  });
+
+  it.each(READS)("%s: a fetch that throws (its message holding the token) is unreachable and carries no message", async (_, call) => {
+    const { gh } = policyClient(() => {
+      throw new TypeError(`Headers.append: "Bearer ${TOKEN}" is an invalid header value.`);
+    });
+    const res = await call(gh);
+    expect(res).toEqual({ ok: false, error: "unreachable", rateLimit: null });
+    expect(JSON.stringify(res)).not.toContain(TOKEN);
+  });
+
+  it.each(READS)("%s: no token, or a malformed repo, is unreachable and no request is made", async (_, call) => {
+    const none = fakeFetch(() => json({}));
+    expect(await call(createGitHubClient({ readToken: () => undefined, fetch: none.fetch }))).toMatchObject({ ok: false, error: "unreachable" });
+    expect(none.calls).toEqual([]);
+    const { gh, calls } = policyClient(() => json({}));
+    for (const bad of ["o", "o/r/x", "../user", "o/r?x=1"]) {
+      expect(await gh.getRepoInfo(bad)).toMatchObject({ error: "unreachable" });
+      expect(await gh.getBranchProtection(bad, "main")).toMatchObject({ error: "unreachable" });
+      expect(await gh.listPushCollaborators(bad)).toMatchObject({ error: "unreachable" });
+      expect(await gh.getPullMergeState(bad, 7)).toMatchObject({ error: "unreachable" });
+    }
+    expect(await gh.getPullMergeState("o/r", 0)).toMatchObject({ error: "unreachable" });
+    expect(await gh.getPullMergeState("o/r", 1.5)).toMatchObject({ error: "unreachable" });
+    expect(calls).toEqual([]);
+  });
+
+  it("every request is a GET to the one origin that never follows a redirect, with no body (the allowlist of non-GETs is unchanged)", async () => {
+    const { gh, calls } = policyClient(mergeRoute({}));
+    for (const [, call] of READS) await call(gh);
+    expect(calls.length).toBeGreaterThanOrEqual(7);
+    for (const c of calls) {
+      expect(c.init.method).toBe("GET");
+      expect(c.init.redirect).toBe("manual");
+      expect(new URL(c.url).origin).toBe("https://api.github.com");
+      expect(c.init.body).toBeUndefined();
+    }
+    expect(GITHUB_ALLOWED_NON_GET).toHaveLength(5);
+  });
+
+  it("the fake answers the same shapes as the real reads", async () => {
+    const fake = new FakeGitHubClient({
+      rateLimit: RATE_LIMIT,
+      repoInfo: { "o/r": { default_branch: "main", private: false } },
+      protection: { "o/r": { required_approving_review_count: 1, required_checks: ["ci"] } },
+      pushers: { "o/r": ["alice"] },
+      mergeStates: { "o/r#7": { head_sha: HEAD, approvals: 0, changes_requested: false, ci: "none" } },
+    });
+    const real = policyClient(
+      (url) => {
+        if (url.pathname === "/repos/o/r") return json({ default_branch: "main", private: false });
+        if (url.pathname.endsWith("/protection")) return json({ required_pull_request_reviews: { required_approving_review_count: 1 }, required_status_checks: { contexts: ["ci"] } });
+        if (url.pathname.endsWith("/collaborators")) return json([{ login: "alice" }]);
+        return mergeRoute({})(url);
+      },
+    ).gh;
+    for (const [, call] of READS) expect(await call(fake)).toEqual(await call(real));
   });
 });
