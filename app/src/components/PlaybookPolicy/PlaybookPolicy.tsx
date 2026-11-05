@@ -20,7 +20,7 @@ export function provenance(setBy: string | null): string {
 
 /**
  * The owner-settable policy fields the Chat card edits, by the kernel's own names. With
- * `READ_ONLY_POLICY_FIELDS` they are exactly the kernel's `PLAYBOOK_POLICY_FIELDS`
+ * `READ_ONLY_POLICY_FIELDS` (the rows Chat's card shows but does not edit) they are exactly the kernel's `PLAYBOOK_POLICY_FIELDS`
  * (kernel/src/playbooks/store.ts), in its order; kernel/test/console-contract.test.ts
  * reads this file as text and pins that.
  */
@@ -32,7 +32,7 @@ export const POLICY_FIELDS = ["dedupe_key", "priority", "model", "token_limit"] 
  * `live_mode_owner_only`. The Playbooks screen edits it through `modePolicyRow`.
  * `merge_requirement` (migration 21): shown through `mergeRequirementPolicyRow`; the kernel takes
  * it from the owner's `set` and refuses an enable looser than the playbook's repo, and the
- * editor for it comes with phase 8 item 13.
+ * editor for it comes with a later item.
  */
 export const READ_ONLY_POLICY_FIELDS = ["mode", "merge_requirement"] as const;
 export type PolicyField = (typeof POLICY_FIELDS)[number];
@@ -62,7 +62,7 @@ export interface PolicyRow<F extends KernelPolicyField = KernelPolicyField> {
   readonly mono: boolean;
   /** The editor's first value. */
   readonly draft: string;
-  /** Text rows only: the line under the controls. */
+  /** The line under the controls (a select row's too, as Mode's). */
   readonly hint: string | null;
   /** A select row's choices; `null` is a text row. */
   readonly options: readonly PolicyOption[] | null;
@@ -147,8 +147,10 @@ export function policyRows(playbook: PlaybookListing): readonly PolicyRow<Policy
 
 /**
  * The `mode` row, which only the Playbooks screen edits (Chat's card shows it
- * read-only). It offers `draft`, with `live` present but disabled: phase 6's
- * kernel refuses `live`, so the owner sees it exists and is not available yet.
+ * read-only). It offers `draft` and `live`, both selectable: the kernel takes the
+ * owner's `live` on an enabled playbook and refuses it otherwise
+ * (`live_needs_enable`), so a refusal is the kernel's to word. The screen asks the
+ * owner to confirm before it sends `live`. This is the only home of the options.
  */
 export function modePolicyRow(playbook: PlaybookListing): PolicyRow<"mode"> {
   return {
@@ -160,10 +162,10 @@ export function modePolicyRow(playbook: PlaybookListing): PolicyRow<"mode"> {
     setBy: playbook.mode_set_by,
     mono: false,
     draft: playbook.mode,
-    hint: null,
+    hint: "draft records outward calls and sends none; live sends them through the approval gate",
     options: [
       { value: "draft", label: "draft" },
-      { value: "live", label: "live (not available yet)", disabled: true },
+      { value: "live", label: "live" },
     ],
   };
 }
@@ -172,7 +174,7 @@ export function modePolicyRow(playbook: PlaybookListing): PolicyRow<"mode"> {
  * The `merge_requirement` row (`none`, `studio_approval` or `reviews:<N>`): read-only for now, so
  * the kernel's value is shown as it stands, "not set" when there is none (the kernel ships no
  * default) and with its provenance ("proposed" / "set by owner") like every other row. Its
- * editor text row is the one phase 8 item 13 wires.
+ * editor text row is a later item's.
  */
 export function mergeRequirementPolicyRow(playbook: PlaybookListing): PolicyRow<"merge_requirement"> {
   return {
@@ -233,6 +235,7 @@ export function PolicyEditor({ row, busy, held, onConfirm, onCancel }: PolicyEdi
             label={label}
             aria-label={label}
             aria-disabled={held ? "true" : undefined}
+            aria-describedby={row.hint === null ? undefined : hintId}
             value={value}
             onChange={(event) => {
               if (!held) setValue(event.target.value);

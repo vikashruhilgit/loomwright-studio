@@ -1,7 +1,7 @@
 // The app's API contract, pinned from the kernel side (phase 5 item 01).
 // `app/src/api/contract.ts` is read as TEXT, never imported: the kernel's
 // tsconfig includes only `src` and `test`, and its build stays `rootDir src`,
-// so no kernel file may depend on the app package. Four pins:
+// so no kernel file may depend on the app package. Five pins:
 //
 //   1. `CONTRACT_ROUTES`' methods, paths and origins equal the list written
 //      literally below, each route once, so a route can't be added, dropped or
@@ -18,16 +18,24 @@
 //      `SESSION_OUTPUT_KINDS` (`kernel/src/console/output.ts`).
 //   4. The shared playbook policy editor's `POLICY_FIELDS` and `READ_ONLY_POLICY_FIELDS`
 //      (`app/src/components/PlaybookPolicy/PlaybookPolicy.tsx`, also read as text) are together exactly
-//      `PLAYBOOK_POLICY_FIELDS` (`kernel/src/playbooks/store.ts`), in order.
+//      `PLAYBOOK_POLICY_FIELDS` (`kernel/src/playbooks/store.ts`), in order. `READ_ONLY_POLICY_FIELDS`
+//      are the rows Chat's card shows but does not edit; the Playbooks screen edits `mode` too, through
+//      `modePolicyRow` (so the list is the fields' split between "edited by the shared editor" and
+//      "shown read-only by Chat's card", not a list of what the Playbooks screen can edit).
+//   5. The Approvals screen's mirrored `MERGE_APPROVAL_ACTION`
+//      (`app/src/screens/approvals/subject.ts`, read as text) equals the kernel's
+//      (`kernel/src/integrations/github/repo-policy.ts`), so a rename on either side fails here.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { EVENT_FEED_PATH } from "../src/api/feed.js";
 import { SESSION_OUTPUT_KINDS } from "../src/console/output.js";
 import { PHASE1_RESERVED, PHASE1_ROUTES, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
+import { MERGE_APPROVAL_ACTION } from "../src/integrations/github/repo-policy.js";
 import { PLAYBOOK_POLICY_FIELDS } from "../src/playbooks/store.js";
 
 const CONTRACT = new URL("../../app/src/api/contract.ts", import.meta.url);
 const PLAYBOOK_CARDS = new URL("../../app/src/components/PlaybookPolicy/PlaybookPolicy.tsx", import.meta.url);
+const APPROVAL_SUBJECT = new URL("../../app/src/screens/approvals/subject.ts", import.meta.url);
 
 interface ContractEntry {
   readonly method: string;
@@ -281,6 +289,20 @@ describe("the shared policy editor's fields (app/src/components/PlaybookPolicy/P
   });
 });
 
+/** The string literal of `export const MERGE_APPROVAL_ACTION = "…";` in `text`; throws when it is missing or not a plain literal. */
+function mirroredMergeAction(text: string): string {
+  const match = /^export const MERGE_APPROVAL_ACTION = "([a-z_]+)";$/m.exec(text);
+  if (match === null) throw new Error('no `export const MERGE_APPROVAL_ACTION = "…";` line');
+  return match[1] ?? "";
+}
+
+describe("the Approvals screen's merge action (app/src/screens/approvals/subject.ts, read as text)", () => {
+  it("MERGE_APPROVAL_ACTION is the kernel's, so the merge card is drawn for exactly the approval item 09 files", () => {
+    expect(mirroredMergeAction(readFileSync(APPROVAL_SUBJECT, "utf8"))).toBe(MERGE_APPROVAL_ACTION);
+    expect(MERGE_APPROVAL_ACTION).toBe("kernel_merge_approval_request");
+  });
+});
+
 describe("the text readers fail loudly on a contract they can't read", () => {
   it("refuses a CONTRACT_ROUTES line that is not one entry (an entry split over two lines)", () => {
     const split = 'export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([\n  { method: "GET",\n    path: "/status", origin: "phase-1" },\n]);\n';
@@ -295,6 +317,12 @@ describe("the text readers fail loudly on a contract they can't read", () => {
     expect(() => constStringList('export const POLICY_FIELDS = ["model", OTHER] as const;\n', "POLICY_FIELDS")).toThrow(/not a string literal/);
     expect(() => constStringList("export const OTHER = [] as const;\n", "POLICY_FIELDS")).toThrow(/no `export const POLICY_FIELDS/);
     expect(constStringList('export const POLICY_FIELDS = ["model", "mode"] as const;\n', "POLICY_FIELDS")).toEqual(["model", "mode"]);
+  });
+
+  it("refuses a merge action line that is missing or not a plain string literal", () => {
+    expect(() => mirroredMergeAction("export const OTHER = 1;\n")).toThrow(/no `export const MERGE_APPROVAL_ACTION/);
+    expect(() => mirroredMergeAction("export const MERGE_APPROVAL_ACTION = ACTION;\n")).toThrow(/no `export const MERGE_APPROVAL_ACTION/);
+    expect(mirroredMergeAction('x\nexport const MERGE_APPROVAL_ACTION = "a_b";\n')).toBe("a_b");
   });
 
   it("refuses a SessionOutputKind member that is not a string literal", () => {

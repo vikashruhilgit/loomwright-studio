@@ -54,6 +54,8 @@ export interface EventCardApprovalProps {
   readonly threadAgent: string;
   readonly onAllowOnce: (id: string) => void;
   readonly onAlways: (id: string) => void;
+  /** `false` when Always can never be granted (a merge approval): no Always button. ⇧A still calls `onAlways`, which refuses. Default `true`. */
+  readonly offerAlways?: boolean;
   readonly onDeny: (id: string) => void;
   /** Opens the Approvals inbox on the exact payload. */
   readonly onFullPayload: (id: string) => void;
@@ -117,7 +119,7 @@ function EventLineView({ event, onOpen }: { readonly event: EventLine; readonly 
 }
 
 function InlineApprovalView(props: EventCardApprovalProps) {
-  const { approval, onAllowOnce, onAlways, onDeny, onFullPayload } = props;
+  const { approval, onAllowOnce, onAlways, offerAlways = true, onDeny, onFullPayload } = props;
   const heading = approval.title ? `Waiting on you · ${approval.title}` : "Waiting on you";
 
   // Shortcuts work only while focus is inside the card; the global keymap is not this component's.
@@ -151,12 +153,14 @@ function InlineApprovalView(props: EventCardApprovalProps) {
             A
           </kbd>
         </button>
-        <button type="button" className="eventcard-btn eventcard-btn-secondary" aria-keyshortcuts="Shift+A" onClick={() => onAlways(approval.id)}>
-          Always
-          <kbd className="eventcard-kbd" aria-hidden="true">
-            ⇧A
-          </kbd>
-        </button>
+        {offerAlways ? (
+          <button type="button" className="eventcard-btn eventcard-btn-secondary" aria-keyshortcuts="Shift+A" onClick={() => onAlways(approval.id)}>
+            Always
+            <kbd className="eventcard-kbd" aria-hidden="true">
+              ⇧A
+            </kbd>
+          </button>
+        ) : null}
         <button type="button" className="eventcard-btn eventcard-btn-danger" aria-keyshortcuts="D" onClick={() => onDeny(approval.id)}>
           Deny
           <kbd className="eventcard-kbd" aria-hidden="true">

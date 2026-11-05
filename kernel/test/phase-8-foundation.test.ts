@@ -18,7 +18,7 @@ import { AUTOMATE_NAME, AUTOMATE_PARTS, automateContribution, automateContributi
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { INTEGRATIONS_PARTS, githubAppRoutesPart, integrationsContribution, mcpPart, repoPolicyPart } from "../src/integrations/index.js";
 import { CONNECTOR_KINDS } from "../src/integrations/types.js";
-import type { GitHubClient, GitHubPullSummary, PollSpec } from "../src/integrations/types.js";
+import type { GitHubClient, GitHubPullSummary, GithubPollSpec } from "../src/integrations/types.js";
 import { rosterRoutes } from "../src/agents/roster.js";
 import type { ContributedRouteResponse } from "../src/features/index.js";
 import { PlaybookError, checkPolicyValue, createPlaybook, getPlaybook, setPlaybookPolicy, updatePlaybook } from "../src/playbooks/index.js";
@@ -49,7 +49,7 @@ describe("phase 8 closed sets", () => {
     expect(Object.isFrozen(CONNECTOR_KINDS)).toBe(true);
   });
 
-  it("POLL_SOURCES lists the three GitHub sources and the two not built yet (jira.issues, clickup.tasks)", () => {
+  it("POLL_SOURCES lists the three GitHub sources and the two ticket sources (jira.issues, clickup.tasks), all built", () => {
     expect(POLL_SOURCES).toEqual(["github.pulls", "github.issues", "github.pr_comments", "jira.issues", "clickup.tasks"]);
   });
 
@@ -66,21 +66,40 @@ describe("phase 8 closed sets", () => {
 
 const REPOS = ["acme/widgets"];
 
-describe("a poll source not built is refused poll_source_not_built (invalid_spec)", () => {
+describe("no poll source is refused poll_source_not_built (phase 8 item 07 built the last two)", () => {
+  const TRACKER_FILTERS: Record<string, Record<string, unknown>> = {
+    "jira.issues": { site: "acme.atlassian.net" },
+    "clickup.tasks": { list: "901" },
+  };
   for (const source of ["jira.issues", "clickup.tasks"]) {
-    it(source, () => {
-      const text = JSON.stringify({ source, repos: REPOS, filters: {}, interval_seconds: 300 });
+    it(`${source} parses with its required filters (no repos), and is never refused poll_source_not_built`, () => {
+      const given = { source, filters: TRACKER_FILTERS[source], interval_seconds: 300 };
+      expect(parsePollSpec(JSON.stringify(given))).toEqual(given);
+      // The old shape (GitHub repos, no site / list) is a plain invalid_spec, not the retired refusal.
       let thrown: unknown;
       try {
-        parsePollSpec(text);
+        parsePollSpec(JSON.stringify({ source, repos: REPOS, filters: {}, interval_seconds: 300 }));
       } catch (err) {
         thrown = err;
       }
       expect(thrown).toBeInstanceOf(TriggerError);
       expect((thrown as TriggerError).code).toBe("invalid_spec");
-      expect((thrown as TriggerError).message.startsWith("poll_source_not_built:")).toBe(true);
+      expect((thrown as TriggerError).message.startsWith("poll_source_not_built")).toBe(false);
     });
   }
+
+  it("every POLL_SOURCES entry parses, so poll_source_not_built is thrown for none", () => {
+    const specs: Record<string, Record<string, unknown>> = {
+      "github.pulls": { repos: REPOS, filters: {} },
+      "github.issues": { repos: REPOS, filters: {} },
+      "github.pr_comments": { repos: REPOS, filters: {} },
+      "jira.issues": { filters: TRACKER_FILTERS["jira.issues"] },
+      "clickup.tasks": { filters: TRACKER_FILTERS["clickup.tasks"] },
+    };
+    for (const source of POLL_SOURCES) {
+      expect(parsePollSpec(JSON.stringify({ source, interval_seconds: 300, ...specs[source] })).source, source).toBe(source);
+    }
+  });
 
   it("the three GitHub sources parse (github.issues and github.pr_comments since phase 8 item 05)", () => {
     for (const source of ["github.pulls", "github.issues", "github.pr_comments"]) {
@@ -435,7 +454,7 @@ function clientOf(answers: Record<string, () => unknown>): GitHubClient {
   return { listOpenPulls: async (repo: string) => (answers[repo] ?? (() => ({ ok: true, data: [] })))() } as unknown as GitHubClient;
 }
 
-const SPEC = (repos: string[], filters: PollSpec["filters"] = {}): PollSpec => ({ source: "github.pulls", repos, filters, interval_seconds: 300 });
+const SPEC = (repos: string[], filters: GithubPollSpec["filters"] = {}): GithubPollSpec => ({ source: "github.pulls", repos, filters, interval_seconds: 300 });
 
 describe("the github.pulls source module", () => {
   it("lists repos in spec order, pulls by ascending number, deduped, with the kernel's own filters", async () => {

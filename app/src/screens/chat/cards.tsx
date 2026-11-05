@@ -10,7 +10,7 @@ import { EventCard } from "../../components/EventCard/EventCard";
 import { POLICY_FIELDS, PolicyEditor, modePolicyRow, policyRows, provenance } from "../../components/PlaybookPolicy/PlaybookPolicy";
 import type { PolicyField } from "../../components/PlaybookPolicy/PlaybookPolicy";
 import type { ResourceName } from "../../store/resources";
-import { approvalLink, approvalSourceText } from "../approvals/subject";
+import { MERGE_ALWAYS_REFUSED, approvalLink, approvalSourceText, isMergeApproval } from "../approvals/subject";
 import { focusLost, inFlightGuard, navigate, rehashIfCurrent, triggerSchedule, triggerState, when, write } from "./model";
 
 /** What Always says when the approval did not come from a playbook session. */
@@ -68,6 +68,7 @@ export function ApprovalCard({ api, approval, agent, playbooks }: ApprovalCardPr
   const changes = approvalChanges(agent);
   const params = { id: approval.id };
   const link = approvalLink(approval, playbooks);
+  const merge = isMergeApproval(approval);
   const decide = (decision: "once" | "always"): void =>
     act(decision, async () => {
       const outcome = await write(api, "/approvals/:id/approve", params, { decision }, changes);
@@ -86,7 +87,13 @@ export function ApprovalCard({ api, approval, agent, playbooks }: ApprovalCardPr
           reason: approvalSourceText(approval),
         }}
         onAllowOnce={() => decide("once")}
+        // A merge is asked every time, as on the Approvals screen: no Always button, and ⇧A sends nothing.
+        offerAlways={!merge}
         onAlways={() => {
+          if (merge) {
+            setRefusal(MERGE_ALWAYS_REFUSED);
+            return;
+          }
           // The app sees only this part of the kernel's `alwaysRefusal`; the kernel's 409 covers the rest.
           if (approval.playbook === null) {
             setRefusal(ALWAYS_INELIGIBLE);
@@ -331,7 +338,7 @@ export function PlaybookCard({ api, playbookId, playbook, trigger, agent }: Play
             </dd>
           </Fragment>
         ))}
-        {/* `mode` (READ_ONLY_POLICY_FIELDS): only `draft` is accepted in phase 6, so it is shown, not edited.
+        {/* `mode` (READ_ONLY_POLICY_FIELDS): shown, not edited here; the Playbooks screen edits it, with the live confirm.
             The kernel's default `draft` has no `mode_set_by`, so it reads "not set" (invariant 1). */}
         <Field label="Mode" value={modePolicyRow(playbook).shown} setBy={playbook.mode_set_by} />
         {/* Not owner-settable (`PLAYBOOK_POLICY_FIELDS` has no such field): read-only. */}

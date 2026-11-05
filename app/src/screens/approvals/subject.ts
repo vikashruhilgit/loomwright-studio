@@ -48,6 +48,105 @@ export function approvalSubject(a: Approval): ApprovalSubject | undefined {
   return undefined;
 }
 
+/**
+ * The action of the approval item 09 files to ask the owner before Loomwright's
+ * gate merges a PR. Mirrors `MERGE_APPROVAL_ACTION` in
+ * `kernel/src/integrations/github/repo-policy.ts`; `console-contract.test.ts`
+ * reads this file as text and fails if the two differ.
+ */
+export const MERGE_APPROVAL_ACTION = "kernel_merge_approval_request";
+
+/**
+ * The payload keys the merge card reads, all in one place so item 09's filing can
+ * be matched to them. `repo`, `pr` and `head_sha` are the three the kernel's own
+ * reader (`hasMergeApproval`) uses as `$.repo`, `$.pr`, `$.head_sha`; `ci`,
+ * `ready_at` and `policy` are NOT fixed by any code yet (item 09 owns them), so a
+ * different name there reads "not in the request" on the card, never a guess.
+ */
+export const MERGE_PAYLOAD_KEYS = { repo: "repo", pr: "pr", headSha: "head_sha", ci: "ci", readyAt: "ready_at", policy: "policy" } as const;
+
+/** What a merge approval says, read from its payload by type only. The optional three are `undefined` when missing or not a string. */
+export interface MergeApproval {
+  readonly repo: string;
+  readonly pr: number;
+  /** The full head SHA: lowercase hex, 7 to 40 characters. */
+  readonly headSha: string;
+  readonly ci: string | undefined;
+  readonly readyAt: string | undefined;
+  readonly policy: string | undefined;
+}
+
+const REPO = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
+const HEAD_SHA = /^[0-9a-f]{7,40}$/;
+
+/** A plain object (never `null` or an array), else `undefined`. */
+function plain(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+/** Whether `a` is the approval item 09 files for a merge, by its action alone. Safety gates (no Always) key on this, never on whether the fields validate. */
+export function isMergeApproval(a: Approval): boolean {
+  return a.action === MERGE_APPROVAL_ACTION;
+}
+
+/** Why `always` is never sent for a merge approval, on the Approvals screen and the thread's inline card alike. */
+export const MERGE_ALWAYS_REFUSED = "A merge is asked every time, so there is no standing allowance for it. Nothing was sent; allow it once or deny it.";
+
+const KERNEL_KEYS = [MERGE_PAYLOAD_KEYS.repo, MERGE_PAYLOAD_KEYS.pr, MERGE_PAYLOAD_KEYS.headSha] as const;
+
+/** Whether `fields` carries any of the three keys the kernel authorises on. */
+function carriesKernelKeys(fields: Readonly<Record<string, unknown>> | undefined): fields is Readonly<Record<string, unknown>> {
+  return fields !== undefined && KERNEL_KEYS.some((key) => fields[key] !== undefined);
+}
+
+/**
+ * The fields the kernel would authorise on. The kernel's reader (`hasMergeApproval`)
+ * reads only the payload's top level, so the top level wins. `payload.input` (the
+ * rail's `{tool, input, cwd}`) is read only when the top level carries none of
+ * `repo`, `pr`, `head_sha`. When both carry them and they differ, there is no
+ * answer: `undefined`, so no card is drawn for a PR the owner's Allow would not
+ * authorise.
+ */
+function kernelFields(payload: unknown): Readonly<Record<string, unknown>> | undefined {
+  const top = plain(payload);
+  const input = plain(inputOf(payload));
+  if (!carriesKernelKeys(top)) return carriesKernelKeys(input) ? input : undefined;
+  if (carriesKernelKeys(input) && KERNEL_KEYS.some((key) => input[key] !== undefined && input[key] !== top[key])) return undefined;
+  return top;
+}
+
+/**
+ * The merge request an approval carries, or `undefined` when it is not one: the
+ * action is not `MERGE_APPROVAL_ACTION`, or `repo` (`owner/name`), `pr` (a
+ * positive safe integer) or `head_sha` does not validate, so no PR URL is ever
+ * built from a value that does not. The fields are read as the kernel reads them
+ * (see `kernelFields`): the top level first, `payload.input` only as the fallback
+ * when the top level has none of the three, and a conflict between the two is
+ * no card. Only the card is keyed on this; the no-Always gate is `isMergeApproval`.
+ */
+export function mergeApprovalOf(a: Approval): MergeApproval | undefined {
+  if (!isMergeApproval(a)) return undefined;
+  const fields = kernelFields(a.payload);
+  if (fields === undefined) return undefined;
+  const repo = fields[MERGE_PAYLOAD_KEYS.repo];
+  const pr = fields[MERGE_PAYLOAD_KEYS.pr];
+  const headSha = fields[MERGE_PAYLOAD_KEYS.headSha];
+  if (typeof repo !== "string" || !REPO.test(repo) || repo.endsWith("/.") || repo.endsWith("/..")) return undefined;
+  if (typeof pr !== "number" || !Number.isSafeInteger(pr) || pr <= 0) return undefined;
+  if (typeof headSha !== "string" || !HEAD_SHA.test(headSha)) return undefined;
+  const ci = fields[MERGE_PAYLOAD_KEYS.ci];
+  const readyAt = fields[MERGE_PAYLOAD_KEYS.readyAt];
+  const policy = fields[MERGE_PAYLOAD_KEYS.policy];
+  return {
+    repo,
+    pr,
+    headSha,
+    ci: typeof ci === "string" ? ci : undefined,
+    readyAt: typeof readyAt === "string" ? readyAt : undefined,
+    policy: typeof policy === "string" ? policy : undefined,
+  };
+}
+
 /** Where an approval with no playbook was asked from. The contract has no `source` field: every one reads this. */
 export const IN_CHAT = "in chat";
 

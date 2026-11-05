@@ -4,6 +4,7 @@
 // `#/chat?playbook=<id>` route that scrolls to a playbook's card.
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MERGE_ALWAYS_REFUSED, MERGE_APPROVAL_ACTION } from "../approvals/subject";
 import { ALWAYS_INELIGIBLE } from "./cards";
 import { playbookCardHash, playbookFromHash } from "./model";
 import { WRIGHT_EMPTY } from "./Thread";
@@ -138,6 +139,36 @@ describe("thread", () => {
     expect(k.posted("POST /approvals/:id/approve")[0]?.body).toEqual({ decision: "always" });
     // The card stays.
     expect(screen.getByText("Post a comment (approval 7)")).toBeTruthy();
+  });
+
+  it("a merge approval from a playbook session offers no Always, and Shift+A sends nothing; a non-merge one keeps Always", async () => {
+    const pb = { id: 3, slug: "pr-review", version: 1 };
+    const merge = approval(7, {
+      action: MERGE_APPROVAL_ACTION,
+      playbook: pb,
+      display: "Merge PR 12 (approval 7)",
+      payload: { repo: "owner/repo", pr: 12, head_sha: "0123456789abcdef0123456789abcdef01234567" },
+    });
+    const k = kit({ threads: { wright: thread([], { pending_approvals: [merge, approval(8, { playbook: pb })] }) } });
+    const view = await renderChat(k);
+    await screen.findByText("Merge PR 12 (approval 7)");
+    const mergeCard = view.container.querySelector('[data-approval="7"]') as HTMLElement;
+    const otherCard = view.container.querySelector('[data-approval="8"]') as HTMLElement;
+    expect(within(mergeCard).queryByRole("button", { name: /^Always/ })).toBeNull();
+    expect(within(mergeCard).getByRole("button", { name: /^Allow once/ })).toBeTruthy();
+    expect(within(mergeCard).getByRole("button", { name: /^Deny/ })).toBeTruthy();
+    // The playbook is set, so only the merge guard stops ⇧A: nothing is sent, and the card says why.
+    await act(async () => {
+      fireEvent.keyDown(within(mergeCard).getByRole("group"), { key: "A", shiftKey: true });
+    });
+    expect(within(mergeCard).getByRole("alert").textContent).toBe(MERGE_ALWAYS_REFUSED);
+    expect(k.posted("POST /approvals/:id/approve")).toHaveLength(0);
+    // A non-merge approval from the same playbook keeps Always, and it sends.
+    await act(async () => {
+      fireEvent.click(within(otherCard).getByRole("button", { name: /^Always/ }));
+    });
+    await waitFor(() => expect(k.posted("POST /approvals/:id/approve")).toHaveLength(1));
+    expect(k.posted("POST /approvals/:id/approve")[0]).toMatchObject({ params: { id: 8 }, body: { decision: "always" } });
   });
 
   it("HTML and javascript: links render inert", async () => {
