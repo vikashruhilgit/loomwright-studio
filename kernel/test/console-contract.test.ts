@@ -13,7 +13,7 @@
 //      same method and same declared path. The routes phase 5, phase 6, phase 7
 //      and phase 8 items add are not checked here; each item's own test pins its
 //      route against the contract. Phase 7's twelve and phase 8's seven are listed
-//      below as not yet served, and never counted as existing.
+//      below and never counted as existing (phase 8's are served by items 03, 06 and 08; pinned in "phase 8's served routes").
 //   3. The contract's `SessionOutputKind` union carries exactly the values of
 //      `SESSION_OUTPUT_KINDS` (`kernel/src/console/output.ts`).
 //   4. The shared playbook policy editor's `POLICY_FIELDS` and `READ_ONLY_POLICY_FIELDS`
@@ -216,7 +216,7 @@ describe("the app contract's routes (app/src/api/contract.ts, read as text)", ()
     expect(phase7.filter(isExisting)).toEqual([]);
   });
 
-  it("lists phase 8's seven routes, each GET or POST: items 03 and 06 serve theirs, item 08's are not yet served", () => {
+  it("lists phase 8's seven routes, each GET or POST: items 03, 06 and 08 serve theirs", () => {
     const phase8 = routes.filter((r) => r.origin.startsWith("p8-"));
     expect(phase8.map((r) => [r.origin, key(r)])).toEqual([
       ["p8-item-03", "GET /connectors/github/app/upgrade"],
@@ -231,14 +231,14 @@ describe("the app contract's routes (app/src/api/contract.ts, read as text)", ()
     expect(phase8.every((r) => r.method === "GET" || r.method === "POST")).toBe(true);
   });
 
-  it("phase 8's served routes: item 06's three (and item 03's upgrade route) are in the shipped composition; item 08's are not", () => {
+  it("phase 8's served routes: item 06's three, item 03's upgrade route and item 08's three are in the shipped composition", () => {
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     const served = new Set(merged.routes.map(key));
     const phase8 = routes.filter((r) => r.origin.startsWith("p8-"));
     const servedBy = (origin: string): string[] => phase8.filter((r) => r.origin === origin && served.has(key(r))).map(key);
     expect(servedBy("p8-item-06")).toEqual(["POST /connectors/mcp/:kind/connect", "POST /connectors/mcp/:kind/connect/cancel", "POST /connectors/mcp/:kind/disconnect"]);
     expect(servedBy("p8-item-03")).toEqual(["GET /connectors/github/app/upgrade"]);
-    expect(servedBy("p8-item-08")).toEqual([]);
+    expect(servedBy("p8-item-08")).toEqual(["GET /repos/policy", "POST /repos/policy/:owner/:repo/detect", "POST /repos/policy/:owner/:repo"]);
   });
 
   it("the feed route is the path the API server upgrades", () => {
@@ -277,7 +277,7 @@ describe("the shared policy editor's fields (app/src/components/PlaybookPolicy/P
     const edited = constStringList(cards, "POLICY_FIELDS");
     const shown = constStringList(cards, "READ_ONLY_POLICY_FIELDS");
     expect([...edited, ...shown]).toEqual([...PLAYBOOK_POLICY_FIELDS]);
-    expect(shown).toEqual(["mode"]);
+    expect(shown).toEqual(["mode", "merge_requirement"]);
   });
 });
 

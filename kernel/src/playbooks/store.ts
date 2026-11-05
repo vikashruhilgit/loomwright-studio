@@ -30,8 +30,8 @@ import type { EventRef } from "../loop/internal.js";
 import type { Store } from "../store/store.js";
 import { TRIGGER_KINDS, TriggerError, listTriggers, registerTrigger, updateTriggerSpec } from "../triggers/index.js";
 import type { TriggerView } from "../triggers/index.js";
-import { DEDUPE_KEY_FIELDS, PLAYBOOK_MODES, PLAYBOOK_PRIORITIES } from "./types.js";
-import type { PlaybookPriority, PolicySetter } from "./types.js";
+import { DEDUPE_KEY_FIELDS, MERGE_REQUIREMENT_KINDS, PLAYBOOK_MODES, PLAYBOOK_PRIORITIES } from "./types.js";
+import type { MergeRequirementKind, PlaybookPriority, PolicySetter } from "./types.js";
 
 /**
  * The audit event kinds the playbooks feature appends (actor `kernel`), one
@@ -41,7 +41,7 @@ import type { PlaybookPriority, PolicySetter } from "./types.js";
 export const PLAYBOOK_AUDIT_KINDS = ["playbook_created", "playbook_updated", "playbook_disabled", "playbook_dry_run", "playbook_enabled"] as const;
 
 /** The policy fields a playbook change names (`playbook_updated.fields`) and the owner's `set` takes. */
-export const PLAYBOOK_POLICY_FIELDS = ["dedupe_key", "priority", "model", "token_limit", "mode"] as const;
+export const PLAYBOOK_POLICY_FIELDS = ["dedupe_key", "priority", "model", "token_limit", "mode", "merge_requirement"] as const;
 export type PlaybookPolicyField = (typeof PLAYBOOK_POLICY_FIELDS)[number];
 
 /** Every field `updatePlaybook` takes, in the order a `playbook_updated` event lists them. */
@@ -80,7 +80,7 @@ export class PlaybookError extends Error {
   }
 }
 
-/** A `playbooks` row as stored (every column of migration 13, and migration 17's `mode`). */
+/** A `playbooks` row as stored (every column of migration 13, migration 17's `mode` and migration 21's `merge_requirement`). */
 export interface PlaybookRow {
   readonly id: number;
   readonly slug: string;
@@ -107,6 +107,9 @@ export interface PlaybookRow {
   /** One of `PLAYBOOK_MODES` (migration 17; `draft` until set). */
   readonly mode: string;
   readonly mode_set_by: string | null;
+  /** `none`, `studio_approval` or `reviews:<N>` (`MERGE_REQUIREMENT_KINDS`; migration 21); null until set (no default). */
+  readonly merge_requirement: string | null;
+  readonly merge_requirement_set_by: string | null;
 }
 
 /** A playbook as listed: its row, its linked trigger's id and next fire (null when it has none). */
@@ -137,6 +140,7 @@ const POLICY_COLUMNS: Readonly<Record<PlaybookPolicyField, { readonly value: key
   model: { value: "model", setBy: "model_set_by" },
   token_limit: { value: "token_limit_per_day", setBy: "token_limit_set_by" },
   mode: { value: "mode", setBy: "mode_set_by" },
+  merge_requirement: { value: "merge_requirement", setBy: "merge_requirement_set_by" },
 };
 
 type ColumnValue = string | number | null;
@@ -188,8 +192,19 @@ function checkTriggerInput(trigger: unknown): PlaybookTriggerInput {
   return { kind: t.kind, spec: t.spec, ...(t.tz === undefined ? {} : { tz: t.tz }) };
 }
 
-/** The policy fields whose column is NOT NULL: never cleared, not even by the owner's `none`. */
-const UNCLEARABLE: readonly PlaybookPolicyField[] = Object.freeze(["priority", "mode"]);
+/**
+ * The policy fields never cleared, not even by the owner: `priority` and `mode` have a NOT NULL
+ * column; `merge_requirement` has `none` as a value, so a set requirement is changed, never unset.
+ */
+const UNCLEARABLE: readonly PlaybookPolicyField[] = Object.freeze(["priority", "mode", "merge_requirement"]);
+
+/** A `merge_requirement` value as its parts: `reviews:<N>` carries its N, `none` and `studio_approval` have none. `null` for any other text. */
+export function parseMergeRequirement(value: unknown): { readonly kind: MergeRequirementKind; readonly reviews: number | null } | null {
+  if (isOneOf(MERGE_REQUIREMENT_KINDS, value) && value !== "reviews") return { kind: value, reviews: null };
+  if (typeof value !== "string") return null;
+  const m = /^reviews:([1-9]\d{0,8})$/.exec(value);
+  return m === null ? null : { kind: "reviews", reviews: Number(m[1]) };
+}
 
 /**
  * `value` for policy field `field` as its column stores it, or a refusal
@@ -200,6 +215,8 @@ const UNCLEARABLE: readonly PlaybookPolicyField[] = Object.freeze(["priority", "
  * refused `live_mode_owner_only` when `allowClear` is false, on every agent
  * path: each one calls this check. The owner's `live` passes here and meets
  * `live_needs_enable` in `setPlaybookPolicy`, which reads the row.
+ * `merge_requirement` is `none`, `studio_approval` or `reviews:<N>` (N >= 1, a
+ * plain decimal), and cannot be cleared either.
  */
 export function checkPolicyValue(field: PlaybookPolicyField, value: unknown, allowClear: boolean): ColumnValue {
   if (value === null && allowClear && !UNCLEARABLE.includes(field)) return null;
@@ -231,6 +248,11 @@ export function checkPolicyValue(field: PlaybookPolicyField, value: unknown, all
       if (!isOneOf(PLAYBOOK_MODES, value)) throw invalid(`mode must be one of ${PLAYBOOK_MODES.join(", ")} (got ${shown(value)})`);
       if (value === "live" && !allowClear) throw new PlaybookError("live_mode_owner_only", "live_mode_owner_only: only the owner can set mode live (studio playbooks set <id> mode live); an agent proposes draft");
       return value;
+    case "merge_requirement":
+      if (parseMergeRequirement(value) === null) {
+        throw invalid(`merge_requirement must be none, studio_approval or reviews:<N> with N a whole number of at least 1 (got ${shown(value)})`);
+      }
+      return value as string;
   }
 }
 
@@ -245,7 +267,8 @@ export function parseOwnerPolicyValue(field: string, raw: string): { readonly fi
   if (!isOneOf(PLAYBOOK_POLICY_FIELDS, field)) throw invalid(`field must be one of ${PLAYBOOK_POLICY_FIELDS.join(", ")} (got ${shown(field)})`);
   if (typeof raw !== "string") throw invalid(`${field}: the value must be a string`);
   let value: unknown = raw;
-  if (raw === CLEAR_VALUE) {
+  // For merge_requirement `none` is a value (no requirement), not the clear word.
+  if (raw === CLEAR_VALUE && field !== "merge_requirement") {
     if (field === "priority") throw invalid(`priority cannot be cleared: it is one of ${PLAYBOOK_PRIORITIES.join(", ")}`);
     if (field === "mode") throw invalid(`mode cannot be cleared: it is one of ${PLAYBOOK_MODES.join(", ")}`);
     value = null;
@@ -449,6 +472,7 @@ export interface CreatePlaybookParams {
   readonly model?: string | undefined;
   readonly token_limit?: number | undefined;
   readonly mode?: string | undefined;
+  readonly merge_requirement?: string | undefined;
   /** The session that asked, for the audit rows. */
   readonly sessionId?: number | null;
 }
@@ -479,8 +503,8 @@ export function createPlaybook(store: Store, params: CreatePlaybookParams, now: 
         .prepare(
           `INSERT INTO playbooks (slug, name, owning_agent, intent, status, version,
              dedupe_key_spec, dedupe_key_set_by, priority, priority_set_by, model, model_set_by, token_limit_per_day, token_limit_set_by,
-             mode, mode_set_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             mode, mode_set_by, merge_requirement, merge_requirement_set_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           slug,
@@ -497,6 +521,8 @@ export function createPlaybook(store: Store, params: CreatePlaybookParams, now: 
           proposed("token_limit"),
           policy.get("mode") ?? "draft",
           proposed("mode"),
+          policy.get("merge_requirement") ?? null,
+          proposed("merge_requirement"),
           at,
           at,
         ).lastInsertRowid,
@@ -547,6 +573,7 @@ export interface PlaybookChanges {
   readonly model?: string | undefined;
   readonly token_limit?: number | undefined;
   readonly mode?: string | undefined;
+  readonly merge_requirement?: string | undefined;
 }
 
 export interface UpdatePlaybookParams {

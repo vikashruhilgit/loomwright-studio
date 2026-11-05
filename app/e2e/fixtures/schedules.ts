@@ -106,6 +106,8 @@ function playbook(id: number, slug: string, name: string, status = "enabled"): P
     updated_at: "2026-10-21T09:00:00.000Z",
     mode: "draft",
     mode_set_by: null,
+    merge_requirement: null,
+    merge_requirement_set_by: null,
     trigger_id: null,
     next_fire_at: null,
   };

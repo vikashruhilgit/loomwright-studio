@@ -2,6 +2,7 @@
 // call, and never reaches the network (no `fetch`, no socket). Phase 6 items
 // 03, 04 and 06 code against `GitHubClient` and test against this.
 import type {
+  GitHubBranchProtection,
   GitHubClient,
   GitHubCommentResult,
   GitHubFailure,
@@ -13,15 +14,18 @@ import type {
   GitHubPullDiff,
   GitHubPullFile,
   GitHubPullFilters,
+  GitHubPullMergeState,
   GitHubPullSummary,
   GitHubRateLimit,
   GitHubRepo,
+  GitHubRepoInfo,
+  GitHubRepoPolicyReads,
   GitHubResponse,
   GitHubTokenInfo,
 } from "../../src/integrations/types.js";
 
-/** A `GitHubClient` method's name. */
-export type GitHubCallName = keyof GitHubClient;
+/** A `GitHubClient` or `GitHubRepoPolicyReads` method's name. */
+export type GitHubCallName = keyof (GitHubClient & GitHubRepoPolicyReads);
 
 /** One call the fake answered, with its arguments as given. */
 export interface GitHubCall {
@@ -48,6 +52,17 @@ export interface FakeGitHubData {
   readonly issues?: Readonly<Record<string, readonly GitHubIssueSummary[]>>;
   /** Comments and reviews on open pulls by `<owner>/<repo>`: `listOpenPullComments` answers them. */
   readonly prComments?: Readonly<Record<string, readonly GitHubPrComment[]>>;
+  /** Repo info by `<owner>/<repo>`: `getRepoInfo` answers it (`http_error` 404 for a repo not listed). */
+  readonly repoInfo?: Readonly<Record<string, GitHubRepoInfo>>;
+  /**
+   * Branch protection by `<owner>/<repo>`: `getBranchProtection` answers the protection (any branch), or an HTTP
+   * status as `http_error` (403: GitHub cannot enforce protection here; 404: the branch is unprotected). A repo not listed is 404.
+   */
+  readonly protection?: Readonly<Record<string, GitHubBranchProtection | number>>;
+  /** Push collaborators' logins by `<owner>/<repo>`: `listPushCollaborators` answers them (none for a repo not listed). */
+  readonly pushers?: Readonly<Record<string, readonly string[]>>;
+  /** Merge state by `<owner>/<repo>#<n>`: `getPullMergeState` answers it (`http_error` 404 for one not listed). A test moves it with `setMergeState`. */
+  readonly mergeStates?: Readonly<Record<string, GitHubPullMergeState>>;
   readonly rateLimit?: GitHubRateLimit;
   /** A method answering this failure instead of data (e.g. `rate_limited`). */
   readonly failures?: Partial<Record<GitHubCallName, GitHubFailure>>;
@@ -62,12 +77,27 @@ export const FAKE_TOKEN_INFO: GitHubTokenInfo = Object.freeze({ login: "studio-t
  * pull is open. Answers are copies: a test mutating one never changes the
  * canned data.
  */
-export class FakeGitHubClient implements GitHubClient {
+export class FakeGitHubClient implements GitHubClient, GitHubRepoPolicyReads {
   readonly calls: GitHubCall[] = [];
   readonly #data: FakeGitHubData;
+  /** The merge states, mutable mid-test (a head moving, an approval landing): seeded from `data.mergeStates`. */
+  readonly #mergeStates: Map<string, GitHubPullMergeState>;
+  readonly #protection: Map<string, GitHubBranchProtection | number>;
 
   constructor(data: FakeGitHubData = {}) {
     this.#data = data;
+    this.#mergeStates = new Map(Object.entries(data.mergeStates ?? {}));
+    this.#protection = new Map(Object.entries(data.protection ?? {}));
+  }
+
+  /** Replaces pull `number`'s merge state from now on (the head moves, an approval lands). */
+  setMergeState(repo: string, number: number, state: GitHubPullMergeState): void {
+    this.#mergeStates.set(`${repo}#${number}`, state);
+  }
+
+  /** Replaces `repo`'s branch protection from now on: the protection, or an HTTP status it fails with. */
+  setProtection(repo: string, protection: GitHubBranchProtection | number): void {
+    this.#protection.set(repo, protection);
   }
 
   #answer<T>(method: GitHubCallName, args: readonly unknown[], data: () => T): Promise<GitHubResponse<T>> {
@@ -131,6 +161,36 @@ export class FakeGitHubClient implements GitHubClient {
 
   listOpenPullComments(repo: string): Promise<GitHubResponse<readonly GitHubPrComment[]>> {
     return this.#answer("listOpenPullComments", [repo], () => this.#data.prComments?.[repo] ?? []);
+  }
+
+  // ---- The repo-policy reads (`GitHubRepoPolicyReads`) ----
+
+  /** An `http_error` answer, recorded; a `failures` entry for the method still wins. */
+  #httpError(method: GitHubCallName, args: readonly unknown[], status: number): Promise<GitHubResponse<never>> {
+    this.calls.push({ method, args: [...args] });
+    return Promise.resolve(this.#data.failures?.[method] ?? { ok: false, error: "http_error", status, rateLimit: this.#data.rateLimit ?? FAKE_RATE_LIMIT });
+  }
+
+  getRepoInfo(repo: string): Promise<GitHubResponse<GitHubRepoInfo>> {
+    const info = this.#data.repoInfo?.[repo];
+    if (info === undefined) return this.#httpError("getRepoInfo", [repo], 404);
+    return this.#answer("getRepoInfo", [repo], () => info);
+  }
+
+  getBranchProtection(repo: string, branch: string): Promise<GitHubResponse<GitHubBranchProtection>> {
+    const p = this.#protection.get(repo);
+    if (p === undefined || typeof p === "number") return this.#httpError("getBranchProtection", [repo, branch], p ?? 404);
+    return this.#answer("getBranchProtection", [repo, branch], () => p);
+  }
+
+  listPushCollaborators(repo: string): Promise<GitHubResponse<readonly string[]>> {
+    return this.#answer("listPushCollaborators", [repo], () => this.#data.pushers?.[repo] ?? []);
+  }
+
+  getPullMergeState(repo: string, number: number): Promise<GitHubResponse<GitHubPullMergeState>> {
+    const state = this.#mergeStates.get(`${repo}#${number}`);
+    if (state === undefined) return this.#httpError("getPullMergeState", [repo, number], 404);
+    return this.#answer("getPullMergeState", [repo, number], () => state);
   }
 
   // The writes are recorded in `calls` with their arguments as given (a test asserts "exactly that request" or "nothing sent"); none reaches a network.

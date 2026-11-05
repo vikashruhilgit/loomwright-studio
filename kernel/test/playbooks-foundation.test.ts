@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { USAGE, runCli } from "../src/cli/index.js";
+import { setRepoPolicy } from "../src/integrations/github/repo-policy.js";
 import type { CliDeps } from "../src/cli/index.js";
 import { ContributionConflictError, InvalidContributionError, PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
 import type { CliApiClient, ContributedRoute } from "../src/features/index.js";
@@ -33,7 +34,12 @@ import {
   runsPart,
 } from "../src/playbooks/index.js";
 import type { PlaybookPart, PlaybookVerb } from "../src/playbooks/index.js";
-import { PLAYBOOK_MODES } from "../src/playbooks/types.js";
+import { EnableRefused, enableApproved } from "../src/playbooks/enable.js";
+import { createPlaybook, getPlaybook, parseMergeRequirement, setPlaybookPolicy } from "../src/playbooks/store.js";
+import { MERGE_REQUIREMENT_KINDS, PLAYBOOK_MODES } from "../src/playbooks/types.js";
+import { Store } from "../src/store/index.js";
+import { approvalApplierOf, heldToolCheckOf } from "../src/tools/server.js";
+import type { KernelToolContext } from "../src/tools/server.js";
 
 let tmp: string;
 let dataDir: string;
@@ -305,5 +311,152 @@ describe("a playbooks contribution with verbs (what a later item's part adds)", 
   it("a verb's help without the leading `studio playbooks ` goes on the help line unchanged", () => {
     const c = playbooksContributionOf([emptyPart("drafts", { verbs: [verb("show"), { ...verb("odd"), help: "odd <x> (no prefix)" }] })]);
     expect(c.subcommands?.[0]?.help).toBe("studio playbooks <verb> | show <id> | odd <x> (no prefix)");
+  });
+});
+
+describe("a playbook's merge_requirement may only be stricter than the repo it polls (AC7)", () => {
+  const NOW = new Date("2026-10-14T10:00:00.000Z");
+  const ENABLE_FULL = "mcp__kernel__kernel_playbook_enable";
+  const POLL = JSON.stringify({ source: "github.pulls", repos: ["o/r"], filters: {}, interval_seconds: 300 });
+  let store: Store;
+
+  beforeEach(() => {
+    store = new Store({ dataDir });
+    store.prepare("INSERT INTO connectors (kind, status, reachable_repos_json) VALUES ('github', 'connected', ?)").run(JSON.stringify(["o/r", "o/s"]));
+  });
+  afterEach(() => {
+    store.close();
+  });
+
+  /** A draft (with a done dry run at its version) polling `repos`, its requirement `requirement` (omitted: not set). */
+  function draft(requirement: string | undefined, spec: string = POLL, trigger: "poll" | "cron" = "poll"): number {
+    const { playbook } = createPlaybook(
+      store,
+      {
+        agent: "wright",
+        name: `Reviewer ${requirement ?? "unset"} ${spec.length}`,
+        intent: "Review each open pull request.",
+        trigger: trigger === "poll" ? { kind: "poll", spec } : { kind: "cron", spec: "0 9 * * 1-5", tz: "UTC" },
+        model: "claude-sonnet-4-5",
+        ...(requirement === undefined ? {} : { merge_requirement: requirement }),
+      },
+      NOW,
+    );
+    store
+      .prepare("INSERT INTO playbook_runs (playbook, version, kind, status, result_json, ended_at) VALUES (?, ?, 'dry_run', 'done', '{}', ?)")
+      .run(playbook.id, playbook.version, NOW.toISOString());
+    return playbook.id;
+  }
+
+  const repoNeeds = (repo: string, required: number): void => void setRepoPolicy(store, repo, { kind: "reviews", required }, () => NOW);
+
+  /** What the gate asks before it holds Wright's enable: the verdict, and how many approvals exist. */
+  function preHold(id: number): { verdict: { refuse?: string; display?: string; subjectVersion?: number } | undefined; approvals: number } {
+    const sessions = { stopSession: async () => "stopped", getSession: (sid: number) => ({ id: sid, agent: "wright" }) } as unknown as KernelToolContext["sessions"];
+    const check = heldToolCheckOf(playbooksContribution.tools ?? [], (sessionId) => ({ store, sessions, sessionId, now: () => NOW }));
+    const verdict = check(ENABLE_FULL, { id, idempotency_key: `e${id}` }, 1) as { refuse?: string; display?: string; subjectVersion?: number } | undefined;
+    return { verdict, approvals: store.prepare<[], number>("SELECT count(*) FROM approvals").pluck().get() ?? 0 };
+  }
+
+  /** The kernel's apply of an approved enable (what `studio approve` runs), for the draft's current version. */
+  function applyApproved(id: number) {
+    const row = getPlaybook(store, id);
+    const apply = approvalApplierOf(playbooksContribution.tools ?? []);
+    return apply(ENABLE_FULL, { id, idempotency_key: `e${id}` }, { id: 1, sessionId: null, agent: "wright", subjectVersion: row?.version ?? null, requestedEventId: 1 }, store, NOW);
+  }
+
+  it("the closed kinds are none, studio_approval and reviews; the column ships no default (null until set)", () => {
+    expect([...MERGE_REQUIREMENT_KINDS]).toEqual(["none", "studio_approval", "reviews"]);
+    expect(getPlaybook(store, draft(undefined))).toMatchObject({ merge_requirement: null, merge_requirement_set_by: null });
+  });
+
+  it("reviews:1 under a repo that needs 2 is refused playbook_looser_than_repo at the pre-hold check: nothing is held, no approval is written", () => {
+    repoNeeds("o/r", 2);
+    const id = draft("reviews:1");
+    const { verdict, approvals } = preHold(id);
+    expect(verdict).toEqual({
+      refuse: "kernel_playbook_enable: playbook_looser_than_repo: merge_requirement reviews:1 is looser than o/r, whose policy needs 2 reviews; set reviews:2 or more, or have the owner change the repo's policy (nothing was held for the owner)",
+    });
+    expect(approvals).toBe(0);
+    expect(getPlaybook(store, id)?.status).toBe("draft");
+  });
+
+  it("reviews:2, reviews:3, studio_approval, none and no requirement are not refused: the enable is held with its requirement shown", () => {
+    repoNeeds("o/r", 2);
+    for (const [requirement, shown] of [
+      ["reviews:2", "merge_requirement: reviews:2 (proposed)"],
+      ["reviews:3", "merge_requirement: reviews:3 (proposed)"],
+      ["studio_approval", "merge_requirement: studio_approval (proposed)"],
+      ["none", "merge_requirement: none (proposed)"],
+      [undefined, "merge_requirement: not set"],
+    ] as const) {
+      const id = draft(requirement);
+      const { verdict } = preHold(id);
+      expect(verdict, String(requirement)).toMatchObject({ subjectVersion: 1 });
+      expect(verdict?.refuse, String(requirement)).toBeUndefined();
+      expect(verdict?.display?.split("\n"), String(requirement)).toContain(shown);
+    }
+  });
+
+  it("a repo with another kind of policy, or none, never refuses; only a polled repo counts; the stricter of several repos refuses and is named", () => {
+    const solo = draft("reviews:1");
+    expect(preHold(solo).verdict?.refuse).toBeUndefined();
+    setRepoPolicy(store, "o/r", { kind: "studio_approval" }, () => NOW);
+    expect(preHold(solo).verdict?.refuse).toBeUndefined();
+    setRepoPolicy(store, "o/r", { kind: "solo" }, () => NOW);
+    expect(preHold(solo).verdict?.refuse).toBeUndefined();
+    // A cron playbook polls no repo: nothing to be looser than.
+    repoNeeds("o/r", 5);
+    expect(preHold(draft("reviews:1", POLL, "cron")).verdict?.refuse).toBeUndefined();
+    // Two repos: the one that needs more than the playbook does is named.
+    repoNeeds("o/r", 1);
+    repoNeeds("o/s", 3);
+    const two = draft("reviews:2", JSON.stringify({ source: "github.pulls", repos: ["o/r", "o/s"], filters: {}, interval_seconds: 300 }));
+    expect(preHold(two).verdict?.refuse).toContain("looser than o/s, whose policy needs 3 reviews");
+  });
+
+  it("raised after the enable was held: the kernel's apply refuses playbook_looser_than_repo (the approval's apply_refused), the playbook stays draft and nothing is enabled", () => {
+    repoNeeds("o/r", 2);
+    const id = draft("reviews:2");
+    expect(preHold(id).verdict?.display).toBeDefined();
+    repoNeeds("o/r", 3);
+    const outcome = applyApproved(id);
+    expect(outcome).toMatchObject({ refused: "playbook_looser_than_repo" });
+    expect((outcome as { text: string }).text).toBe(
+      `The kernel did not enable playbook reviewer-reviews-2-${POLL.length} (#${id}): playbook_looser_than_repo (merge_requirement reviews:2 is looser than o/r, whose policy needs 3 reviews; set reviews:3 or more, or have the owner change the repo's policy).`,
+    );
+    expect(getPlaybook(store, id)).toMatchObject({ status: "draft", version: 1 });
+    expect(store.prepare("SELECT count(*) FROM events WHERE kind = 'playbook_enabled'").pluck().get()).toBe(0);
+    // The same enable, with the repo back at 2, is applied.
+    repoNeeds("o/r", 2);
+    expect(applyApproved(id)).toMatchObject({ applied: expect.stringContaining("The kernel enabled playbook") });
+    expect(getPlaybook(store, id)?.status).toBe("enabled");
+  });
+
+  it("enableApproved throws EnableRefused with the reason, writing nothing; the owner raising the playbook's own requirement clears it (a new version, a new dry run)", () => {
+    repoNeeds("o/r", 2);
+    const id = draft("reviews:1");
+    const attempt = () => enableApproved(store, { playbookId: id, agent: "wright", approval: { id: 1, requestedEventId: 1, subjectVersion: 1 }, sessionId: null, now: NOW });
+    expect(attempt).toThrow(EnableRefused);
+    try {
+      attempt();
+    } catch (err) {
+      expect((err as EnableRefused).reason).toBe("playbook_looser_than_repo");
+    }
+    expect(getPlaybook(store, id)?.status).toBe("draft");
+    setPlaybookPolicy(store, { id, field: "merge_requirement", value: "reviews:2" }, NOW);
+    expect(getPlaybook(store, id)).toMatchObject({ version: 2, merge_requirement: "reviews:2", merge_requirement_set_by: "owner" });
+    expect(preHold(id).verdict?.refuse).toContain("a dry run of version 2 is required");
+  });
+});
+
+describe("parseMergeRequirement (the one merge_requirement grammar)", () => {
+  it("reads none, studio_approval and reviews:N, and nothing else", () => {
+    expect(parseMergeRequirement("none")).toEqual({ kind: "none", reviews: null });
+    expect(parseMergeRequirement("studio_approval")).toEqual({ kind: "studio_approval", reviews: null });
+    expect(parseMergeRequirement("reviews:2")).toEqual({ kind: "reviews", reviews: 2 });
+    for (const bad of ["reviews", "reviews:0", "reviews:01", "reviews:1234567890", "reviews:-1", "Reviews:1", "", null, undefined, 3]) {
+      expect(parseMergeRequirement(bad)).toBeNull();
+    }
   });
 });

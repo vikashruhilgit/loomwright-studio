@@ -16,8 +16,9 @@
 // Phase 8 adds two parts. `mcp` (item 06: MCP connectors with OAuth 2.1, D38) is
 // filled: `mcp/connector.ts` builds it (the three `/connectors/mcp/:kind/…` owner
 // routes and the token renewal), with its session tools in `mcp/tools.ts`.
-// `repo-policy` (item 08: the per-repo merge policy, D40) is defined here because
-// it has no files of its own yet; it is empty until its item fills it in.
+// `repo-policy` (item 08: the per-repo merge policy, D40) is filled: `github/repo-policy-routes.ts`
+// builds it (the three `/repos/policy` owner routes, and no agent tool), over
+// `github/repo-policy.ts` (detect, propose, `policyMet`).
 // Integrations are optional (invariant 5): Studio works with none connected.
 // Mechanism only (invariant 1). `startKernel` and `runCli` merge it through
 // `SHIPPED_CONTRIBUTIONS` (`../features/index.ts`), ninth, after
@@ -29,20 +30,17 @@
 // registry's module graph).
 import { consoleContributionOf } from "../console/index.js";
 import type { FeatureContribution } from "../features/contribution.js";
-import { emptyConsolePart } from "../console/types.js";
 import { draftsPart } from "./drafts.js";
 import { githubAppRoutesPart } from "./github/app-routes.js";
 import { githubConnectorPart } from "./github/connector.js";
 import { githubRoutesPart } from "./github/routes.js";
 import { githubToolsPart } from "./github/tools.js";
+import { repoPolicyPart } from "./github/repo-policy-routes.js";
 import { mcpPart } from "./mcp/connector.js";
 import type { IntegrationsPart } from "./types.js";
 
 /** The contribution's name. */
 export const INTEGRATIONS_NAME = "integrations";
-
-/** The `repo-policy` part (phase 8 item 08): the per-repo merge policy (D40). Empty and claims no handler kind until its item fills it in. */
-export const repoPolicyPart: IntegrationsPart = emptyConsolePart("repo-policy");
 
 /**
  * Every part, in merge order: tools, routes, subcommands and due work keep this order.
@@ -84,6 +82,33 @@ export {
   listConnectors,
 } from "./github/connector.js";
 export type { ConnectorErrorCode, ConnectorOutcome, ConnectorView, GitHubConnector, GitHubConnectorDeps, GitHubTokenRefusal } from "./github/connector.js";
+export {
+  MERGE_APPROVAL_ACTION,
+  POLICY_NOT_MET_REASONS,
+  REPO_POLICY_CHOICES,
+  REPO_POLICY_KINDS,
+  REPO_POLICY_ROW_KINDS,
+  REPO_PROTECTIONS,
+  detectRepoPolicy,
+  getRepoPolicy,
+  loomwrightMergeFlags,
+  policyMet,
+  proposeRepoPolicy,
+} from "./github/repo-policy.js";
+export type {
+  PolicyMet,
+  PolicyMetDeps,
+  PolicyNotMetReason,
+  RepoDetection,
+  RepoPolicyChoice,
+  RepoPolicyDeps,
+  RepoPolicyKind,
+  RepoPolicyProposal,
+  RepoPolicyRowKind,
+  RepoPolicyView,
+  RepoProtection,
+} from "./github/repo-policy.js";
+export { repoPolicyPart, repoPolicyRoutes } from "./github/repo-policy-routes.js";
 export { githubRoutes, githubRoutesPart } from "./github/routes.js";
 export { GITHUB_PR_DIFF_DEFAULT_MAX_BYTES, GITHUB_TOOL_REFUSALS, createGitHubTools, githubToolsPart } from "./github/tools.js";
 export type { GitHubToolRefusal, GitHubToolsDeps } from "./github/tools.js";
@@ -105,6 +130,8 @@ export type {
   GitHubAppPortError,
   GitHubAppPortResult,
   GitHubAppSetupRefusal,
+  GitHubBranchProtection,
+  GitHubCiState,
   GitHubClient,
   GitHubFailure,
   GitHubPull,
@@ -112,9 +139,12 @@ export type {
   GitHubPullDiff,
   GitHubPullFile,
   GitHubPullFilters,
+  GitHubPullMergeState,
   GitHubPullSummary,
   GitHubRateLimit,
   GitHubRepo,
+  GitHubRepoInfo,
+  GitHubRepoPolicyReads,
   GitHubResponse,
   GitHubTokenInfo,
   IntegrationsPart,

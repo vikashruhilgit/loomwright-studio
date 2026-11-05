@@ -480,6 +480,9 @@ export interface Playbook {
   /** The kernel's `PLAYBOOK_MODES` value (`draft` / `live`; migration 17, default `draft`). Phase 6 accepts only `draft`. */
   readonly mode: string;
   readonly mode_set_by: string | null;
+  /** `none`, `studio_approval` or `reviews:<N>` (the kernel's `MERGE_REQUIREMENT_KINDS`; migration 21); null until set, the kernel ships no default. */
+  readonly merge_requirement: string | null;
+  readonly merge_requirement_set_by: string | null;
 }
 
 export interface PlaybookListing extends Playbook {
@@ -1370,6 +1373,26 @@ export interface McpConnectResponse {
  */
 export type RepoPolicyKind = "solo" | "studio_approval" | "reviews";
 
+/**
+ * What a detection found for the default branch's protection (item 08, closed in code by the kernel): `protected`,
+ * `unprotected` (GitHub answered 404), `protection_unavailable` (403: a private repo on GitHub Free cannot be protected) or `unreadable`.
+ */
+export type RepoProtection = "protected" | "unprotected" | "protection_unavailable" | "unreadable";
+
+/** What the owner can pick where GitHub cannot enforce protection (item 08, closed in code by the kernel); none is picked for them. */
+export type RepoPolicyChoice = "make_public_or_upgrade" | "trust_unprotected" | "safe_mode";
+
+/**
+ * The policy a detection suggests (item 08). The kernel never applies it: the owner accepts or changes it with `RepoPolicySetBody`.
+ * `choices` is present only where GitHub cannot enforce protection, and then `kind` is `null` (none is picked).
+ */
+export interface RepoPolicyProposal {
+  readonly kind: RepoPolicyKind | null;
+  /** The approvals GitHub's protection requires, for `reviews`; `null` otherwise. */
+  readonly required_reviews: number | null;
+  readonly choices?: readonly RepoPolicyChoice[];
+}
+
 /** One repo's merge policy with what the kernel detected (item 08). `kind` is `null` while no policy is set (PRs park). */
 export interface RepoPolicy {
   /** `owner/name`. */
@@ -1381,6 +1404,8 @@ export interface RepoPolicy {
   readonly trust_unprotected: boolean;
   /** The last detection (branch protection, required reviews and checks, who can push), as read from GitHub; `null` before the first. */
   readonly detected: Readonly<Record<string, unknown>> | null;
+  /** The suggestion made from `detected` (never applied by the kernel); `null` before the first detection and where nothing applies. */
+  readonly proposal: RepoPolicyProposal | null;
   readonly set_by: string | null;
   readonly set_at: IsoTime | null;
 }

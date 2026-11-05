@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 // The shared playbook policy editor: the rows (an unset value reads "not set",
 // never a default), the `mode` row (draft offered, live present but disabled),
+// the read-only `merge_requirement` row (not set, or its value and who set it),
 // and the inline editor (Set sends the typed text, Enter submits, Escape and
 // Cancel leave only when nothing is pending, and a held editor keeps its text).
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PlaybookListing } from "../../api/contract";
-import { MODEL_NOT_SET, POLICY_FIELDS, PolicyEditor, READ_ONLY_POLICY_FIELDS, modePolicyRow, policyRows, provenance } from "./PlaybookPolicy";
+import { MODEL_NOT_SET, POLICY_FIELDS, PolicyEditor, READ_ONLY_POLICY_FIELDS, mergeRequirementPolicyRow, modePolicyRow, policyRows, provenance } from "./PlaybookPolicy";
 import type { PolicyEditorProps, PolicyRow } from "./PlaybookPolicy";
 
 afterEach(cleanup);
@@ -36,6 +37,8 @@ function playbook(overrides: Partial<PlaybookListing> = {}): PlaybookListing {
     api_key_fallback_set_by: null,
     mode: "draft",
     mode_set_by: null,
+    merge_requirement: null,
+    merge_requirement_set_by: null,
     created_at: T0,
     updated_at: T0,
     trigger_id: null,
@@ -71,7 +74,7 @@ describe("policyRows", () => {
     expect(rows.map((r) => r.field)).toEqual([...POLICY_FIELDS]);
     expect(rows.map((r) => r.label)).toEqual(["Dedupe key", "Priority", "Model", "Token limit per day"]);
     expect(rows.map((r) => r.name)).toEqual(["dedupe key", "priority", "model", "token limit per day"]);
-    expect(READ_ONLY_POLICY_FIELDS).toEqual(["mode"]);
+    expect(READ_ONLY_POLICY_FIELDS).toEqual(["mode", "merge_requirement"]);
   });
 
   it("show each value with who set it, and offer the dedupe key comma-separated", () => {
@@ -111,6 +114,31 @@ describe("policyRows", () => {
 
   it("make priority the only select among them", () => {
     expect(policyRows(playbook()).map((r) => r.options?.map((o) => o.value) ?? null)).toEqual([null, ["low", "normal", "high"], null, null]);
+  });
+});
+
+describe("mergeRequirementPolicyRow", () => {
+  it("reads not set when the kernel has no requirement (it ships no default), with no provenance", () => {
+    const merge = mergeRequirementPolicyRow(playbook());
+    expect(merge).toMatchObject({ field: "merge_requirement", label: "Merge requirement", name: "merge requirement", shown: "not set", unset: true, setBy: null, draft: "", options: null });
+    expect(provenance(merge.setBy)).toBe("");
+  });
+
+  it("shows the value as the kernel has it, proposed when Wright set it and set by owner when the owner did", () => {
+    for (const [value, setBy, words] of [
+      ["reviews:2", "wright", "proposed"],
+      ["studio_approval", "owner", "set by owner"],
+      ["none", "owner", "set by owner"],
+    ] as const) {
+      const merge = mergeRequirementPolicyRow(playbook({ merge_requirement: value, merge_requirement_set_by: setBy }));
+      expect([merge.shown, merge.unset, merge.setBy, merge.draft, provenance(merge.setBy)]).toEqual([value, false, setBy, value, words]);
+    }
+  });
+
+  it("is a text row whose editor starts at the stored value and hints that a set value is changed, never cleared", () => {
+    renderEditor({ row: mergeRequirementPolicyRow(playbook({ merge_requirement: "reviews:2", merge_requirement_set_by: "owner" })) });
+    expect((screen.getByRole("textbox", { name: "New merge requirement" }) as HTMLInputElement).value).toBe("reviews:2");
+    expect(screen.getByText(/never cleared/)).toBeTruthy();
   });
 });
 

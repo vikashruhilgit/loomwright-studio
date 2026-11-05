@@ -549,6 +549,7 @@ describe("the markdown mirror (AC1, AC7)", () => {
         "- Model: not set",
         "- Token limit per day: `1000` (proposed)",
         "- Mode: `draft`",
+        "- Merge requirement: not set",
         "- Effort: not set",
         "- API-key fallback: not set",
         "",
@@ -754,7 +755,7 @@ describe("the owner: studio playbooks list | show | set | off and the /playbooks
 
     paths = [];
     const refused: [string[], string][] = [
-      [["nope", "x"], 'studio playbooks set: unknown field "nope" (one of dedupe_key, priority, model, token_limit, mode)\n'],
+      [["nope", "x"], 'studio playbooks set: unknown field "nope" (one of dedupe_key, priority, model, token_limit, mode, merge_requirement)\n'],
       [["priority", "urgent"], 'studio playbooks set: priority must be one of low, normal, high (got "urgent")\n'],
       [["priority", "none"], "studio playbooks set: priority cannot be cleared: it is one of low, normal, high\n"],
       [["token_limit", "0"], "studio playbooks set: token_limit must be a positive whole number of tokens per day\n"],
@@ -787,6 +788,66 @@ describe("the owner: studio playbooks list | show | set | off and the /playbooks
     expect((await api("POST", "/playbooks/abc/set", { field: "priority", value: "high" })).status).toBe(400);
     expect((await api("POST", "/playbooks/999/set", { field: "priority", value: "high" })).status).toBe(404);
     expect(row(id).version).toBe(5);
+  });
+
+  it("set merge_requirement reviews:2 is owner-set; reviews:0, reviews:x, other and a clear are refused invalid_input naming the field; none is a value, not the clear word; a later agent edit is refused (AC10)", async () => {
+    const { id, slug } = value<Created>(await create());
+    // Not set until someone sets it: the kernel ships no default.
+    expect(row(id)).toMatchObject({ merge_requirement: null, merge_requirement_set_by: null });
+    setClock("2026-10-14T10:02:00.000Z");
+    const c = studio();
+    expect(await c.run("playbooks", "set", String(id), "merge_requirement", "reviews:2")).toBe(0);
+    expect(c.stdout()).toBe(`studio: playbook ${id} merge_requirement set to reviews:2 (version 2)\n`);
+    expect(paths).toEqual([`/playbooks/${id}/set`]);
+    expect(row(id)).toMatchObject({ merge_requirement: "reviews:2", merge_requirement_set_by: "owner", version: 2 });
+    expect(snapshots(id).at(-1)).toEqual({ version: 2, snapshot: { ...row(id) } });
+    expect(events(env.store, "playbook_updated").at(-1)?.payload).toEqual({ playbook_id: id, version: 2, by: "owner", fields: ["merge_requirement"] });
+    expect(mirrorText(slug).split("\n")).toContain("- Merge requirement: `reviews:2`");
+
+    paths = [];
+    for (const bad of ["reviews:0", "reviews:x", "reviews:", "reviews:-1", "reviews:01", "reviews:2.5", "other", "Reviews:2", " studio_approval"]) {
+      const refused = studio();
+      expect(await refused.run("playbooks", "set", String(id), "merge_requirement", bad), bad).toBe(2);
+      expect(refused.stderr(), bad).toMatch(/^studio playbooks set: merge_requirement must be none, studio_approval or reviews:<N>/);
+      expect(refused.stdout()).toBe("");
+      // The route refuses the same value itself, naming the field.
+      const res = await api("POST", `/playbooks/${id}/set`, { field: "merge_requirement", value: bad });
+      expect(res.status, bad).toBe(400);
+      expect(((await res.json()) as { error: string; message: string }).message, bad).toMatch(/^merge_requirement must be none, studio_approval or reviews:<N>/);
+    }
+    expect(paths).toEqual([]);
+    expect(row(id)).toMatchObject({ merge_requirement: "reviews:2", version: 2 });
+    // A set requirement is changed, never cleared: the store refuses a null even from the owner.
+    expect(() => setPlaybookPolicy(env.store, { id, field: "merge_requirement", value: null }, env.now())).toThrow(/^merge_requirement must be none, studio_approval or reviews:<N>/);
+    expect(row(id)).toMatchObject({ merge_requirement: "reviews:2", version: 2 });
+
+    // Wright cannot overwrite what the owner set (the same guard as every other field); it can still propose on a field the owner left alone.
+    const text = errorText(await update(id, { merge_requirement: "none" }));
+    expect(text).toBe("kernel_playbook_update: merge_requirement: the owner set this value; only the owner can change it");
+    expect(row(id)).toMatchObject({ merge_requirement: "reviews:2", merge_requirement_set_by: "owner", version: 2 });
+
+    // `none` is a value: the owner may set it, and it is stored as the text.
+    const none = studio();
+    expect(await none.run("playbooks", "set", String(id), "merge_requirement", "none")).toBe(0);
+    expect(row(id)).toMatchObject({ merge_requirement: "none", merge_requirement_set_by: "owner", version: 3 });
+    const sa = studio();
+    expect(await sa.run("playbooks", "set", String(id), "merge_requirement", "studio_approval")).toBe(0);
+    expect(row(id)).toMatchObject({ merge_requirement: "studio_approval", version: 4 });
+  });
+
+  it("Wright proposes merge_requirement in a draft (merge_requirement_set_by wright, shown (proposed) in the mirror); a bad value is refused naming the field and creates nothing", async () => {
+    const created = value<Created>(await create({ merge_requirement: "reviews:3" }));
+    expect(row(created.id)).toMatchObject({ merge_requirement: "reviews:3", merge_requirement_set_by: "wright" });
+    expect(mirrorText(created.slug).split("\n")).toContain("- Merge requirement: `reviews:3` (proposed)");
+    expect(snapshots(created.id)[0]?.snapshot).toMatchObject({ merge_requirement: "reviews:3", merge_requirement_set_by: "wright" });
+    expect(errorText(await create({ name: "Another", merge_requirement: "reviews:0" }))).toMatch(/merge_requirement must be none, studio_approval or reviews:<N>/);
+    expect(count(env.store, "SELECT count(*) FROM playbooks")).toBe(1);
+    // Wright can change its own proposal; a repeat of the same value changes nothing.
+    expect(value(await update(created.id, { merge_requirement: "studio_approval" }))).toMatchObject({ version: 2, changed: true });
+    expect(value(await update(created.id, { merge_requirement: "studio_approval" }))).toMatchObject({ version: 2, changed: false });
+    // `none` is not a clear for an agent either.
+    expect(value(await update(created.id, { merge_requirement: "none" }))).toMatchObject({ version: 3, changed: true });
+    expect(row(created.id)).toMatchObject({ merge_requirement: "none", merge_requirement_set_by: "wright" });
   });
 
   it("list hides disabled ones unless --all; --json is the route's answer; show gives the playbook, its versions and its linked trigger; off is final for Wright (AC6, AC10)", async () => {
@@ -830,6 +891,7 @@ describe("the owner: studio playbooks list | show | set | off and the /playbooks
         "  priority: high (set by owner)",
         "  model: claude-sonnet-4-5 (proposed)",
         "  token limit per day: 50000 (proposed)",
+        "  merge requirement: not set",
         "  effort: not set",
         "  api-key fallback: not set",
         "  versions: 1 (2026-10-14 15:30 +05:30), 2 (2026-10-14 15:35 +05:30)",

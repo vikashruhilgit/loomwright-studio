@@ -44,6 +44,16 @@ export const PLAYBOOK_MODES = Object.freeze(["draft", "live"] as const);
 export type PlaybookMode = (typeof PLAYBOOK_MODES)[number];
 
 /**
+ * The kinds a `playbooks.merge_requirement` (migration 21) takes: `none`,
+ * `studio_approval`, or `reviews` as the text `reviews:<N>` with N a whole
+ * number of at least 1 (`parseMergeRequirement`, `./store.ts`). The kernel
+ * ships no default: the column is null until the owner sets it or Wright
+ * proposes it in a draft. It may only be stricter than the repo's policy.
+ */
+export const MERGE_REQUIREMENT_KINDS = Object.freeze(["none", "studio_approval", "reviews"] as const);
+export type MergeRequirementKind = (typeof MERGE_REQUIREMENT_KINDS)[number];
+
+/**
  * A `studio playbooks <verb> …` verb: the `ContributedSubcommand` call shape.
  * `help` is one line, appended to the `studio playbooks` help line.
  */

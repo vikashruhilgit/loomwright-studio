@@ -46,6 +46,7 @@ import { phase6Foundation } from "../src/store/migrations/017_phase_6_foundation
 import { connectorPermissionsSource } from "../src/store/migrations/018_connector_permissions_source.js";
 import { connectorApp } from "../src/store/migrations/019_connector_app.js";
 import { phase8Foundation } from "../src/store/migrations/020_phase_8_foundation.js";
+import { playbookMergeRequirement } from "../src/store/migrations/021_playbook_merge_requirement.js";
 import { contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolContext, KernelToolResult } from "../src/tools/server.js";
 import { TRIGGER_KINDS, TriggerError, registerTrigger, triggersContribution, updateTriggerSpec } from "../src/triggers/index.js";
@@ -160,7 +161,7 @@ describe("the integrations feature (AC2)", () => {
     expect(SHIPPED_CONTRIBUTIONS[8]).toBe(integrationsContribution);
   });
 
-  it("merges its seven parts in a fixed order: github-connector, github-routes (item 03), github-tools (item 06), drafts (item 07), mcp and repo-policy (phase 8, empty), github-app-routes (D36)", () => {
+  it("merges its seven parts in a fixed order: github-connector, github-routes (item 03), github-tools (item 06), drafts (item 07), mcp and repo-policy (phase 8, both filled), github-app-routes (D36)", () => {
     expect(INTEGRATIONS_PARTS.map((p) => p.name)).toEqual(["github-connector", "github-routes", "github-tools", "drafts", "mcp", "repo-policy", "github-app-routes"]);
     expect(Object.isFrozen(INTEGRATIONS_PARTS)).toBe(true);
   });
@@ -229,6 +230,10 @@ describe("the integrations feature (AC2)", () => {
       "integrations POST /connectors/mcp/:kind/connect",
       "integrations POST /connectors/mcp/:kind/connect/cancel",
       "integrations POST /connectors/mcp/:kind/disconnect",
+      // The `repo-policy` part's three owner routes (phase 8 item 08).
+      "integrations GET /repos/policy",
+      "integrations POST /repos/policy/:owner/:repo/detect",
+      "integrations POST /repos/policy/:owner/:repo",
     ]);
     const appRoutes = merged.routes.filter(isApp);
     expect(appRoutes.every((r) => r.owner === "integrations")).toBe(true);
@@ -259,7 +264,7 @@ describe("the integrations feature (AC2)", () => {
     // The GitHub App's modules (`github/app-*.ts`: the port stub, the routes and the setup flow, then the tokens item's own) are matched by pattern, so a new one does not edit this pin.
     const isAppModule = (f: string): boolean => /^github[\\/]app-[^\\/]+\.ts$/.test(f);
     expect(files.filter((f) => !isAppModule(f)).sort()).toEqual(
-      ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/credential-lock.ts", "github/routes.ts", "github/tools.ts", "github/write-tools.ts", "index.ts", "mcp/client.ts", "mcp/connector.ts", "mcp/credential.ts", "mcp/oauth.ts", "mcp/routes.ts", "mcp/rows.ts", "mcp/tools.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
+      ["cli.ts", "drafts.ts", "github/client.ts", "github/connector.ts", "github/credential-lock.ts", "github/repo-policy-routes.ts", "github/repo-policy.ts", "github/routes.ts", "github/tools.ts", "github/write-tools.ts", "index.ts", "mcp/client.ts", "mcp/connector.ts", "mcp/credential.ts", "mcp/oauth.ts", "mcp/routes.ts", "mcp/rows.ts", "mcp/tools.ts", "tool-filter.ts", "types.ts"].map((f) => join(f)),
     );
     expect(files).toEqual(expect.arrayContaining([join("github/app-port.ts"), join("github/app-routes.ts")]));
     for (const f of files) {
@@ -310,20 +315,22 @@ describe("toolsForConnectors", () => {
 describe("migration 17: phase_6_foundation (AC1)", () => {
   const V16 = migrations.slice(0, 16);
 
-  it("is version 17, and migration 18 (connector_permissions_source, its own tests in integrations-github-declared.test.ts) and 19 (connector_app, in integrations-github-app-migration.test.ts) sit above it, 19 directly below 20 (phase_8_foundation, last)", () => {
+  it("is version 17, and migration 18 (connector_permissions_source, its own tests in integrations-github-declared.test.ts) and 19 (connector_app, in integrations-github-app-migration.test.ts) sit above it, 19 directly below 20 (phase_8_foundation) and 21 (playbook_merge_requirement, last)", () => {
     expect(migrations.at(16)).toBe(phase6Foundation);
     expect([phase6Foundation.version, phase6Foundation.name]).toEqual([17, "phase_6_foundation"]);
-    expect(migrations.at(-3)).toBe(connectorPermissionsSource);
+    expect(migrations.at(-4)).toBe(connectorPermissionsSource);
     expect([connectorPermissionsSource.version, connectorPermissionsSource.name]).toEqual([18, "connector_permissions_source"]);
-    expect(migrations.at(-2)).toBe(connectorApp);
+    expect(migrations.at(-3)).toBe(connectorApp);
     expect([connectorApp.version, connectorApp.name]).toEqual([19, "connector_app"]);
-    expect(migrations.at(-1)).toBe(phase8Foundation);
+    expect(migrations.at(-2)).toBe(phase8Foundation);
     expect([phase8Foundation.version, phase8Foundation.name]).toEqual([20, "phase_8_foundation"]);
+    expect(migrations.at(-1)).toBe(playbookMergeRequirement);
+    expect([playbookMergeRequirement.version, playbookMergeRequirement.name]).toEqual([21, "playbook_merge_requirement"]);
   });
 
   it("on a fresh store creates connectors and draft_outputs with exactly their columns, and adds playbooks.mode / mode_set_by and playbook_runs.item_ref / item_revision", () => {
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([21, "playbook_merge_requirement"]);
     // Migration 17's columns, then the two migration 18 adds, then the three migration 19 adds at the end.
     expect(columnsOf(store, "connectors")).toEqual([
       "id",
@@ -343,7 +350,8 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
       "installation_id",
     ]);
     expect(columnsOf(store, "draft_outputs")).toEqual(["id", "session", "agent", "playbook", "playbook_run", "item_ref", "tool", "payload_json", "created_at"]);
-    expect(columnsOf(store, "playbooks").slice(-2)).toEqual(["mode", "mode_set_by"]);
+    // Migration 17's two columns, then the two migration 21 adds at the end.
+    expect(columnsOf(store, "playbooks").slice(-4)).toEqual(["mode", "mode_set_by", "merge_requirement", "merge_requirement_set_by"]);
     expect(columnsOf(store, "playbook_runs").slice(-2)).toEqual(["item_ref", "item_revision"]);
 
     const info = (table: string, column: string): unknown =>
@@ -400,14 +408,14 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     expect(before.tables).not.toContain("draft_outputs");
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([21, "playbook_merge_requirement"]);
     expect(store.prepare("SELECT mode, mode_set_by FROM playbooks WHERE id = 1").get()).toEqual({ mode: "draft", mode_set_by: null });
     expect(store.prepare("SELECT item_ref, item_revision FROM playbook_runs WHERE id = 1").get()).toEqual({ item_ref: null, item_revision: null });
     store.close();
 
     inspect((db) => {
       expect(() => checkAfterMigrating(db, tmp, migrations)).not.toThrow();
-      const added: Record<string, string[]> = { playbooks: ["mode", "mode_set_by"], playbook_runs: ["item_ref", "item_revision"] };
+      const added: Record<string, string[]> = { playbooks: ["mode", "mode_set_by", "merge_requirement", "merge_requirement_set_by"], playbook_runs: ["item_ref", "item_revision"] };
       for (const t of before.tables) {
         const cols = before.cols[t] ?? [];
         expect(columnsOf(db, t), t).toEqual([...cols, ...(added[t] ?? [])]);
@@ -449,7 +457,7 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     db.exec("DELETE FROM schema_migrations WHERE version >= 17");
     db.close();
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([21, "playbook_merge_requirement"]);
     rerun.close();
     expect(snap()).toEqual(before);
   });

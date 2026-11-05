@@ -17,7 +17,9 @@
 //   owner or not a draft, an idempotency key whose work step already exists
 //   in this session (an earlier enable used it: its stored result would be
 //   replayed, so a new approval could only be spent with no effect), or a
-//   playbook whose current version has no `done` dry run (`latestDryRun`), is
+//   playbook whose current version has no `done` dry run (`latestDryRun`), or
+//   whose `merge_requirement` is looser than the policy of a repo it polls
+//   (`playbook_looser_than_repo`), is
 //   refused, so no approval is written; otherwise the call
 //   is held with a display for `studio approvals` (the name, slug, version,
 //   every policy value with `(proposed)` where Wright set it, and the dry
@@ -27,7 +29,8 @@
 //   (its agent, the owner's off, `draft`), refuses "version changed" unless
 //   the approval's `subject_version` is the current version and no
 //   `playbook_updated` came after the request, refuses with no `done` dry run
-//   of the current version, then enables it (`enablePlaybook`). A refusal is
+//   of the current version, refuses `playbook_looser_than_repo` when the repo's
+//   policy was raised since the hold, then enables it (`enablePlaybook`). A refusal is
 //   recorded on the approval and said in the agent's message; nothing is
 //   enabled.
 // - the handler, a defence path only: it runs when the gate let a call
@@ -44,20 +47,23 @@
 //
 // It never edits the triggers module: the linked trigger already exists
 // (item 02), and item 08 makes it fire. The `studio` CLI loads this module:
-// zod, the feature seam, `../loop/*`, the leaf `../agents/registry.js` and
-// this feature's files only.
+// zod, the feature seam, `../loop/*`, the leaf `../agents/registry.js`, the
+// repo-policy read (`../integrations/github/repo-policy.js`: the store, the
+// keychain reader and the GitHub client, never the Agent SDK) and this
+// feature's files only.
 import { z } from "zod";
 import { getAgent } from "../agents/registry.js";
 import type { AppliedApproval, ApprovalApplyOutcome } from "../approvals/store.js";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { getWorkStep, runStep } from "../loop/steps.js";
+import { getRepoPolicy } from "../integrations/github/repo-policy.js";
 import type { HeldToolVerdict } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { CREW_CANNOT_DRAFT_DETAIL, afterPlaybookStep, mayManage, named, refuseCrewDrafting, syncMirror } from "./drafts.js";
 import { DRY_RUN_TOOL_NAME, latestDryRun } from "./dry-run.js";
 import type { DryRunRecord } from "./dry-run.js";
-import { PlaybookError, enablePlaybook, getPlaybook, linkedTriggerOf, refuseIfOwnerTurnedOff } from "./store.js";
+import { PlaybookError, enablePlaybook, getPlaybook, linkedTriggerOf, parseMergeRequirement, refuseIfOwnerTurnedOff } from "./store.js";
 import type { PlaybookRow } from "./store.js";
 import type { PlaybookPart } from "./types.js";
 
@@ -85,7 +91,7 @@ function invalid(message: string): PlaybookError {
  * one-line detail.
  */
 export class EnableRefused extends Error {
-  readonly reason: "not_found" | "crew_cannot_draft" | "not_owner" | "turned_off_by_owner" | "not_draft" | "version_changed" | "no_dry_run";
+  readonly reason: "not_found" | "crew_cannot_draft" | "not_owner" | "turned_off_by_owner" | "not_draft" | "version_changed" | "no_dry_run" | "playbook_looser_than_repo";
 
   constructor(reason: EnableRefused["reason"], message: string) {
     super(message);
@@ -100,6 +106,7 @@ function playbookErrorOf(err: EnableRefused): PlaybookError {
   if (err.reason === "crew_cannot_draft") return new PlaybookError("crew_cannot_draft", `crew_cannot_draft: ${err.message}`);
   if (err.reason === "turned_off_by_owner") return new PlaybookError("owner_off", err.message);
   if (err.reason === "version_changed" || err.reason === "no_dry_run") return invalid(`version changed: ${err.message}`);
+  if (err.reason === "playbook_looser_than_repo") return invalid(`playbook_looser_than_repo: ${err.message}`);
   return invalid(err.message);
 }
 
@@ -141,6 +148,38 @@ function draftOf(store: Store, id: number, agent: string | null): PlaybookRow {
 /** Playbook `id` if the caller may enable it: it exists, it may manage it, it is not turned off by the owner, and it is a draft. */
 function ownDraft(store: Store, id: number, agent: string): PlaybookRow {
   return asPlaybookError(() => draftOf(store, id, agent));
+}
+
+// ---- The repo's policy -----------------------------------------------------------------
+
+/** The repos a playbook's linked poll trigger watches (`owner/name`, as the spec has them); none for any other trigger. */
+function polledRepos(store: Store, row: PlaybookRow): readonly string[] {
+  const trigger = linkedTriggerOf(store, row);
+  if (trigger === null || trigger.kind !== "poll") return [];
+  const repos = (trigger.spec as { repos?: unknown } | null)?.repos;
+  return Array.isArray(repos) ? repos.filter((r): r is string => typeof r === "string") : [];
+}
+
+/**
+ * The refusal when `row`'s own `merge_requirement` is looser than a repo it polls, or `undefined`: it is
+ * `reviews:N` and a polled repo's policy is `reviews` with more than N required (a playbook may only be
+ * stricter than its repo, never looser). `none`, `studio_approval`, no requirement and a repo with another
+ * kind (or none) are never refused here. Reads the repo's stored policy at the call, so the apply sees
+ * what the owner set after the enable was held.
+ */
+function looserThanRepo(store: Store, row: PlaybookRow): EnableRefused | undefined {
+  const own = parseMergeRequirement(row.merge_requirement);
+  if (own === null || own.reviews === null) return undefined;
+  for (const repo of polledRepos(store, row)) {
+    const policy = getRepoPolicy(store, repo);
+    if (policy.kind === "reviews" && policy.required_reviews !== null && policy.required_reviews > own.reviews) {
+      return new EnableRefused(
+        "playbook_looser_than_repo",
+        `merge_requirement reviews:${own.reviews} is looser than ${repo}, whose policy needs ${policy.required_reviews} reviews; set reviews:${policy.required_reviews} or more, or have the owner change the repo's policy`,
+      );
+    }
+  }
+  return undefined;
 }
 
 // ---- The display ----------------------------------------------------------------
@@ -186,6 +225,7 @@ export function enableDisplay(store: Store, row: PlaybookRow, dryRun: DryRunReco
     valueLine("priority", row.priority, row.priority_set_by),
     valueLine("dedupe_key", dedupeText(row.dedupe_key_spec), row.dedupe_key_set_by),
     valueLine("token_limit", row.token_limit_per_day, row.token_limit_set_by),
+    valueLine("merge_requirement", row.merge_requirement, row.merge_requirement_set_by),
     valueLine("effort", row.effort, row.effort_set_by),
     valueLine("api_key_fallback", row.api_key_fallback_json, row.api_key_fallback_set_by),
     `dry run: ${dryRun.summary}`,
@@ -218,6 +258,8 @@ function beforeHold(a: { id: number; idempotency_key: string }, ctx: Contributed
         refuse: `${ENABLE_TOOL_NAME}: a dry run of version ${row.version} is required before playbook ${row.id} can be enabled; call ${DRY_RUN_TOOL_NAME} first (nothing was held for the owner)`,
       };
     }
+    const looser = looserThanRepo(ctx.store, row);
+    if (looser !== undefined) return { refuse: `${ENABLE_TOOL_NAME}: ${playbookErrorOf(looser).message} (nothing was held for the owner)` };
     return { display: enableDisplay(ctx.store, row, dryRun), subjectVersion: row.version };
   } catch (err) {
     if (err instanceof PlaybookError) return { refuse: `${ENABLE_TOOL_NAME}: ${err.message}` };
@@ -316,7 +358,8 @@ export interface EnableApprovedParams {
  * in order: `draftOf` (`not_found`, `crew_cannot_draft`, `not_owner`,
  * `turned_off_by_owner`, `not_draft`); the approval's `subject_version` is the current version and
  * no `playbook_updated` came after its request (`version_changed`); the
- * current version has a `done` dry run (`no_dry_run`). Then `enablePlaybook`
+ * current version has a `done` dry run (`no_dry_run`); its `merge_requirement` is not
+ * looser than a repo it polls (`playbook_looser_than_repo`). Then `enablePlaybook`
  * (which re-checks the version and `draft` in its own transaction; nested in
  * a caller's, it joins it). Throws `EnableRefused` for a refusal, writing
  * nothing; any other throw propagates.
@@ -334,6 +377,8 @@ export function enableApproved(store: Store, p: EnableApprovedParams): EnableToo
     throw new EnableRefused("version_changed", `playbook ${row.id} was edited after approval ${approval.id} was requested; it stays draft`);
   }
   if (latestDryRun(store, row.id, row.version) === null) throw new EnableRefused("no_dry_run", `version ${row.version} has no done dry run; it stays draft`);
+  const looser = looserThanRepo(store, row);
+  if (looser !== undefined) throw looser;
   enablePlaybook(store, { id: row.id, version: row.version, sessionId: p.sessionId, approvalId: approval.id }, p.now);
   return { playbook: row.id, version: row.version, status: "enabled", approval_id: approval.id };
 }
