@@ -34,6 +34,7 @@
 // Keychain module and the GitHub client modules: never the Agent SDK, the
 // session manager or `kernel.ts` (`kernel/test/feature-seams.test.ts`).
 import { securityCliKeychain } from "../../auth/keychain.js";
+import { parseMergeRequirement } from "../../playbooks/store.js";
 import type { Store } from "../../store/store.js";
 import type { GitHubPullMergeState, GitHubRepoPolicyReads } from "../types.js";
 import { githubAppTokens } from "./app-token.js";
@@ -414,14 +415,6 @@ export function parseRepoPolicyBody(body: unknown): { readonly ok: true; readonl
 
 // ---- Is the policy met? ----------------------------------------------------------
 
-/** A playbook's `merge_requirement` (`none`, `studio_approval` or `reviews:<N>`, N >= 1), parsed; `undefined` when it is none of those. */
-function parseRequirement(v: string | null | undefined): { readonly kind: "none" | "studio_approval" | "reviews"; readonly reviews: number } | undefined {
-  if (v === undefined || v === null || v === "none") return { kind: "none", reviews: 0 };
-  if (v === "studio_approval") return { kind: "studio_approval", reviews: 0 };
-  const m = /^reviews:([1-9][0-9]{0,8})$/.exec(v);
-  return m === null ? undefined : { kind: "reviews", reviews: Number(m[1]) };
-}
-
 /** Whether the owner approved merging `repo`#`pr` at `headSha`: an approved `MERGE_APPROVAL_ACTION` approval whose payload names exactly that. */
 function hasMergeApproval(store: Store, repo: string, pr: number, headSha: string): boolean {
   const found = store
@@ -469,8 +462,9 @@ export async function policyMet(repo: string, pr: number, headSha: string, deps:
     // A kind that is none of the three cannot be read as a policy.
     const kind = kindOf(row);
     if (kind === null) return notMet("unreadable");
-    const requirement = parseRequirement(playbookRequirement);
-    if (requirement === undefined) return notMet("unreadable");
+    // No requirement is the same as `none`; any other text goes through the one grammar (`parseMergeRequirement`, the store's).
+    const requirement = playbookRequirement === undefined || playbookRequirement === null ? { kind: "none", reviews: null } : parseMergeRequirement(playbookRequirement);
+    if (requirement === null) return notMet("unreadable");
     const repoReviews = row.required_reviews;
     if (kind === "reviews" && (repoReviews === null || !Number.isSafeInteger(repoReviews) || repoReviews < 1)) return notMet("unreadable");
     const res = await clientOf(deps).getPullMergeState(repo, pr);
@@ -482,7 +476,7 @@ export async function policyMet(repo: string, pr: number, headSha: string, deps:
     if (kind === "studio_approval" && !approved()) return notMet("awaiting_owner_approval");
     if (requirement.kind === "studio_approval" && !approved()) return notMet("awaiting_owner_approval");
     const repoNeeds = kind === "reviews" ? (repoReviews ?? 0) : 0;
-    const needed = Math.max(repoNeeds, requirement.kind === "reviews" ? requirement.reviews : 0);
+    const needed = Math.max(repoNeeds, requirement.reviews ?? 0);
     if (needed > 0) return reviewsMet(state, needed);
     return MET;
   } catch {

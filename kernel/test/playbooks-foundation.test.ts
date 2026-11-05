@@ -35,7 +35,7 @@ import {
 } from "../src/playbooks/index.js";
 import type { PlaybookPart, PlaybookVerb } from "../src/playbooks/index.js";
 import { EnableRefused, enableApproved } from "../src/playbooks/enable.js";
-import { createPlaybook, getPlaybook, setPlaybookPolicy } from "../src/playbooks/store.js";
+import { createPlaybook, getPlaybook, parseMergeRequirement, setPlaybookPolicy } from "../src/playbooks/store.js";
 import { MERGE_REQUIREMENT_KINDS, PLAYBOOK_MODES } from "../src/playbooks/types.js";
 import { Store } from "../src/store/index.js";
 import { approvalApplierOf, heldToolCheckOf } from "../src/tools/server.js";
@@ -447,5 +447,16 @@ describe("a playbook's merge_requirement may only be stricter than the repo it p
     setPlaybookPolicy(store, { id, field: "merge_requirement", value: "reviews:2" }, NOW);
     expect(getPlaybook(store, id)).toMatchObject({ version: 2, merge_requirement: "reviews:2", merge_requirement_set_by: "owner" });
     expect(preHold(id).verdict?.refuse).toContain("a dry run of version 2 is required");
+  });
+});
+
+describe("parseMergeRequirement (the one merge_requirement grammar)", () => {
+  it("reads none, studio_approval and reviews:N, and nothing else", () => {
+    expect(parseMergeRequirement("none")).toEqual({ kind: "none", reviews: null });
+    expect(parseMergeRequirement("studio_approval")).toEqual({ kind: "studio_approval", reviews: null });
+    expect(parseMergeRequirement("reviews:2")).toEqual({ kind: "reviews", reviews: 2 });
+    for (const bad of ["reviews", "reviews:0", "reviews:01", "reviews:1234567890", "reviews:-1", "Reviews:1", "", null, undefined, 3]) {
+      expect(parseMergeRequirement(bad)).toBeNull();
+    }
   });
 });
