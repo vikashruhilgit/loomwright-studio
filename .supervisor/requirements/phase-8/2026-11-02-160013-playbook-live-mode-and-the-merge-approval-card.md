@@ -88,3 +88,9 @@ app/e2e/playbooks.spec.ts
 app/e2e/fixtures/approvals.ts
 kernel/test/console-contract.test.ts
 docs/evidence/phase-8-polish/
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-05T07:06:42Z
+- **Brief:** .supervisor/jobs/done/2026-11-05-live-mode-editor-and-merge-approval-card.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/228
