@@ -105,12 +105,12 @@ export interface DraftOutputRow {
 // ---- Poll sources --------------------------------------------------------------
 
 /**
- * A `poll` trigger's spec (its `spec_json`): which source to list, on which
+ * A GitHub poll trigger's spec (its `spec_json`): which source to list, on which
  * repos, with which filters, how often. Every value is the user's, stored as
  * given (D4); the trigger validates it when it is created (item 04).
  */
-export interface PollSpec {
-  /** The GitHub sources the kernel builds; `jira.issues` and `clickup.tasks` are not built (`poll_source_not_built`). */
+export interface GithubPollSpec {
+  /** The GitHub sources. */
   readonly source: "github.pulls" | "github.issues" | "github.pr_comments";
   /** `<owner>/<repo>` names. */
   readonly repos: readonly string[];
@@ -129,13 +129,56 @@ export interface PollSpec {
 }
 
 /**
+ * A `jira.issues` poll's spec (phase 8 item 07): no `repos`; the Atlassian
+ * `site` is the owner's, per poll, and goes to the server as `cloudId`. Every
+ * other filter is optional. The kernel builds the JQL from these only.
+ */
+export interface JiraPollSpec {
+  readonly source: "jira.issues";
+  readonly filters: {
+    /** The Atlassian site, for example `acme.atlassian.net`. */
+    readonly site: string;
+    readonly project?: string;
+    readonly status?: string;
+    readonly assignee?: string;
+    /** Label names an issue must all carry. */
+    readonly labels?: readonly string[];
+  };
+  readonly interval_seconds: number;
+}
+
+/**
+ * A `clickup.tasks` poll's spec (phase 8 item 07): no `repos`; exactly one of
+ * `list` or `space` scopes it (the parse enforces that; the type cannot).
+ */
+export interface ClickupPollSpec {
+  readonly source: "clickup.tasks";
+  readonly filters: {
+    /** A ClickUp list id. */
+    readonly list?: string;
+    /** A ClickUp space id. */
+    readonly space?: string;
+    readonly status?: string;
+    readonly assignee?: string;
+    /** Tag names a task must all carry; the kernel applies them again on the parsed tasks. */
+    readonly tags?: readonly string[];
+  };
+  readonly interval_seconds: number;
+}
+
+/** A `poll` trigger's spec: one of the three source families. */
+export type PollSpec = GithubPollSpec | JiraPollSpec | ClickupPollSpec;
+
+/**
  * One item a poll found: what a per-item playbook run is about. `ref` is
  * stable for the item (`github:<owner>/<repo>#<n>`, or
- * `…#<pr>:<kind>:<comment id>` for a PR comment) and `revision` changes when it
- * does (a PR's head SHA, an issue's or a comment's `updated_at`); they are the
- * dedupe-key fields `item.id` and `item.revision`. `title`, `text` (an issue's
- * or a comment's body) and `author` are author-controlled text: untrusted data.
- * `text`, `author`, `kind` and `pr` are set by the issue and comment sources only.
+ * `…#<pr>:<kind>:<comment id>` for a PR comment; `jira:<site>/<KEY>`;
+ * `clickup:<task id>`) and `revision` changes when it does (a PR's head SHA, an
+ * issue's, a comment's or a ticket's updated time); they are the dedupe-key
+ * fields `item.id` and `item.revision`. `title`, `text` (an issue's, a comment's
+ * or a ticket's body), `author` and `status` are author-controlled text:
+ * untrusted data. `text`, `author`, `kind` and `pr` are set by the issue and
+ * comment sources only; a ticket source sets `text` and `status`.
  */
 export interface SourceItem {
   readonly ref: string;
@@ -143,7 +186,7 @@ export interface SourceItem {
   readonly title: string;
   readonly url: string;
   readonly updated_at: string;
-  /** The issue's or comment's body: untrusted data. */
+  /** The issue's, comment's or ticket's body: untrusted data. */
   readonly text?: string;
   /** The issue's or comment's author login: untrusted data. */
   readonly author?: string;
@@ -151,6 +194,8 @@ export interface SourceItem {
   readonly kind?: GitHubPrComment["kind"];
   /** The pull request a comment is on (`github.pr_comments`). */
   readonly pr?: number;
+  /** A ticket's status name (`jira.issues`, `clickup.tasks`): untrusted data. */
+  readonly status?: string;
 }
 
 // ---- The GitHub client ----------------------------------------------------------
@@ -241,11 +286,11 @@ export interface GitHubPullComment {
   readonly path: string | null;
 }
 
-/** The open-pull listing's filters: `PollSpec.filters`, applied as given. */
-export type GitHubPullFilters = PollSpec["filters"];
+/** The open-pull listing's filters: `GithubPollSpec.filters`, applied as given. */
+export type GitHubPullFilters = GithubPollSpec["filters"];
 
-/** The issue listing's filters (`state`, `labels`, `assignee`): the slice of `PollSpec.filters` a `github.issues` poll takes, passed to GitHub as given. */
-export type GitHubIssueFilters = Pick<PollSpec["filters"], "state" | "labels" | "assignee">;
+/** The issue listing's filters (`state`, `labels`, `assignee`): the slice of `GithubPollSpec.filters` a `github.issues` poll takes, passed to GitHub as given. */
+export type GitHubIssueFilters = Pick<GithubPollSpec["filters"], "state" | "labels" | "assignee">;
 
 /** One issue as a listing shows it (a pull request is never one). `title`, `body`, `author` and `labels` are author-controlled: untrusted data. */
 export interface GitHubIssueSummary {

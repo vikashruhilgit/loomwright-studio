@@ -6,7 +6,7 @@
 //
 // Imports: type-only from `../../integrations/types.js` and the loop helpers,
 // so the `studio` CLI's module graph is unchanged.
-import type { GitHubClient, GitHubPullSummary, PollSpec, SourceItem } from "../../integrations/types.js";
+import type { GitHubClient, GitHubPullSummary, GithubPollSpec, SourceItem } from "../../integrations/types.js";
 import { clip, errorMessage } from "../../loop/internal.js";
 
 /** What a source's fetch came to before the cap: every item found, or the first repo's failure. */
@@ -16,7 +16,7 @@ export type SourceFetch =
   | { readonly ok: false; readonly error: "http_error" | "unreachable" | "client_error"; readonly repo: string; readonly status?: number; readonly message?: string };
 
 /** Whether pull `p` passes `filters` in the kernel (the client's filtering is not the only one). The listing is open pulls only. */
-function matches(p: GitHubPullSummary, filters: PollSpec["filters"]): boolean {
+function matches(p: GitHubPullSummary, filters: GithubPollSpec["filters"]): boolean {
   if (filters.state !== undefined && filters.state !== "open") return false;
   if (filters.draft !== undefined && p.draft !== filters.draft) return false;
   if (filters.author !== undefined && p.author !== filters.author) return false;
@@ -40,7 +40,7 @@ function itemOf(repo: string, p: GitHubPullSummary): SourceItem {
  * client that throws, or answers data that is not a list, is a `client_error`.
  * Items are repos in spec order, pulls by ascending number, uncapped.
  */
-export async function fetchGithubPulls(github: GitHubClient, spec: PollSpec): Promise<SourceFetch> {
+export async function fetchGithubPulls(github: GitHubClient, spec: GithubPollSpec): Promise<SourceFetch> {
   const items: SourceItem[] = [];
   for (const repo of spec.repos) {
     let res: Awaited<ReturnType<GitHubClient["listOpenPulls"]>>;

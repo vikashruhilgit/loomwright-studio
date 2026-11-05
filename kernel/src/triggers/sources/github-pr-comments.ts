@@ -22,7 +22,7 @@
 //
 // Imports: type-only from `../../integrations/types.js`, `./github-pulls.js` and
 // the loop helpers, so the `studio` CLI's module graph is unchanged.
-import type { GitHubClient, GitHubPrComment, PollSpec, SourceItem } from "../../integrations/types.js";
+import type { GitHubClient, GitHubPrComment, GithubPollSpec, SourceItem } from "../../integrations/types.js";
 import { clip, errorMessage } from "../../loop/internal.js";
 import type { SourceFetch } from "./github-pulls.js";
 
@@ -68,7 +68,7 @@ function itemOf(repo: string, c: GitHubPrComment): SourceItem {
  * kind (conversation comments, review comments, reviews), then comment id
  * ascending, uncapped. A comment listed twice is one item.
  */
-export async function fetchGithubPrComments(github: GitHubClient, spec: PollSpec): Promise<SourceFetch> {
+export async function fetchGithubPrComments(github: GitHubClient, spec: GithubPollSpec): Promise<SourceFetch> {
   const items: SourceItem[] = [];
   for (const repo of spec.repos) {
     let res: Awaited<ReturnType<GitHubClient["listOpenPullComments"]>>;

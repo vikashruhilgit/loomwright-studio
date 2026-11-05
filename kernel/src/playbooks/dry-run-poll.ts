@@ -12,10 +12,15 @@
 // keyed `trigger:<id>:<instant>`. The caller (`./dry-run.ts`) owns the run
 // row, the session and the audit event.
 //
-// Checked before any fetch, in order: a usable `github` connector and a wired
-// client (`connector_missing`), then the owning agent's `github` grant
-// (`needs_github`). A fetch that fails is `rate_limited` or `source_error`.
-// Each is a `preview_incomplete`: no session starts, the parsed spec is still
+// Checked before any fetch, in order. A GitHub source: a usable `github`
+// connector and a wired client (`connector_missing`), then the owning agent's
+// `github` grant (`needs_github`). A ticket source (`jira.issues`,
+// `clickup.tasks`, phase 8 item 07): only its own MCP connection, through the
+// same `mcpConnectorGate` a due poll uses (`connector_missing`, the fix naming
+// the tracker); no GitHub connector, client or grant is asked for. A fetch that
+// fails is `rate_limited` or `source_error` (a ticket source's fix names the
+// tracker and the fixed code the kernel wrote, never the server's text). Each
+// is a `preview_incomplete`: no session starts, the parsed spec is still
 // returned, and the dry run still counts (the enable stays possible: a real
 // run parks at run time instead, item 05).
 //
@@ -27,16 +32,23 @@
 // The `studio` CLI loads this module through `./dry-run.ts`: besides
 // `node:` builtins it imports only `../agents/settings.js`, `../brain/context.js`
 // (the untrusted-data wrapper), `../loop/internal.js`,
-// the triggers feature's public index, type-only integrations and feature
+// the triggers feature's public index (and `../triggers/poll.js`, for the
+// tracker a source reads), the MCP connector's gate (`mcpConnectorGate`, the
+// function `triggers/poll.ts` uses) and the ticket reader's failure codes and
+// type (`../integrations/mcp/trackers.js`), type-only integrations and feature
 // modules and this feature's files; never the Agent SDK, the session manager
 // or `kernel.ts`. `./dry-run.ts` imports it, never the other way round.
 import { agentSettingsPath } from "../agents/settings.js";
+import { mcpConnectorGate } from "../integrations/mcp/connector.js";
+import { MCP_TICKET_FAILURES } from "../integrations/mcp/trackers.js";
+import type { McpTicketReader } from "../integrations/mcp/trackers.js";
 import type { GitHubClient, PollSpec } from "../integrations/types.js";
 import { wrapUntrusted } from "../brain/context.js";
 import type { DraftPayloadKind } from "../sessions/draft-mode.js";
 import type { WouldDoEntry } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { fetchPollItems, githubConnectorState, parsePollSpec } from "../triggers/index.js";
+import { trackerOf } from "../triggers/poll.js";
 import type { TriggerView } from "../triggers/index.js";
 import { needsGithub } from "./items.js";
 import type { RunItem } from "./items.js";
@@ -124,6 +136,8 @@ export interface PollPreviewDeps {
   readonly github: GitHubClient | undefined;
   readonly now: Date;
   readonly agent: string;
+  /** The reader a ticket source (`jira.issues`, `clickup.tasks`) calls its server through. Default: the kernel's real one (its Keychain is read only when a fetch gets that far). */
+  readonly tickets?: McpTicketReader;
 }
 
 function incomplete(spec: PollSpec, reason: PreviewIncompleteReason, fix: string): PollPlan {
@@ -136,26 +150,11 @@ function hostTimeZone(): string {
 }
 
 /**
- * The poll preview of playbook `row`, whose linked trigger is the `poll`
- * `trigger`. `scheduledAt` for the key is the trigger's `next_fire_at` when
- * set, else the dry run's now (a key naming `trigger.scheduled_at` or `date`
- * depends on it; the check at fire time is what really skips). Throws
- * `PlaybookError` `invalid_input` for a stored spec that cannot be read; never
- * for a source that fails (that is `preview_incomplete`).
+ * The checks a GitHub source needs before any fetch, in order: a usable
+ * `github` connector and a wired client (`connector_missing`), then the owning
+ * agent's `github` grant (`needs_github`). `undefined` when all hold.
  */
-export async function previewPoll(
-  deps: PollPreviewDeps,
-  row: Pick<PlaybookRow, "id" | "version" | "dedupe_key_spec">,
-  trigger: Pick<TriggerView, "id" | "spec" | "next_fire_at">,
-): Promise<PollPlan> {
-  const { store, github, now, agent } = deps;
-  let spec: PollSpec;
-  try {
-    spec = parsePollSpec(JSON.stringify(trigger.spec));
-  } catch (err) {
-    throw new PlaybookError("invalid_input", `the poll trigger ${trigger.id}'s stored spec cannot be read: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
+function githubPreflight(store: Store, github: GitHubClient | undefined, agent: string, spec: PollSpec): PollPlan | undefined {
   const connector = githubConnectorState(store);
   if (!connector.usable || github === undefined) {
     const status = connector.status ?? "absent";
@@ -176,11 +175,49 @@ export async function previewPoll(
     // The connector read above found it usable, so this is a connector that changed meanwhile: the same fix.
     return incomplete(spec, "connector_missing", `Connect GitHub in Integrations (the github connector is ${park.connector_status ?? "absent"}).`);
   }
+  return undefined;
+}
 
-  const fetched = await fetchPollItems(github, spec);
+/**
+ * The poll preview of playbook `row`, whose linked trigger is the `poll`
+ * `trigger`. `scheduledAt` for the key is the trigger's `next_fire_at` when
+ * set, else the dry run's now (a key naming `trigger.scheduled_at` or `date`
+ * depends on it; the check at fire time is what really skips). Throws
+ * `PlaybookError` `invalid_input` for a stored spec that cannot be read; never
+ * for a source that fails (that is `preview_incomplete`).
+ */
+export async function previewPoll(
+  deps: PollPreviewDeps,
+  row: Pick<PlaybookRow, "id" | "version" | "dedupe_key_spec">,
+  trigger: Pick<TriggerView, "id" | "spec" | "next_fire_at">,
+): Promise<PollPlan> {
+  const { store, github, now, agent, tickets } = deps;
+  let spec: PollSpec;
+  try {
+    spec = parsePollSpec(JSON.stringify(trigger.spec));
+  } catch (err) {
+    throw new PlaybookError("invalid_input", `the poll trigger ${trigger.id}'s stored spec cannot be read: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // A ticket source asks only for its own connection; a GitHub source for the connector, the client and the grant.
+  const tracker = trackerOf(spec.source);
+  if (tracker !== undefined) {
+    const gate = mcpConnectorGate(store, tracker.kind);
+    if (gate.kind !== "open") return incomplete(spec, "connector_missing", `Connect ${tracker.label} in Integrations (the ${tracker.kind} connector is ${gate.status ?? "absent"}).`);
+  } else {
+    const refused = githubPreflight(store, github, agent, spec);
+    if (refused !== undefined) return refused;
+  }
+
+  const fetched = await fetchPollItems(github, spec, tickets, store);
   if (!fetched.ok) {
     if (fetched.error === "rate_limited") {
       return incomplete(spec, "rate_limited", `GitHub rate-limited the poll of ${fetched.repo}; try the dry run again after ${fetched.resets_at}.`);
+    }
+    if (tracker !== undefined) {
+      // The message is the kernel's own fixed code, never the server's text; anything else is shown as the closed `client_error`.
+      const code = (MCP_TICKET_FAILURES as readonly unknown[]).includes(fetched.message) ? fetched.message : fetched.error;
+      return incomplete(spec, "source_error", `${tracker.label} could not be read for ${fetched.repo}: ${code}. Check the ${tracker.kind} connection in Integrations and the poll's filters, then dry-run again.`);
     }
     // The client's error message is outside text (a response body can carry a PR author's): kept out of the fix the model reads.
     const detail = fetched.status !== undefined ? ` (HTTP ${fetched.status})` : "";
@@ -334,6 +371,8 @@ function inline(text: string, max: number): string {
 function itemNoun(source: string, n: number): string {
   const plural = n === 1 ? "" : "s";
   if (source === "github.issues") return `issue${plural}`;
+  if (source === "jira.issues") return `Jira issue${plural}`;
+  if (source === "clickup.tasks") return `ClickUp task${plural}`;
   if (source === "github.pr_comments") return `PR comment${plural}`;
   return `open pull request${plural}`;
 }

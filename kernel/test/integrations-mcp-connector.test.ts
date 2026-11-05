@@ -327,12 +327,17 @@ describe("connecting (AC1, AC5)", () => {
     expect([...r.kc.items.keys()].sort()).toEqual(["loomwright-studio-mcp-clickup", "loomwright-studio-mcp-jira"]);
   });
 
-  it("refuses to connect a kind with no server address (item 06 hard-codes none), and uses the row's address once there is one", async () => {
-    expect(MCP_SERVERS).toEqual({});
+  it("ships exactly the Jira and ClickUp addresses; a kind with no address is refused, and the row's address is used once there is one (no case reaches a vendor)", async () => {
+    expect(MCP_SERVERS).toEqual({ jira: { url: "https://mcp.atlassian.com/v1/mcp" }, clickup: { url: "https://mcp.clickup.com/mcp" } });
     const f = await startFakeMcp();
     const kc = fakeKeychain();
     cleanups.push(() => f.close());
-    const connector = createMcpConnector({ keychain: kc.reader, writer: kc.writer, deleter: kc.deleter, allowLoopbackHttp: true });
+    // `serverFor` is injected so neither case resolves the shipped vendor address.
+    const addressFromRow = (kind: McpKind, store: typeof env.store): { url: string } | undefined => {
+      const url = mcpRow(store, kind)?.server_url;
+      return url === null || url === undefined ? undefined : { url };
+    };
+    const connector = createMcpConnector({ keychain: kc.reader, writer: kc.writer, deleter: kc.deleter, allowLoopbackHttp: true, serverFor: addressFromRow });
     expect(await connector.connect(env.store, "jira", env.now)).toMatchObject({ ok: false, error: "server_not_configured" });
     env.store.prepare("INSERT INTO mcp_connections (kind, server_url, status) VALUES ('jira', ?, 'disconnected')").run(f.mcpUrl);
     const opened = await connector.connect(env.store, "jira", env.now);

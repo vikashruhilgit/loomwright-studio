@@ -1,0 +1,32 @@
+{
+  "_note": "AUTHORED, not recorded from the live server. ClickUp's official MCP server's real tool names and response shapes are NEEDS VERIFICATION (docs/architecture/mcp-connectors.md); a web search found only third-party servers' names. This file pins the name the kernel's definition (kernel/src/integrations/mcp/trackers.ts) uses and the argument names the ClickUp source sends (list_ids or space_ids, statuses, assignees, tags). The owner's live ClickUp run (phase 8 item 13) confirms or corrects both. The kernel refuses a name the connection's own tool list lacks (tool_unavailable), so a wrong guess is a named failure, never a call to an unknown tool.",
+  "server": "https://mcp.clickup.com/mcp",
+  "tools": [
+    {
+      "name": "get_workspace_tasks",
+      "description": "List tasks in the workspace, filtered by list, space, status, assignee or tag.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "list_ids": { "type": "array", "items": { "type": "string" } },
+          "space_ids": { "type": "array", "items": { "type": "string" } },
+          "statuses": { "type": "array", "items": { "type": "string" } },
+          "assignees": { "type": "array", "items": { "type": "string" } },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "annotations": { "readOnlyHint": true }
+    },
+    {
+      "name": "get_task",
+      "description": "Read one task.",
+      "inputSchema": { "type": "object", "properties": { "task_id": { "type": "string" } }, "required": ["task_id"] },
+      "annotations": { "readOnlyHint": true }
+    },
+    {
+      "name": "create_task",
+      "description": "Create a task.",
+      "inputSchema": { "type": "object", "properties": { "list_id": { "type": "string" }, "name": { "type": "string" } }, "required": ["list_id", "name"] }
+    }
+  ]
+}

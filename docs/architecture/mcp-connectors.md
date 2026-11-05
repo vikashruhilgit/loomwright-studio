@@ -2,13 +2,14 @@
 
 Part of [Phase 8 features](../ARCHITECTURE.md#phase-8-features). Phase 8 item 06 built the generic MCP connector mechanism: an OAuth 2.1 connect to a hosted MCP server, its tokens only in the Keychain, the server's tool list on the `mcp_connections` row, a renewal of the sign-in, and the proxy tools a session is offered. The decision is [D38](../DECISIONS.md). Code: `kernel/src/integrations/mcp/`. Tests: `kernel/test/integrations-mcp-oauth.test.ts` (the connect) and `kernel/test/integrations-mcp-connector.test.ts` (the connector, the tools, the routes), over the fake MCP and authorization server in `kernel/test/fixtures/mcp-fake.ts`. Nothing here was run against a real vendor server (see [what is not verified](#not-verified-and-not-exercised)).
 
-The kernel provides the mechanism and the owner sets the policy (invariant 1). **No vendor address is built in:** `MCP_SERVERS` in `connector.ts` is empty, and item 07 (the Jira and ClickUp ticket sources) fills it. Until a kind has an address (in `MCP_SERVERS`, or already on its row's `server_url`), a connect for it is refused `server_not_configured`.
+The kernel provides the mechanism and the owner sets the policy (invariant 1). **Two vendor addresses are built in, as data:** item 07 (the Jira and ClickUp ticket sources) put them in `MCP_TRACKERS` (`trackers.ts`), and `MCP_SERVERS` in `connector.ts` is filled from it (see [Ticket sources](#ticket-sources)). A kind with no address (in `MCP_SERVERS`, or already on its row's `server_url`) is refused `server_not_configured` on connect; a test can inject its own `serverFor`.
 
 ## The pieces
 
 | File | Owns |
 |---|---|
 | `connector.ts` | The `mcpPart`, the row writes, the Keychain swap, the renewal (due work), the disconnect, `mcpConnectorGate` and `listMcpConnections` |
+| `trackers.ts` | The Jira and ClickUp definitions (`MCP_TRACKERS`: address, the one listing tool, the name the owner reads) and the kernel's ticket reader (`createMcpTicketReader`), which the two poll sources call. See [Ticket sources](#ticket-sources) |
 | `oauth.ts` | Metadata discovery, dynamic registration, PKCE `S256`, the `state`, the loopback listener, the code exchange, the refresh call |
 | `client.ts` | `tools/list` and `tools/call` over Streamable HTTP with the bearer token, and the guarded `fetch` every remote call uses |
 | `routes.ts` | The three owner routes |
@@ -79,7 +80,68 @@ Due work on every loop tick (`mcpRefreshDueWork`). A `connected` row whose `toke
 
 `expired` is written once per outage, with one `connector_status` event and one notification (`kernel:mcp_connector_expired_<kind>`, "The <kind> connection needs you"), on the transition only. The owner reconnects in Integrations; a connect replaces the sign-in.
 
-**`mcpConnectorGate(store, kind)`** is what item 07's `jira.issues` and `clickup.tasks` sources call before a poll: a `connected` (or `expiring`) row is `{kind: "open", status}`; an `expired`, `disconnected` or `rejected` row, or none, is `{kind: "connector_missing", status}` (`status` is `null` for no row), the shape `triggers/poll.ts` uses for GitHub. `poll.ts` is not edited by this item: in item 06 no poll source needs an MCP connector, because the two sources are still refused `poll_source_not_built`.
+**`mcpConnectorGate(store, kind)`** is what the `jira.issues` and `clickup.tasks` sources call before a poll: a `connected` (or `expiring`) row is `{kind: "open", status}`; an `expired`, `disconnected` or `rejected` row, or none, is `{kind: "connector_missing", status}` (`status` is `null` for no row), the shape `triggers/poll.ts` uses for GitHub. `poll.ts` calls it for a ticket source (item 07, see [Ticket sources](#ticket-sources)); the dry run calls the same function.
+
+## Ticket sources
+
+Phase 8 item 07 turns a Jira or ClickUp connection into two poll sources, `jira.issues` and `clickup.tasks`. Each lists tickets and gives the same item a GitHub issue gives, so a playbook's per-item run takes them. The kernel does the fetch itself, with the owner's Keychain sign-in, as its own due work: never inside a session, and not under the per-agent tool grant (that governs sessions only). With neither tracker connected, nothing else changes (invariant 5). Code: `kernel/src/integrations/mcp/trackers.ts`, `kernel/src/triggers/sources/{jira-issues,clickup-tasks,tracker-shared}.ts`, and the dispatch in `kernel/src/triggers/poll.ts` ([poll triggers](triggers.md#poll-triggers)). Tests: `kernel/test/integrations-mcp-trackers.test.ts`, over the fake server, with the tool lists pinned in `kernel/test/fixtures/mcp-trackers/`. No test reaches a vendor address, and Jira is never called live (it is the owner's work account).
+
+**The definitions.** `MCP_TRACKERS` names, per kind, the server's address, the one tool a poll calls and the name the owner reads. `MCP_SERVERS` is exactly these two addresses:
+
+| Kind | Address | Tool a poll calls |
+|---|---|---|
+| `jira` | `https://mcp.atlassian.com/v1/mcp` (Atlassian Rovo) | `searchJiraIssuesUsingJql` |
+| `clickup` | `https://mcp.clickup.com/mcp` | `get_workspace_tasks` (NEEDS VERIFICATION) |
+
+A tool name is data, not trust. Before any call the reader checks that the row's stored tool list (the one recorded from the server's own `tools/list` at connect) has the name, and fails `tool_unavailable` with no call otherwise. So a wrong guess is a named failure, never a call to an unknown tool. A test asserts that every name in `MCP_TRACKERS` is in its kind's pinned fixture.
+
+**Where the Jira site lives.** The connection row does not record it (`mcp_connections` keeps its six columns; there is no migration). A `jira.issues` poll names its own `site` (for example `acme.atlassian.net`) in its filters, and the kernel sends it as Atlassian's `cloudId`, which Atlassian documents as accepting the site URL. A poll is one tool call: there is no round trip to list accessible sites. A `clickup.tasks` poll is scoped by its `list` or `space` filter, so it names no workspace.
+
+**The specs.** Neither takes `repos`. Both are stored as `{source, filters, interval_seconds}`; a `repos` field is `invalid_spec`, and a filter key the source does not take is `poll_filter_unknown`. There is no default filter, interval or dedupe key (invariant 1): Wright may propose them in a draft, and the owner sets them.
+
+| Source | Filters |
+|---|---|
+| `jira.issues` | `site` (required, `<name>.atlassian.net`, lower-case letters, digits and hyphens); `project`, `status`, `assignee` (strings of 1-200 characters); `labels` (a non-empty array of such strings) |
+| `clickup.tasks` | exactly one of `list` or `space` (a string of 1-200 characters); `status`, `assignee` (strings); `tags` (a non-empty array of strings) |
+
+Registering a ticket poll is refused `poll_connector_missing` (naming the kind and its status) when `mcpConnectorGate` is not `open`. A ticket spec has no reachable-repo check.
+
+**The query.** The kernel builds Jira's JQL from the closed filter set only; the owner never writes raw JQL. It is `project = "<p>"`, `status = "<s>"`, one `labels = "<l>"` per label and `assignee = "<a>"`, joined with `AND`, then `ORDER BY updated ASC`. Each value is double-quoted with `\` and `"` escaped, so a value cannot add a clause. With no optional filter it is `ORDER BY updated ASC` alone. The call asks for at most `MAX_POLL_ITEMS` results. ClickUp's arguments are the list or space id plus the given status, assignee and tags, as the fixture's tool takes them (`list_ids` or `space_ids`, `statuses`, `assignees`, `tags`). The kernel applies the tag filter again on the parsed tasks, whatever the server answered (a task must carry every tag, compared without regard to case), as `github.pulls` re-applies its filters.
+
+**The item.** `{ref, revision, title, url, updated_at, text, status}`:
+
+| Field | Jira | ClickUp |
+|---|---|---|
+| `ref` | `jira:<site>/<KEY>`, for example `jira:acme.atlassian.net/PROJ-12` | `clickup:<task id>` |
+| `revision`, `updated_at` | the issue's `updated` time | the task's updated time, as an ISO time |
+| `title` | the summary | the name |
+| `text` | the description (Atlassian's ADF object becomes its JSON text) | the description |
+| `status` | the status name | the status name |
+| `url` | `https://<site>/browse/<KEY>`, built by the kernel | the task's own `url`, or empty when it is not usable |
+
+An entry with no usable key, id or updated time is dropped, never guessed. Items come ordered by updated time and then ref, a repeated ref kept once, and capped at `MAX_POLL_ITEMS` with the rest. The dedupe key the owner sets may name `item.id` and `item.revision`, so a ticket runs once and again when it is edited. The two ref shapes are `JIRA_ITEM_REF` and `CLICKUP_ITEM_REF` in `kernel/src/playbooks/items.ts`, beside `GITHUB_ITEM_REF`; `jira:ABC-1` (no site) and a ref carrying words stay refused. A ticket item is not a GitHub item, so it never parks `needs_github`.
+
+**Untrusted data.** A ticket's `title`, `text`, `status` and `url` are server text (invariant 3). They reach a model only inside the item's one `<untrusted-data source="<ref>">` block, in a run's prompt and in a dry run's tool result. The ref prints outside the wrapper, so it must match its strict pattern.
+
+**Failures.** A failure is `source_error` (a due poll) with `error: client_error` and one fixed code as the message; the server's own text is never kept. The `repo` field carries the tracker scope (`jira:<site>`, `clickup:list/<id>` or `clickup:space/<id>`).
+
+| Code | When |
+|---|---|
+| `connector_missing` | The row is gone, or not in use, between the gate and the call |
+| `connector_expired` | No sign-in in the Keychain, or one past its expiry. No call |
+| `tool_unavailable` | The tool is not in the row's stored tool list. No call |
+| `keychain_failed` | The Keychain could not be read. No call |
+| `mcp_unauthorized`, `mcp_timeout`, `mcp_unreachable` | The call failed in transport |
+| `mcp_protocol` | The call broke the protocol, or the answer was not JSON or held no issue or task array |
+| `mcp_tool_error` | The tool ran and answered `isError` |
+
+A due ticket poll whose gate is not `open` is not a fetch at all: it records `connector_missing` with no call, and one notification per outage whose title names the tracker (`Poll trigger <id>: Jira not connected`). GitHub's texts are unchanged.
+
+**The dry run.** A playbook whose linked trigger polls a tracker is dry-run from the same fetch a due poll uses ([poll playbooks](dry-run.md#poll-playbooks)). It asks for no GitHub connector, client or grant. Before any fetch it checks the gate: an unusable row is `preview_incomplete` `connector_missing` with a fix naming the tracker (`Connect Jira in Integrations (the jira connector is expired).`) and nothing is fetched. A source failure is `source_error`, and its fix names the tracker and the fixed code (`ClickUp could not be read for clickup:list/901: tool_unavailable. …`), never GitHub's sentence. The preview writes nothing.
+
+**No secret.** No token reaches a row, an event, a notification, an answer or a log from a ticket poll. A test scans for the fake token on every outcome.
+
+**NEEDS VERIFICATION: ClickUp's tool name and response shape.** The Jira tool is from Atlassian's supported-tools page. ClickUp's official MCP server's real tool names and result shapes were not found (a search turned up only third-party servers' names), so `get_workspace_tasks` and the argument names are authored, and the fixture says so. The parse is loose and drops an off-shape entry, and `tool_unavailable` names a wrong tool. The owner's live ClickUp run (phase 8 item 14) confirms or corrects both. Atlassian also documents a v2 endpoint (`https://mcp.atlassian.com/v2/mcp`); the v1 address is what ships, as data in one place, and v2 is NEEDS VERIFICATION.
 
 ## The proxy tools
 
@@ -129,5 +191,7 @@ No token, code, verifier, client secret or `state` reaches a row, an event, a no
 
 - **The model API's exact tool-name limit** is NEEDS VERIFICATION. The 64-character cap on `mcp__kernel__<proxy>` is conservative and was not probed.
 - **Vendor behaviour.** Nothing ran against Atlassian's or ClickUp's real server. Open points: whether each accepts a dynamically registered loopback redirect with an arbitrary port; whether each sets `readOnlyHint` (a tool without it is `kernel_mcp_w_…`, so it is held, which is the safe side); how long their tokens are against the 3800-character Keychain limit; and a December 2025 user report that ClickUp's OAuth metadata mismatched (unconfirmed whether fixed). A mismatch is a named refusal (`discovery_failed`), never a crash.
+- **ClickUp's ticket-source tool** is NEEDS VERIFICATION. `get_workspace_tasks`, its argument names and its result shape are authored, not taken from ClickUp's server ([ticket sources](#ticket-sources)). A wrong name is `tool_unavailable` and an off-shape entry is dropped.
+- **Atlassian's v2 endpoint.** Atlassian also documents `https://mcp.atlassian.com/v2/mcp`; the v1 address ships. Whether v2 should replace it is NEEDS VERIFICATION; Jira is not touched live, so this stays `not_exercised`.
 - **Jira is the owner's work (Tray) account**, so nothing touches it live: it is built and tested against the fake server, and its live check is recorded `not_exercised`. ClickUp is personal, so a live run may read it.
 - **The system browser.** The app opening `authorize_url` and the real browser's redirect to the loopback listener were not run; the tests play the browser with `fetch`.

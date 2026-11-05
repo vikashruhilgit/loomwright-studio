@@ -1,0 +1,37 @@
+{
+  "_note": "AUTHORED, not recorded from the live server. The tool names and argument names follow Atlassian's Rovo MCP supported-tools documentation (searchJiraIssuesUsingJql takes cloudId, jql, fields and maxResults; cloudId may be the site URL). Jira is never called live from this repository (the owner's work account), so this file pins only what the kernel's definition (kernel/src/integrations/mcp/trackers.ts) names. The v1 address is the requirement's; Atlassian also documents a v2 endpoint (NEEDS VERIFICATION in docs/architecture/mcp-connectors.md).",
+  "server": "https://mcp.atlassian.com/v1/mcp",
+  "tools": [
+    {
+      "name": "searchJiraIssuesUsingJql",
+      "description": "Search Jira issues using JQL.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cloudId": { "type": "string", "description": "The cloud ID or site URL." },
+          "jql": { "type": "string" },
+          "fields": { "type": "array", "items": { "type": "string" } },
+          "maxResults": { "type": "number" },
+          "nextPageToken": { "type": "string" }
+        },
+        "required": ["cloudId", "jql"]
+      },
+      "annotations": { "readOnlyHint": true }
+    },
+    {
+      "name": "getVisibleJiraProjects",
+      "description": "List the Jira projects the user can see.",
+      "inputSchema": { "type": "object", "properties": { "cloudId": { "type": "string" } }, "required": ["cloudId"] },
+      "annotations": { "readOnlyHint": true }
+    },
+    {
+      "name": "createJiraIssue",
+      "description": "Create a Jira issue.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "cloudId": { "type": "string" }, "projectKey": { "type": "string" }, "summary": { "type": "string" } },
+        "required": ["cloudId", "projectKey", "summary"]
+      }
+    }
+  ]
+}
