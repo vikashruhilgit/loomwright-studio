@@ -14,6 +14,11 @@
 // and dark, is written to the committed `docs/evidence/phase-5-polish/approvals/`;
 // otherwise to Playwright's per-test output dir, so CI and other lanes' e2e
 // runs never dirty tracked files. The spec asserts behaviour, never pixels.
+//
+// The merge approval card (phase 8 item 13, `kernel_merge_approval_request`): its facts, Allow once and Deny
+// only (no Always button, Shift+A sends nothing), and its three screenshots, light and dark (pending, after
+// Allow once, after Deny). Those are written to the committed `docs/evidence/phase-8-polish/approvals/` only
+// with `PHASE8_POLISH_EVIDENCE=1` (shared with the Playbooks lane's phase 8 shots), else to the per-test dir.
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +31,7 @@ import type { FixtureKernel, FixtureRoute } from "./fixture-kernel";
 import type { RouteKey } from "../src/api/contract";
 import {
   KERNEL_AGENT_CREATE,
+  MERGE_HEAD_SHA,
   alwaysHeldMessage,
   approvalEvent,
   approvalsKernel,
@@ -35,6 +41,7 @@ import {
   enableApproval,
   pagedWrightThread,
   hostileApproval,
+  mergeApproval,
   requestApproval,
   reviewApproval,
 } from "./fixtures/approvals";
@@ -42,6 +49,14 @@ import type { ApprovalsKernel, ApprovalsKernelInit } from "./fixtures/approvals"
 
 const EVIDENCE = process.env.APPROVALS_EVIDENCE === "1";
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-5-polish/approvals/", import.meta.url));
+/** Phase 8's evidence switch, shared by every phase 8 polish spec; its dir for this screen. */
+const PHASE8_EVIDENCE = process.env.PHASE8_POLISH_EVIDENCE === "1";
+const PHASE8_DIR = fileURLToPath(new URL("../../docs/evidence/phase-8-polish/approvals/", import.meta.url));
+const PHASE8_README = join(PHASE8_DIR, "README.md");
+/** The merge card's states, named for the mockup's views (`merge-card`, `merge-card-allowed`, `merge-card-denied`). */
+const MERGE_STATES = ["merge-card", "merge-card-allowed", "merge-card-denied"] as const;
+/** When this run began, for the guard that the tracked phase 8 dir is untouched without `PHASE8_POLISH_EVIDENCE`. */
+const RUN_START = Date.now();
 const THEMES = ["light", "dark"] as const;
 type Theme = (typeof THEMES)[number];
 /** Every designed state, in the README's order. */
@@ -525,4 +540,157 @@ test("the evidence README lists every state's screenshot in both themes, and the
   expect(listed).toEqual(expected);
   const onDisk = readdirSync(EVIDENCE_DIR).filter((f) => f.endsWith(".png")).sort();
   expect(onDisk).toEqual(expected);
+});
+
+// ---- the merge approval card (phase 8 item 13) -------------------------------------------------------------
+
+/** Select approval `id` by the notification route, the way a link to it does. */
+async function selectById(page: Page, id: number): Promise<void> {
+  await page.evaluate((n) => {
+    window.location.hash = `#/approvals/${n}`;
+  }, id);
+  await expect(page.getByTestId("approval-detail")).toHaveAttribute("data-approval-id", String(id));
+}
+
+test("a merge approval is a merge card: its facts as text, Allow once and Deny only, and Shift+A sends nothing", async () => {
+  const { kernel, fixture: started } = await startKernel({ approvals: [charterApproval(1), mergeApproval(7)] });
+  const page = await openWith(started);
+  await selectById(page, 7);
+
+  const card = page.getByTestId("merge-card");
+  await expect(card.getByRole("heading", { name: "Allow PR #21 to go to Loomwright's gate" })).toBeVisible();
+  await expect(card.getByTestId("merge-repo")).toHaveText("studio-sandbox/studio-sandbox");
+  await expect(card.getByTestId("merge-url")).toHaveText("https://github.com/studio-sandbox/studio-sandbox/pull/21");
+  await expect(card.getByTestId("merge-head-sha")).toHaveText(MERGE_HEAD_SHA.slice(0, 7));
+  await expect(card.getByTestId("merge-head-sha")).toHaveAttribute("title", MERGE_HEAD_SHA);
+  await expect(card.getByTestId("merge-ci")).toHaveText("green · 5 of 5 checks passed");
+  await expect(card.getByTestId("merge-ready")).toHaveText("2026-10-22T08:20:00.000Z");
+  await expect(card.getByTestId("merge-policy")).toHaveText("Approve in Studio · set by you");
+  await expect(card.getByTestId("merge-gate")).toContainText("Approving does not merge.");
+  // Text, never a link: the allowlist does not admit PR addresses, and an href is never built from the payload.
+  await expect(card.locator("a, [href]")).toHaveCount(0);
+
+  // Allow once and Deny only.
+  await expect(page.getByRole("button", { name: /^Allow once/ })).toBeEnabled();
+  await expect(page.getByRole("button", { name: /^Deny/ })).toBeEnabled();
+  await expect(page.getByRole("button", { name: /Always/ })).toHaveCount(0);
+  for (const name of await page.getByTestId("approval-detail").getByRole("button").allTextContents()) expect(name).not.toMatch(/merge/i);
+
+  // Shift+A: nothing is sent, and the screen says a merge is asked every time.
+  await page.keyboard.press("Shift+A");
+  await expect(page.getByTestId("approval-notice")).toContainText("A merge is asked every time");
+  await page.waitForTimeout(300);
+  expect(kernel.posts).toHaveLength(0);
+
+  // A non-merge approval keeps its Always button.
+  await selectById(page, 1);
+  await expect(page.getByRole("button", { name: /^Always for this playbook/ })).toBeVisible();
+
+  // Allow once: exactly one request, `{decision: "once"}`; the card stays beside the outcome.
+  await selectById(page, 7);
+  await page.keyboard.press("a");
+  await expect(page.getByTestId("approval-outcome")).toContainText("Allowed once by owner");
+  expect(postsTo(kernel, "/approve").map((p) => [p.path, p.body])).toEqual([["/approvals/7/approve", { decision: "once" }]]);
+  await expect(page.getByTestId("merge-card")).toBeVisible();
+  expect(postsTo(kernel, "/deny")).toHaveLength(0);
+});
+
+test("a merge approval in the flat payload shape is read too, and a field it did not carry reads 'not in the request'", async () => {
+  const flat = mergeApproval(7, { shape: "flat", fields: { ci: undefined, ready_at: undefined, policy: undefined } });
+  const { kernel, fixture: started } = await startKernel({ approvals: [flat] });
+  const page = await openWith(started);
+  const card = page.getByTestId("merge-card");
+  await expect(card.getByTestId("merge-repo")).toHaveText("studio-sandbox/studio-sandbox");
+  await expect(card.getByTestId("merge-head-sha")).toHaveText(MERGE_HEAD_SHA.slice(0, 7));
+  for (const id of ["merge-ci", "merge-ready", "merge-policy"]) await expect(card.getByTestId(id)).toHaveText("not in the request");
+  await page.keyboard.press("d");
+  await expect(page.getByTestId("approval-outcome")).toContainText("Denied by owner");
+  expect(postsTo(kernel, "/deny").map((p) => p.path)).toEqual(["/approvals/7/deny"]);
+  expect(postsTo(kernel, "/approve")).toHaveLength(0);
+});
+
+/** Both themes of one merge-card state, to the committed phase 8 dir with `PHASE8_POLISH_EVIDENCE=1`, else to the per-test dir. */
+async function shootMerge(page: Page, state: (typeof MERGE_STATES)[number], testInfo: TestInfo): Promise<void> {
+  // Taller than the default window, so the card, the payload and the decision buttons are all in one shot.
+  await app?.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1180, 1240));
+  await expect.poll(() => page.evaluate(() => window.innerHeight)).toBeGreaterThanOrEqual(1200);
+  const grounds: string[] = [];
+  for (const theme of THEMES) {
+    await setTheme(page, theme);
+    grounds.push(await ground(page));
+    const file = `${state}-${theme}.png`;
+    const path = PHASE8_EVIDENCE ? join(PHASE8_DIR, file) : testInfo.outputPath(file);
+    await page.screenshot({ path, animations: "disabled" });
+    expect(statSync(path).size, `${file} was written`).toBeGreaterThan(1000);
+    mergeWritten.push(file);
+  }
+  expect(grounds[0]).not.toBe(grounds[1]);
+  await page.evaluate(() => {
+    delete document.documentElement.dataset.theme;
+  });
+}
+
+const mergeWritten: string[] = [];
+
+test("phase 8: the merge card pending, after Allow once and after Deny, in light and dark", async ({}, testInfo) => {
+  test.setTimeout(120_000);
+  if (PHASE8_EVIDENCE) {
+    // The folder holds exactly this run's screenshots: a renamed or removed state leaves no stale PNG.
+    mkdirSync(PHASE8_DIR, { recursive: true });
+    for (const file of readdirSync(PHASE8_DIR)) if (file.endsWith(".png")) rmSync(join(PHASE8_DIR, file));
+  }
+  const waiting = [charterApproval(1), mergeApproval(7)];
+
+  // Pending, then Allow once.
+  {
+    const { kernel, fixture: started } = await startKernel({ approvals: [...waiting] });
+    const page = await openWith(started);
+    await selectById(page, 7);
+    await expect(page.getByTestId("merge-card")).toBeVisible();
+    await expect(page.getByTestId("approval-outcome")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Always/ })).toHaveCount(0);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await shootMerge(page, "merge-card", testInfo);
+
+    await page.keyboard.press("a");
+    await expect(page.getByTestId("approval-outcome")).toContainText("Allowed once by owner");
+    expect(postsTo(kernel, "/approve").map((p) => p.body)).toEqual([{ decision: "once" }]);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await shootMerge(page, "merge-card-allowed", testInfo);
+    await closeAll(started);
+  }
+
+  // Pending, then Deny: a fresh kernel, so the same card is the one denied.
+  {
+    const { kernel, fixture: started } = await startKernel({ approvals: [...waiting] });
+    const page = await openWith(started);
+    await selectById(page, 7);
+    await page.keyboard.press("d");
+    await expect(page.getByTestId("approval-outcome")).toContainText("Denied by owner");
+    expect(postsTo(kernel, "/deny").map((p) => p.path)).toEqual(["/approvals/7/deny"]);
+    expect(postsTo(kernel, "/approve")).toHaveLength(0);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await shootMerge(page, "merge-card-denied", testInfo);
+  }
+
+  expect([...new Set(mergeWritten)].sort()).toEqual(MERGE_STATES.flatMap((s) => THEMES.map((t) => `${s}-${t}.png`)).sort());
+});
+
+test("without PHASE8_POLISH_EVIDENCE nothing under the tracked phase 8 approvals dir changed during the run", () => {
+  test.skip(PHASE8_EVIDENCE, "an evidence run writes the tracked dir on purpose");
+  const touched = readdirSync(PHASE8_DIR).filter((name) => statSync(join(PHASE8_DIR, name)).mtimeMs > RUN_START);
+  expect(touched, "no file under docs/evidence/phase-8-polish/approvals/ is newer than this run's start").toEqual([]);
+});
+
+test("the phase 8 evidence README lists every merge-card screenshot in both themes, the folder holds nothing else, and the follow-ups are written down", () => {
+  const readme = readFileSync(PHASE8_README, "utf8");
+  const expected = MERGE_STATES.flatMap((s) => THEMES.map((t) => `${s}-${t}.png`)).sort();
+  const listed = [...new Set(readme.match(/\bmerge-card(?:-[a-z]+)?-(?:light|dark)\.png/g) ?? [])].sort();
+  expect(listed).toEqual(expected);
+  const onDisk = readdirSync(PHASE8_DIR).filter((f) => f.endsWith(".png")).sort();
+  expect(onDisk).toEqual(expected);
+  expect(readme).toContain("PHASE8_POLISH_EVIDENCE=1");
+  for (const view of MERGE_STATES) expect(readme, `the README names the mockup view ${view}`).toContain(view);
+  // The follow-ups for item 09 and the owner.
+  for (const key of ["head_sha", "ready_at", "policy", "hasMergeApproval", "ALWAYS_HELD_TOOLS", "cards.tsx"]) expect(readme, `the README names ${key}`).toContain(key);
 });

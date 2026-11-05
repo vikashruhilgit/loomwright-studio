@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // The shared playbook policy editor: the rows (an unset value reads "not set",
-// never a default), the `mode` row (draft offered, live present but disabled),
+// never a default), the `mode` row (draft and live both offered),
 // the read-only `merge_requirement` row (not set, or its value and who set it),
 // and the inline editor (Set sends the typed text, Enter submits, Escape and
 // Cancel leave only when nothing is pending, and a held editor keeps its text).
@@ -149,18 +149,27 @@ describe("modePolicyRow", () => {
     expect(modePolicyRow(playbook({ mode_set_by: null })).setBy).toBeNull();
   });
 
-  it("offers draft only: live is present but disabled, and says it is not available yet", () => {
+  it("offers draft and live, both selectable, with a hint that says what live does", () => {
     renderEditor({ row: modePolicyRow(playbook()) });
     const select = screen.getByRole("combobox", { name: "New mode" }) as HTMLSelectElement;
     const options = [...select.options].map((o) => ({ value: o.value, disabled: o.disabled, text: o.textContent }));
     expect(options).toEqual([
       { value: "draft", disabled: false, text: "draft" },
-      { value: "live", disabled: true, text: "live (not available yet)" },
+      { value: "live", disabled: false, text: "live" },
     ]);
     expect(select.value).toBe("draft");
+    expect(select.getAttribute("aria-describedby")).toBe(screen.getByText(/live sends them through the approval gate/).id);
   });
 
-  it("sets draft, the one value on offer", () => {
+  it("sets live when the owner picks it: the editor hands the value on, the caller owns the confirm", () => {
+    const { props } = renderEditor({ row: modePolicyRow(playbook()) });
+    fireEvent.change(screen.getByRole("combobox", { name: "New mode" }), { target: { value: "live" } });
+    fireEvent.click(screen.getByRole("button", { name: "Set mode" }));
+    expect(props.onConfirm).toHaveBeenCalledTimes(1);
+    expect(props.onConfirm).toHaveBeenCalledWith("live");
+  });
+
+  it("sets draft from the draft it starts at", () => {
     const { props } = renderEditor({ row: modePolicyRow(playbook()) });
     fireEvent.click(screen.getByRole("button", { name: "Set mode" }));
     expect(props.onConfirm).toHaveBeenCalledTimes(1);

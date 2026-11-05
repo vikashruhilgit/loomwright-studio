@@ -484,7 +484,7 @@ describe("AC5: a field edit is one /set, and nothing changes until the kernel an
     expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1);
   });
 
-  it("offers each of the five settable fields its own Edit, mode offers draft with live disabled, and name, intent and effort are read-only", async () => {
+  it("offers each of the five settable fields its own Edit, mode offers draft and live, and name, intent and effort are read-only", async () => {
     await mountLoaded();
     await openEdit("Review PRs");
     for (const [key, name] of [["dedupe_key", "dedupe key"], ["priority", "priority"], ["model", "model"], ["token_limit", "token limit per day"], ["mode", "mode"]] as const) {
@@ -496,8 +496,8 @@ describe("AC5: a field edit is one /set, and nothing changes until the kernel an
       expect(row.textContent).toContain("Change this with Edit in English");
     }
     fireEvent.click(within(field("mode")).getByRole("button", { name: "Edit mode" }));
-    const live = screen.getByRole("option", { name: "live (not available yet)" }) as HTMLOptionElement;
-    expect(live.disabled).toBe(true);
+    const live = screen.getByRole("option", { name: "live" }) as HTMLOptionElement;
+    expect(live.disabled).toBe(false);
     expect((screen.getByRole("option", { name: "draft" }) as HTMLOptionElement).disabled).toBe(false);
   });
 
@@ -513,6 +513,128 @@ describe("AC5: a field edit is one /set, and nothing changes until the kernel an
     expect(document.activeElement).toBe(within(field("model")).getByRole("button", { name: "Edit model" }));
     fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
     await screen.findByTestId(IDS.detail);
+  });
+});
+
+describe("AC5b: Set live asks first, and sends once", () => {
+  async function pickLive(): Promise<void> {
+    fireEvent.click(within(field("mode")).getByRole("button", { name: "Edit mode" }));
+    fireEvent.change(screen.getByLabelText("New mode"), { target: { value: "live" } });
+    fireEvent.click(screen.getByRole("button", { name: "Set mode" }));
+  }
+
+  it("opens the confirm instead of sending, then one confirm sends exactly one {mode, live}", async () => {
+    const { fake } = await mountLoaded();
+    await openEdit("Review PRs");
+    await pickLive();
+    const dialog = await screen.findByRole("dialog", { name: "Turn on live mode for “Review PRs”?" });
+    expect(dialog.textContent).toContain("Live sends outward calls through the approval gate");
+    // `mode` is connector-agnostic: the confirm names no connector and promises no merge rule.
+    expect(dialog.textContent).not.toContain("GitHub");
+    expect(dialog.textContent).not.toContain("merge");
+    expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Set live" }));
+    await waitFor(() => expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1));
+    expect(posts(fake, "POST /playbooks/:id/set")[0]).toMatchObject({ params: { id: 1 }, body: { field: "mode", value: "live" } });
+    await waitFor(() => expect(within(field("mode")).getByTestId(IDS.fieldStatus).textContent).toContain("Mode: saved as v4."));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1);
+  });
+
+  it("Enter in the held mode editor while a live Set is in flight opens no second confirm, and sends nothing more", async () => {
+    const gate = hold<ApiResult<unknown>>();
+    const { fake, kernel } = await mountLoaded();
+    kernel.posts["POST /playbooks/:id/set"] = (req) => {
+      const answer = applySet(kernel, req);
+      return gate.promise.then(() => answer);
+    };
+    await openEdit("Review PRs");
+    await pickLive();
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Set live" }));
+    await waitFor(() => expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const form = screen.getByRole("form", { name: "Set mode" });
+    act(() => {
+      fireEvent.submit(form);
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await act(async () => gate.release(ok({})));
+    await waitFor(() => expect(within(field("mode")).getByTestId(IDS.fieldStatus).textContent).toContain("Mode: saved as v4."));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1);
+  });
+
+  it("Cancel in the confirm sends nothing and leaves the mode editor open on the owner's pick, with focus back in it", async () => {
+    const { fake } = await mountLoaded();
+    await openEdit("Review PRs");
+    await pickLive();
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(allPosts(fake)).toHaveLength(0);
+    expect((screen.getByLabelText("New mode") as HTMLSelectElement).value).toBe("live");
+    expect(screen.getByText("v3 now")).toBeTruthy();
+    expect(screen.getByTestId(IDS.edit).contains(document.activeElement)).toBe(true);
+  });
+
+  it("Escape in the confirm cancels it, sends nothing and keeps the edit view", async () => {
+    const { fake } = await mountLoaded();
+    await openEdit("Review PRs");
+    await pickLive();
+    await screen.findByRole("dialog");
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByTestId(IDS.edit)).toBeTruthy();
+    expect(allPosts(fake)).toHaveLength(0);
+  });
+
+  it("setting draft sends at once, with no confirm", async () => {
+    const { fake, kernel } = await mountLoaded();
+    kernel.playbooks[0] = { ...(kernel.playbooks[0] as PlaybookListing), mode: "live", mode_set_by: "owner" };
+    await openEdit("Review PRs");
+    fireEvent.click(within(field("mode")).getByRole("button", { name: "Edit mode" }));
+    fireEvent.change(screen.getByLabelText("New mode"), { target: { value: "draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Set mode" }));
+    await waitFor(() => expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1));
+    expect(posts(fake, "POST /playbooks/:id/set")[0]).toMatchObject({ body: { field: "mode", value: "draft" } });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("another field's Set never opens the confirm, whatever its text says", async () => {
+    const { fake } = await mountLoaded();
+    await openEdit("Review PRs");
+    fireEvent.click(within(field("model")).getByRole("button", { name: "Edit model" }));
+    fireEvent.change(screen.getByLabelText("New model"), { target: { value: "live" } });
+    fireEvent.click(screen.getByRole("button", { name: "Set model" }));
+    await waitFor(() => expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("a kernel refusal after the confirm shows under the mode field in the kernel's words and code, the editor stays open, and one request was sent", async () => {
+    const { kernel, fake } = await mountLoaded();
+    const message = "live_needs_enable: mode live needs playbook 1 to be enabled at version 3; it is draft";
+    kernel.posts["POST /playbooks/:id/set"] = () => ({ ok: false, status: 409, body: { error: "live_needs_enable", message } });
+    await openEdit("Review PRs");
+    await pickLive();
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Set live" }));
+    const refusal = await within(field("mode")).findByTestId(IDS.fieldRefusal);
+    expect(refusal.textContent).toBe(`${message} (live_needs_enable)`);
+    expect(refusal.getAttribute("role")).toBe("alert");
+    expect((screen.getByLabelText("New mode") as HTMLSelectElement).value).toBe("live");
+    expect(screen.getByText("v3 now")).toBeTruthy();
+    expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1);
+  });
+
+  it("a hostile playbook name is the dialog's title as text", async () => {
+    const base = standard();
+    const first = base.playbooks?.[0] as PlaybookListing;
+    base.playbooks = [{ ...first, name: "<img src=x onerror=alert(1)>" }, ...(base.playbooks?.slice(1) ?? [])];
+    await mountLoaded(base);
+    await openEdit("<img src=x onerror=alert(1)>");
+    await pickLive();
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.querySelector("img")).toBeNull();
+    expect(dialog.textContent).toContain("<img src=x onerror=alert(1)>");
   });
 });
 

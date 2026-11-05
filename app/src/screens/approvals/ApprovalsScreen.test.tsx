@@ -2,8 +2,9 @@
 // The Approvals screen over a scriptable bridge (`../../store/fake-bridge`):
 // the bridge guard, the pending-first inbox selected by id, the detail
 // fields, A / ⇧A / D and what the kernel answered, the escaped payload, the
-// grants with a confirmed Revoke, the registered ⌘K commands, and the source
-// label and the link to what an approval is about.
+// grants with a confirmed Revoke, the registered ⌘K commands, the source
+// label and the link to what an approval is about, and the merge approval card
+// (Allow once and Deny only).
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiRequest, Approval, BrainMessage, EventFrame, Grant, PlaybookListing, SessionSummary, StudioBridge } from "../../api/contract";
@@ -12,8 +13,11 @@ import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
 import type { FakeBridge } from "../../store/fake-bridge";
-import { APPROVAL_COMMANDS, ApprovalsScreen, EMPTY_TITLE } from "./ApprovalsScreen";
+import { APPROVAL_COMMANDS, ApprovalsScreen, EMPTY_TITLE, MERGE_ALWAYS_REFUSED } from "./ApprovalsScreen";
 import { screen as approvalsScreen } from "./index";
+import { alwaysRefusalFor } from "./kernel-mirror";
+import { NOT_IN_REQUEST } from "./MergeApprovalCard";
+import { MERGE_APPROVAL_ACTION, mergeApprovalOf } from "./subject";
 
 const ESC = "\u001b";
 const RLO = "\u202e";
@@ -967,5 +971,290 @@ describe("what an approval is about (the source label and the link)", () => {
     press("a");
     await waitFor(() => expect(screen.getByTestId("approval-refused")).toBeTruthy());
     expect(screen.queryByTestId("approval-link")).toBeNull();
+  });
+});
+
+// ---- the merge approval card (phase 8 item 13) -------------------------------------------------
+
+const SHA = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
+
+/**
+ * A `kernel_merge_approval_request`, held through the rail from a playbook session (so `alwaysRefusalFor`
+ * has nothing to say and only the merge card's own guard keeps `always` from being sent). `fields` replace
+ * the default ones; a key set to `undefined` is dropped. The rail payload is `{tool, input, cwd}`; `flat`
+ * puts the fields at the top level.
+ */
+function mergeApproval(id: number, fields: Record<string, unknown> = {}, shape: "rail" | "flat" = "rail", overrides: Partial<Approval> = {}): Approval {
+  const merged: Record<string, unknown> = {
+    repo: "acme/widgets",
+    pr: 21,
+    head_sha: SHA,
+    ci: "green · 5 of 5 checks passed",
+    ready_at: "2026-10-22T08:20:00.000Z",
+    policy: "Approve in Studio",
+    ...fields,
+  };
+  const kept = Object.fromEntries(Object.entries(merged).filter(([, value]) => value !== undefined));
+  return approval(id, {
+    requesting_agent: "ada",
+    requesting_session: 2,
+    action: MERGE_APPROVAL_ACTION,
+    playbook: { id: 7, slug: "tickets-to-prs", version: 2 },
+    payload: shape === "flat" ? kept : { tool: "mcp__kernel__kernel_merge_approval_request", input: kept, cwd: "/work/widgets" },
+    ...overrides,
+  });
+}
+
+describe("mergeApprovalOf", () => {
+  const FULL = {
+    repo: "acme/widgets",
+    pr: 21,
+    headSha: SHA,
+    ci: "green · 5 of 5 checks passed",
+    readyAt: "2026-10-22T08:20:00.000Z",
+    policy: "Approve in Studio",
+  };
+
+  it("reads the fields from payload.input for the rail's {tool, input, cwd}, and from the payload itself otherwise", () => {
+    expect(mergeApprovalOf(mergeApproval(1))).toEqual(FULL);
+    expect(mergeApprovalOf(mergeApproval(1, {}, "flat"))).toEqual(FULL);
+  });
+
+  it("reads the top level first, as the kernel does, and payload.input only when the top level has none of repo, pr, head_sha", () => {
+    const top = { repo: "acme/widgets", pr: 21, head_sha: SHA };
+    const topWins = mergeApproval(1, {}, "rail", { payload: { ...top, input: {} } });
+    expect(mergeApprovalOf(topWins)).toMatchObject({ repo: "acme/widgets", pr: 21, headSha: SHA });
+    const sameBoth = mergeApproval(1, {}, "rail", { payload: { ...top, input: { ...top } } });
+    expect(mergeApprovalOf(sameBoth)).toMatchObject({ repo: "acme/widgets", pr: 21, headSha: SHA });
+    const inputOnly = mergeApproval(1, {}, "rail", { payload: { tool: "t", input: top, cwd: "/" } });
+    expect(mergeApprovalOf(inputOnly)).toMatchObject({ repo: "acme/widgets", pr: 21, headSha: SHA });
+  });
+
+  it("draws no card when the top level and payload.input name different PRs, so Allow once never authorises one the card did not show", () => {
+    const mismatch = mergeApproval(1, {}, "rail", { payload: { repo: "evil/top", pr: 1, head_sha: "abcdef0", input: { repo: "acme/widgets", pr: 21, head_sha: SHA } } });
+    expect(mergeApprovalOf(mismatch)).toBeUndefined();
+    const onePart = mergeApproval(1, {}, "rail", { payload: { repo: "acme/widgets", pr: 21, head_sha: SHA, input: { pr: 22 } } });
+    expect(mergeApprovalOf(onePart)).toBeUndefined();
+  });
+
+  it("is undefined for any other action, whatever the fields", () => {
+    expect(mergeApprovalOf(mergeApproval(1, {}, "rail", { action: "kernel_merge_approval" }))).toBeUndefined();
+    expect(mergeApprovalOf(mergeApproval(1, {}, "rail", { action: "mcp__kernel__kernel_merge_approval_request" }))).toBeUndefined();
+    expect(mergeApprovalOf(approval(1))).toBeUndefined();
+  });
+
+  it("is undefined for a repo that is not owner/name, so no URL is built", () => {
+    for (const repo of ["acme", "acme/", "/widgets", "a b/widgets", "acme/wid gets", "acme/widgets/extra", "acme/..", "acme/.", "ac_me/widgets", "https://evil.test/x", "acme/widgets\n", 5, null, undefined]) {
+      expect(mergeApprovalOf(mergeApproval(1, { repo })), String(repo)).toBeUndefined();
+    }
+    for (const repo of ["acme/widgets", "Acme-Co/widgets.v2_x-y", "a/.github"]) expect(mergeApprovalOf(mergeApproval(1, { repo })), repo).toMatchObject({ repo });
+  });
+
+  it("is undefined for a pr that is not a positive safe integer", () => {
+    for (const pr of [0, -3, 1.5, "21", null, undefined, 2 ** 53, Number.POSITIVE_INFINITY]) {
+      expect(mergeApprovalOf(mergeApproval(1, { pr })), String(pr)).toBeUndefined();
+    }
+  });
+
+  it("is undefined for a head_sha that is not 7 to 40 lowercase hex characters", () => {
+    for (const head_sha of ["1a2b3c", `${SHA}0`, SHA.toUpperCase(), "xyz1234", "1a2b3c4 ", 1234567, null, undefined]) {
+      expect(mergeApprovalOf(mergeApproval(1, { head_sha })), String(head_sha)).toBeUndefined();
+    }
+    expect(mergeApprovalOf(mergeApproval(1, { head_sha: "1a2b3c4" }))?.headSha).toBe("1a2b3c4");
+  });
+
+  it("is undefined for a payload that is not an object", () => {
+    for (const payload of [null, [], "repo", 5, undefined]) {
+      expect(mergeApprovalOf(mergeApproval(1, {}, "rail", { payload })), String(payload)).toBeUndefined();
+    }
+  });
+
+  it("reads a missing or wrongly typed ci, ready_at or policy as undefined, never a default", () => {
+    const bare = mergeApprovalOf(mergeApproval(1, { ci: undefined, ready_at: undefined, policy: undefined }));
+    expect(bare).toEqual({ repo: "acme/widgets", pr: 21, headSha: SHA, ci: undefined, readyAt: undefined, policy: undefined });
+    const typed = mergeApprovalOf(mergeApproval(1, { ci: 5, ready_at: { at: "now" }, policy: ["x"] }));
+    expect(typed?.ci).toBeUndefined();
+    expect(typed?.readyAt).toBeUndefined();
+    expect(typed?.policy).toBeUndefined();
+  });
+});
+
+describe("the merge approval card", () => {
+  const card = (): HTMLElement => screen.getByTestId("merge-card");
+  const buttonNames = (): string[] => screen.getAllByRole("button").map((b) => b.textContent ?? "");
+
+  it("shows the repo, the PR with its URL as text, the 7-character head with the full SHA as its title, CI, READY and the policy", async () => {
+    await mount({ approvals: [mergeApproval(1)] });
+    expect(within(card()).getByRole("heading", { name: "Allow PR #21 to go to Loomwright's gate" })).toBeTruthy();
+    expect(screen.getByTestId("merge-repo").textContent).toBe("acme/widgets");
+    expect(screen.getByTestId("merge-pr").textContent).toContain("#21");
+    expect(screen.getByTestId("merge-url").textContent).toBe("https://github.com/acme/widgets/pull/21");
+    const head = screen.getByTestId("merge-head-sha");
+    expect(head.textContent).toBe("1a2b3c4");
+    expect(head.getAttribute("title")).toBe(SHA);
+    expect(screen.getByTestId("merge-ci").textContent).toBe("green · 5 of 5 checks passed");
+    expect(screen.getByTestId("merge-ready").textContent).toBe("2026-10-22T08:20:00.000Z");
+    expect(screen.getByTestId("merge-policy").textContent).toBe("Approve in Studio");
+    expect(card().textContent).not.toContain(SHA);
+  });
+
+  it("the PR URL is text, never a link: no anchor and no href anywhere in the card", async () => {
+    await mount({ approvals: [mergeApproval(1)] });
+    expect(card().querySelector("a")).toBeNull();
+    expect(card().querySelector("[href]")).toBeNull();
+    expect(screen.queryAllByRole("link").filter((link) => (link.getAttribute("href") ?? "").includes("github.com"))).toEqual([]);
+  });
+
+  it("draws the same card for the flat payload shape", async () => {
+    await mount({ approvals: [mergeApproval(1, {}, "flat")] });
+    expect(screen.getByTestId("merge-url").textContent).toBe("https://github.com/acme/widgets/pull/21");
+    expect(screen.getByTestId("merge-head-sha").textContent).toBe("1a2b3c4");
+  });
+
+  it("a missing or wrongly typed ci, ready_at or policy reads 'not in the request'", async () => {
+    await mount({ approvals: [mergeApproval(1, { ci: undefined, ready_at: 1761120000, policy: { name: "Approve in Studio" } })] });
+    for (const id of ["merge-ci", "merge-ready", "merge-policy"]) expect(screen.getByTestId(id).textContent, id).toBe(NOT_IN_REQUEST);
+    expect(NOT_IN_REQUEST).toBe("not in the request");
+    // The fields the request did carry are still read.
+    expect(screen.getByTestId("merge-repo").textContent).toBe("acme/widgets");
+  });
+
+  it("escapes a payload string: an ANSI escape and a bidi override show as text, never raw", async () => {
+    await mount({ approvals: [mergeApproval(1, { ci: `${ESC}[31mred${ESC}[0m${RLO}`, policy: `ok${RLO}` })] });
+    expect(screen.getByTestId("merge-ci").textContent).toContain("\\x1b[31mred");
+    expect(card().textContent).not.toContain(ESC);
+    expect(card().textContent).not.toContain(RLO);
+    expect(screen.getByTestId("merge-policy").textContent).toContain("\\u202e");
+  });
+
+  it("says approving does not merge, and no control's text says merge", async () => {
+    await mount({ approvals: [mergeApproval(1)] });
+    expect(screen.getByTestId("merge-gate").textContent).toContain("Approving does not merge.");
+    expect(screen.getByTestId("merge-gate").textContent).toContain("Loomwright's gate merges the PR when its own checks pass.");
+    for (const name of buttonNames()) expect(name, name).not.toMatch(/merge/i);
+  });
+
+  it("offers Allow once and Deny only: no 'Always for this playbook' button, and no always reason", async () => {
+    const merge = mergeApproval(1);
+    expect(alwaysRefusalFor(merge)).toBeUndefined();
+    await mount({ approvals: [merge] });
+    expect(screen.getByRole("button", { name: /^Allow once/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Deny/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Always/ })).toBeNull();
+    expect(within(screen.getByTestId("approval-detail")).queryByText(/Always for this playbook/)).toBeNull();
+    expect(screen.queryByTestId("always-reason")).toBeNull();
+  });
+
+  it("the ⇧A command is disabled for a merge approval, and enabled again for one that is not", async () => {
+    const { registry } = await mount({ approvals: [mergeApproval(1), approval(2)] });
+    expect(selectedId()).toBe(1);
+    expect(registry.get(APPROVAL_COMMANDS.approveAlways)?.enabled?.()).toBe(false);
+    expect(registry.get(APPROVAL_COMMANDS.approveOnce)?.enabled?.()).toBe(true);
+    expect(registry.get(APPROVAL_COMMANDS.deny)?.enabled?.()).toBe(true);
+    press("j");
+    expect(selectedId()).toBe(2);
+    expect(screen.getByRole("button", { name: /^Always for this playbook/ })).toBeTruthy();
+    expect(registry.get(APPROVAL_COMMANDS.approveAlways)?.enabled?.()).toBe(true);
+  });
+
+  it("Shift+A on a pending, rail-held merge approval sends no request and says a merge is asked every time", async () => {
+    const merge = mergeApproval(1);
+    expect(alwaysRefusalFor(merge)).toBeUndefined();
+    const { fake } = await mount({ approvals: [merge] });
+    press("A", { shiftKey: true });
+    await act(async () => undefined);
+    expect(fake.requests.filter((r) => r.req.method === "POST")).toEqual([]);
+    expect(screen.getByTestId("approval-notice").textContent).toBe(MERGE_ALWAYS_REFUSED);
+    expect(screen.getByTestId("approval-notice").getAttribute("data-tone")).toBe("attention");
+    expect(MERGE_ALWAYS_REFUSED).toContain("A merge is asked every time");
+    // Still pending, still decidable.
+    expect(screen.getByRole("button", { name: /^Allow once/ }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("running the ⇧A command directly (the palette) sends no request either", async () => {
+    const merge = mergeApproval(1);
+    expect(alwaysRefusalFor(merge)).toBeUndefined();
+    const { fake, registry } = await mount({ approvals: [merge] });
+    await act(async () => registry.get(APPROVAL_COMMANDS.approveAlways)?.run());
+    expect(fake.requests.filter((r) => r.req.method === "POST")).toEqual([]);
+    expect(screen.getByTestId("approval-notice").textContent).toBe(MERGE_ALWAYS_REFUSED);
+  });
+
+  it("Allow once sends one approve once; Deny sends one deny; the card stays beside the outcome", async () => {
+    const merge = mergeApproval(1);
+    const { fake } = await mount({ approvals: [merge] });
+    fake.route("POST /approvals/:id/approve", () =>
+      ok({ approval: { ...merge, status: "approved", decision: "once", decided_by: "owner", decided_at: "2026-10-22T09:00:00.000Z" } }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Allow once/ }));
+    await waitFor(() => expect(screen.getByTestId("approval-outcome").textContent).toContain("Allowed once by owner"));
+    const approves = posts(fake, "POST /approvals/:id/approve");
+    expect(approves).toHaveLength(1);
+    expect(JSON.stringify(approves[0]?.body)).toBe('{"decision":"once"}');
+    expect(posts(fake, "POST /approvals/:id/deny")).toHaveLength(0);
+    expect(card()).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Allow once/ })).toBeNull();
+    cleanup();
+
+    const again = mergeApproval(3);
+    const second = await mount({ approvals: [again] });
+    second.fake.route("POST /approvals/:id/deny", () =>
+      ok({ approval: { ...again, status: "denied", decision: "deny", decided_by: "owner", decided_at: "2026-10-22T09:00:00.000Z" } }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Deny/ }));
+    await waitFor(() => expect(screen.getByTestId("approval-outcome").textContent).toContain("Denied by owner"));
+    expect(posts(second.fake, "POST /approvals/:id/deny")).toHaveLength(1);
+    expect(posts(second.fake, "POST /approvals/:id/approve")).toHaveLength(0);
+    expect(card()).toBeTruthy();
+  });
+
+  it("keeps the generic header, the exact payload and the display under the card", async () => {
+    await mount({ approvals: [mergeApproval(1, {}, "rail", { display: "Allow PR #21 on acme/widgets" })] });
+    expect(screen.getByTestId("approval-action").textContent).toBe("kernel_merge_approval_request");
+    expect(screen.getByTestId("approval-payload").textContent).toContain(SHA);
+    expect(screen.getByTestId("approval-display").textContent).toBe("Allow PR #21 on acme/widgets");
+    const detail = screen.getByTestId("approval-detail");
+    expect(card().compareDocumentPosition(screen.getByTestId("approval-payload")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(detail.contains(card())).toBe(true);
+  });
+
+  it("a merge-action approval whose repo, pr or head_sha does not validate gets no card and builds no PR URL", async () => {
+    await mount({ approvals: [mergeApproval(1, { head_sha: "not-a-sha" })] });
+    expect(screen.queryByTestId("merge-card")).toBeNull();
+    expect(screen.queryByTestId("merge-url")).toBeNull();
+    expect(screen.getByTestId("screen-approvals").textContent).not.toContain("https://github.com/");
+  });
+
+  it("a merge-action approval whose fields do not validate still has no Always button, ⇧A is disabled, and Shift+A sends nothing", async () => {
+    const bad = [
+      mergeApproval(1, { head_sha: SHA.toUpperCase() }),
+      mergeApproval(2, { pr: "21" }),
+      mergeApproval(3, {}, "rail", { payload: { repo: "evil/top", pr: 1, head_sha: "abcdef0", input: { repo: "acme/widgets", pr: 21, head_sha: SHA } } }),
+    ];
+    for (const one of bad) {
+      expect(mergeApprovalOf(one)).toBeUndefined();
+      const { fake, registry } = await mount({ approvals: [one] });
+      expect(screen.queryByTestId("merge-card")).toBeNull();
+      expect(screen.getByRole("button", { name: /^Allow once/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /^Deny/ })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /Always/ })).toBeNull();
+      expect(registry.get(APPROVAL_COMMANDS.approveAlways)?.enabled?.()).toBe(false);
+      press("A", { shiftKey: true });
+      await act(async () => registry.get(APPROVAL_COMMANDS.approveAlways)?.run());
+      expect(fake.requests.filter((r) => r.req.method === "POST")).toEqual([]);
+      cleanup();
+    }
+  });
+
+  it("a non-merge approval renders and decides as before: no card, Always offered and sent", async () => {
+    const plain = approval(5);
+    const { fake } = await mount({ approvals: [plain] });
+    expect(screen.queryByTestId("merge-card")).toBeNull();
+    fake.route("POST /approvals/:id/approve", () =>
+      ok({ approval: { ...plain, status: "approved", decision: "always", decided_by: "owner", decided_at: "2026-10-22T09:00:00.000Z" } }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^Always for this playbook/ }));
+    await waitFor(() => expect(screen.getByTestId("approval-outcome").textContent).toContain("Always allowed for this playbook"));
+    expect(posts(fake, "POST /approvals/:id/approve").map((r) => r.body)).toEqual([{ decision: "always" }]);
   });
 });

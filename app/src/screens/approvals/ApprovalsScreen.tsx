@@ -13,6 +13,10 @@
 //   will do; the display and the exact payload. Every untrusted field is escaped by
 //   `printable` (the kernel's own escaping) and rendered as text in a
 //   monospace `<pre>`.
+// - A merge approval (`kernel_merge_approval_request`) is drawn as a merge card
+//   (`MergeApprovalCard`) above the payload well, and offers only Allow once
+//   and Deny: no Always button, the ⇧A command is disabled for it, and
+//   `decide()` refuses `always` for it before any request.
 // - Decisions: Allow once (A), Always for this playbook (⇧A) and Deny (D),
 //   each a registered command (so the ⌘K palette lists it). After a decision:
 //   the kernel's applied or refused line, then the message the agent gets
@@ -49,9 +53,12 @@ import type { ListDataItem } from "../../components/List/List";
 import { liveStoreFor, useResource } from "../../store/react";
 import type { ResourceError } from "../../store/store";
 import { alwaysRefusalFor, kernelWillLine, playbookText } from "./kernel-mirror";
+import { MergeApprovalCard } from "./MergeApprovalCard";
 import { payloadText, printable } from "./printable";
-import { IN_CHAT, approvalLink, approvalSourceText } from "./subject";
+import { IN_CHAT, MERGE_ALWAYS_REFUSED, approvalLink, approvalSourceText, isMergeApproval, mergeApprovalOf } from "./subject";
 import "./approvals.css";
+
+export { MERGE_ALWAYS_REFUSED };
 
 /** The command ids this screen registers (owner `approvals`). */
 export const APPROVAL_COMMANDS = {
@@ -317,6 +324,11 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
   const decide = useCallback(
     async (approval: Approval, decision: Decision): Promise<void> => {
       if (approval.status !== "pending" || inFlight.current.has(approval.id)) return;
+      // A merge is asked every time: nothing is sent, whichever way `always` got here (the ⇧A command or Shift+A).
+      if (decision === "always" && isMergeApproval(approval)) {
+        setNotice(approval.id, { tone: "attention", text: MERGE_ALWAYS_REFUSED });
+        return;
+      }
       if (decision === "always") {
         // The one refusal the app can tell before asking: nothing is sent.
         const refused = alwaysRefusalFor(approval);
@@ -430,7 +442,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
         keywords: ["approve", "always", "grant"],
         enabled: () => {
           const { selected: current, canDecide: can } = latest.current;
-          return can && current !== undefined && alwaysRefusalFor(current) === undefined;
+          return can && current !== undefined && alwaysRefusalFor(current) === undefined && !isMergeApproval(current);
         },
         run: run("always"),
       },
@@ -742,7 +754,9 @@ function ApprovalDetail({ focusLost, approval: a, sessions, playbooks, message, 
   const reasonId = useId();
   const willLine = kernelWillLine(a);
   const link = approvalLink(a, playbooks);
-  const alwaysRefused = alwaysRefusalFor(a);
+  const merge = mergeApprovalOf(a);
+  // A merge approval has no Always button, so no reason for one being off.
+  const alwaysRefused = isMergeApproval(a) ? undefined : alwaysRefusalFor(a);
   const pending = a.status === "pending";
   const sectionRef = useRef<HTMLElement>(null);
   const outcomeRef = useRef<HTMLDivElement>(null);
@@ -801,6 +815,8 @@ function ApprovalDetail({ focusLost, approval: a, sessions, playbooks, message, 
         </p>
       )}
 
+      {merge === undefined ? null : <MergeApprovalCard merge={merge} />}
+
       {a.display === undefined ? null : (
         <div className="approvals-well">
           <div className="approvals-well-head">
@@ -831,17 +847,19 @@ function ApprovalDetail({ focusLost, approval: a, sessions, playbooks, message, 
             <Button variant="primary" kbd="A" aria-keyshortcuts="A" loading={busyOn("once")} disabled={off("once")} onClick={() => onDecide("once")}>
               Allow once
             </Button>
-            <Button
-              variant="secondary"
-              kbd="⇧A"
-              aria-keyshortcuts="Shift+A"
-              loading={busyOn("always")}
-              disabled={alwaysRefused !== undefined || off("always")}
-              aria-describedby={alwaysRefused === undefined ? undefined : reasonId}
-              onClick={() => onDecide("always")}
-            >
-              Always for this playbook
-            </Button>
+            {!isMergeApproval(a) ? (
+              <Button
+                variant="secondary"
+                kbd="⇧A"
+                aria-keyshortcuts="Shift+A"
+                loading={busyOn("always")}
+                disabled={alwaysRefused !== undefined || off("always")}
+                aria-describedby={alwaysRefused === undefined ? undefined : reasonId}
+                onClick={() => onDecide("always")}
+              >
+                Always for this playbook
+              </Button>
+            ) : null}
             <Button variant="danger" kbd="D" aria-keyshortcuts="D" loading={busyOn("deny")} disabled={off("deny")} onClick={() => onDecide("deny")}>
               Deny
             </Button>

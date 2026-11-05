@@ -203,6 +203,68 @@
   padding: var(--space-1) 0 0;
 }
 
+/* The merge approval card (docs/design/mockups/phase-8.html `.mcard` and `.gate`): an attention edge while it waits, a header strip, the facts, the gate line. */
+.approvals-merge {
+  border: 1px solid var(--attention);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+.approvals-merge-head {
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-sunken);
+  border-bottom: 1px solid var(--hairline);
+}
+.approvals-merge-title {
+  margin: 0;
+  font-family: var(--type-title-2-family);
+  font-size: var(--type-title-2-size);
+  line-height: var(--type-title-2-line);
+  font-weight: var(--type-title-2-weight);
+  overflow-wrap: anywhere;
+}
+.approvals-merge-body {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: var(--space-4);
+}
+/* The row wrappers keep each label with its value for the markup; the grid aligns the columns. */
+.approvals-merge-row {
+  display: contents;
+}
+.approvals-merge-row .approvals-label {
+  margin: 0;
+}
+.approvals-merge-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.approvals-merge-pr {
+  font-weight: 600;
+}
+.approvals-merge-note,
+.approvals-merge-missing {
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.approvals-merge-gate {
+  display: block;
+  margin: 0 var(--space-4) var(--space-4);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
 /* Decisions. */
 .approvals-decide {
   display: flex;

@@ -10,10 +10,15 @@
 // pending the editor keeps its text (the shared `PolicyEditor`'s `held`). A refusal
 // shows under that field in the kernel's own words and code. The version named is
 // always the one the kernel answered with, never a predicted "vN+1".
+//
+// Mode is the one field whose Set can ask first: `live` sends outward calls through the approval gate,
+// so a Set of `live` opens the shared Dialog and only its primary action sends (one `/set`);
+// Cancel closes it and sends nothing. `draft` sends at once, as every other field does.
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import type { PlaybookChangeResponse, PlaybookListing } from "../../api/contract";
 import { Badge } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
+import { Dialog } from "../../components/Dialog/Dialog";
 import { type KernelPolicyField, type PolicyRow, PolicyEditor, modePolicyRow, policyRows } from "../../components/PlaybookPolicy/PlaybookPolicy";
 import { focusLost } from "../chat/model";
 import type { WriteOutcome } from "../chat/model";
@@ -77,6 +82,8 @@ export function PlaybookEdit({ playbook, actions, onSet, onBack }: PlaybookEditP
   const [editing, setEditing] = useState<KernelPolicyField | null>(null);
   const [note, setNote] = useState<FieldNote | null>(null);
   const [busy, setBusy] = useState<KernelPolicyField | null>(null);
+  // The row whose Set of `live` is waiting on the owner's confirm; nothing is sent while it is.
+  const [liveAsk, setLiveAsk] = useState<PolicyRow | null>(null);
   const editRefs = useRef(new Map<KernelPolicyField, HTMLButtonElement>());
   // Opening or closing an editor unmounts the focused control: say where focus goes.
   const focusAfter = useRef<KernelPolicyField | null>(null);
@@ -166,7 +173,14 @@ export function PlaybookEdit({ playbook, actions, onSet, onBack }: PlaybookEditP
                 <dt>{row.label}</dt>
                 <dd>
                   {editing === row.field ? (
-                    <PolicyEditor row={row} busy={busy === row.field} held={busy !== null} onConfirm={(value) => void confirm(row, value)} onCancel={() => cancel(row.field)} />
+                    <PolicyEditor row={row} busy={busy === row.field} held={busy !== null} onConfirm={(value) => {
+                        // A held editor still submits: no second dialog while a Set is in flight (confirm's own guard would drop its Set).
+                        if (row.field === "mode" && value === "live") {
+                          if (busy === null && !sending.current) setLiveAsk(row);
+                          return;
+                        }
+                        void confirm(row, value);
+                      }} onCancel={() => cancel(row.field)} />
                   ) : (
                     <span className="pb-value">
                       <span className={row.mono ? "pb-mono" : undefined}>{safe(row.shown)}</span>
@@ -205,6 +219,22 @@ export function PlaybookEdit({ playbook, actions, onSet, onBack }: PlaybookEditP
           );
         })}
       </dl>
+      {liveAsk === null ? null : (
+        <Dialog
+          kind="decision"
+          title={`Turn on live mode for “${safe(playbook.name)}”?`}
+          description="Live sends outward calls through the approval gate: each is held for your approval instead of recorded as a draft. This writes a new version of the playbook, a draft again until you turn it on."
+          action={{
+            label: "Set live",
+            onAction: () => {
+              const row = liveAsk;
+              setLiveAsk(null);
+              void confirm(row, "live");
+            },
+          }}
+          onCancel={() => setLiveAsk(null)}
+        />
+      )}
     </div>
   );
 }
