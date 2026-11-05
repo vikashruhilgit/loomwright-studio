@@ -51,6 +51,10 @@ Recorded 2026-11-03 in the phase 8 product-owner Touches re-trace (AskUserQuesti
 - **Fixes and `/review-pr` run the same way,** in the triage playbook's own session.
 - **The owner's 2026-11-02 choices are unchanged.**
 
+## Owner decisions (2026-11-05, binding)
+
+The bot's review of wave PR #227 (item 08) found a fail-open bug in `getPullMergeState` after item 08's drain had ended READY. The owner chose to merge #227 as is, with this item taking the fix ("Merge, fix in item 09"), because item 09 is what makes `policyMet` a merge condition. No code called `policyMet` when this was recorded. See Scope 8.
+
 ## Scope
 
 **Gate first.** Probes p14 and p15 (item 01) must have a recorded answer in `docs/OPEN_QUESTIONS.md`. On 2026-11-03 both still read "Not yet run". If either is unrecorded, or p14 answers that Loomwright has no supported single-item merge, stop at Launch Pad and say so; build nothing.
@@ -67,6 +71,8 @@ Every tool below is called by a **live playbook's own run session**, which the k
 5. **The merge itself is Loomwright's.** The kernel never calls a merge API, and `gh pr merge` stays `merge_blocked` in every session. Loomwright's seven gate conditions decide, and a park is reported as Loomwright reports it.
 6. **Wright's guidance** (`brain/templates.ts`) names these tools and the two playbook shapes they serve (tickets → `/automate`, merge when ready), so Wright can draft them from a sentence. Nothing is preinstalled (D3).
 7. **Docs:** `docs/architecture/automate.md` (runner and merge check) and `approvals.md` (the merge approval).
+8. **Fix `getPullMergeState` before `merge_check` relies on it (owner decision 2026-11-05).** In `kernel/src/integrations/github/client.ts`, each reviewer's latest review is kept by login (`latest.set(rev.login, rev)`), and `loginOf` reads every deleted account (`user: null`) as `ghost`. So a later review from one deleted account overwrites another deleted account's `CHANGES_REQUESTED`, and `changes_requested` reads false, against the function's own rule that a change request from anyone blocks. Give each deleted reviewer its own entry, so that reviews with no account never collapse into one. Do not change how `loginOf` reads an author elsewhere (tests pin `ghost`). Unverified: whether GitHub really returns `user: null` on PR reviews; the fix must hold either way.
+   **Also decide, and record in the PR body:** `getPages` stops at `maxPages`. Per item 08's dismissed LOW finding, it returns ok with truncated data past 10×100 items, so `getPullMergeState` could miss a late `CHANGES_REQUESTED` or a failing check run. Check that against the code, then either make this read fail closed or state why it can stay. This is item 09's call because `merge_check` is the first thing to depend on the answer.
 
 **Touches traced from the code (2026-11-03, `main` at `20684c8`):** the 2026-11-02 list named only this item's new files. Items 05 and 06 each stopped at Launch Pad because the existing seam files they must edit (where item 01's refusals and empty parts live, and the tests that pin them) were missing. Each shared file below is listed because an acceptance criterion changes it: `automate/index.ts` (the empty `runnerPart` is defined there); `sessions/policy.ts` (`ALWAYS_HELD_TOOLS`: the merge-approval tool is always held, never covered by an always grant); `brain/templates.ts` (Wright's tool guidance names the new tools); the pins in `phase-8-foundation.test.ts` (part empty), `tools-sdk-list.test.ts`, `brain.test.ts` and `sessions-policy.test.ts`.
 
@@ -86,6 +92,8 @@ Every tool below is called by a **live playbook's own run session**, which the k
 - [ ] Given an Approve in Studio repo, then `kernel_merge_approval_request` is held with the head SHA; once approved, `merge_check` answers `go` for that head and `wait` after a new push.
 - [ ] Given no repo policy, then `merge_check` answers `park: no_policy`.
 - [ ] Given a session of a draft playbook, or of an agent without `github: write`, then the tools are not listed or are refused.
+- [ ] Given two reviews with `user: null` on one PR, the earlier `CHANGES_REQUESTED` and the later `APPROVED`, then `getPullMergeState` answers `changes_requested: true` and `policyMet` answers `met: false`, and a test pins it.
+- [ ] Given the `getPages` truncation question in Scope 8, then the PR body records the decision and its reason, and a fail-closed choice has a test.
 
 ## Validation (must pass before merge)
 
@@ -110,6 +118,9 @@ kernel/src/automate/tickets-to-items.ts
 kernel/src/automate/merge-check.ts
 kernel/src/sessions/policy.ts
 kernel/src/brain/templates.ts
+kernel/src/integrations/github/client.ts
+kernel/test/integrations-github-client.test.ts
+kernel/test/integrations-github-repo-policy.test.ts
 kernel/test/automate-runner.test.ts
 kernel/test/automate-merge-check.test.ts
 kernel/test/fixtures/loomwright-run-files/
