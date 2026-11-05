@@ -162,7 +162,7 @@ export function modePolicyRow(playbook: PlaybookListing): PolicyRow<"mode"> {
     setBy: playbook.mode_set_by,
     mono: false,
     draft: playbook.mode,
-    hint: "draft records outward calls and sends none; live acts on GitHub through the approval gate",
+    hint: "draft records outward calls and sends none; live sends them through the approval gate",
     options: [
       { value: "draft", label: "draft" },
       { value: "live", label: "live" },

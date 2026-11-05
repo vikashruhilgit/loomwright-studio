@@ -158,7 +158,7 @@ describe("modePolicyRow", () => {
       { value: "live", disabled: false, text: "live" },
     ]);
     expect(select.value).toBe("draft");
-    expect(select.getAttribute("aria-describedby")).toBe(screen.getByText(/live acts on GitHub through the approval gate/).id);
+    expect(select.getAttribute("aria-describedby")).toBe(screen.getByText(/live sends them through the approval gate/).id);
   });
 
   it("sets live when the owner picks it: the editor hands the value on, the caller owns the confirm", () => {

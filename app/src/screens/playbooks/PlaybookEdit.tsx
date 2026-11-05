@@ -11,7 +11,7 @@
 // shows under that field in the kernel's own words and code. The version named is
 // always the one the kernel answered with, never a predicted "vN+1".
 //
-// Mode is the one field whose Set can ask first: `live` acts on GitHub through the approval gate,
+// Mode is the one field whose Set can ask first: `live` sends outward calls through the approval gate,
 // so a Set of `live` opens the shared Dialog and only its primary action sends (one `/set`);
 // Cancel closes it and sends nothing. `draft` sends at once, as every other field does.
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
@@ -223,7 +223,7 @@ export function PlaybookEdit({ playbook, actions, onSet, onBack }: PlaybookEditP
         <Dialog
           kind="decision"
           title={`Turn on live mode for “${safe(playbook.name)}”?`}
-          description="Live acts on GitHub through the approval gate: outward actions are held for your approval, and a merge is always asked. This writes a new version of the playbook, a draft again until you turn it on."
+          description="Live sends outward calls through the approval gate: each is held for your approval instead of recorded as a draft. This writes a new version of the playbook, a draft again until you turn it on."
           action={{
             label: "Set live",
             onAction: () => {

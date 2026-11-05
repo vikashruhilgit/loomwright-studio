@@ -55,8 +55,10 @@ import type { ResourceError } from "../../store/store";
 import { alwaysRefusalFor, kernelWillLine, playbookText } from "./kernel-mirror";
 import { MergeApprovalCard } from "./MergeApprovalCard";
 import { payloadText, printable } from "./printable";
-import { IN_CHAT, approvalLink, approvalSourceText, isMergeApproval, mergeApprovalOf } from "./subject";
+import { IN_CHAT, MERGE_ALWAYS_REFUSED, approvalLink, approvalSourceText, isMergeApproval, mergeApprovalOf } from "./subject";
 import "./approvals.css";
+
+export { MERGE_ALWAYS_REFUSED };
 
 /** The command ids this screen registers (owner `approvals`). */
 export const APPROVAL_COMMANDS = {
@@ -68,9 +70,6 @@ export const APPROVAL_COMMANDS = {
 } as const;
 
 export const EMPTY_TITLE = "Nothing waiting on you.";
-
-/** Why `always` is never sent for a merge approval. */
-export const MERGE_ALWAYS_REFUSED = "A merge is asked every time, so there is no standing allowance for it. Nothing was sent; allow it once or deny it.";
 
 const APPROVAL_ROUTE = /^#\/approvals\/([1-9][0-9]{0,15})$/;
 

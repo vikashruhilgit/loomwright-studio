@@ -528,7 +528,10 @@ describe("AC5b: Set live asks first, and sends once", () => {
     await openEdit("Review PRs");
     await pickLive();
     const dialog = await screen.findByRole("dialog", { name: "Turn on live mode for “Review PRs”?" });
-    expect(dialog.textContent).toContain("Live acts on GitHub through the approval gate");
+    expect(dialog.textContent).toContain("Live sends outward calls through the approval gate");
+    // `mode` is connector-agnostic: the confirm names no connector and promises no merge rule.
+    expect(dialog.textContent).not.toContain("GitHub");
+    expect(dialog.textContent).not.toContain("merge");
     expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(0);
     fireEvent.click(within(dialog).getByRole("button", { name: "Set live" }));
     await waitFor(() => expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1));

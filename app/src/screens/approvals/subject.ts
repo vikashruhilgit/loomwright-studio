@@ -89,6 +89,9 @@ export function isMergeApproval(a: Approval): boolean {
   return a.action === MERGE_APPROVAL_ACTION;
 }
 
+/** Why `always` is never sent for a merge approval, on the Approvals screen and the thread's inline card alike. */
+export const MERGE_ALWAYS_REFUSED = "A merge is asked every time, so there is no standing allowance for it. Nothing was sent; allow it once or deny it.";
+
 const KERNEL_KEYS = [MERGE_PAYLOAD_KEYS.repo, MERGE_PAYLOAD_KEYS.pr, MERGE_PAYLOAD_KEYS.headSha] as const;
 
 /** Whether `fields` carries any of the three keys the kernel authorises on. */

@@ -979,7 +979,7 @@ test("AC1: Set live opens the confirm first, Cancel sends nothing, and one confi
   await page.getByRole("button", { name: "Set mode" }).click();
   const dialog = page.getByRole("dialog", { name: `Turn on live mode for “${REVIEW.name}”?` });
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("Live acts on GitHub through the approval gate");
+  await expect(dialog).toContainText("Live sends outward calls through the approval gate");
   expect(postsTo(fx, "/playbooks/:id/set")).toHaveLength(0);
 
   // Cancel (by its button): nothing was sent, the editor is still open on the owner's pick.
