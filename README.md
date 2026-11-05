@@ -11,7 +11,7 @@ Nothing is predefined. You describe a duty in plain English, for example "review
 
 ## Status
 
-**Phase 0** (design system and high-fidelity mockups) is done; see [`docs/DESIGN.md`](docs/DESIGN.md). **Phase 1**, the kernel in [`kernel/`](kernel/), is done (2026-10-06): its exit criterion (`kill -9` mid-session, then restart and resume with no duplicated work) passed live on the owner's machine, under launchd, on the subscription token; see [`docs/evidence/`](docs/evidence/) and [`docs/ROADMAP.md`](docs/ROADMAP.md). Next is phase 2, the brain and the Loomwright adapter.
+**Phase 0** (design system and high-fidelity mockups) is done; see [`docs/DESIGN.md`](docs/DESIGN.md). **Phase 1**, the kernel in [`kernel/`](kernel/), is done (2026-10-06): its exit criterion (`kill -9` mid-session, then restart and resume with no duplicated work) passed live on the owner's machine, under launchd, on the subscription token; see [`docs/evidence/`](docs/evidence/) and [`docs/ROADMAP.md`](docs/ROADMAP.md). Phases 2–7 are also done: **2** brain and Loomwright adapter (2026-10-16), **3** self-authored playbooks and dry run (2026-10-18), **4** agent roster (2026-10-20), **5** GUI v1 (2026-10-25), **6** Integrations screen and acceptance test 1, in draft mode (2026-10-29), and **7** GUI v2 (2026-11-02). **Phase 8**, acceptance test 2 (tickets → PRs → approvals through Loomwright `/automate`), is in progress.
 
 ## Run the kernel as a launchd agent
 
