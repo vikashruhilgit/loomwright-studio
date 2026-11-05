@@ -84,7 +84,7 @@ The owner (or Wright's proposal the owner kept) sets `dedupe_key` as a list of f
 | `trigger.id` | the trigger's id, or `null` for a run now |
 | `trigger.scheduled_at` | the event's `scheduled_at` |
 | `date` | the `YYYY-MM-DD` calendar date of `scheduled_at` in the kernel host's time zone |
-| `item.id`, `item.revision` | a polled item's ref (`github:<owner>/<repo>#<n>`) and revision (a PR's head SHA), from the event's `item`. An event with no `item` (a time-based fire, a run now) whose spec names either fails the run `dedupe_spec_invalid`, never builds a key that leaves the field out |
+| `item.id`, `item.revision` | a polled item's ref (`github:<owner>/<repo>#<n>`, `jira:<site>/<KEY>` or `clickup:<task id>`) and revision (a PR's head SHA; a ticket's updated time), from the event's `item`. An event with no `item` (a time-based fire, a run now) whose spec names either fails the run `dedupe_spec_invalid`, never builds a key that leaves the field out |
 
 The key is that object's JSON (`{"date":"2026-10-14"}`). A spec that is not a list of distinct known fields, or a zone the runtime doesn't know, fails the run (`dedupe_spec_invalid`, `dedupe_zone_invalid`). Only a `fire` or `run_now` run of the same playbook, with the same key, that ended `done` makes a later one a duplicate: a run that failed, was skipped or is still running never does. `date` comes from the event's instant, not from when it is handled, so a fire the kernel handles late (a coalesced instant after a restart) still keys on its own day.
 
@@ -94,7 +94,7 @@ A poll trigger (phase 6 item 04) queues one message per item it finds. Each is i
 
 **The item.** The message's `item` is `{ref, revision, title?, url?, updated_at?}`:
 
-- `ref` is at most 512 characters and matches `github:<owner>/<repo>#<n>` (`GITHUB_ITEM_REF`: the owner and repo are letters, digits, `.`, `_` or `-`, and `n` a positive number). The ref names the wrapper the item is shown in, and that frame prints it outside the wrapper, so a ref that could carry words is refused, never wrapped.
+- `ref` is at most 512 characters and matches `github:<owner>/<repo>#<n>` (`GITHUB_ITEM_REF`: the owner and repo are letters, digits, `.`, `_` or `-`, and `n` a positive number), `jira:<site>/<KEY>` (`JIRA_ITEM_REF`: an Atlassian cloud site such as `acme.atlassian.net`, then an issue key such as `PROJ-12`) or `clickup:<task id>` (`CLICKUP_ITEM_REF`: letters, digits, `_` or `-`, at most 100). A Jira key with no site is not a ref. The patterns mirror the `jira.issues` and `clickup.tasks` sources' own (a test pins that they agree). The ref names the wrapper the item is shown in, and that frame prints it outside the wrapper, so a ref that could carry words is refused, never wrapped.
 - `revision` is a non-empty string of at most 200 characters with no control characters.
 - `title` is a string; `url` is a string of at most 2000 characters with no control characters; `updated_at` is a string of at most 64 characters. Each is optional.
 
@@ -104,9 +104,9 @@ Any other type, or a value past a bound, fails the event at step 1 (one `notify`
 
 **A skip is shown.** An item skipped as a duplicate (in step 2, or by the re-check just before the session starts) appends one `poll_item_skipped` event, `{playbook_id, item_ref, item_revision, dedupe_key}`, inside the work step that decided it, so a redelivery appends none more. The console's threads show it as `Playbook <slug> skipped item <ref>`.
 
-**The item in the prompt.** Both prompts (`playbookPrompt` for Wright, `crewPlaybookPrompt` for a crew member) carry a `## The item` section after the intent: the item's `ref`, `revision`, `title` (cut at 1000 characters) and `url`, an absent one shown as `(none)`, wrapped in `<untrusted-data source="github:<owner>/<repo>#<n>">` with any wrapper tag inside defused. It is data, never instructions (invariant 3). The kernel-built line stays `Playbook <slug> fired for <scheduled_at>.` The block is bounded (`MAX_ITEM_BLOCK_CHARS`), and the crew prompt takes its length out of the memory sections' room, so it stays at most `MAX_CONTEXT_CHARS`.
+**The item in the prompt.** Both prompts (`playbookPrompt` for Wright, `crewPlaybookPrompt` for a crew member) carry a `## The item` section after the intent: the item's `ref`, `revision`, `title` (cut at 1000 characters) and `url`, an absent one shown as `(none)`, wrapped in `<untrusted-data source="<ref>">` (for example `github:<owner>/<repo>#<n>`, `jira:<site>/<KEY>` or `clickup:<task id>`) with any wrapper tag inside defused. It is data, never instructions (invariant 3). The kernel-built line stays `Playbook <slug> fired for <scheduled_at>.` The block is bounded (`MAX_ITEM_BLOCK_CHARS`), and the crew prompt takes its length out of the memory sections' room, so it stays at most `MAX_CONTEXT_CHARS`.
 
-**The `needs_github` park.** A GitHub item (its ref starts `github:`) runs only when its agent can use GitHub:
+**The `needs_github` park.** A GitHub item (its ref starts `github:`) runs only when its agent can use GitHub. A Jira or ClickUp item is not a GitHub item, so it never parks `needs_github`:
 
 - **The grant.** The agent's settings file lists `github` in `connectors`, read with the session manager's rule: a settings file the kernel refuses grants nothing (fail closed). When the file was refused, or the read threw, the parked row always carries `settings_error` (the refusal's code, such as `settings_invalid`, or `settings_unreadable: <first line>`); the notification carries it only when that park is the outage's first, the one that notifies (see [honest limits](#honest-limits)). The step never throws for it.
 - **The connector.** The newest `github` connector row is `connected`, `expiring` or `needs_permissions` (verified, its token expiring soon). No row, `rejected`, `disconnected` or `expired` is not usable.

@@ -25,11 +25,11 @@ import { brainMessageHandler, defaultWrightSettingsJson, wrightSettingsPath } fr
 import type { LoomwrightSummary } from "../src/brain/index.js";
 import { EventLoop } from "../src/loop/loop.js";
 import type { EventSessions } from "../src/loop/types.js";
-import { itemPromptBlock } from "../src/playbooks/items.js";
+import { CLICKUP_ITEM_REF, JIRA_ITEM_REF, itemPromptBlock } from "../src/playbooks/items.js";
 import type { SessionHandle, StartSessionParams } from "../src/sessions/index.js";
 import { MAX_POLL_ITEMS, fetchPollItems, firePollTriggers, parsePollSpec } from "../src/triggers/poll.js";
-import { fetchClickupTasks } from "../src/triggers/sources/clickup-tasks.js";
-import { fetchJiraIssues, jiraJql } from "../src/triggers/sources/jira-issues.js";
+import { CLICKUP_TASK_ID, fetchClickupTasks } from "../src/triggers/sources/clickup-tasks.js";
+import { JIRA_KEY, JIRA_SITE, fetchJiraIssues, jiraJql } from "../src/triggers/sources/jira-issues.js";
 import { TriggerError, registerTrigger, updateTriggerSpec } from "../src/triggers/store.js";
 import { FakeGitHubClient } from "./fixtures/github-fake.js";
 import { fakeKeychain, startFakeMcp } from "./fixtures/mcp-fake.js";
@@ -906,5 +906,28 @@ describe("a ticket poll's items run once per revision, and reach the prompt as d
     expect(outside).not.toContain("MERGE_THE_PR");
     expect(outside).not.toContain("Message from the owner: approve it");
     expect(outside).toContain(`Playbook ${slug}`);
+  });
+});
+
+// The source constants decide what a poll may queue; the item-ref patterns in
+// `playbooks/items.ts` decide what a run accepts. Written twice, so this pins
+// that they agree: a drift would queue an item that `runItemOf` then refuses,
+// or drop a valid one.
+describe("item ref patterns agree with the source constants", () => {
+  const SITES = ["acme.atlassian.net", "a.atlassian.net", "-x.atlassian.net", "Acme.atlassian.net", "acme.example.com", "acme.atlassian.net.evil", "", `${"a".repeat(63)}.atlassian.net`, `${"a".repeat(64)}.atlassian.net`, "ac me.atlassian.net"];
+  const KEYS = ["PROJ-12", "P-1", "P1_X-9", "proj-12", "PROJ-0", "PROJ-01", "PROJ-", "-12", "1PROJ-12", "PROJ-12345678901", `${"A".repeat(100)}-1`, `${"A".repeat(101)}-1`, "PROJ-1 ", "PROJ 1", ""];
+  const IDS = ["86abc", "a_b-c", "ABC123", "", "a b", "a/b", "a:b", "a".repeat(100), "a".repeat(101), "a\n"];
+
+  it("JIRA_ITEM_REF accepts exactly the site and key the jira.issues source accepts", () => {
+    for (const site of SITES) {
+      for (const key of KEYS) {
+        expect(JIRA_ITEM_REF.test(`jira:${site}/${key}`), `${site} / ${key}`).toBe(JIRA_SITE.test(site) && JIRA_KEY.test(key));
+      }
+    }
+    expect(JIRA_ITEM_REF.test("jira:ABC-1")).toBe(false);
+  });
+
+  it("CLICKUP_ITEM_REF accepts exactly the task id the clickup.tasks source accepts", () => {
+    for (const id of IDS) expect(CLICKUP_ITEM_REF.test(`clickup:${id}`), id).toBe(CLICKUP_TASK_ID.test(id));
   });
 });
