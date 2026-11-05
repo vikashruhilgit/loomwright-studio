@@ -93,3 +93,9 @@ kernel/test/triggers-poll.test.ts
 kernel/test/playbooks-runs-items.test.ts
 kernel/test/playbooks-dry-run-poll.test.ts
 docs/architecture/mcp-connectors.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-05T07:06:01Z
+- **Brief:** .supervisor/jobs/done/2026-11-05-jira-and-clickup-ticket-sources.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/229
