@@ -317,6 +317,62 @@ export interface GitHubClient {
   requestReviewers(repo: string, pull: number, reviewers: readonly string[]): Promise<GitHubResponse<{ readonly pull: number }>>;
 }
 
+// ---- The repo-policy reads (phase 8 item 08) --------------------------------------------
+
+/** What `GET /repos/{r}` says that detection needs: the default branch and whether the repo is private. */
+export interface GitHubRepoInfo {
+  readonly default_branch: string;
+  readonly private: boolean;
+}
+
+/**
+ * A branch's protection as GitHub reports it. `required_approving_review_count`
+ * is `null` when protection has no pull-request review rule (a rule asking for
+ * 0 approvals reads 0). `required_checks` are the required status checks' names.
+ */
+export interface GitHubBranchProtection {
+  readonly required_approving_review_count: number | null;
+  readonly required_checks: readonly string[];
+}
+
+/**
+ * A head commit's CI as `getPullMergeState` derives it: `green` (every check run
+ * finished `success`, `neutral` or `skipped`, and the combined status is `success`
+ * or there are no statuses), `pending`, `failing`, or `none` (no check runs and no statuses at all).
+ */
+export type GitHubCiState = "green" | "pending" | "failing" | "none";
+
+/**
+ * What decides whether a pull request may merge, read at one moment. `head_sha`
+ * is the pull's current head. `approvals` counts distinct reviewers whose latest
+ * deciding review is `APPROVED` and was made on `head_sha` (a stale approval never
+ * counts); `changes_requested` is whether any reviewer's latest deciding review is `CHANGES_REQUESTED`.
+ */
+export interface GitHubPullMergeState {
+  readonly head_sha: string;
+  readonly approvals: number;
+  readonly changes_requested: boolean;
+  readonly ci: GitHubCiState;
+}
+
+/**
+ * The extra GitHub reads the repo merge policy makes (phase 8 item 08), all GETs.
+ * A separate interface, not more members of `GitHubClient`, so a test's own
+ * `GitHubClient` implementation keeps compiling. `createGitHubClient` and
+ * `FakeGitHubClient` implement both. Every read answers `unreachable` for a bad
+ * repo path and never throws; a 403 or 404 arrives as `http_error` with its status.
+ */
+export interface GitHubRepoPolicyReads {
+  /** `GET /repos/{r}`. */
+  getRepoInfo(repo: string): Promise<GitHubResponse<GitHubRepoInfo>>;
+  /** `GET /repos/{r}/branches/{b}/protection`: 404 when the branch is not protected, 403 where GitHub cannot enforce protection (a private repo on GitHub Free). */
+  getBranchProtection(repo: string, branch: string): Promise<GitHubResponse<GitHubBranchProtection>>;
+  /** `GET /repos/{r}/collaborators?permission=push`: the logins that can push. */
+  listPushCollaborators(repo: string): Promise<GitHubResponse<readonly string[]>>;
+  /** A pull request's head, approvals at the head, requested changes and CI, read fresh. */
+  getPullMergeState(repo: string, number: number): Promise<GitHubResponse<GitHubPullMergeState>>;
+}
+
 // ---- The GitHub App connect (D36) ------------------------------------------------------
 
 /**

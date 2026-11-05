@@ -51,6 +51,8 @@ import type { KeychainReader } from "../../auth/keychain.js";
 import type {
   ConnectorMethod,
   GitHubAppConversion,
+  GitHubBranchProtection,
+  GitHubCiState,
   GitHubClient,
   GitHubCommentResult,
   GitHubFailure,
@@ -62,9 +64,12 @@ import type {
   GitHubPullDiff,
   GitHubPullFile,
   GitHubPullFilters,
+  GitHubPullMergeState,
   GitHubPullSummary,
   GitHubRateLimit,
   GitHubRepo,
+  GitHubRepoInfo,
+  GitHubRepoPolicyReads,
   GitHubResponse,
   GitHubTokenInfo,
 } from "../types.js";
@@ -517,6 +522,89 @@ function prCommentOf(kind: GitHubPrComment["kind"], pr: number, v: unknown): Git
   };
 }
 
+/** The longest branch name the client puts in a path (GitHub's own limit is 255 bytes). */
+const MAX_BRANCH_LENGTH = 255;
+
+/**
+ * A branch name as URL path segments (`feature/x` keeps its slash), or `undefined`
+ * when it is not one the client will send: empty, too long, a control character or
+ * backslash, an empty segment, or a `.` or `..` segment.
+ */
+function branchPath(branch: string): string | undefined {
+  if (typeof branch !== "string" || branch.length === 0 || branch.length > MAX_BRANCH_LENGTH) return undefined;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f\\]/.test(branch)) return undefined;
+  const segments = branch.split("/");
+  if (segments.some((seg) => seg === "" || seg === "." || seg === "..")) return undefined;
+  return segments.map(encodeURIComponent).join("/");
+}
+
+/** A commit SHA as one path segment: hex, 7 to 64 characters (SHA-1 or SHA-256). */
+const COMMIT_SHA = /^[0-9a-fA-F]{7,64}$/;
+
+function repoInfoOf(v: unknown): GitHubRepoInfo {
+  const r = record(v);
+  return { default_branch: str(r["default_branch"]), private: r["private"] === true };
+}
+
+/**
+ * Branch protection: the approvals its pull-request review rule needs (`null` with
+ * no such rule) and its required status checks' names (`checks[].context`, else
+ * the older `contexts`), each once.
+ */
+function protectionOf(v: unknown): GitHubBranchProtection {
+  const p = record(v);
+  const reviews = p["required_pull_request_reviews"];
+  const checks = p["required_status_checks"];
+  const names: string[] = [];
+  if (checks !== undefined && checks !== null) {
+    const c = record(checks);
+    const detailed = c["checks"];
+    const found = Array.isArray(detailed) ? detailed.map((x) => str(record(x)["context"])) : list(c["contexts"] ?? []).map(str);
+    for (const name of found) if (!names.includes(name)) names.push(name);
+  }
+  return {
+    required_approving_review_count: reviews === undefined || reviews === null ? null : int(record(reviews)["required_approving_review_count"] ?? 0),
+    required_checks: names,
+  };
+}
+
+/** The deciding review states: a `COMMENTED` or `PENDING` review leaves a reviewer's earlier decision as it was. */
+const DECIDING_REVIEW_STATES: readonly string[] = ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"];
+
+/** One review, reduced to what the merge state needs; `undefined` for a review that does not decide (commented, pending). */
+function reviewOf(v: unknown): { readonly login: string; readonly state: string; readonly commit: string | null } | undefined {
+  const r = record(v);
+  const state = str(r["state"]).toUpperCase();
+  if (!DECIDING_REVIEW_STATES.includes(state)) return undefined;
+  const commit = r["commit_id"];
+  return { login: loginOf(r["user"]), state, commit: typeof commit === "string" ? commit : null };
+}
+
+/** Check-run conclusions that count as passing. */
+const PASSING_CONCLUSIONS: readonly string[] = ["success", "neutral", "skipped"];
+
+/** A check run reduced to `ok`, `pending` or `failing`. */
+function checkRunOf(v: unknown): "ok" | "pending" | "failing" {
+  const c = record(v);
+  if (c["status"] !== "completed") return "pending";
+  const conclusion = c["conclusion"];
+  return typeof conclusion === "string" && PASSING_CONCLUSIONS.includes(conclusion) ? "ok" : "failing";
+}
+
+/**
+ * The head's CI from its check runs and its combined status. `total` is the
+ * combined status's own count of statuses (0 reads as none: GitHub answers
+ * `pending` for a commit with no statuses). A failing run or status wins over a
+ * pending one; nothing at all is `none`.
+ */
+function ciOf(runs: readonly ("ok" | "pending" | "failing")[], combined: string, total: number): GitHubCiState {
+  if (runs.length === 0 && total === 0) return "none";
+  if (runs.includes("failing") || (total > 0 && (combined === "failure" || combined === "error"))) return "failing";
+  if (runs.includes("pending") || (total > 0 && combined !== "success")) return "pending";
+  return "green";
+}
+
 type GitHubMethod = "GET" | PostMethod;
 
 /** The slice of `GitHubClientDeps` one request needs; `mintInstallationToken` and `convertManifest` take exactly this. */
@@ -688,7 +776,7 @@ interface Session {
 }
 
 /** Builds the real client. Nothing runs (no Keychain read, no request) until a method is called. */
-export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient {
+export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient & GitHubRepoPolicyReads {
   const maxBodyBytes = deps.maxBodyBytes ?? GITHUB_DEFAULT_MAX_BODY_BYTES;
   const maxPages = deps.maxPages ?? GITHUB_DEFAULT_MAX_PAGES;
   let keychain: KeychainReader | undefined = deps.keychain;
@@ -776,6 +864,11 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient {
   async function getJson<T>(path: string, map: (body: unknown, headers: Headers) => T): Promise<GitHubResponse<T>> {
     const s = await begin();
     if (s === undefined) return unreachable();
+    return getJsonOn(s, path, map);
+  }
+
+  /** `getJson` over a session already begun (one token read and at most one renewal for a read of several requests). */
+  async function getJsonOn<T>(s: Session, path: string, map: (body: unknown, headers: Headers) => T): Promise<GitHubResponse<T>> {
     const answer = await get(s, path, "application/vnd.github+json", maxBodyBytes);
     if (answer.kind === "failure") return answer.failure;
     if (answer.over) return unreachable();
@@ -936,6 +1029,63 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient {
         }
       }
       return { ok: true, data: out, rateLimit };
+    },
+
+    // ---- The repo-policy reads (phase 8 item 08): `GitHubRepoPolicyReads` ----
+
+    async getRepoInfo(repo: string): Promise<GitHubResponse<GitHubRepoInfo>> {
+      const r = repoPath(repo);
+      if (r === undefined) return unreachable();
+      return getJson(`/repos/${r}`, (body) => repoInfoOf(body));
+    },
+
+    async getBranchProtection(repo: string, branch: string): Promise<GitHubResponse<GitHubBranchProtection>> {
+      const r = repoPath(repo);
+      const b = branchPath(branch);
+      if (r === undefined || b === undefined) return unreachable();
+      return getJson(`/repos/${r}/branches/${b}/protection`, (body) => protectionOf(body));
+    },
+
+    async listPushCollaborators(repo: string): Promise<GitHubResponse<readonly string[]>> {
+      const r = repoPath(repo);
+      if (r === undefined) return unreachable();
+      return getPages(`/repos/${r}/collaborators?permission=push`, (c) => str(record(c)["login"]));
+    },
+
+    async getPullMergeState(repo: string, number: number): Promise<GitHubResponse<GitHubPullMergeState>> {
+      const r = repoPath(repo);
+      if (r === undefined || !isPullNumber(number)) return unreachable();
+      // One session for the whole read: the token is read once and a renewal happens at most once.
+      const s = await begin();
+      if (s === undefined) return unreachable();
+      const pull = await getJsonOn(s, `/repos/${r}/pulls/${number}`, (body) => str(record(record(body)["head"])["sha"]));
+      if (!pull.ok) return pull;
+      const head = pull.data;
+      if (!COMMIT_SHA.test(head)) return unreachable();
+      const reviews = await getPages(`/repos/${r}/pulls/${number}/reviews`, reviewOf, list, s);
+      if (!reviews.ok) return reviews;
+      // Each reviewer's latest deciding review, in the order GitHub lists them (oldest first).
+      const latest = new Map<string, { readonly state: string; readonly commit: string | null }>();
+      for (const rev of reviews.data) if (rev !== undefined) latest.set(rev.login, rev);
+      let approvals = 0;
+      let changesRequested = false;
+      for (const rev of latest.values()) {
+        if (rev.state === "CHANGES_REQUESTED") changesRequested = true;
+        else if (rev.state === "APPROVED" && rev.commit === head) approvals += 1;
+      }
+      const status = await getJsonOn(s, `/repos/${r}/commits/${head}/status`, (body) => {
+        const b = record(body);
+        const statuses = list(b["statuses"] ?? []);
+        return { state: str(b["state"]), total: typeof b["total_count"] === "number" && Number.isSafeInteger(b["total_count"]) ? b["total_count"] : statuses.length };
+      });
+      if (!status.ok) return status;
+      const runs = await getPages(`/repos/${r}/commits/${head}/check-runs`, checkRunOf, (body) => list(record(body)["check_runs"]), s);
+      if (!runs.ok) return runs;
+      return {
+        ok: true,
+        data: { head_sha: head, approvals, changes_requested: changesRequested, ci: ciOf(runs.data, status.data.state, status.data.total) },
+        rateLimit: runs.rateLimit,
+      };
     },
 
     async replyToReviewComment(repo: string, pull: number, commentId: number, body: string): Promise<GitHubResponse<GitHubCommentResult>> {

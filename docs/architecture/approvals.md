@@ -212,6 +212,7 @@ A held call to a kernel tool with a kernel-side effect is applied by the kernel 
 | `not_draft` | the playbook is no longer a `draft` |
 | `version_changed` | the approval's `subject_version` is not the playbook's current version, or the playbook was edited after the request |
 | `no_dry_run` | the current version has no `done` dry run |
+| `playbook_looser_than_repo` | the playbook's `merge_requirement` is `reviews:N` and a repo its poll trigger names has a policy needing more than N reviews (the owner raised the repo's policy after the enable was held) |
 | `reserved` | an update names `wright`, which is not a crew member (the owner edits `wright.json`) |
 | `agent_off` | the crew member an update names is `off` |
 | `id_taken` | a crew member with the create's id exists, `active` or `off` (the owner made one since the request) |
@@ -221,7 +222,7 @@ A held call to a kernel tool with a kernel-side effect is applied by the kernel 
 | `no_applier` | no applier is registered for a tool in the set (fail closed: the action is never handed back to the agent) |
 | `apply_error` | the applier threw; its writes were rolled back (`the kernel could not apply it: <message, cut to 300 characters>`) |
 
-`not_owner`, `crew_cannot_draft`, `turned_off_by_owner`, `not_draft`, `version_changed`, `no_dry_run` and the playbook case of `not_found` are the enable's (`EnableRefused` in `kernel/src/playbooks/enable.ts`, [playbooks: enabling](playbooks.md#enabling)). `not_lead`, `reserved`, `agent_off`, `id_taken`, `files_exist`, `config_changed` and the crew-member cases of `not_found` and `invalid_input` are the charter tools' (`CHARTER_TOOL_REFUSALS` in `kernel/src/agents/charter-tools.ts`, [agents: Wright's charter tools](agents.md#wrights-charter-tools)). `invalid_input` (the shape), `no_applier` and `apply_error` are the decision's.
+`not_owner`, `crew_cannot_draft`, `turned_off_by_owner`, `not_draft`, `version_changed`, `no_dry_run`, `playbook_looser_than_repo` and the playbook case of `not_found` are the enable's (`EnableRefused` in `kernel/src/playbooks/enable.ts`, [playbooks: enabling](playbooks.md#enabling)). `not_lead`, `reserved`, `agent_off`, `id_taken`, `files_exist`, `config_changed` and the crew-member cases of `not_found` and `invalid_input` are the charter tools' (`CHARTER_TOOL_REFUSALS` in `kernel/src/agents/charter-tools.ts`, [agents: Wright's charter tools](agents.md#wrights-charter-tools)). `invalid_input` (the shape), `no_applier` and `apply_error` are the decision's.
 
 **Other actions keep the agent's retry.** A held call to any other tool (a `gh pr comment`, a `git push`, a write under `~/.claude/`) is never run by the kernel: the owner's approval is a grant the agent's own exact repeat uses once, as above. Its message now names the exact call to repeat ([delivering the decision](#delivering-the-decision)). The rail's hold reason says the same: a held call to any other tool is told to repeat itself once if approved, and a kernel-applied action is told that the kernel applies it and not to repeat the call (`kernel/src/sessions/manager.ts`, branching on `KERNEL_APPLIED_ACTIONS`). A repeat of a kernel-applied action anyway is refused or held anew, never let through.
 

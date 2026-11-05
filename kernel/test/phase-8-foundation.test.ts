@@ -27,6 +27,7 @@ import { NEVER_CATEGORIES } from "../src/sessions/policy.js";
 import { MAX_POLL_ITEMS, POLL_SOURCES, fetchPollItems, parsePollSpec } from "../src/triggers/index.js";
 import { DB_FILENAME, Store, migrations } from "../src/store/index.js";
 import { phase8Foundation } from "../src/store/migrations/020_phase_8_foundation.js";
+import { playbookMergeRequirement } from "../src/store/migrations/021_playbook_merge_requirement.js";
 import { TriggerError } from "../src/triggers/store.js";
 import { fetchGithubPulls } from "../src/triggers/sources/github-pulls.js";
 
@@ -527,7 +528,7 @@ describe("the automate feature (phase_8_foundation)", () => {
 });
 
 describe("the integrations parts mcp and repo-policy (phase_8_foundation)", () => {
-  it("sit before github-app-routes, which stays last; repo-policy is empty and mcp is filled (phase 8 item 06)", () => {
+  it("sit before github-app-routes, which stays last; mcp (item 06) and repo-policy (item 08) are filled", () => {
     expect(INTEGRATIONS_PARTS.map((p) => p.name).slice(-3)).toEqual(["mcp", "repo-policy", "github-app-routes"]);
     expect(INTEGRATIONS_PARTS.at(-1)).toBe(githubAppRoutesPart);
     for (const part of [mcpPart, repoPolicyPart]) {
@@ -537,8 +538,12 @@ describe("the integrations parts mcp and repo-policy (phase_8_foundation)", () =
       expect(part.handlers, part.name).toEqual({});
       expect(part.subcommands ?? [], part.name).toEqual([]);
     }
-    // `repo-policy` stays empty until item 08.
-    expect(repoPolicyPart.routes).toEqual([]);
+    // `repo-policy` is filled by item 08: exactly its three owner routes, no tool (so no agent can set a policy) and no due work.
+    expect(repoPolicyPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual([
+      "GET /repos/policy",
+      "POST /repos/policy/:owner/:repo/detect",
+      "POST /repos/policy/:owner/:repo",
+    ]);
     expect(repoPolicyPart.dueWork ?? []).toEqual([]);
     // `mcp` is filled: its three owner routes and the token renewal.
     expect(mcpPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual([
@@ -576,15 +581,16 @@ describe("migration 20: phase_8_foundation", () => {
   });
   const columnsOf = (s: Store, table: string): string[] => s.prepare<[string], string>("SELECT name FROM pragma_table_info(?)").pluck().all(table);
 
-  it("is version 20, named phase_8_foundation, last in the list, and the list is contiguous from 1", () => {
+  it("is version 20, named phase_8_foundation, directly below 21 (playbook_merge_requirement, last), and the list is contiguous from 1", () => {
     expect([phase8Foundation.version, phase8Foundation.name]).toEqual([20, "phase_8_foundation"]);
-    expect(migrations.at(-1)).toBe(phase8Foundation);
-    expect(migrations.map((m) => m.version)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+    expect(migrations.at(-2)).toBe(phase8Foundation);
+    expect(migrations.at(-1)).toBe(playbookMergeRequirement);
+    expect(migrations.map((m) => m.version)).toEqual(Array.from({ length: 21 }, (_, i) => i + 1));
   });
 
   it("creates repo_policies, pr_tracks and mcp_connections with exactly the requirement's columns", () => {
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([21, "playbook_merge_requirement"]);
     expect(columnsOf(store, "repo_policies")).toEqual(["id", "repo", "policy_kind", "required_reviews", "trust_unprotected", "detected_json", "set_by", "set_at"]);
     expect(columnsOf(store, "pr_tracks")).toEqual([
       "id",
@@ -614,7 +620,7 @@ describe("migration 20: phase_8_foundation", () => {
     expect(store.prepare("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name <> 'events'").pluck().get()).toBe(0);
   });
 
-  it("is safe to re-run: with its record deleted, migration 20 runs again as a no-op and every row stays", () => {
+  it("is safe to re-run: with its record deleted (and 21's, which sits above it), migration 20 runs again as a no-op and every row stays", () => {
     const first = open();
     first.prepare("INSERT INTO repo_policies (repo, policy_kind, required_reviews, set_by) VALUES ('acme/widgets', 'reviews', 2, 'owner')").run();
     first.prepare("INSERT INTO pr_tracks (repo, number, head_sha, state, owner_kind) VALUES ('acme/widgets', 7, 'abc', 'open', 'automate_live')").run();
@@ -622,11 +628,12 @@ describe("migration 20: phase_8_foundation", () => {
     first.close();
 
     const db = new Database(join(tmp, DB_FILENAME));
-    db.exec("DELETE FROM schema_migrations WHERE version = 20");
+    // Deleting 20 alone would leave 21 above a gap: 20 and 21 re-run together.
+    db.exec("DELETE FROM schema_migrations WHERE version >= 20");
     db.close();
 
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([20, "phase_8_foundation"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([21, "playbook_merge_requirement"]);
     expect(rerun.prepare("SELECT repo, policy_kind, required_reviews, trust_unprotected FROM repo_policies").all()).toEqual([{ repo: "acme/widgets", policy_kind: "reviews", required_reviews: 2, trust_unprotected: 0 }]);
     expect(rerun.prepare("SELECT repo, number, approvals, merged_by_gate FROM pr_tracks").all()).toEqual([{ repo: "acme/widgets", number: 7, approvals: 0, merged_by_gate: 0 }]);
     expect(rerun.prepare("SELECT kind, status FROM mcp_connections").all()).toEqual([{ kind: "jira", status: "connected" }]);

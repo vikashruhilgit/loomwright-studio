@@ -194,6 +194,7 @@ export function renderPlaybookMirror(row: PlaybookRow, trigger: MirrorTrigger | 
     policyLine("Model", row.model, row.model_set_by),
     policyLine("Token limit per day", row.token_limit_per_day, row.token_limit_set_by),
     policyLine("Mode", row.mode, row.mode_set_by),
+    policyLine("Merge requirement", row.merge_requirement, row.merge_requirement_set_by),
     policyLine("Effort", row.effort, row.effort_set_by),
     policyLine("API-key fallback", row.api_key_fallback_json, row.api_key_fallback_set_by),
     "",

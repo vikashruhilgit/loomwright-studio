@@ -1182,8 +1182,10 @@ describe("the four routes (AC11)", () => {
     // The GitHub App's owner routes (D36) live under /connectors/github/app/ and are pinned by the contract test, not here.
     // The `mcp` part's three owner routes (phase 8 item 06) are served by the same feature, after the drafts routes.
     const mcp = ["POST /connectors/mcp/:kind/connect", "POST /connectors/mcp/:kind/connect/cancel", "POST /connectors/mcp/:kind/disconnect"];
+    // The `repo-policy` part's three owner routes (the repo merge policy) follow the mcp routes, before the App routes.
+    const repoPolicy = ["GET /repos/policy", "POST /repos/policy/:owner/:repo/detect", "POST /repos/policy/:owner/:repo"];
     const served = merged.routes.filter((r) => r.owner === "integrations" && !r.path.startsWith("/connectors/github/app/")).map((r) => `${r.method} ${r.path}`);
-    expect(served).toEqual([...item03, ...item07, ...mcp]);
+    expect(served).toEqual([...item03, ...item07, ...mcp, ...repoPolicy]);
     expect(githubRoutesPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual(item03);
   });
 });

@@ -18,6 +18,7 @@ import { phase6Foundation } from "./017_phase_6_foundation.js";
 import { connectorPermissionsSource } from "./018_connector_permissions_source.js";
 import { connectorApp } from "./019_connector_app.js";
 import { phase8Foundation } from "./020_phase_8_foundation.js";
+import { playbookMergeRequirement } from "./021_playbook_merge_requirement.js";
 import type { Migration } from "./types.js";
 
 export type { Migration } from "./types.js";
@@ -44,4 +45,5 @@ export const migrations: readonly Migration[] = [
   connectorPermissionsSource,
   connectorApp,
   phase8Foundation,
+  playbookMergeRequirement,
 ];
