@@ -1020,9 +1020,21 @@ describe("mergeApprovalOf", () => {
     expect(mergeApprovalOf(mergeApproval(1, {}, "flat"))).toEqual(FULL);
   });
 
-  it("reads payload.input when it is there, never a top-level repo beside it", () => {
-    const both = mergeApproval(1, {}, "rail", { payload: { repo: "evil/top", pr: 1, head_sha: "abcdef0", input: { repo: "acme/widgets", pr: 21, head_sha: SHA } } });
-    expect(mergeApprovalOf(both)).toMatchObject({ repo: "acme/widgets", pr: 21, headSha: SHA });
+  it("reads the top level first, as the kernel does, and payload.input only when the top level has none of repo, pr, head_sha", () => {
+    const top = { repo: "acme/widgets", pr: 21, head_sha: SHA };
+    const topWins = mergeApproval(1, {}, "rail", { payload: { ...top, input: {} } });
+    expect(mergeApprovalOf(topWins)).toMatchObject({ repo: "acme/widgets", pr: 21, headSha: SHA });
+    const sameBoth = mergeApproval(1, {}, "rail", { payload: { ...top, input: { ...top } } });
+    expect(mergeApprovalOf(sameBoth)).toMatchObject({ repo: "acme/widgets", pr: 21, headSha: SHA });
+    const inputOnly = mergeApproval(1, {}, "rail", { payload: { tool: "t", input: top, cwd: "/" } });
+    expect(mergeApprovalOf(inputOnly)).toMatchObject({ repo: "acme/widgets", pr: 21, headSha: SHA });
+  });
+
+  it("draws no card when the top level and payload.input name different PRs, so Allow once never authorises one the card did not show", () => {
+    const mismatch = mergeApproval(1, {}, "rail", { payload: { repo: "evil/top", pr: 1, head_sha: "abcdef0", input: { repo: "acme/widgets", pr: 21, head_sha: SHA } } });
+    expect(mergeApprovalOf(mismatch)).toBeUndefined();
+    const onePart = mergeApproval(1, {}, "rail", { payload: { repo: "acme/widgets", pr: 21, head_sha: SHA, input: { pr: 22 } } });
+    expect(mergeApprovalOf(onePart)).toBeUndefined();
   });
 
   it("is undefined for any other action, whatever the fields", () => {
@@ -1211,6 +1223,27 @@ describe("the merge approval card", () => {
     expect(screen.queryByTestId("merge-card")).toBeNull();
     expect(screen.queryByTestId("merge-url")).toBeNull();
     expect(screen.getByTestId("screen-approvals").textContent).not.toContain("https://github.com/");
+  });
+
+  it("a merge-action approval whose fields do not validate still has no Always button, ⇧A is disabled, and Shift+A sends nothing", async () => {
+    const bad = [
+      mergeApproval(1, { head_sha: SHA.toUpperCase() }),
+      mergeApproval(2, { pr: "21" }),
+      mergeApproval(3, {}, "rail", { payload: { repo: "evil/top", pr: 1, head_sha: "abcdef0", input: { repo: "acme/widgets", pr: 21, head_sha: SHA } } }),
+    ];
+    for (const one of bad) {
+      expect(mergeApprovalOf(one)).toBeUndefined();
+      const { fake, registry } = await mount({ approvals: [one] });
+      expect(screen.queryByTestId("merge-card")).toBeNull();
+      expect(screen.getByRole("button", { name: /^Allow once/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /^Deny/ })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /Always/ })).toBeNull();
+      expect(registry.get(APPROVAL_COMMANDS.approveAlways)?.enabled?.()).toBe(false);
+      press("A", { shiftKey: true });
+      await act(async () => registry.get(APPROVAL_COMMANDS.approveAlways)?.run());
+      expect(fake.requests.filter((r) => r.req.method === "POST")).toEqual([]);
+      cleanup();
+    }
   });
 
   it("a non-merge approval renders and decides as before: no card, Always offered and sent", async () => {

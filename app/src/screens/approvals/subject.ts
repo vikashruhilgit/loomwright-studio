@@ -84,17 +84,46 @@ function plain(value: unknown): Readonly<Record<string, unknown>> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
+/** Whether `a` is the approval item 09 files for a merge, by its action alone. Safety gates (no Always) key on this, never on whether the fields validate. */
+export function isMergeApproval(a: Approval): boolean {
+  return a.action === MERGE_APPROVAL_ACTION;
+}
+
+const KERNEL_KEYS = [MERGE_PAYLOAD_KEYS.repo, MERGE_PAYLOAD_KEYS.pr, MERGE_PAYLOAD_KEYS.headSha] as const;
+
+/** Whether `fields` carries any of the three keys the kernel authorises on. */
+function carriesKernelKeys(fields: Readonly<Record<string, unknown>> | undefined): fields is Readonly<Record<string, unknown>> {
+  return fields !== undefined && KERNEL_KEYS.some((key) => fields[key] !== undefined);
+}
+
+/**
+ * The fields the kernel would authorise on. The kernel's reader (`hasMergeApproval`)
+ * reads only the payload's top level, so the top level wins. `payload.input` (the
+ * rail's `{tool, input, cwd}`) is read only when the top level carries none of
+ * `repo`, `pr`, `head_sha`. When both carry them and they differ, there is no
+ * answer: `undefined`, so no card is drawn for a PR the owner's Allow would not
+ * authorise.
+ */
+function kernelFields(payload: unknown): Readonly<Record<string, unknown>> | undefined {
+  const top = plain(payload);
+  const input = plain(inputOf(payload));
+  if (!carriesKernelKeys(top)) return carriesKernelKeys(input) ? input : undefined;
+  if (carriesKernelKeys(input) && KERNEL_KEYS.some((key) => input[key] !== undefined && input[key] !== top[key])) return undefined;
+  return top;
+}
+
 /**
  * The merge request an approval carries, or `undefined` when it is not one: the
  * action is not `MERGE_APPROVAL_ACTION`, or `repo` (`owner/name`), `pr` (a
  * positive safe integer) or `head_sha` does not validate, so no PR URL is ever
- * built from a value that does not. The fields are read from `payload.input`
- * when the payload is the rail's `{tool, input, cwd}`, else from the payload
- * itself, so either shape item 09 files is read.
+ * built from a value that does not. The fields are read as the kernel reads them
+ * (see `kernelFields`): the top level first, `payload.input` only as the fallback
+ * when the top level has none of the three, and a conflict between the two is
+ * no card. Only the card is keyed on this; the no-Always gate is `isMergeApproval`.
  */
 export function mergeApprovalOf(a: Approval): MergeApproval | undefined {
-  if (a.action !== MERGE_APPROVAL_ACTION) return undefined;
-  const fields = plain(inputOf(a.payload)) ?? plain(a.payload);
+  if (!isMergeApproval(a)) return undefined;
+  const fields = kernelFields(a.payload);
   if (fields === undefined) return undefined;
   const repo = fields[MERGE_PAYLOAD_KEYS.repo];
   const pr = fields[MERGE_PAYLOAD_KEYS.pr];

@@ -173,7 +173,14 @@ export function PlaybookEdit({ playbook, actions, onSet, onBack }: PlaybookEditP
                 <dt>{row.label}</dt>
                 <dd>
                   {editing === row.field ? (
-                    <PolicyEditor row={row} busy={busy === row.field} held={busy !== null} onConfirm={(value) => (row.field === "mode" && value === "live" ? setLiveAsk(row) : void confirm(row, value))} onCancel={() => cancel(row.field)} />
+                    <PolicyEditor row={row} busy={busy === row.field} held={busy !== null} onConfirm={(value) => {
+                        // A held editor still submits: no second dialog while a Set is in flight (confirm's own guard would drop its Set).
+                        if (row.field === "mode" && value === "live") {
+                          if (busy === null && !sending.current) setLiveAsk(row);
+                          return;
+                        }
+                        void confirm(row, value);
+                      }} onCancel={() => cancel(row.field)} />
                   ) : (
                     <span className="pb-value">
                       <span className={row.mono ? "pb-mono" : undefined}>{safe(row.shown)}</span>

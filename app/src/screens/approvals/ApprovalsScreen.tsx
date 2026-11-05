@@ -55,7 +55,7 @@ import type { ResourceError } from "../../store/store";
 import { alwaysRefusalFor, kernelWillLine, playbookText } from "./kernel-mirror";
 import { MergeApprovalCard } from "./MergeApprovalCard";
 import { payloadText, printable } from "./printable";
-import { IN_CHAT, approvalLink, approvalSourceText, mergeApprovalOf } from "./subject";
+import { IN_CHAT, approvalLink, approvalSourceText, isMergeApproval, mergeApprovalOf } from "./subject";
 import "./approvals.css";
 
 /** The command ids this screen registers (owner `approvals`). */
@@ -326,7 +326,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
     async (approval: Approval, decision: Decision): Promise<void> => {
       if (approval.status !== "pending" || inFlight.current.has(approval.id)) return;
       // A merge is asked every time: nothing is sent, whichever way `always` got here (the ⇧A command or Shift+A).
-      if (decision === "always" && mergeApprovalOf(approval) !== undefined) {
+      if (decision === "always" && isMergeApproval(approval)) {
         setNotice(approval.id, { tone: "attention", text: MERGE_ALWAYS_REFUSED });
         return;
       }
@@ -443,7 +443,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
         keywords: ["approve", "always", "grant"],
         enabled: () => {
           const { selected: current, canDecide: can } = latest.current;
-          return can && current !== undefined && alwaysRefusalFor(current) === undefined && mergeApprovalOf(current) === undefined;
+          return can && current !== undefined && alwaysRefusalFor(current) === undefined && !isMergeApproval(current);
         },
         run: run("always"),
       },
@@ -756,8 +756,8 @@ function ApprovalDetail({ focusLost, approval: a, sessions, playbooks, message, 
   const willLine = kernelWillLine(a);
   const link = approvalLink(a, playbooks);
   const merge = mergeApprovalOf(a);
-  // A merge card has no Always button, so no reason for one being off.
-  const alwaysRefused = merge === undefined ? alwaysRefusalFor(a) : undefined;
+  // A merge approval has no Always button, so no reason for one being off.
+  const alwaysRefused = isMergeApproval(a) ? undefined : alwaysRefusalFor(a);
   const pending = a.status === "pending";
   const sectionRef = useRef<HTMLElement>(null);
   const outcomeRef = useRef<HTMLDivElement>(null);
@@ -848,7 +848,7 @@ function ApprovalDetail({ focusLost, approval: a, sessions, playbooks, message, 
             <Button variant="primary" kbd="A" aria-keyshortcuts="A" loading={busyOn("once")} disabled={off("once")} onClick={() => onDecide("once")}>
               Allow once
             </Button>
-            {mergeApprovalOf(a) === undefined ? (
+            {!isMergeApproval(a) ? (
               <Button
                 variant="secondary"
                 kbd="⇧A"

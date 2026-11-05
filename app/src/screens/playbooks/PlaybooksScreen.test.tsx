@@ -538,6 +538,29 @@ describe("AC5b: Set live asks first, and sends once", () => {
     expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1);
   });
 
+  it("Enter in the held mode editor while a live Set is in flight opens no second confirm, and sends nothing more", async () => {
+    const gate = hold<ApiResult<unknown>>();
+    const { fake, kernel } = await mountLoaded();
+    kernel.posts["POST /playbooks/:id/set"] = (req) => {
+      const answer = applySet(kernel, req);
+      return gate.promise.then(() => answer);
+    };
+    await openEdit("Review PRs");
+    await pickLive();
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Set live" }));
+    await waitFor(() => expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const form = screen.getByRole("form", { name: "Set mode" });
+    act(() => {
+      fireEvent.submit(form);
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await act(async () => gate.release(ok({})));
+    await waitFor(() => expect(within(field("mode")).getByTestId(IDS.fieldStatus).textContent).toContain("Mode: saved as v4."));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1);
+  });
+
   it("Cancel in the confirm sends nothing and leaves the mode editor open on the owner's pick, with focus back in it", async () => {
     const { fake } = await mountLoaded();
     await openEdit("Review PRs");
