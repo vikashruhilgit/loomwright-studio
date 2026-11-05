@@ -86,4 +86,4 @@ The other reasons: `head_moved` (GitHub's head is not `head_sha`, checked before
 
 ## What stays fixed
 
-The kernel never merges (invariant 4). `gh pr merge` stays `merge_blocked` in every session, and the only merge is Loomwright's single sanctioned `--auto-merge` gate. Whether Loomwright can merge one parked item through that gate is unverified: probe p14 ([OPEN_QUESTIONS](../OPEN_QUESTIONS.md#technical-verify-dont-assume)). A "no" blocks the merge items until a Loomwright change lands in that repo.
+The kernel never merges (invariant 4). `gh pr merge` stays `merge_blocked` in every session, and the only merge is Loomwright's single sanctioned `--auto-merge` gate. Probe p14 answered no on Loomwright 17.31.0 (2026-11-05): nothing supported merges one parked item through that gate ([OPEN_QUESTIONS](../OPEN_QUESTIONS.md#technical-verify-dont-assume)). That blocks the merge items until a Loomwright change lands in that repo.
