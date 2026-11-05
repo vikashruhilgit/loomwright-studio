@@ -18,6 +18,11 @@
 // "last known" cells that survive leaving the screen and coming back while the kernel is away (the fixture kernel's
 // `stop()` and `restart()`, not a full close).
 //
+// Phase 8 item 13 adds: Mode is editable (draft or live), a Set of live asks first in the shared Dialog (one `/set`
+// on confirm, none on Cancel), and the kernel's `live_needs_enable` refusal shows under the Mode field. Its three
+// shots (the mode editor with live selectable, the confirm, the refused state; light and dark) are written to
+// docs/evidence/phase-8-polish/playbooks/ with `PHASE8_POLISH_EVIDENCE=1`, else to Playwright's per-test output dir.
+//
 // Run `npm run build` first; then `npx playwright test e2e/playbooks.spec.ts`.
 import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -32,6 +37,9 @@ import type { PlaybooksFixture, PlaybooksFixtureInit } from "./fixtures/playbook
 
 const EVIDENCE = process.env.PLAYBOOKS_EVIDENCE === "1";
 const EVIDENCE_DIR = resolve(APP_DIR, "..", "docs/evidence/phase-7-polish/playbooks");
+/** Phase 8's shots share this switch with the Approvals spec (each writes only its own folder). */
+const PHASE8_EVIDENCE = process.env.PHASE8_POLISH_EVIDENCE === "1";
+const PHASE8_EVIDENCE_DIR = resolve(APP_DIR, "..", "docs/evidence/phase-8-polish/playbooks");
 const THEMES = ["light", "dark"] as const;
 type Theme = (typeof THEMES)[number];
 /** The mockup's ten Playbooks states, in the README's order. */
@@ -310,9 +318,10 @@ test("AC5: a refusal shows under its field in the kernel's words and code, the e
     await expect(fieldOf(page, key)).toContainText("Change this with Edit in English");
     await expect(fieldOf(page, key).getByRole("button")).toHaveCount(0);
   }
-  // Mode offers draft, with live shown and disabled.
+  // Mode offers draft and live, both selectable (live asks first: see the phase 8 tests below).
   await fieldOf(page, "mode").getByRole("button", { name: "Edit mode" }).click();
-  await expect(page.getByRole("option", { name: "live (not available yet)" })).toBeDisabled();
+  await expect(page.getByRole("option", { name: "live", exact: true })).toBeEnabled();
+  await expect(page.getByRole("option", { name: "draft", exact: true })).toBeEnabled();
 });
 
 test("AC10: Escape cancels an open editor and then leaves the view, and Tab reaches each field's Edit, Set and Cancel", async () => {
@@ -952,4 +961,144 @@ test("the evidence README lists every screenshot, and nothing else, and the fold
   const onDisk = readdirSync(EVIDENCE_DIR).filter((f) => f.endsWith(".png"));
   expect(onDisk.sort()).toEqual([...EXPECTED].sort());
   for (const state of STATES) expect(readme, `the README names the ${state} state`).toContain(`\`playbooks-${state}\``);
+});
+
+// ---- phase 8 item 13: Mode is editable, and live asks first ---------------------------------------------------------------
+
+/** The playbook is on (the fixture's review playbook is enabled): the kernel stores the owner's `live` on it. */
+async function pickLive(page: Page): Promise<void> {
+  await fieldOf(page, "mode").getByRole("button", { name: "Edit mode" }).click();
+  await page.getByLabel("New mode").selectOption("live");
+}
+
+test("AC1: Set live opens the confirm first, Cancel sends nothing, and one confirm sends exactly one {mode, live}", async () => {
+  const { page, fx } = await openLoaded();
+  await openEdit(page, REVIEW.name);
+  await pickLive(page);
+  await expect(page.getByLabel("New mode")).toHaveValue("live");
+  await page.getByRole("button", { name: "Set mode" }).click();
+  const dialog = page.getByRole("dialog", { name: `Turn on live mode for “${REVIEW.name}”?` });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("Live acts on GitHub through the approval gate");
+  expect(postsTo(fx, "/playbooks/:id/set")).toHaveLength(0);
+
+  // Cancel (by its button): nothing was sent, the editor is still open on the owner's pick.
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(postsTo(fx, "/playbooks/:id/set")).toHaveLength(0);
+  await expect(page.getByLabel("New mode")).toHaveValue("live");
+
+  // Escape cancels too.
+  await page.getByRole("button", { name: "Set mode" }).click();
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId("playbook-edit")).toBeVisible();
+  expect(postsTo(fx, "/playbooks/:id/set")).toHaveLength(0);
+
+  // Confirm: exactly one write, no optimistic change, then what the kernel answered.
+  await page.getByRole("button", { name: "Set mode" }).click();
+  await dialog.getByRole("button", { name: "Set live" }).click();
+  await expect(fieldOf(page, "mode").getByTestId("playbook-field-status")).toContainText("Mode: saved as v4.");
+  await expect(fieldOf(page, "mode").getByTestId("playbook-field-status")).toContainText("a draft again");
+  expect(postsTo(fx, "/playbooks/:id/set")).toHaveLength(1);
+  expect(postsTo(fx, "/playbooks/:id/set")[0]).toMatchObject({ params: { id: String(REVIEW.id) }, body: { field: "mode", value: "live" } });
+  await expect(page.getByText("v4 now")).toBeVisible();
+  await expect(fieldOf(page, "mode")).toContainText("live");
+});
+
+test("AC1: setting draft sends at once, with no confirm", async () => {
+  const { page, fx } = await openLoaded();
+  fx.kernel.playbooks = fx.kernel.playbooks.map((p) => (p.id === REVIEW.id ? { ...p, mode: "live", mode_set_by: "owner" } : p));
+  fx.kernel.onChange("playbook_updated");
+  await openEdit(page, REVIEW.name);
+  await fieldOf(page, "mode").getByRole("button", { name: "Edit mode" }).click();
+  await page.getByLabel("New mode").selectOption("draft");
+  await page.getByRole("button", { name: "Set mode" }).click();
+  await expect(fieldOf(page, "mode").getByTestId("playbook-field-status")).toContainText("Mode: saved as v4.");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(postsTo(fx, "/playbooks/:id/set")).toHaveLength(1);
+  expect(postsTo(fx, "/playbooks/:id/set")[0]).toMatchObject({ body: { field: "mode", value: "draft" } });
+});
+
+test("AC1: the kernel's live_needs_enable refusal shows under the Mode field in its words and code", async () => {
+  const { page, fx } = await openLoaded({ state: "waiting" });
+  await openEdit(page, WEEKLY.name);
+  await pickLive(page);
+  await page.getByRole("button", { name: "Set mode" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Set live" }).click();
+  const refusal = fieldOf(page, "mode").getByTestId("playbook-field-refusal");
+  await expect(refusal).toContainText("live_needs_enable: mode live needs playbook");
+  await expect(refusal).toContainText("(live_needs_enable)");
+  // The editor stays open on the owner's pick, and exactly one request was sent.
+  await expect(page.getByLabel("New mode")).toHaveValue("live");
+  expect(postsTo(fx, "/playbooks/:id/set")).toHaveLength(1);
+  await expect(page.getByText("v1 now")).toBeVisible();
+});
+
+// ---- phase 8 screenshots ----------------------------------------------------------------------------------------------------
+
+const PHASE8_SHOTS = ["mode-editor", "mode-confirm", "mode-refused"] as const;
+type Phase8Shot = (typeof PHASE8_SHOTS)[number];
+
+function phase8Name(shot: Phase8Shot, theme: Theme): string {
+  return `playbooks-${shot}-${theme}.png`;
+}
+
+const PHASE8_EXPECTED = PHASE8_SHOTS.flatMap((s) => THEMES.map((t) => phase8Name(s, t)));
+
+async function shoot8(page: Page, shot: Phase8Shot, dir: string, ready: () => Promise<void>): Promise<void> {
+  await page.mouse.move(0, 0);
+  for (const theme of THEMES) {
+    await setTheme(page, theme);
+    await ready();
+    await settled(page);
+    await page.screenshot({ path: join(dir, phase8Name(shot, theme)), scale: "css" });
+  }
+}
+
+test("the phase 8 mode states are screenshot in light and dark", async ({}, testInfo) => {
+  test.setTimeout(240_000);
+  const dir = PHASE8_EVIDENCE ? PHASE8_EVIDENCE_DIR : testInfo.outputPath("shots");
+  mkdirSync(dir, { recursive: true });
+  // The folder holds exactly this run's screenshots: a renamed or removed state leaves no stale PNG.
+  if (PHASE8_EVIDENCE) for (const file of readdirSync(dir)) if (file.endsWith(".png")) rmSync(join(dir, file));
+
+  // The mode editor with live selectable, then the confirm over it.
+  {
+    const { page } = await openLoaded();
+    await openEdit(page, REVIEW.name);
+    await pickLive(page);
+    await shoot8(page, "mode-editor", dir, async () => {
+      await expect(page.getByRole("option", { name: "live", exact: true })).toBeEnabled();
+      await expect(page.getByLabel("New mode")).toHaveValue("live");
+    });
+    await page.getByRole("button", { name: "Set mode" }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await shoot8(page, "mode-confirm", dir, async () => expect(page.getByRole("dialog")).toBeVisible());
+    await closeAll();
+  }
+
+  // Refused: a draft playbook cannot be set live; the kernel's words and code sit under the field.
+  {
+    const { page } = await openLoaded({ state: "waiting" });
+    await openEdit(page, WEEKLY.name);
+    await pickLive(page);
+    await page.getByRole("button", { name: "Set mode" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Set live" }).click();
+    await expect(page.getByTestId("playbook-field-refusal")).toContainText("(live_needs_enable)");
+    await shoot8(page, "mode-refused", dir, async () => expect(page.getByTestId("playbook-field-refusal")).toBeVisible());
+  }
+
+  const written = readdirSync(dir).filter((f) => f.endsWith(".png"));
+  expect(written.sort()).toEqual([...PHASE8_EXPECTED].sort());
+});
+
+test("the phase 8 evidence README lists every mode screenshot, and nothing else, and the folder holds those files", async () => {
+  const readme = readFileSync(join(PHASE8_EVIDENCE_DIR, "README.md"), "utf8");
+  const listed = new Set(readme.match(/playbooks-[a-z-]+-(?:light|dark)\.png/g) ?? []);
+  expect([...listed].sort()).toEqual([...PHASE8_EXPECTED].sort());
+  const onDisk = readdirSync(PHASE8_EVIDENCE_DIR).filter((f) => f.endsWith(".png"));
+  expect(onDisk.sort()).toEqual([...PHASE8_EXPECTED].sort());
+  for (const shot of PHASE8_SHOTS) expect(readme, `the README names the ${shot} state`).toContain(`\`playbooks-${shot}\``);
 });
