@@ -17,6 +17,7 @@ import type {
   ApiResult,
   AskResponse,
   ConnectorsResponse,
+  McpConnectionKind,
   StudioBridge,
 } from "../../api/contract";
 import { type CallOutcome, outcomeOf } from "./model";
@@ -56,6 +57,17 @@ export function setAgentField(api: StudioBridge, id: string, field: AgentSetFiel
 /** `POST /agents/:id/set` with `{field: "connectors", value}`: `github` grants the connector, `none` removes the grant. The owner's route only; a session cannot set it. */
 export function setAgentConnectors(api: StudioBridge, id: string, value: "github" | "none"): Promise<CallOutcome<AgentSetResponse>> {
   const body: AgentConnectorsSetBody = { field: "connectors", value };
+  return call<AgentSetResponse>(api, { method: "POST", path: "/agents/:id/set", params: { id }, body });
+}
+
+/**
+ * `POST /agents/:id/set` with `{field: "connectors", value: "<kind>:<tool>[,<tool>…]"}`: the owner's per-tool grant
+ * for one MCP kind (`jira`, `clickup`); no tools sends `"<kind>:none"`, which drops that kind and keeps every other
+ * key. A separate setter from `setAgentConnectors`, whose `github | none` value is never widened. The caller passes
+ * tool names as the server listed them; the kernel refuses a malformed list by name.
+ */
+export function setAgentMcpTools(api: StudioBridge, id: string, kind: McpConnectionKind, tools: readonly string[]): Promise<CallOutcome<AgentSetResponse>> {
+  const body: AgentConnectorsSetBody = { field: "connectors", value: `${kind}:${tools.length === 0 ? "none" : tools.join(",")}` };
   return call<AgentSetResponse>(api, { method: "POST", path: "/agents/:id/set", params: { id }, body });
 }
 
