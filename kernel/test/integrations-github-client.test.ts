@@ -1769,6 +1769,49 @@ describe("the repo-policy reads (phase 8 item 08)", () => {
     expect(await gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 1, changes_requested: true } });
   });
 
+  it("getPullMergeState: reviews from two deleted accounts (user null) are two reviewers: the earlier CHANGES_REQUESTED still blocks after the later APPROVED", async () => {
+    const deleted = (state: string) => ({ user: null, state, commit_id: HEAD, submitted_at: "2026-10-26T10:00:00Z", author_association: "COLLABORATOR" });
+    const { gh } = policyClient(mergeRoute({ reviews: [deleted("CHANGES_REQUESTED"), deleted("APPROVED")] }));
+    expect(await gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 1, changes_requested: true } });
+    // Two deleted accounts' approvals cannot be told apart as people: together they are one approval.
+    const twice = policyClient(mergeRoute({ reviews: [deleted("APPROVED"), deleted("APPROVED")] }));
+    expect(await twice.gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 1, changes_requested: false } });
+    // A named reviewer's later decision still replaces that same reviewer's earlier one.
+    const named = policyClient(mergeRoute({ reviews: [review("bob", "CHANGES_REQUESTED", HEAD), review("bob", "APPROVED", HEAD)] }));
+    expect(await named.gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 1, changes_requested: false } });
+  });
+
+  describe("getPullMergeState fails closed when reviews or check runs reach the page cap (more may lie beyond it)", () => {
+    const fullReviews = (n: number) => Array.from({ length: n }, (_, i) => review(`u${i}`, "COMMENTED", HEAD));
+    const fullRuns = (n: number) => Array.from({ length: n }, () => ({ status: "completed", conclusion: "success" }));
+
+    it("reviews: a full last page at maxPages is unreachable; a short page at the cap, or a full page below it, is read", async () => {
+      const route = (reviews: (page: number) => unknown[]): Route => {
+        const base = mergeRoute({});
+        return (url) => (url.pathname === "/repos/o/r/pulls/7/reviews" ? json(reviews(Number(url.searchParams.get("page")))) : base(url));
+      };
+      const capped = policyClient(route((p) => fullReviews(100).map((r) => ({ ...r, id: p }))), { maxPages: 2 });
+      expect(await capped.gh.getPullMergeState("o/r", 7)).toEqual({ ok: false, error: "unreachable", rateLimit: null });
+      const shortAtCap = policyClient(route((p) => (p === 1 ? fullReviews(100) : fullReviews(3))), { maxPages: 2 });
+      expect(await shortAtCap.gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true });
+      const below = policyClient(route((p) => (p === 1 ? fullReviews(100) : [])), { maxPages: 2 });
+      expect(await below.gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true });
+    });
+
+    it("check runs: a full last page at maxPages is unreachable", async () => {
+      const base = mergeRoute({});
+      const { gh } = policyClient((url) => (url.pathname === `/repos/o/r/commits/${HEAD}/check-runs` ? json({ total_count: 500, check_runs: fullRuns(100) }) : base(url)), { maxPages: 2 });
+      expect(await gh.getPullMergeState("o/r", 7)).toEqual({ ok: false, error: "unreachable", rateLimit: null });
+    });
+
+    it("the other listings keep the cap's old behaviour: a short list, not a failure (listPushCollaborators)", async () => {
+      const full = Array.from({ length: 100 }, (_, i) => ({ login: `user-${i}` }));
+      const { gh } = policyClient(() => json(full), { maxPages: 2 });
+      const res = await gh.listPushCollaborators("o/r");
+      expect(res.ok && res.data).toHaveLength(200);
+    });
+  });
+
   it.each([
     ["no check runs and no statuses", undefined, [], "none"],
     ["a pending combined status with no statuses is still none", { state: "pending", total_count: 0 }, [], "none"],

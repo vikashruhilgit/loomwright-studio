@@ -14,7 +14,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agentSettingsPath, readAgentSettings, validateCharter } from "../src/agents/index.js";
 import { mergeConnectorsGrant, parseConnectorsGrant, parseMcpGrantValue } from "../src/agents/settings.js";
-import { AUTOMATE_NAME, AUTOMATE_PARTS, automateContribution, automateContributionOf } from "../src/automate/index.js";
+import { AUTOMATE_NAME, AUTOMATE_PARTS, automateContribution, automateContributionOf, runnerPart } from "../src/automate/index.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { INTEGRATIONS_PARTS, githubAppRoutesPart, integrationsContribution, mcpPart, repoPolicyPart } from "../src/integrations/index.js";
 import { CONNECTOR_KINDS } from "../src/integrations/types.js";
@@ -511,28 +511,45 @@ describe("fetchPollItems keeps its signature and applies the cap", () => {
 // ---------------------------------------------------------------------------
 
 describe("the automate feature (phase_8_foundation)", () => {
-  it("is registered last, after gui, with the parts runner, tracker and routing in that order, all empty", () => {
+  it("is registered last, after gui, with the parts runner, tracker and routing in that order; the runner (item 09) has its four tools and the other two parts are empty", () => {
     expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name).slice(-2)).toEqual(["gui", AUTOMATE_NAME]);
     expect(SHIPPED_CONTRIBUTIONS.at(-1)).toBe(automateContribution);
     expect(AUTOMATE_NAME).toBe("automate");
     expect(AUTOMATE_PARTS.map((p) => p.name)).toEqual(["runner", "tracker", "routing"]);
     expect(Object.isFrozen(AUTOMATE_PARTS)).toBe(true);
-    for (const part of AUTOMATE_PARTS) {
+    expect(AUTOMATE_PARTS[0]).toBe(runnerPart);
+    // The runner part: exactly its four tools, in this order, each listed only to a write-granted agent; no route, handler, due work or subcommand.
+    expect(runnerPart.tools.map((t) => t.name)).toEqual(["kernel_automate_prepare", "kernel_automate_state", "kernel_automate_merge_check", "kernel_merge_approval_request"]);
+    for (const tool of runnerPart.tools) {
+      expect(tool.requiresConnector, tool.name).toBe("github");
+      expect(tool.requiresConnectorLevel, tool.name).toBe("write");
+    }
+    expect(runnerPart.routes).toEqual([]);
+    expect(runnerPart.handlers).toEqual({});
+    expect(runnerPart.dueWork ?? []).toEqual([]);
+    expect(runnerPart.subcommands ?? []).toEqual([]);
+    for (const part of AUTOMATE_PARTS.slice(1)) {
       expect(part.tools, part.name).toEqual([]);
       expect(part.routes, part.name).toEqual([]);
       expect(part.handlers, part.name).toEqual({});
       expect(part.dueWork ?? [], part.name).toEqual([]);
       expect(part.subcommands ?? [], part.name).toEqual([]);
     }
-    expect(Object.keys(automateContribution)).toEqual(["name"]);
+    expect(Object.keys(automateContribution).sort()).toEqual(["name", "tools"]);
     expect(Object.isFrozen(automateContribution)).toBe(true);
   });
 
-  it("merges with the shipped features and adds no tool, route, subcommand, handler or due work", () => {
+  it("merges with the shipped features and adds the runner's four tools and no route, subcommand, handler or due work", () => {
     const withIt = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     const without = mergeContributions(SHIPPED_CONTRIBUTIONS.slice(0, -1), PHASE1_RESERVED);
     expect(withIt.contributors).toEqual([...without.contributors, "automate"]);
-    expect(withIt.tools.map((t) => t.name)).toEqual(without.tools.map((t) => t.name));
+    expect(withIt.tools.map((t) => t.name)).toEqual([
+      ...without.tools.map((t) => t.name),
+      "kernel_automate_prepare",
+      "kernel_automate_state",
+      "kernel_automate_merge_check",
+      "kernel_merge_approval_request",
+    ]);
     const routeKeys = (m: typeof withIt): string[] => m.routes.map((r) => `${r.owner} ${r.method} ${r.path}`);
     expect(routeKeys(withIt)).toEqual(routeKeys(without));
     expect(withIt.subcommands.map((c) => c.name)).toEqual(without.subcommands.map((c) => c.name));

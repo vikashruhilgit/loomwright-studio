@@ -380,7 +380,8 @@ describe("AC6: a session lists the write tools only for an agent holding github:
   });
 
   it("the flag changes only the write-level tools: every other tool is listed the same with and without it", () => {
-    const strip = (tools: readonly ContributedTool[]) => tools.filter((t) => !(WRITE_NAMES as readonly string[]).includes(t.name)).map((t) => t.name);
+    // Every write-level tool: the four here and, since phase 8 item 09, the automate runner's four.
+    const strip = (tools: readonly ContributedTool[]) => tools.filter((t) => t.requiresConnectorLevel !== "write").map((t) => t.name);
     expect(strip(toolsForConnectors(shipped, ["github"], true))).toEqual(strip(toolsForConnectors(shipped, ["github"], false)));
     expect(strip(toolsForConnectors(shipped, [], true))).toEqual(strip(toolsForConnectors(shipped, [])));
   });
