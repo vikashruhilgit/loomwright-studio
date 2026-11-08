@@ -24,7 +24,7 @@ import type {
   RepoPolicySetBody,
   RosterEntry,
 } from "../../api/contract";
-import { acceptedSettings, githubGranted, isRecord, isWright, orderRoster, outcomeOf } from "../team/model";
+import { acceptedSettings, githubGranted, isRecord, isWright, MCP_KIND_LABELS, mcpToolsHeld, orderRoster, outcomeOf } from "../team/model";
 
 /** The ids the unit tests and the e2e spec target; the screen sets no other test id. */
 export const INTEGRATIONS_TEST_IDS = {
@@ -470,8 +470,8 @@ export interface McpVendor {
 }
 
 export const MCP_VENDORS: Readonly<Record<McpConnectionKind, McpVendor>> = Object.freeze({
-  jira: { name: "Jira", vendor: "Atlassian", revoke: "Remove “Loomwright Studio” from the apps connected to your Atlassian account" },
-  clickup: { name: "ClickUp", vendor: "ClickUp", revoke: "Remove “Loomwright Studio” from the apps connected to your ClickUp account" },
+  jira: { name: MCP_KIND_LABELS.jira, vendor: "Atlassian", revoke: "Remove “Loomwright Studio” from the apps connected to your Atlassian account" },
+  clickup: { name: MCP_KIND_LABELS.clickup, vendor: "ClickUp", revoke: "Remove “Loomwright Studio” from the apps connected to your ClickUp account" },
 });
 
 /** The Keychain item an MCP kind's tokens live in (`docs/architecture/mcp-connectors.md`); named here, never read. */
@@ -587,22 +587,6 @@ export function mcpRefusalCopy(kind: McpConnectionKind, refusal: McpRefusal): Mc
 
 export type ToolCell = "granted" | "not_granted" | "unknown";
 
-/**
- * The tools of `kind` a crew member holds, from its `GET /agents/:id` `settings.content.connectors[<kind>]`
- * (a record of kind to tool names; the GitHub grant is a list or a level, never read here). `undefined` when the detail
- * is not read ok or the key is absent: unknown, not "none".
- */
-export function mcpToolsHeld(detail: AgentDetailResponse | undefined, kind: McpConnectionKind): readonly string[] | undefined {
-  if (detail === undefined) return undefined;
-  const content = acceptedSettings(detail);
-  if (!isRecord(content)) return undefined;
-  const connectors = content["connectors"];
-  if (!isRecord(connectors)) return undefined;
-  const held = connectors[kind];
-  if (held === undefined) return [];
-  return Array.isArray(held) ? held.filter((tool): tool is string => typeof tool === "string") : undefined;
-}
-
 /** The crew members whose roster entry says they hold `kind` at all, or who are unreported: the ones whose detail is read. */
 export function needsToolRead(agent: RosterEntry, kind: McpConnectionKind): boolean {
   if (isWright(agent)) return false;
@@ -618,7 +602,8 @@ export function toolCell(agent: RosterEntry, kind: McpConnectionKind, tool: stri
   const held = agent.connectors;
   if (held !== undefined && held !== null && !held.includes(kind)) return "not_granted";
   if (isWright(agent)) return "unknown";
-  const tools = mcpToolsHeld(details.get(agent.id), kind);
+  const detail = details.get(agent.id);
+  const tools = detail === undefined ? undefined : mcpToolsHeld(acceptedSettings(detail), kind);
   if (tools === undefined) return "unknown";
   return tools.includes(tool) ? "granted" : "not_granted";
 }

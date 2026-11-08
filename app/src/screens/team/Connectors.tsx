@@ -21,7 +21,7 @@
 import type { McpConnection, McpConnectionKind, StudioBridge } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
 import { setAgentConnectors, setAgentMcpTools } from "./actions";
-import { type ConnectorsState, connectorStateText, isRecord } from "./model";
+import { type ConnectorsState, connectorStateText, MCP_KIND_LABELS, mcpToolsHeld } from "./model";
 
 /** What the owner asked for: give the agent GitHub, or take it away. */
 export type GrantChange = "grant" | "revoke";
@@ -46,9 +46,6 @@ export async function changeGithubGrant(api: StudioBridge, agent: { readonly id:
   return { ok: true, text: outcome.body.changed ? `GitHub revoked from ${agent.display_name}.` : `${agent.display_name} already has no GitHub.` };
 }
 
-/** The MCP kinds' names in the row. */
-export const MCP_KIND_LABELS: Readonly<Record<McpConnectionKind, string>> = { jira: "Jira", clickup: "ClickUp" };
-
 /**
  * Replace one MCP kind's tool grant for `agent` through `POST /agents/:id/set`
  * (`<kind>:<tool>[,<tool>…]`, or `<kind>:none` for no tools). The one call every
@@ -63,24 +60,6 @@ export async function changeMcpGrant(api: StudioBridge, agent: { readonly id: st
   if (!outcome.body.changed) return { ok: true, text: `${agent.display_name}'s ${label} tools were already as set.` };
   if (tools.length === 0) return { ok: true, text: `${label} tools revoked from ${agent.display_name}.` };
   return { ok: true, text: `${label}: ${tools.length} ${tools.length === 1 ? "tool" : "tools"} granted to ${agent.display_name}.` };
-}
-
-/**
- * The tools an agent holds for one MCP kind, from its settings file's `connectors`
- * (`GET /agents/:id` `settings.content`): the kind's array in the object form, `[]`
- * when the file grants none (no `connectors`, the array form, or no such key), and
- * undefined (unknown, never "none") when the content is not an object or `connectors`
- * is a shape the kernel does not write. Pure; `content` is untrusted file text.
- */
-export function mcpToolsHeld(content: unknown, kind: McpConnectionKind): readonly string[] | undefined {
-  if (!isRecord(content)) return undefined;
-  const grant = content.connectors;
-  if (grant === undefined || grant === null || Array.isArray(grant)) return [];
-  if (!isRecord(grant)) return undefined;
-  const tools = grant[kind];
-  if (tools === undefined) return [];
-  if (!Array.isArray(tools)) return undefined;
-  return tools.filter((tool): tool is string => typeof tool === "string");
 }
 
 /** One connected MCP kind in the row: the tools it lists and the ones the agent holds (undefined: unknown). */

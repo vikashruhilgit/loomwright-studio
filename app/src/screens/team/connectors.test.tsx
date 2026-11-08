@@ -12,8 +12,8 @@ import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
 import type { FakeBridge, Responder } from "../../store/fake-bridge";
-import { changeMcpGrant, mcpGrantRows, mcpToolsHeld } from "./Connectors";
-import { type ConnectorsState, connectorStateText, githubGranted } from "./model";
+import { changeMcpGrant, mcpGrantRows } from "./Connectors";
+import { type ConnectorsState, connectorStateText, githubGranted, mcpToolsHeld } from "./model";
 import { TeamView } from "./TeamView";
 
 // ---- Fixtures -------------------------------------------------------------------------------

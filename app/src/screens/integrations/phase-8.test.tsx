@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { AgentDetailResponse, ApiRequest, Connector, McpConnection, McpConnectionKind, RepoPolicy, RepoPolicySetBody, RosterEntry } from "../../api/contract";
 import { ok } from "../../store/fake-bridge";
 import { INTEGRATIONS_OWNER } from "./commands";
-import { BILLING_PLANS_URL, INTEGRATIONS_TEST_IDS as IDS, acceptBody, detectionOf, mcpRefusalOfCode, mcpRefusalOfEvent, policyRowMeta, presetBody, repoSettingsUrl, splitRepo } from "./model";
+import { BILLING_PLANS_URL, INTEGRATIONS_TEST_IDS as IDS, acceptBody, detectionOf, mcpRefusalOfCode, mcpRefusalOfEvent, policyRowMeta, presetBody, repoSettingsUrl, splitRepo, toolCell } from "./model";
+import { mcpToolsHeld } from "../team/model";
 import { UNREACHABLE, WRIGHT, agent, appConnector, connector, createKernel, deferred, emit, mountScreen, refused, requests, sleep } from "./test-support";
 import type { Kernel } from "./test-support";
 
@@ -1061,5 +1062,19 @@ describe("the phase 8 view model", () => {
     expect(policyRowMeta({ phase: "ready", repos: [set], error: undefined }, false)).toEqual({ dot: "ok", text: "all repos set" });
     expect(policyRowMeta({ phase: "ready", repos: [set, policyOf("a/c")], error: undefined }, false)).toEqual({ dot: "waiting", text: "1 of 2 repos set" });
     expect(policyRowMeta({ phase: "ready", repos: [set], error: undefined }, true).text).toBe("status unknown · kernel unreachable");
+  });
+});
+
+describe("one reading of `connectors` for Team and Integrations", () => {
+  it("reads the array form and null as 'no MCP tools held' on both screens' path, and an unreadable shape as unknown", () => {
+    const mason = agent("mason", "Mason", ["github", "jira"]);
+    for (const connectors of [["github"], null, undefined]) {
+      const details = new Map([["mason", detailOf(mason, connectors)]]);
+      expect(mcpToolsHeld({ connectors }, "jira")).toEqual([]);
+      expect(toolCell(mason, "jira", "getJiraIssue", details)).toBe("not_granted");
+    }
+    const odd = new Map([["mason", detailOf(mason, "jira")]]);
+    expect(mcpToolsHeld({ connectors: "jira" }, "jira")).toBeUndefined();
+    expect(toolCell(mason, "jira", "getJiraIssue", odd)).toBe("unknown");
   });
 });
