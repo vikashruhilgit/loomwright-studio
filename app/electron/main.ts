@@ -14,7 +14,8 @@ import { registerDeepLinks } from "./deeplink";
 import { showsWindow } from "./hidden-window";
 import { createKernelConnection, resolveDataDir, tokenReaderFor } from "./kernel-connection";
 import type { FeedHandle, KernelConnection } from "./kernel-connection";
-import { isAllowedExternal } from "./open-external";
+import { NO_KERNEL_URLS, isAllowedExternal, rememberKernelUrl } from "./open-external";
+import type { KernelUrls } from "./open-external";
 import { createPreferences } from "./settings";
 import type { Preferences } from "./settings";
 import { createTray } from "./tray";
@@ -55,6 +56,9 @@ const KERNEL_LOG_FILE = join("logs", "kernel.err.log");
 function handleBridge(kernel: KernelConnection, prefs: Preferences, dataDir: string, owner: () => WebContents | undefined): void {
   const fromOwner = (event: IpcMainInvokeEvent): boolean => event.sender === owner();
   let feed: FeedHandle | undefined;
+  // The addresses the kernel itself answered (an MCP authorize URL, the App upgrade URL): the open-external
+  // allowlist's one dynamic input. Recorded from the request handler, read by the open handler.
+  let kernelUrls: KernelUrls = NO_KERNEL_URLS;
   // Bumped by every subscribe and unsubscribe: a socket opened for a request a later one superseded is closed, never kept.
   let generation = 0;
   const closeFeed = (): void => {
@@ -69,7 +73,10 @@ function handleBridge(kernel: KernelConnection, prefs: Preferences, dataDir: str
   });
   ipcMain.handle(CHANNELS.request, async (event, request: ApiRequest) => {
     if (!fromOwner(event)) throw new Error("refused");
-    return kernel.request(request);
+    const result = await kernel.request(request);
+    // Record the answer, never alter it: the renderer gets exactly what the kernel said.
+    kernelUrls = rememberKernelUrl(kernelUrls, request, result, Date.now());
+    return result;
   });
   ipcMain.handle(CHANNELS.feedSubscribe, async (event, after: unknown) => {
     if (!fromOwner(event)) throw new Error("refused");
@@ -100,7 +107,7 @@ function handleBridge(kernel: KernelConnection, prefs: Preferences, dataDir: str
     if (typeof url !== "string") return false;
     const where = await kernel.connection();
     if (where.state !== "connected") return false;
-    if (!isAllowedExternal(url, where.port)) return false;
+    if (!isAllowedExternal(url, where.port, kernelUrls, Date.now())) return false;
     try {
       await shell.openExternal(url);
       return true;

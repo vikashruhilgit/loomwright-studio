@@ -5,7 +5,7 @@
 // its button, so both reach the same route.
 //
 // The palette reads `enabled` when it opens, so the flags are read through a
-// ref that every render refreshes: the four commands are registered once,
+// ref that every render refreshes: the seven commands are registered once,
 // never again when the connector changes state.
 //   Connect GitHub          disabled while the kernel is unreachable, and while a GitHub App is
 //                           connected (the mockup's "disconnect first": one connection at a time);
@@ -18,6 +18,10 @@
 //                           enabled only while a token is in use, the kernel is reachable and no App is
 //                           connected (the detail pane's "Switch to GitHub App"): it opens the App setup
 //                           dialog over the token, which stays in use until the install succeeds
+//   Connect Jira / Connect ClickUp
+//                           (phase 8) disabled only while the kernel is unreachable; they select the connector and press
+//                           its Connect, the same handler as the pane's button (a connected one just shows its pane)
+//   Open repo policy        (phase 8) disabled while the kernel is unreachable; shows the repo policy cards
 import { useEffect, useRef } from "react";
 import type { Command, CommandRegistry } from "../../commands/registry";
 
@@ -35,6 +39,12 @@ export interface IntegrationsCommandHandlers {
   readonly refreshRepos: () => void | Promise<void>;
   /** The App setup dialog over the token in use (the detail pane's "Switch to GitHub App"). */
   readonly switchToApp: () => void;
+  /** The Jira pane, and its Connect when Jira is not connected. */
+  readonly connectJira: () => void;
+  /** The ClickUp pane, and its Connect when ClickUp is not connected. */
+  readonly connectClickup: () => void;
+  /** The repo policy pane. */
+  readonly repoPolicy: () => void;
 }
 
 /** What decides `enabled`, read at the moment the palette asks. */
@@ -93,6 +103,30 @@ export function integrationsCommands(flags: () => IntegrationsCommandFlags, hand
         return f.hasToken && !f.offline && !f.appConnected;
       },
       run: () => handlers().switchToApp(),
+    },
+    {
+      id: "integrations.connect-jira",
+      title: "Connect Jira",
+      group: INTEGRATIONS_GROUP,
+      keywords: ["atlassian", "mcp", "tickets", "integration", "connector"],
+      enabled: () => !flags().offline,
+      run: () => handlers().connectJira(),
+    },
+    {
+      id: "integrations.connect-clickup",
+      title: "Connect ClickUp",
+      group: INTEGRATIONS_GROUP,
+      keywords: ["mcp", "tickets", "integration", "connector"],
+      enabled: () => !flags().offline,
+      run: () => handlers().connectClickup(),
+    },
+    {
+      id: "integrations.repo-policy",
+      title: "Open repo policy",
+      group: INTEGRATIONS_GROUP,
+      keywords: ["merge", "protection", "reviews", "solo", "repos", "github"],
+      enabled: () => !flags().offline,
+      run: () => handlers().repoPolicy(),
     },
   ];
 }

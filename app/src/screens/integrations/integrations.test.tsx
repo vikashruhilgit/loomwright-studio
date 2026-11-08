@@ -483,10 +483,26 @@ describe("the ⌘K commands", () => {
     return found;
   };
 
-  it("registers Connect GitHub, Disconnect GitHub, Refresh reachable repos and Switch GitHub to the GitHub App under owner integrations, and unregisters them on unmount", async () => {
+  it("registers Connect GitHub, Disconnect GitHub, Refresh reachable repos, Switch GitHub to the GitHub App, Connect Jira, Connect ClickUp and Open repo policy under owner integrations, and unregisters them on unmount", async () => {
     const kernel = await startScreen();
-    expect(owned(kernel)).toEqual(["integrations.connect-github", "integrations.disconnect-github", "integrations.refresh-repos", "integrations.switch-to-app"]);
-    expect(kernel.registry.list().map((c) => c.title)).toEqual(["Connect GitHub", "Disconnect GitHub", "Refresh reachable repos", "Switch GitHub to the GitHub App"]);
+    expect(owned(kernel)).toEqual([
+      "integrations.connect-github",
+      "integrations.disconnect-github",
+      "integrations.refresh-repos",
+      "integrations.switch-to-app",
+      "integrations.connect-jira",
+      "integrations.connect-clickup",
+      "integrations.repo-policy",
+    ]);
+    expect(kernel.registry.list().map((c) => c.title)).toEqual([
+      "Connect GitHub",
+      "Disconnect GitHub",
+      "Refresh reachable repos",
+      "Switch GitHub to the GitHub App",
+      "Connect Jira",
+      "Connect ClickUp",
+      "Open repo policy",
+    ]);
     cleanup();
     expect(owned(kernel)).toEqual([]);
   });

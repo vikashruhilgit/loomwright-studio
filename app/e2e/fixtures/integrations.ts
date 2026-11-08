@@ -43,8 +43,41 @@
 // token connection never becomes before the install. The install itself is `change("app-connected")`, which mirrors
 // `recordInstallation` (the token item gone, the row an App, connected).
 //
+// Phase 8 (Jira and ClickUp connect, the App upgrade, the repo policy card) adds, all opt-in so every phase 6 and 7 spec
+// sees the answers it always did (no MCP row, no repo, `GET /connectors` carrying `mcp_connections: []`):
+//   POST /connectors/mcp/:kind/connect          records the kind; answers an `authorize_url` (a distinct https address per
+//                                    call, `https://auth.example.test/<kind>/authorize?state=fixture-mcp-<n>`) with the
+//                                    window's `expires_at`, or the refusal set by `refuseMcpConnect`
+//   POST /connectors/mcp/:kind/connect/cancel   records the kind; answers `{cancelled: true}`
+//   POST /connectors/mcp/:kind/disconnect       records the kind; the row reads `disconnected`, with an event
+//   GET  /connectors/github/app/upgrade         records the read; answers the `url` (`setUpgradeUrl`, default `UPGRADE_URL`)
+//   GET  /repos/policy                          records the read; answers the repos given as `policies`
+//   POST /repos/policy/:owner/:repo             records the repo and body; answers the repo with that policy set
+//   POST /repos/policy/:owner/:repo/detect      records the repo; answers the repo with a fresh `read_at`
+//   GET  /agents/:id                            Mason's detail only, carrying `settings.content.connectors[<kind>]`
+// `changeMcp(kind, state)` is the kernel changing an MCP row (state, then a `connector_status` event, which is how the
+// screen learns); `refuseMcpEvent` is a connect refused as the `refused` field of a `connector_status` payload. An MCP
+// refusal's `message` is `MCP_REFUSAL_MESSAGE`: the screen shows it as plain text beside the code, never as markup.
+//
 // Every value here is fixture data: no real account, repo or token.
-import type { Connector, ConnectorChangeResponse, ConnectorReposResponse, ConnectorsResponse, EventFrame, GitHubAppSetupCancelResponse, GitHubAppSetupRefusal, GitHubAppSetupResponse } from "../../src/api/contract";
+import type {
+  AgentDetailResponse,
+  Connector,
+  ConnectorChangeResponse,
+  ConnectorReposResponse,
+  ConnectorsResponse,
+  EventFrame,
+  GitHubAppSetupCancelResponse,
+  GitHubAppSetupRefusal,
+  GitHubAppSetupResponse,
+  GitHubAppUpgradeResponse,
+  McpConnection,
+  McpConnectResponse,
+  RepoPoliciesResponse,
+  RepoPolicy,
+  RepoPolicySetBody,
+  RosterEntry,
+} from "../../src/api/contract";
 import type { FixtureAnswer, FixtureKernel, FixtureKernelOptions, FixtureRequest } from "../fixture-kernel";
 import { ADA, MASON, WRIGHT } from "./team";
 
@@ -70,14 +103,89 @@ export const REFRESHED_REPO = "studio-fixture/new-repo";
 const DAY_MS = 86_400_000;
 const CREATED = "2026-10-21T09:00:00.000Z";
 
-/** The App's states: Create is done (no installation yet), installed and connected, and refused by GitHub after it was installed. */
-export type AppState = "app-created" | "app-connected" | "app-revoked";
+/**
+ * The address `GET /connectors/github/app/upgrade` answers by default: where the owner accepts the App's new permissions.
+ * Its path ends in `/permissions`, which none of the main process's fixed GitHub forms allows, so the channel opens it
+ * only because the kernel answered it.
+ */
+export const UPGRADE_URL = `https://github.com/settings/apps/${APP_SLUG}/permissions`;
+
+/** The MCP kinds Studio lists (`McpConnectionKind`). */
+export type McpKind = "jira" | "clickup";
+export const MCP_KINDS: readonly McpKind[] = ["jira", "clickup"];
+/** An MCP row: no row yet, connected, past its refresh, or disconnected (the row the kernel keeps). */
+export type McpRowState = "none" | "connected" | "expired" | "disconnected";
+
+/** Each kind's workspace address and the tools the kernel kept after connect (invented; Jira is a stub in the real build). */
+export const MCP_SERVER: Readonly<Record<McpKind, string>> = {
+  jira: "https://mcp.jira.example.test/studio-fixture",
+  clickup: "https://mcp.clickup.example.test/studio-fixture",
+};
+export const MCP_TOOLS: Readonly<Record<McpKind, readonly string[]>> = {
+  jira: ["getJiraIssue", "searchJiraIssues", "transitionJiraIssue"],
+  clickup: ["get_task", "search_tasks", "update_task"],
+};
+/** The tools Mason holds, when the fixture gives him any (`masonTools`): the reads, not the tool that changes things. */
+export const MASON_MCP_TOOLS: Readonly<Record<McpKind, readonly string[]>> = {
+  jira: ["getJiraIssue", "searchJiraIssues"],
+  clickup: ["get_task", "search_tasks"],
+};
+/** A refusal's `message` as the vendor or kernel might send it: markup the screen must show as text, never as elements. */
+export const MCP_REFUSAL_MESSAGE = "<b>MCP-KERNEL-MESSAGE</b> keep this as text";
+
+/** A connect the kernel refuses: any non-2xx answer is one refused state in the screen. */
+export interface McpConnectRefusal {
+  readonly status: number;
+  readonly error: string;
+  readonly message?: string;
+}
+
+/** The GitHub App's states: Create is done (no installation yet), installed and connected, refused by GitHub after it was installed, and installed but holding fewer permissions than Studio now asks for. */
+export type AppState = "app-created" | "app-connected" | "app-revoked" | "app-needs-permissions";
 export type ConnectorState = Connector["status"] | AppState | "none";
 export type Refusal = "token_invalid" | "token_write_scoped";
+
+/** The repos the policy card is drawn for: one with a proposal, one with a detection and no proposal, two GitHub cannot protect. */
+export const POLICY_REPOS = {
+  proposed: "studio-fixture/site",
+  none: "studio-fixture/notes-cli",
+  trust: "studio-fixture/dotfiles",
+  safe: "studio-fixture/vault",
+} as const;
+
+/** A detection as the kernel reads it from GitHub, dated now. */
+export function detection(repo: string, overrides: Readonly<Record<string, unknown>> = {}): Record<string, unknown> {
+  return { repo, protection: "protected", required_reviews: 2, required_checks: ["ci"], pushers: ["studio-fixture", "studio-dev"], default_branch: "main", private: false, read_at: new Date().toISOString(), ...overrides };
+}
+
+/** The four repos of `POLICY_REPOS`, none with a policy set yet (a fresh copy each call; pass as `policies`). */
+export function policyRepos(): RepoPolicy[] {
+  const unset = { kind: null, required_reviews: null, trust_unprotected: false, set_by: null, set_at: null } as const;
+  const unavailable = (repo: string): RepoPolicy => ({
+    ...unset,
+    repo,
+    detected: detection(repo, { protection: "protection_unavailable", required_reviews: null, required_checks: [], private: true }),
+    proposal: { kind: null, required_reviews: null, choices: ["make_public_or_upgrade", "trust_unprotected", "safe_mode"] },
+  });
+  return [
+    { ...unset, repo: POLICY_REPOS.proposed, detected: detection(POLICY_REPOS.proposed), proposal: { kind: "reviews", required_reviews: 2 } },
+    { ...unset, repo: POLICY_REPOS.none, detected: detection(POLICY_REPOS.none, { protection: "unprotected", required_reviews: null, required_checks: [] }), proposal: null },
+    unavailable(POLICY_REPOS.trust),
+    unavailable(POLICY_REPOS.safe),
+  ];
+}
 
 export interface IntegrationsFixtureOptions {
   /** The GitHub connector's state from the start (default: none, "not connected"). */
   readonly connector?: ConnectorState;
+  /** Each MCP kind's row from the start (default: no row, "not connected"). */
+  readonly mcp?: Readonly<Partial<Record<McpKind, McpRowState>>>;
+  /** What `GET /repos/policy` answers (default: no repos reached). */
+  readonly policies?: readonly RepoPolicy[];
+  /** What `GET /connectors/github/app/upgrade` answers (default: `UPGRADE_URL`; `null`: the install needs nothing). */
+  readonly upgradeUrl?: string | null;
+  /** The MCP tools Mason holds per kind: the roster then says he holds the kind, and his `GET /agents/mason` lists them. */
+  readonly masonTools?: Readonly<Partial<Record<McpKind, readonly string[]>>>;
 }
 
 export interface IntegrationsFixture {
@@ -95,6 +203,24 @@ export interface IntegrationsFixture {
   readonly cancels: unknown[];
   /** The `setup_url` each setup call answered, in order (the address the sheet must open through the channel). */
   readonly setupUrls: string[];
+  /** The kind of every `POST /connectors/mcp/:kind/connect`, in order (refused ones included). */
+  readonly mcpConnects: McpKind[];
+  /** The kind of every `POST /connectors/mcp/:kind/connect/cancel`, in order. */
+  readonly mcpCancels: McpKind[];
+  /** The kind of every `POST /connectors/mcp/:kind/disconnect`, in order. */
+  readonly mcpDisconnects: McpKind[];
+  /** The `authorize_url` each accepted connect answered, in order (the address the pane must open through the channel). */
+  readonly mcpUrls: string[];
+  /** The `expires_at` each accepted connect answered, in order. */
+  readonly mcpExpiries: string[];
+  /** Every `GET /connectors/github/app/upgrade` query, in order. */
+  readonly upgradeReads: Readonly<Record<string, string>>[];
+  /** Every `GET /repos/policy` query, in order. */
+  readonly policyReads: Readonly<Record<string, string>>[];
+  /** Every `POST /repos/policy/:owner/:repo` (`repo` as `owner/name`, with the body it was sent), in order. */
+  readonly policySets: { readonly repo: string; readonly body: unknown }[];
+  /** The repo (`owner/name`) of every `POST /repos/policy/:owner/:repo/detect`, in order. */
+  readonly policyDetects: string[];
   /** Give the routes the started kernel, so they can append events and `dropNextRead` can close it. */
   attach(kernel: FixtureKernel): void;
   /** Change what `GET /connectors` answers next (no event: use `change` for the kernel's behaviour). */
@@ -122,6 +248,16 @@ export interface IntegrationsFixture {
    * (and `write_permissions` for `token_write_scoped`, `app_slug` when given). The row does not change.
    */
   refuseEvent(reason: GitHubAppSetupRefusal, extra?: Readonly<Record<string, unknown>>): void;
+  /** Change what `GET /connectors` answers for `kind` next (no event: use `changeMcp` for the kernel's behaviour). */
+  setMcp(kind: McpKind, state: McpRowState): void;
+  /** `setMcp`, then a `connector_status` event: the kernel changing the MCP connection. */
+  changeMcp(kind: McpKind, state: McpRowState): void;
+  /** The next connect is refused with this answer (`undefined`: accepted again). */
+  refuseMcpConnect(refusal: McpConnectRefusal | undefined): void;
+  /** The kernel refusing a waiting connect: a `connector_status` event of `kind` whose payload carries `refused: code` and `MCP_REFUSAL_MESSAGE`. The row does not change. */
+  refuseMcpEvent(kind: McpKind, code: string): void;
+  /** What `GET /connectors/github/app/upgrade` answers next. */
+  setUpgradeUrl(url: string | null): void;
   /** An event with the next id. */
   event(kind: string, payload: unknown): EventFrame;
 }
@@ -129,6 +265,7 @@ export interface IntegrationsFixture {
 /** The status the kernel gives a row in `state`. */
 function statusOf(state: Exclude<ConnectorState, "none">): Connector["status"] {
   if (state === "app-connected") return "connected";
+  if (state === "app-needs-permissions") return "needs_permissions";
   if (state === "app-created" || state === "app-revoked") return "rejected";
   return state;
 }
@@ -166,15 +303,16 @@ export function appConnectorRow(state: AppState): Connector {
     kind: "github",
     status: statusOf(state),
     account_login: created ? null : ACCOUNT,
-    // D39: the App holds every repository permission at write, except Metadata (read).
-    permissions: created ? null : { metadata: "read", pull_requests: "write", contents: "write" },
+    // D39: the App holds every repository permission at write, except Metadata (read). An install that predates it
+    // (`app-needs-permissions`) still holds the old read set: the kernel reads it `needs_permissions` until GitHub reports the new one.
+    permissions: created ? null : state === "app-needs-permissions" ? { metadata: "read", pull_requests: "read", contents: "read" } : { metadata: "read", pull_requests: "write", contents: "write" },
     permissions_source: created ? null : "reported",
     permissions_declared_at: null,
     method: "app",
     app_slug: APP_SLUG,
     installation_id: created ? null : APP_INSTALLATION,
     reachable_repos: created ? null : [...APP_REPOS],
-    expires_at: state === "app-connected" ? new Date(Date.now() + 55 * 60_000).toISOString() : null,
+    expires_at: state === "app-connected" || state === "app-needs-permissions" ? new Date(Date.now() + 55 * 60_000).toISOString() : null,
     verified_at: created ? null : new Date(Date.now() - (state === "app-revoked" ? 3 * 3_600_000 : 0)).toISOString(),
     created_at: CREATED,
     updated_at: new Date().toISOString(),
@@ -183,7 +321,37 @@ export function appConnectorRow(state: AppState): Connector {
 
 /** The row for any state but `none`. */
 function rowOf(state: Exclude<ConnectorState, "none">): Connector {
-  return state === "app-created" || state === "app-connected" || state === "app-revoked" ? appConnectorRow(state) : connectorRow(state);
+  return state === "app-created" || state === "app-connected" || state === "app-revoked" || state === "app-needs-permissions" ? appConnectorRow(state) : connectorRow(state);
+}
+
+/** The `mcp_connections` row of `kind` in `state`; `none` has no row. Dates are relative to now. */
+function mcpConnectionRow(kind: McpKind, state: Exclude<McpRowState, "none">): McpConnection {
+  const live = state === "connected" || state === "expired";
+  return {
+    kind,
+    server_url: live ? MCP_SERVER[kind] : null,
+    status: state,
+    granted_tools: live ? [...MCP_TOOLS[kind]] : [],
+    token_expiry: state === "connected" ? new Date(Date.now() + 55 * 60_000).toISOString() : null,
+  };
+}
+
+/** The connector row a disconnect answers (the contract's `ConnectorChangeResponse` carries a `Connector`). */
+function disconnectedRow(kind: McpKind): Connector {
+  return { ...connectorRow("disconnected"), id: kind === "jira" ? 2 : 3, kind };
+}
+
+/** The roster as `GET /agents` answers it: Team's, with Mason holding each MCP kind he is given tools of. */
+function rosterOf(masonTools: IntegrationsFixtureOptions["masonTools"]): RosterEntry[] {
+  const kinds = MCP_KINDS.filter((kind) => masonTools?.[kind] !== undefined);
+  return [WRIGHT, { ...MASON, connectors: [...(MASON.connectors ?? []), ...kinds] }, ADA];
+}
+
+/** Mason's `GET /agents/:id`: the parsed settings carry `connectors[<kind>]` for each MCP kind he holds. */
+function masonDetail(masonTools: IntegrationsFixtureOptions["masonTools"]): AgentDetailResponse {
+  const [, mason] = rosterOf(masonTools) as [RosterEntry, RosterEntry, RosterEntry];
+  const connectors = Object.fromEntries(MCP_KINDS.flatMap((kind) => (masonTools?.[kind] === undefined ? [] : [[kind, masonTools[kind]]])));
+  return { agent: mason, settings: { file: "config/agents/mason.json", content: { connectors }, error: null }, never: null, workspaces: null, memory: { dir: "", files: [] }, charter: null };
 }
 
 /** How long the setup window stays open. */
@@ -208,8 +376,22 @@ export function integrationsFixture(options: IntegrationsFixtureOptions = {}): I
   let slugStored = false;
   /** The repos a `?refresh=1` read has added. */
   let refreshed = false;
+  // Phase 8.
+  const mcpConnects: McpKind[] = [];
+  const mcpCancels: McpKind[] = [];
+  const mcpDisconnects: McpKind[] = [];
+  const mcpUrls: string[] = [];
+  const mcpExpiries: string[] = [];
+  const upgradeReads: Record<string, string>[] = [];
+  const policyReads: Record<string, string>[] = [];
+  const policySets: { repo: string; body: unknown }[] = [];
+  const policyDetects: string[] = [];
+  const mcp: Record<McpKind, McpRowState> = { jira: options.mcp?.jira ?? "none", clickup: options.mcp?.clickup ?? "none" };
+  let mcpRefusal: McpConnectRefusal | undefined;
+  let upgradeUrl: string | null = options.upgradeUrl === undefined ? UPGRADE_URL : options.upgradeUrl;
+  let policies: RepoPolicy[] = (options.policies ?? []).map((policy) => ({ ...policy }));
 
-  const event = (kind: string, payload: unknown): EventFrame => ({ type: "event", id: nextId++, at: new Date().toISOString(), kind, session_id: null, task_id: null, payload });
+  const event =(kind: string, payload: unknown): EventFrame => ({ type: "event", id: nextId++, at: new Date().toISOString(), kind, session_id: null, task_id: null, payload });
   const change = (next: ConnectorState): void => {
     state = next;
     if (next !== "none") kernel?.appendEvent(event("connector_status", { connector_id: 1, kind: "github", status: statusOf(next) }));
@@ -221,6 +403,40 @@ export function integrationsFixture(options: IntegrationsFixtureOptions = {}): I
   };
   /** A token is in use: connected, expiring or expired. */
   const hasToken = (): boolean => state === "connected" || state === "expiring" || state === "expired";
+  const connectorIdOf = (kind: McpKind): number => (kind === "jira" ? 2 : 3);
+  const setMcp = (kind: McpKind, next: McpRowState): void => {
+    mcp[kind] = next;
+  };
+  const changeMcp = (kind: McpKind, next: McpRowState): void => {
+    setMcp(kind, next);
+    if (next !== "none") kernel?.appendEvent(event("connector_status", { connector_id: connectorIdOf(kind), kind, status: next }));
+  };
+  /** The MCP kind a route's `:kind` names, else `undefined` (the kernel would refuse it). */
+  const mcpKindOf = (req: FixtureRequest): McpKind | undefined => MCP_KINDS.find((kind) => kind === req.params.kind);
+  const unknownKind: FixtureAnswer = { status: 404, body: { error: "unknown_connector" } };
+  /** `owner/name` of a policy route's params. */
+  const repoOf = (req: FixtureRequest): string => `${req.params.owner ?? ""}/${req.params.repo ?? ""}`;
+  /** Replaces the repo's policy in the list and answers it, or the 404 the kernel gives a repo it never reached. */
+  const updatePolicy = (repo: string, update: (before: RepoPolicy) => RepoPolicy): FixtureAnswer => {
+    const before = policies.find((policy) => policy.repo === repo);
+    if (before === undefined) return { status: 404, body: { error: "unknown_repo" } };
+    const after = update(before);
+    policies = policies.map((policy) => (policy.repo === repo ? after : policy));
+    return { status: 200, body: after satisfies RepoPolicy };
+  };
+
+  const mcpConnect = (req: FixtureRequest): FixtureAnswer => {
+    const kind = mcpKindOf(req);
+    if (kind === undefined) return unknownKind;
+    mcpConnects.push(kind);
+    if (mcpRefusal !== undefined) return { status: mcpRefusal.status, body: { error: mcpRefusal.error, ...(mcpRefusal.message === undefined ? {} : { message: mcpRefusal.message }), connector: kind } };
+    // The vendor's consent page, a distinct address per call (the single-use state); any host, https only.
+    const url = `https://auth.example.test/${kind}/authorize?state=fixture-mcp-${mcpUrls.length + 1}`;
+    const expires = new Date(Date.now() + SETUP_WINDOW_MS).toISOString();
+    mcpUrls.push(url);
+    mcpExpiries.push(expires);
+    return { status: 200, body: { authorize_url: url, expires_at: expires } satisfies McpConnectResponse };
+  };
 
   const token = async (req: FixtureRequest): Promise<FixtureAnswer> => {
     tokens.push(req.body);
@@ -253,6 +469,15 @@ export function integrationsFixture(options: IntegrationsFixtureOptions = {}): I
     setups,
     cancels,
     setupUrls,
+    mcpConnects,
+    mcpCancels,
+    mcpDisconnects,
+    mcpUrls,
+    mcpExpiries,
+    upgradeReads,
+    policyReads,
+    policySets,
+    policyDetects,
     attach(started) {
       kernel = started;
     },
@@ -291,10 +516,23 @@ export function integrationsFixture(options: IntegrationsFixtureOptions = {}): I
       const writes = reason === "token_write_scoped" ? { write_permissions: [{ permission: "contents", level: "write" }] } : {};
       kernel?.appendEvent(event("connector_status", { connector_id: 1, kind: "github", status: "rejected", refused: reason, message: RAW_REFUSAL_MESSAGE, ...writes, ...extra }));
     },
+    setMcp,
+    changeMcp,
+    refuseMcpConnect(next) {
+      mcpRefusal = next;
+    },
+    refuseMcpEvent(kind, code) {
+      kernel?.appendEvent(event("connector_status", { connector_id: connectorIdOf(kind), kind, status: mcp[kind], refused: code, message: MCP_REFUSAL_MESSAGE }));
+    },
+    setUpgradeUrl(next) {
+      upgradeUrl = next;
+    },
     event,
     options: {
       routes: {
-        "GET /agents": () => ({ status: 200, body: { agents: [WRIGHT, MASON, ADA] } }),
+        "GET /agents": () => ({ status: 200, body: { agents: rosterOf(options.masonTools) } }),
+        // Mason's detail only, and only for the kinds he is given tools of; every other crew member is a 404 (unknown, as before phase 8).
+        "GET /agents/:id": ({ params }) => (params.id === "mason" ? { status: 200, body: masonDetail(options.masonTools) } : { status: 404, body: { error: "unknown_agent" } }),
         "GET /connectors": async () => {
           if (drop) {
             drop = false;
@@ -302,7 +540,49 @@ export function integrationsFixture(options: IntegrationsFixtureOptions = {}): I
             void kernel?.close();
             return new Promise<FixtureAnswer>(() => undefined);
           }
-          return { status: 200, body: { connectors: state === "none" ? [] : [answerRow(state)] } satisfies ConnectorsResponse };
+          const mcpConnections = MCP_KINDS.flatMap((kind) => (mcp[kind] === "none" ? [] : [mcpConnectionRow(kind, mcp[kind] as Exclude<McpRowState, "none">)]));
+          return { status: 200, body: { connectors: state === "none" ? [] : [answerRow(state)], mcp_connections: mcpConnections } satisfies ConnectorsResponse };
+        },
+        "POST /connectors/mcp/:kind/connect": mcpConnect,
+        "POST /connectors/mcp/:kind/connect/cancel": (req) => {
+          const kind = mcpKindOf(req);
+          if (kind === undefined) return unknownKind;
+          mcpCancels.push(kind);
+          return { status: 200, body: { cancelled: true } satisfies GitHubAppSetupCancelResponse };
+        },
+        "POST /connectors/mcp/:kind/disconnect": (req) => {
+          const kind = mcpKindOf(req);
+          if (kind === undefined) return unknownKind;
+          mcpDisconnects.push(kind);
+          changeMcp(kind, "disconnected");
+          return { status: 200, body: { connector: disconnectedRow(kind) } satisfies ConnectorChangeResponse };
+        },
+        "GET /connectors/github/app/upgrade": (req) => {
+          upgradeReads.push({ ...req.query });
+          return { status: 200, body: { url: upgradeUrl } satisfies GitHubAppUpgradeResponse };
+        },
+        "GET /repos/policy": (req) => {
+          policyReads.push({ ...req.query });
+          return { status: 200, body: { repos: policies } satisfies RepoPoliciesResponse };
+        },
+        "POST /repos/policy/:owner/:repo/detect": (req) => {
+          const repo = repoOf(req);
+          policyDetects.push(repo);
+          // A fresh read of GitHub: the detection is dated now, and nothing else about the repo changes.
+          return updatePolicy(repo, (before) => ({ ...before, detected: { ...(before.detected ?? {}), read_at: new Date().toISOString() } }));
+        },
+        "POST /repos/policy/:owner/:repo": (req) => {
+          const repo = repoOf(req);
+          const body = req.body as RepoPolicySetBody;
+          policySets.push({ repo, body });
+          return updatePolicy(repo, (before) => ({
+            ...before,
+            kind: body.kind,
+            required_reviews: body.kind === "reviews" ? (body.required ?? null) : null,
+            trust_unprotected: body.trust_unprotected ?? before.trust_unprotected,
+            set_by: "owner",
+            set_at: new Date().toISOString(),
+          }));
         },
         "POST /connectors/github/token": token,
         "POST /connectors/github/disconnect": (req) => {
@@ -325,7 +605,7 @@ export function integrationsFixture(options: IntegrationsFixtureOptions = {}): I
         "GET /connectors/github/repos": (req) => {
           repoReads.push({ ...req.query });
           if (req.query.refresh === "1") refreshed = true;
-          const own = state === "app-connected" || state === "app-revoked" ? APP_REPOS : REPOS;
+          const own = state === "app-connected" || state === "app-revoked" || state === "app-needs-permissions" ? APP_REPOS : REPOS;
           const repos = refreshed ? [...own, REFRESHED_REPO] : [...own];
           return { status: 200, body: { repos, verified_at: new Date().toISOString() } satisfies ConnectorReposResponse };
         },
