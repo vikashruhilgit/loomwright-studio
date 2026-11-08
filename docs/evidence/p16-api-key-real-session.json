@@ -1,0 +1,129 @@
+{
+  "probe": "p16-api-key-real-session",
+  "mode": "real-key",
+  "date": "2026-11-08T17:28:48.212Z",
+  "sdk": "0.3.284",
+  "results": [
+    {
+      "model": "claude-fable-5-1",
+      "init_at_s": 23.5,
+      "apiKeySource": "ANTHROPIC_API_KEY",
+      "plugins": [
+        {
+          "name": "loomwright",
+          "path": "local"
+        },
+        {
+          "name": "agents-md",
+          "path": "builtin"
+        },
+        {
+          "name": "telemetry",
+          "path": "builtin"
+        },
+        {
+          "name": "plugin-authoring",
+          "path": "builtin"
+        }
+      ],
+      "status": "ok",
+      "answered_by": [
+        "claude-fable-5-1"
+      ],
+      "reply": "OK",
+      "seconds": 26.2,
+      "rate_limit_event": null
+    },
+    {
+      "model": "claude-opus-5-5",
+      "init_at_s": 22.5,
+      "apiKeySource": "ANTHROPIC_API_KEY",
+      "plugins": [
+        {
+          "name": "loomwright",
+          "path": "local"
+        },
+        {
+          "name": "agents-md",
+          "path": "builtin"
+        },
+        {
+          "name": "telemetry",
+          "path": "builtin"
+        }
+      ],
+      "status": "ok",
+      "answered_by": [
+        "claude-opus-5-5"
+      ],
+      "reply": "OK",
+      "seconds": 25.5,
+      "rate_limit_event": null
+    },
+    {
+      "model": "claude-sonnet-5",
+      "init_at_s": 23.1,
+      "apiKeySource": "ANTHROPIC_API_KEY",
+      "plugins": [
+        {
+          "name": "loomwright",
+          "path": "local"
+        },
+        {
+          "name": "agents-md",
+          "path": "builtin"
+        },
+        {
+          "name": "telemetry",
+          "path": "builtin"
+        },
+        {
+          "name": "plugin-authoring",
+          "path": "builtin"
+        }
+      ],
+      "status": "ok",
+      "answered_by": [
+        "claude-sonnet-5"
+      ],
+      "reply": "OK",
+      "seconds": 25.6,
+      "rate_limit_event": null
+    },
+    {
+      "model": "claude-haiku-4-5-20251001",
+      "init_at_s": 23.2,
+      "apiKeySource": "ANTHROPIC_API_KEY",
+      "plugins": [
+        {
+          "name": "loomwright",
+          "path": "local"
+        },
+        {
+          "name": "agents-md",
+          "path": "builtin"
+        },
+        {
+          "name": "telemetry",
+          "path": "builtin"
+        }
+      ],
+      "status": "ok",
+      "answered_by": [
+        "claude-haiku-4-5-20251001"
+      ],
+      "reply": "OK",
+      "seconds": 27.1,
+      "rate_limit_event": null
+    }
+  ],
+  "provider_health": {
+    "status": "ok"
+  },
+  "strip_check": {
+    "decoy_token_reached_child": false,
+    "credential_vars_in_child": [
+      "ANTHROPIC_API_KEY"
+    ]
+  }
+}
