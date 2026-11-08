@@ -38,8 +38,11 @@ In the clone, in a Claude Code session:
 
 Try the supported, documented forms in this order, **one at a time**, recording each one's exact command line, what it did and its last lines of output. Stop at the first that merges.
 
-1. `/loomwright:automate --resume <run_id> --auto-merge` (add `--trust-unprotected` only if setup step 3 chose it).
-2. Any other entry point the installed docs name for merging one parked item (search `commands/automate.md` and `skills/automate-loop/modes-and-merge-gate.md` and `resume.md` for it; record what you found and tried).
+1. `/loomwright:automate --merge-parked <run_id>` (Loomwright 17.34.0 or later; 17.34.1 or later on a branch with no required reviews). Add `--trust-unprotected` only if setup step 3 chose it.
+2. On Loomwright older than 17.34.0 only: `/loomwright:automate --resume <run_id> --auto-merge` (add `--trust-unprotected` only if setup step 3 chose it). On 17.31.0 this parks again and never reaches the gate.
+3. Any other entry point the installed docs name for merging one parked item (search `commands/automate.md` and `skills/automate-loop/modes-and-merge-gate.md` and `resume.md` for it; record what you found and tried).
+
+If the gate parks on `rules_gate_dirty_tree` and the only dirty file is an untracked `.gitignore` holding `.supervisor/` (written by Loomwright's Supervisor during run 1), delete it, retry, and record that step. Committing `.supervisor/` to the repo's `.gitignore` on `main` before run 1 avoids it.
 
 Do not use a form the docs do not document, and do not combine steps by hand.
 
