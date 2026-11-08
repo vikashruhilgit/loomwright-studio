@@ -1,7 +1,9 @@
-// The open-external allowlist (AC8): exactly three address forms may reach the
-// system browser; every other spelling is refused.
+// The open-external allowlist (AC8): only the listed address forms may reach the
+// system browser (three fixed forms, two policy-card GitHub pages and an address the
+// kernel itself answered); every other spelling is refused.
 import { describe, expect, it } from "vitest";
-import { isAllowedExternal } from "./open-external";
+import { NO_KERNEL_URLS, isAllowedExternal, rememberKernelUrl } from "./open-external";
+import type { KernelUrls } from "./open-external";
 
 const PORT = 45_123;
 const START = `http://127.0.0.1:${PORT}/connectors/github/app/start?state=s3cr3t-state_1`;
@@ -118,5 +120,160 @@ describe("every other scheme and every non-string", () => {
   ];
   it.each(refused)("refuses %s", (_name, url) => {
     expect(isAllowedExternal(url, PORT)).toBe(false);
+  });
+});
+
+describe("the policy-card GitHub pages", () => {
+  const allowed = ["https://github.com/acme/widgets/settings", "https://github.com/a/b/settings", "https://github.com/Some-Org1/my.repo_x-1/settings", "https://github.com/settings/billing/plans"];
+  it.each(allowed)("allows %s", (url) => {
+    expect(isAllowedExternal(url, PORT)).toBe(true);
+  });
+
+  const refused: [string, string][] = [
+    ["a query on the repo settings page", "https://github.com/acme/widgets/settings?x=1"],
+    ["an extra path segment after settings", "https://github.com/acme/widgets/settings/branches"],
+    ["an extra segment before settings", "https://github.com/acme/widgets/extra/settings"],
+    ["a trailing slash", "https://github.com/acme/widgets/settings/"],
+    ["a bad owner name (leading hyphen)", "https://github.com/-acme/widgets/settings"],
+    ["a bad owner name (trailing hyphen)", "https://github.com/acme-/widgets/settings"],
+    ["a bad owner name (double hyphen)", "https://github.com/ac--me/widgets/settings"],
+    ["a bad owner name (underscore)", "https://github.com/ac_me/widgets/settings"],
+    ["an owner over 39 characters", `https://github.com/${"a".repeat(40)}/widgets/settings`],
+    ["an encoded owner", "https://github.com/ac%6De/widgets/settings"],
+    ["a bad repo name (space)", "https://github.com/acme/wid%20gets/settings"],
+    ["a repo name of dot-dot", "https://github.com/acme/../settings"],
+    ["a repo name of a single dot", "https://github.com/acme/./settings"],
+    ["a repo over 100 characters", `https://github.com/acme/${"r".repeat(101)}/settings`],
+    ["settings as the owner", "https://github.com/settings/widgets/settings"],
+    ["no repo", "https://github.com/acme/settings"],
+    ["plain http", "http://github.com/acme/widgets/settings"],
+    ["another host", "https://example.com/acme/widgets/settings"],
+    ["a port", "https://github.com:8443/acme/widgets/settings"],
+    ["userinfo", "https://user@github.com/acme/widgets/settings"],
+    ["a fragment", "https://github.com/acme/widgets/settings#x"],
+    ["/settings/billing", "https://github.com/settings/billing"],
+    ["/settings/billing/", "https://github.com/settings/billing/"],
+    ["the billing plans page with a query", "https://github.com/settings/billing/plans?x=1"],
+    ["the billing plans page with a sub-path", "https://github.com/settings/billing/plans/x"],
+    ["the billing plans page in upper case", "https://github.com/settings/billing/Plans"],
+    ["the billing plans page over http", "http://github.com/settings/billing/plans"],
+  ];
+  it.each(refused)("refuses %s", (_name, url) => {
+    expect(isAllowedExternal(url, PORT)).toBe(false);
+  });
+});
+
+describe("a kernel-answered address", () => {
+  const NOW = Date.parse("2026-11-08T12:00:00.000Z");
+  const FUTURE = "2026-11-08T12:10:00.000Z";
+  const AUTHORIZE = "https://auth.atlassian.com/authorize?audience=api&state=abc123";
+  const connect = (kind: string, url: unknown, expires: unknown = FUTURE) => ({
+    request: { method: "POST", path: "/connectors/mcp/:kind/connect", params: { kind } },
+    result: { ok: true, status: 200, body: { authorize_url: url, expires_at: expires } },
+  });
+  const remember = (state: KernelUrls, step: { request: unknown; result: unknown }, now = NOW): KernelUrls => rememberKernelUrl(state, step.request, step.result, now);
+  const upgrade = (url: unknown) => ({ request: { method: "GET", path: "/connectors/github/app/upgrade" }, result: { ok: true, status: 200, body: { url } } });
+
+  it("refuses an https address nobody remembered", () => {
+    expect(isAllowedExternal(AUTHORIZE, PORT)).toBe(false);
+    expect(isAllowedExternal(AUTHORIZE, PORT, NO_KERNEL_URLS, NOW)).toBe(false);
+  });
+
+  it("allows a connect's authorize_url byte-for-byte until its expires_at", () => {
+    const state = remember(NO_KERNEL_URLS, connect("jira", AUTHORIZE));
+    expect(isAllowedExternal(AUTHORIZE, PORT, state, NOW)).toBe(true);
+    expect(isAllowedExternal(AUTHORIZE, PORT, state, Date.parse(FUTURE) - 1)).toBe(true);
+    expect(isAllowedExternal(AUTHORIZE, PORT, state, Date.parse(FUTURE))).toBe(false);
+    expect(isAllowedExternal(AUTHORIZE, PORT, state, Date.parse(FUTURE) + 1)).toBe(false);
+  });
+
+  it("refuses a renderer-only https address beside a remembered one, and any different spelling of it", () => {
+    const state = remember(NO_KERNEL_URLS, connect("jira", AUTHORIZE));
+    for (const url of ["https://example.com/", `${AUTHORIZE}&x=1`, AUTHORIZE.replace("https:", "http:"), `${AUTHORIZE}#frag`, AUTHORIZE.replace("auth.", "AUTH."), ` ${AUTHORIZE}`]) {
+      expect(isAllowedExternal(url, PORT, state, NOW)).toBe(false);
+    }
+  });
+
+  it("drops an expired address when the next request is remembered", () => {
+    const state = remember(NO_KERNEL_URLS, connect("jira", AUTHORIZE));
+    const later = remember(state, { request: { method: "GET", path: "/status" }, result: { ok: true, status: 200, body: {} } }, Date.parse(FUTURE) + 1);
+    expect(later.mcp).toEqual({});
+  });
+
+  it("drops that kind's address on its cancel, whatever the cancel answered, and keeps the other kind's", () => {
+    let state = remember(NO_KERNEL_URLS, connect("jira", AUTHORIZE));
+    const clickup = "https://app.clickup.com/api/v2/oauth?state=zzz";
+    state = remember(state, connect("clickup", clickup));
+    state = remember(state, { request: { method: "POST", path: "/connectors/mcp/:kind/connect/cancel", params: { kind: "jira" } }, result: { ok: false, status: 0, connection: { state: "unreachable" } } });
+    expect(isAllowedExternal(AUTHORIZE, PORT, state, NOW)).toBe(false);
+    expect(isAllowedExternal(clickup, PORT, state, NOW)).toBe(true);
+  });
+
+  it("drops that kind's address on its disconnect", () => {
+    let state = remember(NO_KERNEL_URLS, connect("jira", AUTHORIZE));
+    state = remember(state, { request: { method: "POST", path: "/connectors/mcp/:kind/disconnect", params: { kind: "jira" } }, result: { ok: true, status: 200, body: {} } });
+    expect(isAllowedExternal(AUTHORIZE, PORT, state, NOW)).toBe(false);
+  });
+
+  it("replaces a kind's address on its next connect", () => {
+    const next = "https://auth.atlassian.com/authorize?state=second";
+    let state = remember(NO_KERNEL_URLS, connect("jira", AUTHORIZE));
+    state = remember(state, connect("jira", next));
+    expect(isAllowedExternal(AUTHORIZE, PORT, state, NOW)).toBe(false);
+    expect(isAllowedExternal(next, PORT, state, NOW)).toBe(true);
+  });
+
+  it("keeps a live address when a later connect is refused", () => {
+    let state = remember(NO_KERNEL_URLS, connect("jira", AUTHORIZE));
+    state = remember(state, { request: connect("jira", 0).request, result: { ok: false, status: 409, body: { error: "connect_in_progress", message: "x" } } });
+    expect(isAllowedExternal(AUTHORIZE, PORT, state, NOW)).toBe(true);
+  });
+
+  it("remembers nothing from an answer that is not ok, not https, not plain, or has no usable expiry", () => {
+    const refusedAnswer = { request: connect("jira", AUTHORIZE).request, result: { ok: false, status: 409, body: { authorize_url: AUTHORIZE, expires_at: FUTURE } } };
+    expect(remember(NO_KERNEL_URLS, refusedAnswer)).toEqual(NO_KERNEL_URLS);
+    for (const step of [
+      connect("jira", "http://auth.example.com/authorize"),
+      connect("jira", "https://user:pw@auth.example.com/authorize"),
+      connect("jira", "https://auth.example.com/authorize#frag"),
+      connect("jira", "https://AUTH.example.com/authorize"),
+      connect("jira", 7),
+      connect("jira", AUTHORIZE, "not a date"),
+      connect("jira", AUTHORIZE, null),
+    ]) {
+      expect(remember(NO_KERNEL_URLS, step).mcp).toEqual({});
+    }
+  });
+
+  it("remembers a connect only for a kind the kernel serves", () => {
+    expect(remember(NO_KERNEL_URLS, connect("github", AUTHORIZE)).mcp).toEqual({});
+    expect(remember(NO_KERNEL_URLS, connect("../x", AUTHORIZE)).mcp).toEqual({});
+  });
+
+  it("allows the App upgrade url while it is the latest answer, and drops it on a null", () => {
+    const url = "https://github.com/apps/loomwright-studio/installations/new/permissions?target_id=42";
+    let state = remember(NO_KERNEL_URLS, upgrade(url));
+    expect(isAllowedExternal(url, PORT, state, NOW + 86_400_000)).toBe(true);
+    expect(isAllowedExternal(`${url}&x=1`, PORT, state, NOW)).toBe(false);
+    state = remember(state, upgrade(null));
+    expect(isAllowedExternal(url, PORT, state, NOW)).toBe(false);
+  });
+
+  it("does not let a remembered address widen what the http form allows", () => {
+    const loopback = `http://127.0.0.1:${PORT + 1}/connectors/github/app/start?state=a`;
+    expect(remember(NO_KERNEL_URLS, upgrade(loopback)).upgrade).toBeNull();
+    expect(isAllowedExternal(loopback, PORT, { mcp: {}, upgrade: loopback }, NOW)).toBe(false);
+  });
+
+  it("ignores a request that is not shaped like one, and never changes its input", () => {
+    const state = remember(NO_KERNEL_URLS, connect("jira", AUTHORIZE));
+    const before = JSON.stringify(state);
+    for (const request of [undefined, null, 7, "POST", { method: 1, path: "/x" }, { method: "POST" }, [], { method: "POST", path: "/connectors/mcp/:kind/connect", params: "jira" }]) {
+      expect(rememberKernelUrl(state, request, { ok: true, status: 200, body: {} }, NOW)).toEqual(state);
+    }
+    for (const result of [undefined, null, 7, { ok: true }, { ok: true, status: 200 }, { ok: true, status: 200, body: [] }]) {
+      expect(() => rememberKernelUrl(state, connect("jira", AUTHORIZE).request, result, NOW)).not.toThrow();
+    }
+    expect(JSON.stringify(state)).toBe(before);
   });
 });

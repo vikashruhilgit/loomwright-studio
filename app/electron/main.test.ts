@@ -43,7 +43,9 @@ const kernel = vi.hoisted(() => {
   const where: { current: unknown } = { current: { state: "connected", port: 1 } };
   // Every address `shell.openExternal` was handed.
   const opened: string[] = [];
-  return { feeds, where, opened };
+  // What `request()` answers; a test sets it to try a kernel answer that carries an address.
+  const answer: { current: unknown } = { current: { ok: true, status: 200, body: {} } };
+  return { feeds, where, opened, answer };
 });
 
 vi.mock("./kernel-connection", () => ({
@@ -52,7 +54,7 @@ vi.mock("./kernel-connection", () => ({
   tokenReaderFor: () => async () => undefined,
   createKernelConnection: () => ({
     connection: async () => kernel.where.current,
-    request: async () => ({ ok: true, status: 200, body: {} }),
+    request: async () => kernel.answer.current,
     openFeed: (after: number, onFrame: (f: unknown) => void) =>
       new Promise((done) => {
         const feed = {
@@ -292,6 +294,90 @@ describe("the open-external channel", () => {
 
   it("leaves the window's navigation and window-open guards in place", () => {
     expect(electron.windows[0]?.openHandler?.()).toEqual({ action: "deny" });
+  });
+
+  describe("an address the kernel answered", () => {
+    const AUTHORIZE = "https://auth.atlassian.com/authorize?state=abc123";
+    const UPGRADE = "https://github.com/apps/loomwright-studio/installations/new/permissions?target_id=9";
+    const request = (req: unknown, answer: unknown) => {
+      kernel.answer.current = answer;
+      return Promise.resolve(electron.handlers.get("studio:request")?.(owner(), req));
+    };
+    const connectReq = (kind: string) => ({ method: "POST", path: "/connectors/mcp/:kind/connect", params: { kind } });
+    const connectAnswer = (url: string, expires = new Date(Date.now() + 600_000).toISOString()) => ({ ok: true, status: 200, body: { authorize_url: url, expires_at: expires } });
+    const cancel = (kind: string) => request({ method: "POST", path: "/connectors/mcp/:kind/connect/cancel", params: { kind } }, { ok: true, status: 200, body: {} });
+
+    afterEach(async () => {
+      await cancel("jira");
+      await cancel("clickup");
+      await request({ method: "GET", path: "/connectors/github/app/upgrade" }, { ok: true, status: 200, body: { url: null } });
+      kernel.answer.current = { ok: true, status: 200, body: {} };
+    });
+
+    it("refuses the address before the kernel has answered it", async () => {
+      await expect(open(AUTHORIZE)).resolves.toBe(false);
+      await expect(open(UPGRADE)).resolves.toBe(false);
+      expect(kernel.opened).toEqual([]);
+    });
+
+    it("opens a connect's authorize_url and hands the renderer the answer unchanged", async () => {
+      const answer = connectAnswer(AUTHORIZE);
+      await expect(request(connectReq("jira"), answer)).resolves.toBe(answer);
+      await expect(open(AUTHORIZE)).resolves.toBe(true);
+      await expect(open(`${AUTHORIZE}&x=1`)).resolves.toBe(false);
+      await expect(open("https://example.com/")).resolves.toBe(false);
+      expect(kernel.opened).toEqual([AUTHORIZE]);
+    });
+
+    it("opens the App upgrade url", async () => {
+      await request({ method: "GET", path: "/connectors/github/app/upgrade" }, { ok: true, status: 200, body: { url: UPGRADE } });
+      await expect(open(UPGRADE)).resolves.toBe(true);
+      expect(kernel.opened).toEqual([UPGRADE]);
+    });
+
+    it("refuses an authorize_url once its window has expired", async () => {
+      await request(connectReq("jira"), connectAnswer(AUTHORIZE, new Date(Date.now() - 1_000).toISOString()));
+      await expect(open(AUTHORIZE)).resolves.toBe(false);
+      expect(kernel.opened).toEqual([]);
+    });
+
+    it("refuses an authorize_url after that kind's cancel", async () => {
+      await request(connectReq("jira"), connectAnswer(AUTHORIZE));
+      await cancel("jira");
+      await expect(open(AUTHORIZE)).resolves.toBe(false);
+      expect(kernel.opened).toEqual([]);
+    });
+
+    it("refuses an authorize_url once the next connect has replaced it", async () => {
+      const next = "https://auth.atlassian.com/authorize?state=second";
+      await request(connectReq("jira"), connectAnswer(AUTHORIZE));
+      await request(connectReq("jira"), connectAnswer(next));
+      await expect(open(AUTHORIZE)).resolves.toBe(false);
+      await expect(open(next)).resolves.toBe(true);
+    });
+
+    it("remembers nothing from a refused connect, and still refuses while the kernel is not connected", async () => {
+      await request(connectReq("jira"), { ok: false, status: 409, body: { error: "connect_in_progress", message: "x" } });
+      await expect(open(AUTHORIZE)).resolves.toBe(false);
+      await request(connectReq("jira"), connectAnswer(AUTHORIZE));
+      kernel.where.current = { state: "unreachable", reason: "api_unreachable" };
+      await expect(open(AUTHORIZE)).resolves.toBe(false);
+      expect(kernel.opened).toEqual([]);
+    });
+
+    it("opens the two fixed policy-card pages and refuses their off-list neighbours", async () => {
+      for (const url of ["https://github.com/acme/widgets/settings", "https://github.com/settings/billing/plans"]) await expect(open(url)).resolves.toBe(true);
+      for (const url of ["https://github.com/acme/widgets/settings?x=1", "https://github.com/acme/widgets/settings/branches", "https://github.com/-acme/widgets/settings", "https://github.com/settings/billing"]) {
+        await expect(open(url)).resolves.toBe(false);
+      }
+      expect(kernel.opened).toEqual(["https://github.com/acme/widgets/settings", "https://github.com/settings/billing/plans"]);
+    });
+
+    it("refuses a caller that is not the window, and remembers nothing from it", async () => {
+      kernel.answer.current = connectAnswer(AUTHORIZE);
+      await expect(Promise.resolve(electron.handlers.get("studio:request")?.({ sender: {} }, connectReq("jira")))).rejects.toThrow("refused");
+      await expect(open(AUTHORIZE)).resolves.toBe(false);
+    });
   });
 });
 
