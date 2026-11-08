@@ -24,6 +24,7 @@
 // only `node:` builtins: never the Agent SDK, the session manager or `kernel.ts`.
 import { closeSync, lstatSync, openSync, readFileSync, readSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { oneLine } from "./text-rules.js";
 
 /** The title line that makes a file in `.supervisor/automate/` a run file. */
 export const RUN_FILE_TITLE = "# Automate Run:";
@@ -100,8 +101,7 @@ export interface RunSummary {
 
 /** One line, no control characters, at most `MAX_VALUE` characters. */
 function clean(text: string): string {
-  // eslint-disable-next-line no-control-regex
-  const line = text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim();
+  const line = oneLine(text);
   return line.length > MAX_VALUE ? `${line.slice(0, MAX_VALUE - 1)}…` : line;
 }
 

@@ -23,6 +23,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { linkSync, lstatSync, mkdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
+import { UNSAFE_BODY_CHARS, UNSAFE_TEXT_CHAR, oneLine } from "./text-rules.js";
 
 /** Where the items go, relative to the checkout (Loomwright's `.supervisor/requirements/` convention). */
 export const STUDIO_ITEMS_DIR = ".supervisor/requirements/studio";
@@ -70,15 +71,11 @@ export const REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/#@-]{0,199}$/;
 
 /** A link is a plain `https` URL: no whitespace, control or line-separator character (C0, DEL, C1, U+2028/9), quote, angle bracket or backtick. */
 // eslint-disable-next-line no-control-regex
-export const LINK_PATTERN = /^https:\/\/[^\s\u0000-\u001f\u007f-\u009f\u2028\u2029<>"'`\\]{1,1990}$/;
-
-// eslint-disable-next-line no-control-regex
-const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029]/g;
+export const LINK_PATTERN = /^https:\/\/[^\s\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069<>"'`\\]{1,1990}$/;
 
 /** A title as one clean line (control characters and runs of space collapsed), cut to `MAX_TITLE`. */
 export function cleanTitle(title: string): string {
-  // eslint-disable-next-line no-control-regex
-  const line = title.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim();
+  const line = oneLine(title);
   return line.length > MAX_TITLE ? line.slice(0, MAX_TITLE) : line;
 }
 
@@ -105,7 +102,7 @@ export function itemFileName(ref: string): string {
 
 /** The body quoted line by line: `> ` before every line, an empty one included. */
 export function quoteBody(body: string): string {
-  const text = body.replace(/\r\n?/g, "\n").replace(CONTROL, " ");
+  const text = body.replace(/\r\n?/g, "\n").replace(UNSAFE_BODY_CHARS, " ");
   return text
     .split("\n")
     .map((l) => (l === "" ? ">" : `> ${l}`))
@@ -150,7 +147,7 @@ export function automateInvocation(path: string): string {
 function shellArg(path: string): string {
   if (/^[A-Za-z0-9_./~@+:=,-]+$/.test(path)) return path;
   // eslint-disable-next-line no-control-regex
-  if (/["\\$`\u0000-\u001f\u007f]/.test(path)) throw new RangeError("unsafe_path: the backlog path has a character that cannot be put in an invocation");
+  if (/["\\$`]/.test(path) || UNSAFE_TEXT_CHAR.test(path)) throw new RangeError("unsafe_path: the backlog path has a character that cannot be put in an invocation");
   return `"${path}"`;
 }
 

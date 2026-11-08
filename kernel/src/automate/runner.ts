@@ -49,6 +49,7 @@ import type { GitHubRepoPolicyReads } from "../integrations/types.js";
 import type { HeldToolVerdict } from "../sessions/types.js";
 import { mergeCheck } from "./merge-check.js";
 import { readRunState, summarizeRuns } from "./run-state.js";
+import { ONE_SAFE_LINE } from "./text-rules.js";
 import { MAX_BODY, MAX_LINK, MAX_REF, MAX_TICKETS, MAX_TITLE, writeTicketItems } from "./tickets-to-items.js";
 
 /** The four tool names, in the order the part lists them. */
@@ -269,7 +270,7 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
       head_sha: shaShape.describe("The pull request's full head SHA (the run file's ready_sha)."),
       ci: z.enum(MERGE_APPROVAL_CI_CLAIMS).describe("The CI state you saw at that head."),
       ready_at: readyAtShape.describe("When Loomwright marked it READY: the run file's ready_at."),
-      policy: z.string().min(1).max(100).regex(/^[^\u0000-\u001f\u007f]+$/, "must be one line").optional().describe("The merge policy that asks for this approval, if you want it shown."),
+      policy: z.string().min(1).max(100).regex(ONE_SAFE_LINE, "must be one line with no control, line-separator or bidi character").optional().describe("The merge policy that asks for this approval, if you want it shown."),
     },
     requiresConnector: "github",
     requiresConnectorLevel: "write",
