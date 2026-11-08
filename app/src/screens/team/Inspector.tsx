@@ -16,7 +16,9 @@
 //   it back), and "unknown" while the roster says wright.json does not read ok.
 // - Both: a Connectors row (phase 6 item 08) with the GitHub grant (the roster's
 //   `connectors`) and the connector's state (`GET /connectors`, read by the
-//   screen), and Grant GitHub or Revoke through `POST /agents/:id/set`.
+//   screen), and Grant GitHub or Revoke through `POST /agents/:id/set`; plus,
+//   per connected MCP kind (Jira, ClickUp), the tools the agent holds (its
+//   `GET /agents/:id` `settings.content.connectors`), unknown for Wright.
 // - The header avatar carries the card's state (`avatar`, from the task line),
 //   never a fixed one.
 //
@@ -24,7 +26,7 @@
 // through the feed (`agent_*` events refetch `agents`), never a local edit.
 // Every kernel string is a React text child (invariant 3).
 import { type FormEvent, type KeyboardEvent, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
-import type { AgentDetailResponse, AgentSetField, RosterEntry, StudioBridge, WrightSetField } from "../../api/contract";
+import type { AgentDetailResponse, AgentSetField, McpConnectionKind, RosterEntry, StudioBridge, WrightSetField } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
 import type { AvatarState } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
@@ -32,7 +34,7 @@ import { Button } from "../../components/Button/Button";
 import { formatTokens } from "../../components/Card/Card";
 import { SelectField, TextField } from "../../components/Input/Input";
 import { setAgentField, turnAgent } from "./actions";
-import { Connectors, type GrantChange, changeGithubGrant } from "./Connectors";
+import { Connectors, type GrantChange, changeGithubGrant, changeMcpGrant, mcpGrantRows } from "./Connectors";
 import {
   CLEAR_VALUE,
   CREW_SET_FIELDS,
@@ -291,6 +293,18 @@ export function Inspector({ api, agent, avatar, detail, wrightSet, connectors, o
     }
   };
 
+  // A per-tool MCP grant: the same route as GitHub's, one kind's tool list at a time.
+  const onMcpGrant = async (kind: McpConnectionKind, tools: readonly string[]) => {
+    setBusy(true);
+    setNotice(undefined);
+    try {
+      const outcome = await changeMcpGrant(api, agent, kind, tools);
+      setNotice({ kind: outcome.ok ? "ok" : "error", text: outcome.text });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const ok = detail?.status === "ok" ? detail.detail : undefined;
   const prose = ok === undefined ? undefined : charterProse(ok);
   // A charter list that does not parse is null: shown as not read, never as "None stated".
@@ -301,6 +315,8 @@ export function Inspector({ api, agent, avatar, detail, wrightSet, connectors, o
   // value, "no limit" or "not set". The model falls back to the roster's own read of the same file,
   // which says itself whether it read ok.
   const content = ok === undefined ? undefined : acceptedSettings(ok);
+  // Wright has no detail route, so its per-tool MCP grant is unknown (undefined), never "not granted".
+  const mcpSettings = lead ? undefined : content;
   const value = (field: AgentSetField, absent: string): string => settingText(content, field, absent);
   const model = isRecord(content) ? value("model", "not set") : rosterModel(agent);
   // Wright's effort and delegation depth: no route reports them, so a value is shown only as this
@@ -394,7 +410,14 @@ export function Inspector({ api, agent, avatar, detail, wrightSet, connectors, o
       </Section>
 
       <Section title="Connectors" note="granted per agent" testId="team-insp-connectors">
-        <Connectors granted={githubGranted(agent)} state={connectors} busy={busy} onChange={(change) => void onGrant(change)} />
+        <Connectors
+          granted={githubGranted(agent)}
+          state={connectors}
+          busy={busy}
+          onChange={(change) => void onGrant(change)}
+          mcp={mcpGrantRows(connectors, mcpSettings)}
+          onMcpChange={(kind, tools) => void onMcpGrant(kind, tools)}
+        />
       </Section>
 
       {ok === undefined ? null : (
