@@ -1,6 +1,6 @@
 # Probe 14: can Loomwright merge one parked `awaiting_merge` item through its `--auto-merge` gate?
 
-Phase 8 item 01, **owner-run** (or the agent on the owner's word, with the owner watching: D33, D35). **Run 2026-11-05: no on Loomwright 17.31.0. Run 2026-11-08: yes on 17.34.1, with `/loomwright:automate --merge-parked <run_id>` as run 2 (added to Loomwright after the first run; try it first on 17.34.0 or later).** This file is the procedure only; the result is in `docs/OPEN_QUESTIONS.md` ("Phase 8: probe p14").
+Phase 8 item 01, **owner-run** (or the agent on the owner's word, with the owner watching: D33, D35). **Run 2026-11-05: no on Loomwright 17.31.0. Run 2026-11-08: yes on 17.34.1 with one manual step, then a clean yes on 17.34.2, with `/loomwright:automate --merge-parked <run_id>` as run 2 (added to Loomwright after the first run). Use 17.34.2 or later.** This file is the procedure only; the result is in `docs/OPEN_QUESTIONS.md` ("Phase 8: probe p14").
 
 ## The claim under test
 
@@ -38,11 +38,11 @@ In the clone, in a Claude Code session:
 
 Try the supported, documented forms in this order, **one at a time**, recording each one's exact command line, what it did and its last lines of output. Stop at the first that merges.
 
-1. `/loomwright:automate --merge-parked <run_id>` (Loomwright 17.34.0 or later; 17.34.1 or later on a branch with no required reviews). Add `--trust-unprotected` only if setup step 3 chose it.
+1. `/loomwright:automate --merge-parked <run_id>` (Loomwright 17.34.2 or later; 17.34.0 and 17.34.1 park on known bugs, below). Add `--trust-unprotected` only if setup step 3 chose it.
 2. On Loomwright older than 17.34.0 only: `/loomwright:automate --resume <run_id> --auto-merge` (add `--trust-unprotected` only if setup step 3 chose it). On 17.31.0 this parks again and never reaches the gate.
 3. Any other entry point the installed docs name for merging one parked item (search `commands/automate.md` and `skills/automate-loop/modes-and-merge-gate.md` and `resume.md` for it; record what you found and tried).
 
-If the gate parks on `rules_gate_dirty_tree` and the only dirty file is an untracked `.gitignore` holding `.supervisor/` (written by Loomwright's Supervisor during run 1), delete it, retry, and record that step. Committing `.supervisor/` to the repo's `.gitignore` on `main` before run 1 avoids it.
+On 17.34.1 or older only: if the gate parks on `rules_gate_dirty_tree` and the only dirty file is an untracked `.gitignore` holding `.supervisor/` (written by Loomwright's Supervisor during run 1), delete it, retry, and record that step. Committing `.supervisor/` to the repo's `.gitignore` on `main` before run 1 avoids it.
 
 Do not use a form the docs do not document, and do not combine steps by hand.
 
