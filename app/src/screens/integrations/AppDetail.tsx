@@ -10,9 +10,12 @@
 // There is no Replace token. Revoked on GitHub
 // (`rejected`), the pane keeps the last-read data and Set up again is the primary.
 //
+// Needs new permissions (`needs_permissions`, phase 8): the pane keeps its connected look and the `upgrade` slot (the
+// screen mounts `AppUpgrade` there) sits above it, under the header; the status reads "needs new permissions".
+//
 // `Connector` carries no App name, so the App row shows the slug in the name's place
 // (the mockup shows both). Every value from the kernel or GitHub is untrusted text.
-import { useId } from "react";
+import { type ReactNode, useId } from "react";
 import type { Connector, RosterEntry } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
 import { INTEGRATIONS_TEST_IDS as IDS, type IntegrationsView as View, isOffline, permissionLines, whenText } from "./model";
@@ -31,9 +34,11 @@ export interface AppDetailProps {
   readonly onSetUpAgain: () => void;
   readonly onDisconnect: () => void;
   readonly onRefresh: () => void;
+  /** The "needs new permissions" view, mounted above the pane's rows; absent for a plain connected App. */
+  readonly upgrade?: ReactNode;
 }
 
-export function AppDetail({ view, row, repos, roster, rosterError, refreshing, now, onSetUpAgain, onDisconnect, onRefresh }: AppDetailProps) {
+export function AppDetail({ view, row, repos, roster, rosterError, refreshing, now, onSetUpAgain, onDisconnect, onRefresh, upgrade }: AppDetailProps) {
   const ids = useId();
   const offline = isOffline(view);
   const revoked = view.state === "revoked";
@@ -71,6 +76,8 @@ export function AppDetail({ view, row, repos, roster, rosterError, refreshing, n
         </div>
       ) : null}
 
+      {upgrade}
+
       <dl className="integrations-kv">
         <dt>Status</dt>
         <dd data-testid={IDS.status}>
@@ -84,8 +91,8 @@ export function AppDetail({ view, row, repos, roster, rosterError, refreshing, n
             </>
           ) : (
             <>
-              <span className="integrations-dot" data-state={row.status === "connected" ? "ok" : row.status === "expiring" ? "waiting" : "danger"} aria-hidden="true" />
-              {row.status}
+              <span className="integrations-dot" data-state={row.status === "connected" ? "ok" : row.status === "expiring" || row.status === "needs_permissions" ? "waiting" : "danger"} aria-hidden="true" />
+              {row.status === "needs_permissions" ? "needs new permissions" : row.status}
               <span className="integrations-cap">{`verified ${verified}`}</span>
             </>
           )}
