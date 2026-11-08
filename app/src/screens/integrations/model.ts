@@ -9,8 +9,22 @@
 // here builds markup, and the components render each value as a React text
 // child. The pasted token is not in this file at all: it never leaves
 // `ConnectSheet.tsx`'s submit handler and the one call in `actions.ts`.
-import type { ApiError, ApiResult, Connector, ConnectorStatus, ConnectorsResponse, RosterEntry } from "../../api/contract";
-import { githubGranted, orderRoster, outcomeOf } from "../team/model";
+import type {
+  AgentDetailResponse,
+  ApiError,
+  ApiResult,
+  Connector,
+  ConnectorStatus,
+  ConnectorsResponse,
+  McpConnection,
+  McpConnectionKind,
+  RepoPolicy,
+  RepoPolicyKind,
+  RepoPolicyProposal,
+  RepoPolicySetBody,
+  RosterEntry,
+} from "../../api/contract";
+import { acceptedSettings, githubGranted, isRecord, isWright, orderRoster, outcomeOf } from "../team/model";
 
 /** The ids the unit tests and the e2e spec target; the screen sets no other test id. */
 export const INTEGRATIONS_TEST_IDS = {
@@ -78,6 +92,64 @@ export const INTEGRATIONS_TEST_IDS = {
   appConfirm: "integrations-app-confirm",
   appConfirmInstalled: "integrations-app-confirm-installed",
   appConfirmApps: "integrations-app-confirm-apps",
+  // Phase 8: the list rows beside GitHub's, the Jira / ClickUp pane, the App upgrade and the repo policy card.
+  rowPolicy: "integrations-row-policy",
+  rowJira: "integrations-row-jira",
+  rowClickup: "integrations-row-clickup",
+  mcp: "integrations-mcp",
+  mcpStub: "integrations-mcp-stub",
+  mcpConnect: "integrations-mcp-connect",
+  mcpWait: "integrations-mcp-wait",
+  mcpWaitCloses: "integrations-mcp-wait-closes",
+  mcpOpenAgain: "integrations-mcp-open-again",
+  mcpCancel: "integrations-mcp-cancel",
+  mcpRefused: "integrations-mcp-refused",
+  mcpRefusedMessage: "integrations-mcp-refused-message",
+  mcpRetry: "integrations-mcp-retry",
+  mcpDismiss: "integrations-mcp-dismiss",
+  mcpExpired: "integrations-mcp-expired",
+  mcpReconnect: "integrations-mcp-reconnect",
+  mcpDisconnect: "integrations-mcp-disconnect",
+  mcpDisconnectConfirm: "integrations-mcp-disconnect-confirm",
+  mcpNotice: "integrations-mcp-notice",
+  mcpWorkspace: "integrations-mcp-workspace",
+  mcpTools: "integrations-mcp-tools",
+  mcpTool: "integrations-mcp-tool",
+  mcpToolCell: "integrations-mcp-tool-cell",
+  mcpTeam: "integrations-mcp-team",
+  upgrade: "integrations-upgrade",
+  upgradeAccept: "integrations-upgrade-accept",
+  upgradeAddress: "integrations-upgrade-address",
+  upgradeCheck: "integrations-upgrade-check",
+  upgradeError: "integrations-upgrade-error",
+  upgradeScope: "integrations-upgrade-scope",
+  policy: "integrations-policy",
+  policyEmpty: "integrations-policy-empty",
+  policyError: "integrations-policy-error",
+  policyChip: "integrations-policy-chip",
+  policyCard: "integrations-policy-card",
+  policyDetected: "integrations-policy-detected",
+  policyRedetect: "integrations-policy-redetect",
+  policyProposal: "integrations-policy-proposal",
+  policyAccept: "integrations-policy-accept",
+  policyNone: "integrations-policy-none",
+  policyChoices: "integrations-policy-choices",
+  policyMakePublic: "integrations-policy-make-public",
+  policyUpgrade: "integrations-policy-upgrade",
+  policyLinkError: "integrations-policy-link-error",
+  policyTrust: "integrations-policy-trust",
+  policyTrustConfirm: "integrations-policy-trust-confirm",
+  policyTrusting: "integrations-policy-trusting",
+  policySafe: "integrations-policy-safe",
+  policySafeView: "integrations-policy-safe-view",
+  policySafeAgain: "integrations-policy-safe-again",
+  policyPreset: "integrations-policy-preset",
+  policyReviews: "integrations-policy-reviews",
+  policySet: "integrations-policy-set",
+  policyCurrent: "integrations-policy-current",
+  policyChange: "integrations-policy-change",
+  policyNotice: "integrations-policy-notice",
+  policyStatus: "integrations-policy-status",
 } as const;
 
 // ---- One call's answer ------------------------------------------------------------------------
@@ -283,6 +355,7 @@ export function rowMeta(view: IntegrationsView, connecting: boolean, now: Date):
   }
   const who = row?.account_login ? ` · ${row.account_login}` : "";
   if (view.state === "revoked") return { dot: "danger", text: "rejected · GitHub no longer accepts the App" };
+  if (row?.status === "needs_permissions") return { dot: "waiting", text: `needs new permissions${who}${isAppRow(row) ? " · GitHub App" : ""}` };
   if (view.state === "connected") return { dot: "ok", text: `connected${who}${isAppRow(row) ? " · GitHub App" : ""}` };
   if (view.state === "expired") return { dot: "danger", text: `expired${who}` };
   const days = daysLeft(row?.expires_at ?? null, now);
@@ -377,4 +450,333 @@ export function ungrantedNote(roster: readonly RosterEntry[]): string | undefine
   if (names.length === 0) return undefined;
   const list = names.length === 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1] ?? ""}`;
   return `${list} ${names.length === 1 ? "doesn't" : "don't"} have it.`;
+}
+
+// ---- Phase 8: Jira and ClickUp (MCP) ----------------------------------------------------------------
+// Design source: `docs/design/mockups/phase-8.html` (`listHTML`, `cnPane`, `toolsTable`, `jiraNote`). Everything read
+// from `mcp_connections` (the workspace address, the tool names) and from a refusal (its code and `message`) is the
+// server's or the kernel's text: untrusted, rendered as a React text child.
+
+/** The MCP kinds the screen lists, in the order of the mockup's list. */
+export const MCP_KINDS: readonly McpConnectionKind[] = Object.freeze(["jira", "clickup"] as const);
+
+export interface McpVendor {
+  /** The connector's name in the list and the headings. */
+  readonly name: string;
+  /** Who runs the hosted server the owner approves Studio at. */
+  readonly vendor: string;
+  /** What stays the owner's to do at the vendor after a disconnect (`cnDialog`'s disconnect view). */
+  readonly revoke: string;
+}
+
+export const MCP_VENDORS: Readonly<Record<McpConnectionKind, McpVendor>> = Object.freeze({
+  jira: { name: "Jira", vendor: "Atlassian", revoke: "Remove “Loomwright Studio” from the apps connected to your Atlassian account" },
+  clickup: { name: "ClickUp", vendor: "ClickUp", revoke: "Remove “Loomwright Studio” from the apps connected to your ClickUp account" },
+});
+
+/** The Keychain item an MCP kind's tokens live in (`docs/architecture/mcp-connectors.md`); named here, never read. */
+export function mcpKeychainItem(kind: McpConnectionKind): string {
+  return `loomwright-studio-mcp-${kind}`;
+}
+
+/** The `mcp_connections` rows of a `GET /connectors` answer; the field is optional, so a missing one is `[]`. */
+export function mcpRowsOf(answer: ConnectorsResponse | undefined): readonly McpConnection[] {
+  return answer?.mcp_connections ?? [];
+}
+
+export function mcpRowOf(rows: readonly McpConnection[], kind: McpConnectionKind): McpConnection | undefined {
+  return rows.find((row) => row.kind === kind);
+}
+
+/** An MCP row's designed state: `connected` (also `expiring`), `expired`, else `none` (no row, `disconnected`, `rejected`). */
+export type McpState = "none" | "connected" | "expired";
+
+export function mcpStateOf(row: McpConnection | undefined): McpState {
+  if (row === undefined) return "none";
+  if (row.status === "connected" || row.status === "expiring") return "connected";
+  if (row.status === "expired") return "expired";
+  return "none";
+}
+
+/** The list row's dot and words for an MCP kind (the mockup's `lstat`). */
+export function mcpRowMeta(row: McpConnection | undefined, view: Pick<IntegrationsView, "phase">, connecting: boolean, hasData: boolean): { readonly dot: RowDot; readonly text: string } {
+  if (connecting) return { dot: "working", text: "connecting · waiting for you" };
+  if (view.phase === "unreachable") return { dot: "none", text: "status unknown · kernel unreachable" };
+  if (!hasData) return view.phase === "loading" ? { dot: "idle", text: "checking…" } : { dot: "none", text: "status unknown" };
+  const state = mcpStateOf(row);
+  if (state === "connected") return { dot: "ok", text: row?.server_url ? `connected · ${row.server_url}` : "connected" };
+  if (state === "expired") return { dot: "danger", text: "expired" };
+  return { dot: "idle", text: "not connected" };
+}
+
+// ---- A connect's refusal ----
+
+/**
+ * Why a connect ended without a connection. The kernel's codes are a closed set (`MCP_ERROR_STATUS` in
+ * `kernel/src/integrations/mcp/routes.ts`) that the app neither imports nor copies: two codes have their own sentence,
+ * any other is the generic sentence plus the code. `not_opened` and `unanswered` are the app's own: the system browser
+ * would not open the address, or the kernel could not be asked.
+ */
+export type McpRefusal =
+  | { readonly kind: "denied" }
+  | { readonly kind: "window_expired" }
+  | { readonly kind: "code"; readonly code: string }
+  | { readonly kind: "not_opened" }
+  | { readonly kind: "unanswered" };
+
+export interface McpRefusalView {
+  readonly refusal: McpRefusal;
+  /** The kernel's own words for it, when it sent some; text only. */
+  readonly message: string | undefined;
+}
+
+const CODE_CLIP = 80;
+const MESSAGE_CLIP = 300;
+
+function clipped(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)}…`;
+}
+
+/** The refusal for a code from a connect answer or a `connector_status` event's `refused`. */
+export function mcpRefusalOfCode(code: string, message?: string): McpRefusalView {
+  const said = message === undefined || message === "" ? undefined : clipped(message, MESSAGE_CLIP);
+  if (code === "authorization_denied") return { refusal: { kind: "denied" }, message: said };
+  if (code === "window_expired") return { refusal: { kind: "window_expired" }, message: said };
+  return { refusal: { kind: "code", code: clipped(code, CODE_CLIP) }, message: said };
+}
+
+/** The refusal behind a non-ok answer of the connect route: any non-2xx is one refused state. */
+export function mcpRefusalOfReply(reply: Exclude<Reply<unknown>, { readonly kind: "ok" }>): McpRefusalView {
+  if (reply.kind === "refused") return mcpRefusalOfCode(reply.error, reply.message);
+  return { refusal: { kind: "unanswered" }, message: undefined };
+}
+
+/** The refusal a `connector_status` event of `kind` carries (`payload.refused`), else `undefined`. */
+export function mcpRefusalOfEvent(payload: unknown, kind: McpConnectionKind): McpRefusalView | undefined {
+  if (!isRecord(payload) || payload["kind"] !== kind) return undefined;
+  const refused = payload["refused"];
+  if (typeof refused !== "string" || refused === "") return undefined;
+  const message = payload["message"];
+  return mcpRefusalOfCode(refused, typeof message === "string" ? message : undefined);
+}
+
+export interface McpRefusalCopy {
+  readonly title: string;
+  readonly text: string;
+}
+
+/** The words for a refusal (the mockup's `int-refused` view, with the copy for each kind of ending). */
+export function mcpRefusalCopy(kind: McpConnectionKind, refusal: McpRefusal): McpRefusalCopy {
+  const { name, vendor } = MCP_VENDORS[kind];
+  const kept = "Nothing was connected, and no token was kept.";
+  switch (refusal.kind) {
+    case "denied":
+      return { title: `${vendor} refused access`, text: `${vendor} didn't grant access (authorization_denied). You chose Deny there, or the account doesn't allow Studio. ${kept}` };
+    case "window_expired":
+      return { title: "The sign-in window closed", text: `The window closed (window_expired) before ${vendor} came back to Studio. ${kept}` };
+    case "code":
+      return { title: `${name} didn't connect`, text: `Studio couldn't connect ${name} (${refusal.code}). ${kept}` };
+    case "not_opened":
+      return { title: `${name} didn't connect`, text: `Studio couldn't open ${vendor}'s page in your browser, so the sign-in never started. ${kept}` };
+    case "unanswered":
+      return { title: `${name} didn't connect`, text: `Studio couldn't reach the kernel to connect ${name}. ${kept}` };
+  }
+}
+
+// ---- The tools and who holds each ----
+
+export type ToolCell = "granted" | "not_granted" | "unknown";
+
+/**
+ * The tools of `kind` a crew member holds, from its `GET /agents/:id` `settings.content.connectors[<kind>]`
+ * (a record of kind to tool names; the GitHub grant is a list or a level, never read here). `undefined` when the detail
+ * is not read ok or the key is absent: unknown, not "none".
+ */
+export function mcpToolsHeld(detail: AgentDetailResponse | undefined, kind: McpConnectionKind): readonly string[] | undefined {
+  if (detail === undefined) return undefined;
+  const content = acceptedSettings(detail);
+  if (!isRecord(content)) return undefined;
+  const connectors = content["connectors"];
+  if (!isRecord(connectors)) return undefined;
+  const held = connectors[kind];
+  if (held === undefined) return [];
+  return Array.isArray(held) ? held.filter((tool): tool is string => typeof tool === "string") : undefined;
+}
+
+/** The crew members whose roster entry says they hold `kind` at all, or who are unreported: the ones whose detail is read. */
+export function needsToolRead(agent: RosterEntry, kind: McpConnectionKind): boolean {
+  if (isWright(agent)) return false;
+  const held = agent.connectors;
+  return held === undefined || held === null || held.includes(kind);
+}
+
+/**
+ * One cell of the tools table. A roster that says the agent does not hold the kind is "not granted" for every tool; Wright
+ * has no detail route, so with the kind held its per-tool grant is unknown, never "not granted".
+ */
+export function toolCell(agent: RosterEntry, kind: McpConnectionKind, tool: string, details: ReadonlyMap<string, AgentDetailResponse>): ToolCell {
+  const held = agent.connectors;
+  if (held !== undefined && held !== null && !held.includes(kind)) return "not_granted";
+  if (isWright(agent)) return "unknown";
+  const tools = mcpToolsHeld(details.get(agent.id), kind);
+  if (tools === undefined) return "unknown";
+  return tools.includes(tool) ? "granted" : "not_granted";
+}
+
+// ---- Phase 8: the GitHub App upgrade ----------------------------------------------------------------
+
+/** The permissions a session's token is cut down to (`SESSION_TOKEN_PERMISSIONS`, D39): the mockup's `SESSION_PERMS`. */
+export const SESSION_TOKEN_PERMISSIONS: readonly string[] = Object.freeze(["Pull requests", "Contents", "Issues", "Checks"]);
+
+/** The App row reads `needs_permissions`: the kernel says its installation holds fewer permissions than Studio now asks for. */
+export function needsUpgrade(row: Connector | undefined): boolean {
+  return isAppRow(row) && row?.status === "needs_permissions";
+}
+
+// ---- Phase 8: the repo policy card ----------------------------------------------------------------------
+
+export interface PolicyPreset {
+  readonly kind: RepoPolicyKind;
+  readonly label: string;
+  readonly blurb: string;
+}
+
+/** The mockup's `POLN` and `POLD`: the three presets, which are the three kinds the kernel closes in code. */
+export const POLICY_PRESETS: readonly PolicyPreset[] = Object.freeze([
+  { kind: "solo", label: "Solo", blurb: "Nobody is asked. When CI is green and Loomwright's review passes, Loomwright's gate merges the PR. Studio and the kernel merge nothing." },
+  { kind: "studio_approval", label: "Approve in Studio", blurb: "Each PR parks until you allow it in Approvals. Then Loomwright's gate merges it when its own checks pass." },
+  { kind: "reviews", label: "N GitHub reviews", blurb: "The PR waits for N approving reviews on GitHub, with CI green and Loomwright's review passed. Then Loomwright's gate merges it." },
+]);
+
+export function policyLabel(kind: RepoPolicyKind): string {
+  return POLICY_PRESETS.find((preset) => preset.kind === kind)?.label ?? kind;
+}
+
+/** "Solo", "Approve in Studio", "2 GitHub reviews". */
+export function policyWords(kind: RepoPolicyKind, required: number | null): string {
+  if (kind !== "reviews") return policyLabel(kind);
+  return required === null ? "GitHub reviews" : `${required} GitHub ${required === 1 ? "review" : "reviews"}`;
+}
+
+/** A whole number from 1 to 999: the mockup's `nOk`. */
+export function reviewsValid(text: string): boolean {
+  return /^[1-9]\d{0,2}$/.test(text.trim());
+}
+
+/** The body that sets a preset: `reviews` carries the typed N (`required`), the others carry only their kind. `undefined` for an N that is not valid. */
+export function presetBody(kind: RepoPolicyKind, reviews: string, trustUnprotected: boolean): RepoPolicySetBody | undefined {
+  const trust = trustUnprotected ? { trust_unprotected: true } : {};
+  if (kind !== "reviews") return { kind, ...trust };
+  if (!reviewsValid(reviews)) return undefined;
+  return { kind, required: Number(reviews.trim()), ...trust };
+}
+
+/** The body that accepts a proposal: its kind, plus its `required_reviews` when the kind is `reviews`. `undefined` when it names no kind. */
+export function acceptBody(proposal: RepoPolicyProposal): RepoPolicySetBody | undefined {
+  if (proposal.kind === null) return undefined;
+  if (proposal.kind === "reviews" && proposal.required_reviews !== null) return { kind: "reviews", required: proposal.required_reviews };
+  return { kind: proposal.kind };
+}
+
+/** What the kernel's detection found for the default branch, read defensively from `detected` (the open record the route sends). */
+export function protectionOf(detected: RepoPolicy["detected"]): string | undefined {
+  const value = isRecord(detected) ? detected["protection"] : undefined;
+  return typeof value === "string" ? value : undefined;
+}
+
+export interface DetectionLine {
+  readonly label: string;
+  readonly value: string;
+  /** The value is a check or login list: set in the mono face. */
+  readonly mono: boolean;
+}
+
+export interface DetectionView {
+  readonly lines: readonly DetectionLine[];
+  /** "read today 14:20", or "never read". */
+  readonly read: string;
+}
+
+function strings(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
+}
+
+/** The card's "On GitHub" lines (the mockup's `polCard` rows) from a detection, else `undefined` before the first one. */
+export function detectionOf(detected: RepoPolicy["detected"], now: Date): DetectionView | undefined {
+  if (!isRecord(detected)) return undefined;
+  const protection = protectionOf(detected);
+  const unavailable = protection === "protection_unavailable";
+  const protectedBranch = protection === "protected";
+  const branch = typeof detected["default_branch"] === "string" && detected["default_branch"] !== "" ? detected["default_branch"] : undefined;
+  const reviews = typeof detected["required_reviews"] === "number" ? detected["required_reviews"] : null;
+  const checks = strings(detected["required_checks"]) ?? [];
+  const pushers = strings(detected["pushers"]);
+  const readAt = typeof detected["read_at"] === "string" ? detected["read_at"] : null;
+
+  const protectionText =
+    protection === "protected"
+      ? `On${branch === undefined ? "" : `, on ${branch}`}`
+      : protection === "unprotected"
+        ? `None${branch === undefined ? "" : ` on ${branch}`}`
+        : unavailable
+          ? "GitHub can't enforce it (a private repo on Free)"
+          : protection === "unreadable"
+            ? "Couldn't be read"
+            : "Not reported";
+  const reviewsText = unavailable ? "Can't be required" : protectedBranch && reviews !== null && reviews > 0 ? `${reviews} approving ${reviews === 1 ? "review" : "reviews"}` : "None";
+  const checksText = unavailable ? "Can't be required" : protectedBranch && checks.length > 0 ? checks.join(", ") : "None";
+  const pushText = pushers === undefined ? "GitHub would not say" : pushers.length === 0 ? "No one reported" : pushers.join(", ");
+  return {
+    read: readAt === null ? "never read" : `read ${whenText(readAt, now)}`,
+    lines: [
+      { label: "Branch protection", value: protectionText, mono: false },
+      { label: "Required reviews", value: reviewsText, mono: false },
+      { label: "Required checks", value: checksText, mono: protectedBranch && checks.length > 0 },
+      { label: "Who can push", value: pushText, mono: false },
+    ],
+  };
+}
+
+/** `owner/name` as the two path params of the policy routes, else `undefined` (nothing is sent for a repo that does not read so). */
+export function splitRepo(repo: string): { readonly owner: string; readonly name: string } | undefined {
+  const parts = repo.split("/");
+  if (parts.length !== 2) return undefined;
+  const [owner, name] = parts as [string, string];
+  return owner === "" || name === "" ? undefined : { owner, name };
+}
+
+const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const NAME_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
+
+/**
+ * The repo's GitHub settings page (`https://github.com/<owner>/<repo>/settings`), built only from a name that matches
+ * GitHub's own pattern (the open-external allowlist checks the same shape), else `undefined`.
+ */
+export function repoSettingsUrl(repo: string): string | undefined {
+  const parts = splitRepo(repo);
+  if (parts === undefined || !OWNER_PATTERN.test(parts.owner) || !NAME_PATTERN.test(parts.name) || parts.name === "." || parts.name === "..") return undefined;
+  return `https://github.com/${parts.owner}/${parts.name}/settings`;
+}
+
+/** Where a private repo on GitHub Free is upgraded: the one fixed address the allowlist adds beside the repo settings page. */
+export const BILLING_PLANS_URL = "https://github.com/settings/billing/plans";
+
+/** What the read of `GET /repos/policy` holds: the last good list, and why the latest read failed. */
+export interface PolicyRead {
+  /** `idle`: not read yet (the pane has not been opened); `loading`: the first read is out. */
+  readonly phase: "idle" | "loading" | "ready" | "error";
+  readonly repos: readonly RepoPolicy[];
+  /** The latest read failed: the list stays, with this beside it. */
+  readonly error: string | undefined;
+}
+
+/** The "Repo policy" list row's dot and words (the mockup's `lstat`). */
+export function policyRowMeta(read: PolicyRead, offline: boolean): { readonly dot: RowDot; readonly text: string } {
+  if (read.phase === "idle") return { dot: "idle", text: "open to read the repos" };
+  if (read.phase === "loading") return { dot: "idle", text: "checking…" };
+  if (read.phase === "error" && read.repos.length === 0) return { dot: "none", text: "status unknown" };
+  if (offline) return { dot: "none", text: "status unknown · kernel unreachable" };
+  if (read.repos.length === 0) return { dot: "idle", text: "no repos reached yet" };
+  const set = read.repos.filter((repo) => repo.kind !== null).length;
+  return set === read.repos.length ? { dot: "ok", text: "all repos set" } : { dot: "waiting", text: `${set} of ${read.repos.length} repos set` };
 }
