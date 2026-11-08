@@ -74,24 +74,35 @@ An attempt is `connection()` (the main process's `api.json`, pid, token and `GET
 
 The window can't open the system browser itself: `lockDown` (`app/electron/main.ts`) denies every new window and every navigation, and that stays. The one way out is the `studio:open-external` IPC channel, reached as `window.api.openExternal(url)` (an optional member of `StudioBridge`; a caller treats a missing method as `false`). It answers a boolean and nothing else: `true` once `shell.openExternal` accepted the address, `false` for everything else. The renderer is given no channel name, no `ipcRenderer` and no Node API. Three more invoke channels carry the app's own preferences (see "The app's own preferences" below); none of them opens an address.
 
-The main process's handler, in order:
+The main process's handler, in order. (Separately, the `studio:request` handler records the addresses the kernel itself answers: see "Addresses the kernel answered" below.)
 
 1. refuses a caller that is not its own window (`throw new Error("refused")`, like every other handler);
 2. answers `false` for an argument that is not a string;
 3. answers `false` unless the kernel is `connected` right now (the kernel's start page is only valid on the port the kernel has now, read from `kernel.connection()` at call time, never cached);
-4. answers `false` unless `isAllowedExternal(url, port)` says yes, and then opens the address. The renderer's address is re-checked here and never trusted. A failure to open also answers `false` and logs a reason with no address in it, because the setup `state` is in the query.
+4. answers `false` unless `isAllowedExternal(url, port, kernelUrls, now)` says yes, and then opens the address. The renderer's address is re-checked here and never trusted. A failure to open also answers `false` and logs a reason with no address in it, because the setup `state` is in the query.
 
-`isAllowedExternal` (`app/electron/open-external.ts`) is a pure function. It allows exactly three forms:
+`isAllowedExternal` (`app/electron/open-external.ts`) is a pure function. It allows exactly these forms:
 
 | Form | Rule |
 |---|---|
 | The kernel's GitHub App start page | `http://127.0.0.1:<the kernel's current port>/connectors/github/app/start?state=<state>`: host `API_HOST`, that port, that path, and a query of `state` alone (one non-empty value) |
 | The installations page | `https://github.com/settings/installations` |
 | One App's page | `https://github.com/settings/apps/<slug>`, where `<slug>` matches `^[a-z0-9][a-z0-9-]*$` |
+| A repo's settings page | `https://github.com/<owner>/<repo>/settings`: exactly three segments, no query; `<owner>` is 1 to 39 letters, digits and single hyphens (not starting or ending with one, and never `settings`); `<repo>` is 1 to 100 of letters, digits, `.`, `_` and `-` (never `.` or `..`). The policy card's "Make public on GitHub" link |
+| The billing plans page | exactly `https://github.com/settings/billing/plans` (`/settings/billing` is refused). The policy card's "Upgrade on GitHub" link |
+| An address the kernel answered | an https string byte-equal to a live remembered kernel answer (see "Addresses the kernel answered") |
 
-Anything else is refused: another host or port, `localhost` for `127.0.0.1`, `https:` on the loopback host, `http:` on `github.com`, another path or a path prefix, any other query, userinfo, a fragment (even an empty one), `javascript:`, `file:`, `data:`, the bare `https://github.com/settings/apps`, and a slug with `/`, `..`, `%2F` or any escape. The address must also be exactly what the URL parser would write back, so a spelling it would rewrite (a case change, a stripped default port, a resolved `..`, a dropped tab or newline) is refused, never normalised into an allowed address.
+Anything else is refused: another host or port, `localhost` for `127.0.0.1`, `https:` on the loopback host, `http:` on `github.com`, another path or a path prefix, any other query, userinfo, a fragment (even an empty one), `javascript:`, `file:`, `data:`, the bare `https://github.com/settings/apps`, a slug with `/`, `..`, `%2F` or any escape, and any other https address the kernel did not answer. The address must also be exactly what the URL parser would write back, so a spelling it would rewrite (a case change, a stripped default port, a resolved `..`, a dropped tab or newline) is refused, never normalised into an allowed address.
 
-**Tests:** `app/electron/open-external.test.ts` (the allowlist, one case per off-list form), `app/electron/main.test.ts` ("the open-external channel": the caller check, a non-string argument, a kernel that is not connected, the port read at call time, a failed open) and `app/electron/preload.test.ts` (the method forwards over `studio:open-external`, the three prefs methods forward over their channels, and the bridge's key list). `app/e2e/smoke.spec.ts` pins the built preload's key list.
+### Addresses the kernel answered
+
+Two kernel routes answer an address the owner must open in a browser, and the renderer must never build either: the MCP connect's `authorize_url` and the App upgrade `url`. The main process remembers them as the renderer's `studio:request` calls pass through it. `rememberKernelUrl(before, request, result, now)` (pure, in `open-external.ts`) reads the answer and never alters it; the handler hands the renderer exactly what the kernel said.
+
+- `POST /connectors/mcp/:kind/connect` answered ok with an https `authorize_url` and an `expires_at` remembers that address for `jira` or `clickup` (a new connect for the kind replaces the old one; a refused connect changes nothing). It is refused from its `expires_at` on, and dropped on that kind's `connect/cancel` or `disconnect`, whatever those answered.
+- `GET /connectors/github/app/upgrade` answered ok remembers a non-null https `url` until the next answer replaces it (a `null` drops it).
+- A remembered address must be https with no userinfo and no fragment, and only a string byte-equal to it opens. Nothing remembered widens the loopback `http:` form. An answer the kernel refused, or an unreachable kernel, remembers nothing.
+
+**Tests:** `app/electron/open-external.test.ts` (the allowlist, one case per off-list form, the two policy-card pages and the kernel-answered addresses), `app/electron/main.test.ts` ("the open-external channel": the caller check, a non-string argument, a kernel that is not connected, the port read at call time, a failed open, and a kernel-answered address opening, expiring, being cancelled and being replaced) and `app/electron/preload.test.ts` (the method forwards over `studio:open-external`, the three prefs methods forward over their channels, and the bridge's key list). `app/e2e/smoke.spec.ts` pins the built preload's key list.
 
 ## The GitHub App connect (renderer)
 
