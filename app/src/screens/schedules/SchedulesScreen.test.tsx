@@ -647,8 +647,9 @@ describe("the firing history", () => {
     fireEvent.click(button);
     await waitFor(() => expect(rows()).toHaveLength(8));
     expect(screen.queryByTestId(IDS.loadOlder)).toBeNull();
-    expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement).toBe(rows()[4]);
+    // The focus moves in a passive effect after the commit that adds the rows, so on a loaded runner the rows can be
+    // in the DOM before it has run: wait for the focus too, not only for the rows.
+    await waitFor(() => expect(document.activeElement).toBe(rows()[4]));
   });
 
   it("'Load older' does not move focus when the user has moved on, nor when a refetch lands", async () => {
@@ -660,6 +661,9 @@ describe("the firing history", () => {
     const chip = screen.getByTestId(IDS.filterAll);
     chip.focus();
     await waitFor(() => expect(rows()).toHaveLength(8));
+    // Give the focus effect its turn (it runs after the commit) so this checks it left the chip alone, rather than
+    // passing because it has not run yet.
+    await sleep(30);
     expect(document.activeElement).toBe(chip);
     emit(kernel, "trigger_fired");
     await sleep(30);
