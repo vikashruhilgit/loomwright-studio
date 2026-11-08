@@ -18,6 +18,7 @@ import type {
   Approval,
   BrainMessage,
   ConnectorsResponse,
+  McpConnectionKind,
   RosterEntry,
   SessionSummary,
   WrightSetField,
@@ -303,6 +304,29 @@ export interface EnforcedToolPolicy {
  */
 export function acceptedSettings(detail: AgentDetailResponse): unknown {
   return detail.settings.error === null ? detail.settings.content : undefined;
+}
+
+/** The MCP kinds' names in the Team row and the Integrations list and headings: the one copy both screens read. */
+export const MCP_KIND_LABELS: Readonly<Record<McpConnectionKind, string>> = { jira: "Jira", clickup: "ClickUp" };
+
+/**
+ * The tools an agent holds for one MCP kind, from its settings file's `connectors`
+ * (`GET /agents/:id` `settings.content`): the kind's array in the object form, `[]`
+ * when the file grants none (no `connectors`, null, the array form, which grants only
+ * GitHub kinds in the kernel's `parseConnectorsGrant`, or no such key), and undefined
+ * (unknown, never "none") when the content is not an object or `connectors` is a shape
+ * the kernel does not write. Pure; `content` is untrusted file text. The one reader
+ * both the Team inspector and the Integrations tools table use.
+ */
+export function mcpToolsHeld(content: unknown, kind: McpConnectionKind): readonly string[] | undefined {
+  if (!isRecord(content)) return undefined;
+  const grant = content.connectors;
+  if (grant === undefined || grant === null || Array.isArray(grant)) return [];
+  if (!isRecord(grant)) return undefined;
+  const tools = grant[kind];
+  if (tools === undefined) return [];
+  if (!Array.isArray(tools)) return undefined;
+  return tools.filter((tool): tool is string => typeof tool === "string");
 }
 
 /**

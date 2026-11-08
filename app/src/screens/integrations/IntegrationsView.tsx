@@ -1,6 +1,6 @@
 // Integrations' view (phase 6 item 11): the GitHub connector, built to the
 // approved mockup (`docs/design/mockups/integrations.html`). A list pane with
-// the one connector row, and a detail pane that is the empty state, the
+// the GitHub row (phase 8 adds three below it), and a detail pane that is the empty state, the
 // connected / expiring / expired detail, or "status unknown"; the Connect
 // GitHub sheet (`./ConnectSheet.tsx`), the Disconnect confirm and Integrations'
 // ⌘K commands.
@@ -27,10 +27,16 @@
 // setting up the App`. Nothing here disconnects: the token goes only when the kernel records the install, and a
 // cancel or a failure leaves the connection as it was.
 //
+// Phase 8: three more list rows (Repo policy, Jira, ClickUp) select the pane beside GitHub's. This screen only mounts the
+// views (`./McpConnect.tsx`, `./AppUpgrade.tsx` through `AppDetail`, `./RepoPolicyCard.tsx`) and holds their read state: the
+// `mcp_connections` of the one `GET /connectors` read, the one MCP connect (the kernel's window is single, so it lives here
+// and survives switching panes), and the `GET /repos/policy` read (made when the Repo policy pane is first opened). The list is
+// one tab stop (the selected row; Up and Down move between the rows), so Tab from GitHub's row still reaches its controls.
+//
 // Every string from the kernel or GitHub (account, permission names, repo
 // names, refusals) is untrusted data: a React text child, never markup.
-import { type ReactNode, type Ref, useCallback, useEffect, useId, useRef, useState } from "react";
-import type { Connector, ConnectorsResponse, RosterEntry, StudioBridge } from "../../api/contract";
+import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type Ref, useCallback, useEffect, useId, useRef, useState } from "react";
+import type { Connector, ConnectorsResponse, McpConnectionKind, RosterEntry, StudioBridge } from "../../api/contract";
 import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { Button } from "../../components/Button/Button";
@@ -41,11 +47,14 @@ import { useLiveStore, useResource } from "../../store/react";
 import { REFETCH_THROTTLE_MS } from "../../store/store";
 import { disconnectGithub, fetchRepos, readConnectors } from "./actions";
 import { AppDetail } from "./AppDetail";
+import { AppUpgrade } from "./AppUpgrade";
 import { AppSetupSheet } from "./AppSetupSheet";
 import { type AppSetupPhase, INSTALLATIONS_URL, appRowMeta, slugOf, switchRowMeta } from "./app-setup";
 import { ConnectSheet } from "./ConnectSheet";
 import type { SheetMode } from "./ConnectSheet";
 import { useIntegrationsCommands } from "./commands";
+import { McpConnect, useMcpConnect } from "./McpConnect";
+import { RepoPolicyPane, useRepoPolicies } from "./RepoPolicyCard";
 import {
   type ConnectorsRead,
   INTEGRATIONS_TEST_IDS as IDS,
@@ -57,7 +66,14 @@ import {
   hasToken,
   isAppConnection,
   isOffline,
+  MCP_KINDS,
+  type RowDot,
+  mcpRowMeta,
+  mcpRowOf,
+  mcpRowsOf,
+  needsUpgrade,
   permissionLines,
+  policyRowMeta,
   replyText,
   rowMeta,
   switchToApp,
@@ -122,6 +138,53 @@ function useGithubConnectors(api: StudioBridge, eventId: number, live: boolean):
 
 // ---- Panes ------------------------------------------------------------------------------------------------
 
+/** The panes the list selects: GitHub's (the default) and the phase 8 ones. */
+type Pane = "github" | "policy" | McpConnectionKind;
+
+interface ExtraRowProps {
+  readonly testId: string;
+  readonly title: string;
+  readonly meta: { readonly dot: RowDot; readonly text: string };
+  readonly selected: boolean;
+  readonly onSelect: () => void;
+  readonly badge?: string;
+}
+
+/**
+ * The list is one tab stop (the selected row), as a listbox is: Tab from it goes to the detail's controls, and Up, Down, Home
+ * and End move focus between the rows, where Enter or Space selects one.
+ */
+function moveBetweenRows(event: ReactKeyboardEvent<HTMLDivElement>): void {
+  const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
+  if (!keys.includes(event.key)) return;
+  const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="option"]')];
+  const at = rows.findIndex((row) => row === document.activeElement);
+  if (at === -1) return;
+  event.preventDefault();
+  const next = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1 : Math.min(rows.length - 1, Math.max(0, at + (event.key === "ArrowDown" ? 1 : -1)));
+  rows[next]?.focus();
+}
+
+/** A phase 8 list row: the same dot and words as GitHub's, selecting its own pane. */
+function ExtraRow({ testId, title, meta, selected, onSelect, badge }: ExtraRowProps) {
+  return (
+    <button type="button" role="option" aria-selected={selected} tabIndex={selected ? 0 : -1} className="integrations-row" data-testid={testId} onClick={onSelect}>
+      <span className="integrations-dot" data-state={meta.dot} aria-hidden="true" />
+      <span className="integrations-row-text">
+        <span className="integrations-row-title">
+          {title}
+          {badge === undefined ? null : (
+            <span className="integrations-badge" data-tone="neutral">
+              {badge}
+            </span>
+          )}
+        </span>
+        <span className="integrations-cap">{meta.text}</span>
+      </span>
+    </button>
+  );
+}
+
 interface ListPaneProps {
   readonly view: View;
   readonly connecting: boolean;
@@ -131,15 +194,20 @@ interface ListPaneProps {
   readonly setup: AppSetupPhase | undefined;
   /** The dialog runs over a token in use: the row keeps the token's words and adds the setup's. */
   readonly switching: boolean;
+  readonly selected: Pane;
+  readonly onSelect: (pane: Pane) => void;
+  /** The phase 8 rows' dots and words. */
+  readonly policyMeta: { readonly dot: RowDot; readonly text: string };
+  readonly mcpMeta: Readonly<Record<McpConnectionKind, { readonly dot: RowDot; readonly text: string }>>;
 }
 
-/** The list pane: the one connector, with its dot and words. */
-function ListPane({ view, connecting, now, rowRef, setup, switching }: ListPaneProps) {
+/** The list pane: GitHub (the default row), then Repo policy, Jira and ClickUp, each with its dot and words. */
+function ListPane({ view, connecting, now, rowRef, setup, switching, selected, onSelect, policyMeta, mcpMeta }: ListPaneProps) {
   const meta = setup === undefined ? rowMeta(view, connecting, now) : switching ? switchRowMeta(setup, rowMeta(view, false, now)) : appRowMeta(setup);
   return (
     <div className="integrations-list" data-testid={IDS.list}>
-      <div role="listbox" aria-label="Connectors">
-        <button ref={rowRef} type="button" role="option" aria-selected="true" className="integrations-row" data-testid={IDS.listRow}>
+      <div role="listbox" aria-label="Connectors" onKeyDown={moveBetweenRows}>
+        <button ref={rowRef} type="button" role="option" aria-selected={selected === "github"} tabIndex={selected === "github" ? 0 : -1} className="integrations-row" data-testid={IDS.listRow} onClick={() => onSelect("github")}>
           <span className="integrations-dot" data-state={meta.dot} data-testid={IDS.listDot} aria-hidden="true" />
           <span className="integrations-row-text">
             <span className="integrations-row-title">
@@ -151,6 +219,9 @@ function ListPane({ view, connecting, now, rowRef, setup, switching }: ListPaneP
             </span>
           </span>
         </button>
+        <ExtraRow testId={IDS.rowPolicy} title="Repo policy" meta={policyMeta} selected={selected === "policy"} onSelect={() => onSelect("policy")} />
+        <ExtraRow testId={IDS.rowJira} title="Jira" badge="work · stub" meta={mcpMeta.jira} selected={selected === "jira"} onSelect={() => onSelect("jira")} />
+        <ExtraRow testId={IDS.rowClickup} title="ClickUp" meta={mcpMeta.clickup} selected={selected === "clickup"} onSelect={() => onSelect("clickup")} />
       </div>
       <p className="integrations-cap integrations-more">More connectors come later. Studio works with none connected.</p>
     </div>
@@ -406,6 +477,15 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
   const appInUse = isAppConnection(view);
   const switchable = switchToApp(view);
 
+  // Phase 8: the pane the list selects, the MCP rows of the same connectors read, the one MCP connect and the repo policies.
+  const [selected, setSelected] = useState<Pane>("github");
+  const mcpRows = mcpRowsOf(read.lastOk);
+  const mcp = useMcpConnect(api, eventLog, mcpRows);
+  // The policies are read when their pane is first opened: a screen nobody opens that pane on asks the kernel for nothing.
+  const [policyOpened, setPolicyOpened] = useState(false);
+  if (selected === "policy" && !policyOpened) setPolicyOpened(true);
+  const policies = useRepoPolicies(api, newestConnectorEventId(eventLog), policyOpened);
+
   const [sheet, setSheet] = useState<SheetState | undefined>(undefined);
   const [app, setApp] = useState<AppRun | undefined>(undefined);
   const [appPhase, setAppPhase] = useState<AppSetupPhase | undefined>(undefined);
@@ -579,10 +659,28 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
     else setNotice({ text: `Couldn't refresh the repos: ${replyText(reply)}` });
   };
 
+  /** Jira's and ClickUp's Connect, from the pane's button and the palette alike: the pane, then the one connect call. */
+  const connectKind = (kind: McpConnectionKind) => {
+    if (offline) return;
+    setSelected(kind);
+    mcp.connect(kind);
+  };
+  const showPolicy = () => {
+    if (!offline) setSelected("policy");
+  };
+
   useIntegrationsCommands(
     registry,
     { offline, hasToken: tokenInUse, appConnected: appInUse },
-    { connect: connectHandler, disconnect: requestDisconnect, refreshRepos, switchToApp: switchHandler },
+    {
+      connect: connectHandler,
+      disconnect: requestDisconnect,
+      refreshRepos,
+      switchToApp: switchHandler,
+      connectJira: () => connectKind("jira"),
+      connectClickup: () => connectKind("clickup"),
+      repoPolicy: showPolicy,
+    },
   );
 
   const row = view.row;
@@ -592,12 +690,12 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
   const rosterError = roster === undefined && agents?.error !== undefined;
   const unknownNoData = read.lastOk === undefined && (view.phase === "error" || view.phase === "unreachable");
 
-  let detail: ReactNode;
-  if (view.phase === "loading") detail = <UnknownDetail loading />;
-  else if (unknownNoData) detail = <UnknownDetail loading={false} />;
-  else if (row === undefined) detail = <EmptyDetail offline={offline} onConnect={() => openSheet("connect")} />;
+  let githubDetail: ReactNode;
+  if (view.phase === "loading") githubDetail = <UnknownDetail loading />;
+  else if (unknownNoData) githubDetail = <UnknownDetail loading={false} />;
+  else if (row === undefined) githubDetail = <EmptyDetail offline={offline} onConnect={() => openSheet("connect")} />;
   else if (appInUse)
-    detail = (
+    githubDetail = (
       <AppDetail
         view={view}
         row={row}
@@ -609,10 +707,11 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
         onSetUpAgain={startApp}
         onDisconnect={requestDisconnect}
         onRefresh={() => void refreshRepos()}
+        upgrade={needsUpgrade(row) ? <AppUpgrade api={api} offline={offline} onCheck={refetch} /> : undefined}
       />
     );
   else
-    detail = (
+    githubDetail = (
       <TokenDetail
         view={view}
         row={row}
@@ -626,6 +725,34 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
         onDisconnect={requestDisconnect}
         onRefresh={() => void refreshRepos()}
       />
+    );
+
+  const hasData = read.lastOk !== undefined;
+  const connectingKind = mcp.attempt !== undefined && (mcp.attempt.phase.kind === "starting" || mcp.attempt.phase.kind === "waiting") ? mcp.attempt.kind : undefined;
+  const mcpMeta = {
+    jira: mcpRowMeta(mcpRowOf(mcpRows, "jira"), view, connectingKind === "jira", hasData),
+    clickup: mcpRowMeta(mcpRowOf(mcpRows, "clickup"), view, connectingKind === "clickup", hasData),
+  };
+  const mcpKind = MCP_KINDS.find((kind) => kind === selected);
+  const detail: ReactNode =
+    mcpKind !== undefined ? (
+      <McpConnect
+        api={api}
+        kind={mcpKind}
+        row={mcpRowOf(mcpRows, mcpKind)}
+        hasData={hasData}
+        phase={view.phase}
+        offline={offline}
+        now={now}
+        controller={mcp}
+        roster={roster}
+        rosterError={rosterError}
+        onChanged={refetch}
+      />
+    ) : selected === "policy" ? (
+      <RepoPolicyPane api={api} read={policies.read} offline={offline} now={now} onUpdated={policies.replace} />
+    ) : (
+      githubDetail
     );
 
   return (
@@ -647,7 +774,7 @@ export function IntegrationsView({ api, registry = commandRegistry }: Integratio
         </p>
       )}
       <div className="integrations-split">
-        <ListPane view={view} connecting={connecting} now={now} rowRef={rowRef} setup={app === undefined || appConnected ? undefined : appPhase} switching={switching} />
+        <ListPane view={view} connecting={connecting} now={now} rowRef={rowRef} setup={app === undefined || appConnected ? undefined : appPhase} switching={switching} selected={selected} onSelect={setSelected} policyMeta={policyRowMeta(policies.read, offline)} mcpMeta={mcpMeta} />
         {detail}
       </div>
       {sheet === undefined ? null : (

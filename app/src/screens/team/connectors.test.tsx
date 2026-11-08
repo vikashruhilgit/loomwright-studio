@@ -7,12 +7,13 @@
 // only when the feed's `agent_*` event refetches the roster.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AgentDetailResponse, ApiRequest, ApiResult, Connector, ConnectorStatus, EventFrame, RosterEntry, StatusBody } from "../../api/contract";
+import type { AgentDetailResponse, ApiRequest, ApiResult, Connector, ConnectorStatus, EventFrame, McpConnection, RosterEntry, StatusBody } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
 import type { FakeBridge, Responder } from "../../store/fake-bridge";
-import { type ConnectorsState, connectorStateText, githubGranted } from "./model";
+import { changeMcpGrant, mcpGrantRows } from "./Connectors";
+import { type ConnectorsState, connectorStateText, githubGranted, mcpToolsHeld } from "./model";
 import { TeamView } from "./TeamView";
 
 // ---- Fixtures -------------------------------------------------------------------------------
@@ -50,12 +51,12 @@ const WRIGHT = entry({ id: "wright", display_name: "Wright", avatar: { shape: "w
 const MASON = entry({ id: "mason", display_name: "Mason", connectors: ["github"] });
 const PIM = entry({ id: "pim", display_name: "Pim", avatar: { shape: "octopus", hue: "crew-berry" }, connectors: [] });
 
-function detail(agent: RosterEntry): AgentDetailResponse {
+function detail(agent: RosterEntry, extra: Record<string, unknown> = {}): AgentDetailResponse {
   return {
     agent,
     settings: {
       file: `/Users/o/.loomwright-studio/config/agents/${agent.id}.json`,
-      content: { model: agent.model, permission_mode: "default", tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] }, never: [], limits: {}, workspaces: [] },
+      content: { model: agent.model, permission_mode: "default", tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] }, never: [], limits: {}, workspaces: [], ...extra },
       error: null,
     },
     never: [],
@@ -106,6 +107,8 @@ interface Setup {
   readonly roster?: RosterEntry[];
   readonly connectors?: ApiResult<unknown>;
   readonly set?: Responder;
+  /** Keys merged into every crew member's settings `content` (e.g. the object-form `connectors`). */
+  readonly content?: Record<string, unknown>;
 }
 
 async function startTeam(setup: Setup = {}): Promise<Kernel> {
@@ -126,7 +129,7 @@ async function startTeam(setup: Setup = {}): Promise<Kernel> {
     const id = String(req.params?.id);
     const found = kernel.roster.find((a) => a.id === id);
     if (id === "wright") return refused(409, { error: "reserved", message: "Wright is not a crew member" });
-    return found === undefined ? refused(404, { error: "not_found" }) : ok(detail(found));
+    return found === undefined ? refused(404, { error: "not_found" }) : ok(detail(found, setup.content));
   });
   if (setup.set !== undefined) fake.route("POST /agents/:id/set", setup.set);
   render(<TeamView api={fake.bridge} registry={kernel.registry} />);
@@ -368,5 +371,164 @@ describe("Grant GitHub and Revoke GitHub commands", () => {
     await waitFor(() => expect(kernel.registry.get("team.grant-github.pim")?.enabled?.()).toBe(false));
     expect(kernel.registry.get("team.revoke-github.pim")?.enabled?.()).toBe(true);
     expect(kernel.registry.list().filter((c) => c.id === "team.revoke-github.pim")).toHaveLength(1);
+  });
+});
+
+// ---- Phase 8 (S4): the per-tool MCP grant ------------------------------------------------------------
+
+function mcpRow(kind: "jira" | "clickup", grantedTools: readonly string[], status: ConnectorStatus = "connected"): McpConnection {
+  return { kind, server_url: `https://${kind}.example.test/mcp`, status, granted_tools: grantedTools, token_expiry: null };
+}
+
+const JIRA_TOOLS = ["getJiraIssue", "searchJiraIssuesUsingJql", "createJiraIssue"] as const;
+const mcpTools = (inspector: HTMLElement, kind: string): HTMLElement => within(inspector).getByTestId(`team-connector-mcp-${kind}-tools`);
+const mcpWords = (inspector: HTMLElement, kind: string): string | null => within(inspector).getByTestId(`team-connector-mcp-${kind}-grant`).textContent;
+const ticked = (inspector: HTMLElement, kind: string): string[] =>
+  within(mcpTools(inspector, kind))
+    .getAllByRole("checkbox")
+    .filter((box) => (box as HTMLInputElement).checked)
+    .map((box) => box.closest("label")?.textContent?.trim() ?? "");
+
+describe("mcpToolsHeld and mcpGrantRows", () => {
+  it("reads a kind's tools from the object form, none from the array form or a missing key, and unknown from a shape the kernel does not write", () => {
+    expect(mcpToolsHeld({ connectors: { github: "read", jira: ["a", "b"] } }, "jira")).toEqual(["a", "b"]);
+    expect(mcpToolsHeld({ connectors: { jira: ["a"] } }, "clickup")).toEqual([]);
+    expect(mcpToolsHeld({ connectors: ["github"] }, "jira")).toEqual([]);
+    expect(mcpToolsHeld({}, "jira")).toEqual([]);
+    expect(mcpToolsHeld({ connectors: null }, "jira")).toEqual([]);
+    expect(mcpToolsHeld(undefined, "jira")).toBeUndefined();
+    expect(mcpToolsHeld("not an object", "jira")).toBeUndefined();
+    expect(mcpToolsHeld({ connectors: "jira" }, "jira")).toBeUndefined();
+    expect(mcpToolsHeld({ connectors: { jira: "a" } }, "jira")).toBeUndefined();
+    expect(mcpToolsHeld({ connectors: { jira: ["a", 3, null] } }, "jira")).toEqual(["a"]);
+  });
+
+  it("lists one row per connected or expiring MCP kind, none for a dead row, a failed read or a response without mcp_connections", () => {
+    const content = { connectors: { jira: ["getJiraIssue", "retiredTool"] } };
+    const state = (mcp: McpConnection[] | undefined): ConnectorsState => ({ status: "ok", connectors: mcp === undefined ? { connectors: [] } : { connectors: [], mcp_connections: mcp } });
+    const rows = mcpGrantRows(state([mcpRow("jira", JIRA_TOOLS), mcpRow("clickup", ["get_task"], "expiring")]), content);
+    expect(rows.map((r) => r.kind)).toEqual(["jira", "clickup"]);
+    // A held tool the connection no longer lists is still shown (so it can be taken away), after the listed ones.
+    expect(rows[0]?.tools).toEqual([...JIRA_TOOLS, "retiredTool"]);
+    expect(rows[0]?.held).toEqual(["getJiraIssue", "retiredTool"]);
+    expect(rows[1]?.held).toEqual([]);
+    expect(mcpGrantRows(state([mcpRow("jira", JIRA_TOOLS, "expired"), mcpRow("clickup", ["t"], "disconnected")]), content)).toEqual([]);
+    expect(mcpGrantRows(state(undefined), content)).toEqual([]);
+    expect(mcpGrantRows({ status: "error" }, content)).toEqual([]);
+    expect(mcpGrantRows({ status: "loading" }, content)).toEqual([]);
+    // Settings not read: the grant is unknown, never empty.
+    expect(mcpGrantRows(state([mcpRow("jira", JIRA_TOOLS)]), undefined)[0]?.held).toBeUndefined();
+  });
+});
+
+describe("changeMcpGrant", () => {
+  const agent = { id: "mason", display_name: "Mason" };
+
+  it("posts <kind>:<tool>[,<tool>] for tools and <kind>:none for no tools, to the same route as the GitHub grant", async () => {
+    const fake = fakeBridge();
+    fake.route("POST /agents/:id/set", () => ok({ agent: {}, field: "connectors", old: null, new: null, changed: true }));
+    expect(await changeMcpGrant(fake.bridge, agent, "jira", ["getJiraIssue", "searchJiraIssuesUsingJql"])).toEqual({ ok: true, text: "Jira: 2 tools granted to Mason." });
+    expect(await changeMcpGrant(fake.bridge, agent, "clickup", ["get_task"])).toEqual({ ok: true, text: "ClickUp: 1 tool granted to Mason." });
+    expect(await changeMcpGrant(fake.bridge, agent, "jira", [])).toEqual({ ok: true, text: "Jira tools revoked from Mason." });
+    const sent = fake.requestsTo("POST /agents/:id/set").map((r) => r.req);
+    expect(sent.map((r) => r.body)).toEqual([
+      { field: "connectors", value: "jira:getJiraIssue,searchJiraIssuesUsingJql" },
+      { field: "connectors", value: "clickup:get_task" },
+      { field: "connectors", value: "jira:none" },
+    ]);
+    expect(sent.every((r) => r.params?.id === "mason")).toBe(true);
+  });
+
+  it("says so when nothing changed, shows a refusal as text, and sends nothing for a tool name holding a comma", async () => {
+    const fake = fakeBridge();
+    fake.route("POST /agents/:id/set", () => ok({ agent: {}, field: "connectors", old: null, new: null, changed: false }));
+    expect((await changeMcpGrant(fake.bridge, agent, "jira", ["a"])).text).toBe("Mason's Jira tools were already as set.");
+    fake.route("POST /agents/:id/set", () => refused(400, { error: "invalid_input", field: "connectors", message: "an MCP grant is <kind>:<tool>" }));
+    expect(await changeMcpGrant(fake.bridge, agent, "jira", ["a"])).toEqual({ ok: false, text: "invalid_input: an MCP grant is <kind>:<tool>" });
+    const before = fake.requestsTo("POST /agents/:id/set").length;
+    const comma = await changeMcpGrant(fake.bridge, agent, "jira", ["a", "b,c"]);
+    expect(comma.ok).toBe(false);
+    expect(fake.requestsTo("POST /agents/:id/set")).toHaveLength(before);
+  });
+});
+
+describe("the Connectors row's MCP grant", () => {
+  const withJira = (extra: Partial<Parameters<typeof startTeam>[0]> = {}) =>
+    startTeam({
+      connectors: ok({ connectors: [connector("connected")], mcp_connections: [mcpRow("jira", JIRA_TOOLS), mcpRow("clickup", ["get_task"], "disconnected")] }),
+      content: { connectors: { github: "read", jira: ["getJiraIssue"] } },
+      ...extra,
+    });
+
+  it("shows, per connected MCP kind, which of its granted tools the agent holds, and no row for a kind that is not connected", async () => {
+    await withJira();
+    const mason = await openInspector("Mason");
+    await waitFor(() => expect(mcpWords(mason, "jira")).toBe("1 of 3 tools granted"));
+    expect(within(mason).getByTestId("team-connector-mcp-jira").textContent).toContain("Jira");
+    expect(ticked(mason, "jira")).toEqual(["getJiraIssue"]);
+    expect(within(mcpTools(mason, "jira")).getAllByRole("checkbox")).toHaveLength(3);
+    expect(within(mason).queryByTestId("team-connector-mcp-clickup")).toBeNull();
+    // The GitHub row is untouched.
+    expect(grantWords(mason)).toBe("granted");
+  });
+
+  it("shows an agent with no grant for the kind as no tools granted", async () => {
+    await withJira({ content: {} });
+    const mason = await openInspector("Mason");
+    await waitFor(() => expect(mcpWords(mason, "jira")).toBe("no tools granted"));
+    expect(ticked(mason, "jira")).toEqual([]);
+  });
+
+  it("shows Wright's per-tool grant as unknown, with no checkboxes, and never requests its detail", async () => {
+    const kernel = await withJira();
+    const wright = await openInspector("Wright");
+    await waitFor(() => expect(mcpWords(wright, "jira")).toBe("grant unknown"));
+    expect(within(wright).queryByTestId("team-connector-mcp-jira-tools")).toBeNull();
+    expect(within(wright).queryAllByRole("checkbox")).toEqual([]);
+    expect(requests(kernel, "GET /agents/:id").filter((r) => r.params?.id === "wright")).toEqual([]);
+  });
+
+  it("shows no MCP row while GET /connectors failed or lists no mcp_connections", async () => {
+    await startTeam({ connectors: refused(500, { error: "internal" }) });
+    let mason = await openInspector("Mason");
+    await waitFor(() => expect(stateWords(mason)).toBe("state unknown"));
+    expect(within(mason).queryByTestId("team-connector-mcp-jira")).toBeNull();
+    cleanup();
+    await startTeam({ connectors: ok({ connectors: [connector("connected")] }) });
+    mason = await openInspector("Mason");
+    await waitFor(() => expect(stateWords(mason)).toBe("connected"));
+    expect(within(mason).queryByTestId("team-connector-mcp-jira")).toBeNull();
+  });
+
+  it("ticking a tool posts the whole next list, unticking the last posts <kind>:none, and the row changes only when the feed refetches the detail", async () => {
+    const kernel = await withJira({ set: setOk("connectors", null, null) });
+    const mason = await openInspector("Mason");
+    await waitFor(() => expect(mcpWords(mason, "jira")).toBe("1 of 3 tools granted"));
+
+    fireEvent.click(within(mcpTools(mason, "jira")).getByRole("checkbox", { name: "createJiraIssue" }));
+    await waitFor(() => expect(requests(kernel, "POST /agents/:id/set")).toHaveLength(1));
+    expect(requests(kernel, "POST /agents/:id/set")[0]).toMatchObject({ params: { id: "mason" }, body: { field: "connectors", value: "jira:getJiraIssue,createJiraIssue" } });
+    expect((await within(mason).findByTestId("team-insp-notice")).textContent).toBe("Jira: 2 tools granted to Mason.");
+    // Not a local edit: the box is still as the detail read it.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(ticked(mason, "jira")).toEqual(["getJiraIssue"]);
+
+    fireEvent.click(within(mcpTools(mason, "jira")).getByRole("checkbox", { name: "getJiraIssue" }));
+    await waitFor(() => expect(requests(kernel, "POST /agents/:id/set")).toHaveLength(2));
+    expect(requests(kernel, "POST /agents/:id/set")[1]).toMatchObject({ params: { id: "mason" }, body: { field: "connectors", value: "jira:none" } });
+    expect((await within(mason).findByTestId("team-insp-notice")).textContent).toBe("Jira tools revoked from Mason.");
+    // No GitHub grant call was made.
+    expect(requests(kernel, "POST /agents/:id/set").map((r) => (r.body as { value: string }).value)).not.toContain("github");
+  });
+
+  it("a refusal is the notice as text, and the row keeps what the detail read", async () => {
+    await withJira({ set: () => refused(400, { error: "invalid_input", field: "connectors", message: "<b>bad</b> tool" }) });
+    const mason = await openInspector("Mason");
+    await waitFor(() => expect(mcpWords(mason, "jira")).toBe("1 of 3 tools granted"));
+    fireEvent.click(within(mcpTools(mason, "jira")).getByRole("checkbox", { name: "createJiraIssue" }));
+    const notice = await within(mason).findByTestId("team-insp-notice");
+    expect(notice.textContent).toBe("invalid_input: <b>bad</b> tool");
+    expect(notice.querySelector("b")).toBeNull();
+    expect(ticked(mason, "jira")).toEqual(["getJiraIssue"]);
   });
 });
