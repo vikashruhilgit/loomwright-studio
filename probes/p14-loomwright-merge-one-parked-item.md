@@ -1,6 +1,6 @@
 # Probe 14: can Loomwright merge one parked `awaiting_merge` item through its `--auto-merge` gate?
 
-Phase 8 item 01, **owner-run** (or the agent on the owner's word, with the owner watching: D33, D35). **Run 2026-11-05: the answer was no on Loomwright 17.31.0.** This file is the procedure only; the result is in `docs/OPEN_QUESTIONS.md` ("Phase 8: probe p14").
+Phase 8 item 01, **owner-run** (or the agent on the owner's word, with the owner watching: D33, D35). **Run 2026-11-05: no on Loomwright 17.31.0. Run 2026-11-08: yes on 17.34.1, with `/loomwright:automate --merge-parked <run_id>` as run 2 (added to Loomwright after the first run; try it first on 17.34.0 or later).** This file is the procedure only; the result is in `docs/OPEN_QUESTIONS.md` ("Phase 8: probe p14").
 
 ## The claim under test
 
