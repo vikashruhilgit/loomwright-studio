@@ -582,7 +582,9 @@ const DECIDING_REVIEW_STATES: readonly string[] = ["APPROVED", "CHANGES_REQUESTE
 const APPROVER_ASSOCIATIONS: readonly string[] = ["OWNER", "MEMBER", "COLLABORATOR"];
 
 /** One review, reduced to what the merge state needs; `undefined` for a review that does not decide (commented, pending). */
-function reviewOf(v: unknown): { readonly login: string; readonly state: string; readonly commit: string | null; readonly trusted: boolean } | undefined {
+function reviewOf(
+  v: unknown,
+): { readonly login: string; readonly deleted: boolean; readonly state: string; readonly commit: string | null; readonly trusted: boolean } | undefined {
   const r = record(v);
   const state = str(r["state"]).toUpperCase();
   if (!DECIDING_REVIEW_STATES.includes(state)) return undefined;
@@ -590,6 +592,8 @@ function reviewOf(v: unknown): { readonly login: string; readonly state: string;
   const association = r["author_association"];
   return {
     login: loginOf(r["user"]),
+    // A deleted account (`user: null`) reads as `ghost` for every such reviewer, so the name cannot tell two of them apart.
+    deleted: r["user"] === null || r["user"] === undefined,
     state,
     commit: typeof commit === "string" ? commit : null,
     trusted: typeof association === "string" && APPROVER_ASSOCIATIONS.includes(association.toUpperCase()),
@@ -901,19 +905,24 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient & 
    * once for the whole listing; the rate limit is the last page's. A failed
    * page fails the listing. `itemsOf` picks the array out of a page's body
    * (default: the body is the array; `/installation/repositories` wraps it in
-   * `repositories`).
+   * `repositories`). With `failClosed`, a listing still full at the cap (more may
+   * lie beyond it) is `unreachable` instead of a short list: a merge decision must
+   * not rest on a part of the reviews or check runs (see
+   * `docs/evidence/phase-8-item-09-getpages-truncation.md`).
    */
   async function getPages<T>(
     path: string,
     map: (item: unknown) => T,
     itemsOf: (body: unknown) => readonly unknown[] = list,
     session?: Session,
+    failClosed = false,
   ): Promise<GitHubResponse<readonly T[]>> {
     const s = session ?? (await begin());
     if (s === undefined) return unreachable();
     const items: T[] = [];
     let rateLimit: GitHubRateLimit | undefined;
     const sep = path.includes("?") ? "&" : "?";
+    let truncated = false;
     for (let page = 1; page <= maxPages; page++) {
       const answer = await get(s, `${path}${sep}per_page=${PER_PAGE}&page=${page}`, "application/vnd.github+json", maxBodyBytes);
       if (answer.kind === "failure") return answer.failure;
@@ -927,7 +936,9 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient & 
         return unreachable();
       }
       if (pageItems.length < PER_PAGE) break;
+      if (page === maxPages) truncated = true;
     }
+    if (failClosed && truncated) return unreachable();
     return rateLimit === undefined ? unreachable() : { ok: true, data: items, rateLimit };
   }
 
@@ -1077,13 +1088,21 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient & 
       if (!pull.ok) return pull;
       const head = pull.data;
       if (!COMMIT_SHA.test(head)) return unreachable();
-      const reviews = await getPages(`/repos/${r}/pulls/${number}/reviews`, reviewOf, list, s);
+      // Fail closed: reviews or check runs cut off at the page cap are not a state to merge on.
+      const reviews = await getPages(`/repos/${r}/pulls/${number}/reviews`, reviewOf, list, s, true);
       if (!reviews.ok) return reviews;
       // Each reviewer's latest deciding review, in the order GitHub lists them (oldest first).
       // Only a trusted reviewer's approval counts; a change request from anyone still blocks
       // (the safe direction: an outsider can hold a merge, never release one).
+      // Each deleted-account review (`user: null`) is its own entry: they all read `ghost`, and
+      // keying on that name would let a later deleted account's approval hide an earlier one's change request.
       const latest = new Map<string, { readonly state: string; readonly commit: string | null; readonly trusted: boolean }>();
-      for (const rev of reviews.data) if (rev !== undefined) latest.set(rev.login, rev);
+      let position = 0;
+      for (const rev of reviews.data) {
+        if (rev === undefined) continue;
+        position += 1;
+        latest.set(rev.deleted ? `deleted#${position}` : rev.login, rev);
+      }
       let approvals = 0;
       let changesRequested = false;
       for (const rev of latest.values()) {
@@ -1096,7 +1115,7 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient & 
         return { state: str(b["state"]), total: typeof b["total_count"] === "number" && Number.isSafeInteger(b["total_count"]) ? b["total_count"] : statuses.length };
       });
       if (!status.ok) return status;
-      const runs = await getPages(`/repos/${r}/commits/${head}/check-runs`, checkRunOf, (body) => list(record(body)["check_runs"]), s);
+      const runs = await getPages(`/repos/${r}/commits/${head}/check-runs`, checkRunOf, (body) => list(record(body)["check_runs"]), s, true);
       if (!runs.ok) return runs;
       return {
         ok: true,

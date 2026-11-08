@@ -415,18 +415,26 @@ export function parseRepoPolicyBody(body: unknown): { readonly ok: true; readonl
 
 // ---- Is the policy met? ----------------------------------------------------------
 
-/** Whether the owner approved merging `repo`#`pr` at `headSha`: an approved `MERGE_APPROVAL_ACTION` approval whose payload names exactly that. */
-function hasMergeApproval(store: Store, repo: string, pr: number, headSha: string): boolean {
+/** The tool name the rail files in `payload.tool` for a merge approval: the `mcp__kernel__` prefix plus `MERGE_APPROVAL_ACTION`. */
+const MERGE_APPROVAL_TOOL = `mcp__kernel__${MERGE_APPROVAL_ACTION}`;
+
+/**
+ * Whether the owner approved merging `repo`#`pr` at `headSha`: an approved `MERGE_APPROVAL_ACTION` approval whose payload names exactly that.
+ * The payload is the shape the rail files for a tool call (`{ tool, input, cwd }`, `kernel/src/sessions/policy.ts`), so the repo, PR and head
+ * are read from `$.input` and only that shape, and `$.tool` must be the merge approval tool. See `docs/evidence/phase-8-item-09-merge-approval-shape.md`.
+ */
+export function hasMergeApproval(store: Store, repo: string, pr: number, headSha: string): boolean {
   const found = store
-    .prepare<[string, string, number, string], { readonly one: number }>(
+    .prepare<[string, string, string, number, string], { readonly one: number }>(
       `SELECT 1 AS one FROM approvals
        WHERE action = ? AND status = 'approved'
          AND CASE WHEN json_valid(payload_json)
-               THEN json_extract(payload_json, '$.repo') = ? AND json_extract(payload_json, '$.pr') = ? AND json_extract(payload_json, '$.head_sha') = ?
+               THEN json_extract(payload_json, '$.tool') = ? AND json_extract(payload_json, '$.input.repo') = ?
+                AND json_extract(payload_json, '$.input.pr') = ? AND json_extract(payload_json, '$.input.head_sha') = ?
                ELSE 0 END
        LIMIT 1`,
     )
-    .get(MERGE_APPROVAL_ACTION, repo, pr, headSha);
+    .get(MERGE_APPROVAL_ACTION, MERGE_APPROVAL_TOOL, repo, pr, headSha);
   return found !== undefined;
 }
 
