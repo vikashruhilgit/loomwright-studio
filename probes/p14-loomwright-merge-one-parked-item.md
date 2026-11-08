@@ -53,7 +53,7 @@ The answer is **yes** only if all of these hold for one invocation:
 1. **It merged through the gate.** The PR reads `MERGED` (`gh pr view <n> --repo vikashruhilgit/studio-sandbox --json state,mergedAt,mergedBy`), and the session shows the gate evaluating its conditions and then running the merge itself. You ran no `gh pr merge`.
 2. **It reconciled and finished the item.** The run file's item is checked off (`- [x]`) with the merge recorded, and the run's `closeout` ran (its cleanup, stamp and check-off, as Loomwright does after a human merge).
 3. **It started no other drain.** No second session, lane or fix run was started, and item 2 was **not** started unless the invocation asked for it (record whether it was).
-4. **It needed no hand edit** of the run file, the PR or the repo between run 1 and run 2.
+4. **It needed no hand edit** of the run file, the PR or the repo between run 1 and run 2. **One named exception, graded separately:** deleting an untracked `.gitignore` whose only content is `.supervisor/`, written by Loomwright's Supervisor during run 1 (the Run 2 note above). If that is the only hand edit and 1 to 3 hold, the answer is **"yes, with one manual step"**, recorded as such and never as a clean yes. Any other hand edit, including to a tracked `.gitignore`, makes the answer no.
 
 The answer is **no** if no documented invocation merged the item, if the gate parked it (record the `PARK: <reason>`; a high-risk park or a failed condition is a finding, not an error: say which), or if it merged only after a step in the list above was broken. A "no" with a stated reason, for example "`--resume` reconciles an open PR to `awaiting_merge` and never re-runs the gate", is a complete answer.
 
