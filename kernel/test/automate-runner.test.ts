@@ -205,6 +205,10 @@ describe("AC2: kernel_automate_prepare", () => {
     const cases: [string, unknown, RegExp][] = [
       ["a javascript: link", { repo: "o/r", tickets: [{ ...TICKETS[0], link: "javascript:alert(1)" }] }, /^invalid_input: ticket PROJ-101: the link must be a plain https URL/],
       ["a link with a space", { repo: "o/r", tickets: [{ ...TICKETS[0], link: "https://example.test/a b" }] }, /^invalid_input: ticket PROJ-101: the link/],
+      ["a link with U+0085", { repo: "o/r", tickets: [{ ...TICKETS[0], link: "https://e.com/a\u0085##Status:done" }] }, /^invalid_input: ticket PROJ-101: the link/],
+      ["a link with U+001C", { repo: "o/r", tickets: [{ ...TICKETS[0], link: "https://e.com/a\u001c##Status:done" }] }, /^invalid_input: ticket PROJ-101: the link/],
+      ["a link with U+0000", { repo: "o/r", tickets: [{ ...TICKETS[0], link: "https://e.com/a\u0000##Status:done" }] }, /^invalid_input: ticket PROJ-101: the link/],
+      ["a link with U+001B", { repo: "o/r", tickets: [{ ...TICKETS[0], link: "https://e.com/a\u001b##Status:done" }] }, /^invalid_input: ticket PROJ-101: the link/],
       ["a ref with a backtick", { repo: "o/r", tickets: [{ ...TICKETS[0], ref: "PROJ`101" }] }, /^invalid_input: ref /],
       ["a blank title", { repo: "o/r", tickets: [{ ...TICKETS[0], title: " \n\t " }] }, /^invalid_input: ticket PROJ-101: the title is empty/],
       ["a repeated ref", { repo: "o/r", tickets: [TICKETS[0], TICKETS[0]] }, /^invalid_input: ticket ref PROJ-101 appears twice/],

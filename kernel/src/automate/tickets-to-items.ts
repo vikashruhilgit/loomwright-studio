@@ -68,8 +68,9 @@ export interface PreparedTickets {
 /** A dedupe ref is a plain token: no space, no control character, no markdown beyond `._:/#@-`. */
 export const REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/#@-]{0,199}$/;
 
-/** A link is a plain `https` URL: no whitespace, quote, angle bracket or backtick. */
-export const LINK_PATTERN = /^https:\/\/[^\s<>"'`\\]{1,1990}$/;
+/** A link is a plain `https` URL: no whitespace, control or line-separator character (C0, DEL, C1, U+2028/9), quote, angle bracket or backtick. */
+// eslint-disable-next-line no-control-regex
+export const LINK_PATTERN = /^https:\/\/[^\s\u0000-\u001f\u007f-\u009f\u2028\u2029<>"'`\\]{1,1990}$/;
 
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029]/g;
@@ -85,7 +86,7 @@ export function cleanTitle(title: string): string {
 export function ticketProblem(ticket: Ticket): string | undefined {
   if (!REF_PATTERN.test(ticket.ref)) return `ref ${JSON.stringify(ticket.ref.slice(0, 40))} must be a plain token of 1 to ${MAX_REF} characters (letters, digits and . _ : / # @ -)`;
   if (cleanTitle(ticket.title) === "") return `ticket ${ticket.ref}: the title is empty`;
-  if (!LINK_PATTERN.test(ticket.link)) return `ticket ${ticket.ref}: the link must be a plain https URL with no space, quote, angle bracket or backtick`;
+  if (!LINK_PATTERN.test(ticket.link)) return `ticket ${ticket.ref}: the link must be a plain https URL with no space, control character, quote, angle bracket or backtick`;
   if ((ticket.body ?? "").length > MAX_BODY) return `ticket ${ticket.ref}: the body is over ${MAX_BODY} characters`;
   return undefined;
 }

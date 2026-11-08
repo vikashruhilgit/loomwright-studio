@@ -1773,6 +1773,9 @@ describe("the repo-policy reads (phase 8 item 08)", () => {
     const deleted = (state: string) => ({ user: null, state, commit_id: HEAD, submitted_at: "2026-10-26T10:00:00Z", author_association: "COLLABORATOR" });
     const { gh } = policyClient(mergeRoute({ reviews: [deleted("CHANGES_REQUESTED"), deleted("APPROVED")] }));
     expect(await gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 1, changes_requested: true } });
+    // Two deleted accounts' approvals cannot be told apart as people: together they are one approval.
+    const twice = policyClient(mergeRoute({ reviews: [deleted("APPROVED"), deleted("APPROVED")] }));
+    expect(await twice.gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 1, changes_requested: false } });
     // A named reviewer's later decision still replaces that same reviewer's earlier one.
     const named = policyClient(mergeRoute({ reviews: [review("bob", "CHANGES_REQUESTED", HEAD), review("bob", "APPROVED", HEAD)] }));
     expect(await named.gh.getPullMergeState("o/r", 7)).toMatchObject({ ok: true, data: { approvals: 1, changes_requested: false } });

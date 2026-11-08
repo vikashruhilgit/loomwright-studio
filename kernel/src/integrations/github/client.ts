@@ -1096,7 +1096,8 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient & 
       // (the safe direction: an outsider can hold a merge, never release one).
       // Each deleted-account review (`user: null`) is its own entry: they all read `ghost`, and
       // keying on that name would let a later deleted account's approval hide an earlier one's change request.
-      const latest = new Map<string, { readonly state: string; readonly commit: string | null; readonly trusted: boolean }>();
+      // But the entries cannot be told apart as people, so together they count for at most one approval.
+      const latest = new Map<string, { readonly deleted: boolean; readonly state: string; readonly commit: string | null; readonly trusted: boolean }>();
       let position = 0;
       for (const rev of reviews.data) {
         if (rev === undefined) continue;
@@ -1104,11 +1105,16 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient & 
         latest.set(rev.deleted ? `deleted#${position}` : rev.login, rev);
       }
       let approvals = 0;
+      let deletedApproved = false;
       let changesRequested = false;
       for (const rev of latest.values()) {
         if (rev.state === "CHANGES_REQUESTED") changesRequested = true;
-        else if (rev.state === "APPROVED" && rev.trusted && rev.commit === head) approvals += 1;
+        else if (rev.state === "APPROVED" && rev.trusted && rev.commit === head) {
+          if (rev.deleted) deletedApproved = true;
+          else approvals += 1;
+        }
       }
+      if (deletedApproved) approvals += 1;
       const status = await getJsonOn(s, `/repos/${r}/commits/${head}/status`, (body) => {
         const b = record(body);
         const statuses = list(b["statuses"] ?? []);
