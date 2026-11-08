@@ -1,6 +1,7 @@
 # 12 — Integrations: Jira and ClickUp connect, the App permission upgrade, the repo policy card
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/234
 
 **Priority:** MVP · ROADMAP phase 8 · D9, D12, D38–D40 (item 01)
 
@@ -102,3 +103,9 @@ app/e2e/integrations-phase-8.spec.ts
 app/e2e/fixture-kernel.ts
 app/e2e/fixtures/integrations.ts
 docs/evidence/phase-8-polish/
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-08T17:40:22Z
+- **Brief:** .supervisor/jobs/done/2026-11-08-integrations-mcp-connect-upgrade-policy.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/234
