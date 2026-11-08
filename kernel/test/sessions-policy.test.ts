@@ -386,8 +386,13 @@ describe("a live, write-granted policy gets the same rail answers (phase 8 item 
 describe("ALWAYS_HELD_TOOLS (phase 3 foundation)", () => {
   const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work" };
 
-  it("is the closed list of tools every call to which is held: kernel_playbook_enable, then the two charter tools", () => {
-    expect(ALWAYS_HELD_TOOLS).toEqual(["mcp__kernel__kernel_playbook_enable", "mcp__kernel__kernel_agent_create", "mcp__kernel__kernel_agent_update"]);
+  it("is the closed list of tools every call to which is held: kernel_playbook_enable, the two charter tools, then the merge approval (phase 8 item 09)", () => {
+    expect(ALWAYS_HELD_TOOLS).toEqual([
+      "mcp__kernel__kernel_playbook_enable",
+      "mcp__kernel__kernel_agent_create",
+      "mcp__kernel__kernel_agent_update",
+      "mcp__kernel__kernel_merge_approval_request",
+    ]);
     expect(Object.isFrozen(ALWAYS_HELD_TOOLS)).toBe(true);
   });
 
@@ -404,6 +409,26 @@ describe("ALWAYS_HELD_TOOLS (phase 3 foundation)", () => {
     for (const name of ["mcp__kernel__kernel_agent_list", "mcp__kernel__kernel_agent_message", "mcp__kernel__kernel_agent_createx"]) {
       expect(classifyToolCall(name, {}, rail), name).toEqual({ kind: "ordinary" });
     }
+  });
+
+  it("classifies kernel_merge_approval_request as outward whatever its input, filing {tool, input, cwd}; it is neither a GitHub write tool nor in any never category (phase 8 item 09)", () => {
+    const name = "mcp__kernel__kernel_merge_approval_request";
+    for (const input of [{ repo: "o/r", pr: 7, head_sha: "a".repeat(40), ci: "green", ready_at: "2026-11-08T04:56:42Z" }, {}, null]) {
+      expect(classifyToolCall(name, input, rail)).toEqual({
+        kind: "outward",
+        action: "kernel_merge_approval_request",
+        payload: { tool: name, input, cwd: "/work" },
+      });
+    }
+    // Held, never "always": it is in ALWAYS_HELD_TOOLS, so no per-playbook grant covers it, and it is not a GitHub write tool a grant could cover.
+    expect(ALWAYS_HELD_TOOLS).toContain(name);
+    expect(Object.keys(GITHUB_WRITE_TOOLS)).not.toContain(name);
+    expect(neverCategoriesOf("kernel_merge_approval_request")).toEqual([]);
+    for (const near of ["mcp__kernel__kernel_merge_approval_requestx", "kernel_merge_approval_request", "mcp__other__kernel_merge_approval_request"]) {
+      expect(classifyToolCall(near, {}, rail), near).toEqual({ kind: "ordinary" });
+    }
+    // The merge itself stays blocked for every session.
+    expect(classifyToolCall("Bash", { command: "gh pr merge 7" }, rail)).toEqual({ kind: "deny", reason: "merge_blocked" });
   });
 
   it("classifies kernel_playbook_enable as outward whatever its input: action without the mcp__kernel__ prefix, payload {tool, input, cwd}", () => {
