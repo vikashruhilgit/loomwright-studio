@@ -1,4 +1,4 @@
-// Probe 16 (auth-switch Auth 1): does a REAL API key, read by the kernel's own `api-key` provider from
+// Probe 16 (the auth-switch side track in docs/ROADMAP.md): does a REAL API key, read by the kernel's own `api-key` provider from
 // the Keychain item `loomwright-studio-api-key`, authenticate a fully isolated session
 // (settingSources [] and Loomwright by path), and which models answer on it? Also checks that the
 // provider's env strips a stray subscription token, and how fast a bad key fails.
