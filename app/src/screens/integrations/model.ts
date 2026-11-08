@@ -730,16 +730,19 @@ export function splitRepo(repo: string): { readonly owner: string; readonly name
   return owner === "" || name === "" ? undefined : { owner, name };
 }
 
-const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+/** Mirrors `OWNER` in `electron/open-external.ts` (the renderer does not import from `electron/`): no `--`, no edge hyphen. */
+const OWNER_PATTERN = /^(?!.*--)[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+/** Mirrors `RESERVED_OWNER` there: `github.com/settings/...` is GitHub's own account area, never an owner. */
+const RESERVED_OWNER = "settings";
 const NAME_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
 
 /**
  * The repo's GitHub settings page (`https://github.com/<owner>/<repo>/settings`), built only from a name that matches
- * GitHub's own pattern (the open-external allowlist checks the same shape), else `undefined`.
+ * GitHub's own pattern (the open-external allowlist applies the same owner and repo checks, mirrored here), else `undefined`.
  */
 export function repoSettingsUrl(repo: string): string | undefined {
   const parts = splitRepo(repo);
-  if (parts === undefined || !OWNER_PATTERN.test(parts.owner) || !NAME_PATTERN.test(parts.name) || parts.name === "." || parts.name === "..") return undefined;
+  if (parts === undefined || parts.owner === RESERVED_OWNER || !OWNER_PATTERN.test(parts.owner) || !NAME_PATTERN.test(parts.name) || parts.name === "." || parts.name === "..") return undefined;
   return `https://github.com/${parts.owner}/${parts.name}/settings`;
 }
 

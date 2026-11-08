@@ -1032,7 +1032,7 @@ describe("the phase 8 view model", () => {
   it("builds a settings link only from GitHub-shaped names, and the plans address is fixed", () => {
     expect(repoSettingsUrl("octo-owner/site")).toBe("https://github.com/octo-owner/site/settings");
     expect(repoSettingsUrl("octo-owner/my.repo_2")).toBe("https://github.com/octo-owner/my.repo_2/settings");
-    for (const bad of ["", "octo-owner", "a/b/c", "-bad/site", "bad-/site", "octo owner/site", "octo-owner/site?x=1", "octo-owner/..", "octo-owner/a#b", "octo-owner/a/../b"]) expect(repoSettingsUrl(bad)).toBeUndefined();
+    for (const bad of ["", "octo-owner", "a/b/c", "-bad/site", "bad-/site", "octo owner/site", "octo-owner/site?x=1", "octo-owner/..", "octo-owner/a#b", "octo-owner/a/../b", "a--b/repo", "settings/repo"]) expect(repoSettingsUrl(bad)).toBeUndefined();
     expect(BILLING_PLANS_URL).toBe("https://github.com/settings/billing/plans");
     expect(splitRepo("octo-owner/site")).toEqual({ owner: "octo-owner", name: "site" });
     expect(splitRepo("/site")).toBeUndefined();
