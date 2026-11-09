@@ -1,6 +1,7 @@
 # 10 — The PR tracker and owner-aware comment routing
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/241
 
 **Priority:** MVP · ROADMAP phase 8 · invariants 1, 4 · D40 (item 01)
 
@@ -120,3 +121,9 @@ kernel/test/console-contract.test.ts
 kernel/test/tools-sdk-list.test.ts
 kernel/test/brain.test.ts
 docs/architecture/automate.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-09T07:06:33Z
+- **Brief:** .supervisor/jobs/done/2026-11-09-pr-tracker-and-owner-aware-routing.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/241
