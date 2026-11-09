@@ -1,0 +1,129 @@
+/* The ticket -> PR card: docs/design/mockups/phase-8.html (.tw, .tcard, .tfoot, .pills, .srcchip, .lk). Colour, type, spacing and widths come only from tokens.css custom properties. */
+/*
+ * The card is a list item holding the open-history button and, beside it, an optional footer link, so a card never
+ * nests a button in a button. The li draws the border; the button inside is flat.
+ */
+.ticket-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  transition: box-shadow var(--duration-instant) var(--ease-standard);
+}
+.ticket-card:hover {
+  box-shadow: var(--shadow-1);
+}
+.ticket-card-wait {
+  border-color: var(--attention);
+}
+.ticket-card .ticket-face {
+  border: 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: none;
+  box-shadow: none;
+}
+.ticket-card .ticket-face:hover:not([aria-disabled="true"]) {
+  box-shadow: none;
+}
+.ticket-card .ticket-kind {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+.ticket-card .ticket-kind > * {
+  white-space: nowrap;
+}
+.ticket-src,
+.ticket-pr {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  color: var(--ink-secondary);
+}
+.ticket-glyph {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.ticket-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+/* The CI dot: filled green or red when the kernel recorded it, a hollow ring while it is pending, absent or unknown. */
+.ticket-dot {
+  display: block;
+  flex: none;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+}
+.ticket-dot[data-dot="ok"] {
+  background: var(--ok);
+}
+.ticket-dot[data-dot="danger"] {
+  background: var(--danger);
+}
+.ticket-dot[data-dot="idle"] {
+  border: 2px solid var(--idle);
+}
+.ticket-last-known {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+
+/* The footer: the waiting row or the policy note, with its link. */
+.ticket-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--hairline);
+  color: var(--ink-secondary);
+}
+.ticket-foot-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.ticket-foot-full {
+  flex-basis: 100%;
+}
+.ticket-foot .btn {
+  flex: none;
+}
+
+/* The open card: the waiting band, and the sessions and approvals lists beside the history. */
+.ticket-band {
+  margin: 0 var(--space-6);
+}
+.ticket-band-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ticket-link-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.ticket-link-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ticket-event-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}

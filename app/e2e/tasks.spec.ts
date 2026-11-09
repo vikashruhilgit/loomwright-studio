@@ -32,6 +32,13 @@
 // dark, is written to the committed `docs/evidence/phase-7-polish/tasks/`;
 // otherwise to Playwright's per-test output dir, so CI and other lanes' e2e runs
 // never dirty tracked files. The spec asserts behaviour, never pixels.
+//
+// Phase 8 (item 14, the tests after the phase 7 ones): a ticket's pull request as a card on the board and in its
+// history. The columns and honest tones of the ticket cards, the "Waiting on you" link to the pending merge approval
+// (only with a matching pending approval), the history as one sentence per PR state change with a link to each
+// session's log, the last-known board, the keys and the contrast. Its screenshots go to
+// `docs/evidence/phase-8-polish/tasks/` with `PHASE8_POLISH_EVIDENCE=1` (the switch every phase 8 polish spec
+// shares), else to the per-test output dir; a test fails if the tracked folder changed during a plain run.
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,12 +48,39 @@ import { launchApp } from "./electron-harness";
 import { appEnv, startFixtureKernel, unreachableDataDir } from "./fixture-kernel";
 import type { FixtureKernel, FixtureRoute } from "./fixture-kernel";
 import type { RouteKey } from "../src/api/contract";
-import { feedEvent, item, populatedItems, reviewHistory, reviewLog, runningSessions, stamp, tasksKernel, tasksRoutes, waitingItems } from "./fixtures/tasks";
+import {
+  PENDING_TICKET,
+  TICKET_REPO,
+  WAITING_TICKET,
+  feedEvent,
+  item,
+  populatedItems,
+  reviewHistory,
+  reviewLog,
+  runningSessions,
+  stamp,
+  tasksKernel,
+  tasksRoutes,
+  ticketInit,
+  ticketItem,
+  ticketItems,
+  ticketPr,
+  waitingItems,
+} from "./fixtures/tasks";
 import type { TasksKernel, TasksKernelInit } from "./fixtures/tasks";
+import { mergeApproval } from "./fixtures/approvals";
 import { outputRow } from "./fixtures/sessions";
 
 const EVIDENCE = process.env.TASKS_EVIDENCE === "1";
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-7-polish/tasks/", import.meta.url));
+/** Phase 8's evidence switch, shared by every phase 8 polish spec; its own dir for this screen. */
+const PHASE8_EVIDENCE = process.env.PHASE8_POLISH_EVIDENCE === "1";
+const PHASE8_DIR = fileURLToPath(new URL("../../docs/evidence/phase-8-polish/tasks/", import.meta.url));
+/** When this run began, for the guard that the tracked phase 8 dir is untouched without `PHASE8_POLISH_EVIDENCE`. */
+const RUN_START = Date.now();
+/** The ticket -> PR views, named for the mockup's `tasks-populated`, `tasks-waiting`, `tasks-history` and `tasks-unreachable`. */
+const TICKET_SHOTS = ["ticket-populated", "ticket-waiting", "ticket-pending", "ticket-history", "ticket-unreachable"] as const;
+type TicketShot = (typeof TICKET_SHOTS)[number];
 const THEMES = ["light", "dark"] as const;
 type Theme = (typeof THEMES)[number];
 /** The mockup's eight Tasks views, in the README's order: `tasks-<state>`. */
@@ -733,6 +767,40 @@ test("AC9: an event refetches the board and moves the card without a reload; unc
   await expect.poll(() => boardReads(started)).toBe(base + 2);
 });
 
+/** The WCAG contrast of every element `selector` matches, text on what it sits on, in the page's current theme. */
+async function contrastRows(page: Page, selector: string): Promise<{ readonly selector: string; readonly text: string; readonly ratio: number }[]> {
+  return page.evaluate((selector) => {
+    type Rgba = readonly [number, number, number, number];
+    const parse = (css: string): Rgba => {
+      const n = (css.match(/[-\d.]+(?:e-?\d+)?/g) ?? []).map(Number);
+      return css.startsWith("color(") ? [(n[0] ?? 0) * 255, (n[1] ?? 0) * 255, (n[2] ?? 0) * 255, n[3] ?? 1] : [n[0] ?? 0, n[1] ?? 0, n[2] ?? 0, n[3] ?? 1];
+    };
+    const over = (top: Rgba, bottom: readonly [number, number, number]): [number, number, number] => [0, 1, 2].map((i) => (top[i] as number) * top[3] + (bottom[i] as number) * (1 - top[3])) as [number, number, number];
+    const channel = (v: number): number => {
+      const c = v / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    const luminance = ([r, g, b]: readonly [number, number, number]): number => 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    const backdrop = (el: Element): [number, number, number] => {
+      const layers: Rgba[] = [];
+      for (let e: Element | null = el; e !== null; e = e.parentElement) {
+        const bg = parse(getComputedStyle(e).backgroundColor);
+        if (bg[3] > 0) layers.push(bg);
+        if (bg[3] >= 1) break;
+      }
+      let base: [number, number, number] = [255, 255, 255];
+      for (let i = layers.length - 1; i >= 0; i -= 1) base = over(layers[i] as Rgba, base);
+      return base;
+    };
+    return [...document.querySelectorAll(selector)].map((el) => {
+      const bg = backdrop(el);
+      const fg = over(parse(getComputedStyle(el).color), bg);
+      const [hi, lo] = [luminance(fg), luminance(bg)].sort((a, b) => b - a) as [number, number];
+      return { selector: el.className, text: (el.textContent ?? "").slice(0, 40), ratio: (hi + 0.05) / (lo + 0.05) };
+    });
+  }, selector);
+}
+
 test("AC10: every card has an accessible name; every column is a labelled region; the log is a labelled role=log; text is at least 4.5:1 in both themes", async () => {
   const { fixture: started } = await startKernel(reviewInit(waitingItems()));
   const page = await openWith(started);
@@ -748,36 +816,7 @@ test("AC10: every card has an accessible name; every column is a labelled region
   const checks = ".tasks-card-title, .tasks-card-meta, .tasks-card-kind, .tasks-card .badge";
   for (const theme of THEMES) {
     await setTheme(page, theme);
-    const rows = await page.evaluate((selector) => {
-      type Rgba = readonly [number, number, number, number];
-      const parse = (css: string): Rgba => {
-        const n = (css.match(/[-\d.]+(?:e-?\d+)?/g) ?? []).map(Number);
-        return css.startsWith("color(") ? [(n[0] ?? 0) * 255, (n[1] ?? 0) * 255, (n[2] ?? 0) * 255, n[3] ?? 1] : [n[0] ?? 0, n[1] ?? 0, n[2] ?? 0, n[3] ?? 1];
-      };
-      const over = (top: Rgba, bottom: readonly [number, number, number]): [number, number, number] => [0, 1, 2].map((i) => (top[i] as number) * top[3] + (bottom[i] as number) * (1 - top[3])) as [number, number, number];
-      const channel = (v: number): number => {
-        const c = v / 255;
-        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-      };
-      const luminance = ([r, g, b]: readonly [number, number, number]): number => 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
-      const backdrop = (el: Element): [number, number, number] => {
-        const layers: Rgba[] = [];
-        for (let e: Element | null = el; e !== null; e = e.parentElement) {
-          const bg = parse(getComputedStyle(e).backgroundColor);
-          if (bg[3] > 0) layers.push(bg);
-          if (bg[3] >= 1) break;
-        }
-        let base: [number, number, number] = [255, 255, 255];
-        for (let i = layers.length - 1; i >= 0; i -= 1) base = over(layers[i] as Rgba, base);
-        return base;
-      };
-      return [...document.querySelectorAll(selector)].map((el) => {
-        const bg = backdrop(el);
-        const fg = over(parse(getComputedStyle(el).color), bg);
-        const [hi, lo] = [luminance(fg), luminance(bg)].sort((a, b) => b - a) as [number, number];
-        return { selector: el.className, text: (el.textContent ?? "").slice(0, 40), ratio: (hi + 0.05) / (lo + 0.05) };
-      });
-    }, checks);
+    const rows = await contrastRows(page, checks);
     expect(rows.length, `${theme}: elements checked`).toBeGreaterThan(30);
     const low = rows.filter((r) => r.ratio < 4.5);
     expect(low, `${theme}: text under 4.5:1`).toEqual([]);
@@ -918,4 +957,409 @@ test("the evidence README lists every state's screenshot in both themes, and the
   // Nothing else in the folder: the sixteen PNGs and the README.
   const onDisk = readdirSync(EVIDENCE_DIR).sort();
   expect(onDisk).toEqual([...expected, "README.md"].sort());
+});
+
+// ---- phase 8: a ticket's pull request on the board ------------------------------------------------------------------
+
+/** The text and tone of one badge on a ticket card: `testid` is `task-card-state`, `ticket-approvals` or `ticket-ci`. */
+async function pill(page: Page, key: string, testid: "task-card-state" | "ticket-approvals" | "ticket-ci"): Promise<readonly [string | null, string | null]> {
+  const badge = card(page, key).getByTestId(testid).locator(".badge");
+  return [await badge.textContent(), await badge.getAttribute("data-tone")];
+}
+
+test("phase 8 AC1, AC3, AC7: ticket cards read their ticket, PR, state, approvals, CI and owner; the column follows the PR's state; green only for what the kernel recorded", async () => {
+  const { fixture: started } = await startKernel(ticketInit({ waiting: false }));
+  const page = await openWith(started);
+
+  // AC7: open / draft / ready are Working, parked is Parked, merged / closed are Done today; the plain task keeps its column.
+  expect(await keysIn(page, "wait")).toEqual([]);
+  expect((await keysIn(page, "work")).sort()).toEqual(["task:20", "task:62", "task:63", "task:64"]);
+  expect((await keysIn(page, "park")).sort()).toEqual(["task:61", "task:65"]);
+  expect((await keysIn(page, "done")).sort()).toEqual(["task:66", "task:67"]);
+  await expect(page.getByTestId("tasks-attention-band")).toHaveCount(0);
+  await expect(page.getByTestId("tasks-subtitle")).toHaveText("8 cards · 4 working");
+
+  // Each card: its ticket (from the ref's prefix), PR, state, approvals, CI and owner words, in the kernel's tones.
+  const expected: Record<string, { line: string; state: readonly [string, string]; approvals: readonly [string, string]; ci: readonly [string, string]; owner: RegExp }> = {
+    "task:61": { line: "Issue #14→PR #21", state: ["parked", "parked"], approvals: ["Approve in Studio", "neutral"], ci: ["CI green", "ok"], owner: /^ada · parked \/automate item$/i },
+    "task:62": { line: "ClickUp CU-8a41→PR #22", state: ["open", "neutral"], approvals: ["0/2 approvals", "neutral"], ci: ["CI pending", "neutral"], owner: /^ada · live \/automate run$/i },
+    "task:63": { line: "Issue #12→PR #19", state: ["ready", "accent"], approvals: ["Solo", "neutral"], ci: ["CI green", "ok"], owner: /^ada · you or the App$/i },
+    "task:64": { line: "Issue #15→PR #23", state: ["draft", "neutral"], approvals: ["0/2 approvals", "neutral"], ci: ["CI failing", "danger"], owner: /^mason · someone else$/i },
+    "task:65": { line: "Issue #3→PR #4", state: ["parked", "parked"], approvals: ["No policy", "parked"], ci: ["CI green", "ok"], owner: /^ada · you or the App$/i },
+    "task:66": { line: "Issue #9→PR #17", state: ["merged", "ok"], approvals: ["Solo", "neutral"], ci: ["CI green", "ok"], owner: /^ada · live \/automate run$/i },
+    "task:67": { line: "Issue #7→PR #16", state: ["closed", "neutral"], approvals: ["Solo", "neutral"], ci: ["CI failing", "danger"], owner: /^ada · you or the App$/i },
+  };
+  for (const [key, want] of Object.entries(expected)) {
+    await expect(card(page, key).locator(".ticket-kind"), key).toHaveText(want.line);
+    expect(await pill(page, key, "task-card-state"), `${key} state`).toEqual(want.state);
+    expect(await pill(page, key, "ticket-approvals"), `${key} approvals`).toEqual(want.approvals);
+    expect(await pill(page, key, "ticket-ci"), `${key} CI`).toEqual(want.ci);
+    await expect(card(page, key).getByTestId("ticket-owner"), key).toHaveText(want.owner);
+  }
+
+  // AC3: nothing on a pending-CI card is green; a null CI and a "none" are never green either.
+  await expect(card(page, "task:62").locator('.badge[data-tone="ok"]')).toHaveCount(0);
+  await expect(card(page, "task:62").locator(".ticket-dot[data-dot='idle']")).toHaveCount(1);
+  await expect(card(page, "task:64").locator(".ticket-dot[data-dot='danger']")).toHaveCount(1);
+  // Green is exactly: merged, and CI green. A parked PR with Approve in Studio is not green.
+  const greens = await page.locator("[data-card-key] .badge").evaluateAll((els) =>
+    els.filter((el) => el.getAttribute("data-tone") === "ok").map((el) => `${el.closest("[data-card-key]")?.getAttribute("data-card-key")}:${el.textContent}`),
+  );
+  expect(greens.sort()).toEqual(["task:61:CI green", "task:63:CI green", "task:65:CI green", "task:66:CI green", "task:66:merged"].sort());
+
+  // The parked No policy PR shows the mockup's note and a link to Integrations; nothing on a card writes.
+  await expect(page.getByTestId("ticket-card-task:65").getByTestId("ticket-policy-note")).toContainText("Set this repo's merge policy to move it on.");
+  await expect(card(page, "task:66").getByTestId("ticket-meta")).toContainText("by Loomwright's gate");
+  // The kernel serves no triage tally, so none is drawn: no comment counts anywhere on the board.
+  expect((await page.getByTestId("tasks-board").textContent()) ?? "").not.toMatch(/\d+ (fix|reply|answer)|comments?:/i);
+
+  // A plain task is drawn exactly as before.
+  await expect(card(page, "task:20").locator(".tasks-card-label")).toHaveText("Task #20");
+  await expect(page.getByTestId("ticket-card-task:20")).toHaveCount(0);
+});
+
+test("phase 8 AC1: a PR on a reviews: 2 repo with one approval and CI green reads '1/2 approvals' (neutral) and 'CI green' (ok)", async () => {
+  const pr = ticketPr(30, "open", { ticket: "github:vikashruhilgit/studio-sandbox#14", approvals: "1/2", ci: "green", owner_kind: "automate_live" });
+  const { fixture: started } = await startKernel({ items: [ticketItem(70, "Wire the queue", pr)] });
+  const page = await openWith(started);
+  await expect(card(page, "task:70").locator(".ticket-kind")).toHaveText("Issue #14→PR #30");
+  expect(await pill(page, "task:70", "ticket-approvals")).toEqual(["1/2 approvals", "neutral"]);
+  expect(await pill(page, "task:70", "ticket-ci")).toEqual(["CI green", "ok"]);
+  expect(await pill(page, "task:70", "task-card-state")).toEqual(["open", "neutral"]);
+  await expect(card(page, "task:70")).toHaveAccessibleName("Task 70: Wire the queue, open. GitHub Issue #14. PR 30 open. 1/2 approvals. CI green. live /automate run.");
+});
+
+test("phase 8 AC1: the ticket's source is read only from the ref's prefix: ClickUp and Jira by their own, any other ref shown raw with no icon, no ticket for null", async () => {
+  const at = (n: number, ticket: string | null) => ticketItem(80 + n, `Ticket ${n}`, ticketPr(40 + n, "open", { ticket, ci: "none", approvals: "solo" }));
+  const items = [at(1, "github:vikashruhilgit/ntfs-tool#3"), at(2, "clickup:86abc12"), at(3, "jira:acme.atlassian.net/PROJ-12"), at(4, "linear:ENG-4"), at(5, null)];
+  const { fixture: started } = await startKernel({ items });
+  const page = await openWith(started);
+  await expect(card(page, "task:81").locator(".ticket-kind")).toHaveText("Issue #3→PR #41");
+  await expect(card(page, "task:82").locator(".ticket-kind")).toHaveText("ClickUp 86abc12→PR #42");
+  await expect(card(page, "task:83").locator(".ticket-kind")).toHaveText("Jira PROJ-12→PR #43");
+  await expect(card(page, "task:84").locator(".ticket-kind")).toHaveText("linear:ENG-4→PR #44");
+  await expect(card(page, "task:84").locator(".ticket-src svg")).toHaveCount(0);
+  await expect(card(page, "task:85").locator(".ticket-kind")).toHaveText("PR #45");
+  await expect(card(page, "task:85").locator(".ticket-src")).toHaveCount(0);
+  // CI "none" is not green either.
+  expect(await pill(page, "task:81", "ticket-ci")).toEqual(["No CI checks", "neutral"]);
+});
+
+test("phase 8 AC2: a parked PR with a matching pending merge approval sits in Waiting on you with 'Open approval #7', which opens #/approvals/7; the open card shows the same band and link", async () => {
+  const { fixture: started } = await startKernel(ticketInit());
+  const page = await openWith(started);
+
+  expect(await keysIn(page, "wait")).toEqual(["task:61"]);
+  expect(await keysIn(page, "park")).toEqual(["task:65"]);
+  await expect(page.getByTestId("tasks-attention-band")).toHaveText("1 thing waits on you.");
+  const face = page.getByTestId("ticket-card-task:61");
+  await expect(face.getByTestId("ticket-waiting")).toContainText("Waiting on you");
+  expect(await pill(page, "task:61", "ticket-approvals")).toEqual(["Approve in Studio", "attention"]);
+  await expect(card(page, "task:61")).toHaveAccessibleName(/^Task 61: Add retry reset to the queue loop, parked\. GitHub Issue #14\. PR 21 parked\. Approve in Studio\. CI green\. parked \/automate item\. Waiting on you\.$/);
+  // The link is a sibling of the card button, never inside it.
+  await expect(card(page, "task:61").getByRole("button")).toHaveCount(0);
+  // The other parked card has no pending approval, so it does not wait.
+  await expect(page.getByTestId("ticket-card-task:65").getByTestId("ticket-waiting")).toHaveCount(0);
+
+  // The open card: the same band and link.
+  await card(page, "task:61").click();
+  const band = page.getByTestId("ticket-waiting-band");
+  await expect(band).toContainText("Waiting on you: approval #7 for PR #21.");
+  await expect(page.getByTestId("task-facts")).toContainText("Approve in Studio");
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(page.getByTestId("screen-tasks")).toHaveAttribute("data-state", "populated");
+
+  // The link goes to the approval, which the Approvals screen selects.
+  await face.getByRole("button", { name: "Open approval #7" }).click();
+  await expect.poll(() => page.evaluate(() => window.location.hash)).toBe("#/approvals/7");
+  await expect(page.getByTestId("screen-approvals")).toBeVisible();
+  await expect(page.getByTestId("merge-card")).toBeVisible();
+});
+
+test("phase 8 AC2: with no matching pending approval the card shows no 'waiting on you', whatever its state word says", async () => {
+  // Pending approvals that name another PR, and the same PR number in another repo, and a decided one (which the kernel does not list as pending).
+  const at54 = { requesting_session: 54 };
+  const approvals = [
+    mergeApproval(5, { fields: { repo: TICKET_REPO, pr: 99 }, overrides: at54 }),
+    mergeApproval(6, { fields: { repo: "vikashruhilgit/ntfs-tool", pr: 21 }, overrides: at54 }),
+    mergeApproval(8, { fields: { repo: TICKET_REPO, pr: 21 }, overrides: { ...at54, status: "approved", decision: "once" } }),
+  ];
+  const { fixture: started } = await startKernel({ ...ticketInit(), approvals });
+  const page = await openWith(started);
+  expect(await keysIn(page, "wait")).toEqual([]);
+  expect((await keysIn(page, "park")).sort()).toEqual(["task:61", "task:65"]);
+  await expect(page.getByTestId("ticket-waiting")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Open approval/ })).toHaveCount(0);
+  await expect(card(page, "task:61")).not.toHaveAccessibleName(/Waiting on you/);
+  await expect(page.getByTestId("tasks-attention-band")).toHaveCount(0);
+});
+
+test("phase 8 AC4: the history lists each PR state change once, oldest first, as a sentence; each event with a session links that session's log; the sessions and approvals are listed with their links", async () => {
+  const { kernel, fixture: started } = await startKernel(ticketInit());
+  const page = await openWith(started);
+  await card(page, "task:61").click();
+  await expect(page.getByTestId("task-detail")).toBeVisible();
+  expect(kernel.historyReads.at(-1)).toEqual({ kind: "task", id: String(WAITING_TICKET) });
+
+  const events = page.getByRole("list", { name: "History" }).getByRole("listitem");
+  await expect(events).toHaveCount(7);
+  await expect(page.getByTestId("task-history")).toContainText("History · 7");
+  const sentences = await events.getByTestId("task-event-sentence").allTextContents();
+  expect(sentences).toEqual([
+    "Created “Add retry reset to the queue loop” · state open",
+    "session_started recorded",
+    "PR #21: opened → open · CI pending · approvals 0",
+    "comment_routed recorded",
+    "PR #21: open → open · CI green · approvals 0",
+    "session_started recorded",
+    "PR #21: open → parked · CI green · approvals 0 · reason awaiting_merge",
+  ]);
+  // Each PR state change once, never the stored JSON.
+  expect(sentences.filter((s) => s.startsWith("PR #21:"))).toHaveLength(3);
+  const text = (await page.getByTestId("task-history").textContent()) ?? "";
+  expect(text).not.toContain("{");
+  expect(text).not.toContain("head_sha");
+  expect(text).not.toContain(TICKET_REPO);
+  // The actor is the agent of the event's session, or the kernel.
+  expect(await events.getByTestId("task-event-actor").allTextContents()).toEqual(["kernel", "ada", "kernel", "ada", "kernel", "ada", "ada"]);
+
+  // Every event with a session links that session; the kernel's own events do not.
+  expect(await page.getByTestId("task-event-session").allTextContents()).toEqual(["Session 51 log", "Session 53 log", "Session 54 log", "Session 54 log"]);
+  await expect(events.nth(2).getByTestId("task-event-session")).toHaveCount(0);
+  // The default log is the merge-item run (the task's own session, 54); a link shows another's.
+  await expect(page.getByTestId("task-log")).toHaveAttribute("data-session-id", "54");
+  await expect(page.getByRole("log", { name: "Session output" })).toContainText("the item parks as awaiting_merge");
+  await events.nth(1).getByTestId("task-event-session").click();
+  await expect(page.getByTestId("task-log")).toHaveAttribute("data-session-id", "51");
+  await expect(page.getByRole("log", { name: "Session output" })).toContainText("The retry loop never resets its counter after a success.");
+
+  // The history's sessions and approvals are listed with their links.
+  const sessions = page.getByRole("list", { name: "Sessions" }).getByTestId("task-session-row");
+  await expect(sessions).toHaveCount(3);
+  expect(await sessions.evaluateAll((rows) => rows.map((row) => /Session #(\d+)/.exec(row.textContent ?? "")?.[1]))).toEqual(["51", "53", "54"]);
+  await sessions.filter({ hasText: "Session #53" }).getByRole("button", { name: "Show session 53 log" }).click();
+  await expect(page.getByTestId("task-log")).toHaveAttribute("data-session-id", "53");
+  await expect(sessions.filter({ hasText: "Session #53" }).getByRole("button")).toHaveAttribute("aria-pressed", "true");
+  const approvals = page.getByRole("list", { name: "Approvals" });
+  await expect(approvals).toContainText("Approval #7 · kernel_merge_approval_request");
+  await approvals.getByRole("button", { name: "Open approval #7" }).click();
+  await expect.poll(() => page.evaluate(() => window.location.hash)).toBe("#/approvals/7");
+});
+
+test("phase 8 AC4: a plain task's history is unchanged: no session links, no Sessions list", async () => {
+  const { fixture: started } = await startKernel(ticketInit());
+  const page = await openWith(started);
+  await card(page, "task:20").click();
+  await expect(page.getByTestId("task-detail")).toBeVisible();
+  await expect(page.getByTestId("task-event-session")).toHaveCount(0);
+  await expect(page.getByRole("list", { name: "Sessions" })).toHaveCount(0);
+  await expect(page.getByTestId("ticket-waiting-band")).toHaveCount(0);
+});
+
+test("phase 8 AC5: opening Tasks again with the listener stopped shows the last known ticket cards with their approvals, CI and owner words, marked, every card disabled, and no request text", async () => {
+  test.setTimeout(90_000);
+  const { fixture: started } = await startKernel(ticketInit());
+  const page = await openWith(started);
+  await expect(page.getByTestId("tasks-subtitle")).toHaveText("8 cards · 4 working");
+  await settled(started);
+
+  await started.stop();
+  await expect(page.getByTestId("kernel-unreachable-band")).toBeVisible({ timeout: 20_000 });
+  // Leave Tasks (the screen really unmounts), then open it again with the kernel still away.
+  await page.evaluate(() => {
+    window.location.hash = "#/chat";
+  });
+  await expect(page.getByTestId("screen-tasks")).toHaveCount(0);
+  await page.evaluate(() => {
+    window.location.hash = "#/tasks";
+  });
+  await expect(page.getByTestId("screen-tasks")).toBeVisible();
+
+  await expect(page.getByTestId("screen-tasks")).toHaveAttribute("data-state", "populated");
+  await expect(page.getByTestId("tasks-subtitle")).toHaveText("8 cards · 4 working · last known");
+  const keys = ["task:61", "task:62", "task:63", "task:64", "task:65", "task:66", "task:67"];
+  for (const key of keys) {
+    await expect(card(page, key), key).toBeVisible();
+    await expect(card(page, key), key).toBeDisabled();
+    await expect(card(page, key).getByTestId("ticket-last-known"), key).toHaveText("Last known");
+    await expect(card(page, key), key).toHaveAccessibleName(/Last known\.$/);
+  }
+  // The words are the last read ones: approvals, CI and owner.
+  expect(await pill(page, "task:62", "ticket-approvals")).toEqual(["0/2 approvals", "neutral"]);
+  expect(await pill(page, "task:62", "ticket-ci")).toEqual(["CI pending", "neutral"]);
+  await expect(card(page, "task:62").getByTestId("ticket-owner")).toHaveText(/live \/automate run/);
+  expect(await pill(page, "task:66", "ticket-ci")).toEqual(["CI green", "ok"]);
+  // The shared approvals resource kept its last data, so PR #21 still waits on #7, and its link is off.
+  await expect(card(page, "task:61").getByTestId("ticket-last-known")).toBeVisible();
+  const link = page.getByRole("button", { name: "Open approval #7" });
+  await expect(link).toHaveAttribute("aria-disabled", "true");
+  // A disabled card opens nothing, and no request text is shown.
+  await card(page, "task:61").click({ force: true });
+  await expect(page.getByTestId("task-detail")).toHaveCount(0);
+  await link.click({ force: true });
+  expect(await page.evaluate(() => window.location.hash)).toBe("#/tasks");
+  const text = (await page.getByTestId("screen-tasks").textContent()) ?? "";
+  expect(text).not.toMatch(/GET \/tasks|connection_failed|ECONNREFUSED|\b50[0-9]\b/);
+  await expect(page.getByTestId("tasks-empty")).toHaveCount(0);
+  await expect(page.getByTestId("tasks-error")).toHaveCount(0);
+});
+
+test("phase 8 AC8: ticket cards keep the board's accessible name and keys; the footer link is beside the card button, never inside it; text is at least 4.5:1 in both themes", async () => {
+  const { fixture: started } = await startKernel(ticketInit());
+  const page = await openWith(started);
+
+  // Every card (ticket or plain) is a named button of the board's form; no button sits inside another.
+  const unnamed = await page.locator("[data-card-key]").evaluateAll((els) => els.filter((el) => !/^(Task|Playbook run|Session) \d+: .+, .+$/.test(el.getAttribute("aria-label") ?? "")).length);
+  expect(unnamed).toBe(0);
+  expect(await page.locator("[data-card-key] button, button button").count()).toBe(0);
+  expect(await page.locator("[data-card-key]").evaluateAll((els) => els.every((el) => el.tagName === "BUTTON" && el.getAttribute("type") === "button"))).toBe(true);
+
+  // J / K walk the ticket cards in column order, Enter opens one, Esc returns with focus on it. The footer link is not a card.
+  const order = await page.locator("[data-card-key]").evaluateAll((els) => els.map((el) => el.getAttribute("data-card-key") ?? ""));
+  expect(order).toEqual(["task:61", "task:62", "task:63", "task:64", "task:20", "task:65", "task:66", "task:67"].sort((a, b) => order.indexOf(a) - order.indexOf(b)));
+  expect(order).toHaveLength(8);
+  await page.keyboard.press("j");
+  expect(await focusedKey(page)).toBe(order[0]);
+  await page.keyboard.press("j");
+  expect(await focusedKey(page)).toBe(order[1]);
+  await page.keyboard.press("k");
+  expect(await focusedKey(page)).toBe(order[0]);
+  await card(page, "task:62").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("task-detail")).toHaveAttribute("data-card-key", "task:62");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("screen-tasks")).toHaveAttribute("data-state", "populated");
+  await expect(card(page, "task:62")).toBeFocused();
+
+  // Contrast: the card's words, badges, the footer note and the link, in both themes.
+  const checks = ".tasks-card-title, .tasks-card-meta, .tasks-card-kind, .ticket-src, .ticket-pr, .ticket-foot-note, .ticket-card .badge, .ticket-foot .btn";
+  for (const theme of THEMES) {
+    await setTheme(page, theme);
+    const rows = await contrastRows(page, checks);
+    expect(rows.length, `${theme}: elements checked`).toBeGreaterThan(40);
+    expect(rows.filter((r) => r.ratio < 4.5), `${theme}: text under 4.5:1`).toEqual([]);
+  }
+  await page.evaluate(() => {
+    delete document.documentElement.dataset.theme;
+  });
+});
+
+// ---- phase 8 screenshots ---------------------------------------------------------------------------------------------
+
+const ticketWritten: string[] = [];
+
+/** Both themes of one ticket view, to the committed phase 8 dir with `PHASE8_POLISH_EVIDENCE=1`, else to the per-test dir. */
+async function shootTicket(page: Page, shot: TicketShot, testInfo: TestInfo, height = 1100): Promise<void> {
+  // Taller than the default window, so every card of the board is in one shot.
+  await app?.evaluate(({ BrowserWindow }, h) => BrowserWindow.getAllWindows()[0]?.setContentSize(1180, h), height);
+  await expect.poll(() => page.evaluate(() => window.innerHeight)).toBeGreaterThanOrEqual(height - 40);
+  const grounds: string[] = [];
+  for (const theme of THEMES) {
+    await setTheme(page, theme);
+    grounds.push(await ground(page));
+    const file = `tasks-${shot}-${theme}.png`;
+    const path = PHASE8_EVIDENCE ? join(PHASE8_DIR, file) : testInfo.outputPath(file);
+    await page.screenshot({ path, animations: "disabled" });
+    expect(statSync(path).size, `${file} was written`).toBeGreaterThan(1000);
+    ticketWritten.push(file);
+  }
+  expect(grounds[0]).not.toBe(grounds[1]);
+  await page.evaluate(() => {
+    delete document.documentElement.dataset.theme;
+  });
+}
+
+test("phase 8 AC9: every ticket card and history state, in light and dark", async ({}, testInfo) => {
+  test.setTimeout(180_000);
+  if (PHASE8_EVIDENCE) {
+    // The folder holds exactly this run's screenshots: a renamed or removed state leaves no stale PNG.
+    mkdirSync(PHASE8_DIR, { recursive: true });
+    for (const file of readdirSync(PHASE8_DIR)) if (file.endsWith(".png")) rmSync(join(PHASE8_DIR, file));
+  }
+
+  // Populated: the seven ticket cards and a plain task; PR #21 is parked, with no approval waiting yet.
+  {
+    const { fixture: started } = await startKernel(ticketInit({ waiting: false }));
+    const page = await openWith(started);
+    await expect(card(page, "task:61")).toBeVisible();
+    await expect(page.getByTestId("tasks-attention-band")).toHaveCount(0);
+    await blur(page);
+    await shootTicket(page, "ticket-populated", testInfo);
+    await closeAll(started);
+  }
+
+  // Waiting on you: PR #21 waits on approval #7, with its footer link and the attention band.
+  {
+    const { fixture: started } = await startKernel(ticketInit());
+    const page = await openWith(started);
+    await expect(page.getByTestId("tasks-attention-band")).toHaveText("1 thing waits on you.");
+    await expect(page.getByTestId("ticket-waiting")).toContainText("Waiting on you");
+    await blur(page);
+    await shootTicket(page, "ticket-waiting", testInfo);
+    await closeAll(started);
+  }
+
+  // Pending: a PR with CI pending and 0/2 approvals, beside a draft whose CI failed: nothing is green.
+  {
+    const init = ticketInit({ waiting: false });
+    const items = ticketItems().filter((i) => [PENDING_TICKET, 64, 20].includes(i.id));
+    const { fixture: started } = await startKernel({ ...init, items });
+    const page = await openWith(started);
+    await expect(card(page, "task:62")).toBeVisible();
+    await expect(page.locator('[data-card-key] .badge[data-tone="ok"]')).toHaveCount(0);
+    await blur(page);
+    await shootTicket(page, "ticket-pending", testInfo, 620);
+    await closeAll(started);
+  }
+
+  // Unreachable: the shell's band over the board, which keeps its ticket cards, last known, every card disabled.
+  {
+    const { fixture: started } = await startKernel(ticketInit(), { "GET /status": () => ({ status: 503, body: { error: "unavailable" } }) });
+    const page = await launch(started.env);
+    await openTasks(page);
+    await expect(page.getByTestId("kernel-unreachable-band")).toBeVisible();
+    await expect(page.getByTestId("tasks-subtitle")).toHaveText("8 cards · 4 working · last known");
+    await expect(card(page, "task:61")).toBeDisabled();
+    await expect(card(page, "task:61").getByTestId("ticket-last-known")).toBeVisible();
+    await blur(page);
+    await shootTicket(page, "ticket-unreachable", testInfo);
+    await closeAll(started);
+  }
+
+  // History: the waiting PR opened, its PR state changes as sentences with session links, its sessions, its approval and its log.
+  {
+    const { fixture: started } = await startKernel(ticketInit());
+    const page = await openWith(started);
+    await card(page, "task:61").click();
+    await expect(page.getByRole("list", { name: "History" }).getByRole("listitem")).toHaveCount(7);
+    await expect(page.getByTestId("ticket-waiting-band")).toBeVisible();
+    await expect(page.getByRole("log", { name: "Session output" })).toContainText("approval #7 requested");
+    await blur(page);
+    await shootTicket(page, "ticket-history", testInfo, 1500);
+  }
+
+  expect([...new Set(ticketWritten)].sort()).toEqual(TICKET_SHOTS.flatMap((s) => THEMES.map((t) => `tasks-${s}-${t}.png`)).sort());
+});
+
+test("phase 8 AC9: without PHASE8_POLISH_EVIDENCE nothing under the tracked phase 8 tasks dir changed during the run", () => {
+  test.skip(PHASE8_EVIDENCE, "an evidence run writes the tracked dir on purpose");
+  const touched = readdirSync(PHASE8_DIR).filter((name) => statSync(join(PHASE8_DIR, name)).mtimeMs > RUN_START);
+  expect(touched, "no file under docs/evidence/phase-8-polish/tasks/ is newer than this run's start").toEqual([]);
+});
+
+test("phase 8 AC9: the evidence README lists every ticket screenshot in both themes with the views they match, how to regenerate them and the deviations, and the folder holds nothing else", () => {
+  const readme = readFileSync(join(PHASE8_DIR, "README.md"), "utf8");
+  const expected = TICKET_SHOTS.flatMap((s) => THEMES.map((t) => `tasks-${s}-${t}.png`)).sort();
+  expect(expected).toHaveLength(10);
+  const listed = [...new Set(readme.match(/\btasks-ticket-[a-z]+-(?:light|dark)\.png/g) ?? [])].sort();
+  expect(listed).toEqual(expected);
+  // Nothing else in the folder: the ten PNGs and the README.
+  expect(readdirSync(PHASE8_DIR).sort()).toEqual([...expected, "README.md"].sort());
+  // Each shot is named against the mockup view it matches.
+  for (const view of ["tasks-populated", "tasks-waiting", "tasks-history", "tasks-unreachable"]) expect(readme, `the README names the mockup view ${view}`).toContain(`\`${view}\``);
+  expect(readme).toContain("PHASE8_POLISH_EVIDENCE=1");
+  expect(readme).toContain("npx playwright test e2e/tasks.spec.ts");
+  // The deviations: the tally the kernel does not serve (AC6), and the label prefix the board keeps (AC8).
+  expect(readme).toContain("Deviations from the mockup");
+  for (const word of ["comment_tally", "comment_routed", "Task <id>:"]) expect(readme, `the README names ${word}`).toContain(word);
 });
