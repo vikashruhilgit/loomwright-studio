@@ -3,14 +3,24 @@
 // cards for what the kernel did about that agent.
 //
 //   GET /threads/:agent[?before=<cursor>][&limit=N]
-//       200 {items, next_before, pending_approvals, thread_summarize_hint_tokens}: the newest N items
+//       200 {items, next_before, pending_approvals, thread_summarize_hint_tokens, threads}: the newest N items
 //       (1-200, default 50) strictly older than the cursor, oldest first;
 //       `next_before` is the cursor for the page before this one, null once
 //       the oldest item is in this page; `pending_approvals` is every
 //       pending approval the agent requested, oldest first
 //       400 invalid_limit / invalid_before; 404 no_such_agent. The body also
 //       carries `thread_summarize_hint_tokens`: the agent's settings value of
-//       that name (the owner's, D34), null when unset or the file is refused
+//       that name (the owner's, D34), null when unset or the file is refused.
+//       Phase 8 item 17: each message item also carries `thread_id` (its
+//       thread's first row id), `continuation` (`resumed` / `replayed` / null)
+//       and `session_title` (its session's title, `../brain/titles.ts`; null
+//       when it had no session), and `threads` is one `ThreadFigures` per
+//       thread a message item of the page is in, by thread id: its title (the
+//       owner's rename wins), message count, the tokens its latest reply read
+//       (input + cache-read + cache-write of that session's
+//       `sessions.model_usage_json`, D26's counting) and, when its summary
+//       file exists, the summary's size in tokens ESTIMATED as characters / 4.
+//       Tokens only, never dollars (D24)
 //
 // Phase 8 item 17's write routes (`:thread` is a thread id: its first row's
 // id; 400 invalid_thread when it is not a positive integer, 404
@@ -39,9 +49,14 @@
 //       already_started_fresh {summarized_into} / no_summary {file} (no
 //       `summary` and no file) / history_too_large {thread, size, bound} /
 //       summary_unwritable {file, code}
+//   POST /threads/:agent/:thread/rename   body {title}
+//       200 {thread, title, renamed}: the owner's title for the thread
+//       (`brain_threads.title`), one line, at most `MAX_TITLE_CHARS`; `title:
+//       null` clears it back to the derived title. Writes no event and queues
+//       nothing; no agent tool renames. 400 invalid_body
 //
-// The write routes queue `message` events through `enqueueEvent` and never
-// start a session (invariant 2: the loop's handler does). The agent's
+// The write routes queue `message` events through `enqueueEvent` (rename
+// only stores the owner's title) and never start a session (invariant 2: the loop's handler does). The agent's
 // settings (its model) are the handler's to refuse, on the row.
 //
 // An item is a message (`{type: "message", …brain_messages row}`, every row
@@ -68,8 +83,10 @@ import { memoryDir, readMemoryFile, threadSummaryRelativePath, writeThreadSummar
 import { ensureBrainMessage } from "../brain/messages.js";
 import type { BrainMessageRow } from "../brain/messages.js";
 import { ASK_AGENT, askTextProblem } from "../brain/routes.js";
+import { ownerTitle, renameThread, renameTitleOf, sessionTitle, threadTitle } from "../brain/titles.js";
 import {
   MAX_THREAD_SUMMARY_CHARS,
+  getMessageThread,
   latestStartedRow,
   recordStartFresh,
   recordSummaryRequest,
@@ -79,6 +96,7 @@ import {
   threadLinks,
   threadProblem,
 } from "../brain/threads.js";
+import type { Continuation } from "../brain/threads.js";
 import type { ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
 import { enqueueEvent } from "../loop/queue.js";
 import { TERMINAL_STATUSES, isTerminalStatus } from "../sessions/types.js";
@@ -144,8 +162,34 @@ interface ThreadKey {
   readonly id: number;
 }
 
-/** A message item: the row, marked. */
-export type ThreadMessageItem = { readonly type: "message" } & BrainMessageRow;
+/** What a message item adds to its row (phase 8 item 17): its thread, how its session continued it, and its session's title. */
+export interface ThreadMessageFields {
+  readonly thread_id: number;
+  readonly continuation: Continuation | null;
+  /** The title its session carries (`sessionTitle`), null when the row had no session. */
+  readonly session_title: string | null;
+}
+
+/** A message item: the row, marked, then its thread fields. */
+export type ThreadMessageItem = { readonly type: "message" } & BrainMessageRow & ThreadMessageFields;
+
+/** One thread's figures in a page (phase 8 item 17), all in tokens (D24). */
+export interface ThreadFigures {
+  /** The thread id: its first row's. */
+  readonly id: number;
+  /** The agent the thread talks to (its first row's). */
+  readonly agent: string;
+  /** The thread's title (`threadTitle`: the owner's rename, else derived). */
+  readonly title: string;
+  /** Whether `title` is the owner's rename. */
+  readonly renamed: boolean;
+  /** How many `brain_messages` rows the thread holds. */
+  readonly messages: number;
+  /** Input + cache-read + cache-write tokens of the session of the thread's newest replied row (D26's counting, from its `model_usage_json`); null when none has a reading. */
+  readonly latest_reply_tokens: number | null;
+  /** The summary file's size in tokens, an ESTIMATE (characters / 4, rounded up); null when the thread has no summary file. */
+  readonly summary_estimated_tokens: number | null;
+}
 
 /** An event card: one kernel-written line about one `events` row. */
 export interface ThreadEventItem {
@@ -168,6 +212,8 @@ export interface ThreadPage {
   readonly pending_approvals: readonly ApprovalView[];
   /** The agent's `thread_summarize_hint_tokens` setting (the owner's), null when unset. */
   readonly thread_summarize_hint_tokens: number | null;
+  /** The figures of each thread a message item of `items` is in, by thread id. */
+  readonly threads: readonly ThreadFigures[];
 }
 
 // The `brain_messages` columns (the same list as `../brain/messages.ts`'s, typed as its `BrainMessageRow`).
@@ -359,6 +405,74 @@ function eventItemOf(row: ThreadEventRow): ThreadEventItem {
   }
 }
 
+// ---- Thread fields and figures (phase 8 item 17) ----------------------------------
+
+/** `row` as a message item: marked, then its thread, its continuation and its session's title. */
+function messageItemOf(store: Store, row: BrainMessageRow): ThreadMessageItem {
+  const thread = getMessageThread(store, row.id);
+  return {
+    type: "message",
+    ...row,
+    thread_id: thread?.thread_id ?? row.id,
+    continuation: thread?.continuation ?? null,
+    session_title: row.session_id === null ? null : sessionTitle(store, row.session_id),
+  };
+}
+
+/** A non-negative integer token count from a stored usage field, else 0 (D26 reads a bad number as nothing). */
+const tokenField = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.trunc(v) : 0);
+
+/**
+ * The tokens a session read: input + cache-read + cache-write over every
+ * model in its `model_usage_json` (`{<model>: {inputTokens, …}}`, the SDK's
+ * `result.modelUsage` as stored). Null for no reading, or text that is not
+ * a JSON object.
+ */
+export function readTokensOf(modelUsageJson: string | null): number | null {
+  if (modelUsageJson === null) return null;
+  let usage: unknown;
+  try {
+    usage = JSON.parse(modelUsageJson) as unknown;
+  } catch {
+    return null;
+  }
+  if (typeof usage !== "object" || usage === null || Array.isArray(usage)) return null;
+  let total = 0;
+  for (const u of Object.values(usage as Record<string, unknown>)) {
+    if (typeof u !== "object" || u === null) continue;
+    const m = u as Record<string, unknown>;
+    total += tokenField(m.inputTokens) + tokenField(m.cacheReadInputTokens) + tokenField(m.cacheCreationInputTokens);
+  }
+  return total;
+}
+
+/** The row ids of thread `thread`: its first row and every row recorded in it. */
+const THREAD_ROWS = "SELECT ? AS id UNION SELECT message_id FROM brain_message_threads WHERE thread_id = ?";
+
+/** Thread `thread`'s figures (`ThreadFigures`). */
+export function threadFiguresOf(store: Store, thread: number): ThreadFigures {
+  const counted = store
+    .prepare<number[], { messages: number; agent: string | null; usage: string | null }>(
+      `SELECT (SELECT count(*) FROM brain_messages m WHERE m.id IN (${THREAD_ROWS})) AS messages,
+              (SELECT agent FROM brain_messages WHERE id = ?) AS agent,
+              (SELECT s.model_usage_json FROM brain_messages m JOIN sessions s ON s.id = m.session_id
+                WHERE m.id IN (${THREAD_ROWS}) AND m.reply_text IS NOT NULL ORDER BY m.id DESC LIMIT 1) AS usage`,
+    )
+    .get(thread, thread, thread, thread, thread) as { messages: number; agent: string | null; usage: string | null };
+  const agent = counted.agent ?? ASK_AGENT;
+  const read = readMemoryFile(store.dataDir, threadSummaryRelativePath(agent, thread), MAX_THREAD_SUMMARY_CHARS);
+  const summaryChars = read.problem === null ? read.text.length + read.cut : null;
+  return {
+    id: thread,
+    agent,
+    title: threadTitle(store, thread),
+    renamed: ownerTitle(store, thread) !== null,
+    messages: counted.messages,
+    latest_reply_tokens: readTokensOf(counted.usage),
+    summary_estimated_tokens: summaryChars === null ? null : Math.ceil(summaryChars / 4),
+  };
+}
+
 // ---- The page ---------------------------------------------------------------------
 
 const keyOf = (item: ThreadItem): ThreadKey => ({ at: item.type === "message" ? item.created_at : item.at, type: item.type, id: item.id });
@@ -417,7 +531,7 @@ function pendingApprovals(store: Store, agent: string): ApprovalView[] {
  * whether an older item remains.
  */
 export function readThreadPage(store: Store, agent: string, cursor: ThreadKey | null, limit: number): ThreadPage {
-  const messages: ThreadItem[] = newestMessages(store, agent, cursor, limit + 1).map((row) => ({ type: "message", ...row }));
+  const messages: ThreadItem[] = newestMessages(store, agent, cursor, limit + 1).map((row) => messageItemOf(store, row));
   const events: ThreadItem[] = newestEvents(store, agent, cursor, limit + 1).map(eventItemOf);
   const newestFirst = [...messages, ...events].sort((a, b) => compareKeys(keyOf(b), keyOf(a)));
   const page = newestFirst.slice(0, limit).reverse();
@@ -427,6 +541,7 @@ export function readThreadPage(store: Store, agent: string, cursor: ThreadKey | 
     next_before: newestFirst.length > limit && oldest !== undefined ? encodeThreadCursor(keyOf(oldest)) : null,
     pending_approvals: pendingApprovals(store, agent),
     thread_summarize_hint_tokens: threadSummarizeHintTokens(store.dataDir, agent),
+    threads: [...new Set(page.flatMap((item) => (item.type === "message" ? [item.thread_id] : [])))].sort((a, b) => a - b).map((thread) => threadFiguresOf(store, thread)),
   };
 }
 
@@ -568,4 +683,22 @@ const startFreshRoute: ContributedRoute = {
   },
 };
 
-export const threadsPart: ConsolePart = Object.freeze({ ...emptyConsolePart("threads"), routes: Object.freeze([threadRoute, summarizeRoute, summaryRoute, startFreshRoute]) });
+const renameRoute: ContributedRoute = {
+  method: "POST",
+  path: "/threads/:agent/:thread/rename",
+  handler: async (req): Promise<ContributedRouteResponse> => {
+    const target = threadTarget(req);
+    if (!("agent" in target)) return target;
+    const { agent, thread } = target;
+    const body = req.body ?? {};
+    if (typeof body !== "object" || body === null || Array.isArray(body) || !("title" in body)) {
+      return { status: 400, body: { error: "invalid_body", message: "the body must be a JSON object {title}" } };
+    }
+    const parsed = renameTitleOf((body as { title?: unknown }).title);
+    if (!parsed.ok) return { status: 400, body: { error: "invalid_body", message: parsed.message } };
+    renameThread(req.store, { thread, agent, title: parsed.title }, req.now());
+    return { status: 200, body: { thread, title: threadTitle(req.store, thread), renamed: parsed.title !== null } };
+  },
+};
+
+export const threadsPart: ConsolePart = Object.freeze({ ...emptyConsolePart("threads"), routes: Object.freeze([threadRoute, summarizeRoute, summaryRoute, startFreshRoute, renameRoute]) });

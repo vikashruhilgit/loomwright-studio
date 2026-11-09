@@ -48,7 +48,7 @@ A failing log write never fails a session. The whole of `record` is in a try/cat
 
 Both are `GET`, behind the API's bearer token.
 
-- `GET /sessions?status=<s>&limit=<n>` answers `200 {sessions: SessionSummary[]}`, newest first. Each summary is `id, agent, status, model, started` (`started_at`), `ended` (`ended_at`), `tokens` (the session's summed `budget.counted_tokens`, `null` when it has none), `cwd` and `playbook`. `status` filters on the exact status. `limit` defaults to 50 and is at most 500. A `limit` that is not an integer in 1-500 answers `400 invalid_query`.
+- `GET /sessions?status=<s>&limit=<n>` answers `200 {sessions: SessionSummary[]}`, newest first. Each summary is `id, agent, status, model, started` (`started_at`), `ended` (`ended_at`), `tokens` (the session's summed `budget.counted_tokens`, `null` when it has none), `cwd`, `playbook` and `title` (phase 8 item 17: derived at read time by `kernel/src/brain/titles.ts`, the owner's thread rename winning; see [threads](threads.md#phase-8-item-17-continuity-figures-titles-and-the-write-routes)). `status` filters on the exact status. `limit` defaults to 50 and is at most 500. A `limit` that is not an integer in 1-500 answers `400 invalid_query`.
 - `GET /sessions/:id/output?after=<seq>&limit=<n>` answers `200 {rows: SessionOutputRow[]}`: the rows with `seq > after` (default 0), in `seq` order, at most `limit` (default 500, at most 500, as `GET /events`). Each row is `id, session_id, seq, kind, payload` (the parsed `payload_json`) and `created_at`. A bad id answers `400 invalid_id`, a bad `after` or `limit` `400 invalid_query`, and an id with no session `404 not_found`. A session with no rows answers an empty list.
 
 ## The feed event
