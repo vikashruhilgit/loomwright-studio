@@ -621,8 +621,9 @@ function avatarHTML(a,size){
    - Per thread, item 17b's thread route returns the message count, the tokens the latest reply read (input plus cache, from sessions.model_usage_json),
      and, once a summary file exists, the summary's estimated size. The summary file is memory/<agent>/threads/<thread id>.md.
    - A thread's title is item 17b's session title (the owner's first line; a thread started from a summary is the old title, marked continued).
-   - The size hint is item 17b's owner setting (unset by default). The reference limit is the bound 17b puts on a thread reference, shown as an owner
-     setting with Wright's proposal; a referenced thread's own size in tokens is computed in the app. Both are listed for the owner in the field map.
+   - The size hint is item 17b's owner setting (unset by default). The reference limit is the bound 17b puts on a thread reference, drawn as an owner
+     setting, unset until the owner saves it, with Wright's value beside it as a proposal; a referenced thread's own size in tokens is computed in the
+     app. Both are listed for the owner in the field map.
    Nothing here is a built-in default: every policy value shows who set it (set by you, proposed by Wright). */
 const AGENTS={
   wright:{id:'wright',name:'Wright',shape:'whale',hue:'accent',last:'Ready'},
@@ -662,12 +663,15 @@ const ROW71={id:71,start:'summary',rat:'14:24',sess:87,
   reply:['I have read the summary of our crew setup. The two charters, #11 and #12, still wait on you in Approvals. Tell me what to change, or approve them there.']};
 /* A thread of another agent, for the too-large reference. It has no summary, so its chip has no toggle. */
 const OTHER=[{id:31,agent:'mason',title:'Review notes for studio-sandbox',n:212,size:182000,sum:null}];
-/* The owner's settings this mockup reads. The size hint is unset (no highlight) except in the long-thread view. */
-const REF_LIMIT={v:50000,by:'wright'};
+/* The owner's settings this mockup reads. The size hint is unset (no highlight) except in the long-thread view. The reference limit is unset (nothing is
+   refused at paste) except in the too-large view, where the owner has saved one. */
 const HINT_SET={v:40000,by:'owner'};
-/* Wright's proposal for the size hint. It is shown beside the setting and never applied until the owner saves it (invariant 1). */
+const REF_SET={v:50000,by:'owner'};
+/* Wright's proposals for both. Each is shown beside its setting and never applied until the owner saves it (invariant 1). */
 const HINT_PROPOSAL=40000;
-const refLimit=()=>S.ref||REF_LIMIT;
+const REF_PROPOSAL=50000;
+const PROPOSAL={hint:HINT_PROPOSAL,ref:REF_PROPOSAL};
+const refLimit=()=>S.ref;
 
 /* Sandbox Developer's Crew thread, later the same day (after the owner approved charter #11 at 14:40). Same fields as Wright's rows. */
 const CREW_SUMFILE='memory/sandbox-developer/threads/90.md';
@@ -756,7 +760,8 @@ const refSize=(t,m)=>m==='sum'&&t.sum?t.sum.est:t.size;
    Optional forcing props apply when the view is chosen from the strip or the hash, never when it is reached by a click:
    reply (row id of the Reply strip), info (thread id of the open ⓘ panel), dlg (dialog over it), edit (preview in edit mode), fresh (the summary was
    started fresh), chip ({t: thread id, m: full|sum}), sent (rows the owner sent), summarizing (thread id), long (the long thread past the size hint),
-   after (view when the dialog closes), back (selector that gets focus when the dialog closes and no opener is left), see (selector scrolled into view).
+   ref (the reference limit the owner saved), back (selector that gets focus when the dialog closes and no opener is left), see (selector scrolled into
+   view). When the dialog closes, the view key goes back to the key Summarize was clicked on (S.under), or to <screen>-threads for a forced preview.
    ADDING VIEWS (the next part of this mockup): add the SCREENS change, RENDER entry, VIEWS entries and a GROUPS entry at the SUBTASK-2 markers below,
    and its palette commands in palExtra(). Do not edit the entries above the markers. */
 const SCREENS={
@@ -790,8 +795,8 @@ const VIEWS={
   'chat-reply-sent':{scr:'chat',st:'threads',label:'Reply sent, joined to its thread',grp:'reply',sent:[SENT_REPLY]},
   'chat-info':{scr:'chat',st:'threads',label:'ⓘ: this thread in tokens',grp:'summary',info:65,see:'#info-65'},
   'chat-summarizing':{scr:'chat',st:'threads',label:'Wright writing the summary',grp:'summary',summarizing:65,see:'#m-67'},
-  'chat-preview':{scr:'chat',st:'threads',label:'Summary preview',grp:'summary',dlg:'preview',after:'chat-threads',back:'[data-act="summarize"][data-t="65"]',see:'#m-67'},
-  'chat-preview-edit':{scr:'chat',st:'threads',label:'Summary preview: editing',grp:'summary',dlg:'preview',edit:1,after:'chat-threads',back:'[data-act="summarize"][data-t="65"]',see:'#m-67'},
+  'chat-preview':{scr:'chat',st:'threads',label:'Summary preview',grp:'summary',dlg:'preview',back:'[data-act="summarize"][data-t="65"]',see:'#m-67'},
+  'chat-preview-edit':{scr:'chat',st:'threads',label:'Summary preview: editing',grp:'summary',dlg:'preview',edit:1,back:'[data-act="summarize"][data-t="65"]',see:'#m-67'},
   'chat-fresh':{scr:'chat',st:'threads',label:'Started fresh: new thread, old one marked',grp:'summary',fresh:1,see:'#tg-71'},
   'chat-fresh-old':{scr:'chat',st:'threads',label:'Old thread: Summarized, still has Reply',grp:'summary',fresh:1,see:'#tg-65'},
   'chat-reference':{scr:'chat',st:'threads',label:'Chip: full thread',grp:'reference',fresh:1,chip:{t:65,m:'full'}},
@@ -800,7 +805,7 @@ const VIEWS={
   'chat-empty':{scr:'chat',st:'empty',label:'Empty thread',grp:'states'},
   'chat-long':{scr:'chat',st:'threads',label:'Long thread past the size hint',grp:'states',long:1,see:'#m-67'},
   'chat-reply-fallback':{scr:'chat',st:'threads',label:'Reply: earlier session can\'t be continued',grp:'states',sent:[{...SENT_REPLY,path:'replayed'}]},
-  'chat-reference-too-large':{scr:'chat',st:'threads',label:'Reference too large: refused',grp:'states',chip:{t:31,m:'full'}},
+  'chat-reference-too-large':{scr:'chat',st:'threads',label:'Reference too large: refused',grp:'states',chip:{t:31,m:'full'},ref:REF_SET},
   'chat-unreachable':{scr:'chat',st:'unreachable',label:'Kernel unreachable',grp:'states'},
   /* SUBTASK-2:VIEWS. Second part's forcing props: names (owner renames, by thread id), renaming (thread id being renamed), hint (the saved size hint),
      setDraft (unsaved Settings fields), dec (approval decisions, by id), raw (the raw-names disclosure open), sess (the selected session), later (the
@@ -812,8 +817,8 @@ const VIEWS={
   'crew-reply-fallback':{scr:'crew',st:'threads',label:'Continuing from the saved conversation',grp:'crew',later:1,sent:[{...CREW_SENT_REPLY,path:'replayed'}]},
   'crew-info':{scr:'crew',st:'threads',label:'ⓘ in tokens',grp:'crew',later:1,info:90,see:'#info-90'},
   'crew-summarizing':{scr:'crew',st:'threads',label:'Writing the summary',grp:'crew',later:1,summarizing:90,see:'#m-91'},
-  'crew-preview':{scr:'crew',st:'threads',label:'Summary preview',grp:'crew',later:1,dlg:'preview',after:'crew-threads',back:'[data-act="summarize"][data-t="90"]',see:'#m-91'},
-  'crew-preview-edit':{scr:'crew',st:'threads',label:'Preview: editing',grp:'crew',later:1,dlg:'preview',edit:1,after:'crew-threads',back:'[data-act="summarize"][data-t="90"]',see:'#m-91'},
+  'crew-preview':{scr:'crew',st:'threads',label:'Summary preview',grp:'crew',later:1,dlg:'preview',back:'[data-act="summarize"][data-t="90"]',see:'#m-91'},
+  'crew-preview-edit':{scr:'crew',st:'threads',label:'Preview: editing',grp:'crew',later:1,dlg:'preview',edit:1,back:'[data-act="summarize"][data-t="90"]',see:'#m-91'},
   'crew-fresh':{scr:'crew',st:'threads',label:'Started fresh',grp:'crew',later:1,fresh:1,see:'#tg-96'},
   'crew-reference':{scr:'crew',st:'threads',label:'Chip: Wright\'s thread, full',grp:'crew',later:1,chip:{t:65,m:'full'}},
   'crew-reference-summary':{scr:'crew',st:'threads',label:'Chip: its summary',grp:'crew',later:1,chip:{t:65,m:'sum'}},
@@ -837,7 +842,7 @@ const DEFAULT_VIEW='chat-threads';
 /* Transient state is what a screen shows on top of its data: the Reply strip, the ⓘ panel, the preview and its edit, the chip, a running summary.
    Every setView clears all of it, so nothing a click opened leaks into another view. Persistent state (fresh, sent, the copied reference) is
    cleared only by a forced view, which then applies exactly what its entry names. */
-const transient=()=>({reply:null,info:null,dlg:null,edit:false,editText:null,chip:null,summarizing:null,draft:'',
+const transient=()=>({reply:null,info:null,dlg:null,edit:false,editText:null,chip:null,summarizing:null,under:null,draft:'',
   /* second part: the thread being renamed and its unsaved text, unsaved Settings fields and their error, the open raw-names disclosure, the selected session */
   renaming:null,rnText:null,setDraft:null,setErr:null,rawOpen:null,sess:null});
 /* names (renames), dec (approval decisions), hint, ref (the saved Settings) and copied are the owner's across screens. fresh, sent, long, bare,
@@ -853,6 +858,10 @@ let S=fresh();
 /* jump: the next render scrolls the thread to what the view is about (a view change or a send); otherwise the thread keeps its scroll. */
 let opener=null, overlayKey='', sumTk=0, jump=true;
 const V=()=>VIEWS[S.view];
+/* While a summary is being written or previewed, S.view names that flow and S.under keeps the key of the thread screen beneath it. Thread actions
+   read and write the key through these two, so a click during the flow re-keys what is beneath, and closing the preview restores it exactly. */
+const curKey=()=>S.under!=null?S.under:S.view;
+const setKey=k=>{ if(S.under!=null) S.under=k; else S.view=k; };
 const offline=()=>V().st==='unreachable';
 const dis=off=>off?' disabled title="Needs the kernel"':'';
 
@@ -867,7 +876,7 @@ function setView(v,keep){
   if(!keep){
     S.fresh=!!x.fresh; S.sent=(x.sent||[]).map(r=>({...r})); S.long=!!x.long; S.hint=x.long?HINT_SET:(x.hint||null); S.bare=x.st==='empty';
     S.sumText=baseSum(x.scr); S.sumEdited=false; S.copied=null;
-    S.names={...(x.names||{})}; S.dec={...(x.dec||{})}; S.ref=null; S.stash={};
+    S.names={...(x.names||{})}; S.dec={...(x.dec||{})}; S.ref=x.ref?{...x.ref}:null; S.stash={};
     if(x.reply!=null) S.reply=x.reply;
     if(x.info!=null) S.info=x.info;
     if(x.edit){ S.edit=true; S.editText=baseSum(x.scr); }
@@ -936,7 +945,7 @@ function agentTurn(t,r,last,D,off){
   const path=r.path==='resumed'?'<span>· continued</span>':r.path==='replayed'?'<span>· from the saved conversation</span>':r.start==='summary'?'<span>· started from the summary</span>':'';
   if(r.pending) return `<li class="turn" id="m-${r.id}">${avatarHTML(w,24)}<div><div class="who"><span>${esc(w.name)}</span></div>${pendHTML(t,r)}</div></li>`;
   const sum=last?`<button class="btn ${past?'sec hl':'ghost'} sm" data-act="summarize" data-t="${t.id}"${busy?' aria-disabled="true"':''}${D}>${I.fresh}Summarize &amp; start fresh</button><button class="btn ghost sm ic" data-act="info" data-t="${t.id}" aria-expanded="${open}" aria-controls="info-${t.id}" aria-label="About Summarize &amp; start fresh: this thread in tokens">${I.info}</button>${past?'<span class="badge att">past your size hint</span>':''}`:'';
-  const status=busy?`<p class="pend" role="status"><span class="spin" aria-hidden="true"></span>${esc(w.name)} is writing a summary of this thread: one short session. Nothing new starts until you choose.</p>`:'';
+  const status=busy?`<p class="pend" id="sum-status" role="status"><span class="spin" aria-hidden="true"></span>${esc(w.name)} is writing a summary of this thread: one short session. Nothing new starts until you choose, so Send waits.</p>`:'';
   return `<li class="turn" id="m-${r.id}">${avatarHTML(w,24)}<div><div class="who"><span>${esc(w.name)}</span><span>${r.rat}</span>${path}</div><div class="msg">${r.reply.map(p=>`<p>${esc(p)}</p>`).join('')}</div>
     <div class="macts"><button class="btn ghost sm" data-act="reply" data-r="${r.id}" aria-label="Reply to ${esc(w.name)}'s message of ${r.rat}"${D}>${I.reply}Reply</button>${sum}</div>${status}${last&&open?infoHTML(t,off):''}</div></li>`;
 }
@@ -957,17 +966,19 @@ function threadHTML(t,D,off){
 function chipHTML(off){
   const c=S.chip; if(!c) return '';
   const t=findThread(c.t); if(!t) return '';
-  const ag=AGENTS[t.agent], size=refSize(t,c.m), RL=refLimit(), over=size>RL.v;
+  const ag=AGENTS[t.agent], size=refSize(t,c.m), RL=refLimit(), over=!!RL&&size>RL.v;
   const tog=t.sum?`<span class="seg2" role="group" aria-label="Attach as"><button data-act="chip-mode" data-m="full" aria-pressed="${c.m!=='sum'}">Full thread</button><button data-act="chip-mode" data-m="sum" aria-pressed="${c.m==='sum'}">Summary</button></span>`:'';
   const err=over?`<p class="cerr" id="chip-err" role="alert">${I.warn}<span>Too large to attach: this thread is ${fmt(size)} tokens and your reference limit is ${fmt(RL.v)} tokens. Nothing was cut and nothing was sent. Remove it, or summarize that thread first and attach its summary. <button class="lnk" data-go="settings">Change the limit in Settings</button></span></p><p class="cap">Reference limit ${fmt(RL.v)} tokens ${setBy(RL.by)}</p>`:'';
   return `<div class="rchips"><div class="rchip${over?' err':''}" role="group" aria-label="Attached thread reference">${I.clip}<span class="rc-t">Thread: <b>${esc(t.title)}</b> <span class="tn">(${msgs(refN(t))})</span>${t.agent!==AG().id?' · '+esc(ag.name):''}</span>${tog}<span class="cap tn">${c.m==='sum'?'about ':''}${fmt(size)} tokens</span><button class="x" data-act="chip-x" aria-label="Remove the reference to ${esc(t.title)}">${I.x}</button></div>${err}</div>`;
 }
-const chipOver=()=>{ const c=S.chip, t=c&&findThread(c.t); return !!(t&&refSize(t,c.m)>refLimit().v); };
+const chipOver=()=>{ const c=S.chip, t=c&&findThread(c.t), RL=refLimit(); return !!(t&&RL&&refSize(t,c.m)>RL.v); };
 function composerHTML(off){
   const r=S.reply!=null&&rowById(S.reply), n=esc(AG().name);
   const strip=r?`<div class="rstrip" role="group" aria-label="Reply">${I.reply}<span class="rt">Replying to: <b>${esc(firstLine(r.reply[0]))}</b></span><span class="kbd" aria-hidden="true">Esc</span><button class="x" data-act="reply-x" aria-label="Cancel reply">${I.x}</button></div>`:'';
-  const block=off||chipOver();
-  return `<div class="composer">${strip}${chipHTML(off)}<div class="crow"><div class="field"><input id="cin" aria-label="${r?'Reply to '+n:'Message '+n}" placeholder="${r?'Reply to '+n:'Message '+n}" autocomplete="off" value="${esc(S.draft)}"></div><button class="btn pri" data-act="send"${block?` disabled${off?' title="Needs the kernel"':''}${chipOver()?' aria-describedby="chip-err"':''}`:''}>Send <span class="kbd">⏎</span></button></div></div>`;
+  /* Send waits while a summary is being written: the status line under that thread says why (it exists only while the thread is on screen). */
+  const busy=S.summarizing!=null, why=[chipOver()?'chip-err':'',busy?'sum-status':''].filter(Boolean).join(' ');
+  const block=off||chipOver()||busy;
+  return `<div class="composer">${strip}${chipHTML(off)}<div class="crow"><div class="field"><input id="cin" aria-label="${r?'Reply to '+n:'Message '+n}" placeholder="${r?'Reply to '+n:'Message '+n}" autocomplete="off" value="${esc(S.draft)}"></div><button class="btn pri" data-act="send"${block?` disabled${off?' title="Needs the kernel"':busy?' title="Waits for the summary"':''}${why?` aria-describedby="${why}"`:''}`:''}>Send <span class="kbd">⏎</span></button></div></div>`;
 }
 function chatScreen(st){
   const off=st==='unreachable', D=dis(off);
@@ -996,27 +1007,38 @@ const dialogHTML=()=>S.dlg==='preview'?previewDialog():'';
 function chatAct(a,el){
   const off=offline(), tid=+el.dataset.t, say=m=>{ toast(m); live(m); }, n=AG().name;
   switch(a){
-    case 'reply': { if(off) return; S.reply=+el.dataset.r; if(S.view===vk("threads")) S.view=vk("reply"); render(); $('#cin')?.focus({preventScroll:true}); live(`Replying to ${n}'s message of ${rowById(S.reply).rat}.`); break; }
+    case 'reply': { if(off) return; S.reply=+el.dataset.r; if(curKey()===vk("threads")) setKey(vk("reply")); render(); $('#cin')?.focus({preventScroll:true}); live(`Replying to ${n}'s message of ${rowById(S.reply).rat}.`); break; }
     case 'reply-x': cancelReply(); break;
-    case "info": { S.info=S.info===tid?null:tid; if(S.info!=null&&S.view===vk("threads")) S.view=vk("info"); else if(S.info==null&&S.view===vk("info")) S.view=vk("threads"); render(); if(S.info) within($(`#info-${tid}`),"nearest"); break; }
+    case "info": { S.info=S.info===tid?null:tid; if(S.info!=null&&curKey()===vk("threads")) setKey(vk("info")); else if(S.info==null&&curKey()===vk("info")) setKey(vk("threads")); render(); if(S.info) within($(`#info-${tid}`),"nearest"); break; }
     case 'summarize': {
       if(off||S.summarizing!=null) return;
-      setOpener(el); S.info=null; S.summarizing=tid; S.view=vk('summarizing'); render(); live(`${n} is writing a summary of this thread.`);
-      const tk=++sumTk; setTimeout(()=>{ if(tk!==sumTk||S.view!==vk('summarizing')) return; S.summarizing=null; S.view=vk('preview'); S.dlg='preview'; render(); live('The summary is ready to read.'); },1400);
+      /* The summary flow is drawn for one thread per screen (CTX().sumId), once. Summarize on any other thread, or on that one once it is summarized,
+         says so instead of opening another thread's summary (as the sidebar does for Mason's thread). */
+      const C=CTX(), own=findThread(tid), drawn=findThread(C.sumId);
+      if(tid!==C.sumId||S.fresh){ const m=tid!==C.sumId?`Summarize & start fresh on “${own?own.title:'this thread'}” works the same way; this mockup draws it on “${drawn.title}”.`:`“${drawn.title}” is already summarized and continued in “${findThread(C.newId).title}”. This mockup draws one summary of it.`; note(m); live(m); return; }
+      setOpener(el); S.info=null;
+      /* The key beneath the flow: what was on screen, less the ⓘ panel this closes. Closing the preview restores it. */
+      S.under=curKey()===vk('info')?vk('threads'):curKey();
+      S.summarizing=tid; S.view=vk('summarizing'); render(); live(`${n} is writing a summary of this thread.`);
+      /* Only a view change (setView bumps sumTk) cancels the wait. Whatever else happened meanwhile, the flag is cleared and the preview opens. */
+      const tk=++sumTk; setTimeout(()=>{ if(tk!==sumTk||S.summarizing!==tid) return;
+        S.summarizing=null; setOpener($(`#main [data-act="summarize"][data-t="${tid}"]`)); S.view=vk('preview'); S.dlg='preview'; render(); live('The summary is ready to read.'); },1400);
       break; }
     case 'edit': {
       if(S.edit){ S.edit=false; } else { S.edit=true; if(S.editText==null) S.editText=S.sumText; }
       S.view=vk(S.edit?'preview-edit':'preview'); redrawOverlay(); ($(S.edit?'#sumedit':'#overlay [data-act="edit"]'))?.focus({preventScroll:true}); writeHash(); break; }
     case 'fresh': {
       if(S.editText!=null){ S.sumEdited=S.editText!==CTX().sum; S.sumText=S.editText; }
-      dropOverlay(); S.fresh=true; S.view=vk('fresh'); render(); seeThread(CTX().newId);
+      /* Start fresh moves to the new thread, so the Reply strip and an open rename (both on the old thread) end here; a chip stays in the composer. */
+      dropOverlay(); S.under=null; S.reply=null; S.renaming=null; S.rnText=null; S.fresh=true;
+      S.view=S.chip?vk(S.chip.m==='sum'?'reference-summary':'reference'):vk('fresh'); render(); seeThread(CTX().newId);
       say(S.sumEdited?'Started a new thread from your edited summary. The old thread stays, and Reply still continues it.':'Started a new thread from the summary. The old thread stays, and Reply still continues it.'); break; }
     case 'goto-thread': seeThread(tid); break;
     case 'copyref': { const t=findThread(tid); S.copied=tid; say(`Copied a reference to “${t.title}”. Paste it into any composer, Chat or Crew, with ⌘V.`); break; }
-    case 'chip-mode': { S.chip.m=el.dataset.m; S.view=vk(S.chip.m==='sum'?'reference-summary':'reference'); render(); break; }
+    case 'chip-mode': { S.chip.m=el.dataset.m; const k=curKey(); if(k===vk('threads')||k===vk('fresh')||/-reference(-summary)?$/.test(k)) setKey(vk(S.chip.m==='sum'?'reference-summary':'reference')); render(); break; }
     case 'chip-x': { S.chip=null; render(); $('#cin')?.focus({preventScroll:true}); live('Reference removed.'); break; }
     case 'send': send(); break;
-    case 'rename': { if(off) return; S.renaming=tid; S.rnText=null; S.info=null; if(S.view==='chat-threads') S.view='chat-rename'; render(); const i=$('#rn-in'); if(i){ i.focus({preventScroll:true}); i.select(); } live('Rename the thread. Enter saves, Escape cancels.'); break; }
+    case 'rename': { if(off) return; S.renaming=tid; S.rnText=null; S.info=null; if(curKey()==='chat-threads'||curKey()==='chat-info') setKey('chat-rename'); else if(curKey()===vk('info')) setKey(vk('threads')); render(); const i=$('#rn-in'); if(i){ i.focus({preventScroll:true}); i.select(); } live('Rename the thread. Enter saves, Escape cancels.'); break; }
     case 'rename-save': saveRename(); break;
     case 'rename-x': cancelRename(); break;
   }
@@ -1024,7 +1046,7 @@ function chatAct(a,el){
 /* Rename in place. Save and Enter store the owner's name (empty brings back the derived one); Cancel, Esc and leaving the view drop the unsaved text.
    Every exit returns focus to that thread's Rename button. */
 function endRename(id,msg){
-  S.renaming=null; S.rnText=null; if(S.view==='chat-rename') S.view=msg&&S.names[id]!=null?'chat-renamed':'chat-threads'; render();
+  S.renaming=null; S.rnText=null; if(curKey()==='chat-rename') setKey(msg&&S.names[id]!=null?'chat-renamed':'chat-threads'); render();
   $(`#main [data-act="rename"][data-t="${id}"]`)?.focus({preventScroll:true}); live(msg||'Rename cancelled.');
 }
 function cancelRename(){ if(S.renaming!=null) endRename(S.renaming,''); }
@@ -1039,12 +1061,12 @@ function saveRename(){
 }
 function cancelReply(){
   const id=S.reply; if(id==null) return;
-  S.reply=null; if(S.view===vk('reply')) S.view=vk('threads'); render();
+  S.reply=null; if(curKey()===vk('reply')) setKey(vk('threads')); render();
   $(`#main [data-act="reply"][data-r="${id}"]`)?.focus({preventScroll:true}); live('Reply cancelled.');
 }
 function closeInfo(){
   const id=S.info; if(id==null) return;
-  S.info=null; if(S.view===vk('info')) S.view=vk('threads'); render();
+  S.info=null; if(curKey()===vk('info')) setKey(vk('threads')); render();
   $(`#main [data-act="info"][data-t="${id}"]`)?.focus({preventScroll:true});
 }
 /* Scrolls the thread only, never the page: scrollIntoView would also move the review harness around the window. */
@@ -1065,6 +1087,7 @@ function pasteRef(){
 }
 function send(){
   if(offline()||chipOver()) return;
+  if(S.summarizing!=null){ const m='Send waits until the summary is ready.'; note(m); live(m); return; }
   const text=($('#cin')?.value||'').trim();
   if(!text){ note('Type a message first. A plain message starts a new topic.'); $('#cin')?.focus({preventScroll:true}); return; }
   const C=CTX(), id=C.nextId+S.sent.length, at=C.at, cont=S.reply, ref=S.chip?{...S.chip}:null;
@@ -1119,30 +1142,33 @@ function tasksScreen(){
 }
 
 /* ---------- Settings: the size hint and the reference limit (second part) ----------
-   Both are owner settings (item 17b: stored with the owner's other settings). The size hint is unset by default; Wright's value is shown beside it as a
-   proposal and is applied only when the owner saves it. The reference limit is drawn as subtask 1 drew it in the chip: Wright's proposed value, in use
-   until the owner changes it (an open point for the owner, listed in the evidence README's field map). */
+   Both are owner settings (item 17b: stored with the owner's other settings). Each is unset by default; Wright's value is shown beside it as a
+   proposal and is applied only when the owner saves it (invariant 1). Unset, the size hint highlights nothing and the reference limit refuses nothing
+   at paste. The limit as an owner setting is an open point for the owner, listed in the evidence README's field map. */
 const numIn=s=>String(s==null?'':s).replace(/[,\s]/g,'');
 function checkSet(d){
-  const out={hint:S.hint?S.hint.v:null,ref:refLimit().v,err:null}; if(!d) return out;
+  const out={hint:S.hint?S.hint.v:null,ref:S.ref?S.ref.v:null,err:null}; if(!d) return out;
   if(d.hint!=null){ const v=numIn(d.hint); if(v==='') out.hint=null; else if(/^[0-9]+$/.test(v)&&+v>0) out.hint=+v; else out.err={k:'hint',m:'Enter a whole number of tokens, like 40000. Leave it empty for no size hint.'}; }
-  if(d.ref!=null&&!out.err){ const v=numIn(d.ref); if(/^[0-9]+$/.test(v)&&+v>0) out.ref=+v; else out.err={k:'ref',m:'Enter a whole number of tokens, like 50000.'}; }
+  if(d.ref!=null&&!out.err){ const v=numIn(d.ref); if(v==='') out.ref=null; else if(/^[0-9]+$/.test(v)&&+v>0) out.ref=+v; else out.err={k:'ref',m:'Enter a whole number of tokens, like 50000. Leave it empty for no reference limit.'}; }
   return out;
 }
-const setVal=k=>S.setDraft&&S.setDraft[k]!=null?S.setDraft[k]:k==='hint'?(S.hint?String(S.hint.v):''):String(refLimit().v);
-const setDirty=()=>!!S.setDraft&&(numIn(setVal('hint'))!==(S.hint?String(S.hint.v):'')||numIn(setVal('ref'))!==String(refLimit().v));
+const saved=k=>{ const o=k==='hint'?S.hint:S.ref; return o?String(o.v):''; };
+const setVal=k=>S.setDraft&&S.setDraft[k]!=null?S.setDraft[k]:saved(k);
+const setDirty=()=>!!S.setDraft&&(numIn(setVal('hint'))!==saved('hint')||numIn(setVal('ref'))!==saved('ref'));
 function settingsScreen(){
-  const e=S.setErr, h=S.hint, RL=refLimit(), dirty=setDirty();
-  const fld=(k,label,now,prop,help)=>`<label for="set-${k}">${label}</label><div class="ctl"><div class="field num${e&&e.k===k?' err':''}"><input id="set-${k}" class="setin" data-k="${k}" inputmode="numeric" autocomplete="off" placeholder="${k==='hint'?'Not set':''}" value="${esc(setVal(k))}" aria-describedby="${k}-now ${k}-help${e&&e.k===k?' '+k+'-err':''}"${e&&e.k===k?' aria-invalid="true"':''}><span class="u">tokens</span></div>
+  const e=S.setErr, h=S.hint, RL=S.ref, dirty=setDirty();
+  const fld=(k,label,now,prop,help)=>`<label for="set-${k}">${label}</label><div class="ctl"><div class="field num${e&&e.k===k?' err':''}"><input id="set-${k}" class="setin" data-k="${k}" inputmode="numeric" autocomplete="off" placeholder="Not set" value="${esc(setVal(k))}" aria-describedby="${k}-now ${k}-help${e&&e.k===k?' '+k+'-err':''}"${e&&e.k===k?' aria-invalid="true"':''}><span class="u">tokens</span></div>
     ${e&&e.k===k?`<p class="ferr" id="${k}-err" role="alert">${I.warn}<span>${esc(e.m)}</span></p>`:''}<p class="prop" id="${k}-now">${now}</p>${prop}<p class="cap" id="${k}-help">${help}</p></div>`;
   const hintNow=h?`Now <b class="tn">${fmt(h.v)} tokens</b>${setBy(h.by)}`:'Now <b>not set</b><span class="cap">Summarize is never highlighted.</span>';
-  const hintProp=h&&h.v===HINT_PROPOSAL?'':`<p class="prop"><span class="badge acc">proposed by Wright</span><span class="tn">${fmt(HINT_PROPOSAL)} tokens</span><button class="btn sec sm" data-act="set-use">Use Wright's proposal</button></p>`;
+  /* Wright's proposal for a setting, with the one control that copies it into the field; gone once the saved value is the proposal. */
+  const prop=(k,o)=>o&&o.v===PROPOSAL[k]?'':`<p class="prop"><span class="badge acc">proposed by Wright</span><span class="tn">${fmt(PROPOSAL[k])} tokens</span><button class="btn sec sm" data-act="set-use" data-k="${k}" aria-label="Use Wright's proposal for the ${k==='hint'?'size hint':'reference limit'}">Use Wright's proposal</button></p>`;
+  const refNow=RL?`Now <b class="tn">${fmt(RL.v)} tokens</b>${setBy(RL.by)}`:'Now <b>not set</b><span class="cap">Nothing is refused when you attach a thread.</span>';
   const sample=h?`<span class="btn sec hl sm" aria-hidden="true">${I.fresh}Summarize &amp; start fresh</span><span class="badge att">past your size hint</span><span class="vh">Past it, Summarize &amp; start fresh is highlighted and marked past your size hint.</span>`:`<span class="btn ghost sm" aria-hidden="true">${I.fresh}Summarize &amp; start fresh</span><span class="cap">Not set: never highlighted.</span>`;
   const html=`<div class="scroll"><div class="pad"><p class="where cap">The rest of Settings (auth provider, kernel, this app) is drawn in gui-v2.html. This item adds the Threads section.</p>
     <section class="blk" aria-labelledby="h-thr"><div class="sech"><h3 class="label" id="h-thr">Threads</h3><span class="cap">Kept with your other settings in the kernel</span></div>
-    <div class="fe">${fld('hint','Size hint',hintNow,hintProp,'When the tokens a thread\'s latest reply read pass this, Summarize &amp; start fresh is highlighted on that thread.')}
+    <div class="fe">${fld('hint','Size hint',hintNow,prop('hint',h),'When the tokens a thread\'s latest reply read pass this, Summarize &amp; start fresh is highlighted on that thread.')}
     <span class="lbl">On a thread past it</span><div class="ctl"><div class="prop">${sample}</div></div>
-    ${fld('ref','Reference limit',`Now <b class="tn">${fmt(RL.v)} tokens</b>${setBy(RL.by)}`,'','A thread you attach that is larger than this is refused before anything is sent, naming its size and this limit. Nothing is cut.')}</div>
+    ${fld('ref','Reference limit',refNow,prop('ref',RL),'A thread you attach that is larger than this is refused before anything is sent, naming its size and this limit. Nothing is cut.')}</div>
     <div class="facts"><button class="btn pri" id="set-save" data-act="set-save"${dirty?'':' disabled'}>Save <span class="kbd">⏎</span></button><button class="btn sec" id="set-discard" data-act="set-discard"${dirty?'':' disabled'}>Discard</button><span class="cap" id="set-state">${dirty?'Unsaved change. Leaving Settings drops it, as Discard does.':'Saved.'}</span></div></section></div></div>`;
   return {title:'Settings',sub:'Threads',html};
 }
@@ -1217,7 +1243,7 @@ function sideAct(a,el){
       /* A thread started from a summary exists only once that screen has started fresh, so opening one draws that screen's started-fresh state. */
       if(id===CTX().newId&&!S.fresh){ S.fresh=true; S.view=vk('fresh'); }
       render(); seeThread(id); if(!$(`#tt-${id}`)) $('#col')?.focus({preventScroll:true}); break; }
-    case 'set-use': { S.setDraft={...(S.setDraft||{}),hint:String(HINT_PROPOSAL)}; S.setErr=null; if(S.view==='settings-threads') S.view='settings-threads-edit'; render(); $('#set-save')?.focus({preventScroll:true}); live('Wright\'s proposal, 40,000 tokens, is in the field. Save to use it.'); break; }
+    case 'set-use': { const k=el.dataset.k==='ref'?'ref':'hint'; S.setDraft={...(S.setDraft||{}),[k]:String(PROPOSAL[k])}; S.setErr=null; if(S.view==='settings-threads'&&k==='hint') S.view='settings-threads-edit'; render(); $('#set-save')?.focus({preventScroll:true}); live(`Wright's proposal, ${fmt(PROPOSAL[k])} tokens, is in the field. Save to use it.`); break; }
     case 'set-save': saveSettings(); break;
     case 'set-discard': { S.setDraft=null; S.setErr=null; if(/-(edit|invalid)$/.test(S.view)) S.view=S.hint?'settings-threads-set':'settings-threads'; render(); $('#set-hint')?.focus({preventScroll:true}); live('Discarded. The saved settings stand.'); break; }
     case 'ap-approve': case 'ap-deny': {
@@ -1235,10 +1261,10 @@ function saveSettings(){
   if(r.err){ S.setErr=r.err; if(S.view==='settings-threads-edit') S.view='settings-threads-invalid'; render(); $(`#set-${r.err.k}`)?.focus({preventScroll:true}); return; }
   if(!setDirty()){ S.setDraft=null; S.setErr=null; render(); $('#set-hint')?.focus({preventScroll:true}); return; }
   S.hint=r.hint==null?null:{v:r.hint,by:'owner'};
-  if(r.ref!==refLimit().v) S.ref={v:r.ref,by:'owner'};
+  S.ref=r.ref==null?null:{v:r.ref,by:'owner'};
   S.setDraft=null; S.setErr=null; if(/^settings-/.test(S.view)) S.view=S.hint?'settings-threads-set':'settings-threads';
   render(); $('#set-hint')?.focus({preventScroll:true});
-  live(`Saved. Size hint ${S.hint?fmt(S.hint.v)+' tokens, set by you':'not set'}; reference limit ${fmt(refLimit().v)} tokens.`);
+  live(`Saved. Size hint ${S.hint?fmt(S.hint.v)+' tokens, set by you':'not set'}; reference limit ${S.ref?fmt(S.ref.v)+' tokens, set by you':'not set'}.`);
 }
 const SIDE_ACTS=['sess','open-sess','open-thread','set-use','set-save','set-discard','ap-approve','ap-deny','ap-enable','ap-anyway'];
 
@@ -1316,9 +1342,10 @@ function redrawOverlay(){ overlayKey=''; renderOverlay(); }
 /* Cancel, Esc and a click on the backdrop close the same way: an unsaved edit is dropped, and focus returns to Summarize. */
 function closeOverlay(){
   if(!$('#overlay').innerHTML) return;
-  const wasPal=overlayKey==='pal', back=V().back, aft=V().after;
+  const wasPal=overlayKey==='pal', back=V().back;
   S.dlg=null; S.edit=false; S.editText=null; $('#overlay').innerHTML=''; overlayKey='';
-  if(!wasPal&&aft){ S.view=aft; render(); }
+  /* The preview closes onto the key Summarize was clicked on, kept in S.under with whatever changed beneath it; a forced preview onto <screen>-threads. */
+  if(!wasPal&&threadScr()){ S.view=S.under!=null?S.under:vk('threads'); S.under=null; render(); }
   restoreFocus(back);
 }
 function trapTab(e){
@@ -1357,7 +1384,7 @@ const crewLast=a=>V().later&&LATER_LAST[a.id]||a.last;
 function palExtra(mk,off){
   const btn=sel=>$('#main '+sel), via=(sel,fn)=>()=>{ const b=btn(sel); if(b&&!b.disabled){ b.focus({preventScroll:true}); fn(b); } };
   if(threadScr()&&V().st!=='empty') threads().forEach(t=>{ if(S.renaming==null) mk('Threads',I.pencil,`Rename thread: ${t.title}`,off?'needs the kernel':'',via(`[data-act="rename"][data-t="${t.id}"]`,b=>chatAct('rename',b)),off); });
-  if(V().scr==='settings'&&btn('[data-act="set-use"]')) mk('Settings',I.gear,'Size hint: use Wright\'s proposal (40,000 tokens)','',via('[data-act="set-use"]',b=>sideAct('set-use',b)));
+  if(V().scr==='settings') [['hint','Size hint'],['ref','Reference limit']].forEach(([k,l])=>{ const s=`[data-act="set-use"][data-k="${k}"]`; if(btn(s)) mk('Settings',I.gear,`${l}: use Wright's proposal (${fmt(PROPOSAL[k])} tokens)`,'',via(s,b=>sideAct('set-use',b))); });
   if(V().scr==='approvals') $$('#main details.raw').forEach(d=>mk('Approvals',I.list,`${d.open?'Hide':'Show'} kernel tool names: #${d.dataset.raw}`,'',()=>{ d.open=!d.open; d.querySelector('summary').focus({preventScroll:true}); }));
 }
 function paletteItems(){

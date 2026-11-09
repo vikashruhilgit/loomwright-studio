@@ -296,9 +296,10 @@ The mockup adds no route and no code. Item 17b (the kernel) supplies what it sho
   - When the earlier session can't be resumed, the reply says "Continuing from the saved conversation": the thread's saved messages are read as data in a new session, and nothing is lost.
 - **Summarize & start fresh (17b Part 2, 17c):**
   - The button and its ⓘ sit on a thread's latest agent reply. The ⓘ panel shows the messages so far, the tokens the latest reply read, the summary's estimated size (once a summary exists) and the size hint.
-  - Summarizing runs one short session and starts nothing.
+  - Summarizing runs one short session and starts nothing. While it runs, Send waits and says so; Reply, the ⓘ, Rename and the chip stay usable, and the preview opens over whatever they left on screen.
+  - The mockup draws the summary flow on one thread per screen (Wright's thread 65, the Crew thread 90). Summarize on any other thread, or on that one once summarized, says the flow is drawn elsewhere instead of opening another thread's summary.
   - The preview is a Dialog with the summary, Start fresh with this, Edit and Cancel. Its Tab order is the summary text, then those three, and `Esc` or Cancel returns focus to Summarize.
-  - Start fresh begins a "(continued)" thread with the summary at its top. The old thread is marked "Summarized: continued in …" and keeps Reply.
+  - Start fresh begins a "(continued)" thread with the summary at its top. The old thread is marked "Summarized: continued in …" and keeps Reply. Start fresh ends an open Reply strip and an unsaved rename (both belong to the old thread); a reference chip stays in the composer.
 - **The size hint (17b item 8, invariant 1):**
   - An owner setting in Settings → Threads, unset by default; unset means Summarize is never highlighted.
   - Wright's value is shown beside it as "proposed by Wright" and is applied only when the owner saves it.
@@ -307,7 +308,7 @@ The mockup adds no route and no code. Item 17b (the kernel) supplies what it sho
   - Every thread header offers Copy reference. Pasting into any composer, Chat or Crew, gives a chip: the thread's title and count, the agent when it is another's, a Full thread / Summary toggle when a summary exists, the size in tokens, and ×.
   - × returns focus to the composer.
   - A sent reference is drawn as quoted data with its source, never as the owner's words (invariant 3).
-  - A reference over the limit is refused, naming its size and the limit, and nothing is cut.
+  - A reference over the owner's reference limit is refused, naming its size and the limit, and nothing is cut. The limit is an owner setting, unset by default, with Wright's value beside it as a proposal (invariant 1; open point 1).
 - **Session names (17b Part 5, 17c):**
   - Every thread and every session card in Sessions and Tasks shows the name 17b derives: the owner's first line, a playbook's name, "From <agent>: …", an approval's label, or an old title marked continued.
   - A thread is renamed in place (`⏎` saves, `Esc` cancels, empty brings back the derived name), and the rename wins and is marked "renamed by you".
@@ -326,10 +327,10 @@ The mockup adds no route and no code. Item 17b (the kernel) supplies what it sho
 The mockup's copy and layout are proposals the owner can change on this PR, as with the earlier mockups. These need a decision, or the owner's word that the proposal stands. Points 1–4 are fields with no source item 17b names (the [field map](design/evidence/chat-threads-mockup/README.md#field-map-ac5) marks each). Points 5 and 6 are item 16 differences. Point 7 is sample data.
 
 1. **A referenced thread's full size, and the reference limit as an owner setting.**
-   - The chip shows a thread's full size in tokens (4,200; 182,000) and refuses one at paste time against "Reference limit 50,000 tokens · proposed by Wright", a proposal in effect until the owner changes it.
+   - The chip shows a thread's full size in tokens (4,200; 182,000) and refuses one at paste time against the owner's saved limit ("Reference limit 50,000 tokens · set by you"). The limit is an owner setting in Settings → Threads, unset by default (nothing is refused at paste), with Wright's 50,000 shown beside it as a proposal and applied only when the owner saves it, as the size hint is (invariant 1).
    - 17b names a summary's size (item 7) and bounds each reference and the total, refusing one past the bound with its size on send (item 9, AC10). It names no full-thread size the app can read before sending, and the bound is the kernel's, not an owner setting.
-   - A proposal in effect before the owner saves also differs from the size hint, which is unset until saved (invariant 1). The total bound across several references is not drawn.
-   - Decide: either 17b returns each thread's size and stores the limit as an owner setting (unset, or set by the owner), or the chip shows no full size and the refusal comes back from the send.
+   - 17b names no field that stores Wright's proposal for the limit (as with the size hint, point 2). The total bound across several references is not drawn.
+   - Decide: either 17b returns each thread's size and stores the limit as an owner setting (unset, or set by the owner), as drawn, or the chip shows no full size and the refusal comes back from the send.
 
    Affects items 17b and 17c.
 2. **Wright's size-hint proposal (40,000 tokens) has no stored source.** 17b item 8 says Wright may propose a value in a draft and never set it, but names no field that keeps the proposal, so Settings has nothing to read for "proposed by Wright · 40,000 tokens" and Use Wright's proposal. Either 17b stores the proposal beside the setting, or Wright proposes it in Chat and Settings shows only the owner's value. Affects items 17b and 17c.
