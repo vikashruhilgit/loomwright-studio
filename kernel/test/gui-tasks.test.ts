@@ -10,7 +10,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PR_OWNER_KINDS, PR_TRACK_STATES } from "../src/automate/tracker.js";
 import { guiContribution } from "../src/gui/index.js";
+import { setRepoPolicy } from "../src/integrations/github/repo-policy.js";
+import type { RepoPolicyInput } from "../src/integrations/github/repo-policy.js";
 import { tasksPart, tasksRoutes } from "../src/gui/tasks.js";
 import type { ContributedRouteResponse } from "../src/features/index.js";
 import { Store } from "../src/store/index.js";
@@ -42,6 +45,20 @@ const call = (path: string, params: Record<string, string>, query: Record<string
 const list = (query: Record<string, string> = {}) => call("/tasks", {}, query);
 const history = (kind: string, id: string) => call("/tasks/:kind/:id", { kind, id }, {});
 
+interface TicketPrCard {
+  ticket: string | null;
+  repo: string;
+  number: number;
+  url: string;
+  state: string;
+  head_sha: string | null;
+  approvals: string;
+  ci: string | null;
+  owner_kind: string | null;
+  merged_by_gate: boolean;
+  updated: string;
+}
+
 interface Card {
   kind: string;
   id: number;
@@ -57,6 +74,7 @@ interface Card {
   updated: string;
   creator_agent: string | null;
   creator_session: number | null;
+  ticket_pr: TicketPrCard | null;
 }
 interface Board {
   groups: { state: string; items: Card[] }[];
@@ -165,18 +183,18 @@ describe("GET /tasks: the union (AC1)", () => {
     const byKey = new Map(b.groups.flatMap((g) => g.items).map((c) => [`${c.kind}:${c.id}`, c]));
     expect(byKey.get(`task:${task}`)).toEqual({
       kind: "task", id: task, title: "Ship it", state: "waiting", agent: "wright", playbook: null, item_ref: null, session: null, tokens: null,
-      started: at(2), ended: null, updated: at(7), creator_agent: null, creator_session: null,
+      started: at(2), ended: null, updated: at(7), creator_agent: null, creator_session: null, ticket_pr: null,
     });
     expect(byKey.get(`playbook_run:${run}`)).toEqual({
       kind: "playbook_run", id: run, title: "Review PRs", state: "done", agent: "ada", playbook, item_ref: "github:o/r#4", session: null, tokens: 120,
-      started: at(3), ended: at(9), updated: at(9), creator_agent: null, creator_session: null,
+      started: at(3), ended: at(9), updated: at(9), creator_agent: null, creator_session: null, ticket_pr: null,
     });
     expect(byKey.get(`session:${session}`)).toEqual({
       kind: "session", id: session, title: null, state: "completed", agent: "bo", playbook, item_ref: null, session: null, tokens: 17,
-      started: at(4), ended: at(6), updated: at(6), creator_agent: null, creator_session: null,
+      started: at(4), ended: at(6), updated: at(6), creator_agent: null, creator_session: null, ticket_pr: null,
     });
     expect(Object.keys(byKey.get(`task:${task}`) ?? {})).toEqual(
-      ["kind", "id", "title", "state", "agent", "playbook", "item_ref", "session", "tokens", "started", "ended", "updated", "creator_agent", "creator_session"],
+      ["kind", "id", "title", "state", "agent", "playbook", "item_ref", "session", "tokens", "started", "ended", "updated", "creator_agent", "creator_session", "ticket_pr"],
     );
   });
 
@@ -217,7 +235,7 @@ describe("GET /tasks: the creator of a task (AC7)", () => {
     addEvent("task_created", { session: wright, task });
     const card = await cardOf("task", task);
     expect(card).toMatchObject({ agent: null, session: null, creator_agent: "wright", creator_session: wright });
-    expect(Object.keys(card ?? {}).slice(-2)).toEqual(["creator_agent", "creator_session"]);
+    expect(Object.keys(card ?? {}).slice(-2)).toEqual(["creator_session", "ticket_pr"]);
   });
 
   it("the creator is the FIRST task_created event, and the assignee stays the assignee", async () => {
@@ -268,6 +286,149 @@ describe("GET /tasks: the creator of a task (AC7)", () => {
     expect(cards).toHaveLength(5);
     expect(cards.every((c) => c.creator_agent === "wright")).toBe(true);
     expect(seen.filter((sql) => sql.includes("task_created"))).toHaveLength(1);
+  });
+});
+
+describe("GET /tasks: a ticket's pull request (AC5)", () => {
+  const cardOf = async (kind: string, id: number): Promise<Card | undefined> => (await board()).groups.flatMap((g) => g.items).find((c) => c.kind === kind && c.id === id);
+
+  /** A `pr_tracks` row as the tracker writes it. */
+  function addTrack(o: { repo?: string; number?: number; state?: string; approvals?: number; required?: number | null; ci?: string | null; owner?: string | null; ticket?: string | null; gate?: number } = {}): void {
+    store
+      .prepare("INSERT INTO pr_tracks (repo, number, head_sha, state, ticket_ref, approvals, required, ci_state, owner_kind, run_file, item_id, merged_by_gate, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)")
+      .run(o.repo ?? "acme/shop", o.number ?? 7, "a".repeat(40), o.state ?? "ready", o.ticket === undefined ? "jira:SHOP-1" : o.ticket, o.approvals ?? 1, o.required === undefined ? 2 : o.required, o.ci === undefined ? "green" : o.ci, o.owner === undefined ? "automate_live" : o.owner, o.gate ?? 0, at(8));
+  }
+
+  /** A task whose `links_json` is `links` (agent-writable text, stored as given). */
+  function addLinked(links: unknown, o: { title?: string; updated?: string } = {}): number {
+    const id = addTask({ title: o.title ?? "SHOP-1 ticket", state: "ready", updated: o.updated ?? at(3) });
+    store.prepare("UPDATE tasks SET links_json = ?, kind = 'ticket_pr' WHERE id = ?").run(typeof links === "string" ? links : JSON.stringify(links), id);
+    return id;
+  }
+
+  const prLinks = (repo = "acme/shop", number = 7): unknown => ({ ticket: "jira:SHOP-1", pr: { repo, number, url: `https://github.com/${repo}/pull/${number}` }, state: "ready" });
+  const policy = (repo: string, input: RepoPolicyInput): void => void setRepoPolicy(store, repo, input, () => new Date("2026-10-30T12:00:00.000Z"));
+
+  it("a task whose links name a tracked PR carries ticket_pr from the pr_tracks row, in the contract's key order", async () => {
+    policy("acme/shop", { kind: "reviews", required: 2 });
+    addTrack({ approvals: 1, required: 2, ci: "pending", owner: "automate_parked", state: "parked", gate: 0 });
+    const task = addLinked(prLinks());
+    const card = await cardOf("task", task);
+    expect(card?.ticket_pr).toEqual({
+      ticket: "jira:SHOP-1",
+      repo: "acme/shop",
+      number: 7,
+      url: "https://github.com/acme/shop/pull/7",
+      state: "parked",
+      head_sha: "a".repeat(40),
+      approvals: "1/2",
+      ci: "pending",
+      owner_kind: "automate_parked",
+      merged_by_gate: false,
+      updated: at(8),
+    });
+    expect(Object.keys(card?.ticket_pr ?? {})).toEqual(["ticket", "repo", "number", "url", "state", "head_sha", "approvals", "ci", "owner_kind", "merged_by_gate", "updated"]);
+    expect(Object.keys(card ?? {}).slice(-2)).toEqual(["creator_session", "ticket_pr"]);
+  });
+
+  it("reads approvals as the repo policy words them: solo, studio_approval, no_policy, and merged_by_gate as a boolean", async () => {
+    policy("acme/solo", { kind: "solo" });
+    policy("acme/studio", { kind: "studio_approval" });
+    addTrack({ repo: "acme/solo", number: 1, approvals: 0, required: null, gate: 1, state: "merged" });
+    addTrack({ repo: "acme/studio", number: 2, approvals: 3, required: null });
+    addTrack({ repo: "acme/bare", number: 3, approvals: 1, required: null });
+    const solo = addLinked(prLinks("acme/solo", 1));
+    const studio = addLinked(prLinks("acme/studio", 2));
+    const bare = addLinked(prLinks("acme/bare", 3));
+    expect((await cardOf("task", solo))?.ticket_pr).toMatchObject({ approvals: "solo", merged_by_gate: true, state: "merged" });
+    expect((await cardOf("task", studio))?.ticket_pr).toMatchObject({ approvals: "studio_approval", merged_by_gate: false });
+    expect((await cardOf("task", bare))?.ticket_pr).toMatchObject({ approvals: "no_policy" });
+  });
+
+  it("every other card carries ticket_pr null: a plain task, a run, a session, and a task with no links", async () => {
+    addTrack();
+    const plain = addTask();
+    const playbook = addPlaybook();
+    const run = addRun({ playbook, itemRef: "github:acme/shop#7" });
+    const session = addSession();
+    addLinked(prLinks());
+    expect((await cardOf("task", plain))?.ticket_pr).toBeNull();
+    expect((await cardOf("playbook_run", run))?.ticket_pr).toBeNull();
+    expect((await cardOf("session", session))?.ticket_pr).toBeNull();
+    for (const c of (await board()).groups.flatMap((g) => g.items)) expect(Object.keys(c).slice(-1)).toEqual(["ticket_pr"]);
+  });
+
+  it("a task whose agent-written links name an untracked PR carries null, whatever the links claim", async () => {
+    addTrack({ repo: "acme/shop", number: 7 });
+    const untracked = addLinked({ ticket: "jira:X-9", pr: { repo: "acme/shop", number: 8, url: "https://evil.example/x" }, state: "merged", approvals: "9/9" });
+    const other = addLinked(prLinks("acme/other", 7));
+    expect((await cardOf("task", untracked))?.ticket_pr).toBeNull();
+    expect((await cardOf("task", other))?.ticket_pr).toBeNull();
+  });
+
+  it("serves every value from the row, never from links: hostile links only locate it", async () => {
+    policy("acme/shop", { kind: "reviews", required: 2 });
+    addTrack({ approvals: 2, required: 2, state: "ready", ci: "green", owner: "owner", ticket: "jira:SHOP-1" });
+    const task = addLinked({ ticket: "jira:FAKE-1", pr: { repo: "ACME/Shop", number: 7, url: "javascript:alert(1)" }, state: "merged", approvals: "0/9", ci: "failing", owner_kind: "other" });
+    expect((await cardOf("task", task))?.ticket_pr).toEqual({
+      ticket: "jira:SHOP-1", repo: "acme/shop", number: 7, url: "https://github.com/acme/shop/pull/7", state: "ready", head_sha: "a".repeat(40),
+      approvals: "2/2", ci: "green", owner_kind: "owner", merged_by_gate: false, updated: at(8),
+    });
+  });
+
+  it("links that cannot name a PR (not JSON, not an object, no pr, a string number) read as null, never a throw", async () => {
+    addTrack();
+    const bad = ["not json", "null", "[]", JSON.stringify({ pr: "acme/shop#7" }), JSON.stringify({ pr: { repo: "acme/shop", number: "7" } }), JSON.stringify({ pr: { repo: 5, number: 7 } }), JSON.stringify({ pr: { repo: "acme/shop", number: 7.5 } })];
+    const ids = bad.map((links) => addLinked(links));
+    const noLinks = addTask();
+    for (const id of [...ids, noLinks]) expect((await cardOf("task", id))?.ticket_pr).toBeNull();
+  });
+
+  it("a row whose state is outside the closed set is not served; an owner kind outside it reads null", async () => {
+    addTrack({ number: 1, state: "frobbed" });
+    addTrack({ number: 2, owner: "somebody", ci: null });
+    const unknownState = addLinked(prLinks("acme/shop", 1));
+    const unknownOwner = addLinked(prLinks("acme/shop", 2));
+    expect((await cardOf("task", unknownState))?.ticket_pr).toBeNull();
+    expect((await cardOf("task", unknownOwner))?.ticket_pr).toMatchObject({ owner_kind: null, ci: null });
+  });
+
+  it("every state and owner kind the tracker's closed sets name is served as written", async () => {
+    const ids: { id: number; state: string; owner: string }[] = [];
+    PR_TRACK_STATES.forEach((state, i) => {
+      const owner = PR_OWNER_KINDS[i % PR_OWNER_KINDS.length] as string;
+      addTrack({ number: 100 + i, state, owner });
+      ids.push({ id: addLinked(prLinks("acme/shop", 100 + i)), state, owner });
+    });
+    for (const { id, state, owner } of ids) expect((await cardOf("task", id))?.ticket_pr).toMatchObject({ state, owner_kind: owner });
+  });
+
+  it("two tasks naming one PR both carry it, and the page reads the links and the rows in two queries", async () => {
+    addTrack();
+    const a = addLinked(prLinks());
+    const b = addLinked(prLinks());
+    const prepare = store.prepare.bind(store) as (sql: string) => unknown;
+    const seen: string[] = [];
+    (store as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      seen.push(sql);
+      return prepare(sql);
+    };
+    const cards = (await board()).groups.flatMap((g) => g.items);
+    expect(cards.filter((c) => c.id === a || c.id === b).every((c) => c.ticket_pr?.number === 7)).toBe(true);
+    expect(seen.filter((sql) => sql.includes("links_json") || sql.includes("FROM pr_tracks"))).toHaveLength(2);
+  });
+
+  it("the history item carries ticket_pr, and its events include the task's pr_state_changed rows", async () => {
+    policy("acme/shop", { kind: "reviews", required: 2 });
+    addTrack();
+    const task = addLinked(prLinks());
+    const created = addEvent("task_created", { task }, { title: "SHOP-1 ticket" }, at(4));
+    const changed = addEvent("pr_state_changed", { task }, { repo: "acme/shop", pr: 7, from: null, to: "ready" }, at(5));
+    const h = await historyOf("task", task);
+    expect(h.item.ticket_pr).toMatchObject({ repo: "acme/shop", number: 7, approvals: "1/2", state: "ready" });
+    expect(h.events.map((e) => [e.id, e.kind])).toEqual([[created, "task_created"], [changed, "pr_state_changed"]]);
+    const untracked = addTask();
+    expect((await historyOf("task", untracked)).item.ticket_pr).toBeNull();
   });
 });
 
@@ -530,7 +691,7 @@ describe("GET /tasks/:kind/:id: the history (AC2)", () => {
     addEvent("session_started", { session: wright }, {}, at(2));
     const h = await historyOf("task", task);
     expect(h.item).toMatchObject({ kind: "task", id: task, agent: null, session: null, creator_agent: "wright", creator_session: wright });
-    expect(Object.keys(h.item).slice(-2)).toEqual(["creator_agent", "creator_session"]);
+    expect(Object.keys(h.item).slice(-2)).toEqual(["creator_session", "ticket_pr"]);
     expect(h.sessions).toEqual([]);
     expect(h.events.map((e) => e.id)).toEqual([created]);
     expect((await historyOf("session", wright)).item).toMatchObject({ creator_agent: null, creator_session: null });

@@ -25,9 +25,14 @@
 //   5. The Approvals screen's mirrored `MERGE_APPROVAL_ACTION`
 //      (`app/src/screens/approvals/subject.ts`, read as text) equals the kernel's
 //      (`kernel/src/integrations/github/repo-policy.ts`), so a rename on either side fails here.
+//   6. The PR tracker's mirrored closed sets and the `TaskTicketPr` shape `GET /tasks`
+//      serves: the contract's `PrTrackState` / `PrOwnerKind` unions equal `PR_TRACK_STATES` /
+//      `PR_OWNER_KINDS` (`kernel/src/automate/tracker.ts`), `PrCiState` is the four CI words,
+//      and `TaskTicketPr`'s fields are the card's `ticket_pr` keys, in order.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { EVENT_FEED_PATH } from "../src/api/feed.js";
+import { PR_OWNER_KINDS, PR_TRACK_STATES } from "../src/automate/tracker.js";
 import { SESSION_OUTPUT_KINDS } from "../src/console/output.js";
 import { PHASE1_RESERVED, PHASE1_ROUTES, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { MERGE_APPROVAL_ACTION } from "../src/integrations/github/repo-policy.js";
@@ -300,6 +305,50 @@ describe("the Approvals screen's merge action (app/src/screens/approvals/subject
   it("MERGE_APPROVAL_ACTION is the kernel's, so the merge card is drawn for exactly the approval item 09 files", () => {
     expect(mirroredMergeAction(readFileSync(APPROVAL_SUBJECT, "utf8"))).toBe(MERGE_APPROVAL_ACTION);
     expect(MERGE_APPROVAL_ACTION).toBe("kernel_merge_approval_request");
+  });
+});
+
+/** The string literals of `export type <name> = "…" | "…";` in `text`, refusing anything else in the union. */
+function stringUnion(text: string, name: string): string[] {
+  const match = new RegExp(`export type ${name} =([^;]*);`).exec(text);
+  if (match === null) throw new Error(`contract.ts has no \`export type ${name} = …;\``);
+  return (match[1] ?? "").split("|").map((member) => {
+    const literal = /^"([a-z_]+)"$/.exec(member.trim());
+    if (literal === null) throw new Error(`${name} member is not a string literal: ${member.trim()}`);
+    return literal[1] ?? "";
+  });
+}
+
+/** The field names of `export interface <name> { … }` in `text`, in order (one `readonly <field>: …;` per line). */
+function interfaceFields(text: string, name: string): string[] {
+  const start = text.indexOf(`export interface ${name} {`);
+  if (start === -1) throw new Error(`contract.ts has no \`export interface ${name} {\``);
+  const end = text.indexOf("\n}", start);
+  return [...text.slice(start, end).matchAll(/^ {2}readonly ([a-z_]+): /gm)].map((m) => m[1] ?? "");
+}
+
+describe("the PR tracker's mirrored sets and the card's ticket_pr (contract.ts, read as text)", () => {
+  it("PrTrackState is exactly PR_TRACK_STATES, in order", () => {
+    expect(stringUnion(contractText, "PrTrackState")).toEqual([...PR_TRACK_STATES]);
+    expect(stringUnion(contractText, "PrTrackState")).toEqual(["open", "draft", "ready", "parked", "merged", "closed"]);
+  });
+
+  it("PrOwnerKind is exactly PR_OWNER_KINDS, in order, and PrCiState is the four CI words", () => {
+    expect(stringUnion(contractText, "PrOwnerKind")).toEqual([...PR_OWNER_KINDS]);
+    expect(stringUnion(contractText, "PrCiState")).toEqual(["green", "pending", "failing", "none"]);
+  });
+
+  it("TaskTicketPr declares the card's ticket_pr keys in order, and TaskBoardItem ends with ticket_pr", () => {
+    expect(interfaceFields(contractText, "TaskTicketPr")).toEqual(["ticket", "repo", "number", "url", "state", "head_sha", "approvals", "ci", "owner_kind", "merged_by_gate", "updated"]);
+    expect(interfaceFields(contractText, "TaskBoardItem").slice(-3)).toEqual(["creator_agent", "creator_session", "ticket_pr"]);
+    expect(contractText).toContain("readonly ticket_pr: TaskTicketPr | null;");
+    expect(contractText).toMatch(/export interface PrTrack \{[^}]*readonly state: PrTrackState;[^}]*readonly ci_state: PrCiState \| null;/);
+  });
+
+  it("the readers refuse a union member that is not a string literal and a missing interface", () => {
+    expect(() => stringUnion('export type PrTrackState = "open" | Other;\n', "PrTrackState")).toThrow(/not a string literal/);
+    expect(() => stringUnion("export type X = \"a\";\n", "PrTrackState")).toThrow(/no `export type PrTrackState/);
+    expect(() => interfaceFields("export interface X {\n}\n", "TaskTicketPr")).toThrow(/no `export interface TaskTicketPr/);
   });
 });
 

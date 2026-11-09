@@ -65,6 +65,7 @@ export function item(kind: TaskBoardKind, id: number, state: string, overrides: 
     updated: stamp(5),
     creator_agent: null,
     creator_session: null,
+    ticket_pr: null,
     ...overrides,
   };
 }
