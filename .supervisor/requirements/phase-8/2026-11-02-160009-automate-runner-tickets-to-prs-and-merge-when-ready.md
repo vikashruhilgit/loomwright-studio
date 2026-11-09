@@ -1,6 +1,7 @@
 # 09 — The /automate runner tools: tickets to PRs in the playbook's own session, and "merge when ready" through Loomwright's gate
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/237
 
 **Priority:** MVP · ROADMAP phase 8 · invariants 2, 3, 4 · D32, D40 (item 01)
 
@@ -133,3 +134,9 @@ kernel/test/brain.test.ts
 kernel/test/sessions-policy.test.ts
 docs/architecture/automate.md
 docs/architecture/approvals.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-09T03:19:36Z
+- **Brief:** .supervisor/jobs/done/2026-11-09-automate-runner-tickets-prs-merge-ready.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/237
