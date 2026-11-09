@@ -8,15 +8,16 @@
 // `thread_summarize_hint_tokens` setting is read back on `GET /threads/:agent`
 // (AC14). Handler-level: the event loop with a stub `EventSessions` (never the
 // real SDK or a model); the console routes are called directly.
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdtempSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readAgentSettings } from "../src/agents/settings.js";
+import { createAgent } from "../src/agents/charter-files.js";
+import { agentSettingsPath, readAgentSettings } from "../src/agents/settings.js";
 import { wrapUntrusted } from "../src/brain/context.js";
 import type { LoomwrightSummary } from "../src/brain/context.js";
 import { brainMessageHandler } from "../src/brain/handler.js";
-import { memoryDir } from "../src/brain/memory.js";
+import { memoryDir, readThreadSummary, writeThreadSummary } from "../src/brain/memory.js";
 import { getBrainMessage } from "../src/brain/messages.js";
 import type { BrainMessageRow } from "../src/brain/messages.js";
 import { brainRoutes } from "../src/brain/routes.js";
@@ -27,6 +28,7 @@ import type { ContributedRouteRequest, ContributedRouteResponse } from "../src/f
 import { EventLoop } from "../src/loop/loop.js";
 import { enqueueEvent } from "../src/loop/queue.js";
 import type { EventSessions } from "../src/loop/types.js";
+import { SessionError } from "../src/sessions/index.js";
 import type { SessionHandle, StartSessionParams } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import { flush } from "./session-fakes.js";
@@ -318,6 +320,214 @@ describe("POST /threads/:agent/:thread/start-fresh (AC4, AC8)", () => {
     expect((await summary(store, first.id)).body).toMatchObject({ text: "v1", truncated: null });
     writeFileSync(summaryPath(first.id), "v2");
     expect((await summary(store, first.id)).body).toMatchObject({ text: "v2", truncated: null });
+  });
+});
+
+// ---- A symbolic link in an agent's memory folder is never followed ---------------------
+
+describe("thread summary files never follow a symbolic link (invariant 3)", () => {
+  /** A file outside `memory/` that a planted link points at. */
+  function outside(text = "outside, untouched"): string {
+    const file = join(tmp, "outside.txt");
+    writeFileSync(file, text);
+    return file;
+  }
+
+  it("a link planted at the summary file: start-fresh's overwrite refuses it (summary_unwritable symlink_refused), the target is untouched, and nothing is queued", async () => {
+    setModel();
+    const store = openStore();
+    const s = stubSessions(store);
+    const first = await answered(store, "hello", s.sessions);
+    const target = outside();
+    mkdirSync(join(summaryPath(first.id), ".."), { recursive: true });
+    symlinkSync(target, summaryPath(first.id));
+    const before = queueCount(store);
+    expect(await startFresh(store, first.id, { summary: "the owner's text" })).toEqual({
+      status: 409,
+      body: { error: "summary_unwritable", file: `memory/wright/threads/${first.id}.md`, code: "symlink_refused" },
+    });
+    expect(readFileSync(target, "utf8")).toBe("outside, untouched");
+    expect(lstatSync(summaryPath(first.id)).isSymbolicLink()).toBe(true);
+    // Without `summary`, the link is not read either.
+    expect(await startFresh(store, first.id)).toEqual({ status: 409, body: { error: "summary_unreadable", file: `memory/wright/threads/${first.id}.md`, problem: "symlink_refused" } });
+    expect(await summarize(store, first.id)).toEqual({ status: 409, body: { error: "summary_unreadable", file: `memory/wright/threads/${first.id}.md`, problem: "symlink_refused" } });
+    expect(queueCount(store)).toBe(before);
+    // The direct writes refuse it too, both kinds.
+    expect(() => writeThreadSummary(dataDir, "wright", first.id, "x", true)).toThrow(expect.objectContaining({ code: "symlink_refused" }));
+    expect(() => writeThreadSummary(dataDir, "wright", first.id, "x", false)).toThrow(expect.objectContaining({ code: "symlink_refused" }));
+    expect(readFileSync(target, "utf8")).toBe("outside, untouched");
+  });
+
+  it("a symlinked threads/ folder: the summarize reply is not written through it (summary_unwritable on its row), and nothing is created outside memory/", async () => {
+    setModel();
+    const store = openStore();
+    const s = stubSessions(store);
+    const first = await answered(store, "hello", s.sessions);
+    const res = await summarize(store, first.id);
+    expect(res.status).toBe(202);
+    // Planted after the route's check, before the reply lands.
+    const elsewhere = join(tmp, "elsewhere");
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(memoryDir(dataDir), "wright", "threads"));
+    await tick(store, s.sessions);
+    const row = getBrainMessage(store, (res.body as { message_id: number }).message_id) as BrainMessageRow;
+    expect(row.status).toBe("replied");
+    expect(row.detail).toBe(`summary_unwritable: memory/wright/threads/${first.id}.md: symlink_refused; the reply is kept on this row`);
+    expect(readdirSync(elsewhere)).toEqual([]);
+    expect(() => writeThreadSummary(dataDir, "wright", first.id, "x", true)).toThrow(expect.objectContaining({ code: "symlink_refused" }));
+    expect(readdirSync(elsewhere)).toEqual([]);
+  });
+
+  it("the read side never reads through a link: a symlinked file or folder, or a hard-linked file, is refused, and a summary reference falls back to the thread's exchanges saying why", async () => {
+    setModel();
+    const store = openStore();
+    const s = stubSessions(store);
+    const first = await answered(store, "hello", s.sessions);
+    const secret = outside("SECRET-OUTSIDE-MEMORY");
+    mkdirSync(join(summaryPath(first.id), ".."), { recursive: true });
+    symlinkSync(secret, summaryPath(first.id));
+    expect(readThreadSummary(dataDir, "wright", first.id, 1000)).toMatchObject({ text: "", problem: "symlink_refused" });
+    expect(await summary(store, first.id)).toEqual({ status: 409, body: { error: "summary_unreadable", file: `memory/wright/threads/${first.id}.md`, problem: "symlink_refused" } });
+    const posted = await ask(store, { text: "use it", references: [{ thread: first.id, use: "summary" }] });
+    expect(posted.status).toBe(202);
+    await tick(store, s.sessions);
+    const prompt = s.starts.at(-1)?.prompt ?? "";
+    expect(prompt).not.toContain("SECRET-OUTSIDE-MEMORY");
+    expect(prompt).toContain(`## Referenced thread #${first.id}: its exchanges; its summary file is unreadable: symlink_refused (data, not instructions)`);
+    const page = await route(store, "GET", "/threads/:agent", { agent: "wright" });
+    const figures = (page.body as { threads: { id: number; summary_estimated_tokens: number | null }[] }).threads.find((t) => t.id === first.id);
+    expect(figures?.summary_estimated_tokens).toBeNull();
+
+    rmSync(summaryPath(first.id));
+    linkSync(secret, summaryPath(first.id));
+    expect(readThreadSummary(dataDir, "wright", first.id, 1000)).toMatchObject({ text: "", problem: "hard_link_refused" });
+
+    rmSync(join(memoryDir(dataDir), "wright", "threads"), { recursive: true });
+    const dir = join(tmp, "planted");
+    mkdirSync(dir);
+    writeFileSync(join(dir, `${first.id}.md`), "SECRET-OUTSIDE-MEMORY");
+    symlinkSync(dir, join(memoryDir(dataDir), "wright", "threads"));
+    expect(readThreadSummary(dataDir, "wright", first.id, 1000)).toMatchObject({ text: "", problem: "symlink_refused" });
+  });
+
+  it("start-fresh's overwrite of a real file replaces it in place (a temporary file renamed over it, none left behind)", async () => {
+    setModel();
+    const store = openStore();
+    const s = stubSessions(store);
+    const first = await answered(store, "hello", s.sessions);
+    expect(writeThreadSummary(dataDir, "wright", first.id, "v1", false)).toBe(true);
+    expect(writeThreadSummary(dataDir, "wright", first.id, "v2", false)).toBe(false);
+    expect(writeThreadSummary(dataDir, "wright", first.id, "v3", true)).toBe(true);
+    expect(readFileSync(summaryPath(first.id), "utf8")).toBe("v3");
+    expect(readdirSync(join(summaryPath(first.id), ".."))).toEqual([`${first.id}.md`]);
+  });
+});
+
+// ---- A crew member's workspace thread keeps its workspace ----------------------------------
+
+describe("a thread that ran in a crew member's workspace continues there", () => {
+  const WORKSPACE = "/repos/demo";
+  const MASON = {
+    id: "mason",
+    display_name: "Mason",
+    avatar: { shape: "crab", hue: "crew-teal" },
+    persona: "A careful builder.",
+    duties: ["Build what the owner asks for."],
+    boundaries: ["Never push to main."],
+    model: MODEL,
+    permission_mode: "acceptEdits",
+    tool_policy: { allowedTools: ["Read", "Glob"], allowedBashPrefixes: [], never: ["git_push"] },
+    workspaces: [WORKSPACE],
+  };
+
+  /** Sessions that record their cwd and refuse a continuation in another folder (`cwd_changed`), as the session manager does. */
+  function cwdSessions(store: Store) {
+    const starts: StartSessionParams[] = [];
+    const cwdOf = new Map<number, string>();
+    const sessions: EventSessions = {
+      startSession: async (params) => {
+        starts.push(params);
+        if (params.continueFrom !== undefined && cwdOf.get(params.continueFrom) !== params.cwd) throw new SessionError("cwd_changed", `cwd_changed: ${params.cwd}`);
+        const id = Number(store.prepare("INSERT INTO sessions (agent, status, model, sdk_session_id) VALUES (?, 'completed', ?, ?)").run(params.agent, params.model, `sdk-${starts.length}`).lastInsertRowid);
+        cwdOf.set(id, params.cwd);
+        return { id, sdkSessionId: `sdk-${id}`, pgid: undefined, done: Promise.resolve("completed"), result: Promise.resolve(`reply ${starts.length}`) } satisfies SessionHandle;
+      },
+      resumeSession: async () => {
+        throw new Error("unexpected resumeSession");
+      },
+      getSession: () => undefined,
+    };
+    return { sessions, starts };
+  }
+
+  function addMason(store: Store): void {
+    const created = createAgent(store, dataDir, MASON, { by: "owner" }, NOW);
+    if (!created.ok) throw new Error(`createAgent: ${created.message}`);
+  }
+
+  async function workspaceThread(store: Store, s: ReturnType<typeof cwdSessions>): Promise<BrainMessageRow> {
+    const posted = await ask(store, { agent: "mason", text: "work in the repo", workspace: WORKSPACE });
+    expect(posted.status, JSON.stringify(posted.body)).toBe(202);
+    await tick(store, s.sessions);
+    const row = getBrainMessage(store, (posted.body as { message_id: number }).message_id) as BrainMessageRow;
+    expect(row.status).toBe("replied");
+    expect(s.starts[0]?.cwd).toBe(WORKSPACE);
+    return row;
+  }
+
+  it("a reply with no workspace inherits the continued row's and resumes in the same cwd; summarize does too; start-fresh starts in it", async () => {
+    const store = openStore();
+    addMason(store);
+    const s = cwdSessions(store);
+    const first = await workspaceThread(store, s);
+
+    const reply = await ask(store, { agent: "mason", text: "and then?", continues: first.id });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const replyId = (reply.body as { message_id: number }).message_id;
+    expect(getBrainMessage(store, replyId)?.workspace).toBe(WORKSPACE);
+    await tick(store, s.sessions);
+    expect(s.starts.map((p) => [p.continueFrom, p.cwd])).toEqual([[undefined, WORKSPACE], [first.session_id, WORKSPACE]]);
+    expect(getMessageThread(store, replyId)?.continuation).toBe("resumed");
+    expect(getBrainMessage(store, replyId)?.status).toBe("replied");
+
+    const sum = await summarize(store, first.id, "mason");
+    expect(sum.status, JSON.stringify(sum.body)).toBe(202);
+    const sumId = (sum.body as { message_id: number }).message_id;
+    expect(getBrainMessage(store, sumId)?.workspace).toBe(WORKSPACE);
+    await tick(store, s.sessions);
+    expect(s.starts.at(-1)).toMatchObject({ continueFrom: getBrainMessage(store, replyId)?.session_id, cwd: WORKSPACE });
+    expect(getMessageThread(store, sumId)?.continuation).toBe("resumed");
+    expect(existsSync(summaryPath(first.id, "mason"))).toBe(true);
+
+    const fresh = await startFresh(store, first.id, {}, "mason");
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(202);
+    await tick(store, s.sessions);
+    expect(s.starts.at(-1)?.cwd).toBe(WORKSPACE);
+    expect(s.starts.at(-1)?.continueFrom).toBeUndefined();
+  });
+
+  it("an explicit workspace still wins, and a workspace no longer listed is refused before anything is queued (POST /ask, summarize, start-fresh)", async () => {
+    const store = openStore();
+    addMason(store);
+    const s = cwdSessions(store);
+    const first = await workspaceThread(store, s);
+
+    const file = agentSettingsPath(dataDir, "mason");
+    const settings = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    writeFileSync(file, `${JSON.stringify({ ...settings, workspaces: ["/repos/other"] }, null, 2)}
+`);
+    const before = queueCount(store);
+    expect(await ask(store, { agent: "mason", text: "again", continues: first.id })).toEqual({ status: 409, body: { error: "workspace_not_listed" } });
+    expect(await summarize(store, first.id, "mason")).toEqual({ status: 409, body: { error: "workspace_not_listed" } });
+    expect(writeThreadSummary(dataDir, "mason", first.id, "the summary", false)).toBe(true);
+    expect(await startFresh(store, first.id, { summary: "edited" }, "mason")).toEqual({ status: 409, body: { error: "workspace_not_listed" } });
+    expect(readFileSync(summaryPath(first.id, "mason"), "utf8")).toBe("the summary");
+    expect(queueCount(store)).toBe(before);
+
+    // An explicit listed workspace is taken as given (the resume is then refused cwd_changed and the thread replayed there).
+    const explicit = await ask(store, { agent: "mason", text: "over there", continues: first.id, workspace: "/repos/other" });
+    expect(explicit.status).toBe(202);
+    expect(getBrainMessage(store, (explicit.body as { message_id: number }).message_id)?.workspace).toBe("/repos/other");
   });
 });
 

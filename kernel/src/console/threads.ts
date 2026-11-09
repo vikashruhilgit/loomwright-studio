@@ -33,7 +33,11 @@
 //       written to `file` (`memory/<agent>/threads/<thread>.md`). The row is
 //       in the old thread: no new thread starts. 409 kill_switch_engaged /
 //       agent_off / summary_exists {file} (the owner's file is never
-//       overwritten) / nothing_to_summarize (no row of it had a session)
+//       overwritten) / summary_unreadable {file, problem} (a symbolic link
+//       at the folder or the file: `symlink_refused`) / nothing_to_summarize
+//       (no row of it had a session) / workspace_not_listed (the row runs in
+//       the continued row's workspace, which must still be listed; a
+//       settings refusal as `POST /ask` answers it)
 //   GET  /threads/:agent/:thread/summary
 //       200 {thread, file, text, truncated}: the file as it is on disk now
 //       (`truncated` null, or `{chars_cut, at_least}` past
@@ -44,11 +48,16 @@
 //       edit) is written to `file` first when given; then ONE `message` event
 //       and its row (`text`, else `startFreshText`) start a new thread whose
 //       prompt quotes the summary file, read at send time, as data; the old
-//       thread is marked `summarized_into` the new one, never deleted. 400
+//       thread is marked `summarized_into` the new one, never deleted; it
+//       runs in the old thread's workspace (its newest started row's, else
+//       its first row's), checked as summarize checks it. 400
 //       invalid_body; 409 kill_switch_engaged / agent_off /
-//       already_started_fresh {summarized_into} / no_summary {file} (no
-//       `summary` and no file) / history_too_large {thread, size, bound} /
-//       summary_unwritable {file, code}
+//       already_started_fresh {summarized_into} / workspace_not_listed /
+//       no_summary {file} (no
+//       `summary` and no file) / summary_unreadable {file, problem} /
+//       history_too_large {thread, size, bound} / summary_unwritable {file,
+//       code} (`symlink_refused` for a symbolic link at the folder or the
+//       file: the kernel never writes through one)
 //   POST /threads/:agent/:thread/rename   body {title}
 //       200 {thread, title, renamed}: the owner's title for the thread
 //       (`brain_threads.title`), one line, at most `MAX_TITLE_CHARS`; `title:
@@ -71,18 +80,16 @@
 // registry already loads (approvals, agents, brain, sessions' types): never
 // the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the module graph).
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { getAgent } from "../agents/registry.js";
 import { threadSummarizeHintTokens } from "../agents/settings.js";
 import { isKillSwitchEngaged } from "../api/kill-switch.js";
 import { shown } from "../approvals/cli.js";
 import { approvalView, getApproval } from "../approvals/store.js";
 import type { ApprovalRow, ApprovalView } from "../approvals/store.js";
-import { memoryDir, readMemoryFile, threadSummaryRelativePath, writeThreadSummary } from "../brain/memory.js";
-import { ensureBrainMessage } from "../brain/messages.js";
+import { readThreadSummary, threadSummaryRelativePath, writeThreadSummary } from "../brain/memory.js";
+import { ensureBrainMessage, getBrainMessage } from "../brain/messages.js";
 import type { BrainMessageRow } from "../brain/messages.js";
-import { ASK_AGENT, askTextProblem } from "../brain/routes.js";
+import { ASK_AGENT, askTextProblem, continuationWorkspace, continuationWorkspaces } from "../brain/routes.js";
 import { ownerTitle, renameThread, renameTitleOf, sessionTitle, threadTitle } from "../brain/titles.js";
 import {
   MAX_THREAD_SUMMARY_CHARS,
@@ -460,7 +467,7 @@ export function threadFiguresOf(store: Store, thread: number): ThreadFigures {
     )
     .get(thread, thread, thread, thread, thread) as { messages: number; agent: string | null; usage: string | null };
   const agent = counted.agent ?? ASK_AGENT;
-  const read = readMemoryFile(store.dataDir, threadSummaryRelativePath(agent, thread), MAX_THREAD_SUMMARY_CHARS);
+  const read = readThreadSummary(store.dataDir, agent, thread, MAX_THREAD_SUMMARY_CHARS);
   const summaryChars = read.problem === null ? read.text.length + read.cut : null;
   return {
     id: thread,
@@ -588,10 +595,25 @@ function writeRefusal(req: ContributedRouteRequest, agent: string): ContributedR
   return undefined;
 }
 
-/** Queue one owner message for `agent` and write its row (source `ask`), the queue row first. Call inside a transaction. */
-function queueOwnerMessage(req: ContributedRouteRequest, agent: string, text: string, at: Date): { readonly messageId: number; readonly queueId: number } {
-  const queued = enqueueEvent(req.store, { kind: "message", payload: { text, agent } }, at);
-  const row = ensureBrainMessage(req.store, { queueId: queued.id, agent, source: "ask", text, fromAgent: null, depth: 0, workspace: null }, at);
+/**
+ * The workspace a summarize or start-fresh message runs in: the thread row's
+ * (`from`), so the session resumes or starts in the folder the thread ran
+ * in, checked against the agent's settings `workspaces` now exactly as
+ * `POST /ask` checks it (`continuationWorkspace`); or the refusal, before
+ * anything is queued. A row with no workspace reads no settings.
+ */
+function threadWorkspace(req: ContributedRouteRequest, agent: string, from: BrainMessageRow | undefined): { readonly ok: true; readonly workspace: string | null } | ContributedRouteResponse {
+  const inherited = from?.workspace ?? null;
+  if (inherited === null) return { ok: true, workspace: null };
+  const settings = continuationWorkspaces(req.store.dataDir, agent);
+  if (!("ok" in settings)) return settings;
+  return continuationWorkspace(settings.workspaces, undefined, inherited);
+}
+
+/** Queue one owner message for `agent` and write its row (source `ask`, in `workspace` when not null), the queue row first. Call inside a transaction. */
+function queueOwnerMessage(req: ContributedRouteRequest, agent: string, text: string, workspace: string | null, at: Date): { readonly messageId: number; readonly queueId: number } {
+  const queued = enqueueEvent(req.store, { kind: "message", payload: { text, agent, ...(workspace === null ? {} : { workspace }) } }, at);
+  const row = ensureBrainMessage(req.store, { queueId: queued.id, agent, source: "ask", text, fromAgent: null, depth: 0, workspace }, at);
   return { messageId: row.id, queueId: queued.id };
 }
 
@@ -604,12 +626,16 @@ const summarizeRoute: ContributedRoute = {
     const { agent, thread, file } = target;
     const refused = writeRefusal(req, agent);
     if (refused !== undefined) return refused;
-    if (existsSync(join(memoryDir(req.store.dataDir), threadSummaryRelativePath(agent, thread)))) return { status: 409, body: { error: "summary_exists", file } };
+    const present = readThreadSummary(req.store.dataDir, agent, thread, 0).problem;
+    if (present === null) return { status: 409, body: { error: "summary_exists", file } };
+    if (present !== "missing") return { status: 409, body: { error: "summary_unreadable", file, problem: present } };
     const latest = latestStartedRow(req.store, thread);
     if (latest === undefined) return { status: 409, body: { error: "nothing_to_summarize", message: `no message of thread ${thread} had a session` } };
+    const ws = threadWorkspace(req, agent, latest);
+    if (!("ok" in ws)) return ws;
     const at = req.now();
     const queued = req.store.transaction(() => {
-      const q = queueOwnerMessage(req, agent, summarizeText(agent, thread), at);
+      const q = queueOwnerMessage(req, agent, summarizeText(agent, thread), ws.workspace, at);
       recordSummaryRequest(req.store, { messageId: q.messageId, thread, continues: latest.id }, at);
       return q;
     });
@@ -625,7 +651,7 @@ const summaryRoute: ContributedRoute = {
     if (!("agent" in target)) return target;
     const { agent, thread, file } = target;
     // Read now, never cached: the owner's edit on disk is what is answered.
-    const read = readMemoryFile(req.store.dataDir, threadSummaryRelativePath(agent, thread), MAX_THREAD_SUMMARY_CHARS);
+    const read = readThreadSummary(req.store.dataDir, agent, thread, MAX_THREAD_SUMMARY_CHARS);
     if (read.problem === "missing") return { status: 404, body: { error: "no_summary", file } };
     if (read.problem !== null) return { status: 409, body: { error: "summary_unreadable", file, problem: read.problem } };
     const truncated = read.cut > 0 || read.atLeast ? { chars_cut: read.cut, at_least: read.atLeast } : null;
@@ -653,6 +679,9 @@ const startFreshRoute: ContributedRoute = {
     if (refused !== undefined) return refused;
     const linked = threadLinks(req.store, thread)?.summarized_into ?? null;
     if (linked !== null) return { status: 409, body: { error: "already_started_fresh", summarized_into: linked } };
+    // Before the summary is written: the fresh thread runs where the old one last ran (its newest started row, else its first).
+    const ws = threadWorkspace(req, agent, latestStartedRow(req.store, thread) ?? getBrainMessage(req.store, thread));
+    if (!("ok" in ws)) return ws;
     if (typeof summary === "string") {
       if (summary.length > MAX_THREAD_SUMMARY_CHARS) return { status: 409, body: { error: "history_too_large", thread, size: summary.length, bound: MAX_THREAD_SUMMARY_CHARS } };
       try {
@@ -661,8 +690,10 @@ const startFreshRoute: ContributedRoute = {
       } catch (err) {
         return { status: 409, body: { error: "summary_unwritable", file, code: String((err as { code?: unknown }).code ?? "error") } };
       }
-    } else if (!existsSync(join(memoryDir(req.store.dataDir), threadSummaryRelativePath(agent, thread)))) {
-      return { status: 409, body: { error: "no_summary", file } };
+    } else {
+      const present = readThreadSummary(req.store.dataDir, agent, thread, 0).problem;
+      if (present === "missing") return { status: 409, body: { error: "no_summary", file } };
+      if (present !== null) return { status: 409, body: { error: "summary_unreadable", file, problem: present } };
     }
     const sized = referencesHistory(req.store, [{ thread, use: "summary" }]);
     if (!sized.ok) return { status: 409, body: { error: "history_too_large", ...sized.tooLarge } };
@@ -670,7 +701,7 @@ const startFreshRoute: ContributedRoute = {
     let queued: { readonly messageId: number; readonly queueId: number };
     try {
       queued = req.store.transaction(() => {
-        const q = queueOwnerMessage(req, agent, typeof text === "string" ? text : startFreshText(thread), at);
+        const q = queueOwnerMessage(req, agent, typeof text === "string" ? text : startFreshText(thread), ws.workspace, at);
         // Another start-fresh of this thread won: roll back (the row and its queue row with it).
         if (!recordStartFresh(req.store, { messageId: q.messageId, from: thread, agent }, at)) throw new StartedFreshRace();
         return q;

@@ -5,11 +5,16 @@
 // second kernel racing the first. A thread's summary file
 // (`memory/<agent>/threads/<thread>.md`, `writeThreadSummary`) is created the
 // same way from a summarize session's reply; the one overwrite is start-fresh
-// writing the owner's own edited text back (an explicit owner action). Reads are bounded: a huge file never loads
-// whole into memory. Imports only `node:*`, its siblings and
+// writing the owner's own edited text back (an explicit owner action). An
+// agent's session runs with its memory folder as cwd, so it can plant a
+// symbolic link there: every thread-summary write and read refuses a link at
+// `memory/<agent>`, at `threads/` and at the file itself
+// (`symlink_refused`), so the kernel never writes or reads through one
+// (invariant 3). Reads are bounded: a huge file never loads whole into memory. Imports only `node:*`, its siblings and
 // `../tools/handoff.ts` (itself `node:*` only): the `studio` CLI loads this
 // module.
-import { closeSync, mkdirSync, openSync, readSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { UNASSIGNED_AGENT_DIR } from "../tools/handoff.js";
 import { LESSONS_TEMPLATE, PEOPLE_TEMPLATE, PREFERENCES_TEMPLATE, ROLE_TEMPLATE, SHARED_README_TEMPLATE } from "./templates.js";
@@ -109,24 +114,116 @@ export function threadSummaryRelativePath(agent: string, thread: number): string
   return `${agent}/threads/${thread}.md`;
 }
 
+/** An error with a Node-style `code`, for the refusals below. */
+function codedError(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+/**
+ * `memory/<agent>/threads`, checked one component at a time with `lstat`: a
+ * symbolic link at `memory/<agent>` or at `threads/` is refused
+ * (`symlink_refused`), and so is anything that is not a directory
+ * (`not_a_directory`). With `create`, a missing component is created (never
+ * through a link: each `mkdir` is one level under a checked directory); else
+ * a missing one throws `ENOENT`. `memory/` itself is the kernel's own folder.
+ */
+function threadsDir(dataDir: string, agent: string, create: boolean): string {
+  let dir = memoryDir(dataDir);
+  if (create) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (const part of [agent, "threads"]) {
+    dir = join(dir, part);
+    let st = lstatOrUndefined(dir);
+    if (st === undefined) {
+      if (!create) throw codedError("ENOENT", `${dir} does not exist`);
+      try {
+        mkdirSync(dir, { mode: 0o700 });
+      } catch (err) {
+        if (!hasCode(err, "EEXIST")) throw err;
+      }
+      st = lstatSync(dir);
+    }
+    if (st.isSymbolicLink()) throw codedError("symlink_refused", `${dir} is a symbolic link`);
+    if (!st.isDirectory()) throw codedError("not_a_directory", `${dir} is not a directory`);
+  }
+  return dir;
+}
+
+function lstatOrUndefined(path: string): ReturnType<typeof lstatSync> | undefined {
+  try {
+    return lstatSync(path);
+  } catch (err) {
+    if (hasCode(err, "ENOENT")) return undefined;
+    throw err;
+  }
+}
+
 /**
  * Write a thread's summary file (`threadSummaryRelativePath`), its folder
  * created when absent. Owner-editable, so it is never overwritten except by
  * an explicit owner action: `replace: false` (a summarize session's reply) is
  * exclusive create (`wx`) and returns `false` when the file already exists;
- * `replace: true` is only for the owner's own text (start-fresh's `summary`).
- * Any other write error is thrown.
+ * `replace: true` is only for the owner's own text (start-fresh's `summary`),
+ * written to a fresh temporary file (`wx`) renamed over the path, so a link
+ * there is replaced, never written through. A symbolic link at the folder or
+ * the file throws `symlink_refused`; any other write error is thrown.
  */
 export function writeThreadSummary(dataDir: string, agent: string, thread: number, text: string, replace: boolean): boolean {
-  const path = join(memoryDir(dataDir), threadSummaryRelativePath(agent, thread));
-  mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+  const dir = threadsDir(dataDir, agent, true);
+  const path = join(dir, `${thread}.md`);
+  if (lstatOrUndefined(path)?.isSymbolicLink() === true) throw codedError("symlink_refused", `${path} is a symbolic link`);
+  if (!replace) {
+    try {
+      // `wx` is O_CREAT|O_EXCL: it never follows a link planted after the check above.
+      writeFileSync(path, text, { flag: "wx", mode: 0o600 });
+      return true;
+    } catch (err) {
+      if (hasCode(err, "EEXIST")) return false;
+      throw err;
+    }
+  }
+  const tmp = join(dir, `.${thread}.md.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
   try {
-    writeFileSync(path, text, { flag: replace ? "w" : "wx", mode: 0o600 });
-    return true;
+    writeFileSync(tmp, text, { flag: "wx", mode: 0o600 });
+    renameSync(tmp, path);
   } catch (err) {
-    if (!replace && hasCode(err, "EEXIST")) return false;
+    rmSync(tmp, { force: true });
     throw err;
   }
+  return true;
+}
+
+/**
+ * Read a thread's summary file for a prompt or a route, at most `maxChars`
+ * characters (`readMemoryFile`'s bounded read). Never through a link: a
+ * symbolic link at the folder or the file, or a file with more than one hard
+ * link, gives `problem` `symlink_refused` / `hard_link_refused`; a missing
+ * folder or file is `missing`; never a throw.
+ */
+export function readThreadSummary(dataDir: string, agent: string, thread: number, maxChars: number): MemoryRead {
+  const relativePath = threadSummaryRelativePath(agent, thread);
+  const none = (problem: string): MemoryRead => ({ relativePath, text: "", cut: 0, atLeast: false, problem });
+  let fd: number;
+  try {
+    const dir = threadsDir(dataDir, agent, false);
+    // O_NOFOLLOW: a link at the file itself fails the open (ELOOP) instead of being followed.
+    fd = openSync(join(dir, `${thread}.md`), constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (err) {
+    if (hasCode(err, "ENOENT")) return none("missing");
+    if (hasCode(err, "ELOOP")) return none("symlink_refused");
+    return none(String((err as { code?: unknown }).code ?? "unreadable"));
+  }
+  let refused: string | null;
+  try {
+    const st = fstatSync(fd);
+    refused = !st.isFile() ? "not_a_file" : st.nlink > 1 ? "hard_link_refused" : null;
+  } catch (err) {
+    refused = String((err as { code?: unknown }).code ?? "unreadable");
+  }
+  if (refused !== null) {
+    closeSync(fd);
+    return none(refused);
+  }
+  return readOpened(fd, relativePath, maxChars);
 }
 
 /**
@@ -144,6 +241,11 @@ export function readMemoryFile(dataDir: string, relativePath: string, maxChars: 
     const problem = hasCode(err, "ENOENT") ? "missing" : String((err as { code?: unknown }).code ?? "unreadable");
     return { relativePath, text: "", cut: 0, atLeast: false, problem };
   }
+  return readOpened(fd, relativePath, maxChars);
+}
+
+/** The bounded read of an open file (closed here), as `readMemoryFile` describes it. */
+function readOpened(fd: number, relativePath: string, maxChars: number): MemoryRead {
   try {
     const budget = byteBudget(maxChars);
     const buf = Buffer.alloc(budget + 1);

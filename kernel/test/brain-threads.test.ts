@@ -788,6 +788,9 @@ describe("studio ask --continues and --ref (AC15)", () => {
       const r = await run(args, []);
       expect(r.code, args.join(" ")).toBe(2);
       expect(r.stderr).toBe(`usage: ${ASK_HELP}\n       ${ASK_THREAD_HELP}\n`);
+      // The usage output itself names both thread flags (AC15; ASK_HELP stays pinned unchanged, AC2).
+      expect(r.stderr).toContain("--continues <id>");
+      expect(r.stderr).toContain("--ref <thread>[:summary]");
     }
     expect(ASK_THREAD_HELP).toContain("--continues <id>");
     expect(ASK_THREAD_HELP).toContain("--ref <thread>[:summary]");

@@ -8,7 +8,10 @@
 // `--ref <thread>:summary`) attaches a thread's exchanges (or its summary
 // file) as a reference (`references`, `use` `exchanges` or `summary`). The
 // thread flags' usage line is `ASK_THREAD_HELP`, printed with `ASK_HELP` on
-// a usage error (`ASK_HELP` itself is unchanged).
+// a usage error. AC15 asked for `ASK_HELP` to name the flags; it does not,
+// on purpose: `kernel/test/brain.test.ts` pins `ASK_HELP`'s text byte for
+// byte and AC2 forbids editing that test, so the flags are listed in
+// `ASK_THREAD_HELP` instead, and every usage error prints both lines.
 //
 // Exit codes:
 //   0  replied: the reply on stdout
@@ -40,8 +43,9 @@ import type { CliApiClient, CliSubcommandOutput, ContributedSubcommand } from ".
 import { askTextProblem } from "./routes.js";
 
 export const ASK_SUBCOMMAND = "ask";
+// Pinned byte for byte by kernel/test/brain.test.ts (unchanged, AC2): the thread flags are in ASK_THREAD_HELP below, never here.
 export const ASK_HELP = 'studio ask [--agent <id>] [--workspace <path>] "<text>" [--json] [--timeout <s>]';
-/** The thread flags of `studio ask`, printed with `ASK_HELP` on a usage error. */
+/** The thread flags of `studio ask`, printed with `ASK_HELP` on a usage error: AC15's "ASK_HELP names the flags", kept out of `ASK_HELP` because its text is pinned unchanged (AC2). */
 export const ASK_THREAD_HELP = 'studio ask [--continues <id>] [--ref <thread>[:summary]]... "<text>": reply in a thread, attach threads as references';
 
 export const MESSAGES_SUBCOMMAND = "messages";

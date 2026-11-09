@@ -15,7 +15,9 @@
 // settings_invalid` with the `file`; `409 settings_missing` with the `file`
 // (a crew member's file is never created here: this route only reads);
 // `409 workspace_not_listed` (a `workspace` not in the agent's settings
-// `workspaces`; Wright lists none); `409 continues_invalid` with `reason`
+// `workspaces`; Wright lists none; a `continues` with no `workspace` inherits
+// the continued row's workspace, checked the same way, so a reply in a
+// workspace thread resumes in that folder); `409 continues_invalid` with `reason`
 // `no_such_message`, `other_agent` or `never_started` (a `continues` row that
 // is missing, another agent's, or never had a session; `400 invalid_body` when
 // it is not a positive integer); `409 history_too_large` with `{thread, size,
@@ -81,6 +83,24 @@ function askSettings(dataDir: string, agent: string): { readonly ok: true; reado
   }
 }
 
+/**
+ * The workspace a continuation runs in: `explicit` when the body names one,
+ * else the continued row's (`inherited`, null for the memory folder), so a
+ * reply resumes in the folder its thread ran in. A workspace that is no
+ * longer in `workspaces` is refused (`409 workspace_not_listed`), the same
+ * as one the body names.
+ */
+export function continuationWorkspace(workspaces: readonly string[], explicit: string | undefined, inherited: string | null): { readonly ok: true; readonly workspace: string | null } | ContributedRouteResponse {
+  const workspace = explicit ?? inherited;
+  if (workspace !== null && listedWorkspace(workspaces, workspace) === undefined) return { status: 409, body: { error: "workspace_not_listed" } };
+  return { ok: true, workspace };
+}
+
+/** `agent`'s settings `workspaces` for a route that queues a continuation, or the refusal `POST /ask` answers. */
+export function continuationWorkspaces(dataDir: string, agent: string): { readonly ok: true; readonly workspaces: readonly string[] } | ContributedRouteResponse {
+  return askSettings(dataDir, agent);
+}
+
 async function ask(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
   const body = req.body;
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { status: 400, body: { error: "invalid_body", message: "the body must be a JSON object {text}" } };
@@ -115,10 +135,14 @@ async function ask(req: ContributedRouteRequest): Promise<ContributedRouteRespon
 
   // Thread data, checked before anything is queued: never a fresh session silently in place of a refused continuation.
   let threadId: number | undefined;
+  let rowWorkspace: string | null = workspace ?? null;
   if (continues !== undefined) {
     const check = continuesCheck(req.store, agent, continues as number);
     if (!check.ok) return { status: 409, body: { error: "continues_invalid", reason: check.reason, continues } };
     threadId = check.threadId;
+    const inherited = continuationWorkspace(settings.workspaces, workspace, check.row.workspace);
+    if (!("ok" in inherited)) return inherited;
+    rowWorkspace = inherited.workspace;
   }
   for (const ref of references) {
     const problem = referenceProblem(req.store, ref);
@@ -129,11 +153,11 @@ async function ask(req: ContributedRouteRequest): Promise<ContributedRouteRespon
 
   const at = req.now();
   const { messageId, queueId } = req.store.transaction(() => {
-    const payload = { text: text as string, agent, ...(workspace === undefined ? {} : { workspace }) };
+    const payload = { text: text as string, agent, ...(rowWorkspace === null ? {} : { workspace: rowWorkspace }) };
     const queued = enqueueEvent(req.store, { kind: "message", payload }, at);
     const row = ensureBrainMessage(
       req.store,
-      { queueId: queued.id, agent, source: "ask", text: text as string, fromAgent: null, depth: 0, workspace: workspace ?? null },
+      { queueId: queued.id, agent, source: "ask", text: text as string, fromAgent: null, depth: 0, workspace: rowWorkspace },
       at,
     );
     if (threadId !== undefined || references.length > 0) {
