@@ -479,6 +479,53 @@ describe("when the tracker reads GitHub", () => {
     expect(events(env.store, "pr_state_changed")[0]).toMatchObject({ task_id: null });
   });
 
+  it("lets a persistently failing read go behind the rest: it cannot hold a slot under the cap every pass", async () => {
+    const total = MAX_TRACKED_PER_PASS + 3;
+    // The 25 oldest rows (numbers 1..25) can never be read (404); the three newest can, but sort behind them on `updated`.
+    for (let n = 1; n <= total; n += 1) {
+      env.store
+        .prepare("INSERT INTO pr_tracks (repo, number, head_sha, state, updated) VALUES ('o/r', ?, ?, 'open', ?)")
+        .run(n, HEAD, `2026-11-09T08:${String(10 + n).padStart(2, "0")}:00.000Z`);
+    }
+    const fake = fakeWith(Array.from({ length: 3 }, (_, i) => pull({}, total - i)));
+    const work = trackerOver(fake);
+    fire();
+    await tick(work);
+    expect(fake.callsTo("getPull").map((c) => c.args[1])).toHaveLength(MAX_TRACKED_PER_PASS);
+    fire();
+    await tick(work);
+    // Second pass: the three never attempted come first, the failing ones behind them.
+    const second = fake.callsTo("getPull").slice(MAX_TRACKED_PER_PASS).map((c) => c.args[1]);
+    expect(second.slice(0, 3)).toEqual([26, 27, 28]);
+    expect(new Set(second).size).toBe(MAX_TRACKED_PER_PASS);
+  });
+
+  it("re-reads a closed row that a running run names, and its state follows GitHub; a finished run does not revive it", async () => {
+    env.store.prepare("INSERT INTO pr_tracks (repo, number, head_sha, state, owner_kind, updated) VALUES ('o/r', 7, ?, 'closed', 'other', '2026-11-09T08:00:00.000Z')").run(HEAD);
+    env.store.prepare("INSERT INTO pr_tracks (repo, number, head_sha, state, owner_kind, updated) VALUES ('o/r', 8, ?, 'merged', 'other', '2026-11-09T08:00:00.000Z')").run(HEAD);
+    writeRun({ status: "done", itemStatus: "done" });
+    const fake = fakeWith([pull({}, 7), pull({}, 8)]);
+    fire();
+    await tick(trackerOver(fake));
+    expect(fake.calls).toEqual([]);
+    writeRun({ status: "running" });
+    fire();
+    const work = trackerOver(fake);
+    await tick(work);
+    expect(fake.callsTo("getPull").map((c) => c.args[1])).toEqual([7]);
+    expect(tracks().find((t) => t.number === 7)?.state).toBe("open");
+    expect(events(env.store, "pr_state_changed")).toHaveLength(1);
+    // Still closed on GitHub and named by a running run: re-read, but unchanged writes no second event.
+    env.store.prepare("UPDATE pr_tracks SET state = 'closed' WHERE number = 7").run();
+    const closedFake = fakeWith([pull({ state: "closed" }, 7)]);
+    const before = events(env.store, "pr_state_changed").length;
+    fire();
+    await tick(trackerOver(closedFake));
+    fire();
+    await tick(trackerOver(closedFake));
+    expect(events(env.store, "pr_state_changed").length).toBe(before);
+  });
+
   it("does not follow a PR URL in a run file for a repo the workspace is not a clone of", async () => {
     writeRun({ pr: "https://github.com/x/y/pull/3" });
     const fake = fakeWith([pull()]);

@@ -6,8 +6,9 @@
 //
 // Which pull requests it follows: every PR a Loomwright run file names in the
 // workspaces of the registered agents (the current item's `pr:` URL, found by the
-// run-state reader, and only for a repo the workspace is a clone of), and every
-// `pr_tracks` row not yet `merged` or `closed` (re-read until it ends).
+// run-state reader, and only for a repo the workspace is a clone of; a `closed` row
+// is re-read while a running or paused run names it, a `merged` one never), and
+// every `pr_tracks` row not yet `merged` or `closed` (re-read until it ends).
 //
 // When it reads GitHub (the cadence is the owner's): a pass runs only when a
 // `trigger_fired` event was appended since its last pass, so the owner's own
@@ -15,7 +16,8 @@
 // The high-water event id is kept in memory, so a restart re-reads on the first
 // tick that finds a trigger ever fired (the pass is idempotent: an unchanged read
 // writes nothing). A pass reads at most `MAX_TRACKED_PER_PASS` pull requests,
-// oldest `updated` first: a rate guard, not a cadence.
+// least recently attempted first (then oldest `updated`), so a read that keeps
+// failing cannot starve the rest: a rate guard, not a cadence.
 //
 // State, in this precedence: GitHub `merged` is `merged`; GitHub `closed` is
 // `closed`; a parked item (`ownerOf`) is `parked`; a run item naming the PR with a
@@ -170,8 +172,25 @@ function rankOf(n: Named): number {
   return n.run.status === "running" ? 2 : n.run.status === "paused" ? 1 : 0;
 }
 
-/** The pull requests this pass follows: those run files name, plus every row not ended, oldest `updated` first, at most `MAX_TRACKED_PER_PASS`. */
-function candidatesOf(store: Store, checkouts: readonly Checkout[]): Candidate[] {
+/**
+ * What the pass remembers of its own reads, in memory only (a restart starts
+ * empty, and the pass is idempotent): the order each pull request was last
+ * attempted, so a read that keeps failing (it never updates its row) cannot hold
+ * a slot under the per-pass cap every pass.
+ */
+interface Attempts {
+  seq: number;
+  readonly last: Map<string, number>;
+}
+
+/**
+ * The pull requests this pass follows: those run files name, plus every row not
+ * ended; least recently attempted first (never attempted first), then oldest
+ * `updated`, at most `MAX_TRACKED_PER_PASS`. A `merged` row is final; a `closed`
+ * row is re-read only while a running or paused run names it (a closed PR can be
+ * reopened and picked up again), and a row no run names is not read once ended.
+ */
+function candidatesOf(store: Store, checkouts: readonly Checkout[], attempts: Attempts): Candidate[] {
   const rows = new Map<string, TrackRow>();
   for (const row of store.prepare<[], TrackRow>(`SELECT ${TRACK_COLUMNS} FROM pr_tracks`).all()) rows.set(keyOf(row.repo, row.number), row);
   const named = new Map<string, { repo: string; number: number; items: Named[] }>();
@@ -198,9 +217,18 @@ function candidatesOf(store: Store, checkouts: readonly Checkout[]): Candidate[]
       candidates.set(key, { repo: row.repo, number: row.number, named: [], checkout, row });
     }
   }
-  return [...candidates.values()]
-    .filter((c) => c.row === undefined || !(ENDED as readonly string[]).includes(c.row.state))
-    .sort((a, b) => (a.row?.updated ?? "").localeCompare(b.row?.updated ?? "") || keyOf(a.repo, a.number).localeCompare(keyOf(b.repo, b.number)))
+  const live = (c: Candidate): boolean => c.named.some((n) => rankOf(n) > 0);
+  const followed = [...candidates.values()].filter((c) => c.row === undefined || !(ENDED as readonly string[]).includes(c.row.state) || (c.row.state === "closed" && live(c)));
+  // Forget what a pull request no longer followed was last attempted at: the map never outgrows the candidates.
+  const keys = new Set(followed.map((c) => keyOf(c.repo, c.number)));
+  for (const key of [...attempts.last.keys()]) if (!keys.has(key)) attempts.last.delete(key);
+  return followed
+    .sort(
+      (a, b) =>
+        (attempts.last.get(keyOf(a.repo, a.number)) ?? 0) - (attempts.last.get(keyOf(b.repo, b.number)) ?? 0) ||
+        (a.row?.updated ?? "").localeCompare(b.row?.updated ?? "") ||
+        keyOf(a.repo, a.number).localeCompare(keyOf(b.repo, b.number)),
+    )
     .slice(0, MAX_TRACKED_PER_PASS);
 }
 
@@ -399,12 +427,14 @@ export interface TrackerDeps {
 }
 
 /** One pass: the candidates, each read and recorded in turn. Nothing is built (no client, no Keychain read) when there are none. */
-async function pass(ctx: DueWorkContext, deps: TrackerDeps): Promise<void> {
-  const candidates = candidatesOf(ctx.store, checkoutsOf(ctx.store));
+async function pass(ctx: DueWorkContext, deps: TrackerDeps, attempts: Attempts): Promise<void> {
+  const candidates = candidatesOf(ctx.store, checkoutsOf(ctx.store), attempts);
   if (candidates.length === 0) return;
   const client = githubClientOf(deps.client);
   const identity = identityOf(ctx.store);
   for (const candidate of candidates) {
+    attempts.seq += 1;
+    attempts.last.set(keyOf(candidate.repo, candidate.number), attempts.seq);
     const obs = await observe(ctx.store, client, candidate, identity);
     if (obs !== undefined) record(ctx.store, candidate.repo, candidate.number, obs, ctx.now().toISOString());
   }
@@ -417,13 +447,14 @@ async function pass(ctx: DueWorkContext, deps: TrackerDeps): Promise<void> {
  */
 export function createTrackerDueWork(deps: TrackerDeps = {}): DueWorkFn {
   let watermark = 0;
+  const attempts: Attempts = { seq: 0, last: new Map() };
   return async (ctx) => {
     const top = ctx.store.prepare<[], number | null>("SELECT max(id) FROM events").pluck().get() ?? 0;
     if (top <= watermark) return;
     const fired = ctx.store.prepare<[number, number], 1>("SELECT 1 FROM events WHERE kind = 'trigger_fired' AND id > ? AND id <= ? LIMIT 1").pluck().get(watermark, top);
     watermark = top;
     if (fired === undefined) return;
-    await pass(ctx, deps);
+    await pass(ctx, deps, attempts);
   };
 }
 
