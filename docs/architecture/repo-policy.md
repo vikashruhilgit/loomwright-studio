@@ -61,7 +61,7 @@ It writes `set_by = 'owner'` and `set_at` = now, which is the record of who trus
 |---|---|
 | none (no row, or `unset`) | never: `no_policy`, and GitHub is not called. A repo with no policy never merges; its PRs park until the owner sets one |
 | `solo` | CI is `green` (otherwise `ci_not_green`) |
-| `studio_approval` | an `approvals` row with `action = 'kernel_merge_approval_request'` (`MERGE_APPROVAL_ACTION`, which item 09 files), `status = 'approved'` and a payload whose `repo`, `pr` and `head_sha` match (otherwise `awaiting_owner_approval`) |
+| `studio_approval` | an `approvals` row with `action = 'kernel_merge_approval_request'` (`MERGE_APPROVAL_ACTION`, which item 09 files), `status = 'approved'` and a payload filed by the rail as `{tool, input, cwd}`, whose `tool` is `mcp__kernel__kernel_merge_approval_request` and whose `input.repo`, `input.pr` and `input.head_sha` match; the payload's top level is never read (otherwise `awaiting_owner_approval`) |
 | `reviews` | approvals at the head are at least the repo's N and nothing requests changes (otherwise `changes_requested` or `reviews_short`) |
 
 The other reasons: `head_moved` (GitHub's head is not `head_sha`, checked before anything else), and `unreadable` (GitHub could not be read, the stored policy cannot be read as a policy, or the playbook requirement is not valid). `reviews` and `solo` do not look at each other's conditions: Loomwright's gate re-checks CI, `reviewDecision` and every other condition before any merge.

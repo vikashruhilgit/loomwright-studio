@@ -595,9 +595,9 @@ test("a merge approval is a merge card: its facts as text, Allow once and Deny o
   expect(postsTo(kernel, "/deny")).toHaveLength(0);
 });
 
-test("a merge approval in the flat payload shape is read too, and a field it did not carry reads 'not in the request'", async () => {
-  const flat = mergeApproval(7, { shape: "flat", fields: { ci: undefined, ready_at: undefined, policy: undefined } });
-  const { kernel, fixture: started } = await startKernel({ approvals: [flat] });
+test("a field a merge approval did not carry reads 'not in the request'", async () => {
+  const partial = mergeApproval(7, { fields: { ci: undefined, ready_at: undefined, policy: undefined } });
+  const { kernel, fixture: started } = await startKernel({ approvals: [partial] });
   const page = await openWith(started);
   const card = page.getByTestId("merge-card");
   await expect(card.getByTestId("merge-repo")).toHaveText("studio-sandbox/studio-sandbox");
@@ -607,6 +607,14 @@ test("a merge approval in the flat payload shape is read too, and a field it did
   await expect(page.getByTestId("approval-outcome")).toContainText("Denied by owner");
   expect(postsTo(kernel, "/deny").map((p) => p.path)).toEqual(["/approvals/7/deny"]);
   expect(postsTo(kernel, "/approve")).toHaveLength(0);
+});
+
+test("a merge approval in the flat payload shape draws no merge card: the kernel reads only payload.input, so its Allow would never count", async () => {
+  const flat = mergeApproval(7, { shape: "flat" });
+  const { fixture: started } = await startKernel({ approvals: [flat] });
+  const page = await openWith(started);
+  await expect(page.getByTestId("approval-detail")).toBeVisible();
+  await expect(page.getByTestId("merge-card")).toHaveCount(0);
 });
 
 /** Both themes of one merge-card state, to the committed phase 8 dir with `PHASE8_POLISH_EVIDENCE=1`, else to the per-test dir. */

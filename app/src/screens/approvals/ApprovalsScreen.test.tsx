@@ -1015,26 +1015,27 @@ describe("mergeApprovalOf", () => {
     policy: "Approve in Studio",
   };
 
-  it("reads the fields from payload.input for the rail's {tool, input, cwd}, and from the payload itself otherwise", () => {
+  it("reads the fields from payload.input of the rail's {tool, input, cwd}, as the kernel's hasMergeApproval does", () => {
     expect(mergeApprovalOf(mergeApproval(1))).toEqual(FULL);
-    expect(mergeApprovalOf(mergeApproval(1, {}, "flat"))).toEqual(FULL);
   });
 
-  it("reads the top level first, as the kernel does, and payload.input only when the top level has none of repo, pr, head_sha", () => {
+  it("never reads the payload's top level: a flat payload draws no card, because the kernel would never count its Allow", () => {
+    expect(mergeApprovalOf(mergeApproval(1, {}, "flat"))).toBeUndefined();
     const top = { repo: "acme/widgets", pr: 21, head_sha: SHA };
-    const topWins = mergeApproval(1, {}, "rail", { payload: { ...top, input: {} } });
-    expect(mergeApprovalOf(topWins)).toMatchObject({ repo: "acme/widgets", pr: 21, headSha: SHA });
-    const sameBoth = mergeApproval(1, {}, "rail", { payload: { ...top, input: { ...top } } });
-    expect(mergeApprovalOf(sameBoth)).toMatchObject({ repo: "acme/widgets", pr: 21, headSha: SHA });
-    const inputOnly = mergeApproval(1, {}, "rail", { payload: { tool: "t", input: top, cwd: "/" } });
-    expect(mergeApprovalOf(inputOnly)).toMatchObject({ repo: "acme/widgets", pr: 21, headSha: SHA });
+    expect(mergeApprovalOf(mergeApproval(1, {}, "rail", { payload: { tool: "mcp__kernel__kernel_merge_approval_request", ...top, input: {} } }))).toBeUndefined();
   });
 
-  it("draws no card when the top level and payload.input name different PRs, so Allow once never authorises one the card did not show", () => {
-    const mismatch = mergeApproval(1, {}, "rail", { payload: { repo: "evil/top", pr: 1, head_sha: "abcdef0", input: { repo: "acme/widgets", pr: 21, head_sha: SHA } } });
-    expect(mergeApprovalOf(mismatch)).toBeUndefined();
-    const onePart = mergeApproval(1, {}, "rail", { payload: { repo: "acme/widgets", pr: 21, head_sha: SHA, input: { pr: 22 } } });
-    expect(mergeApprovalOf(onePart)).toBeUndefined();
+  it("a top-level field never changes the PR shown: the card names what payload.input names, the PR the kernel authorises", () => {
+    const input = { repo: "acme/widgets", pr: 21, head_sha: SHA };
+    const decoy = mergeApproval(1, {}, "rail", { payload: { tool: "mcp__kernel__kernel_merge_approval_request", repo: "evil/top", pr: 1, head_sha: "abcdef0", input, cwd: "/" } });
+    expect(mergeApprovalOf(decoy)).toMatchObject({ repo: "acme/widgets", pr: 21, headSha: SHA });
+  });
+
+  it("draws no card unless payload.tool is the merge-approval tool, as the kernel requires", () => {
+    const input = { repo: "acme/widgets", pr: 21, head_sha: SHA };
+    for (const tool of [undefined, "t", "kernel_merge_approval_request", "mcp__kernel__kernel_playbook_enable", 5]) {
+      expect(mergeApprovalOf(mergeApproval(1, {}, "rail", { payload: { tool, input, cwd: "/" } })), String(tool)).toBeUndefined();
+    }
   });
 
   it("is undefined for any other action, whatever the fields", () => {
@@ -1105,10 +1106,10 @@ describe("the merge approval card", () => {
     expect(screen.queryAllByRole("link").filter((link) => (link.getAttribute("href") ?? "").includes("github.com"))).toEqual([]);
   });
 
-  it("draws the same card for the flat payload shape", async () => {
+  it("draws no merge card for the flat payload shape, which the kernel's reader never counts", async () => {
     await mount({ approvals: [mergeApproval(1, {}, "flat")] });
-    expect(screen.getByTestId("merge-url").textContent).toBe("https://github.com/acme/widgets/pull/21");
-    expect(screen.getByTestId("merge-head-sha").textContent).toBe("1a2b3c4");
+    expect(screen.queryByTestId("merge-url")).toBeNull();
+    expect(screen.queryByTestId("merge-head-sha")).toBeNull();
   });
 
   it("a missing or wrongly typed ci, ready_at or policy reads 'not in the request'", async () => {

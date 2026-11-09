@@ -5,7 +5,7 @@ Part of [Phase 8 features](../ARCHITECTURE.md#phase-8-features). Phase 8 item 01
 ## What exists today
 
 - **The feature.** `kernel/src/automate/index.ts` exports `automateContribution`, registered after `gui` as the eleventh and last contribution. Its three parts are `runner` (four tools, built by item 09), `tracker` and `routing` (both empty: no tool, route, subcommand, handler or due work). The runner part has no route, subcommand, handler or due work either.
-- **The runner's tools.** A live playbook's own run session uses them to hand tickets to Loomwright's `/automate` and to have Loomwright merge one parked PR. No tool starts a session, runs `/automate` or merges (owner decision 2026-11-03; see [the runner](#the-runner-tools)).
+- **The runner's tools.** A live playbook's own run session uses them to hand tickets to Loomwright's `/automate` and to have Loomwright merge one parked PR. No tool starts a session, runs `/automate` or merges (owner decision 2026-11-03, recorded as [D43](../DECISIONS.md); see [the runner](#the-runner-tools)).
 - **The table.** Migration 20 creates `pr_tracks` (see the [data model](../ARCHITECTURE.md#data-model)). Nothing writes to it yet.
 - **The contract.** `app/src/api/contract.ts` declares the `PrTrack` and `PrOwnerKind` types (`automate_live` / `automate_parked` / `owner` / `other`). No route uses them yet.
 
@@ -73,7 +73,7 @@ For a repo whose policy is Approve in Studio (or a playbook that asks for `studi
 
 Each bullet is an owner decision from the phase 8 session of 2026-11-02, not a description of built code.
 
-- **The runner (built).** See [the runner tools](#the-runner-tools). The playbook's own run session runs `/automate … --inline-phases` itself (owner decision 2026-11-03, superseding the 2026-11-02 kernel-started session), so Stop and Kill, the budget, the cap and the approval gate already apply to it (invariant 2). No `--parallel`: its lanes spawn `claude -p` outside the kernel. It runs `/automate` in safe mode, which parks a ready PR `awaiting_merge`. Probe p15 showed `--inline-phases` reaching a PR in an SDK session started with kernel-like options (2026-11-05); its `AskUserQuestion` path was not exercised, so that part stays unverified ([OPEN_QUESTIONS](../OPEN_QUESTIONS.md#technical-verify-dont-assume)).
+- **The runner (built).** See [the runner tools](#the-runner-tools). The playbook's own run session runs `/automate … --inline-phases` itself (owner decision 2026-11-03, recorded as [D43](../DECISIONS.md), which supersedes D40's kernel-started session), so Stop and Kill, the budget, the cap and the approval gate already apply to it (invariant 2). No `--parallel`: its lanes spawn `claude -p` outside the kernel. It runs `/automate` in safe mode, which parks a ready PR `awaiting_merge`. Probe p15 showed `--inline-phases` reaching a PR in an SDK session started with kernel-like options (2026-11-05); its `AskUserQuestion` path was not exercised, so that part stays unverified ([OPEN_QUESTIONS](../OPEN_QUESTIONS.md#technical-verify-dont-assume)).
 - **The tracker.** The `pr_tracks` rows follow a PR through its states: head sha, approvals against what the repo requires ([repo policy](repo-policy.md)), CI, the ticket it came from and its run file.
 - **Owner-aware routing.** The kernel tells a playbook who owns a PR, and a fix never starts a second drain:
   - a live `/automate` run: leave it to that run's drain;
