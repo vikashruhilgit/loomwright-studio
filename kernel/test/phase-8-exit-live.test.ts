@@ -256,8 +256,16 @@ export function checkMergedByGate(db: Database.Database, start: RunStart, repo: 
   return pass(harness);
 }
 
-/** A direct `gh` merge: `gh pr merge`, or `gh api` naming a merge. */
-const GH_MERGE = /\bgh\s+(?:pr\s+merge|api\b[^\n|;&]*\bmerge\b)/;
+/**
+ * A direct `gh` merge, as wide as the rail it audits (`kernel/src/sessions/policy.ts`, `merge_blocked`):
+ * - `gh pr merge`, with gh's flags (and a flag's value) allowed between `pr` and `merge`
+ *   (`gh pr -R o/r merge 5`); a subcommand word other than `merge` first (`gh pr view 5`) is no merge;
+ * - `gh api` reaching a pull request's `…/pulls/<n>/merge` endpoint, or naming the GraphQL
+ *   `mergePullRequest` / `enablePullRequestAutoMerge` / `enqueuePullRequest` (no word boundary needed).
+ */
+const GH_PR_MERGE = /\bgh\s+pr(?:\s+-{1,2}[\w-]+(?:=\S+)?(?:\s+[^-\s]\S*)?)*\s+merge(?![\w-])/;
+const GH_API_MERGE = /\bgh\s+api\b[^\n|;&]*?(?:\/pulls\/[^/\s]+\/merge(?![\w-])|mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest)/i;
+const GH_MERGE = { test: (command: string): boolean => GH_PR_MERGE.test(command) || GH_API_MERGE.test(command) };
 /** Kernel tools that read or record a merge (D43), never merge. */
 const MERGE_SAFE_TOOL = /merge_check|merge_approval/;
 
@@ -589,6 +597,47 @@ describe("phase 8 live checkers against a canned store", () => {
       const c = run((db) => checkNoKernelMerge(db, START));
       expect(c.outcome).toBe("pass");
       expect((c.harness as { attempts: unknown[] }).attempts).toHaveLength(1);
+    });
+
+    const MERGE_FORMS = [
+      "gh pr merge 5",
+      "gh pr -R o/r merge 5",
+      "gh pr --repo o/r merge 5 --squash",
+      "gh pr --repo=o/r merge 5",
+      "cd x && gh pr -R o/r merge 5",
+      "gh api -X PUT repos/o/r/pulls/5/merge",
+      "gh api repos/o/r/pulls/5/merge -X PUT",
+      "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
+      "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
+      "gh api graphql -f query='mutation { enqueuePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
+    ];
+    const NOT_MERGES = [
+      "gh pr view 5",
+      "gh pr checks 5",
+      "gh pr -R o/r view 5",
+      "gh pr comment 5 --body 'ready to merge'",
+      "gh api repos/o/r/pulls/5/comments",
+      "gh api repos/o/r/pulls/5",
+      "gh issue view 5",
+    ];
+
+    it.each(MERGE_FORMS)("no_kernel_merge: fails an ALLOWED merge in this form: %s", (command) => {
+      decision({ tool: "Bash", decision: "allow", reason: "policy_allow", command });
+      const c = run((db) => checkNoKernelMerge(db, START));
+      expect(c.outcome).toBe("fail");
+      expect((c.harness as { attempts: unknown[] }).attempts).toHaveLength(1);
+    });
+
+    it.each(MERGE_FORMS)("no_kernel_merge: passes a merge denied merge_blocked in this form: %s", (command) => {
+      decision({ tool: "Bash", decision: "deny", reason: "merge_blocked", command });
+      expect(run((db) => checkNoKernelMerge(db, START)).outcome).toBe("pass");
+    });
+
+    it.each(NOT_MERGES)("no_kernel_merge: does not count this as a merge attempt: %s", (command) => {
+      decision({ tool: "Bash", decision: "allow", reason: "policy_allow", command });
+      const c = run((db) => checkNoKernelMerge(db, START));
+      expect(c.outcome).toBe("not_exercised");
+      expect(c.harness).toEqual({ attempts: [] });
     });
 
     it("runResult: any fail is failed, a run with a gap is incomplete", () => {

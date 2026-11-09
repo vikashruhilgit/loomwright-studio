@@ -58,6 +58,13 @@ Before the run. Every GitHub setting is on `vikashruhilgit/studio-sandbox` only.
 8. **Build the kernel, install the service and package the app**, as [phase 5's setup steps 2 to 5](phase-5-exit-runbook.md#setup) and [phase 7's setup](phase-7-exit-runbook.md#setup) do, from the branch under test (the service runs an install copy, so reinstall after every build). Open the app from Finder, not from a terminal. Record `git rev-parse HEAD`, the service's pid, `sw_vers -productVersion` and `node --version` for the evidence file.
 9. **Stage the screenshot folder outside the repo:** `OUT="${TMPDIR:-/tmp}/studio-phase8-exit-$(date +%F)"; mkdir -p "$OUT"; echo "$OUT"`.
 
+## Known preconditions
+
+Two facts the CI walks prove, and that the live run meets as written. Check both before spending the subscription.
+
+- **The kernel wires no session-token minter yet.** `kernel/src/kernel.ts` leaves `sessionTokenMint` unwired (a later item wires item 03's), so a live, write-granted session is refused `github_token_unavailable`. The live run needs a follow-up item to wire the minter first; until then, do not start it. The CI walks supply a stand-in mint.
+- **A ClickUp-polled playbook must link a poll that names a repository.** A live write-granted session's token is minted for the repos of the playbook's first linked poll, and a `clickup.tasks` poll names none, so the session is refused `no_repos`. This is why the walk has two ticket playbooks, four playbooks in all (GitHub tickets, ClickUp tickets, triage, merge when ready), the same layout `kernel/test/phase-8-exit.test.ts` and `app/e2e/phase-8-exit.spec.ts` use.
+
 ## Starting the harness
 
 In a second terminal, from the repo root, before the first step of the walk:
@@ -76,7 +83,7 @@ Do each step in the app, in order. After each, the harness (or the store) shows 
 
 | Step | What happens | What the store shows |
 |---|---|---|
-| 1. Tickets | Open one GitHub issue on the sandbox repo (`gh issue create`), and one ClickUp task tagged as the owner says. Ask Wright to author a live ticket playbook and enable it (a dry run first, then a held enable: Allow once). The playbook polls both sources and runs `/automate --backlog … --inline-phases` in safe mode in its own kernel session. | Two `tasks` rows of kind `ticket_pr`, each linked to its own `pr_tracks` row by `ticket_ref` (PR A and PR B). A PR row per ticket, each starting from a new track |
+| 1. Tickets | Open one GitHub issue on the sandbox repo (`gh issue create`), and one ClickUp task tagged as the owner says. Ask Wright to author two live ticket playbooks, one per source, and enable both (a dry run first, then a held enable: Allow once). The GitHub one polls `github.issues` on the sandbox repo. The ClickUp one first links a `github.pulls` poll that names the sandbox repo (switched off, so it fires nothing) and registers the `clickup.tasks` poll second; see [Known preconditions](#known-preconditions). Each runs `/automate --backlog … --inline-phases` in safe mode in its own kernel session. | Two `tasks` rows of kind `ticket_pr`, each linked to its own `pr_tracks` row by `ticket_ref` (PR A and PR B). A PR row per ticket, each starting from a new track |
 | 2. Triage | On PR A (parked by `/automate`) the owner leaves three comments: `fix: rename ping to pong`, `question: why exit 0?` and `remark: nice`. Ask Wright to author the triage playbook and enable it. | The fix routes to the parked item (a `/loomwright:review-pr <pr url>` in the triage playbook's own session, never a second drain). An answer is posted for the question and a reply for the remark, through the kernel's GitHub write tools, each after the approval gate |
 | 3. Re-request | The same playbook re-requests the owner as reviewer on PR A. | The GitHub request on the PR; the call recorded in the session's events |
 | 4. PR A under Solo | Create the opt-in "merge when ready" playbook and enable it. With CI green and Loomwright's review passed, the merge check answers `go`, and the playbook's session has Loomwright merge that one item through its `--auto-merge` gate. | `pr_tracks`: PR A `merged` with `merged_by_gate` = 1; the ordered `pr_state_changed` events |
@@ -162,7 +169,7 @@ The repo is public and some screens show real data, so:
 
 ## Cleanup
 
-The harness writes nothing, so cleanup is the owner's, in the app and on GitHub: close any PR left open, delete the run's branches, turn off the three playbooks (ticket, triage, merge when ready) from Playbooks, and set the repo's policy to what the owner wants it to stay. The sandbox repo may stay public or return to private; the owner decides.
+The harness writes nothing, so cleanup is the owner's, in the app and on GitHub: close any PR left open, delete the run's branches, turn off the four playbooks (the two ticket playbooks, triage, merge when ready) from Playbooks, and set the repo's policy to what the owner wants it to stay. The sandbox repo may stay public or return to private; the owner decides.
 
 ## Findings
 
