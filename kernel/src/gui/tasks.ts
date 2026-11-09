@@ -27,7 +27,7 @@ import { eventFrameOf } from "../console/events.js";
 import type { EventRow } from "../console/events.js";
 import type { ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
 import { getRepoPolicy } from "../integrations/github/repo-policy.js";
-import type { GitHubCiState } from "../integrations/types.js";
+import { GITHUB_CI_STATES, type GitHubCiState } from "../integrations/types.js";
 import { positiveIntegerOf } from "./query.js";
 import type { Store } from "../store/index.js";
 import type { GuiPart } from "./types.js";
@@ -229,7 +229,7 @@ function namedPr(linksJson: string | null): [string, number] | undefined {
  * Merges in each task's `ticket_pr`: the `pr_tracks` row its `links_json.pr`
  * names, served as the contract's `TaskTicketPr`. `null` for a run, a session, a
  * task whose links name no tracked PR (an untracked PR the agent wrote is not
- * served), and a row whose state or owner kind is outside the closed sets. Every
+ * served), and a row whose state is outside the closed set (an owner kind or CI state outside its set reads `null`). Every
  * value is the kernel-written row's (the approvals word is the repo policy's
  * wording over the row's counts). Two queries per request for the page's tasks,
  * never one per row.
@@ -268,6 +268,7 @@ function withTicketPrs(store: Store, rows: readonly CreatedRow[]): BoardRow[] {
     const state = (PR_TRACK_STATES as readonly string[]).includes(track.state) ? (track.state as PrTrackState) : undefined;
     if (state === undefined) return { ...row, ticket_pr: null };
     const owner = (PR_OWNER_KINDS as readonly string[]).includes(track.owner_kind ?? "") ? (track.owner_kind as PrOwnerKind) : null;
+    const ci = (GITHUB_CI_STATES as readonly string[]).includes(track.ci_state ?? "") ? (track.ci_state as GitHubCiState) : null;
     let policy = policies.get(track.repo.toLowerCase());
     if (policy === undefined) {
       policy = getRepoPolicy(store, track.repo);
@@ -281,7 +282,7 @@ function withTicketPrs(store: Store, rows: readonly CreatedRow[]): BoardRow[] {
       state,
       head_sha: track.head_sha,
       approvals: approvalsWordOf(policy.kind, track.approvals, track.required),
-      ci: track.ci_state as GitHubCiState | null,
+      ci,
       owner_kind: owner,
       merged_by_gate: track.merged_by_gate === 1,
       updated: track.updated,

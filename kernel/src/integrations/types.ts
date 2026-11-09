@@ -389,6 +389,9 @@ export interface GitHubBranchProtection {
  */
 export type GitHubCiState = "green" | "pending" | "failing" | "none";
 
+/** The closed set of `GitHubCiState` values, for a reader that must check a stored string against it. */
+export const GITHUB_CI_STATES = Object.freeze(["green", "pending", "failing", "none"] as const satisfies readonly GitHubCiState[]);
+
 /**
  * What decides whether a pull request may merge, read at one moment. `head_sha`
  * is the pull's current head. `approvals` counts distinct reviewers whose latest

@@ -384,9 +384,9 @@ describe("GET /tasks: a ticket's pull request (AC5)", () => {
     for (const id of [...ids, noLinks]) expect((await cardOf("task", id))?.ticket_pr).toBeNull();
   });
 
-  it("a row whose state is outside the closed set is not served; an owner kind outside it reads null", async () => {
+  it("a row whose state is outside the closed set is not served; an owner kind or CI state outside its set reads null", async () => {
     addTrack({ number: 1, state: "frobbed" });
-    addTrack({ number: 2, owner: "somebody", ci: null });
+    addTrack({ number: 2, owner: "somebody", ci: "melting" });
     const unknownState = addLinked(prLinks("acme/shop", 1));
     const unknownOwner = addLinked(prLinks("acme/shop", 2));
     expect((await cardOf("task", unknownState))?.ticket_pr).toBeNull();

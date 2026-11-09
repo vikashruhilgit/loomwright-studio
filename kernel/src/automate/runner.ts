@@ -42,7 +42,7 @@ import type { ConsolePart } from "../console/types.js";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { isRepoName } from "../integrations/github/repo-policy.js";
-import type { GitHubRepoPolicyReads } from "../integrations/types.js";
+import { GITHUB_CI_STATES, type GitHubRepoPolicyReads } from "../integrations/types.js";
 import type { HeldToolVerdict } from "../sessions/types.js";
 import { checkoutOf } from "./checkout.js";
 import { mergeCheck } from "./merge-check.js";
@@ -131,7 +131,7 @@ const ticketShape = z.object({
 });
 
 /** The CI states a merge approval may claim (`GitHubCiState`), published as an enum in the tool's input schema. */
-export const MERGE_APPROVAL_CI_CLAIMS = Object.freeze(["green", "pending", "failing", "none"] as const);
+export const MERGE_APPROVAL_CI_CLAIMS = GITHUB_CI_STATES;
 
 const shaShape = z.string().regex(/^[0-9a-f]{40}$/, "must be the full 40-character lowercase head SHA");
 const readyAtShape = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/, "must be an ISO-8601 UTC time such as 2026-11-08T04:56:42Z");
