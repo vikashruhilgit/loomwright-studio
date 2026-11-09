@@ -77,6 +77,8 @@ export interface OpenCard {
   /** The session whose log is shown, or `null`: the card has none. */
   readonly sessionId: number | null;
   readonly session: SessionSummary | undefined;
+  /** Shows this session's log instead of the default one (a ticket card's history links each of its sessions). */
+  pickSession(sessionId: number): void;
   readonly output: OutputSnapshot;
   readonly lines: readonly StreamingLogLine[];
   /** Stop and Kill apply. */
@@ -144,7 +146,18 @@ export function useOpenCard(
   const item = history?.item ?? boardItem;
 
   // ---- the session whose log is shown ----------------------------------------------------------
-  const sessionId = item === undefined ? null : logSessionOf(item, history?.sessions ?? [], isLive);
+  // A pick belongs to the card it was made on: closing it, or opening another card, goes back to that card's own session.
+  const [picked, setPicked] = useState<{ readonly key: string; readonly sessionId: number } | undefined>();
+  useEffect(() => {
+    setPicked(undefined);
+  }, [key]);
+  const pickSession = useCallback(
+    (sessionId: number): void => {
+      if (key !== null) setPicked({ key, sessionId });
+    },
+    [key],
+  );
+  const sessionId = picked !== undefined && picked.key === key ? picked.sessionId : item === undefined ? null : logSessionOf(item, history?.sessions ?? [], isLive);
   const session = sessionId === null ? undefined : history?.sessions.find((s) => s.id === sessionId);
   /** A session card knows its status from its row until the history answers; any other card needs the session's summary. */
   const listStatus = session?.status ?? (item?.kind === "session" ? item.state : undefined);
@@ -224,6 +237,7 @@ export function useOpenCard(
     gone: failed?.gone === true,
     sessionId,
     session,
+    pickSession,
     output,
     lines,
     live,

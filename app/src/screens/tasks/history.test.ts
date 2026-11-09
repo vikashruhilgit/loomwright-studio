@@ -100,3 +100,60 @@ describe("the actor", () => {
     expect(actorOf(event("x", {}, 41), { sessions: [{ id: 41, agent: `ma${ESC}son` }], card: { creator_agent: null, creator_session: null } })).toBe("ma\\x1bson");
   });
 });
+
+describe("pr_state_changed (the PR tracker's event)", () => {
+  const payload = { repo: "vikashruhilgit/studio-sandbox", pr: 21, from: "open", to: "parked", head_sha: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", approvals: 0, ci: "green", owner_kind: "automate_parked" };
+
+  it("reads as `PR #<pr>: <from> → <to> · CI <ci> · approvals <n>`, never the raw JSON", () => {
+    const line = historyLine(event("pr_state_changed", payload), none);
+    expect(line.sentence).toBe("PR #21: open → parked · CI green · approvals 0");
+    expect(line.kind).toBe("pr_state_changed");
+    for (const hidden of ["{", "}", "head_sha", "a1b2c3d4", "owner_kind", "automate_parked", "vikashruhilgit"]) expect(line.sentence, hidden).not.toContain(hidden);
+  });
+
+  it("appends the reason when the event carries one", () => {
+    expect(historyLine(event("pr_state_changed", { ...payload, reason: "awaiting_merge" }), none).sentence).toBe("PR #21: open → parked · CI green · approvals 0 · reason awaiting_merge");
+  });
+
+  it("reads a `from` of null as opened", () => {
+    expect(historyLine(event("pr_state_changed", { ...payload, from: null, to: "open", ci: "pending" }), none).sentence).toBe("PR #21: opened → open · CI pending · approvals 0");
+  });
+
+  it("reads a change that kept the state (CI or approvals moved) with the same words", () => {
+    expect(historyLine(event("pr_state_changed", { ...payload, from: "open", to: "open", approvals: 2, ci: "green" }), none).sentence).toBe("PR #21: open → open · CI green · approvals 2");
+  });
+
+  it("leaves out a part whose field is missing or the wrong type, and still reads a sentence", () => {
+    expect(historyLine(event("pr_state_changed", { pr: 21, to: "merged" }), none).sentence).toBe("PR #21: merged");
+    expect(historyLine(event("pr_state_changed", { pr: "21", from: 3, to: ["x"], ci: {}, approvals: -1, reason: 5 }), none).sentence).toBe("PR changed");
+    expect(historyLine(event("pr_state_changed", {}), none).sentence).toBe("PR changed");
+    expect(historyLine(event("pr_state_changed", null), none).sentence).toBe("PR changed");
+    expect(historyLine(event("pr_state_changed", [1, 2]), none).sentence).toBe("PR changed");
+    expect(historyLine(event("pr_state_changed", { pr: 21, to: "parked", ci: "" }), none).sentence).toBe("PR #21: parked");
+  });
+
+  it("escapes every word and cuts a long reason", () => {
+    const hostile = historyLine(event("pr_state_changed", { pr: 21, from: `op${ESC}en`, to: `pa${RLO}rked`, ci: `gr${ESC}een`, approvals: `1${ESC}/2`, reason: `why${ESC}` }), none).sentence;
+    expect(hostile).toBe("PR #21: op\\x1ben → pa\\u202erked · CI gr\\x1been · approvals 1\\x1b/2 · reason why\\x1b");
+    const long = historyLine(event("pr_state_changed", { ...payload, reason: "x".repeat(1000) }), none).sentence;
+    expect(long.length).toBeLessThan(300);
+    expect(long.endsWith("… (cut)")).toBe(true);
+  });
+
+  it("carries the event's session for the open card to link, and null for the kernel's own", () => {
+    expect(historyLine(event("pr_state_changed", payload, 54), none).session).toBe(54);
+    expect(historyLine(event("pr_state_changed", payload, null), none).session).toBeNull();
+    expect(historyLine(event("task_created", {}, 41), none).session).toBe(41);
+  });
+
+  it("names the actor like any other event: the session's agent, or the kernel", () => {
+    const ctx: HistoryContext = { sessions: [{ id: 54, agent: "ada" }], card: { creator_agent: null, creator_session: null } };
+    expect(historyLine(event("pr_state_changed", payload, 54), ctx).actor).toBe("ada");
+    expect(historyLine(event("pr_state_changed", payload, null), ctx).actor).toBe("kernel");
+  });
+
+  it("reads a comment-route event, which the kernel does not record yet, through the generic line: its payload is not shown", () => {
+    const line = historyLine(event("comment_routed", { route: "fix_now", fix: 1, reply: 1, answer: 0 }), none);
+    expect(line.sentence).toBe("comment_routed recorded");
+  });
+});

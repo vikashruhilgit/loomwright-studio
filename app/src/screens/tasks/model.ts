@@ -49,8 +49,8 @@ export const BOARD_COLUMNS: readonly BoardColumn[] = [
  */
 export const OTHER_COLUMN: BoardColumn = { id: "other", label: "Other", none: "" };
 
-/** A table with no prototype: a state word like `constructor` or `__proto__` is just an unknown word. */
-function table<V>(entries: Readonly<Record<string, V>>): Readonly<Record<string, V>> {
+/** A table with no prototype: a state word like `constructor` or `__proto__` is just an unknown word. Every word table here and in `./TicketPrCard.tsx` is one. */
+export function table<V>(entries: Readonly<Record<string, V>>): Readonly<Record<string, V>> {
   return Object.freeze(Object.assign(Object.create(null) as Record<string, V>, entries));
 }
 
@@ -174,15 +174,18 @@ function newestFirst(a: TaskBoardItem, b: TaskBoardItem): number {
  * The response's groups as the four columns, plus Other while a card is in it. Every card lands in one; a
  * terminal card that ended before today (local time) is not on the board. Each
  * column is newest first, as the kernel orders the rows.
+ *
+ * `columnFor` lets the caller place a card the plain tables above do not describe (a ticket's PR, `./TicketPrCard.tsx`):
+ * a column it returns wins, `undefined` falls back to `columnOf`, so every card it passes over keeps its plain column.
  */
-export function buildBoard(groups: readonly TaskBoardGroup[], now: number): Board {
+export function buildBoard(groups: readonly TaskBoardGroup[], now: number, columnFor?: (item: TaskBoardItem) => ColumnId | undefined): Board {
   const seen = new Set<string>();
   const byColumn = new Map<ColumnId, BoardCard[]>([...BOARD_COLUMNS, OTHER_COLUMN].map((c) => [c.id, []]));
   for (const group of groups) {
     for (const item of group.items) {
       const key = cardKey(item);
       if (seen.has(key)) continue;
-      const column = columnOf(item);
+      const column = columnFor?.(item) ?? columnOf(item);
       if (column === "done" && !isToday(item.ended ?? item.updated, now)) continue;
       seen.add(key);
       byColumn.get(column)?.push({ key, item, column });

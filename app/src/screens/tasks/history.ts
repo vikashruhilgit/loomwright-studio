@@ -5,6 +5,11 @@
 //   (the state part only when the event carries one). These are the two payload shapes `kernel_task_create` and
 //   `kernel_task_update` write. An event kind with no sentence here reads `<kind> recorded`: its payload is NOT
 //   shown, so no JSON object can reach the screen.
+// - `pr_state_changed` (the PR tracker's one event per change, phase 8 item 10) reads
+//   `PR #<pr>: <from> → <to> · CI <ci> · approvals <n>`, with ` · reason <reason>` when the event carries one and `opened`
+//   for a `from` of `null`. Only the payload keys the tracker writes are read (`pr`, `from`, `to`, `ci`, `approvals`,
+//   `reason`); a part whose field is missing or the wrong type is left out. `approvals` is the count the tracker records
+//   (not the repo policy's `n/N` word, which the event does not carry).
 // - The actor is the agent of the event's session (from the history's sessions, else the card's `creator_agent`
 //   when the session is the card's `creator_session`: that session is not in the history's sessions), `kernel`
 //   when the event has no session, else `session #N`.
@@ -19,6 +24,8 @@ import { printable } from "../approvals/printable";
 /** One event as a history line. */
 export interface HistoryLine {
   readonly id: number;
+  /** The session the event happened under, or `null`: the open card links it. */
+  readonly session: number | null;
   /** The event kind, escaped. */
   readonly kind: string;
   /** Who it happened under, escaped: an agent, `kernel`, or `session #N`. */
@@ -58,6 +65,29 @@ function stateSuffix(payload: unknown): string {
   return state === undefined ? "" : ` · state ${state}`;
 }
 
+/** A non-negative safe integer payload field, as text; else `undefined`. */
+function countOf(payload: unknown, name: string): string | undefined {
+  const value = fieldOf(payload, name);
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? String(value) : undefined;
+}
+
+/** `PR #<pr>: <from> → <to> · CI <ci> · approvals <n> · reason <reason>`: each part only when the payload carries it. */
+function prStateSentence(payload: unknown): string {
+  const pr = countOf(payload, "pr");
+  const head = pr === undefined ? "PR" : `PR #${pr}`;
+  const to = textOf(payload, "to");
+  // A `from` of `null` is the first read of the PR: it opened.
+  const from = fieldOf(payload, "from") === null ? "opened" : textOf(payload, "from");
+  const parts = [to === undefined ? `${head} changed` : `${head}: ${from === undefined ? "" : `${from} → `}${to}`];
+  const ci = textOf(payload, "ci");
+  if (ci !== undefined) parts.push(`CI ${ci}`);
+  const approvals = countOf(payload, "approvals") ?? textOf(payload, "approvals");
+  if (approvals !== undefined) parts.push(`approvals ${approvals}`);
+  const reason = textOf(payload, "reason");
+  if (reason !== undefined) parts.push(`reason ${reason}`);
+  return parts.join(" · ");
+}
+
 /** The sentence for an event kind that has one, else `undefined`. */
 function sentenceOf(kind: string, payload: unknown): string | undefined {
   if (kind === "task_created") {
@@ -69,6 +99,7 @@ function sentenceOf(kind: string, payload: unknown): string | undefined {
     const fields = Array.isArray(raw) ? raw.filter((f): f is string => typeof f === "string" && f.trim() !== "").map((f) => printable(f)) : [];
     return `${fields.length === 0 ? "Changed the task" : `Changed ${fields.join(", ")}`}${stateSuffix(payload)}`;
   }
+  if (kind === "pr_state_changed") return prStateSentence(payload);
   return undefined;
 }
 
@@ -86,6 +117,7 @@ export function historyLine(event: EventFrame, ctx: HistoryContext): HistoryLine
   const sentence = sentenceOf(event.kind, event.payload) ?? `${kind} recorded`;
   return {
     id: event.id,
+    session: event.session_id,
     kind,
     actor: actorOf(event, ctx),
     time: secondsText(event.at),

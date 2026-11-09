@@ -16,6 +16,9 @@
 //   empty state.
 // - The count line ("8 cards · 3 working") is the title bar's, not the screen's:
 //   the screen writes it to `./subtitle.ts` and `index.tsx`'s `Subtitle` draws it.
+// - A ticket's PR (`ticket_pr`, phase 8 item 14) is placed by `./TicketPrCard.tsx` (open / draft / ready: Working, parked:
+//   Parked, merged / closed: Done today); it sits in "Waiting on you" only while a PENDING merge approval in the shared
+//   `approvals` resource names its PR. The resource is the store's (never a second fetch); with none loaded, nothing waits.
 // - Any task state the board does not read (`waiting on owner`) is in the Other
 //   group with its own word; it is never guessed into a column.
 // - The keys: J / K and the arrows move between cards across the columns, Enter
@@ -36,6 +39,7 @@ import { useKernelReach, withLastKnown } from "../../shell/last-known";
 import { useLiveStore, useResource } from "../../store/react";
 import { printable } from "../approvals/printable";
 import { TaskDetail } from "./TaskDetail";
+import { ticketColumnOf, waitingApprovalOf } from "./TicketPrCard";
 import { KIND_LABEL, agentText, buildBoard, cardAgent, cardOrder, refetchMark } from "./model";
 import type { Board, BoardCard } from "./model";
 import { getLastBoard, setLastBoard } from "./lastKnown";
@@ -116,6 +120,9 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
   const { connection, eventLog } = useLiveStore(api);
   const agents = useResource("agents", api);
   const roster = agents?.data?.agents;
+  // The store's one `approvals` resource (as the Approvals screen reads it): a ticket's PR waits on the pending merge approval that names it.
+  const approvalsResource = useResource("approvals", api);
+  const approvals = approvalsResource?.data?.approvals;
   const [now, touchNow] = useNow();
 
   // A remount starts from the last board this window read (`./lastKnown.ts`); the first read still replaces it.
@@ -155,7 +162,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
   const feedMark = `${refetchMark(eventLog)}:${connection.state}`;
   useEffect(() => { void refetch(); }, [refetch, feedMark]);
 
-  const board = useMemo(() => (data === undefined ? undefined : buildBoard(data.groups, now)), [data, now]);
+  const board = useMemo(() => (data === undefined ? undefined : buildBoard(data.groups, now, (item) => ticketColumnOf(item, approvals))), [data, now, approvals]);
   // The shell's contract for a kernel that does not answer (`shell/last-known.ts`): keep the last data, writes off.
   const reach = useKernelReach(api);
   const offline = reach.offline || readError?.kind === "connection";
@@ -335,6 +342,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
           offline={offline}
           avatar={avatarAgent(cardAgent(openItem), roster)}
           avatarState={avatarState(openItem, column)}
+          approvalId={openItem.ticket_pr === null ? undefined : waitingApprovalOf(openItem.ticket_pr, approvals)}
           onBack={closeCard}
           onOpenCreator={creator}
           onKillRequest={requestKill}
@@ -380,7 +388,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
           Showing the newest {TASKS_LIMIT} cards; older ones are not shown.
         </p>
       )}
-      <BoardView board={board} roster={roster} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
+      <BoardView board={board} roster={roster} approvals={approvals} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
     </TasksFrame>
   );
 }

@@ -7,9 +7,13 @@
 // as sentences with actors (`./history.ts`), never as the stored JSON. A task's
 // "Created in" fact links the session that created it (its own card, when the
 // board has one); that session's Stop and Kill are never wired to the task.
+// A ticket's PR card (`item.ticket_pr`, phase 8 item 14) adds the ticket's facts, the "Waiting on you" band with its link
+// to the pending merge approval, a link from each event to its session's log, the history's sessions and a link on each
+// pending approval (`./TicketPrCard.tsx` owns the words). A plain card is drawn as before.
 // Every string here (a title, an agent, an event's words, an approval's action)
 // is untrusted data and is rendered as a text child only.
 import { useEffect, useRef } from "react";
+import type { ReactNode } from "react";
 import type { Approval, PlaybookRun, SessionSummary, TaskBoardItem } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
 import type { AvatarAgent, AvatarState } from "../../components/Avatar/Avatar";
@@ -21,6 +25,7 @@ import { printable } from "../approvals/printable";
 import { elapsedText, statusLine, statusView, taskText } from "../sessions/model";
 import { historyLine } from "./history";
 import { KIND_LABEL, agentText, cardTitle, factsOf, toneOf } from "./model";
+import { OpenApprovalButton, TicketWaitingBand, ticketFacts } from "./TicketPrCard";
 import type { OpenCard } from "./useOpenCard";
 
 export interface TaskDetailProps {
@@ -32,6 +37,8 @@ export interface TaskDetailProps {
   readonly offline: boolean;
   readonly avatar: AvatarAgent;
   readonly avatarState: AvatarState;
+  /** The pending merge approval a parked ticket PR waits on (`waitingApprovalOf`), if any. */
+  readonly approvalId?: number | undefined;
   readonly onBack: () => void;
   /** Opens the creator session's own card; `undefined` when it is not on the board (or the kernel is away): the fact is plain text. */
   readonly onOpenCreator?: (() => void) | undefined;
@@ -52,18 +59,34 @@ function RunRow({ run }: { readonly run: PlaybookRun }) {
   );
 }
 
-function ApprovalRow({ approval }: { readonly approval: Approval }) {
+/** A ticket card's session row: the session, its status, and the button that shows its log. */
+function SessionRow({ session, shown, onPick }: { readonly session: SessionSummary; readonly shown: boolean; readonly onPick: () => void }) {
+  return (
+    <li className="tasks-side-row ticket-link-row" data-testid="task-session-row">
+      <span>
+        Session #{session.id} · {agentText(session.agent)}
+      </span>
+      <Badge tone={toneOf("session", session.status)}>{printable(session.status)}</Badge>
+      <Button size="row" variant="ghost" aria-label={`Show session ${session.id} log`} aria-pressed={shown} onClick={onPick}>
+        Show log
+      </Button>
+    </li>
+  );
+}
+
+function ApprovalRow({ approval, link }: { readonly approval: Approval; readonly link?: ReactNode }) {
   return (
     <li className="tasks-side-row">
       <span>
         Approval #{approval.id} · {printable(approval.action)}
       </span>
       <Badge tone={approval.status === "pending" ? "attention" : "neutral"}>{printable(approval.status)}</Badge>
+      {link}
     </li>
   );
 }
 
-export function TaskDetail({ item, card, now, offline, avatar, avatarState, onBack, onOpenCreator, onKillRequest }: TaskDetailProps) {
+export function TaskDetail({ item, card, now, offline, avatar, avatarState, approvalId, onBack, onOpenCreator, onKillRequest }: TaskDetailProps) {
   const { history, session, sessionId } = card;
   const regionRef = useRef<HTMLElement>(null);
   // The card the owner opened has left the DOM: focus lands here, so Tab reaches Back first.
@@ -72,10 +95,15 @@ export function TaskDetail({ item, card, now, offline, avatar, avatarState, onBa
   }, []);
 
   const title = cardTitle(item);
-  const facts = factsOf(item, now, session, history?.runs.find((r) => item.kind === "playbook_run" && r.id === item.id));
+  const ticket = item.ticket_pr;
+  const plainFacts = factsOf(item, now, session, history?.runs.find((r) => item.kind === "playbook_run" && r.id === item.id));
+  // A ticket card's State is its PR's (the kernel's `pr_tracks` row), not the task row's word.
+  const facts = ticket === null ? plainFacts : [...ticketFacts(ticket, approvalId), ...plainFacts.filter((f) => f.label !== "State")];
   const events = (history?.events ?? []).map((event) => historyLine(event, { sessions: history?.sessions ?? [], card: item }));
   const runs = item.kind === "playbook_run" ? [] : (history?.runs ?? []);
   const approvals = history?.approvals ?? [];
+  // Oldest first, as the events are.
+  const sessions = ticket === null ? [] : [...(history?.sessions ?? [])].sort((a, b) => a.id - b.id);
 
   const status = statusView(card.status ?? "unknown", card.reason);
   const header = card.status === undefined ? "status unknown" : statusLine(status);
@@ -116,6 +144,7 @@ export function TaskDetail({ item, card, now, offline, avatar, avatarState, onBa
             </div>
           ))}
         </dl>
+        {ticket === null || approvalId === undefined ? null : <TicketWaitingBand approvalId={approvalId} pr={ticket.number} offline={offline} />}
       </div>
 
       {card.gone ? (
@@ -143,18 +172,28 @@ export function TaskDetail({ item, card, now, offline, avatar, avatarState, onBa
             <p className="tasks-note">No events are recorded for this card.</p>
           ) : (
             <ol className="tasks-events" aria-label="History">
-              {events.map((event) => (
-                <li key={event.id} className="tasks-event">
-                  <div className="tasks-event-top">
-                    <b>{event.kind}</b>
-                    <span data-testid="task-event-actor">{event.actor}</span>
-                    <time>{event.time}</time>
-                  </div>
-                  <p className="tasks-event-text" data-testid="task-event-sentence">
-                    {event.sentence}
-                  </p>
-                </li>
-              ))}
+              {events.map((event) => {
+                const at = ticket === null ? null : event.session;
+                return (
+                  <li key={event.id} className="tasks-event">
+                    <div className="tasks-event-top">
+                      <b>{event.kind}</b>
+                      <span data-testid="task-event-actor">{event.actor}</span>
+                      <time>{event.time}</time>
+                    </div>
+                    <p className="tasks-event-text" data-testid="task-event-sentence">
+                      {event.sentence}
+                    </p>
+                    {at === null ? null : (
+                      <div className="ticket-event-links">
+                        <Button size="row" variant="ghost" data-testid="task-event-session" onClick={() => card.pickSession(at)}>
+                          {`Session ${at} log`}
+                        </Button>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
             </ol>
           )}
           {runs.length === 0 ? null : (
@@ -167,12 +206,26 @@ export function TaskDetail({ item, card, now, offline, avatar, avatarState, onBa
               </ul>
             </>
           )}
+          {sessions.length === 0 ? null : (
+            <>
+              <div className="tasks-history-head">Sessions · {sessions.length}</div>
+              <ul className="tasks-side" aria-label="Sessions">
+                {sessions.map((s) => (
+                  <SessionRow key={s.id} session={s} shown={card.sessionId === s.id} onPick={() => card.pickSession(s.id)} />
+                ))}
+              </ul>
+            </>
+          )}
           {approvals.length === 0 ? null : (
             <>
               <div className="tasks-history-head">Approvals · {approvals.length}</div>
               <ul className="tasks-side" aria-label="Approvals">
                 {approvals.map((approval) => (
-                  <ApprovalRow key={approval.id} approval={approval} />
+                  <ApprovalRow
+                    key={approval.id}
+                    approval={approval}
+                    link={ticket !== null && approval.status === "pending" ? <OpenApprovalButton approvalId={approval.id} offline={offline} /> : undefined}
+                  />
                 ))}
               </ul>
             </>
