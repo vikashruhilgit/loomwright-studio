@@ -32,6 +32,7 @@ import { toolsForConnectors } from "./integrations/tool-filter.js";
 import type { ConnectorKind, GitHubClient } from "./integrations/types.js";
 import { EventLoop } from "./loop/loop.js";
 import type { EventHandlers, EventLoopDeps } from "./loop/types.js";
+import type { SessionTokenMint } from "./sessions/github-session-auth.js";
 import { SessionManager } from "./sessions/manager.js";
 import type { AdmissionDecision, AdmissionRequest, SessionManagerDeps, SessionManagerOptions } from "./sessions/types.js";
 import { Store, resolveDataDir } from "./store/store.js";
@@ -102,6 +103,15 @@ export interface KernelDeps {
    * daemon passes the real client (`daemonKernelDeps`, daemon-deps.ts).
    */
   readonly githubClient?: GitHubClient;
+  /**
+   * Builds the session token minter over the kernel's own store, once it is open
+   * (the minter reads the connector row there). Defaults to none, and a live,
+   * write-granted playbook session is then refused `github_token_unavailable`
+   * with `detail: no_minter`. A `sessionTokenMint` in `KernelOptions.sessions`
+   * wins over this. The shipped daemon passes the real one (`daemonKernelDeps`,
+   * daemon-deps.ts).
+   */
+  readonly sessionTokenMintFor?: (store: Store) => SessionTokenMint;
   readonly startApiServer?: (options: ApiServerOptions, deps: ApiServerDeps) => Promise<ApiServer>;
   /** Defaults to `() => new Date()`. */
   readonly now?: () => Date;
@@ -215,9 +225,9 @@ export function connectorsFor(dataDir: string): (agent: string) => readonly Conn
  * {github: "write"}`), through the one reader, read afresh at every start and
  * resume. Any refusal (missing, invalid or model-less file, an id that names no
  * file) grants no write: a session gets fewer rights, never more. The
- * kernel wires no token minter yet (item 03's is wired by a later item), so
- * until then a live session with the write grant is refused
- * `github_token_unavailable`.
+ * daemon's deps wire the token minter (`daemonKernelDeps`, item 03's
+ * `mintSessionToken`); a composition without them refuses a live session with
+ * the write grant `github_token_unavailable` (`detail: no_minter`).
  */
 export function githubWriteFor(dataDir: string): (agent: string) => boolean {
   return (agent) => {
@@ -377,6 +387,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     const budget = new Budget({ store, authProvider, agentLimits: agentLimitsFor(dataDir) }, { now });
     // The client the loop's due work gets, also given to a contributed tool's context (a poll playbook's dry run); absent stays absent.
     const githubOf = deps.githubClient === undefined ? {} : { github: deps.githubClient };
+    // The session token minter, built over the open store; absent stays absent (no minter ⇒ a live, write-granted session is refused `no_minter`).
+    const mintOf = deps.sessionTokenMintFor === undefined ? {} : { sessionTokenMint: deps.sessionTokenMintFor(store) };
     const mcpGrantsOf = mcpToolGrantsFor(dataDir);
     // A proxy tool that can't be built (a name clash, a broken row) is not listed: a session lists fewer tools, never more.
     const proxyToolsOf = (from: Store, grants: McpToolGrants): readonly ContributedTool[] => {
@@ -391,6 +403,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         store,
         authProvider,
         baseEnv: env,
+        // Before the caller's session options, so a `sessionTokenMint` passed through `options.sessions` overrides the deps' one.
+        ...mintOf,
         ...options.sessions,
         onMessage: budget.observe,
         // The console's session output log (a no-op until phase 5 item 03 fills it in).
@@ -399,7 +413,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         admission: admissionFor(budget, authProvider.id, () => isPaused(store)),
         // The owner's connector grants, read afresh at each start and resume; the manager fills `ToolPolicy.connectors` from them.
         connectorsFor: connectorsFor(dataDir),
-        // The owner's GitHub write grant, read the same way. No `sessionTokenMint` is wired here (a later item wires item 03's): a live, write-granted session is refused.
+        // The owner's GitHub write grant, read the same way. The minter is `mintOf`'s (the daemon's deps wire item 03's); a composition without one refuses a live, write-granted session `no_minter`.
         githubWriteFor: githubWriteFor(dataDir),
         // Each session lists only the contributed tools its agent's grants allow (`requiresConnector`, and `requiresConnectorLevel` for the
         // write tools: the agent's `github: write` grant, read by the same reader as above; none for no agent or a throw): it only narrows.

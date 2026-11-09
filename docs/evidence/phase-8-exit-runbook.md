@@ -60,9 +60,9 @@ Before the run. Every GitHub setting is on `vikashruhilgit/studio-sandbox` only.
 
 ## Known preconditions
 
-Two facts the CI walks prove, and that the live run meets as written. Check both before spending the subscription.
+Two facts the CI walks prove, and that the live run meets as written; the first is now met by the kernel, the second is the walk's own layout. Check the second before spending the subscription.
 
-- **The kernel wires no session-token minter yet.** `kernel/src/kernel.ts` leaves `sessionTokenMint` unwired (a later item wires item 03's), so a live, write-granted session is refused `github_token_unavailable`. The live run needs a follow-up item to wire the minter first; until then, do not start it. The CI walks supply a stand-in mint.
+- **Met (phase 8 item 15, 2026-11-09): the kernel wires the session-token minter.** The installed service's `daemonKernelDeps` gives `startKernel` a `SessionTokenMint` over item 03's `mintSessionToken`, so a live, write-granted session gets its token. A composition without the daemon's deps (a test's) is still refused `github_token_unavailable` with `no_minter`, which is why the CI walks supply a stand-in mint. It needs the connected GitHub App (an App row in use, reaching the sandbox repo) to mint; without it the session is refused `mint_failed: no_credentials`.
 - **A ClickUp-polled playbook must link a poll that names a repository.** A live write-granted session's token is minted for the repos of the playbook's first linked poll, and a `clickup.tasks` poll names none, so the session is refused `no_repos`. This is why the walk has two ticket playbooks, four playbooks in all (GitHub tickets, ClickUp tickets, triage, merge when ready), the same layout `kernel/test/phase-8-exit.test.ts` and `app/e2e/phase-8-exit.spec.ts` use.
 
 ## Starting the harness
