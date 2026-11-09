@@ -76,7 +76,7 @@ export const PR_OWNER_KINDS = Object.freeze(["automate_live", "automate_parked",
 /** One of `PR_OWNER_KINDS`. */
 export type PrOwnerKind = (typeof PR_OWNER_KINDS)[number];
 
-/** The states a pull request never leaves: a row in one is not read again. */
+/** The states a pull request ends in: a `merged` row is never read again, a `closed` one only while a running or paused run names it (see `candidatesOf`). */
 const ENDED: readonly PrTrackState[] = ["merged", "closed"];
 
 /** The most pull requests one pass reads (a rate guard against GitHub, not a polling interval). */
