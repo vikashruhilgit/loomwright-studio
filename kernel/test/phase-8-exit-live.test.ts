@@ -257,15 +257,119 @@ export function checkMergedByGate(db: Database.Database, start: RunStart, repo: 
 }
 
 /**
- * A direct `gh` merge, as wide as the rail it audits (`kernel/src/sessions/policy.ts`, `merge_blocked`):
- * - `gh pr merge`, with gh's flags (and a flag's value) allowed between `pr` and `merge`
- *   (`gh pr -R o/r merge 5`); a subcommand word other than `merge` first (`gh pr view 5`) is no merge;
- * - `gh api` reaching a pull request's `…/pulls/<n>/merge` endpoint, or naming the GraphQL
- *   `mergePullRequest` / `enablePullRequestAutoMerge` / `enqueuePullRequest` (no word boundary needed).
+ * A direct `gh` merge, read the way the rail reads it (`kernel/src/sessions/policy.ts`, `merge_blocked`).
+ * Self-contained mirror of the rail's decision rule, NOT an import: this harness is the independent audit
+ * of a rail regression, so it must not share the rail's code. Decision rule, on shell words:
+ * - the command is split into words (quotes kept whole) and into simple commands at an unquoted `;` `|` `&` or newline;
+ * - a simple command is `gh` (program basename, case-folded); its first two non-flag words, with a flag that
+ *   could take a value read both ways (`gh pr -R o/r merge 5`), are `pr merge`;
+ * - or `api`, which merges when it names a GraphQL `mergePullRequest` / `enablePullRequestAutoMerge` /
+ *   `enqueuePullRequest`, sends a GraphQL body it cannot read (`--input`, `-F k=@file`), or reaches
+ *   `…/pulls/<n>/merge` with a non-GET method (`-X`/`--method`, or fields without a method, which gh sends as POST).
+ * A GET of the merge endpoint, and the words `gh pr merge` inside a quoted argument, are not merges.
  */
-const GH_PR_MERGE = /\bgh\s+pr(?:\s+-{1,2}[\w-]+(?:=\S+)?(?:\s+[^-\s]\S*)?)*\s+merge(?![\w-])/;
-const GH_API_MERGE = /\bgh\s+api\b[^\n|;&]*?(?:\/pulls\/[^/\s]+\/merge(?![\w-])|mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest)/i;
-const GH_MERGE = { test: (command: string): boolean => GH_PR_MERGE.test(command) || GH_API_MERGE.test(command) };
+function shellSegments(command: string): string[][] {
+  const segments: string[][] = [[]];
+  let word = "";
+  let inWord = false;
+  const endWord = (): void => {
+    if (inWord) segments[segments.length - 1]?.push(word);
+    word = "";
+    inWord = false;
+  };
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i] as string;
+    if (c === "'") {
+      inWord = true;
+      const end = command.indexOf("'", i + 1);
+      word += command.slice(i + 1, end === -1 ? command.length : end);
+      i = end === -1 ? command.length : end;
+    } else if (c === '"') {
+      inWord = true;
+      for (i++; i < command.length && command[i] !== '"'; i++) {
+        if (command[i] === "\\" && (command[i + 1] === '"' || command[i + 1] === "\\")) i++;
+        word += command[i];
+      }
+    } else if (c === "\\") {
+      inWord = true;
+      if (i + 1 < command.length) word += command[++i];
+    } else if (c === " " || c === "\t") endWord();
+    else if (c === ";" || c === "|" || c === "&" || c === "\n") {
+      endWord();
+      segments.push([]);
+    } else {
+      inWord = true;
+      word += c;
+    }
+  }
+  endWord();
+  return segments.filter((s) => s.length > 0);
+}
+
+/** `gh pr`'s first two command words, one list per reading: a flag that could take a value is read both ways. */
+function ghPositionalReadings(args: readonly string[]): string[][] {
+  const readings: string[][] = [];
+  const walk = (from: number, found: readonly string[]): void => {
+    const words = [...found];
+    for (let i = from; i < args.length && words.length < 2; i++) {
+      const a = args[i] as string;
+      if (a === "") continue;
+      if (!a.startsWith("-")) words.push(a);
+      else if (a !== "-h" && a !== "--help" && a !== "--" && !a.includes("=") && (a.length === 2 || a.startsWith("--") || a.endsWith("R")) && i + 1 < args.length) walk(i + 2, words);
+    }
+    readings.push(words);
+  };
+  walk(0, []);
+  return readings;
+}
+
+function ghApiMerges(args: readonly string[]): boolean {
+  let method = "";
+  let fields = false;
+  let opaque = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] as string;
+    if (a === "--method") method = args[++i] ?? "";
+    else if (a.startsWith("--method=")) method = a.slice("--method=".length);
+    else if (a === "--input" || a.startsWith("--input=")) {
+      fields = opaque = true;
+      if (a === "--input") i++;
+    } else if (a === "--field" || a === "--raw-field" || /^--(field|raw-field)=/.test(a)) {
+      fields = true;
+      const value = a.includes("=") ? a.slice(a.indexOf("=") + 1) : (args[++i] ?? "");
+      if (a.startsWith("--field") && value.includes("=@")) opaque = true;
+    } else if (/^-[^-]/.test(a)) {
+      for (let j = 1; j < a.length; j++) {
+        const c = a[j] as string;
+        if (c === "i") continue;
+        if (!"XfFHpqt".includes(c)) break;
+        const glued = a.slice(j + 1);
+        const value = glued === "" && "XfF".includes(c) ? (args[++i] ?? "") : glued.replace(/^=/, "");
+        if (c === "X") method = value;
+        else if (c === "f" || c === "F") {
+          fields = true;
+          if (c === "F" && value.includes("=@")) opaque = true;
+        }
+        break;
+      }
+    }
+  }
+  const verb = (method === "" ? (fields ? "POST" : "GET") : method).toUpperCase();
+  if (args.some((a) => /mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest/i.test(a))) return true;
+  if (opaque && args.some((a) => /(^|\/)graphql$/.test(a))) return true;
+  return verb !== "GET" && args.some((a) => /(^|\/)pulls\/[^/]+\/merge\/?([?#]|$)/.test(a));
+}
+
+function ghMerges(command: string): boolean {
+  return shellSegments(command).some(([program, ...rest]) => {
+    if ((program ?? "").split("/").pop()?.toLowerCase() !== "gh") return false;
+    const readings = ghPositionalReadings(rest);
+    if (readings.some(([group, sub]) => group === "pr" && sub === "merge")) return true;
+    const apiAt = readings.some(([group]) => group === "api") ? rest.indexOf("api") : -1;
+    return apiAt !== -1 && ghApiMerges(rest.slice(apiAt + 1));
+  });
+}
+const GH_MERGE = { test: ghMerges };
 /** Kernel tools that read or record a merge (D43), never merge. */
 const MERGE_SAFE_TOOL = /merge_check|merge_approval/;
 
@@ -604,8 +708,11 @@ describe("phase 8 live checkers against a canned store", () => {
       "gh pr -R o/r merge 5",
       "gh pr --repo o/r merge 5 --squash",
       "gh pr --repo=o/r merge 5",
+      "cd x && gh pr merge 5",
       "cd x && gh pr -R o/r merge 5",
       "gh api -X PUT repos/o/r/pulls/5/merge",
+      "gh api --method PUT repos/o/r/pulls/5/merge",
+      "gh api -f merge_method=squash repos/o/r/pulls/5/merge",
       "gh api repos/o/r/pulls/5/merge -X PUT",
       "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
       "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
@@ -619,6 +726,10 @@ describe("phase 8 live checkers against a canned store", () => {
       "gh api repos/o/r/pulls/5/comments",
       "gh api repos/o/r/pulls/5",
       "gh issue view 5",
+      "gh api repos/o/r/pulls/5/merge",
+      "gh api -X GET repos/o/r/pulls/5/merge --jq .merged",
+      "git commit -m 'docs: gh pr merge is blocked'",
+      "echo gh pr merge",
     ];
 
     it.each(MERGE_FORMS)("no_kernel_merge: fails an ALLOWED merge in this form: %s", (command) => {
