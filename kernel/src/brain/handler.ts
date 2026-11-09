@@ -41,6 +41,19 @@
 // a work step keyed on the row makes it once per row. A reply is never
 // replied to.
 //
+// Thread continuity (`./threads.ts`): a message with thread data (`POST /ask`
+// `continues` / `references`) takes the continuation path at steps c and d.
+// It resumes the session that answered the continued row (a NEW session
+// through `startSession`'s own admission, `continueFrom`, the prompt the
+// time, the references and the message, `resumed`), or replays the thread
+// (a fresh session whose prompt quotes the thread's rows as data) when that
+// session has no SDK session id or the session manager refuses the resume
+// for a precondition (`isContinuationRefusal`). The row records which ran
+// (`continuation`). A resume whose SDK conversation turns out gone
+// (`conversation_gone`) is replayed once through the loop (`queueReplay`);
+// a history past its bound fails the row `history_too_large: …`. A message
+// with no thread data takes exactly the path above.
+//
 // A message whose payload carries `playbook` is a playbook's run, not a
 // message: it goes to `handlePlaybookMessage` (`../playbooks/runs.ts`) before
 // anything above, and writes no `brain_messages` row (its record is the
@@ -66,11 +79,13 @@ import type { AllowedPermissionMode, SessionHandle, SessionStatus, ToolPolicy } 
 import { handlePlaybookMessage } from "../playbooks/runs.js";
 import type { Store } from "../store/store.js";
 import { MAX_MESSAGE_CHARS, buildContext, loomwrightSummaryOf } from "./context.js";
-import type { LoomwrightSummary } from "./context.js";
+import type { ContextInput, LoomwrightSummary } from "./context.js";
 import { cutChars, ensureMemoryFiles, wrightMemoryDir } from "./memory.js";
 import { FINAL_MESSAGE_STATUSES, ensureBrainMessage, messageFieldsOf, messageSourceOf, updateBrainMessage } from "./messages.js";
 import type { BrainMessageRow, BrainMessageStatus } from "./messages.js";
 import { readWrightSettings } from "./settings.js";
+import { continuationPlan, endedConversationGone, getMessageThread, isContinuationRefusal, queueReplay, replayRowOf, setContinuation } from "./threads.js";
+import type { Continuation } from "./threads.js";
 
 export interface BrainHandlerDeps {
   /** Defaults to `() => new Date()`. */
@@ -183,9 +198,11 @@ function finish(store: Store, row: BrainMessageRow, from: readonly BrainMessageS
  * store may be closed by then (the kernel stopped), and the reply is then lost
  * (the row stays `running`; documented as an honest limit).
  */
-function attachReply(store: Store, row: BrainMessageRow, handle: SessionHandle, now: () => Date): void {
+function attachReply(store: Store, row: BrainMessageRow, handle: SessionHandle, now: () => Date, resumed = false): void {
   void Promise.all([handle.done, handle.result])
     .then(([status, reply]) => {
+      // A resumed thread whose SDK conversation was gone: replayed once (`queueReplay`), never failed for it.
+      if (resumed && status === "failed" && endedConversationGone(store, handle.id) && queueReplay(store, row, handle.id, now())) return;
       finish(store, row, ["running"], { ...endingOf(status, reply), sessionId: handle.id }, now());
     })
     .catch(() => {
@@ -313,9 +330,10 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
     if (typeof agent !== "string") return;
     const text = typeof event.payload.text === "string" ? event.payload.text : "";
 
-    // a. The row (idempotent on queue_id, with the phase 4 fields), then the agent's files.
+    // a. The row (idempotent on queue_id, with the phase 4 fields), then the agent's files. A thread's replay event is its row's.
+    const replayOf = replayRowOf(store, event.id, event.payload);
     const fields = messageFieldsOf(store, event.payload);
-    const row = ensureBrainMessage(store, { queueId: event.id, agent, source: messageSourceOf(event.payload), text, ...fields }, now());
+    const row = replayOf ?? ensureBrainMessage(store, { queueId: event.id, agent, source: messageSourceOf(event.payload), text, ...fields }, now());
     if (FINAL_MESSAGE_STATUSES.includes(row.status)) return;
     // A redelivery that found the row `running` with its session still live
     // writes nothing: that session's listener writes the reply (only from
@@ -371,15 +389,40 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
       return;
     }
 
-    // c. The context.
-    const prompt = buildContext({ dataDir, agent, source: row.source, text: row.text, loomwright: loomwright(sessions), now: now(), timeZone: timeZone() });
+    // c. The context (a continuation's: its plan, read now; a history past its bound fails the row).
+    const thread = getMessageThread(store, row.id);
+    const plan = thread === undefined ? undefined : continuationPlan(store, row, thread, replayOf !== undefined);
+    if (plan !== undefined && !plan.ok) {
+      fail(plan.detail);
+      return;
+    }
+    const contextOf = (extra: Pick<ContextInput, "history" | "resumed">): string =>
+      buildContext({ dataDir, agent, source: row.source, text: row.text, loomwright: loomwright(sessions), now: now(), timeZone: timeZone(), ...extra });
+    const refs = plan === undefined || plan.references.length === 0 ? {} : { history: plan.references };
+    const continuing = plan !== undefined && plan.replay !== undefined;
+    const prompt = continuing ? "" : contextOf(refs);
 
     // d. Start (or resume) the session: the step's first effect, so an admission refusal leaves nothing to repeat.
     const { model, permissionMode, policy } = session;
     let handle: SessionHandle | undefined;
-    let started: { session_id: number };
+    let started: { session_id: number; continuation?: Continuation } | { refused: string };
     try {
       started = await ctx.runStepAsync("start-session", async () => {
+        if (continuing && plan?.replay !== undefined) {
+          // A continuation: the resume, else (a precondition refused) the one replay. An admission refusal parks either.
+          const base = { agent, ...(event.taskId === null ? {} : { task: event.taskId }), model, permissionMode, cwd, policy };
+          if (plan.resumeFrom !== undefined) {
+            try {
+              handle = await sessions.startSession({ ...base, prompt: contextOf({ resumed: true, ...refs }), continueFrom: plan.resumeFrom });
+              return { session_id: handle.id, continuation: "resumed" as const };
+            } catch (err) {
+              if (!isContinuationRefusal(err)) throw err;
+            }
+          }
+          if (!plan.replay.ok) return { refused: plan.replay.detail };
+          handle = await sessions.startSession({ ...base, prompt: contextOf({ history: plan.replay.histories }) });
+          return { session_id: handle.id, continuation: "replayed" as const };
+        }
         const resumeId = interruptedAgentSession(store, agent, event.taskId);
         handle =
           resumeId === undefined
@@ -397,9 +440,14 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
       }
       throw err;
     }
+    if ("refused" in started) {
+      fail(started.refused);
+      return;
+    }
     updateBrainMessage(store, row.id, ["queued", "parked"], { status: "running", sessionId: started.session_id, detail: null }, now());
+    if (started.continuation !== undefined) setContinuation(store, row.id, started.continuation, now());
 
     // e. The reply, when the session ends (only the delivery that started it holds its handle).
-    if (handle !== undefined) attachReply(store, row, handle, now);
+    if (handle !== undefined) attachReply(store, row, handle, now, started.continuation === "resumed");
   };
 }
