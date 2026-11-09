@@ -8,6 +8,15 @@
 // the message at `MAX_MESSAGE_CHARS`, and the whole context at
 // `MAX_CONTEXT_CHARS`; every cut is stated in the context itself.
 //
+// A message that continues a thread or carries thread references
+// (`./threads.ts`) adds history sections before the message: each already
+// wrapped as data (`<untrusted-data source="thread:<id>">`) and bounded by the
+// thread module, so they are kept whole like the message (a history past its
+// bound is refused there, never cut here). A resumed thread's prompt
+// (`resumed`) leaves out the memory and Loomwright sections, which are in
+// the conversation it resumes, and says so. With neither, the context is
+// exactly what it was before threads existed.
+//
 // Untrusted input is data, never instructions (invariant 3): only a message
 // the owner sent with `studio ask` is labelled as the owner's. Text from a
 // trigger, an approval, another agent (`agent:<id>`) or any other source, and the Loomwright manifest
@@ -84,6 +93,12 @@ function attribute(source: string): string {
   return source.replace(/[^A-Za-z0-9:_.#\/-]/g, "_");
 }
 
+/** One history section from the thread module: a heading, and a body already wrapped as data (`wrapUntrusted`). */
+export interface ContextHistory {
+  readonly heading: string;
+  readonly body: string;
+}
+
 export interface ContextInput {
   readonly dataDir: string;
   /** The agent the session runs as: `wright` (the default) or a crew member's id (the caller checks it). */
@@ -95,7 +110,15 @@ export interface ContextInput {
   readonly now: Date;
   /** The IANA zone the time is shown in. */
   readonly timeZone: string;
+  /** Thread history (a replay, references), in order, placed before the message and never cut. Absent: none. */
+  readonly history?: readonly ContextHistory[];
+  /** A resumed thread: no memory or Loomwright sections (the resumed conversation has them), one line saying so. */
+  readonly resumed?: boolean;
 }
+
+/** The line a resumed thread's prompt starts with, in place of the memory and Loomwright sections. */
+export const RESUMED_THREAD_LINE =
+  "This message continues the conversation above. Your role, your memory files and the Loomwright summary are in that conversation's first message; they are not repeated here.";
 
 /** The text around wrapped data from `source`: a line saying it is data, then the opening tag; and the closing tag. */
 function untrustedFrame(source: string): { readonly open: string; readonly close: string } {
@@ -203,19 +226,21 @@ function memorySections(dataDir: string, agent: string): Section[] {
  * it dropped), each with a note naming it.
  */
 export function buildContext(input: ContextInput): string {
-  const memory: Section[] = memorySections(input.dataDir, input.agent ?? "wright");
   const loomwright: Section = input.loomwright.ok
     ? { heading: "Loomwright", body: defuseWrapperTags(input.loomwright.summary), name: "the Loomwright summary", untrusted: "loomwright" }
     : { heading: "Loomwright", body: `Loomwright isn't available: ${oneLine(input.loomwright.reason)}`, name: "the Loomwright line" };
+  const fill: Section[] =
+    input.resumed === true ? [{ heading: "Thread", body: RESUMED_THREAD_LINE, name: "the thread line" }] : [...memorySections(input.dataDir, input.agent ?? "wright"), loomwright];
   const time: Section = { heading: "Now", body: localTimeLine(input.now, input.timeZone), name: "the time" };
+  const history: Section[] = (input.history ?? []).map((h) => ({ heading: h.heading, body: h.body, name: h.heading }));
   const message = messageSection(input.source, input.text);
 
-  const tail = [time, message].map(render).join("\n");
+  const tail = [time, ...history, message].map(render).join("\n");
   const budget = MAX_CONTEXT_CHARS - tail.length - NOTE_RESERVE;
   const head: string[] = [];
   const notes: string[] = [];
   let used = 0;
-  for (const section of [...memory, loomwright]) {
+  for (const section of fill) {
     const full = render(section);
     const sep = head.length === 0 ? 0 : 1;
     if (notes.length === 0 && used + sep + full.length <= budget) {
