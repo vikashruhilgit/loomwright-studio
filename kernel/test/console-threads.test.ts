@@ -140,22 +140,22 @@ function contractInterfaceFields(name: string): string[] {
 }
 
 describe("the threads part against the app contract", () => {
-  it("serves the item-06 contract route, same method and path, owner console", () => {
-    const entries = [...contractText.matchAll(/^\s*\{ method: "([A-Z]+)", path: "([^"]+)", origin: "item-06" \},$/gm)].map((m) => `${m[1]} ${m[2]}`);
-    expect(entries).toEqual(["GET /threads/:agent"]);
+  it("serves the item-06 contract route and phase 8 item 17's three, same method and path, owner console", () => {
+    const entries = [...contractText.matchAll(/^\s*\{ method: "([A-Z]+)", path: "([^"]+)", origin: "(?:item-06|p8-item-17)" \},$/gm)].map((m) => `${m[1]} ${m[2]}`);
+    expect(entries).toEqual(["GET /threads/:agent", "POST /threads/:agent/:thread/summarize", "GET /threads/:agent/:thread/summary", "POST /threads/:agent/:thread/start-fresh"]);
     const served = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).routes.map((r) => `${r.owner} ${r.method} ${r.path}`);
     expect(served).toContain("console GET /threads/:agent");
     expect(threadsPart.routes.map((r) => `${r.method} ${r.path}`)).toEqual(entries);
   });
 
   it("answers exactly the contract's ThreadResponse fields, and items in ThreadItem's shapes", async () => {
-    expect(contractInterfaceFields("ThreadResponse")).toEqual(["items", "next_before", "pending_approvals"]);
+    expect(contractInterfaceFields("ThreadResponse")).toEqual(["items", "next_before", "pending_approvals", "thread_summarize_hint_tokens"]);
     const store = openStore();
     const session = addSession(store, "wright");
     addMessage(store, "wright", 1);
     addEvent(store, "session_status", 2, { from: "starting", to: "running" }, session);
     const body = await page(store, "/threads/wright");
-    expect(Object.keys(body)).toEqual(["items", "next_before", "pending_approvals"]);
+    expect(Object.keys(body)).toEqual(["items", "next_before", "pending_approvals", "thread_summarize_hint_tokens"]);
     const [message, event] = body.items as [Item, Item];
     expect(Object.keys(message)).toEqual(["type", ...contractInterfaceFields("BrainMessage")]);
     expect(Object.keys(event)).toEqual(["type", "id", "at", "kind", "summary", "ref"]);

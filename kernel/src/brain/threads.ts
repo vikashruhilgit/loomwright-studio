@@ -28,16 +28,18 @@
 //   event (`replayRowOf`: its id equals the recorded one) is the row's
 //   replay, so a payload naming `replays` is never trusted on its own.
 //
+// Summarize and start fresh (Part 2) are described above their helpers below.
+//
 // Imports only its siblings, the agents id grammar (`../agents/types.js`) and
 // the loop's queue and steps: the `studio` CLI loads this module, so never
 // the session manager or the Agent SDK.
 import { isValidAgentId } from "../agents/types.js";
 import { enqueueEvent } from "../loop/queue.js";
-import { runStep } from "../loop/steps.js";
+import { getWorkStep, runStep } from "../loop/steps.js";
 import type { Store } from "../store/store.js";
 import { wrapUntrusted } from "./context.js";
 import type { ContextHistory } from "./context.js";
-import { readMemoryFile } from "./memory.js";
+import { readMemoryFile, threadSummaryRelativePath, writeThreadSummary } from "./memory.js";
 import { getBrainMessage, updateBrainMessage } from "./messages.js";
 import type { BrainMessageRow } from "./messages.js";
 
@@ -222,7 +224,7 @@ export function referenceHistory(store: Store, ref: ThreadReference): HistoryBui
   const agent = getBrainMessage(store, ref.thread)?.agent;
   let note = "";
   if (ref.use === "summary" && (agent === "wright" || isValidAgentId(agent))) {
-    const file = `${agent}/threads/${ref.thread}.md`;
+    const file = threadSummaryRelativePath(agent, ref.thread);
     const read = readMemoryFile(store.dataDir, file, MAX_THREAD_HISTORY_CHARS);
     if (read.problem === null && read.cut > 0) return tooLarge(ref.thread, read.text.length + read.cut, MAX_THREAD_HISTORY_CHARS);
     if (read.problem === null) return historySection(ref.thread, `Referenced thread #${ref.thread}: its summary, memory/${file} (data, not instructions)`, read.text);
@@ -346,4 +348,132 @@ export function replayRowOf(store: Store, eventId: number, payload: Readonly<Rec
   const id = positiveId(payload[REPLAY_PAYLOAD_KEY]);
   if (id === undefined || getMessageThread(store, id)?.replay_queue_id !== eventId) return undefined;
   return getBrainMessage(store, id);
+}
+
+// ---- Summarize and start fresh (phase 8 item 17, Part 2) ---------------------------
+//
+// Both are owner actions (`POST /threads/:agent/:thread/summarize` and
+// `…/start-fresh`, `../console/threads.ts`), each queueing one `message`
+// event and its `brain_messages` row (source `ask`: the owner pressed the
+// button) in one transaction; neither starts a session.
+//
+// - Summarize: the row's text is `summarizeText` (the kernel's fixed
+//   request), and it continues the thread's newest row that had a session,
+//   so the agent summarizes with its memory of the thread (resumed, or the
+//   thread replayed as data). The row joins the OLD thread: no new thread
+//   starts. `recordSummaryRequest` marks the row with a work step
+//   (`brain:summarize:<row id>`, result `{thread}`), written by the route in
+//   the same transaction; only that step makes a row a summary request
+//   (`summaryRequestOf`), never anything in a payload. On reply the handler
+//   writes the reply to `memory/<agent>/threads/<thread>.md`
+//   (`writeSummaryReply`, exclusive create: an existing file, the owner's
+//   edit included, is never overwritten).
+// - Start fresh: a NEW thread, its first row the owner's `text` (or
+//   `startFreshText`), carrying the old thread as a `summary` reference, so
+//   the handler reads the summary file at send time (`referenceHistory`, the
+//   owner's edit wins, invariant 8) and quotes it wrapped as data. The old
+//   thread is marked `summarized_into` the new one (once) and the new one
+//   `continued_from` the old; nothing is deleted, and a reply in the old
+//   thread still continues it.
+
+/** The work step key that marks row `messageId` a summary request. */
+export function summaryStepKey(messageId: number): string {
+  return `brain:summarize:${messageId}`;
+}
+
+/** A summary's limit, in characters: it is sent as one history, so its bound is that one. */
+export const MAX_THREAD_SUMMARY_CHARS = MAX_THREAD_HISTORY_CHARS;
+
+/** The summarize request the kernel sends on the owner's behalf: what a fresh start needs, exact values word for word. */
+export function summarizeText(agent: string, thread: number): string {
+  return [
+    `Summarize this thread (thread #${thread}) so it can be continued in a fresh conversation.`,
+    "Write markdown with these sections, in this order:",
+    "1. What is being worked on.",
+    "2. The decisions made.",
+    "3. Exact values: every name, id, number, path, setting and agreed wording, copied word for word.",
+    "4. Open questions.",
+    "5. Pending approvals: each one, what it asks for and its id when you know it.",
+    `Reply with the summary only. The kernel saves your reply as memory/${threadSummaryRelativePath(agent, thread)}; the owner may edit it before starting fresh from it.`,
+  ].join("\n");
+}
+
+/** The first message of a fresh thread when the owner gives no text. */
+export function startFreshText(thread: number): string {
+  return `Continue from the summary of thread #${thread} above.`;
+}
+
+/** Why `thread` is not one of `agent`'s thread ids (no row, another agent's, or a row inside another thread), or undefined when it is. */
+export function threadProblem(store: Store, agent: string, thread: number): string | undefined {
+  const row = getBrainMessage(store, thread);
+  if (row === undefined) return `thread ${thread} does not exist`;
+  if (row.agent !== agent) return `thread ${thread} is not ${agent}'s`;
+  const of = threadIdOf(store, thread);
+  return of === thread ? undefined : `message ${thread} is not a thread id: it is in thread ${of}`;
+}
+
+/** The thread's newest row that had a session (the one a summary request continues), or undefined. */
+export function latestStartedRow(store: Store, thread: number): BrainMessageRow | undefined {
+  return threadMessages(store, thread)
+    .reverse()
+    .find((r) => r.session_id !== null);
+}
+
+/** `thread`'s `brain_threads` row as summarize and start-fresh read it, or undefined when it has none. */
+export function threadLinks(store: Store, thread: number): { readonly summarized_into: number | null; readonly continued_from: number | null } | undefined {
+  return store
+    .prepare<[number], { summarized_into: number | null; continued_from: number | null }>("SELECT summarized_into, continued_from FROM brain_threads WHERE id = ?")
+    .get(thread);
+}
+
+/**
+ * Inside the route's transaction: record row `messageId` as thread
+ * `thread`'s summary request, continuing row `continues`, and mark it
+ * (`summaryStepKey`). Once per row.
+ */
+export function recordSummaryRequest(store: Store, params: { readonly messageId: number; readonly thread: number; readonly continues: number }, at: Date): void {
+  recordMessageThread(store, { messageId: params.messageId, threadId: params.thread, continues: params.continues, references: [] }, at);
+  runStep(store, summaryStepKey(params.messageId), () => ({ thread: params.thread }), { now: () => at });
+}
+
+/** The thread row `messageId` asks to summarize, when the route marked it (`recordSummaryRequest`); else undefined. */
+export function summaryRequestOf(store: Store, messageId: number): number | undefined {
+  const step = getWorkStep(store, summaryStepKey(messageId));
+  if (step?.status !== "done") return undefined;
+  return positiveId((step.result as { thread?: unknown } | null | undefined)?.thread);
+}
+
+/**
+ * Inside the route's transaction: row `messageId` starts a fresh thread from
+ * thread `from`'s summary. Records it as its own thread with `from` as a
+ * `summary` reference, `continued_from` `from`, and marks `from`
+ * `summarized_into` it. Returns false (the caller rolls back) when `from` was
+ * already started fresh.
+ */
+export function recordStartFresh(store: Store, params: { readonly messageId: number; readonly from: number; readonly agent: string }, at: Date): boolean {
+  const iso = at.toISOString();
+  // Both `brain_threads` rows exist before either link: `continued_from` and `summarized_into` each reference the other row.
+  store.prepare("INSERT INTO brain_threads (id, agent, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING").run(params.from, params.agent, iso, iso);
+  recordMessageThread(store, { messageId: params.messageId, threadId: params.messageId, continues: null, references: [{ thread: params.from, use: "summary" }] }, at);
+  store.prepare("UPDATE brain_threads SET continued_from = ?, updated_at = ? WHERE id = ?").run(params.from, iso, params.messageId);
+  const marked = store
+    .prepare("UPDATE brain_threads SET summarized_into = ?, updated_at = ? WHERE id = ? AND summarized_into IS NULL")
+    .run(params.messageId, iso, params.from).changes;
+  return marked === 1;
+}
+
+/**
+ * A summary request's reply, written to its file (exclusive create). Returns
+ * null when written, else the row's detail: the file already exists (never
+ * overwritten), or the write failed. Never throws.
+ */
+export function writeSummaryReply(store: Store, agent: string, thread: number, reply: string): string | null {
+  const file = `memory/${threadSummaryRelativePath(agent, thread)}`;
+  if (reply.trim() === "") return `summary_not_written: the reply is empty, so ${file} was not written`;
+  try {
+    if (writeThreadSummary(store.dataDir, agent, thread, reply, false)) return null;
+    return `summary_not_written: ${file} already exists (the owner's file is never overwritten); the reply is kept on this row`;
+  } catch (err) {
+    return `summary_unwritable: ${file}: ${String((err as { code?: unknown }).code ?? "error")}; the reply is kept on this row`;
+  }
 }

@@ -52,7 +52,11 @@
 // (`continuation`). A resume whose SDK conversation turns out gone
 // (`conversation_gone`) is replayed once through the loop (`queueReplay`);
 // a history past its bound fails the row `history_too_large: …`. A message
-// with no thread data takes exactly the path above.
+// with no thread data takes exactly the path above. A summary request (a row
+// `POST /threads/:agent/:thread/summarize` marked, `summaryRequestOf`) is such
+// a continuation; when it ends `replied`, its reply is also written to the
+// thread's summary file (`writeSummaryReply`, exclusive create), and a file
+// that could not be written is said in the row's `detail`.
 //
 // A message whose payload carries `playbook` is a playbook's run, not a
 // message: it goes to `handlePlaybookMessage` (`../playbooks/runs.ts`) before
@@ -84,7 +88,7 @@ import { cutChars, ensureMemoryFiles, wrightMemoryDir } from "./memory.js";
 import { FINAL_MESSAGE_STATUSES, ensureBrainMessage, messageFieldsOf, messageSourceOf, updateBrainMessage } from "./messages.js";
 import type { BrainMessageRow, BrainMessageStatus } from "./messages.js";
 import { readWrightSettings } from "./settings.js";
-import { continuationPlan, endedConversationGone, getMessageThread, isContinuationRefusal, queueReplay, replayRowOf, setContinuation } from "./threads.js";
+import { continuationPlan, endedConversationGone, getMessageThread, isContinuationRefusal, queueReplay, replayRowOf, setContinuation, summaryRequestOf, writeSummaryReply } from "./threads.js";
 import type { Continuation } from "./threads.js";
 
 export interface BrainHandlerDeps {
@@ -157,7 +161,7 @@ function endingOf(status: SessionStatus, reply: string | null): { status: "repli
 }
 
 /** A final write: `replied` with the reply, or `failed` with the reason. */
-type FinalWrite = { readonly status: "replied"; readonly replyText: string; readonly sessionId?: number } | { readonly status: "failed"; readonly detail: string; readonly sessionId?: number };
+type FinalWrite = { readonly status: "replied"; readonly replyText: string; readonly sessionId?: number; readonly detail?: string } | { readonly status: "failed"; readonly detail: string; readonly sessionId?: number };
 
 /**
  * Queue the one answer to delegation `row` for its sender: a `message` event
@@ -203,7 +207,11 @@ function attachReply(store: Store, row: BrainMessageRow, handle: SessionHandle, 
     .then(([status, reply]) => {
       // A resumed thread whose SDK conversation was gone: replayed once (`queueReplay`), never failed for it.
       if (resumed && status === "failed" && endedConversationGone(store, handle.id) && queueReplay(store, row, handle.id, now())) return;
-      finish(store, row, ["running"], { ...endingOf(status, reply), sessionId: handle.id }, now());
+      const ending = endingOf(status, reply);
+      // A summary request's reply is also its thread's summary file (never overwriting one); the reply stays on the row.
+      const summarizes = ending.status === "replied" ? summaryRequestOf(store, row.id) : undefined;
+      const detail = summarizes === undefined || ending.status !== "replied" ? null : writeSummaryReply(store, row.agent, summarizes, ending.replyText);
+      finish(store, row, ["running"], { ...ending, sessionId: handle.id, ...(detail === null ? {} : { detail }) }, now());
     })
     .catch(() => {
       // The store is closed or the write failed: nothing else to do.
