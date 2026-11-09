@@ -258,6 +258,8 @@ export interface GitHubPullSummary {
 export interface GitHubPull extends GitHubPullSummary {
   readonly body: string;
   readonly state: string;
+  /** Whether GitHub reports the pull merged (`state` alone cannot tell merged from closed unmerged). The real client always sets it; absent on a hand-built literal reads as not merged. */
+  readonly merged?: boolean;
   readonly base_ref: string;
   readonly head_ref: string;
   readonly labels: readonly string[];

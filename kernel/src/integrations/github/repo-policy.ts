@@ -36,7 +36,7 @@
 import { securityCliKeychain } from "../../auth/keychain.js";
 import { parseMergeRequirement } from "../../playbooks/store.js";
 import type { Store } from "../../store/store.js";
-import type { GitHubPullMergeState, GitHubRepoPolicyReads } from "../types.js";
+import type { GitHubClient, GitHubPullMergeState, GitHubRepoPolicyReads } from "../types.js";
 import { githubAppTokens } from "./app-token.js";
 import { NAME_SEGMENT, createGitHubClient, resolveGitHubTokenProvider } from "./client.js";
 
@@ -155,7 +155,7 @@ export interface RepoPolicyInput {
  * as `createResolvingGitHubClient` (`connector.ts`, typed `GitHubClient` only, so
  * it cannot hand out these reads). Nothing runs until a read is called.
  */
-export function createRepoPolicyClient(): GitHubRepoPolicyReads {
+export function createRepoPolicyClient(): GitHubClient & GitHubRepoPolicyReads {
   const keychain = securityCliKeychain();
   return createGitHubClient({ keychain, tokenProvider: resolveGitHubTokenProvider(keychain, githubAppTokens) });
 }
