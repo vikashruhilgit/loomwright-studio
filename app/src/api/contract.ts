@@ -155,6 +155,7 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "POST", path: "/threads/:agent/:thread/summarize", origin: "p8-item-17" },
   { method: "GET", path: "/threads/:agent/:thread/summary", origin: "p8-item-17" },
   { method: "POST", path: "/threads/:agent/:thread/start-fresh", origin: "p8-item-17" },
+  { method: "POST", path: "/threads/:agent/:thread/rename", origin: "p8-item-17" },
 ]);
 
 // ---- Shared shapes -------------------------------------------------------------
@@ -719,6 +720,12 @@ export interface SessionSummary {
   readonly tokens: number | null;
   readonly cwd: string | null;
   readonly playbook: number | null;
+  /**
+   * Phase 8 item 17: the session's title, derived at read time by the kernel
+   * (kernel/src/brain/titles.ts; the owner's thread rename wins). One line,
+   * untrusted text. Optional here until the app reads it; the kernel always sends it.
+   */
+  readonly title?: string;
 }
 
 export interface SessionsResponse {
@@ -773,8 +780,38 @@ export interface ThreadsQuery {
   readonly limit?: string;
 }
 
+/**
+ * Phase 8 item 17: what a thread's message item adds to its BrainMessage.
+ * Optional here until the app reads them; the kernel always sends them.
+ */
+export interface ThreadMessageFields {
+  /** The message's thread: its first message's id. */
+  readonly thread_id?: number;
+  /** How its session continued the thread; null for a first message, or before a session starts. */
+  readonly continuation?: "resumed" | "replayed" | null;
+  /** The title its session carries; null when it had no session. */
+  readonly session_title?: string | null;
+}
+
+/** Phase 8 item 17: one thread's figures, in tokens only (D24). */
+export interface ThreadFigures {
+  /** The thread id: its first message's. */
+  readonly id: number;
+  readonly agent: string;
+  /** The owner's rename when set, else the derived title. One line, untrusted text. */
+  readonly title: string;
+  /** Whether title is the owner's rename. */
+  readonly renamed: boolean;
+  /** How many messages the thread holds. */
+  readonly messages: number;
+  /** Input + cache-read + cache-write tokens of the session of its newest replied message (D26's counting); null when none has a reading. */
+  readonly latest_reply_tokens: number | null;
+  /** The summary file's size in tokens, an ESTIMATE (characters / 4); null when the thread has no summary file. */
+  readonly summary_estimated_tokens: number | null;
+}
+
 export type ThreadItem =
-  | ({ readonly type: "message" } & BrainMessage)
+  | ({ readonly type: "message" } & BrainMessage & ThreadMessageFields)
   | {
       readonly type: "event";
       readonly id: number;
@@ -797,6 +834,8 @@ export interface ThreadResponse {
    * the app reads it; the kernel always sends it.
    */
   readonly thread_summarize_hint_tokens?: number | null;
+  /** Phase 8 item 17: the figures of each thread a message item of the page is in, by thread id. Optional here until the app reads it; the kernel always sends it. */
+  readonly threads?: readonly ThreadFigures[];
 }
 
 // ---- Phase 6 item 03: GET /connectors, POST /connectors/github/token, POST /connectors/github/disconnect, GET /connectors/github/repos ----
@@ -1570,13 +1609,15 @@ export interface ContractRouteMap {
   "POST /threads/:agent/:thread/summarize": Route<NoQuery, undefined, ThreadSummarizeResponse>;
   "GET /threads/:agent/:thread/summary": Route<NoQuery, undefined, ThreadSummaryResponse>;
   "POST /threads/:agent/:thread/start-fresh": Route<NoQuery, ThreadStartFreshBody, ThreadStartFreshResponse>;
+  "POST /threads/:agent/:thread/rename": Route<NoQuery, ThreadRenameBody, ThreadRenameResponse>;
 }
 
 export type RouteKey = keyof ContractRouteMap;
 
-// ---- Phase 8 item 17: summarize a thread and start fresh from its summary ----------------
-// `:thread` is a thread id (its first message's id). Both write routes queue one owner
-// message (source `ask`) and never start a session themselves.
+// ---- Phase 8 item 17: summarize a thread, start fresh from its summary, rename it -------
+// `:thread` is a thread id (its first message's id). Summarize and start-fresh each queue
+// one owner message (source `ask`); rename only stores the owner's title. None starts a
+// session itself.
 
 /** `POST /threads/:agent/:thread/summarize`: the queued summary request; its reply becomes `file`. */
 export interface ThreadSummarizeResponse {
@@ -1610,6 +1651,18 @@ export interface ThreadStartFreshResponse {
   /** The thread it was started fresh from (now marked summarized into `thread`). */
   readonly from: number;
   readonly file: string;
+}
+
+/** `POST /threads/:agent/:thread/rename`: the owner's title for the thread (one line, at most 80 characters), or `null` to clear it back to the derived title. */
+export interface ThreadRenameBody {
+  readonly title: string | null;
+}
+
+export interface ThreadRenameResponse {
+  readonly thread: number;
+  /** The thread's title now: the rename, or the derived title once cleared. */
+  readonly title: string;
+  readonly renamed: boolean;
 }
 
 // ---- The bridge: what the preload exposes as `window.api` -------------------------------

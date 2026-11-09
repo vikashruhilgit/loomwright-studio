@@ -15,10 +15,12 @@
 //
 // The `studio` CLI loads it, so it imports only types, the feature seam and
 // helpers that load no SDK (`../console/events.js`, `../approvals/store.js`, the
-// automate tracker's closed sets and approvals wording, the repo-policy reader):
+// automate tracker's closed sets and approvals wording, the repo-policy reader,
+// the session titles of `../brain/titles.js`):
 // never the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the registry's module graph).
 import { approvalView } from "../approvals/store.js";
+import { withSessionTitles } from "../brain/titles.js";
 import type { ApprovalRow } from "../approvals/store.js";
 import { PR_OWNER_KINDS, PR_TRACK_STATES, approvalsWordOf } from "../automate/tracker.js";
 import type { PrOwnerKind, PrTrackState } from "../automate/tracker.js";
@@ -350,7 +352,7 @@ function listHandler(req: ContributedRouteRequest): Promise<ContributedRouteResp
 
 // ---- GET /tasks/:kind/:id --------------------------------------------------------
 
-/** A session as the contract's `SessionSummary` (the same columns `GET /sessions` reads). */
+/** A session as the contract's `SessionSummary` (the same columns `GET /sessions` reads; `withSessionTitles` adds `title` last). */
 const SESSION_SUMMARY = `SELECT s.id AS id, s.agent AS agent, s.status AS status, s.model AS model,
        s.started_at AS started, s.ended_at AS ended,
        (SELECT sum(b.counted_tokens) FROM budget b WHERE b.session_id = s.id) AS tokens,
@@ -387,7 +389,7 @@ function historyHandler(req: ContributedRouteRequest): Promise<ContributedRouteR
   if (selectedItem === undefined) return Promise.resolve({ status: 404, body: { error: "not_found" } });
   const item = boardRows(store, [selectedItem])[0];
 
-  const sessions =
+  const sessionRows =
     kind === "task"
       ? store
           .prepare<[number, number], Record<string, unknown> & { id: number }>(
@@ -399,6 +401,8 @@ function historyHandler(req: ContributedRouteRequest): Promise<ContributedRouteR
             .prepare<[number], Record<string, unknown> & { id: number }>(`${SESSION_SUMMARY} WHERE s.id = (SELECT session_id FROM playbook_runs WHERE id = ?)`)
             .all(id)
         : store.prepare<[number], Record<string, unknown> & { id: number }>(`${SESSION_SUMMARY} WHERE s.id = ?`).all(id);
+  // `title` last, as `GET /sessions` adds it: the one derivation (`../brain/titles.ts`), never a SQL copy.
+  const sessions = withSessionTitles(store, sessionRows);
   // The ids go in as one JSON array, so a task with many sessions never hits the bound-variable limit.
   const sessionIds = JSON.stringify(sessions.map((s) => s.id));
 
