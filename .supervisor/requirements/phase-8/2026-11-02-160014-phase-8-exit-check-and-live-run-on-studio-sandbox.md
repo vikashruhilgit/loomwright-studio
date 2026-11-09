@@ -1,6 +1,7 @@
 # 14 — Phase 8 exit: the e2e walk, the runbook and the live run on studio-sandbox
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/246
 
 **Priority:** MVP · ROADMAP phase 8 · D33, D35, invariants 3, 4, 5
 
@@ -120,3 +121,9 @@ kernel/test/phase-8-exit-live.test.ts
 docs/evidence/phase-8-exit-runbook.md
 docs/ROADMAP.md
 docs/OPEN_QUESTIONS.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-09T11:12:49Z
+- **Brief:** .supervisor/jobs/done/2026-11-09-phase-8-exit-check-and-live-run.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/246
