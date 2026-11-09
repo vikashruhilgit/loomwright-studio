@@ -43,3 +43,5 @@ Mutation check: flipping `'$.input.repo'` to `'$.repo'` fails those tests (and t
 ## Follow-up (outside this item's files)
 
 `app/src/screens/approvals/subject.ts` `kernelFields` already falls back to `payload.input`; its comment "The kernel's reader (`hasMergeApproval`) reads only the payload's top level, so the top level wins" is now stale and should be reworded (not edited here: outside the item's Touches). `docs/architecture/repo-policy.md` (the `studio_approval` row) says the payload's `repo`, `pr` and `head_sha` match; it should say they are read from the filed `input`.
+
+**Done (2026-11-09, item 09 follow-up):** `kernelFields` now reads only `payload.input` of the merge-approval tool, as `hasMergeApproval` does, so a flat payload draws no card and a top-level field never changes the PR shown (unit and e2e tests pin both); the `studio_approval` row in `docs/architecture/repo-policy.md` now says the fields are read from the filed `input`.

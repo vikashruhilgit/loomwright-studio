@@ -182,7 +182,8 @@ export interface MergeApprovalOptions {
  * #7: a `kernel_merge_approval_request`, held through the rail from playbook
  * `tickets-to-prs`' session (so `alwaysRefusalFor` has nothing to say and only
  * the merge card's own guard keeps `always` from being sent). The payload is
- * the rail's `{tool, input, cwd}`; `shape: "flat"` puts the fields at the top.
+ * the rail's `{tool, input, cwd}`; `shape: "flat"` puts the fields at the top,
+ * a shape the kernel's reader never counts, so the screen draws no merge card for it.
  */
 export function mergeApproval(id = 7, options: MergeApprovalOptions = {}): Approval {
   const merged: Record<string, string | number | undefined> = {
