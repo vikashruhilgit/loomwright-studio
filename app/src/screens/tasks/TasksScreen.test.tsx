@@ -49,7 +49,7 @@ function stamp(minutes: number): string {
 }
 
 function card(kind: TaskBoardItem["kind"], id: number, state: string, overrides: Partial<TaskBoardItem> = {}): TaskBoardItem {
-  return { kind, id, title: kind === "session" ? null : `Title ${id}`, state, agent: "mason", playbook: null, item_ref: null, session: null, tokens: null, started: stamp(30), ended: null, updated: stamp(5), creator_agent: null, creator_session: null, ...overrides };
+  return { kind, id, title: kind === "session" ? null : `Title ${id}`, state, agent: "mason", playbook: null, item_ref: null, session: null, tokens: null, started: stamp(30), ended: null, updated: stamp(5), creator_agent: null, creator_session: null, ticket_pr: null, ...overrides };
 }
 
 function summary(id: number, overrides: Partial<SessionSummary> = {}): SessionSummary {

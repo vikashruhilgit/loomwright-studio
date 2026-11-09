@@ -150,6 +150,7 @@ const DEFAULT_ROUTES: Partial<Record<RouteKey, FixtureRoute>> = {
         updated: "2026-10-30T00:00:00.000Z",
         creator_agent: null,
         creator_session: null,
+        ticket_pr: null,
       },
       events: [],
       runs: [],

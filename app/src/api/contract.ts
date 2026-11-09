@@ -985,6 +985,11 @@ export interface TaskBoardItem {
   readonly creator_agent: string | null;
   /** The `session_id` of the task's first `task_created` event; `null` for a run, a session, or when not recorded. */
   readonly creator_session: number | null;
+  /**
+   * The ticket's pull request (phase 8 item 10): for a task whose `links` name a PR the tracker follows, the `pr_tracks` row
+   * as the kernel wrote it; `null` for every other card, and for a task whose links name an untracked PR.
+   */
+  readonly ticket_pr: TaskTicketPr | null;
 }
 
 /** One state's cards: the board groups by the source's `state`, in the page's order. */
@@ -1425,21 +1430,49 @@ export interface RepoPolicySetBody {
 /** Who holds a tracked PR (items 10 and 11): an `/automate` run live or parked, the owner, or someone else. */
 export type PrOwnerKind = "automate_live" | "automate_parked" | "owner" | "other";
 
+/** The states a tracked PR is in (item 10), closed in code by `PR_TRACK_STATES` (`kernel/src/automate/tracker.ts`). */
+export type PrTrackState = "open" | "draft" | "ready" | "parked" | "merged" | "closed";
+
+/** A tracked PR's CI, as GitHub reports it (the kernel's `GitHubCiState`). */
+export type PrCiState = "green" | "pending" | "failing" | "none";
+
 /** A `pr_tracks` row (items 10 and 11): a PR followed through its states. The values of `state` and `ci_state` are closed in code by item 10. */
 export interface PrTrack {
   /** `owner/name`. */
   readonly repo: string;
   readonly number: number;
   readonly head_sha: string | null;
-  readonly state: string;
+  readonly state: PrTrackState;
   readonly ticket_ref: string | null;
   readonly approvals: number;
   readonly required: number | null;
-  readonly ci_state: string | null;
+  readonly ci_state: PrCiState | null;
   readonly owner_kind: PrOwnerKind | null;
   readonly run_file: string | null;
   readonly item_id: string | null;
   /** Loomwright's gate merged it. The kernel never merges (D40). */
+  readonly merged_by_gate: boolean;
+  readonly updated: IsoTime;
+}
+
+/**
+ * A ticket's pull request on its Tasks card (`TaskBoardItem.ticket_pr`, item 10): every value is the kernel-written
+ * `pr_tracks` row, never the agent-written `links`. `approvals` is the kernel's one wording against the repo's policy:
+ * `n/N` (a `reviews` policy), `solo`, `studio_approval` or `no_policy`.
+ */
+export interface TaskTicketPr {
+  /** The ticket's dedupe ref (untrusted text); `null` when the PR has none. */
+  readonly ticket: string | null;
+  /** `owner/name`. */
+  readonly repo: string;
+  readonly number: number;
+  readonly url: string;
+  readonly state: PrTrackState;
+  readonly head_sha: string | null;
+  readonly approvals: string;
+  readonly ci: PrCiState | null;
+  readonly owner_kind: PrOwnerKind | null;
+  /** Loomwright's gate merged it (shown, never acted on). */
   readonly merged_by_gate: boolean;
   readonly updated: IsoTime;
 }

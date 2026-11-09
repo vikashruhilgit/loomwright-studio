@@ -1,13 +1,14 @@
 # Automate
 
-Part of [Phase 8 features](../ARCHITECTURE.md#phase-8-features). Phase 8 item 01 (the foundation) shipped the seam and this page; item 09 filled the `runner` part with four tools and the merge check. The `tracker` and `routing` parts are still empty, and their bullets below are owner decisions from the phase 8 session of 2026-11-02, not built code.
+Part of [Phase 8 features](../ARCHITECTURE.md#phase-8-features). Phase 8 item 01 (the foundation) shipped the seam and this page; item 09 filled the `runner` part with four tools and the merge check; item 10 filled the `tracker` part (a due work) and the `routing` part (`kernel_pr_route`). The bullets under [What the later items will fill](#what-the-later-items-will-fill) that are not marked built are owner decisions from the phase 8 session of 2026-11-02, not built code.
 
 ## What exists today
 
-- **The feature.** `kernel/src/automate/index.ts` exports `automateContribution`, registered after `gui` as the eleventh and last contribution. Its three parts are `runner` (four tools, built by item 09), `tracker` and `routing` (both empty: no tool, route, subcommand, handler or due work). The runner part has no route, subcommand, handler or due work either.
+- **The feature.** `kernel/src/automate/index.ts` exports `automateContribution`, registered after `gui` as the eleventh and last contribution. Its three parts are `runner` (four tools, built by item 09), `tracker` (one due work, no tool: item 10) and `routing` (one tool, `kernel_pr_route`: item 10). None of the three has a route, subcommand or handler.
 - **The runner's tools.** A live playbook's own run session uses them to hand tickets to Loomwright's `/automate` and to have Loomwright merge one parked PR. No tool starts a session, runs `/automate` or merges (owner decision 2026-11-03, recorded as [D43](../DECISIONS.md); see [the runner](#the-runner-tools)).
-- **The table.** Migration 20 creates `pr_tracks` (see the [data model](../ARCHITECTURE.md#data-model)). Nothing writes to it yet.
-- **The contract.** `app/src/api/contract.ts` declares the `PrTrack` and `PrOwnerKind` types (`automate_live` / `automate_parked` / `owner` / `other`). No route uses them yet.
+- **The routing tool.** `kernel_pr_route(repo, pr)`: read-only, `requiresConnector: "github"` at the read level, so a session lists it with the GitHub read grant (the runner's four tools need write). It answers one of `automate_drain`, `automate_fix`, `review_pr` or `reply_only` (see [owner-aware routing](#owner-aware-routing)); it starts no session and pushes nothing.
+- **The table.** Migration 20 creates `pr_tracks` (see the [data model](../ARCHITECTURE.md#data-model)); the tracker writes it (see [the tracker](#the-pr-tracker)).
+- **The contract.** `app/src/api/contract.ts` declares the `PrTrack` and `PrOwnerKind` types (`automate_live` / `automate_parked` / `owner` / `other`); `GET /tasks` serves a ticket card's PR fields from `pr_tracks`.
 
 Like every feature module, nothing it loads may import the Agent SDK, the session manager or `kernel.ts` as a value, because the `studio` CLI loads it.
 
@@ -59,6 +60,39 @@ For a repo whose policy is Approve in Studio (or a playbook that asks for `studi
 - **The payload.** The rail files `{tool, input, cwd}`; `input` carries `repo`, `pr`, `head_sha`, `ci`, `ready_at` and optionally `policy` under the names the app's merge card reads. `hasMergeApproval` reads `$.input.repo`, `$.input.pr` and `$.input.head_sha` (and requires `$.tool`), and only that shape ([evidence](../evidence/phase-8-item-09-merge-approval-shape.md)).
 - **Stale after a push.** The approval names a head. A new push makes `policyMet` answer `head_moved`, and a re-drained head needs its own approval.
 
+## The PR tracker
+
+The `tracker` part (`kernel/src/automate/tracker.ts`) is one due work, `DueWorkFn`, and no tool. It keeps `pr_tracks` and the linked `tasks` row current, so Tasks shows each ticket's pull request truthfully. It reads and records; it pushes and merges nothing (invariants 1 and 4).
+
+- **What it follows.** Every PR a Loomwright run file names in the workspaces of the registered agents (the current item's `pr:` URL, read by `run-state.ts`, and only for a repo that workspace is a clone of), and every `pr_tracks` row not yet `merged` or `closed`. A `merged` row is never read again; a `closed` row is re-read only while a running or paused run names it (a closed PR can be reopened and picked up again).
+- **When it reads GitHub.** A pass runs only when a `trigger_fired` event was appended since the last tick it looked, so the owner's own trigger cadence drives the refresh and the kernel ships no polling interval (invariant 1). The high-water event id lives in memory: the first tick after a restart re-reads if a trigger ever fired, and the pass is idempotent. A pass reads at most `MAX_TRACKED_PER_PASS` (25) PRs, least recently attempted first (kept in memory, so after a restart oldest `updated` first), a rate guard and not a cadence.
+- **State** (`PR_TRACK_STATES`: `open`, `draft`, `ready`, `parked`, `merged`, `closed`), in this precedence: GitHub `merged` is `merged`; GitHub `closed` is `closed`; a parked item is `parked`; a run item naming the PR with a full `ready_sha` equal to the PR's head is `ready`; a draft is `draft`; else `open`. A parked item's reason (its `pause_reason`, else its status) goes in the event and the task's links.
+- **Approvals** come from the repo's policy ([repo policy](repo-policy.md)) and `getPullMergeState`: `n/N` for a `reviews` policy, `solo`, `studio_approval`, or `no_policy` (`approvalsWordOf`, which `GET /tasks` reuses). CI is `green`, `pending`, `failing` or `none`.
+- **Owner kind** (`PR_OWNER_KINDS`) is `ownerOf` in `routing.ts`, its one home (see [owner-aware routing](#owner-aware-routing)). A PR whose workspace's run state cannot be read is skipped for the pass, never classified; a PR with no workspace for its repo reads `other`.
+- **Writes**, one transaction per PR: the `pr_tracks` upsert (UNIQUE `repo, number`); the linked task (the `tasks` row whose `dedupe_key` is `pr:<repo>#<n>`, created as `kind: ticket_pr` with one `task_created` event when none exists and the PR has a ticket ref), whose `state` follows the PR state and whose `links_json` is `{ticket, pr: {repo, number, url}, state, approvals, ci, owner_kind, reason?}`; and, when the state, head, approvals, required count, CI or owner kind changed (or the row is new), exactly one `pr_state_changed` event `{repo, pr, from, to, head_sha, approvals, ci, owner_kind, reason?}` carrying the task's id. An unchanged read writes nothing. A GitHub read that fails changes nothing for that PR.
+- **The ticket ref** comes from the run item's requirement file when it is a `kernel_automate_prepare` item: its `- dedupe ref:` line under `## Source ticket`, read only from a regular file directly in `.supervisor/requirements/studio/`, size-capped, and checked as a plain token. It is untrusted text (invariant 3). Any other item has no ticket ref and so no task of its own.
+- **`run_file`, `item_id` and `merged_by_gate`.** The upsert sets `run_file` (the run id) and `item_id` (the item path) when a run file names the PR, else leaves them as they were. `merged_by_gate` is 1 only when GitHub reports the PR merged and a run file's current item names it `done` with a full `ready_sha` equal to the merged head. It is shown, never acted on.
+- **The GitHub client** is injected (`{client}`), else `createRepoPolicyClient()` (the stored credential), built on first use and never when there is nothing to follow. It never reads `DueWorkContext.github`.
+
+## Owner-aware routing
+
+`kernel_pr_route(repo, pr)` (`kernel/src/automate/routing.ts`) tells a triage playbook's session where a fix to a PR may go. It is `requiresConnector: "github"` at the read level (an agent with the GitHub read grant lists it) and read-only. It starts no session (owner decision 2026-11-03) and pushes nothing; every push stays held by the rail ([approvals](approvals.md)). The playbook's session sorts each comment (untrusted data) as fix, reply or answer, and consults the route only for a fix.
+
+Who owns a PR is `ownerOf(run state, repo, pr, author, identity)`, in this order:
+
+| Order | Condition | `owner_kind` | Route (`PR_ROUTES`) |
+|---|---|---|---|
+| 1 | a `running` run file's current item names this repo and PR | `automate_live` | `automate_drain`: record only, leave it to that run |
+| 2 | a paused run's parked item names it | `automate_parked` | `automate_fix`: the item (`run_id`, `item`, `status`, `reason`, `pr`) and `command: /loomwright:review-pr <pr url>` |
+| 3 | the author is the GitHub connector's `account_login` or `<app_slug>[bot]` (case-insensitive) | `owner` | `review_pr`: the same command shape; it heals and never merges |
+| 4 | anyone else | `other` | `reply_only`: reply or answer, never push; suggest the fix in the reply |
+
+Loomwright's fix-now is an in-run owner decision offered by `/automate` itself at the park, not a standalone command, so `automate_fix` names `/loomwright:review-pr <pr url>`, and the note says so.
+
+**Fresh, and fail closed.** Every call re-reads the run files and the PR's author; it never reads `pr_tracks`, so a run that went live since the last call answers `automate_drain` on the next. No workspace for the repo, run state that cannot be read, or a GitHub read that fails answers `reply_only` with `reason` (`no_workspace`, `run_state_unreadable`, `unreadable`) and no `command`, never a route that pushes. `ownerOf` never yields `owner` or `automate_parked` from state it could not read.
+
+The answer is `{route, repo, pr, owner_kind, command?, item?, reason?, note}`. The tool's description names the four routes and the three triage outcomes and what the session does for each, and Wright's role template ([brain](brain.md)) lets Wright draft a triage playbook from a sentence; nothing is preinstalled (D3).
+
 ## Known limits
 
 - **The kernel cannot force the session's flags.** The playbook's own session runs `/automate`, so the kernel cannot make it use `--inline-phases` or forbid `--auto-merge`. `merge_check` and Loomwright's own gate are the guard.
@@ -67,18 +101,21 @@ For a repo whose policy is Approve in Studio (or a playbook that asks for `studi
 - **The `AskUserQuestion` path of p15 is unverified.**
 - **A crashed run reads live.** A run file left at `## Status: running`, or a lock whose holder pid is alive, reads `live` until Loomwright's own resume or the owner clears it; the check fails toward waiting.
 - **The lock's pid can be reused.** A reused pid reads as a live holder (`run-lock.sh` also records a start time, which the kernel does not compare).
+- **`merged_by_gate` is read at the pass that first sees the merge.** Nothing in a run file records `--merge-parked` itself, so a hand merge at the exact READY head after `/automate` closed the item also reads 1, and a pass that sees the merge before `/automate` closes the item reads 0 and, the row having ended, is not corrected.
+- **The tracker's refresh follows the owner's triggers.** With no trigger fired, `pr_tracks` and Tasks are as of the last pass; a restart re-reads on the first tick after a trigger ever fired.
+- **A PR with no run file or tracked row is not followed.** A PR enters `pr_tracks` when a run file in a registered agent's workspace names it.
 - **Run files and the lock are read as Loomwright 17.34.2 writes them.** The fixtures in `kernel/test/fixtures/loomwright-run-files/` pin that shape; a Loomwright change to it needs the fixtures and `run-state.ts` updated together.
 
 ## What the later items will fill
 
-Each bullet is an owner decision from the phase 8 session of 2026-11-02, not a description of built code.
+Each bullet not marked built is an owner decision from the phase 8 session of 2026-11-02, not a description of built code.
 
 - **The runner (built).** See [the runner tools](#the-runner-tools). The playbook's own run session runs `/automate … --inline-phases` itself (owner decision 2026-11-03, recorded as [D43](../DECISIONS.md), which supersedes D40's kernel-started session), so Stop and Kill, the budget, the cap and the approval gate already apply to it (invariant 2). No `--parallel`: its lanes spawn `claude -p` outside the kernel. It runs `/automate` in safe mode, which parks a ready PR `awaiting_merge`. Probe p15 showed `--inline-phases` reaching a PR in an SDK session started with kernel-like options (2026-11-05); its `AskUserQuestion` path was not exercised, so that part stays unverified ([OPEN_QUESTIONS](../OPEN_QUESTIONS.md#technical-verify-dont-assume)).
-- **The tracker.** The `pr_tracks` rows follow a PR through its states: head sha, approvals against what the repo requires ([repo policy](repo-policy.md)), CI, the ticket it came from and its run file.
-- **Owner-aware routing.** The kernel tells a playbook who owns a PR, and a fix never starts a second drain:
+- **The tracker (built).** See [the PR tracker](#the-pr-tracker). The `pr_tracks` rows follow a PR through its states: head sha, approvals against what the repo requires ([repo policy](repo-policy.md)), CI, the ticket it came from and its run file.
+- **Owner-aware routing (built).** See [owner-aware routing](#owner-aware-routing). The kernel tells a playbook who owns a PR, and a fix never starts a second drain:
   - a live `/automate` run: leave it to that run's drain;
-  - a parked `/automate` item: its fix-now or `/review-pr <pr>`;
-  - not from `/automate`, authored by the owner or the App: `/review-pr <pr>` in a kernel session (it heals and never merges);
+  - a parked `/automate` item: `/loomwright:review-pr <pr url>` (Loomwright's fix-now is offered only by `/automate` itself, at the park);
+  - not from `/automate`, authored by the owner or the App: `/loomwright:review-pr <pr url>` in a kernel session (it heals and never merges);
   - authored by someone else: reply or answer only, and never push to their branch (a fix is suggested in the reply).
 - **Comments and reviewers.** The kernel adds GitHub write tools (reply to a comment or thread, re-request reviewers, comment) and a poll source for new PR comments. Wright authors the triage playbook from a sentence: an agent reads each comment as untrusted data (invariant 3) and classifies it fix, reply or answer. Nothing is preinstalled (D3).
 - **Polling and dedupe.** The kernel ships no default (invariant 1). Wright's draft proposes defaults (tickets dedupe on the ticket id, so one PR per ticket; comments on the comment id plus its edit time; a poll every 5 minutes; normal priority) and the owner changes any of them before enabling.

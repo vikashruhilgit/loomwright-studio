@@ -455,6 +455,7 @@ function pullOf(v: unknown): GitHubPull {
     ...pullSummaryOf(p),
     body: textOrEmpty(p["body"]),
     state: str(p["state"]),
+    merged: p["merged"] === true,
     base_ref: str(record(p["base"])["ref"]),
     head_ref: str(record(p["head"])["ref"]),
     labels: list(p["labels"] ?? []).map((l) => str(record(l)["name"])),
