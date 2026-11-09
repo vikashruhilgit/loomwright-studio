@@ -51,6 +51,7 @@ export type RouteOrigin =
   | "p8-item-03"
   | "p8-item-06"
   | "p8-item-08"
+  | "p8-item-17"
   | "github-app";
 
 export interface ContractRoute {
@@ -151,6 +152,9 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/repos/policy", origin: "p8-item-08" },
   { method: "POST", path: "/repos/policy/:owner/:repo/detect", origin: "p8-item-08" },
   { method: "POST", path: "/repos/policy/:owner/:repo", origin: "p8-item-08" },
+  { method: "POST", path: "/threads/:agent/:thread/summarize", origin: "p8-item-17" },
+  { method: "GET", path: "/threads/:agent/:thread/summary", origin: "p8-item-17" },
+  { method: "POST", path: "/threads/:agent/:thread/start-fresh", origin: "p8-item-17" },
 ]);
 
 // ---- Shared shapes -------------------------------------------------------------
@@ -786,6 +790,13 @@ export interface ThreadResponse {
   /** `null` once the oldest item is in this page. */
   readonly next_before: string | null;
   readonly pending_approvals: readonly Approval[];
+  /**
+   * Phase 8 item 17: the agent's `thread_summarize_hint_tokens` setting (the
+   * owner's, in `config/agents/<id>.json`), the thread size in tokens past
+   * which the app highlights Summarize; `null` when unset. Optional here until
+   * the app reads it; the kernel always sends it.
+   */
+  readonly thread_summarize_hint_tokens?: number | null;
 }
 
 // ---- Phase 6 item 03: GET /connectors, POST /connectors/github/token, POST /connectors/github/disconnect, GET /connectors/github/repos ----
@@ -1331,7 +1342,8 @@ export interface SettingsResponse {
 
 // ---- Phase 8: the App upgrade, MCP connectors, the repo merge policy and PR tracks ----------
 // Declared by phase 8 item 01 and served by the item named in each route's origin
-// (`p8-item-NN`): a route is served once its item lands (items 03 and 06 have; item 08's are not yet).
+// (`p8-item-NN`): a route is served once its item lands (items 03, 06 and 08 have). Item 17's
+// three thread routes are declared with their shapes further down, and served.
 // A later item that needs another shape adds it itself.
 
 /**
@@ -1555,9 +1567,50 @@ export interface ContractRouteMap {
   "GET /repos/policy": Route<NoQuery, undefined, RepoPoliciesResponse>;
   "POST /repos/policy/:owner/:repo/detect": Route<NoQuery, undefined, RepoPolicy>;
   "POST /repos/policy/:owner/:repo": Route<NoQuery, RepoPolicySetBody, RepoPolicy>;
+  "POST /threads/:agent/:thread/summarize": Route<NoQuery, undefined, ThreadSummarizeResponse>;
+  "GET /threads/:agent/:thread/summary": Route<NoQuery, undefined, ThreadSummaryResponse>;
+  "POST /threads/:agent/:thread/start-fresh": Route<NoQuery, ThreadStartFreshBody, ThreadStartFreshResponse>;
 }
 
 export type RouteKey = keyof ContractRouteMap;
+
+// ---- Phase 8 item 17: summarize a thread and start fresh from its summary ----------------
+// `:thread` is a thread id (its first message's id). Both write routes queue one owner
+// message (source `ask`) and never start a session themselves.
+
+/** `POST /threads/:agent/:thread/summarize`: the queued summary request; its reply becomes `file`. */
+export interface ThreadSummarizeResponse {
+  readonly message_id: number;
+  readonly queue_id: number;
+  readonly thread: number;
+  /** `memory/<agent>/threads/<thread>.md`, relative to the data dir. */
+  readonly file: string;
+}
+
+/** `GET /threads/:agent/:thread/summary`: the summary file as it is on disk now (owner-editable markdown, untrusted text). */
+export interface ThreadSummaryResponse {
+  readonly thread: number;
+  readonly file: string;
+  readonly text: string;
+  /** `null` when the whole file is in `text`. */
+  readonly truncated: { readonly chars_cut: number; readonly at_least: boolean } | null;
+}
+
+/** `POST /threads/:agent/:thread/start-fresh`: `summary` (the owner's edit) is written back to the file; `text` is the new thread's first message. */
+export interface ThreadStartFreshBody {
+  readonly summary?: string;
+  readonly text?: string;
+}
+
+export interface ThreadStartFreshResponse {
+  readonly message_id: number;
+  readonly queue_id: number;
+  /** The new thread's id (its first message's). */
+  readonly thread: number;
+  /** The thread it was started fresh from (now marked summarized into `thread`). */
+  readonly from: number;
+  readonly file: string;
+}
 
 // ---- The bridge: what the preload exposes as `window.api` -------------------------------
 
