@@ -706,8 +706,13 @@ const CTX=()=>V().scr==='crew'
   ?{sumId:90,newId:96,sum:CREW_SUM,sumFile:CREW_SUMFILE,sumEst:700,nextId:97,at:'16:12'}
   :{sumId:65,newId:71,sum:SUMMARY,sumFile:SUMFILE,sumEst:900,nextId:72,at:'14:23'};
 const baseSum=scr=>scr==='crew'?CREW_SUM:SUMMARY;
-/* A thread's summary text: the one this screen may have edited, else the other agent's file as written. */
-const sumOf=t=>t.agent===AG().id?S.sumText:t.agent==='wright'?SUMMARY:CREW_SUM;
+/* The other thread screen's own state (fresh, sent, long, bare, sumText): what it left in S.stash when the owner moved away from it, else how it
+   stands before it is touched. Wright's thread 65 was summarized at 14:24, before the Crew thread's time; the Crew threads start without a summary. */
+const otherScr=()=>V().scr==='crew'?'chat':'crew';
+const UNTOUCHED={chat:{fresh:true,sent:[],long:false,bare:false,sumText:SUMMARY},crew:{fresh:false,sent:[],long:false,bare:false,sumText:CREW_SUM}};
+const otherState=()=>S.stash[otherScr()]||UNTOUCHED[otherScr()];
+/* A thread's summary text: the one this screen may have edited, else the one the other screen holds (edited there, or its file as written). */
+const sumOf=t=>t.agent===AG().id?S.sumText:otherState().sumText;
 
 const firstLine=s=>{ const l=String(s).split('\n')[0].trim(); return l.length>64?l.slice(0,63).trimEnd()+'…':l; };
 const nMsgs=t=>t.earlier+t.rows.reduce((a,r)=>a+(r.text?1:0)+(r.reply?1:0),0);
@@ -734,19 +739,21 @@ function crewBase(o=S){
 }
 /* A thread's title is the session title item 17b derives; the owner's rename, when there is one, wins over it. */
 const named=t=>S.names[t.id]!=null?{...t,title:S.names[t.id],derived:t.title,renamed:true}:t;
-/* The threads on the visible thread screen (Wright's Chat, or the Crew thread), then what the owner sent in this mockup. */
-function threads(){
-  const list=V().scr==='crew'?crewBase():wrightBase();
-  S.sent.forEach(s=>{
+/* One thread screen's threads for its state o: the base data, then what the owner sent on that screen. */
+function threadsOf(crew,o){
+  const list=crew?crewBase(o):wrightBase(o);
+  o.sent.forEach(s=>{
     const th=s.cont!=null&&list.find(t=>t.rows.some(r=>r.id===s.cont));
     if(th) th.rows.push({...s});
-    else list.push({id:s.id,agent:AG().id,title:firstLine(s.text),rows:[{...s}],earlier:0,read:0,size:0,sum:null});
+    else list.push({id:s.id,agent:crew?'dev':'wright',title:firstLine(s.text),rows:[{...s}],earlier:0,read:0,size:0,sum:null});
   });
   return list.map(named);
 }
-/* The other agent's threads, as they stand when this screen is drawn: a reference copied on one thread screen pastes into the other.
-   Wright's thread 65 was summarized at 14:24, before the Crew thread's time; the Crew threads are drawn without a summary. */
-const otherThreads=()=>(V().scr==='crew'?wrightBase({fresh:true}):crewBase({})).map(named);
+/* The threads on the visible thread screen (Wright's Chat, or the Crew thread). */
+const threads=()=>threadsOf(V().scr==='crew',S);
+/* The other agent's threads, from that screen's own state (otherState()): a reference copied on one thread screen pastes into the other, with
+   what was sent, started fresh or edited there. */
+const otherThreads=()=>threadsOf(V().scr!=='crew',otherState());
 const findThread=id=>threads().find(t=>t.id===id)||otherThreads().find(t=>t.id===id)||OTHER.find(t=>t.id===id)||null;
 const threadOfRow=id=>threads().find(t=>t.rows.some(r=>r.id===id));
 const rowById=id=>{ const t=threadOfRow(id); return t&&t.rows.find(r=>r.id===id); };
@@ -807,7 +814,7 @@ const VIEWS={
   'chat-unreachable':{scr:'chat',st:'unreachable',label:'Kernel unreachable',grp:'states'},
   /* SUBTASK-2:VIEWS. Second part's forcing props: names (owner renames, by thread id), renaming (thread id being renamed), hint (the saved size hint),
      setDraft (unsaved Settings fields), dec (approval decisions, by id), raw (the raw-names disclosure open), sess (the selected session), later (the
-     sidebar shows the crew as they are later the same day). Every crew-* key has a chat-* twin, so a click path in either thread lands on a key that reproduces it. */
+     sidebar shows the crew as they are later the same day). Every crew-* key has a chat-* twin, so a click path in either thread lands on the nearest key (relabel(), below). */
   'crew-threads':{scr:'crew',st:'threads',label:'Crew thread: Reply, Summarize, Copy reference',grp:'crew',later:1},
   'crew-plain-sent':{scr:'crew',st:'threads',label:'Plain message: a new topic',grp:'crew',later:1,sent:[{id:97,at:'16:12',text:'Draft the PR description template for studio-sandbox.',pending:1,path:'new'}]},
   'crew-reply':{scr:'crew',st:'threads',label:'Reply strip',grp:'crew',later:1,reply:91,see:'#m-91'},
@@ -1111,7 +1118,8 @@ function within(el,where){
 }
 function seeThread(id){ const h=$(`#tt-${id}`); if(!h) return; within(h,"start"); h.focus({preventScroll:true}); }
 function pasteRef(){
-  if(S.copied==null||!findThread(S.copied)) return false;
+  if(S.copied==null) return false;
+  if(!findThread(S.copied)){ const m='The copied thread is not in this mockup\'s data any more, so nothing was attached.'; note(m); live(m); return false; }
   S.chip={t:S.copied,m:'full'}; render(); $('#cin')?.focus({preventScroll:true});
   live(chipOver()?'The reference is too large to attach. Nothing was cut.':'Reference attached as the full thread.');
   return true;
