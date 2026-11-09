@@ -320,9 +320,27 @@ describe("encodeAppKey and decodeAppKey (AC12)", () => {
     }
   });
 
+  // A fixed PEM-shaped string, not the random KEY: a PEM's text reaches base64's
+  // `+`/`/` only through `>`, `?`, `~` or DEL at a third byte, and real PEM text
+  // holds none of them, so a random key's standard base64 differs from its
+  // canonical form only by `=` padding, and not at all when the PEM's length is
+  // a multiple of 3 (a 1671-character PKCS#1 key, about 1 run in 150). The `?`
+  // here sits at a third byte and the length is a multiple of 3, so the standard
+  // form is unpadded and differs from the canonical one only by `/` for `_`.
+  const STANDARD_PEM = "-----BEGIN RSA PRIVATE KEY-----\nAAA?AA\n-----END RSA PRIVATE KEY-----\n";
+  const STANDARD_B64 = Buffer.from(STANDARD_PEM).toString("base64");
+
+  it("the standard-base64 case differs from the canonical encoding only by alphabet", () => {
+    const canonical = encodeAppKey(STANDARD_PEM) ?? "";
+    expect(decodeAppKey(canonical)).toBe(STANDARD_PEM);
+    expect(STANDARD_B64).not.toBe(canonical);
+    expect(STANDARD_B64).toMatch(/[+/]/);
+    expect(STANDARD_B64).not.toContain("=");
+  });
+
   it.each([
     ["padded", `${ENCODED}=`],
-    ["standard base64", Buffer.from(KEY.privateKey).toString("base64")],
+    ["standard base64", STANDARD_B64],
     ["with whitespace", `${ENCODED.slice(0, 10)} ${ENCODED.slice(10)}`],
     ["with a newline", `${ENCODED}\n`],
     ["empty", ""],
