@@ -304,6 +304,7 @@ const createTool = defineTool({
   name: AGENT_CREATE_TOOL_NAME,
   description:
     "Ask the owner to create a crew member from a charter you draft from the owner's words: {id, display_name, avatar: {shape, hue}, persona, duties, boundaries, model, effort?, permission_mode, tool_policy: {allowedTools, allowedBashPrefixes, never}, limits?: {tokens_per_day?, sessions_at_once?, delegation_depth?}, workspaces, connectors?: [\"github\"]}. " +
+    "When the owner asks for a crew member, draft it straight into the held approval with this call and refine it with an update (kernel_agent_update, once the member exists); never leave a proposal only in chat text. " +
     "Every value the owner did not state is your proposal: say so to the owner. Put each \"never …\" the owner said into both the prose boundaries and the enforced tool_policy.never (only never is enforced; boundaries are guidance). " +
     "Propose limits and limits.delegation_depth, and never let the owner think they are already set: an unset limit is no limit. " +
     "connectors is your proposal of the GitHub grant, never a default: say so to the owner; it takes effect only if the owner approves this call, and no later update changes it. " +
