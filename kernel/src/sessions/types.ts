@@ -618,7 +618,8 @@ export interface SessionManagerOptions {
   /**
    * The port that mints a live, write-granted session's down-scoped GitHub
    * token (item 03's `mintSessionToken`). Absent: such a session is refused
-   * `github_token_unavailable` (the kernel wires none yet).
+   * `github_token_unavailable` (a composition without the daemon's deps wires
+   * none; the daemon's deps wire it, `daemonKernelDeps`).
    */
   readonly sessionTokenMint?: SessionTokenMint;
 }

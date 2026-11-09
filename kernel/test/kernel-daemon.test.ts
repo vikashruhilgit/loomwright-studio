@@ -196,8 +196,8 @@ describe("startKernel", () => {
     expect(daemonSource).not.toMatch(/handlers/);
   });
 
-  it("daemon.ts passes daemonKernelDeps(), whose only dependency is the real GitHub client, built with no Keychain read and no request", () => {
-    // The production entry point is the one composition no other test starts: pin that it wires the client.
+  it("daemon.ts passes daemonKernelDeps(), whose only dependencies are the real GitHub client and the session token minter factory, built with no Keychain read and no request", () => {
+    // The production entry point is the one composition no other test starts: pin that it wires the client and the minter.
     const daemonSource = readFileSync(fileURLToPath(new URL("../src/daemon.ts", import.meta.url)), "utf8");
     expect(daemonSource).toContain("startKernel(parseArgs(args), daemonKernelDeps())");
     const reads: string[] = [];
@@ -209,7 +209,7 @@ describe("startKernel", () => {
         return new Response("[]");
       }) as typeof fetch,
     });
-    expect(Object.keys(d)).toEqual(["githubClient"]);
+    expect(Object.keys(d)).toEqual(["githubClient", "sessionTokenMintFor"]);
     expect(typeof d.githubClient?.listOpenPulls).toBe("function");
     expect(reads).toEqual([]);
     expect(requests).toEqual([]);

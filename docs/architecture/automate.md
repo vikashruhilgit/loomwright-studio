@@ -97,7 +97,7 @@ The answer is `{route, repo, pr, owner_kind, command?, item?, reason?, note}`. T
 
 - **The kernel cannot force the session's flags.** The playbook's own session runs `/automate`, so the kernel cannot make it use `--inline-phases` or forbid `--auto-merge`. `merge_check` and Loomwright's own gate are the guard.
 - **`--merge-parked` inside a kernel-started SDK session in host mode is untested.** Probe p14 ran in a terminal session; this item builds and tests the tools with fixtures and fakes only. The live check is item 14 ([OPEN_QUESTIONS](../OPEN_QUESTIONS.md#technical-verify-dont-assume)).
-- **No token minter is wired yet.** A live write session is refused `github_token_unavailable` until the daemon wires one, so the tools are reachable in a live run only after that.
+- **The daemon wires the token minter** (phase 8 item 15, `daemonKernelDeps`). A live write session of the shipped kernel gets its down-scoped token, so the tools are reachable in a live run; a composition without the daemon's deps still refuses it `github_token_unavailable` (`no_minter`).
 - **The `AskUserQuestion` path of p15 is unverified.**
 - **A crashed run reads live.** A run file left at `## Status: running`, or a lock whose holder pid is alive, reads `live` until Loomwright's own resume or the owner clears it; the check fails toward waiting.
 - **The lock's pid can be reused.** A reused pid reads as a live holder (`run-lock.sh` also records a start time, which the kernel does not compare).
