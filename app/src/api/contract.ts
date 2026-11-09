@@ -804,7 +804,7 @@ export interface ThreadFigures {
   readonly renamed: boolean;
   /** How many messages the thread holds. */
   readonly messages: number;
-  /** Input + cache-read + cache-write tokens of the session of its newest replied message (D26's counting); null when none has a reading. */
+  /** Input + cache-read + cache-write tokens of the session of its newest replied message: its context size, deliberately NOT D26's counted tokens (those add output and drop cache reads for limits; output is not context, cache reads are); null when none has a reading. */
   readonly latest_reply_tokens: number | null;
   /** The summary file's size in tokens, an ESTIMATE (characters / 4); null when the thread has no summary file. */
   readonly summary_estimated_tokens: number | null;

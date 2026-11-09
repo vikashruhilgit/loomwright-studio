@@ -17,8 +17,10 @@
 //       when it had no session), and `threads` is one `ThreadFigures` per
 //       thread a message item of the page is in, by thread id: its title (the
 //       owner's rename wins), message count, the tokens its latest reply read
-//       (input + cache-read + cache-write of that session's
-//       `sessions.model_usage_json`, D26's counting) and, when its summary
+//       (that session's context size: input + cache-read + cache-write of its
+//       `sessions.model_usage_json`; deliberately NOT D26's counted tokens,
+//       which add output and drop cache reads for limits: output is not
+//       context, cache reads are) and, when its summary
 //       file exists, the summary's size in tokens ESTIMATED as characters / 4.
 //       Tokens only, never dollars (D24)
 //
@@ -201,7 +203,7 @@ export interface ThreadFigures {
   readonly renamed: boolean;
   /** How many `brain_messages` rows the thread holds. */
   readonly messages: number;
-  /** Input + cache-read + cache-write tokens of the session of the thread's newest replied row (D26's counting, from its `model_usage_json`); null when none has a reading. */
+  /** Input + cache-read + cache-write tokens of the session of the thread's newest replied row, from its `model_usage_json`: its context size, deliberately NOT D26's counted tokens (those add output and drop cache reads for limits; output is not context, cache reads are); null when none has a reading. */
   readonly latest_reply_tokens: number | null;
   /** The summary file's size in tokens, an ESTIMATE (characters / 4, rounded up); null when the thread has no summary file. */
   readonly summary_estimated_tokens: number | null;
@@ -435,7 +437,7 @@ function messageItemOf(store: Store, row: BrainMessageRow): ThreadMessageItem {
   };
 }
 
-/** A non-negative integer token count from a stored usage field, else 0 (D26 reads a bad number as nothing). */
+/** A non-negative integer token count from a stored usage field, else 0 (as the D26 meter's `readTotals` reads a bad number, `../budget/meter.ts`). */
 const tokenField = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.trunc(v) : 0);
 
 /**

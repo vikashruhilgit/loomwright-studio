@@ -12,7 +12,7 @@
 //      kernel serves today: a phase 1 route or a shipped contribution's route,
 //      same method and same declared path. The routes phase 5, phase 6, phase 7
 //      and phase 8 items add are not checked here; each item's own test pins its
-//      route against the contract. Phase 7's twelve and phase 8's ten are listed
+//      route against the contract. Phase 7's twelve and phase 8's eleven are listed
 //      below and never counted as existing (phase 8's are served by items 03, 06, 08 and 17; pinned in "phase 8's served routes").
 //   3. The contract's `SessionOutputKind` union carries exactly the values of
 //      `SESSION_OUTPUT_KINDS` (`kernel/src/console/output.ts`).
