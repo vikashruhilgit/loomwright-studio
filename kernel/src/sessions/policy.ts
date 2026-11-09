@@ -190,11 +190,16 @@ export const PROTECTED_DATA_DIRS: readonly string[] = ["config", "app"];
  * - `mcp__kernel__kernel_agent_create` / `mcp__kernel__kernel_agent_update`:
  *   a crew member's charter and enforced settings persist and shape every
  *   later session it runs, so the owner sees each one (phase 4).
+ * - `mcp__kernel__kernel_merge_approval_request`: the owner's approval to merge
+ *   one pull request at one head SHA (phase 8 item 09). A record only: it is
+ *   neither a GitHub write tool nor a kernel-applied action, and no "always"
+ *   grant ever covers it, so the owner decides every merge.
  */
 export const ALWAYS_HELD_TOOLS: readonly string[] = Object.freeze([
   "mcp__kernel__kernel_playbook_enable",
   "mcp__kernel__kernel_agent_create",
   "mcp__kernel__kernel_agent_update",
+  "mcp__kernel__kernel_merge_approval_request",
 ]);
 
 /**

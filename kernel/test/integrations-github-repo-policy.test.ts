@@ -81,8 +81,11 @@ function insertRow(kind: string, required: number | null = null, extra: { trust?
     .run(kind, required, extra.trust ?? 0, T0);
 }
 
+/** A payload as the rail files it for a tool call: `{ tool, input, cwd }` (`classifyToolCall`, kernel/src/sessions/policy.ts). */
+const filed = (input: unknown, tool = `mcp__kernel__${MERGE_APPROVAL_ACTION}`): unknown => ({ tool, input, cwd: "/work/o/r" });
+
 function approval(over: { action?: string; status?: string; payload?: unknown } = {}): void {
-  const payload = over.payload === undefined ? { repo: "o/r", pr: 7, head_sha: A } : over.payload;
+  const payload = over.payload === undefined ? filed({ repo: "o/r", pr: 7, head_sha: A }) : over.payload;
   env.store
     .prepare("INSERT INTO approvals (requesting_agent, action, payload_json, status) VALUES ('kernel', ?, ?, ?)")
     .run(over.action ?? MERGE_APPROVAL_ACTION, typeof payload === "string" ? payload : JSON.stringify(payload), over.status ?? "approved");
@@ -335,6 +338,25 @@ describe("policyMet (AC3, AC4, AC5)", () => {
     expect(await policyMet("o/r", 7, A, { store: env.store, client: () => real, now: env.now })).toEqual({ met: false, reason: "reviews_short" });
   });
 
+  it("reviews: two deleted accounts (user null), the first requesting changes and the later approving, are two reviewers: met false, changes_requested (real client over stubbed REST)", async () => {
+    insertRow("reviews", 1);
+    const reply = (body: unknown): Response => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    const stub = (async (input: unknown) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/repos/o/r/pulls/7") return reply({ head: { sha: A } });
+      if (path === "/repos/o/r/pulls/7/reviews")
+        return reply([
+          { user: null, state: "CHANGES_REQUESTED", commit_id: A, author_association: "COLLABORATOR" },
+          { user: null, state: "APPROVED", commit_id: A, author_association: "COLLABORATOR" },
+        ]);
+      if (path === `/repos/o/r/commits/${A}/status`) return reply({ state: "success", total_count: 1, statuses: [] });
+      if (path === `/repos/o/r/commits/${A}/check-runs`) return reply({ total_count: 0, check_runs: [] });
+      return new Response("{}", { status: 404 });
+    }) as typeof fetch;
+    const real = createGitHubClient({ readToken: () => "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd", fetch: stub, now: env.now });
+    expect(await policyMet("o/r", 7, A, { store: env.store, client: () => real, now: env.now })).toEqual({ met: false, reason: "changes_requested" });
+  });
+
   it("reviews: nothing may request changes (even with enough approvals), and the reason names it", async () => {
     insertRow("reviews", 1);
     const fake = fakeFor({ mergeStates: { "o/r#7": state({ approvals: 3, changes_requested: true }) } });
@@ -370,10 +392,15 @@ describe("policyMet (AC3, AC4, AC5)", () => {
     approval({ status: "pending" });
     approval({ status: "denied" });
     approval({ action: "kernel_github_pr_comment" });
-    approval({ payload: { repo: "o/other", pr: 7, head_sha: A } });
-    approval({ payload: { repo: "o/r", pr: 8, head_sha: A } });
+    approval({ payload: filed({ repo: "o/other", pr: 7, head_sha: A }) });
+    approval({ payload: filed({ repo: "o/r", pr: 8, head_sha: A }) });
     approval({ payload: "not json {" });
-    approval({ payload: { repo: "o/r", pr: "7", head_sha: A } });
+    approval({ payload: filed({ repo: "o/r", pr: "7", head_sha: A }) });
+    // Only the filed shape counts: a top-level repo / pr / head_sha (nothing files that), a missing or other tool, and an input that is not an object.
+    approval({ payload: { repo: "o/r", pr: 7, head_sha: A } });
+    approval({ payload: { input: { repo: "o/r", pr: 7, head_sha: A }, cwd: "/work/o/r" } });
+    approval({ payload: filed({ repo: "o/r", pr: 7, head_sha: A }, "mcp__kernel__kernel_github_pr_comment") });
+    approval({ payload: filed("o/r#7") });
     expect(await met(fake)).toEqual({ met: false, reason: "awaiting_owner_approval" });
     // The exact one, approved: met whatever the CI says (the owner's approval is the policy).
     approval();
