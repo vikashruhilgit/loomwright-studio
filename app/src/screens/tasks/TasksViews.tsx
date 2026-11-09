@@ -6,7 +6,7 @@
 // word) is untrusted and passes through `./model.ts`'s escaping.
 import { useCallback, useId } from "react";
 import type { ReactNode, Ref } from "react";
-import type { RosterEntry, TaskBoardItem } from "../../api/contract";
+import type { Approval, RosterEntry, TaskBoardItem } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
 import type { AvatarAgent, AvatarState } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
@@ -16,6 +16,7 @@ import type { IconName } from "../../components/icons";
 import { printable } from "../approvals/printable";
 import { KIND_LABEL, NO_AGENT, cardAgent, cardLabel, cardOrder, cardTitle, metaText, reasonText, stateText, toneOf } from "./model";
 import type { Board, BoardCard, ColumnId } from "./model";
+import { TicketPrCard, ticketAvatarState, waitingApprovalOf } from "./TicketPrCard";
 import "./tasks.css";
 
 export const EMPTY_TITLE = "No tasks yet.";
@@ -41,6 +42,8 @@ const KIND_ICON: Readonly<Record<TaskBoardItem["kind"], IconName>> = { task: "ta
 const COLUMN_AVATAR: Readonly<Record<ColumnId, AvatarState>> = { wait: "waiting", work: "working", park: "parked", done: "idle", other: "idle" };
 
 export function avatarState(item: TaskBoardItem, column: ColumnId): AvatarState {
+  // A ticket's PR is done only when the kernel recorded it merged; its task's own state word says nothing more.
+  if (item.ticket_pr !== null) return ticketAvatarState(item.ticket_pr, COLUMN_AVATAR[column]);
   const tone = toneOf(item.kind, item.state);
   if (tone === "danger") return "danger";
   if (tone === "ok") return "done";
@@ -156,6 +159,8 @@ export function TasksNoKernel() {
 interface CardViewProps {
   readonly card: BoardCard;
   readonly agent: AvatarAgent;
+  /** The store's pending approvals: a ticket card waits on one that names its PR. */
+  readonly approvals: readonly Approval[] | undefined;
   readonly offline: boolean;
   readonly tabbable: boolean;
   readonly onOpen: (card: BoardCard) => void;
@@ -163,7 +168,7 @@ interface CardViewProps {
   readonly onFocusLost: (key: string) => void;
 }
 
-function CardView({ card, agent, offline, tabbable, onOpen, onFocused, onFocusLost }: CardViewProps) {
+function CardView({ card, agent, approvals, offline, tabbable, onOpen, onFocused, onFocusLost }: CardViewProps) {
   const { item, key, column } = card;
   const why = reasonText(item);
   // Reports the card leaving the DOM while it holds focus (a card that moves column is a new element), so the screen hands focus to its new one.
@@ -176,6 +181,23 @@ function CardView({ card, agent, offline, tabbable, onOpen, onFocused, onFocusLo
     },
     [key, onFocusLost],
   );
+  // A ticket's PR is drawn by `./TicketPrCard.tsx`; a plain card is exactly the one below.
+  if (item.ticket_pr !== null) {
+    return (
+      <TicketPrCard
+        card={card}
+        ticket={item.ticket_pr}
+        agent={agent}
+        avatarState={avatarState(item, column)}
+        approvalId={waitingApprovalOf(item.ticket_pr, approvals)}
+        offline={offline}
+        tabbable={tabbable}
+        buttonRef={watch}
+        onOpen={onOpen}
+        onFocused={onFocused}
+      />
+    );
+  }
   return (
     <li>
       <button
@@ -218,6 +240,8 @@ function CardView({ card, agent, offline, tabbable, onOpen, onFocused, onFocusLo
 interface BoardViewProps {
   readonly board: Board;
   readonly roster: readonly RosterEntry[] | undefined;
+  /** The store's pending approvals, for the ticket cards that wait on one. */
+  readonly approvals: readonly Approval[] | undefined;
   readonly offline: boolean;
   readonly activeKey: string | null;
   readonly onOpen: (card: BoardCard) => void;
@@ -225,7 +249,7 @@ interface BoardViewProps {
   readonly onFocusLost: (key: string) => void;
 }
 
-export function BoardView({ board, roster, offline, activeKey, onOpen, onFocused, onFocusLost }: BoardViewProps) {
+export function BoardView({ board, roster, approvals, offline, activeKey, onOpen, onFocused, onFocusLost }: BoardViewProps) {
   const idBase = useId();
   const order = cardOrder(board);
   const tabKey = order.some((c) => c.key === activeKey) ? activeKey : (order[0]?.key ?? null);
@@ -258,6 +282,7 @@ export function BoardView({ board, roster, offline, activeKey, onOpen, onFocused
                       key={card.key}
                       card={card}
                       agent={avatarAgent(cardAgent(card.item), roster)}
+                      approvals={approvals}
                       offline={offline}
                       tabbable={card.key === tabKey}
                       onOpen={onOpen}
