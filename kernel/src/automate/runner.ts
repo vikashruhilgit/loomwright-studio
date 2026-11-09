@@ -18,8 +18,8 @@
 // (`playbook_not_live`). A draft-mode session never reaches the held tool: the
 // gate records a draft instead.
 //
-// The checkout is the calling agent's workspace for the repo: one of the
-// `workspaces` in its settings file whose git remote names `<owner>/<repo>`.
+// The checkout (`checkout.ts`) is the calling agent's workspace for the repo: one
+// of the `workspaces` in its settings file whose git remote names `<owner>/<repo>`.
 // Without one, `no_workspace`. Workspaces are the owner's, outside protected
 // folders and the data dir (the settings reader's checks), so the items land
 // where D31 allows. Wright has no workspaces yet, so its playbooks are refused.
@@ -35,18 +35,16 @@
 // through `merge_check`, and a new push makes it stale.
 //
 // The `studio` CLI loads this module through the feature registry, so it imports
-// only types, the feature seam, zod, the settings reader and this feature's
-// files: never the Agent SDK, the session manager or `kernel.ts`.
-import { lstatSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+// only types, the feature seam, zod and this feature's files: never the Agent SDK,
+// the session manager or `kernel.ts`.
 import { z } from "zod";
-import { readAgentSettings } from "../agents/settings.js";
 import type { ConsolePart } from "../console/types.js";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { isRepoName } from "../integrations/github/repo-policy.js";
-import type { GitHubRepoPolicyReads } from "../integrations/types.js";
+import { GITHUB_CI_STATES, type GitHubRepoPolicyReads } from "../integrations/types.js";
 import type { HeldToolVerdict } from "../sessions/types.js";
+import { checkoutOf } from "./checkout.js";
 import { mergeCheck } from "./merge-check.js";
 import { readRunState, summarizeRuns } from "./run-state.js";
 import { ONE_SAFE_LINE } from "./text-rules.js";
@@ -116,59 +114,6 @@ function liveSession(ctx: ContributedToolContext): LiveSession {
   return { agent: row.agent, playbook: row.playbook, mergeRequirement: pb.merge_requirement };
 }
 
-// ---- The checkout ------------------------------------------------------------------
-
-/** `owner/repo` of a GitHub remote URL (`https://github.com/o/r.git`, `git@github.com:o/r`, `ssh://git@github.com/o/r`), else `undefined`. */
-function repoOfRemote(url: string): string | undefined {
-  const m = /github\.com[:/]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i.exec(url.trim());
-  return m === null ? undefined : `${m[1] as string}/${m[2] as string}`;
-}
-
-/** The directory holding a checkout's git config: `.git` itself, or the common dir a worktree's `.git` file points to. */
-function gitConfigDir(workspace: string): string | undefined {
-  const dotGit = join(workspace, ".git");
-  const st = lstatSync(dotGit);
-  if (st.isDirectory()) return dotGit;
-  if (!st.isFile()) return undefined;
-  const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"));
-  if (pointer === null) return undefined;
-  const gitdir = resolve(workspace, (pointer[1] as string).trim());
-  try {
-    return resolve(gitdir, readFileSync(join(gitdir, "commondir"), "utf8").trim());
-  } catch {
-    return gitdir;
-  }
-}
-
-/** The GitHub repos the checkout at `workspace` has as remotes (empty when it is not a git checkout or its config cannot be read). */
-function remoteRepos(workspace: string): readonly string[] {
-  try {
-    const dir = gitConfigDir(workspace);
-    if (dir === undefined) return [];
-    const found: string[] = [];
-    for (const line of readFileSync(join(dir, "config"), "utf8").split("\n")) {
-      const m = /^\s*url\s*=\s*(.+)$/.exec(line);
-      const repo = m === null ? undefined : repoOfRemote(m[1] as string);
-      if (repo !== undefined) found.push(repo);
-    }
-    return found;
-  } catch {
-    return [];
-  }
-}
-
-/** The agent's workspace that is a checkout of `repo`, else a `no_workspace` refusal. */
-function checkoutOf(ctx: ContributedToolContext, agent: string, repo: string): string {
-  const settings = readAgentSettings(ctx.store.dataDir, agent);
-  if (!settings.ok) throw refuse("no_workspace", `agent ${agent}'s settings do not read (${settings.error}), so it has no workspace for ${repo}`);
-  const want = repo.toLowerCase();
-  const found = (settings.settings.workspaces ?? []).find((ws) => remoteRepos(ws).some((r) => r.toLowerCase() === want));
-  if (found === undefined) {
-    throw refuse("no_workspace", `agent ${agent} has no workspace that is a git clone of ${repo}; the owner lists one in the agent's settings (workspaces)`);
-  }
-  return found;
-}
-
 // ---- Shapes --------------------------------------------------------------------------
 
 const repoShape = z
@@ -186,7 +131,7 @@ const ticketShape = z.object({
 });
 
 /** The CI states a merge approval may claim (`GitHubCiState`), published as an enum in the tool's input schema. */
-export const MERGE_APPROVAL_CI_CLAIMS = Object.freeze(["green", "pending", "failing", "none"] as const);
+export const MERGE_APPROVAL_CI_CLAIMS = GITHUB_CI_STATES;
 
 const shaShape = z.string().regex(/^[0-9a-f]{40}$/, "must be the full 40-character lowercase head SHA");
 const readyAtShape = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/, "must be an ISO-8601 UTC time such as 2026-11-08T04:56:42Z");

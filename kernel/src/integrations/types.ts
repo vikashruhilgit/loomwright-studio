@@ -258,6 +258,8 @@ export interface GitHubPullSummary {
 export interface GitHubPull extends GitHubPullSummary {
   readonly body: string;
   readonly state: string;
+  /** Whether GitHub reports the pull merged (`state` alone cannot tell merged from closed unmerged). The real client always sets it; absent on a hand-built literal reads as not merged. */
+  readonly merged?: boolean;
   readonly base_ref: string;
   readonly head_ref: string;
   readonly labels: readonly string[];
@@ -386,6 +388,9 @@ export interface GitHubBranchProtection {
  * or there are no statuses), `pending`, `failing`, or `none` (no check runs and no statuses at all).
  */
 export type GitHubCiState = "green" | "pending" | "failing" | "none";
+
+/** The closed set of `GitHubCiState` values, for a reader that must check a stored string against it. */
+export const GITHUB_CI_STATES = Object.freeze(["green", "pending", "failing", "none"] as const satisfies readonly GitHubCiState[]);
 
 /**
  * What decides whether a pull request may merge, read at one moment. `head_sha`

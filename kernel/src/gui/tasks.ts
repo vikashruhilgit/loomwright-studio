@@ -14,14 +14,20 @@
 // (invariant 3): it is returned as stored, never interpreted.
 //
 // The `studio` CLI loads it, so it imports only types, the feature seam and
-// helpers that load no SDK (`../console/events.js`, `../approvals/store.js`):
+// helpers that load no SDK (`../console/events.js`, `../approvals/store.js`, the
+// automate tracker's closed sets and approvals wording, the repo-policy reader):
 // never the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the registry's module graph).
 import { approvalView } from "../approvals/store.js";
 import type { ApprovalRow } from "../approvals/store.js";
+import { PR_OWNER_KINDS, PR_TRACK_STATES, approvalsWordOf } from "../automate/tracker.js";
+import type { PrOwnerKind, PrTrackState } from "../automate/tracker.js";
+import { pullUrlOf } from "../automate/routing.js";
 import { eventFrameOf } from "../console/events.js";
 import type { EventRow } from "../console/events.js";
 import type { ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
+import { getRepoPolicy } from "../integrations/github/repo-policy.js";
+import { GITHUB_CI_STATES, type GitHubCiState } from "../integrations/types.js";
 import { positiveIntegerOf } from "./query.js";
 import type { Store } from "../store/index.js";
 import type { GuiPart } from "./types.js";
@@ -53,15 +59,38 @@ interface SelectedRow {
   readonly updated: string;
 }
 
-/**
- * One card as served (the contract's `TaskBoardItem`, in its field order): the
- * selected columns, then the creator of a task. Not columns of the union: they
- * are read once per request for the page's tasks (`withCreators`), `null` for a
- * run and a session.
- */
-interface BoardRow extends SelectedRow {
+/** A selected card with the creator of a task (`withCreators`). */
+interface CreatedRow extends SelectedRow {
   readonly creator_agent: string | null;
   readonly creator_session: number | null;
+}
+
+/**
+ * A ticket's pull request as served (the contract's `TaskTicketPr`, in its field
+ * order), every value from the kernel-written `pr_tracks` row.
+ */
+interface TicketPr {
+  readonly ticket: string | null;
+  readonly repo: string;
+  readonly number: number;
+  readonly url: string;
+  readonly state: PrTrackState;
+  readonly head_sha: string | null;
+  readonly approvals: string;
+  readonly ci: GitHubCiState | null;
+  readonly owner_kind: PrOwnerKind | null;
+  readonly merged_by_gate: boolean;
+  readonly updated: string;
+}
+
+/**
+ * One card as served (the contract's `TaskBoardItem`, in its field order): the
+ * selected columns, then the creator of a task, then its pull request. Not
+ * columns of the union: they are read once per request for the page's tasks
+ * (`withCreators`, `withTicketPrs`), `null` for a run and a session.
+ */
+interface BoardRow extends CreatedRow {
+  readonly ticket_pr: TicketPr | null;
 }
 
 /** The columns every source SELECT answers, in `BoardRow`'s order. */
@@ -135,7 +164,7 @@ function parseCursor(text: string): Cursor | undefined {
  * session never joins a history's `sessions`, and its events never join the
  * task's history.
  */
-function withCreators(store: Store, rows: readonly SelectedRow[]): BoardRow[] {
+function withCreators(store: Store, rows: readonly SelectedRow[]): CreatedRow[] {
   const taskIds = rows.filter((row) => row.kind === "task").map((row) => row.id);
   const creators = new Map<number, { agent: string | null; session: number | null }>();
   if (taskIds.length > 0) {
@@ -155,6 +184,115 @@ function withCreators(store: Store, rows: readonly SelectedRow[]): BoardRow[] {
     return { ...row, creator_agent: creator?.agent ?? null, creator_session: creator?.session ?? null };
   });
 }
+
+// ---- The pull request of a ticket ---------------------------------------------------
+
+/** One `pr_tracks` row as the card reads it. */
+interface TrackRead {
+  readonly repo: string;
+  readonly number: number;
+  readonly head_sha: string | null;
+  readonly state: string;
+  readonly ticket_ref: string | null;
+  readonly approvals: number;
+  readonly required: number | null;
+  readonly ci_state: string | null;
+  readonly owner_kind: string | null;
+  readonly merged_by_gate: number;
+  readonly updated: string;
+}
+
+const keyOf = (repo: string, number: number): string => `${repo.toLowerCase()}#${number}`;
+
+/**
+ * The `[repo, number]` a task's `links_json.pr` names, or undefined. `links_json`
+ * is agent-writable (invariant 3): it is parsed defensively and only LOCATES a
+ * `pr_tracks` row, never supplies a value.
+ */
+function namedPr(linksJson: string | null): [string, number] | undefined {
+  if (linksJson === null) return undefined;
+  let links: unknown;
+  try {
+    links = JSON.parse(linksJson);
+  } catch {
+    return undefined;
+  }
+  if (typeof links !== "object" || links === null) return undefined;
+  const pr = (links as Record<string, unknown>)["pr"];
+  if (typeof pr !== "object" || pr === null) return undefined;
+  const { repo, number } = pr as Record<string, unknown>;
+  if (typeof repo !== "string" || typeof number !== "number" || !Number.isSafeInteger(number)) return undefined;
+  return [repo, number];
+}
+
+/**
+ * Merges in each task's `ticket_pr`: the `pr_tracks` row its `links_json.pr`
+ * names, served as the contract's `TaskTicketPr`. `null` for a run, a session, a
+ * task whose links name no tracked PR (an untracked PR the agent wrote is not
+ * served), and a row whose state is outside the closed set (an owner kind or CI state outside its set reads `null`). Every
+ * value is the kernel-written row's (the approvals word is the repo policy's
+ * wording over the row's counts). Two queries per request for the page's tasks,
+ * never one per row.
+ */
+function withTicketPrs(store: Store, rows: readonly CreatedRow[]): BoardRow[] {
+  const taskIds = rows.filter((row) => row.kind === "task").map((row) => row.id);
+  const named = new Map<number, [string, number]>();
+  if (taskIds.length > 0) {
+    const links = store
+      .prepare<[string], { id: number; links_json: string | null }>("SELECT id, links_json FROM tasks WHERE id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(taskIds));
+    for (const { id, links_json } of links) {
+      const at = namedPr(links_json);
+      if (at !== undefined) named.set(id, at);
+    }
+  }
+  const tracks = new Map<string, TrackRead>();
+  if (named.size > 0) {
+    const pairs = JSON.stringify([...named.values()]);
+    const found = store
+      .prepare<[string], TrackRead>(
+        `SELECT p.repo AS repo, p.number AS number, p.head_sha AS head_sha, p.state AS state, p.ticket_ref AS ticket_ref, p.approvals AS approvals,
+                p.required AS required, p.ci_state AS ci_state, p.owner_kind AS owner_kind, p.merged_by_gate AS merged_by_gate, p.updated AS updated
+           FROM pr_tracks p
+          WHERE EXISTS (SELECT 1 FROM json_each(?) j
+                         WHERE lower(json_extract(j.value, '$[0]')) = lower(p.repo) AND json_extract(j.value, '$[1]') = p.number)`,
+      )
+      .all(pairs);
+    for (const track of found) tracks.set(keyOf(track.repo, track.number), track);
+  }
+  const policies = new Map<string, ReturnType<typeof getRepoPolicy>>();
+  return rows.map((row) => {
+    const at = row.kind === "task" ? named.get(row.id) : undefined;
+    const track = at === undefined ? undefined : tracks.get(keyOf(at[0], at[1]));
+    if (track === undefined) return { ...row, ticket_pr: null };
+    const state = (PR_TRACK_STATES as readonly string[]).includes(track.state) ? (track.state as PrTrackState) : undefined;
+    if (state === undefined) return { ...row, ticket_pr: null };
+    const owner = (PR_OWNER_KINDS as readonly string[]).includes(track.owner_kind ?? "") ? (track.owner_kind as PrOwnerKind) : null;
+    const ci = (GITHUB_CI_STATES as readonly string[]).includes(track.ci_state ?? "") ? (track.ci_state as GitHubCiState) : null;
+    let policy = policies.get(track.repo.toLowerCase());
+    if (policy === undefined) {
+      policy = getRepoPolicy(store, track.repo);
+      policies.set(track.repo.toLowerCase(), policy);
+    }
+    const ticket_pr: TicketPr = {
+      ticket: track.ticket_ref,
+      repo: track.repo,
+      number: track.number,
+      url: pullUrlOf(track.repo, track.number),
+      state,
+      head_sha: track.head_sha,
+      approvals: approvalsWordOf(policy.kind, track.approvals, track.required),
+      ci,
+      owner_kind: owner,
+      merged_by_gate: track.merged_by_gate === 1,
+      updated: track.updated,
+    };
+    return { ...row, ticket_pr };
+  });
+}
+
+/** The cards `rows` are, as served: each with its creator and its ticket's pull request. */
+const boardRows = (store: Store, rows: readonly SelectedRow[]): BoardRow[] => withTicketPrs(store, withCreators(store, rows));
 
 // ---- GET /tasks ----------------------------------------------------------------
 
@@ -187,7 +325,7 @@ function listHandler(req: ContributedRouteRequest): Promise<ContributedRouteResp
     )
     .all(...(cursor === undefined ? [] : [cursor.updated, cursor.updated, cursor.kind, cursor.updated, cursor.kind, cursor.id]));
   const selected = rows.slice(0, limit);
-  const page = withCreators(req.store, selected);
+  const page = boardRows(req.store, selected);
   // Rows are already newest first; a state's group opens where its first row appears.
   const byState = new Map<string, BoardRow[]>();
   const groups: { state: string; items: BoardRow[] }[] = [];
@@ -247,7 +385,7 @@ function historyHandler(req: ContributedRouteRequest): Promise<ContributedRouteR
   const alias = kind === "task" ? "t" : kind === "playbook_run" ? "r" : "s";
   const selectedItem = store.prepare<[number], SelectedRow>(`${source} WHERE ${alias}.id = ?`).get(id);
   if (selectedItem === undefined) return Promise.resolve({ status: 404, body: { error: "not_found" } });
-  const item = withCreators(store, [selectedItem])[0];
+  const item = boardRows(store, [selectedItem])[0];
 
   const sessions =
     kind === "task"

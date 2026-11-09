@@ -132,6 +132,8 @@ const CLOSED_VALUE_SETS: Readonly<Record<string, readonly ClosedValueSet[]>> = {
   kernel_automate_state: [],
   kernel_automate_merge_check: [],
   kernel_merge_approval_request: [{ path: "ci", enum: MERGE_APPROVAL_CI_CLAIMS }],
+  // The owner-aware comment routing (phase 8 item 10): read-only, no closed input value.
+  kernel_pr_route: [],
 };
 
 type Json = Record<string, unknown>;
@@ -199,9 +201,9 @@ afterEach(() => {
 });
 
 describe("the shipped kernel tools list through the Agent SDK", () => {
-  it("(a) every name of kernelToolNames is listed (34 in all), each with an object input schema", async () => {
+  it("(a) every name of kernelToolNames is listed (35 in all), each with an object input schema", async () => {
     const expected = kernelToolNames(SHIPPED);
-    expect(expected).toHaveLength(34);
+    expect(expected).toHaveLength(35);
     const listed = await listKernelTools(SHIPPED);
     expect(listed.map((t) => t.name).sort()).toEqual([...expected].sort());
     for (const t of listed) expect((t.inputSchema as { type?: unknown }).type, t.name).toBe("object");
@@ -253,8 +255,8 @@ describe("the shipped kernel tools list through the Agent SDK", () => {
     expect(() => LISTING_CTX.store.dataDir).toThrow("tool listing only");
     expect(() => LISTING_CTX.sessions.getSession(1)).toThrow("tool listing only");
     expect(() => LISTING_CTX.sessions.stopSession(1)).toThrow("tool listing only");
-    expect(kernelToolDefinitions(LISTING_CTX, SHIPPED)).toHaveLength(34);
-    await expect(listKernelTools(SHIPPED)).resolves.toHaveLength(34);
+    expect(kernelToolDefinitions(LISTING_CTX, SHIPPED)).toHaveLength(35);
+    await expect(listKernelTools(SHIPPED)).resolves.toHaveLength(35);
   });
 });
 

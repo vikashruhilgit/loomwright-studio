@@ -290,6 +290,14 @@ export const AUDIT_SENTENCES: Readonly<Record<string, Sentence>> = {
     const g = reader(p);
     return `A poll item${withText(g("item_ref"), " ")} was skipped: its dedupe key was already seen.`;
   },
+  pr_state_changed: (p) => {
+    const g = reader(p);
+    const repo = g("repo");
+    const pr = g("pr");
+    const name = repo !== undefined && pr !== undefined ? `Pull request ${repo}#${pr}` : "A tracked pull request";
+    const from = g("from");
+    return `${name} ${from === undefined ? "was first tracked as" : `went from ${words(from)} to`} ${words(g("to")) ?? "an unrecorded state"}${paren(words(g("reason")))}.`;
+  },
   route_failed: (p) => {
     const g = reader(p);
     return `A route${withText(g("method"), " ")}${withText(g("path"), " ")}${withText(g("contributor"), " from ")} failed${withText(g("error"), ": ")}.`;

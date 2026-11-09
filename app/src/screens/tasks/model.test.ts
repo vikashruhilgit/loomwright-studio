@@ -34,7 +34,7 @@ const NOW = new Date(2026, 9, 30, 14, 22, 0).getTime();
 const at = (h: number, m: number, day = 30): string => new Date(2026, 9, day, h, m, 0).toISOString();
 
 function item(kind: TaskBoardKind, id: number, state: string, overrides: Partial<TaskBoardItem> = {}): TaskBoardItem {
-  return { kind, id, title: kind === "session" ? null : `Title ${id}`, state, agent: "mason", playbook: null, item_ref: null, session: null, tokens: null, started: at(13, 0), ended: null, updated: at(14, 0), creator_agent: null, creator_session: null, ...overrides };
+  return { kind, id, title: kind === "session" ? null : `Title ${id}`, state, agent: "mason", playbook: null, item_ref: null, session: null, tokens: null, started: at(13, 0), ended: null, updated: at(14, 0), creator_agent: null, creator_session: null, ticket_pr: null, ...overrides };
 }
 
 describe("the columns", () => {

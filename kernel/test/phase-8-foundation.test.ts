@@ -14,7 +14,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agentSettingsPath, readAgentSettings, validateCharter } from "../src/agents/index.js";
 import { mergeConnectorsGrant, parseConnectorsGrant, parseMcpGrantValue } from "../src/agents/settings.js";
-import { AUTOMATE_NAME, AUTOMATE_PARTS, automateContribution, automateContributionOf, runnerPart } from "../src/automate/index.js";
+import { AUTOMATE_NAME, AUTOMATE_PARTS, automateContribution, automateContributionOf, routingPart, runnerPart, trackerPart } from "../src/automate/index.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { INTEGRATIONS_PARTS, githubAppRoutesPart, integrationsContribution, mcpPart, repoPolicyPart } from "../src/integrations/index.js";
 import { CONNECTOR_KINDS } from "../src/integrations/types.js";
@@ -511,7 +511,7 @@ describe("fetchPollItems keeps its signature and applies the cap", () => {
 // ---------------------------------------------------------------------------
 
 describe("the automate feature (phase_8_foundation)", () => {
-  it("is registered last, after gui, with the parts runner, tracker and routing in that order; the runner (item 09) has its four tools and the other two parts are empty", () => {
+  it("is registered last, after gui, with the parts runner, tracker and routing in that order; the runner (item 09) has its four tools, the tracker (item 10) one due work and the routing part one tool", () => {
     expect(SHIPPED_CONTRIBUTIONS.map((c) => c.name).slice(-2)).toEqual(["gui", AUTOMATE_NAME]);
     expect(SHIPPED_CONTRIBUTIONS.at(-1)).toBe(automateContribution);
     expect(AUTOMATE_NAME).toBe("automate");
@@ -528,18 +528,27 @@ describe("the automate feature (phase_8_foundation)", () => {
     expect(runnerPart.handlers).toEqual({});
     expect(runnerPart.dueWork ?? []).toEqual([]);
     expect(runnerPart.subcommands ?? []).toEqual([]);
-    for (const part of AUTOMATE_PARTS.slice(1)) {
-      expect(part.tools, part.name).toEqual([]);
-      expect(part.routes, part.name).toEqual([]);
-      expect(part.handlers, part.name).toEqual({});
-      expect(part.dueWork ?? [], part.name).toEqual([]);
-      expect(part.subcommands ?? [], part.name).toEqual([]);
-    }
-    expect(Object.keys(automateContribution).sort()).toEqual(["name", "tools"]);
+    expect(AUTOMATE_PARTS[1]).toBe(trackerPart);
+    expect(AUTOMATE_PARTS[2]).toBe(routingPart);
+    // The tracker part (item 10): one due work and nothing else.
+    expect(trackerPart.tools).toEqual([]);
+    expect(trackerPart.routes).toEqual([]);
+    expect(trackerPart.handlers).toEqual({});
+    expect(trackerPart.dueWork).toHaveLength(1);
+    expect(trackerPart.subcommands ?? []).toEqual([]);
+    // The routing part (item 10): kernel_pr_route, offered to an agent with the GitHub read grant (no write level), and nothing else.
+    expect(routingPart.tools.map((t) => t.name)).toEqual(["kernel_pr_route"]);
+    expect(routingPart.tools[0]?.requiresConnector).toBe("github");
+    expect(routingPart.tools[0]?.requiresConnectorLevel).toBeUndefined();
+    expect(routingPart.routes).toEqual([]);
+    expect(routingPart.handlers).toEqual({});
+    expect(routingPart.dueWork ?? []).toEqual([]);
+    expect(routingPart.subcommands ?? []).toEqual([]);
+    expect(Object.keys(automateContribution).sort()).toEqual(["dueWork", "name", "tools"]);
     expect(Object.isFrozen(automateContribution)).toBe(true);
   });
 
-  it("merges with the shipped features and adds the runner's four tools and no route, subcommand, handler or due work", () => {
+  it("merges with the shipped features and adds the runner's four tools, the routing tool and the tracker's one due work, and no route, subcommand or handler", () => {
     const withIt = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     const without = mergeContributions(SHIPPED_CONTRIBUTIONS.slice(0, -1), PHASE1_RESERVED);
     expect(withIt.contributors).toEqual([...without.contributors, "automate"]);
@@ -549,11 +558,13 @@ describe("the automate feature (phase_8_foundation)", () => {
       "kernel_automate_state",
       "kernel_automate_merge_check",
       "kernel_merge_approval_request",
+      "kernel_pr_route",
     ]);
     const routeKeys = (m: typeof withIt): string[] => m.routes.map((r) => `${r.owner} ${r.method} ${r.path}`);
     expect(routeKeys(withIt)).toEqual(routeKeys(without));
     expect(withIt.subcommands.map((c) => c.name)).toEqual(without.subcommands.map((c) => c.name));
-    expect(withIt.dueWork.map((d) => d.run)).toEqual(without.dueWork.map((d) => d.run));
+    expect(withIt.dueWork.map((d) => d.run)).toEqual([...without.dueWork.map((d) => d.run), trackerPart.dueWork?.[0]]);
+    expect(withIt.dueWork.at(-1)?.owner).toBe("automate");
   });
 
   it("builds a contribution named automate from the parts it is given, with the console's handler-conflict check", () => {

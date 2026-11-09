@@ -266,7 +266,7 @@ describe("AC4: a parked awaiting_merge item at the PR's head on a Solo repo, CI 
 
   it("scans: nothing under kernel/src/automate/ names a merge endpoint, the GitHub CLI's merge, a merge mutation or a way to start a process", () => {
     const files = readdirSync(AUTOMATE_SRC).filter((f) => f.endsWith(".ts"));
-    expect(files.sort()).toEqual(["index.ts", "merge-check.ts", "run-state.ts", "runner.ts", "text-rules.ts", "tickets-to-items.ts"]);
+    expect(files.sort()).toEqual(["checkout.ts", "index.ts", "merge-check.ts", "routing.ts", "run-state.ts", "runner.ts", "text-rules.ts", "tickets-to-items.ts", "tracker.ts"]);
     const forbidden: readonly [string, RegExp][] = [
       ["a /merge endpoint", /\/merge(?![\w-])/],
       ["gh pr merge", /gh\s+pr\s+merge|\bgh\b.*\bmerge\b/],

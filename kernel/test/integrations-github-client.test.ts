@@ -261,6 +261,7 @@ describe("getPull (AC9a)", () => {
         updated_at: "2026-10-26T10:00:00Z",
         body: "",
         state: "open",
+        merged: false,
         base_ref: "main",
         head_ref: "feature-7",
         labels: ["a", "b"],
@@ -268,6 +269,18 @@ describe("getPull (AC9a)", () => {
       rateLimit: RATE_LIMIT,
     });
     expect(calls.map((c) => c.url)).toEqual([`${GITHUB_API_ORIGIN}/repos/o/r/pulls/7`]);
+  });
+
+  it("reports merged: true for a pull GitHub says is merged, false for a closed unmerged one", async () => {
+    const merged = client(() => json(apiPull(8, { state: "closed", merged: true })));
+    const m = await merged.gh.getPull("o/r", 8);
+    expect(m.ok && m.data).toMatchObject({ state: "closed", merged: true });
+    const closed = client(() => json(apiPull(9, { state: "closed", merged: false })));
+    const c = await closed.gh.getPull("o/r", 9);
+    expect(c.ok && c.data).toMatchObject({ state: "closed", merged: false });
+    const absent = client(() => json(apiPull(10, { state: "closed" })));
+    const a = await absent.gh.getPull("o/r", 10);
+    expect(a.ok && a.data.merged).toBe(false);
   });
 
   it("a missing pull is http_error 404, as FakeGitHubClient answers it", async () => {
