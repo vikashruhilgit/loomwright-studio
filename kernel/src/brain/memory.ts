@@ -2,7 +2,10 @@
 // `<dataDir>/memory/`, which the owner reads and edits. The kernel creates a
 // file only when it is absent, with exclusive create (`flag: "wx"`), so an
 // existing file (the owner's edit included) is never overwritten, even by a
-// second kernel racing the first. Reads are bounded: a huge file never loads
+// second kernel racing the first. A thread's summary file
+// (`memory/<agent>/threads/<thread>.md`, `writeThreadSummary`) is created the
+// same way from a summarize session's reply; the one overwrite is start-fresh
+// writing the owner's own edited text back (an explicit owner action). Reads are bounded: a huge file never loads
 // whole into memory. Imports only `node:*`, its siblings and
 // `../tools/handoff.ts` (itself `node:*` only): the `studio` CLI loads this
 // module.
@@ -99,6 +102,31 @@ export function cutChars(text: string, max: number): string {
   let cut = text.slice(0, max);
   if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
   return cut;
+}
+
+/** A thread's summary file, relative to `memory/`: `<agent>/threads/<thread>.md` (`agent` is `wright` or a crew id; the caller checks it). */
+export function threadSummaryRelativePath(agent: string, thread: number): string {
+  return `${agent}/threads/${thread}.md`;
+}
+
+/**
+ * Write a thread's summary file (`threadSummaryRelativePath`), its folder
+ * created when absent. Owner-editable, so it is never overwritten except by
+ * an explicit owner action: `replace: false` (a summarize session's reply) is
+ * exclusive create (`wx`) and returns `false` when the file already exists;
+ * `replace: true` is only for the owner's own text (start-fresh's `summary`).
+ * Any other write error is thrown.
+ */
+export function writeThreadSummary(dataDir: string, agent: string, thread: number, text: string, replace: boolean): boolean {
+  const path = join(memoryDir(dataDir), threadSummaryRelativePath(agent, thread));
+  mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+  try {
+    writeFileSync(path, text, { flag: replace ? "w" : "wx", mode: 0o600 });
+    return true;
+  } catch (err) {
+    if (!replace && hasCode(err, "EEXIST")) return false;
+    throw err;
+  }
 }
 
 /**

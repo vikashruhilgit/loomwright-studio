@@ -6,6 +6,11 @@
 // `never` and `workspaces` until an item applies them to Wright's sessions;
 // its `limits` are read (the budget applies `tokens_per_day` and
 // `sessions_at_once` at admission, `./delegate.ts` applies `delegation_depth`).
+// Any agent's file may also set `thread_summarize_hint_tokens` (phase 8 item
+// 17: the thread size past which the app highlights Summarize), unset by
+// default and set only by the owner's own edit of the file: no route, CLI verb
+// or tool writes it (D34), and the kernel only reads it back for the thread
+// route (`threadSummarizeHintTokens`).
 // `readAgentSettings` is the ONE reader:
 // Wright's (`readWrightSettings` in `../brain/settings.ts` is a thin call to
 // it) and every crew member's, so every file is refused the same way.
@@ -28,7 +33,7 @@
 // for Wright's first-run text and the size limit (a cycle used only at call
 // time: neither module reads the other's bindings at load). Never the Agent SDK, the session
 // manager or `kernel.ts` (the `studio` CLI loads this module).
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
@@ -82,6 +87,8 @@ const shape = {
   // Strict: a misspelt limit is refused, never silently unenforced.
   limits: z.object({ tokens_per_day: limit.optional(), sessions_at_once: limit.optional(), delegation_depth: limit.optional() }).strict().optional(),
   workspaces: z.array(z.string()).optional(),
+  // The owner's hint: the thread size (tokens) past which the app highlights Summarize. Unset by default; only the owner's edit of the file sets it (no route, verb or tool writes it, D34).
+  thread_summarize_hint_tokens: limit.optional(),
 };
 
 /**
@@ -291,6 +298,8 @@ export interface AgentSettings {
   readonly githubWrite?: boolean;
   /** The server tools the owner granted, per MCP kind (the object form's `jira` / `clickup`). Present only when the file names some; `connectors` then lists those kinds too. */
   readonly mcpGrants?: McpToolGrantSet;
+  /** The file's `thread_summarize_hint_tokens` (a display hint the app reads, never a limit). Present only when the file sets it. */
+  readonly threadSummarizeHintTokens?: number;
 }
 
 export type AgentSettingsRefusal =
@@ -307,6 +316,8 @@ export type AgentSettingsRefusal =
       readonly field: "model";
       readonly message: string;
       readonly limits?: AgentLimits;
+      /** The file's `thread_summarize_hint_tokens`, when it sets one (a missing model does not hide the owner's hint). */
+      readonly threadSummarizeHintTokens?: number;
     }
   /** The file is not JSON, too large, unreadable, or not the expected shape. `field` is the offending path, or `the file`. Never rewritten. */
   | { readonly ok: false; readonly error: "settings_invalid"; readonly file: string; readonly field: string; readonly message: string }
@@ -445,6 +456,7 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
       field: "model",
       message: `${isWright ? "Wright" : `Agent ${id}`} has no model: set "model" in ${file} (the kernel never picks one)`,
       ...(s.limits !== undefined ? { limits: Object.freeze({ ...s.limits }) } : {}),
+      ...(s.thread_summarize_hint_tokens !== undefined ? { threadSummarizeHintTokens: s.thread_summarize_hint_tokens } : {}),
     };
   }
   return {
@@ -462,6 +474,20 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
       ...(grant === undefined ? {} : { connectors: grant.connectors }),
       ...(grant?.githubWrite === true ? { githubWrite: true } : {}),
       ...(grant !== undefined && Object.keys(grant.mcp).length > 0 ? { mcpGrants: grant.mcp } : {}),
+      ...(s.thread_summarize_hint_tokens !== undefined ? { threadSummarizeHintTokens: s.thread_summarize_hint_tokens } : {}),
     },
   };
+}
+
+/**
+ * `agent`'s `thread_summarize_hint_tokens`, or null when unset or when its
+ * file is refused (nothing in a refused file applies). Reads only: a Wright
+ * file that is absent is null here, never created (`readAgentSettings`
+ * creates it on the first message).
+ */
+export function threadSummarizeHintTokens(dataDir: string, agent: string): number | null {
+  if (agent === WRIGHT_ID && !existsSync(agentSettingsPath(dataDir, agent))) return null;
+  const read = readAgentSettings(dataDir, agent);
+  if (read.ok) return read.settings.threadSummarizeHintTokens ?? null;
+  return read.error === "model_unset" ? (read.threadSummarizeHintTokens ?? null) : null;
 }

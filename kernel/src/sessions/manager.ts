@@ -364,6 +364,8 @@ interface Attempt {
   readonly streamEnded: Promise<void>;
   markStreamEnded: () => void;
   sawInit: boolean;
+  /** A start that resumes an earlier session's SDK conversation (`StartSessionParams.continueFrom`): its gone-conversation ending is told apart. */
+  readonly continuation: boolean;
   firstResult: SDKResultMessage | undefined;
   lastResult: SDKResultMessage | undefined;
   /** The `result` text of this attempt's last successful `result` message (`SessionHandle.result`). */
@@ -623,6 +625,29 @@ function resultErrorText(result: SDKResultMessage): string {
   return `result ${result.subtype}${result.is_error ? " (is_error)" : ""}${errors === "" ? "" : `: ${errors}`}`;
 }
 
+/** The ended statuses a continuation (`StartSessionParams.continueFrom`) may resume the conversation of. Never `abandoned` (its group may be alive). */
+const CONTINUABLE_STATUSES: readonly string[] = ["completed", "failed", "failed:auth", "stopped"];
+
+/** The CLI's error when a resume names an SDK conversation it has no transcript for (docs/evidence/p17-resume-completed-session.md, case d). */
+const CONVERSATION_GONE_PREFIX = "No conversation found with session ID:";
+
+/**
+ * The result text when a continuation's SDK conversation is gone: the
+ * attempt is a continuation (`StartSessionParams.continueFrom`), it never saw
+ * `system/init`, and its first `result` is `error_during_execution` with
+ * `is_error` and an `errors[0]` beginning `CONVERSATION_GONE_PREFIX`: the
+ * shape probe p17 recorded, which comes before any model turn and costs no
+ * tokens. Anything else is `undefined` (an ordinary ending).
+ */
+function conversationGoneError(attempt: Attempt): string | undefined {
+  const first = attempt.firstResult;
+  if (!attempt.continuation || attempt.sawInit || first === undefined) return undefined;
+  if (first.subtype !== "error_during_execution" || first.is_error !== true) return undefined;
+  const errors: unknown = (first as { errors?: unknown }).errors;
+  if (!Array.isArray(errors) || typeof errors[0] !== "string" || !errors[0].startsWith(CONVERSATION_GONE_PREFIX)) return undefined;
+  return resultErrorText(first);
+}
+
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const defaultSchedule = (fn: () => void, ms: number): CancelTimer => {
@@ -778,6 +803,18 @@ export class SessionManager {
    * failed mint) the start is refused `github_token_unavailable`: one
    * `session_refused` event `{reason, detail}`, no row, no spawn. A resume
    * mints again on the same terms, and its refusal leaves the row unchanged.
+   *
+   * A continuation (`params.continueFrom`, thread continuity) is this same
+   * start, admitted as a `start`: a NEW row whose SDK options carry
+   * `resume: <the earlier row's sdk_session_id>` instead of a fresh
+   * `sessionId`, and which records that id. The earlier row must qualify
+   * (`#continuableRow`, before Loomwright, admission or any row, the
+   * recorded-cwd check included), and is never changed. It is one attempt,
+   * never retried. A continuation whose SDK conversation is gone (its first
+   * message an error result `No conversation found with session ID: …`,
+   * before `system/init`: probe p17) ends `failed` with reason
+   * `conversation_gone`; what to do then is the caller's (the brain replays
+   * the thread once).
    */
   async startSession(params: StartSessionParams): Promise<SessionHandle> {
     const permissionMode = checkPermissionMode(params.permissionMode);
@@ -789,6 +826,8 @@ export class SessionManager {
     if (params.task !== undefined && !Number.isInteger(params.task)) throw new SessionError("invalid_params", "task must be an integer id");
     this.#checkPlaybookParams(params);
     const policy = checkPolicy(params.policy);
+    // A continuation (`continueFrom`): the earlier session's checks, before Loomwright, admission or any row.
+    const from = params.continueFrom === undefined ? undefined : this.#continuableRow(params);
 
     const loomwright = this.#refusingLoomwright(null, () =>
       resolveSessionLoomwright({
@@ -818,9 +857,10 @@ export class SessionManager {
     const collision = hostSwitchCollision(env, loomwright.hostSwitch);
     if (collision !== undefined) this.#refuseLoomwright(hostSwitchCollisionError(loomwrightPath, collision), null);
 
-    const dryRun = params.dryRun === true;
+    // A dry run only narrows: a continuation of a session that started as one runs as one (forced-draft too), as a resume does.
+    const dryRun = params.dryRun === true || (from !== undefined && this.#startedAsDryRun(from.id));
     // `#checkPlaybookParams` refused a `forceDraft` without `dryRun: true`.
-    const forceDraft = dryRun && params.forceDraft === true;
+    const forceDraft = dryRun && (params.forceDraft === true || (from !== undefined && this.#startedAsForcedDraft(from.id)));
     // A live, write-granted session needs its down-scoped token: minted after admission, before any row exists (a refusal leaves none).
     let githubToken: MintedGithubToken | undefined;
     if (this.#githubWriteQualifies(params.agent, params.playbook ?? null, dryRun)) {
@@ -831,7 +871,8 @@ export class SessionManager {
       this.#admit(startRequest);
       if (!this.#githubWriteQualifies(params.agent, params.playbook ?? null, dryRun)) githubToken = undefined;
     }
-    const sdkSessionId = this.#randomUUID();
+    // A continuation keeps the SDK conversation's id: the CLI resumes it under the same id (docs/evidence/p17-resume-completed-session.md).
+    const sdkSessionId = from === undefined ? this.#randomUUID() : (from.sdk_session_id as string);
     const at = this.#nowIso();
     const id = this.#store.transaction(() => {
       const rowId = this.#insertRow(params, loomwrightPath, sdkSessionId, "starting", at);
@@ -857,7 +898,7 @@ export class SessionManager {
         env: withHostSwitch({ ...env, ...githubEnv }, loomwright.hostSwitch, stateDir),
         loomwrightPath,
         closeInputOnResult: params.closeInputOnResult ?? true,
-        sessionOptions: { sessionId: sdkSessionId },
+        sessionOptions: from === undefined ? { sessionId: sdkSessionId } : { resume: sdkSessionId },
         resumeMode: false,
         agent: params.agent,
         task: params.task ?? null,
@@ -1601,6 +1642,7 @@ export class SessionManager {
       streamEnded,
       markStreamEnded,
       sawInit: false,
+      continuation: !config.resumeMode && config.sessionOptions.resume !== undefined,
       firstResult: undefined,
       lastResult: undefined,
       lastSuccessText: undefined,
@@ -1959,7 +2001,11 @@ export class SessionManager {
     if (live.stopping && live.stopPromise !== undefined) await live.stopPromise;
     let verdict: Verdict | undefined;
     if (!live.stopping && !live.authFailed) {
-      if (outcome.kind === "ended") {
+      const gone = conversationGoneError(attempt);
+      if (gone !== undefined) {
+        // The stream may end or throw after that first error result: either way the conversation is gone, before any model turn.
+        verdict = { to: "failed", payload: { reason: "conversation_gone", error: gone.slice(0, MAX_RECORDED_TEXT) } };
+      } else if (outcome.kind === "ended") {
         const result = attempt.closeInputOnResult ? attempt.firstResult : attempt.lastResult;
         if (result === undefined) verdict = { to: "failed", payload: { reason: "ended_without_result" } };
         else if (isSuccessResult(result)) verdict = { to: "completed", payload: { reason: "result_success" } };
@@ -2443,6 +2489,39 @@ export class SessionManager {
    * cwd (from before migration 15) is not compared: it resumes as before. The
    * SDK still gets `cwd` as given.
    */
+  /**
+   * The row a continuation (`StartSessionParams.continueFrom`) resumes the SDK
+   * conversation of, once it qualifies; else a `SessionError` before Loomwright,
+   * admission or any row: `invalid_params` (not a positive integer),
+   * `not_found`, `not_resumable` (another agent, no SDK session id, running
+   * in this kernel, not ended, or a kill left incomplete: its CLI may still
+   * write that conversation; or another session on the same SDK conversation
+   * is still running in this kernel, or its row is live, resumable or has a
+   * kill left incomplete: one CLI per conversation) or `cwd_changed` (`#refuseChangedCwd`, which logs
+   * its `session_refused` event with that row's id). `resumeSession`'s own
+   * refusal of rows that are not `interrupted`/`orphaned` is unchanged: a
+   * continuation is a NEW row, admitted as a start.
+   */
+  #continuableRow(params: StartSessionParams): SessionRow {
+    const fromId = params.continueFrom;
+    if (typeof fromId !== "number" || !Number.isSafeInteger(fromId) || fromId < 1) throw new SessionError("invalid_params", "continueFrom must be a positive integer session id");
+    const row = this.getSession(fromId);
+    if (row === undefined) throw new SessionError("not_found", `no session ${fromId}`);
+    if (row.agent !== params.agent) throw new SessionError("not_resumable", `session ${fromId} is ${String(row.agent)}'s, not ${params.agent}'s`);
+    if (!isNonEmptyString(row.sdk_session_id)) throw new SessionError("not_resumable", `session ${fromId} has no SDK session id`);
+    if (this.#live.has(fromId) || !CONTINUABLE_STATUSES.includes(row.status) || row.kill_incomplete_at !== null) {
+      throw new SessionError("not_resumable", `session ${fromId} is ${row.status}${row.kill_incomplete_at === null ? "" : " with a kill left incomplete"}; a continuation needs an ended session`);
+    }
+    // One CLI per SDK conversation: another session on it that this kernel still runs, or a row that is live, resumable or may have a live group, refuses.
+    const sdk = row.sdk_session_id;
+    const inUse =
+      [...this.#live.values()].some((l) => l.sdkSessionId === sdk) ||
+      this.#store.prepare<[string], number>("SELECT count(*) FROM sessions WHERE sdk_session_id = ? AND (status IN ('starting', 'running', 'interrupted', 'orphaned') OR kill_incomplete_at IS NOT NULL)").pluck().get(sdk) !== 0;
+    if (inUse) throw new SessionError("not_resumable", `session ${fromId}'s SDK conversation is in use by another session`);
+    this.#refuseChangedCwd(params.cwd, row);
+    return row;
+  }
+
   #refuseChangedCwd(cwd: string, row: SessionRow): void {
     const recorded = row.cwd;
     if (recorded === null) return;

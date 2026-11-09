@@ -3,32 +3,84 @@
 // cards for what the kernel did about that agent.
 //
 //   GET /threads/:agent[?before=<cursor>][&limit=N]
-//       200 {items, next_before, pending_approvals}: the newest N items
+//       200 {items, next_before, pending_approvals, thread_summarize_hint_tokens}: the newest N items
 //       (1-200, default 50) strictly older than the cursor, oldest first;
 //       `next_before` is the cursor for the page before this one, null once
 //       the oldest item is in this page; `pending_approvals` is every
 //       pending approval the agent requested, oldest first
-//       400 invalid_limit / invalid_before; 404 no_such_agent
+//       400 invalid_limit / invalid_before; 404 no_such_agent. The body also
+//       carries `thread_summarize_hint_tokens`: the agent's settings value of
+//       that name (the owner's, D34), null when unset or the file is refused
+//
+// Phase 8 item 17's write routes (`:thread` is a thread id: its first row's
+// id; 400 invalid_thread when it is not a positive integer, 404
+// no_such_thread when it names no thread of the agent):
+//
+//   POST /threads/:agent/:thread/summarize
+//       202 {message_id, queue_id, thread, file}: queues ONE `message` event
+//       and its row (source `ask`, the kernel's `summarizeText`) continuing
+//       the thread's newest started row, in one transaction; the reply is
+//       written to `file` (`memory/<agent>/threads/<thread>.md`). The row is
+//       in the old thread: no new thread starts. 409 kill_switch_engaged /
+//       agent_off / summary_exists {file} (the owner's file is never
+//       overwritten) / nothing_to_summarize (no row of it had a session)
+//   GET  /threads/:agent/:thread/summary
+//       200 {thread, file, text, truncated}: the file as it is on disk now
+//       (`truncated` null, or `{chars_cut, at_least}` past
+//       `MAX_THREAD_SUMMARY_CHARS`); 404 no_summary {file}; 409
+//       summary_unreadable {file, problem}
+//   POST /threads/:agent/:thread/start-fresh   body {summary?, text?}
+//       202 {message_id, queue_id, thread, from, file}: `summary` (the owner's
+//       edit) is written to `file` first when given; then ONE `message` event
+//       and its row (`text`, else `startFreshText`) start a new thread whose
+//       prompt quotes the summary file, read at send time, as data; the old
+//       thread is marked `summarized_into` the new one, never deleted. 400
+//       invalid_body; 409 kill_switch_engaged / agent_off /
+//       already_started_fresh {summarized_into} / no_summary {file} (no
+//       `summary` and no file) / history_too_large {thread, size, bound} /
+//       summary_unwritable {file, code}
+//
+// The write routes queue `message` events through `enqueueEvent` and never
+// start a session (invariant 2: the loop's handler does). The agent's
+// settings (its model) are the handler's to refuse, on the row.
 //
 // An item is a message (`{type: "message", …brain_messages row}`, every row
 // the agent received or sent) or an event card (`{type: "event", id, at,
 // kind, summary, ref}`, one `events` row of a kind in `THREAD_EVENT_KINDS`
 // tied to the agent). Both sources share one order, `(at, type, id)`.
 //
-// Mechanism only (invariant 1), and read-only. Payloads and stored names are
+// Mechanism only (invariant 1); `GET /threads/:agent` is read-only. Payloads and stored names are
 // untrusted data (invariant 3): a summary reads only typed fields, and every
 // stored string in it passes through `shown`. The `studio` CLI loads this
 // part through the feature registry, so its value imports are modules that
 // registry already loads (approvals, agents, brain, sessions' types): never
 // the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the module graph).
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { getAgent } from "../agents/registry.js";
+import { threadSummarizeHintTokens } from "../agents/settings.js";
+import { isKillSwitchEngaged } from "../api/kill-switch.js";
 import { shown } from "../approvals/cli.js";
 import { approvalView, getApproval } from "../approvals/store.js";
 import type { ApprovalRow, ApprovalView } from "../approvals/store.js";
+import { memoryDir, readMemoryFile, threadSummaryRelativePath, writeThreadSummary } from "../brain/memory.js";
+import { ensureBrainMessage } from "../brain/messages.js";
 import type { BrainMessageRow } from "../brain/messages.js";
-import { ASK_AGENT } from "../brain/routes.js";
-import type { ContributedRoute, ContributedRouteResponse } from "../features/contribution.js";
+import { ASK_AGENT, askTextProblem } from "../brain/routes.js";
+import {
+  MAX_THREAD_SUMMARY_CHARS,
+  latestStartedRow,
+  recordStartFresh,
+  recordSummaryRequest,
+  referencesHistory,
+  startFreshText,
+  summarizeText,
+  threadLinks,
+  threadProblem,
+} from "../brain/threads.js";
+import type { ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
+import { enqueueEvent } from "../loop/queue.js";
 import { TERMINAL_STATUSES, isTerminalStatus } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { emptyConsolePart } from "./types.js";
@@ -114,6 +166,8 @@ export interface ThreadPage {
   readonly items: readonly ThreadItem[];
   readonly next_before: string | null;
   readonly pending_approvals: readonly ApprovalView[];
+  /** The agent's `thread_summarize_hint_tokens` setting (the owner's), null when unset. */
+  readonly thread_summarize_hint_tokens: number | null;
 }
 
 // The `brain_messages` columns (the same list as `../brain/messages.ts`'s, typed as its `BrainMessageRow`).
@@ -372,6 +426,7 @@ export function readThreadPage(store: Store, agent: string, cursor: ThreadKey | 
     items: page,
     next_before: newestFirst.length > limit && oldest !== undefined ? encodeThreadCursor(keyOf(oldest)) : null,
     pending_approvals: pendingApprovals(store, agent),
+    thread_summarize_hint_tokens: threadSummarizeHintTokens(store.dataDir, agent),
   };
 }
 
@@ -397,4 +452,120 @@ const threadRoute: ContributedRoute = {
   },
 };
 
-export const threadsPart: ConsolePart = Object.freeze({ ...emptyConsolePart("threads"), routes: Object.freeze([threadRoute]) });
+// ---- Summarize and start fresh (phase 8 item 17) -----------------------------------
+
+/** The route's agent and thread, or the refusal: 404 no_such_agent, 400 invalid_thread, 404 no_such_thread. */
+function threadTarget(req: ContributedRouteRequest): { readonly agent: string; readonly thread: number; readonly file: string } | ContributedRouteResponse {
+  const agent = req.params.agent;
+  if (agent === undefined || (agent !== ASK_AGENT && getAgent(req.store, agent) === undefined)) return { status: 404, body: { error: "no_such_agent" } };
+  const raw = req.params.thread ?? "";
+  if (!POSITIVE_INT.test(raw) || !Number.isSafeInteger(Number(raw))) return { status: 400, body: { error: "invalid_thread" } };
+  const thread = Number(raw);
+  const problem = threadProblem(req.store, agent, thread);
+  if (problem !== undefined) return { status: 404, body: { error: "no_such_thread", message: problem } };
+  return { agent, thread, file: `memory/${threadSummaryRelativePath(agent, thread)}` };
+}
+
+/** The write routes' shared refusals, before anything is written: the kill switch, and a crew member that is off. */
+function writeRefusal(req: ContributedRouteRequest, agent: string): ContributedRouteResponse | undefined {
+  if (isKillSwitchEngaged(req.store)) return { status: 409, body: { error: "kill_switch_engaged" } };
+  if (agent !== ASK_AGENT && getAgent(req.store, agent)?.status !== "active") return { status: 409, body: { error: "agent_off" } };
+  return undefined;
+}
+
+/** Queue one owner message for `agent` and write its row (source `ask`), the queue row first. Call inside a transaction. */
+function queueOwnerMessage(req: ContributedRouteRequest, agent: string, text: string, at: Date): { readonly messageId: number; readonly queueId: number } {
+  const queued = enqueueEvent(req.store, { kind: "message", payload: { text, agent } }, at);
+  const row = ensureBrainMessage(req.store, { queueId: queued.id, agent, source: "ask", text, fromAgent: null, depth: 0, workspace: null }, at);
+  return { messageId: row.id, queueId: queued.id };
+}
+
+const summarizeRoute: ContributedRoute = {
+  method: "POST",
+  path: "/threads/:agent/:thread/summarize",
+  handler: async (req): Promise<ContributedRouteResponse> => {
+    const target = threadTarget(req);
+    if (!("agent" in target)) return target;
+    const { agent, thread, file } = target;
+    const refused = writeRefusal(req, agent);
+    if (refused !== undefined) return refused;
+    if (existsSync(join(memoryDir(req.store.dataDir), threadSummaryRelativePath(agent, thread)))) return { status: 409, body: { error: "summary_exists", file } };
+    const latest = latestStartedRow(req.store, thread);
+    if (latest === undefined) return { status: 409, body: { error: "nothing_to_summarize", message: `no message of thread ${thread} had a session` } };
+    const at = req.now();
+    const queued = req.store.transaction(() => {
+      const q = queueOwnerMessage(req, agent, summarizeText(agent, thread), at);
+      recordSummaryRequest(req.store, { messageId: q.messageId, thread, continues: latest.id }, at);
+      return q;
+    });
+    return { status: 202, body: { message_id: queued.messageId, queue_id: queued.queueId, thread, file } };
+  },
+};
+
+const summaryRoute: ContributedRoute = {
+  method: "GET",
+  path: "/threads/:agent/:thread/summary",
+  handler: async (req): Promise<ContributedRouteResponse> => {
+    const target = threadTarget(req);
+    if (!("agent" in target)) return target;
+    const { agent, thread, file } = target;
+    // Read now, never cached: the owner's edit on disk is what is answered.
+    const read = readMemoryFile(req.store.dataDir, threadSummaryRelativePath(agent, thread), MAX_THREAD_SUMMARY_CHARS);
+    if (read.problem === "missing") return { status: 404, body: { error: "no_summary", file } };
+    if (read.problem !== null) return { status: 409, body: { error: "summary_unreadable", file, problem: read.problem } };
+    const truncated = read.cut > 0 || read.atLeast ? { chars_cut: read.cut, at_least: read.atLeast } : null;
+    return { status: 200, body: { thread, file, text: read.text, truncated } };
+  },
+};
+
+/** Thrown inside start-fresh's transaction when the thread was already started fresh, to roll it back. */
+class StartedFreshRace extends Error {}
+
+const startFreshRoute: ContributedRoute = {
+  method: "POST",
+  path: "/threads/:agent/:thread/start-fresh",
+  handler: async (req): Promise<ContributedRouteResponse> => {
+    const target = threadTarget(req);
+    if (!("agent" in target)) return target;
+    const { agent, thread, file } = target;
+    const body = req.body ?? {};
+    if (typeof body !== "object" || body === null || Array.isArray(body)) return { status: 400, body: { error: "invalid_body", message: "the body must be a JSON object {summary?, text?}" } };
+    const { summary, text } = body as { summary?: unknown; text?: unknown };
+    if (summary !== undefined && (typeof summary !== "string" || summary.trim() === "")) return { status: 400, body: { error: "invalid_body", message: "summary must be a string that is not blank" } };
+    const textProblem = text === undefined ? undefined : askTextProblem(text);
+    if (textProblem !== undefined) return { status: 400, body: { error: "invalid_body", message: textProblem } };
+    const refused = writeRefusal(req, agent);
+    if (refused !== undefined) return refused;
+    const linked = threadLinks(req.store, thread)?.summarized_into ?? null;
+    if (linked !== null) return { status: 409, body: { error: "already_started_fresh", summarized_into: linked } };
+    if (typeof summary === "string") {
+      if (summary.length > MAX_THREAD_SUMMARY_CHARS) return { status: 409, body: { error: "history_too_large", thread, size: summary.length, bound: MAX_THREAD_SUMMARY_CHARS } };
+      try {
+        // The owner's edited text: the one overwrite of a summary file (an explicit owner action).
+        writeThreadSummary(req.store.dataDir, agent, thread, summary, true);
+      } catch (err) {
+        return { status: 409, body: { error: "summary_unwritable", file, code: String((err as { code?: unknown }).code ?? "error") } };
+      }
+    } else if (!existsSync(join(memoryDir(req.store.dataDir), threadSummaryRelativePath(agent, thread)))) {
+      return { status: 409, body: { error: "no_summary", file } };
+    }
+    const sized = referencesHistory(req.store, [{ thread, use: "summary" }]);
+    if (!sized.ok) return { status: 409, body: { error: "history_too_large", ...sized.tooLarge } };
+    const at = req.now();
+    let queued: { readonly messageId: number; readonly queueId: number };
+    try {
+      queued = req.store.transaction(() => {
+        const q = queueOwnerMessage(req, agent, typeof text === "string" ? text : startFreshText(thread), at);
+        // Another start-fresh of this thread won: roll back (the row and its queue row with it).
+        if (!recordStartFresh(req.store, { messageId: q.messageId, from: thread, agent }, at)) throw new StartedFreshRace();
+        return q;
+      });
+    } catch (err) {
+      if (!(err instanceof StartedFreshRace)) throw err;
+      return { status: 409, body: { error: "already_started_fresh", summarized_into: threadLinks(req.store, thread)?.summarized_into ?? null } };
+    }
+    return { status: 202, body: { message_id: queued.messageId, queue_id: queued.queueId, thread: queued.messageId, from: thread, file } };
+  },
+};
+
+export const threadsPart: ConsolePart = Object.freeze({ ...emptyConsolePart("threads"), routes: Object.freeze([threadRoute, summarizeRoute, summaryRoute, startFreshRoute]) });

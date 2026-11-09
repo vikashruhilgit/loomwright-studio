@@ -3,14 +3,20 @@
 // and print the reply, over the routes in `routes.ts`. It POSTs the text,
 // then polls `GET /messages/:id` until the message is answered or the wait
 // ends. `--workspace` names one of the agent's settings workspaces as its
-// session's cwd.
+// session's cwd. `--continues <id>` sends the message as a reply that
+// continues message <id>'s thread (`continues`); each `--ref <thread>` (or
+// `--ref <thread>:summary`) attaches a thread's exchanges (or its summary
+// file) as a reference (`references`, `use` `exchanges` or `summary`). The
+// thread flags' usage line is `ASK_THREAD_HELP`, printed with `ASK_HELP` on
+// a usage error (`ASK_HELP` itself is unchanged).
 //
 // Exit codes:
 //   0  replied: the reply on stdout
 //   1  failed (the reason on stderr), or the kernel API answered unexpectedly
 //   2  refused, nothing queued (model_unset, kill_switch_engaged,
 //      settings_invalid, settings_missing, no_such_agent, agent_off,
-//      workspace_not_listed), or parked by admission (the reason and retry
+//      workspace_not_listed, continues_invalid with its reason,
+//      history_too_large with its size and bound), or parked by admission (the reason and retry
 //      time), or a usage error
 //   3  no answer within --timeout (default 120 s): prints the session id, if
 //      one started, and "follow up with `studio status`". The session keeps
@@ -35,6 +41,8 @@ import { askTextProblem } from "./routes.js";
 
 export const ASK_SUBCOMMAND = "ask";
 export const ASK_HELP = 'studio ask [--agent <id>] [--workspace <path>] "<text>" [--json] [--timeout <s>]';
+/** The thread flags of `studio ask`, printed with `ASK_HELP` on a usage error. */
+export const ASK_THREAD_HELP = 'studio ask [--continues <id>] [--ref <thread>[:summary]]... "<text>": reply in a thread, attach threads as references';
 
 export const MESSAGES_SUBCOMMAND = "messages";
 export const MESSAGES_HELP = "studio messages [--agent <id>] [--all] [--json]";
@@ -62,6 +70,17 @@ interface AskCommand {
   /** Absent: Wright (the POST names no agent). */
   readonly agent?: string;
   readonly workspace?: string;
+  /** `--continues`: the message this one continues. */
+  readonly continues?: number;
+  /** Each `--ref`, in order. */
+  readonly references: readonly { readonly thread: number; readonly use: "exchanges" | "summary" }[];
+}
+
+/** `<thread>` or `<thread>:summary` as a reference, or undefined. */
+function parseRef(v: string): { readonly thread: number; readonly use: "exchanges" | "summary" } | undefined {
+  const m = /^([1-9]\d*)(:summary)?$/.exec(v);
+  if (m === null || !Number.isSafeInteger(Number(m[1]))) return undefined;
+  return { thread: Number(m[1]), use: m[2] === undefined ? "exchanges" : "summary" };
 }
 
 function parse(args: readonly string[]): AskCommand | undefined {
@@ -70,11 +89,22 @@ function parse(args: readonly string[]): AskCommand | undefined {
   let timeoutS: number | undefined;
   let agent: string | undefined;
   let workspace: string | undefined;
+  let continues: number | undefined;
+  const references: { readonly thread: number; readonly use: "exchanges" | "summary" }[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i] as string;
     if (a === "--json") {
       if (json) return undefined;
       json = true;
+    } else if (a === "--continues") {
+      const v = args[++i];
+      if (continues !== undefined || v === undefined || !/^[1-9]\d*$/.test(v) || !Number.isSafeInteger(Number(v))) return undefined;
+      continues = Number(v);
+    } else if (a === "--ref") {
+      const v = args[++i];
+      const ref = v === undefined ? undefined : parseRef(v);
+      if (ref === undefined) return undefined;
+      references.push(ref);
     } else if (a === "--agent") {
       const v = args[++i];
       if (agent !== undefined || v === undefined || v === "") return undefined;
@@ -95,7 +125,15 @@ function parse(args: readonly string[]): AskCommand | undefined {
     }
   }
   if (text === undefined) return undefined;
-  return { text, json, timeoutS: timeoutS ?? DEFAULT_ASK_TIMEOUT_S, ...(agent === undefined ? {} : { agent }), ...(workspace === undefined ? {} : { workspace }) };
+  return {
+    text,
+    json,
+    timeoutS: timeoutS ?? DEFAULT_ASK_TIMEOUT_S,
+    ...(agent === undefined ? {} : { agent }),
+    ...(workspace === undefined ? {} : { workspace }),
+    ...(continues === undefined ? {} : { continues }),
+    references,
+  };
 }
 
 /**
@@ -167,6 +205,16 @@ function refused(c: AskCommand, res: { status: number; body: unknown }, out: Cli
     out.stderr.write(`studio: ${oneLine(c.workspace ?? "")} is not one of ${name}'s settings workspaces; nothing was queued\n`);
     return 2;
   }
+  if (res.status === 409 && error === "continues_invalid") {
+    out.stderr.write(`studio: message ${c.continues ?? "?"} can't be continued (${oneLine(field(res.body, "reason") ?? "no reason given")}); nothing was queued\n`);
+    return 2;
+  }
+  if (res.status === 409 && error === "history_too_large") {
+    const thread = field(res.body, "thread");
+    const what = typeof thread === "number" ? `thread ${thread}'s history` : "the threads' history together";
+    out.stderr.write(`studio: ${what} is ${oneLine(field(res.body, "size"))} characters, over the bound of ${oneLine(field(res.body, "bound"))}; nothing was queued\n`);
+    return 2;
+  }
   if (res.status === 400 || res.status === 409) {
     out.stderr.write(`studio: ask refused: ${error}\n`);
     return 1;
@@ -182,7 +230,13 @@ export function askSubcommand(deps: AskSubcommandDeps = {}): ContributedSubcomma
   const pollMs = deps.pollMs ?? ASK_POLL_MS;
 
   async function run(c: AskCommand, client: CliApiClient, out: CliSubcommandOutput): Promise<number> {
-    const body = { text: c.text, ...(c.agent === undefined ? {} : { agent: c.agent }), ...(c.workspace === undefined ? {} : { workspace: c.workspace }) };
+    const body = {
+      text: c.text,
+      ...(c.agent === undefined ? {} : { agent: c.agent }),
+      ...(c.workspace === undefined ? {} : { workspace: c.workspace }),
+      ...(c.continues === undefined ? {} : { continues: c.continues }),
+      ...(c.references.length === 0 ? {} : { references: c.references }),
+    };
     const posted = await client.request("POST", "/ask", body);
     if (posted.status !== 202) return refused(c, posted, out);
     const id = positiveId(field(posted.body, "message_id"));
@@ -234,12 +288,12 @@ export function askSubcommand(deps: AskSubcommandDeps = {}): ContributedSubcomma
     async run(args, client, out) {
       const c = parse(args);
       if (c === undefined) {
-        out.stderr.write(`usage: ${ASK_HELP}\n`);
+        out.stderr.write(`usage: ${ASK_HELP}\n       ${ASK_THREAD_HELP}\n`);
         return 2;
       }
       const problem = askTextProblem(c.text);
       if (problem !== undefined) {
-        out.stderr.write(`studio: ${problem}\nusage: ${ASK_HELP}\n`);
+        out.stderr.write(`studio: ${problem}\nusage: ${ASK_HELP}\n       ${ASK_THREAD_HELP}\n`);
         return 2;
       }
       return run(c, client, out);
