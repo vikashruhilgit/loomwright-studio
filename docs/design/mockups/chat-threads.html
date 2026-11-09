@@ -606,8 +606,6 @@ const HUES={accent:'--accent',teal:'--crew-teal',berry:'--crew-berry'};
 /* The thread's agent: Wright on Chat, Sandbox Developer on its Crew thread. Both draw through the same thread functions (one component, Thread.tsx). */
 const AG=()=>V().scr==='crew'?AGENTS.dev:AGENTS.wright;
 const threadScr=()=>V().scr==='chat'||V().scr==='crew';
-/* The view key a thread flow lands on, on the visible thread screen: chat-<suffix> or crew-<suffix>. */
-const vk=suffix=>(V().scr==='crew'?'crew-':'chat-')+suffix;
 function avatarHTML(a,size){
   const sh=SHAPES[a.shape]; const [tx,ty]=sh.tail;
   const crown=a.id==='wright'?`<path class="crown" d="M${sh.crown[0]-6.5} ${sh.crown[1]+4.5}l1.5-5 3 3 2-4.5 2 4.5 3-3 1.5 5z"/>`:'';
@@ -761,7 +759,7 @@ const refSize=(t,m)=>m==='sum'&&t.sum?t.sum.est:t.size;
    reply (row id of the Reply strip), info (thread id of the open ⓘ panel), dlg (dialog over it), edit (preview in edit mode), fresh (the summary was
    started fresh), chip ({t: thread id, m: full|sum}), sent (rows the owner sent), summarizing (thread id), long (the long thread past the size hint),
    ref (the reference limit the owner saved), back (selector that gets focus when the dialog closes and no opener is left), see (selector scrolled into
-   view). When the dialog closes, the view key goes back to the key Summarize was clicked on (S.under), or to <screen>-threads for a forced preview.
+   view). A click never names its own result: every render re-derives the key from the state on screen (relabel(), below the registry).
    ADDING VIEWS (the next part of this mockup): add the SCREENS change, RENDER entry, VIEWS entries and a GROUPS entry at the SUBTASK-2 markers below,
    and its palette commands in palExtra(). Do not edit the entries above the markers. */
 const SCREENS={
@@ -809,7 +807,7 @@ const VIEWS={
   'chat-unreachable':{scr:'chat',st:'unreachable',label:'Kernel unreachable',grp:'states'},
   /* SUBTASK-2:VIEWS. Second part's forcing props: names (owner renames, by thread id), renaming (thread id being renamed), hint (the saved size hint),
      setDraft (unsaved Settings fields), dec (approval decisions, by id), raw (the raw-names disclosure open), sess (the selected session), later (the
-     sidebar shows the crew as they are later the same day). Every crew-* key has a chat-* twin, and every suffix a thread flow lands on (vk()) exists for both, because the flows name their result by suffix. */
+     sidebar shows the crew as they are later the same day). Every crew-* key has a chat-* twin, so a click path in either thread lands on a key that reproduces it. */
   'crew-threads':{scr:'crew',st:'threads',label:'Crew thread: Reply, Summarize, Copy reference',grp:'crew',later:1},
   'crew-plain-sent':{scr:'crew',st:'threads',label:'Plain message: a new topic',grp:'crew',later:1,sent:[{id:97,at:'16:12',text:'Draft the PR description template for studio-sandbox.',pending:1,path:'new'}]},
   'crew-reply':{scr:'crew',st:'threads',label:'Reply strip',grp:'crew',later:1,reply:91,see:'#m-91'},
@@ -827,6 +825,10 @@ const VIEWS={
   'settings-threads-edit':{scr:'settings',st:'threads',label:'Proposal used, not saved yet',grp:'hint',setDraft:{hint:String(HINT_PROPOSAL)}},
   'settings-threads-invalid':{scr:'settings',st:'threads',label:'Not a number: refused',grp:'hint',setDraft:{hint:'40k'}},
   'settings-threads-set':{scr:'settings',st:'threads',label:'Saved: set by you',grp:'hint',hint:HINT_SET},
+  'settings-threads-ref-edit':{scr:'settings',st:'threads',label:'Limit: proposal used, not saved yet',grp:'hint',setDraft:{ref:String(REF_PROPOSAL)}},
+  'settings-threads-ref-invalid':{scr:'settings',st:'threads',label:'Limit not a number: refused',grp:'hint',setDraft:{ref:'50k'}},
+  'settings-threads-ref-set':{scr:'settings',st:'threads',label:'Limit saved: set by you',grp:'hint',ref:REF_SET},
+  'settings-threads-both-set':{scr:'settings',st:'threads',label:'Both saved: set by you',grp:'hint',hint:HINT_SET,ref:REF_SET},
   'chat-rename':{scr:'chat',st:'threads',label:'Rename a thread in place',grp:'names',renaming:65,see:'#rn-in'},
   'chat-renamed':{scr:'chat',st:'threads',label:'Renamed by you',grp:'names',names:{65:'Studio-sandbox crew setup'},see:'#tt-65'},
   'sessions-names':{scr:'sessions',st:'list',label:'Sessions: every session named',grp:'names',later:1},
@@ -842,7 +844,7 @@ const DEFAULT_VIEW='chat-threads';
 /* Transient state is what a screen shows on top of its data: the Reply strip, the ⓘ panel, the preview and its edit, the chip, a running summary.
    Every setView clears all of it, so nothing a click opened leaks into another view. Persistent state (fresh, sent, the copied reference) is
    cleared only by a forced view, which then applies exactly what its entry names. */
-const transient=()=>({reply:null,info:null,dlg:null,edit:false,editText:null,chip:null,summarizing:null,under:null,draft:'',
+const transient=()=>({reply:null,info:null,dlg:null,edit:false,editText:null,chip:null,summarizing:null,draft:'',
   /* second part: the thread being renamed and its unsaved text, unsaved Settings fields and their error, the open raw-names disclosure, the selected session */
   renaming:null,rnText:null,setDraft:null,setErr:null,rawOpen:null,sess:null});
 /* names (renames), dec (approval decisions), hint, ref (the saved Settings) and copied are the owner's across screens. fresh, sent, long, bare,
@@ -855,40 +857,71 @@ function swapScreen(from,to){
   Object.assign(S,S.stash[to]||{fresh:false,sent:[],long:false,bare:false,sumText:baseSum(to),sumEdited:false});
 }
 let S=fresh();
-/* jump: the next render scrolls the thread to what the view is about (a view change or a send); otherwise the thread keeps its scroll. */
+/* jump: the next render scrolls the thread to what the view is about (a view change), or to the newest message ('end', a send); otherwise the
+   thread keeps its scroll. */
 let opener=null, overlayKey='', sumTk=0, jump=true;
 const V=()=>VIEWS[S.view];
-/* While a summary is being written or previewed, S.view names that flow and S.under keeps the key of the thread screen beneath it. Thread actions
-   read and write the key through these two, so a click during the flow re-keys what is beneath, and closing the preview restores it exactly. */
-const curKey=()=>S.under!=null?S.under:S.view;
-const setKey=k=>{ if(S.under!=null) S.under=k; else S.view=k; };
 const offline=()=>V().st==='unreachable';
 const dis=off=>off?' disabled title="Needs the kernel"':'';
 
+/* What a view forces: everything its entry names, and nothing else (transient state cleared, persistent state as the entry says). */
+function forcedState(v){
+  const x=VIEWS[v], o=transient();
+  Object.assign(o,{dlg:x.dlg||null,fresh:!!x.fresh,sent:(x.sent||[]).map(r=>({...r})),long:!!x.long,hint:x.long?HINT_SET:(x.hint||null),bare:x.st==='empty',
+    sumText:baseSum(x.scr),sumEdited:false,copied:null,names:{...(x.names||{})},dec:{...(x.dec||{})},ref:x.ref?{...x.ref}:null,stash:{}});
+  if(x.reply!=null) o.reply=x.reply;
+  if(x.info!=null) o.info=x.info;
+  if(x.edit){ o.edit=true; o.editText=baseSum(x.scr); }
+  if(x.chip){ o.chip={...x.chip}; o.copied=x.chip.t; }
+  if(x.summarizing!=null) o.summarizing=x.summarizing;
+  if(x.renaming!=null) o.renaming=x.renaming;
+  if(x.setDraft){ o.setDraft={...x.setDraft}; o.setErr=checkSet(o.setDraft).err; }
+  if(x.raw!=null) o.rawOpen={[x.raw]:true};
+  if(x.sess!=null) o.sess=x.sess;
+  return o;
+}
 function setView(v,keep){
   if(!Object.prototype.hasOwnProperty.call(VIEWS,v)) return false;
   const x=VIEWS[v];
   sumTk++; jump=true;
   const from=VIEWS[S.view]&&VIEWS[S.view].scr;
-  Object.assign(S,transient());
-  if(keep&&from!==x.scr) swapScreen(from,x.scr);
-  S.view=v; S.dlg=x.dlg||null;
-  if(!keep){
-    S.fresh=!!x.fresh; S.sent=(x.sent||[]).map(r=>({...r})); S.long=!!x.long; S.hint=x.long?HINT_SET:(x.hint||null); S.bare=x.st==='empty';
-    S.sumText=baseSum(x.scr); S.sumEdited=false; S.copied=null;
-    S.names={...(x.names||{})}; S.dec={...(x.dec||{})}; S.ref=x.ref?{...x.ref}:null; S.stash={};
-    if(x.reply!=null) S.reply=x.reply;
-    if(x.info!=null) S.info=x.info;
-    if(x.edit){ S.edit=true; S.editText=baseSum(x.scr); }
-    if(x.chip){ S.chip={...x.chip}; S.copied=x.chip.t; }
-    if(x.summarizing!=null) S.summarizing=x.summarizing;
-    if(x.renaming!=null) S.renaming=x.renaming;
-    if(x.setDraft){ S.setDraft={...x.setDraft}; S.setErr=checkSet(S.setDraft).err; }
-    if(x.raw!=null) S.rawOpen={[x.raw]:true};
-    if(x.sess!=null) S.sess=x.sess;
-  }
+  if(keep){ Object.assign(S,transient()); if(from!==x.scr) swapScreen(from,x.scr); S.dlg=x.dlg||null; }
+  else Object.assign(S,forcedState(v));
+  S.view=v;
   return true;
 }
+/* The view key names what is on screen, so a copied or reloaded hash shows it again. No click sets the key: relabel() runs on every render (and
+   after a change drawn without one) and compares the state with what each view of the same screen forces, field by field. Typed content is not
+   compared (the composer, a sent message's words, a new name, an edited summary, a number in Settings): the key names the state, the words are the
+   owner's. The current key stays while it reproduces the screen; otherwise the first view that does is chosen. A state no view forces (two flows
+   open at once, a decision on a card no view decides) gets the nearest key: first the one whose thread contents and open rename field match
+   (weight 100), then the one with the fewest other differing fields, the current key on a tie. */
+const SAVED=(o,k)=>o[k]?o[k].by+(o[k].v===PROPOSAL[k]?':proposal':':own'):null;
+const DRAFT=o=>['hint','ref'].filter(k=>o.setDraft&&o.setDraft[k]!=null&&numIn(o.setDraft[k])!==(o[k]?String(o[k].v):'')).join();
+const KEY_FIELDS=[
+  [100,o=>!!o.fresh],[100,o=>JSON.stringify(o.sent.map(r=>[r.cont!=null?r.cont:null,r.ref?r.ref.t+':'+r.ref.m:null,r.path]))],[100,o=>!!o.long],[100,o=>!!o.bare],
+  [100,o=>o.renaming],[1,o=>o.reply],[1,o=>o.info],[1,o=>o.dlg],[1,o=>!!o.edit],[1,o=>o.chip?o.chip.t+':'+o.chip.m:null],[1,o=>o.summarizing],
+  [1,o=>!!o.sumEdited],[1,o=>SAVED(o,'hint')],[1,o=>SAVED(o,'ref')],[1,o=>Object.keys(o.names).sort().join()],
+  [1,o=>JSON.stringify(Object.entries(o.dec).sort())],[1,o=>Object.keys(o.rawOpen||{}).filter(k=>o.rawOpen[k]).sort().join()],[1,o=>o.sess],
+  [1,o=>DRAFT(o)],[1,o=>o.setErr?o.setErr.k:null]
+];
+const keySig=o=>KEY_FIELDS.map(([,f])=>{ const v=f(o); return v==null?null:v; });
+const SIGS={};
+const forcedSig=v=>SIGS[v]||(SIGS[v]=keySig(forcedState(v)));
+const keyDist=(a,b)=>KEY_FIELDS.reduce((n,[w],i)=>n+(a[i]===b[i]?0:w),0);
+function relabel(){
+  const cur=V(), me=keySig(S);
+  let best=S.view, bd=keyDist(me,forcedSig(S.view));
+  if(!bd) return;
+  for(const k of Object.keys(VIEWS)){
+    const x=VIEWS[k]; if(x.scr!==cur.scr||x.st!==cur.st||!!x.later!==!!cur.later) continue;
+    const d=keyDist(me,forcedSig(k)); if(d<bd){ bd=d; best=k; }
+  }
+  S.view=best;
+}
+function pressStrip(){ $$('#groups button').forEach(b=>{const on=b.dataset.v===S.view;b.classList.toggle('on',on);b.setAttribute('aria-pressed',on)}); }
+/* For a change drawn without a render (the preview's Edit, typing in Settings, the raw-names disclosure). */
+function syncKey(){ relabel(); pressStrip(); writeHash(); }
 function applyHash(){
   const p=new URLSearchParams(location.hash.slice(1));
   setView(p.get('view')||DEFAULT_VIEW)||setView(DEFAULT_VIEW);
@@ -1003,13 +1036,13 @@ function previewDialog(){
 }
 const dialogHTML=()=>S.dlg==='preview'?previewDialog():'';
 
-/* Chat actions. Each changes only Chat's own state and sets the view key that names the result, so the URL hash follows the click path. */
+/* Chat actions. Each changes only Chat's own state; the render after it names the result in the view key (relabel()), so the hash follows the click path. */
 function chatAct(a,el){
   const off=offline(), tid=+el.dataset.t, say=m=>{ toast(m); live(m); }, n=AG().name;
   switch(a){
-    case 'reply': { if(off) return; S.reply=+el.dataset.r; if(curKey()===vk("threads")) setKey(vk("reply")); render(); $('#cin')?.focus({preventScroll:true}); live(`Replying to ${n}'s message of ${rowById(S.reply).rat}.`); break; }
+    case 'reply': { if(off) return; S.reply=+el.dataset.r; render(); $('#cin')?.focus({preventScroll:true}); live(`Replying to ${n}'s message of ${rowById(S.reply).rat}.`); break; }
     case 'reply-x': cancelReply(); break;
-    case "info": { S.info=S.info===tid?null:tid; if(S.info!=null&&curKey()===vk("threads")) setKey(vk("info")); else if(S.info==null&&curKey()===vk("info")) setKey(vk("threads")); render(); if(S.info) within($(`#info-${tid}`),"nearest"); break; }
+    case "info": { S.info=S.info===tid?null:tid; render(); if(S.info) within($(`#info-${tid}`),"nearest"); break; }
     case 'summarize': {
       if(off||S.summarizing!=null) return;
       /* The summary flow is drawn for one thread per screen (CTX().sumId), once. Summarize on any other thread, or on that one once it is summarized,
@@ -1017,28 +1050,26 @@ function chatAct(a,el){
       const C=CTX(), own=findThread(tid), drawn=findThread(C.sumId);
       if(tid!==C.sumId||S.fresh){ const m=tid!==C.sumId?`Summarize & start fresh on “${own?own.title:'this thread'}” works the same way; this mockup draws it on “${drawn.title}”.`:`“${drawn.title}” is already summarized and continued in “${findThread(C.newId).title}”. This mockup draws one summary of it.`; note(m); live(m); return; }
       setOpener(el); S.info=null;
-      /* The key beneath the flow: what was on screen, less the ⓘ panel this closes. Closing the preview restores it. */
-      S.under=curKey()===vk('info')?vk('threads'):curKey();
-      S.summarizing=tid; S.view=vk('summarizing'); render(); live(`${n} is writing a summary of this thread.`);
+      S.summarizing=tid; render(); live(`${n} is writing a summary of this thread.`);
       /* Only a view change (setView bumps sumTk) cancels the wait. Whatever else happened meanwhile, the flag is cleared and the preview opens. */
       const tk=++sumTk; setTimeout(()=>{ if(tk!==sumTk||S.summarizing!==tid) return;
-        S.summarizing=null; setOpener($(`#main [data-act="summarize"][data-t="${tid}"]`)); S.view=vk('preview'); S.dlg='preview'; render(); live('The summary is ready to read.'); },1400);
+        S.summarizing=null; setOpener($(`#main [data-act="summarize"][data-t="${tid}"]`)); S.dlg='preview'; render(); live('The summary is ready to read.'); },1400);
       break; }
     case 'edit': {
       if(S.edit){ S.edit=false; } else { S.edit=true; if(S.editText==null) S.editText=S.sumText; }
-      S.view=vk(S.edit?'preview-edit':'preview'); redrawOverlay(); ($(S.edit?'#sumedit':'#overlay [data-act="edit"]'))?.focus({preventScroll:true}); writeHash(); break; }
+      redrawOverlay(); ($(S.edit?'#sumedit':'#overlay [data-act="edit"]'))?.focus({preventScroll:true}); syncKey(); break; }
     case 'fresh': {
       if(S.editText!=null){ S.sumEdited=S.editText!==CTX().sum; S.sumText=S.editText; }
       /* Start fresh moves to the new thread, so the Reply strip and an open rename (both on the old thread) end here; a chip stays in the composer. */
-      dropOverlay(); S.under=null; S.reply=null; S.renaming=null; S.rnText=null; S.fresh=true;
-      S.view=S.chip?vk(S.chip.m==='sum'?'reference-summary':'reference'):vk('fresh'); render(); seeThread(CTX().newId);
+      dropOverlay(); S.reply=null; S.renaming=null; S.rnText=null; S.fresh=true;
+      render(); seeThread(CTX().newId);
       say(S.sumEdited?'Started a new thread from your edited summary. The old thread stays, and Reply still continues it.':'Started a new thread from the summary. The old thread stays, and Reply still continues it.'); break; }
     case 'goto-thread': seeThread(tid); break;
     case 'copyref': { const t=findThread(tid); S.copied=tid; say(`Copied a reference to “${t.title}”. Paste it into any composer, Chat or Crew, with ⌘V.`); break; }
-    case 'chip-mode': { S.chip.m=el.dataset.m; const k=curKey(); if(k===vk('threads')||k===vk('fresh')||/-reference(-summary)?$/.test(k)) setKey(vk(S.chip.m==='sum'?'reference-summary':'reference')); render(); break; }
+    case 'chip-mode': { S.chip.m=el.dataset.m; render(); break; }
     case 'chip-x': { S.chip=null; render(); $('#cin')?.focus({preventScroll:true}); live('Reference removed.'); break; }
     case 'send': send(); break;
-    case 'rename': { if(off) return; S.renaming=tid; S.rnText=null; S.info=null; if(curKey()==='chat-threads'||curKey()==='chat-info') setKey('chat-rename'); else if(curKey()===vk('info')) setKey(vk('threads')); render(); const i=$('#rn-in'); if(i){ i.focus({preventScroll:true}); i.select(); } live('Rename the thread. Enter saves, Escape cancels.'); break; }
+    case 'rename': { if(off) return; S.renaming=tid; S.rnText=null; S.info=null; render(); const i=$('#rn-in'); if(i){ i.focus({preventScroll:true}); i.select(); } live('Rename the thread. Enter saves, Escape cancels.'); break; }
     case 'rename-save': saveRename(); break;
     case 'rename-x': cancelRename(); break;
   }
@@ -1046,7 +1077,7 @@ function chatAct(a,el){
 /* Rename in place. Save and Enter store the owner's name (empty brings back the derived one); Cancel, Esc and leaving the view drop the unsaved text.
    Every exit returns focus to that thread's Rename button. */
 function endRename(id,msg){
-  S.renaming=null; S.rnText=null; if(curKey()==='chat-rename') setKey(msg&&S.names[id]!=null?'chat-renamed':'chat-threads'); render();
+  S.renaming=null; S.rnText=null; render();
   $(`#main [data-act="rename"][data-t="${id}"]`)?.focus({preventScroll:true}); live(msg||'Rename cancelled.');
 }
 function cancelRename(){ if(S.renaming!=null) endRename(S.renaming,''); }
@@ -1061,12 +1092,12 @@ function saveRename(){
 }
 function cancelReply(){
   const id=S.reply; if(id==null) return;
-  S.reply=null; if(curKey()===vk('reply')) setKey(vk('threads')); render();
+  S.reply=null; render();
   $(`#main [data-act="reply"][data-r="${id}"]`)?.focus({preventScroll:true}); live('Reply cancelled.');
 }
 function closeInfo(){
   const id=S.info; if(id==null) return;
-  S.info=null; if(curKey()===vk('info')) setKey(vk('threads')); render();
+  S.info=null; render();
   $(`#main [data-act="info"][data-t="${id}"]`)?.focus({preventScroll:true});
 }
 /* Scrolls the thread only, never the page: scrollIntoView would also move the review harness around the window. */
@@ -1093,8 +1124,7 @@ function send(){
   const C=CTX(), id=C.nextId+S.sent.length, at=C.at, cont=S.reply, ref=S.chip?{...S.chip}:null;
   S.sent.push({id,at,text,cont:cont!=null?cont:undefined,ref,pending:1,path:cont!=null?'resumed':'new'});
   S.reply=null; S.chip=null; S.draft=''; S.info=null;
-  S.view=vk(cont!=null?'reply-sent':ref?'reference-sent':'plain-sent');
-  jump=cont==null; render(); if(cont!=null) within($(`#m-${id}`),"nearest"); $('#cin')?.focus({preventScroll:true});
+  jump=cont==null?'end':false; render(); if(cont!=null) within($(`#m-${id}`),"nearest"); $('#cin')?.focus({preventScroll:true});
   live(cont!=null?`Sent as a reply. ${AG().name} continues this thread.`:`Sent as a new topic. ${AG().name} starts a fresh session.`);
 }
 /* ---------- Session names: Sessions and Tasks (second part) ----------
@@ -1241,14 +1271,13 @@ function sideAct(a,el){
     case 'open-thread': {
       const scr=el.dataset.what; setView(SCREENS[scr].home,true);
       /* A thread started from a summary exists only once that screen has started fresh, so opening one draws that screen's started-fresh state. */
-      if(id===CTX().newId&&!S.fresh){ S.fresh=true; S.view=vk('fresh'); }
+      if(id===CTX().newId&&!S.fresh) S.fresh=true;
       render(); seeThread(id); if(!$(`#tt-${id}`)) $('#col')?.focus({preventScroll:true}); break; }
-    case 'set-use': { const k=el.dataset.k==='ref'?'ref':'hint'; S.setDraft={...(S.setDraft||{}),[k]:String(PROPOSAL[k])}; S.setErr=null; if(S.view==='settings-threads'&&k==='hint') S.view='settings-threads-edit'; render(); $('#set-save')?.focus({preventScroll:true}); live(`Wright's proposal, ${fmt(PROPOSAL[k])} tokens, is in the field. Save to use it.`); break; }
+    case 'set-use': { const k=el.dataset.k==='ref'?'ref':'hint'; S.setDraft={...(S.setDraft||{}),[k]:String(PROPOSAL[k])}; S.setErr=null; render(); $('#set-save')?.focus({preventScroll:true}); live(`Wright's proposal, ${fmt(PROPOSAL[k])} tokens, is in the field. Save to use it.`); break; }
     case 'set-save': saveSettings(); break;
-    case 'set-discard': { S.setDraft=null; S.setErr=null; if(/-(edit|invalid)$/.test(S.view)) S.view=S.hint?'settings-threads-set':'settings-threads'; render(); $('#set-hint')?.focus({preventScroll:true}); live('Discarded. The saved settings stand.'); break; }
+    case 'set-discard': { S.setDraft=null; S.setErr=null; render(); $('#set-hint')?.focus({preventScroll:true}); live('Discarded. The saved settings stand.'); break; }
     case 'ap-approve': case 'ap-deny': {
       S.dec[id]=a==='ap-approve'?'approved':'denied';
-      if(id===13&&a==='ap-approve'&&S.view==='approvals-fit-gap') S.view='approvals-fit-closed';
       render();
       const nx=id===13&&a==='ap-approve'?$('#main [data-act="ap-enable"][data-t="14"]'):null;
       (nx&&!nx.disabled?nx:$(`#ap-t-${id}`))?.focus({preventScroll:true});
@@ -1258,11 +1287,11 @@ function sideAct(a,el){
 }
 function saveSettings(){
   const r=checkSet(S.setDraft);
-  if(r.err){ S.setErr=r.err; if(S.view==='settings-threads-edit') S.view='settings-threads-invalid'; render(); $(`#set-${r.err.k}`)?.focus({preventScroll:true}); return; }
+  if(r.err){ S.setErr=r.err; render(); $(`#set-${r.err.k}`)?.focus({preventScroll:true}); return; }
   if(!setDirty()){ S.setDraft=null; S.setErr=null; render(); $('#set-hint')?.focus({preventScroll:true}); return; }
   S.hint=r.hint==null?null:{v:r.hint,by:'owner'};
   S.ref=r.ref==null?null:{v:r.ref,by:'owner'};
-  S.setDraft=null; S.setErr=null; if(/^settings-/.test(S.view)) S.view=S.hint?'settings-threads-set':'settings-threads';
+  S.setDraft=null; S.setErr=null;
   render(); $('#set-hint')?.focus({preventScroll:true});
   live(`Saved. Size hint ${S.hint?fmt(S.hint.v)+' tokens, set by you':'not set'}; reference limit ${S.ref?fmt(S.ref.v)+' tokens, set by you':'not set'}.`);
 }
@@ -1301,7 +1330,7 @@ function render(){
   const sc0=$('#thread'), prevScroll=sc0?sc0.scrollTop:0;
   if(S.theme) document.documentElement.dataset.theme=S.theme; else delete document.documentElement.dataset.theme;
   $$('#themeseg button').forEach(b=>b.classList.toggle('on',b.dataset.t===S.theme));
-  $$('#groups button').forEach(b=>{const on=b.dataset.v===S.view;b.classList.toggle('on',on);b.setAttribute('aria-pressed',on)});
+  relabel(); pressStrip();
   $('#nav').innerHTML=navHTML();
   $('#footdot').className='dot '+(offline()?'danger':'idle');
   $('#foottext').textContent=offline()?'kernel unreachable':'idle';
@@ -1312,9 +1341,9 @@ function render(){
   const sc=$('#thread');
   if(sc){
     if(!jump&&sc0) sc.scrollTop=prevScroll;
-    else { const see=V().see&&$(V().see); if(see) within(see,"center"); else sc.scrollTop=sc.scrollHeight; }
+    else { const see=jump!=='end'&&V().see&&$(V().see); if(see) within(see,"center"); else sc.scrollTop=sc.scrollHeight; }
   }
-  else if(jump&&V().see){ const el=$(V().see), box=el&&el.closest('.scroll'); if(box) box.scrollTop+=el.getBoundingClientRect().top-box.getBoundingClientRect().top-16; }
+  else if(jump===true&&V().see){ const el=$(V().see), box=el&&el.closest('.scroll'); if(box) box.scrollTop+=el.getBoundingClientRect().top-box.getBoundingClientRect().top-16; }
   jump=false;
   renderOverlay(); writeHash();
   if(keep&&!$('#overlay').innerHTML){ const el=$(keep); if(el&&!el.disabled) el.focus({preventScroll:true}); }
@@ -1344,8 +1373,8 @@ function closeOverlay(){
   if(!$('#overlay').innerHTML) return;
   const wasPal=overlayKey==='pal', back=V().back;
   S.dlg=null; S.edit=false; S.editText=null; $('#overlay').innerHTML=''; overlayKey='';
-  /* The preview closes onto the key Summarize was clicked on, kept in S.under with whatever changed beneath it; a forced preview onto <screen>-threads. */
-  if(!wasPal&&threadScr()){ S.view=S.under!=null?S.under:vk('threads'); S.under=null; render(); }
+  /* Closing the preview re-renders the thread beneath it; render re-derives the key from what is left on screen. */
+  if(!wasPal&&threadScr()) render();
   restoreFocus(back);
 }
 function trapTab(e){
@@ -1456,10 +1485,11 @@ document.addEventListener('input',e=>{
     S.setDraft={...(S.setDraft||{}),[e.target.dataset.k]:e.target.value};
     const d=setDirty(); $('#set-save').disabled=!d; $('#set-discard').disabled=!d;
     $('#set-state').textContent=d?'Unsaved change. Leaving Settings drops it, as Discard does.':'Saved.';
+    syncKey();
   }
 });
 /* The raw-names disclosure keeps its open state across re-renders (an approval decision re-renders the card). */
-document.addEventListener('toggle',e=>{ const d=e.target; if(d.matches&&d.matches('details.raw')){ S.rawOpen={...(S.rawOpen||{}),[d.dataset.raw]:d.open}; } },true);
+document.addEventListener('toggle',e=>{ const d=e.target; if(d.matches&&d.matches('details.raw')&&d.isConnected){ S.rawOpen={...(S.rawOpen||{}),[d.dataset.raw]:d.open}; syncKey(); } },true);
 document.addEventListener('paste',e=>{ if(e.target.id==='cin'&&threadScr()&&S.copied!=null&&pasteRef()) e.preventDefault(); });
 document.addEventListener('keydown',e=>{
   const t=e.target, mod=e.metaKey||e.ctrlKey, open=!!$('#overlay').innerHTML;
