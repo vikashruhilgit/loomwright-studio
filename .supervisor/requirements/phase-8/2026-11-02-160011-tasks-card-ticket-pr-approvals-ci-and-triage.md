@@ -1,6 +1,7 @@
 # 11 — Tasks: the ticket → PR card (approvals, CI, owner, triage) and its history
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/244
 
 **Priority:** MVP · ROADMAP phase 8 · D9, UI.md Tasks
 
@@ -91,3 +92,9 @@ app/src/screens/tasks/
 app/e2e/tasks.spec.ts
 app/e2e/fixtures/tasks.ts
 docs/evidence/phase-8-polish/
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-09T08:59:21Z
+- **Brief:** .supervisor/jobs/done/2026-11-09-tasks-card-ticket-pr-approvals-ci-triage.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/244
