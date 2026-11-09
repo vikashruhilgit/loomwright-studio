@@ -261,12 +261,18 @@ export function checkMergedByGate(db: Database.Database, start: RunStart, repo: 
  * Self-contained mirror of the rail's decision rule, NOT an import: this harness is the independent audit
  * of a rail regression, so it must not share the rail's code. Decision rule, on shell words:
  * - the command is split into words (quotes kept whole) and into simple commands at an unquoted `;` `|` `&` or newline;
- * - a simple command is `gh` (program basename, case-folded); its first two non-flag words, with a flag that
- *   could take a value read both ways (`gh pr -R o/r merge 5`), are `pr merge`;
- * - or `api`, which merges when it names a GraphQL `mergePullRequest` / `enablePullRequestAutoMerge` /
- *   `enqueuePullRequest`, sends a GraphQL body it cannot read (`--input`, `-F k=@file`), or reaches
- *   `…/pulls/<n>/merge` with a non-GET method (`-X`/`--method`, or fields without a method, which gh sends as POST).
+ * - each word is brace-expanded (`{a,b}` lists, nested; a `{1..9}` sequence reads as `*`; over 64 results reads as
+ *   `*`), an empty result is dropped, and the first word is the program: `gh` by basename, case-folded;
+ * - `gh`'s first two non-flag words are read as globs (`*`, `?`, `[x]` could be any text), with a flag that could
+ *   take a value read both ways (`gh pr -R o/r merge 5`; a globbed flag could be any flag); more than 64 readings
+ *   fail closed as a merge. A reading is a merge when it is `pr merge`, or when it is `api` and `ghApiMerges`;
+ * - `ghApiMerges`: a GraphQL `mergePullRequest` / `enablePullRequestAutoMerge` / `enqueuePullRequest`; a GraphQL
+ *   endpoint with a body it cannot read (`--input`, `-F k=@file`, a globbed word or an unknown short flag); or a
+ *   `…/pulls/<n>/merge` endpoint (brace-expanded, percent-decoded or not, `?query` cut, `//` `.` `..` normalised, globs
+ *   matched) with a non-GET method (`-X`/`--method`, or fields without a method, which gh sends as POST) or with a
+ *   flag it cannot account for (a glob, an unknown short flag such as `-z`), which could be `-X PUT`.
  * A GET of the merge endpoint, and the words `gh pr merge` inside a quoted argument, are not merges.
+ * Not covered, as in the rail: `env gh …`, `sh -c …`, aliases and scripts.
  */
 function shellSegments(command: string): string[][] {
   const segments: string[][] = [[]];
@@ -306,27 +312,120 @@ function shellSegments(command: string): string[][] {
   return segments.filter((s) => s.length > 0);
 }
 
-/** `gh pr`'s first two command words, one list per reading: a flag that could take a value is read both ways. */
-function ghPositionalReadings(args: readonly string[]): string[][] {
-  const readings: string[][] = [];
-  const walk = (from: number, found: readonly string[]): void => {
+const MAX_EXPANSIONS = 64;
+
+/** A word after brace expansion (`{a,b}` lists, nested; `{1..9}` reads as `*`); too many results read as `*`. */
+function braceWords(word: string): string[] {
+  const out: string[] = [];
+  const expand = (s: string): boolean => {
+    for (let i = s.indexOf("{"); i !== -1; i = s.indexOf("{", i + 1)) {
+      let depth = 0;
+      let close = -1;
+      const commas: number[] = [];
+      for (let j = i; j < s.length && close === -1; j++) {
+        if (s[j] === "{") depth++;
+        else if (s[j] === "}" && --depth === 0) close = j;
+        else if (s[j] === "," && depth === 1) commas.push(j);
+      }
+      if (close === -1) continue;
+      const pre = s.slice(0, i);
+      const post = s.slice(close + 1);
+      if (commas.length > 0) {
+        let start = i + 1;
+        for (const end of [...commas, close]) {
+          if (!expand(pre + s.slice(start, end) + post)) return false;
+          start = end + 1;
+        }
+        return true;
+      }
+      if (/^(-?\d+\.\.-?\d+|[a-z]\.\.[a-z])(\.\.-?\d+)?$/i.test(s.slice(i + 1, close))) return expand(`${pre}*${post}`);
+    }
+    if (out.length >= MAX_EXPANSIONS) return false;
+    out.push(s);
+    return true;
+  };
+  return expand(word) ? out : ["*"];
+}
+
+/** Whether a shell word, read as a glob (`*` `?` `[x]`), could be exactly `literal` (case-folded). */
+function globIs(word: string, literal: string): boolean {
+  let re = "";
+  const w = word.toLowerCase();
+  for (let i = 0; i < w.length; i++) {
+    const c = w[i] as string;
+    if (c === "*") re += ".*";
+    else if (c === "?") re += ".";
+    else if (c === "[" && w.indexOf("]", i + 2) !== -1) {
+      re += ".";
+      i = w.indexOf("]", i + 2);
+    } else re += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${re}$`).test(literal.toLowerCase());
+}
+
+const GLOB_CHAR = /[*?[]/;
+const isGlobbedFlag = (a: string): boolean => a.startsWith("-") && GLOB_CHAR.test(a);
+
+/** `gh`'s first two command words (with their index), one list per reading: a flag that could take a value is read both ways. `undefined`: too many readings. */
+function ghPositionalReadings(args: readonly string[]): { word: string; index: number }[][] | undefined {
+  const readings: { word: string; index: number }[][] = [];
+  const walk = (from: number, found: readonly { word: string; index: number }[]): boolean => {
     const words = [...found];
     for (let i = from; i < args.length && words.length < 2; i++) {
       const a = args[i] as string;
       if (a === "") continue;
-      if (!a.startsWith("-")) words.push(a);
-      else if (a !== "-h" && a !== "--help" && a !== "--" && !a.includes("=") && (a.length === 2 || a.startsWith("--") || a.endsWith("R")) && i + 1 < args.length) walk(i + 2, words);
+      if (!a.startsWith("-")) words.push({ word: a, index: i });
+      else if (
+        (isGlobbedFlag(a) || (a !== "-h" && a !== "--help" && a !== "--" && !a.includes("=") && (a.length === 2 || a.startsWith("--") || a.endsWith("R")))) &&
+        i + 1 < args.length &&
+        !walk(i + 2, words)
+      ) {
+        return false;
+      }
     }
     readings.push(words);
+    return readings.length <= MAX_EXPANSIONS;
   };
-  walk(0, []);
-  return readings;
+  return walk(0, []) ? readings : undefined;
+}
+
+/** Whether `word` could reach the endpoint `target` (`**` any run of path segments, `*` any one): expanded, percent-decoded or not, `?query` cut or not, normalised. */
+function endpointIs(word: string, target: readonly string[]): boolean {
+  return braceWords(word).some((e) => {
+    let decoded = e;
+    try {
+      decoded = decodeURIComponent(e);
+    } catch {
+      // malformed percent-encoding: the raw text is still compared
+    }
+    return [e, decoded].some((v) =>
+      [v, v.replace(/[?#].*$/, "")].some((x) => {
+        const segs: string[] = [];
+        for (const part of x.split("/")) {
+          if (part === "" || part === ".") continue;
+          if (part === "..") {
+            const last = segs.pop();
+            if (last !== undefined && /^\*\*+$/.test(last)) segs.push(last);
+          } else segs.push(part);
+        }
+        const meets = (pi: number, ti: number): boolean => {
+          if (ti === target.length) return pi === segs.length;
+          const wild = pi < segs.length - 1 && /^\*\*+$/.test(segs[pi] as string);
+          if (target[ti] === "**") return meets(pi, ti + 1) || (pi < segs.length && meets(pi + 1, ti));
+          if (wild && (meets(pi + 1, ti) || meets(pi, ti + 1))) return true;
+          return pi < segs.length && (target[ti] === "*" || globIs(segs[pi] as string, target[ti] as string)) && meets(pi + 1, ti + 1);
+        };
+        return meets(0, 0);
+      }),
+    );
+  });
 }
 
 function ghApiMerges(args: readonly string[]): boolean {
   let method = "";
   let fields = false;
   let opaque = false;
+  let unread = args.some(isGlobbedFlag);
   for (let i = 0; i < args.length; i++) {
     const a = args[i] as string;
     if (a === "--method") method = args[++i] ?? "";
@@ -339,10 +438,15 @@ function ghApiMerges(args: readonly string[]): boolean {
       const value = a.includes("=") ? a.slice(a.indexOf("=") + 1) : (args[++i] ?? "");
       if (a.startsWith("--field") && value.includes("=@")) opaque = true;
     } else if (/^-[^-]/.test(a)) {
-      for (let j = 1; j < a.length; j++) {
+      let accounted = false;
+      for (let j = 1; j < a.length && !accounted; j++) {
         const c = a[j] as string;
-        if (c === "i") continue;
+        if (c === "i") {
+          if (a[j + 1] === "=" || j === a.length - 1) accounted = true;
+          continue;
+        }
         if (!"XfFHpqt".includes(c)) break;
+        accounted = true;
         const glued = a.slice(j + 1);
         const value = glued === "" && "XfF".includes(c) ? (args[++i] ?? "") : glued.replace(/^=/, "");
         if (c === "X") method = value;
@@ -350,23 +454,28 @@ function ghApiMerges(args: readonly string[]): boolean {
           fields = true;
           if (c === "F" && value.includes("=@")) opaque = true;
         }
-        break;
       }
+      if (!accounted) unread = true;
     }
   }
+  if (unread || args.some((a) => GLOB_CHAR.test(a))) opaque = true;
   const verb = (method === "" ? (fields ? "POST" : "GET") : method).toUpperCase();
   if (args.some((a) => /mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest/i.test(a))) return true;
-  if (opaque && args.some((a) => /(^|\/)graphql$/.test(a))) return true;
-  return verb !== "GET" && args.some((a) => /(^|\/)pulls\/[^/]+\/merge\/?([?#]|$)/.test(a));
+  if (opaque && args.some((a) => endpointIs(a, ["**", "graphql"]))) return true;
+  return (verb !== "GET" || unread) && args.some((a) => endpointIs(a, ["**", "pulls", "*", "merge"]));
 }
 
 function ghMerges(command: string): boolean {
-  return shellSegments(command).some(([program, ...rest]) => {
+  return shellSegments(command).some((words) => {
+    const [program, ...rest] = words.flatMap(braceWords).filter((w) => w !== "");
     if ((program ?? "").split("/").pop()?.toLowerCase() !== "gh") return false;
     const readings = ghPositionalReadings(rest);
-    if (readings.some(([group, sub]) => group === "pr" && sub === "merge")) return true;
-    const apiAt = readings.some(([group]) => group === "api") ? rest.indexOf("api") : -1;
-    return apiAt !== -1 && ghApiMerges(rest.slice(apiAt + 1));
+    if (readings === undefined) return true;
+    return readings.some(([group, sub]) => {
+      if (group === undefined) return false;
+      if (globIs(group.word, "pr") && sub !== undefined && globIs(sub.word, "merge")) return true;
+      return globIs(group.word, "api") && ghApiMerges(rest.slice(group.index + 1));
+    });
   });
 }
 const GH_MERGE = { test: ghMerges };
@@ -714,6 +823,16 @@ describe("phase 8 live checkers against a canned store", () => {
       "gh api --method PUT repos/o/r/pulls/5/merge",
       "gh api -f merge_method=squash repos/o/r/pulls/5/merge",
       "gh api repos/o/r/pulls/5/merge -X PUT",
+      "gh {pr,merge} 5",
+      "gh pr {merge,view} 5",
+      "gh p? merge 5",
+      "gh pr mer* 5",
+      "gh pr [m]erge 5",
+      "gh api repos/o/r/pulls/5/%6Derge -X PUT",
+      "gh api repos/o/r/pulls//5/merge -X PUT",
+      "gh api repos/o/r/pulls/5/../5/merge -X PUT",
+      "gh api -zX PUT repos/o/r/pulls/5/merge",
+      "gh api -z repos/o/r/pulls/5/merge",
       "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
       "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
       "gh api graphql -f query='mutation { enqueuePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
