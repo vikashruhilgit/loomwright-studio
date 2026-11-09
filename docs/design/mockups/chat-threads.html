@@ -492,10 +492,54 @@ svg.i.xs{width:12px;height:12px;stroke-width:2}
 .refq .src{display:flex;align-items:center;gap:var(--space-1)}
 .refq summary{cursor:pointer;color:var(--accent);border-radius:var(--radius-xs);width:max-content}
 .refq .sumtext{margin-top:var(--space-2);background:var(--surface);max-height:180px}
+/* Rename a thread in place: the title becomes a field with Save and Cancel */
+.rnf{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;min-width:0}
+.rnf .field{width:360px;max-width:100%}
+.th .badge{flex:none}
+
+/* ---- Crew, Settings, Sessions, Tasks, Approvals (thread continuity, second part). Board and card rules copied unchanged from phase-8.html; the rest is new and named in the evidence README's table ---- */
+.board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--space-4);padding:var(--space-5);align-items:start}
+.bcol{display:flex;flex-direction:column;gap:var(--space-2);min-width:0}
+.bcol .hd{display:flex;align-items:center;gap:var(--space-2);height:var(--row-height)}
+.bcol .none{padding:var(--space-3);border:1px dashed var(--hairline);border-radius:var(--radius-md);color:var(--ink-tertiary)}
+.bcol ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2)}
+.tcard[disabled]{cursor:default;color:var(--ink)}
+.tcard .why{color:var(--ink-secondary)}
+.row .m{display:block;margin-top:var(--space-0-5)}
+/* A caption on a selected row or crew entry (accent-soft): ink-tertiary there is 4.09:1 in dark, so it steps up to ink-secondary */
+.row.sel .m,.nav.crew.sel .last{color:var(--ink-secondary)}
+.where{margin:0;color:var(--ink-secondary)}
+/* Settings: an owner setting, its value, who set it, and Wright's proposal beside it */
+.fe .field.num{width:200px}
+.fe .field .u{color:var(--ink-tertiary);flex:none}
+.prop{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;color:var(--ink-secondary)}
+.ferr{display:flex;align-items:flex-start;gap:var(--space-2);margin:0;color:var(--danger)}
+.ferr svg{margin-top:var(--space-0-5)}
+.facts{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;padding-left:166px}
+/* The charter card: kernel tools grouped by job, each with its purpose line, before any raw name */
+.jobs{display:flex;flex-direction:column;gap:var(--space-3)}
+.job{border:1px solid var(--hairline);border-radius:var(--radius-md);padding:var(--space-3) var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)}
+.job.add{border-color:var(--ok)}
+.job .jh{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
+.job ul{margin:0;padding-left:var(--space-5);display:flex;flex-direction:column;gap:var(--space-1);color:var(--ink-secondary)}
+.raw > summary{cursor:pointer;color:var(--accent);border-radius:var(--radius-xs);width:max-content}
+.raw .ms{margin:var(--space-2) 0 0;padding:var(--space-2) var(--space-3);border-radius:var(--radius-sm);background:var(--surface-sunken);color:var(--ink-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
+.pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-4);align-items:start}
+.fit{display:flex;align-items:flex-start;gap:var(--space-3);padding:var(--space-3);border-radius:var(--radius-sm);background:var(--attention-soft);color:var(--ink)}
+.fit > svg{margin-top:var(--space-0-5);color:var(--attention)}
+.fit.ok{background:var(--ok-soft)}
+.fit.ok > svg{color:var(--ok)}
+.fit p{margin:0}
+.fit .cap{color:var(--ink-secondary)}
+.fe .ctl p{margin:0}
+.pair .mcard .mh h3{flex:1 1 14em}
+.fit .blk{gap:var(--space-1)}
+.fit ul{margin:0;padding-left:var(--space-5)}
+.mcard h4{margin:0}
 </style>
 
 <div class="page">
-  <div class="intro"><h1>Loomwright Studio · Thread continuity mockup</h1><p>Reply, Summarize &amp; start fresh with its ⓘ and preview, and Copy reference with its chip, in Wright's Chat, every state in light and dark. Click through, use the keyboard, or force a view from the strip below or the URL hash. Nothing here talks to a real kernel.</p></div>
+  <div class="intro"><h1>Loomwright Studio · Thread continuity mockup</h1><p>Reply, Summarize &amp; start fresh with its ⓘ and preview, and Copy reference with its chip, in Wright's Chat and in Sandbox Developer's Crew thread; the size hint in Settings; session names in Sessions and Tasks, with rename in place; and the charter card in plain language in Approvals. Every state in light and dark. Click through, use the keyboard, or force a view from the strip below or the URL hash. Nothing here talks to a real kernel.</p></div>
 
   <div class="stage"><div class="desk">
     <div class="win" id="win">
@@ -518,7 +562,7 @@ svg.i.xs{width:12px;height:12px;stroke-width:2}
     <!-- Review-strip groups are built from GROUPS in the script: one group per design area, one button per VIEWS entry with that group. Add a group and its views there. -->
     <div id="groups" style="display:contents"></div>
     <div class="g"><button class="tog" id="tg-reset">Reset</button></div>
-    <div class="kbdl">Keys: <b>⌘K</b> or <b>/</b> palette · <b>⌘1</b>–<b>⌘6</b> screens (in a browser tab ⌘ switches tabs first; use <b>⌃1</b>–<b>⌃6</b> and <b>⌃K</b>) · <b>Tab</b> reaches Reply, Summarize &amp; start fresh, its ⓘ and Copy reference on each thread · <b>Esc</b> closes the summary preview or the ⓘ panel, else cancels the Reply strip · <b>⌘V</b> in the composer pastes a copied reference · <b>⏎</b> sends. Chat <b>⌘1</b>. URL hash: <b>#view=&lt;view&gt;&amp;theme=&lt;light|dark|system&gt;</b>.</div>
+    <div class="kbdl">Keys: <b>⌘K</b> or <b>/</b> palette · <b>⌘1</b>–<b>⌘6</b> screens (in a browser tab ⌘ switches tabs first; use <b>⌃1</b>–<b>⌃6</b> and <b>⌃K</b>) · <b>Tab</b> reaches Reply, Summarize &amp; start fresh, its ⓘ and Copy reference on each thread · <b>Esc</b> closes the summary preview or the ⓘ panel, else cancels the Reply strip · <b>⌘V</b> in the composer pastes a copied reference, in Chat or a Crew thread · <b>⏎</b> sends · Rename on a thread: <b>⏎</b> saves, <b>Esc</b> cancels and returns focus to Rename. Chat <b>⌘1</b>, Approvals <b>⌘3</b>, Sessions <b>⌘4</b>, Tasks <b>⌘5</b>, Settings <b>⌘6</b>; Sandbox Developer from the sidebar. URL hash: <b>#view=&lt;view&gt;&amp;theme=&lt;light|dark|system&gt;</b>.</div>
     <div class="note" id="note" aria-live="polite"></div>
   </div>
 </div>
@@ -545,7 +589,11 @@ const I={
   reply:ics('<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v5"/>'),
   info:ics('<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/>'),
   clip:ics('<path d="m21 11-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6L15 6.6"/>'),
-  fresh:ics('<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>')
+  fresh:ics('<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>'),
+  /* Second part: rename, a met check, a held approval */
+  pencil:ics('<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/>'),
+  check:ics('<path d="m5 12.5 4.5 4.5L19 7"/>'),
+  shield:ics('<path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Z"/>')
 };
 
 /* ---------- Avatars (static idle pose of the Avatar component; identity hues are crew-* only, Wright is accent) ---------- */
@@ -555,6 +603,11 @@ const SHAPES={
   turtle:{body:'<ellipse class="fill" cx="15" cy="17" rx="10" ry="7"/><circle class="fill" cx="27" cy="15" r="3"/><ellipse class="st" cx="15" cy="17" rx="10" ry="7"/><circle class="st" cx="27" cy="15" r="3"/><path class="ln" d="M8 17h14M11 12l2 5M19 12l-2 5M11 22l2-5M19 22l-2-5M8 12l-4-3M8 22l-4 3M22 22l3 3"/><circle class="knot" cx="28" cy="14" r="1"/>',tail:[4,17]}
 };
 const HUES={accent:'--accent',teal:'--crew-teal',berry:'--crew-berry'};
+/* The thread's agent: Wright on Chat, Sandbox Developer on its Crew thread. Both draw through the same thread functions (one component, Thread.tsx). */
+const AG=()=>V().scr==='crew'?AGENTS.dev:AGENTS.wright;
+const threadScr=()=>V().scr==='chat'||V().scr==='crew';
+/* The view key a thread flow lands on, on the visible thread screen: chat-<suffix> or crew-<suffix>. */
+const vk=suffix=>(V().scr==='crew'?'crew-':'chat-')+suffix;
 function avatarHTML(a,size){
   const sh=SHAPES[a.shape]; const [tx,ty]=sh.tail;
   const crown=a.id==='wright'?`<path class="crown" d="M${sh.crown[0]-6.5} ${sh.crown[1]+4.5}l1.5-5 3 3 2-4.5 2 4.5 3-3 1.5 5z"/>`:'';
@@ -612,27 +665,87 @@ const OTHER=[{id:31,agent:'mason',title:'Review notes for studio-sandbox',n:212,
 /* The owner's settings this mockup reads. The size hint is unset (no highlight) except in the long-thread view. */
 const REF_LIMIT={v:50000,by:'wright'};
 const HINT_SET={v:40000,by:'owner'};
+/* Wright's proposal for the size hint. It is shown beside the setting and never applied until the owner saves it (invariant 1). */
+const HINT_PROPOSAL=40000;
+const refLimit=()=>S.ref||REF_LIMIT;
+
+/* Sandbox Developer's Crew thread, later the same day (after the owner approved charter #11 at 14:40). Same fields as Wright's rows. */
+const CREW_SUMFILE='memory/sandbox-developer/threads/90.md';
+const CREW_SUM=[
+  '## Working on',
+  'Ticket #9 on vikashruhilgit/studio-sandbox, through /automate.',
+  '## Decided',
+  '- The /automate run opened PR #24 and parked it, awaiting merge.',
+  '- Asking for the merge waits on the held charter change #13 (Ask for a merge).',
+  '## Exact values',
+  '- Repo: vikashruhilgit/studio-sandbox',
+  '- Ticket: #9',
+  '- PR: #24',
+  '## Open questions',
+  '- None.',
+  '## Waiting on you',
+  '- Approval #13: the charter change that adds Ask for a merge.'
+].join('\n');
+const CREW90=[
+  {id:90,at:'15:02',text:'Take ticket #9 on studio-sandbox through /automate',rat:'15:04',sess:101,
+   reply:['I handed ticket #9 to /automate in my studio-sandbox workspace. The run is live, so I start nothing else on that repo until it ends.']},
+  {id:91,at:'15:40',cont:90,text:'How did the run go?',rat:'15:41',sess:101,path:'resumed',
+   reply:['It opened PR #24 and parked it, awaiting merge. I can\'t ask for the merge: my charter doesn\'t have that job. Wright has drafted the change, held for you as approval #13.']}
+];
+const CREW93=[
+  {id:93,at:'15:50',text:'Which tickets on studio-sandbox are still open?',rat:'15:51',sess:104,
+   reply:['Three: #11, #12 and #14. None of them is labelled for me yet.']}
+];
+const ROW96={id:96,start:'summary',rat:'16:14',sess:107,
+  reply:['I have read the summary. PR #24 is parked awaiting merge, and approval #13 still waits on you. Approve it and I\'ll ask for the merge.']};
+const CREW_SENT_REPLY={id:97,cont:91,at:'16:12',text:'Approval #13 is through. Ask for the merge on PR #24.',pending:1,path:'resumed'};
+/* What differs between the two thread screens: which thread the summary flow is drawn on, its file and size, and the ids and time a send gets. */
+const CTX=()=>V().scr==='crew'
+  ?{sumId:90,newId:96,sum:CREW_SUM,sumFile:CREW_SUMFILE,sumEst:700,nextId:97,at:'16:12'}
+  :{sumId:65,newId:71,sum:SUMMARY,sumFile:SUMFILE,sumEst:900,nextId:72,at:'14:23'};
+const baseSum=scr=>scr==='crew'?CREW_SUM:SUMMARY;
+/* A thread's summary text: the one this screen may have edited, else the other agent's file as written. */
+const sumOf=t=>t.agent===AG().id?S.sumText:t.agent==='wright'?SUMMARY:CREW_SUM;
 
 const firstLine=s=>{ const l=String(s).split('\n')[0].trim(); return l.length>64?l.slice(0,63).trimEnd()+'…':l; };
 const nMsgs=t=>t.earlier+t.rows.reduce((a,r)=>a+(r.text?1:0)+(r.reply?1:0),0);
 const msgs=n=>fmt(n)+(n===1?" message":" messages");
 
-/* The threads in Wright's Chat for the current state: the base data, then the summary's new thread, then what the owner sent in this mockup. */
-function threads(){
-  const L=S.long;
+/* Wright's threads for a state o (the current one by default): the base data, then the summary's new thread. */
+function wrightBase(o=S){
+  const L=o.long;
   const t65={id:65,agent:'wright',title:'Set up a crew for my studio-sandbox tickets',rows:ROWS65.map(r=>({...r})),earlier:L?40:0,read:L?64200:24800,size:L?51800:4200,
-    sum:S.fresh?{est:900,file:SUMFILE}:null,next:S.fresh?71:null};
+    sum:o.fresh?{est:900,file:SUMFILE}:null,next:o.fresh?71:null};
   const t70={id:70,agent:'wright',title:'What\'s waiting on me today?',rows:ROWS70.map(r=>({...r})),earlier:0,read:18900,size:700,sum:null};
-  const list=S.bare?[]:[t65,t70];
-  if(S.fresh&&!S.bare) list.push({id:71,agent:'wright',title:t65.title+' (continued)',from:65,rows:[{...ROW71}],earlier:0,read:6300,size:1300,sum:null});
+  const list=o.bare?[]:[t65,t70];
+  if(o.fresh&&!o.bare) list.push({id:71,agent:'wright',title:t65.title+' (continued)',from:65,rows:[{...ROW71}],earlier:0,read:6300,size:1300,sum:null});
+  return list;
+}
+/* Sandbox Developer's threads for a state o, in the same form. */
+function crewBase(o=S){
+  const t90={id:90,agent:'dev',title:'Take ticket #9 on studio-sandbox through /automate',rows:CREW90.map(r=>({...r})),earlier:0,read:21400,size:2600,
+    sum:o.fresh?{est:700,file:CREW_SUMFILE}:null,next:o.fresh?96:null};
+  const t93={id:93,agent:'dev',title:'Which tickets on studio-sandbox are still open?',rows:CREW93.map(r=>({...r})),earlier:0,read:8900,size:600,sum:null};
+  const list=o.bare?[]:[t90,t93];
+  if(o.fresh&&!o.bare) list.push({id:96,agent:'dev',title:t90.title+' (continued)',from:90,rows:[{...ROW96}],earlier:0,read:5200,size:900,sum:null});
+  return list;
+}
+/* A thread's title is the session title item 17b derives; the owner's rename, when there is one, wins over it. */
+const named=t=>S.names[t.id]!=null?{...t,title:S.names[t.id],derived:t.title,renamed:true}:t;
+/* The threads on the visible thread screen (Wright's Chat, or the Crew thread), then what the owner sent in this mockup. */
+function threads(){
+  const list=V().scr==='crew'?crewBase():wrightBase();
   S.sent.forEach(s=>{
     const th=s.cont!=null&&list.find(t=>t.rows.some(r=>r.id===s.cont));
     if(th) th.rows.push({...s});
-    else list.push({id:s.id,agent:'wright',title:firstLine(s.text),rows:[{...s}],earlier:0,read:0,size:0,sum:null});
+    else list.push({id:s.id,agent:AG().id,title:firstLine(s.text),rows:[{...s}],earlier:0,read:0,size:0,sum:null});
   });
-  return list;
+  return list.map(named);
 }
-const findThread=id=>threads().find(t=>t.id===id)||OTHER.find(t=>t.id===id)||null;
+/* The other agent's threads, as they stand when this screen is drawn: a reference copied on one thread screen pastes into the other.
+   Wright's thread 65 was summarized at 14:24, before the Crew thread's time; the Crew threads are drawn without a summary. */
+const otherThreads=()=>(V().scr==='crew'?wrightBase({fresh:true}):crewBase({})).map(named);
+const findThread=id=>threads().find(t=>t.id===id)||otherThreads().find(t=>t.id===id)||OTHER.find(t=>t.id===id)||null;
 const threadOfRow=id=>threads().find(t=>t.rows.some(r=>r.id===id));
 const rowById=id=>{ const t=threadOfRow(id); return t&&t.rows.find(r=>r.id===id); };
 const refN=t=>t.n!=null?t.n:nMsgs(t);
@@ -649,19 +762,25 @@ const refSize=(t,m)=>m==='sum'&&t.sum?t.sum.est:t.size;
 const SCREENS={
   chat:{label:'Chat',icon:I.chat,k:'1',home:'chat-threads'},
   team:{label:'Team',icon:I.team,k:'2',ext:'gui-v1.html'},
-  approvals:{label:'Approvals',icon:I.list,k:'3',ext:'phase-8.html'},
-  sessions:{label:'Sessions',icon:I.term,k:'4',ext:'gui-v1.html'},
-  tasks:{label:'Tasks',icon:I.board,k:'5',ext:'phase-8.html'},
-  settings:{label:'Settings',icon:I.gear,k:'6',ext:'gui-v2.html'}
-  /* SUBTASK-2:SCREENS — give a screen a home view here (and drop its ext) when this mockup draws it. */
+  approvals:{label:'Approvals',icon:I.list,k:'3',home:'approvals-charter-create'},
+  sessions:{label:'Sessions',icon:I.term,k:'4',home:'sessions-names'},
+  tasks:{label:'Tasks',icon:I.board,k:'5',home:'tasks-names'},
+  settings:{label:'Settings',icon:I.gear,k:'6',home:'settings-threads'},
+  /* SUBTASK-2:SCREENS — Approvals, Sessions, Tasks and Settings draw only what this item changes; each says where the rest is drawn.
+     The Crew thread is reached from the sidebar's crew list, not the screen list. */
+  crew:{label:'Sandbox Developer',icon:I.chat,home:'crew-threads'}
 };
 const NAV_ORDER=['chat','team','approvals','sessions','|','tasks','settings'];
 const GROUPS=[
   {id:'reply',label:'Chat · Reply'},
   {id:'summary',label:'Chat · Summarize & start fresh'},
   {id:'reference',label:'Chat · Copy reference'},
-  {id:'states',label:'Chat · States'}
-  /* SUBTASK-2:GROUPS — the Crew thread, size hint, session names and charter card groups */
+  {id:'states',label:'Chat · States'},
+  /* SUBTASK-2:GROUPS */
+  {id:'crew',label:'Crew · Sandbox Developer, later today'},
+  {id:'hint',label:'Settings · Size hint and reference limit'},
+  {id:'names',label:'Session names'},
+  {id:'charter',label:'Approvals · Charter card'}
 ];
 const SENT_REPLY={id:72,cont:67,at:'14:23',text:'Also give Sandbox Developer the tool to ask for a merge.',pending:1,path:'resumed'};
 const VIEWS={
@@ -682,15 +801,54 @@ const VIEWS={
   'chat-long':{scr:'chat',st:'threads',label:'Long thread past the size hint',grp:'states',long:1,see:'#m-67'},
   'chat-reply-fallback':{scr:'chat',st:'threads',label:'Reply: earlier session can\'t be continued',grp:'states',sent:[{...SENT_REPLY,path:'replayed'}]},
   'chat-reference-too-large':{scr:'chat',st:'threads',label:'Reference too large: refused',grp:'states',chip:{t:31,m:'full'}},
-  'chat-unreachable':{scr:'chat',st:'unreachable',label:'Kernel unreachable',grp:'states'}
-  /* SUBTASK-2:VIEWS — the Crew thread, size hint, session names and charter card views */
+  'chat-unreachable':{scr:'chat',st:'unreachable',label:'Kernel unreachable',grp:'states'},
+  /* SUBTASK-2:VIEWS. Second part's forcing props: names (owner renames, by thread id), renaming (thread id being renamed), hint (the saved size hint),
+     setDraft (unsaved Settings fields), dec (approval decisions, by id), raw (the raw-names disclosure open), sess (the selected session), later (the
+     sidebar shows the crew as they are later the same day). Every crew-* key has a chat-* twin, and every suffix a thread flow lands on (vk()) exists for both, because the flows name their result by suffix. */
+  'crew-threads':{scr:'crew',st:'threads',label:'Crew thread: Reply, Summarize, Copy reference',grp:'crew',later:1},
+  'crew-plain-sent':{scr:'crew',st:'threads',label:'Plain message: a new topic',grp:'crew',later:1,sent:[{id:97,at:'16:12',text:'Draft the PR description template for studio-sandbox.',pending:1,path:'new'}]},
+  'crew-reply':{scr:'crew',st:'threads',label:'Reply strip',grp:'crew',later:1,reply:91,see:'#m-91'},
+  'crew-reply-sent':{scr:'crew',st:'threads',label:'Reply sent',grp:'crew',later:1,sent:[CREW_SENT_REPLY]},
+  'crew-reply-fallback':{scr:'crew',st:'threads',label:'Continuing from the saved conversation',grp:'crew',later:1,sent:[{...CREW_SENT_REPLY,path:'replayed'}]},
+  'crew-info':{scr:'crew',st:'threads',label:'ⓘ in tokens',grp:'crew',later:1,info:90,see:'#info-90'},
+  'crew-summarizing':{scr:'crew',st:'threads',label:'Writing the summary',grp:'crew',later:1,summarizing:90,see:'#m-91'},
+  'crew-preview':{scr:'crew',st:'threads',label:'Summary preview',grp:'crew',later:1,dlg:'preview',after:'crew-threads',back:'[data-act="summarize"][data-t="90"]',see:'#m-91'},
+  'crew-preview-edit':{scr:'crew',st:'threads',label:'Preview: editing',grp:'crew',later:1,dlg:'preview',edit:1,after:'crew-threads',back:'[data-act="summarize"][data-t="90"]',see:'#m-91'},
+  'crew-fresh':{scr:'crew',st:'threads',label:'Started fresh',grp:'crew',later:1,fresh:1,see:'#tg-96'},
+  'crew-reference':{scr:'crew',st:'threads',label:'Chip: Wright\'s thread, full',grp:'crew',later:1,chip:{t:65,m:'full'}},
+  'crew-reference-summary':{scr:'crew',st:'threads',label:'Chip: its summary',grp:'crew',later:1,chip:{t:65,m:'sum'}},
+  'crew-reference-sent':{scr:'crew',st:'threads',label:'Sent: quoted data',grp:'crew',later:1,sent:[{id:97,at:'16:12',text:'Use the crew setup we agreed when you pick up the next ticket.',ref:{t:65,m:'sum'},pending:1,path:'new'}]},
+  'settings-threads':{scr:'settings',st:'threads',label:'Size hint not set: Wright\'s proposal beside it',grp:'hint'},
+  'settings-threads-edit':{scr:'settings',st:'threads',label:'Proposal used, not saved yet',grp:'hint',setDraft:{hint:String(HINT_PROPOSAL)}},
+  'settings-threads-invalid':{scr:'settings',st:'threads',label:'Not a number: refused',grp:'hint',setDraft:{hint:'40k'}},
+  'settings-threads-set':{scr:'settings',st:'threads',label:'Saved: set by you',grp:'hint',hint:HINT_SET},
+  'chat-rename':{scr:'chat',st:'threads',label:'Rename a thread in place',grp:'names',renaming:65,see:'#rn-in'},
+  'chat-renamed':{scr:'chat',st:'threads',label:'Renamed by you',grp:'names',names:{65:'Studio-sandbox crew setup'},see:'#tt-65'},
+  'sessions-names':{scr:'sessions',st:'list',label:'Sessions: every session named',grp:'names',later:1},
+  'sessions-renamed':{scr:'sessions',st:'list',label:'Sessions: the rename wins',grp:'names',later:1,names:{65:'Studio-sandbox crew setup'},sess:82},
+  'tasks-names':{scr:'tasks',st:'board',label:'Tasks: session cards named',grp:'names',later:1},
+  'approvals-charter-create':{scr:'approvals',st:'create',label:'Held create, by job',grp:'charter'},
+  'approvals-charter-raw':{scr:'approvals',st:'create',label:'Kernel tool names shown',grp:'charter',raw:11,see:'#raw-11'},
+  'approvals-charter-update':{scr:'approvals',st:'update',label:'Held update: adds a job',grp:'charter',later:1},
+  'approvals-fit-gap':{scr:'approvals',st:'fit',label:'Fit check: the gap, the change beside it',grp:'charter',later:1},
+  'approvals-fit-closed':{scr:'approvals',st:'fit',label:'Change approved: the gap closes',grp:'charter',later:1,dec:{13:'approved'}}
 };
 const DEFAULT_VIEW='chat-threads';
 /* Transient state is what a screen shows on top of its data: the Reply strip, the ⓘ panel, the preview and its edit, the chip, a running summary.
    Every setView clears all of it, so nothing a click opened leaks into another view. Persistent state (fresh, sent, the copied reference) is
    cleared only by a forced view, which then applies exactly what its entry names. */
-const transient=()=>({reply:null,info:null,dlg:null,edit:false,editText:null,chip:null,summarizing:null,draft:''});
-const fresh=()=>Object.assign({view:DEFAULT_VIEW,theme:'',fresh:false,sent:[],copied:null,long:false,bare:false,hint:null,sumText:SUMMARY,sumEdited:false},transient());
+const transient=()=>({reply:null,info:null,dlg:null,edit:false,editText:null,chip:null,summarizing:null,draft:'',
+  /* second part: the thread being renamed and its unsaved text, unsaved Settings fields and their error, the open raw-names disclosure, the selected session */
+  renaming:null,rnText:null,setDraft:null,setErr:null,rawOpen:null,sess:null});
+/* names (renames), dec (approval decisions), hint, ref (the saved Settings) and copied are the owner's across screens. fresh, sent, long, bare,
+   sumText and sumEdited belong to one thread screen: moving between Chat and the Crew thread keeps each screen's own (stash). */
+const fresh=()=>Object.assign({view:DEFAULT_VIEW,theme:'',fresh:false,sent:[],copied:null,long:false,bare:false,hint:null,sumText:SUMMARY,sumEdited:false,
+  names:{},dec:{},ref:null,stash:{}},transient());
+const PER_SCREEN=['fresh','sent','long','bare','sumText','sumEdited'];
+function swapScreen(from,to){
+  if(from) S.stash[from]=Object.fromEntries(PER_SCREEN.map(k=>[k,S[k]]));
+  Object.assign(S,S.stash[to]||{fresh:false,sent:[],long:false,bare:false,sumText:baseSum(to),sumEdited:false});
+}
 let S=fresh();
 /* jump: the next render scrolls the thread to what the view is about (a view change or a send); otherwise the thread keeps its scroll. */
 let opener=null, overlayKey='', sumTk=0, jump=true;
@@ -702,16 +860,23 @@ function setView(v,keep){
   if(!Object.prototype.hasOwnProperty.call(VIEWS,v)) return false;
   const x=VIEWS[v];
   sumTk++; jump=true;
+  const from=VIEWS[S.view]&&VIEWS[S.view].scr;
   Object.assign(S,transient());
+  if(keep&&from!==x.scr) swapScreen(from,x.scr);
   S.view=v; S.dlg=x.dlg||null;
   if(!keep){
-    S.fresh=!!x.fresh; S.sent=(x.sent||[]).map(r=>({...r})); S.long=!!x.long; S.hint=x.long?HINT_SET:null; S.bare=x.st==='empty';
-    S.sumText=SUMMARY; S.sumEdited=false; S.copied=null;
+    S.fresh=!!x.fresh; S.sent=(x.sent||[]).map(r=>({...r})); S.long=!!x.long; S.hint=x.long?HINT_SET:(x.hint||null); S.bare=x.st==='empty';
+    S.sumText=baseSum(x.scr); S.sumEdited=false; S.copied=null;
+    S.names={...(x.names||{})}; S.dec={...(x.dec||{})}; S.ref=null; S.stash={};
     if(x.reply!=null) S.reply=x.reply;
     if(x.info!=null) S.info=x.info;
-    if(x.edit){ S.edit=true; S.editText=SUMMARY; }
+    if(x.edit){ S.edit=true; S.editText=baseSum(x.scr); }
     if(x.chip){ S.chip={...x.chip}; S.copied=x.chip.t; }
     if(x.summarizing!=null) S.summarizing=x.summarizing;
+    if(x.renaming!=null) S.renaming=x.renaming;
+    if(x.setDraft){ S.setDraft={...x.setDraft}; S.setErr=checkSet(S.setDraft).err; }
+    if(x.raw!=null) S.rawOpen={[x.raw]:true};
+    if(x.sess!=null) S.sess=x.sess;
   }
   return true;
 }
@@ -746,18 +911,19 @@ function sumHTML(md){
 function refQuote(ref){
   const t=findThread(ref.t); if(!t) return '';
   const sum=ref.m==='sum'&&t.sum, ag=AGENTS[t.agent];
-  const body=sum?sumHTML(S.sumText):t.rows.filter(r=>r.text||r.reply).map(r=>(r.text?`<p><b>You</b> · ${esc(r.text)}</p>`:'')+(r.reply?`<p><b>${esc(ag.name)}</b> · ${esc(r.reply.join(' '))}</p>`:'')).join('');
-  return `<blockquote class="refq" aria-label="Attached thread, quoted as data"><p class="src cap">${I.clip}Attached thread · sent to Wright as quoted data, not as your words</p><p><b>Thread: ${esc(t.title)}</b> <span class="cap tn">(${msgs(refN(t))})${t.agent!=='wright'?' · '+esc(ag.name):''} · ${sum?'its summary':'full thread'} · ${sum?'about ':''}${fmt(refSize(t,ref.m))} tokens</span></p><details><summary class="cap">Show what was attached</summary><div class="sumtext" tabindex="0" role="region" aria-label="Attached text, quoted">${body}</div></details></blockquote>`;
+  const body=sum?sumHTML(sumOf(t)):t.rows.filter(r=>r.text||r.reply).map(r=>(r.text?`<p><b>You</b> · ${esc(r.text)}</p>`:'')+(r.reply?`<p><b>${esc(ag.name)}</b> · ${esc(r.reply.join(' '))}</p>`:'')).join('');
+  return `<blockquote class="refq" aria-label="Attached thread, quoted as data"><p class="src cap">${I.clip}Attached thread · sent to ${esc(AG().name)} as quoted data, not as your words</p><p><b>Thread: ${esc(t.title)}</b> <span class="cap tn">(${msgs(refN(t))})${t.agent!==AG().id?' · '+esc(ag.name):''} · ${sum?'its summary':'full thread'} · ${sum?'about ':''}${fmt(refSize(t,ref.m))} tokens</span></p><details><summary class="cap">Show what was attached</summary><div class="sumtext" tabindex="0" role="region" aria-label="Attached text, quoted">${body}</div></details></blockquote>`;
 }
 function ownerTurn(r){
   const c=r.cont!=null?rowById(r.cont):null;
-  const who=c?`<div class="who"><span class="rto">${I.reply}Reply to Wright · ${c.rat}</span><span aria-hidden="true">·</span><span>You · ${r.at}</span></div>`:`<div class="who">You · ${r.at}</div>`;
+  const who=c?`<div class="who"><span class="rto">${I.reply}Reply to ${esc(AG().name)} · ${c.rat}</span><span aria-hidden="true">·</span><span>You · ${r.at}</span></div>`:`<div class="who">You · ${r.at}</div>`;
   return `<li class="turn user" id="o-${r.id}"><div class="ub">${who}<div class="msg"><p>${esc(r.text)}</p></div>${r.ref?refQuote(r.ref):''}</div></li>`;
 }
 function pendHTML(t,r){
-  if(r.path==='replayed') return `<div class="fb" role="status"><p class="pend"><span class="dot working" aria-hidden="true"></span><b>Continuing from the saved conversation</b></p><p class="cap">The earlier session can't be continued, so Wright reads this thread's ${nMsgs(t)-1} saved messages, quoted as data, in a new session. Nothing in the thread is lost.</p></div>`;
-  if(r.path==='resumed') return `<p class="pend" role="status"><span class="dot working" aria-hidden="true"></span>Wright is replying · continuing this thread</p>`;
-  return `<p class="pend" role="status"><span class="dot working" aria-hidden="true"></span>Wright is replying · a new topic, in a fresh session</p>`;
+  const n=esc(AG().name);
+  if(r.path==='replayed') return `<div class="fb" role="status"><p class="pend"><span class="dot working" aria-hidden="true"></span><b>Continuing from the saved conversation</b></p><p class="cap">The earlier session can't be continued, so ${n} reads this thread's ${nMsgs(t)-1} saved messages, quoted as data, in a new session. Nothing in the thread is lost.</p></div>`;
+  if(r.path==='resumed') return `<p class="pend" role="status"><span class="dot working" aria-hidden="true"></span>${n} is replying · continuing this thread</p>`;
+  return `<p class="pend" role="status"><span class="dot working" aria-hidden="true"></span>${n} is replying · a new topic, in a fresh session</p>`;
 }
 function infoHTML(t,off){
   const h=S.hint, past=h&&t.read>h.v;
@@ -766,20 +932,24 @@ function infoHTML(t,off){
   return `<div class="infop" id="info-${t.id}" role="region" aria-label="Summarize &amp; start fresh: this thread in tokens"><dl class="kv"><dt>Messages so far</dt><dd class="tn">${nMsgs(t)}</dd><dt>Each reply now reads</dt><dd><span class="tn">${fmt(t.read)} tokens</span><span class="cap">what the latest reply read: input and cache${off?' · last known 14:22':''}</span></dd><dt>With a summary</dt><dd>${sum}</dd><dt>Size hint</dt><dd>${hint}</dd></dl><p>A summary keeps exact values (names, paths, ids, settings) word for word and drops the back-and-forth. You read it, and can edit it, before anything starts. This thread stays, and Reply still continues it.</p></div>`;
 }
 function agentTurn(t,r,last,D,off){
-  const w=AGENTS.wright, h=S.hint, past=!!(h&&t.read>h.v), busy=S.summarizing===t.id, open=S.info===t.id;
+  const w=AG(), h=S.hint, past=!!(h&&t.read>h.v), busy=S.summarizing===t.id, open=S.info===t.id;
   const path=r.path==='resumed'?'<span>· continued</span>':r.path==='replayed'?'<span>· from the saved conversation</span>':r.start==='summary'?'<span>· started from the summary</span>':'';
-  if(r.pending) return `<li class="turn" id="m-${r.id}">${avatarHTML(w,24)}<div><div class="who"><span>Wright</span></div>${pendHTML(t,r)}</div></li>`;
+  if(r.pending) return `<li class="turn" id="m-${r.id}">${avatarHTML(w,24)}<div><div class="who"><span>${esc(w.name)}</span></div>${pendHTML(t,r)}</div></li>`;
   const sum=last?`<button class="btn ${past?'sec hl':'ghost'} sm" data-act="summarize" data-t="${t.id}"${busy?' aria-disabled="true"':''}${D}>${I.fresh}Summarize &amp; start fresh</button><button class="btn ghost sm ic" data-act="info" data-t="${t.id}" aria-expanded="${open}" aria-controls="info-${t.id}" aria-label="About Summarize &amp; start fresh: this thread in tokens">${I.info}</button>${past?'<span class="badge att">past your size hint</span>':''}`:'';
-  const status=busy?`<p class="pend" role="status"><span class="spin" aria-hidden="true"></span>Wright is writing a summary of this thread: one short session. Nothing new starts until you choose.</p>`:'';
-  return `<li class="turn" id="m-${r.id}">${avatarHTML(w,24)}<div><div class="who"><span>Wright</span><span>${r.rat}</span>${path}</div><div class="msg">${r.reply.map(p=>`<p>${esc(p)}</p>`).join('')}</div>
-    <div class="macts"><button class="btn ghost sm" data-act="reply" data-r="${r.id}" aria-label="Reply to Wright's message of ${r.rat}"${D}>${I.reply}Reply</button>${sum}</div>${status}${last&&open?infoHTML(t,off):''}</div></li>`;
+  const status=busy?`<p class="pend" role="status"><span class="spin" aria-hidden="true"></span>${esc(w.name)} is writing a summary of this thread: one short session. Nothing new starts until you choose.</p>`:'';
+  return `<li class="turn" id="m-${r.id}">${avatarHTML(w,24)}<div><div class="who"><span>${esc(w.name)}</span><span>${r.rat}</span>${path}</div><div class="msg">${r.reply.map(p=>`<p>${esc(p)}</p>`).join('')}</div>
+    <div class="macts"><button class="btn ghost sm" data-act="reply" data-r="${r.id}" aria-label="Reply to ${esc(w.name)}'s message of ${r.rat}"${D}>${I.reply}Reply</button>${sum}</div>${status}${last&&open?infoHTML(t,off):''}</div></li>`;
 }
 function threadHTML(t,D,off){
   const next=t.next&&findThread(t.next);
   const lastIdx=t.rows.map((r,i)=>r.reply&&!r.pending?i:-1).filter(i=>i>=0).pop();
-  const head=`<div class="th"><h2 class="tt" id="tt-${t.id}" tabindex="-1">${esc(t.title)}</h2><span class="cap tn">${msgs(nMsgs(t))}</span>${next?'<span class="badge prk">Summarized</span>':''}<span class="sp"></span><button class="btn ghost sm" data-act="copyref" data-t="${t.id}" aria-label="Copy reference to the thread ${esc(t.title)}">${I.clip}Copy reference</button></div>`;
+  /* The title, or (while renaming) the field that replaces it in place. A rename is the owner's and wins over the derived title (item 17b). */
+  const title=S.renaming===t.id
+    ?`<div class="rnf" role="group" aria-label="Rename the thread ${esc(t.title)}"><label class="vh" for="rn-in">Thread name</label><div class="field"><input id="rn-in" maxlength="80" autocomplete="off" value="${esc(S.rnText!=null?S.rnText:t.title)}"></div><button class="btn pri sm" data-act="rename-save" data-t="${t.id}">Save <span class="kbd">⏎</span></button><button class="btn ghost sm" data-act="rename-x" data-t="${t.id}">Cancel <span class="kbd">Esc</span></button><span class="cap">Empty brings back the name from your first line.</span></div>`
+    :`<h2 class="tt" id="tt-${t.id}" tabindex="-1">${esc(t.title)}</h2>${t.renamed?'<span class="badge neu">renamed by you</span>':''}`;
+  const head=`<div class="th">${title}<span class="cap tn">${msgs(nMsgs(t))}</span>${next?'<span class="badge prk">Summarized</span>':''}<span class="sp"></span>${S.renaming===t.id?'':`<button class="btn ghost sm" data-act="rename" data-t="${t.id}" aria-label="Rename the thread ${esc(t.title)}"${D}>${I.pencil}Rename</button>`}<button class="btn ghost sm" data-act="copyref" data-t="${t.id}" aria-label="Copy reference to the thread ${esc(t.title)}">${I.clip}Copy reference</button></div>`;
   const bar=next?`<div class="sumbar" role="note"><span>Summarized: continued in <button class="lnk" data-act="goto-thread" data-t="${next.id}">${esc(next.title)}</button>.</span><span class="cap">This thread stays, and Reply still continues it.</span></div>`:'';
-  const top=t.from?`<details class="sumtop" open><summary><span class="label">Started from a summary</span><span class="cap">of “${esc(findThread(t.from).title)}” · about 900 tokens, an estimate · ${S.sumEdited?'by Wright, edited by you':'by Wright'}</span></summary><div class="sumtext" tabindex="0" role="region" aria-label="The summary this thread started from">${sumHTML(S.sumText)}</div><p class="cap">Kept as <span class="ms">${SUMFILE}</span>. Wright reads it at the top of this thread instead of the earlier messages.</p></details>`:'';
+  const top=t.from?`<details class="sumtop" open><summary><span class="label">Started from a summary</span><span class="cap">of “${esc(findThread(t.from).title)}” · about ${fmt(CTX().sumEst)} tokens, an estimate · ${S.sumEdited?`by ${esc(AG().name)}, edited by you`:`by ${esc(AG().name)}`}</span></summary><div class="sumtext" tabindex="0" role="region" aria-label="The summary this thread started from">${sumHTML(S.sumText)}</div><p class="cap">Kept as <span class="ms">${CTX().sumFile}</span>. ${esc(AG().name)} reads it at the top of this thread instead of the earlier messages.</p></details>`:'';
   const earlier=t.earlier?`<li class="earlier"><button class="btn sec sm" data-act="say" data-what="Shows the ${t.earlier} earlier messages of this thread. They are not drawn in this mockup.">${t.earlier} earlier messages</button></li>`:'';
   const rows=t.rows.map((r,i)=>(r.text?ownerTurn(r):'')+(r.reply||r.pending?agentTurn(t,r,i===lastIdx,D,off):'')).join('');
   return `<section class="tg" id="tg-${t.id}" aria-labelledby="tt-${t.id}">${head}${bar}${top}<ol class="tl">${earlier}${rows}</ol></section>`;
@@ -787,74 +957,94 @@ function threadHTML(t,D,off){
 function chipHTML(off){
   const c=S.chip; if(!c) return '';
   const t=findThread(c.t); if(!t) return '';
-  const ag=AGENTS[t.agent], size=refSize(t,c.m), over=size>REF_LIMIT.v;
+  const ag=AGENTS[t.agent], size=refSize(t,c.m), RL=refLimit(), over=size>RL.v;
   const tog=t.sum?`<span class="seg2" role="group" aria-label="Attach as"><button data-act="chip-mode" data-m="full" aria-pressed="${c.m!=='sum'}">Full thread</button><button data-act="chip-mode" data-m="sum" aria-pressed="${c.m==='sum'}">Summary</button></span>`:'';
-  const err=over?`<p class="cerr" id="chip-err" role="alert">${I.warn}<span>Too large to attach: this thread is ${fmt(size)} tokens and your reference limit is ${fmt(REF_LIMIT.v)} tokens. Nothing was cut and nothing was sent. Remove it, or summarize that thread first and attach its summary. <button class="lnk" data-go="settings">Change the limit in Settings</button></span></p><p class="cap">Reference limit ${fmt(REF_LIMIT.v)} tokens ${setBy(REF_LIMIT.by)}</p>`:'';
-  return `<div class="rchips"><div class="rchip${over?' err':''}" role="group" aria-label="Attached thread reference">${I.clip}<span class="rc-t">Thread: <b>${esc(t.title)}</b> <span class="tn">(${msgs(refN(t))})</span>${t.agent!=='wright'?' · '+esc(ag.name):''}</span>${tog}<span class="cap tn">${c.m==='sum'?'about ':''}${fmt(size)} tokens</span><button class="x" data-act="chip-x" aria-label="Remove the reference to ${esc(t.title)}">${I.x}</button></div>${err}</div>`;
+  const err=over?`<p class="cerr" id="chip-err" role="alert">${I.warn}<span>Too large to attach: this thread is ${fmt(size)} tokens and your reference limit is ${fmt(RL.v)} tokens. Nothing was cut and nothing was sent. Remove it, or summarize that thread first and attach its summary. <button class="lnk" data-go="settings">Change the limit in Settings</button></span></p><p class="cap">Reference limit ${fmt(RL.v)} tokens ${setBy(RL.by)}</p>`:'';
+  return `<div class="rchips"><div class="rchip${over?' err':''}" role="group" aria-label="Attached thread reference">${I.clip}<span class="rc-t">Thread: <b>${esc(t.title)}</b> <span class="tn">(${msgs(refN(t))})</span>${t.agent!==AG().id?' · '+esc(ag.name):''}</span>${tog}<span class="cap tn">${c.m==='sum'?'about ':''}${fmt(size)} tokens</span><button class="x" data-act="chip-x" aria-label="Remove the reference to ${esc(t.title)}">${I.x}</button></div>${err}</div>`;
 }
-const chipOver=()=>{ const c=S.chip, t=c&&findThread(c.t); return !!(t&&refSize(t,c.m)>REF_LIMIT.v); };
+const chipOver=()=>{ const c=S.chip, t=c&&findThread(c.t); return !!(t&&refSize(t,c.m)>refLimit().v); };
 function composerHTML(off){
-  const r=S.reply!=null&&rowById(S.reply);
+  const r=S.reply!=null&&rowById(S.reply), n=esc(AG().name);
   const strip=r?`<div class="rstrip" role="group" aria-label="Reply">${I.reply}<span class="rt">Replying to: <b>${esc(firstLine(r.reply[0]))}</b></span><span class="kbd" aria-hidden="true">Esc</span><button class="x" data-act="reply-x" aria-label="Cancel reply">${I.x}</button></div>`:'';
   const block=off||chipOver();
-  return `<div class="composer">${strip}${chipHTML(off)}<div class="crow"><div class="field"><input id="cin" aria-label="${r?'Reply to Wright':'Message Wright'}" placeholder="${r?'Reply to Wright':'Message Wright'}" autocomplete="off" value="${esc(S.draft)}"></div><button class="btn pri" data-act="send"${block?` disabled${off?' title="Needs the kernel"':''}${chipOver()?' aria-describedby="chip-err"':''}`:''}>Send <span class="kbd">⏎</span></button></div></div>`;
+  return `<div class="composer">${strip}${chipHTML(off)}<div class="crow"><div class="field"><input id="cin" aria-label="${r?'Reply to '+n:'Message '+n}" placeholder="${r?'Reply to '+n:'Message '+n}" autocomplete="off" value="${esc(S.draft)}"></div><button class="btn pri" data-act="send"${block?` disabled${off?' title="Needs the kernel"':''}${chipOver()?' aria-describedby="chip-err"':''}`:''}>Send <span class="kbd">⏎</span></button></div></div>`;
 }
 function chatScreen(st){
   const off=st==='unreachable', D=dis(off);
   const R={title:'Chat',sub:'Wright',html:''};
   if(st==='empty'){ R.html=`${emptyHTML('Ask Wright anything.','It drafts playbooks and crew for you to approve. Each message you send starts a new thread; Reply on an answer continues that thread.')}${composerHTML(off)}`; return R; }
-  const TS=threads();
-  R.sub=`Wright · ${TS.length} threads`+(off?' · last known 14:22':'');
-  R.html=`<div class="thread" id="thread" tabindex="0" role="region" aria-label="Threads with Wright">${TS.map(t=>threadHTML(t,D,off)).join('')}</div>${composerHTML(off)}`;
+  const TS=threads(), crew=V().scr==='crew', a=AG();
+  if(crew){ R.title=a.name; R.sub=`Crew member · ${TS.length} threads · 16:12`; }
+  else R.sub=`Wright · ${TS.length} threads`+(off?' · last known 14:22':'');
+  R.html=`<div class="thread" id="thread" tabindex="0" role="region" aria-label="Threads with ${esc(a.name)}">${TS.map(t=>threadHTML(t,D,off)).join('')}</div>${composerHTML(off)}`;
   return R;
 }
 function previewDialog(){
-  const t=findThread(65), ed=S.edit;
+  const C=CTX(), t=findThread(C.sumId), ed=S.edit;
   const text=ed?`<label class="vh" for="sumedit">Summary text</label><div class="field ta"><textarea id="sumedit" data-af>${esc(S.editText!=null?S.editText:S.sumText)}</textarea></div>`
     :`<div class="sumtext" id="sumview" tabindex="0" role="region" aria-label="Summary text" data-af>${sumHTML(S.editText!=null?S.editText:S.sumText)}</div>`;
-  const edited=S.editText!=null&&S.editText!==SUMMARY;
-  return `<div class="dlg wide" role="dialog" aria-modal="true" aria-labelledby="pv-t" aria-describedby="pv-d"><div class="sech"><h2 id="pv-t">Summary of “${esc(t.title)}”</h2><span class="badge neu">${edited?'edited by you':'by Wright'}</span></div>
+  const edited=S.editText!=null&&S.editText!==C.sum;
+  return `<div class="dlg wide" role="dialog" aria-modal="true" aria-labelledby="pv-t" aria-describedby="pv-d"><div class="sech"><h2 id="pv-t">Summary of “${esc(t.title)}”</h2><span class="badge neu">${edited?'edited by you':'by '+esc(AG().name)}</span></div>
     <p id="pv-d">Read it before anything starts. Start fresh with this begins a new thread with the summary at its top. This thread stays as it is, and Reply still continues it.</p>
     ${text}
-    <p class="cap">Saved as <span class="ms">${SUMFILE}</span> · about 900 tokens, an estimate · in place of ${msgs(nMsgs(t))}${ed?'. Your edit is written to this file when you start fresh; Cancel or Esc drops it.':''}</p>
+    <p class="cap">Saved as <span class="ms">${C.sumFile}</span> · about ${fmt(C.sumEst)} tokens, an estimate · in place of ${msgs(nMsgs(t))}${ed?'. Your edit is written to this file when you start fresh; Cancel or Esc drops it.':''}</p>
     <div class="acts start"><button class="btn pri" data-act="fresh">${I.fresh}Start fresh with this</button><button class="btn sec" data-act="edit" aria-pressed="${ed}">${ed?'Done editing':'Edit'}</button><button class="btn ghost" data-act="close">Cancel <span class="kbd">Esc</span></button></div></div>`;
 }
 const dialogHTML=()=>S.dlg==='preview'?previewDialog():'';
 
 /* Chat actions. Each changes only Chat's own state and sets the view key that names the result, so the URL hash follows the click path. */
 function chatAct(a,el){
-  const off=offline(), tid=+el.dataset.t, say=m=>{ toast(m); live(m); };
+  const off=offline(), tid=+el.dataset.t, say=m=>{ toast(m); live(m); }, n=AG().name;
   switch(a){
-    case 'reply': { if(off) return; S.reply=+el.dataset.r; if(S.view==="chat-threads") S.view="chat-reply"; render(); $('#cin')?.focus({preventScroll:true}); live(`Replying to Wright's message of ${rowById(S.reply).rat}.`); break; }
+    case 'reply': { if(off) return; S.reply=+el.dataset.r; if(S.view===vk("threads")) S.view=vk("reply"); render(); $('#cin')?.focus({preventScroll:true}); live(`Replying to ${n}'s message of ${rowById(S.reply).rat}.`); break; }
     case 'reply-x': cancelReply(); break;
-    case "info": { S.info=S.info===tid?null:tid; if(S.info!=null&&S.view==="chat-threads") S.view="chat-info"; else if(S.info==null&&S.view==="chat-info") S.view="chat-threads"; render(); if(S.info) within($(`#info-${tid}`),"nearest"); break; }
+    case "info": { S.info=S.info===tid?null:tid; if(S.info!=null&&S.view===vk("threads")) S.view=vk("info"); else if(S.info==null&&S.view===vk("info")) S.view=vk("threads"); render(); if(S.info) within($(`#info-${tid}`),"nearest"); break; }
     case 'summarize': {
       if(off||S.summarizing!=null) return;
-      setOpener(el); S.info=null; S.summarizing=tid; S.view='chat-summarizing'; render(); live('Wright is writing a summary of this thread.');
-      const tk=++sumTk; setTimeout(()=>{ if(tk!==sumTk||S.view!=='chat-summarizing') return; S.summarizing=null; S.view='chat-preview'; S.dlg='preview'; render(); live('The summary is ready to read.'); },1400);
+      setOpener(el); S.info=null; S.summarizing=tid; S.view=vk('summarizing'); render(); live(`${n} is writing a summary of this thread.`);
+      const tk=++sumTk; setTimeout(()=>{ if(tk!==sumTk||S.view!==vk('summarizing')) return; S.summarizing=null; S.view=vk('preview'); S.dlg='preview'; render(); live('The summary is ready to read.'); },1400);
       break; }
     case 'edit': {
       if(S.edit){ S.edit=false; } else { S.edit=true; if(S.editText==null) S.editText=S.sumText; }
-      S.view=S.edit?'chat-preview-edit':'chat-preview'; redrawOverlay(); ($(S.edit?'#sumedit':'#overlay [data-act="edit"]'))?.focus({preventScroll:true}); writeHash(); break; }
+      S.view=vk(S.edit?'preview-edit':'preview'); redrawOverlay(); ($(S.edit?'#sumedit':'#overlay [data-act="edit"]'))?.focus({preventScroll:true}); writeHash(); break; }
     case 'fresh': {
-      if(S.editText!=null){ S.sumEdited=S.editText!==SUMMARY; S.sumText=S.editText; }
-      dropOverlay(); S.fresh=true; S.view='chat-fresh'; render(); seeThread(71);
+      if(S.editText!=null){ S.sumEdited=S.editText!==CTX().sum; S.sumText=S.editText; }
+      dropOverlay(); S.fresh=true; S.view=vk('fresh'); render(); seeThread(CTX().newId);
       say(S.sumEdited?'Started a new thread from your edited summary. The old thread stays, and Reply still continues it.':'Started a new thread from the summary. The old thread stays, and Reply still continues it.'); break; }
     case 'goto-thread': seeThread(tid); break;
     case 'copyref': { const t=findThread(tid); S.copied=tid; say(`Copied a reference to “${t.title}”. Paste it into any composer, Chat or Crew, with ⌘V.`); break; }
-    case 'chip-mode': { S.chip.m=el.dataset.m; S.view=S.chip.m==='sum'?'chat-reference-summary':'chat-reference'; render(); break; }
+    case 'chip-mode': { S.chip.m=el.dataset.m; S.view=vk(S.chip.m==='sum'?'reference-summary':'reference'); render(); break; }
     case 'chip-x': { S.chip=null; render(); $('#cin')?.focus({preventScroll:true}); live('Reference removed.'); break; }
     case 'send': send(); break;
+    case 'rename': { if(off) return; S.renaming=tid; S.rnText=null; S.info=null; if(S.view==='chat-threads') S.view='chat-rename'; render(); const i=$('#rn-in'); if(i){ i.focus({preventScroll:true}); i.select(); } live('Rename the thread. Enter saves, Escape cancels.'); break; }
+    case 'rename-save': saveRename(); break;
+    case 'rename-x': cancelRename(); break;
   }
+}
+/* Rename in place. Save and Enter store the owner's name (empty brings back the derived one); Cancel, Esc and leaving the view drop the unsaved text.
+   Every exit returns focus to that thread's Rename button. */
+function endRename(id,msg){
+  S.renaming=null; S.rnText=null; if(S.view==='chat-rename') S.view=msg&&S.names[id]!=null?'chat-renamed':'chat-threads'; render();
+  $(`#main [data-act="rename"][data-t="${id}"]`)?.focus({preventScroll:true}); live(msg||'Rename cancelled.');
+}
+function cancelRename(){ if(S.renaming!=null) endRename(S.renaming,''); }
+function saveRename(){
+  const id=S.renaming; if(id==null) return;
+  const t=threads().find(x=>x.id===id), raw=($('#rn-in')?.value??S.rnText??'');
+  /* The app's printable filter: control characters out, runs of space as one (item 17b: a title is display text only). */
+  const v=raw.replace(/[\u0000-\u001f\u007f]/g,'').replace(/\s+/g,' ').trim();
+  const derived=t?(t.derived||t.title):'';
+  if(!v||v===derived) delete S.names[id]; else S.names[id]=v;
+  endRename(id,S.names[id]!=null?`Renamed to “${v}”.`:`Back to the name from your first line: “${derived}”.`);
 }
 function cancelReply(){
   const id=S.reply; if(id==null) return;
-  S.reply=null; if(S.view==='chat-reply') S.view='chat-threads'; render();
+  S.reply=null; if(S.view===vk('reply')) S.view=vk('threads'); render();
   $(`#main [data-act="reply"][data-r="${id}"]`)?.focus({preventScroll:true}); live('Reply cancelled.');
 }
 function closeInfo(){
   const id=S.info; if(id==null) return;
-  S.info=null; if(S.view==='chat-info') S.view='chat-threads'; render();
+  S.info=null; if(S.view===vk('info')) S.view=vk('threads'); render();
   $(`#main [data-act="info"][data-t="${id}"]`)?.focus({preventScroll:true});
 }
 /* Scrolls the thread only, never the page: scrollIntoView would also move the review harness around the window. */
@@ -877,15 +1067,184 @@ function send(){
   if(offline()||chipOver()) return;
   const text=($('#cin')?.value||'').trim();
   if(!text){ note('Type a message first. A plain message starts a new topic.'); $('#cin')?.focus({preventScroll:true}); return; }
-  const id=72+S.sent.length, at='14:23', cont=S.reply, ref=S.chip?{...S.chip}:null;
+  const C=CTX(), id=C.nextId+S.sent.length, at=C.at, cont=S.reply, ref=S.chip?{...S.chip}:null;
   S.sent.push({id,at,text,cont:cont!=null?cont:undefined,ref,pending:1,path:cont!=null?'resumed':'new'});
   S.reply=null; S.chip=null; S.draft=''; S.info=null;
-  S.view=cont!=null?'chat-reply-sent':ref?'chat-reference-sent':'chat-plain-sent';
+  S.view=vk(cont!=null?'reply-sent':ref?'reference-sent':'plain-sent');
   jump=cont==null; render(); if(cont!=null) within($(`#m-${id}`),"nearest"); $('#cin')?.focus({preventScroll:true});
-  live(cont!=null?'Sent as a reply. Wright continues this thread.':'Sent as a new topic. Wright starts a fresh session.');
+  live(cont!=null?`Sent as a reply. ${AG().name} continues this thread.`:`Sent as a new topic. ${AG().name} starts a fresh session.`);
 }
-const RENDER={chat:chatScreen
-  /* SUBTASK-2:RENDER — screens this mockup draws besides Chat */
+/* ---------- Session names: Sessions and Tasks (second part) ----------
+   Every field but the title is a column at base (SessionSummary: id, agent, status, model, started, tokens, playbook; TaskBoardItem the same for a
+   card). The title is item 17b's session title, derived with no model call from what started the session, or the owner's rename of its thread.
+   src names the 17b rule each title follows, for the field map; it is not drawn (17b gives the title, not which rule made it).
+   Sessions here are as they stand later the same day, 16:20. */
+const SESSIONS=[
+  {id:108,ag:'dev',st:'running',model:'sonnet',at:'16:18',tok:3100,src:'playbook',title:'Merge when ready'},
+  {id:107,ag:'dev',st:'completed',model:'sonnet',at:'16:14',tok:5200,src:'summary',thread:96,title:'Take ticket #9 on studio-sandbox through /automate (continued)'},
+  {id:106,ag:'mason',st:'completed',model:'sonnet',at:'16:02',tok:12400,src:'delegation',title:'From Wright: Review PR #24 on studio-sandbox'},
+  {id:104,ag:'dev',st:'completed',model:'sonnet',at:'15:51',tok:8900,src:'message',thread:93,title:'Which tickets on studio-sandbox are still open?'},
+  {id:101,ag:'dev',st:'completed',model:'sonnet',at:'15:04',tok:38700,src:'message',thread:90,title:'Take ticket #9 on studio-sandbox through /automate'},
+  {id:95,ag:'wright',st:'completed',model:'opus',at:'14:40',tok:4100,src:'approval',title:'Create crew member: Sandbox Developer'},
+  {id:87,ag:'wright',st:'completed',model:'opus',at:'14:24',tok:6300,src:'summary',thread:71,title:'Set up a crew for my studio-sandbox tickets (continued)'},
+  {id:86,ag:'wright',st:'completed',model:'opus',at:'14:15',tok:18900,src:'message',thread:70,title:'What\'s waiting on me today?'},
+  {id:82,ag:'wright',st:'completed',model:'opus',at:'14:02',tok:61300,src:'message',thread:65,title:'Set up a crew for my studio-sandbox tickets'}
+];
+/* A session's name: its thread's rename when the owner made one, else the title the kernel derived. */
+const sessName=s=>s.thread!=null&&S.names[s.thread]!=null?S.names[s.thread]:s.title;
+const sessBadge=s=>s.st==='running'?'<span class="badge acc">running</span>':'<span class="badge ok">completed</span>';
+function sessionsScreen(){
+  const cur=SESSIONS.find(s=>s.id===S.sess)||SESSIONS[0], a=AGENTS[cur.ag];
+  const row=s=>{ const sel=s===cur, ren=s.thread!=null&&S.names[s.thread]!=null;
+    return `<button class="row${sel?' sel':''}" data-act="sess" data-t="${s.id}"${sel?' aria-current="true"':''}><span class="dot ${s.st==='running'?'working':'ok'}" aria-hidden="true"></span><span><span class="t">${esc(sessName(s))}</span><span class="m cap tn">Session ${s.id} · ${esc(AGENTS[s.ag].name)} · ${s.at} · ${fmt(s.tok)} tokens${ren?' · renamed by you':''}</span></span></button>`; };
+  const run=SESSIONS.filter(s=>s.st==='running'), done=SESSIONS.filter(s=>s.st!=='running');
+  const scr=cur.thread!=null?(AGENTS[cur.ag].id==='wright'?'chat':cur.ag==='dev'?'crew':null):null;
+  const thr=scr?`<button class="lnk" data-act="open-thread" data-t="${cur.thread}" data-what="${scr}">Open the thread</button>`:'<span class="cap">None: this session isn\'t a thread.</span>';
+  const ren=cur.thread!=null&&S.names[cur.thread]!=null;
+  const pane=`<section class="pad" aria-labelledby="sess-h"><div class="dhead"><h2 id="sess-h" tabindex="-1">${esc(sessName(cur))}</h2>${ren?'<span class="badge neu">renamed by you</span>':''}${sessBadge(cur)}</div>
+    <dl class="kv">${ren?`<dt>Name</dt><dd>Your rename. It wins over “${esc(cur.title)}”, the name the kernel derived.</dd>`:''}<dt>Agent</dt><dd>${avatarHTML(a,20)}${esc(a.name)}</dd><dt>Session</dt><dd class="tn">${cur.id}</dd><dt>Model</dt><dd class="mono">${cur.model}</dd><dt>Started</dt><dd class="tn">today ${cur.at}</dd><dt>Tokens</dt><dd class="tn">${fmt(cur.tok)} tokens</dd><dt>Thread</dt><dd>${thr}</dd></dl>
+    <p class="where">The kernel names every session from what started it, with no model call: your first line, a playbook's name, “From Wright:” and its request, an approval's label, or an old thread's title marked continued. You can rename a thread from the thread itself; Wright never renames one.</p>
+    <p class="cap">The session log and Stop are drawn in gui-v1.html.</p></section>`;
+  return {title:'Sessions',sub:`${run.length} running · ${SESSIONS.length} today · 16:20`,html:`<div class="split"><div class="list" aria-label="Sessions"><div class="label">Running · ${run.length}</div>${run.map(row).join('')}<div class="label">Finished today · ${done.length}</div>${done.map(row).join('')}</div><div class="pane">${pane}</div></div>`};
+}
+const COLS=[{g:'wait',label:'Waiting on you',none:'Nothing waits on you.'},{g:'work',label:'Working',none:'Nothing is running.'},{g:'park',label:'Parked',none:'Nothing is parked.'},{g:'done',label:'Done today',none:'Nothing finished yet.'}];
+const COL_DOT={wait:'waiting',work:'working',park:'parked',done:'ok'};
+function tasksScreen(){
+  const card=s=>{ const a=AGENTS[s.ag], ren=s.thread!=null&&S.names[s.thread]!=null;
+    return `<li><button class="tcard" data-act="open-sess" data-t="${s.id}" aria-label="Session ${s.id}: ${esc(sessName(s))}, ${s.st}"><span class="k cap">${I.term}Session #${s.id}<span class="sp"></span>${sessBadge(s)}</span><span class="ttl">${esc(sessName(s))}</span>${ren?'<span class="why cap">renamed by you</span>':''}<span class="by cap">${avatarHTML(a,20)}<span class="tn">${esc(a.name)} · ${s.at} · ${fmt(s.tok)} tokens</span></span></button></li>`; };
+  const runCard=`<li><button class="tcard" data-act="say" data-what="A playbook run's detail is drawn in phase-8.html." aria-label="Playbook run 31: Merge when ready, running"><span class="k cap">${I.board}Playbook run #31<span class="sp"></span><span class="badge acc">running</span></span><span class="ttl">Merge when ready</span><span class="by cap">${avatarHTML(AGENTS.dev,20)}<span class="tn">Sandbox Developer · 16:18</span></span></button></li>`;
+  const items={wait:'',work:runCard+SESSIONS.filter(s=>s.st==='running').map(card).join(''),park:'',done:SESSIONS.filter(s=>s.st!=='running').map(card).join('')};
+  const n={wait:0,work:1+SESSIONS.filter(s=>s.st==='running').length,park:0,done:SESSIONS.filter(s=>s.st!=='running').length};
+  return {title:'Tasks',sub:`${n.work+n.done} cards · ${n.work} working · 16:20`,html:`<div class="scroll"><p class="where cap" style="padding:var(--space-4) var(--space-5) 0">Session cards carry the session's name. Tasks and the rest of this board are drawn in phase-8.html.</p><div class="board">${COLS.map(c=>`<section class="bcol" aria-labelledby="bc-${c.g}"><div class="hd"><span class="dot ${COL_DOT[c.g]}" aria-hidden="true"></span><h2 class="label" id="bc-${c.g}">${c.label}</h2><span class="badge neu">${n[c.g]}</span></div>${n[c.g]?`<ul>${items[c.g]}</ul>`:`<p class="none cap">${c.none}</p>`}</section>`).join('')}</div></div>`};
+}
+
+/* ---------- Settings: the size hint and the reference limit (second part) ----------
+   Both are owner settings (item 17b: stored with the owner's other settings). The size hint is unset by default; Wright's value is shown beside it as a
+   proposal and is applied only when the owner saves it. The reference limit is drawn as subtask 1 drew it in the chip: Wright's proposed value, in use
+   until the owner changes it (an open point for the owner, listed in the evidence README's field map). */
+const numIn=s=>String(s==null?'':s).replace(/[,\s]/g,'');
+function checkSet(d){
+  const out={hint:S.hint?S.hint.v:null,ref:refLimit().v,err:null}; if(!d) return out;
+  if(d.hint!=null){ const v=numIn(d.hint); if(v==='') out.hint=null; else if(/^[0-9]+$/.test(v)&&+v>0) out.hint=+v; else out.err={k:'hint',m:'Enter a whole number of tokens, like 40000. Leave it empty for no size hint.'}; }
+  if(d.ref!=null&&!out.err){ const v=numIn(d.ref); if(/^[0-9]+$/.test(v)&&+v>0) out.ref=+v; else out.err={k:'ref',m:'Enter a whole number of tokens, like 50000.'}; }
+  return out;
+}
+const setVal=k=>S.setDraft&&S.setDraft[k]!=null?S.setDraft[k]:k==='hint'?(S.hint?String(S.hint.v):''):String(refLimit().v);
+const setDirty=()=>!!S.setDraft&&(numIn(setVal('hint'))!==(S.hint?String(S.hint.v):'')||numIn(setVal('ref'))!==String(refLimit().v));
+function settingsScreen(){
+  const e=S.setErr, h=S.hint, RL=refLimit(), dirty=setDirty();
+  const fld=(k,label,now,prop,help)=>`<label for="set-${k}">${label}</label><div class="ctl"><div class="field num${e&&e.k===k?' err':''}"><input id="set-${k}" class="setin" data-k="${k}" inputmode="numeric" autocomplete="off" placeholder="${k==='hint'?'Not set':''}" value="${esc(setVal(k))}" aria-describedby="${k}-now ${k}-help${e&&e.k===k?' '+k+'-err':''}"${e&&e.k===k?' aria-invalid="true"':''}><span class="u">tokens</span></div>
+    ${e&&e.k===k?`<p class="ferr" id="${k}-err" role="alert">${I.warn}<span>${esc(e.m)}</span></p>`:''}<p class="prop" id="${k}-now">${now}</p>${prop}<p class="cap" id="${k}-help">${help}</p></div>`;
+  const hintNow=h?`Now <b class="tn">${fmt(h.v)} tokens</b>${setBy(h.by)}`:'Now <b>not set</b><span class="cap">Summarize is never highlighted.</span>';
+  const hintProp=h&&h.v===HINT_PROPOSAL?'':`<p class="prop"><span class="badge acc">proposed by Wright</span><span class="tn">${fmt(HINT_PROPOSAL)} tokens</span><button class="btn sec sm" data-act="set-use">Use Wright's proposal</button></p>`;
+  const sample=h?`<span class="btn sec hl sm" aria-hidden="true">${I.fresh}Summarize &amp; start fresh</span><span class="badge att">past your size hint</span><span class="vh">Past it, Summarize &amp; start fresh is highlighted and marked past your size hint.</span>`:`<span class="btn ghost sm" aria-hidden="true">${I.fresh}Summarize &amp; start fresh</span><span class="cap">Not set: never highlighted.</span>`;
+  const html=`<div class="scroll"><div class="pad"><p class="where cap">The rest of Settings (auth provider, kernel, this app) is drawn in gui-v2.html. This item adds the Threads section.</p>
+    <section class="blk" aria-labelledby="h-thr"><div class="sech"><h3 class="label" id="h-thr">Threads</h3><span class="cap">Kept with your other settings in the kernel</span></div>
+    <div class="fe">${fld('hint','Size hint',hintNow,hintProp,'When the tokens a thread\'s latest reply read pass this, Summarize &amp; start fresh is highlighted on that thread.')}
+    <span class="lbl">On a thread past it</span><div class="ctl"><div class="prop">${sample}</div></div>
+    ${fld('ref','Reference limit',`Now <b class="tn">${fmt(RL.v)} tokens</b>${setBy(RL.by)}`,'','A thread you attach that is larger than this is refused before anything is sent, naming its size and this limit. Nothing is cut.')}</div>
+    <div class="facts"><button class="btn pri" id="set-save" data-act="set-save"${dirty?'':' disabled'}>Save <span class="kbd">⏎</span></button><button class="btn sec" id="set-discard" data-act="set-discard"${dirty?'':' disabled'}>Discard</button><span class="cap" id="set-state">${dirty?'Unsaved change. Leaving Settings drops it, as Discard does.':'Saved.'}</span></div></section></div></div>`;
+  return {title:'Settings',sub:'Threads',html};
+}
+
+/* ---------- Approvals: the charter card in plain language (item 16, AC3; second part) ----------
+   JOBS stands in for item 16's catalogue: each kernel tool once, with its job and its one-line purpose (from the tool's registered description).
+   The names are the tools registered at the base commit. Nothing assigns a job to a member: each charter below is Wright's proposal. */
+const K='mcp__kernel__';
+const JOBS={
+  automate:{name:'Hand tickets to /automate',tools:[['kernel_automate_prepare','Hands tickets to Loomwright\'s /automate in its clone of the repo, as requirement items.'],['kernel_automate_state','Reads whether an /automate run is live, parked or idle (read only).']]},
+  triage:{name:'Triage PR comments',tools:[['kernel_pr_route','Finds where a PR comment may be acted on: the live run, a fix, or a reply (read only).'],['kernel_github_pr_reply','Replies in a review comment\'s thread. Held for you each time.'],['kernel_github_pr_comment','Comments on a PR\'s conversation. Held for you each time.'],['kernel_github_pr_request_reviewers','Asks for reviews on a PR. Held for you each time.']]},
+  merge:{name:'Ask for a merge',tools:[['kernel_automate_merge_check','Checks whether Loomwright\'s gate may merge a parked PR now (read only). It never merges.'],['kernel_merge_approval_request','Asks you to approve merging a parked PR at its ready head. Held for you each time.']]},
+  read:{name:'Read a PR',tools:[['kernel_github_pr_get','Reads a PR\'s details and description (read only).'],['kernel_github_pr_files','Lists the files a PR changes (read only).'],['kernel_github_pr_diff','Reads a PR\'s diff (read only).'],['kernel_github_pr_comments','Reads a PR\'s comments (read only).']]}
+};
+const CHARTERS={
+  11:{id:11,kind:'create',ag:'dev',at:'14:07',jobs:['automate','triage','read'],other:['Read','Edit','Write','Bash'],prefixes:['git ','npm test'],never:['gh_pr_close','gh_issue_close'],model:'sonnet',tok:300000,once:1,ws:'studio-sandbox'},
+  12:{id:12,kind:'create',ag:'mason',at:'14:11',jobs:['triage','read'],other:['Read'],prefixes:[],never:['git_push'],model:'sonnet',tok:150000,once:1,ws:'studio-sandbox'},
+  13:{id:13,kind:'update',ag:'dev',at:'16:05',adds:['merge'],keeps:['automate','triage','read'],other:['Read','Edit','Write','Bash'],prefixes:['git ','npm test'],never:['gh_pr_close','gh_issue_close'],sha:'3f9a1c07b2e4'}
+};
+const ENABLE={id:14,pb:'Merge when ready',repo:'vikashruhilgit/studio-sandbox',ag:'dev',at:'16:04',needs:['merge','read']};
+const toolsOf=jobs=>jobs.flatMap(j=>JOBS[j].tools.map(t=>K+t[0]));
+const enforced=c=>`enforced: never: ${c.never.join(', ')||'none'}; tools: ${[...c.other,...toolsOf(c.adds?[...c.keeps,...c.adds]:c.jobs)].join(', ')}; bash prefixes: ${c.prefixes.map(p=>JSON.stringify(p)).join(', ')||'none'}`;
+const DEC_BADGE={approved:'<span class="badge ok">approved</span>',denied:'<span class="badge neu">denied</span>',enabled:'<span class="badge ok">enabled</span>',anyway:'<span class="badge att">enabled with the gap open · recorded</span>'};
+const decBadge=id=>DEC_BADGE[S.dec[id]]||'<span class="badge att">waiting on you</span>';
+function jobHTML(j,add){
+  const J=JOBS[j];
+  return `<div class="job${add?' add':''}"><div class="jh"><b>${esc(J.name)}</b><span class="cap tn">${J.tools.length} tools</span>${add?'<span class="badge ok">adds</span>':''}</div><ul>${J.tools.map(t=>`<li>${esc(t[1])}</li>`).join('')}</ul></div>`;
+}
+function rawHTML(id,lines){
+  const open=S.rawOpen&&S.rawOpen[id];
+  return `<details class="raw" id="raw-${id}" data-raw="${id}"${open?' open':''}><summary class="cap">Kernel tool names, as enforced</summary><p class="ms">${lines.map(esc).join('\n')}</p></details>`;
+}
+function charterCard(c,D){
+  const a=AGENTS[c.ag], dec=S.dec[c.id], create=c.kind==='create';
+  const from=create?`<dt>From</dt><dd>Wright · ${c.at} · in your thread “${esc(S.names[65]!=null?S.names[65]:'Set up a crew for my studio-sandbox tickets')}”</dd><dt>Model</dt><dd class="mono">${c.model}</dd><dt>Limits</dt><dd><span class="tn">${fmt(c.tok)} tokens a day · ${c.once} session at once</span>${setBy('wright')}</dd><dt>Workspace</dt><dd class="ms">${c.ws}</dd>`
+    :`<dt>From</dt><dd>Wright · ${c.at} · the fit check of ${esc(ENABLE.pb)} (#${ENABLE.id}) found the gap</dd><dt>Drafted against</dt><dd><span class="ms">config/agents/sandbox-developer.json</span><span class="cap ms">sha256 ${c.sha}…</span></dd>`;
+  const jobs=create?`<div class="blk"><div class="sech"><h4 class="label">What it may do in the kernel · ${c.jobs.length} jobs</h4></div><div class="jobs">${c.jobs.map(j=>jobHTML(j)).join('')}</div></div>`
+    :`<div class="blk"><div class="sech"><h4 class="label">Adds · ${c.adds.length} job</h4></div><div class="jobs">${c.adds.map(j=>jobHTML(j,true)).join('')}</div></div>
+      <div class="blk"><div class="sech"><h4 class="label">Keeps · ${c.keeps.length} jobs</h4><span class="cap">unchanged</span></div><p>${c.keeps.map(j=>esc(JOBS[j].name)).join(' · ')}</p></div>
+      <p class="cap">Connector grants stay yours to give in Team. This change asks for none.</p>`;
+  const other=`<div class="blk"><div class="sech"><h4 class="label">Other tools</h4><span class="cap">shown as today</span></div><dl class="kv"><dt>Tools</dt><dd class="ms">${c.other.join(', ')}</dd><dt>Bash prefixes</dt><dd class="ms">${c.prefixes.map(p=>esc(JSON.stringify(p))).join(', ')||'none'}</dd><dt>Never</dt><dd class="ms">${c.never.join(', ')}</dd></dl></div>`;
+  const raw=create?rawHTML(c.id,[enforced(c)]):rawHTML(c.id,[`tool_policy: adds ${toolsOf(c.adds).join(', ')}`,enforced(c)]);
+  const acts=dec?`<span class="cap">You ${dec==='approved'?'approved':'denied'} it.</span>`
+    :`<button class="btn pri" data-act="ap-approve" data-t="${c.id}"${D}>${create?'Approve':'Approve change'}</button><button class="btn sec" data-act="ap-deny" data-t="${c.id}"${D}>Deny</button><button class="btn ghost" data-act="say" data-what="Opens Wright's thread with this approval attached, to change it in words. Not drawn in this mockup.">Ask Wright to change it</button><span class="sp"></span><span class="cap">Held until you choose. Nothing runs before.</span>`;
+  return `<section class="mcard${dec?' done':''}" id="ap-${c.id}" aria-labelledby="ap-t-${c.id}"><div class="mh">${avatarHTML(a,24)}<h3 class="t2" id="ap-t-${c.id}" tabindex="-1">${create?'Create crew member':'Change crew member'}: ${esc(a.name)}</h3><span class="badge neu tn">#${c.id}</span>${setBy('wright')}${decBadge(c.id)}</div>
+    <div class="mb"><dl class="kv">${from}</dl>${jobs}${other}${raw}</div><div class="mf">${acts}</div></section>`;
+}
+function enableCard(D){
+  const E=ENABLE, a=AGENTS[E.ag], dec=S.dec[E.id], gap=S.dec[13]!=='approved';
+  const fit=gap?`<div class="fit" role="status">${I.warn}<div class="blk"><p>This playbook needs <b><i>Ask for a merge</i></b>; ${esc(a.name)} doesn't have it.</p><p class="cap">Wright's dry run of this playbook called these, and the charter refused them:</p><ul class="cap">${JOBS.merge.tools.map(t=>`<li>${esc(t[1])}</li>`).join('')}</ul><p class="cap">Wright has held the charter change that adds it beside this card, #13.</p></div></div>`
+    :`<div class="fit ok" role="status">${I.check}<p>No gap. ${esc(a.name)} has every job this playbook needs: ${E.needs.map(j=>esc(JOBS[j].name)).join(', ')}.</p></div>`;
+  const acts=dec?`<span class="cap">${dec==='anyway'?'You enabled it with the gap open. The choice is in the audit log.':'You enabled it.'}</span>`
+    :`<button class="btn pri" data-act="ap-enable" data-t="${E.id}"${gap?' disabled aria-describedby="gap-why"':''}${D}>Enable</button>${gap?`<button class="btn sec" data-act="ap-anyway" data-t="${E.id}"${D}>Enable anyway</button><span class="cap" id="gap-why">Approve #13 first, or enable anyway. Either choice is recorded.</span>`:''}`;
+  return `<section class="mcard${dec?' done':''}" id="ap-${E.id}" aria-labelledby="ap-t-${E.id}"><div class="mh">${I.shield}<h3 class="t2" id="ap-t-${E.id}" tabindex="-1">Enable playbook: ${esc(E.pb)}</h3><span class="badge neu tn">#${E.id}</span>${dec?DEC_BADGE[dec]:'<span class="badge att">waiting on you</span>'}</div>
+    <div class="mb"><dl class="kv"><dt>Repo</dt><dd class="ms">${E.repo}</dd><dt>Runs as</dt><dd>${avatarHTML(a,20)}${esc(a.name)}</dd><dt>Fit check</dt><dd>Wright's dry run · ${E.at}</dd></dl>${fit}</div><div class="mf">${acts}</div></section>`;
+}
+function approvalsScreen(st){
+  const D=dis(offline()), wait=ids=>ids.filter(i=>!S.dec[i]).length;
+  const note=`<p class="where cap">Merge, enable and connector approvals are drawn in phase-8.html. This item changes the charter card and adds the fit check.</p>`;
+  if(st==='create') return {title:'Approvals',sub:`${wait([11,12])} waiting on you · 14:22`,html:`<div class="scroll"><div class="pad">${note}${charterCard(CHARTERS[11],D)}${charterCard(CHARTERS[12],D)}</div></div>`};
+  if(st==='update') return {title:'Approvals',sub:`${wait([13,14])} waiting on you · 16:06`,html:`<div class="scroll"><div class="pad">${note}${charterCard(CHARTERS[13],D)}${enableCard(D)}</div></div>`};
+  return {title:'Approvals',sub:`${wait([13,14])} waiting on you · 16:06`,html:`<div class="scroll"><div class="pad">${note}<div class="pair">${enableCard(D)}${charterCard(CHARTERS[13],D)}</div></div></div>`};
+}
+/* Second part's actions. Each acts on the visible view only (its buttons exist only there) and moves focus somewhere explicit when its control goes. */
+function sideAct(a,el){
+  const id=+el.dataset.t;
+  switch(a){
+    case 'sess': { S.sess=id; render(); $(`#main [data-act="sess"][data-t="${id}"]`)?.focus({preventScroll:true}); break; }
+    case 'open-sess': { setView('sessions-names',true); S.sess=id; render(); $(`#main [data-act="sess"][data-t="${id}"]`)?.focus({preventScroll:true}); live(`Sessions: session ${id}.`); break; }
+    case 'open-thread': {
+      const scr=el.dataset.what; setView(SCREENS[scr].home,true);
+      /* A thread started from a summary exists only once that screen has started fresh, so opening one draws that screen's started-fresh state. */
+      if(id===CTX().newId&&!S.fresh){ S.fresh=true; S.view=vk('fresh'); }
+      render(); seeThread(id); if(!$(`#tt-${id}`)) $('#col')?.focus({preventScroll:true}); break; }
+    case 'set-use': { S.setDraft={...(S.setDraft||{}),hint:String(HINT_PROPOSAL)}; S.setErr=null; if(S.view==='settings-threads') S.view='settings-threads-edit'; render(); $('#set-save')?.focus({preventScroll:true}); live('Wright\'s proposal, 40,000 tokens, is in the field. Save to use it.'); break; }
+    case 'set-save': saveSettings(); break;
+    case 'set-discard': { S.setDraft=null; S.setErr=null; if(/-(edit|invalid)$/.test(S.view)) S.view=S.hint?'settings-threads-set':'settings-threads'; render(); $('#set-hint')?.focus({preventScroll:true}); live('Discarded. The saved settings stand.'); break; }
+    case 'ap-approve': case 'ap-deny': {
+      S.dec[id]=a==='ap-approve'?'approved':'denied';
+      if(id===13&&a==='ap-approve'&&S.view==='approvals-fit-gap') S.view='approvals-fit-closed';
+      render();
+      const nx=id===13&&a==='ap-approve'?$('#main [data-act="ap-enable"][data-t="14"]'):null;
+      (nx&&!nx.disabled?nx:$(`#ap-t-${id}`))?.focus({preventScroll:true});
+      live(a==='ap-approve'?(id===13?'Approved #13. Sandbox Developer can ask for a merge, and the gap is closed.':`Approved #${id}.`):`Denied #${id}. Nothing changes.`); break; }
+    case 'ap-enable': case 'ap-anyway': { S.dec[id]=a==='ap-enable'?'enabled':'anyway'; render(); $(`#ap-t-${id}`)?.focus({preventScroll:true}); live(a==='ap-enable'?'Enabled Merge when ready.':'Enabled with the gap open. Your choice is recorded in the audit log.'); break; }
+  }
+}
+function saveSettings(){
+  const r=checkSet(S.setDraft);
+  if(r.err){ S.setErr=r.err; if(S.view==='settings-threads-edit') S.view='settings-threads-invalid'; render(); $(`#set-${r.err.k}`)?.focus({preventScroll:true}); return; }
+  if(!setDirty()){ S.setDraft=null; S.setErr=null; render(); $('#set-hint')?.focus({preventScroll:true}); return; }
+  S.hint=r.hint==null?null:{v:r.hint,by:'owner'};
+  if(r.ref!==refLimit().v) S.ref={v:r.ref,by:'owner'};
+  S.setDraft=null; S.setErr=null; if(/^settings-/.test(S.view)) S.view=S.hint?'settings-threads-set':'settings-threads';
+  render(); $('#set-hint')?.focus({preventScroll:true});
+  live(`Saved. Size hint ${S.hint?fmt(S.hint.v)+' tokens, set by you':'not set'}; reference limit ${fmt(refLimit().v)} tokens.`);
+}
+const SIDE_ACTS=['sess','open-sess','open-thread','set-use','set-save','set-discard','ap-approve','ap-deny','ap-enable','ap-anyway'];
+
+const RENDER={chat:chatScreen,
+  /* SUBTASK-2:RENDER — the Crew thread is Chat's thread component with another agent */
+  crew:chatScreen,sessions:sessionsScreen,tasks:tasksScreen,settings:settingsScreen,approvals:approvalsScreen
 };
 
 /* ---------- Render ---------- */
@@ -920,7 +1279,8 @@ function render(){
   $('#nav').innerHTML=navHTML();
   $('#footdot').className='dot '+(offline()?'danger':'idle');
   $('#foottext').textContent=offline()?'kernel unreachable':'idle';
-  $('#crewnav').innerHTML=Object.values(AGENTS).filter(a=>a.id!=='wright').map(a=>`<button class="nav crew" data-act="crew" data-what="${a.id}" aria-label="${esc(a.name)}">${avatarHTML(a,24)}<span class="txt"><span class="nm">${esc(a.name)}</span><span class="last cap">${esc(a.last)}</span></span></button>`).join('');
+  $('#crewnav').innerHTML=Object.values(AGENTS).filter(a=>a.id!=='wright').map(a=>{ const cur=V().scr==='crew'&&a.id==='dev';
+    return `<button class="nav crew${cur?' sel':''}" data-act="crew" data-what="${a.id}" aria-label="${esc(a.name)}"${cur?' aria-current="page"':''}>${avatarHTML(a,24)}<span class="txt"><span class="nm">${esc(a.name)}</span><span class="last cap">${esc(crewLast(a))}</span></span></button>`; }).join('');
   $('#main').innerHTML=renderMain();
   /* The thread keeps its scroll while Chat's own state changes; a view change scrolls to what the view is about, a send to the newest message. */
   const sc=$('#thread');
@@ -928,6 +1288,7 @@ function render(){
     if(!jump&&sc0) sc.scrollTop=prevScroll;
     else { const see=V().see&&$(V().see); if(see) within(see,"center"); else sc.scrollTop=sc.scrollHeight; }
   }
+  else if(jump&&V().see){ const el=$(V().see), box=el&&el.closest('.scroll'); if(box) box.scrollTop+=el.getBoundingClientRect().top-box.getBoundingClientRect().top-16; }
   jump=false;
   renderOverlay(); writeHash();
   if(keep&&!$('#overlay').innerHTML){ const el=$(keep); if(el&&!el.disabled) el.focus({preventScroll:true}); }
@@ -982,19 +1343,30 @@ function goScr(scr){
   opener=null; setView(s.home,true); render(); $('#col')?.focus({preventScroll:true}); note('');
 }
 function goKey(key){ const scr=Object.keys(SCREENS).find(s=>key&&SCREENS[s].k===key); if(scr) goScr(scr); }
-/* SUBTASK-2:CREW — a crew member's thread. Until the Crew views exist, the sidebar entry says where it is drawn. */
-function openCrew(id){ const a=AGENTS[id]; note(`${a.name}'s thread uses the same thread component as Chat; it is drawn in the Crew group of this mockup.`); }
+/* SUBTASK-2:CREW — Sandbox Developer's thread is drawn; Mason's would use the same component. */
+function openCrew(id){
+  if(id==='dev'){ goScr('crew'); return; }
+  note(`${AGENTS[id].name}'s thread uses the same thread component; this mockup draws Sandbox Developer's.`);
+}
+/* The crew's sidebar line: at 14:22 both charters are held; views marked later show them later the same day, after the owner approved both. */
+const LATER_LAST={dev:'PR #24 parked, awaiting merge',mason:'Reviewed PR #24'};
+const crewLast=a=>V().later&&LATER_LAST[a.id]||a.last;
 
 /* ---------- CommandPalette: one builder; each screen contributes entries through paletteItems() ---------- */
-/* SUBTASK-2:PALETTE — commands for the views the next part adds */
-function palExtra(mk,off){}
+/* SUBTASK-2:PALETTE — each command exists only while its control is on the visible view, and acts through that control. */
+function palExtra(mk,off){
+  const btn=sel=>$('#main '+sel), via=(sel,fn)=>()=>{ const b=btn(sel); if(b&&!b.disabled){ b.focus({preventScroll:true}); fn(b); } };
+  if(threadScr()&&V().st!=='empty') threads().forEach(t=>{ if(S.renaming==null) mk('Threads',I.pencil,`Rename thread: ${t.title}`,off?'needs the kernel':'',via(`[data-act="rename"][data-t="${t.id}"]`,b=>chatAct('rename',b)),off); });
+  if(V().scr==='settings'&&btn('[data-act="set-use"]')) mk('Settings',I.gear,'Size hint: use Wright\'s proposal (40,000 tokens)','',via('[data-act="set-use"]',b=>sideAct('set-use',b)));
+  if(V().scr==='approvals') $$('#main details.raw').forEach(d=>mk('Approvals',I.list,`${d.open?'Hide':'Show'} kernel tool names: #${d.dataset.raw}`,'',()=>{ d.open=!d.open; d.querySelector('summary').focus({preventScroll:true}); }));
+}
 function paletteItems(){
   const off=offline(), it=[];
   const mk=(g,ic,t,r,run,dis)=>it.push({g,ic,t,r,run,dis});
-  /* Thread commands exist only while Chat's thread list is the visible view. */
-  if(V().scr==='chat'&&V().st!=='empty') threads().forEach(t=>{
+  /* Thread commands exist only while a thread list (Chat's, or the Crew thread's) is the visible view. */
+  if(threadScr()&&V().st!=='empty') threads().forEach(t=>{
     mk('Threads',I.clip,`Copy reference: ${t.title}`,'',()=>{ S.copied=t.id; toast(`Copied a reference to “${t.title}”. Paste it with ⌘V.`); });
-    if(t.id===65) mk('Threads',I.fresh,`Summarize & start fresh: ${t.title}`,off?'needs the kernel':'',()=>{ const b=$('#main [data-act="summarize"][data-t="65"]'); if(b){ b.focus({preventScroll:true}); chatAct('summarize',b); } },off);
+    if(t.id===CTX().sumId) mk('Threads',I.fresh,`Summarize & start fresh: ${t.title}`,off?'needs the kernel':'',()=>{ const b=$(`#main [data-act="summarize"][data-t="${t.id}"]`); if(b){ b.focus({preventScroll:true}); chatAct('summarize',b); } },off);
   });
   palExtra(mk,off);
   NAV_ORDER.filter(k=>k!=='|').forEach(k=>{const s=SCREENS[k]; mk('Screens',s.icon,s.label,s.k?'⌘'+s.k:'',()=>goScr(k));});
@@ -1033,13 +1405,14 @@ function palette(){
 }
 
 /* ---------- Actions ---------- */
-const CHAT_ACTS=['reply','reply-x','info','summarize','edit','fresh','goto-thread','copyref','chip-mode','chip-x','send'];
+const CHAT_ACTS=['reply','reply-x','info','summarize','edit','fresh','goto-thread','copyref','chip-mode','chip-x','send','rename','rename-save','rename-x'];
 document.addEventListener('click',e=>{
   const el=e.target.closest('[data-act],[data-go]'); if(!el||el.disabled||el.getAttribute('aria-disabled')==='true') return;
   if(el.dataset.go){ goScr(el.dataset.go); return; }
   const a=el.dataset.act;
   if(a==='close-bg'&&e.target!==el) return;
   if(CHAT_ACTS.includes(a)){ chatAct(a,el); return; }
+  if(SIDE_ACTS.includes(a)){ sideAct(a,el); return; }
   ({
     'close':closeOverlay,'close-bg':closeOverlay,
     'crew':()=>openCrew(el.dataset.what),
@@ -1050,19 +1423,32 @@ document.addEventListener('click',e=>{
 document.addEventListener('input',e=>{
   if(e.target.id==='cin') S.draft=e.target.value;
   else if(e.target.id==='sumedit'){ S.editText=e.target.value; }
+  else if(e.target.id==='rn-in') S.rnText=e.target.value;
+  else if(e.target.classList.contains('setin')){
+    /* Typing changes only the draft and the Save and Discard states; nothing re-renders under the caret. */
+    S.setDraft={...(S.setDraft||{}),[e.target.dataset.k]:e.target.value};
+    const d=setDirty(); $('#set-save').disabled=!d; $('#set-discard').disabled=!d;
+    $('#set-state').textContent=d?'Unsaved change. Leaving Settings drops it, as Discard does.':'Saved.';
+  }
 });
-document.addEventListener('paste',e=>{ if(e.target.id==='cin'&&V().scr==='chat'&&S.copied!=null&&pasteRef()) e.preventDefault(); });
+/* The raw-names disclosure keeps its open state across re-renders (an approval decision re-renders the card). */
+document.addEventListener('toggle',e=>{ const d=e.target; if(d.matches&&d.matches('details.raw')){ S.rawOpen={...(S.rawOpen||{}),[d.dataset.raw]:d.open}; } },true);
+document.addEventListener('paste',e=>{ if(e.target.id==='cin'&&threadScr()&&S.copied!=null&&pasteRef()) e.preventDefault(); });
 document.addEventListener('keydown',e=>{
   const t=e.target, mod=e.metaKey||e.ctrlKey, open=!!$('#overlay').innerHTML;
   if(e.key==='Escape'&&open){ e.preventDefault(); closeOverlay(); return; }
   if(e.key==='Tab'&&open){ trapTab(e); return; }
   if(t.id==='palin') return;
-  /* Esc on Chat: the ⓘ panel first, then the Reply strip. Both are cleared by every view change, so Esc acts only on what is on screen. */
-  if(e.key==='Escape'&&V().scr==='chat'){
+  /* Rename in place: Enter saves, Esc cancels. Both act only while the field is on screen (every view change clears renaming). */
+  if(t.id==='rn-in'&&S.renaming!=null&&e.key==='Enter'){ e.preventDefault(); saveRename(); return; }
+  if(e.key==='Escape'&&threadScr()&&S.renaming!=null){ e.preventDefault(); cancelRename(); return; }
+  if(t.classList&&t.classList.contains('setin')&&V().scr==='settings'&&e.key==='Enter'){ e.preventDefault(); saveSettings(); return; }
+  /* Esc on a thread screen: the ⓘ panel first, then the Reply strip. Both are cleared by every view change, so Esc acts only on what is on screen. */
+  if(e.key==='Escape'&&threadScr()){
     if(S.info!=null){ e.preventDefault(); closeInfo(); return; }
     if(S.reply!=null){ e.preventDefault(); cancelReply(); return; }
   }
-  if(t.id==='cin'&&V().scr==='chat'){
+  if(t.id==='cin'&&threadScr()){
     if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); send(); return; }
     if(mod&&!e.altKey&&e.key.toLowerCase()==='v'&&S.copied!=null){ if(pasteRef()) e.preventDefault(); return; }
   }
