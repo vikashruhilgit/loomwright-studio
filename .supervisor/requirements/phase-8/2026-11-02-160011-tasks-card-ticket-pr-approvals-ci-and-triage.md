@@ -41,6 +41,10 @@ Recorded 2026-11-02 in the phase 8 product-owner session, over eight rounds of A
   - **Walk:** **"Full loop, two policies (Recommended)"**. One GitHub issue and one personal ClickUp task become two PRs through `/automate`; a fix, a question and a remark on one PR are triaged; a reviewer is re-requested; PR A merges through the gate under Solo, and PR B under Approve in Studio. Jira is `not_exercised`. Never `vendsy/*` or any Tray system.
 - **Nothing is patched outside an item's Touches.** A lane that needs another file stops and says so.
 
+## Owner decision (2026-11-09, Launch Pad `LP-CLARIFY`, binding)
+
+The kernel records no comment route: `TaskTicketPr` has no tally field, `kernel_pr_route` only reads, and no comment-route event kind exists, so item 10 never built what `phase-8.html` assumed. The owner chose **"Defer tally (Recommended)"**: this item draws no triage tally and no comment routes until the kernel serves them. The card shows no tally numbers, a comment-route event the kernel appends later reads through the history's generic line, and `docs/evidence/phase-8-polish/tasks/README.md` records the gap. A new kernel follow-up item (record a comment-route event plus a tally field on `TaskTicketPr`) delivers both. This amends Scope 1's "the triage tally" and Scope 2's "its comments' routes" below.
+
 ## Scope
 
 1. **The card** (`app/src/screens/tasks/`), as `phase-8.html` draws it:
