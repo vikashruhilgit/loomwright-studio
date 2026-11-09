@@ -5,7 +5,7 @@
 // session the tools to hand tickets to `/automate` and to check a merge (item
 // 09; no tool starts a session, owner decision 2026-11-03), `tracker` follows a
 // PR through its states, and `routing` decides where a finding goes (fix, reply
-// or answer). A part is empty until its item fills it in. Mechanism only
+// or answer). Mechanism only
 // (invariant 1): the repo's merge policy is the user's, and the kernel never
 // merges (invariant 4, D40).
 // `startKernel` and `runCli` merge it through `SHIPPED_CONTRIBUTIONS`
@@ -13,19 +13,21 @@
 //
 // The `studio` CLI loads it, so it imports only types, the feature seam, the
 // console's part merge and its own parts (which may read the repo policy module,
-// already in the registry's graph through `integrations/index.ts`, and node
+// the GitHub connector row, the agent settings and registry readers and the
+// loop's store helpers, all already in the registry's graph, and node
 // `fs`/`path`): never the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the registry's module graph).
 import { consoleContributionOf } from "../console/index.js";
-import { emptyConsolePart } from "../console/types.js";
 import type { ConsolePart } from "../console/types.js";
 import type { FeatureContribution } from "../features/contribution.js";
+import { routingPart } from "./routing.js";
 import { runnerPart } from "./runner.js";
+import { trackerPart } from "./tracker.js";
 
 /** The contribution's name. */
 export const AUTOMATE_NAME = "automate";
 
-/** One sub-part of the `automate` contribution: the console's part shape, empty until its item fills it in. */
+/** One sub-part of the `automate` contribution: the console's part shape. */
 export type AutomatePart = ConsolePart;
 
 /**
@@ -36,11 +38,19 @@ export type AutomatePart = ConsolePart;
  */
 export { runnerPart };
 
-/** The tracker part: follows a pull request through its states (empty until its item). */
-export const trackerPart: AutomatePart = emptyConsolePart("tracker");
+/**
+ * The tracker part (item 10): one due work that keeps `pr_tracks` and the linked
+ * task current, with a `pr_state_changed` event per change, built in `./tracker.ts`.
+ * No tool, route or subcommand; it reads GitHub only after a `trigger_fired`.
+ */
+export { trackerPart };
 
-/** The routing part: routes a finding to fix, reply or answer (empty until its item). */
-export const routingPart: AutomatePart = emptyConsolePart("routing");
+/**
+ * The routing part (item 10): `kernel_pr_route(repo, pr)`, built in `./routing.ts`.
+ * Read-only: it answers where a fix may go (a live run's drain, a parked item's
+ * command, `/loomwright:review-pr`, or a reply only) and pushes nothing.
+ */
+export { routingPart };
 
 /** Every part, in merge order: tools, routes, subcommands and due work keep this order. */
 export const AUTOMATE_PARTS: readonly AutomatePart[] = Object.freeze([runnerPart, trackerPart, routingPart]);
