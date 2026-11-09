@@ -33,11 +33,15 @@
 //       written to `file` (`memory/<agent>/threads/<thread>.md`). The row is
 //       in the old thread: no new thread starts. 409 kill_switch_engaged /
 //       agent_off / summary_exists {file} (the owner's file is never
-//       overwritten) / summary_unreadable {file, problem} (a symbolic link
-//       at the folder or the file: `symlink_refused`) / nothing_to_summarize
-//       (no row of it had a session) / workspace_not_listed (the row runs in
-//       the continued row's workspace, which must still be listed; a
-//       settings refusal as `POST /ask` answers it)
+//       overwritten) / summary_unreadable {file, problem} (`problem` as
+//       `readThreadSummary` names it: `symlink_refused`, `hard_link_refused`,
+//       `not_a_file`, `not_a_directory` or an open error's code) /
+//       nothing_to_summarize (no row of it had a session) /
+//       workspace_not_listed (the row runs in the continued row's workspace,
+//       which must still be listed) / model_unset {file, field} /
+//       settings_invalid {file} / settings_missing {file} (only when that
+//       row has a workspace: the agent's settings are read to check it, and
+//       refused as `POST /ask` refuses them)
 //   GET  /threads/:agent/:thread/summary
 //       200 {thread, file, text, truncated}: the file as it is on disk now
 //       (`truncated` null, or `{chars_cut, at_least}` past
@@ -53,7 +57,9 @@
 //       its first row's), checked as summarize checks it. 400
 //       invalid_body; 409 kill_switch_engaged / agent_off /
 //       already_started_fresh {summarized_into} / workspace_not_listed /
-//       no_summary {file} (no
+//       model_unset {file, field} / settings_invalid {file} /
+//       settings_missing {file} (as summarize: only when that row has a
+//       workspace) / no_summary {file} (no
 //       `summary` and no file) / summary_unreadable {file, problem} /
 //       history_too_large {thread, size, bound} / summary_unwritable {file,
 //       code} (`symlink_refused` for a symbolic link at the folder or the
@@ -65,8 +71,11 @@
 //       nothing; no agent tool renames. 400 invalid_body
 //
 // The write routes queue `message` events through `enqueueEvent` (rename
-// only stores the owner's title) and never start a session (invariant 2: the loop's handler does). The agent's
-// settings (its model) are the handler's to refuse, on the row.
+// only stores the owner's title) and never start a session (invariant 2: the loop's handler does). The
+// routes read the agent's settings only to check a workspace-thread's
+// workspace (refusing a bad file then, before anything is queued); for a
+// thread with no workspace the settings (its model included) are the
+// handler's to refuse, on the row.
 //
 // An item is a message (`{type: "message", …brain_messages row}`, every row
 // the agent received or sent) or an event card (`{type: "event", id, at,

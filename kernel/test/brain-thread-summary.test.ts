@@ -9,6 +9,7 @@
 // (AC14). Handler-level: the event loop with a stub `EventSessions` (never the
 // real SDK or a model); the console routes are called directly.
 import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, mkdtempSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -410,6 +411,58 @@ describe("thread summary files never follow a symbolic link (invariant 3)", () =
     expect(readThreadSummary(dataDir, "wright", first.id, 1000)).toMatchObject({ text: "", problem: "symlink_refused" });
   });
 
+  // A FIFO planted at the path must never block the kernel's event loop: the read
+  // opens it non-blocking and refuses it (`not_a_file`); the writes never open an
+  // existing node. A blocking open would freeze this worker, where no vitest
+  // timeout can fire, so a watchdog process opens the FIFO for writing every
+  // second: a regression is unblocked and fails on the elapsed time (and the
+  // test timeout) instead of hanging the suite.
+  it.skipIf(process.platform === "win32")(
+    "a FIFO planted at the summary file never blocks: every read refuses it (not_a_file), the summarize reply is not written into it, and start-fresh's overwrite replaces it",
+    async () => {
+      setModel();
+      const store = openStore();
+      const s = stubSessions(store);
+      const first = await answered(store, "hello", s.sessions);
+      const file = `memory/wright/threads/${first.id}.md`;
+      mkdirSync(join(summaryPath(first.id), ".."), { recursive: true });
+      execFileSync("mkfifo", [summaryPath(first.id)]);
+      expect(lstatSync(summaryPath(first.id)).isFIFO()).toBe(true);
+      const watchdog = spawn("sh", ["-c", 'while :; do sleep 1; : > "$0"; done', summaryPath(first.id)], { detached: true, stdio: "ignore" });
+      try {
+        const started = Date.now();
+        expect(readThreadSummary(dataDir, "wright", first.id, 0)).toMatchObject({ text: "", problem: "not_a_file" });
+        expect(readThreadSummary(dataDir, "wright", first.id, 1000)).toMatchObject({ text: "", problem: "not_a_file" });
+        expect(Date.now() - started).toBeLessThan(500);
+        const before = queueCount(store);
+        expect(await summary(store, first.id)).toEqual({ status: 409, body: { error: "summary_unreadable", file, problem: "not_a_file" } });
+        expect(await summarize(store, first.id)).toEqual({ status: 409, body: { error: "summary_unreadable", file, problem: "not_a_file" } });
+        expect(await startFresh(store, first.id)).toEqual({ status: 409, body: { error: "summary_unreadable", file, problem: "not_a_file" } });
+        expect(queueCount(store)).toBe(before);
+        const page = await route(store, "GET", "/threads/:agent", { agent: "wright" });
+        expect(page.status).toBe(200);
+        expect((page.body as { threads: { id: number; summary_estimated_tokens: number | null }[] }).threads.find((t) => t.id === first.id)?.summary_estimated_tokens).toBeNull();
+        // A summary reference falls back to the thread's exchanges, saying why.
+        const posted = await ask(store, { text: "use it", references: [{ thread: first.id, use: "summary" }] });
+        expect(posted.status).toBe(202);
+        await tick(store, s.sessions);
+        expect(s.starts.at(-1)?.prompt ?? "").toContain("its summary file is unreadable: not_a_file");
+      } finally {
+        // Stopped before the overwrite below, so it never writes into the regular file.
+        if (watchdog.pid !== undefined) process.kill(-watchdog.pid, "SIGKILL");
+      }
+      // Exclusive create never opens the FIFO: it is "already there".
+      expect(writeThreadSummary(dataDir, "wright", first.id, "x", false)).toBe(false);
+      expect(lstatSync(summaryPath(first.id)).isFIFO()).toBe(true);
+      // The owner's overwrite renames a regular file over it.
+      const fresh = await startFresh(store, first.id, { summary: "the owner's text" });
+      expect(fresh.status, JSON.stringify(fresh.body)).toBe(202);
+      expect(lstatSync(summaryPath(first.id)).isFile()).toBe(true);
+      expect(readFileSync(summaryPath(first.id), "utf8")).toBe("the owner's text");
+    },
+    5000,
+  );
+
   it("start-fresh's overwrite of a real file replaces it in place (a temporary file renamed over it, none left behind)", async () => {
     setModel();
     const store = openStore();
@@ -528,6 +581,34 @@ describe("a thread that ran in a crew member's workspace continues there", () =>
     const explicit = await ask(store, { agent: "mason", text: "over there", continues: first.id, workspace: "/repos/other" });
     expect(explicit.status).toBe(202);
     expect(getBrainMessage(store, (explicit.body as { message_id: number }).message_id)?.workspace).toBe("/repos/other");
+  });
+
+  it("a workspace thread's summarize and start-fresh refuse a missing or invalid settings file before anything is queued (start-fresh writes no summary)", async () => {
+    const store = openStore();
+    addMason(store);
+    const s = cwdSessions(store);
+    const first = await workspaceThread(store, s);
+    const file = agentSettingsPath(dataDir, "mason");
+    const before = queueCount(store);
+
+    writeFileSync(file, "{ not json");
+    const invalidSum = await summarize(store, first.id, "mason");
+    expect(invalidSum.status).toBe(409);
+    expect(invalidSum.body).toMatchObject({ error: "settings_invalid", file });
+    const invalidFresh = await startFresh(store, first.id, { summary: "edited" }, "mason");
+    expect(invalidFresh.status).toBe(409);
+    expect(invalidFresh.body).toMatchObject({ error: "settings_invalid", file });
+    expect(existsSync(summaryPath(first.id, "mason"))).toBe(false);
+
+    rmSync(file);
+    const missingSum = await summarize(store, first.id, "mason");
+    expect(missingSum.status).toBe(409);
+    expect(missingSum.body).toMatchObject({ error: "settings_missing", file });
+    const missingFresh = await startFresh(store, first.id, { summary: "edited" }, "mason");
+    expect(missingFresh.status).toBe(409);
+    expect(missingFresh.body).toMatchObject({ error: "settings_missing", file });
+    expect(existsSync(summaryPath(first.id, "mason"))).toBe(false);
+    expect(queueCount(store)).toBe(before);
   });
 });
 

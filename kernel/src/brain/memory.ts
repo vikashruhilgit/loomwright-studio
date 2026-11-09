@@ -164,7 +164,9 @@ function lstatOrUndefined(path: string): ReturnType<typeof lstatSync> | undefine
  * exclusive create (`wx`) and returns `false` when the file already exists;
  * `replace: true` is only for the owner's own text (start-fresh's `summary`),
  * written to a fresh temporary file (`wx`) renamed over the path, so a link
- * there is replaced, never written through. A symbolic link at the folder or
+ * there is replaced, never written through. Neither path opens an existing
+ * node, so a FIFO planted at the path never blocks: exclusive create answers
+ * `false` (EEXIST) and the rename replaces it. A symbolic link at the folder or
  * the file throws `symlink_refused`; any other write error is thrown.
  */
 export function writeThreadSummary(dataDir: string, agent: string, thread: number, text: string, replace: boolean): boolean {
@@ -196,8 +198,11 @@ export function writeThreadSummary(dataDir: string, agent: string, thread: numbe
  * Read a thread's summary file for a prompt or a route, at most `maxChars`
  * characters (`readMemoryFile`'s bounded read). Never through a link: a
  * symbolic link at the folder or the file, or a file with more than one hard
- * link, gives `problem` `symlink_refused` / `hard_link_refused`; a missing
- * folder or file is `missing`; never a throw.
+ * link, gives `problem` `symlink_refused` / `hard_link_refused`; anything at
+ * the path that is not a regular file (a FIFO, a directory, a socket) is
+ * `not_a_file`, refused without blocking (the open is non-blocking); a folder
+ * component that is not a directory is `not_a_directory`; a missing folder or
+ * file is `missing`; any other open error is its code; never a throw.
  */
 export function readThreadSummary(dataDir: string, agent: string, thread: number, maxChars: number): MemoryRead {
   const relativePath = threadSummaryRelativePath(agent, thread);
@@ -206,7 +211,10 @@ export function readThreadSummary(dataDir: string, agent: string, thread: number
   try {
     const dir = threadsDir(dataDir, agent, false);
     // O_NOFOLLOW: a link at the file itself fails the open (ELOOP) instead of being followed.
-    fd = openSync(join(dir, `${thread}.md`), constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK: a FIFO planted at the path opens at once instead of blocking the
+    // kernel's event loop until a writer appears; `fstat` then refuses it
+    // (`not_a_file`). It changes nothing for a regular file's reads.
+    fd = openSync(join(dir, `${thread}.md`), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (err) {
     if (hasCode(err, "ENOENT")) return none("missing");
     if (hasCode(err, "ELOOP")) return none("symlink_refused");
