@@ -7,7 +7,7 @@
 // untrusted text shown literally and the ⌘K commands. The real kernel's routes are
 // covered by `kernel/test/gui-schedules.test.ts`; the built app by `e2e/schedules.spec.ts`.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiRequest, ApiResult, PlaybookListing, ScheduleEntry, StatusBody, Trigger, TriggerFire } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
@@ -377,6 +377,20 @@ describe("the states", () => {
 // ---- AC1: the timeline ---------------------------------------------------------------------------------------
 
 describe("the upcoming timeline", () => {
+  // The screen splits entries by `now`'s LOCAL day ("Today", then "Later"), and `populated()` dates them relative to
+  // `Date.now()`. With a real clock, from 19:00 local the +300 min entry falls on the next day and moves under "Later",
+  // so these tests failed every evening (in CI's UTC, 19:00-24:00). Pin the clock to 09:30 LOCAL time, whatever the
+  // machine's timezone: +10/+60/+300 min are then today and +900 min is tomorrow. Only `Date` is faked; the real timers
+  // that `waitFor` and `sleep` use keep running.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 22, 9, 30, 0));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("shows the entries in the order the route sent them and sorts nothing", async () => {
     await start(populated());
     await screen.findByTestId(IDS.timeline);
@@ -391,8 +405,8 @@ describe("the upcoming timeline", () => {
     expect(within(screen.getByTestId(IDS.timeline)).getAllByRole("listitem")).toHaveLength(4);
     await waitFor(() => expect(names(IDS.entrySpec)[1]).toBe("poll · every 10 min · studio-sandbox"));
     const specs = names(IDS.entrySpec);
-    // 300 minutes ahead may be tomorrow, so either form of the moment is right.
-    expect(specs[0]).toMatch(/^once · (today |\d{1,2} [A-Z][a-z]{2} )\d\d:\d\d$/);
+    // The pinned clock puts 300 minutes ahead at 14:30 today.
+    expect(specs[0]).toBe("once · today 14:30");
     expect(specs[2]).toBe("Reason: PR #3 review may be ready");
     expect(specs[3]).toBe("cron · 0 9 * * 5 · UTC");
   });
