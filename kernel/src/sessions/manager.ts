@@ -809,7 +809,9 @@ export class SessionManager {
    * `resume: <the earlier row's sdk_session_id>` instead of a fresh
    * `sessionId`, and which records that id. The earlier row must qualify
    * (`#continuableRow`, before Loomwright, admission or any row, the
-   * recorded-cwd check included), and is never changed. It is one attempt,
+   * recorded-cwd check included; when a GitHub token was awaited, asked again
+   * after the mint, `#recheckContinuable`, synchronously with the insert: one
+   * CLI per conversation holds across the await), and is never changed. It is one attempt,
    * never retried. A continuation whose SDK conversation is gone (its first
    * message an error result `No conversation found with session ID: …`,
    * before `system/init`: probe p17) ends `failed` with reason
@@ -867,7 +869,8 @@ export class SessionManager {
       const epoch = this.#stopEpoch;
       githubToken = await this.#mintGithubToken(params.playbook as number, null);
       this.#refuseIfStoppedSince(epoch, null);
-      // The mint was awaited: admission (cap, budget, pause) and the grant are asked again, synchronously with the insert below. A refusal drops the in-memory token; nothing was written.
+      // The mint was awaited: the continued row (another continuation may have claimed its conversation meanwhile), then admission (cap, budget, pause) and the grant are asked again, synchronously with the insert below. A refusal drops the in-memory token; nothing was written.
+      if (from !== undefined) this.#recheckContinuable(from);
       this.#admit(startRequest);
       if (!this.#githubWriteQualifies(params.agent, params.playbook ?? null, dryRun)) githubToken = undefined;
     }
@@ -2493,14 +2496,15 @@ export class SessionManager {
    * The row a continuation (`StartSessionParams.continueFrom`) resumes the SDK
    * conversation of, once it qualifies; else a `SessionError` before Loomwright,
    * admission or any row: `invalid_params` (not a positive integer),
-   * `not_found`, `not_resumable` (another agent, no SDK session id, running
-   * in this kernel, not ended, or a kill left incomplete: its CLI may still
-   * write that conversation; or another session on the same SDK conversation
-   * is still running in this kernel, or its row is live, resumable or has a
-   * kill left incomplete: one CLI per conversation) or `cwd_changed` (`#refuseChangedCwd`, which logs
-   * its `session_refused` event with that row's id). `resumeSession`'s own
-   * refusal of rows that are not `interrupted`/`orphaned` is unchanged: a
-   * continuation is a NEW row, admitted as a start.
+   * `not_found`, `not_resumable` (another agent, or a `#continuationBlocker`:
+   * no SDK session id, running in this kernel, not ended, a kill left
+   * incomplete, or another session on the same SDK conversation) or
+   * `cwd_changed` (`#refuseChangedCwd`, which logs its `session_refused` event
+   * with that row's id). When the start then awaits a GitHub token mint, the
+   * blocker check is run again after it (`#recheckContinuable`): this one is
+   * only as current as the next await. `resumeSession`'s own refusal of rows
+   * that are not `interrupted`/`orphaned` is unchanged: a continuation is a
+   * NEW row, admitted as a start.
    */
   #continuableRow(params: StartSessionParams): SessionRow {
     const fromId = params.continueFrom;
@@ -2508,18 +2512,48 @@ export class SessionManager {
     const row = this.getSession(fromId);
     if (row === undefined) throw new SessionError("not_found", `no session ${fromId}`);
     if (row.agent !== params.agent) throw new SessionError("not_resumable", `session ${fromId} is ${String(row.agent)}'s, not ${params.agent}'s`);
-    if (!isNonEmptyString(row.sdk_session_id)) throw new SessionError("not_resumable", `session ${fromId} has no SDK session id`);
-    if (this.#live.has(fromId) || !CONTINUABLE_STATUSES.includes(row.status) || row.kill_incomplete_at !== null) {
-      throw new SessionError("not_resumable", `session ${fromId} is ${row.status}${row.kill_incomplete_at === null ? "" : " with a kill left incomplete"}; a continuation needs an ended session`);
+    const blocker = this.#continuationBlocker(row);
+    if (blocker !== undefined) throw new SessionError("not_resumable", blocker);
+    this.#refuseChangedCwd(params.cwd, row);
+    return row;
+  }
+
+  /**
+   * Why `row` cannot be continued right now, or `undefined` when it can: it
+   * has no SDK session id; it is live, not ended with a continuable status, or
+   * a kill was left incomplete (its CLI may still write that conversation); or
+   * another session on the same SDK conversation is still running in this
+   * kernel, or its row is live, resumable or has a kill left incomplete (one
+   * CLI per conversation). Read synchronously, so it is true until the next
+   * await: `#continuableRow` asks it before the mint, `#recheckContinuable`
+   * after.
+   */
+  #continuationBlocker(row: SessionRow): string | undefined {
+    if (!isNonEmptyString(row.sdk_session_id)) return `session ${row.id} has no SDK session id`;
+    if (this.#live.has(row.id) || !CONTINUABLE_STATUSES.includes(row.status) || row.kill_incomplete_at !== null) {
+      return `session ${row.id} is ${row.status}${row.kill_incomplete_at === null ? "" : " with a kill left incomplete"}; a continuation needs an ended session`;
     }
     // One CLI per SDK conversation: another session on it that this kernel still runs, or a row that is live, resumable or may have a live group, refuses.
     const sdk = row.sdk_session_id;
     const inUse =
       [...this.#live.values()].some((l) => l.sdkSessionId === sdk) ||
       this.#store.prepare<[string], number>("SELECT count(*) FROM sessions WHERE sdk_session_id = ? AND (status IN ('starting', 'running', 'interrupted', 'orphaned') OR kill_incomplete_at IS NOT NULL)").pluck().get(sdk) !== 0;
-    if (inUse) throw new SessionError("not_resumable", `session ${fromId}'s SDK conversation is in use by another session`);
-    this.#refuseChangedCwd(params.cwd, row);
-    return row;
+    if (inUse) return `session ${row.id}'s SDK conversation is in use by another session`;
+    return undefined;
+  }
+
+  /**
+   * After the token mint's await in a continuation (`#recheckResumable`'s
+   * counterpart): the earlier row, read again, must still be the ended row
+   * `#continuableRow` accepted (same SDK session id, no blocker: in
+   * particular no other session claimed its conversation meanwhile), else
+   * `not_resumable`. Synchronous with the row insert that follows, so two
+   * continuations of one conversation whose mints overlap cannot both insert.
+   */
+  #recheckContinuable(read: SessionRow): void {
+    const now = this.getSession(read.id);
+    const blocker = now === undefined || now.sdk_session_id !== read.sdk_session_id ? "it is gone or its SDK session id changed" : this.#continuationBlocker(now);
+    if (blocker !== undefined) throw new SessionError("not_resumable", `session ${read.id} changed while its GitHub token was being minted: ${blocker}`);
   }
 
   #refuseChangedCwd(cwd: string, row: SessionRow): void {

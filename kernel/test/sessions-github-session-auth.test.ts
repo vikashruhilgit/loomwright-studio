@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { HookCallback, HookInput } from "@anthropic-ai/claude-agent-sdk";
+import type { HookCallback, HookInput, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { decideApproval } from "../src/approvals/index.js";
 import { stripCredentialEnv } from "../src/auth/credential-env.js";
@@ -149,6 +149,9 @@ function setup(o: Options = {}) {
 const flushAll = async () => {
   for (let i = 0; i < 10; i++) await new Promise<void>((r) => setImmediate(r));
 };
+
+/** A stand-in CLI's successful result; pushed after the default `system/init`, then the stream ends and the row completes. */
+const success = (text: string): SDKMessage => ({ type: "result", subtype: "success", is_error: false, result: text, modelUsage: {} }) as unknown as SDKMessage;
 
 const tokenOf = (dir: string) => readFileSync(join(dir, "token"), "utf8");
 const hostsOf = (dir: string) => readFileSync(join(dir, "gh", "hosts.yml"), "utf8");
@@ -587,6 +590,53 @@ describe("admission is asked again after the mint (check-then-await-then-act)", 
     expect(dirs(t)).toEqual(["session-1"]);
     expect(t.refusals()).toHaveLength(0);
     expect(t.timers.filter((x) => !x.cancelled)).toHaveLength(1);
+  });
+
+  it("two concurrent continuations of one conversation with a deferred mint: one resumes it, the other is not_resumable (one CLI per conversation holds across the await)", async () => {
+    const releases: ((r: SessionTokenMintResult) => void)[] = [];
+    let first = true;
+    const m = minter(() => {
+      if (first) {
+        first = false;
+        return ok(0);
+      }
+      return new Promise<SessionTokenMintResult>((resolve) => releases.push(resolve));
+    });
+    const t = setup({ mint: m.fn });
+    const pb = t.playbook();
+    // An ended, continuable session of the live playbook.
+    const h = await t.start(pb);
+    t.fakes.calls[0]?.stream.push(success("done"));
+    t.fakes.calls[0]?.stream.end();
+    expect(await h.done).toBe("completed");
+    const continuation = () => t.manager.startSession(startParams(tmp, { policy: LIVE_POLICY, playbook: pb, playbookVersion: 1, continueFrom: h.id, prompt: "again" }));
+    const settled = [continuation(), continuation()].map((p) => p.then(() => "ok" as const, (e: unknown) => e as SessionError));
+    await flushAll();
+    // Both passed the continuation check before either had a row: two mints pending, nothing inserted.
+    expect(releases).toHaveLength(2);
+    expect(count(t.store, "SELECT count(*) FROM sessions")).toBe(1);
+    releases[0]?.(ok(1));
+    releases[1]?.(ok(2));
+    const results = await Promise.all(settled);
+    expect(results.filter((r) => r === "ok")).toHaveLength(1);
+    const refused = results.find((r) => r !== "ok") as SessionError;
+    expect(refused).toMatchObject({ code: "not_resumable", message: expect.stringContaining(`session ${h.id} changed while its GitHub token was being minted`) });
+    // Exactly one row resumes the conversation (the only new one), and it is the only CLI on it.
+    const onConversation = t.store
+      .prepare<[string], { id: number; status: string }>("SELECT id, status FROM sessions WHERE sdk_session_id = ? AND status NOT IN ('completed', 'failed', 'failed:auth', 'stopped') ORDER BY id")
+      .all(h.sdkSessionId);
+    expect(onConversation).toHaveLength(1);
+    const winner = onConversation[0] as { id: number; status: string };
+    expect(winner.id).not.toBe(h.id);
+    expect(["starting", "running"]).toContain(winner.status);
+    expect(count(t.store, "SELECT count(*) FROM sessions")).toBe(2);
+    expect(t.fakes.calls).toHaveLength(2);
+    expect(t.fakes.calls[1]?.options).toMatchObject({ resume: h.sdkSessionId });
+    // Only the admitted continuation has a token directory; the refused one's in-memory token was dropped, nothing of it written.
+    expect(dirs(t)).toEqual([`session-${winner.id}`]);
+    expect(t.timers.filter((x) => !x.cancelled)).toHaveLength(1);
+    expect(t.refusals()).toHaveLength(0);
+    await t.manager.stopAll({ mode: "shutdown" });
   });
 
   it("a pause set during the mint refuses the start; nothing is written and no timer is armed", async () => {
