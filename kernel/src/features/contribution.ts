@@ -199,8 +199,10 @@ export interface ContributedToolContext {
  * in the fixed `KERNEL_APPLIED_ACTIONS` set (`approvalApplierOf` refuses the
  * composition otherwise). When the owner approves a held call to it `once`,
  * the kernel runs it inside the decision's transaction, with the held input
- * parsed against `shape` and the approval it runs on, instead of leaving the
- * call for the agent to repeat. Synchronous. It answers `{applied, after?}`
+ * parsed against `shape`, the approval it runs on and the kernel's tool
+ * catalogue when there is one (`catalogue`, as
+ * `ContributedToolContext.catalogue`), instead of leaving the call for the
+ * agent to repeat. Synchronous. It answers `{applied, after?}`
  * (a sentence for the agent; `after` runs once the decision committed) or
  * `{refused, text}`; a throw rolls back its writes and is recorded as
  * `apply_error`.
@@ -230,7 +232,10 @@ export interface ContributedTool<S extends z.ZodRawShape = z.ZodRawShape> {
   readonly requiresConnectorLevel?: "write";
   handler(args: z.infer<z.ZodObject<S>>, ctx: ContributedToolContext): unknown;
   beforeHold?(args: z.infer<z.ZodObject<S>>, ctx: ContributedToolContext): HeldToolVerdict;
-  applyOnApproval?(args: z.infer<z.ZodObject<S>>, ctx: { readonly store: Store; readonly now: () => Date; readonly approval: AppliedApproval }): ApprovalApplyOutcome;
+  applyOnApproval?(
+    args: z.infer<z.ZodObject<S>>,
+    ctx: { readonly store: Store; readonly now: () => Date; readonly approval: AppliedApproval; readonly catalogue?: ToolCatalogue },
+  ): ApprovalApplyOutcome;
 }
 
 /** Infers a tool's argument type from its shape. */

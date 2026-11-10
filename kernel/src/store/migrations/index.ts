@@ -20,6 +20,7 @@ import { connectorApp } from "./019_connector_app.js";
 import { phase8Foundation } from "./020_phase_8_foundation.js";
 import { playbookMergeRequirement } from "./021_playbook_merge_requirement.js";
 import { threadContinuity } from "./022_thread_continuity.js";
+import { playbookJobs } from "./023_playbook_jobs.js";
 import type { Migration } from "./types.js";
 
 export type { Migration } from "./types.js";
@@ -48,4 +49,5 @@ export const migrations: readonly Migration[] = [
   phase8Foundation,
   playbookMergeRequirement,
   threadContinuity,
+  playbookJobs,
 ];

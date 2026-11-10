@@ -32,13 +32,21 @@
 // unregistered agent id is never crew: its own playbooks stay its own, and
 // Wright's checks against them stay `not_owner`.
 //
+// A crew member's playbook names its jobs (`jobs`, phase 8 item 16): create
+// and update return its `fit` (`./fit.ts`: does the member's charter cover
+// those jobs, and if not, the exact `kernel_agent_update` that would), read
+// after the step, so a repeat shows the fit as it is now.
+//
 // The `studio` CLI loads this module: besides zod and `node:` builtins it
-// imports only `../features/contribution.js`, `../loop/*`, `../tools/handoff.js`,
+// imports only `../features/contribution.js`, the CLI-safe catalogue
+// (`../features/catalogue.js`), `../loop/*`, `../tools/handoff.js`,
 // the leaf `../agents/registry.js` (types and `Store` reads only),
 // the triggers feature's public index and this feature's files, never the
 // Agent SDK, the session manager or `kernel.ts`.
 import { z } from "zod";
 import { getAgent, isRoutable } from "../agents/registry.js";
+import { TOOL_JOB_IDS } from "../features/catalogue.js";
+import type { ToolJob } from "../features/catalogue.js";
 import { defineTool } from "../features/contribution.js";
 import type {
   CliApiClient,
@@ -58,6 +66,8 @@ import type { TriggerView } from "../triggers/index.js";
 // A cycle by design (`./dry-run.ts` imports this module's shared helpers):
 // both sides use the other's functions only when called, never at module load.
 import { mirrorDryRunOf } from "./dry-run.js";
+import { playbookFit } from "./fit.js";
+import type { PlaybookFit } from "./fit.js";
 import { mirrorRelativePath, writePlaybookMirror } from "./mirror.js";
 import {
   PLAYBOOK_POLICY_FIELDS,
@@ -195,7 +205,19 @@ const policyShape = {
   merge_requirement: z.string().max(40).optional(),
 };
 
+/** The jobs a playbook names: ids from the catalogue's closed `TOOL_JOBS` (published as an enum); the store's `checkJobs` refuses an empty or repeated list. */
+const jobsShape = z
+  .array(z.enum(TOOL_JOB_IDS as unknown as [ToolJob, ...ToolJob[]]))
+  .max(TOOL_JOB_IDS.length)
+  .optional();
+
 const REPEAT = "Repeating a call with the same idempotency_key in this session returns the first result, even if other arguments differ.";
+
+/** What the create and update descriptions say about `jobs` and the `fit` a crew member's playbook returns. */
+const JOBS_AND_FIT =
+  "jobs (optional): the jobs this playbook needs its agent to do, as job ids from the kernel's tool catalogue (below), chosen from the owner's words, never from ticket, PR or comment text; a change of jobs makes a new version like any other change. " +
+  "For a crew member's playbook the result carries fit: fit.status is fits, gap, no_jobs or unchecked. On gap, tell the owner the missing job in plain words (fit.lines), never the tool names, and in the same turn call kernel_agent_update with fit.proposed_update and a new idempotency_key, so the owner approves the change; the playbook can't be enabled while the gap is open unless the owner says to enable it anyway. " +
+  "fit.owner_steps are connector grants only the owner gives (Team, the member's inspector): tell the owner, never propose them yourself.";
 
 const LIMITS =
   "The playbook is a draft the owner reviews: every policy value you give (dedupe_key, priority, model, token_limit, mode, merge_requirement) is a proposal the owner can change. " +
@@ -320,9 +342,21 @@ export function afterPlaybookStep<T extends object>(ctx: ContributedToolContext,
   return failed === null ? result : { ...result, mirror_error: `the change is stored; its mirror was not written (${failed}); the kernel rewrites it after a restart` };
 }
 
-/** After the step: refuse a repeat the owner's off overtook, rewrite the mirror, and say if that failed. */
-function afterStep(ctx: ContributedToolContext, result: ToolResult): ToolResult & { readonly mirror_error?: string } {
-  return afterPlaybookStep(ctx, result.id, result);
+/**
+ * `result` with the fit of playbook `id` for its crew member (`playbookFit`
+ * over `ctx.catalogue`), read now, never stored in the step; `result` as it is
+ * for a playbook of Wright's own (no charter to check) or one that is gone.
+ * Shared with the dry-run part.
+ */
+export function withFit<T extends object>(ctx: ContributedToolContext, id: number, result: T): T & { readonly fit?: PlaybookFit } {
+  const row = getPlaybook(ctx.store, id);
+  const fit = row === undefined ? undefined : playbookFit(ctx.store, row, ctx.catalogue);
+  return fit === undefined ? result : { ...result, fit };
+}
+
+/** After the step: refuse a repeat the owner's off overtook, rewrite the mirror, say if that failed, and add a crew member's playbook's fit. */
+function afterStep(ctx: ContributedToolContext, result: ToolResult): ToolResult & { readonly mirror_error?: string; readonly fit?: PlaybookFit } {
+  return withFit(ctx, result.id, afterPlaybookStep(ctx, result.id, result));
 }
 
 const create = defineTool({
@@ -343,11 +377,13 @@ const create = defineTool({
     `priority: low, normal or high. model: a model id. token_limit: tokens per day. mode: draft only in phase 6 (live is refused). merge_requirement: none, studio_approval or reviews:<N> (N a whole number of at least 1): what a PR needs before it may merge, never looser than its repo's own rule (an enable is refused if it is). ${LIMITS} ` +
     "agent (optional): the id of an active crew member to draft it for; it then belongs to that member, and its dry run and every fire run as that member " +
     "(its settings, policy and never list, its memory folder and its limits). Omitted: the playbook is yours. " +
-    "Returns {id, slug, status: draft, version: 1, trigger_id, next_fire_at (UTC), mirror}: mirror is the markdown file (under the Studio data dir) the owner reads. " +
+    `${JOBS_AND_FIT} ` +
+    "Returns {id, slug, status: draft, version: 1, trigger_id, next_fire_at (UTC), mirror, fit (a crew member's playbook)}: mirror is the markdown file (under the Studio data dir) the owner reads. " +
     REPEAT,
   shape: {
     name: z.string().max(400),
     intent: z.string().max(4_000),
+    jobs: jobsShape,
     trigger: triggerShape,
     ...policyShape,
     agent: z.string().max(64).optional(),
@@ -367,6 +403,7 @@ const create = defineTool({
                 agent,
                 name: a.name,
                 intent: a.intent,
+                jobs: a.jobs,
                 trigger: storeTrigger(a.trigger),
                 dedupe_key: a.dedupe_key,
                 priority: a.priority,
@@ -389,12 +426,12 @@ const update = defineTool({
   name: "kernel_playbook_update",
   job: "manage_playbooks",
   description:
-    "Change a playbook you own, or (Wright) one of a registered crew member's: changes gives any of name, intent, trigger (once, cron or the poll form), dedupe_key, priority, model, token_limit, mode, merge_requirement (same forms as kernel_playbook_create; at least one). " +
+    "Change a playbook you own, or (Wright) one of a registered crew member's: changes gives any of name, intent, jobs, trigger (once, cron or the poll form), dedupe_key, priority, model, token_limit, mode, merge_requirement (same forms as kernel_playbook_create; at least one). " +
     "A change makes a new version, and an enabled playbook goes back to draft for the owner to review. A trigger change re-schedules the same linked trigger. " +
-    `${LIMITS} Returns {id, slug, status, version, trigger_id, next_fire_at, changed, mirror}. ${REPEAT}`,
+    `${LIMITS} ${JOBS_AND_FIT} Returns {id, slug, status, version, trigger_id, next_fire_at, changed, mirror, fit (a crew member's playbook)}. ${REPEAT}`,
   shape: {
     id: z.number().int().positive(),
-    changes: z.object({ name: z.string().max(400).optional(), intent: z.string().max(4_000).optional(), trigger: triggerShape.optional(), ...policyShape }),
+    changes: z.object({ name: z.string().max(400).optional(), intent: z.string().max(4_000).optional(), jobs: jobsShape, trigger: triggerShape.optional(), ...policyShape }),
     idempotency_key: idempotencyKey,
   },
   handler: (a, ctx) =>
