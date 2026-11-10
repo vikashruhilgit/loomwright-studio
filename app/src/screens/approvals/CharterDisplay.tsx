@@ -5,7 +5,9 @@
 // `charterDisplayParts` splits it, and this draws:
 //
 // 1. who the change is for, and the granted kernel tools grouped by job, each
-//    with its purpose line, ahead of any `mcp__kernel__` name;
+//    with its purpose line (the job labels alone when the kernel wrote its
+//    compact form, for a charter granting too many tools to list each),
+//    ahead of any `mcp__kernel__` name;
 // 2. beneath, in a disclosure "Kernel tool names, as enforced", every other
 //    line exactly as the kernel wrote it: the field lines, the `enforced:`
 //    line (non-kernel tools and Bash prefixes as they always were), limits,
@@ -56,11 +58,13 @@ export function CharterDisplay({ parts }: CharterDisplayProps) {
               // Labels may repeat in a malformed display; the position keeps keys unique.
               <li className="approvals-charter-job" key={i} data-testid="charter-job">
                 <span className="approvals-charter-job-label">{printable(job.label)}</span>
-                <ul className="approvals-charter-purposes">
-                  {job.purposes.map((purpose, j) => (
-                    <li key={j}>{printable(purpose)}</li>
-                  ))}
-                </ul>
+                {job.purposes.length === 0 ? null : (
+                  <ul className="approvals-charter-purposes">
+                    {job.purposes.map((purpose, j) => (
+                      <li key={j}>{printable(purpose)}</li>
+                    ))}
+                  </ul>
+                )}
               </li>
             ))}
           </ul>

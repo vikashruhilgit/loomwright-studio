@@ -174,7 +174,7 @@ export const CHARTER_PURPOSE_PREFIX = "  - ";
 export const CHARTER_CATALOGUE_UNAVAILABLE =
   "kernel tools: the kernel's tool catalogue is unavailable, so they are not grouped by job; their names are on the enforced line below";
 
-/** One job of a charter display's plain block: its label and the purpose line of each granted tool of that job. */
+/** One job of a charter display's plain block: its label and the purpose line of each granted tool of that job (none in the kernel's compact, label-only form). */
 export interface CharterJob {
   readonly label: string;
   readonly purposes: readonly string[];
@@ -206,8 +206,11 @@ export interface CharterDisplayParts {
  * display as it always has. Pure. The plain block is the run of lines right
  * after the first: `job: <label>` lines, each followed by its `  - <purpose>`
  * lines, or the one catalogue-unavailable line. It ends at the first line that
- * is neither; a purpose line with no job above it, or a job with no purpose,
- * is not the kernel's format and splits nothing.
+ * is neither. The kernel writes every job with its purposes, or (when that
+ * block would not fit the approval display) every job as its label alone, the
+ * compact form: both split, the compact one into jobs with no purposes. A
+ * purpose line with no job above it, or a block mixing jobs with and without
+ * purposes, is not the kernel's format and splits nothing.
  */
 export function charterDisplayParts(display: string): CharterDisplayParts | undefined {
   const lines = display.split("\n");
@@ -229,7 +232,9 @@ export function charterDisplayParts(display: string): CharterDisplayParts | unde
       break;
     }
   }
-  if (jobs.length === 0 || jobs.some((j) => j.purposes.length === 0)) return undefined;
+  if (jobs.length === 0) return undefined;
+  const compact = jobs.every((j) => j.purposes.length === 0);
+  if (!compact && jobs.some((j) => j.purposes.length === 0)) return undefined;
   return { head, jobs, note: undefined, raw: lines.slice(i).join("\n") };
 }
 

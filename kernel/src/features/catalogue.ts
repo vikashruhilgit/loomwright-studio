@@ -253,8 +253,15 @@ export const DISPLAY_NOT_IN_CATALOGUE = "other kernel tools, not in the catalogu
  * None when no kernel tool is granted (the display is as it always was). One
  * line, `DISPLAY_CATALOGUE_UNAVAILABLE`, when `catalogue` is undefined: never a
  * guessed grouping.
+ *
+ * `purposes: false` is the compact form a display falls back to when the full
+ * one would not fit the part the owner must see whole (`MAX_APPROVAL_DISPLAY`):
+ * the `job:` lines alone, no `  - ` line at all (the not-in-catalogue heading
+ * too; those names are on the enforced line). Its size is bounded by the job
+ * vocabulary (one short line per `TOOL_JOBS` job plus that heading, a few
+ * hundred characters at most), never by how many tools are granted.
  */
-export function jobDisplayLines(allowedTools: readonly string[], catalogue: ToolCatalogue | undefined): string[] {
+export function jobDisplayLines(allowedTools: readonly string[], catalogue: ToolCatalogue | undefined, purposes = true): string[] {
   // A bare prefix names no tool: left to the enforced line, like any other entry.
   const granted = [...new Set(allowedTools.filter((t) => t.startsWith(KERNEL_TOOL_PREFIX)).map((t) => t.slice(KERNEL_TOOL_PREFIX.length)))].filter((name) => name !== "");
   if (granted.length === 0) return [];
@@ -262,9 +269,9 @@ export function jobDisplayLines(allowedTools: readonly string[], catalogue: Tool
   const lines: string[] = [];
   for (const job of catalogue.jobs) {
     const tools = job.tools.filter((t) => granted.includes(t.name));
-    if (tools.length > 0) lines.push(`job: ${job.label}`, ...tools.map((t) => `  - ${t.purpose}`));
+    if (tools.length > 0) lines.push(`job: ${job.label}`, ...(purposes ? tools.map((t) => `  - ${t.purpose}`) : []));
   }
   const unknown = granted.filter((name) => catalogueTool(catalogue, name) === undefined);
-  if (unknown.length > 0) lines.push(`job: ${DISPLAY_NOT_IN_CATALOGUE}`, ...unknown.map((name) => `  - ${name}`));
+  if (unknown.length > 0) lines.push(`job: ${DISPLAY_NOT_IN_CATALOGUE}`, ...(purposes ? unknown.map((name) => `  - ${name}`) : []));
   return lines;
 }

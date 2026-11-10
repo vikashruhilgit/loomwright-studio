@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgent } from "../src/agents/charter-files.js";
 import { listAgents } from "../src/agents/registry.js";
 import { agentSettingsPath, readAgentSettings } from "../src/agents/settings.js";
+import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
 import type { AppliedApproval } from "../src/approvals/store.js";
 import { TOOL_JOB_IDS, buildToolCatalogue } from "../src/features/catalogue.js";
 import type { ToolCatalogue } from "../src/features/catalogue.js";
@@ -373,6 +374,34 @@ describe("AC4 + AC7: a gap is named, closed through kernel_agent_update, and gat
     ).toThrow(/catalogue is unavailable/);
     const done = enableApproved(store, { playbookId: created.id, agent: "wright", approval: approvalNow(96, created.version), sessionId: WRIGHT_SESSION, now: now(), enableAnyway: true });
     expect(done.status).toBe("enabled");
+  });
+
+  it("a member with 30+ kernel tools: the fit's proposed_update (every current tool plus the missing ones) is held for the owner, its job lines in their label-only form, and applies", async () => {
+    const merge = CATALOGUE.tools.filter((t) => t.job === "ask_for_merge").map((t) => `${K}${t.name}`);
+    // Every other kernel tool of the catalogue: before the fix, the job lines alone put this update over the cut.
+    const rest = CATALOGUE.tools.map((t) => `${K}${t.name}`).filter((t) => !merge.includes(t));
+    expect(rest.length).toBeGreaterThanOrEqual(30);
+    addMember(rest);
+    const { fit } = await draft("Merge when ready", ["ask_for_merge"]);
+    expect(fit?.status).toBe("gap");
+    const proposed = fit?.proposed_update;
+    if (proposed === undefined) throw new Error("no proposed_update");
+    expect(proposed.changes.tool_policy.allowedTools).toEqual(["Read", ...rest, ...merge]);
+    const input = { ...proposed, idempotency_key: "close-wide-gap" };
+    const updateHeld = held(AGENT_UPDATE, input, WRIGHT_SESSION) as { display?: string; refuse?: string };
+    expect(updateHeld.refuse).toBeUndefined();
+    const lines = updateHeld.display?.split("\n") ?? [];
+    // Every job of the result by its label alone, ahead of the field line and the enforced line that name the raw tools.
+    const jobs = CATALOGUE.jobs.filter((j) => j.tools.some((t) => [...rest, ...merge].includes(`${K}${t.name}`)));
+    expect(lines.slice(1, 1 + jobs.length)).toEqual(jobs.map((j) => `job: ${j.label}`));
+    // The old list, and the new one only once: on the enforced line beneath (not again as JSON on the field line).
+    expect(lines[1 + jobs.length]).toBe(`tool_policy: ${JSON.stringify({ allowedTools: ["Read", ...rest], allowedBashPrefixes: ["gh pr"] })} → as on the enforced line`);
+    expect(lines.some((l) => l.startsWith("  - "))).toBe(false);
+    expect(lines.at(-1)).toBe(`enforced: never: none; tools: ${["Read", ...rest, ...merge].join(", ")}; bash prefixes: "gh pr"`);
+    expect(lines).toHaveLength(jobs.length + 3);
+    expect(updateHeld.display?.length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+    expect(applier(AGENT_UPDATE, input, approvalNow(97, null), store, now())).toMatchObject({ applied: expect.stringContaining("mason") });
+    expect(allowedToolsOf()).toEqual(["Read", ...rest, ...merge]);
   });
 
   it("a member holding part of a job: the line says so, and the update adds only the tools it lacks", async () => {

@@ -189,6 +189,26 @@ describe("CharterDisplay", () => {
     expect(pre.textContent?.split("\n").map((l) => l.split(":")[0])).toEqual(["tool_policy", "enforced"]);
   });
 
+  it("the kernel's compact form: every job by its label alone, no empty purpose list, still ahead of every raw kernel tool name", () => {
+    const compact = [
+      'Create crew member nell ("Nell", crab crew-teal), proposed by Wright',
+      "job: Hand tickets to /automate",
+      "job: Read a PR",
+      "job: General",
+      `enforced: never: none; tools: ${K}kernel_automate_prepare, ${K}kernel_github_pr_get, ${K}kernel_task_list; bash prefixes: none`,
+      "limits: tokens_per_day not set (no limit); sessions_at_once not set (no limit); delegation_depth not set (no limit)",
+      "workspaces: none",
+    ].join("\n");
+    render(<CharterDisplay parts={parts(compact)} />);
+    const card = screen.getByTestId("approval-display");
+    const jobs = screen.getAllByTestId("charter-job");
+    expect(jobs.map((j) => j.textContent)).toEqual(["Hand tickets to /automate", "Read a PR", "General"]);
+    expect(jobs.every((j) => j.querySelector("ul") === null)).toBe(true);
+    expect(textOutsideRaw(card)).not.toContain(K);
+    expect(before(screen.getByTestId("charter-plain"), screen.getByTestId("charter-raw"))).toBe(true);
+    expect(screen.getByTestId("charter-raw").querySelector("pre")?.textContent).toBe(compact.split("\n").slice(4).join("\n"));
+  });
+
   it("AC9: with the kernel's catalogue unavailable, the kernel's note is shown and no grouping is guessed; the raw names follow", () => {
     render(<CharterDisplay parts={parts(UNAVAILABLE_DISPLAY)} />);
     expect(screen.getByTestId("charter-note").textContent).toBe(CHARTER_CATALOGUE_UNAVAILABLE);

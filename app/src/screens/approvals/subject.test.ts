@@ -224,6 +224,23 @@ describe("charterDisplayParts", () => {
     expect(parts?.jobs).toEqual([{ label: "other kernel tools, not in the catalogue", purposes: ["kernel_github_pr_get"] }]);
   });
 
+  it("the kernel's compact form (every job as its label alone, when the full block would not fit the display) splits into jobs with no purposes, ahead of the raw lines", () => {
+    const raw = [`tool_policy: ${JSON.stringify({ allowedTools: ["Read"], allowedBashPrefixes: [] })} → as on the enforced line`, `enforced: never: none; tools: Read, ${K}kernel_github_pr_get, ${K}kernel_task_list, ${K}kernel_pad; bash prefixes: none`];
+    const display = ['Update crew member mason ("Mason"), settings sha256 3f9a1c07b2e4, proposed by Wright', "job: Read a PR", "job: General", "job: other kernel tools, not in the catalogue", ...raw].join("\n");
+    expect(charterDisplayParts(display)).toEqual({
+      head: 'Update crew member mason ("Mason"), settings sha256 3f9a1c07b2e4, proposed by Wright',
+      jobs: [
+        { label: "Read a PR", purposes: [] },
+        { label: "General", purposes: [] },
+        { label: "other kernel tools, not in the catalogue", purposes: [] },
+      ],
+      note: undefined,
+      raw: raw.join("\n"),
+    });
+    // A lone label-only job is the compact form too.
+    expect(charterDisplayParts("head\njob: Read a PR\nenforced: x")?.jobs).toEqual([{ label: "Read a PR", purposes: [] }]);
+  });
+
   it("AC9: the catalogue-unavailable line is the note, with no grouping; the raw lines follow it", () => {
     const raw = `enforced: never: none; tools: Read, ${K}kernel_github_pr_get; bash prefixes: none`;
     expect(charterDisplayParts(['Create crew member mason ("Mason", crab crew-teal), proposed by Wright', CHARTER_CATALOGUE_UNAVAILABLE, raw].join("\n"))).toEqual({
@@ -239,10 +256,10 @@ describe("charterDisplayParts", () => {
     expect(charterDisplayParts('Create crew member nell ("Nell", crab crew-teal), proposed by Wright\nenforced: never: none; tools: Read; bash prefixes: none')).toBeUndefined();
     expect(charterDisplayParts("")).toBeUndefined();
     expect(charterDisplayParts("one line")).toBeUndefined();
-    // A purpose with no job above it, or a job with no purpose, is not the kernel's format.
+    // A purpose with no job above it, or a block mixing jobs with and without purposes, is not the kernel's format.
     expect(charterDisplayParts("head\n  - orphan purpose\nenforced: x")).toBeUndefined();
-    expect(charterDisplayParts("head\njob: Read a PR\nenforced: x")).toBeUndefined();
     expect(charterDisplayParts("head\njob: Read a PR\n  - Read it.\njob: Ask for a merge\nenforced: x")).toBeUndefined();
+    expect(charterDisplayParts("head\njob: Read a PR\njob: Ask for a merge\n  - Ask.\nenforced: x")).toBeUndefined();
     // A job line that is not right after the head is not a plain block.
     expect(charterDisplayParts("head\nenforced: x\njob: Read a PR\n  - Read it.")).toBeUndefined();
   });
@@ -253,8 +270,8 @@ describe("charterDisplayParts", () => {
     expect(parts?.raw).toBe("");
   });
 
-  it("mirrors the kernel's display format: the job and purpose prefixes and the catalogue-unavailable line", () => {
-    expect(kernelCatalogue).toContain(`lines.push(\`${CHARTER_JOB_PREFIX}\${job.label}\`, ...tools.map((t) => \`${CHARTER_PURPOSE_PREFIX}\${t.purpose}\`))`);
+  it("mirrors the kernel's display format: the job and purpose prefixes (the purposes left out in the compact form) and the catalogue-unavailable line", () => {
+    expect(kernelCatalogue).toContain(`lines.push(\`${CHARTER_JOB_PREFIX}\${job.label}\`, ...(purposes ? tools.map((t) => \`${CHARTER_PURPOSE_PREFIX}\${t.purpose}\`) : []))`);
     const unavailable = /export const DISPLAY_CATALOGUE_UNAVAILABLE =\s*"([^"]*)";/.exec(kernelCatalogue)?.[1];
     expect(unavailable).toBe(CHARTER_CATALOGUE_UNAVAILABLE);
   });
