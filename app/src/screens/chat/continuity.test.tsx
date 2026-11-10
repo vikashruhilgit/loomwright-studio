@@ -335,6 +335,87 @@ describe("a send in flight clears only what it carried", () => {
     expect(screen.getByRole("group", { name: "Attached thread reference" })).toBeTruthy();
     expect(k.posted("POST /ask")[0]?.body).toEqual({ text: "first", agent: "wright" });
   });
+
+  it("a Reply moved to another message while a Reply send is in flight survives its 202 and continues that message", async () => {
+    const k = threadsKit();
+    const release = holdAsk(k);
+    await renderChat(k);
+    const replies = await screen.findAllByRole("button", { name: /^Reply to Wright's message/ });
+    expect(replies.length).toBeGreaterThan(1);
+    await click(replies[0]!);
+    await act(async () => {
+      fireEvent.change(screen.getByRole("textbox", { name: "Reply to Wright" }), { target: { value: "first" } });
+    });
+    await click(screen.getByRole("button", { name: /^Send/ }));
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(1));
+    const firstContinues = (k.posted("POST /ask")[0]?.body as { continues?: number }).continues;
+    expect(firstContinues).toBeDefined();
+    await click(screen.getAllByRole("button", { name: /^Reply to Wright's message/ }).at(-1)!);
+    await act(async () => release());
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Send/ }).getAttribute("aria-busy")).toBeNull());
+    expect(screen.getByRole("group", { name: "Reply" })).toBeTruthy();
+    await act(async () => {
+      fireEvent.change(screen.getByRole("textbox", { name: "Reply to Wright" }), { target: { value: "second" } });
+    });
+    await click(screen.getByRole("button", { name: /^Send/ }));
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(2));
+    const secondContinues = (k.posted("POST /ask")[1]?.body as { continues?: number }).continues;
+    expect(secondContinues).toBeDefined();
+    expect(secondContinues).not.toBe(firstContinues);
+  });
+
+  it("a chip switched to Summary while its send is in flight survives the 202 and goes out as a summary", async () => {
+    const k = threadsKit();
+    const release = holdAsk(k);
+    await renderChat(k);
+    const field = (await screen.findByRole("textbox", { name: "Message Wright" })) as HTMLTextAreaElement;
+    await act(async () => {
+      fireEvent.change(field, { target: { value: "first" } });
+      fireEvent.paste(field, { clipboardData: { getData: () => "loomwright-studio://thread/wright/8" } });
+    });
+    await click(screen.getByRole("button", { name: /^Send/ }));
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(1));
+    expect(k.posted("POST /ask")[0]?.body).toEqual({ text: "first", agent: "wright", references: [{ thread: 8, use: "exchanges" }] });
+    await click(within(screen.getByRole("group", { name: "Attached thread reference" })).getByRole("button", { name: "Summary" }));
+    await act(async () => release());
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Send/ }).getAttribute("aria-busy")).toBeNull());
+    expect(screen.getByRole("group", { name: "Attached thread reference" })).toBeTruthy();
+    await act(async () => {
+      fireEvent.change(field, { target: { value: "second" } });
+    });
+    await click(screen.getByRole("button", { name: /^Send/ }));
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(2));
+    expect(k.posted("POST /ask")[1]?.body).toEqual({ text: "second", agent: "wright", references: [{ thread: 8, use: "summary" }] });
+  });
+
+  // Another thread of the same agent, and the same thread number under another agent: each is a different reference.
+  it.each([
+    ["another thread", "loomwright-studio://thread/wright/4", { thread: 4 }],
+    ["another agent's thread of the same number", "loomwright-studio://thread/pim/8", { thread: 8 }],
+  ])("a different reference (%s) pasted while a reference send is in flight keeps its chip after the 202", async (_case, link, reference) => {
+    const k = threadsKit();
+    const release = holdAsk(k);
+    await renderChat(k);
+    const field = (await screen.findByRole("textbox", { name: "Message Wright" })) as HTMLTextAreaElement;
+    await act(async () => {
+      fireEvent.change(field, { target: { value: "first" } });
+      fireEvent.paste(field, { clipboardData: { getData: () => "loomwright-studio://thread/wright/8" } });
+    });
+    await click(screen.getByRole("button", { name: /^Send/ }));
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(1));
+    await act(async () => {
+      fireEvent.paste(field, { clipboardData: { getData: () => link } });
+    });
+    await act(async () => release());
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Send/ }).getAttribute("aria-busy")).toBeNull());
+    expect(screen.getByRole("group", { name: "Attached thread reference" })).toBeTruthy();
+    await act(async () => {
+      fireEvent.change(field, { target: { value: "second" } });
+    });
+    await click(screen.getByRole("button", { name: /^Send/ }));
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(2));
+    expect((k.posted("POST /ask")[1]?.body as { references?: unknown }).references).toEqual([{ ...reference, use: "exchanges" }]);
+  });
 });
 
 describe("rename in place (AC8)", () => {
@@ -406,6 +487,45 @@ describe("rename in place (AC8)", () => {
     // The save answered: its write refetched the thread.
     await waitFor(() => expect(k.fake.requestsTo("GET /threads/:agent").length).toBeGreaterThan(threadReads));
     expect((screen.getByRole("textbox", { name: "Thread name" }) as HTMLInputElement).value).toBe("Release plan v2");
+  });
+
+  it("another thread's rename opened while a save is in flight stays open and keeps focus after the save answers", async () => {
+    const k = threadsKit();
+    let release: () => void = () => undefined;
+    k.fake.route("POST /threads/:agent/:thread/rename", async (req) => {
+      await new Promise<void>((go) => {
+        release = go;
+      });
+      return ok({ thread: Number(req.params?.thread), title: "Release plan", renamed: true });
+    });
+    await renderChat(k);
+    await click(await screen.findByRole("button", { name: "Rename the thread Plan the release" }));
+    await act(async () => {
+      fireEvent.change(screen.getByRole("textbox", { name: "Thread name" }), { target: { value: "Release plan" } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("textbox", { name: "Thread name" }), { key: "Enter" });
+    });
+    await waitFor(() => expect(posted(k, "POST /threads/:agent/:thread/rename")).toHaveLength(1));
+    // Thread 8's rename, typed to the very name thread 4's save carries: only the thread tells them apart.
+    await click(screen.getByRole("button", { name: "Rename the thread Review PR 12" }));
+    const other = screen.getByRole("textbox", { name: "Thread name" }) as HTMLInputElement;
+    expect(other.closest("[data-thread-head]")?.getAttribute("data-thread-head")).toBe("8");
+    await act(async () => {
+      fireEvent.change(other, { target: { value: "Release plan" } });
+    });
+    expect(document.activeElement).toBe(other);
+    const threadReads = k.fake.requestsTo("GET /threads/:agent").length;
+    await act(async () => release());
+    await waitFor(() => expect(k.fake.requestsTo("GET /threads/:agent").length).toBeGreaterThan(threadReads));
+    // Let a focus move scheduled by the save (setTimeout 0) run.
+    await act(async () => {
+      await new Promise((go) => window.setTimeout(go, 10));
+    });
+    const field = screen.getByRole("textbox", { name: "Thread name" }) as HTMLInputElement;
+    expect(field.closest("[data-thread-head]")?.getAttribute("data-thread-head")).toBe("8");
+    expect(field.value).toBe("Release plan");
+    expect(document.activeElement).toBe(field);
   });
 
   it("a renamed title is marked renamed by you", async () => {
