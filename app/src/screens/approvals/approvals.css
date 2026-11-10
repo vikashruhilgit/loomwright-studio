@@ -203,6 +203,66 @@
   padding: var(--space-1) 0 0;
 }
 
+/* A held charter's display (`CharterDisplay`; docs/design/mockups/chat-threads.html `.job` and `.raw`): the jobs in plain words, then the raw lines in a disclosure. */
+.approvals-charter-plain {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+}
+.approvals-charter-who,
+.approvals-charter-heading,
+.approvals-charter-note {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.approvals-charter-note {
+  color: var(--ink-secondary);
+}
+.approvals-charter-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.approvals-charter-job {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+}
+.approvals-charter-job-label {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.approvals-charter-purposes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-5);
+  color: var(--ink-secondary);
+  overflow-wrap: anywhere;
+}
+.approvals-charter-raw {
+  border-top: 1px solid var(--hairline);
+}
+/* A margin, not padding, so the focus ring (`:focus-visible`, offset 2px) is not clipped by the well's `overflow: hidden`. */
+.approvals-charter-raw-summary {
+  width: max-content;
+  max-width: calc(100% - 2 * var(--space-4));
+  margin: var(--space-2) var(--space-4);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  color: var(--accent);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+
 /* The merge approval card (docs/design/mockups/phase-8.html `.mcard` and `.gate`): an attention edge while it waits, a header strip, the facts, the gate line. */
 .approvals-merge {
   border: 1px solid var(--attention);

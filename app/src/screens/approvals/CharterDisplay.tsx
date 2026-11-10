@@ -1,0 +1,81 @@
+// A held charter create or update's display in plain language (phase 8 item
+// 16, AC3; the approved mockup `docs/design/mockups/chat-threads.html`,
+// `charterCard` and `rawHTML`). The kernel writes the display
+// (`createDisplay` / `updateDisplay` in `kernel/src/agents/charter-tools.ts`);
+// `charterDisplayParts` splits it, and this draws:
+//
+// 1. who the change is for, and the granted kernel tools grouped by job, each
+//    with its purpose line, ahead of any `mcp__kernel__` name;
+// 2. beneath, in a disclosure "Kernel tool names, as enforced", every other
+//    line exactly as the kernel wrote it: the field lines, the `enforced:`
+//    line (non-kernel tools and Bash prefixes as they always were), limits,
+//    workspaces and the files.
+//
+// The disclosure starts open: it carries more than the raw names (the non-kernel
+// tools, Bash prefixes, limits and workspaces the owner has always seen), so
+// nothing the owner approves is hidden by default; the owner may close it.
+// When the kernel's catalogue was unavailable it shows the kernel's own note
+// and no grouping, never a guessed one (AC9).
+//
+// Every part is untrusted text: it goes through `printable` and is rendered as
+// a React text child, never markup.
+import { useId } from "react";
+import type { CharterDisplayParts } from "./subject";
+import { printable } from "./printable";
+import "./approvals.css";
+
+/** The disclosure's summary (the mockup's `rawHTML`). */
+export const RAW_SUMMARY = "Kernel tool names, as enforced";
+
+/** The plain block's heading (the mockup's `charterCard`). */
+export const JOBS_HEADING = "What it may do in the kernel";
+
+export interface CharterDisplayProps {
+  readonly parts: CharterDisplayParts;
+}
+
+export function CharterDisplay({ parts }: CharterDisplayProps) {
+  const headingId = useId();
+  return (
+    <div className="approvals-well" data-testid="approval-display">
+      <div className="approvals-well-head">
+        <span>Display</span>
+        <span className="approvals-spacer" />
+        <span className="approvals-well-note">untrusted text</span>
+      </div>
+      <section className="approvals-charter-plain" aria-labelledby={headingId} data-testid="charter-plain">
+        <p className="approvals-charter-who" data-testid="charter-head">
+          {printable(parts.head)}
+        </p>
+        <h3 className="approvals-label approvals-charter-heading" id={headingId}>
+          {JOBS_HEADING}
+        </h3>
+        {parts.note === undefined ? (
+          <ul className="approvals-charter-jobs" data-testid="charter-jobs">
+            {parts.jobs.map((job, i) => (
+              // Labels may repeat in a malformed display; the position keeps keys unique.
+              <li className="approvals-charter-job" key={i} data-testid="charter-job">
+                <span className="approvals-charter-job-label">{printable(job.label)}</span>
+                <ul className="approvals-charter-purposes">
+                  {job.purposes.map((purpose, j) => (
+                    <li key={j}>{printable(purpose)}</li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="approvals-charter-note" data-testid="charter-note">
+            {printable(parts.note)}
+          </p>
+        )}
+      </section>
+      {parts.raw === "" ? null : (
+        <details className="approvals-charter-raw" open data-testid="charter-raw">
+          <summary className="approvals-charter-raw-summary">{RAW_SUMMARY}</summary>
+          <pre className="approvals-pre">{printable(parts.raw, true)}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
