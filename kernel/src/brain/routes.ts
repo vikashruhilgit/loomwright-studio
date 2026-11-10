@@ -1,7 +1,7 @@
 // The brain's routes on the loopback API (reached only with the bearer
 // token): what `studio ask` and `studio messages` call.
 //
-//   POST /ask            body {text, agent?, workspace?} (text 1-8000 characters, not blank)
+//   POST /ask            body {text, agent?, workspace?, continues?, references?} (text 1-8000 characters, not blank)
 //                        202 {message_id, queue_id}
 //   GET  /messages/:id   200 the `brain_messages` row (status, session_id, reply_text, detail, …)
 //   GET  /messages       200 {messages: [...]}, newest last: the 50 newest rows
@@ -15,11 +15,21 @@
 // settings_invalid` with the `file`; `409 settings_missing` with the `file`
 // (a crew member's file is never created here: this route only reads);
 // `409 workspace_not_listed` (a `workspace` not in the agent's settings
-// `workspaces`; Wright lists none). `agent` absent is Wright, answered exactly
-// as before crew members existed. Otherwise it queues the message for the
-// agent (payload `{text, agent}`, plus `workspace` when given) and writes its
-// row (`queued`, source `ask`, `from_agent` null, depth 0) in ONE
-// transaction, the queue row first (the row's `queue_id` references it).
+// `workspaces`; Wright lists none; a `continues` with no `workspace` inherits
+// the continued row's workspace, checked the same way, so a reply in a
+// workspace thread resumes in that folder); `409 continues_invalid` with `reason`
+// `no_such_message`, `other_agent` or `never_started` (a `continues` row that
+// is missing, another agent's, or never had a session; `400 invalid_body` when
+// it is not a positive integer); `409 history_too_large` with `{thread, size,
+// bound}` (a reference past `MAX_THREAD_HISTORY_CHARS`, or all of them past
+// `MAX_THREAD_HISTORY_TOTAL_CHARS`, `thread` null; `400 invalid_body` for
+// malformed `references` or one naming no thread). `agent` absent is Wright,
+// answered exactly as before crew members existed. Otherwise it queues the
+// message for the agent (payload `{text, agent}`, plus `workspace` when
+// given) and writes its row (`queued`, source `ask`, `from_agent` null, depth
+// 0) in ONE transaction, the queue row first (the row's `queue_id` references
+// it), with its thread data (`./threads.ts`) when it carries `continues` or
+// `references`. A body with neither writes exactly what it did before threads.
 import { isKillSwitchEngaged } from "../api/kill-switch.js";
 import { getAgent } from "../agents/registry.js";
 import { readAgentSettings } from "../agents/settings.js";
@@ -29,6 +39,8 @@ import { MAX_MESSAGE_CHARS } from "./context.js";
 import { listedWorkspace } from "./handler.js";
 import { ensureBrainMessage, getBrainMessage, listBrainMessages } from "./messages.js";
 import { readWrightSettings } from "./settings.js";
+import { continuesCheck, parseReferences, recordMessageThread, referenceProblem, referencesHistory } from "./threads.js";
+import type { ThreadReference } from "./threads.js";
 
 const ID = /^[1-9]\d*$/;
 
@@ -71,13 +83,40 @@ function askSettings(dataDir: string, agent: string): { readonly ok: true; reado
   }
 }
 
+/**
+ * The workspace a continuation runs in: `explicit` when the body names one,
+ * else the continued row's (`inherited`, null for the memory folder), so a
+ * reply resumes in the folder its thread ran in. A workspace that is no
+ * longer in `workspaces` is refused (`409 workspace_not_listed`), the same
+ * as one the body names.
+ */
+export function continuationWorkspace(workspaces: readonly string[], explicit: string | undefined, inherited: string | null): { readonly ok: true; readonly workspace: string | null } | ContributedRouteResponse {
+  const workspace = explicit ?? inherited;
+  if (workspace !== null && listedWorkspace(workspaces, workspace) === undefined) return { status: 409, body: { error: "workspace_not_listed" } };
+  return { ok: true, workspace };
+}
+
+/** `agent`'s settings `workspaces` for a route that queues a continuation, or the refusal `POST /ask` answers. */
+export function continuationWorkspaces(dataDir: string, agent: string): { readonly ok: true; readonly workspaces: readonly string[] } | ContributedRouteResponse {
+  return askSettings(dataDir, agent);
+}
+
 async function ask(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
   const body = req.body;
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { status: 400, body: { error: "invalid_body", message: "the body must be a JSON object {text}" } };
-  const { text, agent: rawAgent, workspace } = body as { text?: unknown; agent?: unknown; workspace?: unknown };
+  const { text, agent: rawAgent, workspace, continues, references: rawReferences } = body as { text?: unknown; agent?: unknown; workspace?: unknown; continues?: unknown; references?: unknown };
   const problem = askTextProblem(text);
   if (problem !== undefined) return { status: 400, body: { error: "invalid_body", message: problem } };
   if (workspace !== undefined && typeof workspace !== "string") return { status: 400, body: { error: "invalid_body", message: "workspace must be a string" } };
+  if (continues !== undefined && (typeof continues !== "number" || !Number.isSafeInteger(continues) || continues < 1)) {
+    return { status: 400, body: { error: "invalid_body", message: "continues must be a positive integer message id" } };
+  }
+  let references: readonly ThreadReference[] = [];
+  if (rawReferences !== undefined) {
+    const parsed = parseReferences(rawReferences);
+    if (!parsed.ok) return { status: 400, body: { error: "invalid_body", message: parsed.message } };
+    references = parsed.references;
+  }
   if (isKillSwitchEngaged(req.store)) return { status: 409, body: { error: "kill_switch_engaged" } };
 
   // The agent: Wright when absent; else Wright or a registered crew member that is `active`.
@@ -94,15 +133,36 @@ async function ask(req: ContributedRouteRequest): Promise<ContributedRouteRespon
   if (!("ok" in settings)) return settings;
   if (workspace !== undefined && listedWorkspace(settings.workspaces, workspace) === undefined) return { status: 409, body: { error: "workspace_not_listed" } };
 
+  // Thread data, checked before anything is queued: never a fresh session silently in place of a refused continuation.
+  let threadId: number | undefined;
+  let rowWorkspace: string | null = workspace ?? null;
+  if (continues !== undefined) {
+    const check = continuesCheck(req.store, agent, continues as number);
+    if (!check.ok) return { status: 409, body: { error: "continues_invalid", reason: check.reason, continues } };
+    threadId = check.threadId;
+    const inherited = continuationWorkspace(settings.workspaces, workspace, check.row.workspace);
+    if (!("ok" in inherited)) return inherited;
+    rowWorkspace = inherited.workspace;
+  }
+  for (const ref of references) {
+    const problem = referenceProblem(req.store, ref);
+    if (problem !== undefined) return { status: 400, body: { error: "invalid_body", message: `references: ${problem}` } };
+  }
+  const sized = referencesHistory(req.store, references);
+  if (!sized.ok) return { status: 409, body: { error: "history_too_large", ...sized.tooLarge } };
+
   const at = req.now();
   const { messageId, queueId } = req.store.transaction(() => {
-    const payload = { text: text as string, agent, ...(workspace === undefined ? {} : { workspace }) };
+    const payload = { text: text as string, agent, ...(rowWorkspace === null ? {} : { workspace: rowWorkspace }) };
     const queued = enqueueEvent(req.store, { kind: "message", payload }, at);
     const row = ensureBrainMessage(
       req.store,
-      { queueId: queued.id, agent, source: "ask", text: text as string, fromAgent: null, depth: 0, workspace: workspace ?? null },
+      { queueId: queued.id, agent, source: "ask", text: text as string, fromAgent: null, depth: 0, workspace: rowWorkspace },
       at,
     );
+    if (threadId !== undefined || references.length > 0) {
+      recordMessageThread(req.store, { messageId: row.id, threadId: threadId ?? row.id, continues: (continues as number | undefined) ?? null, references }, at);
+    }
     return { messageId: row.id, queueId: queued.id };
   });
   return { status: 202, body: { message_id: messageId, queue_id: queueId } };

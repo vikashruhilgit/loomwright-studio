@@ -984,7 +984,7 @@ describe("GET /sessions and GET /sessions/:id/output (AC8)", () => {
       status: 200,
       body: {
         sessions: [
-          { id: ids.d, agent: "wright", status: "running", model: "claude-haiku-4-5", started: "2026-10-21T09:00:00.000Z", ended: null, tokens: 131, cwd: "/repo", playbook: null },
+          { id: ids.d, agent: "wright", status: "running", model: "claude-haiku-4-5", started: "2026-10-21T09:00:00.000Z", ended: null, tokens: 131, cwd: "/repo", playbook: null, title: `Session #${ids.d}` },
         ],
       },
     });

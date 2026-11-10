@@ -94,6 +94,10 @@ describe("the console contribution", () => {
       "POST /pause",
       "POST /unpause",
       "GET /threads/:agent",
+      "POST /threads/:agent/:thread/summarize",
+      "GET /threads/:agent/:thread/summary",
+      "POST /threads/:agent/:thread/start-fresh",
+      "POST /threads/:agent/:thread/rename",
     ]);
     expect(merged.subcommands.filter((s) => consoleContribution.subcommands?.includes(s)).map((s) => s.name)).toEqual(["sessions", "pause", "unpause"]);
     expect(merged.dueWork.filter((d) => d.owner === "console")).toEqual([]);
@@ -141,7 +145,13 @@ describe("the console contribution", () => {
     expect(threadsPart.name).toBe("threads");
     expect(threadsPart.tools).toEqual([]);
     expect(threadsPart.handlers).toEqual({});
-    expect(threadsPart.routes.map((r) => ({ method: r.method, path: r.path }))).toEqual([{ method: "GET", path: "/threads/:agent" }]);
+    expect(threadsPart.routes.map((r) => ({ method: r.method, path: r.path }))).toEqual([
+      { method: "GET", path: "/threads/:agent" },
+      { method: "POST", path: "/threads/:agent/:thread/summarize" },
+      { method: "GET", path: "/threads/:agent/:thread/summary" },
+      { method: "POST", path: "/threads/:agent/:thread/start-fresh" },
+      { method: "POST", path: "/threads/:agent/:thread/rename" },
+    ]);
     expect(mergeConsoleParts(CONSOLE_PARTS)).toEqual({
       tools: [],
       routes: [...eventsPart.routes, ...outputPart.routes, ...controlPart.routes, ...pausePart.routes, ...threadsPart.routes],

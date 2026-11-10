@@ -329,6 +329,7 @@ const create = defineTool({
   name: "kernel_playbook_create",
   description:
     "Draft a playbook: recurring work you will do for the owner. name: a short title (its slug, the mirror's file name, comes from it once). " +
+    "When the owner asks for a playbook, draft it straight into the held approval: store it with this call (enabling it is the held approval) and refine it with an update (kernel_playbook_update); never leave a proposal only in chat text. " +
     "intent: what to do, in plain words. trigger: {kind: once, spec: an ISO-8601 instant WITH a time zone} or {kind: cron, spec: a 5-field cron expression, tz: an IANA zone} " +
     `or {kind: poll, poll: {source, repos, filters, interval_seconds}} (no tz) to watch GitHub or a ticket tracker; filters keys are ${POLL_FILTER_KEYS.join(", ")}: ` +
     "for github.pulls, github.issues and github.pr_comments give repos: [owner/name, ...] and filters are optional; " +
