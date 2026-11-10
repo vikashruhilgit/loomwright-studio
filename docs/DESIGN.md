@@ -17,6 +17,7 @@ Phase 0 is done: the owner approved the design system and the GUI v1 mockups on 
 | GUI v2 mockup (phase 7): Tasks, Playbooks, Schedules & triggers, Memory, Budget & audit, Settings and the Integrations token-to-App path, every state in light and dark, clickable | `docs/design/mockups/gui-v2.html` | One HTML file, no build. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. The owner approves it by merging the PR that adds it (D9). Screenshots, the token audit and the field map: [evidence](evidence/gui-v2-mockup/README.md). What it commits items 03–09 to: [Phase 7: GUI v2](#phase-7-gui-v2) |
 | Phase 8 mockup (phase 8): the Tasks ticket → PR card and its history, the "Approve in Studio" merge approval card, the playbook mode editor with its live-enable confirm, and Integrations' GitHub App permission upgrade, repo policy card and Jira and ClickUp connect, every state in light and dark, clickable | `docs/design/mockups/phase-8.html` | One HTML file, no build. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. Pending: the owner approves it by merging the PR that adds it (D9). Screenshots, the token audit and the field map: [evidence](evidence/phase-8-mockup/README.md). What it commits items 11–13 to: [Phase 8: Tickets to PRs](#phase-8-tickets-to-prs) |
 | Thread continuity mockup (phase 8 item 17a): Reply, Summarize & start fresh with its ⓘ and preview, the size hint and its owner setting, Copy reference and its chip, session names with rename in place, and the charter approval card in plain language, in Chat and one Crew thread, every state in light and dark, clickable | [`docs/design/mockups/chat-threads.html`](design/mockups/chat-threads.html) | One HTML file, no build. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. Pending: the owner approves it by merging the PR that adds it (D9). Screenshots, the token audit, the keyboard paths and the field map: [evidence](design/evidence/chat-threads-mockup/README.md). What it commits items 17b, 17c and 16 to: [Thread continuity](#thread-continuity-phase-8-item-17a) |
+| Charter card mockup (phase 8 item 18a): the crew charter card in Chat, short by default (who, can do, never does, limits, the ready check) and complete on request (every enforced line, the settings file and `role.md`, uncut), its workspace question, its Ask / Change box and the new card version in the thread, the icon tooltips, and Settings → Workspaces, with empty, loading and error states, every state in light and dark, clickable | [`docs/design/mockups/charter-card.html`](design/mockups/charter-card.html) | One HTML file, no build. Its token block is the verbatim output of `node app/scripts/tokens.mjs`. Pending: the owner approves it by merging the PR that adds it (D9). What it commits items 18c and 18d to: [Charter card](#charter-card-phase-8-item-18a) |
 
 The artefact links are private to the owner; the repo copies are the reviewable record. When the design system changes, update the artefact first, then re-copy here in the same commit.
 
@@ -344,6 +345,65 @@ The mockup's copy and layout are proposals the owner can change on this PR, as w
    Affects item 16.
 6. **The update card's raw line.** Under "Kernel tool names, as enforced", the update reads `tool_policy: adds …`. The kernel's update display today writes `tool_policy: <old> → <new>` (`updateDisplay`, `kernel/src/agents/charter-tools.ts`). Either item 16 shows the kernel's line as it is, or it changes the display to name the added tools. Affects item 16.
 7. **The 14:22 sample data draws two crew members before their charters are approved.** The sidebar lists Sandbox Developer and Mason ("Waiting on its charter approval") while #11 and #12 are held, and the refused reference is a 212-message thread of Mason's. A held create has no `agents` row yet (the row is written on approval), so the app has no crew row or thread to draw for either. The data does this so the crew sidebar and a cross-agent chip appear in the Chat views; 17c reads real data. Affects item 17c.
+
+## Charter card (phase 8 item 18a)
+
+The item 16 Validation 2 walk (2026-11-10) found three faults in Chat's charter card. It shows the kernel's display as a raw block (`app/src/screens/chat/cards.tsx`). The kernel cuts that display at 4,000 characters with no mark (`MAX_APPROVAL_DISPLAY`, `kernel/src/approvals/store.ts`). And nothing on the card says that asked-for jobs are missing or that the member has no workspace. As D9 requires, the mockup comes before any code: `design/mockups/charter-card.html`, one HTML file with every state in light and dark. Open it in a browser and use the review strip, or force a view with the URL hash (`#view=card-details&theme=dark`). The owner approves the design by merging the PR that adds it. Its token block is the verbatim output of `node app/scripts/tokens.mjs`, and it adds no colour value outside it.
+
+The mockup adds no route and no code. Item 18b supplies the ready check, item 18c the saved workspaces, and item 18d builds the card to it, in Chat and on the Approvals screen. It reuses [Thread continuity](#thread-continuity-phase-8-item-17a)'s window, review strip, `Kernel unreachable` band and URL-hash hook, and item 16's job marks. The item touches only the mockup and this file, so it has no evidence folder.
+
+### What the owner decided (2026-11-10), as drawn
+
+- Details are hidden by default and shown on request. All text is there, by scroll or Show more, and never silently cut.
+- Copy and show-all controls are icons with tooltips.
+- A ready check (Wright's dry run) runs on its own.
+- The owner can ask about or change the charter from the card, and that conversation shows in the thread where Wright drafted it.
+- Jobs that work on code need a workspace. When Wright can't find the repo's, it asks, and a chosen folder is saved for next time.
+
+### What the mockup commits items 18c and 18d to
+
+- **Compact card (18d Part A):**
+  - The header: avatar, name, repo, version, the held approval's number, "proposed by Wright" and "waiting on you", with two icons, Copy all text and Show full details.
+  - **Can do:** each job's plain name with a "Used for:" line, and the other tools in words ("Work in its copy of the repo", naming the commands its Bash prefixes allow). **Never does:** the never list in words. **Limits** on one line: tokens a day, sessions at once, the model.
+  - Then the ready check, Ask or change, and Approve and Deny.
+  - No `mcp__kernel__` name, JSON or file path shows until the details are open.
+- **Details (18d Part A):** four blocks: the kernel tools by job (each raw name with its purpose line), the enforced lines, the settings file and `role.md`, the last two as the kernel writes them. Each block is complete, scrolls inside the card, and has Show more (opens it in full) and its own copy. A line above them gives the total length and says nothing is cut. The sample totals 4,193 characters, past today's 4,000-character cut.
+- **Ready check (18b Part C, shown by 18d):**
+  - One row per duty: covered by a named job, needs no job, or "No job covers this" with **Add**. Add puts the duty into Ask or change and moves focus there; it changes nothing by itself.
+  - One row per job prerequisite (a workspace, or the GitHub connector): ready, or what is missing with its fix. Each row says its state in words beside the mark.
+  - A check that didn't run says so and why: the kernel is offline (with the shared band; the check reruns on its own), the dry run stopped (Run the check again), or one connector couldn't be read (only its rows read "Not checked", with Check again). None of them shows a ✓ the check did not earn.
+  - While it runs, the card shows "Checking" and placeholder rows. A charter with nothing to check says so.
+- **Workspace question (18d Part C, 18c):**
+  - "Where's your copy of <repo>?", opened from Choose workspace. It lists the saved workspaces whose remote matches (with a count of the others), and offers Use this folder, **Choose folder…** and **Clone it for me**. The clone is held for the owner's approval, and nothing is cloned before.
+  - A protected folder is refused in plain words (D31), with what to do instead.
+  - It has empty, loading and error states. `Esc` or Not now closes it and returns focus to Choose workspace.
+  - A charter with no job that needs a workspace has no workspace row and no question.
+- **Ask or change (18d Part D):** the box sends the owner's words into the drafting thread, marked "From the card's Ask or change". Send waits while Wright answers. A question gets an answer, and the card keeps its version. A change brings a new card: the older one collapses to one line, "Replaced by v2", with what changed, and the new one marks its new jobs `adds` under "New in v2".
+- **An update:** the jobs it adds (green edge, `adds` badge, each tool's purpose) and the ones it keeps ("unchanged"), as item 16's card marks them.
+- **Settings → Workspaces (18c):** a table of repo, path and last used, with a remove icon on each row, and Add folder…. Remove forgets the row only: the folder stays on disk and no crew member's settings change. It offers Undo in place of the row. The list has empty, loading and error states.
+- **Keyboard:** Tab reaches Copy all text, Show full details, the ready check's fixes, the workspace question, the details blocks (Show more, Copy, then the text, which scrolls with the arrow keys), Ask or change and Send, then Approve and Deny. Every action moves focus somewhere explicit. The review strip's key line lists the order.
+- **Components and tokens:** Card, Badge, Button, Input, Table, Toast, Avatar and the Band, as the design system defines them, and the existing warning style (`attention` on `attention-soft`, as the fit check uses). No new token.
+- **Branding (invariant 7):** nothing says or looks like the Claude command-line tool, and no claude.ai sign-in is offered (invariant 6).
+
+### New for approval (charter card)
+
+The design system had no tooltip, so the mockup adds one, as the requirement's assumption asks:
+
+- **Tooltip:** an icon-only button's name in `caption` type, `surface` text on `ink`, `radius-xs` and `shadow-2`, below the button (right-aligned at a card's edge). It shows on hover and on keyboard focus, and `Esc` hides it until the pointer or focus leaves (WCAG 1.4.13). Its words are the button's accessible name.
+- **Icons (Lucide, 16px, 1.5px stroke, `currentColor`):** `copy`; `maximize-2` and `minimize-2` (Show and Hide full details); `ellipsis` and `chevron-up` (Show more and Show less); `trash-2` (remove); `folder`; `download` (clone); `circle-minus` (not checked). Copy shows a check for two seconds, and a toast says how many characters were copied.
+- **Classes:** the "Charter card additions" block of the mockup's stylesheet: the card, the ready-check rows, the workspace question, the details blocks, the Ask box, the collapsed old version and the Workspaces table. Every value is a token.
+
+### Open points for the owner (charter card)
+
+The mockup's copy and layout are proposals the owner can change on this PR, as with the earlier mockups. These need a decision, or the owner's word that the proposal stands:
+
+1. **Choosing a workspace on a held create.** The mockup sets it on the card in place: the row turns ready and the settings file shows the folder. 18d Part C says picking proposes the charter update, held. Decide whether a pick on a held create is a new version ("workspace set") or changes the held draft in place.
+2. **A new version and its approval.** v2 is drawn "held as #16 (replaces #11)". Decide whether a new version withdraws the old held approval and files a new one, or updates the one already held.
+3. **Where Clone it for me clones to.** The mockup proposes `~/Studio/workspaces/<repo>`; no item names the folder. The clone is drawn as its own held approval (#15).
+4. **Approve with gaps open.** The card shows "3 to fix" and keeps Approve available, as item 16's card does. Decide whether Approve stays as drawn, or asks "Approve anyway" and records it, as the enable card's fit check does.
+5. **Why a connector couldn't be read.** The unreadable-connector row says the token couldn't be read from the Keychain. 18b names no field for the reason; either it reports one, or the row says only that the connector couldn't be read.
+6. **Which jobs need GitHub.** The mockup gives Read a PR and Triage PR comments a GitHub row, because their tools are `kernel_github_*`. 18b declares each job's needs once, with the job, and decides.
+7. **A moved or deleted saved folder** (18c Scope 3) is not drawn: the picker lists only folders that exist. Say whether the picker shows one disabled with the reason, or leaves it out.
 
 ## Not in v1 (deferred to GUI v2 or later)
 
