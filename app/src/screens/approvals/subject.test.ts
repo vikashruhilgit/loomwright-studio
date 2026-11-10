@@ -4,9 +4,11 @@
 import { describe, expect, it } from "vitest";
 import type { Approval, PlaybookListing } from "../../api/contract";
 import {
+  CHARTER_ADDED_SUFFIX,
   CHARTER_CATALOGUE_UNAVAILABLE,
   CHARTER_JOB_PREFIX,
   CHARTER_PURPOSE_PREFIX,
+  CHARTER_UPDATE_HEAD_PREFIX,
   approvalLink,
   approvalSourceText,
   approvalSubject,
@@ -22,6 +24,7 @@ interface NodeFs {
 const nodeFs = (globalThis as unknown as { process: { getBuiltinModule(id: "node:fs"): NodeFs } }).process.getBuiltinModule("node:fs");
 const here = (import.meta as unknown as { dirname: string }).dirname;
 const kernelCatalogue = nodeFs.readFileSync(`${here}/../../../../kernel/src/features/catalogue.ts`, "utf8");
+const kernelCharterTools = nodeFs.readFileSync(`${here}/../../../../kernel/src/agents/charter-tools.ts`, "utf8");
 
 const ESC = "\u001b";
 const RLO = "\u202e";
@@ -184,9 +187,10 @@ const UPDATE_RAW = [
   `tool_policy: ${JSON.stringify({ allowedTools: ["Read", `${K}kernel_github_pr_get`], allowedBashPrefixes: [] })} → ${JSON.stringify({ allowedTools: NEXT, allowedBashPrefixes: [] })}`,
   `enforced: never: git_push; tools: ${NEXT.join(", ")}; bash prefixes: none`,
 ];
+// Mason held only kernel_github_pr_get (Read a PR): the update adds Ask for a merge and keeps Read a PR.
 const UPDATE_DISPLAY = [
   'Update crew member mason ("Mason"), settings sha256 3f9a1c07b2e4, proposed by Wright',
-  "job: Ask for a merge",
+  "job: Ask for a merge (added)",
   "  - Whether Loomwright may merge one parked pull request now (read only).",
   "  - Ask the owner to approve merging one pull request at one head SHA, for a repository set to Approve in Studio.",
   "job: Read a PR",
@@ -194,14 +198,18 @@ const UPDATE_DISPLAY = [
   ...UPDATE_RAW,
 ].join("\n");
 
+/** A purpose line the update does not mark (every purpose of a create). */
+const kept = (text: string) => ({ text, added: false });
+
 describe("charterDisplayParts", () => {
   it("AC3: a create splits into who, the jobs with their purposes in the kernel's order, and every later line raw, unchanged", () => {
     expect(charterDisplayParts(CREATE_DISPLAY)).toEqual({
       head: 'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
+      update: false,
       jobs: [
-        { label: "Ask for a merge", purposes: ["Whether Loomwright may merge one parked pull request now (read only)."] },
-        { label: "Read a PR", purposes: ["Read one pull request's metadata and description from GitHub (read-only)."] },
-        { label: "General", purposes: ["List tasks in id order, filtered by state, assignee_agent or parent_task_id (limit 1-200, default 50)."] },
+        { label: "Ask for a merge", added: false, purposes: [kept("Whether Loomwright may merge one parked pull request now (read only).")] },
+        { label: "Read a PR", added: false, purposes: [kept("Read one pull request's metadata and description from GitHub (read-only).")] },
+        { label: "General", added: false, purposes: [kept("List tasks in id order, filtered by state, assignee_agent or parent_task_id (limit 1-200, default 50).")] },
       ],
       note: undefined,
       raw: CREATE_RAW.join("\n"),
@@ -215,13 +223,19 @@ describe("charterDisplayParts", () => {
       ["Read a PR", 1],
     ]);
     expect(parts?.raw).toBe(UPDATE_RAW.join("\n"));
+    // The job the update adds is marked added, the one it keeps is not; the mark is taken off the label.
+    expect(parts?.update).toBe(true);
+    expect(parts?.jobs.map((j) => [j.label, j.added])).toEqual([
+      ["Ask for a merge", true],
+      ["Read a PR", false],
+    ]);
     // No raw kernel name is in the plain block.
     expect(JSON.stringify([parts?.head, parts?.jobs])).not.toContain(K);
   });
 
   it("a granted tool the catalogue lacks is its own heading's purpose line, by name", () => {
     const parts = charterDisplayParts(['Create crew member nell ("Nell", crab crew-teal), proposed by Wright', "job: other kernel tools, not in the catalogue", "  - kernel_github_pr_get", "enforced: never: none"].join("\n"));
-    expect(parts?.jobs).toEqual([{ label: "other kernel tools, not in the catalogue", purposes: ["kernel_github_pr_get"] }]);
+    expect(parts?.jobs).toEqual([{ label: "other kernel tools, not in the catalogue", added: false, purposes: [kept("kernel_github_pr_get")] }]);
   });
 
   it("the kernel's compact form (every job as its label alone, when the full block would not fit the display) splits into jobs with no purposes, ahead of the raw lines", () => {
@@ -229,22 +243,42 @@ describe("charterDisplayParts", () => {
     const display = ['Update crew member mason ("Mason"), settings sha256 3f9a1c07b2e4, proposed by Wright', "job: Read a PR", "job: General", "job: other kernel tools, not in the catalogue", ...raw].join("\n");
     expect(charterDisplayParts(display)).toEqual({
       head: 'Update crew member mason ("Mason"), settings sha256 3f9a1c07b2e4, proposed by Wright',
+      update: true,
       jobs: [
-        { label: "Read a PR", purposes: [] },
-        { label: "General", purposes: [] },
-        { label: "other kernel tools, not in the catalogue", purposes: [] },
+        { label: "Read a PR", added: false, purposes: [] },
+        { label: "General", added: false, purposes: [] },
+        { label: "other kernel tools, not in the catalogue", added: false, purposes: [] },
       ],
       note: undefined,
       raw: raw.join("\n"),
     });
     // A lone label-only job is the compact form too.
-    expect(charterDisplayParts("head\njob: Read a PR\nenforced: x")?.jobs).toEqual([{ label: "Read a PR", purposes: [] }]);
+    expect(charterDisplayParts("head\njob: Read a PR\nenforced: x")?.jobs).toEqual([{ label: "Read a PR", added: false, purposes: [] }]);
+  });
+
+  it("an update's added marks (DESIGN: the jobs it adds and the jobs it keeps): an added job, a new tool under a kept job, and the compact form's marked labels; a create's text is never read as a mark", () => {
+    const head = 'Update crew member mason ("Mason"), settings sha256 3f9a1c07b2e4, proposed by Wright';
+    const full = [head, "job: Ask for a merge", "  - Whether it may merge.", "  - Ask the owner to approve merging. (added)", "job: Read a PR (added)", "  - Read one pull request.", "enforced: x"].join("\n");
+    expect(charterDisplayParts(full)?.jobs).toEqual([
+      { label: "Ask for a merge", added: false, purposes: [kept("Whether it may merge."), { text: "Ask the owner to approve merging.", added: true }] },
+      { label: "Read a PR", added: true, purposes: [kept("Read one pull request.")] },
+    ]);
+    const compact = charterDisplayParts([head, "job: Ask for a merge (added)", "job: General", "tool_policy: [] → as on the enforced line", "enforced: x"].join("\n"));
+    expect(compact?.jobs).toEqual([
+      { label: "Ask for a merge", added: true, purposes: [] },
+      { label: "General", added: false, purposes: [] },
+    ]);
+    expect(compact?.raw).toBe("tool_policy: [] → as on the enforced line\nenforced: x");
+    const create = charterDisplayParts('Create crew member nell ("Nell", crab crew-teal), proposed by Wright\njob: Read a PR (added)\n  - Read it. (added)\nenforced: x');
+    expect(create?.update).toBe(false);
+    expect(create?.jobs).toEqual([{ label: "Read a PR (added)", added: false, purposes: [kept("Read it. (added)")] }]);
   });
 
   it("AC9: the catalogue-unavailable line is the note, with no grouping; the raw lines follow it", () => {
     const raw = `enforced: never: none; tools: Read, ${K}kernel_github_pr_get; bash prefixes: none`;
     expect(charterDisplayParts(['Create crew member mason ("Mason", crab crew-teal), proposed by Wright', CHARTER_CATALOGUE_UNAVAILABLE, raw].join("\n"))).toEqual({
       head: 'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
+      update: false,
       jobs: [],
       note: CHARTER_CATALOGUE_UNAVAILABLE,
       raw,
@@ -270,8 +304,12 @@ describe("charterDisplayParts", () => {
     expect(parts?.raw).toBe("");
   });
 
-  it("mirrors the kernel's display format: the job and purpose prefixes (the purposes left out in the compact form) and the catalogue-unavailable line", () => {
-    expect(kernelCatalogue).toContain(`lines.push(\`${CHARTER_JOB_PREFIX}\${job.label}\`, ...(purposes ? tools.map((t) => \`${CHARTER_PURPOSE_PREFIX}\${t.purpose}\`) : []))`);
+  it("mirrors the kernel's display format: the job and purpose prefixes (the purposes left out in the compact form), the added mark, the update head and the catalogue-unavailable line", () => {
+    expect(kernelCatalogue).toContain(
+      `lines.push(\`${CHARTER_JOB_PREFIX}\${job.label}\${mark(added)}\`, ...(purposes ? tools.map((t) => \`${CHARTER_PURPOSE_PREFIX}\${t.purpose}\${mark(!added && isNew(t.name))}\`) : []))`,
+    );
+    expect(/export const DISPLAY_ADDED = "([^"]*)";/.exec(kernelCatalogue)?.[1]).toBe(CHARTER_ADDED_SUFFIX);
+    expect(kernelCharterTools).toContain(`return \`${CHARTER_UPDATE_HEAD_PREFIX}\${m.row.id} `);
     const unavailable = /export const DISPLAY_CATALOGUE_UNAVAILABLE =\s*"([^"]*)";/.exec(kernelCatalogue)?.[1];
     expect(unavailable).toBe(CHARTER_CATALOGUE_UNAVAILABLE);
   });

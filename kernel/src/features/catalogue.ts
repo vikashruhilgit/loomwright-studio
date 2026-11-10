@@ -250,6 +250,8 @@ export const DISPLAY_NOT_IN_CATALOGUE = "other kernel tools, not in the catalogu
  *     job: other kernel tools, not in the catalogue
  *       - <name>            a granted kernel tool the catalogue does not list
  *
+ * (an update's display may end a line with ` (added)`: see `held` below).
+ *
  * None when no kernel tool is granted (the display is as it always was). One
  * line, `DISPLAY_CATALOGUE_UNAVAILABLE`, when `catalogue` is undefined: never a
  * guessed grouping.
@@ -260,18 +262,48 @@ export const DISPLAY_NOT_IN_CATALOGUE = "other kernel tools, not in the catalogu
  * too; those names are on the enforced line). Its size is bounded by the job
  * vocabulary (one short line per `TOOL_JOBS` job plus that heading, a few
  * hundred characters at most), never by how many tools are granted.
+ *
+ * `held` (an update's display: the member's tool list before the change)
+ * marks what the change adds, with `DISPLAY_ADDED` after the line:
+ *
+ * - a job line, when `held` grants no tool of that job (the job was not
+ *   represented before; the not-in-catalogue heading likewise, when `held`
+ *   grants no kernel tool the catalogue lacks). Every other job line is a
+ *   job the update keeps, even when it gains a tool.
+ * - with `purposes`, the purpose line (or name) of each tool `held` lacks
+ *   under a kept job; under an added job every tool is new, so only the job
+ *   line is marked.
+ *
+ * Undefined `held` (a create) marks nothing. The compact form's marks are one
+ * per added job, so it stays bounded by the job vocabulary.
  */
-export function jobDisplayLines(allowedTools: readonly string[], catalogue: ToolCatalogue | undefined, purposes = true): string[] {
-  // A bare prefix names no tool: left to the enforced line, like any other entry.
-  const granted = [...new Set(allowedTools.filter((t) => t.startsWith(KERNEL_TOOL_PREFIX)).map((t) => t.slice(KERNEL_TOOL_PREFIX.length)))].filter((name) => name !== "");
+export function jobDisplayLines(allowedTools: readonly string[], catalogue: ToolCatalogue | undefined, purposes = true, held?: readonly string[]): string[] {
+  const granted = kernelToolNames(allowedTools);
   if (granted.length === 0) return [];
   if (catalogue === undefined) return [DISPLAY_CATALOGUE_UNAVAILABLE];
+  const had = held === undefined ? undefined : new Set(kernelToolNames(held));
+  const isNew = (name: string): boolean => had !== undefined && !had.has(name);
+  const mark = (added: boolean): string => (added ? DISPLAY_ADDED : "");
   const lines: string[] = [];
   for (const job of catalogue.jobs) {
     const tools = job.tools.filter((t) => granted.includes(t.name));
-    if (tools.length > 0) lines.push(`job: ${job.label}`, ...(purposes ? tools.map((t) => `  - ${t.purpose}`) : []));
+    if (tools.length === 0) continue;
+    const added = had !== undefined && !job.tools.some((t) => had.has(t.name));
+    lines.push(`job: ${job.label}${mark(added)}`, ...(purposes ? tools.map((t) => `  - ${t.purpose}${mark(!added && isNew(t.name))}`) : []));
   }
   const unknown = granted.filter((name) => catalogueTool(catalogue, name) === undefined);
-  if (unknown.length > 0) lines.push(`job: ${DISPLAY_NOT_IN_CATALOGUE}`, ...(purposes ? unknown.map((name) => `  - ${name}`) : []));
+  if (unknown.length > 0) {
+    const added = had !== undefined && ![...had].some((name) => catalogueTool(catalogue, name) === undefined);
+    lines.push(`job: ${DISPLAY_NOT_IN_CATALOGUE}${mark(added)}`, ...(purposes ? unknown.map((name) => `  - ${name}${mark(!added && isNew(name))}`) : []));
+  }
   return lines;
+}
+
+/** What an update's display puts after a job line, purpose line or name the change adds (`jobDisplayLines`' `held`). */
+export const DISPLAY_ADDED = " (added)";
+
+/** The kernel tool names `allowedTools` grants (`mcp__kernel__<name>`, without the prefix), each once, in order. */
+function kernelToolNames(allowedTools: readonly string[]): string[] {
+  // A bare prefix names no tool: left to the enforced line, like any other entry.
+  return [...new Set(allowedTools.filter((t) => t.startsWith(KERNEL_TOOL_PREFIX)).map((t) => t.slice(KERNEL_TOOL_PREFIX.length)))].filter((name) => name !== "");
 }

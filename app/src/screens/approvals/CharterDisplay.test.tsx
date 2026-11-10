@@ -11,7 +11,7 @@ import type { Approval, StudioBridge } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
 import { ApprovalsScreen } from "./ApprovalsScreen";
-import { CharterDisplay, JOBS_HEADING, RAW_SUMMARY } from "./CharterDisplay";
+import { ADDS, CharterDisplay, JOBS_HEADING, KEEPS, RAW_SUMMARY } from "./CharterDisplay";
 import { printable } from "./printable";
 import { CHARTER_CATALOGUE_UNAVAILABLE, charterDisplayParts } from "./subject";
 import type { CharterDisplayParts } from "./subject";
@@ -87,11 +87,14 @@ const WALK_DISPLAY = [
   "You are Mason (id `mason`), a crew member in Loomwright Studio.",
 ].join("\n");
 
-/** The update display the kernel pins (`kernel/test/agents-charter-tools.test.ts`, "a held update shows the result's kernel tools by job"). */
+/**
+ * The update display the kernel pins (`kernel/test/agents-charter-tools.test.ts`, "a held update shows the result's kernel tools by job"):
+ * Mason held only kernel_github_pr_get, so the update adds Ask for a merge and keeps Read a PR.
+ */
 const NEXT = ["Read", `${K}kernel_github_pr_get`, `${K}kernel_automate_merge_check`, `${K}kernel_merge_approval_request`];
 const UPDATE_DISPLAY = [
   'Update crew member mason ("Mason"), settings sha256 3f9a1c07b2e4, proposed by Wright',
-  "job: Ask for a merge",
+  "job: Ask for a merge (added)",
   "  - Whether Loomwright may merge one parked pull request now (read only).",
   "  - Ask the owner to approve merging one pull request at one head SHA, for a repository set to Approve in Studio.",
   "job: Read a PR",
@@ -183,10 +186,39 @@ describe("CharterDisplay", () => {
   it("AC3: an update's jobs come before its field lines, whose raw names stay in the disclosure", () => {
     render(<CharterDisplay parts={parts(UPDATE_DISPLAY)} />);
     const card = screen.getByTestId("approval-display");
-    expect(screen.getAllByTestId("charter-job").map((j) => j.firstChild?.textContent)).toEqual(["Ask for a merge", "Read a PR"]);
+    expect(screen.getAllByTestId("charter-job").map((j) => j.querySelector(".approvals-charter-job-label")?.textContent)).toEqual(["Ask for a merge", "Read a PR"]);
     expect(textOutsideRaw(card)).not.toContain(K);
     const pre = screen.getByTestId("charter-raw").querySelector("pre") as HTMLElement;
     expect(pre.textContent?.split("\n").map((l) => l.split(":")[0])).toEqual(["tool_policy", "enforced"]);
+  });
+
+  it("an update shows the jobs it adds and the jobs it keeps (DESIGN: the charter card), and a new tool under a kept job, in plain words; a create shows neither mark", () => {
+    render(<CharterDisplay parts={parts(UPDATE_DISPLAY)} />);
+    const jobs = screen.getAllByTestId("charter-job");
+    expect(jobs.map((j) => [j.querySelector(".approvals-charter-job-label")?.textContent, j.querySelector(".approvals-charter-job-head .badge")?.textContent])).toEqual([
+      ["Ask for a merge", ADDS],
+      ["Read a PR", KEEPS],
+    ]);
+    // The mark is plain words, never the kernel's "(added)" text.
+    expect(screen.getByTestId("charter-plain").textContent).not.toContain("(added)");
+    cleanup();
+    const keptJobGains = [
+      'Update crew member mason ("Mason"), settings sha256 3f9a1c07b2e4, proposed by Wright',
+      "job: Ask for a merge",
+      "  - Whether Loomwright may merge one parked pull request now (read only).",
+      "  - Ask the owner to approve merging one pull request at one head SHA, for a repository set to Approve in Studio. (added)",
+      `enforced: never: none; tools: ${K}kernel_automate_merge_check, ${K}kernel_merge_approval_request; bash prefixes: none`,
+    ].join("\n");
+    render(<CharterDisplay parts={parts(keptJobGains)} />);
+    const items = within(screen.getByTestId("charter-job")).getAllByRole("listitem");
+    expect(items.map((li) => [li.firstChild?.textContent, li.querySelector(".badge")?.textContent ?? null])).toEqual([
+      ["Whether Loomwright may merge one parked pull request now (read only).", null],
+      ["Ask the owner to approve merging one pull request at one head SHA, for a repository set to Approve in Studio.", ADDS],
+    ]);
+    expect(screen.getByTestId("charter-job").querySelector(".approvals-charter-job-head .badge")?.textContent).toBe(KEEPS);
+    cleanup();
+    render(<CharterDisplay parts={parts(WALK_DISPLAY)} />);
+    expect(screen.getByTestId("charter-plain").querySelector(".badge")).toBeNull();
   });
 
   it("the kernel's compact form: every job by its label alone, no empty purpose list, still ahead of every raw kernel tool name", () => {
@@ -280,7 +312,8 @@ describe("the Approvals screen's charter card", () => {
   it("AC3: a held update's card does too", async () => {
     await mount([approval(1, UPDATE, UPDATE_DISPLAY)]);
     const card = screen.getByTestId("approval-display");
-    expect(within(card).getAllByTestId("charter-job").map((j) => j.firstChild?.textContent)).toEqual(["Ask for a merge", "Read a PR"]);
+    expect(within(card).getAllByTestId("charter-job").map((j) => j.querySelector(".approvals-charter-job-label")?.textContent)).toEqual(["Ask for a merge", "Read a PR"]);
+    expect(within(card).getAllByTestId("charter-job").map((j) => j.querySelector(".badge")?.textContent)).toEqual([ADDS, KEEPS]);
     expect(textOutsideRaw(card)).not.toContain(K);
   });
 

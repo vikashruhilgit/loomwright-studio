@@ -305,6 +305,8 @@ describe("AC4 + AC7: a gap is named, closed through kernel_agent_update, and gat
     const updateHeld = held(AGENT_UPDATE, updateInput, WRIGHT_SESSION) as { display?: string; refuse?: string };
     expect(updateHeld.refuse).toBeUndefined();
     expect(updateHeld.display).toContain(`tool_policy: ${JSON.stringify({ allowedTools: ["Read", ...READ_ONLY], allowedBashPrefixes: ["gh pr"] })} → ${JSON.stringify({ allowedTools: ["Read", ...READ_ONLY, ...added], allowedBashPrefixes: ["gh pr"] })}`);
+    // The full form: the job the fit adds is marked added, the member's Read a PR kept, each with its purposes.
+    expect(updateHeld.display?.split("\n").filter((l) => l.startsWith("job: "))).toEqual(["job: Ask for a merge (added)", "job: Read a PR"]);
     const updated = applier(AGENT_UPDATE, updateInput, approvalNow(92, null), store, now());
     expect(updated).toMatchObject({ applied: expect.stringContaining("mason") });
     expect(allowedToolsOf()).toEqual(["Read", ...READ_ONLY, ...added]);
@@ -391,9 +393,11 @@ describe("AC4 + AC7: a gap is named, closed through kernel_agent_update, and gat
     const updateHeld = held(AGENT_UPDATE, input, WRIGHT_SESSION) as { display?: string; refuse?: string };
     expect(updateHeld.refuse).toBeUndefined();
     const lines = updateHeld.display?.split("\n") ?? [];
-    // Every job of the result by its label alone, ahead of the field line and the enforced line that name the raw tools.
+    // Every job of the result by its label alone, ahead of the field line and the enforced line that name the raw tools;
+    // the one job the fit adds is marked added, every other job is kept (DESIGN: "the jobs it adds and the jobs it keeps").
     const jobs = CATALOGUE.jobs.filter((j) => j.tools.some((t) => [...rest, ...merge].includes(`${K}${t.name}`)));
-    expect(lines.slice(1, 1 + jobs.length)).toEqual(jobs.map((j) => `job: ${j.label}`));
+    expect(lines.slice(1, 1 + jobs.length)).toEqual(jobs.map((j) => `job: ${j.label}${j.id === "ask_for_merge" ? " (added)" : ""}`));
+    expect(lines.filter((l) => l.endsWith(" (added)"))).toEqual(["job: Ask for a merge (added)"]);
     // The old list, and the new one only once: on the enforced line beneath (not again as JSON on the field line).
     expect(lines[1 + jobs.length]).toBe(`tool_policy: ${JSON.stringify({ allowedTools: ["Read", ...rest], allowedBashPrefixes: ["gh pr"] })} → as on the enforced line`);
     expect(lines.some((l) => l.startsWith("  - "))).toBe(false);

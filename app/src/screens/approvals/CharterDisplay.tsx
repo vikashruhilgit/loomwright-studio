@@ -7,7 +7,10 @@
 // 1. who the change is for, and the granted kernel tools grouped by job, each
 //    with its purpose line (the job labels alone when the kernel wrote its
 //    compact form, for a charter granting too many tools to list each),
-//    ahead of any `mcp__kernel__` name;
+//    ahead of any `mcp__kernel__` name. An update marks each job "Adds" (the
+//    member held no tool of it) or "Keeps", and a new tool under a kept job
+//    "Adds" (docs/DESIGN.md: "An update shows the jobs it adds and the jobs
+//    it keeps");
 // 2. beneath, in a disclosure "Kernel tool names, as enforced", every other
 //    line exactly as the kernel wrote it: the field lines, the `enforced:`
 //    line (non-kernel tools and Bash prefixes as they always were), limits,
@@ -22,6 +25,7 @@
 // Every part is untrusted text: it goes through `printable` and is rendered as
 // a React text child, never markup.
 import { useId } from "react";
+import { Badge } from "../../components/Badge/Badge";
 import type { CharterDisplayParts } from "./subject";
 import { printable } from "./printable";
 import "./approvals.css";
@@ -31,6 +35,12 @@ export const RAW_SUMMARY = "Kernel tool names, as enforced";
 
 /** The plain block's heading (the mockup's `charterCard`). */
 export const JOBS_HEADING = "What it may do in the kernel";
+
+/** An update's mark on a job (or a tool under a kept job) it adds. */
+export const ADDS = "Adds";
+
+/** An update's mark on a job the member already had. */
+export const KEEPS = "Keeps";
 
 export interface CharterDisplayProps {
   readonly parts: CharterDisplayParts;
@@ -57,11 +67,22 @@ export function CharterDisplay({ parts }: CharterDisplayProps) {
             {parts.jobs.map((job, i) => (
               // Labels may repeat in a malformed display; the position keeps keys unique.
               <li className="approvals-charter-job" key={i} data-testid="charter-job">
-                <span className="approvals-charter-job-label">{printable(job.label)}</span>
+                <span className="approvals-charter-job-head">
+                  <span className="approvals-charter-job-label">{printable(job.label)}</span>
+                  {parts.update ? <Badge>{job.added ? ADDS : KEEPS}</Badge> : null}
+                </span>
                 {job.purposes.length === 0 ? null : (
                   <ul className="approvals-charter-purposes">
                     {job.purposes.map((purpose, j) => (
-                      <li key={j}>{printable(purpose)}</li>
+                      <li key={j}>
+                        {printable(purpose.text)}
+                        {purpose.added ? (
+                          <>
+                            {" "}
+                            <Badge>{ADDS}</Badge>
+                          </>
+                        ) : null}
+                      </li>
                     ))}
                   </ul>
                 )}

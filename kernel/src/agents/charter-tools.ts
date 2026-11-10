@@ -407,6 +407,8 @@ interface Merged {
   readonly avatar: { readonly shape: string; readonly hue: string };
   /** The validated result: what the kernel would enforce. */
   readonly charter: Charter;
+  /** The member's tool list before the change (its settings file's `tool_policy.allowedTools`, strings only): what the display's job lines mark additions against. */
+  readonly heldTools: readonly string[];
 }
 
 /** Absent and `null` read as one value (not set), so clearing an unset value changes nothing. */
@@ -540,7 +542,10 @@ function mergeUpdate(store: Store, row: AgentRow, file: string, bytes: Buffer, c
   if (!checked.ok) return refused("invalid_input", `the result would not be a valid charter: ${checked.message}`);
   const text = `${JSON.stringify(next, null, 2)}\n`;
   if (Buffer.byteLength(text) > MAX_SETTINGS_BYTES) return refused("invalid_input", `the settings file would be over ${MAX_SETTINGS_BYTES} bytes`);
-  return { row, file, bytes, changes: found, fileChanged, text, displayName, avatar, charter: checked.charter };
+  const heldPolicy = isBodyObject(current.tool_policy) ? current.tool_policy.allowedTools : undefined;
+  // A list that is not one (a hand-edited file) holds nothing: every granted kernel tool shows as added.
+  const heldTools = Array.isArray(heldPolicy) ? heldPolicy.filter((t): t is string => typeof t === "string") : [];
+  return { row, file, bytes, changes: found, fileChanged, text, displayName, avatar, charter: checked.charter, heldTools };
 }
 
 /** The update `a` asks for, at hold: the member, its file, the merge, the hash, and a change that changes something. */
@@ -571,7 +576,11 @@ function updateHead(m: Merged): string {
  * What `studio approvals` shows for an update: who and which file, the
  * result's granted kernel tools by job (`jobDisplayLines`, ahead of the field
  * lines, which may name `mcp__kernel__` tools), one line per changed field,
- * then the result's enforced line. The first of these forms whose whole
+ * then the result's enforced line. The job lines mark what the update adds
+ * against the member's current tools (`Merged.heldTools`): a job line ends
+ * ` (added)` when the member held no tool of that job, and every other job
+ * line is one it keeps; in the full form a new tool under a kept job is
+ * marked on its purpose line. The first of these forms whose whole
  * display fits `MAX_APPROVAL_DISPLAY` (else the last, which the hold refuses):
  *
  * 1. each job's tools' purpose lines, and every field line as
@@ -613,7 +622,7 @@ function updateDisplayWith(m: Merged, catalogue: ToolCatalogue | undefined, form
   const tp = m.charter.tool_policy;
   return [
     updateHead(m),
-    ...jobDisplayLines(tp.allowedTools, catalogue, form.purposes),
+    ...jobDisplayLines(tp.allowedTools, catalogue, form.purposes, m.heldTools),
     ...m.changes.map((c) => fieldLine(c, form.policyOnEnforced)),
     enforcedLine(tp.never, tp.allowedTools, tp.allowedBashPrefixes),
   ].join("\n");
@@ -671,7 +680,10 @@ function shortestNewShown(field: string): string {
  * shortest form (its new value as `POLICY_NEW_ON_ENFORCED`, which no longer
  * form undercuts), with the enforced line's tools and Bash prefixes each a
  * one-character entry (`x`, `"x"`: no shorter than any list, `none`
- * included), so the bound holds for every request and every form.
+ * included), so the bound holds for every request and every form. The
+ * ` (added)` marks never shorten a display, so they are left out: a change
+ * that leaves `tool_policy` alone adds no tool (its job lines carry no mark),
+ * and one that sets it is bounded with no job line at all.
  */
 function updateFloor(m: Merged, catalogue?: ToolCatalogue): string {
   const tp = m.charter.tool_policy;

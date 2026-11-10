@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   CATALOGUE_UNAVAILABLE_TEXT,
+  DISPLAY_ADDED,
   DISPLAY_CATALOGUE_UNAVAILABLE,
   DISPLAY_NOT_IN_CATALOGUE,
   GENERAL_JOB,
@@ -249,6 +250,27 @@ describe("the job-grouped display lines (AC3's grouping, AC9's fallback)", () =>
       `job: ${DISPLAY_NOT_IN_CATALOGUE}`,
       "  - kernel_mcp_jira_x",
     ]);
+  });
+
+  it("an update's held list marks what it adds: a job it held no tool of, and (with purposes) a new tool under a kept job; a job whose held tool is swapped for another is kept; a create (no held list) marks nothing", () => {
+    const held = [`${K}kernel_github_pr_get`, `${K}kernel_task_list`, `${K}kernel_mcp_old`];
+    // Read a PR gains a tool, General swaps kernel_task_list for kernel_task_get (still kept), Ask for a merge is new, the unknown heading gains a name.
+    const next = ["Read", `${K}kernel_github_pr_get`, `${K}kernel_github_pr_comments`, `${K}kernel_automate_merge_check`, `${K}kernel_task_get`, `${K}kernel_mcp_old`, `${K}kernel_mcp_new`];
+    const lines = jobDisplayLines(next, CATALOGUE, true, held);
+    expect(lines.filter((l) => l.startsWith("job: "))).toEqual(["job: Ask for a merge (added)", "job: Read a PR", "job: General", `job: ${DISPLAY_NOT_IN_CATALOGUE}`]);
+    expect(lines).toContain("  - Read one pull request's metadata and description from GitHub (read-only).");
+    expect(lines).toContain(`  - Read the comments on one pull request from GitHub (read-only): the conversation's comments, then the review comments on files.${DISPLAY_ADDED}`);
+    // Under an added job only the job line is marked.
+    expect(lines[1]).toBe("  - Whether Loomwright may merge one parked pull request now (read only).");
+    expect(lines.slice(-2)).toEqual(["  - kernel_mcp_old", `  - kernel_mcp_new${DISPLAY_ADDED}`]);
+    // The compact form: one mark per added job, nothing else.
+    expect(jobDisplayLines(next, CATALOGUE, false, held)).toEqual(["job: Ask for a merge (added)", "job: Read a PR", "job: General", `job: ${DISPLAY_NOT_IN_CATALOGUE}`]);
+    expect(jobDisplayLines([`${K}kernel_mcp_new`], CATALOGUE, false, [])).toEqual([`job: ${DISPLAY_NOT_IN_CATALOGUE}${DISPLAY_ADDED}`]);
+    // Nothing added (the held list is the result), or a create: no mark at all.
+    expect(jobDisplayLines(next, CATALOGUE, true, next).join("\n")).not.toContain(DISPLAY_ADDED);
+    expect(jobDisplayLines(next, CATALOGUE).join("\n")).not.toContain(DISPLAY_ADDED);
+    // The mark cannot be confused with the vocabulary: no job label carries it.
+    for (const label of Object.values(TOOL_JOBS)) expect(label.endsWith(DISPLAY_ADDED)).toBe(false);
   });
 });
 

@@ -6,15 +6,16 @@ This page records Validation 1 for the kernel half (the catalogue, the fit check
 
 ## Validation 1
 
-Run by the worker on 2026-11-10 (macOS, Darwin 25.6.0), on branch `feature/wright-drafts-charters-cover-the-work-2`, which stacks this subtask on subtask 1's commit `27fbba3` (the catalogue).
+First run by the worker on 2026-11-10 (macOS, Darwin 25.6.0) on subtask 2's branch, stacked on subtask 1's commit `27fbba3` (the catalogue). The counts below were re-run on 2026-11-10 on the integrated branch `feature/wright-drafts-charters-cover-the-work` at its review iteration 2 commit (the one that adds this re-run), with the kernel and app dependencies already installed.
 
 | Command | Result |
 |---|---|
-| `cd kernel && npm ci && npm run typecheck` | exit 0 (`tsc -p tsconfig.json`, no errors) |
-| `cd kernel && npm test` | exit 0: 127 test files passed, 2 skipped (129); 4315 tests passed, 16 skipped (4331) |
-| `cd kernel && npx vitest run test/playbooks-fit.test.ts` | 18 passed (AC4, AC5, AC7, AC8, AC10 and the `jobs` field) |
+| `cd kernel && npm run typecheck` | exit 0 (`tsc -p tsconfig.json`, no errors) |
+| `cd kernel && npm test` | exit 0: 127 test files passed, 2 skipped (129); 4319 tests passed, 16 skipped (4335) |
+| `cd kernel && npx vitest run test/playbooks-fit.test.ts` | 19 passed (AC4, AC5, AC7, AC8, AC10, the `jobs` field and the 30+ tool member's `proposed_update`) |
 | `bash scripts/check-docs.sh` | exit 0 |
-| `cd app && npm ci && npm run typecheck && npm test && npm run build && npm run e2e` | not run here: the app half (AC3's rendered card) is subtask 3's lane, in its own worktree. Its counts belong to that subtask's evidence and to the integrated branch. |
+| `cd app && npm run typecheck && npm test` | exit 0: 98 test files passed; 3057 tests passed (3057) |
+| `cd app && npm run build && npm run e2e` | not run here. |
 
 Pin mutations for `kernel/test/playbooks-fit.test.ts` were checked by hand. Each mutation was applied, the file run, then the change reverted:
 
