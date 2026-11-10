@@ -14,8 +14,18 @@
 // The creation times are relative to the moment the fixture is made, so "18 days left" holds
 // whenever the spec runs.
 //
+// Phase 8 item 17c (Settings → Threads): with `agents`, the roster and each agent's size hint are served the way the
+// kernel serves them (`kernel/src/agents/roster.ts`, `kernel/src/console/threads.ts`):
+//   GET /agents            the roster, in the order given
+//   GET /agents/:id        a crew member's detail, `settings.content` its settings file as read (carrying
+//                          `thread_summarize_hint_tokens` when given), `settings.error` the kernel's refusal of it;
+//                          `409 reserved` for Wright, as the kernel answers
+//   GET /threads/:agent    Wright's thread page: no items, `thread_summarize_hint_tokens` the kernel's reading (null unset)
+// Without `agents`, `GET /agents` answers an empty roster as before, `GET /threads/:agent` is not routed, and
+// `GET /agents/:id` answers any crew member another fixture's roster names with a file that sets no hint.
+//
 // Every value here is fixture data: no real account, token or path.
-import type { AuthHealth, EventFrame, LoomwrightAdapterStatus, NotifierKind, RouteKey, SettingsResponse } from "../../src/api/contract";
+import type { AgentDetailResponse, AgentsResponse, AuthHealth, EventFrame, LoomwrightAdapterStatus, NotifierKind, RosterEntry, RouteKey, SettingsResponse, ThreadResponse } from "../../src/api/contract";
 import type { FixtureAnswer, FixtureKernel, FixtureKernelOptions, FixtureRoute } from "../fixture-kernel";
 import { cannedStatus } from "../fixture-kernel";
 
@@ -26,11 +36,26 @@ export const FIXTURE_SECRET = "sk-ant-oat01-NOT-A-REAL-TOKEN-fixture-0123456789a
 
 export type SettingsState = "ok" | "expiring" | "missing";
 
+/** One agent Settings → Threads lists (phase 8 item 17c). */
+export interface ThreadsAgent {
+  readonly id: string;
+  readonly name: string;
+  /**
+   * The value of `thread_summarize_hint_tokens` in its settings file; the key is absent when `undefined`. Any value, so
+   * a spec can serve one the screen must refuse. For Wright it is the thread route's reading (a number, or null).
+   */
+  readonly hint?: unknown;
+  /** The kernel's refusal of the file (`settings.error`), or none. */
+  readonly error?: { readonly error: string; readonly field?: string; readonly message: string };
+}
+
 export interface SettingsFixtureOptions {
   /** The provider's state. Default `ok`. */
   readonly state?: SettingsState;
   /** Extra fields added to the body at the top and in `provider` (a careless screen would show or keep them). */
   readonly extra?: Readonly<Record<string, unknown>>;
+  /** The roster and each agent's size hint; without it the roster is empty and Wright's thread page is not served. */
+  readonly agents?: readonly ThreadsAgent[];
 }
 
 /** What `update` may change: the provider's state, and the kernel part's facts. */
@@ -69,6 +94,67 @@ function providerOf(state: SettingsState): SettingsResponse["provider"] {
   return { ...base, health: { status: "ok" } satisfies AuthHealth, token_created_at: made(100) };
 }
 
+const WRIGHT_ID = "wright";
+
+/** A roster entry for `agent`; only the id and the name matter to Settings. */
+function rosterEntry(agent: ThreadsAgent): RosterEntry {
+  const wright = agent.id === WRIGHT_ID;
+  return {
+    id: agent.id,
+    display_name: agent.name,
+    avatar: { shape: wright ? "whale" : "shark", hue: wright ? "accent" : "crew-teal" },
+    status: "active",
+    created_by: wright ? null : "owner",
+    approval_id: null,
+    model: "claude-sonnet",
+    settings_error: agent.error?.error ?? null,
+    tokens_today: 0,
+    tokens_per_day: null,
+    sessions_running: 0,
+    sessions_at_once: null,
+  };
+}
+
+/**
+ * `GET /agents/:id` as the kernel answers it: `409 reserved` for Wright, else the crew member's detail. With `agents`
+ * an id it does not list is `404 not_found`; without (a composed kernel whose roster is another fixture's, as the
+ * phase 7 exit walk's) any other id is a crew member whose file sets no hint.
+ */
+function detailRoute(agents: readonly ThreadsAgent[] | undefined, dataDir: string): FixtureRoute {
+  const byId = new Map((agents ?? []).map((a) => [a.id, a]));
+  return (req) => {
+    const id = req.params.id ?? "";
+    if (id === WRIGHT_ID) return { status: 409, body: { error: "reserved", message: `Wright is not a crew member: its settings are ${dataDir}/config/agents/wright.json` } };
+    const agent: ThreadsAgent | undefined = agents === undefined ? { id, name: id } : byId.get(id);
+    if (agent === undefined) return { status: 404, body: { error: "not_found", message: `no crew member ${id}` } };
+    const file = `${dataDir}/config/agents/${id}.json`;
+    const content = { model: "claude-sonnet", permission_mode: "default", tool_policy: { allowedTools: [], allowedBashPrefixes: [] }, ...(agent.hint === undefined ? {} : { thread_summarize_hint_tokens: agent.hint }) };
+    const body: AgentDetailResponse = {
+      agent: rosterEntry(agent),
+      settings: { file, content, error: agent.error ?? null },
+      never: agent.error === undefined ? [] : null,
+      workspaces: agent.error === undefined ? [] : null,
+      memory: { dir: `${dataDir}/memory/${id}`, files: [] },
+      charter: null,
+    };
+    return { status: 200, body };
+  };
+}
+
+/** The roster and Wright's thread page behind Settings → Threads for `agents`. */
+function threadsRoutes(agents: readonly ThreadsAgent[]): Partial<Record<RouteKey, FixtureRoute>> {
+  const byId = new Map(agents.map((a) => [a.id, a]));
+  return {
+    "GET /agents": () => ({ status: 200, body: { agents: agents.map(rosterEntry) } satisfies AgentsResponse }),
+    "GET /threads/:agent": (req) => {
+      const agent = byId.get(req.params.agent ?? "");
+      if (agent === undefined) return { status: 404, body: { error: "no_such_agent" } };
+      const hint = typeof agent.hint === "number" ? agent.hint : null;
+      return { status: 200, body: { items: [], next_before: null, pending_approvals: [], thread_summarize_hint_tokens: hint, threads: [] } satisfies ThreadResponse };
+    },
+  };
+}
+
 export function settingsFixture(options: SettingsFixtureOptions = {}): SettingsFixture {
   const dataDir = "/Users/owner/.loomwright-studio";
   let view: SettingsResponse = {
@@ -102,6 +188,9 @@ export function settingsFixture(options: SettingsFixtureOptions = {}): SettingsF
     "GET /approvals": () => ({ status: 200, body: { approvals: [] } }),
     "GET /messages": () => ({ status: 200, body: { messages: [] } }),
     "GET /notifications": () => ({ status: 200, body: { notifications: [] } }),
+    // Settings → Threads reads each crew member's detail for its size hint.
+    "GET /agents/:id": detailRoute(options.agents, dataDir),
+    ...(options.agents === undefined ? {} : threadsRoutes(options.agents)),
   };
 
   return {
