@@ -12,8 +12,8 @@
 //      kernel serves today: a phase 1 route or a shipped contribution's route,
 //      same method and same declared path. The routes phase 5, phase 6, phase 7
 //      and phase 8 items add are not checked here; each item's own test pins its
-//      route against the contract. Phase 7's twelve and phase 8's seven are listed
-//      below and never counted as existing (phase 8's are served by items 03, 06 and 08; pinned in "phase 8's served routes").
+//      route against the contract. Phase 7's twelve and phase 8's eleven are listed
+//      below and never counted as existing (phase 8's are served by items 03, 06, 08 and 17; pinned in "phase 8's served routes").
 //   3. The contract's `SessionOutputKind` union carries exactly the values of
 //      `SESSION_OUTPUT_KINDS` (`kernel/src/console/output.ts`).
 //   4. The shared playbook policy editor's `POLICY_FIELDS` and `READ_ONLY_POLICY_FIELDS`
@@ -97,7 +97,8 @@ function sessionOutputKindUnion(text: string): string[] {
  * GitHub App connect's two owner routes (D36), served by the setup flow: they
  * open and close the setup window; `p7-item-NN` routes are the twelve phase 7
  * items 03-08 add (the app's one `PUT`, the memory write, among them); `p8-item-NN`
- * routes are the seven phase 8 item 01 declares for items 03, 06 and 08 (all GET or POST).
+ * routes are the seven phase 8 item 01 declares for items 03, 06 and 08, plus item 17's four
+ * thread routes (summarize, summary, start-fresh, rename), all GET or POST.
  */
 const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "GET", path: "/status", origin: "phase-1" },
@@ -165,6 +166,10 @@ const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "GET", path: "/repos/policy", origin: "p8-item-08" },
   { method: "POST", path: "/repos/policy/:owner/:repo/detect", origin: "p8-item-08" },
   { method: "POST", path: "/repos/policy/:owner/:repo", origin: "p8-item-08" },
+  { method: "POST", path: "/threads/:agent/:thread/summarize", origin: "p8-item-17" },
+  { method: "GET", path: "/threads/:agent/:thread/summary", origin: "p8-item-17" },
+  { method: "POST", path: "/threads/:agent/:thread/start-fresh", origin: "p8-item-17" },
+  { method: "POST", path: "/threads/:agent/:thread/rename", origin: "p8-item-17" },
 ];
 
 /** A route the contract says the kernel already serves: any origin but a phase 5 item's (`item-NN`), a phase 6 item's (`p6-item-NN`), a phase 7 item's (`p7-item-NN`) or a phase 8 item's (`p8-item-NN`). */
@@ -229,7 +234,7 @@ describe("the app contract's routes (app/src/api/contract.ts, read as text)", ()
     expect(phase7.filter(isExisting)).toEqual([]);
   });
 
-  it("lists phase 8's seven routes, each GET or POST: items 03, 06 and 08 serve theirs", () => {
+  it("lists phase 8's eleven routes, each GET or POST: items 03, 06, 08 and 17 serve theirs", () => {
     const phase8 = routes.filter((r) => r.origin.startsWith("p8-"));
     expect(phase8.map((r) => [r.origin, key(r)])).toEqual([
       ["p8-item-03", "GET /connectors/github/app/upgrade"],
@@ -239,12 +244,16 @@ describe("the app contract's routes (app/src/api/contract.ts, read as text)", ()
       ["p8-item-08", "GET /repos/policy"],
       ["p8-item-08", "POST /repos/policy/:owner/:repo/detect"],
       ["p8-item-08", "POST /repos/policy/:owner/:repo"],
+      ["p8-item-17", "POST /threads/:agent/:thread/summarize"],
+      ["p8-item-17", "GET /threads/:agent/:thread/summary"],
+      ["p8-item-17", "POST /threads/:agent/:thread/start-fresh"],
+      ["p8-item-17", "POST /threads/:agent/:thread/rename"],
     ]);
     expect(phase8.filter(isExisting)).toEqual([]);
     expect(phase8.every((r) => r.method === "GET" || r.method === "POST")).toBe(true);
   });
 
-  it("phase 8's served routes: item 06's three, item 03's upgrade route and item 08's three are in the shipped composition", () => {
+  it("phase 8's served routes: item 06's three, item 03's upgrade route, item 08's three and item 17's four are in the shipped composition", () => {
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     const served = new Set(merged.routes.map(key));
     const phase8 = routes.filter((r) => r.origin.startsWith("p8-"));
@@ -252,6 +261,7 @@ describe("the app contract's routes (app/src/api/contract.ts, read as text)", ()
     expect(servedBy("p8-item-06")).toEqual(["POST /connectors/mcp/:kind/connect", "POST /connectors/mcp/:kind/connect/cancel", "POST /connectors/mcp/:kind/disconnect"]);
     expect(servedBy("p8-item-03")).toEqual(["GET /connectors/github/app/upgrade"]);
     expect(servedBy("p8-item-08")).toEqual(["GET /repos/policy", "POST /repos/policy/:owner/:repo/detect", "POST /repos/policy/:owner/:repo"]);
+    expect(servedBy("p8-item-17")).toEqual(["POST /threads/:agent/:thread/summarize", "GET /threads/:agent/:thread/summary", "POST /threads/:agent/:thread/start-fresh", "POST /threads/:agent/:thread/rename"]);
   });
 
   it("the feed route is the path the API server upgrades", () => {

@@ -157,6 +157,24 @@ export interface StartSessionParams {
    * absent or `false` ⇒ an ordinary dry run.
    */
   readonly forceDraft?: boolean;
+  /**
+   * Continue an earlier session's SDK conversation in this NEW session (thread
+   * continuity, `docs/architecture/brain.md`): the id of a `sessions` row that
+   * has ended (`completed`, `failed`, `failed:auth` or `stopped`, no kill left
+   * incomplete) of the same `agent`, with an SDK session id. The new row gets
+   * that SDK session id and the SDK options carry `resume: <it>` instead of a
+   * fresh `sessionId`; everything else (admission as a `start`, policy, auth,
+   * Loomwright) is exactly a start's. Refused before admission or any row:
+   * `not_found` (no such row), `not_resumable` (another agent, no SDK session
+   * id, live or not ended, a kill left incomplete, or another session on the
+   * same SDK conversation still live or resumable: one CLI per conversation) and `cwd_changed` (the
+   * cwd resolves elsewhere than the row's recorded `sessions.cwd`). A session
+   * whose resume finds the SDK conversation gone (the CLI's first message is
+   * an error result `No conversation found with session ID: …`, before
+   * `system/init`) ends `failed` with reason `conversation_gone`. A positive
+   * integer when given; absent ⇒ a fresh conversation.
+   */
+  readonly continueFrom?: number;
 }
 
 export interface ResumeSessionParams {

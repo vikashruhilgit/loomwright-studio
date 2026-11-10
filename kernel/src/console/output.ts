@@ -14,6 +14,7 @@
 // module through the feature registry.
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { payloadText, shown } from "../approvals/cli.js";
+import { withSessionTitles } from "../brain/titles.js";
 import type {
   CliApiClient,
   CliSubcommandOutput,
@@ -665,6 +666,8 @@ export interface SessionSummary {
   readonly tokens: number | null;
   readonly cwd: string | null;
   readonly playbook: number | null;
+  /** The session's title, derived at read time by `../brain/titles.ts` (the owner's thread rename wins); one line, untrusted text. */
+  readonly title: string;
 }
 
 /** One `GET /sessions/:id/output` row (the contract's `SessionOutputRow`). Every string in `payload` is untrusted. */
@@ -695,8 +698,8 @@ async function listSessions(req: ContributedRouteRequest): Promise<ContributedRo
   const limit = queryInt(req.query.limit, DEFAULT_SESSIONS_LIMIT, 1, MAX_SESSIONS_LIMIT);
   if (limit === undefined) return INVALID_QUERY;
   const status = req.query.status;
-  const sessions = req.store
-    .prepare<unknown[], SessionSummary>(
+  const rows = req.store
+    .prepare<unknown[], Omit<SessionSummary, "title">>(
       `SELECT s.id, s.agent, s.status, s.model, s.started_at AS started, s.ended_at AS ended,
               (SELECT sum(b.counted_tokens) FROM budget b WHERE b.session_id = s.id) AS tokens,
               s.cwd, s.playbook
@@ -704,6 +707,7 @@ async function listSessions(req: ContributedRouteRequest): Promise<ContributedRo
         ORDER BY s.id DESC LIMIT ?`,
     )
     .all(...(status === undefined ? [] : [status]), limit);
+  const sessions: SessionSummary[] = withSessionTitles(req.store, rows);
   return { status: 200, body: { sessions } };
 }
 

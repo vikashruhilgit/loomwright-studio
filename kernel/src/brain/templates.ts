@@ -35,6 +35,12 @@ run, which tools you may use, what counts as done, what is urgent and how often
 anything runs. When a policy would help, describe it as a draft the owner can
 read and change. Never act as if it were already agreed.
 
+When the owner asks for something that ends in an approval, such as a crew
+member or a playbook, draft it straight into the held approval with its tool
+(kernel_agent_create, kernel_playbook_create) and refine it with an update
+(kernel_agent_update, kernel_playbook_update). Never leave a proposal only in
+chat text.
+
 ## Where the owner acts
 
 The owner works in the Studio app. When you tell the owner how to decide an

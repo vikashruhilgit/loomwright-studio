@@ -676,9 +676,9 @@ describe("GET /tasks/:kind/:id: the history (AC2)", () => {
     expect(h.item).toMatchObject({ kind: "task", id: task, title: "Fix flaky test", state: "working", session: owner });
     expect(h.sessions.map((s) => s.id)).toEqual([sub, owner]);
     expect(h.sessions.find((s) => s.id === sub)).toEqual({
-      id: sub, agent: "wright", status: "completed", model: "sonnet", started: at(0), ended: null, tokens: 8, cwd: "/work", playbook: null,
+      id: sub, agent: "wright", status: "completed", model: "sonnet", started: at(0), ended: null, tokens: 8, cwd: "/work", playbook: null, title: "Fix flaky test",
     });
-    expect(Object.keys(h.sessions[0] ?? {})).toEqual(["id", "agent", "status", "model", "started", "ended", "tokens", "cwd", "playbook"]);
+    expect(Object.keys(h.sessions[0] ?? {})).toEqual(["id", "agent", "status", "model", "started", "ended", "tokens", "cwd", "playbook", "title"]);
     expect(h.runs).toEqual([
       { id: run, playbook, version: 1, kind: "fire", status: "done", item_ref: null, item_revision: null, tokens: 7, session: sub, started: at(2), ended: at(3) },
     ]);
