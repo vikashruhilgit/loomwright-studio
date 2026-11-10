@@ -14,6 +14,7 @@ import type { CommandRegistry } from "../../commands/registry";
 import { useResource } from "../../store/react";
 import { sharedNames } from "../team/model";
 import { buildChatCommands } from "./commands";
+import { openThreadSnapshot, subscribeOpenThread } from "./continuity";
 import { WRIGHT, agentAvatarState, hashAgent, navigate, readSeen, requestComposerFocus, resolveBridge, seenSnapshot, specialists, subscribeSeen, threadHash } from "./model";
 import "./chat.css";
 
@@ -64,6 +65,7 @@ export function CrewSection({ api: apiProp, registry = commandRegistry }: CrewSe
   const notifications = useResource("notifications", api);
   const hash = useHash();
   useSyncExternalStore(subscribeSeen, seenSnapshot);
+  const openThread = useSyncExternalStore(subscribeOpenThread, openThreadSnapshot);
   const [notice, setNotice] = useState("");
   const rowIds = useId();
 
@@ -83,8 +85,9 @@ export function CrewSection({ api: apiProp, registry = commandRegistry }: CrewSe
         triggers: triggers?.data?.triggers,
         notifications: notifications?.data?.notifications,
         onNotice: setNotice,
+        openThread,
       }),
-    [api, roster, playbooks?.data, triggers?.data, notifications?.data],
+    [api, roster, playbooks?.data, triggers?.data, notifications?.data, openThread],
   );
   useEffect(() => registry.register("chat", commands), [registry, commands]);
 

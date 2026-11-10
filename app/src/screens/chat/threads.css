@@ -1,0 +1,366 @@
+/*
+ * Thread continuity (phase 8 item 17c): the classes docs/design/mockups/chat-threads.html adds
+ * (.th, .tl, .macts, .infop, .sumbar, .rstrip, .rchip, .seg2, .rnf, .fb, .sumtext), named here
+ * with the `chat-` prefix. Tokens only; light and dark come from tokens.css.
+ */
+
+.chat-thread-icon {
+  flex: none;
+}
+.chat-thread-cap {
+  margin: 0;
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.chat-thread-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A thread's header (.th): title, count, Rename, Copy reference. */
+.chat-thread-headwrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.chat-thread-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  min-height: var(--row-height);
+}
+.chat-thread-title {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  border-radius: var(--radius-xs);
+  color: var(--ink);
+  font: var(--type-body-strong-weight) var(--type-body-strong-size) / var(--type-body-strong-line) var(--type-body-strong-family);
+}
+.chat-thread-title:focus {
+  outline: 0;
+}
+.chat-thread-title:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* One rail per thread (.tl): every message of a thread sits on it; a joined row continues the rail above. */
+.chat-thread-item > .chat-message {
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--hairline);
+}
+.chat-thread-joined {
+  margin-top: calc(var(--space-3) * -1);
+}
+.chat-thread-joined > .chat-message {
+  padding-top: var(--space-3);
+}
+.chat-thread-replyto {
+  margin: 0;
+  align-self: flex-end;
+  color: var(--ink-tertiary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.chat-thread-path {
+  padding-left: var(--space-8);
+}
+
+/* Reply, Summarize & start fresh and its ⓘ under an agent reply (.macts). */
+.chat-thread-actions-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-left: var(--space-6);
+}
+.chat-thread-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+.btn.chat-thread-ic {
+  width: var(--row-height);
+  padding: 0;
+  justify-content: center;
+}
+/* Past the owner's size hint (.btn.hl). */
+.btn.chat-thread-hl {
+  background: var(--attention-soft);
+  color: var(--attention);
+  border-color: var(--attention);
+}
+.chat-thread-pending {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+
+/* The ⓘ panel (.infop). */
+.chat-thread-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 560px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.chat-thread-info p {
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.chat-thread-kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+}
+.chat-thread-kv dt {
+  color: var(--ink-secondary);
+}
+.chat-thread-kv dd {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin: 0;
+  color: var(--ink);
+}
+
+/* "Continuing from the saved conversation" (.fb). */
+.chat-thread-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-width: 560px;
+  margin-left: var(--space-8);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+.chat-thread-fallback-title {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+/* The summarized mark on the old thread (.sumbar). */
+.chat-thread-sumbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  max-width: 720px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--parked-soft);
+  color: var(--ink);
+}
+.chat-thread-link {
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.chat-thread-link:hover {
+  color: var(--accent-hover);
+}
+.chat-thread-notice {
+  margin: 0;
+  padding: var(--space-2) var(--space-5);
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+
+/* Rename in place (.rnf). */
+.chat-rename {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.chat-rename-field {
+  width: 360px;
+  max-width: 100%;
+}
+
+/* The composer's Reply strip (.rstrip) and reference chip (.rchip, .seg2). */
+.chat-reply-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--ink);
+  animation: chat-thread-fade var(--duration-fast) var(--ease-enter);
+}
+.chat-reply-strip > .chat-thread-icon {
+  color: var(--accent);
+}
+.chat-reply-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.chat-x {
+  display: grid;
+  place-items: center;
+  flex: none;
+  padding: var(--space-1);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--ink-secondary);
+  cursor: pointer;
+}
+.chat-x:hover {
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+.chat-x:focus-visible,
+.chat-seg button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.chat-ref-chips {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+}
+.chat-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-height: var(--control-height);
+  padding: var(--space-0-5) var(--space-1) var(--space-0-5) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  animation: chat-thread-fade var(--duration-fast) var(--ease-enter);
+}
+.chat-ref-chip > .chat-thread-icon {
+  color: var(--ink-secondary);
+}
+.chat-ref-title {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.chat-seg {
+  display: inline-flex;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.chat-seg button {
+  height: calc(var(--row-height) - var(--space-1));
+  padding: 0 var(--space-2);
+  border: 0;
+  background: none;
+  color: var(--ink-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.chat-seg button + button {
+  border-left: 1px solid var(--border);
+}
+.chat-seg button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* The summary preview (.dlg.wide, .sumtext). */
+.dialog-panel.chat-summary-dialog {
+  width: min(560px, calc(100vw - var(--space-8)));
+  max-height: calc(100vh - var(--space-8));
+  overflow: auto;
+}
+.chat-summary-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.chat-summary-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 300px;
+  overflow: auto;
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+.chat-summary-text:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.chat-summary-text h3 {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-secondary);
+  font: var(--type-label-weight) var(--type-label-size) / var(--type-label-line) var(--type-label-family);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+}
+.chat-summary-text h3:first-child {
+  margin-top: 0;
+}
+.chat-summary-text p {
+  margin: 0;
+}
+.chat-summary-text ul {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+.chat-summary-edit {
+  height: auto;
+  margin: var(--space-3) 0;
+  padding: var(--space-2) 10px;
+  align-items: stretch;
+}
+.chat-summary-edit textarea {
+  min-height: 240px;
+  resize: vertical;
+}
+.dialog-actions.chat-summary-actions {
+  justify-content: flex-start;
+}
+
+@keyframes chat-thread-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-reply-strip,
+  .chat-ref-chip {
+    animation: none;
+  }
+}
