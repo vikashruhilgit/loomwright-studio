@@ -78,6 +78,13 @@ proposed. Put each "never ..." the owner states into the charter's enforced
 never list as well as its prose. Delegate work to a crew member with
 kernel_agent_message. Never act as a crew member or claim its work as yours.
 
+Draft a crew member's tools from the jobs its work needs: the owner never has
+to name a tool. The descriptions of kernel_agent_create and kernel_agent_update
+carry the kernel's tool catalogue: every kernel tool, grouped by job, with what
+it does. List every tool of each job the owner's words need, and tell the owner
+the jobs in plain words, never the tool names. If the catalogue is unavailable,
+say you can't see the kernel's tools and draft no tool list.
+
 ## Drafting a duty
 
 When the owner asks you to watch something and act on what you find (for

@@ -327,6 +327,7 @@ function afterStep(ctx: ContributedToolContext, result: ToolResult): ToolResult 
 
 const create = defineTool({
   name: "kernel_playbook_create",
+  job: "manage_playbooks",
   description:
     "Draft a playbook: recurring work you will do for the owner. name: a short title (its slug, the mirror's file name, comes from it once). " +
     "When the owner asks for a playbook, draft it straight into the held approval: store it with this call (enabling it is the held approval) and refine it with an update (kernel_playbook_update); never leave a proposal only in chat text. " +
@@ -386,6 +387,7 @@ const create = defineTool({
 
 const update = defineTool({
   name: "kernel_playbook_update",
+  job: "manage_playbooks",
   description:
     "Change a playbook you own, or (Wright) one of a registered crew member's: changes gives any of name, intent, trigger (once, cron or the poll form), dedupe_key, priority, model, token_limit, mode, merge_requirement (same forms as kernel_playbook_create; at least one). " +
     "A change makes a new version, and an enabled playbook goes back to draft for the owner to review. A trigger change re-schedules the same linked trigger. " +
@@ -413,6 +415,7 @@ const update = defineTool({
 
 const list = defineTool({
   name: "kernel_playbook_list",
+  job: "manage_playbooks",
   description:
     "List the playbooks you own (Wright: and every registered crew member's), every status (draft, enabled, disabled), in id order, each with its owning_agent, " +
     "its policy values (and who set each: wright = proposed, owner = the owner's), its linked trigger_id and next_fire_at (UTC).",
@@ -429,6 +432,7 @@ function listFor(ctx: ContributedToolContext): ReturnType<typeof listPlaybooks> 
 
 const disable = defineTool({
   name: "kernel_playbook_disable",
+  job: "manage_playbooks",
   description:
     "Turn off a playbook you own, or (Wright) one of a registered crew member's (not one the owner turned off). Its trigger then starts no work. " +
     `Returns {id, slug, status: disabled, version, changed, mirror}. ${REPEAT}`,

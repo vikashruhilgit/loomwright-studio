@@ -36,7 +36,7 @@ import type { SessionTokenMint } from "./sessions/github-session-auth.js";
 import { SessionManager } from "./sessions/manager.js";
 import type { AdmissionDecision, AdmissionRequest, SessionManagerDeps, SessionManagerOptions } from "./sessions/types.js";
 import { Store, resolveDataDir } from "./store/store.js";
-import { KERNEL_MCP_SERVER_NAME, approvalApplierOf, assertKernelToolsList, createKernelMcpServer, heldToolCheckOf } from "./tools/server.js";
+import { KERNEL_MCP_SERVER_NAME, approvalApplierOf, assertKernelToolsList, createKernelMcpServer, heldToolCheckOf, kernelToolCatalogue } from "./tools/server.js";
 import { writeFileAtomic } from "./tools/handoff.js";
 
 /** Selects the auth provider when `--auth-provider` is not given. */
@@ -353,6 +353,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
   const approvalApplier = approvalApplierOf(contributions.tools);
   // Every tool's shape must list through the Agent SDK: one that cannot empties every session's tools/list.
   await assertKernelToolsList(contributions.tools);
+  // The tool catalogue of the composition's own tools, unfiltered: every session's drafting tools describe every tool a crew member can be granted.
+  const toolCatalogue = kernelToolCatalogue(contributions.tools);
 
   const store = (deps.openStore ?? ((dir: string) => new Store({ dataDir: dir })))(dataDir);
   let sessions: SessionManager | undefined;
@@ -425,6 +427,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
             [KERNEL_MCP_SERVER_NAME]: createKernelMcpServer(
               { store, sessions: manager, sessionId, now, ...githubOf },
               toolsForConnectors([...contributions.tools, ...proxyToolsOf(store, grants)], connectors, writeGrantOf(dataDir, agent), grants),
+              toolCatalogue,
             ),
           };
         },

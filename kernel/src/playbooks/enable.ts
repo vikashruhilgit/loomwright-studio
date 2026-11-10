@@ -456,6 +456,7 @@ function refuseStaleReplay(ctx: ContributedToolContext, a: { id: number; idempot
 
 const enableTool = defineTool({
   name: ENABLE_TOOL_NAME,
+  job: "manage_playbooks",
   description:
     "Ask the owner to enable a draft playbook you own, or (Wright) one of a registered crew member's, at its current version. Its current version needs a done kernel_playbook_dry_run first; otherwise this is refused. " +
     "The kernel always holds this call for the owner, showing the playbook, its values and the dry run; end your turn. " +

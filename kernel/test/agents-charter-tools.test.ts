@@ -24,10 +24,14 @@ import {
   AGENT_UPDATE_TOOL_NAME,
   CHARTER_TOOL_REFUSALS,
   charterToolsPart,
+  createDisplay,
 } from "../src/agents/charter-tools.js";
 import { agentFilePaths, agentSettingsPath, createAgent, ensureAgentFiles, getAgent, readAgentSettings, renderAgentSettingsJson, renderRoleMd, validateCharter } from "../src/agents/index.js";
 import type { Charter } from "../src/agents/index.js";
 import { decideApproval, listApprovals } from "../src/approvals/index.js";
+import { DISPLAY_CATALOGUE_UNAVAILABLE, DISPLAY_NOT_IN_CATALOGUE, buildToolCatalogue } from "../src/features/catalogue.js";
+import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
+import type { ContributedTool } from "../src/features/index.js";
 import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
 import type { AppliedApproval } from "../src/approvals/index.js";
 import { KeychainError } from "../src/auth/index.js";
@@ -216,7 +220,7 @@ async function bootKernel() {
       if (t === undefined) throw new Error(`no tool ${name} on the kernel server`);
       return t.handler(args, {});
     };
-    return { id: handle.id, gate: gateOf(call), tool };
+    return { id: handle.id, gate: gateOf(call), tool, registered: tools };
   }
 
   /** `studio <argv>` against this kernel. */
@@ -240,9 +244,10 @@ async function bootKernel() {
  * A session manager (fake spawner/query) whose gate has the charter tools'
  * pre-hold check, with Wright's session started; the tools' handlers run with
  * `ctx.sessions` = the manager. `decide` is the owner's decision with the
- * shipped applier over the charter tools.
+ * shipped applier over the charter tools. `checkTools` (default the charter
+ * tools) are what the pre-hold check, and so its tool catalogue, is built from.
  */
-async function bootManager() {
+async function bootManager(checkTools: readonly ContributedTool[] = TOOLS) {
   writeWrightSettings();
   const store = new Store({ dataDir });
   stores.push(store);
@@ -251,7 +256,7 @@ async function bootManager() {
   const toolSessions: KernelToolContext["sessions"] = { stopSession: (id: number) => manager.stopSession(id), getSession: (id: number) => manager.getSession(id) };
   const contextOf = (sessionId: number): KernelToolContext => ({ store, sessions: toolSessions, sessionId, now });
   const manager: SessionManager = new SessionManager(
-    { store, authProvider: stubProvider(), loomwrightPath: pluginDir, stopGraceMs: 10, baseEnv: { PATH: "/usr/bin" }, heldToolCheck: heldToolCheckOf(TOOLS, contextOf) },
+    { store, authProvider: stubProvider(), loomwrightPath: pluginDir, stopGraceMs: 10, baseEnv: { PATH: "/usr/bin" }, heldToolCheck: heldToolCheckOf(checkTools, contextOf) },
     { ...fakes.deps, homeDir: home, now },
   );
   async function session(agent: string, policy: ToolPolicy = WRIGHT_POLICY) {
@@ -844,6 +849,148 @@ describe("kernel_agent_update (AC5, AC6)", () => {
 });
 
 // ---- AC7: list ------------------------------------------------------------------------
+
+// ---- Phase 8 item 16: the granted kernel tools by job (AC3 kernel half, AC9) -----------
+//
+// The display's plain block (`jobDisplayLines`, `kernel/src/features/catalogue.ts`), between
+// the who line and every line that names an `mcp__kernel__` tool:
+//   job: <label>        one per job with a granted kernel tool, in TOOL_JOBS order
+//     - <purpose>       one per granted tool of that job (its description's first sentence)
+// A charter that grants no kernel tool has none (every pin above is unchanged).
+
+/** The shipped tools as the daemon merges them, and their catalogue (what `startKernel`'s hold sees). */
+const SHIPPED_TOOLS: readonly ContributedTool[] = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools;
+
+/** The walk charter's kernel tools (`MASON_TOOLS`, `kernel/test/phase-8-exit.test.ts`). */
+const WALK_KERNEL_TOOLS = [
+  "kernel_automate_prepare",
+  "kernel_automate_state",
+  "kernel_automate_merge_check",
+  "kernel_merge_approval_request",
+  "kernel_pr_route",
+  "kernel_github_pr_comments",
+  "kernel_github_pr_reply",
+  "kernel_github_pr_comment",
+  "kernel_github_pr_request_reviewers",
+].map((n) => `${K}${n}`);
+
+/** The `approval_requested` display of approval `n` (1-based). */
+function heldDisplay(store: Store, n = 1): string {
+  return String(events(store, "approval_requested")[n - 1]?.payload.display);
+}
+
+describe("the display groups the granted kernel tools by job (phase 8 item 16: AC3 kernel half, AC9)", () => {
+  it("AC3: a held create shows the granted kernel tools grouped by job with their purposes, ahead of any mcp__kernel__ name; the raw enforced line is still shown beneath", async () => {
+    const h = await bootKernel();
+    const w = await h.session("wright", WRIGHT_POLICY);
+    const granted = ["Read", `${K}kernel_github_pr_get`, `${K}kernel_automate_merge_check`, `${K}kernel_task_list`];
+    const c = charter({ tool_policy: { allowedTools: granted, allowedBashPrefixes: [], never: ["git_push"] }, connectors: ["github"] });
+    expect((await w.gate(CREATE, { charter: c, idempotency_key: "c1" })).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+    const shown = heldDisplay(h.store);
+    expect(shown.split("\n").slice(0, 10)).toEqual([
+      'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
+      "job: Ask for a merge",
+      "  - Whether Loomwright may merge one parked pull request now (read only).",
+      "job: Read a PR",
+      "  - Read one pull request's metadata and description from GitHub (read-only).",
+      "job: General",
+      "  - List tasks in id order, filtered by state, assignee_agent or parent_task_id (limit 1-200, default 50).",
+      `enforced: never: git_push; tools: ${granted.join(", ")}; bash prefixes: none; connectors: github`,
+      "limits: tokens_per_day 200000 (proposed); sessions_at_once 1 (proposed); delegation_depth not set (no limit)",
+      `workspaces: ${join(tmp, "work", "payments")}`,
+    ]);
+    // Every job line comes before the first raw kernel name.
+    expect(shown.lastIndexOf("job: ")).toBeLessThan(shown.indexOf(K));
+    // The display the hold shows is createDisplay over the composition's catalogue.
+    expect(shown).toBe(createDisplay(validated(c), buildToolCatalogue(SHIPPED_TOOLS)));
+  });
+
+  it("AC2 in the daemon: Wright's session, with no GitHub grant of its own, is offered kernel_agent_create with the composition's whole catalogue", async () => {
+    const h = await bootKernel();
+    const tools = (await h.session("wright", WRIGHT_POLICY)).registered as unknown as Record<string, { description?: string }>;
+    // Wright holds no github grant, so the github tools themselves are not on its server …
+    expect(tools.kernel_github_pr_get).toBeUndefined();
+    // … but the drafting tool's description still lists them, from the unfiltered catalogue.
+    expect(tools.kernel_agent_create?.description).toContain('Job read_pr "Read a PR":\n- kernel_github_pr_get: ');
+    expect(tools.kernel_agent_create?.description).toContain('Job ask_for_merge "Ask for a merge":');
+  });
+
+  it("AC3: a held update shows the result's kernel tools by job ahead of its field lines (which name mcp__kernel__ tools), then the enforced line", async () => {
+    const h = await bootKernel();
+    expect(createAgent(h.store, dataDir, charter({ tool_policy: { allowedTools: ["Read", `${K}kernel_github_pr_get`], allowedBashPrefixes: [], never: ["git_push"] } }), { by: "owner" }, clock.at).ok).toBe(true);
+    const w = await h.session("wright", WRIGHT_POLICY);
+    const list = JSON.parse((await w.tool(AGENT_LIST_TOOL_NAME, {})).content[0]?.text ?? "{}") as { agents: ListEntry[] };
+    const sha256 = list.agents.find((a) => a.id === "mason")?.sha256 as string;
+    const next = ["Read", `${K}kernel_github_pr_get`, `${K}kernel_automate_merge_check`, `${K}kernel_merge_approval_request`];
+    const held = await w.gate(UPDATE, { id: "mason", changes: { tool_policy: { allowedTools: next, allowedBashPrefixes: [] } }, expected_sha256: sha256, idempotency_key: "u1" });
+    expect(held.permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+    expect(heldDisplay(h.store).split("\n")).toEqual([
+      `Update crew member mason ("Mason"), settings sha256 ${sha256.slice(0, 12)}, proposed by Wright`,
+      "job: Ask for a merge",
+      "  - Whether Loomwright may merge one parked pull request now (read only).",
+      "  - Ask the owner to approve merging one pull request at one head SHA, for a repository set to Approve in Studio.",
+      "job: Read a PR",
+      "  - Read one pull request's metadata and description from GitHub (read-only).",
+      `tool_policy: ${JSON.stringify({ allowedTools: ["Read", `${K}kernel_github_pr_get`], allowedBashPrefixes: [] })} → ${JSON.stringify({ allowedTools: next, allowedBashPrefixes: [] })}`,
+      `enforced: never: git_push; tools: ${next.join(", ")}; bash prefixes: none`,
+    ]);
+  });
+
+  it("AC9: with the catalogue unavailable the display falls back to the raw names with one plain note, never a guessed grouping (directly, and through the gate of a composition whose catalogue cannot be built)", async () => {
+    const granted = ["Read", `${K}kernel_github_pr_get`];
+    const c = validated(charter({ tool_policy: { allowedTools: granted, allowedBashPrefixes: [], never: [] } }));
+    expect(createDisplay(c).split("\n").slice(0, 3)).toEqual([
+      'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
+      DISPLAY_CATALOGUE_UNAVAILABLE,
+      `enforced: never: none; tools: ${granted.join(", ")}; bash prefixes: none`,
+    ]);
+    // Through the gate: a composition whose catalogue cannot be built (a tool with a job outside TOOL_JOBS, past the merge).
+    const badJob = defineTool({ name: "kernel_bad_job", job: "not_a_job" as never, description: "Bad.", shape: {}, handler: () => ({}) });
+    const h = await bootManager([...TOOLS, badJob]);
+    await h.wright.gate(CREATE, { charter: charter({ tool_policy: { allowedTools: granted, allowedBashPrefixes: [], never: [] } }), idempotency_key: "c1" });
+    expect(heldDisplay(h.store).split("\n")[1]).toBe(DISPLAY_CATALOGUE_UNAVAILABLE);
+  });
+
+  it("a granted kernel tool the catalogue lacks is listed by name under its own heading, never put in a guessed job", async () => {
+    const granted = ["Read", `${K}kernel_github_pr_get`];
+    // The pre-hold check over the charter tools only: its catalogue has no GitHub tool.
+    const g = await bootManager();
+    await g.wright.gate(CREATE, { charter: charter({ id: "nell", tool_policy: { allowedTools: granted, allowedBashPrefixes: [], never: [] } }), idempotency_key: "c1" });
+    expect(heldDisplay(g.store).split("\n").slice(1, 3)).toEqual([`job: ${DISPLAY_NOT_IN_CATALOGUE}`, "  - kernel_github_pr_get"]);
+  });
+
+  it("the job lines count toward the head the hold checks: the walk charter fits; a charter granting every kernel tool, whose enforced line alone would fit, is refused invalid_input", async () => {
+    const h = await bootKernel();
+    const w = await h.session("wright", WRIGHT_POLICY);
+    const walk = charter({ tool_policy: { allowedTools: ["Read", "Bash", ...WALK_KERNEL_TOOLS], allowedBashPrefixes: ["gh pr"], never: [] }, connectors: ["github"] });
+    expect((await w.gate(CREATE, { charter: walk, idempotency_key: "c1" })).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+    expect(heldDisplay(h.store).split("\n").filter((l) => l.startsWith("job: "))).toEqual(["job: Hand tickets to /automate", "job: Triage PR comments", "job: Ask for a merge", "job: Read a PR"]);
+
+    const every = buildToolCatalogue(SHIPPED_TOOLS).tools.map((t) => `${K}${t.name}`);
+    const all = charter({ id: "nell", tool_policy: { allowedTools: every, allowedBashPrefixes: [], never: [] } });
+    const enforced = createDisplay(validated(all)).split("\n").find((l) => l.startsWith("enforced: ")) as string;
+    expect(enforced.length).toBeLessThan(MAX_APPROVAL_DISPLAY);
+    const refusedHold = await w.gate(CREATE, { charter: all, idempotency_key: "c2" });
+    expect(refusedHold.permissionDecisionReason).toMatch(
+      new RegExp(`^kernel_agent_create: invalid_input: the display's enforced, limits and workspaces lines would be \\d+ characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown; `),
+    );
+    expect(count(h.store, "SELECT count(*) FROM approvals")).toBe(1);
+  });
+
+  it("the update's floor counts the job lines of the tools a change keeps: a rename of a member granted every kernel tool gets the owner's remedy; narrowing its tools is held", async () => {
+    const h = await bootKernel();
+    const every = buildToolCatalogue(SHIPPED_TOOLS).tools.map((t) => `${K}${t.name}`);
+    // The owner's own create has no display check: its job lines alone run past the cut.
+    expect(createAgent(h.store, dataDir, charter({ tool_policy: { allowedTools: every, allowedBashPrefixes: [], never: [] } }), { by: "owner" }, clock.at).ok).toBe(true);
+    const w = await h.session("wright", WRIGHT_POLICY);
+    const sha256 = async () =>
+      (JSON.parse((await w.tool(AGENT_LIST_TOOL_NAME, {})).content[0]?.text ?? "{}") as { agents: ListEntry[] }).agents.find((a) => a.id === "mason")?.sha256 as string;
+    const rename = await w.gate(UPDATE, { id: "mason", changes: { display_name: "Mason II" }, expected_sha256: await sha256(), idempotency_key: "u1" });
+    expect(rename.permissionDecisionReason).toContain("so no request to these fields fits; the owner changes config/agents/mason.json by hand");
+    const narrow = await w.gate(UPDATE, { id: "mason", changes: { tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] } }, expected_sha256: await sha256(), idempotency_key: "u2" });
+    expect(narrow.permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+  });
+});
 
 describe("kernel_agent_list (AC7)", () => {
   it("Wright first with its settings and no sha256, then each member whose sha256 is the hash of its settings file's bytes", async () => {

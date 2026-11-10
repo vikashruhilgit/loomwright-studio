@@ -41,6 +41,7 @@ function messageFor(id: number, status: ApprovalStatus): string {
  */
 export const approvalRequestTool = defineTool({
   name: "kernel_approval_request",
+  job: "ask_for_approval",
   description:
     "Ask the owner to approve an action before you take it. action: a short description (one line). payload: the exact details " +
     "(a JSON object), shown to the owner as data. Returns at once with {id, status: \"pending\"}; the owner's decision arrives later " +
