@@ -37,6 +37,9 @@ import type {
   TaskBoardKind,
   TaskHistoryResponse,
   TasksResponse,
+  ThreadRenameResponse,
+  ThreadStartFreshResponse,
+  ThreadSummarizeResponse,
   TriggerFiresResponse,
 } from "../src/api/contract";
 
@@ -67,7 +70,8 @@ export interface FixtureKernelOptions {
    * Keyed `"<METHOD> <path>"` as in `CONTRACT_ROUTES`; merged over the defaults: `GET /status`, phase 6's empty
    * `GET /connectors`, `GET /connectors/github/repos` and `GET /drafts`, and phase 7's eleven read routes
    * (`GET /tasks`, `/tasks/:kind/:id`, `/playbooks/:id/runs`, `/playbooks/:id/versions`, `/schedule`,
-   * `/triggers/:id/fires`, `/memory`, `/memory/file`, `/budget/usage`, `/audit` and a canned `/settings`).
+   * `/triggers/:id/fires`, `/memory`, `/memory/file`, `/budget/usage`, `/audit` and a canned `/settings`), and
+   * phase 8 item 17's four thread routes (summarize, summary, start-fresh, rename; see `DEFAULT_ROUTES`).
    * `PUT /memory/file` has no default: the Memory screen's spec adds it.
    */
   readonly routes?: Partial<Record<RouteKey, FixtureRoute>>;
@@ -124,7 +128,22 @@ export function cannedStatus(overrides: Partial<StatusBody> = {}): StatusBody {
  * each screen adds only its own `app/e2e/fixtures/<screen>.ts`. Each body is
  * `satisfies` its contract response type, so `npm run typecheck` checks it.
  * `PUT /memory/file` has no default: item 06 adds it.
+ *
+ * Phase 8 item 17 (thread continuity): the four thread routes answer as the
+ * kernel does for a thread with no summary file yet (`kernel/src/console/threads.ts`):
+ * summarize queues (`202`), the summary is `404 no_summary` until a spec
+ * writes one, start-fresh queues a new thread (`202`, its id the queued
+ * message's), and rename echoes the owner's title (`null` clears it). They are
+ * called only by the thread controls, so no other spec sees them; a spec
+ * overrides each to script a summary or a refusal. `GET /threads/:agent` and
+ * `GET /sessions` keep no default: a spec that reads them names its own (a
+ * session's `title` comes from `app/e2e/fixtures/sessions.ts`).
  */
+/** A thread's summary file, as the kernel names it: `memory/<agent>/threads/<thread>.md`, relative to the data dir. */
+function summaryFile(params: Readonly<Record<string, string>>): string {
+  return `memory/${params.agent ?? ""}/threads/${params.thread ?? ""}.md`;
+}
+
 const DEFAULT_ROUTES: Partial<Record<RouteKey, FixtureRoute>> = {
   "GET /status": () => ({ status: 200, body: cannedStatus() }),
   "GET /connectors": () => ({ status: 200, body: { connectors: [] } satisfies ConnectorsResponse }),
@@ -172,6 +191,21 @@ const DEFAULT_ROUTES: Partial<Record<RouteKey, FixtureRoute>> = {
   "GET /audit": () => ({ status: 200, body: { events: [], next_before: null } satisfies AuditResponse }),
   "GET /connectors/github/app/upgrade": () => ({ status: 200, body: { url: null } satisfies GitHubAppUpgradeResponse }),
   "GET /repos/policy": () => ({ status: 200, body: { repos: [] } satisfies RepoPoliciesResponse }),
+  "POST /threads/:agent/:thread/summarize": ({ params }) => ({
+    status: 202,
+    body: { message_id: 9001, queue_id: 9001, thread: Number(params.thread), file: summaryFile(params) } satisfies ThreadSummarizeResponse,
+  }),
+  "GET /threads/:agent/:thread/summary": ({ params }) => ({ status: 404, body: { error: "no_summary", file: summaryFile(params) } }),
+  "POST /threads/:agent/:thread/start-fresh": ({ params }) => ({
+    status: 202,
+    body: { message_id: 9002, queue_id: 9002, thread: 9002, from: Number(params.thread), file: summaryFile(params) } satisfies ThreadStartFreshResponse,
+  }),
+  "POST /threads/:agent/:thread/rename": ({ params, body }) => {
+    const title = (body as { title?: unknown } | undefined)?.title;
+    const renamed = typeof title === "string" && title.trim() !== "";
+    // The fixture keeps no thread text to derive a title from: a cleared rename reads as the thread's id.
+    return { status: 200, body: { thread: Number(params.thread), title: renamed ? title.trim() : `Thread #${params.thread}`, renamed } satisfies ThreadRenameResponse };
+  },
   "GET /settings": () => ({
     status: 200,
     body: {

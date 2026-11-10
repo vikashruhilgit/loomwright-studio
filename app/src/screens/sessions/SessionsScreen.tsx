@@ -4,8 +4,8 @@
 //
 // - The list pane (`--list-pane-width`, 360px): "Running", "Waiting on you"
 //   (a running session with a pending approval it asked for), then "Recent".
-//   Each row: the agent's avatar, the agent, the task (`playbook #<n>` or
-//   `ad hoc session`: the contract has no task field), the running time, the
+//   Each row: the agent's avatar, the agent, the task (the kernel's session
+//   title, else `Session #<id>`: `sessionTitle`), the running time, the
 //   tokens and the kernel's status word; a `kill unconfirmed` badge for a
 //   session in `/status` `kill_unconfirmed`, the orphan reason for one in
 //   `orphaned`. The selection is a session id, never a list index.
@@ -58,9 +58,9 @@ import {
   groupSessions,
   isLive,
   rowToLine,
+  sessionTitle,
   statusLine,
   statusView,
-  taskText,
   tokensText,
 } from "./model";
 import { SessionOutputReader } from "./output";
@@ -306,7 +306,7 @@ function SessionsView({ api, registry }: { readonly api: StudioBridge; readonly 
       return {
         session,
         agent: agentText(session),
-        task: taskText(session),
+        task: sessionTitle(session),
         elapsed: elapsedText(session, now),
         tokens: tokensText(session.tokens),
         status: view,
@@ -602,7 +602,7 @@ function SessionsView({ api, registry }: { readonly api: StudioBridge; readonly 
         title={`Kill session #${dialog.session.id}?`}
         description={
           <>
-            Kills {agentText(dialog.session)}'s session ({taskText(dialog.session)}) at once: its process group and every tool it started, with no grace.
+            Kills {agentText(dialog.session)}'s session ({sessionTitle(dialog.session)}) at once: its process group and every tool it started, with no grace.
             The current step is lost. Stop is gentler: it lets the session end its turn first.
           </>
         }

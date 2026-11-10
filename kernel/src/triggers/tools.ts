@@ -46,6 +46,7 @@ function named<T>(name: string, body: () => T): T {
 
 const register = defineTool({
   name: "kernel_trigger_register",
+  job: "manage_schedules",
   description:
     "Create a time trigger you own. kind once: spec is an ISO-8601 instant WITH a time zone (2026-10-14T17:00:00+05:30), in the future. " +
     "kind cron: spec is a 5-field cron expression (minute hour day-of-month month day-of-week) and tz an IANA zone (Asia/Kolkata). " +
@@ -79,6 +80,7 @@ const register = defineTool({
 
 const remove = defineTool({
   name: "kernel_trigger_remove",
+  job: "manage_schedules",
   description: `Delete a trigger you own (not one the owner turned off). ${REPEAT}`,
   shape: { id: z.number().int().positive(), idempotency_key: idempotencyKey },
   handler: (a, ctx) =>
@@ -92,6 +94,7 @@ const remove = defineTool({
 
 const list = defineTool({
   name: "kernel_trigger_list",
+  job: "manage_schedules",
   description: "List the triggers you own, enabled and disabled, in id order, with their next fire (UTC) and last result.",
   shape: {},
   handler: (_a, ctx) => named("kernel_trigger_list", () => ({ triggers: listTriggers(ctx.store, { all: true, agent: owningAgent(ctx) }) })),

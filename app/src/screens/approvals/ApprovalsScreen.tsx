@@ -17,6 +17,10 @@
 //   (`MergeApprovalCard`) above the payload well, and offers only Allow once
 //   and Deny: no Always button, the ⇧A command is disabled for it, and
 //   `decide()` refuses `always` for it before any request.
+// - A held charter create or update whose display has the kernel's plain block
+//   (the granted kernel tools by job) is drawn by `CharterDisplay`: that block
+//   first, the raw lines beneath in "Kernel tool names, as enforced". Any
+//   other display is the escaped `<pre>` as always.
 // - Decisions: Allow once (A), Always for this playbook (⇧A) and Deny (D),
 //   each a registered command (so the ⌘K palette lists it). After a decision:
 //   the kernel's applied or refused line, then the message the agent gets
@@ -53,9 +57,10 @@ import type { ListDataItem } from "../../components/List/List";
 import { liveStoreFor, useResource } from "../../store/react";
 import type { ResourceError } from "../../store/store";
 import { alwaysRefusalFor, kernelWillLine, playbookText } from "./kernel-mirror";
+import { CharterDisplay } from "./CharterDisplay";
 import { MergeApprovalCard } from "./MergeApprovalCard";
 import { payloadText, printable } from "./printable";
-import { IN_CHAT, MERGE_ALWAYS_REFUSED, approvalLink, approvalSourceText, isMergeApproval, mergeApprovalOf } from "./subject";
+import { IN_CHAT, MERGE_ALWAYS_REFUSED, approvalLink, approvalSourceText, charterDisplayParts, isCharterApproval, isMergeApproval, mergeApprovalOf } from "./subject";
 import "./approvals.css";
 
 export { MERGE_ALWAYS_REFUSED };
@@ -755,6 +760,8 @@ function ApprovalDetail({ focusLost, approval: a, sessions, playbooks, message, 
   const willLine = kernelWillLine(a);
   const link = approvalLink(a, playbooks);
   const merge = mergeApprovalOf(a);
+  // A held charter's display in plain words first; `undefined` (any other display, or one with no plain block) keeps the `<pre>`.
+  const charter = a.display !== undefined && isCharterApproval(a) ? charterDisplayParts(a.display) : undefined;
   // A merge approval has no Always button, so no reason for one being off.
   const alwaysRefused = isMergeApproval(a) ? undefined : alwaysRefusalFor(a);
   const pending = a.status === "pending";
@@ -817,7 +824,10 @@ function ApprovalDetail({ focusLost, approval: a, sessions, playbooks, message, 
 
       {merge === undefined ? null : <MergeApprovalCard merge={merge} />}
 
-      {a.display === undefined ? null : (
+      {a.display === undefined ? null : charter !== undefined ? (
+        // Keyed by approval, so the disclosure's open state never carries over to another approval.
+        <CharterDisplay key={a.id} parts={charter} />
+      ) : (
         <div className="approvals-well">
           <div className="approvals-well-head">
             <span>Display</span>

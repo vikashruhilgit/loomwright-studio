@@ -54,6 +54,7 @@ export function loomwrightCapabilities(contract: LoomwrightContract, installPath
  */
 export const capabilitiesTool = defineTool({
   name: "kernel_loomwright_capabilities",
+  job: "general",
   description: "What the Loomwright this session runs with can do: version, contract schema, agents, commands, skills, result schemas, hook counts.",
   shape: {},
   handler: (_args, ctx) => {

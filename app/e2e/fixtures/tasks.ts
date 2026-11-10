@@ -236,12 +236,16 @@ export function tasksRoutes(kernel: TasksKernel): Partial<Record<RouteKey, Fixtu
 
 // ---- the mockup's histories and logs ----------------------------------------------------------------------
 
-/** The history and log of the mockup's `t9`, `r18` and `s44` cards: sessions 41, 42 and 44, running. */
+/**
+ * The history and log of the mockup's `t9`, `r18` and `s44` cards: sessions 41, 42 and 44, running. Each carries the
+ * title the kernel derives for it (`kernel/src/brain/titles.ts`): a task's session its task's title, a playbook run's
+ * session its playbook's name, a chat session its thread's first line; session 40 has none of those (`Session #40`).
+ */
 export function runningSessions(): SessionSummary[] {
   return [
-    summary(41, { agent: "mason", status: "running", started: ago(12), ended: null, tokens: 5310, cwd: "/Users/owner/worktrees/studio-sandbox" }),
-    summary(42, { agent: "ada", status: "running", playbook: 2, started: ago(6), ended: null, tokens: 4210, cwd: "/Users/owner/worktrees/changelog" }),
-    summary(44, { agent: "wright", status: "running", model: "opus", started: ago(3), ended: null, tokens: 1800 }),
+    summary(41, { agent: "mason", status: "running", started: ago(12), ended: null, tokens: 5310, cwd: "/Users/owner/worktrees/studio-sandbox", title: "Review PR #3 on studio-sandbox" }),
+    summary(42, { agent: "ada", status: "running", playbook: 2, started: ago(6), ended: null, tokens: 4210, cwd: "/Users/owner/worktrees/changelog", title: "Weekly changelog draft" }),
+    summary(44, { agent: "wright", status: "running", model: "opus", started: ago(3), ended: null, tokens: 1800, title: "Why is the studio-sandbox build red?" }),
     summary(40, { agent: "mason", status: "stopped", started: ago(111), ended: ago(102), tokens: 3900 }),
   ];
 }

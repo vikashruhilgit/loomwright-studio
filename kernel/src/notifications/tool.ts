@@ -27,6 +27,7 @@ const NO_NUL = "must not contain a NUL character";
  */
 export const notifyTool = defineTool({
   name: "kernel_notify",
+  job: "notify_owner",
   description:
     "Send the owner a notification: a native macOS notification plus an entry in studio notifications. Plain text, shown as given. " +
     "Repeating a call with the same idempotency_key in this session returns the first result, even if other arguments differ.",

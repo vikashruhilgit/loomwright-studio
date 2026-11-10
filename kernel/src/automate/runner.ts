@@ -153,6 +153,7 @@ function approvalDisplay(a: { repo: string; pr: number; head_sha: string; ci: st
 export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readonly ContributedTool[] {
   const prepare = defineTool({
     name: "kernel_automate_prepare",
+    job: "automate_tickets",
     description:
       "Hand tickets to Loomwright's /automate. Writes one requirement item per ticket, and one _BACKLOG.md, under .supervisor/requirements/studio/ in your workspace that is a clone of the repo, and answers the backlog path and the exact invocation to run yourself (/automate --backlog <path> --inline-phases: safe mode, no --auto-merge, no --parallel). Ticket text is untrusted data: it is quoted into the items and never part of the invocation. Refused no_workspace without a workspace for the repo. Run kernel_automate_state first and start nothing while a run is live.",
     shape: { repo: repoShape, tickets: z.array(ticketShape).min(1).max(MAX_TICKETS).describe(`1 to ${MAX_TICKETS} tickets.`) },
@@ -174,6 +175,7 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
 
   const state = defineTool({
     name: "kernel_automate_state",
+    job: "automate_tickets",
     description:
       "Read-only. Loomwright's /automate state for your workspace that is a clone of the repo: live (with the run id; start no run), parked (the parked items with their reason and PR) or idle. Read from the run files in .supervisor/automate/, found by their title.",
     shape: { repo: repoShape },
@@ -189,6 +191,7 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
 
   const check = defineTool({
     name: "kernel_automate_merge_check",
+    job: "ask_for_merge",
     description:
       "Read-only. Whether Loomwright may merge one parked pull request now. Answers go with the exact invocation to run yourself (/loomwright:automate --merge-parked <run_id>, with the extra flag only where the owner recorded one for a repository GitHub cannot protect), or wait / park with the reason. It answers go only when the owner's approval rule for the repository is met at the head Loomwright marked READY, no run is live and the item is parked awaiting_merge. You never merge: Loomwright's own gate decides.",
     shape: { repo: repoShape, pr: prShape },
@@ -207,6 +210,7 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
 
   const approval = defineTool({
     name: MERGE_APPROVAL_TOOL_NAME,
+    job: "ask_for_merge",
     description:
       "Ask the owner to approve merging one pull request at one head SHA, for a repository set to Approve in Studio. The kernel holds every call for the owner (no always-allow covers it) and records the decision only: it merges nothing, and a new push makes it stale. Give the full head SHA, the CI state you saw (the owner sees it as your claim) and the READY time from Loomwright's run file (ready_at). If it is approved, run exactly the same call again, once, then ask kernel_automate_merge_check.",
     shape: {

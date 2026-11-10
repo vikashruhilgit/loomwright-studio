@@ -2,6 +2,8 @@
 
 This is the polish-gate evidence for the Sessions screen: every session the kernel lists, its output streaming, and Stop (⌘.), Kill and Abandon, each showing the status the kernel answered. Every screenshot comes from the built app running against the fixture kernel, in light and dark mode. They are evidence for the owner's review, not visual-regression baselines: the spec never compares pixels.
 
+> **Superseded since phase 8 item 17c:** a row's task is no longer `playbook #<n>` / `ad hoc session`; it is the kernel's session title (fallback `Session #<id>`), see [thread continuity's evidence](../../phase-8-polish/chat-threads/README.md). The screenshots and text below describe the screen as it was then and were not regenerated.
+
 - Screen: [`SessionsScreen.tsx`](../../../../app/src/screens/sessions/SessionsScreen.tsx) (discovered through [`index.tsx`](../../../../app/src/screens/sessions/index.tsx)), [`sessions.css`](../../../../app/src/screens/sessions/sessions.css), the model (order, status words, row → log line) [`model.ts`](../../../../app/src/screens/sessions/model.ts), the paged output reader [`output.ts`](../../../../app/src/screens/sessions/output.ts)
 - Unit tests: [`SessionsScreen.test.tsx`](../../../../app/src/screens/sessions/SessionsScreen.test.tsx), [`model.test.ts`](../../../../app/src/screens/sessions/model.test.ts)
 - e2e: [`sessions.spec.ts`](../../../../app/e2e/sessions.spec.ts) over the fixture [`fixtures/sessions.ts`](../../../../app/e2e/fixtures/sessions.ts)

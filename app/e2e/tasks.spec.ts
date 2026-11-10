@@ -44,6 +44,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import type { ElectronApplication, Locator, Page, TestInfo } from "@playwright/test";
+import { contrastRows } from "./contrast";
 import { launchApp } from "./electron-harness";
 import { appEnv, startFixtureKernel, unreachableDataDir } from "./fixture-kernel";
 import type { FixtureKernel, FixtureRoute } from "./fixture-kernel";
@@ -274,7 +275,14 @@ test("AC4: four columns in the mockup's order; every state is the kernel's word;
 
   await expect(page.getByRole("button", { name: "Task 12: Pick the repos Mason reviews first, waiting" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Playbook run 18: Weekly changelog draft, running" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Session 39: ada · ad hoc session, failed:auth" })).toBeVisible();
+  // AC8 (phase 8 item 17c): a session card names the kernel's title from `GET /sessions`, matched by id; one the list
+  // does not name (39 is not in it) reads the kernel's own fallback, `Session #<id>`. Never `ad hoc session` / `playbook #N`.
+  await expect(page.getByRole("button", { name: "Session 44: Why is the studio-sandbox build red?, running" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Session 40: Session #40, stopped" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Session 39: Session #39, failed:auth" })).toBeVisible();
+  const boardText = await page.getByTestId("tasks-board").innerText();
+  expect(boardText).not.toMatch(/ad hoc session/);
+  expect(boardText).not.toMatch(/playbook #\d+/);
 
   const tones = await page.locator("[data-card-key]").evaluateAll((els) =>
     els.map((el) => [el.getAttribute("data-card-key"), el.querySelector(".badge")?.getAttribute("data-tone"), el.querySelector(".badge")?.textContent] as const),
@@ -449,6 +457,8 @@ test("AC6: Kill asks first: Cancel sends nothing; confirming sends one POST /ses
   const page = await openWith(started);
   await card(page, "session:44").click();
   await expect(page.getByTestId("task-log-status")).toHaveText("running");
+  // The open session card is headed by its kernel title (AC8).
+  await expect(page.getByTestId("task-detail").getByRole("heading", { level: 2, name: "Why is the studio-sandbox build red?" })).toBeVisible();
   await page.getByRole("button", { name: "Kill", exact: true }).click();
   const confirm = page.getByRole("alertdialog");
   await expect(confirm).toContainText("Kill session #44?");
@@ -767,39 +777,6 @@ test("AC9: an event refetches the board and moves the card without a reload; unc
   await expect.poll(() => boardReads(started)).toBe(base + 2);
 });
 
-/** The WCAG contrast of every element `selector` matches, text on what it sits on, in the page's current theme. */
-async function contrastRows(page: Page, selector: string): Promise<{ readonly selector: string; readonly text: string; readonly ratio: number }[]> {
-  return page.evaluate((selector) => {
-    type Rgba = readonly [number, number, number, number];
-    const parse = (css: string): Rgba => {
-      const n = (css.match(/[-\d.]+(?:e-?\d+)?/g) ?? []).map(Number);
-      return css.startsWith("color(") ? [(n[0] ?? 0) * 255, (n[1] ?? 0) * 255, (n[2] ?? 0) * 255, n[3] ?? 1] : [n[0] ?? 0, n[1] ?? 0, n[2] ?? 0, n[3] ?? 1];
-    };
-    const over = (top: Rgba, bottom: readonly [number, number, number]): [number, number, number] => [0, 1, 2].map((i) => (top[i] as number) * top[3] + (bottom[i] as number) * (1 - top[3])) as [number, number, number];
-    const channel = (v: number): number => {
-      const c = v / 255;
-      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-    };
-    const luminance = ([r, g, b]: readonly [number, number, number]): number => 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
-    const backdrop = (el: Element): [number, number, number] => {
-      const layers: Rgba[] = [];
-      for (let e: Element | null = el; e !== null; e = e.parentElement) {
-        const bg = parse(getComputedStyle(e).backgroundColor);
-        if (bg[3] > 0) layers.push(bg);
-        if (bg[3] >= 1) break;
-      }
-      let base: [number, number, number] = [255, 255, 255];
-      for (let i = layers.length - 1; i >= 0; i -= 1) base = over(layers[i] as Rgba, base);
-      return base;
-    };
-    return [...document.querySelectorAll(selector)].map((el) => {
-      const bg = backdrop(el);
-      const fg = over(parse(getComputedStyle(el).color), bg);
-      const [hi, lo] = [luminance(fg), luminance(bg)].sort((a, b) => b - a) as [number, number];
-      return { selector: el.className, text: (el.textContent ?? "").slice(0, 40), ratio: (hi + 0.05) / (lo + 0.05) };
-    });
-  }, selector);
-}
 
 test("AC10: every card has an accessible name; every column is a labelled region; the log is a labelled role=log; text is at least 4.5:1 in both themes", async () => {
   const { fixture: started } = await startKernel(reviewInit(waitingItems()));

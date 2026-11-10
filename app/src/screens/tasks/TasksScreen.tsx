@@ -4,7 +4,10 @@
 //
 // - The cards are the kernel's rows (`GET /tasks`): tasks, playbook runs and the
 //   sessions no task or run owns. `./model.ts` holds the one state -> column table;
-//   a badge is green only for what the kernel recorded as done.
+//   a badge is green only for what the kernel recorded as done. A session card's
+//   title is the kernel's (phase 8 item 17): `GET /tasks` sends none for it, so the
+//   store's shared `sessions` resource (`GET /sessions`) is matched by id, else
+//   `Session #<id>`.
 // - Live: the feed's events (every kind but `session_output_appended`) refetch the
 //   board, so a card moves without a reload. Cards are keyed `kind:id`, column
 //   order is fixed, and nothing else re-renders wholesale, so an unchanged card
@@ -40,7 +43,7 @@ import { useLiveStore, useResource } from "../../store/react";
 import { printable } from "../approvals/printable";
 import { TaskDetail } from "./TaskDetail";
 import { ticketColumnOf, waitingApprovalOf } from "./TicketPrCard";
-import { KIND_LABEL, agentText, buildBoard, cardAgent, cardOrder, refetchMark } from "./model";
+import { KIND_LABEL, agentText, buildBoard, cardAgent, cardOrder, refetchMark, sessionTitles } from "./model";
 import type { Board, BoardCard } from "./model";
 import { getLastBoard, setLastBoard } from "./lastKnown";
 import { setSubtitleLine } from "./subtitle";
@@ -123,6 +126,10 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
   // The store's one `approvals` resource (as the Approvals screen reads it): a ticket's PR waits on the pending merge approval that names it.
   const approvalsResource = useResource("approvals", api);
   const approvals = approvalsResource?.data?.approvals;
+  // The store's one `sessions` resource (as the Sessions screen reads it): a session card's title, matched by id.
+  const sessionsResource = useResource("sessions", api);
+  const sessionList = sessionsResource?.data?.sessions;
+  const titles = useMemo(() => sessionTitles(sessionList), [sessionList]);
   const [now, touchNow] = useNow();
 
   // A remount starts from the last board this window read (`./lastKnown.ts`); the first read still replaces it.
@@ -343,6 +350,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
           avatar={avatarAgent(cardAgent(openItem), roster)}
           avatarState={avatarState(openItem, column)}
           approvalId={openItem.ticket_pr === null ? undefined : waitingApprovalOf(openItem.ticket_pr, approvals)}
+          titles={titles}
           onBack={closeCard}
           onOpenCreator={creator}
           onKillRequest={requestKill}
@@ -388,7 +396,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
           Showing the newest {TASKS_LIMIT} cards; older ones are not shown.
         </p>
       )}
-      <BoardView board={board} roster={roster} approvals={approvals} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
+      <BoardView board={board} roster={roster} approvals={approvals} titles={titles} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
     </TasksFrame>
   );
 }

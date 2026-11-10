@@ -24,8 +24,13 @@
 //   approval is written; otherwise the call is held with a display for
 //   `studio approvals`. The display's enforced lines (`never`, tools, Bash
 //   prefixes, limits, workspaces) are generated here from the PARSED charter,
-//   never copied from its prose, and come first; a call whose enforced lines
-//   (create) or whose whole display (update: the field lines and the enforced
+//   never copied from its prose, and come first, after only the granted
+//   kernel tools grouped by job in plain words (`jobDisplayLines`, from the
+//   kernel's tool catalogue on the context; the raw names stay on the
+//   enforced line; each job's tools' purpose lines when they fit, else the job
+//   labels alone, so the job lines never grow with the number of granted
+//   tools); a call whose head (create) or whose whole display (update:
+//   the job lines, the field lines and the enforced
 //   line) would not fit in `MAX_APPROVAL_DISPLAY` is refused `invalid_input`,
 //   so the 4,000-character cut never hides them. An update whose overflow is
 //   the member's current state (no request changing the same fields would
@@ -49,7 +54,7 @@
 // stored and shown, never followed; the CLI escapes every display line.
 //
 // The `studio` CLI loads this module through `./index.ts`, so it imports only
-// types, zod, `node:*`, the feature seam, `../loop/internal.js`,
+// types, zod, `node:*`, the feature seam and its tool catalogue, `../loop/internal.js`,
 // `../brain/settings.js`, `../approvals/store.js` (a constant),
 // `../sessions/policy.js` (`NEVER_CATEGORIES`) and this
 // feature's own modules: never the Agent SDK,
@@ -61,6 +66,8 @@ import { z } from "zod";
 import { MAX_APPROVAL_DISPLAY } from "../approvals/store.js";
 import type { AppliedApproval, ApprovalApplyOutcome } from "../approvals/store.js";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
+import { jobDisplayLines } from "../features/catalogue.js";
+import type { ToolCatalogue } from "../features/catalogue.js";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedToolContext } from "../features/contribution.js";
 import { NO_REF, appendEvent } from "../loop/internal.js";
@@ -203,16 +210,34 @@ function asLines(text: string): string {
   return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
-/** A create display's head: who, the enforced line, the limits and the workspaces (what the cut must never hide). */
-function createHead(charter: Charter): string {
+/** A create head with the job lines in full (`purposes`) or in their compact, label-only form. */
+function createHeadWith(charter: Charter, catalogue: ToolCatalogue | undefined, purposes: boolean): string {
   const tp = charter.tool_policy;
   return [
     `Create crew member ${charter.id} (${JSON.stringify(charter.display_name)}, ${charter.avatar.shape} ${charter.avatar.hue}), proposed by Wright`,
+    ...jobDisplayLines(tp.allowedTools, catalogue, purposes),
     enforcedLine(tp.never, tp.allowedTools, tp.allowedBashPrefixes, charter.connectors),
     limitsLine(charter.limits),
     `workspaces: ${listText(charter.workspaces)}`,
   ].join("\n");
 }
+
+/**
+ * A create display's head: who, the granted kernel tools grouped by job
+ * (`jobDisplayLines`: none when no kernel tool is granted, one plain note when
+ * `catalogue` is undefined), the enforced line, the limits and the workspaces
+ * (what the cut must never hide). The job lines carry each tool's purpose line
+ * when that head fits `MAX_APPROVAL_DISPLAY`; otherwise they are the job labels
+ * alone (still ahead of every raw name), so the head grows with the job
+ * vocabulary, never with the number of granted tools.
+ */
+function createHead(charter: Charter, catalogue?: ToolCatalogue): string {
+  const full = createHeadWith(charter, catalogue, true);
+  return full.length <= MAX_APPROVAL_DISPLAY ? full : createHeadWith(charter, catalogue, false);
+}
+
+/** What the create hold's fit refusal names: the head the owner must see whole. */
+const CREATE_HEAD_TEXT = "the display's head (who, the job lines, the enforced, limits and workspaces lines)";
 
 /**
  * `invalid_input` when `text` (the part of a display the owner must see
@@ -225,14 +250,15 @@ function displayFitRefusal(what: string, text: string): Refused | undefined {
 }
 
 /**
- * What `studio approvals` shows for a create, in this order: who, the
- * enforced line, the limits, the workspaces, then the settings file and
- * `role.md` exactly as the kernel would write them (the cut may hide the
+ * What `studio approvals` shows for a create, in this order: who, the granted
+ * kernel tools by job (`catalogue`'s grouping, ahead of any `mcp__kernel__`
+ * name), the enforced line, the limits, the workspaces, then the settings file
+ * and `role.md` exactly as the kernel would write them (the cut may hide the
  * files' tail, never the head: the hold refuses a head that does not fit).
  */
-export function createDisplay(charter: Charter): string {
+export function createDisplay(charter: Charter, catalogue?: ToolCatalogue): string {
   return [
-    createHead(charter),
+    createHead(charter, catalogue),
     `config/agents/${charter.id}.json:`,
     asLines(renderAgentSettingsJson(charter)),
     `memory/${charter.id}/role.md:`,
@@ -258,9 +284,9 @@ function createBeforeHold(a: CreateArgs, ctx: ContributedToolContext): HeldToolV
   if (getAgent(ctx.store, checked.charter.id) !== undefined) {
     return holdRefusal(AGENT_CREATE_TOOL_NAME, refused("id_taken", `a crew member with id ${checked.charter.id} exists, active or off (an id is never reused)`));
   }
-  const tooLong = displayFitRefusal("the display's enforced, limits and workspaces lines", createHead(checked.charter));
+  const tooLong = displayFitRefusal(CREATE_HEAD_TEXT, createHead(checked.charter, ctx.catalogue));
   if (tooLong !== undefined) return holdRefusal(AGENT_CREATE_TOOL_NAME, tooLong);
-  return { display: createDisplay(checked.charter) };
+  return { display: createDisplay(checked.charter, ctx.catalogue) };
 }
 
 /** `createAgent`'s refusal codes as this part's tokens. */
@@ -302,6 +328,7 @@ function appliedByKernel(tool: string): never {
 
 const createTool = defineTool({
   name: AGENT_CREATE_TOOL_NAME,
+  job: "manage_crew",
   description:
     "Ask the owner to create a crew member from a charter you draft from the owner's words: {id, display_name, avatar: {shape, hue}, persona, duties, boundaries, model, effort?, permission_mode, tool_policy: {allowedTools, allowedBashPrefixes, never}, limits?: {tokens_per_day?, sessions_at_once?, delegation_depth?}, workspaces, connectors?: [\"github\"]}. " +
     "When the owner asks for a crew member, draft it straight into the held approval with this call and refine it with an update (kernel_agent_update, once the member exists); never leave a proposal only in chat text. " +
@@ -380,6 +407,8 @@ interface Merged {
   readonly avatar: { readonly shape: string; readonly hue: string };
   /** The validated result: what the kernel would enforce. */
   readonly charter: Charter;
+  /** The member's tool list before the change (its settings file's `tool_policy.allowedTools`, strings only): what the display's job lines mark additions against. */
+  readonly heldTools: readonly string[];
 }
 
 /** Absent and `null` read as one value (not set), so clearing an unset value changes nothing. */
@@ -513,7 +542,10 @@ function mergeUpdate(store: Store, row: AgentRow, file: string, bytes: Buffer, c
   if (!checked.ok) return refused("invalid_input", `the result would not be a valid charter: ${checked.message}`);
   const text = `${JSON.stringify(next, null, 2)}\n`;
   if (Buffer.byteLength(text) > MAX_SETTINGS_BYTES) return refused("invalid_input", `the settings file would be over ${MAX_SETTINGS_BYTES} bytes`);
-  return { row, file, bytes, changes: found, fileChanged, text, displayName, avatar, charter: checked.charter };
+  const heldPolicy = isBodyObject(current.tool_policy) ? current.tool_policy.allowedTools : undefined;
+  // A list that is not one (a hand-edited file) holds nothing: every granted kernel tool shows as added.
+  const heldTools = Array.isArray(heldPolicy) ? heldPolicy.filter((t): t is string => typeof t === "string") : [];
+  return { row, file, bytes, changes: found, fileChanged, text, displayName, avatar, charter: checked.charter, heldTools };
 }
 
 /** The update `a` asks for, at hold: the member, its file, the merge, the hash, and a change that changes something. */
@@ -540,14 +572,70 @@ function updateHead(m: Merged): string {
   return `Update crew member ${m.row.id} (${JSON.stringify(m.row.display_name)}), settings sha256 ${m.sha256.slice(0, 12)}, proposed by Wright`;
 }
 
-/** What `studio approvals` shows for an update: who and which file, one line per changed field, then the result's enforced line. */
-export function updateDisplay(m: Merged): string {
+/**
+ * What `studio approvals` shows for an update: who and which file, the
+ * result's granted kernel tools by job (`jobDisplayLines`, ahead of the field
+ * lines, which may name `mcp__kernel__` tools), one line per changed field,
+ * then the result's enforced line. The job lines mark what the update adds
+ * against the member's current tools (`Merged.heldTools`): a job line ends
+ * ` (added)` when the member held no tool of that job, and every other job
+ * line is one it keeps; a new tool under a kept job is marked on its purpose
+ * line in the full form, and on the job line (` (gains tools)`) in the
+ * label-only forms. The first of these forms whose whole
+ * display fits `MAX_APPROVAL_DISPLAY` (else the last, which the hold refuses):
+ *
+ * 1. each job's tools' purpose lines, and every field line as
+ *    `<field>: <old JSON> → <new JSON>`;
+ * 2. the job labels alone (still ahead of every raw name);
+ * 3. the job labels alone, and a `tool_policy` change's new value as
+ *    `POLICY_NEW_ON_ENFORCED` (it is exactly the enforced line's tools and
+ *    Bash prefixes, shown whole beneath).
+ *
+ * So the job lines grow with the job vocabulary, never with the number of
+ * granted tools, and a tool list is shown at most twice (the old value and
+ * the enforced line), never three times: a fit's `proposed_update` (every
+ * current tool plus the missing ones) for a member with many kernel tools is
+ * held whenever the old list and the result's enforced line leave room.
+ */
+export function updateDisplay(m: Merged, catalogue?: ToolCatalogue): string {
+  let display = "";
+  for (const form of UPDATE_DISPLAY_FORMS) {
+    display = updateDisplayWith(m, catalogue, form);
+    if (display.length <= MAX_APPROVAL_DISPLAY) return display;
+  }
+  return display;
+}
+
+/** An update display's form: full purpose lines or labels alone; a `tool_policy` change's new value as JSON or as `POLICY_NEW_ON_ENFORCED`. */
+interface UpdateDisplayForm {
+  readonly purposes: boolean;
+  readonly policyOnEnforced: boolean;
+}
+
+/** `updateDisplay`'s forms, in the order it tries them (each no longer than the one before). */
+const UPDATE_DISPLAY_FORMS: readonly UpdateDisplayForm[] = Object.freeze([
+  { purposes: true, policyOnEnforced: false },
+  { purposes: false, policyOnEnforced: false },
+  { purposes: false, policyOnEnforced: true },
+]);
+
+function updateDisplayWith(m: Merged, catalogue: ToolCatalogue | undefined, form: UpdateDisplayForm): string {
   const tp = m.charter.tool_policy;
   return [
     updateHead(m),
-    ...m.changes.map((c) => `${c.field}: ${shownValue(c.old)} → ${shownValue(c.new)}`),
+    ...jobDisplayLines(tp.allowedTools, catalogue, form.purposes, m.heldTools),
+    ...m.changes.map((c) => fieldLine(c, form.policyOnEnforced)),
     enforcedLine(tp.never, tp.allowedTools, tp.allowedBashPrefixes),
   ].join("\n");
+}
+
+/** What a `tool_policy` field line shows for its new value in `updateDisplay`'s last form: the new value is exactly the enforced line's tools and Bash prefixes. */
+export const POLICY_NEW_ON_ENFORCED = "as on the enforced line";
+
+/** A changed field's line: `<field>: <old JSON> → <new JSON>`, or (`policyOnEnforced`) a `tool_policy` change's new value as `POLICY_NEW_ON_ENFORCED`. */
+function fieldLine(c: FieldChange, policyOnEnforced: boolean): string {
+  const shown = policyOnEnforced && c.field === "tool_policy" ? POLICY_NEW_ON_ENFORCED : shownValue(c.new);
+  return `${c.field}: ${shownValue(c.old)} → ${shown}`;
 }
 
 /** The member of `values` whose `shownValue` is shortest (the first of the shortest). */
@@ -577,25 +665,40 @@ function shortestNewShown(field: string): string {
 
 /**
  * A lower bound on the display of any change to the same fields of this
- * member: no such change has a shorter display. The head; each field line
+ * member: no such change has a shorter display. The head; the compact
+ * (label-only) job lines of the kernel tools it keeps, the shortest form any
+ * display of them takes (none when the change sets `tool_policy`, whose
+ * shortest value grants none); each field line
  * with its old value (shown whatever the new one is) and the field's shortest
  * valid new value (`SHORTEST_NEW`, rendered by `shownValue` as the display
  * renders it); the enforced line with those same shortest values (empty
  * lists) for what the change sets (`never`, `tool_policy`) and the member's
  * current values for the rest (a field the change leaves alone is shown as
- * it is). For each field the bound is a real request's display (the field
- * set to its shortest value), unless that value is the current one (the
- * request would change nothing) or the result fails `validateCharter`.
+ * it is). For each field but `tool_policy` the bound is a real request's
+ * display (the field set to its shortest value), unless that value is the
+ * current one (the request would change nothing) or the result fails
+ * `validateCharter`. A `tool_policy` change is bounded by `updateDisplay`'s
+ * shortest form (its new value as `POLICY_NEW_ON_ENFORCED`, which no longer
+ * form undercuts), with the enforced line's tools and Bash prefixes each a
+ * one-character entry (`x`, `"x"`: no shorter than any list, `none`
+ * included), so the bound holds for every request and every form. The
+ * ` (added)` and ` (gains tools)` marks never shorten a display, so they are left out: a change
+ * that leaves `tool_policy` alone adds no tool (its job lines carry no mark),
+ * and one that sets it is bounded with no job line at all.
  */
-function updateFloor(m: Merged): string {
+function updateFloor(m: Merged, catalogue?: ToolCatalogue): string {
   const tp = m.charter.tool_policy;
   const sets = new Set(m.changes.map((c) => c.field));
   return [
     updateHead(m),
-    ...m.changes.map((c) => `${c.field}: ${shownValue(c.old)} → ${shortestNewShown(c.field)}`),
-    enforcedLine(sets.has("never") ? [] : tp.never, sets.has("tool_policy") ? [] : tp.allowedTools, sets.has("tool_policy") ? [] : tp.allowedBashPrefixes),
+    ...jobDisplayLines(sets.has("tool_policy") ? [] : tp.allowedTools, catalogue, false),
+    ...m.changes.map((c) => (c.field === "tool_policy" ? fieldLine(c, true) : `${c.field}: ${shownValue(c.old)} → ${shortestNewShown(c.field)}`)),
+    enforcedLine(sets.has("never") ? [] : tp.never, sets.has("tool_policy") ? ["x"] : tp.allowedTools, sets.has("tool_policy") ? ["x"] : tp.allowedBashPrefixes),
   ].join("\n");
 }
+
+/** What the update hold's fit refusal names: the display the owner must see whole. */
+const UPDATE_DISPLAY_TEXT = "the display (its job lines, field lines and enforced line)";
 
 /**
  * `invalid_input` when the update's display would not fit `MAX_APPROVAL_DISPLAY`
@@ -606,13 +709,13 @@ function updateFloor(m: Merged): string {
  * and Wright can change the member once they fit. Otherwise a request to the
  * same fields with shorter new values may fit: ask for less.
  */
-function updateFitRefusal(m: Merged, display: string): Refused | undefined {
+function updateFitRefusal(m: Merged, display: string, catalogue?: ToolCatalogue): Refused | undefined {
   if (display.length <= MAX_APPROVAL_DISPLAY) return undefined;
-  const floor = updateFloor(m).length;
-  if (floor <= MAX_APPROVAL_DISPLAY) return displayFitRefusal("the display (its field lines and enforced line)", display);
+  const floor = updateFloor(m, catalogue).length;
+  if (floor <= MAX_APPROVAL_DISPLAY) return displayFitRefusal(UPDATE_DISPLAY_TEXT, display);
   return refused(
     "invalid_input",
-    `the display (its field lines and enforced line) would be ${display.length} characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown, ` +
+    `${UPDATE_DISPLAY_TEXT} would be ${display.length} characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown, ` +
       `and the member's current settings alone (the changed fields' old values, their shortest new values and the enforced line) would be ${floor}, so no request to these fields fits; ` +
       `the owner changes config/agents/${m.row.id}.json by hand (or with \`studio agents set\` for a scalar field, \`studio agents rename\` for the display name), and Wright can change the member once its settings fit`,
   );
@@ -623,9 +726,9 @@ function updateBeforeHold(a: UpdateArgs, ctx: ContributedToolContext): HeldToolV
   if (refusal !== undefined) return holdRefusal(AGENT_UPDATE_TOOL_NAME, refusal);
   const update = updateOf(ctx.store, a);
   if (isRefused(update)) return holdRefusal(AGENT_UPDATE_TOOL_NAME, update);
-  const display = updateDisplay(update);
-  // The field lines and the enforced line are all the owner must see: the whole display fits, or nothing is held.
-  const tooLong = updateFitRefusal(update, display);
+  const display = updateDisplay(update, ctx.catalogue);
+  // The job lines, the field lines and the enforced line are all the owner must see: the whole display fits, or nothing is held.
+  const tooLong = updateFitRefusal(update, display, ctx.catalogue);
   return tooLong === undefined ? { display } : holdRefusal(AGENT_UPDATE_TOOL_NAME, tooLong);
 }
 
@@ -739,6 +842,7 @@ function updateOnApproval(a: UpdateArgs, ctx: { store: Store; now: () => Date; a
 
 const updateTool = defineTool({
   name: AGENT_UPDATE_TOOL_NAME,
+  job: "manage_crew",
   description:
     "Ask the owner to change a crew member's settings (or its display name or avatar). Call kernel_agent_list first: expected_sha256 is the member's sha256 from it, and a settings file that changed since (the owner's edit) is refused. " +
     "changes names only what changes: model, effort (null clears), permission_mode, tool_policy {allowedTools, allowedBashPrefixes}, never, limits {tokens_per_day?, sessions_at_once?, delegation_depth?} (each null clears: no limit), workspaces, display_name, avatar {shape, hue}. Every other key in the file keeps its value. " +
@@ -844,6 +948,7 @@ export function charterList(store: Store): { agents: CharterListEntry[] } {
 
 const listTool = defineTool({
   name: AGENT_LIST_TOOL_NAME,
+  job: "manage_crew",
   description:
     "List the crew: Wright first, then every crew member (active and off) with its display name, avatar, status, who created it, its settings file as JSON (null when unreadable), the settings reader's error (null when it reads ok) and sha256, the hash of the settings file's bytes that kernel_agent_update's expected_sha256 must equal. Reads only.",
   shape: {},

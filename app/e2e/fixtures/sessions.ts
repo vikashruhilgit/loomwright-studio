@@ -79,8 +79,9 @@ export function ago(minutes: number): string {
   return new Date(Date.now() - minutes * MINUTE).toISOString();
 }
 
+/** A `GET /sessions` row. `title` defaults to the kernel's own fallback for a session with nothing to name it by (`Session #<id>`, `kernel/src/brain/titles.ts`); a spec names a playbook or chat session through `overrides`. */
 export function summary(id: number, overrides: Partial<SessionSummary> = {}): SessionSummary {
-  return { id, agent: "ada", status: "completed", model: "sonnet", started: ago(60), ended: ago(50), tokens: 9020, cwd: "/Users/owner/src/loomwright", playbook: null, ...overrides };
+  return { id, agent: "ada", status: "completed", model: "sonnet", started: ago(60), ended: ago(50), tokens: 9020, cwd: "/Users/owner/src/loomwright", playbook: null, title: `Session #${id}`, ...overrides };
 }
 
 /** A session still `starting` (no `system/init` yet): no end, no token count, started `minutesAgo`. */

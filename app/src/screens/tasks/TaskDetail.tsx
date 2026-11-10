@@ -22,9 +22,10 @@ import { Button } from "../../components/Button/Button";
 import { StreamingLog } from "../../components/StreamingLog/StreamingLog";
 import { Crumb } from "../../shell/Crumb";
 import { printable } from "../approvals/printable";
-import { elapsedText, statusLine, statusView, taskText } from "../sessions/model";
+import { elapsedText, statusLine, statusView } from "../sessions/model";
 import { historyLine } from "./history";
-import { KIND_LABEL, agentText, cardTitle, factsOf, toneOf } from "./model";
+import { KIND_LABEL, agentText, cardTitle, factsOf, sessionTitles, toneOf } from "./model";
+import type { SessionTitles } from "./model";
 import { OpenApprovalButton, TicketWaitingBand, ticketFacts } from "./TicketPrCard";
 import type { OpenCard } from "./useOpenCard";
 
@@ -39,6 +40,8 @@ export interface TaskDetailProps {
   readonly avatarState: AvatarState;
   /** The pending merge approval a parked ticket PR waits on (`waitingApprovalOf`), if any. */
   readonly approvalId?: number | undefined;
+  /** The kernel's session titles by id from `GET /sessions` (the screen's); this card's history `sessions` win over it. */
+  readonly titles?: SessionTitles | undefined;
   readonly onBack: () => void;
   /** Opens the creator session's own card; `undefined` when it is not on the board (or the kernel is away): the fact is plain text. */
   readonly onOpenCreator?: (() => void) | undefined;
@@ -86,7 +89,7 @@ function ApprovalRow({ approval, link }: { readonly approval: Approval; readonly
   );
 }
 
-export function TaskDetail({ item, card, now, offline, avatar, avatarState, approvalId, onBack, onOpenCreator, onKillRequest }: TaskDetailProps) {
+export function TaskDetail({ item, card, now, offline, avatar, avatarState, approvalId, titles, onBack, onOpenCreator, onKillRequest }: TaskDetailProps) {
   const { history, session, sessionId } = card;
   const regionRef = useRef<HTMLElement>(null);
   // The card the owner opened has left the DOM: focus lands here, so Tab reaches Back first.
@@ -94,7 +97,11 @@ export function TaskDetail({ item, card, now, offline, avatar, avatarState, appr
     regionRef.current?.focus();
   }, []);
 
-  const title = cardTitle(item);
+  // A session card's title (also the log's task): the kernel's, from this card's history (`GET /tasks/:kind/:id` carries
+  // each `SessionSummary` with its title) over the screen's `GET /sessions` list; else `Session #<id>` (`cardTitle`).
+  const known = new Map(titles ?? []);
+  for (const [id, t] of sessionTitles(history?.sessions)) known.set(id, t);
+  const title = cardTitle(item, known);
   const ticket = item.ticket_pr;
   const plainFacts = factsOf(item, now, session, history?.runs.find((r) => item.kind === "playbook_run" && r.id === item.id));
   // A ticket card's State is its PR's (the kernel's `pr_tracks` row), not the task row's word.
@@ -266,7 +273,7 @@ export function TaskDetail({ item, card, now, offline, avatar, avatarState, appr
               }
               statusLabel={header}
               agent={agentText(session?.agent ?? item.agent)}
-              task={item.kind === "session" ? taskText({ playbook: item.playbook }) : title}
+              task={title}
               elapsed={elapsedText(logSummary, now)}
               tokens={tokens ?? 0}
               lines={card.lines}
