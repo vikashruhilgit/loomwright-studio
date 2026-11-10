@@ -6,6 +6,9 @@
 // composer. `#/chat?playbook=<id>` (an approval's Open playbook link) opens
 // Wright's thread scrolled to that playbook's card, or says the card is not in
 // what is loaded. Every kernel string is a React text child only.
+// Phase 8 item 17c: thread continuity (`ThreadControls.tsx`) draws each thread's
+// header, Reply, Summarize & start fresh with its ⓘ, the preview and the
+// composer's strip and chip, when the kernel's answer carries `threads`.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import type { Approval, DraftOutput, RosterEntry, StudioBridge, ThreadItem, ThreadResponse } from "../../api/contract";
@@ -22,6 +25,7 @@ import { sharedNames } from "../team/model";
 import { ApprovalCard, CharterCard, PlaybookCard, TriggerCard } from "./cards";
 import { ChatComposer } from "./ChatComposer";
 import { useHash } from "./CrewSection";
+import { joinThreads } from "./continuity";
 import { takeComposerHandoff } from "./handoff";
 import { ConnectorLine, DraftCard, PollQueuedLine, SkipGroupCard, groupThreadRows, useDraftList } from "./integrationCards";
 import type { ThreadRow } from "./integrationCards";
@@ -45,6 +49,7 @@ import {
   when,
   writeSeen,
 } from "./model";
+import { useThreadContinuity } from "./ThreadControls";
 import "./chat.css";
 
 export const WRIGHT_EMPTY = "Ask Wright anything. It drafts playbooks and crew for you to approve.";
@@ -71,8 +76,20 @@ function AgentAvatar({ agent, roster, size = 24 }: { readonly agent: string; rea
   return <Avatar agent={{ id: agent, name: nameOf(roster, agent), shape: entry?.avatar.shape, hue: entry?.avatar.hue }} state="idle" size={size} />;
 }
 
+interface MessageViewProps {
+  readonly item: MessageItem;
+  readonly agent: string;
+  readonly roster: readonly RosterEntry[] | undefined;
+  /** "Reply to <agent> · <time>" over an owner message that continues a thread. */
+  readonly replyLabel?: string | undefined;
+  /** How the reply continued its thread. */
+  readonly note?: ReactNode;
+  /** Reply, Summarize & start fresh and its ⓘ, under the reply. */
+  readonly actions?: ReactNode;
+}
+
 /** One message row: the owner's turn (or a quoted delegation), then the agent's reply or the row's state. */
-function MessageView({ item, agent, roster }: { readonly item: MessageItem; readonly agent: string; readonly roster: readonly RosterEntry[] | undefined }) {
+function MessageView({ item, agent, roster, replyLabel, note, actions }: MessageViewProps) {
   const name = nameOf(roster, item.agent);
   let outcome: ReactNode = null;
   if (item.status === "replied") {
@@ -127,7 +144,10 @@ function MessageView({ item, agent, roster }: { readonly item: MessageItem; read
           <p className="chat-kernel-text">{item.text}</p>
         </section>
       ) : item.from_agent === null ? (
-        <ChatBubble speaker="You" from="user" time={clock(item.created_at)} body={item.text} />
+        <>
+          {replyLabel === undefined ? null : <p className="chat-thread-replyto">{replyLabel}</p>}
+          <ChatBubble speaker="You" from="user" time={clock(item.created_at)} body={item.text} />
+        </>
       ) : (
         <blockquote className="chat-quote" data-from-agent={item.from_agent}>
           <p className="chat-quote-label">
@@ -137,7 +157,9 @@ function MessageView({ item, agent, roster }: { readonly item: MessageItem; read
           <p className="chat-quote-text">{item.text}</p>
         </blockquote>
       )}
+      {note}
       {outcome}
+      {actions}
     </div>
   );
 }
@@ -275,7 +297,22 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
   const items = useMemo(() => mergeItems(older?.items ?? [], data?.items ?? []), [older, data]);
   const cursor = older === null ? (data?.next_before ?? null) : older.next;
   const pending = (data?.pending_approvals ?? []).filter((a) => a.requesting_agent === agent);
-  const rows = useMemo(() => groupThreadRows(items), [items]);
+  const continuity = useThreadContinuity({ api, agent, nameOf: (id) => nameOf(roster, id), data, items, focusComposer: () => inputRef.current?.focus() });
+  const { threadIdOf } = continuity;
+  // With threads on, each thread's messages sit together on one rail (a reply joins the thread it continues).
+  const rows = useMemo(() => joinThreads(groupThreadRows(items), (row) => (row.type === "skips" ? undefined : threadIdOf(row))), [items, threadIdOf]);
+  // The first row of each thread: its header goes there; every later row of it is joined to the rail above.
+  const firstRows = useMemo(() => {
+    const seen = new Set<number>();
+    const firsts = new Set<number>();
+    for (const row of rows) {
+      const thread = row.type === "message" ? threadIdOf(row) : undefined;
+      if (row.type !== "message" || thread === undefined || seen.has(thread)) continue;
+      seen.add(thread);
+      firsts.add(row.id);
+    }
+    return firsts;
+  }, [rows, threadIdOf]);
   const draftIds = useMemo(() => {
     const ids: number[] = [];
     for (const item of items) {
@@ -485,7 +522,14 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
         />
       );
     }
-    if (row.type === "message") return <MessageView item={row} agent={agent} roster={roster} />;
+    if (row.type === "message") {
+      return (
+        <>
+          {continuity.header(row, firstRows.has(row.id))}
+          <MessageView item={row} agent={agent} roster={roster} replyLabel={continuity.replyLabel(row)} note={continuity.note(row)} actions={continuity.actions(row)} />
+        </>
+      );
+    }
     return <IntegrationEvent api={api} item={row} drafts={drafts} />;
   };
 
@@ -547,7 +591,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
           // run). Its open state lives in `openSkips` (any member id), so it survives that remount, not the key.
           const key = itemKey(row.type === "skips" ? (row.items[0] as ThreadItem) : row);
           return [
-            <li key={key} className="chat-item" data-item={key}>
+            <li key={key} className={row.type === "message" && continuity.on ? `chat-item chat-thread-item${continuity.joined(row, firstRows.has(row.id)) ? " chat-thread-joined" : ""}` : "chat-item"} data-item={key}>
               {rowView(row)}
             </li>,
             ...cardsAfter(items.indexOf(last)).map((card) => (
@@ -593,6 +637,7 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
         const to = event.relatedTarget;
         if (to instanceof Node && !event.currentTarget.contains(to)) lastFocus.current = null;
       }}
+      onKeyDown={continuity.onKeyDown}
     >
       <div className="chat-titlerow">
         <span className="chat-with" title={agent}>
@@ -635,7 +680,8 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
         )}
         {body}
       </div>
-      <ChatComposer api={api} agent={agent} agentName={name} text={text} onTextChange={setText} inputRef={inputRef} />
+      {continuity.overlay}
+      <ChatComposer api={api} agent={agent} agentName={name} text={text} onTextChange={setText} inputRef={inputRef} {...continuity.composer} />
     </div>
   );
 }

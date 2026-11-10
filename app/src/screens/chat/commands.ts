@@ -6,6 +6,7 @@
 // the palette renders a title as a text child, and nothing here acts on it.
 import type { NotificationRow, PlaybookListing, RosterEntry, StudioBridge, Trigger } from "../../api/contract";
 import type { Command } from "../../commands/registry";
+import type { OpenThreadActions } from "./continuity";
 import { WRIGHT, inFlightGuard, navigate, requestComposerFocus, specialists, threadHash, write } from "./model";
 import type { InFlightGuard } from "./model";
 
@@ -22,6 +23,8 @@ export interface ChatCommandSources {
   readonly notifications: readonly NotificationRow[] | undefined;
   /** Where a command's refusal is shown (the Crew section's status line). */
   readonly onNotice: (text: string) => void;
+  /** The thread on screen (Chat or a Crew thread) when it has a reply to act on: its three thread commands. */
+  readonly openThread?: OpenThreadActions | null;
 }
 
 /** The thread a notification opens: `agent:<x>` for a roster `x`, else Wright's. */
@@ -62,12 +65,21 @@ function guarded(id: string, fn: () => Promise<void>): () => Promise<void> {
 }
 
 export function buildChatCommands(sources: ChatCommandSources): Command[] {
-  const { api, roster, playbooks, triggers, notifications, onNotice } = sources;
+  const { api, roster, playbooks, triggers, notifications, onNotice, openThread = null } = sources;
   const say = (label: string) => (outcome: { readonly ok: boolean; readonly text?: string }) => {
     onNotice(outcome.ok ? `${label}: done.` : `${label}: ${outcome.text ?? "refused"}`);
   };
   const commands: Command[] = [ask("chat.ask.wright", "Ask Wright", WRIGHT)];
   for (const agent of specialists(roster)) commands.push(ask(`chat.ask.${agent.id}`, `Ask ${agent.display_name}`, agent.id));
+
+  // The open thread's commands, for that thread only (phase 8 item 17c). Summarize writes, so it is guarded.
+  if (openThread !== null) {
+    commands.push(
+      { id: "chat.thread.reply-last", title: "Reply to the last message", group: "Threads", run: () => openThread.replyLast() },
+      { id: "chat.thread.summarize", title: "Summarize & start fresh", group: "Threads", run: guarded("chat.thread.summarize", () => openThread.summarizeLast()) },
+      { id: "chat.thread.copy-reference", title: "Copy reference", group: "Threads", run: guarded("chat.thread.copy-reference", () => openThread.copyReference()) },
+    );
+  }
 
   for (const playbook of playbooks ?? []) {
     const params = { id: playbook.id };
