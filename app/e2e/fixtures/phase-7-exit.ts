@@ -58,8 +58,9 @@ export const PHASE_7_EXIT_ROUTE_KEYS = [
   "GET /playbooks",
   "GET /triggers",
   "GET /drafts",
-  // Settings, and the data directory Memory prints.
+  // Settings, and the data directory Memory prints; each crew member's detail for Settings → Threads (phase 8 item 17c).
   "GET /settings",
+  "GET /agents/:id",
   // Tasks, and the log of the session behind a card.
   "GET /tasks",
   "GET /tasks/:kind/:id",
@@ -184,6 +185,7 @@ export function phase7ExitFixture(init: Phase7ExitInit = {}): Phase7ExitFixture 
     "GET /triggers": s("GET /triggers"),
     "GET /drafts": () => ({ status: 200, body: { drafts: [] } satisfies DraftsResponse }),
     "GET /settings": g("GET /settings"),
+    "GET /agents/:id": g("GET /agents/:id"),
     // Tasks.
     "GET /tasks": t("GET /tasks"),
     "GET /tasks/:kind/:id": t("GET /tasks/:kind/:id"),

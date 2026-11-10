@@ -13,8 +13,8 @@
 //
 // What lives here: the test ids, the held view and its parse, the health's words and
 // tone, the token's life (365 days, as `TOKEN_LIFETIME_DAYS` in
-// `kernel/src/auth/subscription-token.ts`), the band, the login item's honest note, and
-// the feed events that make the screen read again.
+// `kernel/src/auth/subscription-token.ts`), the band, the login item's honest note, the
+// feed events that make the screen read again, and Threads' size-hint reader and words (`hintOf`, `hintWords`).
 import type { AppPreferences, SettingsResponse } from "../../api/contract";
 import { printable } from "../approvals/printable";
 import type { Reply } from "../schedules/model";
@@ -63,6 +63,15 @@ export const SETTINGS_TEST_IDS = {
   themeLight: "settings-theme-light",
   themeDark: "settings-theme-dark",
   row: "settings-row",
+  threads: "settings-threads",
+  threadsLoading: "settings-threads-loading",
+  threadsEmpty: "settings-threads-empty",
+  threadsError: "settings-threads-error",
+  threadsRow: "settings-threads-row",
+  threadsHint: "settings-threads-hint",
+  threadsFile: "settings-threads-file",
+  threadsNote: "settings-threads-note",
+  threadsSample: "settings-threads-sample",
 } as const;
 
 /** The Keychain item the subscription token is kept in (`SUBSCRIPTION_KEYCHAIN_SERVICE` in the kernel). A name, never a value. */
@@ -103,7 +112,8 @@ export function safe(text: string): string {
   return printable(text);
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+/** Whether `value` is a plain JSON object (not null, not an array). */
+export const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 function healthOf(raw: unknown): HealthState | undefined {
   if (!isRecord(raw) || typeof raw.status !== "string") return undefined;
@@ -313,6 +323,62 @@ export function themeDescription(theme: AppPreferences["theme"] | undefined): st
 }
 
 export const NOTIFIER_CAPTION = "terminal-notifier if installed, else osascript, else none";
+
+// ---- Threads: each agent's size hint (phase 8 item 17c) -----------------------------------------------------
+
+/**
+ * The size hint in a record that carries `thread_summarize_hint_tokens`: an agent's `settings.content` from
+ * `GET /agents/:id` (its `config/agents/<id>.json` as read), or Wright's `GET /threads/wright` body, which carries the
+ * kernel's own reading under the same name (Wright has no detail route: `GET /agents/wright` is `409 reserved`).
+ * Only a positive safe integer is a hint, as the kernel's schema has it (`limit` in `kernel/src/agents/settings.ts`);
+ * anything else (absent, null, 0, negative, fractional, a string, a non-record) is "not set". Pure; never throws.
+ */
+export function hintOf(content: unknown): number | undefined {
+  if (!isRecord(content)) return undefined;
+  let value: unknown;
+  try {
+    value = content.thread_summarize_hint_tokens;
+  } catch {
+    // A getter or proxy that throws (never in a JSON body, but the reader promises not to throw): not set.
+    return undefined;
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+/** The file the owner edits to set an agent's size hint, relative to the kernel's data folder. The id is kernel text, made inert. */
+export function hintFile(agentId: string): string {
+  return `config/agents/${safe(agentId)}.json`;
+}
+
+/** What one agent's row says about its size hint. */
+export interface HintWords {
+  /** `40,000 tokens · set by you`, or `Not set: Summarize is never highlighted.` */
+  readonly value: string;
+  /** `40,000 tokens` when set (the row draws "set by you" beside it as the mockup's badge); else `undefined`. */
+  readonly tokens: string | undefined;
+  /** Whether a value is set (the row then names the file it is set in). */
+  readonly set: boolean;
+  /** An attention note, when the value the file holds does not apply; else `undefined`. */
+  readonly note: string | undefined;
+}
+
+export const HINT_NOT_SET = "Not set: Summarize is never highlighted.";
+/** Who set a hint: always the owner, by editing the file (D34). */
+export const HINT_SET_BY = "set by you";
+
+/**
+ * The row's words for a hint read from an agent's file. `refused` is the kernel's refusal of that file
+ * (`settings.error` of `GET /agents/:id`), or `undefined`: a refused file applies nothing (`threadSummarizeHintTokens`
+ * in the kernel), except `model_unset`, whose hint the kernel still reads, so a set hint in a refused file is said not
+ * to apply. Tokens only, never dollars (D24).
+ */
+export function hintWords(hint: number | undefined, refused?: { readonly error: string; readonly message: string }): HintWords {
+  if (hint === undefined) return { value: HINT_NOT_SET, tokens: undefined, set: false, note: undefined };
+  const tokens = `${hint.toLocaleString("en-US")} tokens`;
+  const value = `${tokens} · ${HINT_SET_BY}`;
+  if (refused === undefined || refused.error === "model_unset") return { value, tokens, set: true, note: undefined };
+  return { value, tokens, set: true, note: `Not applied: the kernel refuses this file (${safe(refused.message)}), so Summarize is never highlighted.` };
+}
 
 // ---- Live: the feed's events that make the screen read again ----------------------------------------------
 
