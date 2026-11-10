@@ -29,6 +29,11 @@
 // the app at the kernel's data dir. The app starts only through `launchApp` (`e2e/electron-harness.ts`), and no
 // screenshot is taken: this spec writes nothing under `docs/evidence/`.
 //
+// One clock for both sides. The kernel tells time from `clock`, fixed at `START`; the app's window tells time from
+// its own `Date.now()` (the Tasks board's "Done today" filter, every "today 14:10" fact). The window's clock is
+// pinned to the same instant (`syncAppClock`) and moved with every `step`, so the walk does not depend on the
+// real date: before this, it passed only on START's calendar day.
+//
 // The live half (the real App, ClickUp, a real model on studio-sandbox) is the owner's run:
 // `kernel/test/phase-8-exit-live.test.ts` and `docs/evidence/phase-8-exit-runbook.md`.
 //
@@ -423,7 +428,12 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   }
   const noFailures = (): void => expect(s.failures).toEqual([]);
   /** Moves the clock one step: every poll that is due fires once, and the PR tracker follows each fire. */
-  const step = (): void => clock.advance(STEP_MS);
+  // Assigned once the app is launched; every step runs after that.
+  let syncAppClock = async (): Promise<void> => {};
+  const step = async (): Promise<void> => {
+    clock.advance(STEP_MS);
+    await syncAppClock();
+  };
   const seen: Seen = { handovers: [], routes: [], ran: [], held: {}, checks: [], merges: [], mergeAttempts: [] };
 
   // ---- 0. Setup: what the live run's runbook has the owner click through before the walk ----
@@ -444,6 +454,12 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   const launched = app;
   const page = await launched.firstWindow();
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  // The window reads the kernel's time, not the wall clock's: `setFixedTime` fakes `Date` only, so the app's own timers keep running.
+  syncAppClock = async (): Promise<void> => {
+    await launched.context().clock.setFixedTime(clock.now());
+    expect(await page.evaluate(() => Date.now()), "the app window's clock follows the kernel's").toBe(clock.now().getTime());
+  };
+  await syncAppClock();
   await expect(sidebar(page)).toBeVisible();
   await expect(page.getByTestId("kernel-unreachable-band")).toHaveCount(0);
 
@@ -485,7 +501,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     ITEM_KEY,
   );
   s.ready("issue #11 to /automate", TICKETS_MODEL, ticketDriver(seen, checkout, ISSUE_TICKET, { id: RUN_A, ...SHA_A }), new RegExp(ISSUE_REF));
-  step();
+  await step();
   await sessionsDone(issues, 1);
   noFailures();
   // The poll queued the issue as its own run of the playbook, and its session handed it over: the state it saw is idle, then live, then parked.
@@ -494,7 +510,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   expect(seen.handovers[0]?.invocation).toMatch(/^\/automate --backlog \S+_BACKLOG\.md --inline-phases$/);
   expect(trackRows(store)).toEqual([]);
   // The next poll finds the issue again; the owner's key skips it (no second run), and the PR tracker follows the poll's fire and finds PR A.
-  step();
+  await step();
   await expect.poll(() => trackRows(store).length, WAIT).toBe(1);
   expect(sessionRuns(store, issues)).toHaveLength(1);
   await expect.poll(() => runRows(store, issues).map((r) => r.status), WAIT).toEqual(["done", "skipped_duplicate"]);
@@ -535,7 +551,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   const clickupCalls = clickup.mcp.mcpCalls.filter((c) => c.method === "tools/call");
   expect(clickupCalls.length).toBeGreaterThanOrEqual(1);
   expect(clickupCalls.every((c) => c.name === "get_workspace_tasks" && JSON.stringify(c.arguments) === JSON.stringify({ list_ids: ["901"] }))).toBe(true);
-  step();
+  await step();
   await expect.poll(() => trackRows(store).length, WAIT).toBe(2);
   noFailures();
 
@@ -597,7 +613,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     seen.held.reply = await hold(call, "kernel_github_pr_reply", REPLY);
     finish(call, "My reply is waiting for your approval.");
   }, new RegExp(`review_comment:${COMMENT_REMARK.id}`));
-  step();
+  await step();
   await sessionsDone(triage, 3);
   noFailures();
   // Three runs, one per comment, each on its own session.
@@ -647,7 +663,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
 
   // PR B's CI turns green; the next poll's fire makes the tracker read it, and Tasks shows it (CI changed, nothing else did).
   github.setMergeState(REPO, PR_B, mergeState(HEAD_B, "green"));
-  step();
+  await step();
   await expect.poll(() => trackOf(store, PR_B)?.ci_state, WAIT).toBe("green");
   expect(events(store, "pr_state_changed").filter((e) => e.payload.pr === PR_B).map((e) => e.payload.ci)).toEqual(["pending", "green"]);
   await showTasks(page);
@@ -696,7 +712,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   // (d) The check answered go with Loomwright's own invocation for the parked run.
   expect(seen.checks).toEqual([{ pr: PR_A, answer: { answer: "go", repo: REPO, pr: PR_A, run_id: RUN_A, ready_sha: HEAD_A, invocation: `/loomwright:automate --merge-parked ${RUN_A}` } }]);
   expect(seen.merges).toEqual([{ pr: PR_A, invocation: `/loomwright:automate --merge-parked ${RUN_A}` }]);
-  step();
+  await step();
   await expect.poll(() => trackOf(store, PR_A)?.state, WAIT).toBe("merged");
   expect(trackOf(store, PR_A)).toMatchObject({ state: "merged", merged_by_gate: 1, head_sha: HEAD_A, ticket_ref: ISSUE_REF });
   expect(trackOf(store, PR_B)).toMatchObject({ state: "parked", merged_by_gate: 0 });
@@ -732,7 +748,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     seen.held.merge = await hold(call, "kernel_merge_approval_request", MERGE_ASK);
     finish(call, "PR B needs your merge approval; it is waiting in Approvals.");
   });
-  step();
+  await step();
   await runNow();
   await expect.poll(() => sessionRuns(store, mergeReady).map((r) => r.status), WAIT).toEqual(["done", "done"]);
   noFailures();
@@ -770,12 +786,12 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     if (answer.answer === "go" && typeof answer.invocation === "string") gateMerges(PR_B, { id: RUN_B, ...SHA_B }, answer.invocation);
     finish(call, `merge check for PR ${PR_B}: ${String(answer.answer)}`);
   });
-  step();
+  await step();
   await runNow();
   await expect.poll(() => sessionRuns(store, mergeReady).map((r) => r.status), WAIT).toEqual(["done", "done", "done"]);
   noFailures();
   expect(seen.checks[2]).toEqual({ pr: PR_B, answer: { answer: "go", repo: REPO, pr: PR_B, run_id: RUN_B, ready_sha: HEAD_B, invocation: `/loomwright:automate --merge-parked ${RUN_B}` } });
-  step();
+  await step();
   await expect.poll(() => trackOf(store, PR_B)?.state, WAIT).toBe("merged");
 
   // ---- 6. (d, e) The end state: both PRs merged by the gate, and the kernel never merged anything ----
