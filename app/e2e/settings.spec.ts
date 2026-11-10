@@ -731,8 +731,9 @@ test("AC10: every switch, button, group and status has an accessible name, the s
   await expect(group.getByRole("button")).toHaveText(["System", "Light", "Dark"]);
   await expect(group.getByRole("button", { name: "System" })).toHaveAttribute("aria-pressed", "true");
   await expect(group.getByRole("button", { name: "Dark" })).toHaveAttribute("aria-pressed", "false");
-  for (const name of ["Auth provider", "Change it in your terminal", "Kernel", "This app"]) await expect(root.getByRole("region", { name }), name).toBeVisible();
-  await expect(root.getByRole("heading", { level: 2 })).toHaveText(["Auth provider", "Change it in your terminal", "Kernel", "This app"]);
+  // Phase 8 item 17c adds Threads last (`e2e/settings-threads.spec.ts` covers it).
+  for (const name of ["Auth provider", "Change it in your terminal", "Kernel", "This app", "Threads"]) await expect(root.getByRole("region", { name }), name).toBeVisible();
+  await expect(root.getByRole("heading", { level: 2 })).toHaveText(["Auth provider", "Change it in your terminal", "Kernel", "This app", "Threads"]);
   await expect(root.getByRole("button", { name: "Reveal in Finder" })).toBeVisible();
   for (const command of COMMANDS) await expect(root.getByRole("button", { name: `Copy command: ${command}` })).toHaveCount(1);
   for (const button of await root.getByRole("button").all()) await expect(button).toHaveAccessibleName(/\S/);

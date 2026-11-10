@@ -15,7 +15,7 @@ import { Icon } from "../../components/icons";
 import type { IconName } from "../../components/icons";
 import { printable } from "../approvals/printable";
 import { KIND_LABEL, NO_AGENT, cardAgent, cardLabel, cardOrder, cardTitle, metaText, reasonText, stateText, toneOf } from "./model";
-import type { Board, BoardCard, ColumnId } from "./model";
+import type { Board, BoardCard, ColumnId, SessionTitles } from "./model";
 import { TicketPrCard, ticketAvatarState, waitingApprovalOf } from "./TicketPrCard";
 import "./tasks.css";
 
@@ -161,6 +161,8 @@ interface CardViewProps {
   readonly agent: AvatarAgent;
   /** The store's pending approvals: a ticket card waits on one that names its PR. */
   readonly approvals: readonly Approval[] | undefined;
+  /** The kernel's session titles by id (`GET /sessions`): a session card's title. */
+  readonly titles: SessionTitles;
   readonly offline: boolean;
   readonly tabbable: boolean;
   readonly onOpen: (card: BoardCard) => void;
@@ -168,7 +170,7 @@ interface CardViewProps {
   readonly onFocusLost: (key: string) => void;
 }
 
-function CardView({ card, agent, approvals, offline, tabbable, onOpen, onFocused, onFocusLost }: CardViewProps) {
+function CardView({ card, agent, approvals, titles, offline, tabbable, onOpen, onFocused, onFocusLost }: CardViewProps) {
   const { item, key, column } = card;
   const why = reasonText(item);
   // Reports the card leaving the DOM while it holds focus (a card that moves column is a new element), so the screen hands focus to its new one.
@@ -207,7 +209,7 @@ function CardView({ card, agent, approvals, offline, tabbable, onOpen, onFocused
         data-card-key={key}
         data-column={column}
         data-testid={`task-card-${key}`}
-        aria-label={cardLabel(item)}
+        aria-label={cardLabel(item, titles)}
         aria-disabled={offline ? true : undefined}
         tabIndex={tabbable ? 0 : -1}
         onFocus={() => onFocused(key)}
@@ -224,7 +226,7 @@ function CardView({ card, agent, approvals, offline, tabbable, onOpen, onFocused
             <Badge tone={toneOf(item.kind, item.state)}>{stateText(item)}</Badge>
           </span>
         </span>
-        <span className="tasks-card-title">{cardTitle(item)}</span>
+        <span className="tasks-card-title">{cardTitle(item, titles)}</span>
         {why === null ? null : <span className="tasks-card-why">{why}</span>}
         <span className="tasks-card-meta">
           <Avatar agent={agent} state={avatarState(item, column)} size={20} />
@@ -242,6 +244,8 @@ interface BoardViewProps {
   readonly roster: readonly RosterEntry[] | undefined;
   /** The store's pending approvals, for the ticket cards that wait on one. */
   readonly approvals: readonly Approval[] | undefined;
+  /** The kernel's session titles by id (`GET /sessions`, `sessionTitles`): a session card's title, else `Session #<id>`. */
+  readonly titles: SessionTitles;
   readonly offline: boolean;
   readonly activeKey: string | null;
   readonly onOpen: (card: BoardCard) => void;
@@ -249,7 +253,7 @@ interface BoardViewProps {
   readonly onFocusLost: (key: string) => void;
 }
 
-export function BoardView({ board, roster, approvals, offline, activeKey, onOpen, onFocused, onFocusLost }: BoardViewProps) {
+export function BoardView({ board, roster, approvals, titles, offline, activeKey, onOpen, onFocused, onFocusLost }: BoardViewProps) {
   const idBase = useId();
   const order = cardOrder(board);
   const tabKey = order.some((c) => c.key === activeKey) ? activeKey : (order[0]?.key ?? null);
@@ -283,6 +287,7 @@ export function BoardView({ board, roster, approvals, offline, activeKey, onOpen
                       card={card}
                       agent={avatarAgent(cardAgent(card.item), roster)}
                       approvals={approvals}
+                      titles={titles}
                       offline={offline}
                       tabbable={card.key === tabKey}
                       onOpen={onOpen}

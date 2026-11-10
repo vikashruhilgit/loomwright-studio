@@ -1,7 +1,8 @@
 // Settings (phase 7 item 08), built to the approved mockup (`docs/design/mockups/gui-v2.html`,
 // `settingsScreen`): the auth provider read-only with its health and the terminal commands
 // that change it (`./AuthSection.tsx`), the kernel's data location, notifier and Loomwright
-// install, and the app's own preferences (launch at login, notifications, theme).
+// install, and the app's own preferences (launch at login, notifications, theme). Phase 8 item 17c adds Threads
+// (`./ThreadsSection.tsx`, `docs/design/mockups/chat-threads.html`): each agent's size hint, read-only.
 //
 // Data. `GET /settings` is read here, on mount and again when an `auth_*` or `loomwright_*`
 // event arrives on the live feed (`./model.ts` lists the kinds; throttled to one read per
@@ -42,6 +43,7 @@ import {
   themeDescription,
 } from "./model";
 import { Skeleton, Switch, WarnGlyph } from "./parts";
+import { ThreadsSection } from "./ThreadsSection";
 import { useSettingsRead, usePreferences } from "./useSettings";
 import "./settings.css";
 
@@ -247,6 +249,8 @@ export function SettingsScreen({ api, registry = commandRegistry }: SettingsScre
             </li>
           </ul>
         </section>
+        {/* Last, so its rows landing after the reads above move nothing already shown. */}
+        <ThreadsSection api={api} offline={offline} />
       </div>
     </div>
   );

@@ -300,11 +300,58 @@ export interface BrainMessage {
   readonly workspace: string | null;
 }
 
-/** `POST /ask`: `text` 1-8000 characters, not blank; `agent` absent is Wright. */
+/**
+ * Phase 8 item 17: one thread a message carries as history (`ThreadReference`
+ * in `kernel/src/brain/threads.ts`): `exchanges` sends the thread's
+ * conversation, `summary` its summary file. Any other `use` is `400 invalid_body`.
+ */
+export interface AskReference {
+  readonly thread: number;
+  readonly use: "exchanges" | "summary";
+}
+
+/**
+ * `POST /ask`: `text` 1-8000 characters, not blank; `agent` absent is Wright.
+ * Phase 8 item 17 (both optional; a body with neither is a plain send, exactly
+ * as before threads): `continues` is the id of the same agent's earlier message
+ * whose thread this one joins (a positive integer); `references` names other
+ * threads to carry as history.
+ */
 export interface AskBody {
   readonly text: string;
   readonly agent?: string;
   readonly workspace?: string;
+  readonly continues?: number;
+  readonly references?: readonly AskReference[];
+}
+
+/** Why `POST /ask` refuses a `continues` id: `CONTINUES_INVALID_REASONS` in `kernel/src/brain/threads.ts`. */
+export type ContinuesInvalidReason = "no_such_message" | "other_agent" | "never_started";
+
+/**
+ * `409` from `POST /ask`: the `continues` message does not exist
+ * (`no_such_message`), is another agent's (`other_agent`) or never had a
+ * session (`never_started`). Nothing was queued.
+ */
+export interface ContinuesInvalidError extends ApiError {
+  readonly error: "continues_invalid";
+  readonly reason: ContinuesInvalidReason;
+  /** The `continues` id the body carried. */
+  readonly continues: number;
+}
+
+/**
+ * `409` from `POST /ask`: the history the send would carry is past the
+ * kernel's bound (`HistoryTooLarge` in `kernel/src/brain/threads.ts`).
+ * `thread` is the referenced thread past its own bound, or `null` for the
+ * total; `size` and `bound` are in characters, as the kernel counts them.
+ * Nothing was queued.
+ */
+export interface HistoryTooLargeError extends ApiError {
+  readonly error: "history_too_large";
+  readonly thread: number | null;
+  readonly size: number;
+  readonly bound: number;
 }
 
 /** `202`. */

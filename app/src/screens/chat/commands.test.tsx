@@ -6,7 +6,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { NOTIFICATION_COMMANDS, notificationThread } from "./commands";
 import { CrewSection } from "./CrewSection";
-import { agent, kit, notification, playbook, renderChat, resetChat, thread, trigger } from "./testkit";
+import { go, agent, kit, message, notification, playbook, renderChat, resetChat, thread, trigger } from "./testkit";
 import type { Kit } from "./testkit";
 
 afterEach(resetChat);
@@ -210,5 +210,62 @@ describe("commands", () => {
     expect(notificationThread("agent:wright", roster)).toBe("#/chat");
     expect(notificationThread("agent:unknown", roster)).toBe("#/chat");
     expect(notificationThread("trigger:4", roster)).toBe("#/chat");
+  });
+});
+
+// Phase 8 item 17c AC9: the open thread's three commands, for that thread only.
+describe("thread commands", () => {
+  function threadKit(): Kit {
+    const k = commandKit();
+    const fig = { id: 4, agent: "wright", title: "Plan the release", renamed: false, messages: 2, latest_reply_tokens: 900, summary_estimated_tokens: null };
+    k.state.threads.wright = thread([{ ...message(4, { session_id: 104, reply_text: "Here is the plan." }), thread_id: 4 }], { threads: [fig] });
+    return k;
+  }
+
+  it("the open thread adds Reply to the last message, Summarize & start fresh and Copy reference", async () => {
+    const k = threadKit();
+    await renderChat(k);
+    await loaded(k);
+    await waitFor(() => expect(k.registry.get("chat.thread.copy-reference")).toBeDefined());
+    expect(k.registry.list().map((c) => [c.id, c.title, c.group])).toEqual([
+      ["chat.ask.wright", "Ask Wright", "Agents"],
+      ["chat.ask.pim", "Ask Pim", "Agents"],
+      ["chat.thread.reply-last", "Reply to the last message", "Threads"],
+      ["chat.thread.summarize", "Summarize & start fresh", "Threads"],
+      ["chat.thread.copy-reference", "Copy reference", "Threads"],
+      ["chat.playbook.3.run", "Run pr-review", "Playbooks"],
+      ["chat.playbook.3.off", "Turn off pr-review", "Playbooks"],
+      ["chat.playbook.3.priority.high", "Set pr-review priority high", "Playbooks"],
+      ["chat.playbook.3.priority.normal", "Set pr-review priority normal", "Playbooks"],
+      ["chat.playbook.3.priority.low", "Set pr-review priority low", "Playbooks"],
+      ["chat.trigger.5.off", "Turn off trigger 5: weekdays 17:00", "Playbooks"],
+      ["chat.trigger.6.on", "Turn on trigger 6: once at 9", "Playbooks"],
+      ["chat.notification.3", "Ghost said hi", "Notifications"],
+      ["chat.notification.2", "Paused at cap", "Notifications"],
+      ["chat.notification.1", "Pim posted a digest", "Notifications"],
+    ]);
+  });
+
+  it("Reply to the last message opens the strip; Summarize posts once while in flight; leaving Chat drops them", async () => {
+    const k = threadKit();
+    let release: () => void = () => undefined;
+    k.fake.route("POST /threads/:agent/:thread/summarize", () => new Promise((resolve) => (release = () => resolve({ ok: false, status: 409, body: { error: "nothing_to_summarize" } }))));
+    await renderChat(k);
+    await waitFor(() => expect(k.registry.get("chat.thread.reply-last")).toBeDefined());
+    await act(async () => {
+      await k.registry.get("chat.thread.reply-last")?.run();
+    });
+    expect(screen.getByRole("group", { name: "Reply" }).textContent).toContain("Replying to: Here is the plan.");
+    await act(async () => {
+      void k.registry.get("chat.thread.summarize")?.run();
+      void k.registry.get("chat.thread.summarize")?.run();
+    });
+    expect(k.fake.requestsTo("POST /threads/:agent/:thread/summarize")).toHaveLength(1);
+    await act(async () => {
+      release();
+    });
+    await go("#/team");
+    await go("#/chat/pim");
+    await waitFor(() => expect(k.registry.get("chat.thread.reply-last")).toBeUndefined());
   });
 });

@@ -5,7 +5,9 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { ok } from "../../store/fake-bridge";
-import { agent, go, kit, renderChat, resetChat, thread } from "./testkit";
+import type { ThreadFigures, ThreadItem } from "../../api/contract";
+import { clock } from "./model";
+import { agent, go, kit, message, renderChat, resetChat, thread } from "./testkit";
 import type { Kit } from "./testkit";
 
 afterEach(resetChat);
@@ -126,7 +128,9 @@ describe("composer", () => {
     await type("Look at ~/work/b", "Pim");
     await send();
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("workspace_not_listed");
+    // Phase 8 item 17c AC6: plain words, never the bare code, with the kernel's own words kept.
+    expect(alert.textContent).not.toContain("workspace_not_listed");
+    expect(alert.textContent).toContain("That workspace isn't one this agent may use");
     expect(alert.textContent).toContain("is not one of pim's workspaces");
     expect(composer("Pim").value).toBe("Look at ~/work/b");
   });
@@ -336,5 +340,114 @@ describe("composer workspace memory", () => {
     await offered(two);
     expect(picker().value).toBe("~/work/b");
     await sendsWith(k, "still b", "~/work/b");
+  });
+});
+
+// Phase 8 item 17c: Reply and its strip (AC1, AC2), refusals in plain words (AC6).
+describe("composer: Reply", () => {
+  type Msg = Extract<ThreadItem, { type: "message" }>;
+  const AT = "2026-10-22T08:04:00.000Z";
+  const msg = (id: number, threadId: number, overrides: Partial<Msg> = {}): Msg => ({ ...message(id, { session_id: id + 100, updated_at: AT }), thread_id: threadId, continuation: null, session_title: null, ...overrides });
+  const fig = (id: number, title: string): ThreadFigures => ({ id, agent: "wright", title, renamed: false, messages: 2, latest_reply_tokens: 900, summary_estimated_tokens: null });
+
+  function replyKit(): Kit {
+    const k = kit({ threads: { wright: thread([msg(4, 4, { reply_text: "Here is the plan.\nStep two" }), msg(8, 8, { reply_text: "Other topic." })], { threads: [fig(4, "Plan the release"), fig(8, "Other topic")] }) } });
+    k.state.posts["POST /ask"] = (req) => {
+      const body = req.body as { text: string; continues?: number };
+      const current = k.state.threads.wright!;
+      k.state.threads.wright = { ...current, items: [...current.items, msg(10, body.continues === undefined ? 10 : 4, { text: body.text, status: "queued", reply_text: null })] };
+      return { ok: true, status: 202, body: { message_id: 10, queue_id: 10 } };
+    };
+    return k;
+  }
+
+  const replyButton = (): HTMLButtonElement => screen.getAllByRole("button", { name: /^Reply to Wright's message of/ })[0] as HTMLButtonElement;
+
+  it("AC1: a Reply send carries continues and is drawn joined to that thread; a plain send carries none", async () => {
+    const k = replyKit();
+    await renderChat(k);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /^Reply to Wright's message of/ })).toHaveLength(2));
+    await act(async () => {
+      fireEvent.click(replyButton());
+    });
+    const strip = screen.getByRole("group", { name: "Reply" });
+    expect(strip.textContent).toContain("Replying to: Here is the plan.");
+    expect(strip.textContent).not.toContain("Step two");
+    const field = screen.getByRole("textbox", { name: "Reply to Wright" }) as HTMLTextAreaElement;
+    expect(document.activeElement).toBe(field);
+    await act(async () => {
+      fireEvent.change(field, { target: { value: "and then?" } });
+    });
+    await send();
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(1));
+    expect(k.posted("POST /ask")[0]?.body).toEqual({ text: "and then?", agent: "wright", continues: 4 });
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Reply" })).toBeNull());
+    // Drawn on thread 4's rail, under its header, labelled as a reply.
+    const label = await screen.findByText(`Reply to Wright · ${clock(AT)}`);
+    const row = label.closest("li") as HTMLElement;
+    expect(row.className).toContain("chat-thread-joined");
+    expect(row.previousElementSibling?.getAttribute("data-item")).toBe("message:4");
+
+    await type("A new topic");
+    await send();
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(2));
+    expect(k.posted("POST /ask")[1]?.body).toEqual({ text: "A new topic", agent: "wright" });
+  });
+
+  it("AC2: × and Esc close the strip, return focus to that message's Reply, and the next send has no continues", async () => {
+    const k = replyKit();
+    await renderChat(k);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /^Reply to Wright's message of/ })).toHaveLength(2));
+    const reply = replyButton();
+    await act(async () => {
+      fireEvent.click(reply);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel reply" }));
+    });
+    expect(screen.queryByRole("group", { name: "Reply" })).toBeNull();
+    expect(document.activeElement).toBe(reply);
+
+    await act(async () => {
+      fireEvent.click(reply);
+    });
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("textbox", { name: "Reply to Wright" }), { key: "Escape" });
+    });
+    expect(screen.queryByRole("group", { name: "Reply" })).toBeNull();
+    expect(document.activeElement).toBe(reply);
+
+    await type("fresh");
+    await send();
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(1));
+    expect(k.posted("POST /ask")[0]?.body).toEqual({ text: "fresh", agent: "wright" });
+  });
+
+  it("AC6: a continues_invalid refusal keeps the text and the strip, in plain words", async () => {
+    const k = replyKit();
+    k.state.posts["POST /ask"] = () => ({ ok: false, status: 409, body: { error: "continues_invalid", reason: "never_started", continues: 4 } });
+    await renderChat(k);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /^Reply to Wright's message of/ })).toHaveLength(2));
+    await act(async () => {
+      fireEvent.click(replyButton());
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByRole("textbox", { name: "Reply to Wright" }), { target: { value: "keep me" } });
+    });
+    await send();
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("The message you replied to never had a session, so there is no conversation to continue. Nothing was sent; cancel the reply to send this as a new topic.");
+    expect((screen.getByRole("textbox", { name: "Reply to Wright" }) as HTMLTextAreaElement).value).toBe("keep me");
+    expect(screen.getByRole("group", { name: "Reply" })).toBeTruthy();
+  });
+
+  it("AC6: the kernel unreachable on send keeps the text, in plain words", async () => {
+    const k = kit({ threads: { wright: thread([]) } });
+    k.state.posts["POST /ask"] = () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } });
+    await renderChat(k);
+    await type("still here");
+    await send();
+    expect((await screen.findByRole("alert")).textContent).toBe("The kernel isn't reachable, so nothing was sent. Your text is kept; try again once it's back.");
+    expect(composer().value).toBe("still here");
   });
 });

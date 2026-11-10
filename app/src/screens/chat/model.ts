@@ -214,7 +214,10 @@ export function when(iso: string): string {
 
 // ---- writes -------------------------------------------------------------------------------
 
-export type WriteOutcome<R> = { readonly ok: true; readonly status: number; readonly body: R } | { readonly ok: false; readonly status: number; readonly code: string; readonly text: string };
+/** A refusal carries the kernel's body when it answered one (thread continuity reads its `reason`, `size`, `bound`). */
+export type WriteOutcome<R> =
+  | { readonly ok: true; readonly status: number; readonly body: R }
+  | { readonly ok: false; readonly status: number; readonly code: string; readonly text: string; readonly body?: unknown };
 
 /** A refusal as the owner reads it: the kernel's `message` and its `error` code, as text. */
 export function refusalOf(result: ApiResult<unknown> | undefined): { readonly status: number; readonly code: string; readonly text: string } {
@@ -248,7 +251,8 @@ export async function write<R = unknown>(
     for (const name of refetch) store.refetch(name);
     return { ok: true, status: result.status, body: result.body };
   }
-  return { ok: false, ...refusalOf(result) };
+  const refused = result !== undefined && !result.ok && "body" in result ? result.body : undefined;
+  return { ok: false, ...refusalOf(result), ...(refused === undefined ? {} : { body: refused }) };
 }
 
 /**
