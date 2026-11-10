@@ -22,6 +22,7 @@
 import type { EventFrame, PlaybookRun, SessionSummary, TaskBoardGroup, TaskBoardItem, TaskBoardKind, TruncatedEventFrame } from "../../api/contract";
 import type { BadgeTone } from "../../components/Badge/Badge";
 import { printable } from "../approvals/printable";
+import { sessionTitle } from "../sessions/model";
 
 // ---- columns -----------------------------------------------------------------------------
 
@@ -220,10 +221,33 @@ export function cardAgent(item: Pick<TaskBoardItem, "agent" | "creator_agent">):
   return item.agent ?? item.creator_agent;
 }
 
-/** What the card is called: a task's title, a run's playbook name, else (a session has none) its agent and what it ran from. */
-export function cardTitle(item: TaskBoardItem): string {
+/**
+ * Session id -> the kernel's title for it (`SessionSummary.title` from
+ * `GET /sessions`, raw and untrusted). `GET /tasks` sends no title for a
+ * session card (`NULL AS title` in `kernel/src/gui/tasks.ts`), so the screen
+ * matches it by id here.
+ */
+export type SessionTitles = ReadonlyMap<number, string>;
+
+/** The id -> title map of what `GET /sessions` answered; a session with no title is left out. */
+export function sessionTitles(sessions: readonly Pick<SessionSummary, "id" | "title">[] | undefined): SessionTitles {
+  const titles = new Map<number, string>();
+  for (const session of sessions ?? []) {
+    if (session.title !== undefined) titles.set(session.id, session.title);
+  }
+  return titles;
+}
+
+/**
+ * What the card is called: a task's title, a run's playbook name; for a
+ * session (the board's row has no title) the kernel's session title matched
+ * by id in `titles` (phase 8 item 17), else `Session #<id>`, the kernel's own
+ * fallback for any other session. Every title is escaped. `titles` is optional:
+ * a caller with none (a ticket card) gets the fallback for a session.
+ */
+export function cardTitle(item: TaskBoardItem, titles?: SessionTitles): string {
   if (item.title !== null && item.title.trim() !== "") return printable(item.title);
-  if (item.kind === "session") return `${agentText(item.agent)} · ${item.playbook === null ? "ad hoc session" : `playbook #${item.playbook}`}`;
+  if (item.kind === "session") return sessionTitle({ id: item.id, title: titles?.get(item.id) });
   return `${KIND_LABEL[item.kind]} #${item.id}`;
 }
 
@@ -232,9 +256,9 @@ export function stateText(item: Pick<TaskBoardItem, "state">): string {
   return printable(item.state);
 }
 
-/** The card button's accessible name: the mockup's `aria-label`, `Kind id: title, state`. */
-export function cardLabel(item: TaskBoardItem): string {
-  return `${KIND_LABEL[item.kind]} ${item.id}: ${cardTitle(item)}, ${stateText(item)}`;
+/** The card button's accessible name: the mockup's `aria-label`, `Kind id: title, state` (`titles` as for `cardTitle`). */
+export function cardLabel(item: TaskBoardItem, titles?: SessionTitles): string {
+  return `${KIND_LABEL[item.kind]} ${item.id}: ${cardTitle(item, titles)}, ${stateText(item)}`;
 }
 
 /** `HH:MM` in the owner's locale; empty when not a time. */

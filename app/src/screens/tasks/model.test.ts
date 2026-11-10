@@ -22,6 +22,7 @@ import {
   reasonText,
   refetchMark,
   refetchWanted,
+  sessionTitles,
   toneOf,
 } from "./model";
 import type { ColumnId } from "./model";
@@ -284,13 +285,34 @@ describe("the words on a card", () => {
   it("labels a card as the mockup does: kind, id, title, state", () => {
     expect(cardLabel(item("task", 12, "waiting", { title: "Pick the repos" }))).toBe("Task 12: Pick the repos, waiting");
     expect(cardLabel(item("playbook_run", 18, "running", { title: "Weekly changelog draft" }))).toBe("Playbook run 18: Weekly changelog draft, running");
-    expect(cardLabel(item("session", 39, "failed:auth", { agent: "ada", playbook: 2 }))).toBe("Session 39: ada · playbook #2, failed:auth");
+    expect(cardLabel(item("session", 39, "failed:auth", { agent: "ada", playbook: 2 }), new Map([[39, "Weekly changelog draft"]]))).toBe(
+      "Session 39: Weekly changelog draft, failed:auth",
+    );
+    expect(cardLabel(item("session", 39, "failed:auth", { agent: "ada", playbook: 2 }))).toBe("Session 39: Session #39, failed:auth");
   });
 
-  it("names a session by its agent and what it ran from; an unnamed row by its kind and id", () => {
-    expect(cardTitle(item("session", 44, "running", { agent: "wright" }))).toBe("wright · ad hoc session");
-    expect(cardTitle(item("session", 44, "running", { agent: null }))).toBe("No agent recorded · ad hoc session");
+  it("names a session card by its matched `GET /sessions` title, else `Session #<id>`; never `ad hoc session` or `playbook #N`; an unnamed row by its kind and id", () => {
+    const titles = sessionTitles([
+      { id: 44, title: "Why is the build red?" },
+      { id: 45, title: "Weekly changelog draft" },
+      { id: 46 },
+    ]);
+    expect(cardTitle(item("session", 44, "running", { agent: "wright" }), titles)).toBe("Why is the build red?");
+    expect(cardTitle(item("session", 45, "running", { agent: "mason", playbook: 2 }), titles)).toBe("Weekly changelog draft");
+    // No title from the kernel (absent, or the session is not in the list): the kernel's own fallback.
+    expect(cardTitle(item("session", 46, "running", { agent: null }), titles)).toBe("Session #46");
+    expect(cardTitle(item("session", 47, "running", { playbook: 3 }), titles)).toBe("Session #47");
+    expect(cardTitle(item("session", 44, "running"))).toBe("Session #44");
+    for (const s of [item("session", 48, "running", { playbook: 4 }), item("session", 49, "running", { playbook: null })]) {
+      expect(cardLabel(s, titles)).not.toMatch(/ad hoc session|playbook #\d+/);
+    }
+    // A task's or a run's own title wins over the map (the map is keyed by session id only).
+    expect(cardTitle(item("task", 44, "waiting", { title: "Pick the repos" }), titles)).toBe("Pick the repos");
     expect(cardTitle(item("task", 5, "done", { title: "  " }))).toBe("Task #5");
+  });
+
+  it("a session title is untrusted: escaped like every other string", () => {
+    expect(cardTitle(item("session", 50, "running"), new Map([[50, `red${ESC}[31m build${RLO}`]]))).toBe("red\\x1b[31m build\\u202e");
   });
 
   it("names the assignee, else the agent whose session created the task, else says No agent recorded", () => {

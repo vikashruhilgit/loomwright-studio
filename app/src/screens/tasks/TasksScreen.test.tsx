@@ -150,6 +150,7 @@ async function mount(initial: Partial<Kernel> = {}, registry: CommandRegistry = 
   fake.route(HISTORY, (req) => history(kernel, req));
   fake.route("GET /agents", () => ok({ agents: kernel.agents }));
   fake.route("GET /status", () => ok({}));
+  fake.route("GET /sessions", () => ok({ sessions: [...kernel.sessions] }));
   fake.route(OUTPUT, (req) => {
     const id = Number(req.params?.id);
     const after = Number(req.query?.after ?? "0");
@@ -239,7 +240,37 @@ describe("the board", () => {
     await mount();
     expect(screen.getByRole("button", { name: "Task 12: Pick the repos Mason reviews first, waiting" })).toBe(cardEl("task:12"));
     expect(screen.getByRole("button", { name: "Playbook run 18: Weekly changelog draft, running" })).toBe(cardEl("playbook_run:18"));
-    expect(screen.getByRole("button", { name: "Session 39: ada · ad hoc session, failed:auth" })).toBe(cardEl("session:39"));
+    // Session 39 is not in `GET /sessions`: the kernel's own fallback, `Session #<id>`.
+    expect(screen.getByRole("button", { name: "Session 39: Session #39, failed:auth" })).toBe(cardEl("session:39"));
+  });
+
+  it("AC8: a session card names the kernel's title matched from `GET /sessions` by id, else `Session #<id>`; no text reads `ad hoc session` or `playbook #N`", async () => {
+    const items = [
+      card("session", 60, "running", { agent: "mason", playbook: 2, updated: stamp(1) }),
+      card("session", 61, "completed", { agent: "wright", playbook: null, ended: stamp(2), updated: stamp(2) }),
+      card("session", 62, "stopped", { agent: "ada", playbook: 5, ended: stamp(3), updated: stamp(3) }),
+    ];
+    const sessions = [
+      summary(60, { playbook: 2, title: "Weekly changelog draft" }),
+      summary(61, { agent: "wright", status: "completed", title: `Why is the build red?${RLO}` }),
+      summary(62, { agent: "ada", status: "stopped", playbook: 5 }),
+    ];
+    await mount({ items, sessions });
+    await waitFor(() => expect(within(cardEl("session:60")).getByText("Weekly changelog draft")).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Session 60: Weekly changelog draft, running" })).toBe(cardEl("session:60"));
+    // An untrusted title is escaped, never raw.
+    expect(screen.getByRole("button", { name: "Session 61: Why is the build red?\\u202e, completed" })).toBe(cardEl("session:61"));
+    expect(screen.getByRole("button", { name: "Session 62: Session #62, stopped" })).toBe(cardEl("session:62"));
+    const boardText = document.body.textContent ?? "";
+    expect(boardText).not.toMatch(/ad hoc session/);
+    expect(boardText).not.toMatch(/playbook #\d+/);
+
+    // The open card's heading and its log's task carry the same title.
+    await openCard("session:60");
+    expect(screen.getByRole("heading", { level: 2, name: "Weekly changelog draft" })).toBeTruthy();
+    const detailText = document.body.textContent ?? "";
+    expect(detailText).not.toMatch(/ad hoc session/);
+    expect(detailText).not.toMatch(/playbook #\d+/);
   });
 
   it("is green only for task done, run done and session completed, and shows every state as the kernel's word", async () => {
@@ -1022,6 +1053,7 @@ function boardBridge(): FakeBridge {
   fake.route(HISTORY, (req) => history(kernel, req));
   fake.route("GET /agents", () => ok({ agents: kernel.agents }));
   fake.route("GET /status", () => ok({}));
+  fake.route("GET /sessions", () => ok({ sessions: [...kernel.sessions] }));
   fake.route(OUTPUT, () => ok({ rows: [] }));
   return fake;
 }

@@ -274,7 +274,14 @@ test("AC4: four columns in the mockup's order; every state is the kernel's word;
 
   await expect(page.getByRole("button", { name: "Task 12: Pick the repos Mason reviews first, waiting" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Playbook run 18: Weekly changelog draft, running" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Session 39: ada · ad hoc session, failed:auth" })).toBeVisible();
+  // AC8 (phase 8 item 17c): a session card names the kernel's title from `GET /sessions`, matched by id; one the list
+  // does not name (39 is not in it) reads the kernel's own fallback, `Session #<id>`. Never `ad hoc session` / `playbook #N`.
+  await expect(page.getByRole("button", { name: "Session 44: Why is the studio-sandbox build red?, running" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Session 40: Session #40, stopped" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Session 39: Session #39, failed:auth" })).toBeVisible();
+  const boardText = await page.getByTestId("tasks-board").innerText();
+  expect(boardText).not.toMatch(/ad hoc session/);
+  expect(boardText).not.toMatch(/playbook #\d+/);
 
   const tones = await page.locator("[data-card-key]").evaluateAll((els) =>
     els.map((el) => [el.getAttribute("data-card-key"), el.querySelector(".badge")?.getAttribute("data-tone"), el.querySelector(".badge")?.textContent] as const),
@@ -449,6 +456,8 @@ test("AC6: Kill asks first: Cancel sends nothing; confirming sends one POST /ses
   const page = await openWith(started);
   await card(page, "session:44").click();
   await expect(page.getByTestId("task-log-status")).toHaveText("running");
+  // The open session card is headed by its kernel title (AC8).
+  await expect(page.getByTestId("task-detail").getByRole("heading", { level: 2, name: "Why is the studio-sandbox build red?" })).toBeVisible();
   await page.getByRole("button", { name: "Kill", exact: true }).click();
   const confirm = page.getByRole("alertdialog");
   await expect(confirm).toContainText("Kill session #44?");

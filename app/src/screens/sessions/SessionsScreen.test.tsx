@@ -213,7 +213,7 @@ describe("the list", () => {
       sessions: [
         session(29, { agent: "wright", playbook: 3 }),
         session(30, { status: "stopped" }),
-        running(31, { agent: "mason", playbook: 4, tokens: 14208 }),
+        running(31, { agent: "mason", playbook: 4, tokens: 14208, title: "Weekly changelog draft" }),
         session(28, { status: "failed", tokens: null }),
         session(27, { status: "orphaned", ended: null, started: "2026-10-22T07:00:00.000Z", agent: null }),
       ],
@@ -225,12 +225,12 @@ describe("the list", () => {
     expect(selectedId()).toBe(31);
     const first = within(rowOf(31));
     expect(first.getByTestId("session-agent").textContent).toBe("mason");
-    expect(first.getByTestId("session-task").textContent).toBe("playbook #4");
+    expect(first.getByTestId("session-task").textContent).toBe("Weekly changelog draft");
     expect(first.getByTestId("session-status").textContent).toBe("running");
     expect(first.getByTestId("session-tokens").textContent).toBe("14,208 tokens");
     expect(first.getByTestId("session-elapsed").textContent).toMatch(/^\d+(m \d\ds|h \d\dm)$/);
     expect(first.getByRole("img").getAttribute("aria-label")).toMatch(/^mason · /);
-    expect(within(rowOf(30)).getByTestId("session-task").textContent).toBe("ad hoc session");
+    expect(within(rowOf(30)).getByTestId("session-task").textContent).toBe("Session #30");
     expect(within(rowOf(30)).getByTestId("session-elapsed").textContent).toBe("40m 00s");
     expect(within(rowOf(28)).getByTestId("session-tokens").textContent).toBe("—");
     expect(within(rowOf(28)).getByTestId("session-kill-unconfirmed").textContent).toBe("kill unconfirmed");
@@ -243,6 +243,24 @@ describe("the list", () => {
     act(() => fake.emit(event("session_started", 32)));
     await waitFor(() => expect(rowIds()).toEqual([32, 31, 30, 29, 28, 27]));
     expect(selectedId()).toBe(31);
+  });
+
+  it("AC8: a playbook session and a chat session show the kernel's title, never `ad hoc session` or `playbook #N`; the Kill confirm names it too", async () => {
+    await mount({
+      sessions: [
+        running(40, { agent: "mason", playbook: 2, title: "Weekly changelog draft" }),
+        session(41, { agent: "wright", playbook: null, title: `Why is the build red?${RLO}` }),
+        session(42, { agent: "wright", playbook: 5 }),
+      ],
+    });
+    expect(within(rowOf(40)).getByTestId("session-task").textContent).toBe("Weekly changelog draft");
+    expect(within(rowOf(41)).getByTestId("session-task").textContent).toBe("Why is the build red?\\u202e");
+    expect(within(rowOf(42)).getByTestId("session-task").textContent).toBe("Session #42");
+    fireEvent.click(screen.getByRole("button", { name: "Kill" }));
+    expect(screen.getByRole("alertdialog").textContent).toContain("(Weekly changelog draft)");
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(/ad hoc session/);
+    expect(text).not.toMatch(/playbook #\d+/);
   });
 
   it("J / K move the selection in display order; an unknown status renders as its own word", async () => {
