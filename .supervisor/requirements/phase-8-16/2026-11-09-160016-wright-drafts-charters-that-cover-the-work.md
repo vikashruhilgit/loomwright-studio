@@ -1,6 +1,7 @@
 # 16 — Wright drafts charters that cover the work, without the owner naming a tool
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/254
 
 **Priority:** MVP · ROADMAP phase 8 (blocks item 14's live run at setup step 6) · D22, D34, invariants 1, 3, 9
 
@@ -116,3 +117,9 @@ docs/evidence/phase-8-exit-runbook.md
 - `cd kernel && npm ci && npm run typecheck && npm test`
 - `cd app && npm ci && npm run typecheck && npm test && npm run build && npm run e2e`
 - `bash scripts/check-docs.sh`
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-10T16:58:40Z
+- **Brief:** .supervisor/jobs/done/2026-11-10-wright-drafts-charters-cover-the-work.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/254
