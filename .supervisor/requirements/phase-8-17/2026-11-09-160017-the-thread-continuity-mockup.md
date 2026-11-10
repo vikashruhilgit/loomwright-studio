@@ -1,6 +1,7 @@
 # 17a — The thread continuity mockup: Reply, Summarize & start fresh, Copy reference
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/249
 
 **Priority:** MVP (D9 gate) · ROADMAP phase 8 (blocks item 14's live run at setup step 6) · D9, D24, D25
 
@@ -80,3 +81,9 @@ docs/DESIGN.md
 ## Depends on
 
 none
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-10T06:08:40Z
+- **Brief:** .supervisor/jobs/done/2026-11-09-the-thread-continuity-mockup.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/249
