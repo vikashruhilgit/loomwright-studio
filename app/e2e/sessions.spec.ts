@@ -196,8 +196,8 @@ function listInit(): SessionsKernelInit {
   return {
     sessions: [
       summary(30, { agent: "ada", status: "stopped", started: ago(20), ended: ago(10), tokens: 3100 }),
-      summary(31, { agent: "mason", status: "running", playbook: 4, started: ago(4.2), ended: null, tokens: 14_208 }),
-      summary(29, { agent: "wright", status: "completed", playbook: 2, started: ago(60), ended: ago(50), tokens: 22_800 }),
+      summary(31, { agent: "mason", status: "running", playbook: 4, started: ago(4.2), ended: null, tokens: 14_208, title: "Review PRs" }),
+      summary(29, { agent: "wright", status: "completed", playbook: 2, started: ago(60), ended: ago(50), tokens: 22_800, title: "Weekly changelog draft" }),
       summary(28, { agent: "ada", status: "failed", started: ago(80), ended: ago(70), tokens: null }),
       summary(27, { agent: "mason", status: "orphaned", started: ago(120), ended: null }),
       summary(26, { agent: "ada", status: "orphaned", started: ago(130), ended: null }),
@@ -223,12 +223,13 @@ test("AC1: running first and selected; each row's avatar, agent, task, time, tok
   const first = row(page, 31);
   await expect(first.getByRole("img", { name: /^mason · / })).toBeVisible();
   await expect(first.getByTestId("session-agent")).toHaveText("mason");
-  await expect(first.getByTestId("session-task")).toHaveText("playbook #4");
+  await expect(first.getByTestId("session-task")).toHaveText("Review PRs");
   await expect(first.getByTestId("session-elapsed")).toHaveText(/^\d+m \d\ds$/);
   await expect(first.getByTestId("session-tokens")).toHaveText("14,208 tokens");
   await expect(first.getByTestId("session-status")).toHaveText("running");
 
-  await expect(row(page, 30).getByTestId("session-task")).toHaveText("ad hoc session");
+  await expect(row(page, 30).getByTestId("session-task")).toHaveText("Session #30");
+  await expect(row(page, 29).getByTestId("session-task")).toHaveText("Weekly changelog draft");
   await expect(row(page, 30).getByTestId("session-status")).toHaveText("stopped");
   await expect(row(page, 30).getByTestId("session-elapsed")).toHaveText("10m 00s");
   await expect(row(page, 29).getByTestId("session-status")).toHaveText("completed");
@@ -237,6 +238,10 @@ test("AC1: running first and selected; each row's avatar, agent, task, time, tok
   await expect(row(page, 27).getByTestId("session-orphan-reason")).toHaveText("leader_unverified");
   await expect(row(page, 26).getByTestId("session-orphan-reason")).toHaveText("reap_error");
   for (const id of [30, 29, 27, 26]) await expect(row(page, id).getByTestId("session-kill-unconfirmed")).toHaveCount(0);
+  // AC8 (phase 8 item 17c): every row names the kernel's session title, never the old `ad hoc session` / `playbook #N`.
+  const listText = await page.getByTestId("screen-sessions").innerText();
+  expect(listText).not.toMatch(/ad hoc session/);
+  expect(listText).not.toMatch(/playbook #\d+/);
 
   // #28 has no token count: the log header hides its figure rather than saying "0 tokens".
   await selectById(page, 28);

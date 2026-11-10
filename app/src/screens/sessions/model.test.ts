@@ -11,10 +11,10 @@ import {
   elapsedText,
   groupSessions,
   rowToLine,
+  sessionTitle,
   sortSessions,
   statusLine,
   statusView,
-  taskText,
   tokensText,
 } from "./model";
 
@@ -81,9 +81,20 @@ describe("order", () => {
 });
 
 describe("the words on a row", () => {
-  it("the task is the playbook, else ad hoc (the contract has no task field)", () => {
-    expect(taskText({ playbook: 7 })).toBe("playbook #7");
-    expect(taskText({ playbook: null })).toBe("ad hoc session");
+  it("the task is the kernel's session title, else `Session #<id>`, never `ad hoc session` or `playbook #N`", () => {
+    expect(sessionTitle({ id: 7, title: "Weekly changelog draft" })).toBe("Weekly changelog draft");
+    expect(sessionTitle({ id: 30, title: "Why is the build red?" })).toBe("Why is the build red?");
+    // The kernel always sends a title; an absent or blank one reads as the kernel's own fallback.
+    expect(sessionTitle({ id: 30 })).toBe("Session #30");
+    expect(sessionTitle({ id: 31, title: "" })).toBe("Session #31");
+    expect(sessionTitle({ id: 32, title: "   " })).toBe("Session #32");
+    for (const s of [session(4, { playbook: 4 }), session(30, { playbook: null })]) {
+      expect(sessionTitle(s)).not.toMatch(/ad hoc session|playbook #\d+/);
+    }
+  });
+
+  it("the session title is untrusted: control and bidi characters are escaped", () => {
+    expect(sessionTitle({ id: 9, title: `red${ESC}[31m build${RLO}` })).toBe("red\\x1b[31m build\\u202e");
   });
 
   it("the agent is escaped, or unknown", () => {
