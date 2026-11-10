@@ -11,7 +11,7 @@ import type { Approval, StudioBridge } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
 import { ApprovalsScreen } from "./ApprovalsScreen";
-import { ADDS, CharterDisplay, JOBS_HEADING, KEEPS, RAW_SUMMARY } from "./CharterDisplay";
+import { ADDS, ADDS_TOOLS, CharterDisplay, JOBS_HEADING, KEEPS, RAW_SUMMARY } from "./CharterDisplay";
 import { printable } from "./printable";
 import { CHARTER_CATALOGUE_UNAVAILABLE, charterDisplayParts } from "./subject";
 import type { CharterDisplayParts } from "./subject";
@@ -218,6 +218,28 @@ describe("CharterDisplay", () => {
     expect(screen.getByTestId("charter-job").querySelector(".approvals-charter-job-head .badge")?.textContent).toBe(KEEPS);
     cleanup();
     render(<CharterDisplay parts={parts(WALK_DISPLAY)} />);
+    expect(screen.getByTestId("charter-plain").querySelector(".badge")).toBeNull();
+  });
+
+  it("an update's compact form shows a kept job that gains a tool as \"Adds tools\" (no purpose line to mark), never the kernel's text; a create shows no badge", () => {
+    const compact = [
+      'Update crew member mason ("Mason"), settings sha256 3f9a1c07b2e4, proposed by Wright',
+      "job: Ask for a merge (gains tools)",
+      "job: Read a PR (added)",
+      "job: General",
+      "tool_policy: [] → as on the enforced line",
+      `enforced: never: none; tools: ${K}kernel_automate_merge_check; bash prefixes: none`,
+    ].join("\n");
+    render(<CharterDisplay parts={parts(compact)} />);
+    const jobs = screen.getAllByTestId("charter-job");
+    expect(jobs.map((j) => [j.querySelector(".approvals-charter-job-label")?.textContent, j.querySelector(".approvals-charter-job-head .badge")?.textContent])).toEqual([
+      ["Ask for a merge", ADDS_TOOLS],
+      ["Read a PR", ADDS],
+      ["General", KEEPS],
+    ]);
+    expect(screen.getByTestId("charter-plain").textContent).not.toContain("(gains tools)");
+    cleanup();
+    render(<CharterDisplay parts={parts('Create crew member nell ("Nell", crab crew-teal), proposed by Wright\njob: Read a PR (gains tools)\nenforced: x')} />);
     expect(screen.getByTestId("charter-plain").querySelector(".badge")).toBeNull();
   });
 

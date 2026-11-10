@@ -165,14 +165,15 @@ export function isCharterApproval(a: Approval): boolean {
 
 /**
  * The kernel's charter-display format, mirrored from
- * `kernel/src/features/catalogue.ts` (`jobDisplayLines`, `DISPLAY_ADDED` and
- * `DISPLAY_CATALOGUE_UNAVAILABLE`) and `kernel/src/agents/charter-tools.ts`
+ * `kernel/src/features/catalogue.ts` (`jobDisplayLines`, `DISPLAY_ADDED`,
+ * `DISPLAY_GAINS_TOOLS` and `DISPLAY_CATALOGUE_UNAVAILABLE`) and `kernel/src/agents/charter-tools.ts`
  * (`updateHead`); `subject.test.ts` reads those files as text and fails if any
  * drifts.
  */
 export const CHARTER_JOB_PREFIX = "job: ";
 export const CHARTER_PURPOSE_PREFIX = "  - ";
 export const CHARTER_ADDED_SUFFIX = " (added)";
+export const CHARTER_GAINS_TOOLS_SUFFIX = " (gains tools)";
 export const CHARTER_UPDATE_HEAD_PREFIX = "Update crew member ";
 export const CHARTER_CATALOGUE_UNAVAILABLE =
   "kernel tools: the kernel's tool catalogue is unavailable, so they are not grouped by job; their names are on the enforced line below";
@@ -186,12 +187,15 @@ export interface CharterPurpose {
 /**
  * One job of a charter display's plain block: its label, whether the update
  * adds the job (the member held no tool of it; always false for a create),
- * and the purpose line of each granted tool of that job (none in the kernel's
+ * `gainsTools` (present, `true`, only on an update's job line the kernel's
+ * compact form marks: a job the member keeps that gains a tool), and the
+ * purpose line of each granted tool of that job (none in the kernel's
  * compact, label-only form).
  */
 export interface CharterJob {
   readonly label: string;
   readonly added: boolean;
+  readonly gainsTools?: true;
   readonly purposes: readonly CharterPurpose[];
 }
 
@@ -233,8 +237,9 @@ export interface CharterDisplayParts {
  * An update's display (its head starts `CHARTER_UPDATE_HEAD_PREFIX`) marks
  * what it adds with `CHARTER_ADDED_SUFFIX`: a job line the member held no tool
  * of, and, under a kept job, a new tool's purpose line. The suffix is taken
- * off into `added`. A create's display never carries it, so there it is read
- * as part of the text.
+ * off into `added`. In the compact form a kept job line that gains a tool
+ * ends `CHARTER_GAINS_TOOLS_SUFFIX`, taken off into `gainsTools`. A create's
+ * display never carries either, so there they are read as part of the text.
  */
 export function charterDisplayParts(display: string): CharterDisplayParts | undefined {
   const lines = display.split("\n");
@@ -245,13 +250,18 @@ export function charterDisplayParts(display: string): CharterDisplayParts | unde
   }
   const marked = (text: string): { text: string; added: boolean } =>
     update && text.endsWith(CHARTER_ADDED_SUFFIX) ? { text: text.slice(0, -CHARTER_ADDED_SUFFIX.length), added: true } : { text, added: false };
-  const jobs: { label: string; added: boolean; purposes: CharterPurpose[] }[] = [];
+  const jobs: { label: string; added: boolean; gainsTools?: true; purposes: CharterPurpose[] }[] = [];
   let i = 1;
   for (; i < lines.length; i += 1) {
     const line = lines[i] as string;
     if (line.startsWith(CHARTER_JOB_PREFIX)) {
-      const { text, added } = marked(line.slice(CHARTER_JOB_PREFIX.length));
-      jobs.push({ label: text, added, purposes: [] });
+      const jobLine = line.slice(CHARTER_JOB_PREFIX.length);
+      if (update && jobLine.endsWith(CHARTER_GAINS_TOOLS_SUFFIX)) {
+        jobs.push({ label: jobLine.slice(0, -CHARTER_GAINS_TOOLS_SUFFIX.length), added: false, gainsTools: true, purposes: [] });
+      } else {
+        const { text, added } = marked(jobLine);
+        jobs.push({ label: text, added, purposes: [] });
+      }
     } else if (line.startsWith(CHARTER_PURPOSE_PREFIX)) {
       const job = jobs.at(-1);
       if (job === undefined) return undefined;

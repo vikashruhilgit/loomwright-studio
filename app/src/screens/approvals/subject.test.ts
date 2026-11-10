@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { Approval, PlaybookListing } from "../../api/contract";
 import {
   CHARTER_ADDED_SUFFIX,
+  CHARTER_GAINS_TOOLS_SUFFIX,
   CHARTER_CATALOGUE_UNAVAILABLE,
   CHARTER_JOB_PREFIX,
   CHARTER_PURPOSE_PREFIX,
@@ -274,6 +275,21 @@ describe("charterDisplayParts", () => {
     expect(create?.jobs).toEqual([{ label: "Read a PR (added)", added: false, purposes: [kept("Read it. (added)")] }]);
   });
 
+  it("an update's compact form marks a kept job that gains a tool (gainsTools, the mark taken off the label); a create's text, or a job with no mark, is never read as one", () => {
+    const head = 'Update crew member mason ("Mason"), settings sha256 3f9a1c07b2e4, proposed by Wright';
+    const compact = charterDisplayParts([head, `job: Ask for a merge${CHARTER_GAINS_TOOLS_SUFFIX}`, "job: Read a PR (added)", "job: General", "tool_policy: [] → as on the enforced line", "enforced: x"].join("\n"));
+    expect(compact?.jobs).toEqual([
+      { label: "Ask for a merge", added: false, gainsTools: true, purposes: [] },
+      { label: "Read a PR", added: true, purposes: [] },
+      { label: "General", added: false, purposes: [] },
+    ]);
+    expect(compact?.jobs[2]?.gainsTools).toBeUndefined();
+    expect(compact?.raw).toBe("tool_policy: [] → as on the enforced line\nenforced: x");
+    const create = charterDisplayParts(`Create crew member nell ("Nell", crab crew-teal), proposed by Wright\njob: Read a PR${CHARTER_GAINS_TOOLS_SUFFIX}\nenforced: x`);
+    expect(create?.jobs).toEqual([{ label: `Read a PR${CHARTER_GAINS_TOOLS_SUFFIX}`, added: false, purposes: [] }]);
+    expect(create?.jobs[0]?.gainsTools).toBeUndefined();
+  });
+
   it("AC9: the catalogue-unavailable line is the note, with no grouping; the raw lines follow it", () => {
     const raw = `enforced: never: none; tools: Read, ${K}kernel_github_pr_get; bash prefixes: none`;
     expect(charterDisplayParts(['Create crew member mason ("Mason", crab crew-teal), proposed by Wright', CHARTER_CATALOGUE_UNAVAILABLE, raw].join("\n"))).toEqual({
@@ -306,9 +322,12 @@ describe("charterDisplayParts", () => {
 
   it("mirrors the kernel's display format: the job and purpose prefixes (the purposes left out in the compact form), the added mark, the update head and the catalogue-unavailable line", () => {
     expect(kernelCatalogue).toContain(
-      `lines.push(\`${CHARTER_JOB_PREFIX}\${job.label}\${mark(added)}\`, ...(purposes ? tools.map((t) => \`${CHARTER_PURPOSE_PREFIX}\${t.purpose}\${mark(!added && isNew(t.name))}\`) : []))`,
+      `lines.push(\`${CHARTER_JOB_PREFIX}\${job.label}\${mark(added)}\${gains(added, tools.map((t) => t.name))}\`, ...(purposes ? tools.map((t) => \`${CHARTER_PURPOSE_PREFIX}\${t.purpose}\${mark(!added && isNew(t.name))}\`) : []))`,
     );
     expect(/export const DISPLAY_ADDED = "([^"]*)";/.exec(kernelCatalogue)?.[1]).toBe(CHARTER_ADDED_SUFFIX);
+    // The compact form's mark on a kept job that gains a tool: never in the full form (purposes), never on an added job or a create's (isNew is false without held).
+    expect(/export const DISPLAY_GAINS_TOOLS = "([^"]*)";/.exec(kernelCatalogue)?.[1]).toBe(CHARTER_GAINS_TOOLS_SUFFIX);
+    expect(kernelCatalogue).toContain("(!purposes && !added && names.some(isNew) ? DISPLAY_GAINS_TOOLS : \"\")");
     expect(kernelCharterTools).toContain(`return \`${CHARTER_UPDATE_HEAD_PREFIX}\${m.row.id} `);
     const unavailable = /export const DISPLAY_CATALOGUE_UNAVAILABLE =\s*"([^"]*)";/.exec(kernelCatalogue)?.[1];
     expect(unavailable).toBe(CHARTER_CATALOGUE_UNAVAILABLE);

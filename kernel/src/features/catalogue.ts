@@ -250,7 +250,8 @@ export const DISPLAY_NOT_IN_CATALOGUE = "other kernel tools, not in the catalogu
  *     job: other kernel tools, not in the catalogue
  *       - <name>            a granted kernel tool the catalogue does not list
  *
- * (an update's display may end a line with ` (added)`: see `held` below).
+ * (an update's display may end a line with ` (added)`, or a compact job line
+ * with ` (gains tools)`: see `held` below).
  *
  * None when no kernel tool is granted (the display is as it always was). One
  * line, `DISPLAY_CATALOGUE_UNAVAILABLE`, when `catalogue` is undefined: never a
@@ -273,9 +274,14 @@ export const DISPLAY_NOT_IN_CATALOGUE = "other kernel tools, not in the catalogu
  * - with `purposes`, the purpose line (or name) of each tool `held` lacks
  *   under a kept job; under an added job every tool is new, so only the job
  *   line is marked.
+ * - without `purposes` (no purpose line to mark), a kept job line, when the
+ *   change adds a tool to it: `DISPLAY_GAINS_TOOLS` after the line.
  *
- * Undefined `held` (a create) marks nothing. The compact form's marks are one
- * per added job, so it stays bounded by the job vocabulary.
+ * Undefined `held` (a create) marks nothing. The compact form's marks are at
+ * most one per job, so it stays bounded by the job vocabulary. A compact
+ * display is still never longer than the full one: a gained tool's marked
+ * purpose line (`\n  - <purpose> (added)`, a non-empty purpose or name) is
+ * at least as long as `DISPLAY_GAINS_TOOLS`.
  */
 export function jobDisplayLines(allowedTools: readonly string[], catalogue: ToolCatalogue | undefined, purposes = true, held?: readonly string[]): string[] {
   const granted = kernelToolNames(allowedTools);
@@ -284,23 +290,27 @@ export function jobDisplayLines(allowedTools: readonly string[], catalogue: Tool
   const had = held === undefined ? undefined : new Set(kernelToolNames(held));
   const isNew = (name: string): boolean => had !== undefined && !had.has(name);
   const mark = (added: boolean): string => (added ? DISPLAY_ADDED : "");
+  const gains = (added: boolean, names: readonly string[]): string => (!purposes && !added && names.some(isNew) ? DISPLAY_GAINS_TOOLS : "");
   const lines: string[] = [];
   for (const job of catalogue.jobs) {
     const tools = job.tools.filter((t) => granted.includes(t.name));
     if (tools.length === 0) continue;
     const added = had !== undefined && !job.tools.some((t) => had.has(t.name));
-    lines.push(`job: ${job.label}${mark(added)}`, ...(purposes ? tools.map((t) => `  - ${t.purpose}${mark(!added && isNew(t.name))}`) : []));
+    lines.push(`job: ${job.label}${mark(added)}${gains(added, tools.map((t) => t.name))}`, ...(purposes ? tools.map((t) => `  - ${t.purpose}${mark(!added && isNew(t.name))}`) : []));
   }
   const unknown = granted.filter((name) => catalogueTool(catalogue, name) === undefined);
   if (unknown.length > 0) {
     const added = had !== undefined && ![...had].some((name) => catalogueTool(catalogue, name) === undefined);
-    lines.push(`job: ${DISPLAY_NOT_IN_CATALOGUE}${mark(added)}`, ...(purposes ? unknown.map((name) => `  - ${name}${mark(!added && isNew(name))}`) : []));
+    lines.push(`job: ${DISPLAY_NOT_IN_CATALOGUE}${mark(added)}${gains(added, unknown)}`, ...(purposes ? unknown.map((name) => `  - ${name}${mark(!added && isNew(name))}`) : []));
   }
   return lines;
 }
 
 /** What an update's display puts after a job line, purpose line or name the change adds (`jobDisplayLines`' `held`). */
 export const DISPLAY_ADDED = " (added)";
+
+/** What an update's compact display puts after a kept job line the change adds a tool to (`jobDisplayLines`' `held`). */
+export const DISPLAY_GAINS_TOOLS = " (gains tools)";
 
 /** The kernel tool names `allowedTools` grants (`mcp__kernel__<name>`, without the prefix), each once, in order. */
 function kernelToolNames(allowedTools: readonly string[]): string[] {

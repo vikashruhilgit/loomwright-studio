@@ -579,8 +579,9 @@ function updateHead(m: Merged): string {
  * then the result's enforced line. The job lines mark what the update adds
  * against the member's current tools (`Merged.heldTools`): a job line ends
  * ` (added)` when the member held no tool of that job, and every other job
- * line is one it keeps; in the full form a new tool under a kept job is
- * marked on its purpose line. The first of these forms whose whole
+ * line is one it keeps; a new tool under a kept job is marked on its purpose
+ * line in the full form, and on the job line (` (gains tools)`) in the
+ * label-only forms. The first of these forms whose whole
  * display fits `MAX_APPROVAL_DISPLAY` (else the last, which the hold refuses):
  *
  * 1. each job's tools' purpose lines, and every field line as
@@ -681,7 +682,7 @@ function shortestNewShown(field: string): string {
  * form undercuts), with the enforced line's tools and Bash prefixes each a
  * one-character entry (`x`, `"x"`: no shorter than any list, `none`
  * included), so the bound holds for every request and every form. The
- * ` (added)` marks never shorten a display, so they are left out: a change
+ * ` (added)` and ` (gains tools)` marks never shorten a display, so they are left out: a change
  * that leaves `tool_policy` alone adds no tool (its job lines carry no mark),
  * and one that sets it is bounded with no job line at all.
  */

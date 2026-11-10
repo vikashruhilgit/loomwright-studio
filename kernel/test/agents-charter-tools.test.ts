@@ -30,7 +30,7 @@ import {
 import { agentFilePaths, agentSettingsPath, createAgent, ensureAgentFiles, getAgent, readAgentSettings, renderAgentSettingsJson, renderRoleMd, validateCharter } from "../src/agents/index.js";
 import type { Charter } from "../src/agents/index.js";
 import { decideApproval, listApprovals } from "../src/approvals/index.js";
-import { DISPLAY_ADDED, DISPLAY_CATALOGUE_UNAVAILABLE, DISPLAY_NOT_IN_CATALOGUE, buildToolCatalogue, jobDisplayLines } from "../src/features/catalogue.js";
+import { DISPLAY_ADDED, DISPLAY_CATALOGUE_UNAVAILABLE, DISPLAY_GAINS_TOOLS, DISPLAY_NOT_IN_CATALOGUE, buildToolCatalogue, jobDisplayLines } from "../src/features/catalogue.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
 import type { ContributedTool } from "../src/features/index.js";
 import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
@@ -748,6 +748,31 @@ describe("kernel_agent_update (AC5, AC6)", () => {
     expect(h.approvals().map((a) => a.id)).toEqual([1, 2]);
   });
 
+  it("the floor shows a never change's enforced never as empty (its shortest value), not the current list: at 4,000 never: [] is held and a longer never request is ask-for-less", async () => {
+    const h = await bootManager();
+    const NEVER = ["git_push", "gh_pr_create"];
+    const member = (id: string, pad: number) =>
+      h.ownerCreate(charter({ id, tool_policy: { allowedTools: [...longTools(25, "a"), `mcp__pad__${"x".repeat(pad)}`], allowedBashPrefixes: [], never: NEVER } }));
+    const setNever = async (id: string, key: string, never: string[]) => h.wright.gate(UPDATE, { id, changes: { never }, expected_sha256: await h.shaOf(id), idempotency_key: key });
+    const heldDisplays = () => events(h.store, "approval_requested").map((e) => String(e.payload.display));
+    // Probe: the smallest request (never: []) is held; its display's length gives the padding for 4,000.
+    expect(member("pina", 10).ok).toBe(true);
+    expect((await setNever("pina", "k1", [])).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+    const pad = 10 + MAX_APPROVAL_DISPLAY - (heldDisplays()[0]?.length ?? 0);
+    expect(pad).toBeGreaterThan(0);
+    expect(pad).toBeLessThan(190);
+    expect(member("pinc", pad).ok).toBe(true);
+    expect((await setNever("pinc", "k2", [])).permissionDecisionReason).toMatch(/^approval_required: held as approval 2;/);
+    const shown = heldDisplays().at(-1) ?? "";
+    expect(shown.length).toBe(MAX_APPROVAL_DISPLAY);
+    expect(shown).toContain(`never: ${JSON.stringify(NEVER)} → []\nenforced: never: none; tools: `);
+    // A longer request to the same field: the floor (never: [] whole, 4,000) fits, so the remedy is Wright's.
+    const longer = await setNever("pinc", "k3", ["git_push"]);
+    expect(longer.permissionDecision).toBe("deny");
+    expect(longer.permissionDecisionReason).toContain("; ask for less at once");
+    expect(longer.permissionDecisionReason).not.toContain("no request to these fields fits");
+  });
+
   it("an owner's edit between the apply's hash read and the in-transaction re-read: apply_refused config_changed, the owner's bytes kept, no agent_updated, no temporary file left", async () => {
     const h = await bootManager();
     expect(h.ownerCreate().ok).toBe(true);
@@ -1066,6 +1091,83 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     expect([`Update crew member mason ("Mason"), settings sha256 0123456789ab, proposed by Wright`, ...jobDisplayLines(every, catalogue, true), old, enforced].join("\n").length).toBeGreaterThan(MAX_APPROVAL_DISPLAY);
     const two = await w.gate(UPDATE, { id: "mason", changes: { workspaces: workspaces.slice(0, 2) }, expected_sha256: await sha256(), idempotency_key: "u2" });
     expect(two.permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+  });
+
+  it("the floor counts the kept tools' label-only job lines: a member granted every kernel tool whose smallest workspaces request is 4,001 characters gets the owner's remedy; at 4,000 that request is held", async () => {
+    const h = await bootKernel();
+    const catalogue = buildToolCatalogue(SHIPPED_TOOLS);
+    const every = catalogue.tools.map((t) => `${K}${t.name}`);
+    const jobLines = jobDisplayLines(every, catalogue, false);
+    expect(jobLines.length).toBe(catalogue.jobs.length);
+    const enforced = `enforced: never: none; tools: ${every.join(", ")}; bash prefixes: none`;
+    // 9 workspaces of ~200 characters and one padded one: the padding moves the floor one character at a time.
+    const old = (pad: number) => [...Array.from({ length: 9 }, (_, i) => join(tmp, "work", `${"w".repeat(140)}-${String(i).padStart(2, "0")}`)), join(tmp, "work", "p".repeat(pad))];
+    // The smallest request (workspaces: []) on pinb or pinc (a 4-character id, as pinx) shows the label-only job lines (no tool changes, so no mark), its field line and the enforced line.
+    const smallest = (pad: number) => [`Update crew member pinx ("Mason"), settings sha256 0123456789ab, proposed by Wright`, ...jobLines, `workspaces: ${JSON.stringify(old(pad))} → []`, enforced].join("\n");
+    const padFor = (length: number) => 10 + length - smallest(10).length;
+    expect(padFor(MAX_APPROVAL_DISPLAY)).toBeGreaterThan(0);
+    expect(padFor(MAX_APPROVAL_DISPLAY + 1)).toBeLessThan(1000);
+    // Without the job lines that request would be well under the cut: the floor must count them.
+    expect(smallest(padFor(MAX_APPROVAL_DISPLAY + 1)).length - jobLines.join("\n").length).toBeLessThan(MAX_APPROVAL_DISPLAY);
+    const member = (id: string, pad: number) => createAgent(h.store, dataDir, charter({ id, tool_policy: { allowedTools: every, allowedBashPrefixes: [], never: [] }, workspaces: old(pad) }), { by: "owner" }, clock.at);
+    const w = await h.session("wright", WRIGHT_POLICY);
+    const shaOf = async (id: string) =>
+      (JSON.parse((await w.tool(AGENT_LIST_TOOL_NAME, {})).content[0]?.text ?? "{}") as { agents: ListEntry[] }).agents.find((a) => a.id === id)?.sha256 as string;
+    const clear = async (id: string, key: string) => w.gate(UPDATE, { id, changes: { workspaces: [] }, expected_sha256: await shaOf(id), idempotency_key: key });
+
+    // 4,001: no request to workspaces fits, so the remedy is the owner's.
+    expect(member("pinb", padFor(MAX_APPROVAL_DISPLAY + 1)).ok).toBe(true);
+    const over = await clear("pinb", "k1");
+    expect(over.permissionDecision).toBe("deny");
+    expect(over.permissionDecisionReason).toContain(`would be ${MAX_APPROVAL_DISPLAY + 1}, so no request to these fields fits; the owner changes config/agents/pinb.json by hand`);
+    expect(over.permissionDecisionReason).not.toContain("ask for less");
+
+    // 4,000: that same smallest request fits and is held, its display exactly the floor's length.
+    expect(member("pinc", padFor(MAX_APPROVAL_DISPLAY)).ok).toBe(true);
+    expect((await clear("pinc", "k2")).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+    const shown = heldDisplay(h.store);
+    expect(shown.length).toBe(MAX_APPROVAL_DISPLAY);
+    expect(shown.split("\n").slice(1, 1 + jobLines.length)).toEqual(jobLines);
+  });
+
+  it("the label-only forms mark a kept job that gains a tool ` (gains tools)` (one mark per job), only on an update: a job it adds is ` (added)`, a kept job with no new tool and every create job unmarked", async () => {
+    const catalogue = buildToolCatalogue(SHIPPED_TOOLS);
+    const multi = catalogue.jobs.find((j) => j.tools.length >= 2);
+    const other = catalogue.jobs.find((j) => j !== multi && j.tools.length >= 1);
+    const third = catalogue.jobs.find((j) => j !== multi && j !== other && j.tools.length >= 1);
+    if (multi === undefined || other === undefined || third === undefined) throw new Error("the catalogue has no job with two tools");
+    const name = (t: { name: string }) => `${K}${t.name}`;
+    const [first, ...rest] = multi.tools.map(name);
+    const held = [first as string, ...third.tools.map(name)];
+    const next = [...multi.tools.map(name), ...other.tools.map(name), ...third.tools.map(name)];
+    const byOrder = (lines: Record<string, string>) => catalogue.jobs.filter((j) => j.label in lines).map((j) => lines[j.label] as string);
+    // The compact form: the kept job gaining tools is marked once, however many it gains.
+    expect(rest.length).toBeGreaterThan(0);
+    expect(jobDisplayLines(next, catalogue, false, held)).toEqual(
+      byOrder({ [multi.label]: `job: ${multi.label}${DISPLAY_GAINS_TOOLS}`, [other.label]: `job: ${other.label}${DISPLAY_ADDED}`, [third.label]: `job: ${third.label}` }),
+    );
+    // The full form marks the gained tools' purpose lines instead, never the kept job line.
+    const full = jobDisplayLines(next, catalogue, true, held);
+    expect(full).toContain(`job: ${multi.label}`);
+    expect(full.filter((l) => l.endsWith(DISPLAY_GAINS_TOOLS))).toEqual([]);
+    expect(full.filter((l) => l.startsWith("  - ") && l.endsWith(DISPLAY_ADDED)).length).toBe(rest.length);
+    // A create (no held list) marks nothing.
+    expect(jobDisplayLines(next, catalogue, false)).toEqual(byOrder({ [multi.label]: `job: ${multi.label}`, [other.label]: `job: ${other.label}`, [third.label]: `job: ${third.label}` }));
+    // The not-in-catalogue heading likewise: kept and gaining a name.
+    expect(jobDisplayLines([`${K}kernel_pad_a`, `${K}kernel_pad_b`], catalogue, false, [`${K}kernel_pad_a`])).toEqual([`job: ${DISPLAY_NOT_IN_CATALOGUE}${DISPLAY_GAINS_TOOLS}`]);
+    expect(jobDisplayLines([`${K}kernel_pad_a`], catalogue, false, [`${K}kernel_pad_a`])).toEqual([`job: ${DISPLAY_NOT_IN_CATALOGUE}`]);
+
+    // Through the hold: a member granted every kernel tool but one of a kept job, given every tool, is shown the label-only form with that job marked.
+    const h = await bootKernel();
+    const every = catalogue.tools.map(name);
+    const missing = rest[0] as string;
+    expect(createAgent(h.store, dataDir, charter({ tool_policy: { allowedTools: every.filter((t) => t !== missing), allowedBashPrefixes: [], never: [] } }), { by: "owner" }, clock.at).ok).toBe(true);
+    const w = await h.session("wright", WRIGHT_POLICY);
+    const sha256 = (JSON.parse((await w.tool(AGENT_LIST_TOOL_NAME, {})).content[0]?.text ?? "{}") as { agents: ListEntry[] }).agents.find((a) => a.id === "mason")?.sha256 as string;
+    expect((await w.gate(UPDATE, { id: "mason", changes: { tool_policy: { allowedTools: every, allowedBashPrefixes: [] } }, expected_sha256: sha256, idempotency_key: "u1" })).permissionDecisionReason).toMatch(
+      /^approval_required: held as approval 1;/,
+    );
+    expect(heldDisplay(h.store).split("\n").slice(1, 1 + catalogue.jobs.length)).toEqual(catalogue.jobs.map((j) => `job: ${j.label}${j === multi ? DISPLAY_GAINS_TOOLS : ""}`));
   });
 });
 

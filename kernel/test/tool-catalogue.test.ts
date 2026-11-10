@@ -17,6 +17,7 @@ import { describe, expect, it } from "vitest";
 import {
   CATALOGUE_UNAVAILABLE_TEXT,
   DISPLAY_ADDED,
+  DISPLAY_GAINS_TOOLS,
   DISPLAY_CATALOGUE_UNAVAILABLE,
   DISPLAY_NOT_IN_CATALOGUE,
   GENERAL_JOB,
@@ -263,14 +264,19 @@ describe("the job-grouped display lines (AC3's grouping, AC9's fallback)", () =>
     // Under an added job only the job line is marked.
     expect(lines[1]).toBe("  - Whether Loomwright may merge one parked pull request now (read only).");
     expect(lines.slice(-2)).toEqual(["  - kernel_mcp_old", `  - kernel_mcp_new${DISPLAY_ADDED}`]);
-    // The compact form: one mark per added job, nothing else.
-    expect(jobDisplayLines(next, CATALOGUE, false, held)).toEqual(["job: Ask for a merge (added)", "job: Read a PR", "job: General", `job: ${DISPLAY_NOT_IN_CATALOGUE}`]);
+    // The compact form: one mark per job, an added job's or (no purpose line to mark) a kept job's that gains a tool (General's swap gains kernel_task_get).
+    expect(jobDisplayLines(next, CATALOGUE, false, held)).toEqual([
+      "job: Ask for a merge (added)",
+      `job: Read a PR${DISPLAY_GAINS_TOOLS}`,
+      `job: General${DISPLAY_GAINS_TOOLS}`,
+      `job: ${DISPLAY_NOT_IN_CATALOGUE}${DISPLAY_GAINS_TOOLS}`,
+    ]);
     expect(jobDisplayLines([`${K}kernel_mcp_new`], CATALOGUE, false, [])).toEqual([`job: ${DISPLAY_NOT_IN_CATALOGUE}${DISPLAY_ADDED}`]);
     // Nothing added (the held list is the result), or a create: no mark at all.
     expect(jobDisplayLines(next, CATALOGUE, true, next).join("\n")).not.toContain(DISPLAY_ADDED);
     expect(jobDisplayLines(next, CATALOGUE).join("\n")).not.toContain(DISPLAY_ADDED);
     // The mark cannot be confused with the vocabulary: no job label carries it.
-    for (const label of Object.values(TOOL_JOBS)) expect(label.endsWith(DISPLAY_ADDED)).toBe(false);
+    for (const label of Object.values(TOOL_JOBS)) expect(label.endsWith(DISPLAY_ADDED) || label.endsWith(DISPLAY_GAINS_TOOLS)).toBe(false);
   });
 });
 
