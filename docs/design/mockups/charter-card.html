@@ -370,6 +370,7 @@ svg.i.s{width:14px;height:14px;stroke-width:1.75}
 .tipb{position:relative}
 .tip{position:absolute;top:calc(100% + var(--space-1));left:50%;transform:translateX(-50%);z-index:20;padding:var(--space-1) var(--space-2);border-radius:var(--radius-xs);background:var(--ink);color:var(--surface);box-shadow:var(--shadow-2);font:var(--type-caption-weight) var(--type-caption-size)/var(--type-caption-line) var(--type-caption-family);letter-spacing:var(--type-caption-tracking);white-space:nowrap;pointer-events:none;visibility:hidden;opacity:0;transition:opacity var(--duration-fast) var(--ease-standard)}
 .tip.r{left:auto;right:0;transform:none}
+.tip.up{top:auto;bottom:calc(100% + var(--space-1))}
 .tipb:hover .tip,.tipb:focus-visible .tip,.tipb.force .tip{visibility:visible;opacity:1}
 .tipb.tipx .tip{visibility:hidden;opacity:0}
 .tipb.done{color:var(--ok)}
@@ -556,7 +557,7 @@ const MASON={id:'mason',name:'Mason',shape:'shark',hue:'teal',kind:'create',ver:
 /* A first draft with no duties and no job that needs anything: the readiness check's empty state. */
 const SCRIBE={id:'notes-keeper',name:'Notes Keeper',shape:'turtle',hue:'olive',kind:'create',ver:1,held:17,at:'14:20',repo:'no repo',model:'haiku',mode:'default',
   persona:'Quiet and tidy.',jobs:[],other:['Read'],prefixes:[],never:['settings_write'],limits:{tokens_per_day:50000,sessions_at_once:1},connectors:[],duties:[],boundaries:[]};
-/* Saved workspaces (item 18b). The settings file needs an absolute path; the screens show it from ~. */
+/* Saved workspaces (item 18c). The settings file needs an absolute path; the screens show it from ~. */
 const HOME='/Users/owner';
 const SAVED=[
   {repo:REPO,path:'~/code/studio-sandbox',used:'Today, 09:40'},
@@ -629,10 +630,10 @@ function toolsByJob(c){
   return c.jobs.map(j=>`${JOBS[j].name}${c.adds&&c.adds.includes(j)?' (adds)':''}\n`+JOBS[j].tools.map(t=>`  ${K}${t[0]}\n    ${t[1]}`).join('\n')).join('\n\n')+`\n\nOther tools: ${c.other.join(', ')}\n`;
 }
 /* The four details blocks. Each is complete; nothing is cut (the 4,000-character MAX_APPROVAL_DISPLAY cut is the bug designed away). */
-const BLOCKS=c=>[
+const BLOCKS=(c,ws=S.ws)=>[
   {k:'tools',title:'Kernel tools by job',short:'kernel tools',text:toolsByJob(c)},
-  {k:'enf',title:'Enforced lines',short:'enforced lines',text:enforcedLines(c,S.ws)},
-  {k:'set',title:`Settings file · config/agents/${c.id}.json`,short:'settings file',text:settingsJson(c,S.ws)},
+  {k:'enf',title:'Enforced lines',short:'enforced lines',text:enforcedLines(c,ws)},
+  {k:'set',title:`Settings file · config/agents/${c.id}.json`,short:'settings file',text:settingsJson(c,ws)},
   {k:'role',title:`role.md · memory/${c.id}/role.md`,short:'role.md',text:roleMd(c)}
 ];
 
@@ -766,7 +767,7 @@ function rowHTML(r,p,ro,off){
 }
 function readyHTML(c,p,ro){
   const check=ro?'done':S.check, ws=ro?'none':S.ws, off=offline();
-  const head=(badge,extra='')=>`<div class="sech"><h4 class="label" id="${p}-rh">Ready check</h4>${badge}<span class="cap">${extra}</span></div>`;
+  const head=(badge,extra='')=>`<div class="sech"><h4 class="label" id="${p}-rh" tabindex="-1">Ready check</h4>${badge}<span class="cap">${extra}</span></div>`;
   if(check==='loading') return `<section class="blk" id="${p}-ready" aria-labelledby="${p}-rh" aria-busy="true">${head('<span class="badge neu"><span class="spin" aria-hidden="true"></span>Checking</span>')}
     <p class="rnote" role="status"><span class="spin" aria-hidden="true"></span><span>Wright's dry run started at ${c.at}. Each row fills in when it has been checked; nothing shows ready before then.</span></p>
     <div class="skel" aria-hidden="true"><i></i><i></i><i></i></div></section>`;
@@ -783,7 +784,7 @@ function readyHTML(c,p,ro){
   return `<section class="blk" id="${p}-ready" aria-labelledby="${p}-rh">${head(badge,when)}${why}${list}${!ro&&needsWs(c)&&!c.hasWs&&WSQ_OPEN.includes(ws)?wsqHTML(c):''}</section>`;
 }
 
-/* The workspace question (item 18b/18d). Shown only for a charter with a job that needs a workspace (AC5). */
+/* The workspace question (items 18c and 18d). Shown only for a charter with a job that needs a workspace (AC5). */
 function wsqHTML(c){
   const ws=S.ws, match=SAVED.filter(s=>s.repo===REPO), others=SAVED.length-match.length;
   const job=c.jobs.filter(j=>JOBS[j].needs.includes('workspace')).map(j=>JOBS[j].name).join(', ').replace(/, ([^,]*)$/,' and $1');
@@ -879,7 +880,7 @@ function chatScreen(){
   return {title:'Chat',sub:'Wright',html};
 }
 
-/* ---------- Settings → Workspaces (item 18b) ---------- */
+/* ---------- Settings → Workspaces (item 18c) ---------- */
 function settingsScreen(){
   const L=S.list;
   let body;
@@ -890,7 +891,7 @@ function settingsScreen(){
       ?`<tr class="gone"><td colspan="4"><span>Removed <span class="ms">${esc(s.path)}</span> from your saved workspaces. The folder is still on disk, and no crew member's settings change.</span> <button class="lnk" data-act="ws-undo" data-t="${i}">Undo</button></td></tr>`
       :`<tr><td>${esc(s.repo)}</td><td class="ms">${esc(s.path)}</td><td class="tn">${esc(s.used)}</td><td>${tipBtn('ws-remove',`Remove ${s.path}`,I.trash,` data-t="${i}"`,true)}</td></tr>`).join('')}</tbody></table>`;
   const html=`<div class="scroll"><div class="pad"><p class="where cap">The rest of Settings is drawn in gui-v2.html and chat-threads.html. This item adds Workspaces.</p>
-    <section class="blk" aria-labelledby="h-ws"><div class="sech"><h2 class="label" id="h-ws">Workspaces</h2></div>
+    <section class="blk" aria-labelledby="h-ws"><div class="sech"><h2 class="label" id="h-ws" tabindex="-1">Workspaces</h2></div>
     <p class="where">Folders you chose for a repo on a charter card. When a crew member needs a copy of a repo, Wright offers the saved ones whose remote matches. Removing one forgets it here only.</p>${body}${L==='rows'||L==='removed'||L==='empty'?`<div class="acts"><button class="btn sec" data-act="say" data-what="Add folder… opens the macOS folder picker. A protected folder (Documents, Desktop, Downloads, iCloud Drive) or a folder that isn't a git checkout is refused with the reason in plain words, as on the card.">${I.folder}Add folder…</button></div>`:''}</section></div></div>`;
   return {title:'Settings',sub:'Workspaces',html};
 }
@@ -938,25 +939,40 @@ function seeView(){
   if(x.focus) $(x.focus)?.focus({preventScroll:true});
 }
 function focusIn(sel){ const el=$('#main '+sel); if(el){ el.focus({preventScroll:true}); const sc=el.closest('#thread, .scroll'); if(sc){ const r=el.getBoundingClientRect(), b=sc.getBoundingClientRect(); if(r.top<b.top||r.bottom>b.bottom) sc.scrollTop+=r.top-b.top-48; } } }
-function toast(msg){
-  const el=document.createElement('div'); el.className='toast'; el.setAttribute('role','status');
-  el.innerHTML=`<span class="dot ok" aria-hidden="true"></span><span class="t">${esc(msg)}</span><button class="x" aria-label="Dismiss" data-act="dismiss">${I.x}</button>`;
-  $('#toasts').appendChild(el); setTimeout(()=>el.remove(),4000);
+/* A toast remembers the control that raised it; when it goes while it holds focus, focus returns there (or to the column), never to the page. */
+function toast(msg,from){
+  const el=document.createElement('div'); el.className='toast'; el.setAttribute('role','status'); el._from=from;
+  el.innerHTML=`<span class="dot ok" aria-hidden="true"></span><span class="t">${esc(msg)}</span><button class="x tipb" aria-label="Dismiss" data-act="dismiss">${I.x}<span class="tip r up" aria-hidden="true">Dismiss</span></button>`;
+  $('#toasts').appendChild(el); setTimeout(()=>dropToast(el),4000);
+}
+function dropToast(el){
+  if(!el.isConnected) return;
+  const had=el.contains(document.activeElement), f=el._from; el.remove();
+  if(had) ((f&&f.isConnected&&!f.disabled)?f:$('#col'))?.focus({preventScroll:true});
 }
 /* A step that takes time (a check, a send, a reload): show the loading state, then the result, unless the owner moved to another view first. */
 function later(ms,fn){ const t=tk; setTimeout(()=>{ if(t===tk) fn(); },ms); }
 
 /* ---------- Actions ---------- */
-function cardText(){
-  const c=cardOf(), main=$('#cur .ccb');
-  const plain=main?main.innerText:'';
-  return `${c.kind==='update'?'Change':'Create'} crew member: ${c.name}\n${plain}\n\n`+BLOCKS(c).map(b=>`== ${b.title} ==\n${b.text}`).join('\n');
+/* Copy all text: the card's plain part as shown, without the details section or the Ask box, then each details block once, from data.
+   innerText needs layout, so the trimmed copy is measured off-screen beside the card and removed at once. p is the card's prefix (cur, or v1). */
+function cardText(p){
+  const ro=p==='v1', c=ro?DEV:cardOf(), main=$(`#${p} .ccb`);
+  let plain='';
+  if(main){
+    const x=main.cloneNode(true); x.querySelectorAll('.dets, .askb').forEach(n=>n.remove()); x.removeAttribute('id'); x.querySelectorAll('[id]').forEach(n=>n.removeAttribute('id'));
+    /* A cloned checked radio with the same name would uncheck the owner's pick in the live card. */
+    x.querySelectorAll('[name]').forEach(n=>n.removeAttribute('name'));
+    x.setAttribute('aria-hidden','true'); x.style.cssText=`position:absolute;left:-10000px;top:0;width:${main.offsetWidth}px`;
+    main.parentNode.appendChild(x); plain=x.innerText.trim(); x.remove();
+  }
+  return `${c.kind==='update'?'Change':'Create'} crew member: ${c.name}\n${plain}\n\n`+BLOCKS(c,ro?'none':S.ws).map(b=>`== ${b.title} ==\n${b.text}`).join('\n');
 }
 function copy(what,btn){
   const c=cardOf(), b=BLOCKS(c).find(x=>x.k===what);
-  const text=b?b.text:cardText(), label=b?`Copied the ${b.short}`:'Copied all text';
+  const text=b?b.text:cardText(what.replace(/^all-/,'')), label=b?`Copied the ${b.short}`:'Copied all text';
   try{ navigator.clipboard&&navigator.clipboard.writeText(text).catch(()=>{}); }catch(e){}
-  toast(`${label}: ${fmt(text.length)} characters.`); live(`${label}.`);
+  toast(`${label}: ${fmt(text.length)} characters.`,btn); live(`${label}.`);
   btn.classList.add('done'); const svg=btn.querySelector('svg'); svg.outerHTML=I.copied;
   setTimeout(()=>{ if(btn.isConnected){ btn.classList.remove('done'); btn.querySelector('svg').outerHTML=I.copy; } },2000);
 }
@@ -985,7 +1001,7 @@ function act(a,el){
     case 'ws-undo': S.removed=S.removed.filter(r=>r!==id); S.list=S.removed.length?'removed':'rows'; render(); focusIn(`[data-act="ws-remove"][data-t="${id}"]`); live(`${SAVED[id].path} is back in your saved workspaces.`); break;
     case 'list-retry': S.list='loading'; render(); focusIn('#h-ws'); later(900,()=>{ S.list='rows'; render(); $('#main [data-act="ws-remove"]')?.focus({preventScroll:true}); }); break;
     case 'approve': case 'deny': note(`${a==='approve'?'Approve':'Deny'} decides held approval #${cardOf().held}, as item 16's card does today; this mockup draws the card before you choose.`); break;
-    case 'dismiss': el.closest('.toast')?.remove(); break;
+    case 'dismiss': { const t=el.closest('.toast'); if(t) dropToast(t); break; }
     case 'say': note(el.dataset.what); break;
   }
 }
