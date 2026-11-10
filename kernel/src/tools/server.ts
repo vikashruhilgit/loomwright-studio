@@ -30,6 +30,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { KERNEL_APPLIED_ACTIONS } from "../approvals/store.js";
 import type { ApprovalApplier } from "../approvals/store.js";
+import { CATALOGUE_UNAVAILABLE_TEXT, buildToolCatalogue, catalogueText } from "../features/catalogue.js";
+import type { ToolCatalogue } from "../features/catalogue.js";
 import { InvalidContributionError, PHASE1_TOOL_NAMES } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import type { GitHubClient } from "../integrations/types.js";
@@ -44,6 +46,7 @@ import type { Store } from "../store/store.js";
 import { kernelVersion } from "../version.js";
 import { handoffPath, renderHandoff, writeFileAtomic } from "./handoff.js";
 import type { HandoffRef } from "./handoff.js";
+import { PHASE1_DESCRIPTIONS, PHASE1_TASK_LIST_DEFAULT, PHASE1_TASK_LIST_MAX } from "./phase1-descriptions.js";
 
 export const KERNEL_MCP_SERVER_NAME = "kernel";
 
@@ -98,8 +101,8 @@ const MAX_TITLE = 500;
 const MAX_LINK = 2_000;
 const MAX_LINKS = 50;
 const MAX_HANDOFF = 200_000;
-const MAX_LIST = 200;
-const DEFAULT_LIST = 50;
+const MAX_LIST = PHASE1_TASK_LIST_MAX;
+const DEFAULT_LIST = PHASE1_TASK_LIST_DEFAULT;
 
 const id = z.number().int().positive();
 const short = z.string().min(1).max(MAX_SHORT);
@@ -155,19 +158,8 @@ const shapes = {
   },
 } as const;
 
-const REPEAT = "Repeating a call with the same idempotency_key in this session returns the first result, even if other arguments differ.";
-
-/** The words the Tasks board reads as a task's state (the app owns the grouping; the kernel still stores any word). */
-const BOARD_WORDS = "The Tasks board reads four state words: waiting (needs the owner), working, parked, done. Any other word you choose is kept and shows under Other with that exact word.";
-
-const descriptions: Record<KernelToolName, string> = {
-  kernel_task_create: `Create a task row. state is free text you choose; the kernel defines no states. ${BOARD_WORDS} ${REPEAT}`,
-  kernel_task_update: `Update the given fields of a task (null clears an optional field). state is free text. ${BOARD_WORDS} With an idempotency_key: ${REPEAT}`,
-  kernel_task_list: `List tasks in id order, filtered by state, assignee_agent or parent_task_id (limit 1-${MAX_LIST}, default ${DEFAULT_LIST}).`,
-  kernel_task_get: "Get one task by id.",
-  kernel_schedule_wakeup: `Schedule a wake-up at an ISO-8601 instant with a time zone (a past time fires on the next tick). The reason is free text, except that ${RESERVED_WAKEUP_REASON_PREFIXES.join(" and ")} are reserved for the kernel. ${REPEAT}`,
-  kernel_request_stop: `End this session: the kernel writes your handoff note (markdown) to memory and then stops the session. ${REPEAT}`,
-};
+// The phase 1 six's descriptions live in a CLI-safe leaf, so the tool catalogue reads the same text this server publishes.
+const descriptions: Record<KernelToolName, string> = PHASE1_DESCRIPTIONS;
 
 class KernelToolError extends Error {}
 
@@ -406,11 +398,37 @@ export function kernelToolHandlers(ctx: KernelToolContext): Record<KernelToolNam
 }
 
 /**
+ * The kernel's tool catalogue (`buildToolCatalogue`) of the phase 1 six and
+ * `contributed`, or `null` when building it throws: the drafting tools'
+ * descriptions then say it is unavailable, and a charter display shows the
+ * raw names with a plain note. `contributed` is the composition's merged tools
+ * (`startKernel` passes them unfiltered, so a session whose own grants narrow
+ * its tools still sees every tool a crew member can be granted).
+ */
+export function kernelToolCatalogue(contributed: readonly ContributedTool[]): ToolCatalogue | null {
+  try {
+    return buildToolCatalogue(contributed);
+  } catch {
+    return null;
+  }
+}
+
+/** The tools whose descriptions carry the catalogue: the ones Wright drafts a charter or a playbook with. */
+export const DRAFTING_TOOL_NAMES: readonly string[] = Object.freeze(["kernel_agent_create", "kernel_agent_update", "kernel_playbook_create", "kernel_playbook_update"]);
+
+/** `description` as a session is offered it: a drafting tool's carries the catalogue's text (or that it is unavailable) after it. */
+function publishedDescription(name: string, description: string, catalogue: ToolCatalogue | null): string {
+  if (!DRAFTING_TOOL_NAMES.includes(name)) return description;
+  return `${description}\n\n${catalogue === null ? CATALOGUE_UNAVAILABLE_TEXT : catalogueText(catalogue)}`;
+}
+
+/**
  * What a contributed tool's handler (and its `beforeHold`) receives: the
  * session manager as `ctx.sessions` (its `startSession` included when the
- * composition has one), and the step key scoped to the tool and session.
+ * composition has one), the step key scoped to the tool and session, and the
+ * catalogue when there is one.
  */
-function contributedToolContext(contributed: ContributedTool, ctx: KernelToolContext): ContributedToolContext {
+function contributedToolContext(contributed: ContributedTool, ctx: KernelToolContext, catalogue: ToolCatalogue | null = null): ContributedToolContext {
   const { store, sessions, sessionId } = ctx;
   return {
     store,
@@ -418,6 +436,7 @@ function contributedToolContext(contributed: ContributedTool, ctx: KernelToolCon
     sessionId,
     now: ctx.now ?? (() => new Date()),
     ...(ctx.github === undefined ? {} : { github: ctx.github }),
+    ...(catalogue === null ? {} : { catalogue }),
     stepKey: (key) => kernelStepKey(contributed.name, sessionId, key),
   };
 }
@@ -431,16 +450,19 @@ function contributedToolContext(contributed: ContributedTool, ctx: KernelToolCon
  * handler gets, `contextOf(sessionId)` (built at call time, so a composition
  * can pass its session manager before it exists). Any other tool: `undefined`
  * (held as before). A throw propagates: the gate denies `kernel_gate_error`.
+ * The context carries the catalogue of `contributed` (`kernelToolCatalogue`,
+ * built once here), so a charter's held display groups its kernel tools by job.
  */
 export function heldToolCheckOf(contributed: readonly ContributedTool[], contextOf: (sessionId: number) => KernelToolContext): HeldToolCheck {
   const checked = new Map<string, ContributedTool>();
   for (const t of contributed) if (t.beforeHold !== undefined) checked.set(`mcp__${KERNEL_MCP_SERVER_NAME}__${t.name}`, t);
+  const catalogue = kernelToolCatalogue(contributed);
   return (toolName, input, sessionId) => {
     const t = checked.get(toolName);
     if (t?.beforeHold === undefined) return undefined;
     const parsed = z.object(t.shape).safeParse(input ?? {});
     if (!parsed.success) return { refuse: `${t.name}: invalid input: ${z.prettifyError(parsed.error)}` };
-    return t.beforeHold(parsed.data, contributedToolContext(t, contextOf(sessionId)));
+    return t.beforeHold(parsed.data, contributedToolContext(t, contextOf(sessionId), catalogue));
   };
 }
 
@@ -458,7 +480,8 @@ export function heldToolCheckOf(contributed: readonly ContributedTool[], context
  * nothing and gets the real, fixed sets. The returned function answers
  * `undefined` for a tool with no applier; else it parses the held input with the tool's own zod shape (a
  * failure is `{refused: "invalid_input"}`, nothing run) and calls
- * `applyOnApproval` with the store, the decision's instant and the approval.
+ * `applyOnApproval` with the store, the decision's instant, the approval and
+ * the catalogue of `contributed` (`kernelToolCatalogue`, built once here; none when it can't be built).
  * A throw propagates: the decision records it as `apply_error`.
  */
 export function approvalApplierOf(
@@ -479,12 +502,14 @@ export function approvalApplierOf(
     }
     appliers.set(full, t);
   }
+  // The catalogue of the same tools (`heldToolCheckOf`'s), so an apply re-runs a pre-hold check that reads it.
+  const catalogue = kernelToolCatalogue(contributed);
   return (tool, input, approval, store, now) => {
     const t = appliers.get(tool);
     if (t?.applyOnApproval === undefined) return undefined;
     const parsed = z.object(t.shape).safeParse(input ?? {});
     if (!parsed.success) return { refused: "invalid_input", text: `${t.name}: the held input is not valid: ${z.prettifyError(parsed.error)}` };
-    return t.applyOnApproval(parsed.data, { store, now: () => now, approval });
+    return t.applyOnApproval(parsed.data, { store, now: () => now, approval, ...(catalogue === null ? {} : { catalogue }) });
   };
 }
 
@@ -493,11 +518,12 @@ export function approvalApplierOf(
  * `safeParse`d before the guard around the handler, so invalid input is an
  * `isError` result without the handler running; the handler's value is the
  * JSON result (`undefined` ⇒ `null`) and its throw, or a value that is not
- * JSON, an `isError` result.
+ * JSON, an `isError` result. `catalogue` (default none) is put on the
+ * handler's context (`ContributedToolContext.catalogue`).
  * Never rejects.
  */
-export function contributedToolHandler(contributed: ContributedTool, ctx: KernelToolContext): KernelToolHandler {
-  const toolCtx = contributedToolContext(contributed, ctx);
+export function contributedToolHandler(contributed: ContributedTool, ctx: KernelToolContext, catalogue: ToolCatalogue | null = null): KernelToolHandler {
+  const toolCtx = contributedToolContext(contributed, ctx, catalogue);
   const schema = z.object(contributed.shape);
   return async (args) => {
     const parsed = schema.safeParse(args ?? {});
@@ -511,14 +537,25 @@ export function contributedToolHandler(contributed: ContributedTool, ctx: Kernel
   };
 }
 
-/** The SDK tool definitions: the phase 1 six delegating to `kernelToolHandlers(ctx)`, then each contributed tool. */
-export function kernelToolDefinitions(ctx: KernelToolContext, contributed: readonly ContributedTool[] = []): SdkMcpToolDefinition<z.ZodRawShape>[] {
+/**
+ * The SDK tool definitions: the phase 1 six delegating to
+ * `kernelToolHandlers(ctx)`, then each contributed tool. `catalogue` (default:
+ * `kernelToolCatalogue(contributed)`; `null` when it could not be built) is
+ * appended to the drafting tools' descriptions (`DRAFTING_TOOL_NAMES`), or the
+ * sentence that it is unavailable, and put on each contributed handler's
+ * context. The composition passes the catalogue of its own unfiltered tools.
+ */
+export function kernelToolDefinitions(
+  ctx: KernelToolContext,
+  contributed: readonly ContributedTool[] = [],
+  catalogue: ToolCatalogue | null = kernelToolCatalogue(contributed),
+): SdkMcpToolDefinition<z.ZodRawShape>[] {
   const handlers = kernelToolHandlers(ctx);
   return [
     ...KERNEL_TOOL_NAMES.map((name) => tool(name, descriptions[name], shapes[name] as z.ZodRawShape, (args) => handlers[name](args))),
     ...contributed.map((t) => {
-      const handler = contributedToolHandler(t, ctx);
-      return tool(t.name, t.description, t.shape, (args) => handler(args));
+      const handler = contributedToolHandler(t, ctx, catalogue);
+      return tool(t.name, publishedDescription(t.name, t.description, catalogue), t.shape, (args) => handler(args));
     }),
   ];
 }
@@ -528,10 +565,15 @@ export function kernelToolDefinitions(ctx: KernelToolContext, contributed: reado
  * server instance holds a live MCP connection and cannot be reused, so the
  * session manager's `mcpServers` factory calls this once per launch attempt.
  * `contributed` (the merged contributions' tools, default none) are
- * registered after the phase 1 six.
+ * registered after the phase 1 six. `catalogue` is `kernelToolDefinitions`'
+ * (default: the catalogue of `contributed`).
  */
-export function createKernelMcpServer(ctx: KernelToolContext, contributed: readonly ContributedTool[] = []): McpSdkServerConfigWithInstance {
-  return createSdkMcpServer({ name: KERNEL_MCP_SERVER_NAME, version: kernelVersion(), tools: kernelToolDefinitions(ctx, contributed) });
+export function createKernelMcpServer(
+  ctx: KernelToolContext,
+  contributed: readonly ContributedTool[] = [],
+  catalogue: ToolCatalogue | null = kernelToolCatalogue(contributed),
+): McpSdkServerConfigWithInstance {
+  return createSdkMcpServer({ name: KERNEL_MCP_SERVER_NAME, version: kernelVersion(), tools: kernelToolDefinitions(ctx, contributed, catalogue) });
 }
 
 const LISTING_ONLY = "tool listing only";

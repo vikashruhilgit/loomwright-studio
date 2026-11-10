@@ -407,6 +407,15 @@ describe("kernel_playbook_dry_run (AC1)", () => {
     expect(mirror).not.toContain("No dry run yet");
   });
 
+  it("Wright's own playbook carries no fit, even naming jobs: only a crew member's charter is checked (playbooks-fit.test.ts has the crew cases)", async () => {
+    const h = await bootKernel();
+    const { id } = await h.create({ jobs: ["ask_for_merge"] });
+    const result = value<DryRunValue & { fit?: unknown }>(await h.dryRun(id, "d1"));
+    expect(result.status).toBe("done");
+    expect(result).not.toHaveProperty("fit");
+    expect(h.store.prepare("SELECT jobs_json FROM playbooks WHERE id = ?").pluck().get(id)).toBe(JSON.stringify(["ask_for_merge"]));
+  });
+
   it("an edit makes the mirror say the new version has no dry run yet (the earlier version's summary is not shown as current)", async () => {
     const h = await bootKernel();
     const { id, slug } = await h.create();

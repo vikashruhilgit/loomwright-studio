@@ -213,6 +213,7 @@ function queueMessage(ctx: ContributedToolContext, a: Args, ok: Admitted): Agent
 
 const agentMessageTool = defineTool({
   name: AGENT_MESSAGE_TOOL_NAME,
+  job: "message_agents",
   description:
     "Hand work to another agent (a crew member, or wright): queues your text as a new message for it and returns at once with {queue_id, agent, depth}. " +
     "Its reply arrives later as a new message to you; do not wait or poll for it: end your turn. " +

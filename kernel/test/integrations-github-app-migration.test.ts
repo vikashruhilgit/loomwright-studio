@@ -14,6 +14,7 @@ import { connectorApp } from "../src/store/migrations/019_connector_app.js";
 import { phase8Foundation } from "../src/store/migrations/020_phase_8_foundation.js";
 import { playbookMergeRequirement } from "../src/store/migrations/021_playbook_merge_requirement.js";
 import { threadContinuity } from "../src/store/migrations/022_thread_continuity.js";
+import { playbookJobs } from "../src/store/migrations/023_playbook_jobs.js";
 
 const T0 = "2026-10-30T10:00:00.000Z";
 const NEW_COLUMNS = ["method", "app_slug", "installation_id"] as const;
@@ -57,14 +58,15 @@ describe("migration 19: connector_app (AC7)", () => {
   const info = (s: Store, column: string): unknown =>
     s.prepare(`SELECT type, "notnull", dflt_value FROM pragma_table_info('connectors') WHERE name = ?`).get(column);
 
-  it("is version 19, named connector_app, directly after 18 (and directly below 20, phase_8_foundation, 21, playbook_merge_requirement, and 22, thread_continuity, the last), and the list is contiguous from 1", () => {
+  it("is version 19, named connector_app, directly after 18 (and directly below 20, phase_8_foundation, 21, playbook_merge_requirement, 22, thread_continuity, and 23, playbook_jobs, the last), and the list is contiguous from 1", () => {
     expect([connectorApp.version, connectorApp.name]).toEqual([19, "connector_app"]);
-    expect(migrations.at(-4)).toBe(connectorApp);
-    expect(migrations.at(-5)).toBe(connectorPermissionsSource);
-    expect(migrations.at(-3)).toBe(phase8Foundation);
-    expect(migrations.at(-2)).toBe(playbookMergeRequirement);
-    expect(migrations.at(-1)).toBe(threadContinuity);
-    expect(migrations.map((m) => m.version)).toEqual(Array.from({ length: 22 }, (_, i) => i + 1));
+    expect(migrations.at(-5)).toBe(connectorApp);
+    expect(migrations.at(-6)).toBe(connectorPermissionsSource);
+    expect(migrations.at(-4)).toBe(phase8Foundation);
+    expect(migrations.at(-3)).toBe(playbookMergeRequirement);
+    expect(migrations.at(-2)).toBe(threadContinuity);
+    expect(migrations.at(-1)).toBe(playbookJobs);
+    expect(migrations.map((m) => m.version)).toEqual(Array.from({ length: 23 }, (_, i) => i + 1));
   });
 
   it("a fresh store has the three columns, after 18's, nullable with no default", () => {
@@ -87,7 +89,7 @@ describe("migration 19: connector_app (AC7)", () => {
     v18.close();
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([22, "thread_continuity"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([23, "playbook_jobs"]);
     expect(store.prepare("SELECT account_login, permissions_json, reachable_repos_json, verified_at, permissions_source, permissions_declared_at, method, app_slug, installation_id FROM connectors").all()).toEqual([
       {
         account_login: "someone",
@@ -132,7 +134,7 @@ describe("migration 19: connector_app (AC7)", () => {
     db.close();
 
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([22, "thread_continuity"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([23, "playbook_jobs"]);
     expect(rerun.prepare("SELECT method, app_slug, installation_id FROM connectors").all()).toEqual([
       { method: "app", app_slug: "studio-reader", installation_id: 12345 },
     ]);

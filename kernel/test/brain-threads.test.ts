@@ -47,6 +47,7 @@ import { AdmissionRefusedError, SessionError, SessionManager } from "../src/sess
 import type { ResumeSessionParams, SessionHandle, SessionStatus, StartSessionParams } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import { threadContinuity } from "../src/store/migrations/022_thread_continuity.js";
+import { playbookJobs } from "../src/store/migrations/023_playbook_jobs.js";
 import { migrations } from "../src/store/migrations/index.js";
 import { stubNotifierContributions } from "./notifier-stub.js";
 import type { FakeCall } from "./session-fakes.js";
@@ -229,8 +230,9 @@ function ownerPart(prompt: string): string {
 describe("migration 22: thread_continuity", () => {
   const cols = (store: Store, t: string) => store.prepare<[string], string>("SELECT name FROM pragma_table_info(?)").pluck().all(t);
 
-  it("is the last migration, creates the two thread tables with their columns, leaves brain_messages and sessions alone, and creates no SQL trigger", () => {
-    expect(migrations.at(-1)).toBe(threadContinuity);
+  it("sits directly below 23 (playbook_jobs, the last migration), creates the two thread tables with their columns, leaves brain_messages and sessions alone, and creates no SQL trigger", () => {
+    expect(migrations.at(-2)).toBe(threadContinuity);
+    expect(migrations.at(-1)).toBe(playbookJobs);
     expect([threadContinuity.version, threadContinuity.name]).toEqual([22, "thread_continuity"]);
     const store = openStore();
     expect(cols(store, "brain_threads")).toEqual(["id", "agent", "title", "summarized_into", "continued_from", "created_at", "updated_at"]);
@@ -244,11 +246,12 @@ describe("migration 22: thread_continuity", () => {
     const first = openStore();
     first.close();
     const db = new Store({ dataDir });
-    db.prepare("DELETE FROM schema_migrations WHERE version = 22").run();
+    // Deleting 22 alone would leave 23 above a gap: 22 and 23 re-run together.
+    db.prepare("DELETE FROM schema_migrations WHERE version >= 22").run();
     db.prepare("ALTER TABLE brain_message_threads DROP COLUMN replay_queue_id").run();
     db.close();
     const rerun = openStore();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([22, "thread_continuity"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([23, "playbook_jobs"]);
     expect(cols(rerun, "brain_message_threads")).toContain("replay_queue_id");
   });
 });

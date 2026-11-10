@@ -16,13 +16,17 @@
 // The `studio` CLI loads this module (through `./drafts.ts`): it imports only
 // `node:` builtins, `../tools/handoff.js` (itself `node:` builtins only),
 // `../brain/memory.js` (for the folder name, which no crew id may take: the
-// kernel-owned `KERNEL_MEMORY_DIRS`) and the triggers feature's public index.
+// kernel-owned `KERNEL_MEMORY_DIRS`), the CLI-safe job vocabulary
+// (`../features/catalogue.js`), the triggers feature's public index and this
+// feature's store (`playbookJobsOf`, a pure read of the row).
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PLAYBOOK_MIRROR_DIR } from "../brain/memory.js";
+import { TOOL_JOBS } from "../features/catalogue.js";
 import { writeFileAtomic } from "../tools/handoff.js";
 import { formatZoned } from "../triggers/index.js";
 import type { TriggerView } from "../triggers/index.js";
+import { playbookJobsOf } from "./store.js";
 import type { PlaybookRow } from "./store.js";
 
 /** A playbook slug: one path segment, no separator, no leading dot or dash, so no traversal. */
@@ -154,6 +158,18 @@ function lastDryRunLine(row: PlaybookRow, dryRun: MirrorDryRun | undefined): str
   return `Last dry run: No dry run of version ${row.version} yet.`;
 }
 
+/**
+ * The jobs line (migration 23), or none when the playbook names no jobs: each
+ * job's plain label with its id as inert code; a stored value that names no
+ * known job is shown as stored, as inert code (never a guessed job).
+ */
+function jobsLine(row: PlaybookRow): string | null {
+  if (row.jobs_json === null) return null;
+  const jobs = playbookJobsOf(row);
+  if (jobs.length === 0) return `- Jobs: ${inline(row.jobs_json)}`;
+  return `- Jobs: ${jobs.map((job) => `${TOOL_JOBS[job]} (${inline(job)})`).join(", ")}`;
+}
+
 /** One policy line: the value as inert code, or `not set`; ` (proposed)` when Wright set it. */
 function policyLine(label: string, value: string | number | null, setBy: string | null): string {
   return `- ${label}: ${value === null ? "not set" : inline(value)}${setBy === "wright" ? " (proposed)" : ""}`;
@@ -162,7 +178,7 @@ function policyLine(label: string, value: string | number | null, setBy: string 
 /**
  * The mirror of `row` (pure): its name, a line saying the file is generated
  * and edits are not read, status, version, intent, the linked trigger and its
- * next fire in `timeZone`, one line per policy field, mode included (`(proposed)` when
+ * next fire in `timeZone`, the jobs it names (when it names any), one line per policy field, mode included (`(proposed)` when
  * Wright set it), and the last dry run (`dryRun`; its summary is untrusted
  * text, shown as one inert code span).
  */
@@ -177,6 +193,9 @@ export function renderPlaybookMirror(row: PlaybookRow, trigger: MirrorTrigger | 
   ];
   // A crew member's playbook names its agent; Wright's mirror is byte-identical to before crew ownership.
   if (row.owning_agent !== "wright") out.push(`- Agent: ${inline(row.owning_agent)}`);
+  // A playbook that names no jobs keeps the mirror it had before migration 23, byte for byte.
+  const jobs = jobsLine(row);
+  if (jobs !== null) out.push(jobs);
   out.push("", "## Intent", "", fenced(row.intent), "", "## Trigger", "");
   if (trigger === null) out.push("- Schedule: no linked trigger");
   else {

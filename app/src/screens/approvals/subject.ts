@@ -7,6 +7,10 @@
 // Only the three kernel-applied tools name a subject (`KERNEL_APPLIED_ACTIONS`,
 // the kernel's `ALWAYS_HELD_TOOLS`): enabling a playbook names that playbook;
 // creating or changing a crew member names that member.
+//
+// A charter create or update's display is split (`charterDisplayParts`) into
+// its plain block (the granted kernel tools by job) and the raw lines beneath
+// it, for `CharterDisplay`.
 import type { Approval, PlaybookListing } from "../../api/contract";
 import { playbookCardHash } from "../chat/model";
 import { memberHash } from "../team/model";
@@ -144,6 +148,132 @@ export function mergeApprovalOf(a: Approval): MergeApproval | undefined {
     readyAt: typeof readyAt === "string" ? readyAt : undefined,
     policy: typeof policy === "string" ? policy : undefined,
   };
+}
+
+/**
+ * Whether `a` is a held charter create or update (`kernel_agent_create`,
+ * `kernel_agent_update`), read from the payload's `tool` as `approvalSubject`
+ * reads it. Only these two have a display the kernel's pre-hold check wrote
+ * from the charter (`createDisplay` / `updateDisplay` in
+ * `kernel/src/agents/charter-tools.ts`); an agent's own approval request carries
+ * no display at all.
+ */
+export function isCharterApproval(a: Approval): boolean {
+  const tool = payloadTool(a.payload);
+  return tool === CREATE || tool === UPDATE;
+}
+
+/**
+ * The kernel's charter-display format, mirrored from
+ * `kernel/src/features/catalogue.ts` (`jobDisplayLines`, `DISPLAY_ADDED`,
+ * `DISPLAY_GAINS_TOOLS` and `DISPLAY_CATALOGUE_UNAVAILABLE`) and `kernel/src/agents/charter-tools.ts`
+ * (`updateHead`); `subject.test.ts` reads those files as text and fails if any
+ * drifts.
+ */
+export const CHARTER_JOB_PREFIX = "job: ";
+export const CHARTER_PURPOSE_PREFIX = "  - ";
+export const CHARTER_ADDED_SUFFIX = " (added)";
+export const CHARTER_GAINS_TOOLS_SUFFIX = " (gains tools)";
+export const CHARTER_UPDATE_HEAD_PREFIX = "Update crew member ";
+export const CHARTER_CATALOGUE_UNAVAILABLE =
+  "kernel tools: the kernel's tool catalogue is unavailable, so they are not grouped by job; their names are on the enforced line below";
+
+/** One granted tool's purpose line (or name), and whether the update adds that tool to a job the member keeps. */
+export interface CharterPurpose {
+  readonly text: string;
+  readonly added: boolean;
+}
+
+/**
+ * One job of a charter display's plain block: its label, whether the update
+ * adds the job (the member held no tool of it; always false for a create),
+ * `gainsTools` (present, `true`, only on an update's job line the kernel's
+ * compact form marks: a job the member keeps that gains a tool), and the
+ * purpose line of each granted tool of that job (none in the kernel's
+ * compact, label-only form).
+ */
+export interface CharterJob {
+  readonly label: string;
+  readonly added: boolean;
+  readonly gainsTools?: true;
+  readonly purposes: readonly CharterPurpose[];
+}
+
+/**
+ * A charter display split for the card. Raw (unescaped) text: every part goes
+ * through `printable` where it is rendered.
+ *
+ * - `head`: the first line (who, and which file for an update).
+ * - `update`: whether it is an update's display (its head is the kernel's
+ *   update head), whose jobs are each added or kept.
+ * - `jobs`: the granted kernel tools grouped by job, in the kernel's order.
+ * - `note`: the kernel's one plain line when its catalogue was unavailable
+ *   (then `jobs` is empty: the kernel never guesses a grouping, nor does this).
+ * - `raw`: every line after the plain block, exactly as the kernel wrote it
+ *   (field lines, the `enforced:` line with the raw tool names, limits,
+ *   workspaces and the files).
+ */
+export interface CharterDisplayParts {
+  readonly head: string;
+  readonly update: boolean;
+  readonly jobs: readonly CharterJob[];
+  readonly note: string | undefined;
+  readonly raw: string;
+}
+
+/**
+ * `display` split into its plain block and the raw lines beneath it, or
+ * `undefined` when it has no plain block (the charter grants no kernel tool,
+ * or the display is not in the kernel's format): the card then shows the
+ * display as it always has. Pure. The plain block is the run of lines right
+ * after the first: `job: <label>` lines, each followed by its `  - <purpose>`
+ * lines, or the one catalogue-unavailable line. It ends at the first line that
+ * is neither. The kernel writes every job with its purposes, or (when that
+ * block would not fit the approval display) every job as its label alone, the
+ * compact form: both split, the compact one into jobs with no purposes. A
+ * purpose line with no job above it, or a block mixing jobs with and without
+ * purposes, is not the kernel's format and splits nothing.
+ *
+ * An update's display (its head starts `CHARTER_UPDATE_HEAD_PREFIX`) marks
+ * what it adds with `CHARTER_ADDED_SUFFIX`: a job line the member held no tool
+ * of, and, under a kept job, a new tool's purpose line. The suffix is taken
+ * off into `added`. In the compact form a kept job line that gains a tool
+ * ends `CHARTER_GAINS_TOOLS_SUFFIX`, taken off into `gainsTools`. A create's
+ * display never carries either, so there they are read as part of the text.
+ */
+export function charterDisplayParts(display: string): CharterDisplayParts | undefined {
+  const lines = display.split("\n");
+  const head = lines[0] ?? "";
+  const update = head.startsWith(CHARTER_UPDATE_HEAD_PREFIX);
+  if (lines[1] === CHARTER_CATALOGUE_UNAVAILABLE) {
+    return { head, update, jobs: [], note: CHARTER_CATALOGUE_UNAVAILABLE, raw: lines.slice(2).join("\n") };
+  }
+  const marked = (text: string): { text: string; added: boolean } =>
+    update && text.endsWith(CHARTER_ADDED_SUFFIX) ? { text: text.slice(0, -CHARTER_ADDED_SUFFIX.length), added: true } : { text, added: false };
+  const jobs: { label: string; added: boolean; gainsTools?: true; purposes: CharterPurpose[] }[] = [];
+  let i = 1;
+  for (; i < lines.length; i += 1) {
+    const line = lines[i] as string;
+    if (line.startsWith(CHARTER_JOB_PREFIX)) {
+      const jobLine = line.slice(CHARTER_JOB_PREFIX.length);
+      if (update && jobLine.endsWith(CHARTER_GAINS_TOOLS_SUFFIX)) {
+        jobs.push({ label: jobLine.slice(0, -CHARTER_GAINS_TOOLS_SUFFIX.length), added: false, gainsTools: true, purposes: [] });
+      } else {
+        const { text, added } = marked(jobLine);
+        jobs.push({ label: text, added, purposes: [] });
+      }
+    } else if (line.startsWith(CHARTER_PURPOSE_PREFIX)) {
+      const job = jobs.at(-1);
+      if (job === undefined) return undefined;
+      job.purposes.push(marked(line.slice(CHARTER_PURPOSE_PREFIX.length)));
+    } else {
+      break;
+    }
+  }
+  if (jobs.length === 0) return undefined;
+  const compact = jobs.every((j) => j.purposes.length === 0);
+  if (!compact && jobs.some((j) => j.purposes.length === 0)) return undefined;
+  return { head, update, jobs, note: undefined, raw: lines.slice(i).join("\n") };
 }
 
 /** Where an approval with no playbook was asked from. The contract has no `source` field: every one reads this. */

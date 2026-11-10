@@ -95,6 +95,7 @@ export function createGitHubWriteTools(deps: GitHubWriteToolsDeps = {}): readonl
 
   const prReply = defineTool({
     name: "kernel_github_pr_reply",
+    job: "triage_pr_comments",
     description:
       "Reply in one review comment's thread on a pull request on GitHub. The kernel holds the call for the owner's approval (or saves it as a draft in a draft playbook) and posts nothing until the owner allows it; if it is approved, run exactly the same call again, once.",
     shape: { repo: repoShape, pr, comment_id: z.number().int().positive().describe("The id of the review comment to reply to."), body },
@@ -108,6 +109,7 @@ export function createGitHubWriteTools(deps: GitHubWriteToolsDeps = {}): readonl
 
   const prComment = defineTool({
     name: "kernel_github_pr_comment",
+    job: "triage_pr_comments",
     description:
       "Comment on a pull request's conversation on GitHub. The kernel holds the call for the owner's approval (or saves it as a draft in a draft playbook) and posts nothing until the owner allows it; if it is approved, run exactly the same call again, once.",
     shape: { repo: repoShape, pr, body },
@@ -121,6 +123,7 @@ export function createGitHubWriteTools(deps: GitHubWriteToolsDeps = {}): readonl
 
   const issueComment = defineTool({
     name: "kernel_github_issue_comment",
+    job: "comment_on_issues",
     description:
       "Comment on an issue on GitHub. The kernel holds the call for the owner's approval (or saves it as a draft in a draft playbook) and posts nothing until the owner allows it; if it is approved, run exactly the same call again, once.",
     shape: { repo: repoShape, issue: z.number().int().positive().describe("The issue number."), body },
@@ -134,6 +137,7 @@ export function createGitHubWriteTools(deps: GitHubWriteToolsDeps = {}): readonl
 
   const requestReviewers = defineTool({
     name: "kernel_github_pr_request_reviewers",
+    job: "triage_pr_comments",
     description:
       "Ask for, or re-request, reviews on a pull request on GitHub from the named users. The kernel holds the call for the owner's approval (or saves it as a draft in a draft playbook) and requests nothing until the owner allows it; if it is approved, run exactly the same call again, once.",
     shape: {
