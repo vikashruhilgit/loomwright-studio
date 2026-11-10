@@ -342,6 +342,15 @@ export function hintOf(content: unknown): number | undefined {
     // A getter or proxy that throws (never in a JSON body, but the reader promises not to throw): not set.
     return undefined;
   }
+  return hintValue(value);
+}
+
+/**
+ * The one rule for a size hint's value, shared by Settings → Threads (`hintOf`) and Chat (`hintFromThreads` in
+ * `../chat/continuity.ts`) so the two never disagree about whether a hint is set: only a positive safe integer, as the
+ * kernel's schema has it (`limit` in `kernel/src/agents/settings.ts`); anything else is "not set". Pure; never throws.
+ */
+export function hintValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 

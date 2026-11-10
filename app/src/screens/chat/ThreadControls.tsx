@@ -36,7 +36,7 @@ import { threadResource } from "../../store/resources";
 import {
   count,
   firstLine,
-  hintOf,
+  hintFromThreads,
   messagesText,
   pastHint,
   referenceLink,
@@ -52,6 +52,7 @@ import type { MessageItem, RefusalInput, ThreadRef } from "./continuity";
 import { inFlightGuard, clock, navigate, refusalOf, write } from "./model";
 import { ClipIcon } from "./ReferenceChip";
 import type { ChipState } from "./ReferenceChip";
+import type { SentContext } from "./ChatComposer";
 import { SummaryDialog } from "./SummaryDialog";
 import type { SummaryPreview } from "./SummaryDialog";
 import "./threads.css";
@@ -61,6 +62,16 @@ export interface ReplyTarget {
   readonly message: number;
   readonly thread: number;
   readonly firstLine: string;
+}
+
+/** The same Reply: it continues the same message. */
+function sameReply(a: ReplyTarget | null, b: ReplyTarget): boolean {
+  return a !== null && a.message === b.message;
+}
+
+/** The same reference as sent: same agent, thread and use (the figures the composer is shown are not part of what is sent). */
+function sameChip(a: ChipState | null, b: ChipState): boolean {
+  return a !== null && a.agent === b.agent && a.thread === b.thread && a.use === b.use;
 }
 
 const NEEDS_KERNEL = "Needs the kernel";
@@ -311,7 +322,7 @@ export interface ThreadContinuity {
     readonly onChipUse: (use: AskReference["use"]) => void;
     readonly onChipRemove: () => void;
     readonly onPasteReference: (ref: ThreadRef) => void;
-    readonly onSent: () => void;
+    readonly onSent: (sent: SentContext) => void;
     /** The id of the line saying why Send waits, while a summary is being written. */
     readonly waitingOn: string | undefined;
   };
@@ -326,7 +337,7 @@ export function useThreadContinuity({ api, agent, nameOf, data, items, focusComp
   const reach = useKernelReach(api);
   const offline = reach.offline;
   const on = Array.isArray(data?.threads);
-  const hint = hintOf(data?.thread_summarize_hint_tokens);
+  const hint = hintFromThreads(data?.thread_summarize_hint_tokens);
   const figures = useMemo(() => new Map<number, ThreadFigures>((data?.threads ?? []).map((f) => [f.id, f])), [data]);
   const name = nameOf(agent);
 
@@ -340,6 +351,11 @@ export function useThreadContinuity({ api, agent, nameOf, data, items, focusComp
   const [previewRefusal, setPreviewRefusal] = useState("");
   const [renaming, setRenaming] = useState<{ readonly thread: number; readonly text: string } | null>(null);
   const [renameRefusal, setRenameRefusal] = useState<{ readonly thread: number; readonly text: string } | null>(null);
+  // The rename as it is now, read after a save answers (the closure's `renaming` is the one saved).
+  const latestRenaming = useRef(renaming);
+  useLayoutEffect(() => {
+    latestRenaming.current = renaming;
+  }, [renaming]);
   const [notice, setNotice] = useState("");
   // Re-render after the summarized-into memory changes (it is a per-bridge map, not state).
   const [, setMarks] = useState(0);
@@ -542,9 +558,13 @@ export function useThreadContinuity({ api, agent, nameOf, data, items, focusComp
         setRenameRefusal({ thread: current.thread, text: refusalWords(out, "rename") });
         return;
       }
-      setRenameRefusal(null);
-      setRenaming(null);
-      window.setTimeout(() => focusIn(`[data-thread-title="${current.thread}"]`), 0);
+      // Close only the rename that was saved: a field the owner edited, or another thread's rename opened, while the
+      // save was in flight stays open (and keeps focus) for the owner's next ⏎.
+      const still = latestRenaming.current;
+      const saved = still !== null && still.thread === current.thread && still.text === current.text;
+      setRenameRefusal((r) => (r !== null && r.thread === current.thread ? null : r));
+      setRenaming((r) => (r !== null && r.thread === current.thread && r.text === current.text ? null : r));
+      if (saved) window.setTimeout(() => focusIn(`[data-thread-title="${current.thread}"]`), 0);
     });
   }, [renaming, offline, api, agent]);
 
@@ -737,9 +757,10 @@ export function useThreadContinuity({ api, agent, nameOf, data, items, focusComp
         focusComposer();
       },
       onPasteReference: pasteReference,
-      onSent: () => {
-        setReplyTo(null);
-        setChip(null);
+      // Clear only what the send carried: a Reply pressed or a reference pasted while it was in flight stays for the next message.
+      onSent: (sent) => {
+        setReplyTo((r) => (sent.replyTo !== null && sameReply(r, sent.replyTo) ? null : r));
+        setChip((c) => (sent.chip !== null && sameChip(c, sent.chip) ? null : c));
       },
       waitingOn: summarizing === null ? undefined : statusId,
     },

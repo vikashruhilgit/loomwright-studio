@@ -263,6 +263,80 @@ describe("Copy reference and the chip (AC5)", () => {
   });
 });
 
+describe("a send in flight clears only what it carried", () => {
+  /** `POST /ask` held until the returned release is called; then a `202`. */
+  function holdAsk(k: Kit): () => void {
+    let release: () => void = () => undefined;
+    k.fake.route("POST /ask", async () => {
+      await new Promise<void>((go) => {
+        release = go;
+      });
+      return { ok: true, status: 202, body: { message_id: 50, queue_id: 50 } };
+    });
+    return () => release();
+  }
+
+  it("a Reply opened while a plain send is in flight survives its 202 and goes out with the next message", async () => {
+    const k = threadsKit();
+    const release = holdAsk(k);
+    await renderChat(k);
+    const field = (await screen.findByRole("textbox", { name: "Message Wright" })) as HTMLTextAreaElement;
+    await act(async () => {
+      fireEvent.change(field, { target: { value: "first" } });
+    });
+    await click(screen.getByRole("button", { name: /^Send/ }));
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(1));
+    await click(screen.getAllByRole("button", { name: /^Reply to Wright's message/ })[0]!);
+    expect(screen.getByRole("group", { name: "Reply" })).toBeTruthy();
+    await act(async () => release());
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Send/ }).getAttribute("aria-busy")).toBeNull());
+    expect(screen.getByRole("group", { name: "Reply" })).toBeTruthy();
+    expect(k.posted("POST /ask")[0]?.body).toEqual({ text: "first", agent: "wright" });
+    await act(async () => {
+      fireEvent.change(screen.getByRole("textbox", { name: "Reply to Wright" }), { target: { value: "second" } });
+    });
+    await click(screen.getByRole("button", { name: /^Send/ }));
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(2));
+    expect((k.posted("POST /ask")[1]?.body as { continues?: number }).continues).toBeDefined();
+  });
+
+  it("a Reply that went out is spent: the strip closes on the 202", async () => {
+    const k = threadsKit();
+    const release = holdAsk(k);
+    await renderChat(k);
+    await click((await screen.findAllByRole("button", { name: /^Reply to Wright's message/ }))[0]!);
+    const field = screen.getByRole("textbox", { name: "Reply to Wright" }) as HTMLTextAreaElement;
+    await act(async () => {
+      fireEvent.change(field, { target: { value: "continuing" } });
+    });
+    await click(screen.getByRole("button", { name: /^Send/ }));
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(1));
+    expect((k.posted("POST /ask")[0]?.body as { continues?: number }).continues).toBeDefined();
+    await act(async () => release());
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Reply" })).toBeNull());
+  });
+
+  it("a reference pasted while a plain send is in flight keeps its chip after the 202", async () => {
+    const k = threadsKit();
+    const release = holdAsk(k);
+    await renderChat(k);
+    const field = (await screen.findByRole("textbox", { name: "Message Wright" })) as HTMLTextAreaElement;
+    await act(async () => {
+      fireEvent.change(field, { target: { value: "first" } });
+    });
+    await click(screen.getByRole("button", { name: /^Send/ }));
+    await waitFor(() => expect(k.posted("POST /ask")).toHaveLength(1));
+    await act(async () => {
+      fireEvent.paste(field, { clipboardData: { getData: () => "loomwright-studio://thread/wright/4" } });
+    });
+    expect(screen.getByRole("group", { name: "Attached thread reference" })).toBeTruthy();
+    await act(async () => release());
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Send/ }).getAttribute("aria-busy")).toBeNull());
+    expect(screen.getByRole("group", { name: "Attached thread reference" })).toBeTruthy();
+    expect(k.posted("POST /ask")[0]?.body).toEqual({ text: "first", agent: "wright" });
+  });
+});
+
 describe("rename in place (AC8)", () => {
   function SessionsProbe({ k }: { readonly k: Kit }) {
     useResource("sessions", k.fake.bridge);
@@ -304,6 +378,34 @@ describe("rename in place (AC8)", () => {
     });
     await click(screen.getByRole("button", { name: /^Save/ }));
     expect(posted(k, "POST /threads/:agent/:thread/rename")[1]?.body).toEqual({ title: null });
+  });
+
+  it("text typed into the field while a save is in flight keeps the field open after the save answers", async () => {
+    const k = threadsKit();
+    let release: () => void = () => undefined;
+    k.fake.route("POST /threads/:agent/:thread/rename", async (req) => {
+      await new Promise<void>((go) => {
+        release = go;
+      });
+      return ok({ thread: Number(req.params?.thread), title: "Release plan", renamed: true });
+    });
+    await renderChat(k);
+    await click(await screen.findByRole("button", { name: "Rename the thread Plan the release" }));
+    await act(async () => {
+      fireEvent.change(screen.getByRole("textbox", { name: "Thread name" }), { target: { value: "Release plan" } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("textbox", { name: "Thread name" }), { key: "Enter" });
+    });
+    await waitFor(() => expect(posted(k, "POST /threads/:agent/:thread/rename")).toHaveLength(1));
+    await act(async () => {
+      fireEvent.change(screen.getByRole("textbox", { name: "Thread name" }), { target: { value: "Release plan v2" } });
+    });
+    const threadReads = k.fake.requestsTo("GET /threads/:agent").length;
+    await act(async () => release());
+    // The save answered: its write refetched the thread.
+    await waitFor(() => expect(k.fake.requestsTo("GET /threads/:agent").length).toBeGreaterThan(threadReads));
+    expect((screen.getByRole("textbox", { name: "Thread name" }) as HTMLInputElement).value).toBe("Release plan v2");
   });
 
   it("a renamed title is marked renamed by you", async () => {

@@ -17,7 +17,9 @@
 // `continues`; a pasted reference link becomes a chip and the send carries
 // `references`, never the link in the text. A plain send is the body it always
 // was. Every refusal is shown in plain words (`refusalWords`), keeping the
-// text, the strip and the chip. While a summary is being written, Send waits.
+// text, the strip and the chip. A `202` clears only what that send carried:
+// text typed, a Reply opened or a reference pasted while it was in flight
+// stays for the next message. While a summary is being written, Send waits.
 //
 // It is built on the Composer's own markup and CSS (`.composer`, Input.css)
 // rather than the `Composer` component, so the send guard lives here, in the
@@ -54,10 +56,20 @@ export interface ChatComposerProps {
   readonly onChipRemove?: () => void;
   /** A pasted reference link; without it, a paste is plain text. */
   readonly onPasteReference?: (ref: ThreadRef) => void;
-  /** After a `202`: the strip and the chip are spent. */
-  readonly onSent?: () => void;
+  /**
+   * After a `202`: the strip and the chip that went out with the message are spent. `sent` is what the send read when
+   * it started, so the owner of this state clears only that: a Reply or a reference set while the ask was in flight is
+   * the owner's next message and stays.
+   */
+  readonly onSent?: (sent: SentContext) => void;
   /** The id of the line saying why Send waits (a summary is being written); `undefined` when it does not. */
   readonly waitingOn?: string;
+}
+
+/** The Reply strip and the chip a send carried, as they were when it started (`null`: none). */
+export interface SentContext {
+  readonly replyTo: ReplyTarget | null;
+  readonly chip: ChipState | null;
 }
 
 // Per bridge (the app has one for its whole life), per agent id: the owner's
@@ -156,6 +168,7 @@ export function ChatComposer({
     // Only a listed workspace is ever sent.
     const chosen = !isWright && workspace !== "" && workspaces.list.includes(workspace) ? workspace : undefined;
     const sent = text;
+    const sentContext: SentContext = { replyTo, chip };
     const continues = replyTo === null ? undefined : replyTo.message;
     const references: AskReference[] | undefined = chip === null ? undefined : [{ thread: chip.thread, use: chip.use }];
     inFlight.current = true;
@@ -171,7 +184,7 @@ export function ChatComposer({
       setRefusal("");
       // Clear only what was sent: anything typed meanwhile is the owner's next message.
       if (latest.current === sent) onTextChange("");
-      onSent?.();
+      onSent?.(sentContext);
     } else {
       // The text, the strip and the chip all stay: the owner fixes what the words say and sends again.
       setRefusal(refusalWords(outcome, "send"));

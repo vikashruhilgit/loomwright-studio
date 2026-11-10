@@ -46,7 +46,8 @@ export interface ChatFixture {
 
 const AT = (minute: number): string => `2026-10-22T08:${String(minute).padStart(2, "0")}:00.000Z`;
 
-function rosterEntry(id: string, display_name: string, shape: string, hue: string, overrides: Partial<RosterEntry> = {}): RosterEntry {
+/** A `GET /agents` roster row, quiet and on; shared with `./chat-threads.ts`. */
+export function rosterEntry(id: string, display_name: string, shape: string, hue: string, overrides: Partial<RosterEntry> = {}): RosterEntry {
   return {
     id,
     display_name,

@@ -9,6 +9,7 @@
 // Every kernel string (titles, summaries, refusal messages, file paths) is
 // untrusted data (invariant 3): nothing here builds markup or an `href` from one.
 import type { AskBody, AskReference, StudioBridge, ThreadFigures, ThreadItem } from "../../api/contract";
+import { hintValue } from "../settings/model";
 
 export type MessageItem = Extract<ThreadItem, { readonly type: "message" }>;
 
@@ -177,9 +178,12 @@ export function refusalWords(refusal: RefusalInput, context: RefusalContext = "s
 
 // ---- the size hint --------------------------------------------------------------------------
 
-/** The owner's size hint, when set: a positive number of tokens. */
-export function hintOf(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+/**
+ * The owner's size hint from a thread answer's `thread_summarize_hint_tokens`, when set: Settings' rule (`hintValue`,
+ * a positive safe integer as the kernel's schema has it), so Chat and Settings → Threads agree on what is set.
+ */
+export function hintFromThreads(value: unknown): number | null {
+  return hintValue(value) ?? null;
 }
 
 /** A thread is past the hint when the tokens its latest reply read are more than the hint. Unset never highlights. */

@@ -25,6 +25,7 @@ import type {
   ThreadSummaryResponse,
 } from "../../src/api/contract";
 import type { FixtureKernelOptions, FixtureRequest } from "../fixture-kernel";
+import { rosterEntry } from "./chat";
 
 export interface RecordedWrite {
   /** The route, as in `CONTRACT_ROUTES` (`/threads/:agent/:thread/rename`). */
@@ -53,23 +54,6 @@ export const SUMMARY = [
   "- Who signs the build: the owner, by hand.",
   "Kept as text: <img src=x onerror=alert(1)>",
 ].join("\n");
-
-function rosterEntry(id: string, display_name: string, shape: string, hue: string): RosterEntry {
-  return {
-    id,
-    display_name,
-    avatar: { shape, hue },
-    status: "on",
-    created_by: id === "wright" ? null : "wright",
-    approval_id: null,
-    model: null,
-    settings_error: null,
-    tokens_today: 0,
-    tokens_per_day: null,
-    sessions_running: 0,
-    sessions_at_once: null,
-  };
-}
 
 function row(id: number, agent: string, thread: number, text: string, reply: string | null, overrides: Partial<BrainMessage & ThreadMessageFields> = {}): Message {
   return {

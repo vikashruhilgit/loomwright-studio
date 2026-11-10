@@ -61,9 +61,10 @@ export const PHASE_7_EXIT_ROUTE_KEYS = [
   // Settings, and the data directory Memory prints; each crew member's detail for Settings → Threads (phase 8 item 17c).
   "GET /settings",
   "GET /agents/:id",
-  // Tasks, and the log of the session behind a card.
+  // Tasks, the session list a session card takes its kernel title from (phase 8 item 17c), and the log of the session behind a card.
   "GET /tasks",
   "GET /tasks/:kind/:id",
+  "GET /sessions",
   "GET /sessions/:id/output",
   "POST /sessions/:id/stop",
   "POST /sessions/:id/kill",
@@ -189,6 +190,7 @@ export function phase7ExitFixture(init: Phase7ExitInit = {}): Phase7ExitFixture 
     // Tasks.
     "GET /tasks": t("GET /tasks"),
     "GET /tasks/:kind/:id": t("GET /tasks/:kind/:id"),
+    "GET /sessions": t("GET /sessions"),
     "GET /sessions/:id/output": t("GET /sessions/:id/output"),
     "POST /sessions/:id/stop": t("POST /sessions/:id/stop"),
     "POST /sessions/:id/kill": t("POST /sessions/:id/kill"),

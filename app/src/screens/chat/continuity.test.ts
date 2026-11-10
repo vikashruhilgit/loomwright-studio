@@ -6,7 +6,7 @@ import type { StudioBridge, ThreadFigures } from "../../api/contract";
 import {
   askBodyOf,
   firstLine,
-  hintOf,
+  hintFromThreads,
   joinThreads,
   messagesText,
   parseReference,
@@ -17,6 +17,7 @@ import {
   summarizedInto,
   threadTitle,
 } from "./continuity";
+import { hintOf } from "../settings/model";
 import { INERT_BRIDGE } from "./model";
 
 function figures(overrides: Partial<ThreadFigures> = {}): ThreadFigures {
@@ -106,12 +107,19 @@ describe("refusalWords", () => {
 });
 
 describe("the size hint", () => {
-  it("only a positive number is a hint; unset never highlights", () => {
-    expect(hintOf(40000)).toBe(40000);
-    expect(hintOf(null)).toBeNull();
-    expect(hintOf(undefined)).toBeNull();
-    expect(hintOf(0)).toBeNull();
-    expect(hintOf(-5)).toBeNull();
+  it("only a positive safe integer is a hint, as in Settings → Threads; unset never highlights", () => {
+    expect(hintFromThreads(40000)).toBe(40000);
+    expect(hintFromThreads(1)).toBe(1);
+    expect(hintFromThreads(null)).toBeNull();
+    expect(hintFromThreads(undefined)).toBeNull();
+    expect(hintFromThreads(0)).toBeNull();
+    expect(hintFromThreads(-5)).toBeNull();
+    expect(hintFromThreads(1.5)).toBeNull();
+    expect(hintFromThreads(Number.NaN)).toBeNull();
+    expect(hintFromThreads(Number.POSITIVE_INFINITY)).toBeNull();
+    expect(hintFromThreads("40000")).toBeNull();
+    // The same values read the same in Settings → Threads.
+    for (const v of [40000, 1, null, undefined, 0, -5, 1.5, Number.NaN, "40000"]) expect(hintFromThreads(v)).toBe(hintOf({ thread_summarize_hint_tokens: v }) ?? null);
     expect(pastHint(figures(), null)).toBe(false);
     expect(pastHint(figures({ latest_reply_tokens: 52000 }), 40000)).toBe(true);
     expect(pastHint(figures({ latest_reply_tokens: 40000 }), 40000)).toBe(false);
