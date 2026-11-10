@@ -89,12 +89,15 @@ export function agentText(session: Pick<SessionSummary, "agent">): string {
 }
 
 /**
- * What the session is doing. The contract carries no task for a session
- * (`SessionSummary` has none, nor does `/status`): the playbook it ran from,
- * else `ad hoc session` (a finding recorded in the evidence README).
+ * What the session is doing (phase 8 item 17): the kernel's title for it
+ * (`SessionSummary.title`, derived at read time in `kernel/src/brain/titles.ts`:
+ * a playbook run's playbook name, a chat session's thread title, a task's
+ * title), escaped; else `Session #<id>`, the kernel's own fallback for any
+ * other session. Untrusted text: it passes through `printable`.
  */
-export function taskText(session: Pick<SessionSummary, "playbook">): string {
-  return session.playbook === null ? "ad hoc session" : `playbook #${session.playbook}`;
+export function sessionTitle(session: Pick<SessionSummary, "id" | "title">): string {
+  const title = session.title === undefined ? "" : printable(session.title).trim();
+  return title === "" ? `Session #${session.id}` : title;
 }
 
 /** `14,208 tokens`, or `—` when the kernel has no count. */
