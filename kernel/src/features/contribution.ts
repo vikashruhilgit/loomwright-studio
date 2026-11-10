@@ -12,7 +12,8 @@
 // `daemon-exit.ts`).
 //
 // The `studio` CLI (a separate process) imports this module through
-// `features/index.ts`, so it imports only zod and type-level kernel modules:
+// `features/index.ts`, so it imports only zod, type-level kernel modules and
+// CLI-safe leaves (the event kinds, the catalogue's job vocabulary):
 // never the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the module graph).
 import { z } from "zod";
@@ -20,6 +21,10 @@ import type { KillSwitchState } from "../api/kill-switch.js";
 import type { AuthHealth } from "../auth/types.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
 import type { AppliedApproval, ApprovalApplier, ApprovalApplyOutcome } from "../approvals/store.js";
+// The job vocabulary (`TOOL_JOBS`) and the catalogue type: `catalogue.ts`
+// imports only types from this module, so the value import makes no cycle.
+import { TOOL_JOB_IDS, isToolJob } from "./catalogue.js";
+import type { ToolCatalogue, ToolJob } from "./catalogue.js";
 // Type-only: `integrations/types.ts` holds the connector kinds, and a value
 // import would make a runtime cycle through the feature registry.
 import type { ConnectorKind } from "../integrations/types.js";
@@ -163,6 +168,14 @@ export interface ContributedToolContext {
    * feature stays `ConnectorKind` (pinned by `integrations-foundation.test.ts`).
    */
   readonly github?: import("../integrations/types.js").GitHubClient;
+  /**
+   * The kernel's tool catalogue (`buildToolCatalogue` over the composition's
+   * own tools, built by the tool server): what a charter display groups by job
+   * and the playbook fit check reads. Absent when the composition built none or
+   * building it failed: a reader then shows the raw names with a plain note,
+   * never a guessed grouping.
+   */
+  readonly catalogue?: ToolCatalogue;
   /** The work-step key of a call: `<tool>:session-<sessionId>:<idempotencyKey>` (the `kernelStepKey` shape). */
   stepKey(idempotencyKey: string): string;
 }
@@ -201,9 +214,16 @@ export interface ContributedToolContext {
  * further: `"write"` offers the tool only when the agent's grant is the
  * connector's write level (`connectors: {github: "write"}` in its enforced
  * settings), never on the read grant alone. Absent: the read grant suffices.
+ *
+ * `job` (optional) names what the tool is for in the kernel's tool catalogue,
+ * one id of the closed `TOOL_JOBS` (`./catalogue.ts`); `mergeContributions`
+ * refuses any other. Every shipped tool declares one; a tool without one is
+ * catalogued under `general`. An MCP connector's proxy tool has none: it is a
+ * connector grant, not a catalogue entry.
  */
 export interface ContributedTool<S extends z.ZodRawShape = z.ZodRawShape> {
   readonly name: string;
+  readonly job?: ToolJob;
   readonly description: string;
   readonly shape: S;
   readonly requiresConnector?: ConnectorKind;
@@ -529,7 +549,7 @@ function isZodRawShape(shape: unknown): boolean {
  *   method: phase 1 routes match first and would shadow it.
  * - `UnknownEventKindError` for a handler keyed by a kind outside `EVENT_KINDS`.
  * - `InvalidContributionError` for a malformed part (a tool name that does not
- *   start with `kernel_`, a tool shape that is not a zod raw shape, a bad
+ *   start with `kernel_`, a tool `job` outside `TOOL_JOBS`, a tool shape that is not a zod raw shape, a bad
  *   route path or method, an `unauthenticated` route that is not a `GET` on
  *   one of `UNAUTHENTICATED_ROUTE_PATHS`, a subcommand name or help that is not one short
  *   line, a part that is not a function (a tool's `beforeHold` and
@@ -580,6 +600,7 @@ export function mergeContributions(contributions: readonly FeatureContribution[]
         throw invalid("tool", `tool name ${JSON.stringify(t?.name)} must start with kernel_ (lowercase letters, digits and _)`);
       }
       if (typeof t.description !== "string" || t.description.trim() === "") throw invalid("tool", `${t.name} needs a description`);
+      if (t.job !== undefined && !isToolJob(t.job)) throw invalid("tool", `${t.name}'s job ${JSON.stringify(t.job)} is not one of ${TOOL_JOB_IDS.join(", ")}`);
       if (!isZodRawShape(t.shape)) throw invalid("tool", `${t.name} needs a zod raw shape (an object whose every value is a zod schema)`);
       if (typeof t.handler !== "function") throw invalid("tool", `${t.name} needs a handler`);
       if (t.beforeHold !== undefined && typeof t.beforeHold !== "function") throw invalid("tool", `${t.name}'s beforeHold must be a function`);

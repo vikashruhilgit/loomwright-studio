@@ -499,6 +499,7 @@ function finishWithoutSession(ctx: ContributedToolContext, row: PlaybookRow, tri
 
 const dryRunTool = defineTool({
   name: DRY_RUN_TOOL_NAME,
+  job: "manage_playbooks",
   description:
     "Dry-run a draft playbook you own, or (Wright) one of a registered crew member's: run its current version once, as its agent would when it fires, in a session that can read but never act. " +
     "A crew member's playbook runs as that member (its settings, policy and never list, its memory folder); an off member's is refused. " +
