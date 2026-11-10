@@ -22,9 +22,16 @@
 // `playbook_disabled` for it), as the triggers feature reads its toggles:
 // there is no `disabled_by` column.
 //
+// The jobs a playbook names (`jobs`, migration 23's `jobs_json`) are a change
+// field like `name` and `intent`, never a policy field: no `*_set_by`, and the
+// owner's `set` does not take them (the owner changes them by asking Wright).
+//
 // The `studio` CLI loads this module (through `./drafts.ts`): it imports only
-// `../loop/internal.js`, the triggers feature's public index and this
-// feature's types, never the Agent SDK, the session manager or `kernel.ts`.
+// `../loop/internal.js`, the CLI-safe job vocabulary (`../features/catalogue.js`),
+// the triggers feature's public index and this feature's types, never the
+// Agent SDK, the session manager or `kernel.ts`.
+import { TOOL_JOB_IDS, isToolJob } from "../features/catalogue.js";
+import type { ToolJob } from "../features/catalogue.js";
 import { appendEvent } from "../loop/internal.js";
 import type { EventRef } from "../loop/internal.js";
 import type { Store } from "../store/store.js";
@@ -44,8 +51,11 @@ export const PLAYBOOK_AUDIT_KINDS = ["playbook_created", "playbook_updated", "pl
 export const PLAYBOOK_POLICY_FIELDS = ["dedupe_key", "priority", "model", "token_limit", "mode", "merge_requirement"] as const;
 export type PlaybookPolicyField = (typeof PLAYBOOK_POLICY_FIELDS)[number];
 
-/** Every field `updatePlaybook` takes, in the order a `playbook_updated` event lists them. */
-export const PLAYBOOK_CHANGE_FIELDS = ["name", "intent", "trigger", ...PLAYBOOK_POLICY_FIELDS] as const;
+/**
+ * Every field `updatePlaybook` takes, in the order a `playbook_updated` event
+ * lists them. `jobs` is a change field, not a policy field (no `*_set_by`).
+ */
+export const PLAYBOOK_CHANGE_FIELDS = ["name", "intent", "jobs", "trigger", ...PLAYBOOK_POLICY_FIELDS] as const;
 export type PlaybookChangeField = (typeof PLAYBOOK_CHANGE_FIELDS)[number];
 
 export const MAX_PLAYBOOK_NAME = 200;
@@ -110,6 +120,8 @@ export interface PlaybookRow {
   /** `none`, `studio_approval` or `reviews:<N>` (`MERGE_REQUIREMENT_KINDS`; migration 21); null until set (no default). */
   readonly merge_requirement: string | null;
   readonly merge_requirement_set_by: string | null;
+  /** A JSON array of job ids from `TOOL_JOBS` (migration 23), in `TOOL_JOBS` order; null: the playbook names no jobs. */
+  readonly jobs_json: string | null;
 }
 
 /** A playbook as listed: its row, its linked trigger's id and next fire (null when it has none). */
@@ -124,6 +136,34 @@ export interface PlaybookChange {
   readonly trigger: TriggerView | null;
   /** `false`: it already was so (nothing written, no version, no event). */
   readonly changed: boolean;
+}
+
+/**
+ * `value` as the `jobs_json` column stores it: a non-empty list of distinct
+ * job ids from `TOOL_JOBS`, stored in `TOOL_JOBS` order (so the same jobs in
+ * another order change nothing). Throws `invalid_input` naming `jobs`.
+ */
+export function checkJobs(value: unknown): string {
+  if (!Array.isArray(value) || value.length === 0) throw invalid(`jobs must be a non-empty list of distinct jobs from ${TOOL_JOB_IDS.join(", ")}`);
+  const seen = new Set<ToolJob>();
+  for (const job of value) {
+    if (!isToolJob(job)) throw invalid(`jobs: unknown job ${shown(job)} (the jobs are ${TOOL_JOB_IDS.join(", ")})`);
+    if (seen.has(job)) throw invalid(`jobs: job ${job} is listed twice`);
+    seen.add(job);
+  }
+  return JSON.stringify(TOOL_JOB_IDS.filter((job) => seen.has(job)));
+}
+
+/** The jobs a stored `jobs_json` names, in `TOOL_JOBS` order: none for null, and none of an unreadable value or an unknown id (never a guessed job). */
+export function playbookJobsOf(row: Pick<PlaybookRow, "jobs_json">): readonly ToolJob[] {
+  if (row.jobs_json === null) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.jobs_json);
+  } catch {
+    return [];
+  }
+  return Array.isArray(parsed) ? TOOL_JOB_IDS.filter((job) => parsed.includes(job)) : [];
 }
 
 /** A playbook's trigger as an agent gives it: `once` with an instant, or `cron` with an expression and an IANA zone. */
@@ -473,13 +513,16 @@ export interface CreatePlaybookParams {
   readonly token_limit?: number | undefined;
   readonly mode?: string | undefined;
   readonly merge_requirement?: string | undefined;
+  /** The jobs it names (`checkJobs`): Wright's proposal from the owner's words. Absent: none named. */
+  readonly jobs?: readonly string[] | undefined;
   /** The session that asked, for the audit rows. */
   readonly sessionId?: number | null;
 }
 
 /**
  * Create a `draft` playbook at version 1 owned by `agent`, every given policy
- * value proposed (`*_set_by = 'wright'`), with its linked trigger, its version
+ * value proposed (`*_set_by = 'wright'`), its `jobs` (`checkJobs`) when given,
+ * with its linked trigger, its version
  * 1 snapshot and `playbook_created`, in one transaction. The slug is derived
  * from the name once. Throws `PlaybookError("invalid_input")` naming the field
  * before anything is stored (`trigger: …` for a spec the triggers feature
@@ -490,6 +533,7 @@ export function createPlaybook(store: Store, params: CreatePlaybookParams, now: 
   const name = checkName(params.name);
   const intent = checkIntent(params.intent);
   const trigger = checkTriggerInput(params.trigger);
+  const jobs = params.jobs === undefined ? null : checkJobs(params.jobs);
   const policy = checkGivenPolicy(params);
   const at = now.toISOString();
   const sessionId = params.sessionId ?? null;
@@ -503,8 +547,8 @@ export function createPlaybook(store: Store, params: CreatePlaybookParams, now: 
         .prepare(
           `INSERT INTO playbooks (slug, name, owning_agent, intent, status, version,
              dedupe_key_spec, dedupe_key_set_by, priority, priority_set_by, model, model_set_by, token_limit_per_day, token_limit_set_by,
-             mode, mode_set_by, merge_requirement, merge_requirement_set_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             mode, mode_set_by, merge_requirement, merge_requirement_set_by, jobs_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           slug,
@@ -523,6 +567,7 @@ export function createPlaybook(store: Store, params: CreatePlaybookParams, now: 
           proposed("mode"),
           policy.get("merge_requirement") ?? null,
           proposed("merge_requirement"),
+          jobs,
           at,
           at,
         ).lastInsertRowid,
@@ -567,6 +612,7 @@ function writeVersion(
 export interface PlaybookChanges {
   readonly name?: string | undefined;
   readonly intent?: string | undefined;
+  readonly jobs?: readonly string[] | undefined;
   readonly trigger?: PlaybookTriggerInput | undefined;
   readonly dedupe_key?: readonly string[] | undefined;
   readonly priority?: string | undefined;
@@ -594,7 +640,8 @@ function sameTrigger(linked: TriggerView, trigger: PlaybookTriggerInput): boolea
 /**
  * An agent's change to its own playbook: each given value that differs is
  * written as the next version (policy values proposed: `*_set_by =
- * 'wright'`), a trigger change re-schedules the SAME linked trigger
+ * 'wright'`; `jobs` has no setter, like `name` and `intent`), a trigger
+ * change re-schedules the SAME linked trigger
  * (`updateTriggerSpec`), all in one transaction. Throws `PlaybookError`:
  * `invalid_input` (empty `changes`; a refused value, naming the field; a
  * policy field the owner set); `not_found`; `not_owner`; `owner_off`.
@@ -605,6 +652,7 @@ export function updatePlaybook(store: Store, params: UpdatePlaybookParams, now: 
   if (!PLAYBOOK_CHANGE_FIELDS.some((f) => changes[f] !== undefined)) throw invalid(`changes must give at least one of ${PLAYBOOK_CHANGE_FIELDS.join(", ")}`);
   const name = changes.name === undefined ? undefined : checkName(changes.name);
   const intent = changes.intent === undefined ? undefined : checkIntent(changes.intent);
+  const jobs = changes.jobs === undefined ? undefined : checkJobs(changes.jobs);
   const trigger = changes.trigger === undefined ? undefined : checkTriggerInput(changes.trigger);
   const policy = checkGivenPolicy(changes);
   const at = now.toISOString();
@@ -627,6 +675,10 @@ export function updatePlaybook(store: Store, params: UpdatePlaybookParams, now: 
     if (intent !== undefined && intent !== row.intent) {
       sets.set("intent", intent);
       fields.push("intent");
+    }
+    if (jobs !== undefined && jobs !== row.jobs_json) {
+      sets.set("jobs_json", jobs);
+      fields.push("jobs");
     }
     if (trigger !== undefined) {
       const linked = linkedTriggerOf(store, row);

@@ -4,7 +4,7 @@
 // transaction (`applyOnApproval`; `KERNEL_APPLIED_ACTIONS`). `./index.ts`
 // merges this part with the others in `PLAYBOOK_PARTS`.
 //
-//   tool  kernel_playbook_enable(id, idempotency_key)  (Wright: its own draft playbooks and its crew's)
+//   tool  kernel_playbook_enable(id, idempotency_key, enable_anyway?)  (Wright: its own draft playbooks and its crew's)
 //
 // Every call to the tool is held for the owner by the kernel's PreToolUse
 // rail (`ALWAYS_HELD_TOOLS` in `../sessions/policy.ts`), never by this part.
@@ -19,18 +19,24 @@
 //   replayed, so a new approval could only be spent with no effect), or a
 //   playbook whose current version has no `done` dry run (`latestDryRun`), or
 //   whose `merge_requirement` is looser than the policy of a repo it polls
-//   (`playbook_looser_than_repo`), is
+//   (`playbook_looser_than_repo`), or a crew member's playbook whose jobs its
+//   charter does not cover (`charter_gap`: `playbookFit` in `./fit.ts` is a
+//   gap, or could not check, fail closed) unless the call sets `enable_anyway`, is
 //   refused, so no approval is written; otherwise the call
 //   is held with a display for `studio approvals` (the name, slug, version,
 //   every policy value with `(proposed)` where Wright set it, and the dry
-//   run's summary) and the version as the approval's `subject_version`.
+//   run's summary; for a playbook that names jobs, its jobs and the fit, and
+//   with `enable_anyway` over an open gap, that gap and that the owner is
+//   enabling it anyway, so the owner's approval records the choice) and the
+//   version as the approval's `subject_version`.
 // - `applyOnApproval`, which the approvals decision runs when the owner
 //   approves the held call `once`: `enableApproved` re-checks the playbook
 //   (its agent, the owner's off, `draft`), refuses "version changed" unless
 //   the approval's `subject_version` is the current version and no
 //   `playbook_updated` came after the request, refuses with no `done` dry run
 //   of the current version, refuses `playbook_looser_than_repo` when the repo's
-//   policy was raised since the hold, then enables it (`enablePlaybook`). A refusal is
+//   policy was raised since the hold, refuses `charter_gap` when a gap is open
+//   and the held call did not set `enable_anyway`, then enables it (`enablePlaybook`). A refusal is
 //   recorded on the approval and said in the agent's message; nothing is
 //   enabled.
 // - the handler, a defence path only: it runs when the gate let a call
@@ -49,12 +55,14 @@
 // (item 02), and item 08 makes it fire. The `studio` CLI loads this module:
 // zod, the feature seam, `../loop/*`, the leaf `../agents/registry.js`, the
 // repo-policy read (`../integrations/github/repo-policy.js`: the store, the
-// keychain reader and the GitHub client, never the Agent SDK) and this
-// feature's files only.
+// keychain reader and the GitHub client, never the Agent SDK), the
+// catalogue's type and this feature's files only.
 import { z } from "zod";
 import { getAgent } from "../agents/registry.js";
 import type { AppliedApproval, ApprovalApplyOutcome } from "../approvals/store.js";
 import { defineTool } from "../features/contribution.js";
+import { TOOL_JOBS } from "../features/catalogue.js";
+import type { ToolCatalogue } from "../features/catalogue.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { getWorkStep, runStep } from "../loop/steps.js";
 import { getRepoPolicy } from "../integrations/github/repo-policy.js";
@@ -63,7 +71,9 @@ import type { Store } from "../store/store.js";
 import { CREW_CANNOT_DRAFT_DETAIL, afterPlaybookStep, mayManage, named, refuseCrewDrafting, syncMirror } from "./drafts.js";
 import { DRY_RUN_TOOL_NAME, latestDryRun } from "./dry-run.js";
 import type { DryRunRecord } from "./dry-run.js";
-import { PlaybookError, enablePlaybook, getPlaybook, linkedTriggerOf, parseMergeRequirement, refuseIfOwnerTurnedOff } from "./store.js";
+import { fitGapOpen, playbookFit } from "./fit.js";
+import type { PlaybookFit } from "./fit.js";
+import { PlaybookError, enablePlaybook, getPlaybook, linkedTriggerOf, parseMergeRequirement, playbookJobsOf, refuseIfOwnerTurnedOff } from "./store.js";
 import type { PlaybookRow } from "./store.js";
 import type { PlaybookPart } from "./types.js";
 
@@ -71,6 +81,14 @@ export const ENABLE_TOOL_NAME = "kernel_playbook_enable";
 
 /** The tool's full SDK name: what the gate holds, and what its `approval_used` event names. */
 const ENABLE_FULL_NAME = `mcp__kernel__${ENABLE_TOOL_NAME}`;
+
+/** The tool's arguments, as its shape parses them. */
+interface EnableArgs {
+  readonly id: number;
+  readonly idempotency_key: string;
+  /** The owner said to enable it with its charter gap open: the held display says so, and the approval records it. */
+  readonly enable_anyway?: boolean | undefined;
+}
 
 /** What the handler returns (and its work step stores). */
 export interface EnableToolResult {
@@ -91,7 +109,7 @@ function invalid(message: string): PlaybookError {
  * one-line detail.
  */
 export class EnableRefused extends Error {
-  readonly reason: "not_found" | "crew_cannot_draft" | "not_owner" | "turned_off_by_owner" | "not_draft" | "version_changed" | "no_dry_run" | "playbook_looser_than_repo";
+  readonly reason: "not_found" | "crew_cannot_draft" | "not_owner" | "turned_off_by_owner" | "not_draft" | "version_changed" | "no_dry_run" | "playbook_looser_than_repo" | "charter_gap";
 
   constructor(reason: EnableRefused["reason"], message: string) {
     super(message);
@@ -107,6 +125,7 @@ function playbookErrorOf(err: EnableRefused): PlaybookError {
   if (err.reason === "turned_off_by_owner") return new PlaybookError("owner_off", err.message);
   if (err.reason === "version_changed" || err.reason === "no_dry_run") return invalid(`version changed: ${err.message}`);
   if (err.reason === "playbook_looser_than_repo") return invalid(`playbook_looser_than_repo: ${err.message}`);
+  if (err.reason === "charter_gap") return invalid(`charter_gap: ${err.message}`);
   return invalid(err.message);
 }
 
@@ -182,6 +201,24 @@ function looserThanRepo(store: Store, row: PlaybookRow): EnableRefused | undefin
   return undefined;
 }
 
+// ---- The charter gap ---------------------------------------------------------------
+
+/**
+ * The `charter_gap` refusal when `fit` leaves a gap open (`fitGapOpen`: a gap,
+ * or a check that could not run) and the owner did not say to enable it
+ * anyway, or `undefined`. `atHold`: the refusal names the exact
+ * `kernel_agent_update` that closes the gap and how to enable anyway; at the
+ * apply it names the gap only (the playbook stays draft).
+ */
+function charterGap(row: PlaybookRow, fit: PlaybookFit | undefined, enableAnyway: boolean, atHold: boolean): EnableRefused | undefined {
+  if (!fitGapOpen(fit) || enableAnyway) return undefined;
+  const what = fit.lines.join(" ");
+  if (!atHold) return new EnableRefused("charter_gap", `${what} Playbook ${row.id} stays draft`);
+  const close =
+    fit.proposed_update === undefined ? "" : ` Close it: call kernel_agent_update with ${JSON.stringify(fit.proposed_update)} and a new idempotency_key (held for the owner), then ask again.`;
+  return new EnableRefused("charter_gap", `${what}${close} Only if the owner says to enable it with the gap open, call again with enable_anyway: true`);
+}
+
 // ---- The display ----------------------------------------------------------------
 
 function setterText(setBy: string | null): string {
@@ -212,12 +249,28 @@ function scheduleText(trigger: ReturnType<typeof linkedTriggerOf>): string {
 }
 
 /**
+ * The display's charter lines for a playbook that names jobs (none
+ * otherwise, so such a display is as it always was): the jobs, then the fit's
+ * lines; over an open gap with `enableAnyway`, that the owner is enabling it
+ * anyway; then the owner's connector steps.
+ */
+function charterLines(row: PlaybookRow, fit: PlaybookFit | undefined, enableAnyway: boolean): string[] {
+  if (fit === undefined || fit.status === "no_jobs") return [];
+  const lines = [`jobs: ${playbookJobsOf(row).map((job) => TOOL_JOBS[job]).join(", ")}`, ...fit.lines.map((l) => `charter: ${l}`)];
+  if (fitGapOpen(fit) && enableAnyway) lines.push("charter gap: open; the owner is enabling this playbook anyway, with the gap open");
+  lines.push(...fit.owner_steps.map((step) => `owner step: ${step}`));
+  return lines;
+}
+
+/**
  * What `studio approvals` shows for an enable: the playbook (name, slug, id,
  * version, agent), its schedule, every policy value (` (proposed)` where
- * Wright set it), and the dry run's summary. Stored text throughout: the CLI
+ * Wright set it), the dry run's summary, and for a crew member's playbook
+ * that names jobs, its charter lines (`fit`; `enableAnyway` over an open gap
+ * says the owner is enabling it anyway). Stored text throughout: the CLI
  * escapes every line.
  */
-export function enableDisplay(store: Store, row: PlaybookRow, dryRun: DryRunRecord): string {
+export function enableDisplay(store: Store, row: PlaybookRow, dryRun: DryRunRecord, fit?: PlaybookFit, enableAnyway = false): string {
   return [
     `Enable playbook ${JSON.stringify(row.name)} (${row.slug}, #${row.id}) at version ${row.version}, agent ${row.owning_agent}`,
     scheduleText(linkedTriggerOf(store, row)),
@@ -229,6 +282,7 @@ export function enableDisplay(store: Store, row: PlaybookRow, dryRun: DryRunReco
     valueLine("effort", row.effort, row.effort_set_by),
     valueLine("api_key_fallback", row.api_key_fallback_json, row.api_key_fallback_set_by),
     `dry run: ${dryRun.summary}`,
+    ...charterLines(row, fit, enableAnyway),
   ].join("\n");
 }
 
@@ -245,7 +299,7 @@ function usedKeyMessage(id: number): string {
  * version. A refusal of the playbook (`PlaybookError`) is a `refuse`; any
  * other throw propagates (the gate denies `kernel_gate_error`).
  */
-function beforeHold(a: { id: number; idempotency_key: string }, ctx: ContributedToolContext): HeldToolVerdict {
+function beforeHold(a: EnableArgs, ctx: ContributedToolContext): HeldToolVerdict {
   try {
     // A crew member's session is refused before anything else: nothing is held.
     const row = ownDraft(ctx.store, a.id, refuseCrewDrafting(ctx));
@@ -260,7 +314,11 @@ function beforeHold(a: { id: number; idempotency_key: string }, ctx: Contributed
     }
     const looser = looserThanRepo(ctx.store, row);
     if (looser !== undefined) return { refuse: `${ENABLE_TOOL_NAME}: ${playbookErrorOf(looser).message} (nothing was held for the owner)` };
-    return { display: enableDisplay(ctx.store, row, dryRun), subjectVersion: row.version };
+    const fit = playbookFit(ctx.store, row, ctx.catalogue);
+    const enableAnyway = a.enable_anyway === true;
+    const gap = charterGap(row, fit, enableAnyway, true);
+    if (gap !== undefined) return { refuse: `${ENABLE_TOOL_NAME}: ${playbookErrorOf(gap).message} (nothing was held for the owner)` };
+    return { display: enableDisplay(ctx.store, row, dryRun, fit, enableAnyway), subjectVersion: row.version };
   } catch (err) {
     if (err instanceof PlaybookError) return { refuse: `${ENABLE_TOOL_NAME}: ${err.message}` };
     throw err;
@@ -350,6 +408,10 @@ export interface EnableApprovedParams {
   /** The session `playbook_enabled` is linked to (the requesting session). */
   readonly sessionId: number | null;
   readonly now: Date;
+  /** The kernel's tool catalogue, for the charter check (`playbookFit`); absent: a playbook that names jobs is unchecked, a gap (fail closed). */
+  readonly catalogue?: ToolCatalogue | undefined;
+  /** The held call set `enable_anyway`: the owner approved enabling it with a charter gap open. */
+  readonly enableAnyway?: boolean | undefined;
 }
 
 /**
@@ -359,7 +421,9 @@ export interface EnableApprovedParams {
  * `turned_off_by_owner`, `not_draft`); the approval's `subject_version` is the current version and
  * no `playbook_updated` came after its request (`version_changed`); the
  * current version has a `done` dry run (`no_dry_run`); its `merge_requirement` is not
- * looser than a repo it polls (`playbook_looser_than_repo`). Then `enablePlaybook`
+ * looser than a repo it polls (`playbook_looser_than_repo`); a crew member's
+ * charter covers the jobs the playbook names, read now (`charter_gap`, unless
+ * `enableAnyway`). Then `enablePlaybook`
  * (which re-checks the version and `draft` in its own transaction; nested in
  * a caller's, it joins it). Throws `EnableRefused` for a refusal, writing
  * nothing; any other throw propagates.
@@ -379,19 +443,23 @@ export function enableApproved(store: Store, p: EnableApprovedParams): EnableToo
   if (latestDryRun(store, row.id, row.version) === null) throw new EnableRefused("no_dry_run", `version ${row.version} has no done dry run; it stays draft`);
   const looser = looserThanRepo(store, row);
   if (looser !== undefined) throw looser;
+  const gap = charterGap(row, playbookFit(store, row, p.catalogue), p.enableAnyway === true, false);
+  if (gap !== undefined) throw gap;
   enablePlaybook(store, { id: row.id, version: row.version, sessionId: p.sessionId, approvalId: approval.id }, p.now);
   return { playbook: row.id, version: row.version, status: "enabled", approval_id: approval.id };
 }
 
 /** Refuse unless this call runs on its own consumed approval for the current version; then enable it. In one transaction (the step's). */
-function enableOnApproval(ctx: ContributedToolContext, a: { id: number; idempotency_key: string }, agent: string): EnableToolResult {
+function enableOnApproval(ctx: ContributedToolContext, a: EnableArgs, agent: string): EnableToolResult {
   const { store } = ctx;
   const row = ownDraft(store, a.id, agent);
   const approval = ownApproval(store, ctx.sessionId, row.id, a.idempotency_key);
   if (approval === undefined) {
     throw invalid(`no approval of its own: this call has no owner-approved request in this session for playbook ${row.id} with this idempotency_key; nothing was enabled`);
   }
-  return asPlaybookError(() => enableApproved(store, { playbookId: row.id, agent, approval, sessionId: ctx.sessionId, now: ctx.now() }));
+  return asPlaybookError(() =>
+    enableApproved(store, { playbookId: row.id, agent, approval, sessionId: ctx.sessionId, now: ctx.now(), catalogue: ctx.catalogue, enableAnyway: a.enable_anyway === true }),
+  );
 }
 
 /** `text` on one line: every run of whitespace as one space. */
@@ -406,10 +474,18 @@ function oneLine(text: string): string {
  * committed, the mirror rewrite. `EnableRefused` ⇒ its reason and a sentence
  * naming it. Any other throw propagates (the decision records `apply_error`).
  */
-function applyOnApproval(a: { id: number; idempotency_key: string }, ctx: { store: Store; now: () => Date; approval: AppliedApproval }): ApprovalApplyOutcome {
+function applyOnApproval(a: EnableArgs, ctx: { store: Store; now: () => Date; approval: AppliedApproval; catalogue?: ToolCatalogue }): ApprovalApplyOutcome {
   const { store, approval } = ctx;
   try {
-    const done = enableApproved(store, { playbookId: a.id, agent: approval.agent, approval, sessionId: approval.sessionId, now: ctx.now() });
+    const done = enableApproved(store, {
+      playbookId: a.id,
+      agent: approval.agent,
+      approval,
+      sessionId: approval.sessionId,
+      now: ctx.now(),
+      catalogue: ctx.catalogue,
+      enableAnyway: a.enable_anyway === true,
+    });
     const slug = getPlaybook(store, done.playbook)?.slug ?? `#${done.playbook}`;
     return {
       applied: `The kernel enabled playbook ${slug} (#${done.playbook}) at version ${done.version} on approval ${approval.id}.`,
@@ -432,7 +508,7 @@ function applyOnApproval(a: { id: number; idempotency_key: string }, ctx: { stor
  * returned as this call's success. Synchronous with the `runStep` that
  * follows: no call interleaves between this read and the step's claim.
  */
-function refuseStaleReplay(ctx: ContributedToolContext, a: { id: number; idempotency_key: string }): void {
+function refuseStaleReplay(ctx: ContributedToolContext, a: EnableArgs): void {
   const step = getWorkStep(ctx.store, ctx.stepKey(a.idempotency_key));
   if (step?.status !== "done") return;
   const result = step.result as { playbook?: unknown; approval_id?: unknown } | null | undefined;
@@ -462,8 +538,10 @@ const enableTool = defineTool({
     "The kernel always holds this call for the owner, showing the playbook, its values and the dry run; end your turn. " +
     "The owner's approval enables it: the kernel applies it itself, at the version the owner saw, and tells you what it did in a new message; do not repeat the call. " +
     "If it was changed since (a new version), the kernel does not enable it and it stays a draft: dry-run it again and ask again. " +
+    "A crew member's playbook that names jobs its charter does not cover is refused charter_gap, nothing held: tell the owner the missing job in plain words and close the gap with the kernel_agent_update the refusal names. " +
+    "enable_anyway: true only when the owner said to enable it with the gap open; the held approval then shows the open gap and that the owner is enabling it anyway. Never set it on your own. " +
     "Returns {playbook, version, status: enabled, approval_id}. Use a new idempotency_key for each request to the owner: a key an earlier enable in this session used is refused, nothing held.",
-  shape: { id: z.number().int().positive(), idempotency_key: z.string().min(1).max(200) },
+  shape: { id: z.number().int().positive(), idempotency_key: z.string().min(1).max(200), enable_anyway: z.boolean().optional() },
   beforeHold,
   applyOnApproval,
   handler: (a, ctx) =>

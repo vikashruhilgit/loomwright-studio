@@ -480,7 +480,8 @@ export function heldToolCheckOf(contributed: readonly ContributedTool[], context
  * nothing and gets the real, fixed sets. The returned function answers
  * `undefined` for a tool with no applier; else it parses the held input with the tool's own zod shape (a
  * failure is `{refused: "invalid_input"}`, nothing run) and calls
- * `applyOnApproval` with the store, the decision's instant and the approval.
+ * `applyOnApproval` with the store, the decision's instant, the approval and
+ * the catalogue of `contributed` (`kernelToolCatalogue`, built once here; none when it can't be built).
  * A throw propagates: the decision records it as `apply_error`.
  */
 export function approvalApplierOf(
@@ -501,12 +502,14 @@ export function approvalApplierOf(
     }
     appliers.set(full, t);
   }
+  // The catalogue of the same tools (`heldToolCheckOf`'s), so an apply re-runs a pre-hold check that reads it.
+  const catalogue = kernelToolCatalogue(contributed);
   return (tool, input, approval, store, now) => {
     const t = appliers.get(tool);
     if (t?.applyOnApproval === undefined) return undefined;
     const parsed = z.object(t.shape).safeParse(input ?? {});
     if (!parsed.success) return { refused: "invalid_input", text: `${t.name}: the held input is not valid: ${z.prettifyError(parsed.error)}` };
-    return t.applyOnApproval(parsed.data, { store, now: () => now, approval });
+    return t.applyOnApproval(parsed.data, { store, now: () => now, approval, ...(catalogue === null ? {} : { catalogue }) });
   };
 }
 
