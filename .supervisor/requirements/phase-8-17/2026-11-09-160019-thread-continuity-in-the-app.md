@@ -1,6 +1,7 @@
 # 17c — Thread continuity in the app: Reply, Summarize & start fresh with ⓘ, Copy reference
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/253
 
 **Priority:** MVP · ROADMAP phase 8 (blocks item 14's live run at setup step 6) · D9, D24, D25
 
@@ -85,3 +86,9 @@ app/e2e/fixture-kernel.ts
 
 2026-11-09-160017-the-thread-continuity-mockup.md
 2026-11-09-160018-thread-continuity-in-the-kernel.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-10T16:58:40Z
+- **Brief:** .supervisor/jobs/done/2026-11-10-thread-continuity-in-the-app.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/253
