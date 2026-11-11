@@ -291,7 +291,8 @@ describe("on the Settings screen", () => {
     render(<SettingsScreen api={kernel.fake.bridge} registry={createCommandRegistry()} />);
     const region = await screen.findByRole("region", { name: "Threads" });
     const regions = screen.getAllByRole("region").map((r) => r.getAttribute("aria-labelledby"));
-    expect(regions.at(-1)).toBe("settings-h-threads");
+    // Directly after This app (phase 8 item 18c's Workspaces follows it).
+    expect(regions[regions.indexOf("settings-h-app") + 1]).toBe("settings-h-threads");
     expect(region.getAttribute("data-testid")).toBe(IDS.threads);
     await settled();
     expect(hintText("wright")).toBe("40,000 tokens · set by you");

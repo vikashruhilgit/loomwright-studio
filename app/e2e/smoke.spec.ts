@@ -59,7 +59,7 @@ test("against the fixture kernel, the window shows the sidebar's eleven entries,
     require: typeof (window as unknown as { require?: unknown }).require,
     process: typeof (window as unknown as { process?: unknown }).process,
   }));
-  expect(exposed).toEqual({ api: ["connection", "feed", "homeDir", "onNavigate", "openExternal", "prefs", "request", "revealKernelLog"], require: "undefined", process: "undefined" });
+  expect(exposed).toEqual({ api: ["chooseFolder", "connection", "feed", "homeDir", "onNavigate", "openExternal", "prefs", "request", "revealKernelLog"], require: "undefined", process: "undefined" });
 });
 
 test("with no kernel answering, the window shows the kernel unreachable band", async () => {

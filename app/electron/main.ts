@@ -5,9 +5,9 @@
 // token never enters the renderer, which is the surface that renders
 // untrusted text (invariant 3).
 import { stat } from "node:fs/promises";
-import { join } from "node:path";
-import { BrowserWindow, app, ipcMain, session, shell } from "electron";
-import type { BrowserWindowConstructorOptions, IpcMainInvokeEvent, WebContents } from "electron";
+import { isAbsolute, join } from "node:path";
+import { BrowserWindow, app, dialog, ipcMain, session, shell } from "electron";
+import type { BrowserWindowConstructorOptions, IpcMainInvokeEvent, OpenDialogOptions, WebContents } from "electron";
 import type { ApiRequest, FeedRelayFrame, KernelLogReveal } from "../src/api/contract";
 import { CHANNELS } from "./channels";
 import { registerDeepLinks } from "./deeplink";
@@ -152,6 +152,18 @@ function handleBridge(kernel: KernelConnection, prefs: Preferences, dataDir: str
   ipcMain.handle(CHANNELS.homeDir, async (event) => {
     if (!fromOwner(event)) throw new Error("refused");
     return app.getPath("home");
+  });
+  // The owner's folder picker (phase 8 item 18c), argument-free like the home folder: whatever the renderer sends is
+  // dropped. A choose-a-folder sheet on the owner's window; it answers the chosen absolute path, or `null` when the
+  // owner cancels. The renderer never reads the disk: the kernel checks the folder when the path is saved. A dialog
+  // that can't be shown rejects, so the renderer says so instead of reading it as a cancel.
+  ipcMain.handle(CHANNELS.chooseFolder, async (event): Promise<string | null> => {
+    if (!fromOwner(event)) throw new Error("refused");
+    const options: OpenDialogOptions = { properties: ["openDirectory"] };
+    const parent = BrowserWindow.fromWebContents(event.sender);
+    const result = parent === null ? await dialog.showOpenDialog(options) : await dialog.showOpenDialog(parent, options);
+    const [chosen] = result.filePaths;
+    return result.canceled || chosen === undefined || !isAbsolute(chosen) ? null : chosen;
   });
 }
 

@@ -5,7 +5,8 @@
 // provider's facts and the three terminal commands, no secret anywhere (a body's extra field is
 // never shown nor kept), no input and no sign-in control, the app's own preferences (launch at
 // login read from the OS, notifications, theme, Reveal), the kernel unreachable, the live
-// refetch, untrusted text shown literally and the ⌘K commands. The real kernel's route is covered
+// refetch, untrusted text shown literally and the ⌘K commands; and that the Workspaces section (phase 8 item 18c,
+// tested in `WorkspacesSection.test.tsx`) is on the screen. The real kernel's route is covered
 // by `kernel/test/gui-settings.test.ts`; the main process by `electron/settings.test.ts`; the
 // built app by `e2e/settings.spec.ts`.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -21,6 +22,7 @@ import { SETTINGS_OWNER } from "./commands";
 import { SETTINGS_TEST_IDS as IDS } from "./model";
 import { SettingsScreen } from "./SettingsScreen";
 import { STATUS, UNREACHABLE, daysAgo, mountSubtitle, settingsBody } from "./test-support";
+import { WORKSPACES_TEST_IDS } from "./WorkspacesSection";
 
 afterEach(() => {
   cleanup();
@@ -119,6 +121,17 @@ describe("the states", () => {
     for (const name of ["Auth provider", "Change it in your terminal", "Kernel", "This app"]) expect(screen.getByRole("region", { name }), name).toBeTruthy();
     expect(screen.getAllByText("read-only")).toHaveLength(2);
     expect(screen.getByText("Kept in the app's own settings, not in the kernel")).toBeTruthy();
+  });
+
+  it("Workspaces (phase 8 item 18c) renders as the last region, below Threads, and reads GET /workspaces", async () => {
+    const kernel = createKernel();
+    kernel.fake.route("GET /workspaces", () => ok({ workspaces: [] }));
+    await mount(kernel);
+    const region = await screen.findByRole("region", { name: "Workspaces" });
+    expect(region.getAttribute("data-testid")).toBe(WORKSPACES_TEST_IDS.section);
+    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-labelledby")).slice(-2)).toEqual(["settings-h-threads", "settings-h-workspaces"]);
+    await within(region).findByTestId(WORKSPACES_TEST_IDS.empty);
+    expect(kernel.fake.requestsTo("GET /workspaces")).toHaveLength(1);
   });
 
   it("waiting on you (expiring): an attention band as a status naming the days, a renew soon badge and the days left beside the dot", async () => {
