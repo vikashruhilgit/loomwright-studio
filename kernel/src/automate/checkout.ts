@@ -20,10 +20,35 @@ function refuse(code: "no_workspace", detail: string): Error {
   return new Error(`${code}: ${detail}`);
 }
 
-/** `owner/repo` of a GitHub remote URL (`https://github.com/o/r.git`, `git@github.com:o/r`, `ssh://git@github.com/o/r`), else `undefined`. */
+// Remote URL shapes that name a repo on github.com, anchored at both ends so the
+// host is exactly `github.com` (case-insensitive): never a path segment of
+// another host (`https://evil.example/github.com/o/r`), a longer host
+// (`github.com.evil.example`) or a host that merely ends in it (`evilgithub.com`).
+// The https form allows userinfo (`https://user@github.com/o/r`) but no `@` or
+// `/` inside it, so `https://github.com@evil.example/o/r` does not read as GitHub.
+const GITHUB_REMOTES: readonly RegExp[] = [
+  /^https?:\/\/(?:[^@/\s]+@)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i,
+  /^ssh:\/\/git@github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i,
+  /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i,
+];
+
+/**
+ * `owner/repo` of a GitHub remote URL, else `undefined`. Accepted:
+ * `https://github.com/o/r(.git)`, `http(s)://user@github.com/o/r`,
+ * `git@github.com:o/r(.git)` and `ssh://git@github.com/o/r(.git)`; the host
+ * must be exactly `github.com`.
+ */
 export function repoOfRemote(url: string): string | undefined {
-  const m = /github\.com[:/]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i.exec(url.trim());
-  return m === null ? undefined : `${m[1] as string}/${m[2] as string}`;
+  const trimmed = url.trim();
+  for (const re of GITHUB_REMOTES) {
+    const m = re.exec(trimmed);
+    if (m === null) continue;
+    const owner = m[1] as string;
+    const repo = m[2] as string;
+    if (owner === "." || owner === ".." || repo === "." || repo === "..") return undefined;
+    return `${owner}/${repo}`;
+  }
+  return undefined;
 }
 
 /** The directory holding a checkout's git config: `.git` itself, or the common dir a worktree's `.git` file points to. */
