@@ -57,6 +57,7 @@ import type { ListDataItem } from "../../components/List/List";
 import { liveStoreFor, useResource } from "../../store/react";
 import type { ResourceError } from "../../store/store";
 import { alwaysRefusalFor, kernelWillLine, playbookText } from "./kernel-mirror";
+import { CharterAsk } from "../chat/CharterAsk";
 import { CharterDisplay } from "./CharterDisplay";
 import { MergeApprovalCard } from "./MergeApprovalCard";
 import { payloadText, printable } from "./printable";
@@ -687,6 +688,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
           ) : (
             <ApprovalDetail
               key={selected.id}
+              api={api}
               focusLost={paneFocusLost}
               approval={selected}
               sessions={sessions?.data?.sessions}
@@ -710,6 +712,8 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
 // ---- the detail --------------------------------------------------------------------------
 
 interface ApprovalDetailProps {
+  /** The bridge: a pending charter card's Ask or change box posts through it (phase 8 item 18d). */
+  readonly api: StudioBridge;
   /** The inbox's flag for focus lost by a detail-pane child that just unmounted. */
   readonly focusLost: RefObject<boolean>;
   readonly approval: Approval;
@@ -754,7 +758,7 @@ function keepFocus(target: HTMLElement | null, scope: HTMLElement | null): void 
   if (focused === null || focused === document.body || (scope !== null && scope.contains(focused) && focused !== target)) target.focus();
 }
 
-function ApprovalDetail({ focusLost, approval: a, sessions, playbooks, message, messagesError, notice, busyDecision, disabled, onDecide }: ApprovalDetailProps) {
+function ApprovalDetail({ api, focusLost, approval: a, sessions, playbooks, message, messagesError, notice, busyDecision, disabled, onDecide }: ApprovalDetailProps) {
   const titleId = useId();
   const reasonId = useId();
   const willLine = kernelWillLine(a);
@@ -825,8 +829,11 @@ function ApprovalDetail({ focusLost, approval: a, sessions, playbooks, message, 
       {merge === undefined ? null : <MergeApprovalCard merge={merge} />}
 
       {a.display === undefined ? null : charter !== undefined ? (
-        // Keyed by approval, so the disclosure's open state never carries over to another approval.
-        <CharterDisplay key={a.id} parts={charter} />
+        // Keyed by approval, so the details' open state never carries over to another approval. A pending one carries
+        // the Ask or change box (phase 8 item 18d), posting into the thread Wright drafted it in.
+        <CharterDisplay key={a.id} parts={charter} display={a.display}>
+          {pending ? <CharterAsk api={api} approval={a} linkToThread /> : null}
+        </CharterDisplay>
       ) : (
         <div className="approvals-well">
           <div className="approvals-well-head">

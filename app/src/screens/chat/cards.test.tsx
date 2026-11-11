@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 // Chat's cards: the playbook card (provenance, Set, Run now, Turn off, no
 // Enable), the trigger card (schedule, next fire, on / off / spent, On / Off,
-// needs_confirmation), the charter
-// card (Create, Edit in English, Deny), and the inline approval's source label
-// and link to what it is about.
+// needs_confirmation), and the inline approval's source label and link to
+// what it is about. The charter card's cases are in `CharterCard.test.tsx`.
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ApiResult } from "../../api/contract";
@@ -497,7 +496,7 @@ describe("cards", () => {
   });
 
   it("a double click on an approval or charter action posts once", async () => {
-    const k = kit({ threads: { wright: thread([], { pending_approvals: [approval(7), approval(9, { action: "kernel_agent_create" })] }) } });
+    const k = kit({ threads: { wright: thread([], { pending_approvals: [approval(7), approval(9, { action: "kernel_agent_create", payload: { tool: "mcp__kernel__kernel_agent_create", input: { charter: { id: "mason" } } } })] }) } });
     const held: (() => void)[] = [];
     k.fake.route("POST /approvals/:id/approve", async () => {
       await new Promise<void>((go) => held.push(go));
@@ -670,46 +669,5 @@ describe("cards", () => {
     const view = await renderChat(k);
     await playbookCard();
     expect(view.container.querySelectorAll('[data-trigger="5"]')).toHaveLength(1);
-  });
-
-  it("charter card shows the display text as-is", async () => {
-    const display = "Name: Pim\nPersona: brief\n  Duties:\n  - digest";
-    const k = kit({ threads: { wright: thread([], { pending_approvals: [approval(9, { action: "kernel_agent_create", display })] }) } });
-    const view = await renderChat(k);
-    const card = await screen.findByRole("region", { name: "Drafted crew member, approval 9" });
-    expect(card.querySelector("pre")?.textContent).toBe(display);
-    // The charter card replaces the plain approval card.
-    expect(view.container.querySelector(".eventcard-approval")).toBeNull();
-  });
-
-  it("charter Create approves once", async () => {
-    const k = kit({ threads: { wright: thread([], { pending_approvals: [approval(9, { action: "kernel_agent_create" })] }) } });
-    await renderChat(k);
-    const card = await screen.findByRole("region", { name: "Drafted crew member, approval 9" });
-    await press(card, "Create");
-    await waitFor(() => expect(k.posted("POST /approvals/:id/approve")).toHaveLength(1));
-    expect(k.posted("POST /approvals/:id/approve")[0]?.body).toEqual({ decision: "once" });
-    expect(k.posted("POST /approvals/:id/approve")[0]?.params).toEqual({ id: 9 });
-  });
-
-  it("charter Deny posts deny", async () => {
-    const k = kit({ threads: { wright: thread([], { pending_approvals: [approval(9, { action: "kernel_agent_create" })] }) } });
-    await renderChat(k);
-    const card = await screen.findByRole("region", { name: "Drafted crew member, approval 9" });
-    await press(card, "Deny");
-    await waitFor(() => expect(k.posted("POST /approvals/:id/deny")).toHaveLength(1));
-    expect(k.posted("POST /approvals/:id/approve")).toHaveLength(0);
-  });
-
-  it("charter Edit in English fills the composer, sends nothing", async () => {
-    const k = kit({ threads: { wright: thread([], { pending_approvals: [approval(9, { action: "kernel_agent_create" })] }) } });
-    await renderChat(k);
-    const card = await screen.findByRole("region", { name: "Drafted crew member, approval 9" });
-    await press(card, "Edit in English");
-    const composer = screen.getByRole("textbox", { name: "Message Wright" }) as HTMLTextAreaElement;
-    expect(composer.value).toBe("About the charter in approval 9: ");
-    expect(document.activeElement).toBe(composer);
-    expect(k.posted("POST /ask")).toHaveLength(0);
-    expect(k.fake.requests.filter((r) => r.req.method === "POST")).toHaveLength(0);
   });
 });

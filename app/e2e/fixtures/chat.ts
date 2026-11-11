@@ -154,14 +154,18 @@ function triggerOf(id: number, kind: string, text: string, enabled: boolean): Tr
   };
 }
 
+/**
+ * Approval 9's display in the kernel's charter format (`createDisplay` in kernel/src/agents/charter-tools.ts), so the
+ * app draws it as the charter card (phase 8 item 18d). The purpose line carries untrusted markup that must stay text.
+ */
 const CHARTER_DISPLAY = [
-  "Create crew member: Mason",
-  "  persona: Terse reviewer. Cites the line it means.",
-  "  duties: review PRs where the owner is requested",
-  "  tools: GitHub (read, comment)",
-  "  boundaries: never pushes; never approves a PR",
-  "  limits: 150000 tokens / day, 1 session at once",
-  "  note: <img src=x onerror=alert(1)> stays text",
+  'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
+  "job: Review pull requests",
+  "  - Review PRs where the owner is requested; cites the line it means.",
+  "  - Note: <img src=x onerror=alert(1)> stays text",
+  "enforced: never: git_push; tools: Read, mcp__kernel__kernel_github_pr_get; bash prefixes: none",
+  "limits: tokens_per_day 150000 (proposed); sessions_at_once 1 (proposed); delegation_depth not set (no limit)",
+  "workspaces: none",
 ].join("\n");
 
 export function chatFixture(scenario: ChatScenario = "populated"): ChatFixture {
@@ -179,7 +183,8 @@ export function chatFixture(scenario: ChatScenario = "populated"): ChatFixture {
   } else if (scenario === "populated") {
     older.push({ type: "message", ...row(1, "wright", "What can you do for me?", { reply_text: "Anything you can describe as a duty. I draft it as a playbook for you to approve." }) });
     wrightItems.push(
-      { type: "message", ...row(4, "wright", "Review PRs where I'm the requested reviewer.", { reply_text: "Here's the duty I'd set up. I've proposed a dedupe key, a model and a priority; they're yours to change." }) },
+      // Session 12 is approval 9's `requesting_session`: the charter card's Ask or change continues this message (18d).
+      { type: "message", ...row(4, "wright", "Review PRs where I'm the requested reviewer.", { session_id: 12, reply_text: "Here's the duty I'd set up. I've proposed a dedupe key, a model and a priority; they're yours to change." }) },
       { type: "event", id: 100, at: AT(5), kind: "trigger_registered", summary: "Trigger 8 registered", ref: { trigger_id: 8 } },
       { type: "event", id: 101, at: AT(10), kind: "playbook_created", summary: "Playbook pr-review created (v1)", ref: { playbook_id: 3 } },
       { type: "event", id: 102, at: AT(20), kind: "playbook_updated", summary: "Playbook pr-review updated (v2)", ref: { playbook_id: 3 } },
@@ -191,7 +196,7 @@ export function chatFixture(scenario: ChatScenario = "populated"): ChatFixture {
     );
     pending.push(
       approvalOf(7, "github_comment", "Comment on vikashruhilgit/loomwright#401: 0 blocking, 3 nits", { playbook: { id: 3, slug: "pr-review", version: 2 } }),
-      approvalOf(9, "kernel_agent_create", CHARTER_DISPLAY),
+      approvalOf(9, "kernel_agent_create", CHARTER_DISPLAY, { payload: { tool: "mcp__kernel__kernel_agent_create", input: { charter: { id: "mason" } } } }),
     );
   }
   const pimItems: ThreadItem[] =

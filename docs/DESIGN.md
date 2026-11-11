@@ -348,7 +348,7 @@ The mockup's copy and layout are proposals the owner can change on this PR, as w
 
 ## Charter card (phase 8 item 18a)
 
-Chat's charter card has three faults in the current code. It shows the kernel's display as a raw block (`app/src/screens/chat/cards.tsx`). The kernel cuts that display at 4,000 characters with no mark (`MAX_APPROVAL_DISPLAY`, `kernel/src/approvals/store.ts`). And nothing on the card says that asked-for jobs are missing or that the member has no workspace. As D9 requires, the mockup comes before any code: `design/mockups/charter-card.html`, one HTML file with every state in light and dark. Open it in a browser and use the review strip, or force a view with the URL hash (`#view=card-details&theme=dark`). The owner approves the design by merging the PR that adds it. Its token block is the verbatim output of `node app/scripts/tokens.mjs`, and it adds no colour value outside it.
+Chat's charter card had three faults before item 18d. It showed the kernel's display as a raw block (`app/src/screens/chat/cards.tsx`). The kernel cut that display at 4,000 characters with no mark (`MAX_APPROVAL_DISPLAY`, `kernel/src/approvals/store.ts`); since item 18d it stores the display whole, up to 64,000 characters, and only `studio approvals` cuts at 4,000, with a mark naming what it left out. And nothing on the card says that asked-for jobs are missing or that the member has no workspace. As D9 requires, the mockup comes before any code: `design/mockups/charter-card.html`, one HTML file with every state in light and dark. Open it in a browser and use the review strip, or force a view with the URL hash (`#view=card-details&theme=dark`). The owner approves the design by merging the PR that adds it. Its token block is the verbatim output of `node app/scripts/tokens.mjs`, and it adds no colour value outside it.
 
 The mockup adds no route and no code. Item 18b supplies the ready check, item 18c the saved workspaces, and item 18d builds the card to it, in Chat and on the Approvals screen. It reuses [Thread continuity](#thread-continuity-phase-8-item-17a)'s window, review strip, `Kernel unreachable` band and URL-hash hook, and item 16's job marks. The item touches only the mockup and this file, so it has no evidence folder.
 
@@ -367,14 +367,14 @@ The mockup adds no route and no code. Item 18b supplies the ready check, item 18
   - **Can do:** each job's plain name with a "Used for:" line, and the other tools in words ("Work in its copy of the repo", naming the commands its Bash prefixes allow). **Never does:** the never list in words. **Limits** on one line: tokens a day, sessions at once, the model.
   - Then the ready check, Ask or change, and Approve and Deny.
   - No `mcp__kernel__` name, JSON or file path shows until the details are open.
-- **Details (18d Part A):** four blocks: the kernel tools by job (each raw name with its purpose line), the enforced lines, the settings file and `role.md`, the last two as the kernel writes them. Each block is complete, scrolls inside the card, and has Show more (opens it in full) and its own copy. A line above them gives the total length and says nothing is cut. The sample totals 4,193 characters, past today's 4,000-character cut.
+- **Details (18d Part A):** four blocks: the kernel tools by job (each raw name with its purpose line), the enforced lines, the settings file and `role.md`, the last two as the kernel writes them. Each block is complete, scrolls inside the card, and has Show more (opens it in full) and its own copy. A line above them gives the total length and says nothing is cut. The sample totals 4,193 characters, past the 4,000-character cut the kernel made before item 18d.
 - **Ready check (18b Part C, shown by 18d):**
   - One row per duty: covered by a named job, needs no job, or "No job covers this" with **Add**. Add puts the duty into Ask or change and moves focus there; it changes nothing by itself.
   - One row per job prerequisite (a workspace, or the GitHub connector): ready, or what is missing with its fix. Each row says its state in words beside the mark.
   - A check that didn't run says so and why: the kernel is offline (with the shared band; the check reruns on its own), the dry run stopped (Run the check again), or one connector couldn't be read (only its rows read "Not checked", with Check again). None of them shows a ✓ the check did not earn.
   - While it runs, the card shows "Checking" and placeholder rows. A charter with nothing to check says so.
 - **Workspace question (18d Part C, 18c):**
-  - "Where's your copy of <repo>?", opened from Choose workspace. It lists the saved workspaces whose remote matches (with a count of the others), and offers Use this folder, **Choose folder…** and **Clone it for me**. The clone is held for the owner's approval, and nothing is cloned before.
+  - "Where's your copy of <repo>?", opened from Choose workspace. It lists the saved workspaces whose remote matches (with a count of the others), and offers Use this folder, **Choose folder…** and **Clone it for me**. A pick goes to Wright as a Reply, and Clone it for me posts the request and says cloning isn't built yet (the owner's 2026-11-11 answers below).
   - A protected folder is refused in plain words (D31), with what to do instead.
   - It has empty, loading and error states. `Esc` or Not now closes it and returns focus to Choose workspace.
   - A charter with no job that needs a workspace has no workspace row and no question.
@@ -404,6 +404,14 @@ The mockup's copy and layout are proposals the owner can change on this PR, as w
 5. **Why a connector couldn't be read.** The unreadable-connector row says the token couldn't be read from the Keychain. 18b names no field for the reason; either it reports one, or the row says only that the connector couldn't be read.
 6. **Which jobs need GitHub.** The mockup gives Read a PR and Triage PR comments a GitHub row, because their tools are `kernel_github_*`. 18b declares each job's needs once, with the job, and decides.
 7. **A moved or deleted saved folder** (18c Scope 3) is not drawn: the picker lists only folders that exist. Say whether the picker shows one disabled with the reason, or leaves it out.
+
+### What the owner decided (2026-11-11), as built by item 18d
+
+The owner answered open points 1 to 3 (Launch Pad, 2026-11-11). Item 18d builds these; the other open points stand as proposed.
+
+- **Point 2, a new version and its approval: a new version withdraws the old one.** When Wright holds a charter create or update for a member while an older charter call for the same member is still pending, the kernel withdraws the older one (decided `deny` by `kernel`, its `approval_decided` event naming `replaced_by: <new id>`) and holds the new one. Chat shows the old one collapsed to "<member> · v1 · Replaced by v2 · <what changed>"; opening it shows its read-only card.
+- **Point 3, where Clone it for me clones to: the clone is split to a follow-up item.** Clone it for me is offered, and in item 18d it posts the request into the drafting thread and the card says "Cloning isn't built yet; nothing was cloned. Wright has your request." Nothing is cloned and no approval kind is added. A follow-up item builds the held clone (its kind, credentials and destination folder).
+- **Point 1, choosing a workspace on a held create: a pick goes through Wright.** Use this folder, or Choose folder… (saved through `POST /workspaces`, so a protected folder is refused in the kernel's words and nothing is posted), posts a Reply into the drafting thread naming the folder. Wright proposes the held v2 with the workspace, by the same path as Ask or change; the held draft is never changed in place, and there is no new kernel route.
 
 ## Not in v1 (deferred to GUI v2 or later)
 

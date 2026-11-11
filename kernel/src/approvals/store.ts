@@ -35,6 +35,7 @@ import { enqueueEvent } from "../loop/queue.js";
 import { recordNotification } from "../notifications/record.js";
 import { ALWAYS_HELD_TOOLS } from "../sessions/policy.js";
 import type { Store } from "../store/store.js";
+import { withdrawReplaced } from "./replace.js";
 
 /** `approvals.status`. */
 export const APPROVAL_STATUSES = ["pending", "approved", "denied"] as const;
@@ -113,10 +114,21 @@ export const OWNER = "owner";
 export const ALWAYS_REFUSED = "always needs an approval the rail held from a playbook session";
 
 export const MAX_APPROVAL_ACTION = 200;
-/** A held call's display text (the pre-hold check's, phase 3 item 07) is cut to this many characters, never refused. */
+/**
+ * The most of a held call's display text (the pre-hold check's, phase 3 item
+ * 07) that `studio approvals` prints before its "more characters not shown"
+ * mark (phase 8 item 18d), and so the part of a charter display whose head
+ * must fit. The display itself is stored whole, up to `MAX_REQUEST_PAYLOAD_JSON`.
+ */
 export const MAX_APPROVAL_DISPLAY = 4_000;
-/** `kernel_approval_request`'s payload, as JSON, at most this many characters. The rail stores a held call's payload whole. */
+/**
+ * `kernel_approval_request`'s payload, as JSON, at most this many characters,
+ * and the most of a held call's display text that is stored (a longer one is
+ * cut to it, never refused). The rail stores a held call's payload whole.
+ */
 export const MAX_REQUEST_PAYLOAD_JSON = 64_000;
+/** A held call's subject (`HeldToolVerdict.subject`, e.g. `agent:<member id>`): 1 to this many characters. */
+export const MAX_APPROVAL_SUBJECT = 200;
 /** `listApprovals` with `all`: at most this many decided approvals (newest first), after every pending one. */
 export const MAX_DECIDED_LIST = 500;
 
@@ -184,6 +196,12 @@ export interface ApprovalView {
   readonly apply_refused?: string;
   /** The refusal's sentence. Untrusted text (it names a playbook): the CLI escapes it. */
   readonly apply_detail?: string;
+  /**
+   * For an approval the kernel withdrew because a newer held call named the
+   * same subject (`withdrawReplaced`): the newer approval's id (the
+   * `approval_decided` event's `replaced_by`). Present only then.
+   */
+  readonly replaced_by?: number;
 }
 
 const COLUMNS = "id, requesting_agent, requesting_session, action, payload_json, requested_at, status, decision, decided_by, decided_at, playbook";
@@ -218,10 +236,17 @@ export interface ApprovalRequest {
   readonly action: string;
   readonly payload: unknown;
   readonly source: ApprovalSource;
-  /** Shown to the owner beside the payload, on the `approval_requested` event only (never in `payload_json`); cut to `MAX_APPROVAL_DISPLAY`. */
+  /** Shown to the owner beside the payload, on the `approval_requested` event only (never in `payload_json`); kept whole up to `MAX_REQUEST_PAYLOAD_JSON`. */
   readonly display?: string;
   /** The version of the thing the held call is about (a playbook enable's), on the `approval_requested` event as `subject_version`. */
   readonly subjectVersion?: number;
+  /**
+   * What the held call is about (a charter call's `agent:<member id>`), on the
+   * `approval_requested` event as `subject` (never in `payload_json`): a new
+   * approval with a subject withdraws every older pending one with the same
+   * subject (`withdrawReplaced`). 1 to `MAX_APPROVAL_SUBJECT` characters.
+   */
+  readonly subject?: string;
 }
 
 /** The session's agent, or `null` when it has none. */
@@ -241,12 +266,16 @@ function agentOf(agent: string | null): string {
  * records it (`approvals.playbook`) and the event adds `playbook` and
  * `playbook_version` (the session's, null when it recorded none); a session
  * with no playbook writes neither. A given `display` is added to the event
- * (cut to `MAX_APPROVAL_DISPLAY`) and a given `subjectVersion` as
- * `subject_version`; neither ever enters `payload_json`, so grant matching on
- * the canonical payload is unchanged. Returns the row. Throws `ApprovalError` (`invalid_approval`)
+ * (kept whole up to `MAX_REQUEST_PAYLOAD_JSON`), a given `subjectVersion` as
+ * `subject_version` and a given `subject` as `subject`; none of them ever
+ * enters `payload_json`, so grant matching on the canonical payload is
+ * unchanged. With a `subject`, every older pending approval with the same
+ * subject is withdrawn in the same transaction (`withdrawReplaced`: denied by
+ * the kernel, `replaced_by` this one, no message). Returns the row. Throws `ApprovalError` (`invalid_approval`)
  * before writing when the action is empty, longer than 200 characters or
- * holds a NUL, or the agent's name holds a NUL (both go into the
- * notification's text, which `recordNotification` refuses with a NUL).
+ * holds a NUL, the agent's name holds a NUL (both go into the
+ * notification's text, which `recordNotification` refuses with a NUL), or a
+ * given subject is not a 1-`MAX_APPROVAL_SUBJECT`-character string.
  */
 export function requestApproval(store: Store, request: ApprovalRequest, now: Date): ApprovalRow {
   const { action, sessionId, source } = request;
@@ -256,6 +285,10 @@ export function requestApproval(store: Store, request: ApprovalRequest, now: Dat
   if (action.includes("\u0000")) throw new ApprovalError("invalid_approval", "the action must not contain a NUL character");
   if (typeof request.agent === "string" && request.agent.includes("\u0000")) {
     throw new ApprovalError("invalid_approval", "the agent must not contain a NUL character");
+  }
+  const { subject } = request;
+  if (subject !== undefined && (typeof subject !== "string" || subject.length === 0 || subject.length > MAX_APPROVAL_SUBJECT)) {
+    throw new ApprovalError("invalid_approval", `the subject must be 1-${MAX_APPROVAL_SUBJECT} characters`);
   }
   const payloadJson = canonicalJson(request.payload);
   const agent = agentOf(request.agent);
@@ -275,9 +308,12 @@ export function requestApproval(store: Store, request: ApprovalRequest, now: Dat
       requested.playbook = playbook;
       requested.playbook_version = session?.playbook_version ?? null;
     }
-    if (typeof request.display === "string") requested.display = request.display.slice(0, MAX_APPROVAL_DISPLAY);
+    if (typeof request.display === "string") requested.display = request.display.slice(0, MAX_REQUEST_PAYLOAD_JSON);
     if (typeof request.subjectVersion === "number") requested.subject_version = request.subjectVersion;
+    if (subject !== undefined) requested.subject = subject;
     appendEvent(store, "approval_requested", { sessionId, taskId: null }, requested, at);
+    // The owner's 2026-11-11 decision 1: a newer version withdraws the older pending one (a deny, never an approval).
+    if (subject !== undefined) withdrawReplaced(store, subject, id, at);
     recordNotification(
       store,
       {
@@ -328,25 +364,32 @@ function approvalDisplay(store: Store, id: number): string | null {
   return typeof display === "string" ? display : null;
 }
 
-/** What the kernel did with decided approval `id`, from its `approval_decided` event: only the fields that event has. */
-function approvalApply(store: Store, id: number): Pick<ApprovalView, "applied" | "apply_refused" | "apply_detail"> {
+/**
+ * What the kernel did with decided approval `id`, from its `approval_decided`
+ * event: only the fields that event has (`applied`, or `apply_refused` /
+ * `apply_detail`; and `replaced_by` for one the kernel withdrew).
+ */
+function approvalApply(store: Store, id: number): Pick<ApprovalView, "applied" | "apply_refused" | "apply_detail" | "replaced_by"> {
   const json = store
     .prepare<[number], string>("SELECT payload_json FROM events WHERE kind = 'approval_decided' AND json_extract(payload_json, '$.id') = ? ORDER BY id LIMIT 1")
     .pluck()
     .get(id);
-  const decided = typeof json === "string" ? (parsed(json) as { applied?: unknown; apply_refused?: unknown; apply_detail?: unknown } | null) : null;
-  if (typeof decided?.applied === "string") return { applied: decided.applied };
+  const decided =
+    typeof json === "string" ? (parsed(json) as { applied?: unknown; apply_refused?: unknown; apply_detail?: unknown; replaced_by?: unknown } | null) : null;
+  const replaced = typeof decided?.replaced_by === "number" ? { replaced_by: decided.replaced_by } : {};
+  if (typeof decided?.applied === "string") return { applied: decided.applied, ...replaced };
   if (typeof decided?.apply_refused === "string") {
-    return { apply_refused: decided.apply_refused, ...(typeof decided.apply_detail === "string" ? { apply_detail: decided.apply_detail } : {}) };
+    return { apply_refused: decided.apply_refused, ...(typeof decided.apply_detail === "string" ? { apply_detail: decided.apply_detail } : {}), ...replaced };
   }
-  return {};
+  return replaced;
 }
 
 /**
  * `row` with its payload parsed, its playbook (`{id, slug, version}`, or
  * null) and, only when its `approval_requested` event has one, its `display`,
  * read from the store; for a decided approval the kernel applied (or refused
- * to apply), its `applied` or `apply_refused` / `apply_detail`.
+ * to apply), its `applied` or `apply_refused` / `apply_detail`; for one the
+ * kernel withdrew on replace, its `replaced_by`.
  */
 export function approvalView(store: Store, row: ApprovalRow): ApprovalView {
   const { payload_json: raw, playbook: _id, ...rest } = row;
@@ -601,6 +644,8 @@ export interface RailCall {
   readonly display?: string;
   /** The pre-hold check's subject version, likewise (`subject_version`). */
   readonly subjectVersion?: number;
+  /** The pre-hold check's subject, likewise (`subject`); a NEW approval with one withdraws older pending ones with the same subject. */
+  readonly subject?: string;
 }
 
 /** What the rail does with an outward call: run it on grant `id` (a one-shot one is consumed now), or hold it as new approval `id`. */
@@ -642,8 +687,8 @@ const STANDING_GRANT = `SELECT a.id FROM approvals a
  * a tool in `ALWAYS_HELD_TOOLS`. Its use is one `approval_grant_used` event
  * (`{id, tool}`, linked to this session); it is not consumed. With no match,
  * the call is held: `requestApproval` with `source: "rail"` (and the call's
- * `display` / `subjectVersion`, when given). Neither of those takes part in
- * matching a grant.
+ * `display` / `subjectVersion` / `subject`, when given). None of those takes
+ * part in matching a grant; a grant used here withdraws nothing.
  */
 export function holdOrUseGrant(store: Store, call: RailCall, now: Date): RailOutcome {
   const payloadJson = canonicalJson(call.payload);
@@ -688,6 +733,7 @@ export function holdOrUseGrant(store: Store, call: RailCall, now: Date): RailOut
         source: "rail",
         ...(call.display === undefined ? {} : { display: call.display }),
         ...(call.subjectVersion === undefined ? {} : { subjectVersion: call.subjectVersion }),
+        ...(call.subject === undefined ? {} : { subject: call.subject }),
       },
       now,
     );

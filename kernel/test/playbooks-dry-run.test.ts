@@ -932,13 +932,14 @@ describe("the gate's pre-hold check: it can only narrow", () => {
     expect(listApprovals(h.store)[0]).not.toHaveProperty("display");
   });
 
-  it("{display, subjectVersion}: held with the display (cut to 4000 characters) and subject_version on the event, never in the payload; a matching grant is consumed as before", async () => {
+  it("{display, subjectVersion}: held with the whole display (phase 8 item 18d: no 4000 cut) and subject_version on the event, never in the payload; a matching grant is consumed as before", async () => {
     const check = vi.fn<HeldToolCheck>(() => ({ display: `line one\n${"x".repeat(5000)}`, subjectVersion: 7 }));
     const h = await bootManager({ heldToolCheck: check });
     await h.gate(ENABLE, input);
     const payload = events(h.store, "approval_requested")[0]?.payload as { display: string; subject_version: number };
     expect(payload.subject_version).toBe(7);
-    expect(payload.display).toHaveLength(4000);
+    expect(payload.display).toHaveLength(5009);
+    expect(payload.display).toBe(`line one\n${"x".repeat(5000)}`);
     expect(h.approvals()[0]?.payload_json).toBe(JSON.stringify({ cwd: tmp, input, tool: ENABLE }));
     expect(listApprovals(h.store)[0]?.display).toBe(payload.display);
     decideApproval(h.store, { id: 1, decision: "once", by: "owner" }, clock.at);

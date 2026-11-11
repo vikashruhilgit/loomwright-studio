@@ -2,9 +2,10 @@
 // reference link, each refusal in plain words, the size-hint check, the
 // thread grouping and the summarized-into memory.
 import { describe, expect, it } from "vitest";
-import type { StudioBridge, ThreadFigures } from "../../api/contract";
+import type { StudioBridge, ThreadFigures, ThreadItem } from "../../api/contract";
 import {
   askBodyOf,
+  draftingMessage,
   firstLine,
   hintFromThreads,
   joinThreads,
@@ -161,5 +162,45 @@ describe("summarized-into memory", () => {
     expect(summarizedInto(INERT_BRIDGE, "wright", 4)).toBe(20);
     expect(summarizedInto(INERT_BRIDGE, "pim", 4)).toBeUndefined();
     expect(summarizedInto(other, "wright", 4)).toBeUndefined();
+  });
+});
+
+describe("draftingMessage (phase 8 item 18d)", () => {
+  const msg = (id: number, session: number | null, extra: Partial<Extract<ThreadItem, { type: "message" }>> = {}): ThreadItem =>
+    ({
+      type: "message",
+      id,
+      queue_id: id,
+      agent: "wright",
+      source: "ask",
+      text: `q${id}`,
+      status: "replied",
+      session_id: session,
+      reply_text: `a${id}`,
+      detail: null,
+      created_at: "2026-11-11T08:00:00.000Z",
+      updated_at: "2026-11-11T08:00:00.000Z",
+      from_agent: null,
+      depth: 0,
+      reply_to: null,
+      workspace: null,
+      ...extra,
+    }) as ThreadItem;
+  const held = { requesting_session: 31, requesting_agent: "wright" };
+
+  it("is the agent message whose session is the approval's requesting_session, with its thread", () => {
+    const found = draftingMessage([msg(1, 5), msg(4, 31, { thread_id: 2 }), msg(6, 40)], held);
+    expect(found).toMatchObject({ message: 4, thread: 2, agent: "wright" });
+  });
+
+  it("takes the newest of several messages carrying that session (a resumed thread reuses it)", () => {
+    expect(draftingMessage([msg(4, 31), msg(9, 31, { thread_id: 4 })], held)?.message).toBe(9);
+  });
+
+  it("is undefined when the approval names no session, the message is not loaded, or it is another agent's: never a guess", () => {
+    expect(draftingMessage([msg(4, 31)], { requesting_session: null, requesting_agent: "wright" })).toBeUndefined();
+    expect(draftingMessage([msg(4, 30)], held)).toBeUndefined();
+    expect(draftingMessage([msg(4, 31, { agent: "pim" })], held)).toBeUndefined();
+    expect(draftingMessage([{ type: "event", id: 31, at: "2026-11-11T08:00:00.000Z", kind: "approval_requested", summary: "", ref: {} }], held)).toBeUndefined();
   });
 });

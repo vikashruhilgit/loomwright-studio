@@ -93,14 +93,17 @@ async function focusedName(page: Page): Promise<string> {
 }
 
 /** Tab until the focused element is `name` (inside `within` when given), at most `limit` presses. */
-async function tabTo(page: Page, name: string, within?: string, limit = 80): Promise<void> {
+/** Pim's Crew row, read or unread. */
+const PIM_ROW = /^Pim(, unread)?$/;
+
+async function tabTo(page: Page, name: string | RegExp, within?: string, limit = 80): Promise<void> {
   for (let i = 0; i < limit; i += 1) {
     await page.keyboard.press("Tab");
     const here = await focusedName(page);
     const inside = within === undefined ? true : await page.evaluate((sel) => document.activeElement?.closest(sel) !== null, within);
-    if (here === name && inside) return;
+    if ((typeof name === "string" ? here === name : name.test(here)) && inside) return;
   }
-  throw new Error(`Tab never reached ${name}${within === undefined ? "" : ` in ${within}`}`);
+  throw new Error(`Tab never reached ${String(name)}${within === undefined ? "" : ` in ${within}`}`);
 }
 
 /** A loopback proxy to `target` that never answers a request `hold` matches. */
@@ -190,15 +193,17 @@ test("AC9: the keyboard alone reaches every action with Tab / Shift+Tab and runs
   // One full Tab cycle from the top: every action is in it.
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   const seen: string[] = [];
-  for (let i = 0; i < 70; i += 1) {
+  for (let i = 0; i < 80; i += 1) {
     await page.keyboard.press("Tab");
     seen.push(await focusedName(page));
   }
   // The playbook card's own order: each settable row's Edit, then its actions, then its trigger's On / Off.
   const cardOrder = seen.slice(seen.indexOf("Edit dedupe key"), seen.indexOf("Edit dedupe key") + 8);
   expect(cardOrder).toEqual(["Edit dedupe key", "Edit priority", "Edit model", "Edit token limit per day", "Run now", "Turn off", "On", "Off"]);
+  // The Crew row's name carries ", unread" while Pim's newest message is unseen. The last-seen mark lives in the
+  // renderer's localStorage, which the e2e launches share across runs, so either name is Pim's row.
+  expect(seen.some((n) => PIM_ROW.test(n)), "Tab reaches Pim").toBe(true);
   for (const action of [
-    "Pim",
     "Load earlier",
     "Edit dedupe key",
     "Edit priority",
@@ -212,8 +217,11 @@ test("AC9: the keyboard alone reaches every action with Tab / Shift+Tab and runs
     "Always",
     "Deny",
     "Full payload",
+    // The charter card (phase 8 item 18d): its icons, Ask or change and its Send, then Create.
+    "Copy all text",
+    "Show full details",
+    "Ask or change",
     "Create",
-    "Edit in English",
     "Message Wright",
     "Send",
   ]) {
@@ -252,18 +260,21 @@ test("AC9: the keyboard alone reaches every action with Tab / Shift+Tab and runs
   await page.keyboard.press("Escape");
   await expect(card.getByRole("textbox", { name: "New model" })).toHaveCount(0);
   await expect(card.getByRole("button", { name: "Edit model" })).toBeFocused();
-  await tabTo(page, "Edit in English");
-  await page.keyboard.press("Space");
-  await expect(page.getByRole("textbox", { name: "Message Wright" })).toBeFocused();
-  await expect(page.getByRole("textbox", { name: "Message Wright" })).toHaveValue("About the charter in approval 9: ");
-  expect(chat.asks).toEqual([]);
+  // The charter card's Ask or change (it replaced Edit in English): Tab to the box, type, Tab to its Send, Enter. It
+  // posts a Reply continuing the message the charter was drafted in (session 12), never a new topic.
+  await tabTo(page, "Ask or change");
+  await page.keyboard.type("add comment replies");
+  await page.keyboard.press("Tab");
+  expect(await focusedName(page)).toBe("Send");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => chat.asks).toEqual([{ text: "From the card's Ask or change (approval 9): add comment replies", agent: "wright", continues: 4 }]);
   await tabTo(page, "Load earlier");
   await page.keyboard.press("Enter");
   await expect(page.getByText("What can you do for me?")).toBeVisible();
 
   // The Crew row, the workspace picker and Send in Pim's thread.
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await tabTo(page, "Pim");
+  await tabTo(page, PIM_ROW);
   await page.keyboard.press("Enter");
   await expect(page.getByText("with Pim")).toBeVisible();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -277,7 +288,11 @@ test("AC9: the keyboard alone reaches every action with Tab / Shift+Tab and runs
   await page.keyboard.press("Tab");
   expect(await focusedName(page)).toBe("Send");
   await page.keyboard.press("Enter");
-  await expect.poll(() => chat.asks).toEqual([{ text: "From the keyboard.", agent: "pim", workspace: "~/work/a" }]);
+  // After the charter card's Reply above, Pim's send is the second ask.
+  await expect.poll(() => chat.asks).toEqual([
+    { text: "From the card's Ask or change (approval 9): add comment replies", agent: "wright", continues: 4 },
+    { text: "From the keyboard.", agent: "pim", workspace: "~/work/a" },
+  ]);
 });
 
 // A card follows its newest event, so the event its own action writes (a Set's playbook_updated, a

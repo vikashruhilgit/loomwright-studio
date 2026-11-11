@@ -649,8 +649,15 @@ export interface SessionManagerOptions {
  * the calling session is told after the held reason (a charter's open
  * readiness findings and the fix to propose); it is the session's text only,
  * never stored on the approval. Absent: the held reason is exactly as before.
+ * `subject` (optional, 1 to `MAX_APPROVAL_SUBJECT` characters) names what the
+ * held call is about (a charter call's `agent:<member id>`): it is stored on
+ * the `approval_requested` event, and the hold withdraws every older pending
+ * approval with the same subject (denied by the kernel, `replaced_by` the new
+ * one; `withdrawReplaced`). Absent: nothing is withdrawn.
  */
-export type HeldToolVerdict = { readonly refuse: string } | { readonly display: string; readonly subjectVersion?: number; readonly agentNote?: string };
+export type HeldToolVerdict =
+  | { readonly refuse: string }
+  | { readonly display: string; readonly subjectVersion?: number; readonly agentNote?: string; readonly subject?: string };
 
 /** `SessionManagerOptions.heldToolCheck`: synchronous, reads the store only. `undefined`: the tool declares no check. */
 export type HeldToolCheck = (toolName: string, input: unknown, sessionId: number) => HeldToolVerdict | undefined;
