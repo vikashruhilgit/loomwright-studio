@@ -1,6 +1,7 @@
 # 18d — The charter card in Chat: plain and short, complete on request, copyable, and discussed in its thread
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/262
 
 **Priority:** Phase 2 (follow-up) · D9, D22, invariants 3, 7
 
@@ -103,3 +104,9 @@ docs/architecture/approvals.md
 2026-11-10-204052-a-charter-is-checked-ready-before-the-owner-sees-it.md
 2026-11-10-204053-saved-workspaces.md
 ../phase-8-17/2026-11-09-160019-thread-continuity-in-the-app.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-11T18:43:36Z
+- **Brief:** .supervisor/jobs/done/2026-11-11-the-charter-card-in-chat.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/262
