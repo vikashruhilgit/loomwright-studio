@@ -1,6 +1,7 @@
 # 18a — The charter card mockup: short by default, complete on request, ready-checked
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/256
 
 **Priority:** MVP for the set (D9: no new UI before the owner approves its mockup) · phase 8 follow-up to item 16
 
@@ -91,3 +92,9 @@ docs/DESIGN.md
 ## Depends on
 
 none
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-11T07:48:03Z
+- **Brief:** .supervisor/jobs/done/2026-11-10-the-charter-card-mockup.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/256
