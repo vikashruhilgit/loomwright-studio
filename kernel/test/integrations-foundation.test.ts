@@ -49,6 +49,7 @@ import { phase8Foundation } from "../src/store/migrations/020_phase_8_foundation
 import { playbookMergeRequirement } from "../src/store/migrations/021_playbook_merge_requirement.js";
 import { threadContinuity } from "../src/store/migrations/022_thread_continuity.js";
 import { playbookJobs } from "../src/store/migrations/023_playbook_jobs.js";
+import { savedWorkspaces } from "../src/store/migrations/024_saved_workspaces.js";
 import { contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolContext, KernelToolResult } from "../src/tools/server.js";
 import { TRIGGER_KINDS, TriggerError, registerTrigger, triggersContribution, updateTriggerSpec } from "../src/triggers/index.js";
@@ -317,26 +318,28 @@ describe("toolsForConnectors", () => {
 describe("migration 17: phase_6_foundation (AC1)", () => {
   const V16 = migrations.slice(0, 16);
 
-  it("is version 17, and migration 18 (connector_permissions_source, its own tests in integrations-github-declared.test.ts) and 19 (connector_app, in integrations-github-app-migration.test.ts) sit above it, 19 directly below 20 (phase_8_foundation), 21 (playbook_merge_requirement), 22 (thread_continuity) and 23 (playbook_jobs, last)", () => {
+  it("is version 17, and migration 18 (connector_permissions_source, its own tests in integrations-github-declared.test.ts) and 19 (connector_app, in integrations-github-app-migration.test.ts) sit above it, 19 directly below 20 (phase_8_foundation), 21 (playbook_merge_requirement), 22 (thread_continuity), 23 (playbook_jobs) and 24 (saved_workspaces, last)", () => {
     expect(migrations.at(16)).toBe(phase6Foundation);
     expect([phase6Foundation.version, phase6Foundation.name]).toEqual([17, "phase_6_foundation"]);
-    expect(migrations.at(-6)).toBe(connectorPermissionsSource);
+    expect(migrations.at(-7)).toBe(connectorPermissionsSource);
     expect([connectorPermissionsSource.version, connectorPermissionsSource.name]).toEqual([18, "connector_permissions_source"]);
-    expect(migrations.at(-5)).toBe(connectorApp);
+    expect(migrations.at(-6)).toBe(connectorApp);
     expect([connectorApp.version, connectorApp.name]).toEqual([19, "connector_app"]);
-    expect(migrations.at(-4)).toBe(phase8Foundation);
+    expect(migrations.at(-5)).toBe(phase8Foundation);
     expect([phase8Foundation.version, phase8Foundation.name]).toEqual([20, "phase_8_foundation"]);
-    expect(migrations.at(-3)).toBe(playbookMergeRequirement);
+    expect(migrations.at(-4)).toBe(playbookMergeRequirement);
     expect([playbookMergeRequirement.version, playbookMergeRequirement.name]).toEqual([21, "playbook_merge_requirement"]);
-    expect(migrations.at(-2)).toBe(threadContinuity);
+    expect(migrations.at(-3)).toBe(threadContinuity);
     expect([threadContinuity.version, threadContinuity.name]).toEqual([22, "thread_continuity"]);
-    expect(migrations.at(-1)).toBe(playbookJobs);
+    expect(migrations.at(-2)).toBe(playbookJobs);
     expect([playbookJobs.version, playbookJobs.name]).toEqual([23, "playbook_jobs"]);
+    expect(migrations.at(-1)).toBe(savedWorkspaces);
+    expect([savedWorkspaces.version, savedWorkspaces.name]).toEqual([24, "saved_workspaces"]);
   });
 
   it("on a fresh store creates connectors and draft_outputs with exactly their columns, and adds playbooks.mode / mode_set_by and playbook_runs.item_ref / item_revision", () => {
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([23, "playbook_jobs"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([24, "saved_workspaces"]);
     // Migration 17's columns, then the two migration 18 adds, then the three migration 19 adds at the end.
     expect(columnsOf(store, "connectors")).toEqual([
       "id",
@@ -414,7 +417,7 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     expect(before.tables).not.toContain("draft_outputs");
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([23, "playbook_jobs"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([24, "saved_workspaces"]);
     expect(store.prepare("SELECT mode, mode_set_by FROM playbooks WHERE id = 1").get()).toEqual({ mode: "draft", mode_set_by: null });
     expect(store.prepare("SELECT item_ref, item_revision FROM playbook_runs WHERE id = 1").get()).toEqual({ item_ref: null, item_revision: null });
     store.close();
@@ -431,8 +434,9 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
       const named = (o: { name: string }): boolean => before.objects.some((b) => b.name === o.name);
       // Migration 20 (phase_8_foundation, its own tests in phase-8-foundation.test.ts) adds its three tables and their unique indexes on top of 17's,
       // and migration 22 (thread_continuity, its own tests in brain-threads.test.ts) its two tables and their index;
-      // migration 23 (playbook_jobs, its own tests in store.test.ts) adds playbooks.jobs_json only.
-      const phase8 = (o: { name: string }): boolean => /repo_policies|pr_tracks|mcp_connections|brain_threads|brain_message_threads/.test(o.name);
+      // migration 23 (playbook_jobs, its own tests in store.test.ts) adds playbooks.jobs_json only, and migration 24
+      // (saved_workspaces, its own tests in console-workspaces.test.ts) its one table and the index of its UNIQUE path.
+      const phase8 = (o: { name: string }): boolean => /repo_policies|pr_tracks|mcp_connections|brain_threads|brain_message_threads|saved_workspaces/.test(o.name);
       const after = objectsOf(db).filter((o) => !phase8(o));
       expect(after.filter((o) => named(o) && !altered(o))).toEqual(before.objects.filter((o) => !altered(o)));
       expect(after.filter((o) => !named(o)).map((o) => [o.type, o.name])).toEqual([
@@ -465,7 +469,7 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     db.exec("DELETE FROM schema_migrations WHERE version >= 17");
     db.close();
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([23, "playbook_jobs"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([24, "saved_workspaces"]);
     rerun.close();
     expect(snap()).toEqual(before);
   });

@@ -24,8 +24,31 @@
 // Without `agents`, `GET /agents` answers an empty roster as before, `GET /threads/:agent` is not routed, and
 // `GET /agents/:id` answers any crew member another fixture's roster names with a file that sets no hint.
 //
+// Phase 8 item 18c (Settings → Workspaces): with `workspaces`, the saved list is served and edited the way the kernel's
+// owner routes do where the screen can tell (`kernel/src/console/workspaces.ts`):
+//   GET /workspaces                 every saved row, most recently used first, each with the state given
+//   POST /workspaces {path}         refuses a path under the owner's `~/Documents`, `~/Desktop`, `~/Downloads` or
+//                                   `~/Library/Mobile Documents` (`400 protected_folder`, D31's sentence) and one named in
+//                                   `notCheckout` (`400 not_checkout`), saving nothing; else saves it (or touches it when
+//                                   saved) as a ready checkout of `o/r`, or with no repo and the kernel's note when the path
+//                                   ends `no-remote`
+//   POST /workspaces/:id/remove     forgets that row only (`404 not_found` otherwise)
+// Without `workspaces`, none of the three is routed, as before.
+//
 // Every value here is fixture data: no real account, token or path.
-import type { AgentDetailResponse, AgentsResponse, AuthHealth, EventFrame, LoomwrightAdapterStatus, NotifierKind, RosterEntry, RouteKey, SettingsResponse, ThreadResponse } from "../../src/api/contract";
+import type {
+  AgentDetailResponse,
+  AgentsResponse,
+  AuthHealth,
+  EventFrame,
+  LoomwrightAdapterStatus,
+  NotifierKind,
+  RosterEntry,
+  RouteKey,
+  SavedWorkspace,
+  SettingsResponse,
+  ThreadResponse,
+} from "../../src/api/contract";
 import type { FixtureAnswer, FixtureKernel, FixtureKernelOptions, FixtureRoute } from "../fixture-kernel";
 import { cannedStatus } from "../fixture-kernel";
 
@@ -56,6 +79,10 @@ export interface SettingsFixtureOptions {
   readonly extra?: Readonly<Record<string, unknown>>;
   /** The roster and each agent's size hint; without it the roster is empty and Wright's thread page is not served. */
   readonly agents?: readonly ThreadsAgent[];
+  /** The saved workspaces (phase 8 item 18c), most recently used first; without it the `/workspaces` routes are not served. */
+  readonly workspaces?: readonly SavedWorkspace[];
+  /** The folders `POST /workspaces` refuses as not a git checkout. */
+  readonly notCheckout?: readonly string[];
 }
 
 /** What `update` may change: the provider's state, and the kernel part's facts. */
@@ -82,6 +109,8 @@ export interface SettingsFixture {
   reads(): number;
   /** The data location the view reports. */
   readonly dataDir: string;
+  /** The saved workspaces as the fixture holds them now (empty without `workspaces`). */
+  savedWorkspaces(): readonly SavedWorkspace[];
 }
 
 /** The provider's health, and when its token was made, for a state. */
@@ -155,6 +184,40 @@ function threadsRoutes(agents: readonly ThreadsAgent[]): Partial<Record<RouteKey
   };
 }
 
+/** The owner's home in the fixture's paths, whose protected folders `POST /workspaces` refuses (D31). */
+export const FIXTURE_HOME = "/Users/owner";
+const PROTECTED = ["Documents", "Desktop", "Downloads", "Library/Mobile Documents"];
+const PROTECTED_WHY = "macOS blocks the kernel, which runs in the background, from reading anything there (D31)";
+
+/** The saved list and the three routes behind Settings → Workspaces, editing `held` in place. */
+function workspacesRoutes(held: { list: SavedWorkspace[]; nextId: number }, notCheckout: readonly string[]): Partial<Record<RouteKey, FixtureRoute>> {
+  return {
+    "GET /workspaces": () => ({ status: 200, body: { workspaces: held.list } }),
+    "POST /workspaces": (req) => {
+      const path = typeof req.body === "object" && req.body !== null ? (req.body as { path?: unknown }).path : undefined;
+      if (typeof path !== "string" || !path.startsWith("/")) return { status: 400, body: { error: "invalid_input", message: "path must be an absolute folder path (at most 4096 characters)" } };
+      if (PROTECTED.some((p) => path === `${FIXTURE_HOME}/${p}` || path.startsWith(`${FIXTURE_HOME}/${p}/`))) {
+        const list = PROTECTED.map((p) => `~/${p}`).join(", ");
+        return { status: 400, body: { error: "protected_folder", message: `${path} is inside a macOS-protected folder (${list}), so it can't be used: ${PROTECTED_WHY}; use a copy of the repo outside those folders` } };
+      }
+      if (notCheckout.includes(path)) return { status: 400, body: { error: "not_checkout", message: `${path} can't be saved: it is not a git checkout (no .git)` } };
+      const repo = path.endsWith("no-remote") ? null : "o/r";
+      const now = new Date().toISOString();
+      const before = held.list.find((w) => w.path === path);
+      const workspace: SavedWorkspace = before === undefined ? { id: held.nextId++, path, repo, added_at: now, last_used_at: now, state: "ready" } : { ...before, repo, last_used_at: now, state: "ready" };
+      held.list = [workspace, ...held.list.filter((w) => w.path !== path)];
+      const note = repo === null ? `${path} has no GitHub remote, so it won't be matched to a repo; it is saved, but a lookup by repo won't offer it` : null;
+      return { status: 200, body: { workspace, note } };
+    },
+    "POST /workspaces/:id/remove": (req) => {
+      const id = Number(req.params.id);
+      if (!held.list.some((w) => w.id === id)) return { status: 404, body: { error: "not_found", message: `no saved workspace ${JSON.stringify(req.params.id ?? "")}` } };
+      held.list = held.list.filter((w) => w.id !== id);
+      return { status: 200, body: { removed: id } };
+    },
+  };
+}
+
 export function settingsFixture(options: SettingsFixtureOptions = {}): SettingsFixture {
   const dataDir = "/Users/owner/.loomwright-studio";
   let view: SettingsResponse = {
@@ -169,6 +232,7 @@ export function settingsFixture(options: SettingsFixtureOptions = {}): SettingsF
   let release: (() => void) | undefined;
   let failing = false;
   let reads = 0;
+  const saved = { list: [...(options.workspaces ?? [])], nextId: 1 + Math.max(0, ...(options.workspaces ?? []).map((w) => w.id)) };
 
   const event = (kind: string, payload: unknown): EventFrame => ({ type: "event", id: nextEvent++, at: new Date().toISOString(), kind, session_id: null, task_id: null, payload });
 
@@ -191,6 +255,7 @@ export function settingsFixture(options: SettingsFixtureOptions = {}): SettingsF
     // Settings → Threads reads each crew member's detail for its size hint.
     "GET /agents/:id": detailRoute(options.agents, dataDir),
     ...(options.agents === undefined ? {} : threadsRoutes(options.agents)),
+    ...(options.workspaces === undefined ? {} : workspacesRoutes(saved, options.notCheckout ?? [])),
   };
 
   return {
@@ -222,5 +287,6 @@ export function settingsFixture(options: SettingsFixtureOptions = {}): SettingsF
       kernel?.appendEvent(event(kind, payload));
     },
     reads: () => reads,
+    savedWorkspaces: () => saved.list,
   };
 }

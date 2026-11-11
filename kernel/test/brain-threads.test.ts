@@ -48,6 +48,7 @@ import type { ResumeSessionParams, SessionHandle, SessionStatus, StartSessionPar
 import { Store } from "../src/store/index.js";
 import { threadContinuity } from "../src/store/migrations/022_thread_continuity.js";
 import { playbookJobs } from "../src/store/migrations/023_playbook_jobs.js";
+import { savedWorkspaces } from "../src/store/migrations/024_saved_workspaces.js";
 import { migrations } from "../src/store/migrations/index.js";
 import { stubNotifierContributions } from "./notifier-stub.js";
 import type { FakeCall } from "./session-fakes.js";
@@ -230,9 +231,10 @@ function ownerPart(prompt: string): string {
 describe("migration 22: thread_continuity", () => {
   const cols = (store: Store, t: string) => store.prepare<[string], string>("SELECT name FROM pragma_table_info(?)").pluck().all(t);
 
-  it("sits directly below 23 (playbook_jobs, the last migration), creates the two thread tables with their columns, leaves brain_messages and sessions alone, and creates no SQL trigger", () => {
-    expect(migrations.at(-2)).toBe(threadContinuity);
-    expect(migrations.at(-1)).toBe(playbookJobs);
+  it("sits directly below 23 (playbook_jobs) and 24 (saved_workspaces, the last migration), creates the two thread tables with their columns, leaves brain_messages and sessions alone, and creates no SQL trigger", () => {
+    expect(migrations.at(-3)).toBe(threadContinuity);
+    expect(migrations.at(-2)).toBe(playbookJobs);
+    expect(migrations.at(-1)).toBe(savedWorkspaces);
     expect([threadContinuity.version, threadContinuity.name]).toEqual([22, "thread_continuity"]);
     const store = openStore();
     expect(cols(store, "brain_threads")).toEqual(["id", "agent", "title", "summarized_into", "continued_from", "created_at", "updated_at"]);
@@ -246,12 +248,12 @@ describe("migration 22: thread_continuity", () => {
     const first = openStore();
     first.close();
     const db = new Store({ dataDir });
-    // Deleting 22 alone would leave 23 above a gap: 22 and 23 re-run together.
+    // Deleting 22 alone would leave 23 and 24 above a gap: 22, 23 and 24 re-run together.
     db.prepare("DELETE FROM schema_migrations WHERE version >= 22").run();
     db.prepare("ALTER TABLE brain_message_threads DROP COLUMN replay_queue_id").run();
     db.close();
     const rerun = openStore();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([23, "playbook_jobs"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([24, "saved_workspaces"]);
     expect(cols(rerun, "brain_message_threads")).toContain("replay_queue_id");
   });
 });

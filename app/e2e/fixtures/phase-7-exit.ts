@@ -58,9 +58,11 @@ export const PHASE_7_EXIT_ROUTE_KEYS = [
   "GET /playbooks",
   "GET /triggers",
   "GET /drafts",
-  // Settings, and the data directory Memory prints; each crew member's detail for Settings → Threads (phase 8 item 17c).
+  // Settings, and the data directory Memory prints; each crew member's detail for Settings → Threads (phase 8 item 17c);
+  // the saved workspaces Settings → Workspaces lists (phase 8 item 18c).
   "GET /settings",
   "GET /agents/:id",
+  "GET /workspaces",
   // Tasks, the session list a session card takes its kernel title from (phase 8 item 17c), and the log of the session behind a card.
   "GET /tasks",
   "GET /tasks/:kind/:id",
@@ -162,7 +164,8 @@ export function phase7ExitFixture(init: Phase7ExitInit = {}): Phase7ExitFixture 
   const schedules = schedulesFixture(init.schedules);
   const memory = memoryFixture(init.memory);
   const budget = budgetFixture(init.budget);
-  const settings = settingsFixture(init.settings);
+  // Settings → Workspaces reads `GET /workspaces`: the settings fixture serves it (an empty list unless `init.settings` says otherwise).
+  const settings = settingsFixture({ workspaces: [], ...init.settings });
   const integrations = integrationsFixture(init.integrations ?? { connector: "connected" });
 
   const fromTasks = tasksRoutes(tasks);
@@ -187,6 +190,7 @@ export function phase7ExitFixture(init: Phase7ExitInit = {}): Phase7ExitFixture 
     "GET /drafts": () => ({ status: 200, body: { drafts: [] } satisfies DraftsResponse }),
     "GET /settings": g("GET /settings"),
     "GET /agents/:id": g("GET /agents/:id"),
+    "GET /workspaces": g("GET /workspaces"),
     // Tasks.
     "GET /tasks": t("GET /tasks"),
     "GET /tasks/:kind/:id": t("GET /tasks/:kind/:id"),

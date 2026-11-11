@@ -30,7 +30,7 @@ import type { ToolJob } from "../features/catalogue.js";
 import { CONNECTOR_KINDS } from "../integrations/types.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import { NO_REF, appendEvent, errorMessage } from "../loop/internal.js";
-import { PROTECTED_FOLDER_WHY, isInsidePath, isProtectedPath, protectedLocationsText } from "../protected-paths.js";
+import { isInsidePath, isProtectedPath, protectedFolderRefusal } from "../protected-paths.js";
 import { NEVER_CATEGORIES } from "../sessions/policy.js";
 import type { NeverCategory } from "../sessions/policy.js";
 import type { AllowedPermissionMode } from "../sessions/types.js";
@@ -281,9 +281,7 @@ export const CHARTER_JSON_SCHEMA: Readonly<Record<string, unknown>> = deepFreeze
  */
 function workspaceProblem(workspace: string, dataDir: string, homeDir: string): string | undefined {
   if (!isAbsolute(workspace)) return `${JSON.stringify(workspace)} is not an absolute path`;
-  if (isProtectedPath(workspace, homeDir)) {
-    return `${workspace} is inside a macOS-protected folder (${protectedLocationsText()}), so it can't be used: ${PROTECTED_FOLDER_WHY}; use a copy of the repo outside those folders`;
-  }
+  if (isProtectedPath(workspace, homeDir)) return protectedFolderRefusal(workspace);
   if (isInsidePath(workspace, dataDir)) return `${workspace} is the data dir or inside it`;
   if (isInsidePath(dataDir, workspace)) return `${workspace} contains the data dir`;
   return undefined;
