@@ -81,7 +81,8 @@ function charter(extra: Record<string, unknown> = {}): Record<string, unknown> {
     display_name: "Reviewer",
     avatar: { shape: "crab", hue: "crew-teal" },
     persona: "A careful reviewer who comments on pull requests.",
-    duties: ["Review the pull requests the owner sends and comment on them."],
+    // A duty entry, as Wright's create drafts it (the reviewer needs no kernel tool).
+    duties: [{ text: "Review the pull requests the owner sends and comment on them.", jobs: [] }],
     boundaries: ["Never push code."],
     model: "claude-sonnet-5",
     permission_mode: "default",
@@ -217,8 +218,9 @@ describe("the held create's display (AC8)", () => {
     const gate = await wrightGate();
     await gate(CREATE, { charter: charter({ connectors: ["github"] }), idempotency_key: "c1" });
     const block = await shownDisplay();
-    const lines = block.split("\n").slice(1, 3);
-    expect(lines[1]).toBe(`    ${ENFORCED}; connectors: github`);
+    // The head line, then the readiness block (its one duty needs no tool), then the enforced line.
+    const lines = block.split("\n").slice(1, 5);
+    expect(lines[3]).toBe(`    ${ENFORCED}; connectors: github`);
     const c = validated(charter({ connectors: ["github"] }));
     expect(block).toContain('\n      "connectors": [\n        "github"\n      ]\n');
     for (const line of renderRoleMd(c, ["github"]).trimEnd().split("\n")) expect(block).toContain(`\n    ${line}`);

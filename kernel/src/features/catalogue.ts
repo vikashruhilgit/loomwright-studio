@@ -26,30 +26,61 @@ import type { ConnectorKind } from "../integrations/types.js";
 import { PHASE1_DESCRIPTIONS } from "../tools/phase1-descriptions.js";
 import type { ContributedTool } from "./contribution.js";
 
+/** One job's definition: the plain label the owner reads, and what the job needs beyond its tools. */
+export interface ToolJobDefinition {
+  readonly label: string;
+  /**
+   * The job works in a copy of a repo: its tools find the member's checkout
+   * through `../automate/checkout.ts` (`checkoutOf`, refused `no_workspace`
+   * without one). The charter readiness check (`../agents/charter-readiness.ts`)
+   * reads it. A job's connector needs stay on its tools
+   * (`requiresConnector` / `requiresConnectorLevel`), read from the catalogue.
+   */
+  readonly needsWorkspace: boolean;
+}
+
 /**
- * The closed job vocabulary: id → the plain label the owner reads. The four
- * jobs of the phase 8 walk use the approved mockup's labels exactly
+ * The closed job vocabulary, one definition per job: the ONE place a job is
+ * declared (`TOOL_JOBS` below is derived from it). The four jobs of the phase 8
+ * walk use the approved mockup's labels exactly
  * (`docs/design/mockups/chat-threads.html`, `const JOBS`). The order is the
  * order jobs are listed in (the catalogue text and the charter display).
- * Frozen; a tool's `job` outside it is refused at composition.
+ * Frozen.
  */
-export const TOOL_JOBS = Object.freeze({
-  automate_tickets: "Hand tickets to /automate",
-  triage_pr_comments: "Triage PR comments",
-  ask_for_merge: "Ask for a merge",
-  read_pr: "Read a PR",
-  comment_on_issues: "Comment on issues",
-  manage_playbooks: "Manage playbooks",
-  manage_schedules: "Manage schedules",
-  manage_crew: "Manage the crew",
-  message_agents: "Message another agent",
-  ask_for_approval: "Ask the owner to approve an action",
-  notify_owner: "Notify the owner",
-  general: "General",
-} as const);
+export const TOOL_JOB_DEFINITIONS = Object.freeze({
+  automate_tickets: Object.freeze({ label: "Hand tickets to /automate", needsWorkspace: true }),
+  triage_pr_comments: Object.freeze({ label: "Triage PR comments", needsWorkspace: true }),
+  ask_for_merge: Object.freeze({ label: "Ask for a merge", needsWorkspace: true }),
+  read_pr: Object.freeze({ label: "Read a PR", needsWorkspace: false }),
+  comment_on_issues: Object.freeze({ label: "Comment on issues", needsWorkspace: false }),
+  manage_playbooks: Object.freeze({ label: "Manage playbooks", needsWorkspace: false }),
+  manage_schedules: Object.freeze({ label: "Manage schedules", needsWorkspace: false }),
+  manage_crew: Object.freeze({ label: "Manage the crew", needsWorkspace: false }),
+  message_agents: Object.freeze({ label: "Message another agent", needsWorkspace: false }),
+  ask_for_approval: Object.freeze({ label: "Ask the owner to approve an action", needsWorkspace: false }),
+  notify_owner: Object.freeze({ label: "Notify the owner", needsWorkspace: false }),
+  general: Object.freeze({ label: "General", needsWorkspace: false }),
+} as const satisfies Record<string, ToolJobDefinition>);
+
+/** `TOOL_JOB_DEFINITIONS`' labels, by id: the shape every reader of `TOOL_JOBS` reads. */
+type ToolJobLabels = { readonly [K in keyof typeof TOOL_JOB_DEFINITIONS]: (typeof TOOL_JOB_DEFINITIONS)[K]["label"] };
+
+/**
+ * The closed job vocabulary: id → the plain label the owner reads, derived
+ * from `TOOL_JOB_DEFINITIONS` (same ids, same order, same labels). Frozen; a
+ * tool's `job` outside it is refused at composition.
+ */
+export const TOOL_JOBS = Object.freeze(
+  Object.fromEntries(Object.entries(TOOL_JOB_DEFINITIONS).map(([id, definition]) => [id, definition.label])) as ToolJobLabels,
+);
 
 /** A job's id (a key of `TOOL_JOBS`). */
 export type ToolJob = keyof typeof TOOL_JOBS;
+
+/** Whether job `job` works in a copy of a repo (`ToolJobDefinition.needsWorkspace`). */
+export function jobNeedsWorkspace(job: ToolJob): boolean {
+  return TOOL_JOB_DEFINITIONS[job].needsWorkspace;
+}
 
 /** Every job id, in `TOOL_JOBS` order. Frozen. */
 export const TOOL_JOB_IDS: readonly ToolJob[] = Object.freeze(Object.keys(TOOL_JOBS) as ToolJob[]);
@@ -201,6 +232,75 @@ export function buildToolCatalogue(contributed: readonly CataloguedTool[]): Tool
 /** The tool named `name` (without the `mcp__kernel__` prefix) in `catalogue`, if it has one. */
 export function catalogueTool(catalogue: ToolCatalogue, name: string): CatalogueTool | undefined {
   return catalogue.tools.find((t) => t.name === name);
+}
+
+// ---- Granted jobs and their connector needs -----------------------------------------
+//
+// The one rule for "a member has a job" and "a member holds the connector grant
+// a tool needs", shared by the playbook fit check (`../playbooks/fit.ts`) and the
+// charter readiness check (`../agents/charter-readiness.ts`), so the two never
+// disagree on the same charter.
+
+/** The full names (`mcp__kernel__<name>`) of `job`'s catalogue tools that `allowed` lacks, in catalogue order. */
+export function jobLackingTools(catalogue: ToolCatalogue, job: ToolJob, allowed: ReadonlySet<string>): string[] {
+  return catalogue.tools
+    .filter((t) => t.job === job)
+    .map((t) => `${KERNEL_TOOL_PREFIX}${t.name}`)
+    .filter((name) => !allowed.has(name));
+}
+
+/**
+ * Whether `allowed` grants `job`: the catalogue has at least one tool of it
+ * and `allowed` lists every one. A job the catalogue has no tool for (its
+ * feature is not composed) is never granted, so neither check calls a job
+ * covered that no session could do (fail closed).
+ */
+export function jobGranted(catalogue: ToolCatalogue, job: ToolJob, allowed: ReadonlySet<string>): boolean {
+  return catalogue.tools.some((t) => t.job === job) && jobLackingTools(catalogue, job, allowed).length === 0;
+}
+
+/** Each connector kind's name as the owner reads it. */
+export const CONNECTOR_LABELS: Readonly<Record<ConnectorKind, string>> = Object.freeze({ github: "GitHub", jira: "Jira", clickup: "ClickUp" });
+
+/** A connector grant some tools need: `write` only for the write level; `job` is the job of the tool that set it. */
+export interface ConnectorNeed {
+  readonly kind: ConnectorKind;
+  readonly write: boolean;
+  readonly job: ToolJob;
+}
+
+/** The grants `tools` need (`requiresConnector` / `requiresConnectorLevel`), one per kind in first-seen order, a write need folded over a read one. */
+export function connectorNeeds(tools: readonly CatalogueTool[]): ConnectorNeed[] {
+  const needs: ConnectorNeed[] = [];
+  for (const t of tools) {
+    if (t.requiresConnector === undefined) continue;
+    const need: ConnectorNeed = { kind: t.requiresConnector, write: t.requiresConnectorLevel === "write", job: t.job };
+    const same = needs.findIndex((n) => n.kind === need.kind);
+    if (same < 0) needs.push(need);
+    else if (need.write && !(needs[same] as ConnectorNeed).write) needs.splice(same, 1, need);
+  }
+  return needs;
+}
+
+/** What a member's connector grant holds: the kinds, and the GitHub write level. */
+export interface HeldConnectors {
+  readonly connectors?: readonly ConnectorKind[];
+  readonly githubWrite?: boolean;
+}
+
+/**
+ * Whether `held` meets `need`: the kind is granted and, for a write need, the
+ * write level is too. The session's own tool filter's rule
+ * (`toolsForConnectors`, `../integrations/tool-filter.ts`).
+ */
+export function holdsConnector(held: HeldConnectors, need: { readonly kind: ConnectorKind; readonly write: boolean }): boolean {
+  if (!(held.connectors ?? []).includes(need.kind)) return false;
+  return !need.write || held.githubWrite === true;
+}
+
+/** The access a need names, as the owner reads it: `GitHub access`, `GitHub write access`. */
+export function connectorAccessText(need: { readonly kind: ConnectorKind; readonly write: boolean }): string {
+  return `${CONNECTOR_LABELS[need.kind]}${need.write ? " write" : ""} access`;
 }
 
 // ---- The drafting text ------------------------------------------------------------

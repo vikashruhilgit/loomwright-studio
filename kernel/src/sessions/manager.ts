@@ -124,7 +124,8 @@ type GateReason = ToolDecisionReason | "kernel_gate_error" | "dry_run" | "held_r
 /**
  * A pre-hold check's answer, checked for its exact shape (`HeldToolVerdict`):
  * `undefined`, `{refuse}` with a non-empty text, or `{display}` with an
- * optional positive-integer `subjectVersion`, and no other key. Anything else
+ * optional positive-integer `subjectVersion` and an optional non-empty
+ * `agentNote`, and no other key. Anything else
  * (a promise included: the check is synchronous) throws, so the gate denies
  * the call `kernel_gate_error` (fail closed).
  */
@@ -135,12 +136,15 @@ function checkedVerdict(value: unknown): HeldToolVerdict | undefined {
     const keys = Object.keys(v);
     if (keys.length === 1 && isNonEmptyString(v.refuse)) return { refuse: v.refuse };
     const version = v.subjectVersion;
+    const note = v.agentNote;
     if (
       typeof v.display === "string" &&
-      keys.every((k) => k === "display" || k === "subjectVersion") &&
-      (version === undefined || (typeof version === "number" && Number.isSafeInteger(version) && version > 0))
+      keys.every((k) => k === "display" || k === "subjectVersion" || k === "agentNote") &&
+      (version === undefined || (typeof version === "number" && Number.isSafeInteger(version) && version > 0)) &&
+      (note === undefined || isNonEmptyString(note))
     ) {
-      return version === undefined ? { display: v.display } : { display: v.display, subjectVersion: version as number };
+      const held = version === undefined ? { display: v.display } : { display: v.display, subjectVersion: version as number };
+      return note === undefined ? held : { ...held, agentNote: note as string };
     }
   }
   throw new TypeError("the held-tool check gave an answer that is not a verdict");
@@ -2814,11 +2818,13 @@ export class SessionManager {
               const ifApproved = (KERNEL_APPLIED_ACTIONS as readonly string[]).includes(tool)
                 ? "the kernel applies it itself and that message says what it did; do not repeat the call."
                 : "run exactly the same call again, once.";
+              // The check's note for the session (a charter's open readiness findings): only on a hold, after the reason, never stored.
+              const note = verdict !== undefined && "agentNote" in verdict && verdict.agentNote !== undefined ? ` ${verdict.agentNote}` : "";
               const permissionDecisionReason =
                 outcome.kind === "granted"
                   ? "approval_granted"
                   : `approval_required: held as approval ${outcome.id}; it did not run. The owner decides in Studio's Approvals (approval ${outcome.id}) ` +
-                    `and the decision arrives as a new message. End your turn now; if it is approved, ${ifApproved}`;
+                    `and the decision arrives as a new message. End your turn now; if it is approved, ${ifApproved}${note}`;
               return {
                 hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: outcome.kind === "granted" ? "allow" : "deny", permissionDecisionReason },
               };

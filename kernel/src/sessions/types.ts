@@ -645,9 +645,12 @@ export interface SessionManagerOptions {
 /**
  * A pre-hold check's answer: refuse the call (the text is what the model
  * sees), or hold it with `display` for the owner (and the version the held
- * call is about, when it has one).
+ * call is about, when it has one). `agentNote` (optional, non-empty) is what
+ * the calling session is told after the held reason (a charter's open
+ * readiness findings and the fix to propose); it is the session's text only,
+ * never stored on the approval. Absent: the held reason is exactly as before.
  */
-export type HeldToolVerdict = { readonly refuse: string } | { readonly display: string; readonly subjectVersion?: number };
+export type HeldToolVerdict = { readonly refuse: string } | { readonly display: string; readonly subjectVersion?: number; readonly agentNote?: string };
 
 /** `SessionManagerOptions.heldToolCheck`: synchronous, reads the store only. `undefined`: the tool declares no check. */
 export type HeldToolCheck = (toolName: string, input: unknown, sessionId: number) => HeldToolVerdict | undefined;

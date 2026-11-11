@@ -193,7 +193,9 @@ export interface ContributedToolContext {
  * already parsed against `shape`. Synchronous, and it reads the store only.
  * It can only narrow: `{refuse}` denies the call (`held_refused`), `{display,
  * subjectVersion?}` holds it with that text for the owner. A throw denies the
- * call (`kernel_gate_error`).
+ * call (`kernel_gate_error`). A hold may add `agentNote?` (a non-empty string):
+ * the gate appends it to the held reason the calling session reads, and never
+ * stores it on the approval.
  *
  * `applyOnApproval` (optional) is allowed only for a tool whose full name is
  * in the fixed `KERNEL_APPLIED_ACTIONS` set (`approvalApplierOf` refuses the
