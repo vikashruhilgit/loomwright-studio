@@ -47,10 +47,33 @@ The 16 skipped kernel tests are conditional (`skipIf`/`runIf`) tests, such as th
 In the packaged app (`cd app && npm run package`, then open the built app), with the kernel running as the installed service:
 
 1. Open Settings → Workspaces. Choose **Add folder…**, pick a checkout of `vikashruhilgit/studio-sandbox` outside `~/Documents`, `~/Desktop`, `~/Downloads` and iCloud Drive, and check that a row lists it with repo `vikashruhilgit/studio-sandbox`, its path from `~` and a last used of "Today, …".
-   - What it showed: ____________________
+   - What it showed: the row "vikashruhilgit/studio-sandbox · ~/studio-work/studio-sandbox · Today, 16:40", picked through the native macOS folder sheet (Go to Folder `~/studio-work/studio-sandbox`, Open). The list had read "No saved workspaces yet. Add folder... saves one." before.
 2. Choose **Add folder…** again and pick a folder inside `~/Documents` (for example `~/Documents/work/studio-sandbox`). Check that the plain refusal appears ("… is inside a macOS-protected folder (~/Documents, ~/Desktop, ~/Downloads, ~/Library/Mobile Documents), so it can't be used: …; use a copy of the repo outside those folders.") and that no row is added.
-   - What it showed: ____________________
+   - What it showed: the plain refusal below the list, and the list still held only the step 1 row.
 3. Optional: remove the row from step 1 with its remove icon, check that it shows as removed with **Undo**, then choose Undo and check that it is listed again.
-   - What it showed: ____________________
+   - What it showed: the row was replaced in place by "Removed ~/studio-work/studio-sandbox from your saved workspaces. The folder is still on disk, and no crew member's settings change. Undo saves it again, as used now. Undo"; choosing Undo listed the row again, unchanged.
 
 Owner's result (filled in from the owner's report):
+
+Verdict: PASS for Validation 2
+
+Run on 2026-11-11 at 16:40 local time (macOS 26.6.2) by Claude, driving the app at the owner's direction (the owner asked for the check to be run rather than waived), against the packaged app (`npm run package`, `release/mac-arm64/Loomwright Studio.app`) and the kernel installed as the launchd service (`service install`), both built from PR head `bd5543d9`. Text copied from the app's screen:
+
+```
+Step 1 (Add folder... -> ~/studio-work/studio-sandbox):
+  REPO                           PATH                           LAST USED
+  vikashruhilgit/studio-sandbox  ~/studio-work/studio-sandbox   Today, 16:40
+
+Step 2 (Add folder... -> ~/Documents/work/studio-sandbox):
+  Not saved: ~/Documents/work/studio-sandbox. ~/Documents/work/studio-sandbox is inside a
+  macOS-protected folder (~/Documents, ~/Desktop, ~/Downloads, ~/Library/Mobile Documents),
+  so it can't be used: macOS blocks the kernel, which runs in the background, from reading
+  anything there (D31); use a copy of the repo outside those folders.
+  (rows listed: 1, the step 1 row)
+
+Step 3 (remove, then Undo):
+  Removed ~/studio-work/studio-sandbox from your saved workspaces. The folder is still on
+  disk, and no crew member's settings change. Undo saves it again, as used now. Undo
+  -> after Undo:
+  vikashruhilgit/studio-sandbox  ~/studio-work/studio-sandbox   Today, 16:40
+```
