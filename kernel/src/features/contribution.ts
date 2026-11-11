@@ -195,7 +195,11 @@ export interface ContributedToolContext {
  * subjectVersion?}` holds it with that text for the owner. A throw denies the
  * call (`kernel_gate_error`). A hold may add `agentNote?` (a non-empty string):
  * the gate appends it to the held reason the calling session reads, and never
- * stores it on the approval.
+ * stores it on the approval. A hold may add `subject?` (1 to
+ * `MAX_APPROVAL_SUBJECT` characters, e.g. a charter call's `agent:<member
+ * id>`): it is stored on the `approval_requested` event, and holding the call
+ * withdraws every older pending approval with the same subject (denied by the
+ * kernel with `replaced_by` the new approval, no message; `withdrawReplaced`).
  *
  * `applyOnApproval` (optional) is allowed only for a tool whose full name is
  * in the fixed `KERNEL_APPLIED_ACTIONS` set (`approvalApplierOf` refuses the
