@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
-import { TOOL_JOB_IDS } from "../features/catalogue.js";
+import { CONNECTOR_LABELS, TOOL_JOB_IDS } from "../features/catalogue.js";
 import type { ToolJob } from "../features/catalogue.js";
 import { CONNECTOR_KINDS } from "../integrations/types.js";
 import type { ConnectorKind } from "../integrations/types.js";
@@ -383,9 +383,6 @@ export function validateCharter(input: unknown, options: ValidateCharterOptions)
 // ---- The files ------------------------------------------------------------------
 
 /** A bulleted markdown list, or `- None stated.` for an empty one. */
-/** How `role.md` names each connector kind. */
-const CONNECTOR_LABELS: Record<ConnectorKind, string> = { github: "GitHub", jira: "Jira", clickup: "ClickUp" };
-
 function bullets(items: readonly string[]): string {
   return items.length === 0 ? "- None stated." : items.map((item) => `- ${item}`).join("\n");
 }

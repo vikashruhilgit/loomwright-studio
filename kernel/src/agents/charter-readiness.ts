@@ -26,8 +26,8 @@
 // `kernel.ts`.
 import { homedir } from "node:os";
 import { readWorkspaceRepos } from "../automate/checkout.js";
-import { KERNEL_TOOL_PREFIX, TOOL_JOBS, jobNeedsWorkspace } from "../features/catalogue.js";
-import type { CatalogueTool, ToolCatalogue, ToolJob } from "../features/catalogue.js";
+import { KERNEL_TOOL_PREFIX, TOOL_JOBS, connectorAccessText, connectorNeeds, holdsConnector, jobGranted, jobLackingTools, jobNeedsWorkspace } from "../features/catalogue.js";
+import type { ConnectorNeed, ToolCatalogue, ToolJob } from "../features/catalogue.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import { PROTECTED_FOLDER_WHY, isInsidePath, isProtectedPath, protectedLocationsText } from "../protected-paths.js";
 import type { Charter } from "./charter-files.js";
@@ -132,8 +132,6 @@ export interface ReadinessInput {
 
 // ---- The plain words ------------------------------------------------------------------
 
-const CONNECTOR_LABELS: Readonly<Record<ConnectorKind, string>> = Object.freeze({ github: "GitHub", jira: "Jira", clickup: "ClickUp" });
-
 /** `a, b and c`. */
 function andList(items: readonly string[]): string {
   return items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1) as string}`;
@@ -154,27 +152,6 @@ function labels(jobs: readonly ToolJob[]): string {
 }
 
 // ---- The duties ------------------------------------------------------------------------
-
-/** The catalogue's tools of `job`, in catalogue order. */
-function toolsOf(catalogue: ToolCatalogue, job: ToolJob): readonly CatalogueTool[] {
-  return catalogue.tools.filter((t) => t.job === job);
-}
-
-/** The full names (`mcp__kernel__<name>`) of `job`'s tools the charter does not grant. */
-function lackingTools(catalogue: ToolCatalogue, job: ToolJob, allowed: ReadonlySet<string>): string[] {
-  return toolsOf(catalogue, job)
-    .map((t) => `${KERNEL_TOOL_PREFIX}${t.name}`)
-    .filter((name) => !allowed.has(name));
-}
-
-/**
- * Whether the charter grants `job`: every one of its catalogue tools is in
- * `allowedTools` (the playbook fit check's rule, `../playbooks/fit.ts`). A job
- * the catalogue has no tool for is never granted.
- */
-function grants(catalogue: ToolCatalogue, job: ToolJob, allowed: ReadonlySet<string>): boolean {
-  return toolsOf(catalogue, job).length > 0 && lackingTools(catalogue, job, allowed).length === 0;
-}
 
 interface DutyFindings {
   readonly items: ReadinessItem[];
@@ -203,7 +180,7 @@ function dutyFindings(charter: Charter, catalogue: ToolCatalogue | undefined, al
       items.push(item("duty", "not_checked", `${n} (the kernel's tool catalogue is unavailable): ${duty.text}`, `${n} was not checked (no tool catalogue)`));
       continue;
     }
-    const lacking = duty.jobs.filter((job) => !grants(catalogue, job, allowed));
+    const lacking = duty.jobs.filter((job) => !jobGranted(catalogue, job, allowed));
     if (lacking.length === 0) {
       items.push(item("duty", "covered", `${n} by ${andList(duty.jobs.map((j) => TOOL_JOBS[j]))}: ${duty.text}`, `${n} is covered`));
       continue;
@@ -274,45 +251,25 @@ function shortestWorkspaceLine(jobs: readonly ToolJob[]): string {
 
 // ---- The connectors --------------------------------------------------------------------
 
-/** A grant a job's granted tools need: `write` only for a write level. */
-interface GrantNeed {
-  readonly kind: ConnectorKind;
-  readonly write: boolean;
-}
-
-/** The grants `tools` need, one per kind, a write need folded over a read one. */
-function grantNeeds(tools: readonly CatalogueTool[]): GrantNeed[] {
-  const needs: GrantNeed[] = [];
-  for (const t of tools) {
-    if (t.requiresConnector === undefined) continue;
-    const write = t.requiresConnectorLevel === "write";
-    const same = needs.find((n) => n.kind === t.requiresConnector);
-    if (same === undefined) needs.push({ kind: t.requiresConnector, write });
-    else if (write && !same.write) needs.splice(needs.indexOf(same), 1, { kind: t.requiresConnector, write });
-  }
-  return needs;
-}
-
-/** What the member holds: whether a need is met, or why that can't be told. */
-type GrantView = { readonly holds: (need: GrantNeed) => boolean; readonly source: string } | { readonly unread: string };
+/** What the member holds: whether a need is met (`holdsConnector`, the catalogue's one rule), or why that can't be told. */
+type GrantView = { readonly holds: (need: ConnectorNeed) => boolean; readonly source: string } | { readonly unread: string };
 
 function grantView(grant: ReadinessGrant): GrantView {
   if (grant.kind === "unread") return { unread: grant.reason };
   if (grant.kind === "proposed") {
     // A create's proposal is a read grant; the write level is only ever set by the owner, in Team.
-    return { holds: (need) => !need.write && grant.connectors.includes(need.kind), source: "proposed in this charter" };
+    return { holds: (need) => holdsConnector({ connectors: grant.connectors, githubWrite: false }, need), source: "proposed in this charter" };
   }
   if (grant.raw === undefined || grant.raw === null) return { holds: () => false, source: "granted" };
   const read = parseConnectorsGrant(grant.raw);
   if (!read.ok) return { unread: `the member's connectors grant can't be read: ${read.message}` };
   const g = read.grant;
-  return { holds: (need) => g.connectors.includes(need.kind) && (!need.write || (need.kind === "github" && g.githubWrite)), source: "granted" };
+  return { holds: (need) => holdsConnector(g, need), source: "granted" };
 }
 
 /** One connector access line: the access (`GitHub write access`) and the jobs whose granted tools need it. */
-function connectorItem(need: GrantNeed, jobs: readonly ToolJob[], view: GrantView): ReadinessItem {
-  const access = `${CONNECTOR_LABELS[need.kind]}${need.write ? " write" : ""} access`;
-  const subject = `${access} for ${labels(jobs)}`;
+function connectorItem(need: ConnectorNeed, jobs: readonly ToolJob[], view: GrantView): ReadinessItem {
+  const subject = `${connectorAccessText(need)} for ${labels(jobs)}`;
   if ("unread" in view) return item("connector", "not_checked", `${subject}: not checked (${view.unread})`, `${subject}: not checked`, jobs);
   if (view.holds(need)) return item("connector", "ready", `${subject}: ${view.source}`, `${subject}: ${view.source}`, jobs);
   return item("connector", "flagged", `${subject}: only you can grant it (Team, in the member's inspector)`, `${subject}: the owner's step in Team`, jobs);
@@ -342,12 +299,12 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
   } else {
     // The jobs the charter grants a tool of, in TOOL_JOBS order, each with its granted tools' grant needs.
     const codeJobs: ToolJob[] = [];
-    const needs: { readonly need: GrantNeed; readonly jobs: ToolJob[] }[] = [];
+    const needs: { readonly need: ConnectorNeed; readonly jobs: ToolJob[] }[] = [];
     for (const job of catalogue.jobs) {
       const granted = job.tools.filter((t) => allowed.has(`${KERNEL_TOOL_PREFIX}${t.name}`));
       if (granted.length === 0) continue;
       if (jobNeedsWorkspace(job.id)) codeJobs.push(job.id);
-      for (const need of grantNeeds(granted)) {
+      for (const need of connectorNeeds(granted)) {
         const same = needs.find((n) => n.need.kind === need.kind && n.need.write === need.write);
         if (same === undefined) needs.push({ need, jobs: [job.id] });
         else same.jobs.push(job.id);
@@ -370,7 +327,7 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
   const open = items.filter((i) => i.status === "flagged" || i.status === "not_checked");
   const lines = [READINESS_HEADING, ...items.map((i) => i.line)];
   if (open.length === 0) return { lines, items, open };
-  const missingTools = catalogue === undefined ? [] : duties.missingJobs.flatMap((job) => lackingTools(catalogue, job, allowed));
+  const missingTools = catalogue === undefined ? [] : duties.missingJobs.flatMap((job) => jobLackingTools(catalogue, job, allowed));
   const agentNote = noteText({
     action: input.action,
     open,

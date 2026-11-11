@@ -18,13 +18,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createAgent } from "../src/agents/charter-files.js";
-import { READINESS_HEADING } from "../src/agents/charter-readiness.js";
+import { createAgent, validateCharter } from "../src/agents/charter-files.js";
+import { READINESS_HEADING, charterReadiness } from "../src/agents/charter-readiness.js";
 import { listAgents } from "../src/agents/registry.js";
 import { agentSettingsPath, readAgentSettings } from "../src/agents/settings.js";
 import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
 import type { AppliedApproval } from "../src/approvals/store.js";
-import { TOOL_JOB_IDS, buildToolCatalogue } from "../src/features/catalogue.js";
+import { TOOL_JOB_IDS, buildToolCatalogue, jobGranted } from "../src/features/catalogue.js";
 import type { ToolCatalogue } from "../src/features/catalogue.js";
 import type { ContributedTool } from "../src/features/contribution.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
@@ -558,5 +558,57 @@ describe("jobs: a change field like intent, never a policy field", () => {
 
   it("every TOOL_JOBS id is a job the catalogue names (a playbook can only name jobs the kernel has)", () => {
     expect(CATALOGUE.jobs.map((j) => j.id).sort()).toEqual([...TOOL_JOB_IDS].sort());
+  });
+});
+
+describe("one 'job is granted' rule with the charter readiness check (`jobGranted`, kernel/src/features/catalogue.ts)", () => {
+  it("a job the catalogue has no tool for (its feature not composed) is a gap, never fits: no tool to add, so no proposed_update; the readiness check flags the same duty", async () => {
+    addMember(MASON_TOOLS);
+    const { id } = await draft("Merge when ready", ["ask_for_merge"]);
+    const row = getPlaybook(store, id);
+    if (row === undefined) throw new Error("no row");
+    // The shipped catalogue: Mason holds the job.
+    expect(playbookFit(store, row, CATALOGUE)?.status).toBe("fits");
+    // A composition without ask_for_merge's tools: the job is missing, with nothing to add.
+    const partial = buildToolCatalogue(SHIPPED_TOOLS.filter((t) => t.job !== "ask_for_merge"));
+    expect(partial.tools.some((t) => t.job === "ask_for_merge")).toBe(false);
+    expect(jobGranted(partial, "ask_for_merge", new Set(MASON_TOOLS))).toBe(false);
+    const fit = playbookFit(store, row, partial);
+    expect(fit).toMatchObject({ status: "gap", missing: [{ id: "ask_for_merge", label: "Ask for a merge", tools: [] }] });
+    expect(fit?.lines).toEqual(["This playbook needs Ask for a merge; the kernel has no tool for it, so no charter change can give it to Mason."]);
+    expect(fit?.proposed_update).toBeUndefined();
+    expect(fitGapOpen(fit)).toBe(true);
+    // The charter readiness check reads the same rule: a duty naming that job is not covered.
+    const charter = validateCharter(
+      {
+        id: "dev",
+        display_name: "Dev",
+        avatar: { shape: "crab", hue: "crew-teal" },
+        persona: "A developer.",
+        duties: [{ text: "Ask for merges", jobs: ["ask_for_merge"] }],
+        boundaries: [],
+        model: PLAYBOOK_MODEL,
+        permission_mode: "default",
+        tool_policy: { allowedTools: MASON_TOOLS, allowedBashPrefixes: [], never: [] },
+        workspaces: [],
+      },
+      { dataDir },
+    );
+    if (!charter.ok) throw new Error(charter.message);
+    const r = charterReadiness({ action: "create", charter: charter.charter, catalogue: partial, grant: { kind: "proposed", connectors: [] }, dataDir, homeDir: home });
+    expect(r.items[0]).toMatchObject({ subject: "duty", status: "flagged" });
+    expect(charterReadiness({ action: "create", charter: charter.charter, catalogue: CATALOGUE, grant: { kind: "proposed", connectors: [] }, dataDir, homeDir: home }).items[0]).toMatchObject({ subject: "duty", status: "covered" });
+  });
+
+  it("a missing job with tools beside one with none: the update adds exactly the tools there are", async () => {
+    addMember(READ_ONLY);
+    const { id } = await draft("Merge when ready", ["ask_for_merge", "comment_on_issues"]);
+    const row = getPlaybook(store, id);
+    if (row === undefined) throw new Error("no row");
+    const partial = buildToolCatalogue(SHIPPED_TOOLS.filter((t) => t.job !== "comment_on_issues"));
+    const fit = playbookFit(store, row, partial);
+    const merge = CATALOGUE.tools.filter((t) => t.job === "ask_for_merge").map((t) => `${K}${t.name}`);
+    expect(fit?.missing.map((m) => [m.id, m.tools])).toEqual([["ask_for_merge", merge], ["comment_on_issues", []]]);
+    expect(fit?.proposed_update?.changes.tool_policy.allowedTools).toEqual(["Read", ...READ_ONLY, ...merge]);
   });
 });

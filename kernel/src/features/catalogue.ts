@@ -234,6 +234,75 @@ export function catalogueTool(catalogue: ToolCatalogue, name: string): Catalogue
   return catalogue.tools.find((t) => t.name === name);
 }
 
+// ---- Granted jobs and their connector needs -----------------------------------------
+//
+// The one rule for "a member has a job" and "a member holds the connector grant
+// a tool needs", shared by the playbook fit check (`../playbooks/fit.ts`) and the
+// charter readiness check (`../agents/charter-readiness.ts`), so the two never
+// disagree on the same charter.
+
+/** The full names (`mcp__kernel__<name>`) of `job`'s catalogue tools that `allowed` lacks, in catalogue order. */
+export function jobLackingTools(catalogue: ToolCatalogue, job: ToolJob, allowed: ReadonlySet<string>): string[] {
+  return catalogue.tools
+    .filter((t) => t.job === job)
+    .map((t) => `${KERNEL_TOOL_PREFIX}${t.name}`)
+    .filter((name) => !allowed.has(name));
+}
+
+/**
+ * Whether `allowed` grants `job`: the catalogue has at least one tool of it
+ * and `allowed` lists every one. A job the catalogue has no tool for (its
+ * feature is not composed) is never granted, so neither check calls a job
+ * covered that no session could do (fail closed).
+ */
+export function jobGranted(catalogue: ToolCatalogue, job: ToolJob, allowed: ReadonlySet<string>): boolean {
+  return catalogue.tools.some((t) => t.job === job) && jobLackingTools(catalogue, job, allowed).length === 0;
+}
+
+/** Each connector kind's name as the owner reads it. */
+export const CONNECTOR_LABELS: Readonly<Record<ConnectorKind, string>> = Object.freeze({ github: "GitHub", jira: "Jira", clickup: "ClickUp" });
+
+/** A connector grant some tools need: `write` only for the write level; `job` is the job of the tool that set it. */
+export interface ConnectorNeed {
+  readonly kind: ConnectorKind;
+  readonly write: boolean;
+  readonly job: ToolJob;
+}
+
+/** The grants `tools` need (`requiresConnector` / `requiresConnectorLevel`), one per kind in first-seen order, a write need folded over a read one. */
+export function connectorNeeds(tools: readonly CatalogueTool[]): ConnectorNeed[] {
+  const needs: ConnectorNeed[] = [];
+  for (const t of tools) {
+    if (t.requiresConnector === undefined) continue;
+    const need: ConnectorNeed = { kind: t.requiresConnector, write: t.requiresConnectorLevel === "write", job: t.job };
+    const same = needs.findIndex((n) => n.kind === need.kind);
+    if (same < 0) needs.push(need);
+    else if (need.write && !(needs[same] as ConnectorNeed).write) needs.splice(same, 1, need);
+  }
+  return needs;
+}
+
+/** What a member's connector grant holds: the kinds, and the GitHub write level. */
+export interface HeldConnectors {
+  readonly connectors?: readonly ConnectorKind[];
+  readonly githubWrite?: boolean;
+}
+
+/**
+ * Whether `held` meets `need`: the kind is granted and, for a write need, the
+ * write level is too. The session's own tool filter's rule
+ * (`toolsForConnectors`, `../integrations/tool-filter.ts`).
+ */
+export function holdsConnector(held: HeldConnectors, need: { readonly kind: ConnectorKind; readonly write: boolean }): boolean {
+  if (!(held.connectors ?? []).includes(need.kind)) return false;
+  return !need.write || held.githubWrite === true;
+}
+
+/** The access a need names, as the owner reads it: `GitHub access`, `GitHub write access`. */
+export function connectorAccessText(need: { readonly kind: ConnectorKind; readonly write: boolean }): string {
+  return `${CONNECTOR_LABELS[need.kind]}${need.write ? " write" : ""} access`;
+}
+
 // ---- The drafting text ------------------------------------------------------------
 
 /** A tool's connector need, for the catalogue text: `""` when it needs none. */
