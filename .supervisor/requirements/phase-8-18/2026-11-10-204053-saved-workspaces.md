@@ -1,6 +1,7 @@
 # 18c — Saved workspaces: pick a repo's folder once, reuse it next time
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/260
 
 **Priority:** Phase 2 (follow-up) · D31, D34, invariants 1, 3, 8
 
@@ -82,3 +83,9 @@ docs/architecture/agents.md
 ## Depends on
 
 2026-11-10-204051-the-charter-card-mockup.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-11T11:31:32Z
+- **Brief:** .supervisor/jobs/done/2026-11-11-saved-workspaces.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/260
