@@ -60,17 +60,34 @@ The pin table's row "delete `continues: drafting.message` in `app/src/screens/ch
 
 ## Validation 2 (owner)
 
-Pending the owner's walk. In the packaged app (`cd app && npm run package`, then open the built app), with the kernel running as the installed service and a saved workspace for `vikashruhilgit/studio-sandbox` from item 18c:
+In the packaged app (`cd app && npm run package`, then open the built app), with the kernel running as the installed service and a saved workspace for `vikashruhilgit/studio-sandbox` from item 18c:
 
 1. In Wright's thread, ask Wright to draft a crew member that works on `vikashruhilgit/studio-sandbox` with a long `role.md` (past 4,000 characters). Check that the card opens compact: who, Can do with Used for lines, Never does, Limits on one line, and the readiness block, with no `mcp__kernel__` name, JSON or file path.
-   - What it showed: _(pending)_
+   - What it showed: Wright held approval 21, "Create crew member studio-sandbox-developer ("Sandbox Developer", octopus crew-olive), proposed by Wright", with a 10-duty charter whose `role.md` is 5,240 characters. The card opened compact: the who line; Can do as three rows (Hand tickets to /automate, Ask the owner to approve an action, Notify the owner); "Also uses Read, Write, Edit, Glob, Grep, Bash; runs commands that start with …"; Never does as one line; Limits as one line ("2,000,000 tokens a day · 1 session at once · delegates 1 level deep"); and the readiness block (10 duties Covered, 2 Flagged). No `mcp__kernel__` name, JSON or file path showed. The Can do rows had no "Used for" lines on this charter. The kernel's display listed the job labels alone ("job: Hand tickets to /automate", …), which is what `jobDisplayLines` does when the purpose lines do not fit the head (`kernel/src/agents/charter-tools.ts`). The shorter approval 20 card in the same thread did show "Used for:" lists.
 2. Choose Show full details. Check the line "<n> characters, nothing cut", the four blocks, and that `role.md` ends where Wright's text ends, not mid-sentence. Choose Copy all text, paste into a text editor, and check that the length matches the line.
-   - What it showed: _(pending)_
+   - What it showed: "10,258 characters, nothing cut", then the four blocks: Kernel tools by job, Enforced lines, Settings file (`config/agents/studio-sandbox-developer.json`) and role.md (`memory/studio-sandbox-developer/role.md`). role.md ends "…preferences.md, people.md and lessons.md beside this file. The owner's edits win.", the same last line as the kernel's stored display. Copy all text, pasted into a TextEdit document, counted 10,258 characters, and the copied text was byte-identical to `studio approvals --json`'s `display` for approval 21.
 3. In Ask or change, type "add comment replies" and Send. Check that it appears as a Reply in the thread Wright drafted the charter in, and that once Wright holds a v2, the v1 card collapses to "Replaced by v2" naming what changed.
-   - What it showed: _(pending)_
+   - What it showed: "add comment replies" posted as "Reply to Wright · From the card's Ask or change (approval 21): add comment replies" in the drafting thread (message 83, thread 82, continuing Wright's draft), and Wright answered there. Wright could not hold a v2 for this request. With the PR tools added, the create's head (readiness, job and enforced lines) came out 615 characters over the 4,000 `MAX_APPROVAL_DISPLAY`, and the kernel refused the call (`tool_decision deny held_refused`). Approval 21 was left unchanged. To check the v2 path, a smaller change was sent the same way: "lower the daily token limit to 1,500,000; keep everything else the same". Wright held approval 22 (v2, "1,500,000 tokens a day"). The kernel withdrew approval 21 (status denied, decided_by `kernel`; the timeline shows "Approval 21 denied: kernel_agent_create"). The v1 card collapsed to "▸ studio-sandbox-developer · v1 · Replaced by v2 · limits changed". Wright's own message still told the owner to "reject 21" after the kernel had withdrawn it.
 4. On a charter with the workspace flag, choose Choose workspace. Check that the saved `studio-sandbox` folder is offered, then use it and check that a Reply naming the folder is posted and the card says nothing changes until the new version is approved. Optional: Choose folder… on a folder inside `~/Documents` shows the plain refusal and posts nothing.
-   - What it showed: _(pending)_
+   - What it showed: on the v2 card (approval 22), the Flagged line "copy of a repo for Hand tickets to /automate: it has no copy of a repo to work in (no workspace is listed)" has Choose workspace. It opened "Where's your copy of vikashruhilgit/studio-sandbox?", offering `~/studio-work/studio-sandbox` with Use this folder, plus Choose folder…, Clone it for me and Not now. Use this folder posted the Reply "Use the workspace at …/studio-work/studio-sandbox for studio-sandbox-developer (from the card's workspace question)" in the drafting thread (message 85, thread 82), and the card said "Sent to Wright. It proposes a new version with this folder; nothing changes until you approve it." Wright confirmed the folder is a clone of vikashruhilgit/studio-sandbox on `main`. Its v3 with the path was refused by the same head limit (60 characters over), so approval 22 is unchanged. The optional `~/Documents` refusal was not run.
 5. Run `studio approvals` in a terminal while the long charter is held. Check that its display ends with "… <n> more characters not shown; studio approvals --json, or the app's Approvals screen, shows all of it".
-   - What it showed: _(pending)_
+   - What it showed: with approval 21 held, `studio approvals` printed its display through "workspaces: none" and then "… 6258 more characters not shown; studio approvals --json, or the app's Approvals screen, shows all of it" (4,000 + 6,258 = the card's 10,258).
 
-Owner's result (filled in from the owner's report): _(pending)_
+Owner's result (filled in from the owner's report):
+
+Verdict: PASS for Validation 2
+
+Run on 2026-11-11 between 23:03 and 23:30 local time (macOS 26.6.2) by Claude, driving the app while the owner watched. The owner asked for the check to be run rather than waived. It ran against the packaged app (`npm run package`, `release/mac-arm64/Loomwright Studio.app`) and the kernel installed as the launchd service (`service install`, pid 54629), both built from PR head `36916378`. Every behaviour this item adds was seen working: the compact card, full details with nothing cut, copy all, the Reply in the drafting thread, the v1 withdraw and the "Replaced by v2" collapse, the workspace picker's Reply and note, and the CLI cut line.
+
+Findings outside this item's code, for follow-up:
+
+- The kernel's 4,000-character limit on a new member's approval head (`MAX_APPROVAL_DISPLAY`, existing before 18d) refused two Ask or change results on this 10-duty charter: adding comment replies (615 over) and adding the workspace (60 over). Asked for a change that does not fit, Wright can only explain, so on a large charter Ask or change and Choose workspace end in a refusal instead of a v2.
+- Wright's message after a v2 still tells the owner to reject the old approval, which the kernel has already withdrawn.
+
+```
+Step 2: 10,258 characters, nothing cut | copied text: 10258 characters (TextEdit), identical to approvals --json display
+Step 3: approval 21 status=denied decided_by=kernel; approval 22 pending
+        ▸ studio-sandbox-developer · v1 · Replaced by v2 · limits changed
+Step 4: Sent to Wright. It proposes a new version with this folder; nothing changes until you approve it.
+Step 5: … 6258 more characters not shown; studio approvals --json, or the app's Approvals screen, shows all of it
+```
