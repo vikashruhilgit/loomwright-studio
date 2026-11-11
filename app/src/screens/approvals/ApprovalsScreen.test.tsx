@@ -16,6 +16,7 @@ import type { FakeBridge } from "../../store/fake-bridge";
 import { APPROVAL_COMMANDS, ApprovalsScreen, EMPTY_TITLE, MERGE_ALWAYS_REFUSED } from "./ApprovalsScreen";
 import { screen as approvalsScreen } from "./index";
 import { alwaysRefusalFor } from "./kernel-mirror";
+import { NOT_LOADED_HERE } from "../chat/CharterAsk";
 import { NOT_IN_REQUEST } from "./MergeApprovalCard";
 import { MERGE_APPROVAL_ACTION, mergeApprovalOf } from "./subject";
 
@@ -1319,6 +1320,30 @@ describe("the charter card (phase 8 item 18d)", () => {
     await waitFor(() => expect(posts(m.fake, "POST /ask")).toHaveLength(1));
     expect(posts(m.fake, "POST /ask")[0]?.body).toEqual({ text: "From the card's Ask or change (approval 5): why Read a PR?", agent: "wright", continues: 4 });
     expect(posts(m.fake, "POST /approvals/:id/approve")).toHaveLength(0);
+  });
+
+  it("AC7: a drafting message older than the thread's latest page links to Chat, says so for this screen and sends nothing", async () => {
+    const m = await mount({ approvals: [held()] });
+    // The latest page holds a later message only: the drafting one (session 31) is older.
+    const later = { type: "message", ...brainMessage(9, "ask", "Something else."), session_id: 40, reply_text: "Done.", thread_id: 4 };
+    m.fake.route("GET /threads/:agent", () => ok({ items: [later], next_before: 9, pending_approvals: [], threads: [] }));
+    m.fake.route("POST /ask", () => ({ ok: true, status: 202, body: { message_id: 100, queue_id: 100 } }));
+    cleanup();
+    setApi(m.fake.bridge);
+    render(<ApprovalsScreen registry={createCommandRegistry()} />);
+    const field = await screen.findByRole("textbox", { name: "Ask or change" });
+    await waitFor(() => expect(screen.getByTestId("charter-ask-where").textContent).toBe(NOT_LOADED_HERE));
+    expect(screen.getByTestId("charter-ask-thread").getAttribute("href")).toBe("#/chat");
+    const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    await act(async () => {
+      fireEvent.change(field, { target: { value: "why Read a PR?" } });
+    });
+    await act(async () => {
+      fireEvent.click(send);
+      fireEvent.keyDown(field, { key: "Enter" });
+    });
+    expect(posts(m.fake, "POST /ask")).toHaveLength(0);
   });
 
   it("a decided charter has no Ask or change box", async () => {

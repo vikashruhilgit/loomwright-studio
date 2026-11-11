@@ -12,7 +12,8 @@ import { POLICY_FIELDS, PolicyEditor, modePolicyRow, policyRows, provenance } fr
 import type { PolicyField } from "../../components/PlaybookPolicy/PlaybookPolicy";
 import type { ResourceName } from "../../store/resources";
 import { MERGE_ALWAYS_REFUSED, approvalLink, approvalSourceText, isMergeApproval } from "../approvals/subject";
-import { focusLost, inFlightGuard, navigate, rehashIfCurrent, triggerSchedule, triggerState, when, write } from "./model";
+import { Refusal, approvalChanges, useCardAction } from "./cardActions";
+import { focusLost, navigate, rehashIfCurrent, triggerSchedule, triggerState, when, write } from "./model";
 
 export { CharterCard } from "./CharterCard";
 export type { CharterCardProps } from "./CharterCard";
@@ -21,39 +22,6 @@ export type { CharterCardProps } from "./CharterCard";
 export const ALWAYS_INELIGIBLE = "Always needs an approval from a playbook session; approve once";
 
 export const LAST_DRY_RUN_GAP = "Last dry run: not available from the kernel yet";
-
-function Refusal({ text }: { readonly text: string }) {
-  return text === "" ? null : (
-    <p className="chat-card-refusal" role="alert">
-      {text}
-    </p>
-  );
-}
-
-/**
- * A card's actions share one in-flight guard: while one write is pending, any
- * second click on the card is dropped (two Run now clicks would queue two
- * runs). `busy` names the pending action, for its Button's `loading`.
- */
-function useCardAction(): { readonly busy: string | null; readonly act: (key: string, fn: () => Promise<void>) => void } {
-  const [guard] = useState(inFlightGuard);
-  const [busy, setBusy] = useState<string | null>(null);
-  const act = (key: string, fn: () => Promise<void>): void => {
-    void guard.run(async () => {
-      setBusy(key);
-      try {
-        await fn();
-      } finally {
-        setBusy(null);
-      }
-    });
-  };
-  return { busy, act };
-}
-
-function approvalChanges(agent: string): ResourceName[] {
-  return [`thread:${agent}`, "approvals", "grants", "agents", "playbooks", "triggers"];
-}
 
 export interface ApprovalCardProps {
   readonly api: StudioBridge;

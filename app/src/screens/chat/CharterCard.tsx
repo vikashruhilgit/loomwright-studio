@@ -22,13 +22,13 @@ import { useEffect, useRef, useState } from "react";
 import type { Approval, ApprovalsResponse, StudioBridge, ThreadFigures, ThreadItem } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
 import { useResource } from "../../store/react";
-import type { ResourceName } from "../../store/resources";
 import { CharterDisplay } from "../approvals/CharterDisplay";
 import { WORKSPACE_FLAG, charterBlocks, repoCandidates, whatChanged } from "../approvals/charterBlocks";
 import { printable } from "../approvals/printable";
 import { approvalSubject, charterDisplayParts } from "../approvals/subject";
 import { CharterAsk, WorkspaceQuestion } from "./CharterAsk";
-import { inFlightGuard, write } from "./model";
+import { Refusal, approvalChanges, useCardAction } from "./cardActions";
+import { write } from "./model";
 import "./chat.css";
 
 /** The older version's line: "<member> · v<k> · Replaced by v<k+1> · <what changed>". */
@@ -85,14 +85,6 @@ function memberOf(approval: Approval): string {
   return subject?.kind === "member" ? subject.id : "the crew member";
 }
 
-function Refusal({ text }: { readonly text: string }) {
-  return text === "" ? null : (
-    <p className="chat-card-refusal" role="alert">
-      {text}
-    </p>
-  );
-}
-
 /** One older version, collapsed to its line; opening it shows its read-only card. */
 function OlderVersion({ approval, version, next, nextDisplay }: { readonly approval: Approval; readonly version: number; readonly next: number; readonly nextDisplay: string }) {
   const [open, setOpen] = useState(false);
@@ -129,24 +121,17 @@ export interface CharterCardProps {
 /** A pending charter create or update, with its older versions collapsed above it. */
 export function CharterCard({ api, approval, agent, items, threads }: CharterCardProps) {
   const [refusal, setRefusal] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
-  const [guard] = useState(inFlightGuard);
+  const { busy, act } = useCardAction();
   const [question, setQuestion] = useState(false);
   const chooseRef = useRef<HTMLButtonElement>(null);
   const all = useAllApprovals(api);
-  const changes: ResourceName[] = [`thread:${agent}`, "approvals", "grants", "agents", "playbooks", "triggers"];
+  const changes = approvalChanges(agent);
   const params = { id: approval.id };
-  const decide = (key: "create" | "deny", path: string, body: unknown): void => {
-    void guard.run(async () => {
-      setBusy(key);
-      try {
-        const outcome = await write(api, path, params, body, changes);
-        setRefusal(outcome.ok ? "" : outcome.text);
-      } finally {
-        setBusy(null);
-      }
+  const decide = (key: "create" | "deny", path: string, body: unknown): void =>
+    act(key, async () => {
+      const outcome = await write(api, path, params, body, changes);
+      setRefusal(outcome.ok ? "" : outcome.text);
     });
-  };
   const display = approval.display ?? "";
   const parts = charterDisplayParts(display);
   const update = parts?.update ?? approval.action === "kernel_agent_update";

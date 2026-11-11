@@ -33,7 +33,8 @@ import { threadResource } from "../../store/resources";
 import { printable } from "../approvals/printable";
 import { askBodyOf, draftingMessage, refusalWords, summarizedInto, threadTitle } from "./continuity";
 import type { DraftingTarget } from "./continuity";
-import { inFlightGuard, rehashIfCurrent, write } from "./model";
+import { useCardAction } from "./cardActions";
+import { rehashIfCurrent, write } from "./model";
 import "./chat.css";
 import type { WriteOutcome } from "./model";
 
@@ -50,6 +51,9 @@ export function askText(id: number, words: string): string {
 
 /** What the box says when the drafting message is not among the loaded items: nothing is sent. */
 export const NOT_LOADED = "The message Wright drafted this in isn't in the part of the thread that's loaded, so nothing can be sent from here yet. Load earlier in the thread to find it.";
+
+/** The same, on the Approvals screen, which reads only the thread's latest page and has no Load earlier. */
+export const NOT_LOADED_HERE = "The message Wright drafted this in isn't among the thread's latest messages, so nothing can be sent from here. Open the thread in Chat and load earlier messages to find it.";
 
 /** What the card says once Clone it for me posted (the owner's decision 2: the clone is a follow-up item). */
 export const CLONE_NOT_BUILT = "Cloning isn't built yet; nothing was cloned. Wright has your request.";
@@ -133,27 +137,22 @@ export function CharterAsk({ api, approval, items, threads, linkToThread = false
   const fieldId = useId();
   const noteId = useId();
   const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
   const [outcome, setOutcome] = useState<{ readonly ok: boolean; readonly text: string } | null>(null);
-  const [guard] = useState(inFlightGuard);
+  const { busy, act } = useCardAction();
   const { drafting, loaded, title, summarizedInto: into } = useDrafting(api, approval, items, threads);
   const words = text.trim();
 
   const send = (): void => {
-    void guard.run(async () => {
-      if (drafting === undefined) return;
-      if (words === "") return;
-      setSending(true);
-      try {
-        const answer = await postToDrafting(api, drafting, askText(approval.id, words));
-        if (answer.ok) {
-          setText("");
-          setOutcome({ ok: true, text: `Sent to Wright in “${printable(title ?? "")}”. Wright answers there; a change comes back as a new version of this card.` });
-        } else {
-          setOutcome({ ok: false, text: sendRefusal(answer) });
-        }
-      } finally {
-        setSending(false);
+    // Never a guessed thread (AC7): no drafting message, nothing is sent.
+    if (drafting === undefined || words === "") return;
+    const target = drafting;
+    act("send", async () => {
+      const answer = await postToDrafting(api, target, askText(approval.id, words));
+      if (answer.ok) {
+        setText("");
+        setOutcome({ ok: true, text: `Sent to Wright in “${printable(title ?? "")}”. Wright answers there; a change comes back as a new version of this card.` });
+      } else {
+        setOutcome({ ok: false, text: sendRefusal(answer) });
       }
     });
   };
@@ -166,7 +165,7 @@ export function CharterAsk({ api, approval, items, threads, linkToThread = false
 
   let where: string;
   if (!loaded) where = "Finding the thread Wright drafted this in…";
-  else if (drafting === undefined) where = NOT_LOADED;
+  else if (drafting === undefined) where = linkToThread ? NOT_LOADED_HERE : NOT_LOADED;
   else {
     where = `Goes to Wright as a Reply in “${printable(title ?? "")}”, the thread it drafted this version in.`;
     if (into !== undefined) where += ` That thread was summarized into thread #${into}; this version was drafted before that, so the Reply continues it there.`;
@@ -192,11 +191,12 @@ export function CharterAsk({ api, approval, items, threads, linkToThread = false
         onKeyDown={onKeyDown}
       />
       <div className="charter-ask-actions">
-        <Button variant="secondary" size="row" loading={sending} disabled={drafting === undefined} onClick={send}>
+        <Button variant="secondary" size="row" loading={busy === "send"} disabled={drafting === undefined} onClick={send}>
           Send
         </Button>
-        {linkToThread && drafting !== undefined ? (
-          // A link, not a button: it only navigates.
+        {linkToThread && loaded ? (
+          // A link, not a button: it only navigates. Shown when the drafting message isn't loaded too:
+          // this screen has no Load earlier, so Chat is where the owner finds it.
           <a className="approvals-link" href={href} data-testid="charter-ask-thread" onClick={() => rehashIfCurrent(href)}>
             Open the thread in Chat
           </a>
@@ -233,10 +233,9 @@ export function WorkspaceQuestion({ api, approval, member, repos, items, threads
   const headingId = useId();
   const home = useHomeDir(api);
   const [lookup, setLookup] = useState<Lookup>(() => (repos.length === 0 ? { state: "done", rows: [] } : { state: "loading" }));
-  const [busy, setBusy] = useState<string | null>(null);
   const [refusal, setRefusal] = useState("");
   const [sent, setSent] = useState("");
-  const [guard] = useState(inFlightGuard);
+  const { busy, act } = useCardAction();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const { drafting, loaded } = useDrafting(api, approval, items, threads);
   const repoKey = repos.join(" ");
@@ -272,53 +271,45 @@ export function WorkspaceQuestion({ api, approval, member, repos, items, threads
   }, [api, repoKey]);
 
   const shown = (path: string): string => printable(formatHomePath(path, home));
-  const post = (key: string, text: string, after: string): Promise<boolean> =>
-    (async () => {
-      if (drafting === undefined) return false;
-      const answer = await postToDrafting(api, drafting, text);
-      if (!answer.ok) {
-        setRefusal(sendRefusal(answer));
-        return false;
-      }
-      setRefusal("");
-      setSent(after);
-      return true;
-    })().finally(() => setBusy((b) => (b === key ? null : b)));
+  const post = async (target: DraftingTarget, text: string, after: string): Promise<void> => {
+    const answer = await postToDrafting(api, target, text);
+    if (!answer.ok) {
+      setRefusal(sendRefusal(answer));
+      return;
+    }
+    setRefusal("");
+    setSent(after);
+  };
 
+  // Never a guessed thread (AC7): no drafting message, nothing is sent.
   const useFolder = (row: SavedWorkspace): void => {
-    void guard.run(async () => {
-      setBusy(`use:${row.id}`);
-      await post(`use:${row.id}`, folderText(row.path, member), WORKSPACE_SENT);
-    });
+    if (drafting === undefined) return;
+    const target = drafting;
+    act(`use:${row.id}`, () => post(target, folderText(row.path, member), WORKSPACE_SENT));
   };
   const chooseFolder = (): void => {
-    void guard.run(async () => {
-      if (api.chooseFolder === undefined || drafting === undefined) return;
-      setBusy("choose");
+    if (api.chooseFolder === undefined || drafting === undefined) return;
+    const target = drafting;
+    act("choose", async () => {
+      let chosen: string | null | undefined;
       try {
-        let chosen: string | null;
-        try {
-          chosen = await api.chooseFolder();
-        } catch {
-          setRefusal("Couldn't open the folder picker. Nothing was sent to Wright.");
-          return;
-        }
-        if (typeof chosen !== "string" || chosen === "") return;
-        const saved = await write<SaveWorkspaceResponse>(api, "/workspaces", undefined, { path: chosen }, []);
-        // The kernel's own words (a protected folder says why, D31); nothing is proposed.
-        setRefusal(saved.ok ? "" : folderRefusal(saved));
-        if (!saved.ok) return;
-        await post("choose", folderText(saved.body.workspace.path, member), WORKSPACE_SENT);
-      } finally {
-        setBusy((b) => (b === "choose" ? null : b));
+        chosen = await api.chooseFolder?.();
+      } catch {
+        setRefusal("Couldn't open the folder picker. Nothing was sent to Wright.");
+        return;
       }
+      if (typeof chosen !== "string" || chosen === "") return;
+      const saved = await write<SaveWorkspaceResponse>(api, "/workspaces", undefined, { path: chosen }, []);
+      // The kernel's own words (a protected folder says why, D31); nothing is proposed.
+      setRefusal(saved.ok ? "" : folderRefusal(saved));
+      if (!saved.ok) return;
+      await post(target, folderText(saved.body.workspace.path, member), WORKSPACE_SENT);
     });
   };
   const clone = (): void => {
-    void guard.run(async () => {
-      setBusy("clone");
-      await post("clone", cloneText(repos[0], member), CLONE_NOT_BUILT);
-    });
+    if (drafting === undefined) return;
+    const target = drafting;
+    act("clone", () => post(target, cloneText(repos[0], member), CLONE_NOT_BUILT));
   };
 
   const repo = repos[0];
