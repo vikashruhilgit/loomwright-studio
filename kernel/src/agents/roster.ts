@@ -242,11 +242,18 @@ function settingsContent(file: string): unknown {
   }
 }
 
-/** The charter's prose sections from `charter_json`, or null when it does not parse. */
+/** A stored duty as prose: a duty entry (`{text, jobs}`) as its `text`; a bare line (or anything else) as it is. */
+function dutyProse(duty: unknown): unknown {
+  return isBodyObject(duty) && typeof duty.text === "string" ? duty.text : duty;
+}
+
+/** The charter's prose sections from `charter_json`, or null when it does not parse. Duties are their text. */
 function charterProse(row: AgentRow): { persona: unknown; duties: unknown; boundaries: unknown } | null {
   try {
-    const c = JSON.parse(row.charter_json) as Body;
-    return isBodyObject(c) ? { persona: c.persona ?? null, duties: c.duties ?? null, boundaries: c.boundaries ?? null } : null;
+    const c = JSON.parse(row.charter_json) as unknown;
+    if (!isBodyObject(c)) return null;
+    const duties = Array.isArray(c.duties) ? c.duties.map(dutyProse) : (c.duties ?? null);
+    return { persona: c.persona ?? null, duties, boundaries: c.boundaries ?? null };
   } catch {
     return null;
   }

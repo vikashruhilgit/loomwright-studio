@@ -53,11 +53,19 @@
 // or workspace. The charter's text is untrusted data (invariant 3): it is
 // stored and shown, never followed; the CLI escapes every display line.
 //
+// The readiness check (`./charter-readiness.ts`, phase 8 item 18b) runs in both
+// `beforeHold`s and both appliers: its lines go right after the display's first
+// line (so they are in the create's head, never cut), its `agentNote` rides on
+// the hold's verdict (the gate appends it to the held reason Wright reads), and
+// an apply with findings still open names them in its applied sentence. Wright's
+// create is refused `invalid_input` for a bare-string duty (a duty names its jobs).
+//
 // The `studio` CLI loads this module through `./index.ts`, so it imports only
 // types, zod, `node:*`, the feature seam and its tool catalogue, `../loop/internal.js`,
 // `../brain/settings.js`, `../approvals/store.js` (a constant),
 // `../sessions/policy.js` (`NEVER_CATEGORIES`) and this
-// feature's own modules: never the Agent SDK,
+// feature's own modules (`./charter-readiness.js` included, with its CLI-safe
+// imports `../automate/checkout.js` and `../protected-paths.js`): never the Agent SDK,
 // the session manager or `kernel.ts` (`kernel/test/feature-seams.test.ts`).
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -85,6 +93,8 @@ import {
   validateCharter,
 } from "./charter-files.js";
 import type { AgentAuditKind, Charter } from "./charter-files.js";
+import { charterReadiness, openFlagsSentence, readinessFloorLines, wrightDutyRefusal } from "./charter-readiness.js";
+import type { ReadinessResult } from "./charter-readiness.js";
 import { getAgent, listAgents } from "./registry.js";
 import type { AgentRow } from "./registry.js";
 import { agentSettingsPath, readAgentSettings } from "./settings.js";
@@ -211,10 +221,11 @@ function asLines(text: string): string {
 }
 
 /** A create head with the job lines in full (`purposes`) or in their compact, label-only form. */
-function createHeadWith(charter: Charter, catalogue: ToolCatalogue | undefined, purposes: boolean): string {
+function createHeadWith(charter: Charter, catalogue: ToolCatalogue | undefined, purposes: boolean, readiness: readonly string[]): string {
   const tp = charter.tool_policy;
   return [
     `Create crew member ${charter.id} (${JSON.stringify(charter.display_name)}, ${charter.avatar.shape} ${charter.avatar.hue}), proposed by Wright`,
+    ...readiness,
     ...jobDisplayLines(tp.allowedTools, catalogue, purposes),
     enforcedLine(tp.never, tp.allowedTools, tp.allowedBashPrefixes, charter.connectors),
     limitsLine(charter.limits),
@@ -223,21 +234,22 @@ function createHeadWith(charter: Charter, catalogue: ToolCatalogue | undefined, 
 }
 
 /**
- * A create display's head: who, the granted kernel tools grouped by job
+ * A create display's head: who, the readiness lines (`charterReadiness`; none
+ * when not given), the granted kernel tools grouped by job
  * (`jobDisplayLines`: none when no kernel tool is granted, one plain note when
  * `catalogue` is undefined), the enforced line, the limits and the workspaces
  * (what the cut must never hide). The job lines carry each tool's purpose line
  * when that head fits `MAX_APPROVAL_DISPLAY`; otherwise they are the job labels
- * alone (still ahead of every raw name), so the head grows with the job
+ * alone (still ahead of every raw name), so the job lines grow with the job
  * vocabulary, never with the number of granted tools.
  */
-function createHead(charter: Charter, catalogue?: ToolCatalogue): string {
-  const full = createHeadWith(charter, catalogue, true);
-  return full.length <= MAX_APPROVAL_DISPLAY ? full : createHeadWith(charter, catalogue, false);
+function createHead(charter: Charter, catalogue?: ToolCatalogue, readiness: readonly string[] = []): string {
+  const full = createHeadWith(charter, catalogue, true, readiness);
+  return full.length <= MAX_APPROVAL_DISPLAY ? full : createHeadWith(charter, catalogue, false, readiness);
 }
 
 /** What the create hold's fit refusal names: the head the owner must see whole. */
-const CREATE_HEAD_TEXT = "the display's head (who, the job lines, the enforced, limits and workspaces lines)";
+const CREATE_HEAD_TEXT = "the display's head (who, the readiness lines, the job lines, the enforced, limits and workspaces lines)";
 
 /**
  * `invalid_input` when `text` (the part of a display the owner must see
@@ -250,15 +262,17 @@ function displayFitRefusal(what: string, text: string): Refused | undefined {
 }
 
 /**
- * What `studio approvals` shows for a create, in this order: who, the granted
- * kernel tools by job (`catalogue`'s grouping, ahead of any `mcp__kernel__`
- * name), the enforced line, the limits, the workspaces, then the settings file
- * and `role.md` exactly as the kernel would write them (the cut may hide the
- * files' tail, never the head: the hold refuses a head that does not fit).
+ * What `studio approvals` shows for a create, in this order: who, the
+ * readiness lines (`readiness`, the hold's `charterReadiness(...).lines`), the
+ * granted kernel tools by job (`catalogue`'s grouping, ahead of any
+ * `mcp__kernel__` name), the enforced line, the limits, the workspaces, then
+ * the settings file and `role.md` exactly as the kernel would write them (the
+ * cut may hide the files' tail, never the head: the hold refuses a head that
+ * does not fit).
  */
-export function createDisplay(charter: Charter, catalogue?: ToolCatalogue): string {
+export function createDisplay(charter: Charter, catalogue?: ToolCatalogue, readiness: readonly string[] = []): string {
   return [
-    createHead(charter, catalogue),
+    createHead(charter, catalogue, readiness),
     `config/agents/${charter.id}.json:`,
     asLines(renderAgentSettingsJson(charter)),
     `memory/${charter.id}/role.md:`,
@@ -276,17 +290,31 @@ function charterIdText(charter: Record<string, unknown>): string {
   return typeof id === "string" ? id.slice(0, 64) : "(no id)";
 }
 
+/** A create's readiness: the charter's own duties, tools and workspaces, and the connectors it proposes. */
+function createReadiness(charter: Charter, catalogue: ToolCatalogue | undefined, dataDir: string): ReadinessResult {
+  return charterReadiness({ action: "create", charter, catalogue, grant: { kind: "proposed", connectors: charter.connectors ?? [] }, dataDir });
+}
+
+/** A hold's verdict: the display, and the readiness note for Wright when anything is open (none: the held reason is as before). */
+function heldVerdict(display: string, readiness: ReadinessResult): HeldToolVerdict {
+  return readiness.agentNote === undefined ? { display } : { display, agentNote: readiness.agentNote };
+}
+
 function createBeforeHold(a: CreateArgs, ctx: ContributedToolContext): HeldToolVerdict {
   const refusal = leadRefusal(callerOf(ctx)) ?? usedKeyRefusal(ctx, CREATE_FULL_NAME, a.idempotency_key);
   if (refusal !== undefined) return holdRefusal(AGENT_CREATE_TOOL_NAME, refusal);
   const checked = validateCharter(a.charter, { dataDir: ctx.store.dataDir });
   if (!checked.ok) return holdRefusal(AGENT_CREATE_TOOL_NAME, refused("invalid_input", checked.message));
+  // A duty Wright drafts names its jobs, so the readiness check can compare them with the tools.
+  const bare = wrightDutyRefusal(checked.charter);
+  if (bare !== undefined) return holdRefusal(AGENT_CREATE_TOOL_NAME, refused("invalid_input", bare));
   if (getAgent(ctx.store, checked.charter.id) !== undefined) {
     return holdRefusal(AGENT_CREATE_TOOL_NAME, refused("id_taken", `a crew member with id ${checked.charter.id} exists, active or off (an id is never reused)`));
   }
-  const tooLong = displayFitRefusal(CREATE_HEAD_TEXT, createHead(checked.charter, ctx.catalogue));
+  const readiness = createReadiness(checked.charter, ctx.catalogue, ctx.store.dataDir);
+  const tooLong = displayFitRefusal(CREATE_HEAD_TEXT, createHead(checked.charter, ctx.catalogue, readiness.lines));
   if (tooLong !== undefined) return holdRefusal(AGENT_CREATE_TOOL_NAME, tooLong);
-  return { display: createDisplay(checked.charter, ctx.catalogue) };
+  return heldVerdict(createDisplay(checked.charter, ctx.catalogue, readiness.lines), readiness);
 }
 
 /** `createAgent`'s refusal codes as this part's tokens. */
@@ -304,8 +332,12 @@ const CREATE_REFUSAL_TOKENS = {
  * `agent_created` event join the decision's transaction, and the files are
  * written by `ensureAgentFiles` once it committed (`after`; a throw there is
  * ignored by the decision, and the next `ensureAgentFiles` heals the files).
+ * The readiness check runs again on the created charter: what is still open is
+ * named in the applied sentence, as the owner's choice to proceed
+ * (`openFlagsSentence`). A bare-string duty is not refused here: the owner
+ * approved what the display showed.
  */
-function createOnApproval(a: CreateArgs, ctx: { store: Store; now: () => Date; approval: AppliedApproval }): ApprovalApplyOutcome {
+function createOnApproval(a: CreateArgs, ctx: { store: Store; now: () => Date; approval: AppliedApproval; catalogue?: ToolCatalogue }): ApprovalApplyOutcome {
   const { store, approval } = ctx;
   const id = charterIdText(a.charter);
   const notCreated = (r: Refused): ApprovalApplyOutcome => ({ refused: r.refused, text: `The kernel did not create crew member ${id}: ${r.refused} (${oneLine(r.message)}).` });
@@ -314,8 +346,10 @@ function createOnApproval(a: CreateArgs, ctx: { store: Store; now: () => Date; a
   const r = createAgent(store, store.dataDir, a.charter, { by: "wright", approvalId: approval.id, deferFiles: true }, ctx.now());
   if (!r.ok) return notCreated(refused(CREATE_REFUSAL_TOKENS[r.error], r.message));
   const created = r.agent.id;
+  const checked = validateCharter(a.charter, { dataDir: store.dataDir });
+  const open = checked.ok ? openFlagsSentence(createReadiness(checked.charter, ctx.catalogue, store.dataDir)) : "";
   return {
-    applied: `The kernel created crew member ${created} (${r.agent.display_name}) on approval ${approval.id}.`,
+    applied: `The kernel created crew member ${created} (${r.agent.display_name}) on approval ${approval.id}.${open}`,
     // A write error is thrown and ignored by the decision: the row stays, and the next ensureAgentFiles writes the files.
     after: () => void ensureAgentFiles(store, store.dataDir, created),
   };
@@ -331,6 +365,8 @@ const createTool = defineTool({
   job: "manage_crew",
   description:
     "Ask the owner to create a crew member from a charter you draft from the owner's words: {id, display_name, avatar: {shape, hue}, persona, duties, boundaries, model, effort?, permission_mode, tool_policy: {allowedTools, allowedBashPrefixes, never}, limits?: {tokens_per_day?, sessions_at_once?, delegation_depth?}, workspaces, connectors?: [\"github\"]}. " +
+    "Write each duty as {\"text\": \"<the duty>\", \"jobs\": [<the catalogue job ids that do it>]} ([] when it needs no kernel tool), and grant every tool of each job a duty names; a duty written as a bare line is refused. " +
+    "Before the owner sees it, the kernel checks that every duty's jobs are granted and every granted job has what it needs (a workspace that is a git checkout with a GitHub remote for a code job, a connector grant); anything open is shown to the owner and told to you after the held reason, with the fix to propose: say it to the owner. " +
     "When the owner asks for a crew member, draft it straight into the held approval with this call and refine it with an update (kernel_agent_update, once the member exists); never leave a proposal only in chat text. " +
     "Every value the owner did not state is your proposal: say so to the owner. Put each \"never …\" the owner said into both the prose boundaries and the enforced tool_policy.never (only never is enforced; boundaries are guidance). " +
     "Propose limits and limits.delegation_depth, and never let the owner think they are already set: an unset limit is no limit. " +
@@ -409,6 +445,8 @@ interface Merged {
   readonly charter: Charter;
   /** The member's tool list before the change (its settings file's `tool_policy.allowedTools`, strings only): what the display's job lines mark additions against. */
   readonly heldTools: readonly string[];
+  /** The settings file's `connectors` value as stored (an update never changes it): what the readiness check reads the member's grant from. */
+  readonly connectorsRaw: unknown;
 }
 
 /** Absent and `null` read as one value (not set), so clearing an unset value changes nothing. */
@@ -545,7 +583,7 @@ function mergeUpdate(store: Store, row: AgentRow, file: string, bytes: Buffer, c
   const heldPolicy = isBodyObject(current.tool_policy) ? current.tool_policy.allowedTools : undefined;
   // A list that is not one (a hand-edited file) holds nothing: every granted kernel tool shows as added.
   const heldTools = Array.isArray(heldPolicy) ? heldPolicy.filter((t): t is string => typeof t === "string") : [];
-  return { row, file, bytes, changes: found, fileChanged, text, displayName, avatar, charter: checked.charter, heldTools };
+  return { row, file, bytes, changes: found, fileChanged, text, displayName, avatar, charter: checked.charter, heldTools, connectorsRaw: next.connectors };
 }
 
 /** The update `a` asks for, at hold: the member, its file, the merge, the hash, and a change that changes something. */
@@ -574,7 +612,8 @@ function updateHead(m: Merged): string {
 
 /**
  * What `studio approvals` shows for an update: who and which file, the
- * result's granted kernel tools by job (`jobDisplayLines`, ahead of the field
+ * readiness lines (`readiness`, the hold's `charterReadiness(...).lines`, in
+ * every form), the result's granted kernel tools by job (`jobDisplayLines`, ahead of the field
  * lines, which may name `mcp__kernel__` tools), one line per changed field,
  * then the result's enforced line. The job lines mark what the update adds
  * against the member's current tools (`Merged.heldTools`): a job line ends
@@ -597,10 +636,10 @@ function updateHead(m: Merged): string {
  * current tool plus the missing ones) for a member with many kernel tools is
  * held whenever the old list and the result's enforced line leave room.
  */
-export function updateDisplay(m: Merged, catalogue?: ToolCatalogue): string {
+export function updateDisplay(m: Merged, catalogue?: ToolCatalogue, readiness: readonly string[] = []): string {
   let display = "";
   for (const form of UPDATE_DISPLAY_FORMS) {
-    display = updateDisplayWith(m, catalogue, form);
+    display = updateDisplayWith(m, catalogue, form, readiness);
     if (display.length <= MAX_APPROVAL_DISPLAY) return display;
   }
   return display;
@@ -619,10 +658,11 @@ const UPDATE_DISPLAY_FORMS: readonly UpdateDisplayForm[] = Object.freeze([
   { purposes: false, policyOnEnforced: true },
 ]);
 
-function updateDisplayWith(m: Merged, catalogue: ToolCatalogue | undefined, form: UpdateDisplayForm): string {
+function updateDisplayWith(m: Merged, catalogue: ToolCatalogue | undefined, form: UpdateDisplayForm, readiness: readonly string[]): string {
   const tp = m.charter.tool_policy;
   return [
     updateHead(m),
+    ...readiness,
     ...jobDisplayLines(tp.allowedTools, catalogue, form.purposes, m.heldTools),
     ...m.changes.map((c) => fieldLine(c, form.policyOnEnforced)),
     enforcedLine(tp.never, tp.allowedTools, tp.allowedBashPrefixes),
@@ -684,13 +724,18 @@ function shortestNewShown(field: string): string {
  * included), so the bound holds for every request and every form. The
  * ` (added)` and ` (gains tools)` marks never shorten a display, so they are left out: a change
  * that leaves `tool_policy` alone adds no tool (its job lines carry no mark),
- * and one that sets it is bounded with no job line at all.
+ * and one that sets it is bounded with no job line at all. The readiness
+ * block is bounded by `readinessFloorLines` from this request's own readiness
+ * (`readiness`): exact when the change sets neither `tool_policy` nor
+ * `workspaces` (nothing else changes it), else each line that can vary at
+ * its shortest (every update shows the member's stored duties).
  */
-function updateFloor(m: Merged, catalogue?: ToolCatalogue): string {
+function updateFloor(m: Merged, catalogue: ToolCatalogue | undefined, readiness: ReadinessResult): string {
   const tp = m.charter.tool_policy;
   const sets = new Set(m.changes.map((c) => c.field));
   return [
     updateHead(m),
+    ...readinessFloorLines(m.charter, catalogue, readiness, { tools: sets.has("tool_policy"), workspaces: sets.has("workspaces") }),
     ...jobDisplayLines(sets.has("tool_policy") ? [] : tp.allowedTools, catalogue, false),
     ...m.changes.map((c) => (c.field === "tool_policy" ? fieldLine(c, true) : `${c.field}: ${shownValue(c.old)} → ${shortestNewShown(c.field)}`)),
     enforcedLine(sets.has("never") ? [] : tp.never, sets.has("tool_policy") ? ["x"] : tp.allowedTools, sets.has("tool_policy") ? ["x"] : tp.allowedBashPrefixes),
@@ -698,7 +743,7 @@ function updateFloor(m: Merged, catalogue?: ToolCatalogue): string {
 }
 
 /** What the update hold's fit refusal names: the display the owner must see whole. */
-const UPDATE_DISPLAY_TEXT = "the display (its job lines, field lines and enforced line)";
+const UPDATE_DISPLAY_TEXT = "the display (its readiness lines, job lines, field lines and enforced line)";
 
 /**
  * `invalid_input` when the update's display would not fit `MAX_APPROVAL_DISPLAY`
@@ -709,9 +754,9 @@ const UPDATE_DISPLAY_TEXT = "the display (its job lines, field lines and enforce
  * and Wright can change the member once they fit. Otherwise a request to the
  * same fields with shorter new values may fit: ask for less.
  */
-function updateFitRefusal(m: Merged, display: string, catalogue?: ToolCatalogue): Refused | undefined {
+function updateFitRefusal(m: Merged, display: string, catalogue: ToolCatalogue | undefined, readiness: ReadinessResult): Refused | undefined {
   if (display.length <= MAX_APPROVAL_DISPLAY) return undefined;
-  const floor = updateFloor(m, catalogue).length;
+  const floor = updateFloor(m, catalogue, readiness).length;
   if (floor <= MAX_APPROVAL_DISPLAY) return displayFitRefusal(UPDATE_DISPLAY_TEXT, display);
   return refused(
     "invalid_input",
@@ -721,15 +766,25 @@ function updateFitRefusal(m: Merged, display: string, catalogue?: ToolCatalogue)
   );
 }
 
+/**
+ * An update's readiness: the merged result (the member's stored duties, the
+ * result's tools and workspaces) and the member's stored connectors grant
+ * (an update never changes it).
+ */
+function updateReadiness(m: Omit<Merged, "sha256">, catalogue: ToolCatalogue | undefined, dataDir: string): ReadinessResult {
+  return charterReadiness({ action: "update", charter: m.charter, catalogue, grant: { kind: "stored", raw: m.connectorsRaw }, dataDir });
+}
+
 function updateBeforeHold(a: UpdateArgs, ctx: ContributedToolContext): HeldToolVerdict {
   const refusal = leadRefusal(callerOf(ctx)) ?? usedKeyRefusal(ctx, UPDATE_FULL_NAME, a.idempotency_key);
   if (refusal !== undefined) return holdRefusal(AGENT_UPDATE_TOOL_NAME, refusal);
   const update = updateOf(ctx.store, a);
   if (isRefused(update)) return holdRefusal(AGENT_UPDATE_TOOL_NAME, update);
-  const display = updateDisplay(update, ctx.catalogue);
-  // The job lines, the field lines and the enforced line are all the owner must see: the whole display fits, or nothing is held.
-  const tooLong = updateFitRefusal(update, display, ctx.catalogue);
-  return tooLong === undefined ? { display } : holdRefusal(AGENT_UPDATE_TOOL_NAME, tooLong);
+  const readiness = updateReadiness(update, ctx.catalogue, ctx.store.dataDir);
+  const display = updateDisplay(update, ctx.catalogue, readiness.lines);
+  // The readiness lines, the job lines, the field lines and the enforced line are all the owner must see: the whole display fits, or nothing is held.
+  const tooLong = updateFitRefusal(update, display, ctx.catalogue, readiness);
+  return tooLong === undefined ? heldVerdict(display, readiness) : holdRefusal(AGENT_UPDATE_TOOL_NAME, tooLong);
 }
 
 /**
@@ -783,9 +838,10 @@ function unchangedSince(file: string, bytes: Buffer): boolean {
  * last, the rename over the file. On any refusal or throw the sibling is
  * removed. The rename is the last statement of the applier's savepoint: the
  * decision's own writes and its COMMIT still follow (`agents.md`, Honest
- * limits).
+ * limits). The readiness check runs on the merged result: what is still open
+ * is named in the applied sentence, as the owner's choice to proceed.
  */
-function updateOnApproval(a: UpdateArgs, ctx: { store: Store; now: () => Date; approval: AppliedApproval }): ApprovalApplyOutcome {
+function updateOnApproval(a: UpdateArgs, ctx: { store: Store; now: () => Date; approval: AppliedApproval; catalogue?: ToolCatalogue }): ApprovalApplyOutcome {
   const { store, approval } = ctx;
   const notUpdated = (r: Refused): ApprovalApplyOutcome => ({ refused: r.refused, text: `The kernel did not update crew member ${a.id.slice(0, 64)}: ${r.refused} (${oneLine(r.message)}).` });
   const lead = leadRefusal(approval.agent);
@@ -809,6 +865,8 @@ function updateOnApproval(a: UpdateArgs, ctx: { store: Store; now: () => Date; a
   if (merged.changes.length === 0) return notUpdated(refused("invalid_input", "changes changes nothing: every named value equals the current one"));
 
   const fields = merged.changes.map((c) => c.field);
+  // Read before the write: the workspaces and grant it checks are the merged result's, and the file's old bytes are still in place.
+  const open = openFlagsSentence(updateReadiness(merged, ctx.catalogue, store.dataDir));
   const at = ctx.now().toISOString();
   const rowChanged = merged.displayName !== row.display_name || merged.avatar.shape !== row.avatar_shape || merged.avatar.hue !== row.avatar_hue;
   // A temporary sibling, then a rename over the file (atomic on one file system): a reader sees the old file or the new one.
@@ -837,7 +895,7 @@ function updateOnApproval(a: UpdateArgs, ctx: { store: Store; now: () => Date; a
     if (err instanceof ConcurrentEditError) return notUpdated(refused("config_changed", `${file} changed while it was being updated; nothing was written`));
     throw err;
   }
-  return { applied: `The kernel updated crew member ${row.id} on approval ${approval.id}: ${fields.join(", ")}.` };
+  return { applied: `The kernel updated crew member ${row.id} on approval ${approval.id}: ${fields.join(", ")}.${open}` };
 }
 
 const updateTool = defineTool({
@@ -846,7 +904,7 @@ const updateTool = defineTool({
   description:
     "Ask the owner to change a crew member's settings (or its display name or avatar). Call kernel_agent_list first: expected_sha256 is the member's sha256 from it, and a settings file that changed since (the owner's edit) is refused. " +
     "changes names only what changes: model, effort (null clears), permission_mode, tool_policy {allowedTools, allowedBashPrefixes}, never, limits {tokens_per_day?, sessions_at_once?, delegation_depth?} (each null clears: no limit), workspaces, display_name, avatar {shape, hue}. Every other key in the file keeps its value. " +
-    "The kernel always holds this call for the owner, showing each field's old and new value and what the result enforces; end your turn. " +
+    "The kernel always holds this call for the owner, showing each field's old and new value and what the result enforces, after its check that the member's duties are covered and its jobs have what they need (anything open is told to you after the held reason); end your turn. " +
     "The owner's approval applies it: the kernel changes the file itself and tells you what it did in a new message; do not repeat the call. " +
     `Refused (nothing held) with one of: ${CHARTER_TOOL_REFUSALS.join(", ")}. Use a new idempotency_key for each request to the owner.`,
   shape: {

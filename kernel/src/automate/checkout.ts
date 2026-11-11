@@ -42,21 +42,82 @@ export function gitConfigDir(workspace: string): string | undefined {
   }
 }
 
+/** The GitHub repos a git config's text names as remote URLs (`repoOfRemote`, the one remote parse), in order. */
+function reposOfConfig(text: string): string[] {
+  const found: string[] = [];
+  for (const line of text.split("\n")) {
+    const m = /^\s*url\s*=\s*(.+)$/.exec(line);
+    const repo = m === null ? undefined : repoOfRemote(m[1] as string);
+    if (repo !== undefined) found.push(repo);
+  }
+  return found;
+}
+
+/**
+ * What reading a workspace's GitHub remotes found (`readWorkspaceRepos`):
+ * `repos` (a git checkout; the list is empty when no remote is on GitHub),
+ * `not_checkout` (nothing there, or no git checkout: a definite answer), or
+ * `unreadable` (a read failed, so whether it is a checkout is unknown).
+ * `detail` says which, in plain words.
+ */
+export type WorkspaceRepos =
+  | { readonly kind: "repos"; readonly repos: readonly string[] }
+  | { readonly kind: "not_checkout"; readonly detail: string }
+  | { readonly kind: "unreadable"; readonly detail: string };
+
+/** An error's `code` (`ENOENT`, `EACCES`, …), or undefined. */
+function codeOf(err: unknown): string | undefined {
+  const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+  return typeof code === "string" ? code : undefined;
+}
+
+/** A missing path: the answer is "not there", never "unknown". */
+function isMissing(err: unknown): boolean {
+  const code = codeOf(err);
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/** Whether anything is at `path` (false only when it is definitely missing). */
+function pathPresent(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (err) {
+    return !isMissing(err);
+  }
+}
+
+/**
+ * The GitHub remotes of the checkout at `workspace`, telling a definite "not a
+ * checkout" (a missing folder, `.git` or git config) from a read that failed
+ * (`EACCES`, `EPERM`, …: `unreadable`, never "not a checkout"), for the
+ * charter readiness check. The same `gitConfigDir` and remote parse as
+ * `remoteRepos`. Reads only; never throws.
+ */
+export function readWorkspaceRepos(workspace: string): WorkspaceRepos {
+  const unreadable = (err: unknown, what: string): WorkspaceRepos => ({ kind: "unreadable", detail: `its ${what} can't be read (${codeOf(err) ?? "error"})` });
+  let dir: string | undefined;
+  try {
+    dir = gitConfigDir(workspace);
+  } catch (err) {
+    if (!isMissing(err)) return unreadable(err, ".git");
+    return { kind: "not_checkout", detail: pathPresent(workspace) ? "it is not a git checkout" : "the folder does not exist" };
+  }
+  if (dir === undefined) return { kind: "not_checkout", detail: "it is not a git checkout" };
+  let text: string;
+  try {
+    text = readFileSync(join(dir, "config"), "utf8");
+  } catch (err) {
+    if (isMissing(err)) return { kind: "not_checkout", detail: "it has no git config" };
+    return unreadable(err, "git config");
+  }
+  return { kind: "repos", repos: reposOfConfig(text) };
+}
+
 /** The GitHub repos the checkout at `workspace` has as remotes (empty when it is not a git checkout or its config cannot be read). */
 export function remoteRepos(workspace: string): readonly string[] {
-  try {
-    const dir = gitConfigDir(workspace);
-    if (dir === undefined) return [];
-    const found: string[] = [];
-    for (const line of readFileSync(join(dir, "config"), "utf8").split("\n")) {
-      const m = /^\s*url\s*=\s*(.+)$/.exec(line);
-      const repo = m === null ? undefined : repoOfRemote(m[1] as string);
-      if (repo !== undefined) found.push(repo);
-    }
-    return found;
-  } catch {
-    return [];
-  }
+  const read = readWorkspaceRepos(workspace);
+  return read.kind === "repos" ? read.repos : [];
 }
 
 /** The agent's workspace that is a checkout of `repo`, else a `no_workspace` refusal. */

@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgent } from "../src/agents/charter-files.js";
+import { READINESS_HEADING } from "../src/agents/charter-readiness.js";
 import { listAgents } from "../src/agents/registry.js";
 import { agentSettingsPath, readAgentSettings } from "../src/agents/settings.js";
 import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
@@ -392,7 +393,8 @@ describe("AC4 + AC7: a gap is named, closed through kernel_agent_update, and gat
     const input = { ...proposed, idempotency_key: "close-wide-gap" };
     const updateHeld = held(AGENT_UPDATE, input, WRIGHT_SESSION) as { display?: string; refuse?: string };
     expect(updateHeld.refuse).toBeUndefined();
-    const lines = updateHeld.display?.split("\n") ?? [];
+    // The job, field and enforced lines, without the readiness block (pinned in agents-charter-readiness.test.ts).
+    const lines = (updateHeld.display?.split("\n") ?? []).filter((l) => l !== READINESS_HEADING && !/^ {2}(covered|ready|flagged|not checked): /.test(l));
     // Every job of the result by its label alone, ahead of the field line and the enforced line that name the raw tools;
     // the one job the fit adds is marked added, every other job is kept (DESIGN: "the jobs it adds and the jobs it keeps").
     const jobs = CATALOGUE.jobs.filter((j) => j.tools.some((t) => [...rest, ...merge].includes(`${K}${t.name}`)));

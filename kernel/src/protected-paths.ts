@@ -23,6 +23,14 @@ export function protectedLocationsText(): string {
 }
 
 /**
+ * Why a folder inside one of the protected locations can't be used, in plain
+ * words for the owner (D31), after a sentence that names the folder and
+ * `protectedLocationsText()`: the charter's workspace refusal and the charter
+ * readiness check both say it.
+ */
+export const PROTECTED_FOLDER_WHY = "macOS blocks the kernel, which runs in the background, from reading anything there (D31)";
+
+/**
  * `path` with symlinks resolved as far as it exists: `realpathSync.native` on
  * the longest ancestor it can resolve, then the rest appended as written. Any
  * failure (not there yet, or `EPERM` inside a protected folder under launchd)
