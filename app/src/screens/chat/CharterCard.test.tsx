@@ -4,14 +4,14 @@
 // drafting thread, older versions collapsed as "Replaced by v<n>", the
 // workspace question, and the Create / Deny writes (moved from cards.test.tsx).
 // Every kernel string is fake data; the clipboard and folder picker are stubs.
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Approval, SavedWorkspace, ThreadFigures } from "../../api/contract";
 import { ok } from "../../store/fake-bridge";
 import { COPY_ALL, COPY_FAILED, SHOW_DETAILS, copiedLine, totalLine } from "../approvals/CharterDisplay";
 import { printable } from "../approvals/printable";
-import { ASK_LABEL, CLONE_NOT_BUILT, NOT_LOADED, WORKSPACE_SENT, askText, cloneText, folderText } from "./CharterAsk";
-import { CHOOSE_WORKSPACE, REPLACED_BY, olderVersions } from "./CharterCard";
+import { ASK_LABEL, CLONE_NOT_BUILT, NOT_LOADED, READ_FAILED, WORKSPACE_SENT, WorkspaceQuestion, askText, cloneText, folderText } from "./CharterAsk";
+import { CHOOSE_WORKSPACE, REPLACED_BY, VERSIONS_FAILED, olderVersions } from "./CharterCard";
 import { rememberSummarized } from "./continuity";
 import { T0, approval, kit, message, renderChat, resetChat, thread } from "./testkit";
 import type { Kit } from "./testkit";
@@ -228,6 +228,21 @@ describe("Chat's charter card", () => {
     expect(olderVersions([v1, v2], v2).map((a) => a.id)).toEqual([8]);
   });
 
+  it("a failed read of the decided approvals says older versions may be missing, never that there are none", async () => {
+    const v1 = charter(8, V1, { status: "denied", decision: "deny", decided_by: "kernel", decided_at: T0, replaced_by: 9 });
+    const v2 = charter(9, V2);
+    const k = charterKit([v2]);
+    k.state.approvals = [v1, v2];
+    k.fake.route("GET /approvals", (req) => (req.query?.all === "1" ? { ok: false, status: 500, body: { error: "internal", message: "db locked" } } : ok({ approvals: [v2] })));
+    await renderChat(k);
+    const c = await card();
+    await waitFor(() => expect(within(c).getByTestId("charter-versions-failed").textContent).toBe(VERSIONS_FAILED));
+    expect(within(c).getByTestId("charter-versions-failed").getAttribute("role")).toBe("alert");
+    expect(screen.queryByTestId("charter-old")).toBeNull();
+    // The live card still works: Create is offered.
+    expect(within(c).getByRole("button", { name: "Create" })).toBeTruthy();
+  });
+
   it("AC7: when the drafting message is not among the loaded items, the box says so, Send is disabled and nothing is posted", async () => {
     const k = charterKit(undefined, { drafted: false });
     await renderChat(k);
@@ -278,6 +293,27 @@ describe("the workspace question", () => {
     await press(c, CHOOSE_WORKSPACE);
     return within(c).findByTestId("charter-workspace-question");
   }
+
+  it("a failed saved-workspaces lookup says so, never \"no saved folder\"", async () => {
+    const k = charterKit();
+    k.fake.route("GET /workspaces", () => ({ ok: false, status: 500, body: { error: "internal", message: "db locked" } }));
+    const q = await openQuestion(k);
+    await waitFor(() => expect(within(q).getByRole("alert").textContent).toBe("The saved workspaces couldn't be read, so none can be offered. Choose a folder instead, or try again later."));
+    expect(q.textContent).not.toContain("No saved folder");
+    expect(within(q).queryByRole("button", { name: /^Use this folder/ })).toBeNull();
+  });
+
+  it("without loaded items, a failed read of the drafting thread says the read failed (not NOT_LOADED) and nothing can be sent", async () => {
+    const k = charterKit();
+    k.fake.route("GET /threads/:agent", () => ({ ok: false, status: 500, body: { error: "internal", message: "db locked" } }));
+    render(<WorkspaceQuestion api={k.fake.bridge} approval={charter(9, V1)} member="mason" repos={["acme/widgets"]} onClose={() => undefined} />);
+    const q = await screen.findByTestId("charter-workspace-question");
+    await waitFor(() => expect(within(q).getByTestId("charter-wsq-read-failed").textContent).toContain(READ_FAILED));
+    expect(within(q).getByTestId("charter-wsq-read-failed").textContent).toContain("db locked");
+    expect(q.textContent).not.toContain(NOT_LOADED);
+    await press(q, "Clone it for me");
+    expect(k.posted("POST /ask")).toHaveLength(0);
+  });
 
   it("is offered only on a flagged workspace line of a live card", async () => {
     await renderChat(charterKit([charter(9, V2)]));

@@ -16,7 +16,7 @@ import type { FakeBridge } from "../../store/fake-bridge";
 import { APPROVAL_COMMANDS, ApprovalsScreen, EMPTY_TITLE, MERGE_ALWAYS_REFUSED } from "./ApprovalsScreen";
 import { screen as approvalsScreen } from "./index";
 import { alwaysRefusalFor } from "./kernel-mirror";
-import { NOT_LOADED_HERE } from "../chat/CharterAsk";
+import { NOT_LOADED_HERE, READ_FAILED } from "../chat/CharterAsk";
 import { NOT_IN_REQUEST } from "./MergeApprovalCard";
 import { MERGE_APPROVAL_ACTION, mergeApprovalOf } from "./subject";
 
@@ -1334,6 +1334,31 @@ describe("the charter card (phase 8 item 18d)", () => {
     const field = await screen.findByRole("textbox", { name: "Ask or change" });
     await waitFor(() => expect(screen.getByTestId("charter-ask-where").textContent).toBe(NOT_LOADED_HERE));
     expect(screen.getByTestId("charter-ask-thread").getAttribute("href")).toBe("#/chat");
+    const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    await act(async () => {
+      fireEvent.change(field, { target: { value: "why Read a PR?" } });
+    });
+    await act(async () => {
+      fireEvent.click(send);
+      fireEvent.keyDown(field, { key: "Enter" });
+    });
+    expect(posts(m.fake, "POST /ask")).toHaveLength(0);
+  });
+
+  it("AC7: a failed read of the drafting thread says the read failed (not that the message is older), keeps Send disabled and sends nothing", async () => {
+    const m = await mount({ approvals: [held()] });
+    m.fake.route("GET /threads/:agent", () => ({ ok: false, status: 500, body: { error: "internal", message: "db locked" } }));
+    m.fake.route("POST /ask", () => ({ ok: true, status: 202, body: { message_id: 100, queue_id: 100 } }));
+    cleanup();
+    setApi(m.fake.bridge);
+    render(<ApprovalsScreen registry={createCommandRegistry()} />);
+    const field = await screen.findByRole("textbox", { name: "Ask or change" });
+    await waitFor(() => expect(screen.getByTestId("charter-ask-where").textContent).toBe(READ_FAILED));
+    expect(screen.getByTestId("charter-ask-where").textContent).not.toBe(NOT_LOADED_HERE);
+    const alert = screen.getByTestId("charter-ask-read-failed");
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(alert.textContent).toContain("db locked");
     const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
     await act(async () => {

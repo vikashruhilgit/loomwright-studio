@@ -34,7 +34,7 @@ import { printable } from "../approvals/printable";
 import { askBodyOf, draftingMessage, refusalWords, summarizedInto, threadTitle } from "./continuity";
 import type { DraftingTarget } from "./continuity";
 import { useCardAction } from "./cardActions";
-import { rehashIfCurrent, write } from "./model";
+import { readErrorText, rehashIfCurrent, write } from "./model";
 import "./chat.css";
 import type { WriteOutcome } from "./model";
 
@@ -54,6 +54,9 @@ export const NOT_LOADED = "The message Wright drafted this in isn't in the part 
 
 /** The same, on the Approvals screen, which reads only the thread's latest page and has no Load earlier. */
 export const NOT_LOADED_HERE = "The message Wright drafted this in isn't among the thread's latest messages, so nothing can be sent from here. Open the thread in Chat and load earlier messages to find it.";
+
+/** What the box says when the requesting agent's thread could not be read (the Approvals screen): nothing is sent. */
+export const READ_FAILED = "Couldn't read the thread Wright drafted this in, so nothing can be sent from here.";
 
 /** What the card says once Clone it for me posted (the owner's decision 2: the clone is a follow-up item). */
 export const CLONE_NOT_BUILT = "Cloning isn't built yet; nothing was cloned. Wright has your request.";
@@ -78,9 +81,12 @@ export function chatHash(agent: string): string {
 
 /** Where a held charter's requests go, read from the loaded thread. */
 export interface DraftingRead {
-  /** `undefined` while the thread is unread, or when the message is not loaded (`loaded` says which). */
+  /** `undefined` while the thread is unread, when its read failed, or when the message is not loaded (`loaded` / `failed` say which). */
   readonly drafting: DraftingTarget | undefined;
+  /** The thread was read and the drafting message looked for (found or not). A failed read is never `loaded`. */
   readonly loaded: boolean;
+  /** Why the thread read failed, in words (`readErrorText`), when it did and no items were given; otherwise `undefined`. */
+  readonly failed: string | undefined;
   /** The drafting thread's title, as the kernel names it. */
   readonly title: string | undefined;
   /** The thread the drafting one was summarized into in this window, if any. */
@@ -100,8 +106,10 @@ export function useDrafting(api: StudioBridge, approval: Approval, items?: reado
   const title = drafting === undefined ? undefined : threadTitle(figures?.find((t) => t.id === drafting.thread), drafting.thread, drafting.item.session_title);
   return {
     drafting,
-    // A thread read that failed is answered too: the message is not loaded, so nothing is sent.
-    loaded: shown !== undefined || resource?.error !== undefined,
+    // A successful read that lacks the message is a miss; a failed read is its own state, never shown as a miss.
+    // Either way the message is not known, so nothing is sent.
+    loaded: shown !== undefined,
+    failed: shown === undefined && resource?.error !== undefined ? readErrorText(resource.error) : undefined,
     title,
     summarizedInto: drafting === undefined ? undefined : summarizedInto(api, drafting.agent, drafting.thread),
   };
@@ -139,7 +147,7 @@ export function CharterAsk({ api, approval, items, threads, linkToThread = false
   const [text, setText] = useState("");
   const [outcome, setOutcome] = useState<{ readonly ok: boolean; readonly text: string } | null>(null);
   const { busy, act } = useCardAction();
-  const { drafting, loaded, title, summarizedInto: into } = useDrafting(api, approval, items, threads);
+  const { drafting, loaded, failed, title, summarizedInto: into } = useDrafting(api, approval, items, threads);
   const words = text.trim();
 
   const send = (): void => {
@@ -164,7 +172,8 @@ export function CharterAsk({ api, approval, items, threads, linkToThread = false
   };
 
   let where: string;
-  if (!loaded) where = "Finding the thread Wright drafted this in…";
+  if (failed !== undefined) where = READ_FAILED;
+  else if (!loaded) where = "Finding the thread Wright drafted this in…";
   else if (drafting === undefined) where = linkToThread ? NOT_LOADED_HERE : NOT_LOADED;
   else {
     where = `Goes to Wright as a Reply in “${printable(title ?? "")}”, the thread it drafted this version in.`;
@@ -179,6 +188,12 @@ export function CharterAsk({ api, approval, items, threads, linkToThread = false
       <p className="charter-ask-where" id={noteId} data-testid="charter-ask-where">
         {where}
       </p>
+      {failed === undefined ? null : (
+        // The read's failure, in words; the kernel's message in it is untrusted, shown as text only.
+        <p className="chat-card-refusal" role="alert" data-testid="charter-ask-read-failed">
+          {printable(failed)}
+        </p>
+      )}
       <textarea
         id={fieldId}
         className="charter-ask-field"
@@ -194,9 +209,9 @@ export function CharterAsk({ api, approval, items, threads, linkToThread = false
         <Button variant="secondary" size="row" loading={busy === "send"} disabled={drafting === undefined} onClick={send}>
           Send
         </Button>
-        {linkToThread && loaded ? (
-          // A link, not a button: it only navigates. Shown when the drafting message isn't loaded too:
-          // this screen has no Load earlier, so Chat is where the owner finds it.
+        {linkToThread && (loaded || failed !== undefined) ? (
+          // A link, not a button: it only navigates. Shown when the drafting message isn't loaded, or the read
+          // failed, too: this screen has no Load earlier, so Chat is where the owner finds it.
           <a className="approvals-link" href={href} data-testid="charter-ask-thread" onClick={() => rehashIfCurrent(href)}>
             Open the thread in Chat
           </a>
@@ -237,7 +252,7 @@ export function WorkspaceQuestion({ api, approval, member, repos, items, threads
   const [sent, setSent] = useState("");
   const { busy, act } = useCardAction();
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const { drafting, loaded } = useDrafting(api, approval, items, threads);
+  const { drafting, loaded, failed } = useDrafting(api, approval, items, threads);
   const repoKey = repos.join(" ");
 
   useEffect(() => {
@@ -367,7 +382,13 @@ export function WorkspaceQuestion({ api, approval, member, repos, items, threads
           Not now
         </Button>
       </div>
-      {loaded && drafting === undefined ? <p className="charter-wsq-note">{NOT_LOADED}</p> : null}
+      {failed !== undefined ? (
+        <p className="chat-card-refusal" role="alert" data-testid="charter-wsq-read-failed">
+          {READ_FAILED} {printable(failed)}
+        </p>
+      ) : loaded && drafting === undefined ? (
+        <p className="charter-wsq-note">{NOT_LOADED}</p>
+      ) : null}
       {refusal === "" ? null : (
         <p className="chat-card-refusal" role="alert" data-testid="charter-wsq-refusal">
           {refusal}

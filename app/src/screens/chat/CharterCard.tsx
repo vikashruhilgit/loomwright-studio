@@ -37,11 +37,19 @@ export const REPLACED_BY = "Replaced by";
 /** The readiness line's fix that opens the workspace question. */
 export const CHOOSE_WORKSPACE = "Choose workspace";
 
-/** The approvals the kernel decided too (`GET /approvals?all=1`), read again whenever the approvals list changes. */
-function useAllApprovals(api: StudioBridge): readonly Approval[] | undefined {
+/** What the card says when the decided approvals could not be read: older versions may be missing, never "there are none". */
+export const VERSIONS_FAILED = "Couldn't read this charter's earlier versions from the kernel, so they may be missing here.";
+
+/**
+ * The approvals the kernel decided too (`GET /approvals?all=1`), read again
+ * whenever the approvals list changes. `failed` is set when the latest read
+ * failed, so a failed read is never shown as "no older versions".
+ */
+function useAllApprovals(api: StudioBridge): { readonly all: readonly Approval[] | undefined; readonly failed: boolean } {
   const approvals = useResource("approvals", api);
   const answeredAt = approvals?.updatedAt ?? null;
   const [all, setAll] = useState<readonly Approval[] | undefined>(undefined);
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     let live = true;
     void (async () => {
@@ -51,13 +59,19 @@ function useAllApprovals(api: StudioBridge): readonly Approval[] | undefined {
       } catch {
         answer = undefined;
       }
-      if (live && answer?.ok === true) setAll(answer.body.approvals);
+      if (!live) return;
+      if (answer?.ok === true) {
+        setAll(answer.body.approvals);
+        setFailed(false);
+      } else {
+        setFailed(true);
+      }
     })();
     return () => {
       live = false;
     };
   }, [api, answeredAt]);
-  return all;
+  return { all, failed };
 }
 
 /**
@@ -124,7 +138,7 @@ export function CharterCard({ api, approval, agent, items, threads }: CharterCar
   const { busy, act } = useCardAction();
   const [question, setQuestion] = useState(false);
   const chooseRef = useRef<HTMLButtonElement>(null);
-  const all = useAllApprovals(api);
+  const { all, failed: versionsFailed } = useAllApprovals(api);
   const changes = approvalChanges(agent);
   const params = { id: approval.id };
   const decide = (key: "create" | "deny", path: string, body: unknown): void =>
@@ -158,6 +172,11 @@ export function CharterCard({ api, approval, agent, items, threads }: CharterCar
             {older.length === 0 ? null : ` · v${version}`} · approval {approval.id} · proposed by Wright
           </span>
         </div>
+        {versionsFailed ? (
+          <p className="chat-card-refusal" role="alert" data-testid="charter-versions-failed">
+            {VERSIONS_FAILED}
+          </p>
+        ) : null}
         {parts === undefined ? (
           // Not the kernel's charter format: shown exactly as the kernel wrote it, as text.
           <pre className="chat-charter-display">{printable(display, true)}</pre>
