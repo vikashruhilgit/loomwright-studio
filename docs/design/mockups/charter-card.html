@@ -831,13 +831,17 @@ function canDoHTML(c,p){
     ${added.length?`<p class="chg">New in v${c.ver}: ${added.map(j=>`<b>${esc(JOBS[j].name)}</b> <span class="badge ok">adds</span>`).join(' ')}</p>`:''}
     <ul class="cando">${c.jobs.map(j=>`<li><span class="jn"><b>${esc(JOBS[j].name)}</b>${added.includes(j)?'<span class="badge ok">adds</span>':''}</span><span class="u">Used for: ${esc(JOBS[j].use)}</span></li>`).join('')}${work}</ul></section>`;
 }
+/* The header's facts, as plain text: the card draws them and Copy all text copies them from the same place. */
+const titleOf=c=>`${c.kind==='update'?'Change':'Create'} crew member: ${c.name}`;
+const subOf=c=>`${c.repo}${c.ver?` · v${c.ver}`:''} · held as #${c.held}${c.replaces?` (replaces #${c.replaces})`:''}`;
+const statusOf=ro=>ro?'Replaced by v2':'waiting on you';
 function card(c,o){
   const p=o.pre, ro=!!o.ro, off=offline(), D=dis(off), up=c.kind==='update';
-  const status=ro?'<span class="badge prk">Replaced by v2</span>':'<span class="badge att">waiting on you</span>';
-  const sub=`${esc(c.repo)}${c.ver?` · v${c.ver}`:''} · held as #${c.held}${c.replaces?` (replaces #${c.replaces})`:''}`;
+  const status=`<span class="badge ${ro?'prk':'att'}">${statusOf(ro)}</span>`;
+  const sub=esc(subOf(c));
   const copyBtn=tipBtn('copy','Copy all text',S.copied&&!ro?I.copied:I.copy,` data-what="all-${p}"${S.tip===p+'-copy'?' data-force="1"':''}`);
   const detBtn=ro?'':tipBtn('details',S.details?'Hide full details':'Show full details',S.details?I.collapse:I.expand,` aria-expanded="${S.details}" aria-controls="${p}-dets"`,true);
-  const head=`<div class="cch">${avatarHTML(c,32)}<div class="cwho"><h3 class="t2" id="${p}-h" tabindex="-1">${up?'Change crew member':'Create crew member'}: ${esc(c.name)}</h3><span class="cap">${sub}</span></div><span class="badge acc">proposed by Wright</span>${status}<div class="icons">${copyBtn}${detBtn}</div></div>`;
+  const head=`<div class="cch">${avatarHTML(c,32)}<div class="cwho"><h3 class="t2" id="${p}-h" tabindex="-1">${esc(titleOf(c))}</h3><span class="cap">${sub}</span></div><span class="badge acc">proposed by Wright</span>${status}<div class="icons">${copyBtn}${detBtn}</div></div>`;
   const never=`<section class="blk" aria-labelledby="${p}-nv"><div class="sech"><h4 class="label" id="${p}-nv">Never does</h4></div><p class="nevr">${c.never.map(n=>esc(NEVER_PLAIN[n])).join(' · ')}</p></section>`;
   const limits=`<section class="blk" aria-labelledby="${p}-lm"><div class="sech"><h4 class="label" id="${p}-lm">Limits</h4></div><p class="tn">${fmt(c.limits.tokens_per_day)} tokens a day · ${c.limits.sessions_at_once} session at once · runs on ${esc(c.model)}</p></section>`;
   const sending=S.thread==='sending';
@@ -954,19 +958,20 @@ function dropToast(el){
 function later(ms,fn){ const t=tk; setTimeout(()=>{ if(t===tk) fn(); },ms); }
 
 /* ---------- Actions ---------- */
-/* Copy all text: the card's plain part as shown, without the details section or the Ask box, then each details block once, from data.
+/* Copy all text: the header's facts from data (title; repo, version, held number; who proposed it and its status), then the card's plain part
+   as shown, without the details section, the Ask box or any control (buttons and their rows), then each details block once, from data.
    innerText needs layout, so the trimmed copy is measured off-screen beside the card and removed at once. p is the card's prefix (cur, or v1). */
 function cardText(p){
   const ro=p==='v1', c=ro?DEV:cardOf(), main=$(`#${p} .ccb`);
   let plain='';
   if(main){
-    const x=main.cloneNode(true); x.querySelectorAll('.dets, .askb').forEach(n=>n.remove()); x.removeAttribute('id'); x.querySelectorAll('[id]').forEach(n=>n.removeAttribute('id'));
+    const x=main.cloneNode(true); x.querySelectorAll('.dets, .askb, .acts, button').forEach(n=>n.remove()); x.removeAttribute('id'); x.querySelectorAll('[id]').forEach(n=>n.removeAttribute('id'));
     /* A cloned checked radio with the same name would uncheck the owner's pick in the live card. */
     x.querySelectorAll('[name]').forEach(n=>n.removeAttribute('name'));
     x.setAttribute('aria-hidden','true'); x.style.cssText=`position:absolute;left:-10000px;top:0;width:${main.offsetWidth}px`;
     main.parentNode.appendChild(x); plain=x.innerText.trim(); x.remove();
   }
-  return `${c.kind==='update'?'Change':'Create'} crew member: ${c.name}\n${plain}\n\n`+BLOCKS(c,ro?'none':S.ws).map(b=>`== ${b.title} ==\n${b.text}`).join('\n');
+  return `${titleOf(c)}\n${subOf(c)} · proposed by Wright · ${statusOf(ro)}\n\n${plain}\n\n`+BLOCKS(c,ro?'none':S.ws).map(b=>`== ${b.title} ==\n${b.text}`).join('\n');
 }
 function copy(what,btn){
   const c=cardOf(), b=BLOCKS(c).find(x=>x.k===what);
