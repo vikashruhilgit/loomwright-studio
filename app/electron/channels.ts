@@ -17,6 +17,8 @@ export const CHANNELS = Object.freeze({
   revealKernelLog: "studio:reveal-kernel-log",
   /** Renderer -> main: the owner's home folder, read-only, so paths can read `~/…`. Carries no argument. */
   homeDir: "studio:home-dir",
+  /** Renderer -> main: the owner's folder picker (phase 8 item 18c); answers the chosen absolute path or `null`. Carries no argument. */
+  chooseFolder: "studio:choose-folder",
   /** Main -> renderer: one `FeedRelayFrame`. */
   feedFrame: "studio:feed:frame",
   /** Main -> renderer: an app route a deep link asked for (item 17). */
@@ -35,4 +37,5 @@ export const INVOKE_CHANNELS: readonly string[] = [
   CHANNELS.revealDataDir,
   CHANNELS.revealKernelLog,
   CHANNELS.homeDir,
+  CHANNELS.chooseFolder,
 ];

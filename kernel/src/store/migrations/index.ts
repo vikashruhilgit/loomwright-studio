@@ -21,6 +21,7 @@ import { phase8Foundation } from "./020_phase_8_foundation.js";
 import { playbookMergeRequirement } from "./021_playbook_merge_requirement.js";
 import { threadContinuity } from "./022_thread_continuity.js";
 import { playbookJobs } from "./023_playbook_jobs.js";
+import { savedWorkspaces } from "./024_saved_workspaces.js";
 import type { Migration } from "./types.js";
 
 export type { Migration } from "./types.js";
@@ -50,4 +51,5 @@ export const migrations: readonly Migration[] = [
   playbookMergeRequirement,
   threadContinuity,
   playbookJobs,
+  savedWorkspaces,
 ];

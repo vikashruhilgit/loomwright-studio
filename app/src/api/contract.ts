@@ -24,8 +24,8 @@ export type HttpMethod = "GET" | "POST" | "PUT";
 /**
  * Where a route comes from: the phase that built it (existing at the phase 5
  * base), the phase 5 item that adds it (`item-NN`), the phase 6 item that
- * adds it (`p6-item-NN`), the phase 7 item that adds it (`p7-item-NN`), or the
- * GitHub App connect (`github-app`, D36).
+ * adds it (`p6-item-NN`), the phase 7 item that adds it (`p7-item-NN`), the
+ * phase 8 item that adds it (`p8-item-NN`), or the GitHub App connect (`github-app`, D36).
  */
 export type RouteOrigin =
   | "phase-1"
@@ -52,6 +52,7 @@ export type RouteOrigin =
   | "p8-item-06"
   | "p8-item-08"
   | "p8-item-17"
+  | "p8-item-18"
   | "github-app";
 
 export interface ContractRoute {
@@ -85,6 +86,11 @@ export interface ContractRoute {
  * budget usage and the audit log (item 07), and Settings (item 08). The phase 7
  * foundation lists them before the kernel serves them; until its item lands
  * each one answers 404. Every one is an owner route that needs the API token.
+ *
+ * Phase 8's routes are `p8-item-NN`, each served by its item: the App upgrade
+ * (item 03), the MCP connectors (item 06), the repo merge policy (item 08),
+ * thread summarize, summary, start-fresh and rename (item 17) and the saved
+ * workspaces' list or lookup, add and remove (item 18). Owner routes too.
  */
 export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/status", origin: "phase-1" },
@@ -156,6 +162,9 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/threads/:agent/:thread/summary", origin: "p8-item-17" },
   { method: "POST", path: "/threads/:agent/:thread/start-fresh", origin: "p8-item-17" },
   { method: "POST", path: "/threads/:agent/:thread/rename", origin: "p8-item-17" },
+  { method: "GET", path: "/workspaces", origin: "p8-item-18" },
+  { method: "POST", path: "/workspaces", origin: "p8-item-18" },
+  { method: "POST", path: "/workspaces/:id/remove", origin: "p8-item-18" },
 ]);
 
 // ---- Shared shapes -------------------------------------------------------------
@@ -1429,7 +1438,8 @@ export interface SettingsResponse {
 // ---- Phase 8: the App upgrade, MCP connectors, the repo merge policy and PR tracks ----------
 // Declared by phase 8 item 01 and served by the item named in each route's origin
 // (`p8-item-NN`): a route is served once its item lands (items 03, 06 and 08 have). Item 17's
-// three thread routes are declared with their shapes further down, and served.
+// four thread routes and item 18's three saved-workspaces routes are declared with their
+// shapes further down, and served.
 // A later item that needs another shape adds it itself.
 
 /**
@@ -1657,6 +1667,9 @@ export interface ContractRouteMap {
   "GET /threads/:agent/:thread/summary": Route<NoQuery, undefined, ThreadSummaryResponse>;
   "POST /threads/:agent/:thread/start-fresh": Route<NoQuery, ThreadStartFreshBody, ThreadStartFreshResponse>;
   "POST /threads/:agent/:thread/rename": Route<NoQuery, ThreadRenameBody, ThreadRenameResponse>;
+  "GET /workspaces": Route<SavedWorkspacesQuery, undefined, SavedWorkspacesResponse>;
+  "POST /workspaces": Route<NoQuery, SaveWorkspaceBody, SaveWorkspaceResponse>;
+  "POST /workspaces/:id/remove": Route<NoQuery, undefined, RemoveWorkspaceResponse>;
 }
 
 export type RouteKey = keyof ContractRouteMap;
@@ -1710,6 +1723,64 @@ export interface ThreadRenameResponse {
   /** The thread's title now: the rename, or the derived title once cleared. */
   readonly title: string;
   readonly renamed: boolean;
+}
+
+// ---- Phase 8 item 18c: saved workspaces --------------------------------------------------
+// The owner's one list of repo folders (`saved_workspaces`), kept by the kernel. Only these
+// owner routes (bearer token) write it: no session tool and no `studio` subcommand does. Every
+// `GET` re-reads each folder, so `state` is now, never cached.
+
+/**
+ * What re-reading a saved folder found: `ready` (a git checkout whose remotes were read), `missing`
+ * (the folder or its `.git` is gone: moved, renamed or deleted) or `unreadable` (a read failed,
+ * `EACCES`/`EPERM`). Only `ready` is a folder a crew member can use.
+ */
+export type SavedWorkspaceState = "ready" | "missing" | "unreadable";
+
+/** One saved workspace. */
+export interface SavedWorkspace {
+  readonly id: number;
+  /** Absolute, with symlinks resolved; show it from `~` through `formatHomePath`. */
+  readonly path: string;
+  /** The first GitHub remote (`owner/repo`) when it was saved; `null` when it had none (never matched by a lookup). */
+  readonly repo: string | null;
+  readonly added_at: IsoTime;
+  readonly last_used_at: IsoTime;
+  readonly state: SavedWorkspaceState;
+}
+
+/** `GET /workspaces?repo=<owner>/<repo>`: the lookup (400 `invalid_input` when `repo` is not `<owner>/<repo>`). Without it, every row. */
+export interface SavedWorkspacesQuery {
+  readonly repo?: string;
+}
+
+/**
+ * `GET /workspaces`: most recently used first. With `repo`: the rows whose remotes, read now, name it
+ * (case-insensitive), plus the rows saved with it that now read `missing` or `unreadable`.
+ */
+export interface SavedWorkspacesResponse {
+  readonly workspaces: readonly SavedWorkspace[];
+}
+
+/**
+ * `POST /workspaces`: save a folder, or touch it (last used = now) when it is already saved. Refused
+ * (400) before anything is written: `invalid_input` (not an absolute path), `protected_folder`
+ * (inside `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive, D31; `message` says why in plain
+ * words), `not_checkout` (missing, or not a git checkout) or `unreadable` (a read failed).
+ */
+export interface SaveWorkspaceBody {
+  readonly path: string;
+}
+
+export interface SaveWorkspaceResponse {
+  readonly workspace: SavedWorkspace;
+  /** `null`, or (when `workspace.repo` is null) a plain sentence: the folder has no GitHub remote, so it won't be matched to a repo. */
+  readonly note: string | null;
+}
+
+/** `POST /workspaces/:id/remove`: that row only (404 `not_found` otherwise). No crew member's settings file is read or written. */
+export interface RemoveWorkspaceResponse {
+  readonly removed: number;
 }
 
 // ---- The bridge: what the preload exposes as `window.api` -------------------------------
@@ -1769,6 +1840,13 @@ export interface StudioBridge {
    * compiles; a caller treats a missing member as "home unknown" and shows the path in full.
    */
   homeDir?(): Promise<string>;
+  /**
+   * The owner's folder picker (phase 8 item 18c): the main process opens a choose-a-folder dialog for the
+   * owner's window and answers the chosen absolute path, or `null` when cancelled. No argument; the
+   * renderer never reads the disk itself. Optional so a bridge without it (a test fake) compiles; a caller
+   * treats a missing member as "no picker" and offers no Add folder.
+   */
+  chooseFolder?(): Promise<string | null>;
   /**
    * Reveals the kernel service's own log (`<dataDir>/logs/kernel.err.log`) in Finder. It takes no argument: the
    * main process resolves the path itself and never opens one from the renderer. Works with the kernel down.

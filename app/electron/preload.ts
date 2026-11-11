@@ -37,6 +37,8 @@ const api: StudioBridge = {
   openExternal: (url: string) => ipcRenderer.invoke(CHANNELS.openExternal, url) as Promise<boolean>,
   // No argument: the main process answers its own home folder.
   homeDir: () => ipcRenderer.invoke(CHANNELS.homeDir) as Promise<string>,
+  // No argument: the main process opens the folder picker and answers the chosen path (or null).
+  chooseFolder: () => ipcRenderer.invoke(CHANNELS.chooseFolder) as Promise<string | null>,
   // No argument: the main process reveals its own log, never a path from here.
   revealKernelLog: () => ipcRenderer.invoke(CHANNELS.revealKernelLog) as Promise<KernelLogReveal>,
   onNavigate: (listener: (route: string) => void) => listen(CHANNELS.navigate, listener),

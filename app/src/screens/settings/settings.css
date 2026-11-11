@@ -415,3 +415,117 @@
     transition-duration: 0s;
   }
 }
+
+/* Workspaces (phase 8 item 18c): docs/design/mockups/charter-card.html (`settingsScreen`, the `.tbl` and `.tip` classes)
+   on the tokens. The table of saved workspaces, the removed row with Undo, the empty state, the remove icon's tooltip
+   (caption type, surface on ink, radius-xs, shadow-2, right-aligned below its button) and the attention notice. */
+.settings-notice[data-tone="attention"] {
+  background: var(--attention-soft);
+  color: var(--ink);
+}
+.settings-ws-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.settings-ws-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.settings-ws-table th {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  font: var(--type-label-weight) var(--type-label-size) / var(--type-label-line) var(--type-label-family);
+  letter-spacing: var(--type-label-tracking);
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+.settings-ws-table td {
+  padding: var(--space-1) var(--space-3);
+  border-top: 1px solid var(--hairline);
+  height: calc(var(--control-height) + var(--space-2));
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.settings-ws-table td:last-child {
+  width: calc(var(--row-height) + var(--space-6));
+  text-align: right;
+}
+.settings-ws-table tr.settings-ws-gone td {
+  background: var(--surface-sunken);
+  color: var(--ink);
+  text-align: left;
+}
+.settings-ws-path {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.settings-ws-undo {
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.settings-ws-undo:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.settings-ws-empty {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+.settings-ws-empty > svg {
+  margin-top: var(--space-0-5);
+}
+.settings-ws-remove {
+  position: relative;
+}
+.settings-ws-tip {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  right: 0;
+  z-index: 20;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-xs);
+  background: var(--ink);
+  color: var(--surface);
+  box-shadow: var(--shadow-2);
+  font: var(--type-caption-weight) var(--type-caption-size) / var(--type-caption-line) var(--type-caption-family);
+  letter-spacing: var(--type-caption-tracking);
+  white-space: nowrap;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-standard);
+}
+.settings-ws-remove:hover .settings-ws-tip,
+.settings-ws-remove:focus-visible .settings-ws-tip {
+  visibility: visible;
+  opacity: 1;
+}
+.settings-ws-remove[data-tip-hidden="true"] .settings-ws-tip {
+  visibility: hidden;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-ws-tip {
+    transition-duration: 0s;
+  }
+}

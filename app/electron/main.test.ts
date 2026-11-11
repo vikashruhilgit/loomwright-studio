@@ -26,12 +26,18 @@ const electron = vi.hoisted(() => {
   // What the mocked OS holds and was asked: the login item, the theme, the folders `shell.openPath` was handed
   // and the paths `shell.showItemInFolder` was handed.
   const os = { login: { openAtLogin: false, status: "not-registered" }, loginSets: [] as unknown[], themeSource: "system", opened: [] as string[], shown: [] as string[] };
+  // The folder picker: every `dialog.showOpenDialog` call (the parent window's contents, or none, and the options), and what it answers next.
+  const picker = {
+    calls: [] as { parent: unknown; options: unknown }[],
+    answer: { canceled: false, filePaths: ["/Users/o/code/studio-sandbox"] } as unknown,
+  };
   return {
     windows,
     handlers,
     prefsDir,
     dataDir,
     os,
+    picker,
     permission: undefined as undefined | ((c: unknown, p: string, decide: (ok: boolean) => void) => void),
   };
 });
@@ -70,8 +76,14 @@ vi.mock("./kernel-connection", () => ({
 
 vi.mock("electron", () => {
   class BrowserWindow {
+    static readonly made: BrowserWindow[] = [];
+    /** The window whose contents sent an IPC message, as Electron answers it (`null` for any other sender). */
+    static fromWebContents(contents: unknown): BrowserWindow | null {
+      return BrowserWindow.made.find((w) => w.webContents === contents) ?? null;
+    }
     readonly webContents: Record<string, unknown>;
     constructor(options: Record<string, unknown>) {
+      BrowserWindow.made.push(this);
       const record: (typeof electron.windows)[number] = { options, sent: [], themeAtCreation: electron.os.themeSource };
       electron.windows.push(record);
       this.webContents = {
@@ -127,7 +139,16 @@ vi.mock("electron", () => {
     Menu: { buildFromTemplate: (template: unknown) => ({ template }) },
     nativeImage: { createFromBitmap: () => ({ setTemplateImage: (): void => undefined }) },
     systemPreferences: { getAnimationSettings: () => ({ prefersReducedMotion: false }) },
-    dialog: { showMessageBox: async () => ({ response: 0 }) },
+    dialog: {
+      showMessageBox: async () => ({ response: 0 }),
+      showOpenDialog: async (...args: unknown[]) => {
+        const [first, second] = args;
+        const parented = args.length > 1;
+        electron.picker.calls.push({ parent: parented ? (first as { webContents?: unknown }).webContents : undefined, options: parented ? second : first });
+        if (electron.picker.answer instanceof Error) throw electron.picker.answer;
+        return electron.picker.answer;
+      },
+    },
     nativeTheme: {
       get themeSource() {
         return electron.os.themeSource;
@@ -188,6 +209,7 @@ describe("the main window", () => {
 
   it("handles exactly the bridge's channels, and refuses a caller that is not its window", async () => {
     expect([...electron.handlers.keys()].sort()).toEqual([
+      "studio:choose-folder",
       "studio:connection",
       "studio:feed:subscribe",
       "studio:feed:unsubscribe",
@@ -441,6 +463,48 @@ describe("the home-dir channel", () => {
 
   it("refuses a caller that is not the window", async () => {
     for (const sender of [{}, undefined]) await expect(call({ sender })).rejects.toThrow("refused");
+  });
+});
+
+describe("the choose-folder channel", () => {
+  const owner = () => ({ sender: electron.windows[0]?.contents });
+  const call = (event: unknown, ...args: unknown[]) => Promise.resolve(electron.handlers.get("studio:choose-folder")?.(event, ...args));
+
+  beforeEach(() => {
+    electron.picker.calls.length = 0;
+    electron.picker.answer = { canceled: false, filePaths: ["/Users/o/code/studio-sandbox"] };
+  });
+
+  it("opens a choose-a-folder sheet on the owner's window and answers the chosen absolute path", async () => {
+    await expect(call(owner())).resolves.toBe("/Users/o/code/studio-sandbox");
+    expect(electron.picker.calls).toEqual([{ parent: electron.windows[0]?.contents, options: { properties: ["openDirectory"] } }]);
+  });
+
+  it("ignores any argument the renderer sends: the options are the main process's own", async () => {
+    await expect(call(owner(), { defaultPath: "/Users/o/.ssh", properties: ["openFile", "showHiddenFiles"] })).resolves.toBe("/Users/o/code/studio-sandbox");
+    expect(electron.picker.calls.map((c) => c.options)).toEqual([{ properties: ["openDirectory"] }]);
+  });
+
+  it("answers null when the owner cancels, chooses nothing, or the answer is not an absolute path", async () => {
+    for (const answer of [
+      { canceled: true, filePaths: [] },
+      { canceled: true, filePaths: ["/Users/o/code/x"] },
+      { canceled: false, filePaths: [] },
+      { canceled: false, filePaths: ["code/relative"] },
+    ]) {
+      electron.picker.answer = answer;
+      await expect(call(owner()), JSON.stringify(answer)).resolves.toBeNull();
+    }
+  });
+
+  it("rejects when the dialog can't be shown, so the renderer does not read it as a cancel", async () => {
+    electron.picker.answer = new Error("no dialog");
+    await expect(call(owner())).rejects.toThrow("no dialog");
+  });
+
+  it("refuses a caller that is not the window, and opens no dialog", async () => {
+    for (const sender of [{}, undefined]) await expect(call({ sender })).rejects.toThrow("refused");
+    expect(electron.picker.calls).toEqual([]);
   });
 });
 
