@@ -227,7 +227,7 @@ describe("validateCharter (AC3)", () => {
     expect(existsSync(join(env.dataDir, "config"))).toBe(false);
   });
 
-  it("refuses exactly the workspaces the settings reader refuses, with the reader's message", () => {
+  it("refuses exactly the workspaces the settings reader refuses, with the reader's message (a protected folder's then says why, in plain words)", () => {
     mkdirSync(env.dataDir, { recursive: true });
     const fine = join(root, "work", "fine");
     for (const workspace of ["work/repo", join(homeDir, "Documents", "repo"), env.dataDir, join(env.dataDir, "memory", "x"), root, "/", fine, `${env.dataDir}2`]) {
@@ -237,7 +237,11 @@ describe("validateCharter (AC3)", () => {
       writeFileSync(file, renderAgentSettingsJson({ ...validated(charter()), workspaces: [workspace] }));
       const r = readAgentSettings(env.dataDir, "mason", { homeDir });
       expect(v.ok, workspace).toBe(r.ok);
-      if (!v.ok && !r.ok && "message" in r) expect(r.message, workspace).toBe(`${file}: ${v.message}`);
+      if (!v.ok && !r.ok && "message" in r) {
+        // The reader's message, word for word; the charter's refusal of a protected folder goes on to say why it can't be used (D31).
+        const plain = ", so it can't be used: macOS blocks the kernel, which runs in the background, from reading anything there (D31); use a copy of the repo outside those folders";
+        expect(`${file}: ${v.message}`, workspace).toBe(`${r.message}${r.message.includes("macOS-protected folder") ? plain : ""}`);
+      }
     }
   });
 });
@@ -865,5 +869,15 @@ describe("studio agents list | show (AC8)", () => {
     expect(json.settings).toEqual({ file: paths.settings, content: JSON.parse(readFileSync(paths.settings, "utf8")), error: null });
     expect(json.charter).toEqual({ persona: charter().persona, duties: charter().duties, boundaries: charter().boundaries });
     expect((await studio("agents", "show", "nobody")).stderr).toBe('studio: no agent nobody shown: not_found: no crew member nobody\n');
+  });
+
+  it("show: a duty entry ({text, jobs}, item 18b) is shown as its text, beside a bare-line duty; role.md lists the texts the same way", async () => {
+    const duties = [{ text: "Review the pull requests the owner sends.", jobs: ["read_pr"] }, "Summarise each review in three lines."];
+    expect(create(charter("mason", { duties })).ok).toBe(true);
+    const r = await studio("agents", "show", "mason");
+    expect(r.stdout).toContain("  duties:\n    - Review the pull requests the owner sends.\n    - Summarise each review in three lines.\n");
+    const json = JSON.parse((await studio("agents", "show", "mason", "--json")).stdout) as { charter: { duties: unknown } };
+    expect(json.charter.duties).toEqual(["Review the pull requests the owner sends.", "Summarise each review in three lines."]);
+    expect(renderRoleMd(validated(charter("mason", { duties })))).toContain("## Duties\n\n- Review the pull requests the owner sends.\n- Summarise each review in three lines.\n");
   });
 });

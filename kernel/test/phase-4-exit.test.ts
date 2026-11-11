@@ -181,7 +181,8 @@ function masonCharter(repo: string): Record<string, unknown> {
     display_name: "Mason",
     avatar: { shape: "crab", hue: "crew-teal" },
     persona: "A careful reviewer who comments on pull requests.\nIt explains each finding plainly.",
-    duties: ["Review the pull requests in the repo and leave review comments."],
+    // A duty entry, as Wright's create drafts it: reviewing through git and gh needs no kernel tool.
+    duties: [{ text: "Review the pull requests in the repo and leave review comments.", jobs: [] }],
     boundaries: ["Never push code, and never open, edit, review-approve or close a pull request or issue."],
     model: MASON_MODEL,
     permission_mode: "default",
@@ -458,7 +459,9 @@ describe("phase 4 exit: a comment-only reviewer created from chat can't push, ev
     const shown = await studio(["approvals"]);
     expect(shown.code).toBe(0);
     const block = shown.stdout.slice(shown.stdout.indexOf("  display:\n"), shown.stdout.indexOf("  payload:\n"));
-    const [header, enforced] = block.split("\n").slice(1, 3);
+    // The head line, the readiness block (its one duty needs no kernel tool: nothing flagged), then the enforced line.
+    const [header, readiness, covered, enforced] = block.split("\n").slice(1, 5);
+    expect([readiness, covered]).toEqual(["    readiness: checked by the kernel before you see it", "      covered: duty 1 with no tool (it needs no kernel tool): Review the pull requests in the repo and leave review comments."]);
     expect(header).toBe('    Create crew member mason ("Mason", crab crew-teal), proposed by Wright');
     expect(enforced?.startsWith("    enforced: never: ")).toBe(true);
     const neverShown = (enforced ?? "").slice("    enforced: never: ".length).split(";")[0]?.split(", ");

@@ -17,17 +17,20 @@
 // enforces only the settings file and the table row, never the prose.
 //
 // The `studio` CLI loads this module (through `./roster.ts`), so it imports
-// only zod, `node:*`, the store's types and leaf modules: never the Agent SDK,
-// the session manager or `kernel.ts`.
+// only zod, `node:*`, the store's types and leaf modules (the CLI-safe tool
+// catalogue's job vocabulary included): never the Agent SDK, the session
+// manager or `kernel.ts`.
 import { lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
+import { CONNECTOR_LABELS, TOOL_JOB_IDS } from "../features/catalogue.js";
+import type { ToolJob } from "../features/catalogue.js";
 import { CONNECTOR_KINDS } from "../integrations/types.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import { NO_REF, appendEvent, errorMessage } from "../loop/internal.js";
-import { isInsidePath, isProtectedPath, protectedLocationsText } from "../protected-paths.js";
+import { PROTECTED_FOLDER_WHY, isInsidePath, isProtectedPath, protectedLocationsText } from "../protected-paths.js";
 import { NEVER_CATEGORIES } from "../sessions/policy.js";
 import type { NeverCategory } from "../sessions/policy.js";
 import type { AllowedPermissionMode } from "../sessions/types.js";
@@ -80,6 +83,29 @@ export interface CharterLimits {
 /** The limits' keys, in the order the settings file writes them. */
 export const CHARTER_LIMIT_KEYS = Object.freeze(["tokens_per_day", "sessions_at_once", "delegation_depth"] as const);
 
+/**
+ * A duty that names its jobs: its text, and the catalogue jobs (`TOOL_JOBS`
+ * ids, no repeats) that do it; `[]` is a duty that needs no kernel tool. The
+ * charter readiness check (`./charter-readiness.ts`) reads `jobs`, never the
+ * text.
+ */
+export interface DutyEntry {
+  readonly text: string;
+  readonly jobs: readonly ToolJob[];
+}
+
+/**
+ * One duty: an entry, or a bare line of text (the owner's own create, and
+ * every charter stored before duties named their jobs). Only Wright's
+ * `kernel_agent_create` refuses a bare line.
+ */
+export type CharterDuty = string | DutyEntry;
+
+/** A duty's text: the line itself, or an entry's `text`. */
+export function dutyText(duty: CharterDuty): string {
+  return typeof duty === "string" ? duty : duty.text;
+}
+
 /** A crew member's charter: who it is (the row and `role.md`) and what the kernel enforces (`config/agents/<id>.json`). */
 export interface Charter {
   readonly id: string;
@@ -87,7 +113,7 @@ export interface Charter {
   readonly avatar: { readonly shape: AvatarShape; readonly hue: AvatarHue };
   /** One or two lines. */
   readonly persona: string;
-  readonly duties: readonly string[];
+  readonly duties: readonly CharterDuty[];
   /** Prose guidance only: the kernel enforces `tool_policy.never`, never these. */
   readonly boundaries: readonly string[];
   readonly model: string;
@@ -163,13 +189,28 @@ const personaSchema = z
     return lines.length <= 2 && lines.every((l) => line(MAX_PROSE_LINE).safeParse(l).success);
   }, `must be one or two lines (split by \\n), each 1-${MAX_PROSE_LINE} characters, not blank, with no control or bidi character`);
 
+/**
+ * A duty entry: its `text` (a prose line's rule) and `jobs`, each a `TOOL_JOBS`
+ * id (an enum, so the published schema lists them; a job outside it is refused
+ * naming it, `unknownJobMessage`), no repeats. Strict: a misspelt key is refused.
+ */
+const dutyEntrySchema = z
+  .object({
+    text: line(MAX_PROSE_LINE),
+    jobs: z
+      .array(z.enum(TOOL_JOB_IDS as [ToolJob, ...ToolJob[]]))
+      .max(TOOL_JOB_IDS.length)
+      .refine((list) => new Set(list).size === list.length, "must not repeat a job"),
+  })
+  .strict();
+
 const charterSchema = z
   .object({
     id: z.string(),
     display_name: displayNameSchema,
     avatar: z.object({ shape: z.enum(AVATAR_SHAPES), hue: z.enum(AVATAR_HUES) }).strict(),
     persona: personaSchema,
-    duties: z.array(line(MAX_PROSE_LINE)).min(1).max(MAX_PROSE_ITEMS),
+    duties: z.array(z.union([line(MAX_PROSE_LINE), dutyEntrySchema])).min(1).max(MAX_PROSE_ITEMS),
     boundaries: z.array(line(MAX_PROSE_LINE)).max(MAX_PROSE_ITEMS),
     model: modelSchema,
     effort: effortSchema.optional(),
@@ -234,11 +275,15 @@ export const CHARTER_JSON_SCHEMA: Readonly<Record<string, unknown>> = deepFreeze
  * reader's rule (`readAgentSettings`, D31 and the data dir), checked with the
  * same `isInsidePath` / `isProtectedPath` so every spelling it maps onto one
  * folder is refused here too (`kernel/test/agents-roster.test.ts` pins both
- * refusing the same workspaces).
+ * refusing the same workspaces). A protected folder's message starts with the
+ * reader's and goes on to say, in plain words, why it can't be used (D31):
+ * nothing is held that the owner's approval could never apply.
  */
 function workspaceProblem(workspace: string, dataDir: string, homeDir: string): string | undefined {
   if (!isAbsolute(workspace)) return `${JSON.stringify(workspace)} is not an absolute path`;
-  if (isProtectedPath(workspace, homeDir)) return `${workspace} is inside a macOS-protected folder (${protectedLocationsText()})`;
+  if (isProtectedPath(workspace, homeDir)) {
+    return `${workspace} is inside a macOS-protected folder (${protectedLocationsText()}), so it can't be used: ${PROTECTED_FOLDER_WHY}; use a copy of the repo outside those folders`;
+  }
   if (isInsidePath(workspace, dataDir)) return `${workspace} is the data dir or inside it`;
   if (isInsidePath(dataDir, workspace)) return `${workspace} contains the data dir`;
   return undefined;
@@ -253,12 +298,51 @@ function quotedClip(value: unknown): string {
 /** The id rule, as one sentence. */
 const ID_RULE = `a crew member's id is a lowercase letter, then up to 31 lowercase letters, digits or hyphens, and not ${RESERVED_AGENT_IDS.join(", ")}`;
 
+/** The value at `path` inside `input` (undefined when a step is missing). */
+function valueAt(input: unknown, path: readonly PropertyKey[]): unknown {
+  let at = input;
+  for (const key of path) {
+    if (typeof at !== "object" || at === null || !Object.hasOwn(at, key)) return undefined;
+    at = (at as Record<PropertyKey, unknown>)[key];
+  }
+  return at;
+}
+
+/** The message for a duty entry's job outside `TOOL_JOBS`: it names the job (clipped). */
+function unknownJobMessage(job: unknown): string {
+  return `${quotedClip(job)} is not a job in the kernel's catalogue (the jobs are ${TOOL_JOB_IDS.join(", ")})`;
+}
+
+/** One zod issue as `validateCharter` reports it: its full path and the issue itself. */
+interface ReportedIssue {
+  readonly path: readonly PropertyKey[];
+  readonly issue: z.core.$ZodIssue;
+}
+
+/**
+ * The issue to report for `issue`: itself, or, for a union (a duty is a line
+ * or an entry), the first issue of the branch whose type matched the value
+ * (the entry's, for an object), so the refusal names the entry's own field
+ * (`duties.1.jobs.0`), never "invalid input". Its path is made whole.
+ */
+function reportedIssue(issue: z.core.$ZodIssue, base: readonly PropertyKey[] = []): ReportedIssue {
+  const path = [...base, ...issue.path];
+  if (issue.code !== "invalid_union") return { path, issue };
+  const matched = issue.errors.find((branch) => branch.length > 0 && !branch.some((i) => i.code === "invalid_type" && i.path.length === 0));
+  const first = matched?.[0];
+  // No branch's type matched (a number, a list): neither a line nor an entry.
+  if (first === undefined) return { path, issue: { ...issue, message: "must be a line of text or an entry {text, jobs}" } };
+  return reportedIssue(first, path);
+}
+
 /**
  * `input` as a charter, or a refusal naming the field. The id is checked
  * first (`agent_id_invalid`); then every field (`charter_invalid`): unknown
- * keys are refused, named by their path; every text field has bounds; the
- * workspaces pass the settings reader's checks; and the settings file it
- * renders must stay under `MAX_SETTINGS_BYTES`. Never throws, writes nothing.
+ * keys are refused, named by their path; every text field has bounds; a duty
+ * is a line or an entry `{text, jobs}` whose every job is a `TOOL_JOBS` id (an
+ * unknown job is refused naming it); the workspaces pass the settings reader's
+ * checks; and the settings file it renders must stay under
+ * `MAX_SETTINGS_BYTES`. Never throws, writes nothing.
  */
 export function validateCharter(input: unknown, options: ValidateCharterOptions): CharterResult {
   const invalid = (field: string, message: string): CharterRefusal => ({ ok: false, error: "charter_invalid", field, message: `${field}: ${message}` });
@@ -267,8 +351,14 @@ export function validateCharter(input: unknown, options: ValidateCharterOptions)
   if (!isValidAgentId(id)) return { ok: false, error: "agent_id_invalid", field: "id", message: `id ${quotedClip(id)}: ${ID_RULE}` };
   const parsed = charterSchema.safeParse(input);
   if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const path = (issue?.path ?? []).map(String);
+    const first = parsed.error.issues[0];
+    const reported = first === undefined ? undefined : reportedIssue(first);
+    const issue = reported?.issue;
+    const path = (reported?.path ?? []).map(String);
+    // A duty entry's job outside the vocabulary: named, so Wright (or the owner) sees which.
+    if (issue?.code === "invalid_value" && path[0] === "duties" && path[2] === "jobs" && path.length === 4) {
+      return invalid(path.join("."), unknownJobMessage(valueAt(input, reported?.path ?? [])));
+    }
     if (issue?.code === "unrecognized_keys") {
       const key = issue.keys[0] ?? "";
       return invalid([...path, key].join("."), `unknown key${issue.keys.length === 1 ? "" : "s"} ${issue.keys.map((k) => JSON.stringify(k)).join(", ")} (a misspelt field is refused, never silently dropped)`);
@@ -293,9 +383,6 @@ export function validateCharter(input: unknown, options: ValidateCharterOptions)
 // ---- The files ------------------------------------------------------------------
 
 /** A bulleted markdown list, or `- None stated.` for an empty one. */
-/** How `role.md` names each connector kind. */
-const CONNECTOR_LABELS: Record<ConnectorKind, string> = { github: "GitHub", jira: "Jira", clickup: "ClickUp" };
-
 function bullets(items: readonly string[]): string {
   return items.length === 0 ? "- None stated." : items.map((item) => `- ${item}`).join("\n");
 }
@@ -324,7 +411,7 @@ ${charter.persona}
 
 ## Duties
 
-${bullets(charter.duties)}
+${bullets(charter.duties.map(dutyText))}
 
 ## Boundaries
 

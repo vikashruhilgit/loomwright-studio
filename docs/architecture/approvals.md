@@ -95,8 +95,8 @@ A call to a tool in `ALWAYS_HELD_TOOLS` (`mcp__kernel__kernel_playbook_enable`, 
 | nothing (no check configured, or the tool declares no `beforeHold`) | holds the call exactly as before, with no display |
 | a refusal, because the input fails the tool's shape | denies it `held_refused` (below) |
 | `{refuse}` | denies it with reason `held_refused`: one `tool_decision` event, the refusal text as the model's reason. No approval row is written and no grant is used. |
-| `{display, subjectVersion?}` | holds it as before. A new approval's `approval_requested` event gets `display` (cut to 4,000 characters, never refused) and `subject_version`; neither ever enters `payload_json`, so grant matching on the canonical payload is unchanged, and a grant that matches is used exactly as before. |
-| a throw, or any other answer (a promise, an empty refusal, an unknown key, a version that is not a positive integer) | denies it `kernel_gate_error` (fail closed) |
+| `{display, subjectVersion?, agentNote?}` | holds it as before. A new approval's `approval_requested` event gets `display` (cut to 4,000 characters, never refused) and `subject_version`; neither ever enters `payload_json`, so grant matching on the canonical payload is unchanged, and a grant that matches is used exactly as before. `agentNote` (phase 8 item 18b: a charter's open readiness findings, [agents: the readiness check](agents.md#the-readiness-check)) is appended, after a space, to the held reason the session reads, and only on a hold; it is never stored. With no note the reason is as before. |
+| a throw, or any other answer (a promise, an empty refusal, an unknown key, a version that is not a positive integer, a note that is not a non-empty string) | denies it `kernel_gate_error` (fail closed) |
 
 It can only narrow: it never allows a call that would be held, never skips the hold and never uses a grant itself. `held_refused` is a gate-local reason like `dry_run` and `kernel_gate_error`, not yet in the public `ToolDecisionReason` union in `kernel/src/sessions/policy.ts`.
 

@@ -2,7 +2,8 @@
 // A held charter's approval card in plain language (phase 8 item 16, AC3 app
 // half): the granted kernel tools grouped by job, with their purpose lines,
 // before any raw `mcp__kernel__` name; the raw lines beneath, in the "Kernel
-// tool names, as enforced" disclosure. Drawn directly (`CharterDisplay`) and
+// tool names, as enforced" disclosure. The kernel's readiness block (item
+// 18b, AC12) is first in the plain section, ahead of the job lines. Drawn directly (`CharterDisplay`) and
 // on the Approvals screen, which uses it only for a held charter create or
 // update whose display has the kernel's plain block.
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -11,9 +12,16 @@ import type { Approval, StudioBridge } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
 import { ApprovalsScreen } from "./ApprovalsScreen";
-import { ADDS, ADDS_TOOLS, CharterDisplay, JOBS_HEADING, KEEPS, RAW_SUMMARY } from "./CharterDisplay";
+import { ADDS, ADDS_TOOLS, CharterDisplay, JOBS_HEADING, KEEPS, RAW_SUMMARY, READINESS_HEADING, READINESS_STATUS_LABELS } from "./CharterDisplay";
 import { printable } from "./printable";
-import { CHARTER_CATALOGUE_UNAVAILABLE, charterDisplayParts } from "./subject";
+import {
+  CHARTER_CATALOGUE_UNAVAILABLE,
+  CHARTER_READINESS_COVERED_PREFIX,
+  CHARTER_READINESS_FLAG_PREFIX,
+  CHARTER_READINESS_NOT_CHECKED_PREFIX,
+  CHARTER_READINESS_READY_PREFIX,
+  charterDisplayParts,
+} from "./subject";
 import type { CharterDisplayParts } from "./subject";
 
 const K = "mcp__kernel__";
@@ -103,7 +111,7 @@ const UPDATE_DISPLAY = [
   `enforced: never: git_push; tools: ${NEXT.join(", ")}; bash prefixes: none`,
 ].join("\n");
 
-/** A create granting no kernel tool: the display is as it always was (no plain block). */
+/** A create granting no kernel tool, held before the kernel wrote a readiness block: the display is as it always was (no plain block). */
 const NO_KERNEL_DISPLAY = [
   'Create crew member nell ("Nell", crab crew-teal), proposed by Wright',
   "enforced: never: none; tools: Read; bash prefixes: none",
@@ -116,6 +124,38 @@ const UNAVAILABLE_DISPLAY = [
   'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
   CHARTER_CATALOGUE_UNAVAILABLE,
   `enforced: never: none; tools: Read, ${K}kernel_github_pr_get; bash prefixes: none`,
+].join("\n");
+
+/**
+ * Approval #19's charter as the kernel holds it now (phase 8 item 18b; `docs/architecture/agents.md`
+ * §"The readiness check"): the readiness block right after the head, then the jobs, then the raw lines.
+ */
+const READINESS_LINES = [
+  "readiness: checked by the kernel before you see it",
+  `${CHARTER_READINESS_COVERED_PREFIX}duty 1 by Hand tickets to /automate: Turn tickets into PRs`,
+  `${CHARTER_READINESS_FLAG_PREFIX}duty 2 not covered (needs Triage PR comments, which this charter does not grant): Triage PR comments`,
+  `${CHARTER_READINESS_FLAG_PREFIX}duty 3 not covered (needs Ask for a merge, which this charter does not grant): Ask for merges`,
+  `${CHARTER_READINESS_NOT_CHECKED_PREFIX}copy of a repo for Hand tickets to /automate: can't tell whether it has one (/w can't be read (EACCES))`,
+  `${CHARTER_READINESS_READY_PREFIX}GitHub access for Read a PR: proposed in this charter`,
+];
+const READINESS_DISPLAY = [
+  'Create crew member devon ("Devon", crab crew-teal), proposed by Wright',
+  ...READINESS_LINES,
+  "job: Hand tickets to /automate",
+  "  - Hand tickets to Loomwright's /automate.",
+  "job: Read a PR",
+  "  - Read one pull request's metadata and description from GitHub (read-only).",
+  `enforced: never: none; tools: ${K}kernel_automate_prepare, ${K}kernel_github_pr_get; bash prefixes: none; connectors: github`,
+  "workspaces: /w",
+].join("\n");
+
+/** A create granting no kernel tool, as the kernel holds it now: the readiness block and no job line. */
+const READINESS_NO_KERNEL_DISPLAY = [
+  'Create crew member nell ("Nell", crab crew-teal), proposed by Wright',
+  "readiness: checked by the kernel before you see it",
+  `${CHARTER_READINESS_COVERED_PREFIX}duty 1 with no tool (it needs no kernel tool): Watch my site's uptime every morning.`,
+  "enforced: never: none; tools: Read; bash prefixes: none",
+  "workspaces: none",
 ].join("\n");
 
 function parts(display: string): CharterDisplayParts {
@@ -284,6 +324,84 @@ describe("CharterDisplay", () => {
   });
 });
 
+// ---- The readiness block (phase 8 item 18b, AC12) -----------------------------------
+
+/** Each readiness line's [badge text, badge tone, line text]. */
+function readinessRows(): [string | null | undefined, string | undefined, string | null | undefined][] {
+  return screen.getAllByTestId("charter-readiness-line").map((li) => {
+    const badge = li.querySelector(".badge") as HTMLElement | null;
+    return [badge?.textContent, badge?.dataset.tone, li.querySelector(".approvals-charter-readiness-text")?.textContent];
+  });
+}
+
+describe("CharterDisplay: the readiness block", () => {
+  it("AC12: one line per duty and per job prerequisite, in the kernel's order, its status in plain words; flagged and not-checked lines in the attention tone, covered and ready neutral", () => {
+    render(<CharterDisplay parts={parts(READINESS_DISPLAY)} />);
+    expect(screen.getByRole("heading", { name: READINESS_HEADING })).toBeTruthy();
+    expect(screen.getByRole("list", { name: READINESS_HEADING })).toBe(screen.getByTestId("charter-readiness"));
+    expect(readinessRows()).toEqual([
+      [READINESS_STATUS_LABELS.covered, "neutral", "duty 1 by Hand tickets to /automate: Turn tickets into PRs"],
+      [READINESS_STATUS_LABELS.flagged, "attention", "duty 2 not covered (needs Triage PR comments, which this charter does not grant): Triage PR comments"],
+      [READINESS_STATUS_LABELS.flagged, "attention", "duty 3 not covered (needs Ask for a merge, which this charter does not grant): Ask for merges"],
+      [READINESS_STATUS_LABELS.not_checked, "attention", "copy of a repo for Hand tickets to /automate: can't tell whether it has one (/w can't be read (EACCES))"],
+      [READINESS_STATUS_LABELS.ready, "neutral", "GitHub access for Read a PR: proposed in this charter"],
+    ]);
+    expect(Object.values(READINESS_STATUS_LABELS)).toEqual(["Covered", "Ready", "Flagged", "Not checked"]);
+    // The kernel's own prefixes are not shown: the badge says the status.
+    expect(screen.getByTestId("charter-readiness").textContent).not.toMatch(/covered: |flagged: |ready: |not checked: |readiness: /);
+  });
+
+  it("AC12: the block is in the plain section, after who and ahead of the job lines, which are drawn as before; the raw lines stay in the disclosure", () => {
+    render(<CharterDisplay parts={parts(READINESS_DISPLAY)} />);
+    const plain = screen.getByTestId("charter-plain");
+    const block = screen.getByTestId("charter-readiness");
+    expect(plain.contains(block)).toBe(true);
+    expect(before(screen.getByTestId("charter-head"), block)).toBe(true);
+    expect(before(block, screen.getByRole("heading", { name: JOBS_HEADING }))).toBe(true);
+    expect(before(block, screen.getAllByTestId("charter-job")[0] as HTMLElement)).toBe(true);
+    expect(screen.getAllByTestId("charter-job").map((j) => j.querySelector(".approvals-charter-job-label")?.textContent)).toEqual(["Hand tickets to /automate", "Read a PR"]);
+    expect(plain.getAttribute("aria-labelledby")).toBe(screen.getByRole("heading", { name: JOBS_HEADING }).id);
+    expect(textOutsideRaw(screen.getByTestId("approval-display"))).not.toContain(K);
+    expect(screen.getByTestId("charter-raw").querySelector("pre")?.textContent).toBe(READINESS_DISPLAY.split("\n").slice(-2).join("\n"));
+  });
+
+  it("a charter granting no kernel tool shows the readiness block alone: no empty jobs heading, and the section is named by the block's heading", () => {
+    render(<CharterDisplay parts={parts(READINESS_NO_KERNEL_DISPLAY)} />);
+    expect(readinessRows()).toEqual([[READINESS_STATUS_LABELS.covered, "neutral", "duty 1 with no tool (it needs no kernel tool): Watch my site's uptime every morning."]]);
+    expect(screen.queryByRole("heading", { name: JOBS_HEADING })).toBeNull();
+    expect(screen.queryByTestId("charter-jobs")).toBeNull();
+    expect(screen.queryByTestId("charter-note")).toBeNull();
+    expect(screen.getByRole("region", { name: READINESS_HEADING })).toBe(screen.getByTestId("charter-plain"));
+    expect(screen.getByTestId("charter-raw").querySelector("pre")?.textContent).toBe(READINESS_NO_KERNEL_DISPLAY.split("\n").slice(3).join("\n"));
+  });
+
+  it("with the catalogue unavailable, the readiness block comes first and the kernel's note after it", () => {
+    const display = ['Create crew member mason ("Mason", crab crew-teal), proposed by Wright', "readiness: checked by the kernel before you see it", `${CHARTER_READINESS_NOT_CHECKED_PREFIX}duty 1 (the kernel's tool catalogue is unavailable): Read PRs`, CHARTER_CATALOGUE_UNAVAILABLE, "enforced: x"].join("\n");
+    render(<CharterDisplay parts={parts(display)} />);
+    expect(readinessRows()).toEqual([[READINESS_STATUS_LABELS.not_checked, "attention", "duty 1 (the kernel's tool catalogue is unavailable): Read PRs"]]);
+    expect(before(screen.getByTestId("charter-readiness"), screen.getByTestId("charter-note"))).toBe(true);
+  });
+
+  it("AC12: a display with no readiness block (an approval held before this change) renders exactly as before: no block, the jobs heading names the section", () => {
+    for (const display of [WALK_DISPLAY, UPDATE_DISPLAY, UNAVAILABLE_DISPLAY]) {
+      render(<CharterDisplay parts={parts(display)} />);
+      expect(screen.queryByTestId("charter-readiness")).toBeNull();
+      expect(screen.queryByRole("heading", { name: READINESS_HEADING })).toBeNull();
+      expect(screen.getByRole("region", { name: JOBS_HEADING })).toBe(screen.getByTestId("charter-plain"));
+      cleanup();
+    }
+  });
+
+  it("a duty's text is escaped text on its line: an ANSI escape, a bidi override or markup never reaches the DOM raw, and never adds a status", () => {
+    const text = `duty 1 by Read a PR: Read <b>it</b> ${ESC}[31m${RLO}flagged: no`;
+    const display = ['Create crew member x ("x", crab crew-teal), proposed by Wright', "readiness: checked by the kernel before you see it", `${CHARTER_READINESS_COVERED_PREFIX}${text}`, "job: Read a PR", "enforced: x"].join("\n");
+    const { container } = render(<CharterDisplay parts={parts(display)} />);
+    expect(readinessRows()).toEqual([[READINESS_STATUS_LABELS.covered, "neutral", printable(text)]]);
+    expect(screen.getByTestId("charter-readiness").textContent).not.toMatch(RAW);
+    expect(container.querySelector("b")).toBeNull();
+  });
+});
+
 // ---- On the Approvals screen ------------------------------------------------------
 
 function approval(id: number, tool: string, display: string | undefined, overrides: Partial<Approval> = {}): Approval {
@@ -339,7 +457,7 @@ describe("the Approvals screen's charter card", () => {
     expect(textOutsideRaw(card)).not.toContain(K);
   });
 
-  it("a charter granting no kernel tool, or any other approval's display (even one shaped like a plain block), is the escaped <pre> as always", async () => {
+  it("a charter granting no kernel tool held before the readiness block, or any other approval's display (even one shaped like a plain block), is the escaped <pre> as always", async () => {
     const shaped = "Post a comment\njob: Read a PR\n  - Read it.\nmore";
     await mount([approval(1, CREATE, NO_KERNEL_DISPLAY), approval(2, "mcp__github__comment", shaped, { action: "comment" })]);
     let display = screen.getByTestId("approval-display");
@@ -352,6 +470,21 @@ describe("the Approvals screen's charter card", () => {
     expect(display.tagName).toBe("PRE");
     expect(display.textContent).toBe(shaped);
     expect(screen.queryByTestId("charter-plain")).toBeNull();
+  });
+
+  it("AC12: a held create carrying a readiness block shows it first in the plain section, flagged lines in the attention tone; one granting no kernel tool shows its block too, not the <pre>", async () => {
+    await mount([approval(1, CREATE, READINESS_DISPLAY), approval(2, CREATE, READINESS_NO_KERNEL_DISPLAY)]);
+    let card = screen.getByTestId("approval-display");
+    expect(card.tagName).toBe("DIV");
+    const block = within(card).getByTestId("charter-readiness");
+    expect(before(block, within(card).getAllByTestId("charter-job")[0] as HTMLElement)).toBe(true);
+    expect(within(block).getAllByTestId("charter-readiness-line").map((li) => li.querySelector(".badge")?.getAttribute("data-tone"))).toEqual(["neutral", "attention", "attention", "attention", "neutral"]);
+    fireEvent.keyDown(document.body, { key: "j" });
+    await waitFor(() => expect(screen.getByTestId("approval-detail").dataset.approvalId).toBe("2"));
+    card = screen.getByTestId("approval-display");
+    expect(card.tagName).toBe("DIV");
+    expect(within(card).getAllByTestId("charter-readiness-line")).toHaveLength(1);
+    expect(within(card).queryByTestId("charter-jobs")).toBeNull();
   });
 
   it("the disclosure's open state is each approval's own: closing it on one leaves the next open", async () => {

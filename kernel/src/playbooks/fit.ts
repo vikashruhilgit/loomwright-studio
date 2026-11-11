@@ -39,7 +39,7 @@ import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
 import { getAgent } from "../agents/registry.js";
 import { agentSettingsPath, readAgentSettings } from "../agents/settings.js";
 import type { AgentSettings } from "../agents/settings.js";
-import { KERNEL_TOOL_PREFIX, TOOL_JOBS, isToolJob } from "../features/catalogue.js";
+import { CONNECTOR_LABELS, TOOL_JOBS, connectorAccessText, connectorNeeds, holdsConnector, isToolJob, jobGranted, jobLackingTools } from "../features/catalogue.js";
 import type { CatalogueTool, ToolCatalogue, ToolJob } from "../features/catalogue.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import type { Store } from "../store/store.js";
@@ -59,7 +59,7 @@ export type PlaybookFitStatus = "fits" | "gap" | "no_jobs" | "unchecked";
 export interface MissingJob {
   readonly id: ToolJob;
   readonly label: string;
-  /** The job's tools the member lacks, as `mcp__kernel__<name>`, in catalogue order. */
+  /** The job's tools the member lacks, as `mcp__kernel__<name>`, in catalogue order; empty when the catalogue has no tool of the job. */
   readonly tools: readonly string[];
 }
 
@@ -89,7 +89,7 @@ export interface PlaybookFit {
   readonly lines: readonly string[];
   /** `gap`: the named jobs the member lacks tools of. */
   readonly missing: readonly MissingJob[];
-  /** `gap`: the update Wright passes to `kernel_agent_update` (held for the owner). Never a connector grant. */
+  /** `gap`: the update Wright passes to `kernel_agent_update` (held for the owner). Never a connector grant. Absent when no missing job has a tool to add. */
   readonly proposed_update?: ProposedAgentUpdate;
   /** Connector grants only the owner can give, in plain words (Team → the member's inspector). */
   readonly owner_steps: readonly string[];
@@ -104,9 +104,6 @@ interface GrantNeed {
   /** Why, in plain words: a job's label, or the trigger's watch. */
   readonly why: string;
 }
-
-/** Each connector kind's name as the owner reads it. */
-const CONNECTOR_LABELS: Readonly<Record<ConnectorKind, string>> = Object.freeze({ github: "GitHub", jira: "Jira", clickup: "ClickUp" });
 
 /** The connector a poll source reads through (`POLL_SOURCES`, `../triggers/poll.ts`); undefined for an unknown source. */
 function sourceConnector(source: unknown): ConnectorKind | undefined {
@@ -144,21 +141,17 @@ function memberSettings(dataDir: string, agent: string): { readonly settings: Ag
   return { settings: read.settings, sha256: before };
 }
 
-/** The grants the jobs' tools and the trigger's poll source need, GitHub write folded over GitHub read. */
+/**
+ * The grants the jobs' tools need (`connectorNeeds`, the catalogue's one fold:
+ * GitHub write over GitHub read), then the trigger's poll source's read grant
+ * when no tool already needs that kind.
+ */
 function grantNeeds(store: Store, row: PlaybookRow, tools: readonly CatalogueTool[]): GrantNeed[] {
-  const needs: GrantNeed[] = [];
-  const add = (need: GrantNeed): void => {
-    const same = needs.find((n) => n.kind === need.kind);
-    if (same === undefined) needs.push(need);
-    else if (need.write && !same.write) needs.splice(needs.indexOf(same), 1, need);
-  };
-  for (const t of tools) {
-    if (t.requiresConnector !== undefined) add({ kind: t.requiresConnector, write: t.requiresConnectorLevel === "write", why: TOOL_JOBS[t.job] });
-  }
+  const needs: GrantNeed[] = connectorNeeds(tools).map((n) => ({ kind: n.kind, write: n.write, why: TOOL_JOBS[n.job] }));
   const trigger = linkedTriggerOf(store, row);
   if (trigger?.kind === "poll") {
     const kind = sourceConnector((trigger.spec as { source?: unknown } | null)?.source);
-    if (kind !== undefined) add({ kind, write: false, why: `watching ${CONNECTOR_LABELS[kind]}` });
+    if (kind !== undefined && !needs.some((n) => n.kind === kind)) needs.push({ kind, write: false, why: `watching ${CONNECTOR_LABELS[kind]}` });
   }
   return needs;
 }
@@ -173,16 +166,9 @@ function storedJobsReadable(jobsJson: string): boolean {
   }
 }
 
-/** Whether `settings` hold grant `need`. */
-function holds(settings: AgentSettings, need: GrantNeed): boolean {
-  if (!(settings.connectors ?? []).includes(need.kind)) return false;
-  return !need.write || settings.githubWrite === true;
-}
-
 /** The owner's step for a grant the member lacks, in plain words. */
 function ownerStep(name: string, need: GrantNeed): string {
-  const access = `${CONNECTOR_LABELS[need.kind]}${need.write ? " write" : ""} access`;
-  return `${name} needs ${access} for ${need.why}; only you can grant it: Team → ${name}'s inspector.`;
+  return `${name} needs ${connectorAccessText(need)} for ${need.why}; only you can grant it: Team → ${name}'s inspector.`;
 }
 
 /**
@@ -218,13 +204,13 @@ export function playbookFit(store: Store, row: PlaybookRow, catalogue: ToolCatal
   const jobTools = catalogue.tools.filter((t) => jobs.includes(t.job));
   const missing: MissingJob[] = [];
   for (const job of jobs) {
-    const lacking = jobTools.filter((t) => t.job === job && !allowed.has(`${KERNEL_TOOL_PREFIX}${t.name}`)).map((t) => `${KERNEL_TOOL_PREFIX}${t.name}`);
-    if (lacking.length > 0) missing.push({ id: job, label: TOOL_JOBS[job], tools: lacking });
+    // The catalogue's one rule (`jobGranted`): a job with no catalogue tool is missing too, with no tool to add.
+    if (!jobGranted(catalogue, job, allowed)) missing.push({ id: job, label: TOOL_JOBS[job], tools: jobLackingTools(catalogue, job, allowed) });
   }
   let owner_steps: string[];
   try {
     owner_steps = grantNeeds(store, row, jobTools)
-      .filter((need) => !holds(settings, need))
+      .filter((need) => !holdsConnector(settings, need))
       .map((need) => ownerStep(name, need));
   } catch (err) {
     return unchecked(`its trigger can't be read (${err instanceof Error ? err.message : String(err)})`);
@@ -239,14 +225,20 @@ export function playbookFit(store: Store, row: PlaybookRow, catalogue: ToolCatal
     status: "gap",
     lines: missing.map((m) => {
       const total = jobTools.filter((t) => t.job === m.id).length;
+      if (total === 0) return `This playbook needs ${m.label}; the kernel has no tool for it, so no charter change can give it to ${name}.`;
       return m.tools.length === total ? `This playbook needs ${m.label}; ${name} doesn't have it.` : `This playbook needs ${m.label}; ${name} has only part of it.`;
     }),
     missing,
-    proposed_update: {
-      id: agent,
-      changes: { tool_policy: { allowedTools: [...current, ...added.filter((t) => !current.includes(t))], allowedBashPrefixes: [...settings.policy.allowedBashPrefixes] } },
-      expected_sha256: sha256,
-    },
+    // No tool to add (every missing job has none in the catalogue): no update to propose.
+    ...(added.length === 0
+      ? {}
+      : {
+          proposed_update: {
+            id: agent,
+            changes: { tool_policy: { allowedTools: [...current, ...added.filter((t) => !current.includes(t))], allowedBashPrefixes: [...settings.policy.allowedBashPrefixes] } },
+            expected_sha256: sha256,
+          },
+        }),
     owner_steps,
   };
 }

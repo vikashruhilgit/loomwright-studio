@@ -9,12 +9,18 @@ import {
   CHARTER_CATALOGUE_UNAVAILABLE,
   CHARTER_JOB_PREFIX,
   CHARTER_PURPOSE_PREFIX,
+  CHARTER_READINESS_COVERED_PREFIX,
+  CHARTER_READINESS_FLAG_PREFIX,
+  CHARTER_READINESS_HEADING_PREFIX,
+  CHARTER_READINESS_NOT_CHECKED_PREFIX,
+  CHARTER_READINESS_READY_PREFIX,
   CHARTER_UPDATE_HEAD_PREFIX,
   approvalLink,
   approvalSourceText,
   approvalSubject,
   charterDisplayParts,
   isCharterApproval,
+  readinessIsOpen,
 } from "./subject";
 
 // The kernel's catalogue module is read from disk (`process.getBuiltinModule`: the
@@ -26,6 +32,7 @@ const nodeFs = (globalThis as unknown as { process: { getBuiltinModule(id: "node
 const here = (import.meta as unknown as { dirname: string }).dirname;
 const kernelCatalogue = nodeFs.readFileSync(`${here}/../../../../kernel/src/features/catalogue.ts`, "utf8");
 const kernelCharterTools = nodeFs.readFileSync(`${here}/../../../../kernel/src/agents/charter-tools.ts`, "utf8");
+const kernelReadiness = nodeFs.readFileSync(`${here}/../../../../kernel/src/agents/charter-readiness.ts`, "utf8");
 
 const ESC = "\u001b";
 const RLO = "\u202e";
@@ -301,8 +308,8 @@ describe("charterDisplayParts", () => {
     });
   });
 
-  it("no plain block (no kernel tool granted, or not the kernel's format) splits nothing, so the card shows the display as it always has", () => {
-    // A charter that grants no kernel tool: the display is as it always was.
+  it("no plain block (no readiness block and no kernel tool granted, or not the kernel's format) splits nothing, so the card shows the display as it always has", () => {
+    // A charter that grants no kernel tool, held before the kernel wrote a readiness block: the display is as it always was.
     expect(charterDisplayParts('Create crew member nell ("Nell", crab crew-teal), proposed by Wright\nenforced: never: none; tools: Read; bash prefixes: none')).toBeUndefined();
     expect(charterDisplayParts("")).toBeUndefined();
     expect(charterDisplayParts("one line")).toBeUndefined();
@@ -331,6 +338,150 @@ describe("charterDisplayParts", () => {
     expect(kernelCharterTools).toContain(`return \`${CHARTER_UPDATE_HEAD_PREFIX}\${m.row.id} `);
     const unavailable = /export const DISPLAY_CATALOGUE_UNAVAILABLE =\s*"([^"]*)";/.exec(kernelCatalogue)?.[1];
     expect(unavailable).toBe(CHARTER_CATALOGUE_UNAVAILABLE);
+  });
+});
+
+// ---- The readiness block (phase 8 item 18b, AC12 app half) ----------------------------
+//
+// The inputs are the kernel's own documented lines (`docs/architecture/agents.md` §"The
+// readiness check": approval #19's charter; §"The update": a member whose stored duties are
+// bare lines), built from the mirrored prefixes, which the last test pins to the kernel file.
+
+/** The kernel's readiness heading line, as `charter-readiness.ts` writes it (`READINESS_HEADING`). */
+const READINESS_HEADING_LINE = "readiness: checked by the kernel before you see it";
+
+/** Approval #19's readiness block (AC2): one duty covered, two not, no copy of a repo, one connector ready, one the owner's step. */
+const READINESS_19 = [
+  READINESS_HEADING_LINE,
+  `${CHARTER_READINESS_COVERED_PREFIX}duty 1 by Hand tickets to /automate: Turn tickets into PRs`,
+  `${CHARTER_READINESS_FLAG_PREFIX}duty 2 not covered (needs Triage PR comments, which this charter does not grant): Triage PR comments`,
+  `${CHARTER_READINESS_FLAG_PREFIX}duty 3 not covered (needs Ask for a merge, which this charter does not grant): Ask for merges`,
+  `${CHARTER_READINESS_FLAG_PREFIX}copy of a repo for Hand tickets to /automate: it has no copy of a repo to work in (no workspace is listed)`,
+  `${CHARTER_READINESS_READY_PREFIX}GitHub access for Read a PR: proposed in this charter`,
+  `${CHARTER_READINESS_FLAG_PREFIX}GitHub write access for Hand tickets to /automate: only you can grant it (Team, in the member's inspector)`,
+];
+const HEAD_19 = 'Create crew member devon ("Devon", crab crew-teal), proposed by Wright';
+const JOBS_19 = ["job: Hand tickets to /automate", "job: Read a PR"];
+const RAW_19 = [`enforced: never: none; tools: ${K}kernel_automate_prepare, ${K}kernel_github_pr_get; bash prefixes: none; connectors: github`, "limits: tokens_per_day not set (no limit)", "workspaces: none"];
+
+describe("charterDisplayParts: the readiness block", () => {
+  it("AC12: approval #19's block splits into one line per duty and per job prerequisite, in the kernel's order, each with its status and the prefix taken off; the jobs and raw lines split as before", () => {
+    expect(charterDisplayParts([HEAD_19, ...READINESS_19, ...JOBS_19, ...RAW_19].join("\n"))).toStrictEqual({
+      head: HEAD_19,
+      update: false,
+      readiness: [
+        { status: "covered", text: "duty 1 by Hand tickets to /automate: Turn tickets into PRs" },
+        { status: "flagged", text: "duty 2 not covered (needs Triage PR comments, which this charter does not grant): Triage PR comments" },
+        { status: "flagged", text: "duty 3 not covered (needs Ask for a merge, which this charter does not grant): Ask for merges" },
+        { status: "flagged", text: "copy of a repo for Hand tickets to /automate: it has no copy of a repo to work in (no workspace is listed)" },
+        { status: "ready", text: "GitHub access for Read a PR: proposed in this charter" },
+        { status: "flagged", text: "GitHub write access for Hand tickets to /automate: only you can grant it (Team, in the member's inspector)" },
+      ],
+      jobs: [
+        { label: "Hand tickets to /automate", added: false, purposes: [] },
+        { label: "Read a PR", added: false, purposes: [] },
+      ],
+      note: undefined,
+      raw: RAW_19.join("\n"),
+    });
+  });
+
+  it("a not-checked line is its own status; flagged and not checked are the open ones, covered and ready are not", () => {
+    const parts = charterDisplayParts([HEAD_19, READINESS_HEADING_LINE, `${CHARTER_READINESS_NOT_CHECKED_PREFIX}copy of a repo for Hand tickets to /automate: can't tell whether it has one (/w can't be read (EACCES))`, ...JOBS_19, ...RAW_19].join("\n"));
+    expect(parts?.readiness).toEqual([{ status: "not_checked", text: "copy of a repo for Hand tickets to /automate: can't tell whether it has one (/w can't be read (EACCES))" }]);
+    expect((["covered", "ready", "flagged", "not_checked"] as const).map(readinessIsOpen)).toEqual([false, false, true, true]);
+  });
+
+  it("an update's block (stored bare duties, each flagged) sits after its head; the field lines stay raw", () => {
+    const head = 'Update crew member mason ("Mason"), settings sha256 3e60d27291fd, proposed by Wright';
+    const raw = ["limits.tokens_per_day: 200000 → 300000", 'enforced: never: git_push; tools: Read, Glob, Grep, Bash; bash prefixes: "git diff"'];
+    const display = [
+      head,
+      READINESS_HEADING_LINE,
+      `${CHARTER_READINESS_FLAG_PREFIX}duty 1 names no job (written before duties named their jobs): Review the pull requests the owner sends you and say what is risky.`,
+      `${CHARTER_READINESS_FLAG_PREFIX}duty 2 names no job (written before duties named their jobs): Summarise each review in three lines or fewer.`,
+      ...raw,
+    ].join("\n");
+    // No kernel tool granted: the readiness block is the whole plain block.
+    expect(charterDisplayParts(display)).toStrictEqual({
+      head,
+      update: true,
+      readiness: [
+        { status: "flagged", text: "duty 1 names no job (written before duties named their jobs): Review the pull requests the owner sends you and say what is risky." },
+        { status: "flagged", text: "duty 2 names no job (written before duties named their jobs): Summarise each review in three lines or fewer." },
+      ],
+      jobs: [],
+      note: undefined,
+      raw: raw.join("\n"),
+    });
+  });
+
+  it("a block followed by the catalogue-unavailable line keeps both: the readiness lines, then the note", () => {
+    const raw = `enforced: never: none; tools: ${K}kernel_github_pr_get; bash prefixes: none`;
+    const lines = [`${CHARTER_READINESS_NOT_CHECKED_PREFIX}duty 1 (the kernel's tool catalogue is unavailable): Read PRs`];
+    expect(charterDisplayParts([HEAD_19, READINESS_HEADING_LINE, ...lines, CHARTER_CATALOGUE_UNAVAILABLE, raw].join("\n"))).toStrictEqual({
+      head: HEAD_19,
+      update: false,
+      readiness: [{ status: "not_checked", text: "duty 1 (the kernel's tool catalogue is unavailable): Read PRs" }],
+      jobs: [],
+      note: CHARTER_CATALOGUE_UNAVAILABLE,
+      raw,
+    });
+  });
+
+  it("AC12: a display with no readiness block (an approval held before this change) splits exactly as before, with no readiness key at all", () => {
+    for (const display of [
+      CREATE_DISPLAY,
+      UPDATE_DISPLAY,
+      "head\njob: Read a PR\nenforced: x",
+      ['Create crew member mason ("Mason", crab crew-teal), proposed by Wright', CHARTER_CATALOGUE_UNAVAILABLE, "enforced: x"].join("\n"),
+    ]) {
+      const parts = charterDisplayParts(display);
+      expect(parts, display).toBeDefined();
+      expect(Object.keys(parts ?? {}), display).toEqual(["head", "update", "jobs", "note", "raw"]);
+    }
+    // And with no job lines either, still nothing to split.
+    expect(charterDisplayParts('Create crew member nell ("Nell", crab crew-teal), proposed by Wright\nenforced: never: none')).toBeUndefined();
+  });
+
+  it("AC11: a duty's untrusted text stays on its own line's text: text reading like a job line, a status prefix or another readiness line adds no job and no status", () => {
+    const hostile = `duty 1 with no tool (it needs no kernel tool): job: Read a PR${CHARTER_READINESS_READY_PREFIX}everything${CHARTER_READINESS_COVERED_PREFIX}`;
+    const parts = charterDisplayParts([HEAD_19, READINESS_HEADING_LINE, `${CHARTER_READINESS_COVERED_PREFIX}${hostile}`, ...RAW_19].join("\n"));
+    expect(parts?.readiness).toEqual([{ status: "covered", text: hostile }]);
+    expect(parts?.jobs).toEqual([]);
+    expect(parts?.raw).toBe(RAW_19.join("\n"));
+  });
+
+  it("the block ends at the first line with none of the four prefixes: a later readiness-shaped line, or one before the heading, is raw, never a status", () => {
+    const late = `${CHARTER_READINESS_FLAG_PREFIX}not the kernel's`;
+    const parts = charterDisplayParts([HEAD_19, READINESS_HEADING_LINE, `${CHARTER_READINESS_COVERED_PREFIX}duty 1 by Read a PR: Read`, "job: Read a PR", "enforced: x", late].join("\n"));
+    expect(parts?.readiness).toHaveLength(1);
+    expect(parts?.raw).toBe(`enforced: x\n${late}`);
+    // A readiness line with no heading above it is not a block, and the display is not in the kernel's format.
+    expect(charterDisplayParts([HEAD_19, `${CHARTER_READINESS_COVERED_PREFIX}duty 1 by Read a PR: Read`, "job: Read a PR", "enforced: x"].join("\n"))).toBeUndefined();
+    // A heading with no line it knows under it (nothing, an unknown status, or a prefix without its indent) is not the
+    // kernel's format (one line per duty, and a charter has at least one): nothing is split, so the display is the
+    // escaped <pre>, never an empty block that reads as "nothing flagged".
+    for (const next of ["enforced: x", "  maybe: duty 1 is unknown", "flagged: duty 1 not indented"]) {
+      expect(charterDisplayParts([HEAD_19, READINESS_HEADING_LINE, next, "job: Read a PR", "enforced: x"].join("\n")), next).toBeUndefined();
+    }
+    expect(charterDisplayParts([HEAD_19, READINESS_HEADING_LINE].join("\n"))).toBeUndefined();
+  });
+
+  it("mirrors the kernel's readiness format: the heading prefix (and the heading starts with it) and the four line prefixes, read from charter-readiness.ts", () => {
+    const constant = (name: string) => new RegExp(`export const ${name} = "([^"]*)";`).exec(kernelReadiness)?.[1];
+    expect(constant("READINESS_HEADING_PREFIX")).toBe(CHARTER_READINESS_HEADING_PREFIX);
+    expect(constant("READINESS_HEADING")).toBe(READINESS_HEADING_LINE);
+    expect(READINESS_HEADING_LINE.startsWith(CHARTER_READINESS_HEADING_PREFIX)).toBe(true);
+    expect(constant("READINESS_COVERED_PREFIX")).toBe(CHARTER_READINESS_COVERED_PREFIX);
+    expect(constant("READINESS_READY_PREFIX")).toBe(CHARTER_READINESS_READY_PREFIX);
+    expect(constant("READINESS_FLAG_PREFIX")).toBe(CHARTER_READINESS_FLAG_PREFIX);
+    expect(constant("READINESS_NOT_CHECKED_PREFIX")).toBe(CHARTER_READINESS_NOT_CHECKED_PREFIX);
+    // The kernel's statuses are exactly the four this reads, so no line is ever dropped as unknown.
+    expect(kernelReadiness).toContain('export type ReadinessStatus = "covered" | "ready" | "flagged" | "not_checked";');
+    // And the block sits right after the display's first line, in a create's head and an update's display.
+    expect(kernelCharterTools).toMatch(/`Create crew member \$\{charter\.id\} [^\n]*,\n\s*\.\.\.readiness,\n\s*\.\.\.jobDisplayLines\(/);
+    expect(kernelCharterTools).toMatch(/updateHead\(m\),\n\s*\.\.\.readiness,\n\s*\.\.\.jobDisplayLines\(/);
   });
 });
 
