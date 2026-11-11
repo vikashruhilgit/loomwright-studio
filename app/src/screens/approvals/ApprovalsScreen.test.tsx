@@ -1371,6 +1371,36 @@ describe("the charter card (phase 8 item 18d)", () => {
     expect(posts(m.fake, "POST /ask")).toHaveLength(0);
   });
 
+  it("AC7: a failed read of the drafting thread still links to it in Chat, where the owner can find it", async () => {
+    const m = await mount({ approvals: [held()] });
+    m.fake.route("GET /threads/:agent", () => ({ ok: false, status: 500, body: { error: "internal", message: "db locked" } }));
+    cleanup();
+    setApi(m.fake.bridge);
+    render(<ApprovalsScreen registry={createCommandRegistry()} />);
+    await waitFor(() => expect(screen.getByTestId("charter-ask-where").textContent).toBe(READ_FAILED));
+    expect(screen.getByTestId("charter-ask-thread").getAttribute("href")).toBe("#/chat");
+  });
+
+  it("AC7: a later failed read of a drafting thread already read keeps the read thread: never shown as a failed read, and Send still works", async () => {
+    const m = await mount({ approvals: [held()] });
+    m.fake.route("GET /threads/:agent", () => ok({ items: [drafting], next_before: null, pending_approvals: [], threads: [{ id: 4, agent: "wright", title: "Mason", renamed: false, messages: 1, latest_reply_tokens: null, summary_estimated_tokens: null }] }));
+    cleanup();
+    setApi(m.fake.bridge);
+    render(<ApprovalsScreen registry={createCommandRegistry()} />);
+    await waitFor(() => expect(screen.getByTestId("charter-ask-where").textContent).toContain("“Mason”"));
+    const before = m.fake.requestsTo("GET /threads/:agent").length;
+    m.fake.route("GET /threads/:agent", () => ({ ok: false, status: 500, body: { error: "internal", message: "db locked" } }));
+    // Any routed event refetches each loaded thread; this read fails while the earlier answer is still held.
+    act(() => m.fake.emit(event("approval_decided")));
+    await waitFor(() => expect(m.fake.requestsTo("GET /threads/:agent").length).toBeGreaterThan(before));
+    await act(async () => {
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    });
+    expect(screen.getByTestId("charter-ask-where").textContent).toContain("“Mason”");
+    expect(screen.queryByTestId("charter-ask-read-failed")).toBeNull();
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("a decided charter has no Ask or change box", async () => {
     await mount({ approvals: [], decided: [held({ status: "denied", decision: "deny", decided_by: "kernel", replaced_by: 6 })] });
     fireEvent.click(screen.getByRole("button", { name: /Show decided/ }));

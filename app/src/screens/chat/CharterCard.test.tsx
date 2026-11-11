@@ -6,14 +6,14 @@
 // Every kernel string is fake data; the clipboard and folder picker are stubs.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Approval, SavedWorkspace, ThreadFigures } from "../../api/contract";
+import type { ApiResult, Approval, SavedWorkspace, ThreadFigures } from "../../api/contract";
 import { ok } from "../../store/fake-bridge";
 import { COPY_ALL, COPY_FAILED, SHOW_DETAILS, copiedLine, totalLine } from "../approvals/CharterDisplay";
 import { printable } from "../approvals/printable";
 import { ASK_LABEL, CLONE_NOT_BUILT, NOT_LOADED, READ_FAILED, WORKSPACE_SENT, WorkspaceQuestion, askText, cloneText, folderText } from "./CharterAsk";
 import { CHOOSE_WORKSPACE, REPLACED_BY, VERSIONS_FAILED, olderVersions } from "./CharterCard";
 import { rememberSummarized } from "./continuity";
-import { T0, approval, kit, message, renderChat, resetChat, thread } from "./testkit";
+import { T0, approval, eventFrame, kit, message, renderChat, resetChat, thread } from "./testkit";
 import type { Kit } from "./testkit";
 
 const K = "mcp__kernel__";
@@ -241,6 +241,61 @@ describe("Chat's charter card", () => {
     expect(screen.queryByTestId("charter-old")).toBeNull();
     // The live card still works: Create is offered.
     expect(within(c).getByRole("button", { name: "Create" })).toBeTruthy();
+  });
+
+  it("a later good read of the decided approvals clears the failure and shows the older version", async () => {
+    const v1 = charter(8, V1, { status: "denied", decision: "deny", decided_by: "kernel", decided_at: T0, replaced_by: 9 });
+    const v2 = charter(9, V2);
+    const k = charterKit([v2]);
+    let failing = true;
+    k.fake.route("GET /approvals", (req) => {
+      if (req.query?.all !== "1") return ok({ approvals: [v2] });
+      return failing ? { ok: false, status: 500, body: { error: "internal", message: "db locked" } } : ok({ approvals: [v1, v2] });
+    });
+    await renderChat(k);
+    const c = await card();
+    await waitFor(() => expect(within(c).getByTestId("charter-versions-failed").textContent).toBe(VERSIONS_FAILED));
+    failing = false;
+    // A decision changes the approvals list, so the decided ones are read again.
+    await act(async () => {
+      k.fake.emit(eventFrame(40, "approval_decided", {}));
+    });
+    await screen.findByTestId("charter-old");
+    await waitFor(() => expect(within(c).queryByTestId("charter-versions-failed")).toBeNull());
+  });
+
+  it("a slow failed read of the decided approvals that answers after a newer good one is dropped: no failure is shown", async () => {
+    const v1 = charter(8, V1, { status: "denied", decision: "deny", decided_by: "kernel", decided_at: T0, replaced_by: 9 });
+    const v2 = charter(9, V2);
+    const k = charterKit([v2]);
+    let release: ((answer: ApiResult<unknown>) => void) | undefined;
+    let reads = 0;
+    k.fake.route("GET /approvals", (req) => {
+      if (req.query?.all !== "1") return ok({ approvals: [v2] });
+      reads += 1;
+      // The first read hangs until the test answers it; every later one answers at once.
+      return reads === 1 ? new Promise<ApiResult<unknown>>((resolve) => (release = resolve)) : ok({ approvals: [v1, v2] });
+    });
+    try {
+      await renderChat(k);
+      const c = await card();
+      await act(async () => {
+        k.fake.emit(eventFrame(41, "approval_decided", {}));
+      });
+      await screen.findByTestId("charter-old");
+      expect(reads).toBeGreaterThanOrEqual(2);
+      // The stale read now fails: its answer belongs to a superseded read and is dropped.
+      await act(async () => {
+        release?.({ ok: false, status: 500, body: { error: "internal", message: "db locked" } });
+        release = undefined;
+        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      });
+      expect(within(c).queryByTestId("charter-versions-failed")).toBeNull();
+      expect(screen.getByTestId("charter-old")).toBeTruthy();
+    } finally {
+      // Never leave the hung read pending past this test.
+      release?.(ok({ approvals: [] }));
+    }
   });
 
   it("AC7: when the drafting message is not among the loaded items, the box says so, Send is disabled and nothing is posted", async () => {
