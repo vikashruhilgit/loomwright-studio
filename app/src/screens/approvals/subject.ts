@@ -9,8 +9,8 @@
 // creating or changing a crew member names that member.
 //
 // A charter create or update's display is split (`charterDisplayParts`) into
-// its plain block (the granted kernel tools by job) and the raw lines beneath
-// it, for `CharterDisplay`.
+// its plain block (the kernel's readiness block, then the granted kernel tools
+// by job) and the raw lines beneath it, for `CharterDisplay`.
 import type { Approval, PlaybookListing } from "../../api/contract";
 import { playbookCardHash } from "../chat/model";
 import { memberHash } from "../team/model";
@@ -178,6 +178,49 @@ export const CHARTER_UPDATE_HEAD_PREFIX = "Update crew member ";
 export const CHARTER_CATALOGUE_UNAVAILABLE =
   "kernel tools: the kernel's tool catalogue is unavailable, so they are not grouped by job; their names are on the enforced line below";
 
+/**
+ * The kernel's readiness block (phase 8 item 18b), mirrored from
+ * `kernel/src/agents/charter-readiness.ts` (`READINESS_HEADING_PREFIX`,
+ * `READINESS_COVERED_PREFIX`, `READINESS_READY_PREFIX`,
+ * `READINESS_FLAG_PREFIX`, `READINESS_NOT_CHECKED_PREFIX`); `subject.test.ts`
+ * reads that file as text and fails if any drifts. The block's first line
+ * starts with the heading prefix; every line under it starts with exactly one
+ * of the four line prefixes.
+ */
+export const CHARTER_READINESS_HEADING_PREFIX = "readiness: ";
+export const CHARTER_READINESS_COVERED_PREFIX = "  covered: ";
+export const CHARTER_READINESS_READY_PREFIX = "  ready: ";
+export const CHARTER_READINESS_FLAG_PREFIX = "  flagged: ";
+export const CHARTER_READINESS_NOT_CHECKED_PREFIX = "  not checked: ";
+
+/** A readiness line's status, by its prefix (the kernel's `ReadinessStatus`). */
+export type CharterReadinessStatus = "covered" | "ready" | "flagged" | "not_checked";
+
+/** Each status's line prefix, in the order a line is matched against them. */
+const READINESS_PREFIXES: readonly (readonly [CharterReadinessStatus, string])[] = [
+  ["covered", CHARTER_READINESS_COVERED_PREFIX],
+  ["ready", CHARTER_READINESS_READY_PREFIX],
+  ["flagged", CHARTER_READINESS_FLAG_PREFIX],
+  ["not_checked", CHARTER_READINESS_NOT_CHECKED_PREFIX],
+];
+
+/** Whether a readiness status is one the owner should see before approving: a flag, or a check that did not run. */
+export function readinessIsOpen(status: CharterReadinessStatus): boolean {
+  return status === "flagged" || status === "not_checked";
+}
+
+/** One line of the readiness block: its status, and its text with the prefix taken off (a duty's untrusted text is last on it). */
+export interface CharterReadinessLine {
+  readonly status: CharterReadinessStatus;
+  readonly text: string;
+}
+
+/** `line` as a readiness line, or `undefined` when it starts with none of the four prefixes. */
+function readinessLine(line: string): CharterReadinessLine | undefined {
+  const match = READINESS_PREFIXES.find(([, prefix]) => line.startsWith(prefix));
+  return match === undefined ? undefined : { status: match[0], text: line.slice(match[1].length) };
+}
+
 /** One granted tool's purpose line (or name), and whether the update adds that tool to a job the member keeps. */
 export interface CharterPurpose {
   readonly text: string;
@@ -206,7 +249,14 @@ export interface CharterJob {
  * - `head`: the first line (who, and which file for an update).
  * - `update`: whether it is an update's display (its head is the kernel's
  *   update head), whose jobs are each added or kept.
- * - `jobs`: the granted kernel tools grouped by job, in the kernel's order.
+ * - `readiness`: the kernel's readiness block, one entry per line under its
+ *   heading, in the kernel's order (each duty, then each job prerequisite).
+ *   Absent (the key itself, not just its value) when the display has no
+ *   readiness block: an approval held before the kernel wrote one splits
+ *   exactly as it always did.
+ * - `jobs`: the granted kernel tools grouped by job, in the kernel's order
+ *   (empty when the charter grants no kernel tool and a readiness block is
+ *   the whole plain block).
  * - `note`: the kernel's one plain line when its catalogue was unavailable
  *   (then `jobs` is empty: the kernel never guesses a grouping, nor does this).
  * - `raw`: every line after the plain block, exactly as the kernel wrote it
@@ -216,6 +266,7 @@ export interface CharterJob {
 export interface CharterDisplayParts {
   readonly head: string;
   readonly update: boolean;
+  readonly readiness?: readonly CharterReadinessLine[];
   readonly jobs: readonly CharterJob[];
   readonly note: string | undefined;
   readonly raw: string;
@@ -223,12 +274,17 @@ export interface CharterDisplayParts {
 
 /**
  * `display` split into its plain block and the raw lines beneath it, or
- * `undefined` when it has no plain block (the charter grants no kernel tool,
- * or the display is not in the kernel's format): the card then shows the
- * display as it always has. Pure. The plain block is the run of lines right
- * after the first: `job: <label>` lines, each followed by its `  - <purpose>`
- * lines, or the one catalogue-unavailable line. It ends at the first line that
- * is neither. The kernel writes every job with its purposes, or (when that
+ * `undefined` when it has no plain block (no readiness block and no kernel
+ * tool granted, or the display is not in the kernel's format): the card then
+ * shows the display as it always has. Pure. The plain block is the run of
+ * lines right after the first: the readiness block when there is one (its
+ * heading, `CHARTER_READINESS_HEADING_PREFIX`, then every line starting with
+ * one of the four readiness line prefixes), then `job: <label>` lines, each
+ * followed by its `  - <purpose>` lines, or the one catalogue-unavailable
+ * line. It ends at the first line that is none of these. A readiness block
+ * with no job line under it (a charter granting no kernel tool) is a plain
+ * block on its own; a readiness heading with no readiness line under it is
+ * not the kernel's format (it writes one line per duty) and splits nothing. The kernel writes every job with its purposes, or (when that
  * block would not fit the approval display) every job as its label alone, the
  * compact form: both split, the compact one into jobs with no purposes. A
  * purpose line with no job above it, or a block mixing jobs with and without
@@ -245,13 +301,29 @@ export function charterDisplayParts(display: string): CharterDisplayParts | unde
   const lines = display.split("\n");
   const head = lines[0] ?? "";
   const update = head.startsWith(CHARTER_UPDATE_HEAD_PREFIX);
-  if (lines[1] === CHARTER_CATALOGUE_UNAVAILABLE) {
-    return { head, update, jobs: [], note: CHARTER_CATALOGUE_UNAVAILABLE, raw: lines.slice(2).join("\n") };
+  // The readiness block, right after the head when the kernel wrote one; `start` is the first line after it.
+  let start = 1;
+  let readiness: CharterReadinessLine[] | undefined;
+  if (lines[1]?.startsWith(CHARTER_READINESS_HEADING_PREFIX) === true) {
+    readiness = [];
+    for (start = 2; start < lines.length; start += 1) {
+      const line = readinessLine(lines[start] as string);
+      if (line === undefined) break;
+      readiness.push(line);
+    }
+    // The kernel writes one line per duty and a charter has at least one: a heading with no line it knows under it
+    // (a status this does not mirror) is not its format, so nothing is split rather than an empty block read as "all clear".
+    if (readiness.length === 0) return undefined;
+  }
+  // Absent, not `undefined`, when there is no readiness block: such a display splits exactly as it always did.
+  const ready = readiness === undefined ? {} : { readiness };
+  if (lines[start] === CHARTER_CATALOGUE_UNAVAILABLE) {
+    return { head, update, ...ready, jobs: [], note: CHARTER_CATALOGUE_UNAVAILABLE, raw: lines.slice(start + 1).join("\n") };
   }
   const marked = (text: string): { text: string; added: boolean } =>
     update && text.endsWith(CHARTER_ADDED_SUFFIX) ? { text: text.slice(0, -CHARTER_ADDED_SUFFIX.length), added: true } : { text, added: false };
   const jobs: { label: string; added: boolean; gainsTools?: true; purposes: CharterPurpose[] }[] = [];
-  let i = 1;
+  let i = start;
   for (; i < lines.length; i += 1) {
     const line = lines[i] as string;
     if (line.startsWith(CHARTER_JOB_PREFIX)) {
@@ -270,10 +342,10 @@ export function charterDisplayParts(display: string): CharterDisplayParts | unde
       break;
     }
   }
-  if (jobs.length === 0) return undefined;
+  if (jobs.length === 0) return readiness === undefined ? undefined : { head, update, readiness, jobs: [], note: undefined, raw: lines.slice(i).join("\n") };
   const compact = jobs.every((j) => j.purposes.length === 0);
   if (!compact && jobs.some((j) => j.purposes.length === 0)) return undefined;
-  return { head, update, jobs, note: undefined, raw: lines.slice(i).join("\n") };
+  return { head, update, ...ready, jobs, note: undefined, raw: lines.slice(i).join("\n") };
 }
 
 /** Where an approval with no playbook was asked from. The contract has no `source` field: every one reads this. */

@@ -219,6 +219,27 @@
 .approvals-charter-note {
   color: var(--ink-secondary);
 }
+/* The kernel's readiness block, ahead of the jobs: one line per duty and job prerequisite, its status on a Badge (the colour is the Badge's tone, never set here). */
+.approvals-charter-readiness {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  list-style: none;
+}
+.approvals-charter-readiness-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.approvals-charter-readiness-line .badge {
+  flex: none;
+}
+.approvals-charter-readiness-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .approvals-charter-jobs {
   display: flex;
   flex-direction: column;
