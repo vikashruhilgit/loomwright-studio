@@ -32,7 +32,11 @@
 //   tools); a call whose head (create) or whose whole display (update:
 //   the job lines, the field lines and the enforced
 //   line) would not fit in `MAX_APPROVAL_DISPLAY` is refused `invalid_input`,
-//   so the 4,000-character cut never hides them. An update whose overflow is
+//   so the 4,000 characters `studio approvals` lists before its "more
+//   characters not shown" mark always hold them (the display itself is stored
+//   whole, up to `MAX_REQUEST_PAYLOAD_JSON`). The hold names its subject
+//   (`agent:<member id>`), so a newer charter call for the same member
+//   withdraws the older pending one. An update whose overflow is
 //   the member's current state (no request changing the same fields would
 //   fit, whatever their new values) says so: the owner changes the settings
 //   file, not Wright.
@@ -238,7 +242,7 @@ function createHeadWith(charter: Charter, catalogue: ToolCatalogue | undefined, 
  * when not given), the granted kernel tools grouped by job
  * (`jobDisplayLines`: none when no kernel tool is granted, one plain note when
  * `catalogue` is undefined), the enforced line, the limits and the workspaces
- * (what the cut must never hide). The job lines carry each tool's purpose line
+ * (what the list's cut must never hide). The job lines carry each tool's purpose line
  * when that head fits `MAX_APPROVAL_DISPLAY`; otherwise they are the job labels
  * alone (still ahead of every raw name), so the job lines grow with the job
  * vocabulary, never with the number of granted tools.
@@ -253,8 +257,9 @@ const CREATE_HEAD_TEXT = "the display's head (who, the readiness lines, the job 
 
 /**
  * `invalid_input` when `text` (the part of a display the owner must see
- * whole) is longer than `MAX_APPROVAL_DISPLAY`, the cut `studio approvals`
- * shows: the hold refuses rather than show a cut enforced line.
+ * whole) is longer than `MAX_APPROVAL_DISPLAY`, what `studio approvals` lists
+ * before its "more characters not shown" mark: the hold refuses rather than
+ * list a cut enforced line.
  */
 function displayFitRefusal(what: string, text: string): Refused | undefined {
   if (text.length <= MAX_APPROVAL_DISPLAY) return undefined;
@@ -266,9 +271,9 @@ function displayFitRefusal(what: string, text: string): Refused | undefined {
  * readiness lines (`readiness`, the hold's `charterReadiness(...).lines`), the
  * granted kernel tools by job (`catalogue`'s grouping, ahead of any
  * `mcp__kernel__` name), the enforced line, the limits, the workspaces, then
- * the settings file and `role.md` exactly as the kernel would write them (the
- * cut may hide the files' tail, never the head: the hold refuses a head that
- * does not fit).
+ * the settings file and `role.md` exactly as the kernel would write them. The
+ * approval stores it whole; `studio approvals`' cut may hide the files' tail
+ * behind its mark, never the head: the hold refuses a head that does not fit.
  */
 export function createDisplay(charter: Charter, catalogue?: ToolCatalogue, readiness: readonly string[] = []): string {
   return [
@@ -295,9 +300,16 @@ function createReadiness(charter: Charter, catalogue: ToolCatalogue | undefined,
   return charterReadiness({ action: "create", charter, catalogue, grant: { kind: "proposed", connectors: charter.connectors ?? [] }, dataDir });
 }
 
-/** A hold's verdict: the display, and the readiness note for Wright when anything is open (none: the held reason is as before). */
-function heldVerdict(display: string, readiness: ReadinessResult): HeldToolVerdict {
-  return readiness.agentNote === undefined ? { display } : { display, agentNote: readiness.agentNote };
+/**
+ * A hold's verdict: the display, its subject (`agent:<id>`, the member the
+ * call creates or changes, so a newer charter call for the same member
+ * withdraws the older pending one: the owner's 2026-11-11 decision 1), and the
+ * readiness note for Wright when anything is open (none: the held reason is as
+ * before).
+ */
+function heldVerdict(display: string, readiness: ReadinessResult, id: string): HeldToolVerdict {
+  const subject = `agent:${id}`;
+  return readiness.agentNote === undefined ? { display, subject } : { display, subject, agentNote: readiness.agentNote };
 }
 
 function createBeforeHold(a: CreateArgs, ctx: ContributedToolContext): HeldToolVerdict {
@@ -314,7 +326,7 @@ function createBeforeHold(a: CreateArgs, ctx: ContributedToolContext): HeldToolV
   const readiness = createReadiness(checked.charter, ctx.catalogue, ctx.store.dataDir);
   const tooLong = displayFitRefusal(CREATE_HEAD_TEXT, createHead(checked.charter, ctx.catalogue, readiness.lines));
   if (tooLong !== undefined) return holdRefusal(AGENT_CREATE_TOOL_NAME, tooLong);
-  return heldVerdict(createDisplay(checked.charter, ctx.catalogue, readiness.lines), readiness);
+  return heldVerdict(createDisplay(checked.charter, ctx.catalogue, readiness.lines), readiness, checked.charter.id);
 }
 
 /** `createAgent`'s refusal codes as this part's tokens. */
@@ -747,7 +759,8 @@ const UPDATE_DISPLAY_TEXT = "the display (its readiness lines, job lines, field 
 
 /**
  * `invalid_input` when the update's display would not fit `MAX_APPROVAL_DISPLAY`
- * (the hold refuses rather than show a cut field or enforced line). When even
+ * (the hold refuses rather than let `studio approvals` list a cut field or
+ * enforced line). When even
  * the floor (`updateFloor`: a lower bound on any request changing the same
  * fields) would not fit, no request to those fields fits and the remedy is
  * the owner's, not Wright's: the owner changes the member's settings file,
@@ -784,7 +797,7 @@ function updateBeforeHold(a: UpdateArgs, ctx: ContributedToolContext): HeldToolV
   const display = updateDisplay(update, ctx.catalogue, readiness.lines);
   // The readiness lines, the job lines, the field lines and the enforced line are all the owner must see: the whole display fits, or nothing is held.
   const tooLong = updateFitRefusal(update, display, ctx.catalogue, readiness);
-  return tooLong === undefined ? heldVerdict(display, readiness) : holdRefusal(AGENT_UPDATE_TOOL_NAME, tooLong);
+  return tooLong === undefined ? heldVerdict(display, readiness, update.row.id) : holdRefusal(AGENT_UPDATE_TOOL_NAME, tooLong);
 }
 
 /**

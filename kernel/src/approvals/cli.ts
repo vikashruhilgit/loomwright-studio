@@ -3,8 +3,11 @@
 //   studio approvals [--all] [--json]   pending first (id, agent, session, time,
 //                                       action, its playbook, its display text
 //                                       when it has one, the exact payload);
+//                                       a display over MAX_APPROVAL_DISPLAY
+//                                       characters is cut there with a mark
+//                                       naming how many were left out;
 //                                       --all adds decided ones; --json prints
-//                                       the API's JSON
+//                                       the API's JSON (every display whole)
 //   studio approvals grants [--json]    the standing grants not revoked
 //   studio approvals revoke <grant id>  revoke one
 //   studio approve <id> once|always     approve once, or (a rail approval from
@@ -23,7 +26,7 @@
 // registry, which imports this).
 import type { CliApiClient, CliSubcommandOutput, ContributedSubcommand } from "../features/contribution.js";
 import { printable } from "../notifications/cli.js";
-import { ALWAYS_REFUSED } from "./store.js";
+import { ALWAYS_REFUSED, MAX_APPROVAL_DISPLAY } from "./store.js";
 import type { ApprovalPlaybook, ApprovalView, GrantView } from "./store.js";
 
 export const APPROVALS_HELP = "studio approvals [--all] [--json] | grants [--json] | revoke <grant id>";
@@ -76,6 +79,24 @@ function displayText(text: string, indent: string): string {
     .join("\n");
 }
 
+/** Where the whole of a display cut by the list is shown. */
+export const DISPLAY_CUT_WHERE = "studio approvals --json, or the app's Approvals screen, shows all of it";
+
+/**
+ * A held call's display for the list (phase 8 item 18d): the whole text when
+ * it is at most `MAX_APPROVAL_DISPLAY` characters, else its first
+ * `MAX_APPROVAL_DISPLAY` (one fewer when that would split a surrogate pair)
+ * and then a mark line naming how many characters were left out and where
+ * they all are, so a cut display never just stops. Every line of the text is
+ * escaped and indented as `displayText`; the mark holds only a count.
+ */
+function listedDisplay(text: string, indent: string): string {
+  if (text.length <= MAX_APPROVAL_DISPLAY) return displayText(text, indent);
+  const high = text.charCodeAt(MAX_APPROVAL_DISPLAY - 1);
+  const cut = high >= 0xd800 && high <= 0xdbff ? MAX_APPROVAL_DISPLAY - 1 : MAX_APPROVAL_DISPLAY;
+  return `${displayText(text.slice(0, cut), indent)}\n${indent}… ${text.length - cut} more characters not shown; ${DISPLAY_CUT_WHERE}`;
+}
+
 /** `playbook <slug> v<n>` (its id when the slug is unknown; no version when none was recorded). */
 function playbookText(p: ApprovalPlaybook): string {
   const name = p.slug === null || p.slug === undefined ? `#${field(p.id)}` : field(p.slug);
@@ -106,7 +127,8 @@ export function formatApprovals(approvals: readonly ApprovalView[], all: boolean
     if (a.decided_at !== null || a.decided_by !== null) lines.push(`  decided: by ${field(a.decided_by)} at ${field(a.decided_at)}`);
     const apply = applyLine(a);
     if (apply !== undefined) lines.push(`  ${apply}`);
-    if (typeof a.display === "string") lines.push("  display:", displayText(a.display, "    "));
+    if (typeof a.replaced_by === "number") lines.push(`  replaced by #${field(a.replaced_by)}: withdrawn by the kernel when a newer version was held`);
+    if (typeof a.display === "string") lines.push("  display:", listedDisplay(a.display, "    "));
     lines.push("  payload:", payloadText(a.payload, "    "));
     return lines.join("\n");
   });

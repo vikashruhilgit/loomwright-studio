@@ -510,7 +510,7 @@ describe("kernel_agent_create: refusals and the apply's edges (AC3)", () => {
     expect(readFileSync(paths.settings, "utf8")).toBe(renderAgentSettingsJson(validated(charter())));
   });
 
-  it("the display's head (who, enforced, limits, workspaces) always fits the 4,000-character cut: a charter whose head would not is refused invalid_input at the hold; one whose files run past the cut is held with the head whole", async () => {
+  it("the display's head (who, enforced, limits, workspaces) always fits the 4,000 characters studio approvals lists: a charter whose head would not is refused invalid_input at the hold; one whose files run past them is held, stored whole", async () => {
     const h = await bootManager();
     // 64 tools of ~150 characters: valid, but the enforced line alone is ~9,800 characters.
     const wide = charter({ tool_policy: { allowedTools: longTools(64), allowedBashPrefixes: ["gh pr view"], never: ["git_push"] } });
@@ -526,7 +526,12 @@ describe("kernel_agent_create: refusals and the apply's edges (AC3)", () => {
     const fits = charter({ tool_policy: { allowedTools: longTools(20), allowedBashPrefixes: ["gh pr view"], never: ["git_push"] } });
     expect((await h.wright.gate(CREATE, { charter: fits, idempotency_key: "c2" })).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
     const shown = String(events(h.store, "approval_requested")[0]?.payload.display);
-    expect(shown.length).toBe(MAX_APPROVAL_DISPLAY);
+    // Phase 8 item 18d: the display is stored whole (no 4,000 cut), through role.md's last line, and served whole.
+    expect(shown.length).toBeGreaterThan(MAX_APPROVAL_DISPLAY);
+    const fitted = validated(fits);
+    const roleMd = renderRoleMd(fitted, fitted.connectors);
+    expect(shown.endsWith(`\nmemory/mason/role.md:\n${roleMd.endsWith("\n") ? roleMd.slice(0, -1) : roleMd}`)).toBe(true);
+    expect(listApprovals(h.store)[0]?.display).toBe(shown);
     const head = shown.split("\n").slice(0, 6);
     expect(head.slice(1, 3)).toEqual(READY);
     expect(head[3]).toBe(`enforced: never: git_push; tools: ${longTools(20).join(", ")}; bash prefixes: "gh pr view"`);
@@ -875,12 +880,29 @@ describe("kernel_agent_update (AC5, AC6)", () => {
   });
 
   it("an earlier approved update that changed the avatar refuses a later-held update naming avatar; one naming only a settings field is still applied after an owner rename", async () => {
-    const h = await bootManager();
+    // Since phase 8 item 18d a newer charter hold for mason withdraws the older pending one (the hold's `subject`), so three
+    // pending updates for one member arise only from approvals held before 18d, whose holds named no subject: the pre-hold
+    // check here drops it to hold them as such (the applier is the shipped one). The apply-time config_changed check still guards those.
+    const before18d: ContributedTool[] = TOOLS.map((t) => {
+      const check = t.beforeHold;
+      if (check === undefined) return t;
+      return {
+        ...t,
+        beforeHold: (a: never, c: Parameters<typeof check>[1]) => {
+          const v = check.call(t, a, c);
+          if ("refuse" in v) return v;
+          const { subject: _subject, ...held } = v;
+          return held;
+        },
+      } as ContributedTool;
+    });
+    const h = await bootManager(before18d);
     expect(h.ownerCreate().ok).toBe(true);
     const sha = await h.shaOf("mason");
     await h.wright.gate(UPDATE, { id: "mason", changes: { avatar: { shape: "octopus", hue: "crew-sky" } }, expected_sha256: sha, idempotency_key: "u1" });
     await h.wright.gate(UPDATE, { id: "mason", changes: { avatar: { shape: "crab", hue: "crew-sky" } }, expected_sha256: sha, idempotency_key: "u2" });
     await h.wright.gate(UPDATE, { id: "mason", changes: { limits: { tokens_per_day: 300000 } }, expected_sha256: sha, idempotency_key: "u3" });
+    expect(h.approvals().map((a) => a.status)).toEqual(["pending", "pending", "pending"]);
     h.decide(1);
     expect(h.decided(1)?.applied).toBe("The kernel updated crew member mason on approval 1: avatar.");
     h.decide(2);
@@ -1056,8 +1078,10 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     expect(shown.lastIndexOf("job: ")).toBeLessThan(shown.indexOf(K));
     expect(lines.slice(0, 4 + catalogue.jobs.length).join("\n").length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
     expect([lines[0], fullBlock, ...lines.slice(1 + catalogue.jobs.length, 4 + catalogue.jobs.length)].join("\n").length).toBeGreaterThan(MAX_APPROVAL_DISPLAY);
-    // The files' tail is cut at the 4,000 characters; the head never is.
-    expect(shown).toBe(createDisplay(validated(all), catalogue, createReadinessLines(validated(all), catalogue)).slice(0, MAX_APPROVAL_DISPLAY));
+    // Phase 8 item 18d: the whole display is stored, the files' tail included (studio approvals cuts its listing at 4,000, with a mark; the head is never in the cut part).
+    const whole = createDisplay(validated(all), catalogue, createReadinessLines(validated(all), catalogue));
+    expect(whole.length).toBeGreaterThan(MAX_APPROVAL_DISPLAY);
+    expect(shown).toBe(whole);
   });
 
   it("the update's display falls back to the job labels alone when its full block would not fit: a member granted every kernel tool can be renamed and narrowed; its floor counts only the labels", async () => {

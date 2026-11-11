@@ -437,6 +437,12 @@ export interface Approval {
   readonly applied?: string;
   readonly apply_refused?: string;
   readonly apply_detail?: string;
+  /**
+   * Phase 8 item 18d: the approval that replaced this one, when the kernel withdrew it because a newer
+   * charter hold for the same crew member was filed (status `denied`, decision `deny`, decided by
+   * `kernel`; the kernel's `ApprovalView.replaced_by`). Present only then.
+   */
+  readonly replaced_by?: number;
 }
 
 export interface ApprovalsQuery {

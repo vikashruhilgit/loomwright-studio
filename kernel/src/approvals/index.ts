@@ -35,6 +35,8 @@ export {
   ApprovalError,
   KERNEL_APPLIED_ACTIONS,
   MAX_APPROVAL_ACTION,
+  MAX_APPROVAL_DISPLAY,
+  MAX_APPROVAL_SUBJECT,
   MAX_DECIDED_LIST,
   MAX_REQUEST_PAYLOAD_JSON,
   OWNER,
@@ -49,6 +51,7 @@ export {
   requestApproval,
   revokeGrant,
 } from "./store.js";
+export { WITHDRAWN_BY, withdrawReplaced } from "./replace.js";
 export type {
   AppliedApproval,
   ApprovalApplier,

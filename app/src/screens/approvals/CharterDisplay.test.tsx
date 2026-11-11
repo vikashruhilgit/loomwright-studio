@@ -12,7 +12,7 @@ import type { Approval, StudioBridge } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
 import { ApprovalsScreen } from "./ApprovalsScreen";
-import { ADDS, ADDS_TOOLS, CharterDisplay, JOBS_HEADING, KEEPS, RAW_SUMMARY, READINESS_HEADING, READINESS_STATUS_LABELS } from "./CharterDisplay";
+import { ADDS, ADDS_TOOLS, CharterDisplay, JOBS_HEADING, KEEPS, RAW_SUMMARY, READINESS_HEADING, READINESS_STATUS_LABELS, SHOW_DETAILS } from "./CharterDisplay";
 import { printable } from "./printable";
 import {
   CHARTER_CATALOGUE_UNAVAILABLE,
@@ -171,6 +171,27 @@ function textOutsideRaw(card: HTMLElement): string {
   return copy.textContent ?? "";
 }
 
+/** Press Show full details (the details start hidden, the owner's 2026-11-10 decision). */
+function openDetails(scope: HTMLElement = document.body): void {
+  fireEvent.click(within(scope).getByRole("button", { name: SHOW_DETAILS }));
+}
+
+/**
+ * Every line after the plain block as the details show it: the enforced lines, then each file block under its
+ * kernel header line (`config/agents/<id>.json:`, `memory/<id>/role.md:`), joined back as the kernel wrote them.
+ */
+function rawShown(scope: ParentNode = document): string {
+  const out: string[] = [];
+  for (const kind of ["enforced", "settings", "role"]) {
+    const block = scope.querySelector(`[data-testid="charter-block-${kind}"]`);
+    if (block === null) continue;
+    const text = block.querySelector('[data-testid="charter-block-text"]')?.textContent ?? "";
+    const path = block.querySelector(".approvals-charter-block-path")?.textContent;
+    out.push(path === null || path === undefined ? text : `${path}:\n${text}`);
+  }
+  return out.join("\n");
+}
+
 /** Whether `a` comes before `b` in the document. */
 function before(a: Element, b: Element): boolean {
   return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
@@ -184,7 +205,7 @@ afterEach(() => {
 
 describe("CharterDisplay", () => {
   it("AC3: the walk charter's jobs, in plain words with their purposes, come before every raw kernel tool name", () => {
-    render(<CharterDisplay parts={parts(WALK_DISPLAY)} />);
+    render(<CharterDisplay parts={parts(WALK_DISPLAY)} display={WALK_DISPLAY} />);
     const card = screen.getByTestId("approval-display");
     expect(screen.getByTestId("charter-head").textContent).toBe('Create crew member mason ("Mason", crab crew-teal), proposed by Wright');
     expect(screen.getByRole("heading", { name: JOBS_HEADING })).toBeTruthy();
@@ -194,7 +215,8 @@ describe("CharterDisplay", () => {
       "Whether Loomwright may merge one parked pull request now (read only).",
       "Ask the owner to approve merging one pull request at one head SHA, for a repository set to Approve in Studio.",
     ]);
-    // In reading order: the last plain line is before the first raw name.
+    // In reading order, once the details are shown: the last plain line is before the first raw name.
+    openDetails();
     const text = card.textContent ?? "";
     const lastPlain = text.indexOf("Read the comments on one pull request from GitHub (read-only)");
     expect(lastPlain).toBeGreaterThan(0);
@@ -202,38 +224,44 @@ describe("CharterDisplay", () => {
     expect(before(screen.getByTestId("charter-plain"), screen.getByTestId("charter-raw"))).toBe(true);
   });
 
-  it("AC3: the raw names are inside the open \"Kernel tool names, as enforced\" disclosure, beneath, with every later line exactly as the kernel wrote it", () => {
-    render(<CharterDisplay parts={parts(WALK_DISPLAY)} />);
+  it("AC1/AC2: the raw names are inside the full details, hidden by default; shown, every later line is there exactly as the kernel wrote it", () => {
+    render(<CharterDisplay parts={parts(WALK_DISPLAY)} display={WALK_DISPLAY} />);
     const card = screen.getByTestId("approval-display");
     const raw = screen.getByTestId("charter-raw") as HTMLDetailsElement;
     expect(raw.tagName).toBe("DETAILS");
-    expect(raw.open).toBe(true);
+    expect(raw.open).toBe(false);
     expect(raw.querySelector("summary")?.textContent).toBe(RAW_SUMMARY);
-    // No raw kernel name outside the disclosure.
+    // Hidden: nothing of the details is rendered, and no raw kernel name, JSON or file path shows.
+    expect(raw.querySelector("pre")).toBeNull();
+    expect(card.textContent).not.toContain(K);
+    expect(card.textContent).not.toContain("config/agents/");
+    expect(card.textContent).not.toContain('"tool_policy"');
+    openDetails();
+    expect(raw.open).toBe(true);
+    // No raw kernel name outside the details.
     expect(textOutsideRaw(card)).not.toContain(K);
-    const pre = raw.querySelector("pre") as HTMLElement;
     const lines = WALK_DISPLAY.split("\n");
     const enforcedAt = lines.findIndex((l) => l.startsWith("enforced: "));
-    expect(pre.textContent).toBe(lines.slice(enforcedAt).join("\n"));
-    // Non-kernel tools and Bash prefixes are shown as today: on the enforced line, which is open.
-    expect(pre.textContent).toContain('enforced: never: git_push; tools: Read, Bash, mcp__kernel__kernel_automate_prepare, ');
-    expect(pre.textContent).toContain('bash prefixes: "gh pr"; connectors: github');
-    // The owner may close it.
-    fireEvent.click(raw.querySelector("summary") as HTMLElement);
+    expect(rawShown()).toBe(lines.slice(enforcedAt).join("\n"));
+    const enforced = screen.getByTestId("charter-block-enforced").textContent ?? "";
+    expect(enforced).toContain('enforced: never: git_push; tools: Read, Bash, mcp__kernel__kernel_automate_prepare, ');
+    expect(enforced).toContain('bash prefixes: "gh pr"; connectors: github');
+    // The owner may hide it again.
+    fireEvent.click(screen.getByRole("button", { name: "Hide full details" }));
     expect(raw.open).toBe(false);
   });
 
   it("AC3: an update's jobs come before its field lines, whose raw names stay in the disclosure", () => {
-    render(<CharterDisplay parts={parts(UPDATE_DISPLAY)} />);
+    render(<CharterDisplay parts={parts(UPDATE_DISPLAY)} display={UPDATE_DISPLAY} />);
     const card = screen.getByTestId("approval-display");
     expect(screen.getAllByTestId("charter-job").map((j) => j.querySelector(".approvals-charter-job-label")?.textContent)).toEqual(["Ask for a merge", "Read a PR"]);
     expect(textOutsideRaw(card)).not.toContain(K);
-    const pre = screen.getByTestId("charter-raw").querySelector("pre") as HTMLElement;
-    expect(pre.textContent?.split("\n").map((l) => l.split(":")[0])).toEqual(["tool_policy", "enforced"]);
+    openDetails();
+    expect(rawShown().split("\n").map((l) => l.split(":")[0])).toEqual(["tool_policy", "enforced"]);
   });
 
   it("an update shows the jobs it adds and the jobs it keeps (DESIGN: the charter card), and a new tool under a kept job, in plain words; a create shows neither mark", () => {
-    render(<CharterDisplay parts={parts(UPDATE_DISPLAY)} />);
+    render(<CharterDisplay parts={parts(UPDATE_DISPLAY)} display={UPDATE_DISPLAY} />);
     const jobs = screen.getAllByTestId("charter-job");
     expect(jobs.map((j) => [j.querySelector(".approvals-charter-job-label")?.textContent, j.querySelector(".approvals-charter-job-head .badge")?.textContent])).toEqual([
       ["Ask for a merge", ADDS],
@@ -249,7 +277,7 @@ describe("CharterDisplay", () => {
       "  - Ask the owner to approve merging one pull request at one head SHA, for a repository set to Approve in Studio. (added)",
       `enforced: never: none; tools: ${K}kernel_automate_merge_check, ${K}kernel_merge_approval_request; bash prefixes: none`,
     ].join("\n");
-    render(<CharterDisplay parts={parts(keptJobGains)} />);
+    render(<CharterDisplay parts={parts(keptJobGains)} display={keptJobGains} />);
     const items = within(screen.getByTestId("charter-job")).getAllByRole("listitem");
     expect(items.map((li) => [li.firstChild?.textContent, li.querySelector(".badge")?.textContent ?? null])).toEqual([
       ["Whether Loomwright may merge one parked pull request now (read only).", null],
@@ -257,7 +285,7 @@ describe("CharterDisplay", () => {
     ]);
     expect(screen.getByTestId("charter-job").querySelector(".approvals-charter-job-head .badge")?.textContent).toBe(KEEPS);
     cleanup();
-    render(<CharterDisplay parts={parts(WALK_DISPLAY)} />);
+    render(<CharterDisplay parts={parts(WALK_DISPLAY)} display={WALK_DISPLAY} />);
     expect(screen.getByTestId("charter-plain").querySelector(".badge")).toBeNull();
   });
 
@@ -270,7 +298,7 @@ describe("CharterDisplay", () => {
       "tool_policy: [] → as on the enforced line",
       `enforced: never: none; tools: ${K}kernel_automate_merge_check; bash prefixes: none`,
     ].join("\n");
-    render(<CharterDisplay parts={parts(compact)} />);
+    render(<CharterDisplay parts={parts(compact)} display={compact} />);
     const jobs = screen.getAllByTestId("charter-job");
     expect(jobs.map((j) => [j.querySelector(".approvals-charter-job-label")?.textContent, j.querySelector(".approvals-charter-job-head .badge")?.textContent])).toEqual([
       ["Ask for a merge", ADDS_TOOLS],
@@ -279,7 +307,8 @@ describe("CharterDisplay", () => {
     ]);
     expect(screen.getByTestId("charter-plain").textContent).not.toContain("(gains tools)");
     cleanup();
-    render(<CharterDisplay parts={parts('Create crew member nell ("Nell", crab crew-teal), proposed by Wright\njob: Read a PR (gains tools)\nenforced: x')} />);
+    const nell = 'Create crew member nell ("Nell", crab crew-teal), proposed by Wright\njob: Read a PR (gains tools)\nenforced: x';
+    render(<CharterDisplay parts={parts(nell)} display={nell} />);
     expect(screen.getByTestId("charter-plain").querySelector(".badge")).toBeNull();
   });
 
@@ -293,34 +322,38 @@ describe("CharterDisplay", () => {
       "limits: tokens_per_day not set (no limit); sessions_at_once not set (no limit); delegation_depth not set (no limit)",
       "workspaces: none",
     ].join("\n");
-    render(<CharterDisplay parts={parts(compact)} />);
+    render(<CharterDisplay parts={parts(compact)} display={compact} />);
     const card = screen.getByTestId("approval-display");
     const jobs = screen.getAllByTestId("charter-job");
     expect(jobs.map((j) => j.textContent)).toEqual(["Hand tickets to /automate", "Read a PR", "General"]);
     expect(jobs.every((j) => j.querySelector("ul") === null)).toBe(true);
     expect(textOutsideRaw(card)).not.toContain(K);
     expect(before(screen.getByTestId("charter-plain"), screen.getByTestId("charter-raw"))).toBe(true);
-    expect(screen.getByTestId("charter-raw").querySelector("pre")?.textContent).toBe(compact.split("\n").slice(4).join("\n"));
+    openDetails();
+    expect(rawShown()).toBe(compact.split("\n").slice(4).join("\n"));
   });
 
   it("AC9: with the kernel's catalogue unavailable, the kernel's note is shown and no grouping is guessed; the raw names follow", () => {
-    render(<CharterDisplay parts={parts(UNAVAILABLE_DISPLAY)} />);
+    render(<CharterDisplay parts={parts(UNAVAILABLE_DISPLAY)} display={UNAVAILABLE_DISPLAY} />);
     expect(screen.getByTestId("charter-note").textContent).toBe(CHARTER_CATALOGUE_UNAVAILABLE);
     expect(screen.queryByTestId("charter-jobs")).toBeNull();
     expect(screen.queryAllByTestId("charter-job")).toEqual([]);
+    openDetails();
     expect(screen.getByTestId("charter-raw").textContent).toContain(`tools: Read, ${K}kernel_github_pr_get`);
   });
 
   it("every part is escaped text: an ANSI escape or a bidi override in the head, a purpose or a raw line never reaches the DOM raw, and markup stays text", () => {
     const hostile = [`Create crew member x ("x${RLO}", crab crew-teal), proposed by Wright`, `job: Read <b>a</b> PR`, `  - Read ${ESC}[31mit${ESC}[0m.`, `enforced: never: none; tools: ${K}kernel_github_pr_get${RLO}`].join("\n");
-    const { container } = render(<CharterDisplay parts={parts(hostile)} />);
+    const { container } = render(<CharterDisplay parts={parts(hostile)} display={hostile} />);
     const card = screen.getByTestId("approval-display");
     expect(card.textContent).not.toMatch(RAW);
     expect(screen.getByTestId("charter-head").textContent).toContain("x\\u202e");
     expect(screen.getByTestId("charter-job").textContent).toContain("Read \\x1b[31mit\\x1b[0m.");
     expect(screen.getByTestId("charter-job").firstChild?.textContent).toBe("Read <b>a</b> PR");
     expect(container.querySelector("b")).toBeNull();
-    expect(screen.getByTestId("charter-raw").querySelector("pre")?.textContent).toBe(printable(`enforced: never: none; tools: ${K}kernel_github_pr_get${RLO}`, true));
+    openDetails();
+    expect(card.textContent).not.toMatch(RAW);
+    expect(rawShown()).toBe(printable(`enforced: never: none; tools: ${K}kernel_github_pr_get${RLO}`, true));
   });
 });
 
@@ -336,7 +369,7 @@ function readinessRows(): [string | null | undefined, string | undefined, string
 
 describe("CharterDisplay: the readiness block", () => {
   it("AC12: one line per duty and per job prerequisite, in the kernel's order, its status in plain words; flagged and not-checked lines in the attention tone, covered and ready neutral", () => {
-    render(<CharterDisplay parts={parts(READINESS_DISPLAY)} />);
+    render(<CharterDisplay parts={parts(READINESS_DISPLAY)} display={READINESS_DISPLAY} />);
     expect(screen.getByRole("heading", { name: READINESS_HEADING })).toBeTruthy();
     expect(screen.getByRole("list", { name: READINESS_HEADING })).toBe(screen.getByTestId("charter-readiness"));
     expect(readinessRows()).toEqual([
@@ -351,40 +384,43 @@ describe("CharterDisplay: the readiness block", () => {
     expect(screen.getByTestId("charter-readiness").textContent).not.toMatch(/covered: |flagged: |ready: |not checked: |readiness: /);
   });
 
-  it("AC12: the block is in the plain section, after who and ahead of the job lines, which are drawn as before; the raw lines stay in the disclosure", () => {
-    render(<CharterDisplay parts={parts(READINESS_DISPLAY)} />);
+  it("AC1 (18d): the block is in the plain section, after who, Can do, Never does and Limits, the jobs drawn as before; the raw lines stay in the details", () => {
+    render(<CharterDisplay parts={parts(READINESS_DISPLAY)} display={READINESS_DISPLAY} />);
     const plain = screen.getByTestId("charter-plain");
     const block = screen.getByTestId("charter-readiness");
     expect(plain.contains(block)).toBe(true);
     expect(before(screen.getByTestId("charter-head"), block)).toBe(true);
-    expect(before(block, screen.getByRole("heading", { name: JOBS_HEADING }))).toBe(true);
-    expect(before(block, screen.getAllByTestId("charter-job")[0] as HTMLElement)).toBe(true);
+    expect(before(screen.getByRole("heading", { name: JOBS_HEADING }), block)).toBe(true);
+    expect(before(screen.getAllByTestId("charter-job")[1] as HTMLElement, block)).toBe(true);
+    expect(before(screen.getByTestId("charter-never"), block)).toBe(true);
     expect(screen.getAllByTestId("charter-job").map((j) => j.querySelector(".approvals-charter-job-label")?.textContent)).toEqual(["Hand tickets to /automate", "Read a PR"]);
     expect(plain.getAttribute("aria-labelledby")).toBe(screen.getByRole("heading", { name: JOBS_HEADING }).id);
     expect(textOutsideRaw(screen.getByTestId("approval-display"))).not.toContain(K);
-    expect(screen.getByTestId("charter-raw").querySelector("pre")?.textContent).toBe(READINESS_DISPLAY.split("\n").slice(-2).join("\n"));
+    openDetails();
+    expect(rawShown()).toBe(READINESS_DISPLAY.split("\n").slice(-2).join("\n"));
   });
 
   it("a charter granting no kernel tool shows the readiness block alone: no empty jobs heading, and the section is named by the block's heading", () => {
-    render(<CharterDisplay parts={parts(READINESS_NO_KERNEL_DISPLAY)} />);
+    render(<CharterDisplay parts={parts(READINESS_NO_KERNEL_DISPLAY)} display={READINESS_NO_KERNEL_DISPLAY} />);
     expect(readinessRows()).toEqual([[READINESS_STATUS_LABELS.covered, "neutral", "duty 1 with no tool (it needs no kernel tool): Watch my site's uptime every morning."]]);
     expect(screen.queryByRole("heading", { name: JOBS_HEADING })).toBeNull();
     expect(screen.queryByTestId("charter-jobs")).toBeNull();
     expect(screen.queryByTestId("charter-note")).toBeNull();
     expect(screen.getByRole("region", { name: READINESS_HEADING })).toBe(screen.getByTestId("charter-plain"));
-    expect(screen.getByTestId("charter-raw").querySelector("pre")?.textContent).toBe(READINESS_NO_KERNEL_DISPLAY.split("\n").slice(3).join("\n"));
+    openDetails();
+    expect(rawShown()).toBe(READINESS_NO_KERNEL_DISPLAY.split("\n").slice(3).join("\n"));
   });
 
-  it("with the catalogue unavailable, the readiness block comes first and the kernel's note after it", () => {
+  it("with the catalogue unavailable, the kernel's note comes first (under Can do) and the readiness block after it", () => {
     const display = ['Create crew member mason ("Mason", crab crew-teal), proposed by Wright', "readiness: checked by the kernel before you see it", `${CHARTER_READINESS_NOT_CHECKED_PREFIX}duty 1 (the kernel's tool catalogue is unavailable): Read PRs`, CHARTER_CATALOGUE_UNAVAILABLE, "enforced: x"].join("\n");
-    render(<CharterDisplay parts={parts(display)} />);
+    render(<CharterDisplay parts={parts(display)} display={display} />);
     expect(readinessRows()).toEqual([[READINESS_STATUS_LABELS.not_checked, "attention", "duty 1 (the kernel's tool catalogue is unavailable): Read PRs"]]);
-    expect(before(screen.getByTestId("charter-readiness"), screen.getByTestId("charter-note"))).toBe(true);
+    expect(before(screen.getByTestId("charter-note"), screen.getByTestId("charter-readiness"))).toBe(true);
   });
 
   it("AC12: a display with no readiness block (an approval held before this change) renders exactly as before: no block, the jobs heading names the section", () => {
     for (const display of [WALK_DISPLAY, UPDATE_DISPLAY, UNAVAILABLE_DISPLAY]) {
-      render(<CharterDisplay parts={parts(display)} />);
+      render(<CharterDisplay parts={parts(display)} display={display} />);
       expect(screen.queryByTestId("charter-readiness")).toBeNull();
       expect(screen.queryByRole("heading", { name: READINESS_HEADING })).toBeNull();
       expect(screen.getByRole("region", { name: JOBS_HEADING })).toBe(screen.getByTestId("charter-plain"));
@@ -395,7 +431,7 @@ describe("CharterDisplay: the readiness block", () => {
   it("a duty's text is escaped text on its line: an ANSI escape, a bidi override or markup never reaches the DOM raw, and never adds a status", () => {
     const text = `duty 1 by Read a PR: Read <b>it</b> ${ESC}[31m${RLO}flagged: no`;
     const display = ['Create crew member x ("x", crab crew-teal), proposed by Wright', "readiness: checked by the kernel before you see it", `${CHARTER_READINESS_COVERED_PREFIX}${text}`, "job: Read a PR", "enforced: x"].join("\n");
-    const { container } = render(<CharterDisplay parts={parts(display)} />);
+    const { container } = render(<CharterDisplay parts={parts(display)} display={display} />);
     expect(readinessRows()).toEqual([[READINESS_STATUS_LABELS.covered, "neutral", printable(text)]]);
     expect(screen.getByTestId("charter-readiness").textContent).not.toMatch(RAW);
     expect(container.querySelector("b")).toBeNull();
@@ -439,11 +475,14 @@ const CREATE = `${K}kernel_agent_create`;
 const UPDATE = `${K}kernel_agent_update`;
 
 describe("the Approvals screen's charter card", () => {
-  it("AC3: a held create's card shows the jobs in plain words first and the raw names inside the disclosure beneath", async () => {
+  it("AC1: a held create's card opens compact (details hidden) with the jobs in plain words first and the raw names inside the details beneath", async () => {
     await mount([approval(1, CREATE, WALK_DISPLAY)]);
     const card = screen.getByTestId("approval-display");
     expect(card.tagName).toBe("DIV");
     expect(within(card).getAllByTestId("charter-job")).toHaveLength(4);
+    expect((within(card).getByTestId("charter-raw") as HTMLDetailsElement).open).toBe(false);
+    expect(card.textContent).not.toContain(K);
+    openDetails(card);
     expect(textOutsideRaw(card)).not.toContain(K);
     expect(within(card).getByTestId("charter-raw").textContent).toContain(`${K}kernel_automate_prepare`);
     expect(before(within(card).getByTestId("charter-plain"), within(card).getByTestId("charter-raw"))).toBe(true);
@@ -477,7 +516,7 @@ describe("the Approvals screen's charter card", () => {
     let card = screen.getByTestId("approval-display");
     expect(card.tagName).toBe("DIV");
     const block = within(card).getByTestId("charter-readiness");
-    expect(before(block, within(card).getAllByTestId("charter-job")[0] as HTMLElement)).toBe(true);
+    expect(before(within(card).getAllByTestId("charter-job")[1] as HTMLElement, block)).toBe(true);
     expect(within(block).getAllByTestId("charter-readiness-line").map((li) => li.querySelector(".badge")?.getAttribute("data-tone"))).toEqual(["neutral", "attention", "attention", "attention", "neutral"]);
     fireEvent.keyDown(document.body, { key: "j" });
     await waitFor(() => expect(screen.getByTestId("approval-detail").dataset.approvalId).toBe("2"));
@@ -487,13 +526,13 @@ describe("the Approvals screen's charter card", () => {
     expect(within(card).queryByTestId("charter-jobs")).toBeNull();
   });
 
-  it("the disclosure's open state is each approval's own: closing it on one leaves the next open", async () => {
+  it("the details' open state is each approval's own: showing them on one leaves the next hidden", async () => {
     await mount([approval(1, CREATE, WALK_DISPLAY), approval(2, UPDATE, UPDATE_DISPLAY)]);
     const first = screen.getByTestId("charter-raw") as HTMLDetailsElement;
-    fireEvent.click(first.querySelector("summary") as HTMLElement);
-    expect(first.open).toBe(false);
+    openDetails(screen.getByTestId("approval-display"));
+    expect(first.open).toBe(true);
     fireEvent.keyDown(document.body, { key: "j" });
     await waitFor(() => expect(screen.getByTestId("approval-detail").dataset.approvalId).toBe("2"));
-    expect((screen.getByTestId("charter-raw") as HTMLDetailsElement).open).toBe(true);
+    expect((screen.getByTestId("charter-raw") as HTMLDetailsElement).open).toBe(false);
   });
 });

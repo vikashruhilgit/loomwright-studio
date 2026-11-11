@@ -105,6 +105,15 @@ describe("thread", () => {
     expect(k.posted("POST /approvals/:id/approve")).toHaveLength(0);
   });
 
+  it("AC14 (18d): a pending kernel_agent_update renders as the charter card, not the generic approval card", async () => {
+    const display = ['Update crew member pim ("Pim"), settings sha256 3f9a1c07b2e4, proposed by Wright', "job: Read a PR (added)", "  - Read one pull request.", "enforced: never: none; tools: Read; bash prefixes: none"].join("\n");
+    const k = kit({ threads: { wright: thread([message(1)], { pending_approvals: [approval(9, { action: "kernel_agent_update", payload: { tool: "mcp__kernel__kernel_agent_update", input: { id: "pim" } }, display })] }) } });
+    const view = await renderChat(k);
+    const card = await screen.findByRole("region", { name: "Drafted crew member, approval 9" });
+    expect(within(card).getByTestId("charter-job").querySelector(".badge")?.textContent).toBe("Adds");
+    expect(view.container.querySelector(".eventcard-approval")).toBeNull();
+  });
+
   it("another agent's approval is not shown", async () => {
     const k = kit({
       threads: {
@@ -175,7 +184,14 @@ describe("thread", () => {
     const k = kit({
       threads: {
         wright: thread([message(1, { text: XSS_LINK, reply_text: `${XSS_IMG} ${XSS_LINK}` }), eventItem(2, "playbook_created", `${XSS_IMG} ${XSS_LINK}`, {})], {
-          pending_approvals: [approval(7, { display: `${XSS_IMG} ${XSS_LINK}` }), approval(9, { action: "kernel_agent_create", display: `${XSS_IMG}\n${XSS_LINK}` })],
+          pending_approvals: [
+            approval(7, { display: `${XSS_IMG} ${XSS_LINK}` }),
+            approval(9, {
+              action: "kernel_agent_create",
+              payload: { tool: "mcp__kernel__kernel_agent_create", input: { charter: { id: "x" } } },
+              display: [`Create crew member x ("${XSS_IMG}", crab crew-teal), proposed by Wright`, `job: ${XSS_LINK}`, `  - ${XSS_IMG}`, "enforced: never: none; tools: Read; bash prefixes: none"].join("\n"),
+            }),
+          ],
         }),
       },
     });
@@ -187,7 +203,10 @@ describe("thread", () => {
     // Each surface shows the literal text.
     expect(view.container.textContent).toContain(XSS_IMG);
     expect(screen.getByRole("status", { name: "" }).textContent).toContain(XSS_IMG);
-    expect(view.container.querySelector(".chat-charter-display")?.textContent).toBe(`${XSS_IMG}\n${XSS_LINK}`);
+    // The charter card's parts (phase 8 item 18d): the head and the jobs, each as text.
+    const charter = screen.getByRole("region", { name: "Drafted crew member, approval 9" });
+    expect(within(charter).getByTestId("charter-head").textContent).toBe(`Create crew member x ("${XSS_IMG}", crab crew-teal), proposed by Wright`);
+    expect(within(charter).getByTestId("charter-job").textContent).toBe(`${XSS_LINK}Used for:${XSS_IMG}`);
   });
 
   it("failed shows the kernel's reason; parked row shows retry time", async () => {

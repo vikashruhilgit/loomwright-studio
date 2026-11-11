@@ -222,6 +222,37 @@ export function joinThreads<R>(rows: readonly R[], threadIdOf: (row: R) => numbe
   return out;
 }
 
+// ---- the thread a held charter was drafted in (phase 8 item 18d) ----------------------------
+
+/** What a held charter's Ask or change posts into: the agent message to continue, its thread, and whose it is. */
+export interface DraftingTarget {
+  /** The agent message `continues` names. */
+  readonly message: number;
+  readonly thread: number;
+  /** The agent the message belongs to (the `POST /ask` body's `agent`). */
+  readonly agent: string;
+  readonly item: MessageItem;
+}
+
+/**
+ * The message a held charter was drafted in: among the loaded `items`, the
+ * agent's message (the owner's turn and the agent's reply) whose `session_id`
+ * is the approval's `requesting_session`. When several carry that session (a
+ * resumed thread reuses it), the newest. `undefined` when the approval names
+ * no session or that message is not among the items loaded: a caller then
+ * sends nothing, never to a guessed thread.
+ */
+export function draftingMessage(items: readonly ThreadItem[], approval: { readonly requesting_session: number | null; readonly requesting_agent: string }): DraftingTarget | undefined {
+  const session = approval.requesting_session;
+  if (session === null) return undefined;
+  let found: MessageItem | undefined;
+  for (const item of items) {
+    if (item.type !== "message" || item.session_id !== session || item.agent !== approval.requesting_agent) continue;
+    if (found === undefined || item.id > found.id) found = item;
+  }
+  return found === undefined ? undefined : { message: found.id, thread: threadOf(found), agent: found.agent, item: found };
+}
+
 // ---- which thread was summarized into which (per bridge, for the app's lifetime) -------------
 
 // The kernel exposes no `summarized_into` on read: this is what Start fresh's `202` (`from`, `thread`) and an

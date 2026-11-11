@@ -13,7 +13,7 @@ import type {
   SpawnOptions,
   SpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
-import { KERNEL_APPLIED_ACTIONS, holdOrUseGrant } from "../approvals/store.js";
+import { KERNEL_APPLIED_ACTIONS, MAX_APPROVAL_SUBJECT, holdOrUseGrant } from "../approvals/store.js";
 import { KeychainError } from "../auth/keychain.js";
 import { recordDraftOutput } from "../integrations/drafts.js";
 import type { DraftRecord } from "../integrations/drafts.js";
@@ -124,8 +124,9 @@ type GateReason = ToolDecisionReason | "kernel_gate_error" | "dry_run" | "held_r
 /**
  * A pre-hold check's answer, checked for its exact shape (`HeldToolVerdict`):
  * `undefined`, `{refuse}` with a non-empty text, or `{display}` with an
- * optional positive-integer `subjectVersion` and an optional non-empty
- * `agentNote`, and no other key. Anything else
+ * optional positive-integer `subjectVersion`, an optional non-empty
+ * `agentNote` and an optional `subject` of 1 to `MAX_APPROVAL_SUBJECT`
+ * characters, and no other key. Anything else
  * (a promise included: the check is synchronous) throws, so the gate denies
  * the call `kernel_gate_error` (fail closed).
  */
@@ -137,14 +138,20 @@ function checkedVerdict(value: unknown): HeldToolVerdict | undefined {
     if (keys.length === 1 && isNonEmptyString(v.refuse)) return { refuse: v.refuse };
     const version = v.subjectVersion;
     const note = v.agentNote;
+    const subject = v.subject;
     if (
       typeof v.display === "string" &&
-      keys.every((k) => k === "display" || k === "subjectVersion" || k === "agentNote") &&
+      keys.every((k) => k === "display" || k === "subjectVersion" || k === "agentNote" || k === "subject") &&
       (version === undefined || (typeof version === "number" && Number.isSafeInteger(version) && version > 0)) &&
-      (note === undefined || isNonEmptyString(note))
+      (note === undefined || isNonEmptyString(note)) &&
+      (subject === undefined || (isNonEmptyString(subject) && subject.length <= MAX_APPROVAL_SUBJECT))
     ) {
-      const held = version === undefined ? { display: v.display } : { display: v.display, subjectVersion: version as number };
-      return note === undefined ? held : { ...held, agentNote: note as string };
+      return {
+        display: v.display,
+        ...(version === undefined ? {} : { subjectVersion: version as number }),
+        ...(note === undefined ? {} : { agentNote: note as string }),
+        ...(subject === undefined ? {} : { subject: subject as string }),
+      };
     }
   }
   throw new TypeError("the held-tool check gave an answer that is not a verdict");
@@ -2802,7 +2809,13 @@ export class SessionManager {
               refusal = verdict.refuse;
             } else {
               const hold =
-                verdict === undefined ? {} : { display: verdict.display, ...(verdict.subjectVersion === undefined ? {} : { subjectVersion: verdict.subjectVersion }) };
+                verdict === undefined
+                  ? {}
+                  : {
+                      display: verdict.display,
+                      ...(verdict.subjectVersion === undefined ? {} : { subjectVersion: verdict.subjectVersion }),
+                      ...(verdict.subject === undefined ? {} : { subject: verdict.subject }),
+                    };
               const call = { agent: this.getSession(live.id)?.agent ?? null, sessionId: live.id, action: rail.action, payload: rail.payload, tool, ...hold };
               // One transaction: the grant's use (or the new approval) and this call's one decision event.
               // A throw rolls all of it back and falls through to the fail-closed deny below.
