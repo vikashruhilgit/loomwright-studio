@@ -327,12 +327,16 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
   const open = items.filter((i) => i.status === "flagged" || i.status === "not_checked");
   const lines = [READINESS_HEADING, ...items.map((i) => i.line)];
   if (open.length === 0) return { lines, items, open };
-  const missingTools = catalogue === undefined ? [] : duties.missingJobs.flatMap((job) => jobLackingTools(catalogue, job, allowed));
+  // A missing job the catalogue has no tool for is still missing (`jobGranted` fails closed), but no tool can be
+  // added for it: it is named apart, never in the fix (as `../playbooks/fit.ts` does).
+  const lackingTools = catalogue === undefined ? [] : duties.missingJobs.map((job) => ({ job, tools: jobLackingTools(catalogue, job, allowed) }));
+  const fixableJobs = lackingTools.filter((m) => m.tools.length > 0);
   const agentNote = noteText({
     action: input.action,
     open,
-    missingJobs: duties.missingJobs,
-    missingTools,
+    fixableJobs: fixableJobs.map((m) => m.job),
+    missingTools: fixableJobs.flatMap((m) => m.tools),
+    toollessJobs: lackingTools.filter((m) => m.tools.length === 0).map((m) => m.job),
     noRepo,
     unreadableRepo,
     ownerGrant,
@@ -344,8 +348,12 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
 interface NoteParts {
   readonly action: "create" | "update";
   readonly open: readonly ReadinessItem[];
-  readonly missingJobs: readonly ToolJob[];
+  /** The missing jobs the catalogue has at least one tool for, in `TOOL_JOBS` order. */
+  readonly fixableJobs: readonly ToolJob[];
+  /** The fixable jobs' ungranted tools (their exact `mcp__kernel__` names). */
   readonly missingTools: readonly string[];
+  /** The missing jobs the catalogue has no tool for: no charter change can give them. */
+  readonly toollessJobs: readonly ToolJob[];
   readonly noRepo: boolean;
   readonly unreadableRepo: boolean;
   readonly ownerGrant: boolean;
@@ -355,7 +363,8 @@ interface NoteParts {
 /**
  * Wright's note: the open findings in short form, then the fix to propose. The
  * only change it proposes to the charter is adding the missing jobs' tools
- * (their exact `mcp__kernel__` names); a copy of a repo is asked of the owner;
+ * (their exact `mcp__kernel__` names), and a missing job with no catalogue tool
+ * is named apart, with no change; a copy of a repo is asked of the owner;
  * a connector grant and a duty are the owner's own, never drafted by Wright.
  */
 function noteText(p: NoteParts): string {
@@ -369,8 +378,12 @@ function noteText(p: NoteParts): string {
   ];
   if (p.missingTools.length > 0) {
     sentences.push(
-      `The fix to propose: add ${andList(p.missingJobs.map((j) => TOOL_JOBS[j]))} to tool_policy.allowedTools (${p.missingTools.join(", ")}); if the owner agrees, ${how}.`,
+      `The fix to propose: add ${labels(p.fixableJobs)} to tool_policy.allowedTools (${p.missingTools.join(", ")}); if the owner agrees, ${how}.`,
     );
+  }
+  if (p.toollessJobs.length > 0) {
+    const them = p.toollessJobs.length === 1 ? "it" : "them";
+    sentences.push(`This charter needs ${labels(p.toollessJobs)}; the kernel has no tool for ${them}, so no charter change can give ${them} to this member: propose no tool change for ${them}.`);
   }
   if (p.noRepo) {
     sentences.push(

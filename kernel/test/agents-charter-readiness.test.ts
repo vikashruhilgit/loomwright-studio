@@ -336,6 +336,37 @@ describe("AC2: approval #19's charter", () => {
     // The note rides on the session's reason only: the approval stores no note.
     expect(JSON.stringify(events(h.store, "approval_requested")[0]?.payload)).not.toContain(NOTE_START);
   });
+
+  it("a missing job with tools beside one with none: the fix names only the job with tools; the other is named apart, with no change", () => {
+    // A catalogue with no tool for comment_on_issues (as the playbook fit check's test strips one).
+    const partial = buildToolCatalogue(SHIPPED_TOOLS.filter((t) => t.job !== "comment_on_issues"));
+    const c = crew([duty("Ask for merges", "ask_for_merge"), duty("Comment on the issues", "comment_on_issues")], []);
+    const r = charterReadiness({ action: "create", charter: validated(c), catalogue: partial, grant: { kind: "proposed", connectors: [] }, dataDir, homeDir: home });
+    expect(r.lines).toEqual([
+      READINESS_HEADING,
+      "  flagged: duty 1 not covered (needs Ask for a merge, which this charter does not grant): Ask for merges",
+      `  flagged: duty 2 not covered (needs ${TOOL_JOBS.comment_on_issues}, which this charter does not grant): Comment on the issues`,
+    ]);
+    expect(proposedFix(r.agentNote)).toEqual({ labels: "Ask for a merge", tools: toolsOf("ask_for_merge") });
+    expect(r.agentNote?.match(/mcp__kernel__\w+/g)).toEqual(toolsOf("ask_for_merge"));
+    expect(r.agentNote).toContain(
+      `This charter needs ${TOOL_JOBS.comment_on_issues}; the kernel has no tool for it, so no charter change can give it to this member: propose no tool change for it.`,
+    );
+    // Job labels and the kernel's words only: never a duty's text.
+    expect(r.agentNote).not.toContain("Ask for merges");
+    expect(r.agentNote).not.toContain("Comment on the issues");
+  });
+
+  it("only missing jobs with no tool: no fix sentence, one sentence naming them all", () => {
+    const partial = buildToolCatalogue(SHIPPED_TOOLS.filter((t) => t.job !== "comment_on_issues" && t.job !== "ask_for_merge"));
+    const c = crew([duty("Ask for merges", "ask_for_merge"), duty("Comment on the issues", "comment_on_issues")], []);
+    const r = charterReadiness({ action: "update", charter: validated(c), catalogue: partial, grant: { kind: "stored", raw: undefined }, dataDir, homeDir: home });
+    expect(proposedFix(r.agentNote)).toBeUndefined();
+    expect(r.agentNote).not.toMatch(/mcp__kernel__/);
+    expect(r.agentNote).toContain(
+      `This charter needs ${TOOL_JOBS.ask_for_merge} and ${TOOL_JOBS.comment_on_issues}; the kernel has no tool for them, so no charter change can give them to this member: propose no tool change for them.`,
+    );
+  });
 });
 
 // ---- AC3: a code job without a copy of a repo ------------------------------------------------
