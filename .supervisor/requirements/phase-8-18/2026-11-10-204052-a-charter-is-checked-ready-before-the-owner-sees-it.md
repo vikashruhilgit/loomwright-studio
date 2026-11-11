@@ -1,6 +1,7 @@
 # 18b — A charter is checked ready before the owner sees it: every duty covered, every job able to run
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/257
 
 **Priority:** MVP · needed for item 16's Validation 2 to pass · D3, D22, D34, invariants 1, 3, 9
 
@@ -100,3 +101,9 @@ docs/architecture/agents.md
 ## Depends on
 
 ../phase-8-16/2026-11-09-160016-wright-drafts-charters-that-cover-the-work.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-11T07:49:08Z
+- **Brief:** .supervisor/jobs/done/2026-11-10-charter-readiness-check.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/257
