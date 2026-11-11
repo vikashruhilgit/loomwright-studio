@@ -21,6 +21,7 @@ import { isEditableTarget, listMove } from "../../commands/keyboard";
 import { useResource } from "../../store/react";
 import { threadResource } from "../../store/resources";
 import { printable } from "../approvals/printable";
+import { isCharterApproval } from "../approvals/subject";
 import { sharedNames } from "../team/model";
 import { ApprovalCard, CharterCard, PlaybookCard, TriggerCard } from "./cards";
 import { ChatComposer } from "./ChatComposer";
@@ -603,16 +604,9 @@ function AgentThread({ api, agent, roster, approvals }: AgentThreadProps) {
         })}
         {pending.map((approval) => (
           <li key={`approval:${approval.id}`} className="chat-item chat-item-approval" data-testid="chat-pending-approval">
-            {approval.action === "kernel_agent_create" ? (
-              <CharterCard
-                api={api}
-                approval={approval}
-                agent={agent}
-                onEditInEnglish={(prefill) => {
-                  setText(prefill);
-                  focusComposer();
-                }}
-              />
+            {isCharterApproval(approval) ? (
+              // The charter card's Ask or change box posts into the thread it was drafted in, read from every loaded page.
+              <CharterCard api={api} approval={approval} agent={agent} items={items} threads={data?.threads} />
             ) : (
               <ApprovalCard api={api} approval={approval} agent={agent} playbooks={playbookList} />
             )}

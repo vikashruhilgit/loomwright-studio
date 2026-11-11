@@ -1,6 +1,7 @@
 // The thread's actionable cards: a pending approval (EventCard's approval
-// variant, with a link to what it is about), the charter card (a `kernel_agent_create` approval), the
-// playbook card and the trigger card. Each action is one contract write
+// variant, with a link to what it is about), the playbook card and the trigger
+// card. The charter card (a held `kernel_agent_create` or `kernel_agent_update`)
+// lives in `CharterCard.tsx` and is re-exported here. Each action is one contract write
 // through the bridge; a refusal shows the kernel's words as text and leaves
 // the card in place. Every kernel string is a React text child only.
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
@@ -12,6 +13,9 @@ import type { PolicyField } from "../../components/PlaybookPolicy/PlaybookPolicy
 import type { ResourceName } from "../../store/resources";
 import { MERGE_ALWAYS_REFUSED, approvalLink, approvalSourceText, isMergeApproval } from "../approvals/subject";
 import { focusLost, inFlightGuard, navigate, rehashIfCurrent, triggerSchedule, triggerState, when, write } from "./model";
+
+export { CharterCard } from "./CharterCard";
+export type { CharterCardProps } from "./CharterCard";
 
 /** What Always says when the approval did not come from a playbook session. */
 export const ALWAYS_INELIGIBLE = "Always needs an approval from a playbook session; approve once";
@@ -115,48 +119,6 @@ export function ApprovalCard({ api, approval, agent, playbooks }: ApprovalCardPr
       )}
       <Refusal text={refusal} />
     </div>
-  );
-}
-
-export interface CharterCardProps {
-  readonly api: StudioBridge;
-  readonly approval: Approval;
-  readonly agent: string;
-  /** Edit in English: put `text` in the composer and focus it. Sends nothing. */
-  readonly onEditInEnglish: (text: string) => void;
-}
-
-/** A pending `kernel_agent_create`: the charter as the kernel displays it, never parsed. */
-export function CharterCard({ api, approval, agent, onEditInEnglish }: CharterCardProps) {
-  const [refusal, setRefusal] = useState("");
-  const { busy, act } = useCardAction();
-  const changes = approvalChanges(agent);
-  const params = { id: approval.id };
-  const decide = (key: "create" | "deny", path: string, body: unknown): void =>
-    act(key, async () => {
-      const outcome = await write(api, path, params, body, changes);
-      setRefusal(outcome.ok ? "" : outcome.text);
-    });
-  return (
-    <section className="chat-card chat-charter" aria-label={`Drafted crew member, approval ${approval.id}`} data-approval={approval.id}>
-      <div className="chat-card-head">
-        <span className="chat-card-title">Waiting on you · new crew member</span>
-        <span className="chat-card-meta">approval {approval.id}</span>
-      </div>
-      <pre className="chat-charter-display">{approval.display ?? ""}</pre>
-      <div className="chat-card-actions">
-        <Button variant="primary" size="row" loading={busy === "create"} onClick={() => decide("create", "/approvals/:id/approve", { decision: "once" })}>
-          Create
-        </Button>
-        <Button variant="secondary" size="row" onClick={() => onEditInEnglish(`About the charter in approval ${approval.id}: `)}>
-          Edit in English
-        </Button>
-        <Button variant="danger" size="row" loading={busy === "deny"} onClick={() => decide("deny", "/approvals/:id/deny", undefined)}>
-          Deny
-        </Button>
-      </div>
-      <Refusal text={refusal} />
-    </section>
   );
 }
 

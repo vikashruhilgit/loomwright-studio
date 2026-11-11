@@ -29,13 +29,24 @@ function tabOrder(root: HTMLElement): string[] {
     });
 }
 
+/** A held create in the kernel's format, with the kernel's flagged workspace line (Choose workspace is its fix). */
+const CHARTER = [
+  'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
+  "readiness: checked by the kernel before you see it",
+  "  flagged: the code jobs: it has no copy of a repo to work in (no workspace is listed)",
+  "job: Hand tickets to /automate",
+  "  - Hand tickets to Loomwright's /automate.",
+  "enforced: never: git_push; tools: Read, mcp__kernel__kernel_automate_prepare; bash prefixes: none",
+  "workspaces: none",
+].join("\n");
+
 describe("keyboard", () => {
   it("every action reachable by Tab", async () => {
     const k = kit({
       threads: {
         wright: thread(
-          [message(4), eventItem(5, "playbook_created", "Playbook pb-3 created", { playbook_id: 3 }), eventItem(6, "trigger_fired", "Trigger 8 fired", { trigger_id: 8 })],
-          { next_before: "c1", pending_approvals: [approval(7), approval(9, { action: "kernel_agent_create" })] },
+          [message(4, { session_id: 31 }), eventItem(5, "playbook_created", "Playbook pb-3 created", { playbook_id: 3 }), eventItem(6, "trigger_fired", "Trigger 8 fired", { trigger_id: 8 })],
+          { next_before: "c1", pending_approvals: [approval(7), approval(9, { action: "kernel_agent_create", payload: { tool: "mcp__kernel__kernel_agent_create", input: { charter: { id: "mason" } } }, requesting_session: 31, display: CHARTER })] },
         ),
       },
       playbooks: [playbook(3, { trigger_id: 5 })],
@@ -69,9 +80,14 @@ describe("keyboard", () => {
       "Always",
       "Deny",
       "Full payload",
-      // The charter card.
+      // The charter card (phase 8 item 18d, docs/DESIGN.md §"Keyboard"): its two icons, the readiness fix, Ask or change and
+      // Send, then the decision. The details blocks join the order only once shown.
+      "Copy all text",
+      "Show full details",
+      "Choose workspace",
+      "Ask or change",
+      "Send",
       "Create",
-      "Edit in English",
       "Deny",
       // The composer.
       "Message Wright",

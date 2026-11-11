@@ -1259,3 +1259,72 @@ describe("the merge approval card", () => {
     expect(posts(fake, "POST /approvals/:id/approve").map((r) => r.body)).toEqual([{ decision: "always" }]);
   });
 });
+
+// ---- Phase 8 item 18d: the charter card's Ask or change and Copy all text on this screen ----
+
+describe("the charter card (phase 8 item 18d)", () => {
+  const DISPLAY = [
+    'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
+    "job: Read a PR",
+    "  - Read one pull request.",
+    "enforced: never: git_push; tools: Read, mcp__kernel__kernel_github_pr_get; bash prefixes: none",
+    "workspaces: none",
+  ].join("\n");
+  const held = (overrides: Partial<Approval> = {}): Approval =>
+    approval(5, {
+      requesting_agent: "wright",
+      requesting_session: 31,
+      action: "kernel_agent_create",
+      payload: { tool: "mcp__kernel__kernel_agent_create", input: { charter: { id: "mason" } } },
+      playbook: null,
+      display: DISPLAY,
+      ...overrides,
+    });
+  const drafting = { type: "message", ...brainMessage(4, "ask", "Draft me Mason."), session_id: 31, reply_text: "Here it is.", thread_id: 4 };
+
+  it("AC1: the details start hidden; Copy all text writes the stored display exactly", async () => {
+    const written: string[] = [];
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (t: string) => void written.push(t) } });
+    try {
+      await mount({ approvals: [held()] });
+      const card = screen.getByTestId("approval-display");
+      expect((within(card).getByTestId("charter-raw") as HTMLDetailsElement).open).toBe(false);
+      expect(card.textContent).not.toContain("mcp__kernel__");
+      await act(async () => {
+        fireEvent.click(within(card).getByRole("button", { name: "Copy all text" }));
+      });
+      await waitFor(() => expect(written).toEqual([DISPLAY]));
+    } finally {
+      Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
+
+  it("AC4: a pending charter's Ask or change posts a Reply into its drafting thread and links to that thread in Chat", async () => {
+    const m = await mount({ approvals: [held()] });
+    m.fake.route("GET /threads/:agent", () => ok({ items: [drafting], next_before: null, pending_approvals: [], threads: [{ id: 4, agent: "wright", title: "Mason", renamed: false, messages: 1, latest_reply_tokens: null, summary_estimated_tokens: null }] }));
+    m.fake.route("POST /ask", () => ({ ok: true, status: 202, body: { message_id: 100, queue_id: 100 } }));
+    // The thread is read through the live store once the card mounted; nudge a refetch with the route in place.
+    cleanup();
+    setApi(m.fake.bridge);
+    render(<ApprovalsScreen registry={createCommandRegistry()} />);
+    const field = await screen.findByRole("textbox", { name: "Ask or change" });
+    await waitFor(() => expect(screen.getByTestId("charter-ask-where").textContent).toContain("“Mason”"));
+    expect(screen.getByTestId("charter-ask-thread").getAttribute("href")).toBe("#/chat");
+    await act(async () => {
+      fireEvent.change(field, { target: { value: "why Read a PR?" } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await waitFor(() => expect(posts(m.fake, "POST /ask")).toHaveLength(1));
+    expect(posts(m.fake, "POST /ask")[0]?.body).toEqual({ text: "From the card's Ask or change (approval 5): why Read a PR?", agent: "wright", continues: 4 });
+    expect(posts(m.fake, "POST /approvals/:id/approve")).toHaveLength(0);
+  });
+
+  it("a decided charter has no Ask or change box", async () => {
+    await mount({ approvals: [], decided: [held({ status: "denied", decision: "deny", decided_by: "kernel", replaced_by: 6 })] });
+    fireEvent.click(screen.getByRole("button", { name: /Show decided/ }));
+    await waitFor(() => expect(screen.queryByTestId("approval-detail")).not.toBeNull());
+    expect(screen.queryByRole("textbox", { name: "Ask or change" })).toBeNull();
+  });
+});

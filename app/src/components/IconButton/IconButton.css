@@ -1,0 +1,71 @@
+/* IconButton: docs/DESIGN.md "New for approval (charter card)" (the mockup's .tipb/.tip). Every value is a token. */
+.iconbtn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--row-height);
+  height: var(--row-height);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-secondary);
+  cursor: pointer;
+  flex: none;
+  transition:
+    background-color var(--duration-instant) var(--ease-standard),
+    color var(--duration-instant) var(--ease-standard);
+}
+.iconbtn:hover {
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+.iconbtn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.iconbtn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.iconbtn.iconbtn-done {
+  color: var(--ok);
+}
+.iconbtn-icon {
+  display: block;
+}
+/* The tooltip: below the button, on hover and on keyboard focus; Esc hides it until the pointer or focus leaves. */
+.iconbtn-tip {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-xs);
+  background: var(--ink);
+  color: var(--surface);
+  box-shadow: var(--shadow-2);
+  font: var(--type-caption-weight) var(--type-caption-size) / var(--type-caption-line) var(--type-caption-family);
+  letter-spacing: var(--type-caption-tracking);
+  white-space: nowrap;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-standard);
+}
+.iconbtn-tip.iconbtn-tip-right {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+.iconbtn:hover .iconbtn-tip,
+.iconbtn:focus-visible .iconbtn-tip {
+  visibility: visible;
+  opacity: 1;
+}
+.iconbtn.iconbtn-tip-dismissed .iconbtn-tip {
+  visibility: hidden;
+  opacity: 0;
+}

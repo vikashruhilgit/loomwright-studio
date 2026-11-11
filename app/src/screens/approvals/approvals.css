@@ -275,19 +275,95 @@
   color: var(--ink-secondary);
   overflow-wrap: anywhere;
 }
-.approvals-charter-raw {
-  border-top: 1px solid var(--hairline);
+/* Phase 8 item 18d (docs/design/mockups/charter-card.html, "Charter card additions"): the compact view's plain words,
+   the two head icons, and the full details (hidden by default), each block scrolling inside the card. Every value is a token. */
+.approvals-charter {
+  overflow: visible;
 }
-/* A margin, not padding, so the focus ring (`:focus-visible`, offset 2px) is not clipped by the well's `overflow: hidden`. */
-.approvals-charter-raw-summary {
-  width: max-content;
-  max-width: calc(100% - 2 * var(--space-4));
-  margin: var(--space-2) var(--space-4);
-  border-radius: var(--radius-xs);
-  cursor: pointer;
-  color: var(--accent);
+.approvals-charter-icons {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+.approvals-charter-usedfor,
+.approvals-charter-others,
+.approvals-charter-never,
+.approvals-charter-limits {
+  margin: 0;
+  color: var(--ink-secondary);
+  overflow-wrap: anywhere;
+}
+.approvals-charter-usedfor {
   font-size: var(--type-caption-size);
   line-height: var(--type-caption-line);
+}
+.approvals-charter-copied,
+.approvals-charter-copy-failed {
+  margin: 0;
+  padding: var(--space-1) var(--space-4);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.approvals-charter-copied {
+  color: var(--ok);
+}
+.approvals-charter-copy-failed {
+  background: var(--attention-soft);
+  color: var(--ink);
+}
+.approvals-charter-raw[open] {
+  border-top: 1px solid var(--hairline);
+}
+/* The Show full details icon is the control: the summary is never drawn. */
+.approvals-charter-raw-summary {
+  display: none;
+}
+.approvals-charter-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+.approvals-charter-total {
+  margin: 0;
+  color: var(--ink-secondary);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+}
+.approvals-charter-block {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+}
+.approvals-charter-block-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  background: var(--surface-sunken);
+  border-bottom: 1px solid var(--hairline);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.approvals-charter-block-title {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.approvals-charter-block-path {
+  min-width: 0;
+  color: var(--ink-secondary);
+  font-family: var(--type-mono-small-family);
+  font-size: var(--type-mono-small-size);
+  overflow-wrap: anywhere;
+}
+.approvals-charter-block-text {
+  max-height: 200px;
+  padding: var(--space-2) var(--space-3);
+}
+.approvals-charter-block-text:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.approvals-charter-block.open .approvals-charter-block-text {
+  max-height: none;
 }
 
 /* The merge approval card (docs/design/mockups/phase-8.html `.mcard` and `.gate`): an attention edge while it waits, a header strip, the facts, the gate line. */
