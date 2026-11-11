@@ -341,6 +341,19 @@ readiness: checked by the kernel before you see it
 
 **On the owner's `once`** with findings still open, the applied sentence names them as the owner's choice to proceed (above), so the decision's record says what the owner approved knowingly.
 
+## Saved workspaces
+
+The owner's one list of repo folders (phase 8 item 18c), kept by the kernel so a folder chosen once is offered again the next time a crew member needs that repo. It is separate from each member's settings `workspaces` (D34), which stay the one thing a session runs in: saving or removing a folder here never reads or writes any `config/agents/<id>.json`. Code: the console's `workspaces` part (`kernel/src/console/workspaces.ts`); table: `saved_workspaces` (migration 24, see the [data model](../ARCHITECTURE.md#data-model)).
+
+- **The table.** One row per folder: `id`, `path` (absolute and unique, stored as `resolvedPath` resolves it, the D31 resolution, so a symlinked or `/System/Volumes/Data` spelling of a saved folder is that row), `repo` (the first GitHub remote when it was saved, `owner/repo`, or null), `added_at` and `last_used_at` (the kernel's clock). No SQL trigger.
+- **`GET /workspaces`** answers `{workspaces}`, every row most recently used first, with each folder re-read now (`readWorkspaceRepos`, the one remote parse) into a `state`: `ready` (a git checkout whose remotes were read), `missing` (the folder or its `.git` is gone: renamed, moved or deleted) or `unreadable` (a read failed, `EACCES`/`EPERM`). A folder is never `ready` unless the read found a checkout.
+- **The lookup**, `GET /workspaces?repo=<owner>/<repo>` and the exported `lookupSavedWorkspaces(store, repo)` (the one implementation; 18d's card calls the route, and a later Wright tool will call the function), answers the rows whose remotes, read now, name the repo (case-insensitive), plus the rows saved with that repo that now read `missing` or `unreadable`, so a moved folder is reported rather than silently dropped, in the same order. A malformed `repo` is `400 invalid_input`.
+- **`POST /workspaces`** with `{path}` saves the folder, or touches it (last used becomes now) when it is already saved; it is also how a chosen folder is recorded. It refuses, writing nothing: `invalid_input` (not an absolute path), `protected_folder` (inside `~/Documents`, `~/Desktop`, `~/Downloads` or iCloud Drive, even through a symlink; the message is `protectedFolderRefusal`, D31's one sentence, which the charter's workspace refusal also returns), `not_checkout` (missing, or not a git checkout) and `unreadable`. A folder with no GitHub remote is saved with `repo: null`, and the answer's `note` says it won't be matched to a repo; no lookup returns it.
+- **`POST /workspaces/:id/remove`** deletes that row only (`{removed: id}`, or `404 not_found`).
+- **Owner-only.** The three routes are console routes behind the API's bearer token, which lives in the Keychain and no session holds; `studio.db` is a protected data file a session's file tools and shell can't write (`PROTECTED_DATA_FILES`); and the part contributes no kernel tool and no `studio` subcommand. In 18c Wright has no tool to read the list either; the charter card (18d) reads it through the route. `kernel/test/console-workspaces.test.ts` pins all four.
+
+Honest limits: `repo` is the remote at save time, so after a remote changes the listing shows the old name while the lookup follows the new one (it reads remotes fresh). Undo in Settings re-saves the same path, so the row's id changes and its last used becomes now. The add route refuses a protected folder but not the data dir; a member's settings reader still refuses the data dir when the folder is listed there.
+
 ## Events
 
 Audit events (actor `kernel`, no session or task), one per change, each a member of `AGENT_AUDIT_KINDS`. A change that changes nothing writes none.

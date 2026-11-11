@@ -31,6 +31,18 @@ export function protectedLocationsText(): string {
 export const PROTECTED_FOLDER_WHY = "macOS blocks the kernel, which runs in the background, from reading anything there (D31)";
 
 /**
+ * The one plain sentence refusing `path` as a workspace because it is inside
+ * a protected folder (D31): it names the folder, `protectedLocationsText()`
+ * and `PROTECTED_FOLDER_WHY`. The charter's workspace refusal
+ * (`agents/charter-files.ts`) and the saved-workspaces add route
+ * (`console/workspaces.ts`) both answer it, so the sentence has one home.
+ * Pure: the caller decides that `path` is protected (`isProtectedPath`).
+ */
+export function protectedFolderRefusal(path: string): string {
+  return `${path} is inside a macOS-protected folder (${protectedLocationsText()}), so it can't be used: ${PROTECTED_FOLDER_WHY}; use a copy of the repo outside those folders`;
+}
+
+/**
  * `path` with symlinks resolved as far as it exists: `realpathSync.native` on
  * the longest ancestor it can resolve, then the rest appended as written. Any
  * failure (not there yet, or `EPERM` inside a protected folder under launchd)

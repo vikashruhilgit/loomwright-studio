@@ -1,15 +1,18 @@
 // The `console` feature (phase 5): the kernel side of the app. One
 // contribution built from one part per sub-file, so each phase 5 item edits
 // only the sub-file it owns: item 02 `events.ts`, item 03 `output.ts`, item
-// 04 `control.ts`, item 05 `pause.ts`, item 06 `threads.ts`. Every part is
-// empty until its item fills it in. Today all five parts are filled: events
-// (the `GET /events` route), output (the `GET /sessions` and
-// `GET /sessions/:id/output` routes and the `studio sessions` subcommand),
-// control (the `POST /sessions/:id/stop` and `POST /sessions/:id/kill`
-// routes), pause (the `POST /pause` and `POST /unpause` routes and the
-// `studio pause` and `studio unpause` subcommands) and threads (the
-// `GET /threads/:agent` route), so the contribution is its name, those routes
-// and those subcommands: no tools, handlers or due work (the app's live feed
+// 04 `control.ts`, item 05 `pause.ts`, item 06 `threads.ts`, and phase 8
+// item 18c `workspaces.ts`. Every part is empty until its item fills it in.
+// Today all six parts are filled: events (the `GET /events` route), output
+// (the `GET /sessions` and `GET /sessions/:id/output` routes and the
+// `studio sessions` subcommand), control (the `POST /sessions/:id/stop` and
+// `POST /sessions/:id/kill` routes), pause (the `POST /pause` and
+// `POST /unpause` routes and the `studio pause` and `studio unpause`
+// subcommands), threads (the `GET /threads/:agent` route and phase 8 item
+// 17's four thread routes) and workspaces (the owner's saved workspaces:
+// `GET /workspaces`, `POST /workspaces` and `POST /workspaces/:id/remove`),
+// so the contribution is its name, those routes and those subcommands: no
+// tools, handlers or due work (the app's live feed
 // socket is
 // `handleEventFeed` in `../api/feed.ts`, and the session manager's output
 // observer is `recordSessionOutput` in `./output.ts`, which keeps each
@@ -29,12 +32,13 @@ import { outputPart } from "./output.js";
 import { pausePart } from "./pause.js";
 import { threadsPart } from "./threads.js";
 import type { ConsolePart } from "./types.js";
+import { workspacesPart } from "./workspaces.js";
 
 /** The contribution's name. */
 export const CONSOLE_NAME = "console";
 
 /** Every part, in merge order: tools, routes, subcommands and due work keep this order. */
-export const CONSOLE_PARTS: readonly ConsolePart[] = Object.freeze([eventsPart, outputPart, controlPart, pausePart, threadsPart]);
+export const CONSOLE_PARTS: readonly ConsolePart[] = Object.freeze([eventsPart, outputPart, controlPart, pausePart, threadsPart, workspacesPart]);
 
 /** The parts joined: tools, routes, subcommands and due work in part order, and the handlers. */
 export interface MergedConsoleParts {
@@ -117,3 +121,5 @@ export { pausePart } from "./pause.js";
 export { threadsPart } from "./threads.js";
 export { emptyConsolePart } from "./types.js";
 export type { ConsolePart } from "./types.js";
+export { lookupSavedWorkspaces, workspacesPart } from "./workspaces.js";
+export type { SavedWorkspace, SavedWorkspaceState } from "./workspaces.js";

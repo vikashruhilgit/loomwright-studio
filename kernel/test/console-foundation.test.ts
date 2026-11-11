@@ -1,6 +1,7 @@
 // The console feature's foundation (phase 5 item 01): one `console`
-// contribution built from five sub-file parts (`events`, `output`, `control`,
-// `pause`, `threads`, filled by items 02-06; all five are filled now), registered
+// contribution built from six sub-file parts (`events`, `output`, `control`,
+// `pause`, `threads`, filled by items 02-06, and `workspaces`, phase 8 item
+// 18c; all six are filled now), registered
 // eighth in `SHIPPED_CONTRIBUTIONS`, after `agents`; the part merge
 // (subcommands included) and its refusal; the closed `session_output` kind
 // set; and the session output observer the kernel wires
@@ -28,6 +29,7 @@ import { eventsPart } from "../src/console/events.js";
 import { SESSION_OUTPUT_KINDS, outputPart, recordSessionOutput } from "../src/console/output.js";
 import { pausePart } from "../src/console/pause.js";
 import { threadsPart } from "../src/console/threads.js";
+import { workspacesPart } from "../src/console/workspaces.js";
 import { ContributionConflictError, PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { ContributedRoute, ContributedSubcommand, DueWorkFn } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
@@ -78,10 +80,10 @@ describe("the console contribution", () => {
     expect(consoleContribution.name).toBe("console");
   });
 
-  it("is its name, the events, output, control, pause and threads parts' routes and the output and pause parts' subcommands: no tools, handlers or due work", () => {
+  it("is its name, the events, output, control, pause, threads and workspaces parts' routes and the output and pause parts' subcommands: no tools, handlers or due work", () => {
     expect(Object.keys(consoleContribution)).toEqual(["name", "routes", "subcommands"]);
     expect(Object.isFrozen(consoleContribution)).toBe(true);
-    expect(consoleContribution.routes).toEqual([...eventsPart.routes, ...outputPart.routes, ...controlPart.routes, ...pausePart.routes, ...threadsPart.routes]);
+    expect(consoleContribution.routes).toEqual([...eventsPart.routes, ...outputPart.routes, ...controlPart.routes, ...pausePart.routes, ...threadsPart.routes, ...workspacesPart.routes]);
     expect(consoleContribution.subcommands).toEqual([...(outputPart.subcommands ?? []), ...(pausePart.subcommands ?? [])]);
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     expect(merged.contributors[7]).toBe("console");
@@ -98,19 +100,23 @@ describe("the console contribution", () => {
       "GET /threads/:agent/:thread/summary",
       "POST /threads/:agent/:thread/start-fresh",
       "POST /threads/:agent/:thread/rename",
+      "GET /workspaces",
+      "POST /workspaces",
+      "POST /workspaces/:id/remove",
     ]);
     expect(merged.subcommands.filter((s) => consoleContribution.subcommands?.includes(s)).map((s) => s.name)).toEqual(["sessions", "pause", "unpause"]);
     expect(merged.dueWork.filter((d) => d.owner === "console")).toEqual([]);
   });
 
-  it("merges one part per sub-file, in order: events, output, control, pause, threads; events carries GET /events, output has routes and subcommands, control has stop and kill, pause has pause and unpause, threads has GET /threads/:agent", () => {
-    expect(CONSOLE_PARTS).toEqual([eventsPart, outputPart, controlPart, pausePart, threadsPart]);
+  it("merges one part per sub-file, in order: events, output, control, pause, threads, workspaces; events carries GET /events, output has routes and subcommands, control has stop and kill, pause has pause and unpause, threads has GET /threads/:agent, workspaces has the three saved-workspaces routes", () => {
+    expect(CONSOLE_PARTS).toEqual([eventsPart, outputPart, controlPart, pausePart, threadsPart, workspacesPart]);
     expect(CONSOLE_PARTS[0]).toBe(eventsPart);
     expect(CONSOLE_PARTS[1]).toBe(outputPart);
     expect(CONSOLE_PARTS[2]).toBe(controlPart);
     expect(CONSOLE_PARTS[3]).toBe(pausePart);
     expect(CONSOLE_PARTS[4]).toBe(threadsPart);
-    expect(CONSOLE_PARTS.map((p) => p.name)).toEqual(["events", "output", "control", "pause", "threads"]);
+    expect(CONSOLE_PARTS[5]).toBe(workspacesPart);
+    expect(CONSOLE_PARTS.map((p) => p.name)).toEqual(["events", "output", "control", "pause", "threads", "workspaces"]);
     // Item 02's part: the one `GET /events` route, nothing else.
     expect(eventsPart).toEqual({ name: "events", tools: [], routes: [{ method: "GET", path: "/events", handler: expect.any(Function) }], handlers: {} });
     // Item 03's part: its routes and the `sessions` verb, nothing else.
@@ -152,9 +158,19 @@ describe("the console contribution", () => {
       { method: "POST", path: "/threads/:agent/:thread/start-fresh" },
       { method: "POST", path: "/threads/:agent/:thread/rename" },
     ]);
+    // Phase 8 item 18c's part: exactly the three saved-workspaces routes, and nothing else: no tools, handlers, subcommands or due work.
+    expect(Object.keys(workspacesPart).sort()).toEqual(["handlers", "name", "routes", "tools"]);
+    expect(workspacesPart.name).toBe("workspaces");
+    expect(workspacesPart.tools).toEqual([]);
+    expect(workspacesPart.handlers).toEqual({});
+    expect(workspacesPart.routes.map((r) => ({ method: r.method, path: r.path }))).toEqual([
+      { method: "GET", path: "/workspaces" },
+      { method: "POST", path: "/workspaces" },
+      { method: "POST", path: "/workspaces/:id/remove" },
+    ]);
     expect(mergeConsoleParts(CONSOLE_PARTS)).toEqual({
       tools: [],
-      routes: [...eventsPart.routes, ...outputPart.routes, ...controlPart.routes, ...pausePart.routes, ...threadsPart.routes],
+      routes: [...eventsPart.routes, ...outputPart.routes, ...controlPart.routes, ...pausePart.routes, ...threadsPart.routes, ...workspacesPart.routes],
       subcommands: [...(outputPart.subcommands ?? []), ...(pausePart.subcommands ?? [])],
       handlers: {},
       dueWork: [],
