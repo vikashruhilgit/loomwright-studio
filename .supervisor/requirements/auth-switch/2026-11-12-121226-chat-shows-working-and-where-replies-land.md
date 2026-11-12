@@ -14,7 +14,7 @@ Found on 2026-11-12 during phase 8 item 19a's Validation 2 walk, in the packaged
 
 ## The working mark (decided 2026-11-12, owner asked for it to be fixed here)
 
-**Chosen: B, "running stitch".** The reference is the mock beside this file, `2026-11-12-121226-working-mark-mock.html`, which shows all four candidates at real size, with motion on and off.
+**Chosen: B, "running stitch".** The owner compared four candidates in a mock, `2026-11-12-121226-working-mark-mock.html` (in the owner's checkout only; the metadata branch carries Markdown alone). The spec below is complete and authoritative. The implementer adds the chosen mark to `docs/design/design-system/components/StatusDot/preview.html`.
 
 - **Shape:** an inline SVG 18×8 (viewBox `0 0 18 8`): a knot, `circle cx=3 cy=4 r=3` filled `--working`, then a thread `M8 4H18`, stroke `--working`, width 2, round caps, `stroke-dasharray: 2.6 2.4`.
 - **Motion:** the stitches run with the Avatar's existing `run` keyframes (`stroke-dashoffset` to −10) at 1.2s linear infinite. A glint (the same path in `--ink`, `stroke-dasharray: 2.6 22`, opacity 0.9) runs along the thread on the same 1.2s clock. It is the brand's existing "working" motion: the avatar's running stitches and the menu bar's light running along the threads.
