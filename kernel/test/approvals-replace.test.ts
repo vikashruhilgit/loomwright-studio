@@ -32,6 +32,7 @@ import {
   requestApproval,
   withdrawReplaced,
 } from "../src/approvals/index.js";
+import { withdrawnNote } from "../src/approvals/replace.js";
 import type { ApprovalRequest, ApprovalView } from "../src/approvals/index.js";
 import { defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
 import type { CliApiClient } from "../src/features/contribution.js";
@@ -430,5 +431,134 @@ describe("AC12 through the gate: the charter tools' holds name the member, so v2
     await h.gate(CREATE, { charter: {}, idempotency_key: "k2" });
     expect(listApprovals(h.store).map((a) => a.status)).toEqual(["pending", "pending"]);
     expect(events(h.store, "approval_requested").every((e) => !("subject" in e.payload))).toBe(true);
+  });
+});
+
+// ---- Phase 8 item 19b: the held reason names what the hold withdrew ---------------------
+
+/** A charter tool's "if it is approved" clause (both charter tools are kernel-applied actions). */
+const KERNEL_APPLIES = "the kernel applies it itself and that message says what it did; do not repeat the call.";
+
+/** Today's whole held reason for approval `n`, before any withdrawal sentence or note. */
+const HELD_REASON = (n: number) =>
+  `approval_required: held as approval ${n}; it did not run. The owner decides in Studio's Approvals (approval ${n}) ` +
+  `and the decision arrives as a new message. End your turn now; if it is approved, ${KERNEL_APPLIES}`;
+
+/** The one-id withdrawal sentence (AC1). */
+const WITHDREW_ONE = (n: number) =>
+  ` The kernel withdrew approval ${n} (the older pending version of this call); it needs no decision, so do not ask the owner to approve or reject it.`;
+
+describe("19b: the held reason names what the hold withdrew", () => {
+  it("AC1: v2 of a member's charter is told, before any note, that the kernel withdrew v1", async () => {
+    const h = await boot();
+    const v1 = (await h.gate(CREATE, { charter: crew("mason"), idempotency_key: "c1" })).permissionDecisionReason;
+    // The shipped check's readiness note (this charter's duty is not covered) is the part after today's reason;
+    // v2's charter has the same finding, so the same note, which must stay last, after the withdrawal sentence.
+    expect(v1.startsWith(HELD_REASON(1))).toBe(true);
+    const note = v1.slice(HELD_REASON(1).length);
+    expect(note).toMatch(/^ The kernel checked this charter before the owner sees it; /);
+    const v2 = await h.gate(CREATE, { charter: crew("mason", "Tells the owner what changed, daily."), idempotency_key: "c2" });
+    expect(v2.permissionDecision).toBe("deny");
+    expect(v2.permissionDecisionReason).toBe(`${HELD_REASON(2)}${WITHDREW_ONE(1)}${note}`);
+    expect(v2.permissionDecisionReason).toMatch(HELD(2));
+    expect(getApproval(h.store, 1)).toMatchObject({ status: "denied", decided_by: "kernel" });
+    // The tool_decision event is unchanged: the withdraw is recorded on approval 1's own approval_decided event.
+    expect(events(h.store, "tool_decision").at(-1)?.payload).not.toHaveProperty("withdrawn");
+    expect(JSON.stringify(events(h.store, "tool_decision").map((e) => e.payload))).not.toContain("withdrew");
+  });
+
+  it("AC1: the withdrawal sentence sits after the if-approved clause and before the check's agentNote, which stays last", async () => {
+    const h = await boot(() => ({ display: "d", subject: "agent:x", agentNote: "Readiness: 1 duty flagged." }));
+    expect((await h.gate(CREATE, { charter: {}, idempotency_key: "k1" })).permissionDecisionReason).toBe(`${HELD_REASON(1)} Readiness: 1 duty flagged.`);
+    expect((await h.gate(CREATE, { charter: {}, idempotency_key: "k2" })).permissionDecisionReason).toBe(
+      `${HELD_REASON(2)}${WITHDREW_ONE(1)} Readiness: 1 duty flagged.`,
+    );
+  });
+
+  it("AC3: a first charter hold and a hold for another member while one is pending read exactly as before", async () => {
+    const h = await boot();
+    const first = await h.gate(CREATE, { charter: crew("mason"), idempotency_key: "c1" });
+    const other = await h.gate(CREATE, { charter: crew("nell"), idempotency_key: "c2" });
+    // The shipped check adds the charter's readiness note; a no-withdraw hold has nothing between the clause and it.
+    const note =
+      " The kernel checked this charter before the owner sees it; open: duty 1 is not covered (needs Notify the owner). Tell the owner these in plain words, in the thread. " +
+      "The fix to propose: add Notify the owner to tool_policy.allowedTools (mcp__kernel__kernel_notify); if the owner agrees, draft the charter again with kernel_agent_create and a new idempotency_key.";
+    expect(first.permissionDecisionReason).toBe(`${HELD_REASON(1)}${note}`);
+    expect(other.permissionDecisionReason).toBe(`${HELD_REASON(2)}${note}`);
+    for (const r of [first, other]) expect(r.permissionDecisionReason).not.toContain("withdrew");
+    expect([1, 2].map((id) => getApproval(h.store, id)?.status)).toEqual(["pending", "pending"]);
+  });
+
+  it("AC3: a second hold with no subject reads exactly as before", async () => {
+    const plain = await boot(() => ({ display: "d" }));
+    expect((await plain.gate(CREATE, { charter: {}, idempotency_key: "k1" })).permissionDecisionReason).toBe(HELD_REASON(1));
+    expect((await plain.gate(CREATE, { charter: {}, idempotency_key: "k2" })).permissionDecisionReason).toBe(HELD_REASON(2));
+  });
+
+  it("AC3: with a scripted check (no note), a first hold and another member's hold are byte-identical to today's reason", async () => {
+    const subjects = ["agent:mason", "agent:nell"];
+    let next = 0;
+    const h = await boot(() => ({ display: "d", subject: subjects[next++] as string }));
+    expect((await h.gate(CREATE, { charter: {}, idempotency_key: "k1" })).permissionDecisionReason).toBe(HELD_REASON(1));
+    expect((await h.gate(CREATE, { charter: {}, idempotency_key: "k2" })).permissionDecisionReason).toBe(HELD_REASON(2));
+    expect([1, 2].map((id) => getApproval(h.store, id)?.status)).toEqual(["pending", "pending"]);
+  });
+
+  it("AC4: two older pending versions of one subject are both named, oldest first", async () => {
+    const h = await boot(() => ({ display: "d", subject: "agent:x" }));
+    const s = Number(h.store.prepare("SELECT id FROM sessions ORDER BY id LIMIT 1").pluck().get());
+    // Two pending approvals with one subject can't arise through the gate (each hold withdraws the one before
+    // it), so they are seeded in the store: 2 withdraws 1, then 1 is set back to pending. Approval 1 keeps its
+    // earlier approval_decided event (events are append-only); the withdraw query reads only approvals.status
+    // and the approval_requested subject, never that event.
+    expect(hold(h.store, s, { subject: "agent:x" })).toBe(1);
+    expect(hold(h.store, s, { subject: "agent:x" })).toBe(2);
+    h.store.prepare("UPDATE approvals SET status='pending', decision=NULL, decided_by=NULL, decided_at=NULL WHERE id = 1").run();
+    expect([1, 2].map((id) => getApproval(h.store, id)?.status)).toEqual(["pending", "pending"]);
+    const v3 = await h.gate(CREATE, { charter: {}, idempotency_key: "k3" });
+    expect(v3.permissionDecisionReason).toBe(
+      `${HELD_REASON(3)} The kernel withdrew approvals 1 and 2 (the older pending versions of this call); they need no decision, so do not ask the owner to approve or reject them.`,
+    );
+    expect([1, 2, 3].map((id) => getApproval(h.store, id)?.status)).toEqual(["denied", "denied", "pending"]);
+  });
+
+  it("AC4 (unit): withdrawnNote names one, two or three ids in the order given, and nothing for none", () => {
+    expect(withdrawnNote([])).toBe("");
+    expect(withdrawnNote([7])).toBe(WITHDREW_ONE(7));
+    expect(withdrawnNote([1, 2])).toBe(
+      " The kernel withdrew approvals 1 and 2 (the older pending versions of this call); they need no decision, so do not ask the owner to approve or reject them.",
+    );
+    expect(withdrawnNote([1, 2, 3])).toBe(
+      " The kernel withdrew approvals 1, 2 and 3 (the older pending versions of this call); they need no decision, so do not ask the owner to approve or reject them.",
+    );
+  });
+
+  it("AC5: a call an existing one-shot grant lets through is approval_granted, with nothing about withdrawals and nothing withdrawn", async () => {
+    const h = await boot(() => ({ display: "d", subject: "agent:mason" }));
+    const v1 = { charter: { v: 1 }, idempotency_key: "k1" };
+    expect((await h.gate(CREATE, v1)).permissionDecisionReason).toBe(HELD_REASON(1));
+    // The owner approves it once with no applier, so the grant is left for the retry.
+    decideApproval(h.store, { id: 1, decision: "once", by: "owner" }, clock.at);
+    // A different call for the same member is held as 2; approval 1 is approved, so nothing is withdrawn.
+    expect((await h.gate(CREATE, { charter: { v: 2 }, idempotency_key: "k2" })).permissionDecisionReason).toBe(HELD_REASON(2));
+    const granted = await h.gate(CREATE, v1);
+    expect(granted).toMatchObject({ permissionDecision: "allow", permissionDecisionReason: "approval_granted" });
+    expect(getApproval(h.store, 2)?.status).toBe("pending");
+    expect(events(h.store, "approval_decided").filter((e) => e.payload.by === "kernel")).toEqual([]);
+    expect(events(h.store, "approval_used").map((e) => e.payload.id)).toEqual([1]);
+  });
+
+  it("AC6: a hold whose transaction throws after the withdraw is kernel_gate_error, names no withdrawal, and the withdraw rolls back", async () => {
+    const h = await boot(() => ({ display: "d", subject: "agent:mason" }));
+    expect((await h.gate(CREATE, { charter: {}, idempotency_key: "k1" })).permissionDecisionReason).toBe(HELD_REASON(1));
+    h.store
+      .prepare("CREATE TRIGGER test_no_tool_decision BEFORE INSERT ON events WHEN NEW.kind = 'tool_decision' BEGIN SELECT RAISE(ABORT, 'test: no tool_decision'); END")
+      .run();
+    const failed = await h.gate(CREATE, { charter: {}, idempotency_key: "k2" });
+    expect(failed).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "kernel_gate_error" });
+    expect(failed.permissionDecisionReason).not.toContain("withdrew");
+    expect(getApproval(h.store, 1)?.status).toBe("pending");
+    expect(count(h.store, "SELECT count(*) FROM approvals")).toBe(1);
+    expect(events(h.store, "approval_decided")).toEqual([]);
   });
 });
