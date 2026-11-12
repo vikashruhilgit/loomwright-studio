@@ -25,14 +25,14 @@ These stories were written by `/product-owner` from the run's evidence (the owne
 
 ## Order
 
-1. **Wave 1:** 20a (D43; the owner approves the decision by merging), 20d, 20e, 20g.
-2. **Wave 2:** 20b (builds D43; also makes the CI walks use a drafted policy and the live harness report as it runs), 20h.
+1. **Wave 1, five in parallel:** 20a (D43; the owner approves the decision by merging), 20d, 20e, 20g, 20h.
+2. **Wave 2:** 20b (builds D43; also makes the CI walks use a drafted policy and the live harness report as it runs).
 3. **Wave 3:** 20c, the system that knows what a crew member's work needs. Its declared needs for ticket jobs depend on D43.
 4. Then re-run the phase 8 exit walk (item 14's runbook) from setup step 6, with a fresh charter Wright drafts and nothing granted by hand.
 
 ## Run
 
-`plan-waves --max 4` (2026-11-12) gives the three waves above. Use `/automate --backlog <this file> --parallel 4`, or `--parallel 2`, which runs wave 1 in two rounds.
+`plan-waves` with no cap (2026-11-12) gives the three waves above; wave 1 is the widest at 5. Use `/automate --backlog <this file> --parallel 5`. A larger N changes nothing, because 20b and 20c wait on dependencies.
 
 ## Findings mapped to stories
 
