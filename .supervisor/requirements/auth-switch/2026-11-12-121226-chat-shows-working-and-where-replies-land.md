@@ -16,42 +16,40 @@ Found on 2026-11-12 during phase 8 item 19a's Validation 2 walk, in the packaged
 
 The owner asked for the mark to come from the avatar's own circle and to be nothing generic. They compared five takes on the hoop, chose this one ("the thread draws the hoop") and asked for it to be tuned. The tuned version is in a mock, `2026-11-12-121226-working-mark-mock.html`, which is in the owner's checkout only because the metadata branch carries Markdown alone. The spec below is complete and authoritative.
 
-**What it shows:** the avatar's stitched hoop (`.stitch` in `app/src/components/Avatar/Avatar.css`), sewn while the agent works.
-- A needle laps the hoop from 12 o'clock at an even pace, drawing each of the eight stitches as it passes. Each stitch is bright as it is drawn, then settles.
-- At the top the needle swells softly into the knot, and the hoop gives a gentle cinch.
-- The thread then draws back out of the stitches in the order they were sewn, while the needle rests at the top. The next lap starts from there with no jump or fade.
+**What it shows:** the avatar's stitched hoop (`.stitch` in `app/src/components/Avatar/Avatar.css`), **drawn** while the agent works.
+- A needle draws the hoop as one continuous line from 12 o'clock. The stitches come out of the line right behind it, the freshest brightest, and the lap eases in and out like a hand drawing a circle.
+- At the top it ties the knot: a soft swell and a small cinch.
+- It then laps again, pulling the thread out behind it, so it arrives back at the top empty and starts drawing again without a break.
 - A faint hoop stays underneath throughout.
+- The owner asked for exactly this: "I want to see it feel like it's drawing". The line must stay attached to the needle at every frame.
 
-**Shape:** an inline SVG, 14×14, viewBox `0 0 16 16`, `shape-rendering: geometricPrecision`. The ghost and the stitches sit in a group `.cinch` (transform-origin `8px 8px`); the needle is outside the group.
-- **Ghost:** `circle cx=8 cy=8 r=5.6`, no fill, stroke `--working`, width 1.2, opacity 0.18, never animated.
-- **Eight stitches** `s0`–`s7`: arcs on r=5.6 with `pathLength="1"`, stroke `--working`, width 1.8, round caps.
-  - Each uses `stroke-dasharray: 1 2` and is hidden at rest (`stroke-dashoffset: 1; opacity: 0`). The opacity is required: a round cap draws a dot even on a zero-length dash.
-  - Stitch *i* spans 9° to 36° of its 45° slot, clockwise from 12 o'clock:
-    - s0 `M8.88 2.47A5.6 5.6 0 0 1 11.29 3.47`
-    - s1 `M12.53 4.71A5.6 5.6 0 0 1 13.53 7.12`
-    - s2 `M13.53 8.88A5.6 5.6 0 0 1 12.53 11.29`
-    - s3 `M11.29 12.53A5.6 5.6 0 0 1 8.88 13.53`
-    - s4 `M7.12 13.53A5.6 5.6 0 0 1 4.71 12.53`
-    - s5 `M3.47 11.29A5.6 5.6 0 0 1 2.47 8.88`
-    - s6 `M2.47 7.12A5.6 5.6 0 0 1 3.47 4.71`
-    - s7 `M4.71 3.47A5.6 5.6 0 0 1 7.12 2.47`
-- **Needle:** `circle r=1.15`, fill `--ink`, moved with `offset-path: path("M8 2.4A5.6 5.6 0 1 1 7.99 2.4")` and `offset-rotate: 0deg`.
+**Shape:** an inline SVG, 14×14, viewBox `0 0 16 16`, `shape-rendering: geometricPrecision`. Ids come from React's `useId()`, so every instance has its own masks.
+- **Masks:** two masks, `maskUnits="userSpaceOnUse" x=-2 y=-2 w=20 h=20`.
+  - The reveal mask holds `circle.reveal cx=8 cy=8 r=5.6 pathLength=100`, stroke white, width 4, `stroke-dasharray: 100 100`.
+  - The trail mask holds `circle.trail`, the same circle with `stroke-dasharray: 0 100` at rest.
+  - The mask circles are **not rotated**. Mask content is drawn in the masked group's space, which is already rotated. Rotating both draws the line from 9 o'clock.
+- **Group `.cinch`** (transform-origin `8px 8px`) contains:
+  - **Ghost:** `circle cx=8 cy=8 r=5.6`, no fill, stroke `--working`, width 1.2, opacity 0.16, never animated.
+  - **A group `rotate(-90 8 8)`**, so drawing starts at 12 o'clock and runs clockwise, containing:
+    - **under the reveal mask:** the running **thread**, the circle with `pathLength=100`, stroke `--working`, width 0.7, opacity 0.75; and the **stitches**, the same circle, stroke `--working`, width 1.8, round caps, `stroke-dasharray: 7.5 5`, `stroke-dashoffset: -2.5` (8 stitches);
+    - **under the trail mask:** the **fresh** stitches, the same dashes in `--ink`.
+- **Needle**, outside `.cinch`: `circle r=1.15`, fill `--ink`, `offset-path: path("M8 2.4A5.6 5.6 0 1 1 7.99 2.4")`, `offset-rotate: 0deg`.
 
-**Motion:** one cycle of 2.8s, infinite. Percentages are of the cycle.
-- **Sew, 0–60%, linear:** the needle's `offset-distance` goes 0% → 100%.
-  - Stitch *i* is drawn in step with it. `stroke-dashoffset` goes from 1 to 0 between `(45i + 9) / 360 × 60%` and `(45i + 36) / 360 × 60%`, with opacity 1 from the start of the draw.
-  - The stitch is drawn in `--ink` and settles to `--working` 9% of the cycle after its draw ends.
-- **Tie, 60–76%** (`cubic-bezier(.45,0,.25,1)`):
-  - The needle stays at 100%, which is the top, and scales 1 → 1.55 at 66%, back to 1 by 76%.
-  - `.cinch` scales 1 → 0.93 at 65%, back to 1 by 74%.
-- **Unpick, from 66%, linear:**
-  - Stitch *i* draws back out from its start: `stroke-dashoffset` goes 0 → −1 between `66 + 2.6i`% and 9 points later. It then hides (opacity 0) and stays hidden to 100%.
-  - The needle rests at the top. The next cycle starts it from 0%, which is the same point, so there is no jump.
+**Motion:** one cycle of 3.2s, infinite. Percentages are of the cycle. The lap curve is `cubic-bezier(.55,.06,.42,.96)`, written **literally** in every keyframe that uses it: a CSS variable there is ignored for `offset-distance`, and the needle then runs ahead of its line.
+- **Draw, 0–45%, lap curve:**
+  - The needle's `offset-distance` goes 0% → 100%.
+  - `.reveal`'s `stroke-dashoffset` goes 100 → 0 on the same keyframes and curve, so the line ends exactly at the needle.
+  - `.trail`: from 0% to 8% (lap curve), `stroke-dasharray` goes `0 100` → `14 86` and `stroke-dashoffset` 0 → −4. From 8% to 45% (lap curve), `stroke-dashoffset` goes −4 → −86. At 52% it is `0 100`, offset −100.
+- **Tie, 45–55%** (`cubic-bezier(.45,0,.25,1)`): the needle scales 1 → 1.55 at 50%, back to 1 at 55%. `.cinch` scales 1 → 0.93 at 50%, back to 1 by 57%.
+- **Pull out, 55–100%, lap curve:**
+  - The needle jumps from 100% to 0% at 55.01%. That is the same point on the circle, so nothing visibly moves. It then laps 0% → 100% again.
+  - `.reveal`'s `stroke-dashoffset` goes 0 → −100 on the same curve, so the thread disappears exactly behind the needle.
+  - The cycle ends empty with the needle at the top, where the next draw begins.
 
-**Motion off** (`prefers-reduced-motion`): no animation. The hoop is shown mid-sew:
-- the ghost;
-- stitches s0–s4 in, with s4 in `--ink` and the rest in `--working`;
-- the needle at `offset-distance: 66%`.
+**Motion off** (`prefers-reduced-motion`): no animation. The hoop is shown five-eighths drawn:
+- `.reveal` `stroke-dashoffset: 37.5`;
+- `.trail` `stroke-dasharray: 12 88`, `stroke-dashoffset: -50.5`;
+- the needle at `offset-distance: 62.5%`, at the head of the line.
 
 No other state looks like this: idle is a plain ring, waiting on you a solid amber dot, paused at cap a dot with a bar.
 
@@ -76,12 +74,12 @@ No other state looks like this: idle is a plain ring, waiting on you a solid amb
 - [ ] AC1: Given Wright has a session running and no approval pending, then the "with Wright" title row shows the sewing hoop and the word "working".
 - [ ] AC2: Given Wright has a session running and N approvals from Wright pending, then the title row shows the sewing hoop, "working", and the meta "· N waiting on you" (StatusDot's `meta`). It never shows "waiting on you" alone while a Wright session runs.
 - [ ] AC3: Given no Wright session is running and N approvals from Wright are pending, then the title row shows "waiting on you" with the meta "· N", as today.
-- [ ] AC4: Given the `working` StatusDot anywhere in the app, then it renders the sewing hoop as specified above: the needle sews the eight stitches, ties the knot, and the thread draws back out, in a 2.8s cycle, with no jump between cycles. It keeps the 6px gap to its word and does not change the line's height. The other states' marks sit centred in the same 14px slot.
+- [ ] AC4: Given the `working` StatusDot anywhere in the app, then it renders the sewing hoop as specified above: the needle draws the hoop with the line attached to it, ties the knot, and laps again pulling the thread out, in a 3.2s cycle, with no visible jump. It keeps the 6px gap to its word and does not change the line's height. The other states' marks sit centred in the same 14px slot.
 - [ ] AC5: Given I send from a card's Ask or change (or its workspace question), then the card's confirmation line includes a link, "Go to the reply", that scrolls the chat to my Reply in the drafting thread and gives it a brief highlight. The link keeps working after the card re-renders.
 - [ ] AC6: Given Wright's answer to that Reply arrives, then the card shows "Wright answered · View", which scrolls to the answer. Until the answer arrives, the line says "Wright is working on it".
 
 **Edge cases:**
-- [ ] AC7: Given `prefers-reduced-motion`, then the hoop is still, shown mid-sew (stitches s0–s4 and the needle at 66%), and still differs in shape from every other state. The Reply highlight is an opacity fade capped at `duration-instant`.
+- [ ] AC7: Given `prefers-reduced-motion`, then the hoop is still, five-eighths drawn with the needle at the head of the line, and still differs in shape from every other state. The Reply highlight is an opacity fade capped at `duration-instant`.
 - [ ] AC8: Given the drafting thread is not loaded (older than the current page), then "Go to the reply" loads it before scrolling. If the thread is gone, the link is replaced by the plain sentence "Wright answers in “<thread title>”".
 - [ ] AC9: Given a specialist's thread (not Wright), then AC1–AC3 apply to that agent's title row in the same way.
 
