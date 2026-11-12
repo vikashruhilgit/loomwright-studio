@@ -20,20 +20,23 @@ import type { HookCallback, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   READINESS_COVERED_PREFIX,
+  READINESS_DUTY_EXCERPT_MAX,
   READINESS_FLAG_PREFIX,
   READINESS_HEADING,
   READINESS_HEADING_PREFIX,
   READINESS_NOT_CHECKED_PREFIX,
   READINESS_READY_PREFIX,
   charterReadiness,
+  dutyExcerpt,
   openFlagsSentence,
   wrightDutyRefusal,
 } from "../src/agents/charter-readiness.js";
 import type { ReadinessGrant, ReadinessResult } from "../src/agents/charter-readiness.js";
 import { AGENT_CREATE_TOOL_NAME, AGENT_UPDATE_TOOL_NAME } from "../src/agents/charter-tools.js";
-import { agentSettingsPath, createAgent, getAgent, validateCharter } from "../src/agents/index.js";
+import { agentSettingsPath, createAgent, getAgent, renderRoleMd, validateCharter } from "../src/agents/index.js";
 import type { Charter } from "../src/agents/index.js";
 import { decideApproval } from "../src/approvals/index.js";
+import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
 import { readWorkspaceRepos, remoteRepos } from "../src/automate/checkout.js";
 import { defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
 import { TOOL_JOBS, TOOL_JOB_DEFINITIONS, buildToolCatalogue } from "../src/features/catalogue.js";
@@ -710,5 +713,239 @@ describe("the gate carries agentNote on a hold only, and fails closed on any oth
     const h = await boot();
     const d = await h.create(crew([duty("Deploy", "deploy_prod" as ToolJob)], []));
     expect(d.permissionDecisionReason).not.toContain(NOTE_START);
+  });
+});
+
+// ---- 19a: a large charter's readiness lines quote a short excerpt of each duty ---------------
+
+/** The jobs approval 21's charter grants (18d Validation 2): Hand tickets to /automate, Ask the owner to approve an action, Notify the owner. */
+const APPROVAL21_JOBS: readonly ToolJob[] = ["automate_tickets", "ask_for_approval", "notify_owner"];
+
+/** Approval 21's ten duties, each about 200 characters (approval 21's readiness lines took 3,211 of its head's 3,994), every one covered by a granted job or needing no kernel tool. */
+const LONG_DUTIES = [
+  duty("Pick up each ticket the owner assigns in the sandbox repo, read its description and comments, and hand it to /automate with a short summary of what done looks like and which files will change, and link the ticket in the thread.", "automate_tickets"),
+  duty("Before handing a ticket over, check that the copy of the repo is on main and clean, pull the latest changes, and say so in the thread if anything is out of date or a branch is left behind from an earlier run.", "automate_tickets"),
+  duty("Ask the owner to approve any action that writes outside the workspace, deletes a branch, or changes a CI workflow, and wait for the decision instead of trying a different way around it or asking twice.", "ask_for_approval"),
+  duty("Notify the owner when a pull request is opened for a ticket, naming the ticket, the branch and the one-line summary, so the owner can review it from the phone without opening the app or the repo first.", "notify_owner"),
+  duty("Keep each pull request small and focused on one ticket; if a ticket turns out to need more than one change, say so in the thread and propose how to split it before writing any code for the second part."),
+  duty("Run the repo's own tests and linters before every pull request and report the exact commands and their results in the pull request body, never claiming a check passed without running it on this copy of the repo."),
+  duty("Notify the owner when a ticket is blocked for more than a day, naming what it is waiting on (a question, an approval, a failing check) and what you need from the owner to move it forward, once, without repeating it.", "notify_owner"),
+  duty("Write the pull request description in plain words: what changed, why, how it was tested, and what the reviewer should look at first, with links to the ticket and any related pull requests or earlier tickets."),
+  duty("Ask the owner before adding a new dependency, upgrading a major version, or changing the build configuration, and explain the reason, the risk and the smallest alternative you considered and rejected.", "ask_for_approval"),
+  duty("At the end of each day, write a short note in lessons.md about anything that surprised you in the repo, so the next session starts from what you learned instead of finding it out again the hard way."),
+];
+
+/** Approval 21's tool policy: the file and shell tools, every tool of `jobs`, its Bash prefixes and its never list. */
+function approval21Policy(jobs: readonly ToolJob[] = APPROVAL21_JOBS): Record<string, unknown> {
+  return {
+    allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", ...jobs.flatMap(toolsOf)],
+    allowedBashPrefixes: ["git status", "git diff", "git log", "git checkout -b", "npm test", "npm run lint", "npm run typecheck"],
+    never: ["git_push", "gh_pr_create", "gh_pr_edit", "gh_pr_close", "gh_pr_comment", "gh_issue_create"],
+  };
+}
+
+/** Approval 21's shape (18d Validation 2): ten ~200-character duties, the same granted jobs, a GitHub proposal and no workspace. */
+function approval21(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return crew([...LONG_DUTIES], APPROVAL21_JOBS, {
+    id: "studio-sandbox-developer",
+    display_name: "Sandbox Developer",
+    avatar: { shape: "octopus", hue: "crew-olive" },
+    persona: "A developer that turns the owner's tickets into pull requests in the sandbox repo.",
+    tool_policy: approval21Policy(),
+    limits: { tokens_per_day: 2000000, sessions_at_once: 1, delegation_depth: 1 },
+    connectors: ["github"],
+    ...extra,
+  });
+}
+
+const A21 = "studio-sandbox-developer";
+
+/** A create display's head: every line before the settings file (what must fit `MAX_APPROVAL_DISPLAY`). */
+function headOf(display: string, id = A21): string {
+  const at = display.indexOf(`\nconfig/agents/${id}.json:\n`);
+  if (at < 0) throw new Error("not a create display");
+  return display.slice(0, at);
+}
+
+/** Approval 21's ten duties' excerpts: each its leading words that fit READINESS_DUTY_EXCERPT_MAX with the mark, cut at a space. */
+const A21_EXCERPTS = [
+  "Pick up each ticket the owner assigns in the sandbox repo, read its…",
+  "Before handing a ticket over, check that the copy of the repo is on…",
+  "Ask the owner to approve any action that writes outside the workspace,…",
+  "Notify the owner when a pull request is opened for a ticket, naming the…",
+  "Keep each pull request small and focused on one ticket; if a ticket…",
+  "Run the repo's own tests and linters before every pull request and…",
+  "Notify the owner when a ticket is blocked for more than a day, naming…",
+  "Write the pull request description in plain words: what changed, why,…",
+  "Ask the owner before adding a new dependency, upgrading a major…",
+  "At the end of each day, write a short note in lessons.md about anything…",
+];
+
+/** `head` as the kernel showed it before 19a: each duty quoted whole, and the job lines in their shortest (label-only) form. */
+function wholeDutyHead(head: string): string {
+  let whole = head
+    .split("\n")
+    .filter((l) => !l.startsWith("  - "))
+    .join("\n");
+  LONG_DUTIES.forEach((d, i) => {
+    whole = whole.replace(A21_EXCERPTS[i] as string, d.text);
+  });
+  return whole;
+}
+
+/** Approval 21's ten duty lines, exactly as the kernel quotes them (each duty's number, how it is covered, its excerpt). */
+const A21_DUTY_LINES = [
+  "  covered: duty 1 by Hand tickets to /automate: Pick up each ticket the owner assigns in the sandbox repo, read its…",
+  "  covered: duty 2 by Hand tickets to /automate: Before handing a ticket over, check that the copy of the repo is on…",
+  "  covered: duty 3 by Ask the owner to approve an action: Ask the owner to approve any action that writes outside the workspace,…",
+  "  covered: duty 4 by Notify the owner: Notify the owner when a pull request is opened for a ticket, naming the…",
+  "  covered: duty 5 with no tool (it needs no kernel tool): Keep each pull request small and focused on one ticket; if a ticket…",
+  "  covered: duty 6 with no tool (it needs no kernel tool): Run the repo's own tests and linters before every pull request and…",
+  "  covered: duty 7 by Notify the owner: Notify the owner when a ticket is blocked for more than a day, naming…",
+  "  covered: duty 8 with no tool (it needs no kernel tool): Write the pull request description in plain words: what changed, why,…",
+  "  covered: duty 9 by Ask the owner to approve an action: Ask the owner before adding a new dependency, upgrading a major…",
+  "  covered: duty 10 with no tool (it needs no kernel tool): At the end of each day, write a short note in lessons.md about anything…",
+];
+
+describe("19a: a readiness duty line quotes a word-bounded excerpt of the duty, so a large charter still gets a new version", () => {
+  it("AC5: a text of at most READINESS_DUTY_EXCERPT_MAX characters is quoted whole; a longer one ends at a space with exactly one …, never mid-word", () => {
+    expect(READINESS_DUTY_EXCERPT_MAX).toBe(72);
+    // Whole, with no cut mark: a short text, and one of exactly the limit.
+    expect(dutyExcerpt("Turn tickets into PRs")).toBe("Turn tickets into PRs");
+    const atLimit = `${"word ".repeat(14)}ab`;
+    expect(atLimit).toHaveLength(READINESS_DUTY_EXCERPT_MAX);
+    expect(dutyExcerpt(atLimit)).toBe(atLimit);
+    // One character over: the last word that leaves room for the mark, then the mark.
+    expect(dutyExcerpt(`${atLimit}c`)).toBe(`${"word ".repeat(13)}word…`);
+    // A word ending exactly where the mark would go is kept whole.
+    expect(dutyExcerpt(`${"abcd ".repeat(14)}a ${"z".repeat(20)}`)).toBe(`${"abcd ".repeat(14)}a…`);
+    // Whitespace runs are one space before the length is counted.
+    expect(dutyExcerpt("  Turn\n tickets\t into   PRs ")).toBe("Turn tickets into PRs");
+    // A first word longer than the excerpt is the one case cut inside a word, still with one mark, never half a surrogate pair.
+    expect(dutyExcerpt("a".repeat(100))).toBe(`${"a".repeat(71)}…`);
+    expect(dutyExcerpt(`${"a".repeat(70)}😀${"b".repeat(10)}`)).toBe(`${"a".repeat(70)}…`);
+    // Every long duty: at most the limit, one mark at the end, a prefix of the text that ends where a word ends.
+    for (const { text } of LONG_DUTIES) {
+      const excerpt = dutyExcerpt(text);
+      expect(excerpt.length).toBeLessThanOrEqual(READINESS_DUTY_EXCERPT_MAX);
+      expect(excerpt.endsWith("…")).toBe(true);
+      expect(excerpt.split("…")).toHaveLength(2);
+      const words = excerpt.slice(0, -1);
+      expect(text.startsWith(words)).toBe(true);
+      expect(text[words.length]).toBe(" ");
+      expect(words.endsWith(" ")).toBe(false);
+    }
+  });
+
+  it("AC1 and AC6: approval 21's 10-duty charter is held; each duty line names its number and quotes its excerpt, the head fits with at least 1,200 characters to spare, and role.md keeps every duty's full text", async () => {
+    const lengths = LONG_DUTIES.map((d) => d.text.length);
+    expect(lengths.reduce((a, b) => a + b, 0) / lengths.length).toBeGreaterThanOrEqual(180);
+    expect(Math.min(...lengths)).toBeGreaterThan(READINESS_DUTY_EXCERPT_MAX);
+    const h = await boot();
+    expect((await h.create(approval21())).permissionDecisionReason.startsWith("approval_required: held as approval 1;")).toBe(true);
+    const display = h.display();
+    const head = headOf(display);
+    expect(readinessLines(display)).toEqual([
+      READINESS_HEADING,
+      ...A21_DUTY_LINES,
+      "  flagged: copy of a repo for Hand tickets to /automate: it has no copy of a repo to work in (no workspace is listed)",
+      "  flagged: GitHub write access for Hand tickets to /automate: only you can grant it (Team, in the member's inspector)",
+    ]);
+    expect(MAX_APPROVAL_DISPLAY - head.length).toBeGreaterThanOrEqual(1200);
+    // AC6: the head quotes no duty whole; role.md, in the stored display, has every duty's full text.
+    const roleMd = display.slice(display.indexOf(`\nmemory/${A21}/role.md:\n`));
+    expect(display.endsWith(renderRoleMd(validated(approval21()), ["github"]).trimEnd())).toBe(true);
+    for (const { text } of LONG_DUTIES) {
+      expect(head).not.toContain(text);
+      expect(roleMd).toContain(text);
+    }
+  });
+
+  it("AC5: the excerpts are exactly each duty's leading words (the duty number keeps two alike apart)", () => {
+    expect(LONG_DUTIES.map((d) => dutyExcerpt(d.text))).toEqual(A21_EXCERPTS);
+  });
+
+  it("AC2: the owner's Ask or change adds comment replies (Triage PR comments and the Read a PR it needs, 8 more kernel tools); Wright's redraft (a new key, the same id) is held as v2 and withdraws v1", async () => {
+    const h = await boot();
+    expect((await h.create(approval21(), "c1")).permissionDecisionReason.startsWith("approval_required: held as approval 1;")).toBe(true);
+    const more: ToolJob[] = ["triage_pr_comments", "read_pr"];
+    expect(more.flatMap(toolsOf).length).toBeGreaterThanOrEqual(5);
+    const v2 = await h.create(approval21({ tool_policy: approval21Policy([...APPROVAL21_JOBS, ...more]) }), "c2");
+    expect(v2.permissionDecisionReason.startsWith("approval_required: held as approval 2;")).toBe(true);
+    expect(events(h.store, "approval_decided").map((e) => e.payload)).toEqual([{ id: 1, decision: "deny", by: "kernel", action: AGENT_CREATE_TOOL_NAME, replaced_by: 2 }]);
+    const display = h.display(2);
+    expect(headOf(display).length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+    expect(readinessLines(display).slice(1, 11)).toEqual(A21_DUTY_LINES);
+    for (const tool of more.flatMap(toolsOf)) expect(headOf(display)).toContain(tool);
+    // Before 19a (each duty quoted whole) this redraft was refused for size, as approval 21's was.
+    expect(wholeDutyHead(headOf(display)).length).toBeGreaterThan(MAX_APPROVAL_DISPLAY);
+  });
+
+  it("AC3: Choose workspace: Wright's redraft naming the saved workspace (a path longer than ~/studio-work/studio-sandbox under a home dir) is held as v2, and with comment replies too as v3", async () => {
+    const ws = checkout(join(home, "studio-work", "studio-sandbox"), "git@github.com:owner/studio-sandbox.git");
+    expect(ws.length).toBeGreaterThanOrEqual(join("/Users/owner", "studio-work", "studio-sandbox").length);
+    const h = await boot();
+    await h.create(approval21(), "c1");
+    expect((await h.create(approval21({ workspaces: [ws] }), "c2")).permissionDecisionReason.startsWith("approval_required: held as approval 2;")).toBe(true);
+    const v2 = h.display(2);
+    expect(headOf(v2).length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+    expect(readinessLines(v2)).toContain(`  ready: copy of a repo for Hand tickets to /automate: works in owner/studio-sandbox at ${ws}`);
+    expect(headOf(v2).split("\n").at(-1)).toBe(`workspaces: ${ws}`);
+    const both = approval21({ workspaces: [ws], tool_policy: approval21Policy([...APPROVAL21_JOBS, "triage_pr_comments", "read_pr"]) });
+    expect((await h.create(both, "c3")).permissionDecisionReason.startsWith("approval_required: held as approval 3;")).toBe(true);
+    expect(headOf(h.display(3)).length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+    // Before 19a (each duty quoted whole) this v3 was refused for size, as approval 21's workspace redraft was.
+    expect(wholeDutyHead(headOf(h.display(3))).length).toBeGreaterThan(MAX_APPROVAL_DISPLAY);
+    expect(events(h.store, "approval_decided").map((e) => [e.payload.id, e.payload.replaced_by])).toEqual([
+      [1, 2],
+      [2, 3],
+    ]);
+  });
+
+  it("AC4: a held update of a 10-duty member quotes the same excerpts and fits under the same conditions as the create (the comment-reply tools, the saved workspace)", async () => {
+    const ws = checkout(join(home, "studio-work", "studio-sandbox"), "git@github.com:owner/studio-sandbox.git");
+    const h = await boot();
+    h.ownerCreate(approval21());
+    const policy = approval21Policy([...APPROVAL21_JOBS, "triage_pr_comments", "read_pr"]);
+    const tools = await h.update(A21, { tool_policy: { allowedTools: policy.allowedTools, allowedBashPrefixes: policy.allowedBashPrefixes } }, "u1");
+    expect(tools.permissionDecisionReason.startsWith("approval_required: held as approval 1;")).toBe(true);
+    const display = h.display(1);
+    expect(display.length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+    expect(readinessLines(display).slice(0, 11)).toEqual([READINESS_HEADING, ...A21_DUTY_LINES]);
+    expect((await h.update(A21, { workspaces: [ws] }, "u2")).permissionDecisionReason.startsWith("approval_required: held as approval 2;")).toBe(true);
+    expect(h.display(2).length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+    expect(readinessLines(h.display(2)).slice(1, 11)).toEqual(A21_DUTY_LINES);
+  });
+
+  it("AC4: the update's floor quotes the same excerpts: on a 10-duty member a tool_policy request over the cut is asked for less (never 'no request to these fields fits'), and a smaller one is held", async () => {
+    const h = await boot();
+    const wide = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `mcp__wide__${tag.repeat(135)}_${String(i).padStart(2, "0")}`);
+    // Every duty names a job, so each duty line in the floor is at its shortest form (covered or not covered, with the excerpt).
+    const duties = LONG_DUTIES.map((d) => (d.jobs.length > 0 ? d : duty(d.text, "notify_owner")));
+    const base = approval21Policy();
+    const held = [...(base.allowedTools as string[]), ...wide(8, "a")];
+    h.ownerCreate(approval21({ duties, tool_policy: { ...base, allowedTools: held } }));
+    // Over the cut in every form (8 more long tools), but a request to tool_policy with shorter values fits: Wright's to shrink.
+    const over = await h.update(A21, { tool_policy: { allowedTools: [...held, ...wide(8, "b")], allowedBashPrefixes: base.allowedBashPrefixes } }, "u1");
+    expect(over.permissionDecision).toBe("deny");
+    expect(over.permissionDecisionReason).toMatch(
+      /^kernel_agent_update: invalid_input: the display \(its readiness lines, job lines, field lines and enforced line\) would be \d+ characters, \d+ over the 4000 the owner is shown; ask for less at once \(fewer or shorter tools, prefixes or workspaces\) \(nothing was held for the owner\)$/,
+    );
+    expect(over.permissionDecisionReason).not.toContain("no request to these fields fits");
+    expect(h.approvals()).toBe(0);
+    // Dropping the long tools: held, with the same excerpts.
+    const fits = await h.update(A21, { tool_policy: { allowedTools: base.allowedTools, allowedBashPrefixes: base.allowedBashPrefixes } }, "u2");
+    expect(fits.permissionDecisionReason.startsWith("approval_required: held as approval 1;")).toBe(true);
+    expect(h.display(1).length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+  });
+
+  it("AC5: a stored bare-string duty (an update's legacy line) is quoted by its excerpt too", async () => {
+    const h = await boot();
+    h.ownerCreate(crew(LONG_DUTIES.map((d) => d.text), []));
+    expect((await h.update("dev", { limits: { tokens_per_day: 100000 } })).permissionDecisionReason.startsWith("approval_required: held as approval 1;")).toBe(true);
+    expect(readinessLines(h.display())).toEqual([
+      READINESS_HEADING,
+      ...A21_EXCERPTS.map((e, i) => `  flagged: duty ${i + 1} names no job (written before duties named their jobs): ${e}`),
+    ]);
   });
 });
