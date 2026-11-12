@@ -39,11 +39,17 @@ import { parseConnectorsGrant } from "./settings.js";
 // an update's head line):
 //
 //     readiness: checked by the kernel before you see it     READINESS_HEADING (starts READINESS_HEADING_PREFIX)
-//       covered: duty <n> <how>: <duty text>                  READINESS_COVERED_PREFIX
-//       flagged: duty <n> <why>: <duty text>                  READINESS_FLAG_PREFIX
+//       covered: duty <n> <how>: <duty excerpt>               READINESS_COVERED_PREFIX
+//       flagged: duty <n> <why>: <duty excerpt>               READINESS_FLAG_PREFIX
 //       ready: <prerequisite> for <job labels>: <what it has>  READINESS_READY_PREFIX
 //       flagged: <prerequisite> for <job labels>: <missing>    READINESS_FLAG_PREFIX
 //       not checked: <duty n, or prerequisite …>: <why not>    READINESS_NOT_CHECKED_PREFIX
+//
+// A duty is quoted by an excerpt of its text (`dutyExcerpt`: the whole text when
+// it is at most `READINESS_DUTY_EXCERPT_MAX` characters, else its leading words
+// and one `…`), so a charter with many long duties still fits the head the
+// owner must see whole; the full text is in the display's `role.md`. The duty
+// number keeps two duties whose excerpts look alike apart.
 //
 // One line per duty, in charter order, then one line per prerequisite the
 // granted jobs need, naming those jobs in `TOOL_JOBS` order: a copy of a repo
@@ -142,6 +148,30 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+/** The most characters a readiness line quotes of a duty's text, the cut mark included (`dutyExcerpt`). */
+export const READINESS_DUTY_EXCERPT_MAX = 72;
+
+/** The kernel's cut mark (as `clip` in `../loop/internal.ts`, not imported: this module stays CLI-safe). */
+const CUT_MARK = "…";
+
+/**
+ * A duty's text as its readiness line quotes it: on one line, whole when it is
+ * at most `READINESS_DUTY_EXCERPT_MAX` characters; else its leading words, cut
+ * at a space, then one `CUT_MARK`, at most `READINESS_DUTY_EXCERPT_MAX` in all.
+ * A first word longer than that is the one case cut inside a word (never inside
+ * a surrogate pair), still with one `CUT_MARK`.
+ */
+export function dutyExcerpt(text: string): string {
+  const whole = oneLine(text);
+  if (whole.length <= READINESS_DUTY_EXCERPT_MAX) return whole;
+  // The first MAX characters: a space among them ends the last whole word that leaves room for the mark.
+  const head = whole.slice(0, READINESS_DUTY_EXCERPT_MAX);
+  const space = head.lastIndexOf(" ");
+  let words = space > 0 ? whole.slice(0, space) : whole.slice(0, READINESS_DUTY_EXCERPT_MAX - 1);
+  if (/[\uD800-\uDBFF]$/.test(words)) words = words.slice(0, -1);
+  return `${words}${CUT_MARK}`;
+}
+
 function item(subject: ReadinessSubject, status: ReadinessStatus, text: string, brief: string, jobs?: readonly ToolJob[]): ReadinessItem {
   return { subject, status, line: `${PREFIXES[status]}${oneLine(text)}`, brief: oneLine(brief), ...(jobs === undefined ? {} : { jobs }) };
 }
@@ -166,28 +196,30 @@ function dutyFindings(charter: Charter, catalogue: ToolCatalogue | undefined, al
   let legacy = false;
   for (const [i, duty] of charter.duties.entries()) {
     const n = `duty ${i + 1}`;
+    // The duty's excerpt, never its whole text past READINESS_DUTY_EXCERPT_MAX (the full text is in role.md).
+    const text = dutyExcerpt(typeof duty === "string" ? duty : duty.text);
     if (typeof duty === "string") {
       // Design decision 6: a duty written before duties named their jobs is flagged, never covered.
       legacy = true;
-      items.push(item("duty", "flagged", `${n} names no job (written before duties named their jobs): ${duty}`, `${n} names no job`));
+      items.push(item("duty", "flagged", `${n} names no job (written before duties named their jobs): ${text}`, `${n} names no job`));
       continue;
     }
     if (duty.jobs.length === 0) {
-      items.push(item("duty", "covered", `${n} with no tool (it needs no kernel tool): ${duty.text}`, `${n} needs no tool`));
+      items.push(item("duty", "covered", `${n} with no tool (it needs no kernel tool): ${text}`, `${n} needs no tool`));
       continue;
     }
     if (catalogue === undefined) {
-      items.push(item("duty", "not_checked", `${n} (the kernel's tool catalogue is unavailable): ${duty.text}`, `${n} was not checked (no tool catalogue)`));
+      items.push(item("duty", "not_checked", `${n} (the kernel's tool catalogue is unavailable): ${text}`, `${n} was not checked (no tool catalogue)`));
       continue;
     }
     const lacking = duty.jobs.filter((job) => !jobGranted(catalogue, job, allowed));
     if (lacking.length === 0) {
-      items.push(item("duty", "covered", `${n} by ${andList(duty.jobs.map((j) => TOOL_JOBS[j]))}: ${duty.text}`, `${n} is covered`));
+      items.push(item("duty", "covered", `${n} by ${andList(duty.jobs.map((j) => TOOL_JOBS[j]))}: ${text}`, `${n} is covered`));
       continue;
     }
     for (const job of lacking) missing.add(job);
     const needs = andList(lacking.map((j) => TOOL_JOBS[j]));
-    items.push(item("duty", "flagged", `${n} not covered (needs ${needs}, which this charter does not grant): ${duty.text}`, `${n} is not covered (needs ${needs})`));
+    items.push(item("duty", "flagged", `${n} not covered (needs ${needs}, which this charter does not grant): ${text}`, `${n} is not covered (needs ${needs})`));
   }
   const missingJobs = (Object.keys(TOOL_JOBS) as ToolJob[]).filter((j) => missing.has(j));
   return { items, missingJobs, legacy };
@@ -406,9 +438,11 @@ export interface ReadinessFloorSets {
 function shortestDutyLine(duty: Charter["duties"][number], n: number, actual: string, catalogue: ToolCatalogue | undefined): string {
   // A bare line, a duty needing no tool, or no catalogue: the line does not depend on the tools.
   if (typeof duty === "string" || duty.jobs.length === 0 || catalogue === undefined) return actual;
-  const covered = `${READINESS_COVERED_PREFIX}duty ${n} by ${andList(duty.jobs.map((j) => TOOL_JOBS[j]))}: ${oneLine(duty.text)}`;
+  // The same excerpt `dutyFindings` quotes, so this stays a lower bound of the real line.
+  const excerpt = dutyExcerpt(duty.text);
+  const covered = `${READINESS_COVERED_PREFIX}duty ${n} by ${andList(duty.jobs.map((j) => TOOL_JOBS[j]))}: ${excerpt}`;
   const label = duty.jobs.map((j) => TOOL_JOBS[j]).reduce((a, b) => (b.length < a.length ? b : a));
-  const flagged = `${READINESS_FLAG_PREFIX}duty ${n} not covered (needs ${label}, which this charter does not grant): ${oneLine(duty.text)}`;
+  const flagged = `${READINESS_FLAG_PREFIX}duty ${n} not covered (needs ${label}, which this charter does not grant): ${excerpt}`;
   return covered.length <= flagged.length ? covered : flagged;
 }
 

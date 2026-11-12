@@ -31,7 +31,8 @@
 //   labels alone, so the job lines never grow with the number of granted
 //   tools); a call whose head (create) or whose whole display (update:
 //   the job lines, the field lines and the enforced
-//   line) would not fit in `MAX_APPROVAL_DISPLAY` is refused `invalid_input`,
+//   line) would not fit in `MAX_APPROVAL_DISPLAY` is refused `invalid_input`
+//   (naming the characters over and what to ask for less of),
 //   so the 4,000 characters `studio approvals` lists before its "more
 //   characters not shown" mark always hold them (the display itself is stored
 //   whole, up to `MAX_REQUEST_PAYLOAD_JSON`). The hold names its subject
@@ -255,15 +256,22 @@ function createHead(charter: Charter, catalogue?: ToolCatalogue, readiness: read
 /** What the create hold's fit refusal names: the head the owner must see whole. */
 const CREATE_HEAD_TEXT = "the display's head (who, the readiness lines, the job lines, the enforced, limits and workspaces lines)";
 
+/** What a create may ask for less of: each duty is a readiness line, then the tools, prefixes and workspaces. */
+const CREATE_ASK_LESS = "fewer duties, then fewer or shorter tools, prefixes or workspaces";
+
 /**
  * `invalid_input` when `text` (the part of a display the owner must see
  * whole) is longer than `MAX_APPROVAL_DISPLAY`, what `studio approvals` lists
  * before its "more characters not shown" mark: the hold refuses rather than
- * list a cut enforced line.
+ * list a cut enforced line. It names how many characters over the limit
+ * `text` is, and `less`: what the caller's request may ask for less of.
  */
-function displayFitRefusal(what: string, text: string): Refused | undefined {
+function displayFitRefusal(what: string, text: string, less: string): Refused | undefined {
   if (text.length <= MAX_APPROVAL_DISPLAY) return undefined;
-  return refused("invalid_input", `${what} would be ${text.length} characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown; ask for less at once (fewer or shorter tools, prefixes or workspaces)`);
+  return refused(
+    "invalid_input",
+    `${what} would be ${text.length} characters, ${text.length - MAX_APPROVAL_DISPLAY} over the ${MAX_APPROVAL_DISPLAY} the owner is shown; ask for less at once (${less})`,
+  );
 }
 
 /**
@@ -324,7 +332,7 @@ function createBeforeHold(a: CreateArgs, ctx: ContributedToolContext): HeldToolV
     return holdRefusal(AGENT_CREATE_TOOL_NAME, refused("id_taken", `a crew member with id ${checked.charter.id} exists, active or off (an id is never reused)`));
   }
   const readiness = createReadiness(checked.charter, ctx.catalogue, ctx.store.dataDir);
-  const tooLong = displayFitRefusal(CREATE_HEAD_TEXT, createHead(checked.charter, ctx.catalogue, readiness.lines));
+  const tooLong = displayFitRefusal(CREATE_HEAD_TEXT, createHead(checked.charter, ctx.catalogue, readiness.lines), CREATE_ASK_LESS);
   if (tooLong !== undefined) return holdRefusal(AGENT_CREATE_TOOL_NAME, tooLong);
   return heldVerdict(createDisplay(checked.charter, ctx.catalogue, readiness.lines), readiness, checked.charter.id);
 }
@@ -770,7 +778,8 @@ const UPDATE_DISPLAY_TEXT = "the display (its readiness lines, job lines, field 
 function updateFitRefusal(m: Merged, display: string, catalogue: ToolCatalogue | undefined, readiness: ReadinessResult): Refused | undefined {
   if (display.length <= MAX_APPROVAL_DISPLAY) return undefined;
   const floor = updateFloor(m, catalogue, readiness).length;
-  if (floor <= MAX_APPROVAL_DISPLAY) return displayFitRefusal(UPDATE_DISPLAY_TEXT, display);
+  // An update never changes the stored duties: only what it can change is asked for less of.
+  if (floor <= MAX_APPROVAL_DISPLAY) return displayFitRefusal(UPDATE_DISPLAY_TEXT, display, "fewer or shorter tools, prefixes or workspaces");
   return refused(
     "invalid_input",
     `${UPDATE_DISPLAY_TEXT} would be ${display.length} characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown, ` +

@@ -517,8 +517,17 @@ describe("kernel_agent_create: refusals and the apply's edges (AC3)", () => {
     validated(wide);
     const refusedHold = await h.wright.gate(CREATE, { charter: wide, idempotency_key: "c1" });
     expect(refusedHold.permissionDecision).toBe("deny");
-    expect(refusedHold.permissionDecisionReason).toMatch(
-      new RegExp(`^kernel_agent_create: invalid_input: the display's head \\(who, the readiness lines, the job lines, the enforced, limits and workspaces lines\\) would be \\d+ characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown; .*\\(nothing was held for the owner\\)$`),
+    // Phase 8 item 19a (AC8): the refusal names how many characters over the cut the head is, and what a create can ask for less of (duties first).
+    const wideHead = [
+      'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
+      ...READY,
+      `enforced: never: git_push; tools: ${longTools(64).join(", ")}; bash prefixes: "gh pr view"`,
+      "limits: tokens_per_day 200000 (proposed); sessions_at_once 1 (proposed); delegation_depth not set (no limit)",
+      `workspaces: ${join(tmp, "work", "payments")}`,
+    ].join("\n").length;
+    expect(refusedHold.permissionDecisionReason).toBe(
+      `kernel_agent_create: invalid_input: the display's head (who, the readiness lines, the job lines, the enforced, limits and workspaces lines) would be ${wideHead} characters, ` +
+        `${wideHead - MAX_APPROVAL_DISPLAY} over the ${MAX_APPROVAL_DISPLAY} the owner is shown; ask for less at once (fewer duties, then fewer or shorter tools, prefixes or workspaces) (nothing was held for the owner)`,
     );
     expect(h.approvals()).toEqual([]);
 
@@ -538,6 +547,21 @@ describe("kernel_agent_create: refusals and the apply's edges (AC3)", () => {
     expect(head[4]).toBe("limits: tokens_per_day 200000 (proposed); sessions_at_once 1 (proposed); delegation_depth not set (no limit)");
     expect(head[5]).toBe(`workspaces: ${join(tmp, "work", "payments")}`);
     expect(shown).toContain("\nconfig/agents/mason.json:\n");
+  });
+
+  it("phase 8 item 19a (AC6): a long duty's readiness line quotes its excerpt; role.md in the stored display carries its full text", async () => {
+    const h = await bootManager();
+    const long = "Review the pull requests the owner sends and comment on each risky change, naming the file, the line and the smallest fix, and say plainly when a change looks safe to merge.";
+    const c = charter({ duties: [{ text: long, jobs: [] }] });
+    expect((await h.wright.gate(CREATE, { charter: c, idempotency_key: "c1" })).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+    const shown = String(events(h.store, "approval_requested")[0]?.payload.display);
+    expect(shown.split("\n").slice(1, 3)).toEqual([READINESS_HEADING, "  covered: duty 1 with no tool (it needs no kernel tool): Review the pull requests the owner sends and comment on each risky…"]);
+    const roleMd = renderRoleMd(validated(c), validated(c).connectors);
+    expect(roleMd).toContain(long);
+    expect(shown.endsWith(`\nmemory/mason/role.md:\n${roleMd.endsWith("\n") ? roleMd.slice(0, -1) : roleMd}`)).toBe(true);
+    // The full text is shown once: in role.md, never in the head.
+    expect(shown.split(long)).toHaveLength(2);
+    expect(shown.indexOf(long)).toBeGreaterThan(shown.indexOf("\nmemory/mason/role.md:\n"));
   });
 
   it("the apply reads the caller from the approval, never the input: an approval whose agent is not Wright is refused not_lead, nothing written", () => {
@@ -692,9 +716,15 @@ describe("kernel_agent_update (AC5, AC6)", () => {
     const changes = { tool_policy: { allowedTools: longTools(20, "b"), allowedBashPrefixes: [] }, never: [] };
     const d = await h.wright.gate(UPDATE, { id: "mason", changes, expected_sha256: await h.shaOf("mason"), idempotency_key: "u1" });
     expect(d.permissionDecision).toBe("deny");
-    expect(d.permissionDecisionReason).toMatch(
-      new RegExp(`^kernel_agent_update: invalid_input: the display \\(its readiness lines, job lines, field lines and enforced line\\) would be \\d+ characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown; `),
-    );
+    // Phase 8 item 19a (AC8): the characters over the cut, and only what an update can change (never duties: an update can't change the stored duties).
+    const m = new RegExp(
+      `^kernel_agent_update: invalid_input: the display \\(its readiness lines, job lines, field lines and enforced line\\) would be (\\d+) characters, (\\d+) over the ${MAX_APPROVAL_DISPLAY} the owner is shown; ` +
+        "ask for less at once \\(fewer or shorter tools, prefixes or workspaces\\) \\(nothing was held for the owner\\)$",
+    ).exec(d.permissionDecisionReason);
+    expect(m).not.toBeNull();
+    expect(Number(m?.[2])).toBe(Number(m?.[1]) - MAX_APPROVAL_DISPLAY);
+    expect(Number(m?.[2])).toBeGreaterThan(0);
+    expect(d.permissionDecisionReason).not.toMatch(/dut(y|ies)/);
     expect(h.approvals()).toEqual([]);
     expect(readFileSync(file, "utf8")).toBe(original);
     // The current state fits (narrowing to no tools would): the remedy is Wright's, a smaller request.

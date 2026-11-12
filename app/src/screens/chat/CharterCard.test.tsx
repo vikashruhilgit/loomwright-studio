@@ -443,6 +443,77 @@ describe("the workspace question", () => {
   });
 });
 
+// ---- Phase 8 item 19a: a shortened readiness block ----------------------------------------
+
+/** A long charter's duties (each past the kernel's 72-character excerpt; the repo is named only past it). */
+const LONG_DUTIES = [
+  "Pick up each ticket the owner assigns, read its description and comments, and hand it to /automate for acme/widgets with a short summary of what done looks like.",
+  "Notify the owner when a pull request is opened for a ticket, naming the ticket, the branch and the one-line summary, so the owner can review it from the phone.",
+  "Keep each pull request small and focused on one ticket; if a ticket turns out to need more than one change, say so in the thread before writing any code.",
+];
+
+/** A create display in the kernel's 19a format: each duty line quotes its excerpt (`dutyExcerpt`), and role.md has every duty's full text. */
+const SHORT = [
+  'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
+  "readiness: checked by the kernel before you see it",
+  "  covered: duty 1 by Hand tickets to /automate: Pick up each ticket the owner assigns, read its description and…",
+  "  covered: duty 2 by Notify the owner: Notify the owner when a pull request is opened for a ticket, naming the…",
+  "  covered: duty 3 with no tool (it needs no kernel tool): Keep each pull request small and focused on one ticket; if a ticket…",
+  "  flagged: copy of a repo for Hand tickets to /automate: it has no copy of a repo to work in (no workspace is listed)",
+  "  flagged: GitHub write access for Hand tickets to /automate: only you can grant it (Team, in the member's inspector)",
+  "job: Hand tickets to /automate",
+  "  - Hand tickets to Loomwright's /automate.",
+  "job: Notify the owner",
+  "  - Send the owner a notification: a native macOS notification plus an entry in studio notifications.",
+  `enforced: never: git_push, gh_pr_create; tools: Read, Bash, ${K}kernel_automate_prepare, ${K}kernel_notify; bash prefixes: "gh pr"; connectors: github`,
+  "limits: tokens_per_day 2000000 (proposed); sessions_at_once 1 (proposed); delegation_depth 1 (proposed)",
+  "workspaces: none",
+  "config/agents/mason.json:",
+  ...settingsLines([]),
+  "memory/mason/role.md:",
+  "# Mason",
+  "",
+  "## Duties",
+  "",
+  ...LONG_DUTIES.map((d) => `- ${d}`),
+].join("\n");
+
+describe("19a: a shortened readiness block on the charter card", () => {
+  it("AC7: every readiness line shows with its Covered / Flagged badge and its duty number, and the workspace line still offers Choose workspace for the repo role.md names", async () => {
+    const k = charterKit([charter(9, SHORT)]);
+    k.fake.route("GET /workspaces", (req) => ok({ workspaces: req.query?.repo === "acme/widgets" ? [savedRow(3, "/Users/me/code/widgets")] : [] }));
+    await renderChat(k);
+    const c = await card();
+    const lines = within(c).getAllByTestId("charter-readiness-line");
+    expect(lines.map((l) => [l.querySelector(".badge")?.textContent, l.querySelector(".approvals-charter-readiness-text")?.textContent])).toEqual([
+      ["Covered", "duty 1 by Hand tickets to /automate: Pick up each ticket the owner assigns, read its description and…"],
+      ["Covered", "duty 2 by Notify the owner: Notify the owner when a pull request is opened for a ticket, naming the…"],
+      ["Covered", "duty 3 with no tool (it needs no kernel tool): Keep each pull request small and focused on one ticket; if a ticket…"],
+      ["Flagged", "copy of a repo for Hand tickets to /automate: it has no copy of a repo to work in (no workspace is listed)"],
+      ["Flagged", "GitHub write access for Hand tickets to /automate: only you can grant it (Team, in the member's inspector)"],
+    ]);
+    // Choose workspace is on the flagged workspace line only.
+    expect(lines.map((l) => within(l).queryByRole("button", { name: CHOOSE_WORKSPACE }) !== null)).toEqual([false, false, false, true, false]);
+    // The excerpts name no repo; the question asks for the one role.md names in full.
+    await press(c, CHOOSE_WORKSPACE);
+    const q = await within(c).findByTestId("charter-workspace-question");
+    expect(within(q).getByRole("heading").textContent).toBe("Where's your copy of acme/widgets?");
+    expect(await within(q).findByRole("button", { name: /^Use this folder/ })).toBeTruthy();
+  });
+
+  it("AC6: Show full details counts the stored display's own length (nothing cut), and role.md carries every duty's full text", async () => {
+    await renderChat(charterKit([charter(9, SHORT)]));
+    const c = await card();
+    await press(c, SHOW_DETAILS);
+    expect(within(c).getByTestId("charter-total").textContent).toBe(`${SHORT.length.toLocaleString("en-US")} characters, nothing cut`);
+    const role = within(c).getByTestId("charter-block-role").querySelector('[data-testid="charter-block-text"]')?.textContent ?? "";
+    for (const duty of LONG_DUTIES) expect(role).toContain(`- ${duty}`);
+    // The readiness block quotes only the excerpts: no duty's full text is shown above the details.
+    const readiness = within(c).getByTestId("charter-readiness").textContent ?? "";
+    for (const duty of LONG_DUTIES) expect(readiness).not.toContain(duty);
+  });
+});
+
 describe("AC11: every part is untrusted text", () => {
   it("head, jobs, never, limits, readiness, each details block and the what-changed line render as text, never markup", async () => {
     const hostile = createDisplay({ head: `Create crew member mason ("${XSS_IMG}", crab crew-teal), proposed by Wright`, jobs: [`<b>Bold</b> job`], never: `git_push, <script>x</script>` });

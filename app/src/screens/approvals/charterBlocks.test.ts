@@ -4,8 +4,8 @@
 // changed between two versions; and the repo names a workspace lookup tries.
 import { describe, expect, it } from "vitest";
 import { NEVER_CATEGORIES } from "../team/model";
-import { BLOCK_TITLES, KERNEL_TOOL_PREFIX, NEVER_WORDS, charterBlocks, limitsWords, neverWords, repoCandidates, whatChanged } from "./charterBlocks";
-import { CHARTER_CATALOGUE_UNAVAILABLE } from "./subject";
+import { BLOCK_TITLES, KERNEL_TOOL_PREFIX, NEVER_WORDS, WORKSPACE_FLAG, charterBlocks, limitsWords, neverWords, repoCandidates, whatChanged } from "./charterBlocks";
+import { CHARTER_CATALOGUE_UNAVAILABLE, charterDisplayParts } from "./subject";
 
 const K = KERNEL_TOOL_PREFIX;
 
@@ -100,5 +100,47 @@ describe("repoCandidates", () => {
   it("finds the owner/repo names in the duty lines and role.md, each once, never a longer path", () => {
     expect(repoCandidates(CREATE)).toEqual(["acme/widgets", "example/other"]);
     expect(repoCandidates("Create crew member x (\"x\", crab crew-teal), proposed by Wright\nreadiness: checked by the kernel before you see it\n  covered: duty 1: watch https://github.com/a/b and src/a/b.ts\njob: X\n  - y\nenforced: x")).toEqual([]);
+  });
+});
+
+// ---- Phase 8 item 19a: a duty line quotes a word-bounded excerpt of the duty -----------------
+
+/** The kernel's 19a shape: the duty line quotes the excerpt (no repo in it); role.md has the full duty, which names the repo. */
+const SHORTENED = [
+  'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
+  "readiness: checked by the kernel before you see it",
+  "  covered: duty 1 by Hand tickets to /automate: Pick up each ticket the owner assigns, read its description and…",
+  "  flagged: copy of a repo for Hand tickets to /automate: it has no copy of a repo to work in (no workspace is listed)",
+  "job: Hand tickets to /automate",
+  "  - Hand tickets to Loomwright's /automate.",
+  `enforced: never: git_push; tools: Read, ${K}kernel_automate_prepare; bash prefixes: none; connectors: github`,
+  "limits: tokens_per_day 200000 (proposed); sessions_at_once 1 (proposed); delegation_depth not set (no limit)",
+  "workspaces: none",
+  "config/agents/mason.json:",
+  "{}",
+  "memory/mason/role.md:",
+  "# Mason",
+  "",
+  "- Pick up each ticket the owner assigns, read its description and comments, and hand it to /automate for acme/widgets with a short summary of what done looks like.",
+].join("\n");
+
+describe("a shortened readiness block (19a)", () => {
+  it("keeps every line in its block and the workspace flag the card offers Choose workspace on", () => {
+    const parts = charterDisplayParts(SHORTENED);
+    expect(parts?.readiness).toEqual([
+      { status: "covered", text: "duty 1 by Hand tickets to /automate: Pick up each ticket the owner assigns, read its description and…" },
+      { status: "flagged", text: "copy of a repo for Hand tickets to /automate: it has no copy of a repo to work in (no workspace is listed)" },
+    ]);
+    expect(parts?.readiness?.filter((l) => l.status === "flagged" && l.text.includes(WORKSPACE_FLAG)).map((l) => l.text)).toEqual([
+      "copy of a repo for Hand tickets to /automate: it has no copy of a repo to work in (no workspace is listed)",
+    ]);
+    const read = charterBlocks(SHORTENED);
+    expect(read.blocks.map((b) => b.kind)).toEqual(["jobs", "enforced", "settings", "role"]);
+    expect(read.blocks.map((b) => (b.path === undefined ? b.text : `${b.path}:\n${b.text}`)).join("\n")).toBe(SHORTENED.split("\n").slice(4).join("\n"));
+  });
+
+  it("repoCandidates: an excerpt that drops the owner/repo token still finds the repo in role.md, never a partial name", () => {
+    expect(SHORTENED.split("\n")[2]).not.toMatch(/acme/);
+    expect(repoCandidates(SHORTENED)).toEqual(["acme/widgets"]);
   });
 });
