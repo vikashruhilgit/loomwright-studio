@@ -13,7 +13,7 @@ Switching between subscription billing and API credits today means using a termi
 ## Order
 1. Auth 2 (decision D42 + contract, mockup, `501` stubs) and, alongside it, Auth 1 (real-key probe, owner-run by hand, not automatable: real credential). The owner approves D42 in Auth 2's review.
 2. Auth 3 (kernel) and Auth 4 (app) in parallel: disjoint Touches, both build against Auth 2's contract. Auth 3 also depends on Auth 1: it cannot merge until the probe evidence is committed, and it adds that citation to D42.
-3. Chat 1 (added 2026-11-12, from the 19a walk): the title row shows "working" while an approval waits, a clearer working mark (the running stitch, decided with the owner), and a link from a card's Ask or change to Wright's reply. It depends on nothing and shares no file with Auth 2–4, so it runs in wave 1 beside Auth 2.
+3. Chat 1 (added 2026-11-12, from the 19a walk): the title row shows "working" while an approval waits, a clearer working mark ("the hoop sews", made from the avatar's stitched hoop and decided with the owner), and a link from a card's Ask or change to Wright's reply. It depends on nothing and shares no file with Auth 2–4, so it runs in wave 1 beside Auth 2.
 
 ## Run
 Two waves: [Auth 2 ∥ Chat 1 ∥ Auth 1 (owner)] → [Auth 3 ∥ Auth 4]. Queue Auth 2–4 and Chat 1 through `/automate`; Auth 1 is done by hand during wave 1.
@@ -28,4 +28,4 @@ Two waves: [Auth 2 ∥ Chat 1 ∥ Auth 1 (owner)] → [Auth 3 ∥ Auth 4]. Queue
 - A distributed build ships: re-check D29's token-free path end to end.
 
 ## Owner decisions
-- 2026-11-12: add Chat 1 to this backlog; running it in the same wave as the auth items is fine. Its working mark is fixed as B, "running stitch" (reference mock `2026-11-12-121226-working-mark-mock.html`).
+- 2026-11-12: add Chat 1 to this backlog; running it in the same wave as the auth items is fine. Its working mark is "the hoop sews", made from the avatar's stitched hoop (reference mock `2026-11-12-121226-working-mark-mock.html`).
