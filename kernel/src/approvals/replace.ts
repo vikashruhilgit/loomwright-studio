@@ -12,7 +12,10 @@
 // (the two charter tools name the member). A withdraw only ever denies
 // (invariant 3): it never approves, never uses or consumes a grant, and
 // queues no decision message (the agent that held the new call is the one
-// replacing the old one, so there is nothing to tell it).
+// replacing the old one, so there is nothing to tell it). That agent learns
+// of the withdraw only from its held call's own reason, which names what the
+// hold withdrew (`withdrawnNote`, phase 8 item 19b), so it never asks the
+// owner to decide a withdrawn approval.
 //
 // This module imports only the loop's audit helper and types, so `store.ts`
 // can call it without an import cycle and the `studio` CLI can still load the
@@ -69,4 +72,22 @@ export function withdrawReplaced(store: Store, subject: string, newId: number, a
     }
     return withdrawn;
   });
+}
+
+/**
+ * The sentence the held call's reason gets when its hold withdrew `ids`
+ * (phase 8 item 19b): it names each one, in the order given (`withdrawReplaced`'s,
+ * oldest first), says the kernel withdrew it and tells the agent not to ask
+ * the owner to decide it. It starts with a space, so the session gate appends
+ * it as is; with no ids it is `""`, so a hold that withdrew nothing reads
+ * exactly as before. The ids are numbers from the store, never untrusted text.
+ * Nothing is stored or queued for it.
+ */
+export function withdrawnNote(ids: readonly number[]): string {
+  if (ids.length === 0) return "";
+  if (ids.length === 1) {
+    return ` The kernel withdrew approval ${ids[0]} (the older pending version of this call); it needs no decision, so do not ask the owner to approve or reject it.`;
+  }
+  const named = `${ids.slice(0, -1).join(", ")} and ${ids[ids.length - 1]}`;
+  return ` The kernel withdrew approvals ${named} (the older pending versions of this call); they need no decision, so do not ask the owner to approve or reject them.`;
 }

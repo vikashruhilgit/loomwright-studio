@@ -271,13 +271,25 @@ function agentOf(agent: string | null): string {
  * enters `payload_json`, so grant matching on the canonical payload is
  * unchanged. With a `subject`, every older pending approval with the same
  * subject is withdrawn in the same transaction (`withdrawReplaced`: denied by
- * the kernel, `replaced_by` this one, no message). Returns the row. Throws `ApprovalError` (`invalid_approval`)
+ * the kernel, `replaced_by` this one, no message). Returns the row (the
+ * withdrawn ids stay with `insertApproval`, which `holdOrUseGrant` calls). Throws `ApprovalError` (`invalid_approval`)
  * before writing when the action is empty, longer than 200 characters or
  * holds a NUL, the agent's name holds a NUL (both go into the
  * notification's text, which `recordNotification` refuses with a NUL), or a
  * given subject is not a 1-`MAX_APPROVAL_SUBJECT`-character string.
  */
 export function requestApproval(store: Store, request: ApprovalRequest, now: Date): ApprovalRow {
+  return insertApproval(store, request, now).row;
+}
+
+/**
+ * `requestApproval`'s work: the new row, and the ids its hold withdrew
+ * (`withdrawReplaced`'s, oldest first; `[]` with no subject or nothing
+ * pending to withdraw), so the rail can name them in the held call's reason
+ * (phase 8 item 19b) without a second store read. Same checks, same writes,
+ * same one transaction.
+ */
+function insertApproval(store: Store, request: ApprovalRequest, now: Date): { row: ApprovalRow; withdrawn: number[] } {
   const { action, sessionId, source } = request;
   if (typeof action !== "string" || action.length === 0 || action.length > MAX_APPROVAL_ACTION) {
     throw new ApprovalError("invalid_approval", `the action must be 1-${MAX_APPROVAL_ACTION} characters`);
@@ -313,7 +325,7 @@ export function requestApproval(store: Store, request: ApprovalRequest, now: Dat
     if (subject !== undefined) requested.subject = subject;
     appendEvent(store, "approval_requested", { sessionId, taskId: null }, requested, at);
     // The owner's 2026-11-11 decision 1: a newer version withdraws the older pending one (a deny, never an approval).
-    if (subject !== undefined) withdrawReplaced(store, subject, id, at);
+    const withdrawn = subject !== undefined ? withdrawReplaced(store, subject, id, at) : [];
     recordNotification(
       store,
       {
@@ -324,7 +336,7 @@ export function requestApproval(store: Store, request: ApprovalRequest, now: Dat
       },
       now,
     );
-    return getApproval(store, id) as ApprovalRow;
+    return { row: getApproval(store, id) as ApprovalRow, withdrawn };
   });
 }
 
@@ -648,8 +660,13 @@ export interface RailCall {
   readonly subject?: string;
 }
 
-/** What the rail does with an outward call: run it on grant `id` (a one-shot one is consumed now), or hold it as new approval `id`. */
-export type RailOutcome = { readonly kind: "granted"; readonly id: number } | { readonly kind: "held"; readonly id: number };
+/**
+ * What the rail does with an outward call: run it on grant `id` (a one-shot one is consumed now), or hold it as new
+ * approval `id`, which withdrew the older pending approvals `withdrawn` (oldest first; `[]` when it withdrew none).
+ */
+export type RailOutcome =
+  | { readonly kind: "granted"; readonly id: number }
+  | { readonly kind: "held"; readonly id: number; readonly withdrawn: readonly number[] };
 
 /**
  * The calling session `?`'s standing grant for this call, as SQL over the
@@ -686,9 +703,10 @@ const STANDING_GRANT = `SELECT a.id FROM approvals a
  * calling session with a named agent and a playbook at a version, and never
  * a tool in `ALWAYS_HELD_TOOLS`. Its use is one `approval_grant_used` event
  * (`{id, tool}`, linked to this session); it is not consumed. With no match,
- * the call is held: `requestApproval` with `source: "rail"` (and the call's
- * `display` / `subjectVersion` / `subject`, when given). None of those takes
- * part in matching a grant; a grant used here withdraws nothing.
+ * the call is held: `insertApproval` (`requestApproval`'s work) with
+ * `source: "rail"` (and the call's `display` / `subjectVersion` / `subject`,
+ * when given), and the outcome carries the ids that hold withdrew. None of
+ * those takes part in matching a grant; a grant used here withdraws nothing.
  */
 export function holdOrUseGrant(store: Store, call: RailCall, now: Date): RailOutcome {
   const payloadJson = canonicalJson(call.payload);
@@ -723,7 +741,7 @@ export function holdOrUseGrant(store: Store, call: RailCall, now: Date): RailOut
         return { kind: "granted", id: standing };
       }
     }
-    const row = requestApproval(
+    const { row, withdrawn } = insertApproval(
       store,
       {
         agent: call.agent,
@@ -737,7 +755,7 @@ export function holdOrUseGrant(store: Store, call: RailCall, now: Date): RailOut
       },
       now,
     );
-    return { kind: "held", id: row.id };
+    return { kind: "held", id: row.id, withdrawn };
   });
 }
 

@@ -14,6 +14,7 @@ import type {
   SpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
 import { KERNEL_APPLIED_ACTIONS, MAX_APPROVAL_SUBJECT, holdOrUseGrant } from "../approvals/store.js";
+import { withdrawnNote } from "../approvals/replace.js";
 import { KeychainError } from "../auth/keychain.js";
 import { recordDraftOutput } from "../integrations/drafts.js";
 import type { DraftRecord } from "../integrations/drafts.js";
@@ -2675,7 +2676,8 @@ export class SessionManager {
    * in the outward set runs only on an unused one-shot grant for exactly its
    * payload (`approval_granted`, consumed now) or is held as a new pending
    * approval and denied (`approval_required`, the hook's reason naming the
-   * approval id). Records one `tool_decision` event per call (for an outward
+   * approval id, and any older pending approval its hold withdrew:
+   * `withdrawnNote`, phase 8 item 19b). Records one `tool_decision` event per call (for an outward
    * call, in the same transaction as the grant's use or the new approval),
    * and fails closed: any exception (including failing to create the
    * approval, consume the grant or record an allow) denies with
@@ -2833,11 +2835,13 @@ export class SessionManager {
                 : "run exactly the same call again, once.";
               // The check's note for the session (a charter's open readiness findings): only on a hold, after the reason, never stored.
               const note = verdict !== undefined && "agentNote" in verdict && verdict.agentNote !== undefined ? ` ${verdict.agentNote}` : "";
+              // What this hold withdrew (phase 8 item 19b), from the committed outcome only: named before the note, "" when none.
+              const withdrawn = outcome.kind === "held" ? withdrawnNote(outcome.withdrawn) : "";
               const permissionDecisionReason =
                 outcome.kind === "granted"
                   ? "approval_granted"
                   : `approval_required: held as approval ${outcome.id}; it did not run. The owner decides in Studio's Approvals (approval ${outcome.id}) ` +
-                    `and the decision arrives as a new message. End your turn now; if it is approved, ${ifApproved}${note}`;
+                    `and the decision arrives as a new message. End your turn now; if it is approved, ${ifApproved}${withdrawn}${note}`;
               return {
                 hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: outcome.kind === "granted" ? "allow" : "deny", permissionDecisionReason },
               };
