@@ -1,6 +1,7 @@
 # 19b — Wright knows the old version was withdrawn
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/264
 
 **Priority:** MVP (small, but it misleads the owner at every redraft) · invariants 2, 3 · follows 18d
 
@@ -75,3 +76,9 @@ docs/architecture/approvals.md
 
 ## Depends on
 none
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-12T11:34:05Z
+- **Brief:** .supervisor/jobs/done/2026-11-12-wright-knows-old-version-was-withdrawn.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/264
