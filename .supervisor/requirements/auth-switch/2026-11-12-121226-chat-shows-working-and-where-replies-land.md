@@ -12,29 +12,55 @@ Found on 2026-11-12 during phase 8 item 19a's Validation 2 walk, in the packaged
 2. **The working mark is too faint.** Today's `working` StatusDot is an 8px dot that breathes from scale 1 to 0.85. Beside a word, it reads as still. With motion off it is a filled dot, the same shape as "waiting on you" in another colour.
 3. **An Ask or change reply is out of sight.** `CharterAsk.tsx` posts the text as a Reply in the thread where Wright drafted the charter. The only trace is the grey line "Sent to Wright in “…”. Wright answers there; …". That thread sits above the pending cards, and a 10-duty card is several screens tall. The owner could not find the message or Wright's two replies (brain_messages 93 and 94) without help.
 
-## The working mark: "the hoop sews" (decided with the owner, 2026-11-12)
+## The working mark: "the thread sews the hoop" (decided with the owner, 2026-11-12)
 
-The owner asked for the mark to come from the avatar's own circle and to be nothing generic. It is the avatar's stitched hoop (`.stitch` in `app/src/components/Avatar/Avatar.css`) with no creature in it, sewing. The owner reviewed it in a mock, `2026-11-12-121226-working-mark-mock.html` (in the owner's checkout only; the metadata branch carries Markdown alone). The spec below is complete and authoritative.
+The owner asked for the mark to come from the avatar's own circle and to be nothing generic. They compared five takes on the hoop, chose this one ("the thread draws the hoop") and asked for it to be tuned. The tuned version is in a mock, `2026-11-12-121226-working-mark-mock.html`, which is in the owner's checkout only because the metadata branch carries Markdown alone. The spec below is complete and authoritative.
 
-- **Shape:** an inline SVG, 14×14 (viewBox `0 0 16 16`), group `rotate(-90 8 8)` so the first stitch sits at 12 o'clock.
-  - **The hoop:** `circle cx=8 cy=8 r=5.6 pathLength=40`, no fill, stroke `--working`, width 1.8, round caps, `stroke-dasharray: 2.6 2.4` (8 stitches), `stroke-dashoffset: 1.3`, opacity 0.8.
-  - **The stitch being laid:** the same circle drawn again, width 2.1, round caps.
-- **Motion, one beat every 1.1s** (`cubic-bezier(.6,0,.15,1)`, infinite):
-  - The laid stitch is pulled in from nothing at the top: `stroke-dasharray` goes from `0 40` to `2.6 37.4` over the first 40%, in `--ink` (bright).
-  - Then the whole hoop steps round by exactly one stitch, `stroke-dashoffset` 1.3 → −3.7 between 45% and 100%. The laid stitch moves with it and settles to `--working` at opacity 0.8.
-  - The dash period is 5 of 40, so −3.7 draws the same picture as 1.3, and the loop has no seam.
-  - It moves in beats, like cloth under a sewing machine, never a smooth spin. That is what keeps it from reading as a loading spinner.
-- **Motion off** (`prefers-reduced-motion`): no animation. The stitched hoop is drawn with its top stitch in `--ink`. No other state has stitches: idle is a plain ring, waiting on you a solid amber dot, paused at cap a dot with a bar.
-- **Where:** it replaces the `working` form of `StatusDot` everywhere, because StatusDot is "the same mark everywhere so the user learns it once":
-  - the chat title row, the thread's "<name> is working on it" line and the sidebar footer;
-  - Sessions, Tasks, Playbooks and the menu-bar panel.
-  - `hideLabel` keeps the word as the mark's `aria-label`. The other states' dots keep their 8px size, centred in the same 14px slot, so the words line up across states. The menu-bar tray glyph (`app/electron/tray-glyph.ts`) and Avatars are unchanged.
-- **Rejected along the way, so the implementer does not drift back:**
-  - Today's breathing dot is too faint.
-  - Radial fading ticks read as the stock activity spinner.
-  - A hoop with a hanging thread and knot read as a magnifying glass, and with the thread at the top right as the ♂ sign; a circle with any tail drifts toward a common symbol.
-  - Typing dots and a smooth spinner are generic.
-- **Words do not change.** The four kernel state words stay verbatim (`idle`, `working`, `waiting on you`, `paused at cap`). There is no "thinking" or "busy".
+**What it shows:** the avatar's stitched hoop (`.stitch` in `app/src/components/Avatar/Avatar.css`), sewn while the agent works.
+- A needle runs round from 12 o'clock and lays the hoop's eight stitches behind it, each bright as it lands.
+- When the needle meets its start, the knot is tied: the hoop cinches in and springs back.
+- The stitches then unpick in the order they were sewn, and the needle starts again.
+- A faint hoop always stays underneath, so the mark never vanishes.
+
+**Shape:** an inline SVG, 14×14, viewBox `0 0 16 16`. Its three parts sit in a group `.cinch` (transform-origin `8px 8px`), with the needle outside the group:
+- **Ghost:** `circle cx=8 cy=8 r=5.6`, no fill, stroke `--working`, width 1.2, opacity 0.2.
+- **Eight stitches** `s0`–`s7`: arcs on r=5.6, stroke `--working`, width 1.8, round caps, opacity 0 at rest. Stitch *i* spans 9° to 36° of its 45° slot, clockwise from 12 o'clock:
+  - s0 `M8.88 2.47A5.6 5.6 0 0 1 11.29 3.47`
+  - s1 `M12.53 4.71A5.6 5.6 0 0 1 13.53 7.12`
+  - s2 `M13.53 8.88A5.6 5.6 0 0 1 12.53 11.29`
+  - s3 `M11.29 12.53A5.6 5.6 0 0 1 8.88 13.53`
+  - s4 `M7.12 13.53A5.6 5.6 0 0 1 4.71 12.53`
+  - s5 `M3.47 11.29A5.6 5.6 0 0 1 2.47 8.88`
+  - s6 `M2.47 7.12A5.6 5.6 0 0 1 3.47 4.71`
+  - s7 `M4.71 3.47A5.6 5.6 0 0 1 7.12 2.47`
+- **Needle:** `circle r=1.15`, fill `--ink`, moved with `offset-path: path("M8 2.4A5.6 5.6 0 1 1 7.99 2.4")` and `offset-rotate: 0deg`.
+
+**Motion:** one cycle of 2.4s, linear, infinite. Percentages are of the cycle:
+- **Sew, 0–58%:** the needle's `offset-distance` goes 0% → 100%. Stitch *i* appears (opacity 0 → 1) at `(i + 0.85) / 8 × 58%` in `--ink`, and settles to `--working` 7% of the cycle later (by 63% at the latest).
+- **Tie, 58–66%:** the needle scales 1 → 1.9 at 61%, then to 1.15 at 66%. `.cinch` scales 1 → 0.88 at 61%, back to 1 at 66% (`cubic-bezier(.3,0,.2,1)`).
+- **Unpick, 74–92%:** stitch *i* fades from opacity 1 at `74 + 1.8i`% to 0 five points later. The needle shrinks to 0.6 and fades out by 86%, jumps back to 0% while hidden, and fades in at the top by 100%.
+
+**Motion off** (`prefers-reduced-motion`): no animation. The hoop is shown mid-sew:
+- the ghost;
+- stitches s0–s4 in, with s4 in `--ink` and the rest in `--working`;
+- the needle at `offset-distance: 66%`.
+
+No other state looks like this: idle is a plain ring, waiting on you a solid amber dot, paused at cap a dot with a bar.
+
+**Where:** it replaces the `working` form of `StatusDot` everywhere, because StatusDot is "the same mark everywhere so the user learns it once":
+- the chat title row, the thread's "<name> is working on it" line and the sidebar footer;
+- Sessions, Tasks, Playbooks and the menu-bar panel.
+
+`hideLabel` keeps the word as the mark's `aria-label`. The other states' 8px dots sit centred in the same 14px slot, so the words line up across states. The menu-bar tray glyph (`app/electron/tray-glyph.ts`) and Avatars are unchanged.
+
+**Rejected along the way, so the implementer does not drift back:**
+- Today's breathing dot is too faint.
+- Radial fading ticks read as the stock activity spinner.
+- A hoop with a hanging thread and knot read as a magnifying glass, and with the thread at the top right as the ♂ sign.
+- Typing dots and a smooth spinner are generic.
+- The embroidery double ring, the crowned hoop and the "pulled tight" pulse were shown and not chosen.
+
+**Words do not change.** The four kernel state words stay verbatim (`idle`, `working`, `waiting on you`, `paused at cap`). There is no "thinking" or "busy".
 
 ## Acceptance Criteria
 
@@ -42,12 +68,12 @@ The owner asked for the mark to come from the avatar's own circle and to be noth
 - [ ] AC1: Given Wright has a session running and no approval pending, then the "with Wright" title row shows the sewing hoop and the word "working".
 - [ ] AC2: Given Wright has a session running and N approvals from Wright pending, then the title row shows the sewing hoop, "working", and the meta "· N waiting on you" (StatusDot's `meta`). It never shows "waiting on you" alone while a Wright session runs.
 - [ ] AC3: Given no Wright session is running and N approvals from Wright are pending, then the title row shows "waiting on you" with the meta "· N", as today.
-- [ ] AC4: Given the `working` StatusDot anywhere in the app, then it renders the sewing hoop as specified above. It steps one stitch per 1.1s beat, keeps the 6px gap to its word, and does not change the line's height. The other states' marks sit centred in the same 14px slot.
+- [ ] AC4: Given the `working` StatusDot anywhere in the app, then it renders the sewing hoop as specified above: the needle sews the eight stitches, ties the knot, and the stitches unpick, in a 2.4s cycle. It keeps the 6px gap to its word and does not change the line's height. The other states' marks sit centred in the same 14px slot.
 - [ ] AC5: Given I send from a card's Ask or change (or its workspace question), then the card's confirmation line includes a link, "Go to the reply", that scrolls the chat to my Reply in the drafting thread and gives it a brief highlight. The link keeps working after the card re-renders.
 - [ ] AC6: Given Wright's answer to that Reply arrives, then the card shows "Wright answered · View", which scrolls to the answer. Until the answer arrives, the line says "Wright is working on it".
 
 **Edge cases:**
-- [ ] AC7: Given `prefers-reduced-motion`, then the hoop is still, with its top stitch in `--ink`, and still differs in shape from every other state. The Reply highlight is an opacity fade capped at `duration-instant`.
+- [ ] AC7: Given `prefers-reduced-motion`, then the hoop is still, shown mid-sew (stitches s0–s4 and the needle at 66%), and still differs in shape from every other state. The Reply highlight is an opacity fade capped at `duration-instant`.
 - [ ] AC8: Given the drafting thread is not loaded (older than the current page), then "Go to the reply" loads it before scrolling. If the thread is gone, the link is replaced by the plain sentence "Wright answers in “<thread title>”".
 - [ ] AC9: Given a specialist's thread (not Wright), then AC1–AC3 apply to that agent's title row in the same way.
 
@@ -64,7 +90,7 @@ The owner asked for the mark to come from the avatar's own circle and to be noth
 - The Settings and auth work in this backlog (Auth 2–4).
 
 ## Owner decisions
-- 2026-11-12: the working mark is "the hoop sews", made from the avatar's stitched hoop as specified above. The owner rejected a generic mark and asked for the avatar's circle; this was fixed in the 19a follow-up conversation and passed to this requirement.
+- 2026-11-12: the working mark is "the thread sews the hoop", made from the avatar's stitched hoop as specified above. The owner rejected a generic mark, asked for the avatar's circle, chose variant B of five and asked for it to be tuned. This was fixed in the 19a follow-up conversation and passed to this requirement.
 - 2026-11-12: queue this with the auth-switch backlog; it may run in the same wave, since it shares no file with Auth 2–4.
 
 ## Priority: High
