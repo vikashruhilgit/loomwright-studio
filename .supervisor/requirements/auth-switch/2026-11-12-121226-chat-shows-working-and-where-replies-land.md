@@ -17,28 +17,36 @@ Found on 2026-11-12 during phase 8 item 19a's Validation 2 walk, in the packaged
 The owner asked for the mark to come from the avatar's own circle and to be nothing generic. They compared five takes on the hoop, chose this one ("the thread draws the hoop") and asked for it to be tuned. The tuned version is in a mock, `2026-11-12-121226-working-mark-mock.html`, which is in the owner's checkout only because the metadata branch carries Markdown alone. The spec below is complete and authoritative.
 
 **What it shows:** the avatar's stitched hoop (`.stitch` in `app/src/components/Avatar/Avatar.css`), sewn while the agent works.
-- A needle runs round from 12 o'clock and lays the hoop's eight stitches behind it, each bright as it lands.
-- When the needle meets its start, the knot is tied: the hoop cinches in and springs back.
-- The stitches then unpick in the order they were sewn, and the needle starts again.
-- A faint hoop always stays underneath, so the mark never vanishes.
+- A needle laps the hoop from 12 o'clock at an even pace, drawing each of the eight stitches as it passes. Each stitch is bright as it is drawn, then settles.
+- At the top the needle swells softly into the knot, and the hoop gives a gentle cinch.
+- The thread then draws back out of the stitches in the order they were sewn, while the needle rests at the top. The next lap starts from there with no jump or fade.
+- A faint hoop stays underneath throughout.
 
-**Shape:** an inline SVG, 14×14, viewBox `0 0 16 16`. Its three parts sit in a group `.cinch` (transform-origin `8px 8px`), with the needle outside the group:
-- **Ghost:** `circle cx=8 cy=8 r=5.6`, no fill, stroke `--working`, width 1.2, opacity 0.2.
-- **Eight stitches** `s0`–`s7`: arcs on r=5.6, stroke `--working`, width 1.8, round caps, opacity 0 at rest. Stitch *i* spans 9° to 36° of its 45° slot, clockwise from 12 o'clock:
-  - s0 `M8.88 2.47A5.6 5.6 0 0 1 11.29 3.47`
-  - s1 `M12.53 4.71A5.6 5.6 0 0 1 13.53 7.12`
-  - s2 `M13.53 8.88A5.6 5.6 0 0 1 12.53 11.29`
-  - s3 `M11.29 12.53A5.6 5.6 0 0 1 8.88 13.53`
-  - s4 `M7.12 13.53A5.6 5.6 0 0 1 4.71 12.53`
-  - s5 `M3.47 11.29A5.6 5.6 0 0 1 2.47 8.88`
-  - s6 `M2.47 7.12A5.6 5.6 0 0 1 3.47 4.71`
-  - s7 `M4.71 3.47A5.6 5.6 0 0 1 7.12 2.47`
+**Shape:** an inline SVG, 14×14, viewBox `0 0 16 16`, `shape-rendering: geometricPrecision`. The ghost and the stitches sit in a group `.cinch` (transform-origin `8px 8px`); the needle is outside the group.
+- **Ghost:** `circle cx=8 cy=8 r=5.6`, no fill, stroke `--working`, width 1.2, opacity 0.18, never animated.
+- **Eight stitches** `s0`–`s7`: arcs on r=5.6 with `pathLength="1"`, stroke `--working`, width 1.8, round caps.
+  - Each uses `stroke-dasharray: 1 2` and is hidden at rest (`stroke-dashoffset: 1; opacity: 0`). The opacity is required: a round cap draws a dot even on a zero-length dash.
+  - Stitch *i* spans 9° to 36° of its 45° slot, clockwise from 12 o'clock:
+    - s0 `M8.88 2.47A5.6 5.6 0 0 1 11.29 3.47`
+    - s1 `M12.53 4.71A5.6 5.6 0 0 1 13.53 7.12`
+    - s2 `M13.53 8.88A5.6 5.6 0 0 1 12.53 11.29`
+    - s3 `M11.29 12.53A5.6 5.6 0 0 1 8.88 13.53`
+    - s4 `M7.12 13.53A5.6 5.6 0 0 1 4.71 12.53`
+    - s5 `M3.47 11.29A5.6 5.6 0 0 1 2.47 8.88`
+    - s6 `M2.47 7.12A5.6 5.6 0 0 1 3.47 4.71`
+    - s7 `M4.71 3.47A5.6 5.6 0 0 1 7.12 2.47`
 - **Needle:** `circle r=1.15`, fill `--ink`, moved with `offset-path: path("M8 2.4A5.6 5.6 0 1 1 7.99 2.4")` and `offset-rotate: 0deg`.
 
-**Motion:** one cycle of 2.4s, linear, infinite. Percentages are of the cycle:
-- **Sew, 0–58%:** the needle's `offset-distance` goes 0% → 100%. Stitch *i* appears (opacity 0 → 1) at `(i + 0.85) / 8 × 58%` in `--ink`, and settles to `--working` 7% of the cycle later (by 63% at the latest).
-- **Tie, 58–66%:** the needle scales 1 → 1.9 at 61%, then to 1.15 at 66%. `.cinch` scales 1 → 0.88 at 61%, back to 1 at 66% (`cubic-bezier(.3,0,.2,1)`).
-- **Unpick, 74–92%:** stitch *i* fades from opacity 1 at `74 + 1.8i`% to 0 five points later. The needle shrinks to 0.6 and fades out by 86%, jumps back to 0% while hidden, and fades in at the top by 100%.
+**Motion:** one cycle of 2.8s, infinite. Percentages are of the cycle.
+- **Sew, 0–60%, linear:** the needle's `offset-distance` goes 0% → 100%.
+  - Stitch *i* is drawn in step with it. `stroke-dashoffset` goes from 1 to 0 between `(45i + 9) / 360 × 60%` and `(45i + 36) / 360 × 60%`, with opacity 1 from the start of the draw.
+  - The stitch is drawn in `--ink` and settles to `--working` 9% of the cycle after its draw ends.
+- **Tie, 60–76%** (`cubic-bezier(.45,0,.25,1)`):
+  - The needle stays at 100%, which is the top, and scales 1 → 1.55 at 66%, back to 1 by 76%.
+  - `.cinch` scales 1 → 0.93 at 65%, back to 1 by 74%.
+- **Unpick, from 66%, linear:**
+  - Stitch *i* draws back out from its start: `stroke-dashoffset` goes 0 → −1 between `66 + 2.6i`% and 9 points later. It then hides (opacity 0) and stays hidden to 100%.
+  - The needle rests at the top. The next cycle starts it from 0%, which is the same point, so there is no jump.
 
 **Motion off** (`prefers-reduced-motion`): no animation. The hoop is shown mid-sew:
 - the ghost;
@@ -68,7 +76,7 @@ No other state looks like this: idle is a plain ring, waiting on you a solid amb
 - [ ] AC1: Given Wright has a session running and no approval pending, then the "with Wright" title row shows the sewing hoop and the word "working".
 - [ ] AC2: Given Wright has a session running and N approvals from Wright pending, then the title row shows the sewing hoop, "working", and the meta "· N waiting on you" (StatusDot's `meta`). It never shows "waiting on you" alone while a Wright session runs.
 - [ ] AC3: Given no Wright session is running and N approvals from Wright are pending, then the title row shows "waiting on you" with the meta "· N", as today.
-- [ ] AC4: Given the `working` StatusDot anywhere in the app, then it renders the sewing hoop as specified above: the needle sews the eight stitches, ties the knot, and the stitches unpick, in a 2.4s cycle. It keeps the 6px gap to its word and does not change the line's height. The other states' marks sit centred in the same 14px slot.
+- [ ] AC4: Given the `working` StatusDot anywhere in the app, then it renders the sewing hoop as specified above: the needle sews the eight stitches, ties the knot, and the thread draws back out, in a 2.8s cycle, with no jump between cycles. It keeps the 6px gap to its word and does not change the line's height. The other states' marks sit centred in the same 14px slot.
 - [ ] AC5: Given I send from a card's Ask or change (or its workspace question), then the card's confirmation line includes a link, "Go to the reply", that scrolls the chat to my Reply in the drafting thread and gives it a brief highlight. The link keeps working after the card re-renders.
 - [ ] AC6: Given Wright's answer to that Reply arrives, then the card shows "Wright answered · View", which scrolls to the answer. Until the answer arrives, the line says "Wright is working on it".
 
