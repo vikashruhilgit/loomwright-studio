@@ -48,10 +48,20 @@ All in `kernel/test/approvals-replace.test.ts`, `describe("19b: the held reason 
 In the packaged app (`cd app && npm run package`, then open the built app), with the kernel running as the installed service:
 
 1. In Wright's thread, ask Wright to draft a crew member. Check that Wright holds a charter approval (v1) and the card shows it.
-   - What it showed:
+   - What it showed: asked for a read-only "Docs Checker" (reads files in `~/studio-work/studio-sandbox`, notifies about broken links, no GitHub access, 1,000,000 tokens a day, 1 session at once). Wright held approval 23, "Create crew member docs-checker ("Docs Checker", seahorse crew-olive), proposed by Wright", and the card showed it with Limits "1,000,000 tokens a day · 1 session at once · delegates 1 level deep" and both duties Covered.
 2. On v1's card, use Ask or change for a small change, for example "lower the daily token limit to 1,500,000; keep everything else the same", and Send. Check that Wright holds a v2 and that v1's card collapses to "Replaced by v2".
-   - What it showed:
+   - What it showed: sent "lower the daily token limit to 500,000; keep everything else the same" from approval 23's Ask or change. Wright held approval 24 (v2, "500,000 tokens a day · 1 session at once · delegates 1 level deep"). The kernel withdrew approval 23 (status `denied`, decided_by `kernel`; the timeline shows "Approval 23 denied: kernel_agent_create" at 16:29), and the v1 card collapsed to "▸ docs-checker · v1 · Replaced by v2 · limits changed".
 3. Read Wright's reply in the thread after the v2 is held. Check that it names v2 as the approval to decide, says the old one was withdrawn, and does not tell the owner to "reject <v1's id>" or to approve v1.
-   - What it showed (Wright's message, as the owner reports it):
+   - What it showed (Wright's message, as the owner reports it): "The revised Docs Checker charter is waiting for your decision as **approval 24** in Studio's **Approvals**. The daily token limit is now 500,000, and everything else is the same as before. The kernel withdrew approval 23, so it doesn't need a decision." It names v2 (24) as the one to decide, says 23 was withdrawn, and says nothing about rejecting or approving 23.
 
 Owner's result (filled in from the owner's report):
+
+Verdict: PASS for Validation 2
+
+Run on 2026-11-12 between 16:21 and 16:30 local time (macOS 26.6.2) by Claude, driving the app at the owner's request after #264 had merged. It ran against the packaged app (`npm run package`, `release/mac-arm64/Loomwright Studio.app`) and the kernel installed as the launchd service (`service install`, pid 40317), both built from `main` at `d7f21bea` (the #264 merge). The installed kernel's `dist/approvals/replace.js` carries the 19b sentence. The small charter fit the approval head, so this walk does not touch 19a's large-charter case.
+
+```
+Step 2: approval 23 status=denied decided_by=kernel; approval 24 pending
+        ▸ docs-checker · v1 · Replaced by v2 · limits changed
+Step 3: Wright: "The kernel withdrew approval 23, so it doesn't need a decision." (no "reject 23")
+```
