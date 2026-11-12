@@ -29,15 +29,16 @@ The owner's words in the phase 8 exit live run, 2026-11-12 (commit `cfb3d428`, c
 
 **Edge cases:**
 - [ ] Given a new job added with no declared needs, then a test fails.
-- [ ] Given the 2026-11-12 charter (`studio-sandbox-dev` before approval 32) as a fixture, then readiness flags its missing needs for "Hand tickets to /automate" under the path D43 chose.
+- [ ] Given the 2026-11-12 charter (`studio-sandbox-dev` before approval 32) as a fixture, then readiness flags its missing needs for "Hand tickets to /automate" under D43 (kernel-owned launch): the gap it flags is the missing GitHub write and workspace, never `Skill`.
 
 ## Non-goals
-- How a ticket run starts (20a, 20b).
+- How a ticket run starts (20b, D43).
 - Granting anything automatically: the system shows gaps, and the owner or Wright's held update closes them.
 
 ## Owner decisions
 - 2026-11-12: the owner asked for this system during the live run, since a crew member can be set up for anything.
-- 2026-11-12: Proceed anyway at PO-ASSUME; this story waits on D43.
+- 2026-11-12: Proceed anyway at PO-ASSUME.
+- 2026-11-12: D43 is the kernel-owned launch, so a ticket job's declared needs hold no `Skill` or Loomwright shell prefixes.
 
 ## Priority: MVP
 **Rationale:** Without it, every new kind of crew member repeats the 2026-11-12 run: approved, then refused at run time.
@@ -46,7 +47,7 @@ The owner's words in the phase 8 exit live run, 2026-11-12 (commit `cfb3d428`, c
 - Loomwright's `capabilities.json` does not yet declare per-command needs; the kernel's pinned table covers that until it does (a Loomwright change is out of this repo's scope).
 
 ## Dependencies
-- Depends on: 20a, 20b (the catalogue change lands in 20b first)
+- Depends on: 20b (D43 and the catalogue change land there first)
 
 ## Risks
 - The pinned table drifts from Loomwright's real needs after a Loomwright upgrade; the version-change note (phase 2) should name it.

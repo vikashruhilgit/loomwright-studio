@@ -15,7 +15,6 @@ These stories were written by `/product-owner` from the run's evidence (the owne
 
 ## Checklist
 
-- [ ] 2026-11-12-170445-a-crew-member-s-ticket-run-starts-automate-the-way-d43-decides.md
 - [ ] 2026-11-12-170445-d-the-owner-grants-github-write-in-team.md
 - [ ] 2026-11-12-170445-e-the-owner-can-see-and-set-when-a-playbook-is-live.md
 - [ ] 2026-11-12-170445-g-clickup-tickets-are-read-with-a-tool-clickup-has.md
@@ -25,14 +24,13 @@ These stories were written by `/product-owner` from the run's evidence (the owne
 
 ## Order
 
-1. **Wave 1, five in parallel:** 20a (D43; the owner approves the decision by merging), 20d, 20e, 20g, 20h.
-2. **Wave 2:** 20b (builds D43; also makes the CI walks use a drafted policy and the live harness report as it runs).
-3. **Wave 3:** 20c, the system that knows what a crew member's work needs. Its declared needs for ticket jobs depend on D43.
-4. Then re-run the phase 8 exit walk (item 14's runbook) from setup step 6, with a fresh charter Wright drafts and nothing granted by hand.
+1. **Wave 1, five in parallel:** 20b (D43 is decided: the kernel launches `/automate`; 20b records it and builds it), 20d, 20e, 20g, 20h.
+2. **Wave 2:** 20c, the system that knows what a crew member's work needs. It shares the jobs catalogue with 20b and its ticket-job needs follow D43.
+3. Then re-run the phase 8 exit walk (item 14's runbook) from setup step 6, with a fresh charter Wright drafts and nothing granted by hand.
 
 ## Run
 
-`plan-waves` with no cap (2026-11-12) gives the three waves above; wave 1 is the widest at 5. Use `/automate --backlog <this file> --parallel 5`. A larger N changes nothing, because 20b and 20c wait on dependencies.
+`/automate --backlog <this file> --parallel 5 --cheap`. Wave 1 is the widest at 5, so a larger N changes nothing.
 
 ## Findings mapped to stories
 
@@ -43,21 +41,21 @@ These stories were written by `/product-owner` from the run's evidence (the owne
 | 3. One poll per playbook: a ClickUp playbook can't name its repo | 20h |
 | 4. ClickUp reads fail `tool_unavailable` (`get_workspace_tasks` doesn't exist) | 20g |
 | 5. The enable card never says "live"; the card's Mode row says "never sent" even when live | 20e (Part B, Part A) |
-| 6. A crew member can't run `/automate` (`Skill`, Bash prefixes, notify refused); CI used a hand-written policy | 20a, 20b |
+| 6. A crew member can't run `/automate` (`Skill`, Bash prefixes, notify refused); CI used a hand-written policy | 20b (D43: the kernel launches `/automate`) |
 | 7. No system knows what a crew member's work needs (the owner's ask) | 20c |
 | 8. The live harness prints nothing until it ends | 20b (Part C) |
 
 ## Considered and not queued
 
 - Widening the crew member's policy by hand to finish this run: the owner chose to stop and file instead.
-- Folding 20a (decision, small) into 20b: kept separate, because it is the owner's approval gate (the Auth 2 pattern).
+- A separate decision story for D43 (20a): the owner decided D43 in chat on 2026-11-12 (the kernel launches `/automate`), so it folded into 20b and the backlog runs in two waves.
+- D43 option (a), a scoped `Skill` and shell-prefix grant: rejected, because every ticket-handling crew member would carry a growing shell grant.
 - Cutting the dry run's token cost (about 121k tokens per run): not its own story yet.
 
 ## Revisit when
 
-- D43 lands: check that 20c's declared needs match the chosen path.
 - Loomwright's `capabilities.json` declares per-command needs: 20c reads them instead of the pinned table.
 
 ## Owner decisions
 
-none recorded
+- 2026-11-12: D43 = the kernel launches `/automate` (folded into 20b); run with `--parallel 5 --cheap`.
