@@ -1,6 +1,7 @@
 # 19a — A large charter still gets a new version when the owner asks for a change
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/266
 
 **Priority:** MVP (blocks the phase 8 live run, step 6) · D24, invariants 1, 3 · follows 18b, 18d
 
@@ -91,3 +92,9 @@ docs/architecture/agents.md
 
 ## Depends on
 none
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-12T11:52:39Z
+- **Brief:** .supervisor/jobs/done/2026-11-12-a-large-charter-still-gets-a-new-version.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/266
