@@ -18,7 +18,7 @@
 //   in this session (an earlier enable used it: its stored result would be
 //   replayed, so a new approval could only be spent with no effect), or a
 //   playbook whose current version has no `done` dry run (`latestDryRun`), or
-//   whose `merge_requirement` is looser than the policy of a repo it polls
+//   whose `merge_requirement` is looser than the policy of a repo it polls or targets
 //   (`playbook_looser_than_repo`), or a ClickUp or Jira ticket playbook with no
 //   target repository (`no_target_repo`), or one whose target repository the
 //   GitHub connector does not reach (`target_repo_not_reachable`;

@@ -1239,13 +1239,15 @@ describe.skipIf(!LIVE)("live phase 8 exit: tickets to PRs, merged through the ga
         try {
           last = withDb(dataDir, (db) => checkStore(db, runStart, repo));
           summary.checks = last;
+          if (summary.result !== "interrupted") summary.result = runResult(last);
+          // Ordering invariant: the summary is on disk BEFORE the line that announces it is printed, because the parent
+          // reads the file as soon as it sees the line (every report/save pair in this block saves first).
+          save();
           const line = CHECK_NAMES.map((n) => `${n}:${(last as Checks)[n].outcome}`).join(" ");
           if (line !== shown) {
             shown = line;
             report(`phase-8-exit-live ${new Date().toISOString()} ${line}`);
           }
-          if (summary.result !== "interrupted") summary.result = runResult(last);
-          save();
           if (runResult(last) !== "incomplete") break;
         } catch (err) {
           pollErrors += 1;
