@@ -36,8 +36,16 @@
 // A summary (never env or tokens; the home dir written as `~`) is written to the
 // path printed at the start, mode 0600, after every change. The evidence file the
 // owner commits at the close has the shape `checkEvidenceShape` accepts.
+//
+// IT REPORTS AS IT RUNS. vitest holds `console.log` until a test
+// ends, so a two-hour wait printed nothing for two hours. Every line the
+// run prints goes through `report`, which writes straight to the terminal's file
+// descriptor (`writeSync(1, …)`), and the summary is rewritten on every check change.
+// On Ctrl-C (SIGINT) the summary is saved with `result: "interrupted"` and the checks
+// seen so far, then the signal is passed on.
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -150,6 +158,19 @@ export function redact(text: string, home: string = homedir()): string {
 /** Write `summary` to `path`, redacted, mode 0600 (a fresh path per run, so the mode is set at creation). */
 export function writeSummary(path: string, summary: unknown, home: string = homedir()): void {
   writeFileSync(path, `${redact(JSON.stringify(summary, null, 2), home)}\n`, { mode: 0o600 });
+}
+
+/**
+ * Print one line to the terminal NOW. vitest holds `console.log` until the test
+ * ends; a direct write to file descriptor 1 is not held. Redacted like the summary.
+ * A failed write (a closed or full pipe) is dropped: reporting never stops the check.
+ */
+export function report(line: string, fd: number = 1): void {
+  try {
+    writeSync(fd, `${redact(line)}\n`);
+  } catch {
+    // the terminal went away; the summary file still holds everything
+  }
 }
 
 // ---- Store reads (read-only) -----------------------------------------------------
@@ -927,6 +948,92 @@ describe("phase 8 live: the summary", () => {
   });
 });
 
+// ---- The harness reports as it runs (AC10, AC11) -------------------------------------
+//
+// Starts the REAL harness (the runbook's command, on a scratch store) as a child vitest
+// process and reads its stdout while it is still running: the summary path must arrive
+// in seconds, a check-change line after it, both before the run ends. Then Ctrl-C (a
+// SIGINT to the child's process group) must leave the summary with the checks seen so
+// far and `result: "interrupted"`. The child sets STUDIO_LIVE=1, so this block (skipped
+// there) never recurses.
+
+/** Collect a child's stdout and resolve with the first match of `re` in what has arrived so far. */
+function waitForOutput(child: ReturnType<typeof spawn>, re: RegExp, timeoutMs: number): Promise<RegExpMatchArray> {
+  return new Promise((resolve, reject) => {
+    let seen = "";
+    const timer = setTimeout(() => reject(new Error(`no ${String(re)} within ${timeoutMs}ms; stdout so far:\n${seen}`)), timeoutMs);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      seen += chunk.toString("utf8");
+      const m = re.exec(seen);
+      if (m !== null) {
+        clearTimeout(timer);
+        resolve(m);
+      }
+    });
+  });
+}
+
+describe.skipIf(LIVE)("phase 8 live: the harness reports as it runs (AC10, AC11)", () => {
+  let env: LoopEnv | undefined;
+  afterEach(() => {
+    env?.cleanup();
+    env = undefined;
+  });
+
+  it(
+    "prints the summary path and each check change while it runs, and a Ctrl-C leaves an interrupted summary with the checks so far",
+    async () => {
+      env = loopEnv("2026-11-10T10:00:00.000Z");
+      const kernelDir = fileURLToPath(new URL("..", import.meta.url));
+      const child = spawn(
+        process.execPath,
+        [join(kernelDir, "node_modules", "vitest", "vitest.mjs"), "run", "test/phase-8-exit-live.test.ts", "-t", "live phase 8 exit"],
+        {
+          cwd: kernelDir,
+          detached: true, // its own process group, so a group SIGINT is a terminal's Ctrl-C
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            STUDIO_LIVE: "1",
+            STUDIO_DATA_DIR: env.dataDir,
+            STUDIO_LIVE_GITHUB_ACCOUNT: "someone",
+            STUDIO_LIVE_SANDBOX_REPO: "someone/studio-sandbox",
+            STUDIO_LIVE_WAIT_MIN: "5",
+          },
+        },
+      );
+      const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+      let summaryPath = "";
+      try {
+        // Both lines arrive while the child is still running (it waits up to five minutes for the checks).
+        const pathLine = await waitForOutput(child, /phase-8-exit-live summary: (\S+) \(run start/, 60_000);
+        summaryPath = pathLine[1] as string;
+        await waitForOutput(child, /phase-8-exit-live \S+ pr_states:\S+ merged_by_gate:\S+ no_kernel_merge:\S+/, 30_000);
+        expect(child.exitCode).toBeNull();
+        // The summary is already on disk, written on the first check change.
+        const live = JSON.parse(readFileSync(summaryPath, "utf8")) as Record<string, unknown>;
+        expect(live.result).toBe("incomplete");
+        expect(Object.keys(live.checks as object)).toEqual(CHECK_NAMES);
+
+        process.kill(-(child.pid as number), "SIGINT");
+        await Promise.race([exited, sleep(30_000)]);
+        const saved = JSON.parse(readFileSync(summaryPath, "utf8")) as Record<string, unknown>;
+        expect(saved.result).toBe("interrupted");
+        expect(Object.keys(saved.checks as object)).toEqual(CHECK_NAMES);
+        expect(typeof saved.interrupted_at).toBe("string");
+      } finally {
+        try {
+          process.kill(-(child.pid as number), "SIGKILL");
+        } catch {
+          // already gone
+        }
+        if (summaryPath !== "") rmSync(summaryPath, { force: true });
+      }
+    },
+    150_000,
+  );
+});
+
 // ---- The evidence shape (AC4) -------------------------------------------------------
 
 /** A valid evidence object in the runbook's shape; each case below breaks one thing. */
@@ -1059,6 +1166,15 @@ describe.skipIf(!LIVE)("live phase 8 exit: tickets to PRs, merged through the ga
   const summary: Record<string, unknown> = { test: "phase-8-exit-live", result: "running", run_by: null, clicks: [], jira: "not_exercised" };
   const save = (): void => writeSummary(summaryPath, summary);
 
+  /** Ctrl-C: keep the checks seen so far, say the run was interrupted, then let the signal through. */
+  const onInterrupt = (): void => {
+    summary.result = "interrupted";
+    summary.interrupted_at = new Date().toISOString();
+    save();
+    report(`phase-8-exit-live summary: ${summaryPath} (interrupted)`);
+    process.kill(process.pid, "SIGINT");
+  };
+
   beforeAll(() => {
     const configured = checkSandboxRepo(process.env.STUDIO_LIVE_SANDBOX_REPO, process.env.STUDIO_LIVE_GITHUB_ACCOUNT);
     expect(configured.ok ? "" : configured.reason).toBe("");
@@ -1068,16 +1184,18 @@ describe.skipIf(!LIVE)("live phase 8 exit: tickets to PRs, merged through the ga
     start = withDb(dataDir, (db) => readRunStart(db));
     Object.assign(summary, { date: start.at.slice(0, 10), run_start: start, sandbox: { repo }, harness_summary: summaryPath, wait_minutes: waitMs / MINUTE });
     save();
-    console.log(`phase-8-exit-live summary: ${summaryPath} (run start: event ${start.event_id}, ${start.at})`);
-    console.log("phase-8-exit-live: do the walk in Loomwright Studio.app now; this harness only reads the store and never decides an approval.");
+    process.once("SIGINT", onInterrupt);
+    report(`phase-8-exit-live summary: ${summaryPath} (run start: event ${start.event_id}, ${start.at})`);
+    report("phase-8-exit-live: do the walk in Loomwright Studio.app now; this harness only reads the store and never decides an approval.");
   }, 60_000);
 
   afterAll(() => {
+    process.removeListener("SIGINT", onInterrupt);
     if (start === undefined) return;
     summary.finished_at = new Date().toISOString();
-    summary.result = last === undefined ? "failed" : runResult(last);
+    if (summary.result !== "interrupted") summary.result = last === undefined ? "failed" : runResult(last);
     save();
-    console.log(`phase-8-exit-live summary: ${summaryPath} (${String(summary.result)})`);
+    report(`phase-8-exit-live summary: ${summaryPath} (${String(summary.result)})`);
   }, 60_000);
 
   it(
@@ -1094,9 +1212,9 @@ describe.skipIf(!LIVE)("live phase 8 exit: tickets to PRs, merged through the ga
           const line = CHECK_NAMES.map((n) => `${n}:${(last as Checks)[n].outcome}`).join(" ");
           if (line !== shown) {
             shown = line;
-            console.log(`phase-8-exit-live ${new Date().toISOString()} ${line}`);
+            report(`phase-8-exit-live ${new Date().toISOString()} ${line}`);
           }
-          summary.result = runResult(last);
+          if (summary.result !== "interrupted") summary.result = runResult(last);
           save();
           if (runResult(last) !== "incomplete") break;
         } catch (err) {

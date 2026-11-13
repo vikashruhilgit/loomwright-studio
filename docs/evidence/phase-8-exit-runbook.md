@@ -76,7 +76,9 @@ export STUDIO_LIVE_SANDBOX_REPO=vikashruhilgit/studio-sandbox
 cd kernel && STUDIO_LIVE=1 npx vitest run test/phase-8-exit-live.test.ts
 ```
 
-It refuses a repo whose owner is not the named personal account, records a run start (the store's highest event id) and prints the path of its summary (under `tmpdir()`, mode `0600`). It then re-reads the store every few seconds and prints a line whenever a check changes. `STUDIO_LIVE_WAIT_MIN` (1 to 240, default 120) bounds the wait. It ends when the three checks are all `pass` or one `fail`s, or at the wait's end. It never decides an approval: when a card is waiting, decide it in the app.
+It refuses a repo whose owner is not the named personal account, records a run start (the store's highest event id) and prints the path of its summary (under `tmpdir()`, mode `0600`) within a few seconds of starting. It then re-reads the store every few seconds and prints a line whenever a check changes, and rewrites the summary file on every change. `STUDIO_LIVE_WAIT_MIN` (1 to 240, default 120) bounds the wait. It ends when the three checks are all `pass` or one `fail`s, or at the wait's end. It never decides an approval: when a card is waiting, decide it in the app.
+
+**It prints as it runs.** vitest holds `console.log` until the test ends, which is why the 2026-11-12 run showed nothing for about 75 minutes. The harness writes each line straight to the terminal's file descriptor instead (`report` in `kernel/test/phase-8-exit-live.test.ts`), so the command above needs no extra flag. If you stop it early with Ctrl-C, the summary file keeps the checks seen so far and its `result` is `interrupted` (the "(interrupted)" line may not reach the terminal, because vitest is already shutting down, so read the path from the first line it printed). A kernel test starts this exact command on a scratch store and pins both ([evidence](phase-8-20b-harness-reports.md)).
 
 ## The walk
 
