@@ -13,9 +13,9 @@
 // server text, and no token, reaches a row, an event, a notification, an
 // answer or a log from this file. Nothing here logs.
 //
-// ClickUp's real tool name and response shape are NEEDS VERIFICATION
-// (`docs/architecture/mcp-connectors.md`): the owner's live run (item 13)
-// confirms or corrects them.
+// ClickUp's tool name (`clickup_filter_tasks`), its arguments and its response
+// shape were read from the live server on 2026-11-13 and are recorded in
+// `docs/evidence/phase-8-20g-clickup-reader.md`.
 //
 // Imports: the MCP client, the credential and row modules, the store and the
 // Keychain reader's type and constructor; never `connector.ts` (which imports
@@ -43,11 +43,12 @@ export interface McpTrackerDefinition {
  * The trackers built in, by kind. The Jira address is Atlassian Rovo's v1
  * endpoint (a v2 endpoint is documented too: NEEDS VERIFICATION in
  * `docs/architecture/mcp-connectors.md`); Jira is never called live from here
- * (the owner's work account). The ClickUp tool name is NEEDS VERIFICATION.
+ * (the owner's work account). The ClickUp tool is the one its server lists for
+ * filtering tasks (probed, `docs/evidence/phase-8-20g-clickup-reader.md`).
  */
 export const MCP_TRACKERS: Readonly<Record<McpKind, McpTrackerDefinition>> = Object.freeze({
   jira: Object.freeze({ url: "https://mcp.atlassian.com/v1/mcp", tool: "searchJiraIssuesUsingJql", label: "Jira" }),
-  clickup: Object.freeze({ url: "https://mcp.clickup.com/mcp", tool: "get_workspace_tasks", label: "ClickUp" }),
+  clickup: Object.freeze({ url: "https://mcp.clickup.com/mcp", tool: "clickup_filter_tasks", label: "ClickUp" }),
 });
 
 /** Every way a ticket read fails: a closed set of fixed codes, each the whole of the failure. */

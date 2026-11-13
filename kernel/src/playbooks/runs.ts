@@ -77,6 +77,7 @@ import type { LoomwrightSummary } from "../brain/context.js";
 import { cutChars, ensureMemoryFiles, readMemoryFile, wrightMemoryDir } from "../brain/memory.js";
 import { readWrightSettings } from "../brain/settings.js";
 import type { CliApiClient, CliSubcommandOutput, ContributedRoute, ContributedRouteRequest } from "../features/contribution.js";
+import { isPositiveId, messageOf } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
 import type { EventContext, EventSessions } from "../loop/types.js";
 import { recordNotification } from "../notifications/record.js";
@@ -289,10 +290,6 @@ interface PlaybookEvent {
   readonly kind: "fire" | "run_now";
   /** The polled item the message is about (`./items.ts`), or `null` for a per-instant message. */
   readonly item: RunItem | null;
-}
-
-function isPositiveId(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 /** Step a: the payload, or a `TypeError` naming what is wrong (the loop fails the event, one notify). */
@@ -576,14 +573,6 @@ function admissionRefusal(err: unknown): { readonly reason: string; readonly ret
   if (!(err instanceof Error) || (err as { code?: unknown }).code !== "admission_refused") return undefined;
   const { reason, retryAt } = err as { reason?: unknown; retryAt?: unknown };
   return { reason: typeof reason === "string" ? reason : "admission_refused", retryAt: typeof retryAt === "string" ? retryAt : null };
-}
-
-/** An error's first line, prefixed with its code when it has one. */
-function messageOf(err: unknown): string {
-  const text = err instanceof Error ? err.message : String(err);
-  const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
-  const line = text.split("\n", 1)[0] ?? "";
-  return typeof code === "string" && !line.startsWith(code) ? `${code}: ${line}` : line;
 }
 
 /**

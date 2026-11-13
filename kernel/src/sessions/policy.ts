@@ -194,12 +194,19 @@ export const PROTECTED_DATA_DIRS: readonly string[] = ["config", "app"];
  *   one pull request at one head SHA (phase 8 item 09). A record only: it is
  *   neither a GitHub write tool nor a kernel-applied action, and no "always"
  *   grant ever covers it, so the owner decides every merge.
+ * - `AskUserQuestion`: a gate question the kernel-started `/automate` run raises
+ *   (D44). Held, so it reaches the owner in Approvals with the question's header,
+ *   text and option labels in the payload, and no "always" grant covers it. It is
+ *   held in EVERY session whose policy allows it, not only the run (no charter
+ *   grants it today). Whether the owner's chosen answer reaches the session is
+ *   unverified (probe p15 did not exercise it); holding it claims nothing more.
  */
 export const ALWAYS_HELD_TOOLS: readonly string[] = Object.freeze([
   "mcp__kernel__kernel_playbook_enable",
   "mcp__kernel__kernel_agent_create",
   "mcp__kernel__kernel_agent_update",
   "mcp__kernel__kernel_merge_approval_request",
+  "AskUserQuestion",
 ]);
 
 /**
