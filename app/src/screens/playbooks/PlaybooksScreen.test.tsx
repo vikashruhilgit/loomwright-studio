@@ -852,6 +852,33 @@ describe("phase 8 item 20e: the Mode ⌘K commands", () => {
     expect(allPosts(fake)).toHaveLength(0);
   });
 
+  it("opening another playbook with the card open leaves no Mode note, no Wright offer and no confirm from the first one", async () => {
+    const registry = createCommandRegistry();
+    const { fake } = await mountLoaded(undefined, registry);
+    await openOn(registry, 1, "detail");
+    fireEvent.click(screen.getByRole("radio", { name: "Live" }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: LIVE_DIALOG })).getByRole("button", { name: "Set live" }));
+    await waitFor(() => expect(screen.getByTestId(IDS.modeNote).textContent).toContain("saved as v4"));
+    expect(screen.getByTestId(IDS.modeNextStep)).toBeTruthy();
+    await act(async () => registry.get(PLAYBOOKS_COMMANDS.open(2))?.run());
+    await waitFor(() => expect(screen.getByTestId(IDS.detail).textContent).toContain("Weekly changelog"));
+    expect(screen.queryByTestId(IDS.modeNote)).toBeNull();
+    expect(screen.queryByTestId(IDS.modeNextStep)).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1);
+  });
+
+  it("an open Live confirm does not follow the owner to another playbook", async () => {
+    const registry = createCommandRegistry();
+    await mountLoaded(undefined, registry);
+    await openOn(registry, 1, "detail");
+    fireEvent.click(screen.getByRole("radio", { name: "Live" }));
+    await screen.findByRole("dialog", { name: LIVE_DIALOG });
+    await act(async () => registry.get(PLAYBOOKS_COMMANDS.open(2))?.run());
+    await waitFor(() => expect(screen.getByTestId(IDS.detail).textContent).toContain("Weekly changelog"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("playbooks.mode-live: disabled on a playbook that is not enabled, on one already live, and while the kernel is unreachable", async () => {
     const registry = createCommandRegistry();
     const { fake } = await mountLoaded(undefined, registry);

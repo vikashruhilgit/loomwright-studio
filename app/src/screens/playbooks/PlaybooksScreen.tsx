@@ -446,6 +446,8 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
     } else if (view.kind === "detail") {
       body = (
         <PlaybookDetail
+          // Per-playbook local state (the Mode note, the Wright offer) must not follow the owner to another playbook (the open command can switch with the card open).
+          key={current.id}
           playbook={current}
           trigger={triggerOf(current)}
           owner={owner === undefined ? undefined : { agent: owner, state: agentAvatarState(owner, approvals) }}
