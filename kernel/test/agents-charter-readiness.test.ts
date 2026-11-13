@@ -39,7 +39,7 @@ import { decideApproval } from "../src/approvals/index.js";
 import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
 import { readWorkspaceRepos, remoteRepos } from "../src/automate/checkout.js";
 import { defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
-import { TOOL_JOBS, TOOL_JOB_DEFINITIONS, buildToolCatalogue } from "../src/features/catalogue.js";
+import { TOOL_JOBS, TOOL_JOB_DEFINITIONS, TOOL_JOB_IDS, buildToolCatalogue, jobNeedsWorkspace } from "../src/features/catalogue.js";
 import type { ToolJob } from "../src/features/catalogue.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { ContributedTool } from "../src/features/index.js";
@@ -250,7 +250,7 @@ describe("the readiness format", () => {
   it("the code jobs are declared once, on the job: TOOL_JOBS is derived from the definitions with the same ids, order and labels", () => {
     expect(Object.keys(TOOL_JOBS)).toEqual(Object.keys(TOOL_JOB_DEFINITIONS));
     for (const [id, def] of Object.entries(TOOL_JOB_DEFINITIONS)) expect(TOOL_JOBS[id as ToolJob]).toBe(def.label);
-    expect(Object.entries(TOOL_JOB_DEFINITIONS).filter(([, d]) => d.needsWorkspace).map(([id]) => id)).toEqual(["automate_tickets", "triage_pr_comments", "ask_for_merge"]);
+    expect(TOOL_JOB_IDS.filter((id) => jobNeedsWorkspace(id))).toEqual(["automate_tickets", "triage_pr_comments", "ask_for_merge"]);
   });
 });
 
