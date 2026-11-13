@@ -82,3 +82,8 @@ app/e2e/phase-8-exit.spec.ts
 docs/architecture/automate.md
 docs/evidence/phase-8-exit-runbook.md
 docs/evidence/phase-8-20b-harness-reports.md
+
+## Status: brief-shipped
+
+Job `.supervisor/jobs/done/2026-11-13-kernel-launches-automate-run.md` completed (reconciled from the job lifecycle, not self-reported).
+Acceptance criteria are NOT machine-verified here — review them before promoting this to `## Status: done`.
