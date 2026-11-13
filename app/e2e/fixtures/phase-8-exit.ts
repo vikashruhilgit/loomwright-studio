@@ -33,7 +33,9 @@ import { createAutomateRunnerTools } from "../../../kernel/src/automate/runner.j
 import { createRoutingTools } from "../../../kernel/src/automate/routing.js";
 import { createTrackerDueWork } from "../../../kernel/src/automate/tracker.js";
 import { PROPOSED_ALLOWED_TOOLS, brainContribution, brainMessageHandler, defaultWrightSettingsJson, wrightSettingsPath } from "../../../kernel/src/brain/index.js";
-import { SHIPPED_CONTRIBUTIONS } from "../../../kernel/src/features/index.js";
+import { allowedToolsForJobs, buildToolCatalogue } from "../../../kernel/src/features/catalogue.js";
+import type { ToolJob } from "../../../kernel/src/features/catalogue.js";
+import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../../../kernel/src/features/index.js";
 import type { DueWorkFn, FeatureContribution } from "../../../kernel/src/features/index.js";
 import { INTEGRATIONS_PARTS, createGitHubTools, integrationsContributionOf, repoPolicyRoutes } from "../../../kernel/src/integrations/index.js";
 import { createGitHubWriteTools } from "../../../kernel/src/integrations/github/write-tools.js";
@@ -100,17 +102,14 @@ export const POLL_SECONDS = 300;
 export const STEP_MS = (POLL_SECONDS + 1) * 1000;
 
 export const K = "mcp__kernel__";
-/** The kernel tools the crew member's policy allows (their full SDK names). */
-export const CREW_TOOLS: readonly string[] = [
-  "kernel_automate_state",
-  "kernel_automate_prepare",
-  "kernel_automate_merge_check",
-  "kernel_merge_approval_request",
-  "kernel_pr_route",
-  "kernel_github_pr_reply",
-  "kernel_github_pr_comment",
-  "kernel_github_pr_request_reviewers",
-].map((name) => `${K}${name}`);
+/**
+ * The jobs the owner's words give the crew member ("hand each ticket to /automate, triage the comments on a pull request and ask
+ * for a merge"). Its policy is drafted from them over the shipped catalogue by `allowedToolsForJobs`, the one jobs-to-tools rule:
+ * no tool name is written by hand here.
+ */
+export const CREW_JOBS: readonly ToolJob[] = ["automate_tickets", "triage_pr_comments", "ask_for_merge"];
+/** The crew member's drafted `allowedTools` (full SDK names): every `mcp__kernel__` tool of `CREW_JOBS`, plus "Read a PR" for triage. */
+export const crewAllowedTools = (): string[] => allowedToolsForJobs(buildToolCatalogue(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools), CREW_JOBS);
 
 // ---- One clock, one Keychain ------------------------------------------------------------------
 
@@ -349,8 +348,9 @@ export function writeWrightSettings(dataDir: string): void {
 
 /**
  * The crew member's charter: the one the owner approves in the live run (its grants are set by the owner after it).
- * Its policy lets it use the kernel's automate, routing and GitHub write tools, and names `gh pr merge` as a Bash prefix, so
- * a direct merge reaches the rail (which denies it `merge_blocked`) rather than the policy's own prefix check.
+ * Its `tool_policy` is drafted from the shipped catalogue for `CREW_JOBS` (`crewAllowedTools`): kernel tools only, no `Read`,
+ * `Skill` or Bash prefix. The `/automate` run is the kernel's own session (D44) under the kernel's own policy, and `never` keeps
+ * the owner's boundary (`git_push`), which is not a grant.
  */
 export function crewCharter(workspace: string): Record<string, unknown> {
   return {
@@ -362,7 +362,7 @@ export function crewCharter(workspace: string): Record<string, unknown> {
     boundaries: ["Never push to a branch that is not yours, and never merge: Loomwright's gate does that."],
     model: CREW_MODEL,
     permission_mode: "default",
-    tool_policy: { allowedTools: ["Read", "Skill", ...CREW_TOOLS], allowedBashPrefixes: ["gh pr merge"], never: ["git_push"] },
+    tool_policy: { allowedTools: crewAllowedTools(), allowedBashPrefixes: [], never: ["git_push"] },
     workspaces: [workspace],
   };
 }
