@@ -1,6 +1,6 @@
 # Phase 8 item 20c: a crew member's charter is checked against what its work needs
 
-In the phase 8 exit live run (2026-11-12) a charter passed every check and its real run was then refused three times, because the readiness check asked only whether the charter held the kernel tools of its jobs, and a playbook's dry run runs in draft mode and never reaches the calls a real run makes. This item makes every catalogue job declare what its work needs and shows any gap before the owner approves a charter or enables a playbook: the charter card's readiness block (the readiness subtask), and the playbook's fit, dry run summary and enable (this file's subtask: [dry runs](../architecture/dry-run.md#calls-a-real-run-would-be-refused)).
+In the phase 8 exit live run (2026-11-12) a charter passed every check and its real run was then refused three times, because the readiness check asked only whether the charter held the kernel tools of its jobs, and a playbook's dry run runs in draft mode and never reaches the calls a real run makes. This item makes every catalogue job declare what its work needs and shows any gap before the owner approves a charter or enables a playbook: the charter card's readiness block (the readiness subtask), and the playbook's fit, dry run summary and enable (this file's subtask: [dry runs](../architecture/dry-run.md#a-playbooks-dry-run)).
 
 ## Validation 1: the static suites
 
