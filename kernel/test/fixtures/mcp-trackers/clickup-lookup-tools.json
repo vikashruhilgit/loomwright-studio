@@ -1,0 +1,249 @@
+{
+  "_note": "RECORDED from the live server on 2026-11-13: the clickup_get_list and clickup_get_workspace_hierarchy entries of https://mcp.clickup.com/mcp tools/list (read-only probe of the owner's personal ClickUp; see docs/evidence/phase-8-21a-clickup-list-by-name.md). name, description, inputSchema, annotations and outputSchema are verbatim; each entry's _meta (a UI resource hint) is left out. The kernel resolves a list name with clickup_get_list (MCP_TRACKERS.clickup.lookup.list). clickup_get_workspace_hierarchy is the only tool that lists every space and list, but its name maps to 31 characters and a ClickUp proxy name keeps at most 30 (mappedBudget), so a connect drops it and the kernel can never call it: it is recorded to pin why a space name has no lookup.",
+  "server": "https://mcp.clickup.com/mcp",
+  "tools": [
+    {
+      "name": "clickup_get_list",
+      "description": "Get list details by list_id or list_name. Returns id, name, content, space info, and configured statuses. Use to resolve list names to IDs.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Get List"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "list_id": {
+            "description": "ID of the list to retrieve.",
+            "type": "string"
+          },
+          "list_name": {
+            "description": "List name as displayed in ClickUp. Matching ignores case and surrounding whitespace, preferring an exact match. If several lists share the name, the first match is returned — verify the space in the result. If not found, confirm the name with the user rather than retrying variants.",
+            "type": "string"
+          },
+          "workspace_id": {
+            "description": "Workspace ID (digits only). Only needed when you have multiple workspaces.",
+            "type": "string",
+            "pattern": "^\\d+$"
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "space": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "url": {
+            "type": "string"
+          },
+          "statuses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "Status name (e.g., \"to do\", \"in progress\"). Pass this value as `status` to update_task."
+                },
+                "color": {
+                  "type": "string"
+                },
+                "orderindex": {
+                  "type": "number"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "Status category: \"open\", \"custom\", \"closed\", \"done\", \"unstarted\". Use to distinguish \"done\" (finished, reopenable) from \"closed\" (archived)."
+                },
+                "status_group": {
+                  "description": "Where the status is defined: \"proj_<space id>\", \"cat_<folder id>\" or \"subcat_<list id>\".",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "status",
+                "color",
+                "orderindex",
+                "type"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Full set of statuses configured on the list (including any inherited from the parent folder or space). Use this to discover which status values can be assigned via update_task."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "space",
+          "url",
+          "statuses"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "clickup_get_workspace_hierarchy",
+      "description": "Get workspace hierarchy (spaces, folders, lists) with pagination and depth control. Use to browse the structure or to find a space, folder, or list whose name is unknown. When the name is known, clickup_get_list and clickup_get_folder resolve it to an id directly; task tools take ids only.",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Get Workspace Hierarchy"
+      },
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "description": "Pagination cursor from previous response. Use to fetch next page of spaces",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum number of spaces to return per page (default: 10, max: 50)",
+            "type": "number",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "max_depth": {
+            "description": "Maximum depth of hierarchy to return: 0=spaces only, 1=spaces+folders, 2=spaces+folders+lists (default: 2)",
+            "type": "string",
+            "enum": [
+              "0",
+              "1",
+              "2"
+            ]
+          },
+          "space_ids": {
+            "description": "Filter to return only specific spaces by ID.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "workspace_id": {
+            "description": "Workspace ID (digits only). Only needed when you have multiple workspaces.",
+            "type": "string",
+            "pattern": "^\\d+$"
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "hierarchy": {
+            "type": "object",
+            "properties": {
+              "root": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "children": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        },
+                        "children": {
+                          "type": "array",
+                          "items": {}
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "children"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "children"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "root"
+            ],
+            "additionalProperties": false,
+            "description": "Workspace hierarchy tree containing paginated spaces"
+          },
+          "next_cursor": {
+            "description": "Cursor for next page of spaces, or null if no more pages",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether there are more spaces to fetch"
+          },
+          "total_spaces": {
+            "type": "number",
+            "description": "Total number of spaces in workspace (after filtering if space_ids provided)"
+          }
+        },
+        "required": [
+          "hierarchy",
+          "next_cursor",
+          "has_more",
+          "total_spaces"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}
