@@ -18,8 +18,11 @@
 //   in this session (an earlier enable used it: its stored result would be
 //   replayed, so a new approval could only be spent with no effect), or a
 //   playbook whose current version has no `done` dry run (`latestDryRun`), or
-//   whose `merge_requirement` is looser than the policy of a repo it polls
-//   (`playbook_looser_than_repo`), or a crew member's playbook whose jobs its
+//   whose `merge_requirement` is looser than the policy of a repo it polls or targets
+//   (`playbook_looser_than_repo`), or a ClickUp or Jira ticket playbook with no
+//   target repository (`no_target_repo`), or one whose target repository the
+//   GitHub connector does not reach (`target_repo_not_reachable`;
+//   `./target-repo.ts`), or a crew member's playbook whose jobs its
 //   charter does not cover (`charter_gap`: `playbookFit` in `./fit.ts` is a
 //   gap, or could not check, fail closed) unless the call sets `enable_anyway`, is
 //   refused, so no approval is written; otherwise the call
@@ -35,7 +38,10 @@
 //   the approval's `subject_version` is the current version and no
 //   `playbook_updated` came after the request, refuses with no `done` dry run
 //   of the current version, refuses `playbook_looser_than_repo` when the repo's
-//   policy was raised since the hold, refuses `charter_gap` when a gap is open
+//   policy was raised since the hold, refuses `no_target_repo` /
+//   `target_repo_not_reachable` when the target repository was cleared or
+//   stopped being reachable since the hold (`enable_anyway` skips neither),
+//   refuses `charter_gap` when a gap is open
 //   and the held call did not set `enable_anyway`, then enables it (`enablePlaybook`). A refusal is
 //   recorded on the approval and said in the agent's message; nothing is
 //   enabled.
@@ -75,6 +81,7 @@ import { fitGapOpen, playbookFit } from "./fit.js";
 import type { PlaybookFit } from "./fit.js";
 import { PlaybookError, enablePlaybook, getPlaybook, linkedTriggerOf, parseMergeRequirement, playbookJobsOf, refuseIfOwnerTurnedOff } from "./store.js";
 import type { PlaybookRow } from "./store.js";
+import { targetRepoRefusal } from "./target-repo.js";
 import type { PlaybookPart } from "./types.js";
 
 export const ENABLE_TOOL_NAME = "kernel_playbook_enable";
@@ -109,7 +116,7 @@ function invalid(message: string): PlaybookError {
  * one-line detail.
  */
 export class EnableRefused extends Error {
-  readonly reason: "not_found" | "crew_cannot_draft" | "not_owner" | "turned_off_by_owner" | "not_draft" | "version_changed" | "no_dry_run" | "playbook_looser_than_repo" | "charter_gap";
+  readonly reason: "not_found" | "crew_cannot_draft" | "not_owner" | "turned_off_by_owner" | "not_draft" | "version_changed" | "no_dry_run" | "playbook_looser_than_repo" | "no_target_repo" | "target_repo_not_reachable" | "charter_gap";
 
   constructor(reason: EnableRefused["reason"], message: string) {
     super(message);
@@ -125,6 +132,8 @@ function playbookErrorOf(err: EnableRefused): PlaybookError {
   if (err.reason === "turned_off_by_owner") return new PlaybookError("owner_off", err.message);
   if (err.reason === "version_changed" || err.reason === "no_dry_run") return invalid(`version changed: ${err.message}`);
   if (err.reason === "playbook_looser_than_repo") return invalid(`playbook_looser_than_repo: ${err.message}`);
+  if (err.reason === "no_target_repo") return invalid(`no_target_repo: ${err.message}`);
+  if (err.reason === "target_repo_not_reachable") return invalid(`target_repo_not_reachable: ${err.message}`);
   if (err.reason === "charter_gap") return invalid(`charter_gap: ${err.message}`);
   return invalid(err.message);
 }
@@ -171,17 +180,28 @@ function ownDraft(store: Store, id: number, agent: string): PlaybookRow {
 
 // ---- The repo's policy -----------------------------------------------------------------
 
-/** The repos a playbook's linked poll trigger watches (`owner/name`, as the spec has them); none for any other trigger. */
+/**
+ * The repos a playbook's pull requests go to (`owner/name`): the `repos` of its linked poll trigger and its
+ * own `target_repo`, de-duplicated as written (a policy is found only under the name it was set with, so two spellings are both checked).
+ */
 function polledRepos(store: Store, row: PlaybookRow): readonly string[] {
   const trigger = linkedTriggerOf(store, row);
-  if (trigger === null || trigger.kind !== "poll") return [];
-  const repos = (trigger.spec as { repos?: unknown } | null)?.repos;
-  return Array.isArray(repos) ? repos.filter((r): r is string => typeof r === "string") : [];
+  const spec = trigger !== null && trigger.kind === "poll" ? (trigger.spec as { repos?: unknown } | null) : null;
+  const listed = Array.isArray(spec?.repos) ? spec.repos.filter((r): r is string => typeof r === "string") : [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const repo of [...listed, ...(row.target_repo ? [row.target_repo] : [])]) {
+    if (!seen.has(repo)) {
+      seen.add(repo);
+      out.push(repo);
+    }
+  }
+  return out;
 }
 
 /**
- * The refusal when `row`'s own `merge_requirement` is looser than a repo it polls, or `undefined`: it is
- * `reviews:N` and a polled repo's policy is `reviews` with more than N required (a playbook may only be
+ * The refusal when `row`'s own `merge_requirement` is looser than a repo it polls or targets, or `undefined`: it is
+ * `reviews:N` and a polled or target repo's policy is `reviews` with more than N required (a playbook may only be
  * stricter than its repo, never looser). `none`, `studio_approval`, no requirement and a repo with another
  * kind (or none) are never refused here. Reads the repo's stored policy at the call, so the apply sees
  * what the owner set after the enable was held.
@@ -199,6 +219,18 @@ function looserThanRepo(store: Store, row: PlaybookRow): EnableRefused | undefin
     }
   }
   return undefined;
+}
+
+// ---- The target repository ---------------------------------------------------------
+
+/**
+ * The `no_target_repo` or `target_repo_not_reachable` refusal for `row`, or `undefined` (the rule is
+ * `targetRepoRefusal`'s). Never skipped by `enable_anyway`, which is scoped to the charter gap. Reads the
+ * playbook and the connector at the call, so the apply sees a change made after the hold.
+ */
+function targetRepoRefused(store: Store, row: PlaybookRow): EnableRefused | undefined {
+  const refusal = targetRepoRefusal(store, row);
+  return refusal === undefined ? undefined : new EnableRefused(refusal.reason, refusal.message);
 }
 
 // ---- The charter gap ---------------------------------------------------------------
@@ -280,6 +312,7 @@ export function enableDisplay(store: Store, row: PlaybookRow, dryRun: DryRunReco
     valueLine("dedupe_key", dedupeText(row.dedupe_key_spec), row.dedupe_key_set_by),
     valueLine("token_limit", row.token_limit_per_day, row.token_limit_set_by),
     valueLine("merge_requirement", row.merge_requirement, row.merge_requirement_set_by),
+    ...(row.target_repo === null || row.target_repo === undefined ? [] : [`target_repo: ${row.target_repo}`]),
     valueLine("effort", row.effort, row.effort_set_by),
     valueLine("api_key_fallback", row.api_key_fallback_json, row.api_key_fallback_set_by),
     `dry run: ${dryRun.summary}`,
@@ -315,6 +348,8 @@ function beforeHold(a: EnableArgs, ctx: ContributedToolContext): HeldToolVerdict
     }
     const looser = looserThanRepo(ctx.store, row);
     if (looser !== undefined) return { refuse: `${ENABLE_TOOL_NAME}: ${playbookErrorOf(looser).message} (nothing was held for the owner)` };
+    const noRepo = targetRepoRefused(ctx.store, row);
+    if (noRepo !== undefined) return { refuse: `${ENABLE_TOOL_NAME}: ${playbookErrorOf(noRepo).message} (nothing was held for the owner)` };
     const fit = playbookFit(ctx.store, row, ctx.catalogue);
     const enableAnyway = a.enable_anyway === true;
     const gap = charterGap(row, fit, enableAnyway, true);
@@ -422,7 +457,9 @@ export interface EnableApprovedParams {
  * `turned_off_by_owner`, `not_draft`); the approval's `subject_version` is the current version and
  * no `playbook_updated` came after its request (`version_changed`); the
  * current version has a `done` dry run (`no_dry_run`); its `merge_requirement` is not
- * looser than a repo it polls (`playbook_looser_than_repo`); a crew member's
+ * looser than a repo it polls or targets (`playbook_looser_than_repo`); a ticket
+ * playbook has a target repo and a set one is reachable (`no_target_repo`,
+ * `target_repo_not_reachable`, never skipped by `enableAnyway`); a crew member's
  * charter covers the jobs the playbook names, read now (`charter_gap`, unless
  * `enableAnyway`). Then `enablePlaybook`
  * (which re-checks the version and `draft` in its own transaction; nested in
@@ -444,6 +481,8 @@ export function enableApproved(store: Store, p: EnableApprovedParams): EnableToo
   if (latestDryRun(store, row.id, row.version) === null) throw new EnableRefused("no_dry_run", `version ${row.version} has no done dry run; it stays draft`);
   const looser = looserThanRepo(store, row);
   if (looser !== undefined) throw looser;
+  const noRepo = targetRepoRefused(store, row);
+  if (noRepo !== undefined) throw noRepo;
   const gap = charterGap(row, playbookFit(store, row, p.catalogue), p.enableAnyway === true, false);
   if (gap !== undefined) throw gap;
   enablePlaybook(store, { id: row.id, version: row.version, sessionId: p.sessionId, approvalId: approval.id }, p.now);

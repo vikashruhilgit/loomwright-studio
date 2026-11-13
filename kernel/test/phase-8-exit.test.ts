@@ -73,7 +73,6 @@ import type { SessionTokenMint } from "../src/sessions/github-session-auth.js";
 import type { Store } from "../src/store/index.js";
 import type { KernelToolResult } from "../src/tools/server.js";
 import { firePollTriggers, fireDueTriggers, triggersContribution } from "../src/triggers/index.js";
-import { registerTrigger } from "../src/triggers/store.js";
 import { FakeGitHubClient } from "./fixtures/github-fake.js";
 import { HEAD as FIXTURE_HEAD, PARKED_RUN_ID, READY_AT, makeCheckout } from "./fixtures/loomwright-run-files/harness.js";
 import { fakeKeychain, startFakeMcp } from "./fixtures/mcp-fake.js";
@@ -638,20 +637,14 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
       { agent: "mason", name: "Tickets from GitHub", intent: "Hand each new issue to /automate.", trigger: { kind: "poll", spec: pollOf("github.issues", { state: "open" }, [REPO]) }, dedupe_key: DEDUPE, ...live },
       clock.now(),
     );
-    // A ClickUp poll names no repository, and a live write-granted session's token is minted for the repos of the playbook's FIRST
-    // linked poll trigger (`playbookRepos`): so the playbook first links a github.pulls poll that names the repo (switched off, it
-    // fires nothing) and the ClickUp poll is registered second. See the deviations: the live run (item 14) meets this.
+    // A ClickUp poll names no repository, so the playbook carries `target_repo`: a live write-granted session's token is minted for
+    // that repository (`playbookRepos`), and the enable refuses a tracker playbook without one (`no_target_repo`).
     const intakeClickup = createPlaybook(
       store,
-      { agent: "mason", name: "Tickets from ClickUp", intent: "Hand each new task to /automate.", trigger: { kind: "poll", spec: pollOf("github.pulls", { state: "open" }, [REPO]) }, dedupe_key: DEDUPE, ...live },
+      { agent: "mason", name: "Tickets from ClickUp", intent: "Hand each new task to /automate.", trigger: { kind: "poll", spec: pollOf("clickup.tasks", { list: "901" }) }, target_repo: REPO, dedupe_key: DEDUPE, ...live },
       clock.now(),
     );
-    registerTrigger(
-      store,
-      { agent: "mason", kind: "poll", spec: pollOf("clickup.tasks", { list: "901" }), action: "wake_agent", text: `Playbook ${intakeClickup.playbook.slug}`, playbook: intakeClickup.playbook.slug },
-      clock.now(),
-    );
-    store.prepare("UPDATE triggers SET enabled = 0 WHERE id = ?").run(intakeClickup.trigger?.id);
+    expect(intakeClickup.playbook.target_repo).toBe(REPO);
     const triage = createPlaybook(
       store,
       { agent: "mason", name: "Triage", intent: "Triage the comments on a pull request.", trigger: { kind: "poll", spec: pollOf("github.pulls", { state: "open" }, [REPO]) }, model: TRIAGE_MODEL },

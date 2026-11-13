@@ -31,6 +31,7 @@ import { playbookMergeRequirement } from "../src/store/migrations/021_playbook_m
 import { threadContinuity } from "../src/store/migrations/022_thread_continuity.js";
 import { playbookJobs } from "../src/store/migrations/023_playbook_jobs.js";
 import { savedWorkspaces } from "../src/store/migrations/024_saved_workspaces.js";
+import { playbookTargetRepo } from "../src/store/migrations/025_playbook_target_repo.js";
 import { TriggerError } from "../src/triggers/store.js";
 import { fetchGithubPulls } from "../src/triggers/sources/github-pulls.js";
 
@@ -631,19 +632,20 @@ describe("migration 20: phase_8_foundation", () => {
   });
   const columnsOf = (s: Store, table: string): string[] => s.prepare<[string], string>("SELECT name FROM pragma_table_info(?)").pluck().all(table);
 
-  it("is version 20, named phase_8_foundation, directly below 21 (playbook_merge_requirement), 22 (thread_continuity), 23 (playbook_jobs) and 24 (saved_workspaces, last), and the list is contiguous from 1", () => {
+  it("is version 20, named phase_8_foundation, directly below 21 (playbook_merge_requirement), 22 (thread_continuity), 23 (playbook_jobs), 24 (saved_workspaces) and 25 (playbook_target_repo, last), and the list is contiguous from 1", () => {
     expect([phase8Foundation.version, phase8Foundation.name]).toEqual([20, "phase_8_foundation"]);
-    expect(migrations.at(-5)).toBe(phase8Foundation);
-    expect(migrations.at(-4)).toBe(playbookMergeRequirement);
-    expect(migrations.at(-3)).toBe(threadContinuity);
-    expect(migrations.at(-2)).toBe(playbookJobs);
-    expect(migrations.at(-1)).toBe(savedWorkspaces);
-    expect(migrations.map((m) => m.version)).toEqual(Array.from({ length: 24 }, (_, i) => i + 1));
+    expect(migrations.at(-6)).toBe(phase8Foundation);
+    expect(migrations.at(-5)).toBe(playbookMergeRequirement);
+    expect(migrations.at(-4)).toBe(threadContinuity);
+    expect(migrations.at(-3)).toBe(playbookJobs);
+    expect(migrations.at(-2)).toBe(savedWorkspaces);
+    expect(migrations.at(-1)).toBe(playbookTargetRepo);
+    expect(migrations.map((m) => m.version)).toEqual(Array.from({ length: 25 }, (_, i) => i + 1));
   });
 
   it("creates repo_policies, pr_tracks and mcp_connections with exactly the requirement's columns", () => {
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([24, "saved_workspaces"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([25, "playbook_target_repo"]);
     expect(columnsOf(store, "repo_policies")).toEqual(["id", "repo", "policy_kind", "required_reviews", "trust_unprotected", "detected_json", "set_by", "set_at"]);
     expect(columnsOf(store, "pr_tracks")).toEqual([
       "id",
@@ -686,7 +688,7 @@ describe("migration 20: phase_8_foundation", () => {
     db.close();
 
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([24, "saved_workspaces"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([25, "playbook_target_repo"]);
     expect(rerun.prepare("SELECT repo, policy_kind, required_reviews, trust_unprotected FROM repo_policies").all()).toEqual([{ repo: "acme/widgets", policy_kind: "reviews", required_reviews: 2, trust_unprotected: 0 }]);
     expect(rerun.prepare("SELECT repo, number, approvals, merged_by_gate FROM pr_tracks").all()).toEqual([{ repo: "acme/widgets", number: 7, approvals: 0, merged_by_gate: 0 }]);
     expect(rerun.prepare("SELECT kind, status FROM mcp_connections").all()).toEqual([{ kind: "jira", status: "connected" }]);

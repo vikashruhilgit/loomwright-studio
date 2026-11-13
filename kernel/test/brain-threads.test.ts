@@ -49,6 +49,7 @@ import { Store } from "../src/store/index.js";
 import { threadContinuity } from "../src/store/migrations/022_thread_continuity.js";
 import { playbookJobs } from "../src/store/migrations/023_playbook_jobs.js";
 import { savedWorkspaces } from "../src/store/migrations/024_saved_workspaces.js";
+import { playbookTargetRepo } from "../src/store/migrations/025_playbook_target_repo.js";
 import { migrations } from "../src/store/migrations/index.js";
 import { stubNotifierContributions } from "./notifier-stub.js";
 import type { FakeCall } from "./session-fakes.js";
@@ -231,10 +232,11 @@ function ownerPart(prompt: string): string {
 describe("migration 22: thread_continuity", () => {
   const cols = (store: Store, t: string) => store.prepare<[string], string>("SELECT name FROM pragma_table_info(?)").pluck().all(t);
 
-  it("sits directly below 23 (playbook_jobs) and 24 (saved_workspaces, the last migration), creates the two thread tables with their columns, leaves brain_messages and sessions alone, and creates no SQL trigger", () => {
-    expect(migrations.at(-3)).toBe(threadContinuity);
-    expect(migrations.at(-2)).toBe(playbookJobs);
-    expect(migrations.at(-1)).toBe(savedWorkspaces);
+  it("sits directly below 23 (playbook_jobs), 24 (saved_workspaces) and 25 (playbook_target_repo, the last migration), creates the two thread tables with their columns, leaves brain_messages and sessions alone, and creates no SQL trigger", () => {
+    expect(migrations.at(-4)).toBe(threadContinuity);
+    expect(migrations.at(-3)).toBe(playbookJobs);
+    expect(migrations.at(-2)).toBe(savedWorkspaces);
+    expect(migrations.at(-1)).toBe(playbookTargetRepo);
     expect([threadContinuity.version, threadContinuity.name]).toEqual([22, "thread_continuity"]);
     const store = openStore();
     expect(cols(store, "brain_threads")).toEqual(["id", "agent", "title", "summarized_into", "continued_from", "created_at", "updated_at"]);
@@ -253,7 +255,7 @@ describe("migration 22: thread_continuity", () => {
     db.prepare("ALTER TABLE brain_message_threads DROP COLUMN replay_queue_id").run();
     db.close();
     const rerun = openStore();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([24, "saved_workspaces"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([25, "playbook_target_repo"]);
     expect(cols(rerun, "brain_message_threads")).toContain("replay_queue_id");
   });
 });

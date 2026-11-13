@@ -9,6 +9,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ContributedTool } from "../src/features/index.js";
+import { formatPlaybook } from "../src/playbooks/drafts.js";
 import { getPlaybook, mirrorPath, playbooksContribution, setPlaybookPolicy } from "../src/playbooks/index.js";
 import { contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolContext, KernelToolResult } from "../src/tools/server.js";
@@ -203,5 +204,58 @@ describe("mode and the owner's values (AC3, AC5)", () => {
     expect(errorText(await update(created.id, { dedupe_key: KEY }))).toBe("kernel_playbook_update: dedupe_key: the owner set this value; only the owner can change it");
     expect(errorText(await update(created.id, { mode: "draft" }))).toBe("kernel_playbook_update: mode: the owner set this value; only the owner can change it");
     expect(getPlaybook(env.store, created.id)).toEqual(owned);
+  });
+});
+
+describe("target_repo through the drafting tools (phase 8 item 20h, AC1)", () => {
+  const TARGET = "vikashruhilgit/studio-sandbox";
+  const targetLine = (slug: string): string | undefined => mirrorLines(slug).find((l) => l.startsWith("- Target repo:"));
+
+  it("a create with target_repo stores it in playbooks.target_repo and version 1's snapshot, formatPlaybook shows a `target repo:` line, and the mirror shows `- Target repo:`", async () => {
+    const created = value<Created>(await create({ target_repo: TARGET }));
+    expect(getPlaybook(env.store, created.id)?.target_repo).toBe(TARGET);
+    const snapshot = env.store.prepare("SELECT snapshot_json FROM playbook_versions WHERE playbook = ? AND version = 1").pluck().get(created.id) as string;
+    expect(JSON.parse(snapshot)).toMatchObject({ target_repo: TARGET });
+    expect(targetLine(created.slug)).toBe(`- Target repo: \`${TARGET}\``);
+    const shown = formatPlaybook({ playbook: getPlaybook(env.store, created.id) as never, versions: [], trigger: null }, "UTC");
+    expect(shown.split("\n")).toContain(`  target repo: ${TARGET}`);
+  });
+
+  it("a playbook with no target repo keeps its mirror byte for byte (no line) and its show output unchanged", async () => {
+    const created = value<Created>(await create());
+    expect(targetLine(created.slug)).toBeUndefined();
+    expect(mirrorLines(created.slug).some((l) => l.includes("Target repo"))).toBe(false);
+    expect(formatPlaybook({ playbook: getPlaybook(env.store, created.id) as never, versions: [], trigger: null }, "UTC")).not.toContain("target repo");
+  });
+
+  it("an update sets it as a new version (the mirror follows), re-saving the same value changes nothing, and none clears it", async () => {
+    const created = value<Created>(await create());
+    expect(value<{ version: number; changed: boolean }>(await update(created.id, { target_repo: TARGET }))).toMatchObject({ version: 2, changed: true });
+    expect(getPlaybook(env.store, created.id)?.target_repo).toBe(TARGET);
+    expect(targetLine(created.slug)).toBe(`- Target repo: \`${TARGET}\``);
+    expect(value<{ version: number; changed: boolean }>(await update(created.id, { target_repo: TARGET }))).toMatchObject({ version: 2, changed: false });
+    expect(value<{ version: number; changed: boolean }>(await update(created.id, { target_repo: "none" }))).toMatchObject({ version: 3, changed: true });
+    expect(getPlaybook(env.store, created.id)?.target_repo).toBeNull();
+    expect(targetLine(created.slug)).toBeUndefined();
+  });
+
+  it("a malformed value is refused invalid_input naming target_repo on a create and on an update, writing nothing", async () => {
+    for (const bad of ["studio-sandbox", "owner/name/extra", "../name", "owner/..", "owner/."]) {
+      expect(errorText(await create({ target_repo: bad })), bad).toContain("target_repo must be owner/name");
+    }
+    nothingWritten();
+    const created = value<Created>(await create());
+    expect(errorText(await update(created.id, { target_repo: "owner/.." }))).toBe("kernel_playbook_update: target_repo must be owner/name, with neither part . or .. (got \"owner/..\")");
+    expect(getPlaybook(env.store, created.id)).toMatchObject({ version: 1, target_repo: null });
+  });
+
+  it("both tools' descriptions name target_repo, and a ticket playbook is told it needs one before it can be enabled", () => {
+    for (const name of ["kernel_playbook_create", "kernel_playbook_update"]) {
+      const description = tool(name).description;
+      expect(description, name).toContain("target_repo (optional)");
+      expect(description, name).toContain("no_target_repo");
+      expect(description, name).toContain("never from ticket, PR or comment text");
+    }
+    expect(tool("kernel_playbook_update").description).toContain("jobs, target_repo, trigger");
   });
 });

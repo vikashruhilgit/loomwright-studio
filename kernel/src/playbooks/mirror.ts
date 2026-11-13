@@ -178,7 +178,7 @@ function policyLine(label: string, value: string | number | null, setBy: string 
 /**
  * The mirror of `row` (pure): its name, a line saying the file is generated
  * and edits are not read, status, version, intent, the linked trigger and its
- * next fire in `timeZone`, the jobs it names (when it names any), one line per policy field, mode included (`(proposed)` when
+ * next fire in `timeZone`, the jobs it names (when it names any), the target repo (when it names one), one line per policy field, mode included (`(proposed)` when
  * Wright set it), and the last dry run (`dryRun`; its summary is untrusted
  * text, shown as one inert code span).
  */
@@ -196,6 +196,8 @@ export function renderPlaybookMirror(row: PlaybookRow, trigger: MirrorTrigger | 
   // A playbook that names no jobs keeps the mirror it had before migration 23, byte for byte.
   const jobs = jobsLine(row);
   if (jobs !== null) out.push(jobs);
+  // The same for the target repository (migration 25): the line appears only when one is named.
+  if (row.target_repo !== null && row.target_repo !== undefined) out.push(`- Target repo: ${inline(row.target_repo)}`);
   out.push("", "## Intent", "", fenced(row.intent), "", "## Trigger", "");
   if (trigger === null) out.push("- Schedule: no linked trigger");
   else {

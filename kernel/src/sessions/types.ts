@@ -310,8 +310,8 @@ export type SessionErrorCode =
   | "cwd_changed"
   /**
    * A live playbook session whose agent holds `github: write` could not get its
-   * down-scoped GitHub token (no minter wired, the playbook's poll trigger names
-   * no repos, or the mint failed): refused before any spawn, one
+   * down-scoped GitHub token (no minter wired, the playbook has no repos
+   * (its poll trigger names none and it has no `target_repo`), or the mint failed): refused before any spawn, one
    * `session_refused` event `{reason, detail}` (a resume's carries the session's
    * id, and its row is unchanged). Fail closed: the session never runs without
    * the token it was granted, and never with a broader one.
