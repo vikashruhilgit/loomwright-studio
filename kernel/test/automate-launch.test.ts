@@ -209,7 +209,17 @@ function unit(o: { withSessions?: boolean; never?: readonly string[]; mode?: "li
     .prepare("INSERT INTO playbooks (id, slug, name, owning_agent, intent, version, mode, merge_requirement) VALUES (5, 'pb5', 'pb5', 'mason', 'Hand tickets over', 2, ?, 'none')")
     .run(o.mode ?? "live");
   const starts: StartSessionParams[] = [];
-  const callers = new Map<number, Partial<SessionRow>>([[CALLER.id, { ...CALLER }]]);
+  // Every row set here is mirrored into the `sessions` table: the handler scopes its candidates there, then reads the row back.
+  class MirroredRows extends Map<number, Partial<SessionRow>> {
+    override set(id: number, row: Partial<SessionRow>): this {
+      store
+        .prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET agent = excluded.agent, status = excluded.status, cwd = excluded.cwd")
+        .run(id, row.agent ?? null, row.status ?? "running", row.cwd ?? null);
+      return super.set(id, row);
+    }
+  }
+  const callers = new MirroredRows();
+  callers.set(CALLER.id, { ...CALLER });
   const self: { startBehaviour: { throws?: Error } } = { startBehaviour: {} };
   const sessions: EventSessions = {
     async startSession(params) {
@@ -364,6 +374,29 @@ describe("handleAutomateRun starts one run session (AC3)", () => {
       await u.loop.tick();
       expect(u.starts).toHaveLength(2);
       expect(u.stepOf(third)).toEqual({ session_id: 102 });
+    } finally {
+      u.store.close();
+    }
+  });
+
+  it("finds the live run session however many newer automate-run steps other agents or checkouts have", async () => {
+    const u = unit();
+    try {
+      const first = u.queue();
+      await u.loop.tick();
+      expect(u.stepOf(first)).toEqual({ session_id: 101 });
+      u.callers.set(101, { id: 101, agent: "mason", status: "running", cwd: u.checkout });
+      // 60 newer steps for other sessions (other agent, other checkout, ended): none may push 101 out of view.
+      for (let i = 0; i < 60; i++) {
+        const sid = 1000 + i;
+        u.callers.set(sid, { id: sid, agent: i % 2 === 0 ? "ranger" : "mason", status: i % 3 === 0 ? "completed" : "running", cwd: i % 2 === 0 ? u.checkout : join(tmp, "elsewhere") });
+        u.store.prepare("INSERT INTO work_steps (key, status, result_json) VALUES (?, 'done', ?)").run(`event:${9000 + i}:automate-run`, JSON.stringify({ session_id: sid }));
+      }
+      u.store.prepare("INSERT INTO work_steps (key, status, result_json) VALUES ('event:9999:automate-run', 'done', 'not json')").run();
+      const second = u.queue();
+      await u.loop.tick();
+      expect(u.starts).toHaveLength(1);
+      expect(u.stepOf(second)).toEqual({ session_id: null, skipped: "run_session_live: session 101" });
     } finally {
       u.store.close();
     }

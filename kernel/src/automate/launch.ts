@@ -60,7 +60,7 @@ import { readAgentSettings } from "../agents/settings.js";
 import { isPositiveId, messageOf } from "../loop/internal.js";
 import type { EventContext, EventSessions } from "../loop/types.js";
 import { resolvedPath } from "../protected-paths.js";
-import { isTerminalStatus } from "../sessions/types.js";
+import { TERMINAL_STATUSES, isTerminalStatus } from "../sessions/types.js";
 import type { ToolPolicy } from "../sessions/types.js";
 import { readRunState, summarizeRuns } from "./run-state.js";
 import { automateInvocation } from "./tickets-to-items.js";
@@ -146,14 +146,21 @@ function liveRunSession(store: EventContext["store"], sessions: EventSessions, a
   // workspace (or macOS /tmp, /var) never matches on `resolve()` alone. `resolvedPath` never throws (a missing path
   // resolves as far as it exists), so a deleted checkout compares lexically instead of wedging the event.
   const want = resolvedPath(checkout);
-  const rows = store.prepare<[], string>("SELECT result_json FROM work_steps WHERE key LIKE 'event:%:automate-run' AND status = 'done' AND result_json IS NOT NULL ORDER BY id DESC LIMIT 50").pluck().all();
-  for (const json of rows) {
-    let id: unknown;
-    try {
-      id = (JSON.parse(json) as { session_id?: unknown } | null)?.session_id;
-    } catch {
-      continue;
-    }
+  // The candidates are scoped in SQL, so the answer never depends on how many other `automate-run` steps exist: the
+  // run sessions this handler started (the steps' stored `session_id`) that are this agent's and not terminal. The
+  // `CASE json_valid` keeps a malformed `result_json` from raising (SQLite does not order AND operands). The cwd
+  // (a realpath compare) and the terminal check are then made on the session row itself.
+  const placeholders = TERMINAL_STATUSES.map(() => "?").join(", ");
+  const ids = store
+    .prepare<unknown[], number>(
+      `SELECT s.id FROM sessions s WHERE s.agent = ? AND s.status NOT IN (${placeholders}) AND s.id IN (
+         SELECT CASE WHEN json_valid(w.result_json) THEN json_extract(w.result_json, '$.session_id') END
+         FROM work_steps w WHERE w.key LIKE 'event:%:automate-run' AND w.status = 'done' AND w.result_json IS NOT NULL)
+       ORDER BY s.id DESC`,
+    )
+    .pluck()
+    .all(agent, ...TERMINAL_STATUSES);
+  for (const id of ids) {
     if (!isPositiveId(id)) continue;
     const row = sessions.getSession(id);
     if (row === undefined || row.agent !== agent || row.cwd === null || resolvedPath(row.cwd) !== want) continue;
