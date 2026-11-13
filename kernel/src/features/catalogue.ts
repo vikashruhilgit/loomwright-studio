@@ -327,6 +327,21 @@ export function catalogueText(catalogue: ToolCatalogue): string {
   ].join("\n");
 }
 
+/**
+ * The `tool_policy.allowedTools` a charter is drafted to for `jobs`: every
+ * `mcp__kernel__<tool>` of each named job, in catalogue order, plus the tools
+ * of `read_pr` when `triage_pr_comments` is named (the rule `catalogueText`
+ * states). The one deterministic form of the instruction a drafting session
+ * follows, so a walk that needs a crew policy builds it from the shipped
+ * catalogue instead of writing tool names by hand. A job the catalogue has no
+ * tool for contributes nothing.
+ */
+export function allowedToolsForJobs(catalogue: ToolCatalogue, jobs: readonly ToolJob[]): string[] {
+  const wanted = new Set<ToolJob>(jobs);
+  if (wanted.has("triage_pr_comments")) wanted.add("read_pr");
+  return catalogue.tools.filter((t) => wanted.has(t.job)).map((t) => `${KERNEL_TOOL_PREFIX}${t.name}`);
+}
+
 /** What the drafting tools' descriptions carry when the catalogue could not be built: no tool list is guessed. */
 export const CATALOGUE_UNAVAILABLE_TEXT =
   "The kernel's tool catalogue is unavailable, so you cannot see the kernel's tools: tell the owner you can't see the kernel's tools, and draft no tool list.";

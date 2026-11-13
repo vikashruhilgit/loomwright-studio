@@ -24,6 +24,7 @@ import {
   TOOL_JOBS,
   TOOL_JOB_IDS,
   ToolCatalogueError,
+  allowedToolsForJobs,
   buildToolCatalogue,
   catalogueText,
   isToolJob,
@@ -131,6 +132,52 @@ describe("the catalogue covers every registered tool (AC1, AC6)", () => {
     expect(Object.isFrozen(CATALOGUE.tools)).toBe(true);
     expect(Object.isFrozen(CATALOGUE.jobs[0])).toBe(true);
     expect(Object.isFrozen(TOOL_JOBS)).toBe(true);
+  });
+});
+
+describe("allowedToolsForJobs: the one deterministic form of the drafting instruction (phase 8 item 20b, AC5, AC6)", () => {
+  const K = "mcp__kernel__";
+  const full = (names: readonly string[]): string[] => names.map((n) => `${K}${n}`);
+
+  it("AC6: a named job lists every one of its tools as mcp__kernel__<tool>, in catalogue order, and nothing else", () => {
+    expect(allowedToolsForJobs(CATALOGUE, ["automate_tickets"])).toEqual(full(WALK_JOBS.automate_tickets[1]));
+    expect(allowedToolsForJobs(CATALOGUE, ["ask_for_merge"])).toEqual(full(WALK_JOBS.ask_for_merge[1]));
+    // The order is the catalogue's, whatever order the jobs are named in; a repeated job adds nothing twice.
+    expect(allowedToolsForJobs(CATALOGUE, ["ask_for_merge", "automate_tickets", "ask_for_merge"])).toEqual(
+      CATALOGUE.tools.filter((t) => t.job === "automate_tickets" || t.job === "ask_for_merge").map((t) => `${K}${t.name}`),
+    );
+    expect(allowedToolsForJobs(CATALOGUE, [])).toEqual([]);
+  });
+
+  it("AC6: naming 'Triage PR comments' adds the tools of 'Read a PR' (the rule catalogueText states), and naming 'Read a PR' alone does not add triage", () => {
+    expect(catalogueText(CATALOGUE)).toContain("also needs Read a PR");
+    expect(allowedToolsForJobs(CATALOGUE, ["triage_pr_comments"])).toEqual(
+      CATALOGUE.tools.filter((t) => t.job === "triage_pr_comments" || t.job === "read_pr").map((t) => `${K}${t.name}`),
+    );
+    expect(allowedToolsForJobs(CATALOGUE, ["triage_pr_comments"])).toEqual(expect.arrayContaining(full(WALK_JOBS.read_pr[1])));
+    expect(allowedToolsForJobs(CATALOGUE, ["read_pr"])).toEqual(full(WALK_JOBS.read_pr[1]));
+  });
+
+  it("AC6: it reads the catalogue it is given: a job whose grant was removed, or that the catalogue lacks, lists nothing for it", () => {
+    const without = buildToolCatalogue(SHIPPED_TOOLS.filter((t) => t.name !== "kernel_automate_prepare"));
+    expect(allowedToolsForJobs(without, ["automate_tickets"])).toEqual(full(["kernel_automate_state"]));
+    const noMerge = buildToolCatalogue(SHIPPED_TOOLS.filter((t) => t.job !== "ask_for_merge"));
+    expect(allowedToolsForJobs(noMerge, ["ask_for_merge"])).toEqual([]);
+  });
+
+  it("AC5: 'Hand tickets to /automate' and 'Triage PR comments' are drafted to mcp__kernel__ tools only: no Skill, no Read, no Bash, no shell prefix", () => {
+    for (const job of ["automate_tickets", "triage_pr_comments"] as const) {
+      const drafted = allowedToolsForJobs(CATALOGUE, [job]);
+      expect(drafted.length, job).toBeGreaterThan(0);
+      for (const tool of drafted) expect(tool.startsWith(K), tool).toBe(true);
+      expect(drafted).not.toEqual(expect.arrayContaining(["Skill"]));
+    }
+  });
+
+  it("the drafted list is a fresh array each call (a caller cannot change the catalogue through it)", () => {
+    const a = allowedToolsForJobs(CATALOGUE, ["automate_tickets"]);
+    a.push("Skill");
+    expect(allowedToolsForJobs(CATALOGUE, ["automate_tickets"])).toEqual(full(WALK_JOBS.automate_tickets[1]));
   });
 });
 
