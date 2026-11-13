@@ -16,8 +16,9 @@
 // `connectors github` writes `connectors: ["github"]`, `connectors github:write`
 // writes the write grant `connectors: {"github": "write"}` (phase 8 item 04),
 // `connectors jira:<tool>[,<tool>…]` (or `clickup:`) grants that MCP kind's named
-// tools (phase 8 item 06) and `connectors jira:none` drops that one key, each
-// keeping the other keys; `connectors none` removes the whole key, for a crew
+// tools (phase 8 item 06) and `connectors jira:none` drops that one key, as
+// `connectors github:none` drops only the GitHub key, each keeping the other
+// keys; `connectors none` removes the whole key, for a crew
 // member and for Wright, through the same write path. Only this owner route and
 // verb set it: `kernel_agent_update` refuses it and the protected-path rail
 // refuses a session's write to the file.
@@ -335,6 +336,8 @@ function parseSetValue(field: SettableField, raw: string): { readonly value: Set
     // `github:write` is the owner's write grant (phase 8 item 04); `jira:` / `clickup:` name MCP tools (item 06).
     if (raw === "github:write") return { change: { kind: "github", level: "write" } };
     if (raw === "github") return { change: { kind: "github", level: "read" } };
+    // `github:none` drops only the GitHub key (a change, never a `value`): the member's Jira / ClickUp tools stay. `none` clears every key.
+    if (raw === "github:none") return { change: { kind: "github", level: null } };
     // A malformed `jira:` / `clickup:` value is the parser's own message; any other text is the one connectors message.
     return parseMcpGrantValue(raw) ?? { message: CONNECTORS_VALUE_MESSAGE };
   }
@@ -714,7 +717,7 @@ const setVerb: AgentVerb = {
   async run(args, client, out) {
     const [id, name, value, ...rest] = args;
     if (!idArg(id) || name === undefined || value === undefined || rest.length > 0) {
-      return usage(out, ROSTER_VERB_HELP.set, ` (field: ${AGENT_SET_FIELDS.join(", ")}, ${CONNECTORS_FIELD} (github or ${CLEAR_VALUE}), ${CONNECTORS_FIELD} github:write for the GitHub write level, or ${CONNECTORS_FIELD} jira:<tool>[,<tool>…] / clickup:<tool>[,<tool>…] for an MCP connector's tools (jira:${CLEAR_VALUE} drops one); ${CLEAR_VALUE} clears effort, a limit or all connectors)`);
+      return usage(out, ROSTER_VERB_HELP.set, ` (field: ${AGENT_SET_FIELDS.join(", ")}, ${CONNECTORS_FIELD} (github or ${CLEAR_VALUE}), ${CONNECTORS_FIELD} github:write for the GitHub write level, ${CONNECTORS_FIELD} github:none to drop only the GitHub grant, or ${CONNECTORS_FIELD} jira:<tool>[,<tool>…] / clickup:<tool>[,<tool>…] for an MCP connector's tools (jira:${CLEAR_VALUE} drops one); ${CLEAR_VALUE} clears effort, a limit or all connectors)`);
     }
     const path = `/agents/${encodeURIComponent(id)}/set`;
     const res = await client.request("POST", path, { field: name, value });

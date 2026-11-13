@@ -10,9 +10,10 @@
 // (`inspector-scrolled`), and on every screen the document has nothing to
 // scroll (the shell's grid bounds the window). Phase 6 item 08: the inspector's
 // Connectors row (GitHub granted or not, and the connector's state from `GET
-// /connectors`), Revoke and Grant GitHub through `POST /agents/:id/set`, and a
-// screenshot pair of the connected and not-connected states
-// (`connectors-connected`, `connectors-not-connected`). Run `npm run build` first.
+// /connectors`) and a screenshot pair of the connected and not-connected states
+// (`connectors-connected`, `connectors-not-connected`). Phase 8 item 20: a crew
+// member's GitHub level None, Read or Write (and Write's line, `connectors-write`)
+// and Wright's Grant GitHub / Revoke, through `POST /agents/:id/set`. Run `npm run build` first.
 //
 // Loading cannot be held open by the fixture (a `FixtureRoute` answers
 // synchronously), so that one state is the real `App` in a gallery window
@@ -671,7 +672,7 @@ async function showInInspector(page: Page, row: Locator): Promise<void> {
   expect(await documentScrollTop(page), "the document did not scroll").toBe(0);
 }
 
-test("phase 6 item 08: a granted agent's Connectors row shows GitHub connected; Revoke and Grant GitHub post the owner's set and the row follows the feed", async ({}, testInfo) => {
+test("phase 6 item 08 / phase 8 item 20: a crew member's Connectors row shows GitHub connected at Read; None, Read and Write post the owner's set and the row follows the feed", async ({}, testInfo) => {
   const team = teamFixture({ connector: "connected" });
   const page = await openTeam(team);
   await card(page, "Mason").click();
@@ -680,35 +681,52 @@ test("phase 6 item 08: a granted agent's Connectors row shows GitHub connected; 
   const row = inspector.getByTestId("team-insp-connectors");
   await expect(row.getByRole("heading", { level: 3 })).toContainText("Connectors");
   await expect(row.getByText("GitHub", { exact: true })).toBeVisible();
-  await expect(row.getByTestId("team-connector-grant")).toHaveText("granted");
+  // The level is read from Mason's detail: its file holds ["github"], which is Read; the other two levels are offered in place.
+  await expect(row.getByTestId("team-connector-grant")).toHaveText("Read");
   await expect(row.getByTestId("team-connector-state")).toHaveText("connected");
-  await expect(row.getByRole("button", { name: "Revoke" })).toBeVisible();
-  await expect(row.getByRole("button", { name: "Grant GitHub" })).toHaveCount(0);
+  await expect(row.getByRole("button", { name: "None" })).toBeVisible();
+  await expect(row.getByRole("button", { name: "Write" })).toBeVisible();
+  await expect(row.getByRole("button", { name: "Read" })).toHaveCount(0);
+  await expect(row.getByTestId("team-connector-write-line")).toHaveCount(0);
   await showInInspector(page, row);
   await screenshots(page, "connectors-connected", testInfo);
 
-  // Revoke: the owner's set, value none. The row follows the feed's agent_settings_set.
-  await row.getByRole("button", { name: "Revoke" }).click();
-  await expect(row.getByTestId("team-connector-grant")).toHaveText("not granted");
-  expect(team.sets).toEqual([{ id: "mason", body: { field: "connectors", value: "none" } }]);
+  // None: the owner's set, value github:none (never none). The row follows the feed's agent_settings_set.
+  await row.getByRole("button", { name: "None" }).click();
+  await expect(row.getByTestId("team-connector-grant")).toHaveText("None");
+  expect(team.sets).toEqual([{ id: "mason", body: { field: "connectors", value: "github:none" } }]);
   await expect(inspector.getByTestId("team-insp-notice")).toHaveText("GitHub revoked from Mason.");
-  await expect(row.getByRole("button", { name: "Revoke" })).toHaveCount(0);
+  await expect(row.getByRole("button", { name: "None" })).toHaveCount(0);
 
-  // Grant GitHub: value github.
-  await row.getByRole("button", { name: "Grant GitHub" }).click();
-  await expect(row.getByTestId("team-connector-grant")).toHaveText("granted");
+  // Read: value github.
+  await row.getByRole("button", { name: "Read" }).click();
+  await expect(row.getByTestId("team-connector-grant")).toHaveText("Read");
+
+  // Write: value github:write; the row shows the line about what Write lets the playbooks do.
+  await row.getByRole("button", { name: "Write" }).click();
+  await expect(row.getByTestId("team-connector-grant")).toHaveText("Write");
+  await expect(row.getByTestId("team-connector-write-line")).toHaveText("Write lets this member's live playbooks push and comment on GitHub, each through the approval gate.");
+  await expect(row.getByRole("button", { name: "Write" })).toHaveCount(0);
   expect(team.sets).toEqual([
-    { id: "mason", body: { field: "connectors", value: "none" } },
+    { id: "mason", body: { field: "connectors", value: "github:none" } },
     { id: "mason", body: { field: "connectors", value: "github" } },
+    { id: "mason", body: { field: "connectors", value: "github:write" } },
   ]);
+  await showInInspector(page, row);
+  await screenshots(page, "connectors-write", testInfo);
 
-  // Wright holds none: its inspector offers Grant GitHub, and the set goes to /agents/wright/set.
+  // Wright holds none: its inspector offers Grant GitHub (read) only, and the set goes to /agents/wright/set.
   await card(page, "Wright").click();
   await expect(inspector.getByRole("heading", { name: "Wright", level: 2 })).toBeVisible();
   await expect(row.getByTestId("team-connector-grant")).toHaveText("not granted");
+  await expect(row.getByRole("button", { name: "Write" })).toHaveCount(0);
   await row.getByRole("button", { name: "Grant GitHub" }).click();
   await expect(row.getByTestId("team-connector-grant")).toHaveText("granted");
-  expect(team.sets[2]).toEqual({ id: "wright", body: { field: "connectors", value: "github" } });
+  expect(team.sets[3]).toEqual({ id: "wright", body: { field: "connectors", value: "github" } });
+  // Wright's Revoke posts github:none, so the MCP grant Team cannot read is never dropped.
+  await row.getByRole("button", { name: "Revoke" }).click();
+  await expect(row.getByTestId("team-connector-grant")).toHaveText("not granted");
+  expect(team.sets[4]).toEqual({ id: "wright", body: { field: "connectors", value: "github:none" } });
   expect(fixture?.requests.filter((r) => r.path === "/agents/wright"), "Wright's detail is never requested").toEqual([]);
 });
 
@@ -718,7 +736,7 @@ test("phase 6 item 08: with GitHub not connected the granted row says so, and a 
   await card(page, "Mason").click();
   const inspector = page.getByTestId("team-inspector");
   const row = inspector.getByTestId("team-insp-connectors");
-  await expect(row.getByTestId("team-connector-grant")).toHaveText("granted");
+  await expect(row.getByTestId("team-connector-grant")).toHaveText("Read");
   await expect(row.getByTestId("team-connector-state")).toHaveText("not connected");
   await showInInspector(page, row);
   await screenshots(page, "connectors-not-connected", testInfo);

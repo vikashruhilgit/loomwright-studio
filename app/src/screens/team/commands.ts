@@ -3,16 +3,22 @@
 // renders only the current screen), through the registry's own unregister.
 // Each command calls the same handler as its button, so both reach the same
 // route. Grant GitHub and Revoke GitHub (phase 6 item 08) are registered for
-// every agent, Wright included, and are `enabled` only in their matching state:
-// grant while the roster says the agent holds no GitHub, revoke while it does,
-// neither while the roster did not report it. A command that cannot run now is absent (Wright has no rename, off
+// every agent, Wright included. Wright's are `enabled` by the roster: grant while
+// it holds no GitHub, revoke while it does, neither while the roster did not
+// report it. A crew member also has Grant GitHub write (phase 8 item 20), and
+// all three are `enabled` by its known level (`githubLevel`, from its detail):
+// grant (read) at None or Write, revoke at Read or Write, write at None or Read,
+// none while the level is unknown. A command that cannot run now is absent (Wright has no rename, off
 // or on: the kernel refuses them `reserved`) or `enabled: () => false` (on for
 // an active member, off for one already off). Team never registers "Message
 // <agent>": that is Chat's (item 13); its thread command opens `#/chat`.
 import { useEffect, useRef } from "react";
 import type { RosterEntry } from "../../api/contract";
 import type { Command, CommandRegistry } from "../../commands/registry";
+import type { GithubLevel } from "./Connectors";
 import { githubGranted, isWright, orderRoster } from "./model";
+
+const NO_LEVELS: GithubLevels = new Map();
 
 /** The registry owner every Team command is registered under. */
 export const TEAM_OWNER = "team";
@@ -27,12 +33,15 @@ export interface TeamCommandHandlers {
   readonly setField: (agent: RosterEntry) => void;
   readonly turn: (agent: RosterEntry, to: "on" | "off") => void | Promise<void>;
   readonly openThread: (agent: RosterEntry) => void;
-  readonly grantGithub: (agent: RosterEntry) => void | Promise<void>;
-  readonly revokeGithub: (agent: RosterEntry) => void | Promise<void>;
+  /** Set the agent's GitHub level: the one handler Grant GitHub (read), Revoke GitHub (none) and Grant GitHub write call. */
+  readonly setGithub: (agent: RosterEntry, level: GithubLevel) => void | Promise<void>;
 }
 
-/** Team's commands for `agents`: New crew member, then each agent's Rename, Set a field, Turn on, Turn off and Open thread. */
-export function teamCommands(agents: readonly RosterEntry[], handlers: TeamCommandHandlers): Command[] {
+/** Each crew member's known GitHub level by id; an id with no entry, or undefined, is unknown. Wright is never in it. */
+export type GithubLevels = ReadonlyMap<string, GithubLevel | undefined>;
+
+/** Team's commands for `agents`: New crew member, then each agent's Rename, Set a field, Turn on, Turn off, the GitHub commands and Open thread. */
+export function teamCommands(agents: readonly RosterEntry[], handlers: TeamCommandHandlers, levels: GithubLevels = new Map()): Command[] {
   const commands: Command[] = [
     { id: "team.new-crew-member", title: "New crew member", group: TEAM_GROUP, keywords: ["create", "agent", "charter"], run: () => handlers.newCrewMember() },
   ];
@@ -61,42 +70,54 @@ export function teamCommands(agents: readonly RosterEntry[], handlers: TeamComma
         run: () => handlers.turn(agent, "off"),
       });
     }
+    // Wright's two commands follow the roster; a crew member's follow its level, and unknown enables none.
+    const level = lead ? undefined : levels.get(agent.id);
     commands.push({
       id: `team.grant-github.${agent.id}`,
       title: `Grant GitHub to ${name}`,
       group: TEAM_GROUP,
       keywords: [agent.id, "connector", "access"],
-      enabled: () => githubGranted(agent) === false,
-      run: () => handlers.grantGithub(agent),
+      enabled: () => (lead ? githubGranted(agent) === false : level === "none" || level === "write"),
+      run: () => handlers.setGithub(agent, "read"),
     });
     commands.push({
       id: `team.revoke-github.${agent.id}`,
       title: `Revoke GitHub from ${name}`,
       group: TEAM_GROUP,
       keywords: [agent.id, "connector", "access"],
-      enabled: () => githubGranted(agent) === true,
-      run: () => handlers.revokeGithub(agent),
+      enabled: () => (lead ? githubGranted(agent) === true : level === "read" || level === "write"),
+      run: () => handlers.setGithub(agent, "none"),
     });
+    if (!lead) {
+      commands.push({
+        id: `team.github-write.${agent.id}`,
+        title: `Grant GitHub write to ${name}`,
+        group: TEAM_GROUP,
+        keywords: [agent.id, "connector", "access", "push", "comment"],
+        enabled: () => level === "none" || level === "read",
+        run: () => handlers.setGithub(agent, "write"),
+      });
+    }
     commands.push({ id: `team.thread.${agent.id}`, title: `Open thread with ${name}`, group: TEAM_GROUP, keywords: [agent.id, "chat"], run: () => handlers.openThread(agent) });
   }
   return commands;
 }
 
-/** What changes a command's id, title or `enabled`: re-register only then. A grant change flips Grant and Revoke, so `connectors` is part of it. */
-function rosterKey(agents: readonly RosterEntry[]): string {
-  return JSON.stringify(agents.map((a) => [a.id, a.display_name, a.status, a.connectors ?? null]));
+/** What changes a command's id, title or `enabled`: re-register only then. A grant change flips Grant, Revoke and Write, so `connectors` and the known level are part of it. */
+function rosterKey(agents: readonly RosterEntry[], levels: GithubLevels): string {
+  return JSON.stringify(agents.map((a) => [a.id, a.display_name, a.status, a.connectors ?? null, levels.get(a.id) ?? null]));
 }
 
 /**
  * Register Team's commands with `registry` for the caller's lifetime, and
- * again (old ones first unregistered) whenever an agent's id, name, status or
- * `connectors` changes. The handlers are read through a ref, so a new closure each render
- * never re-registers.
+ * again (old ones first unregistered) whenever an agent's id, name, status,
+ * `connectors` or known GitHub level changes. The handlers are read through a ref,
+ * so a new closure each render never re-registers.
  */
-export function useTeamCommands(registry: CommandRegistry, agents: readonly RosterEntry[], handlers: TeamCommandHandlers): void {
-  const latest = useRef({ agents, handlers });
-  latest.current = { agents, handlers };
-  const key = rosterKey(agents);
+export function useTeamCommands(registry: CommandRegistry, agents: readonly RosterEntry[], handlers: TeamCommandHandlers, levels: GithubLevels = NO_LEVELS): void {
+  const latest = useRef({ agents, handlers, levels });
+  latest.current = { agents, handlers, levels };
+  const key = rosterKey(agents, levels);
   useEffect(() => {
     const forward: TeamCommandHandlers = {
       newCrewMember: () => latest.current.handlers.newCrewMember(),
@@ -104,9 +125,8 @@ export function useTeamCommands(registry: CommandRegistry, agents: readonly Rost
       setField: (agent) => latest.current.handlers.setField(agent),
       turn: (agent, to) => latest.current.handlers.turn(agent, to),
       openThread: (agent) => latest.current.handlers.openThread(agent),
-      grantGithub: (agent) => latest.current.handlers.grantGithub(agent),
-      revokeGithub: (agent) => latest.current.handlers.revokeGithub(agent),
+      setGithub: (agent, level) => latest.current.handlers.setGithub(agent, level),
     };
-    return registry.register(TEAM_OWNER, teamCommands(latest.current.agents, forward));
+    return registry.register(TEAM_OWNER, teamCommands(latest.current.agents, forward, latest.current.levels));
   }, [registry, key]);
 }

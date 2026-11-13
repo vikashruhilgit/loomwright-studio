@@ -1251,6 +1251,7 @@ describe("the ⌘K commands", () => {
       "team.off.mason",
       "team.grant-github.mason",
       "team.revoke-github.mason",
+      "team.github-write.mason",
       "team.thread.mason",
       "team.rename.pim",
       "team.set.pim",
@@ -1258,6 +1259,7 @@ describe("the ⌘K commands", () => {
       "team.off.pim",
       "team.grant-github.pim",
       "team.revoke-github.pim",
+      "team.github-write.pim",
       "team.thread.pim",
     ]);
     expect(kernel.registry.get("team.on.mason")?.enabled?.()).toBe(false);
