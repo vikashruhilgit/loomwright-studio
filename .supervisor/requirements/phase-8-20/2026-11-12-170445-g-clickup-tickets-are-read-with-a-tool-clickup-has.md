@@ -58,3 +58,9 @@ docs/evidence/phase-8-20g-clickup-reader.md
 
 Job `.supervisor/jobs/done/2026-11-12-clickup-tickets-read-with-real-tool.md` completed (reconciled from the job lifecycle, not self-reported).
 Acceptance criteria are NOT machine-verified here — review them before promoting this to `## Status: done`.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-13T11:17:46Z
+- **Brief:** .supervisor/jobs/done/2026-11-12-clickup-tickets-read-with-real-tool.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/271
