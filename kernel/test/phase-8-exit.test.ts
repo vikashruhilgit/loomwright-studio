@@ -3,7 +3,10 @@
 // under its repo's policy" (acceptance test 2), steps (a) to (e), on the kernel alone.
 //
 //   (a) one GitHub issue (#11) and one ClickUp task (cu-1) become two ticket tasks,
-//       each linked to its own PR in `pr_tracks` (PR A #21, PR B #22)
+//       each linked to its own PR in `pr_tracks` (PR A #21, PR B #22): the crew session hands each ticket over
+//       (`kernel_automate_prepare`) and the KERNEL starts the `/automate` stand-in run session (D44), which opens the PR.
+//       The crew member's `tool_policy` is drafted from the shipped catalogue by `allowedToolsForJobs` (AC7); a catalogue
+//       without the handover's grant drafts a policy that denies the call `tool_not_allowed`, and the walk reaches no run (AC9)
 //   (b) three comments on PR A are routed: PR A is a parked `/automate` item, so
 //       `kernel_pr_route` answers `automate_fix` and the fix runs
 //       `/loomwright:review-pr <pr url>` in the triage playbook's own session (never a
@@ -11,7 +14,8 @@
 //   (c) the owner is re-requested as reviewer (`requestReviewers`)
 //   (d) PR A merges under Solo, PR B under Approve in Studio (after the owner approves
 //       the merge card for PR B's head); both `merged_by_gate = 1`; the kernel never merges
-//   (e) a stand-in session's `gh pr merge` is denied `merge_blocked`
+//   (e) a `gh pr merge` in the kernel-started run session is denied `merge_blocked`; the crew session, drafted from
+//       the catalogue, holds no Bash grant at all
 //
 // The kernel is `startKernel` over `SHIPPED_CONTRIBUTIONS` with `triggers`, `integrations`
 // and `automate` rebuilt over the fakes (the shipped tracker, write tools and ticket reader
@@ -32,9 +36,9 @@
 //
 // The live half (a real model, a real sandbox repo) is the owner's run:
 // test/phase-8-exit-live.test.ts and docs/evidence/phase-8-exit-runbook.md.
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { HookCallback, HookInput, Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -48,9 +52,12 @@ import { AUTOMATE_PARTS, automateContribution, automateContributionOf } from "..
 import { createRoutingTools } from "../src/automate/routing.js";
 import { createAutomateRunnerTools } from "../src/automate/runner.js";
 import { createTrackerDueWork } from "../src/automate/tracker.js";
+import { itemFileName } from "../src/automate/tickets-to-items.js";
 import { PROPOSED_ALLOWED_TOOLS, brainContribution, brainMessageHandler, defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
 import { runCli } from "../src/cli/index.js";
-import { SHIPPED_CONTRIBUTIONS } from "../src/features/index.js";
+import { allowedToolsForJobs, buildToolCatalogue } from "../src/features/catalogue.js";
+import type { ToolCatalogue, ToolJob } from "../src/features/catalogue.js";
+import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { DueWorkFn, FeatureContribution } from "../src/features/index.js";
 import { INTEGRATIONS_PARTS, createGitHubTools, integrationsContribution, integrationsContributionOf, repoPolicyRoutes } from "../src/integrations/index.js";
 import { createGitHubWriteTools } from "../src/integrations/github/write-tools.js";
@@ -144,18 +151,13 @@ const DEDUPE = ["playbook.id", "item.id", "item.revision"];
 const FIXTURE_DIR = fileURLToPath(new URL("./fixtures/loomwright-run-files/", import.meta.url));
 /** What the fake GitHub records as a write; every other recorded call is a read. */
 const WRITE_METHODS = ["replyToReviewComment", "createPullComment", "createIssueComment", "requestReviewers"];
-/** The kernel tools mason's sessions may call (the rail still holds the outward ones). */
-const MASON_TOOLS = [
-  "kernel_automate_prepare",
-  "kernel_automate_state",
-  "kernel_automate_merge_check",
-  "kernel_merge_approval_request",
-  "kernel_pr_route",
-  "kernel_github_pr_comments",
-  "kernel_github_pr_reply",
-  "kernel_github_pr_comment",
-  "kernel_github_pr_request_reviewers",
-].map((n) => `${K}${n}`);
+/**
+ * The jobs the owner's words give mason ("hand each ticket to /automate, triage the comments on its pull request and ask for a
+ * merge"): its charter is drafted from them by `allowedToolsForJobs`, the one jobs-to-tools rule, never from tool names written by hand.
+ */
+const MASON_JOBS: readonly ToolJob[] = ["automate_tickets", "triage_pr_comments", "ask_for_merge"];
+/** The shipped tool catalogue (every tool the shipped composition registers, by job): what a charter is drafted from. */
+const SHIPPED_CATALOGUE: ToolCatalogue = buildToolCatalogue(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools);
 
 let tmp: string;
 const kernels: Kernel[] = [];
@@ -259,8 +261,11 @@ function pull(t: Ticket, over: Partial<GitHubPull> = {}): GitHubPull {
   };
 }
 
-/** The charter the owner approves for the one crew member: the GitHub grant, the kernel tools its sessions call, `gh pr` Bash. */
-function masonCharter(workspace: string): Record<string, unknown> {
+/**
+ * The charter the owner approves for the one crew member: its `tool_policy` is what a session drafts from `catalogue` for
+ * `MASON_JOBS`. No `Read`, `Bash` or `Skill` is granted: the `/automate` run is the kernel's own session (D44) under the kernel's own policy.
+ */
+function masonCharter(workspace: string, catalogue: ToolCatalogue): Record<string, unknown> {
   return {
     id: "mason",
     display_name: "Mason",
@@ -270,7 +275,7 @@ function masonCharter(workspace: string): Record<string, unknown> {
     boundaries: ["Never merge a pull request except through Loomwright's gate."],
     model: MASON_MODEL,
     permission_mode: "default",
-    tool_policy: { allowedTools: ["Read", "Bash", ...MASON_TOOLS], allowedBashPrefixes: ["gh pr"], never: [] },
+    tool_policy: { allowedTools: allowedToolsForJobs(catalogue, MASON_JOBS), allowedBashPrefixes: [], never: [] },
     limits: { tokens_per_day: 200_000 },
     workspaces: [workspace],
     connectors: ["github"],
@@ -407,7 +412,11 @@ function writeRunFile(workspace: string, t: Ticket, itemPath: string, finished: 
 // ---- The test ------------------------------------------------------------------------------------
 
 describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, comments are triaged, a reviewer is re-requested, each merge goes through Loomwright's gate (AC2)", () => {
-  it("(a) tickets → PRs → (b) triage → (c) re-request → (d) Solo and Approve-in-Studio merges → (e) merge blocked, on fakes, one clock", async () => {
+  /**
+   * The whole walk over a crew member drafted from `catalogue`. With `grantsKept: false` the catalogue lacks a grant the walk needs
+   * (AC9), so the walk stops at the denied handover: it returns after (a), having reached no run.
+   */
+  async function walk(catalogue: ToolCatalogue, grantsKept: boolean): Promise<void> {
     const dataDir = join(tmp, "data");
     const home = join(tmp, "home");
     mkdirSync(home);
@@ -567,6 +576,13 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
       return row.id;
     }
 
+    /** A read-only kernel tool call as a live session makes it: through its PreToolUse gate (the drafted policy must list the tool), then run. */
+    async function readTool<T = Record<string, unknown>>(call: FakeCall, name: string, input: Record<string, unknown>): Promise<T> {
+      const d = await gateOf(call)(`${K}${name}`, input);
+      if (d.permissionDecision !== "allow") throw new Error(`${name} was refused: ${d.permissionDecision} ${d.permissionDecisionReason}`);
+      return value<T>(await tool(call, name, input));
+    }
+
     /** An outward tool call as a live session makes it: held, decided by the owner, repeated once, then run. */
     async function outward(call: FakeCall, name: string, input: Record<string, unknown>): Promise<unknown> {
       const gate = gateOf(call);
@@ -594,7 +610,7 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     expect(getRepoPolicy(store, REPO)).toMatchObject({ kind: "solo", set_by: "owner" });
 
     // The crew member from a charter, then the owner's grant in its settings file: GitHub write and ClickUp's read tool.
-    const created = createAgent(store, dataDir, masonCharter(workspace), { by: "owner", homeDir: home }, clock.now());
+    const created = createAgent(store, dataDir, masonCharter(workspace, catalogue), { by: "owner", homeDir: home }, clock.now());
     expect(created).toMatchObject({ ok: true, filesError: null });
     const settingsFile = agentSettingsPath(dataDir, "mason");
     const rendered = JSON.parse(readFileSync(settingsFile, "utf8")) as Record<string, unknown>;
@@ -602,6 +618,11 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     expect(getAgent(store, "mason")?.status).toBe("active");
     const grant = readAgentSettings(dataDir, "mason");
     expect(grant.ok && grant.settings.githubWrite).toBe(true);
+    // The crew member's policy is exactly the drafted one: only mcp__kernel__ tools, no Read, Skill or shell grant (AC4, AC7).
+    const crewTools = grant.ok ? grant.settings.policy.allowedTools : [];
+    expect(crewTools).toEqual(allowedToolsForJobs(catalogue, MASON_JOBS));
+    expect(crewTools.every((t) => t.startsWith(K))).toBe(true);
+    expect(grant.ok && grant.settings.policy.allowedBashPrefixes).toEqual([]);
 
     const pollOf = (source: string, filters: Record<string, unknown>, repos?: readonly string[]): string =>
       JSON.stringify({ source, ...(repos === undefined ? {} : { repos }), filters, interval_seconds: INTERVAL });
@@ -670,26 +691,75 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     // ================================ (a) tickets become PRs ================================
     const prepared: { ref: string; invocation: string; item: string }[] = [];
     const automateRuns: string[] = [];
+    const runMergeAttempts: Decision[] = [];
+    /** The handover calls the crew session's policy denied (AC9): only a drafted policy that lacks the grant ever lists one. */
+    const handoverDenials: string[] = [];
+    // Both ticket playbooks' sessions run on INTAKE_MODEL, and so does the /automate run the kernel starts for each (D44):
+    // the driver tells them apart by the prompt, the way it tells the intake session's ticket apart by its ref.
+    let intakes = 0;
     drivers.set(INTAKE_MODEL, async (call) => {
       await vi.waitFor(() => expect(prompts.get(call.options)?.length ?? 0).toBeGreaterThan(0), WAIT);
       const prompt = (prompts.get(call.options) as string[])[0] as string;
+      if (prompt.startsWith("/loomwright:automate --backlog")) {
+        // The kernel-started stand-in /automate (safe mode): it reads its backlog, opens the PR and parks it awaiting_merge at its READY head.
+        const backlog = /^\/loomwright:automate --backlog (\S+) --inline-phases$/.exec(prompt)?.[1];
+        if (backlog === undefined) throw new Error(`the run session was started with an unexpected prompt: ${prompt}`);
+        const listed = readFileSync(backlog, "utf8");
+        const ran = TICKETS.find((t) => listed.includes(`/${itemFileName(t.ref)}`));
+        if (ran === undefined) throw new Error("the run session's backlog lists no known ticket");
+        const item = `.supervisor/requirements/studio/${itemFileName(ran.ref)}`;
+        automateRuns.push(prompt);
+        // (e) the run session's `gh pr merge` (its policy allows `gh`): the rail denies it `merge_blocked` (D40), whatever the policy.
+        runMergeAttempts.push(await gateOf(call)("Bash", { command: `gh pr merge ${ran.pr} --squash --delete-branch` }));
+        writeRunFile(workspace, ran, item, false);
+        prepared.push({ ref: ran.ref, invocation: prompt, item });
+        endSession(call);
+        return;
+      }
       const ticket = TICKETS.find((t) => prompt.includes(t.ref));
       if (ticket === undefined) throw new Error("the intake session was started on no known ticket");
-      // The playbook's own session, as the shipped guidance has it: look first, then hand the ticket over.
+      // One backlog file per checkout, and one drain: the second ticket is handed over once the first run has parked.
+      const turn = intakes++;
+      if (grantsKept) await vi.waitFor(() => expect(prepared.length).toBeGreaterThanOrEqual(turn), WAIT);
+      // The playbook's own session, as the shipped guidance has it: look first, then hand the ticket over. The kernel starts the run.
+      // Each call goes through the session's PreToolUse gate first, as the CLI does: the drafted policy decides whether the tool is offered.
+      const stateGate = await gateOf(call)(`${K}kernel_automate_state`, { repo: REPO });
+      if (stateGate.permissionDecision !== "allow") throw new Error(`kernel_automate_state was refused: ${stateGate.permissionDecisionReason}`);
       const state = value<{ state: string }>(await tool(call, "kernel_automate_state", { repo: REPO }));
       if (state.state === "live") throw new Error("a run is live: single drain");
-      const handedOver = value<{ invocation: string; items: { ref: string; path: string }[] }>(
-        await tool(call, "kernel_automate_prepare", { repo: REPO, tickets: [{ ref: ticket.ref, title: ticket.title, link: ticket.link, body: ticket.body }] }),
-      );
-      const item = relative(workspace, handedOver.items[0]?.path ?? "");
-      // The stand-in /automate runs the invocation (safe mode), opens the PR and parks it awaiting_merge at its READY head.
-      automateRuns.push(handedOver.invocation);
-      writeRunFile(workspace, ticket, item, false);
-      prepared.push({ ref: ticket.ref, invocation: handedOver.invocation, item });
+      const handover = { repo: REPO, tickets: [{ ref: ticket.ref, title: ticket.title, link: ticket.link, body: ticket.body }] };
+      const handoverGate = await gateOf(call)(`${K}kernel_automate_prepare`, handover);
+      if (handoverGate.permissionDecision !== "allow") {
+        handoverDenials.push(handoverGate.permissionDecisionReason);
+        endSession(call);
+        return;
+      }
+      const handedOver = value<{ run: string; items: { ref: string; path: string }[] }>(await tool(call, "kernel_automate_prepare", handover));
+      if (handedOver.run !== "started_by_kernel") throw new Error(`prepare did not hand the run to the kernel: ${handedOver.run}`);
       endSession(call);
     });
 
     clock.advance((INTERVAL + 1) * 1000);
+    if (!grantsKept) {
+      // AC9: the drafted policy lacks the handover's grant, so both intake sessions were denied `tool_not_allowed` and the walk never reaches the run.
+      await vi.waitFor(() => expect(handoverDenials).toHaveLength(2), WAIT);
+      await vi.waitFor(() => expect(count(store, "SELECT count(*) FROM playbook_runs WHERE status = 'done'")).toBe(2), WAIT);
+      noFailures();
+      expect(handoverDenials).toEqual(["tool_not_allowed", "tool_not_allowed"]);
+      expect(prepared).toEqual([]);
+      expect(automateRuns).toEqual([]);
+      // No run session was started: only the two intake sessions exist, nothing was written for a run, and no PR was opened or tracked.
+      expect(sessionRows(store).map((r) => [r.agent, r.model, r.playbook]).sort()).toEqual(
+        [
+          ["mason", INTAKE_MODEL, intakeGithub.playbook.id],
+          ["mason", INTAKE_MODEL, intakeClickup.playbook.id],
+        ].sort(),
+      );
+      expect(existsSync(join(workspace, ".supervisor", "requirements"))).toBe(false);
+      expect(tracks(store)).toEqual([]);
+      expect(github.callsTo("createPullComment")).toEqual([]);
+      return;
+    }
     await vi.waitFor(() => expect(prepared).toHaveLength(2), WAIT);
     noFailures();
     // The next owner's poll fires (nothing new: the dedupe key skips both), which lets the tracker read the run files.
@@ -702,18 +772,25 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     expect(mcp.mcpCalls.filter((m) => m.method === "tools/call").every((m) => m.name === "get_workspace_tasks")).toBe(true);
     expect(mcp.mcpCalls.some((m) => m.method === "tools/call")).toBe(true);
     expect(github.callsTo("listIssues").length).toBeGreaterThanOrEqual(1);
-    // Two intake sessions, each a live run of its playbook as mason, each given a token down-scoped to the one repo.
+    // Two intake sessions, each a live run of its playbook as mason, each given a token down-scoped to the one repo; and, for each,
+    // the /automate run session the kernel started (D44): a session of the same playbook, as mason, on the playbook's model.
     const intakeSessions = sessionRows(store).filter((s) => s.model === INTAKE_MODEL);
     expect(intakeSessions.map((s) => [s.agent, s.status, s.playbook]).sort()).toEqual(
       [
         ["mason", "completed", intakeGithub.playbook.id],
+        ["mason", "completed", intakeGithub.playbook.id],
+        ["mason", "completed", intakeClickup.playbook.id],
         ["mason", "completed", intakeClickup.playbook.id],
       ].sort(),
     );
     expect(mintedFor.length).toBeGreaterThanOrEqual(2);
     for (const repos of mintedFor) expect(repos).toEqual([REPO]);
     expect(prepared.map((p) => p.ref).sort()).toEqual([TICKET_A.ref, TICKET_B.ref].sort());
-    for (const run of automateRuns) expect(run).toMatch(/^\/automate --backlog \S*_BACKLOG\.md --inline-phases$/);
+    expect(handoverDenials).toEqual([]);
+    // (e) in each kernel-started run session, a `gh pr merge` (its policy allows `gh`) is denied `merge_blocked` by the rail.
+    expect(runMergeAttempts).toHaveLength(2);
+    for (const attempt of runMergeAttempts) expect(attempt).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "merge_blocked" });
+    for (const run of automateRuns) expect(run).toMatch(/^\/loomwright:automate --backlog \S*_BACKLOG\.md --inline-phases$/);
     // Two ticket tasks, each linked to its own PR in `pr_tracks`, none merged by the gate yet.
     expect(tracks(store)).toEqual([
       expect.objectContaining({ repo: REPO, number: PR_A, head_sha: TICKET_A.head, state: "parked", ticket_ref: TICKET_A.ref, owner_kind: "automate_parked", run_file: TICKET_A.runId, merged_by_gate: 0 }),
@@ -740,8 +817,8 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
       TRIAGE_MODEL,
       async (call) => {
         await flush(1);
-        const read = value<string>(await tool(call, "kernel_github_pr_comments", { repo: REPO, number: PR_A }));
-        const route = value<{ route: string; command?: string }>(await tool(call, "kernel_pr_route", { repo: REPO, pr: PR_A }));
+        const read = await readTool<string>(call, "kernel_github_pr_comments", { repo: REPO, number: PR_A });
+        const route = await readTool<{ route: string; command?: string }>(call, "kernel_pr_route", { repo: REPO, pr: PR_A });
         triaged.route = route;
         // The stand-in triages by what each comment says (comment text is data to a real model, never an instruction).
         for (const line of [...read.matchAll(/^(fix|question|remark): .*$/gm)].map((m) => m[0])) {
@@ -795,14 +872,14 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
       (t: Ticket, directMerge: boolean) =>
       async (call: FakeCall): Promise<void> => {
         await flush(1);
-        // (e) a direct `gh pr merge` from a session: the rail denies it, whatever the policy.
+        // The drafted policy holds no Bash prefix: a direct `gh pr merge` from the crew session is denied by the policy itself, before the rail.
         if (directMerge) blocked = await gateOf(call)("Bash", { command: `gh pr merge ${t.pr} --squash` });
-        let check = value<{ answer: string; reason?: string; invocation?: string; run_id?: string }>(await tool(call, "kernel_automate_merge_check", { repo: REPO, pr: t.pr }));
+        let check = await readTool<{ answer: string; reason?: string; invocation?: string; run_id?: string }>(call, "kernel_automate_merge_check", { repo: REPO, pr: t.pr });
         checks.push({ pr: t.pr, ...check });
         if (check.answer === "wait" && check.reason === "awaiting_owner_approval") {
           // Approve in Studio: the merge card for this PR at this head, decided by the owner; then ask again.
           await outward(call, "kernel_merge_approval_request", { repo: REPO, pr: t.pr, head_sha: t.head, ci: "green", ready_at: READY_AT });
-          check = value(await tool(call, "kernel_automate_merge_check", { repo: REPO, pr: t.pr }));
+          check = await readTool<typeof check>(call, "kernel_automate_merge_check", { repo: REPO, pr: t.pr });
           checks.push({ pr: t.pr, ...check });
         }
         if (check.answer === "go" && check.invocation !== undefined) {
@@ -820,10 +897,12 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     await vi.waitFor(() => expect(merged.map((m) => m.pr)).toEqual([PR_A]), WAIT);
     noFailures();
     expect(checks).toEqual([{ pr: PR_A, repo: REPO, answer: "go", run_id: TICKET_A.runId, ready_sha: TICKET_A.head, invocation: `/loomwright:automate --merge-parked ${TICKET_A.runId}` }]);
-    // (e) the direct merge was denied `merge_blocked`, as the recorded decision shows.
-    expect(blocked).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "merge_blocked" });
-    const mergeDecisions = events(store, "tool_decision").filter((e) => e.payload.command === `gh pr merge ${PR_A} --squash`);
-    expect(mergeDecisions.map((e) => [e.payload.tool, e.payload.decision, e.payload.reason])).toEqual([["Bash", "deny", "merge_blocked"]]);
+    // (e) the crew session's direct merge was denied (no Bash grant), and each run session's `gh pr merge` was denied `merge_blocked`, as the recorded decisions show.
+    expect(blocked).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
+    const mergeDecisions = events(store, "tool_decision").filter((e) => String(e.payload.command).startsWith("gh pr merge"));
+    expect(mergeDecisions.map((e) => [e.payload.tool, e.payload.decision, e.payload.reason]).sort()).toEqual(
+      [["Bash", "deny", "merge_blocked"], ["Bash", "deny", "merge_blocked"], ["Bash", "deny", "bash_prefix_not_allowed"]].sort(),
+    );
     clock.advance((INTERVAL + 1) * 1000);
     await vi.waitFor(() => expect(tracks(store).find((t) => t.number === PR_A)).toMatchObject({ state: "merged", merged_by_gate: 1 }), WAIT);
     noFailures();
@@ -866,6 +945,19 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     expect(new Set(net.hosts)).toEqual(new Set(["127.0.0.1"]));
     expect(keychain.items.size).toBe(1);
     expect(kc.calls.filter((c) => c.startsWith("add ")).every((c) => c === "add loomwright-studio-mcp-clickup")).toBe(true);
+  }
+
+  it("(a) tickets → PRs → (b) triage → (c) re-request → (d) Solo and Approve-in-Studio merges → (e) merge blocked, on fakes, one clock, the crew drafted from the catalogue (AC7)", async () => {
+    await walk(SHIPPED_CATALOGUE, true);
+  }, 120_000);
+
+  it("a catalogue without the handover's grant drafts a policy that denies kernel_automate_prepare `tool_not_allowed`, and the walk reaches no run (AC9)", async () => {
+    // `kernel_automate_prepare` moved off `automate_tickets`: the drafted policy lists `kernel_automate_state` and no longer the handover.
+    const tools = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools;
+    const without = buildToolCatalogue(tools.map((t) => (t.name === "kernel_automate_prepare" ? { ...t, job: "general" as const } : t)));
+    expect(allowedToolsForJobs(without, MASON_JOBS)).not.toContain(`${K}kernel_automate_prepare`);
+    expect(allowedToolsForJobs(SHIPPED_CATALOGUE, MASON_JOBS)).toContain(`${K}kernel_automate_prepare`);
+    await walk(without, false);
   }, 120_000);
 });
 
