@@ -15,7 +15,9 @@
 // text is the kernel's own words. Nothing shown changes until the kernel answers (no
 // optimistic update). There is NO route here that turns a playbook on: the switch in
 // the off position only reveals the held `kernel_playbook_enable` approval and links to
-// it (invariant 3). "Edit in English" hands a line to Wright's composer and sends nothing.
+// it (invariant 3). "Edit in English" and "Ask Wright for the dry run and enable" hand a line to
+// Wright's composer and send nothing. The card's Mode control Sets `mode` through the same `/set`
+// (Live only after its confirm, whose open state lives here so the ⌘K command can open it).
 //
 // Every string from the kernel (name, intent, slug, item_ref, a refusal's message) is
 // untrusted data: a React text child, never markup.
@@ -42,6 +44,7 @@ import {
   PLAYBOOKS_TEST_IDS as IDS,
   dedupeText,
   draftsOf,
+  dryRunEnableLine,
   handoffLine,
   newestRelevantEventId,
   pendingEnableApproval,
@@ -309,6 +312,8 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
   const [turnOn, setTurnOn] = useState<number | undefined>(undefined);
   const [offNotice, setOffNotice] = useState<Tagged | undefined>(undefined);
   const [runNotice, setRunNotice] = useState<Tagged | undefined>(undefined);
+  // The playbook whose card has its Live confirm open: nothing is sent while it is.
+  const [liveAsk, setLiveAsk] = useState<number | undefined>(undefined);
   const [pending, setPending] = useState<string | null>(null);
   const guard = useRef<InFlightGuard | null>(null);
   guard.current ??= inFlightGuard();
@@ -323,6 +328,8 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
   }, [view]);
   const show = (next: View, focus: string): void => {
     focusAfter.current = focus;
+    // A confirm belongs to the card it was opened on: leaving the view drops it (the Live command sets it again after).
+    setLiveAsk(undefined);
     setView(next);
   };
   const back = (): void => {
@@ -354,6 +361,11 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
     handOffComposerText(WRIGHT, handoffLine(playbook));
     navigate(threadHash(WRIGHT));
   };
+  const askDryRunEnable = (playbook: PlaybookListing): void => {
+    // The thread takes this line once when it mounts, into the composer, and sends nothing.
+    handOffComposerText(WRIGHT, dryRunEnableLine(playbook));
+    navigate(threadHash(WRIGHT));
+  };
   const turnOff = (playbook: PlaybookListing): void => {
     void guarded(`off:${playbook.id}`, async () => {
       const outcome = await write(api, "/playbooks/:id/off", { id: playbook.id }, undefined, ["playbooks", "triggers"]);
@@ -383,6 +395,17 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
       return outcome;
     });
   const open = (playbook: PlaybookListing): void => show({ kind: "detail", id: playbook.id }, "[data-pb-back]");
+  /** The ⌘K Live command: the card, with its confirm open. Sends nothing. */
+  const askLive = (playbook: PlaybookListing): void => {
+    show({ kind: "detail", id: playbook.id }, "[data-pb-back]");
+    setLiveAsk(playbook.id);
+  };
+  /** The ⌘K Draft command: `mode draft` at once, from any view; a refusal shows on the card's status line. */
+  const setModeDraft = (playbook: PlaybookListing): void => {
+    void setField(playbook, "mode", "draft").then((outcome) => {
+      if (outcome !== undefined && !outcome.ok) setRunNotice({ id: playbook.id, notice: { tone: "danger", text: `Set mode draft: ${outcome.text}` } });
+    });
+  };
 
   const actions: PlaybookActions = { offline, pending, turnOff, revealTurnOn: (p) => setTurnOn(p.id), runNow, editInEnglish };
 
@@ -395,6 +418,9 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
       editInEnglish,
       editFields: (p) => show({ kind: "edit", id: p.id }, "[data-pb-back]"),
       showHistory: (p) => show({ kind: "history", id: p.id }, "[data-pb-back]"),
+      askLive,
+      setModeDraft,
+      askDryRunEnable,
     },
   );
   useRowKeys(rootRef);
@@ -432,6 +458,11 @@ function PlaybooksView({ api, registry }: { readonly api: StudioBridge; readonly
           onBack={back}
           onEdit={() => show({ kind: "edit", id: current.id }, "[data-pb-back]")}
           onHistory={() => show({ kind: "history", id: current.id }, "[data-pb-back]")}
+          liveAskOpen={liveAsk === current.id}
+          onAskLive={(p) => setLiveAsk(p.id)}
+          onCancelLive={() => setLiveAsk(undefined)}
+          onSet={setField}
+          onAskDryRunEnable={askDryRunEnable}
         />
       );
     } else if (view.kind === "edit") {

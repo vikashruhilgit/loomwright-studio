@@ -23,7 +23,7 @@ import { type KernelPolicyField, type PolicyRow, PolicyEditor, modePolicyRow, po
 import { focusLost } from "../chat/model";
 import type { WriteOutcome } from "../chat/model";
 import { type PlaybookActions, PlaybookCrumb, SetBy } from "./parts";
-import { PLAYBOOKS_TEST_IDS as IDS, NOT_SET, dedupeText, isOn, limitText, safe, safeBlock, valueOrNotSet } from "./model";
+import { PLAYBOOKS_TEST_IDS as IDS, LIVE_EXPLANATION, NOT_SET, dedupeText, isOn, limitText, safe, safeBlock, valueOrNotSet } from "./model";
 
 /** What a read-only field says about changing it. */
 export const READ_ONLY_HINT = "Change this with Edit in English";
@@ -223,7 +223,7 @@ export function PlaybookEdit({ playbook, actions, onSet, onBack }: PlaybookEditP
         <Dialog
           kind="decision"
           title={`Turn on live mode for “${safe(playbook.name)}”?`}
-          description="Live sends outward calls through the approval gate: each is held for your approval instead of recorded as a draft. This writes a new version of the playbook, a draft again until you turn it on."
+          description={LIVE_EXPLANATION}
           action={{
             label: "Set live",
             onAction: () => {

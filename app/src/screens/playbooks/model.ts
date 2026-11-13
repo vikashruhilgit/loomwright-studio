@@ -8,7 +8,7 @@
 // as a React text child, never as markup. Invariant 1 holds in every formatter:
 // an unset policy value reads "not set", never the kernel's default, and a field
 // a version's snapshot does not carry reads "unknown", never a guess.
-import type { Approval, Playbook, PlaybookListing, PlaybookRun, PlaybookVersion, Trigger } from "../../api/contract";
+import type { Approval, Playbook, PlaybookChangeResponse, PlaybookListing, PlaybookRun, PlaybookVersion, Trigger } from "../../api/contract";
 import { approvalSubject } from "../approvals/subject";
 import { printable } from "../approvals/printable";
 import type { ResourceError } from "../../store/store";
@@ -56,6 +56,13 @@ export const PLAYBOOKS_TEST_IDS = {
   owner: "playbook-owner",
   schedulesLink: "playbook-schedules-link",
   kernelBand: "playbooks-kernel-band",
+  modeControl: "playbook-mode",
+  modeLive: "playbook-mode-live",
+  modeDraft: "playbook-mode-draft",
+  modeNeedsEnable: "playbook-mode-needs-enable",
+  modeNote: "playbook-mode-note",
+  modeNextStep: "playbook-mode-next-step",
+  askDryRunEnable: "playbook-ask-dry-run-enable",
 } as const;
 
 export const NOT_SET = "not set";
@@ -92,6 +99,14 @@ export function stateOf(playbook: Pick<Playbook, "status">): PlaybookState {
 
 export function isOn(playbook: Pick<Playbook, "status">): boolean {
   return stateOf(playbook) === "on";
+}
+
+/**
+ * Whether the card may offer a change to Live: the playbook is enabled (the kernel refuses `live` on any other, `live_needs_enable`)
+ * and is not live already, so choosing Live on a live playbook asks and sends nothing.
+ */
+export function liveChoosable(playbook: Pick<Playbook, "status" | "mode">): boolean {
+  return isOn(playbook) && playbook.mode !== "live";
 }
 
 /** The playbooks whose state is `draft`: they wait on the owner. */
@@ -400,6 +415,44 @@ export function versionFieldLabel(field: VersionField): string {
 /** The line "Edit in English" puts in Wright's composer: it names the playbook by id and slug, and the owner finishes and sends it. */
 export function handoffLine(playbook: Pick<Playbook, "id" | "slug">): string {
   return `About playbook ${playbook.id} (${safe(playbook.slug)}): `;
+}
+
+// ---- the Mode control -----------------------------------------------------------------------------------
+
+/** The Mode row's caption on a draft-mode playbook (unchanged wording, pinned by the e2e spec). */
+export const DRAFT_MODE_CAPTION = "outward calls are recorded, never sent";
+
+/** The Mode row's caption on a live-mode playbook. */
+export const LIVE_MODE_CAPTION = "its runs push and comment through the approval gate";
+
+/** The Mode row's caption: what the stored mode does, never what a default would. */
+export function modeCaption(playbook: Pick<Playbook, "mode">): string {
+  return playbook.mode === "live" ? LIVE_MODE_CAPTION : DRAFT_MODE_CAPTION;
+}
+
+/** What turning Live on does: the one text the card's confirm and the Edit view's confirm both show. */
+export const LIVE_EXPLANATION =
+  "Live sends outward calls through the approval gate: each is held for your approval instead of recorded as a draft. This writes a new version of the playbook, a draft again, and that version needs its own dry run and an enable approval before it runs live.";
+
+/** Under the Mode control while the playbook is not enabled: why Live cannot be chosen. */
+export const LIVE_NEEDS_ENABLE_TEXT = "Live can only be chosen on a playbook that is on: it must be enabled (turned on) first.";
+
+/** After Live was set: the next two steps, before the playbook runs live. */
+export const LIVE_NEXT_STEP_TEXT = "This new version is a draft. It needs its own dry run and an enable approval before it runs live.";
+
+/** The label of the hand-off button (and the ⌘K command's wording). */
+export const ASK_DRY_RUN_ENABLE_LABEL = "Ask Wright for the dry run and enable";
+
+/** The card's line after a Set of `mode` the kernel accepted: the version it answered with, and any mirror-file error in its words. */
+export function modeSavedText(answer: PlaybookChangeResponse): string {
+  if (!answer.changed) return `No change: mode already reads that, so the kernel wrote no version (still v${answer.playbook.version}).`;
+  const mirror = answer.mirror_error === undefined ? "" : ` The playbook's mirror file could not be written: ${safe(answer.mirror_error)}`;
+  return `Mode: saved as v${answer.playbook.version}.${mirror}`;
+}
+
+/** The line the dry-run-and-enable hand-off puts in Wright's composer: it names the playbook by id and slug and asks for its dry run, then its enable. The owner sends it. */
+export function dryRunEnableLine(playbook: Pick<Playbook, "id" | "slug">): string {
+  return `About playbook ${playbook.id} (${safe(playbook.slug)}): please run its dry run, then ask for its enable.`;
 }
 
 // ---- the feed ------------------------------------------------------------------------------------------------
