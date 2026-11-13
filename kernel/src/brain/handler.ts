@@ -80,6 +80,7 @@ import { readAgentSettings } from "../agents/settings.js";
 import type { AgentSettingsRefusal } from "../agents/settings.js";
 import { AUTOMATE_RUN_KEY, handleAutomateRun } from "../automate/launch.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
+import { messageOf } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
 import { runStep } from "../loop/steps.js";
 import type { EventContext, EventHandler, EventSessions } from "../loop/types.js";
@@ -126,13 +127,6 @@ function admissionRefusal(err: unknown): { readonly reason: string; readonly ret
   if (!(err instanceof Error) || (err as { code?: unknown }).code !== "admission_refused") return undefined;
   const { reason, retryAt } = err as { reason?: unknown; retryAt?: unknown };
   return { reason: typeof reason === "string" ? reason : "admission_refused", retryAt: typeof retryAt === "string" ? retryAt : null };
-}
-
-function messageOf(err: unknown): string {
-  const text = err instanceof Error ? err.message : String(err);
-  const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
-  const line = text.split("\n", 1)[0] ?? "";
-  return typeof code === "string" && !line.startsWith(code) ? `${code}: ${line}` : line;
 }
 
 /**

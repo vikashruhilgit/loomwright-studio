@@ -26,25 +26,36 @@
 // `AUTOMATE_RUN_POLICY` is a frozen kernel constant. It is never read from, or
 // written into, a charter or a settings file, and the crew member's own policy
 // holds none of it (the crew session has no `Skill` and no shell grant). It
-// grants what `/automate --inline-phases` needs to ask for; it widens neither
-// the rail nor the gate: a push or a GitHub write is still held, a merge is
-// still denied, and the crew member's `never` boundary still applies. The rail
-// still denies any Bash command with a shell metacharacter, which a real run
-// may hit (a known open point, `docs/architecture/automate.md`).
+// grants what `/automate --inline-phases` needs to ask for, as subcommand
+// prefixes (never bare `git` or `gh`: `git config core.fsmonitor`, `git -c`,
+// `gh release`, `gh secret`, `gh workflow` and `gh repo edit` would run or write
+// past the rail in a session that reads untrusted ticket text). It changes
+// neither the rail nor the gate: a push is held, a merge denied, the crew
+// member's `never` boundary applies. What it DOES allow is exactly its list. Two
+// exposures remain, both for the rail and not for this policy: `gh api` is
+// matched on the prefix, so `gh api -X POST ...` is allowed and the rail does not
+// hold it, and `gh pr ready|reopen|update-branch|lock` and `gh issue` writes are
+// not in the rail's outward set. See the open points in
+// `docs/architecture/automate.md`. The rail still denies any Bash command with a
+// shell metacharacter, which a real run may hit (also an open point there).
 //
 // Single drain (invariant 4): the handler starts nothing while Loomwright's run
-// state reads live or cannot be read, and stores why. It is idempotent: ONE work
+// state reads live or cannot be read, or while a run session it started for the
+// same crew member and checkout has not ended (Loomwright's lock lags the start), and stores why. It is idempotent: ONE work
 // step, so a redelivery returns the stored result and starts no second session.
 //
 // This module starts no process, calls no GitHub endpoint and merges nothing:
 // the only effect is one start call on the session manager the loop passes in. The `studio` CLI loads it
-// through the brain's handler, so it imports only types, node `path`, the agent
+// through the brain's handler, so it imports only types, the status helper in
+// `sessions/types.ts`, the loop's `internal.ts` leaf, node `path`, the agent
 // readers and this feature's files: never the Agent SDK, the session manager or
 // `kernel.ts`.
 import { resolve, sep } from "node:path";
 import { getAgent } from "../agents/registry.js";
 import { readAgentSettings } from "../agents/settings.js";
-import type { EventContext } from "../loop/types.js";
+import { isPositiveId, messageOf } from "../loop/internal.js";
+import type { EventContext, EventSessions } from "../loop/types.js";
+import { isTerminalStatus } from "../sessions/types.js";
 import type { ToolPolicy } from "../sessions/types.js";
 import { readRunState, summarizeRuns } from "./run-state.js";
 import { automateInvocation } from "./tickets-to-items.js";
@@ -76,7 +87,15 @@ export interface AutomateRunPayload {
  */
 export const AUTOMATE_RUN_POLICY: ToolPolicy = Object.freeze({
   allowedTools: Object.freeze(["Skill", "Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent", "AskUserQuestion"]),
-  allowedBashPrefixes: Object.freeze(["git", "gh", "ls", "cat", "pwd", "date", "mkdir", "test", "wc", "head", "tail", "grep", "sleep", "jq"]),
+  allowedBashPrefixes: Object.freeze([
+    // git: the subcommands the run uses and the rail reads. A prefix matches on a
+    // word boundary (`git commit` admits `git commit -m x`, not `git commit-tree`).
+    "git status", "git diff", "git log", "git show", "git add", "git commit", "git checkout", "git switch", "git branch", "git fetch",
+    "git push", "git rev-parse", "git worktree", "git stash", "git merge-base", "git ls-files",
+    // gh: reads and the PR / issue work; no release, secret, workflow or repo edit / delete.
+    "gh pr", "gh issue", "gh api", "gh repo view", "gh auth status", "gh run view",
+    "ls", "cat", "pwd", "date", "mkdir", "test", "wc", "head", "tail", "grep", "sleep", "jq",
+  ]),
 });
 
 /** The command the run starts with: Loomwright's `/automate` over the backlog, inline phases, safe mode. */
@@ -84,10 +103,6 @@ export const AUTOMATE_RUN_COMMAND = "/loomwright:automate";
 
 /** What the `automate-run` step stores: the run session's id, or no session and why. */
 export type AutomateRunResult = { readonly session_id: number } | { readonly session_id: null; readonly skipped: string };
-
-function isPositiveId(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
 
 /** The event's `automate_run` payload, checked; a `TypeError` names what is wrong (the loop fails the event, one notify). */
 function automateRunOf(eventId: number, payload: Readonly<Record<string, unknown>>): AutomateRunPayload & { readonly agent: string } {
@@ -115,17 +130,27 @@ function automateRunOf(eventId: number, payload: Readonly<Record<string, unknown
   };
 }
 
-/** An error's first line, prefixed with its code when it has one. */
-function messageOf(err: unknown): string {
-  const text = err instanceof Error ? err.message : String(err);
-  const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
-  const line = text.split("\n", 1)[0] ?? "";
-  return typeof code === "string" && !line.startsWith(code) ? `${code}: ${line}` : line;
-}
-
 /** The prompt the run starts with: `/loomwright:automate --backlog <path> --inline-phases`. Throws `RangeError` for a path that cannot be quoted. */
 export function automateRunPrompt(backlog: string): string {
   return automateInvocation(backlog).replace(/^\/automate /, `${AUTOMATE_RUN_COMMAND} `);
+}
+
+/** The id of a non-terminal session this handler started (an `automate-run` step's stored `session_id`) for `agent` in `checkout`, if any. */
+function liveRunSession(store: EventContext["store"], sessions: EventSessions, agent: string, checkout: string): number | undefined {
+  const rows = store.prepare<[], string>("SELECT result_json FROM work_steps WHERE key LIKE 'event:%:automate-run' AND status = 'done' AND result_json IS NOT NULL ORDER BY id DESC LIMIT 50").pluck().all();
+  for (const json of rows) {
+    let id: unknown;
+    try {
+      id = (JSON.parse(json) as { session_id?: unknown } | null)?.session_id;
+    } catch {
+      continue;
+    }
+    if (!isPositiveId(id)) continue;
+    const row = sessions.getSession(id);
+    if (row === undefined || row.agent !== agent || row.cwd === null || resolve(row.cwd) !== checkout) continue;
+    if (!isTerminalStatus(row.status)) return id;
+  }
+  return undefined;
 }
 
 /**
@@ -173,6 +198,12 @@ async function startRun(ctx: EventContext, run: AutomateRunPayload & { readonly 
   if (!state.ok) return skip(`run_state_unreadable: ${state.reason}`);
   const summary = summarizeRuns(state);
   if (summary.state === "live") return skip(`run_live: ${summary.run_id ?? "run lock held"}`);
+
+  // Loomwright writes its lock after the session starts, so the run state lags: also refuse while a run session
+  // this handler started for the same crew member and checkout is still live. The `automate-run` steps are the
+  // record of those sessions (the sessions table keeps no prompt), and a session that has ended no longer blocks.
+  const live = liveRunSession(store, sessions, run.agent, checkout);
+  if (live !== undefined) return skip(`run_session_live: session ${live}`);
 
   // The session is the step's last effect, so an admission refusal leaves nothing to repeat.
   const handle = await sessions.startSession({

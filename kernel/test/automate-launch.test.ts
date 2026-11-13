@@ -89,7 +89,9 @@ describe("AUTOMATE_RUN_POLICY (AC4)", () => {
     expect(Object.isFrozen(AUTOMATE_RUN_POLICY.allowedTools)).toBe(true);
     expect(Object.isFrozen(AUTOMATE_RUN_POLICY.allowedBashPrefixes)).toBe(true);
     expect([...AUTOMATE_RUN_POLICY.allowedTools].sort()).toEqual(["Agent", "AskUserQuestion", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "Write"]);
-    expect(AUTOMATE_RUN_POLICY.allowedBashPrefixes).toEqual(expect.arrayContaining(["git", "gh"]));
+    expect(AUTOMATE_RUN_POLICY.allowedBashPrefixes).toEqual(expect.arrayContaining(["git status", "git commit", "gh pr"]));
+    // Never the bare programs: they carry config / alias / hook / release / secret / workflow routes past the rail.
+    for (const bare of ["git", "gh"]) expect(AUTOMATE_RUN_POLICY.allowedBashPrefixes, bare).not.toContain(bare);
     // `bash` / `sh` as a prefix would let `bash -c '…'` run anything past the rail.
     for (const shell of ["bash", "sh", "zsh", "env", "xargs", "find", "npx", "npm", "node"]) expect(AUTOMATE_RUN_POLICY.allowedBashPrefixes, shell).not.toContain(shell);
     // The crew member's `never` list is added at the start; the constant carries none, and no mode the manager sets itself.
@@ -109,6 +111,26 @@ describe("AUTOMATE_RUN_POLICY (AC4)", () => {
     expect(classifyToolCall("Bash", { command: "gh pr merge 7 --squash" }, rail)).toEqual({ kind: "deny", reason: "merge_blocked" });
     expect(decideToolUse(AUTOMATE_RUN_POLICY, "AskUserQuestion", {})).toMatchObject({ decision: "allow" });
     expect(ALWAYS_HELD_TOOLS).toContain("AskUserQuestion");
+  });
+
+  it("does not allow git config, git -c, gh release / secret / workflow / repo delete, or git commit-tree (a prefix is matched on a word boundary)", () => {
+    for (const command of [
+      "git config core.fsmonitor touch",
+      "git config --global core.hooksPath /x",
+      "git -c core.fsmonitor=x status",
+      "git commit-tree HEAD",
+      "gh release create v1",
+      "gh secret set X",
+      "gh workflow run x",
+      "gh repo delete x",
+      "gh repo edit x",
+      "gh label delete x",
+    ]) {
+      expect(decideToolUse(AUTOMATE_RUN_POLICY, "Bash", { command }), command).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    }
+    for (const command of ["git commit -m x", "git diff HEAD", "gh pr view 7", "gh repo view o/r"]) {
+      expect(decideToolUse(AUTOMATE_RUN_POLICY, "Bash", { command }), command).toMatchObject({ decision: "allow" });
+    }
   });
 
   it("the prompt is Loomwright's automate over the backlog with inline phases and nothing else (safe mode, no --auto-merge, no --parallel)", () => {
@@ -294,6 +316,28 @@ describe("handleAutomateRun starts one run session (AC3)", () => {
       u.queue();
       await u.loop.tick();
       expect(u.starts).toHaveLength(2);
+    } finally {
+      u.store.close();
+    }
+  });
+
+  it("starts no second run while the first run session is still live (Loomwright has not written its lock yet), and starts one once it ended", async () => {
+    const u = unit();
+    try {
+      const first = u.queue();
+      await u.loop.tick();
+      expect(u.stepOf(first)).toEqual({ session_id: 101 });
+      u.callers.set(101, { id: 101, agent: "mason", status: "running", cwd: u.checkout });
+      const second = u.queue();
+      await u.loop.tick();
+      expect(u.starts).toHaveLength(1);
+      expect(u.stepOf(second)).toEqual({ session_id: null, skipped: "run_session_live: session 101" });
+      // The first run ended: a later event starts a new run.
+      u.callers.set(101, { id: 101, agent: "mason", status: "completed", cwd: u.checkout });
+      const third = u.queue();
+      await u.loop.tick();
+      expect(u.starts).toHaveLength(2);
+      expect(u.stepOf(third)).toEqual({ session_id: 102 });
     } finally {
       u.store.close();
     }

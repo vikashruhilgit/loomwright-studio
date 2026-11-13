@@ -957,20 +957,38 @@ describe("phase 8 live: the summary", () => {
 // far and `result: "interrupted"`. The child sets STUDIO_LIVE=1, so this block (skipped
 // there) never recurses.
 
-/** Collect a child's stdout and resolve with the first match of `re` in what has arrived so far. */
-function waitForOutput(child: ReturnType<typeof spawn>, re: RegExp, timeoutMs: number): Promise<RegExpMatchArray> {
-  return new Promise((resolve, reject) => {
-    let seen = "";
-    const timer = setTimeout(() => reject(new Error(`no ${String(re)} within ${timeoutMs}ms; stdout so far:\n${seen}`)), timeoutMs);
-    child.stdout?.on("data", (chunk: Buffer) => {
-      seen += chunk.toString("utf8");
-      const m = re.exec(seen);
-      if (m !== null) {
-        clearTimeout(timer);
-        resolve(m);
-      }
-    });
+/**
+ * A child's stdout, accumulated from the moment it is spawned. Every wait reads the
+ * WHOLE buffer, so a line that arrived before the wait began (the harness prints the
+ * summary path and the first check line back to back, often in one chunk) is never
+ * missed: a per-wait buffer attached after the first line loses it, and the second
+ * wait then times out on empty output, which is what CI showed.
+ */
+function collectOutput(child: ReturnType<typeof spawn>): { waitFor(re: RegExp, timeoutMs: number): Promise<RegExpMatchArray> } {
+  let seen = "";
+  const waiters = new Set<() => void>();
+  child.stdout?.on("data", (chunk: Buffer) => {
+    seen += chunk.toString("utf8");
+    for (const wake of [...waiters]) wake();
   });
+  return {
+    waitFor: (re, timeoutMs) =>
+      new Promise((resolve, reject) => {
+        const check = (): boolean => {
+          const m = re.exec(seen);
+          if (m === null) return false;
+          clearTimeout(timer);
+          waiters.delete(check);
+          resolve(m);
+          return true;
+        };
+        const timer = setTimeout(() => {
+          waiters.delete(check);
+          reject(new Error(`no ${String(re)} within ${timeoutMs}ms; stdout so far:\n${seen}`));
+        }, timeoutMs);
+        if (!check()) waiters.add(check as () => void);
+      }),
+  };
 }
 
 describe.skipIf(LIVE)("phase 8 live: the harness reports as it runs (AC10, AC11)", () => {
@@ -1003,12 +1021,13 @@ describe.skipIf(LIVE)("phase 8 live: the harness reports as it runs (AC10, AC11)
         },
       );
       const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+      const output = collectOutput(child);
       let summaryPath = "";
       try {
         // Both lines arrive while the child is still running (it waits up to five minutes for the checks).
-        const pathLine = await waitForOutput(child, /phase-8-exit-live summary: (\S+) \(run start/, 60_000);
+        const pathLine = await output.waitFor(/phase-8-exit-live summary: (\S+) \(run start/, 60_000);
         summaryPath = pathLine[1] as string;
-        await waitForOutput(child, /phase-8-exit-live \S+ pr_states:\S+ merged_by_gate:\S+ no_kernel_merge:\S+/, 30_000);
+        await output.waitFor(/phase-8-exit-live \S+ pr_states:\S+ merged_by_gate:\S+ no_kernel_merge:\S+/, 30_000);
         expect(child.exitCode).toBeNull();
         // The summary is already on disk, written on the first check change.
         const live = JSON.parse(readFileSync(summaryPath, "utf8")) as Record<string, unknown>;

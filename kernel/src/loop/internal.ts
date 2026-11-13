@@ -23,6 +23,19 @@ export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** An error's first line, prefixed with its code when it has one. */
+export function messageOf(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err);
+  const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+  const line = text.split("\n", 1)[0] ?? "";
+  return typeof code === "string" && !line.startsWith(code) ? `${code}: ${line}` : line;
+}
+
+/** A positive safe integer (a row id). */
+export function isPositiveId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
 export function clip(text: string, max: number = MAX_EVENT_TEXT): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
