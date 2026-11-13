@@ -1084,6 +1084,26 @@ describe("next fires and the dedupe-key preview", () => {
   });
 });
 
+describe("the summary names the calls a real run would be refused (item 20c)", () => {
+  const base = { run_id: 4, version: 2, status: "done" as const, would_do: [], next_fires: [], dedupe_key: null, tokens: 7 };
+
+  it("nothing refused (omitted or empty): the summary is exactly as it was", () => {
+    const plain = formatDryRunSummary(base);
+    expect(formatDryRunSummary({ ...base, refused: [] })).toBe(plain);
+    expect(plain).not.toContain("refused");
+    expect(plain.split("\n")).toHaveLength(1);
+  });
+
+  it("each refused call is named after what the run would do, bounded to six then 'and N more', still one paragraph", () => {
+    const calls = Array.from({ length: 8 }, (_, i) => `Job ${i} (run skills)`);
+    const text = formatDryRunSummary({ ...base, refused: calls });
+    expect(text).toContain("it would do nothing that acts. A dry run never reaches them, but a real run would be refused: Job 0 (run skills); ");
+    expect(text).toContain("Job 5 (run skills); and 2 more. The enable is refused (charter_gap) unless the owner enables it anyway. Next fires");
+    expect(text).not.toContain("Job 6");
+    expect(text.split("\n")).toHaveLength(1);
+  });
+});
+
 describe("enablePlaybook", () => {
   it("enables a draft at exactly its version, with playbook_enabled by the owner; a moved version or a non-draft is refused and nothing is written", async () => {
     const h = await bootManager();
