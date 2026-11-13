@@ -26,6 +26,7 @@ import { isPaused } from "./console/pause.js";
 import { PHASE1_RESERVED, mergeContributions } from "./features/contribution.js";
 import type { ContributedTool, FeatureContribution, MergedContributions } from "./features/contribution.js";
 import { SHIPPED_CONTRIBUTIONS } from "./features/index.js";
+import { loadCommandNeeds } from "./features/job-needs.js";
 import { mcpProxyTools } from "./integrations/mcp/tools.js";
 import type { McpToolGrants } from "./integrations/mcp/tools.js";
 import { toolsForConnectors } from "./integrations/tool-filter.js";
@@ -349,12 +350,16 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     ...PHASE1_RESERVED,
     handlerKinds: Object.keys(options.handlers ?? {}),
   });
+  // The tool catalogue of the composition's own tools, unfiltered: every session's drafting tools describe every tool a crew member can be granted.
+  // The active Loomwright install's contract is read once, fail-safe (any error is the pinned table), for the needs of the commands the jobs reach.
+  const toolCatalogue = kernelToolCatalogue(
+    contributions.tools,
+    loadCommandNeeds({ configured: options.sessions?.loomwrightPath, installedPluginsPath: options.sessions?.installedPluginsPath }),
+  );
   // Built here too: a tool's applier outside KERNEL_APPLIED_ACTIONS refuses the start before the store opens.
-  const approvalApplier = approvalApplierOf(contributions.tools);
+  const approvalApplier = approvalApplierOf(contributions.tools, undefined, toolCatalogue);
   // Every tool's shape must list through the Agent SDK: one that cannot empties every session's tools/list.
   await assertKernelToolsList(contributions.tools);
-  // The tool catalogue of the composition's own tools, unfiltered: every session's drafting tools describe every tool a crew member can be granted.
-  const toolCatalogue = kernelToolCatalogue(contributions.tools);
 
   const store = (deps.openStore ?? ((dir: string) => new Store({ dataDir: dir })))(dataDir);
   let sessions: SessionManager | undefined;
@@ -432,7 +437,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
           };
         },
         // The gate's pre-hold check, from the same contributed tools the server registers (it can only narrow).
-        heldToolCheck: heldToolCheckOf(contributions.tools, (sessionId) => ({ store, sessions: manager, sessionId, now, ...githubOf })),
+        heldToolCheck: heldToolCheckOf(contributions.tools, (sessionId) => ({ store, sessions: manager, sessionId, now, ...githubOf }), toolCatalogue),
       },
       { now, ...deps.sessionDeps },
     );

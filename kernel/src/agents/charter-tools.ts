@@ -70,7 +70,7 @@
 // `../brain/settings.js`, `../approvals/store.js` (a constant),
 // `../sessions/policy.js` (`NEVER_CATEGORIES`) and this
 // feature's own modules (`./charter-readiness.js` included, with its CLI-safe
-// imports `../automate/checkout.js` and `../protected-paths.js`): never the Agent SDK,
+// imports `../automate/checkout.js`, `../features/job-needs.js` and `../protected-paths.js`): never the Agent SDK,
 // the session manager or `kernel.ts` (`kernel/test/feature-seams.test.ts`).
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -386,7 +386,7 @@ const createTool = defineTool({
   description:
     "Ask the owner to create a crew member from a charter you draft from the owner's words: {id, display_name, avatar: {shape, hue}, persona, duties, boundaries, model, effort?, permission_mode, tool_policy: {allowedTools, allowedBashPrefixes, never}, limits?: {tokens_per_day?, sessions_at_once?, delegation_depth?}, workspaces, connectors?: [\"github\"]}. " +
     "Write each duty as {\"text\": \"<the duty>\", \"jobs\": [<the catalogue job ids that do it>]} ([] when it needs no kernel tool), and grant every tool of each job a duty names; a duty written as a bare line is refused. " +
-    "Before the owner sees it, the kernel checks that every duty's jobs are granted and every granted job has what it needs (a workspace that is a git checkout with a GitHub remote for a code job, a connector grant); anything open is shown to the owner and told to you after the held reason, with the fix to propose: say it to the owner. " +
+    "Before the owner sees it, the kernel checks that every duty's jobs are granted and every granted job has what it needs (a workspace that is a git checkout with a GitHub remote for a code job, a connector grant, the Claude tools and shell commands its work needs); anything open is shown to the owner and told to you after the held reason, with the fix to propose: say it to the owner. " +
     "When the owner asks for a crew member, draft it straight into the held approval with this call and refine it with an update (kernel_agent_update, once the member exists); never leave a proposal only in chat text. " +
     "Every value the owner did not state is your proposal: say so to the owner. Put each \"never …\" the owner said into both the prose boundaries and the enforced tool_policy.never (only never is enforced; boundaries are guidance). " +
     "Propose limits and limits.delegation_depth, and never let the owner think they are already set: an unset limit is no limit. " +

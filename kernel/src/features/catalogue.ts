@@ -25,18 +25,57 @@
 import type { ConnectorKind } from "../integrations/types.js";
 import { PHASE1_DESCRIPTIONS } from "../tools/phase1-descriptions.js";
 import type { ContributedTool } from "./contribution.js";
+import type { LoomwrightCommandNeedsTable } from "./job-needs.js";
 
-/** One job's definition: the plain label the owner reads, and what the job needs beyond its tools. */
-export interface ToolJobDefinition {
+/** A Claude tool or a Bash prefix a job needs, with the plain words for it (never the raw name on a readiness line). */
+export interface NeedLabel {
+  readonly name: string;
   readonly label: string;
+}
+
+/** A connector grant a job needs beyond what its tools declare: `write` for the write level. */
+export interface ConnectorNeedDeclaration {
+  readonly kind: ConnectorKind;
+  readonly write: boolean;
+}
+
+/**
+ * What a job's work needs, beyond its kernel tools (those are the catalogue's
+ * tools of the job, never listed again). `loomwrightCommands` are the
+ * invocations of the Loomwright commands it reaches, keyed as
+ * `LOOMWRIGHT_COMMAND_NEEDS` is (`./job-needs.ts`); their needs are resolved
+ * there (`resolveJobNeeds`), contract first.
+ */
+export interface JobNeedsDeclaration {
+  readonly claudeTools: readonly NeedLabel[];
+  readonly bashPrefixes: readonly NeedLabel[];
+  readonly connectors: readonly ConnectorNeedDeclaration[];
   /**
    * The job works in a copy of a repo: its tools find the member's checkout
    * through `../automate/checkout.ts` (`checkoutOf`, refused `no_workspace`
    * without one). The charter readiness check (`../agents/charter-readiness.ts`)
-   * reads it. A job's connector needs stay on its tools
-   * (`requiresConnector` / `requiresConnectorLevel`), read from the catalogue.
+   * reads it through `jobNeedsWorkspace`. A job's connector needs stay on its
+   * tools (`requiresConnector` / `requiresConnectorLevel`), read from the catalogue.
    */
-  readonly needsWorkspace: boolean;
+  readonly workspace: boolean;
+  readonly loomwrightCommands: readonly string[];
+}
+
+/** One job's definition: the plain label the owner reads, and what the job needs beyond its tools. */
+export interface ToolJobDefinition {
+  readonly label: string;
+  readonly needs: JobNeedsDeclaration;
+}
+
+/** A job's needs declaration (frozen). A job that needs nothing beyond its tools still declares it: a test fails otherwise. */
+function needs(declared: Partial<JobNeedsDeclaration> = {}): JobNeedsDeclaration {
+  return Object.freeze({
+    claudeTools: Object.freeze([...(declared.claudeTools ?? [])]),
+    bashPrefixes: Object.freeze([...(declared.bashPrefixes ?? [])]),
+    connectors: Object.freeze([...(declared.connectors ?? [])]),
+    workspace: declared.workspace ?? false,
+    loomwrightCommands: Object.freeze([...(declared.loomwrightCommands ?? [])]),
+  });
 }
 
 /**
@@ -48,18 +87,21 @@ export interface ToolJobDefinition {
  * Frozen.
  */
 export const TOOL_JOB_DEFINITIONS = Object.freeze({
-  automate_tickets: Object.freeze({ label: "Hand tickets to /automate", needsWorkspace: true }),
-  triage_pr_comments: Object.freeze({ label: "Triage PR comments", needsWorkspace: true }),
-  ask_for_merge: Object.freeze({ label: "Ask for a merge", needsWorkspace: true }),
-  read_pr: Object.freeze({ label: "Read a PR", needsWorkspace: false }),
-  comment_on_issues: Object.freeze({ label: "Comment on issues", needsWorkspace: false }),
-  manage_playbooks: Object.freeze({ label: "Manage playbooks", needsWorkspace: false }),
-  manage_schedules: Object.freeze({ label: "Manage schedules", needsWorkspace: false }),
-  manage_crew: Object.freeze({ label: "Manage the crew", needsWorkspace: false }),
-  message_agents: Object.freeze({ label: "Message another agent", needsWorkspace: false }),
-  ask_for_approval: Object.freeze({ label: "Ask the owner to approve an action", needsWorkspace: false }),
-  notify_owner: Object.freeze({ label: "Notify the owner", needsWorkspace: false }),
-  general: Object.freeze({ label: "General", needsWorkspace: false }),
+  // D44: the kernel starts `/loomwright:automate` under its own frozen policy, so the job needs no Claude tool or shell prefix.
+  automate_tickets: Object.freeze({ label: "Hand tickets to /automate", needs: needs({ workspace: true, loomwrightCommands: ["/loomwright:automate"] }) }),
+  // D44-open: the crew session runs `/loomwright:review-pr` itself (the kernel does not launch this route yet).
+  triage_pr_comments: Object.freeze({ label: "Triage PR comments", needs: needs({ workspace: true, loomwrightCommands: ["/loomwright:review-pr"] }) }),
+  // D44-open: the crew session runs `/loomwright:automate --merge-parked` itself.
+  ask_for_merge: Object.freeze({ label: "Ask for a merge", needs: needs({ workspace: true, loomwrightCommands: ["/loomwright:automate --merge-parked"] }) }),
+  read_pr: Object.freeze({ label: "Read a PR", needs: needs() }),
+  comment_on_issues: Object.freeze({ label: "Comment on issues", needs: needs() }),
+  manage_playbooks: Object.freeze({ label: "Manage playbooks", needs: needs() }),
+  manage_schedules: Object.freeze({ label: "Manage schedules", needs: needs() }),
+  manage_crew: Object.freeze({ label: "Manage the crew", needs: needs() }),
+  message_agents: Object.freeze({ label: "Message another agent", needs: needs() }),
+  ask_for_approval: Object.freeze({ label: "Ask the owner to approve an action", needs: needs() }),
+  notify_owner: Object.freeze({ label: "Notify the owner", needs: needs() }),
+  general: Object.freeze({ label: "General", needs: needs() }),
 } as const satisfies Record<string, ToolJobDefinition>);
 
 /** `TOOL_JOB_DEFINITIONS`' labels, by id: the shape every reader of `TOOL_JOBS` reads. */
@@ -77,9 +119,9 @@ export const TOOL_JOBS = Object.freeze(
 /** A job's id (a key of `TOOL_JOBS`). */
 export type ToolJob = keyof typeof TOOL_JOBS;
 
-/** Whether job `job` works in a copy of a repo (`ToolJobDefinition.needsWorkspace`). */
+/** Whether job `job` works in a copy of a repo (`JobNeedsDeclaration.workspace`). */
 export function jobNeedsWorkspace(job: ToolJob): boolean {
-  return TOOL_JOB_DEFINITIONS[job].needsWorkspace;
+  return TOOL_JOB_DEFINITIONS[job].needs.workspace;
 }
 
 /** Every job id, in `TOOL_JOBS` order. Frozen. */
@@ -124,6 +166,14 @@ export interface CatalogueJob {
 export interface ToolCatalogue {
   readonly tools: readonly CatalogueTool[];
   readonly jobs: readonly CatalogueJob[];
+  /**
+   * The needs of the Loomwright commands the jobs reach, resolved once when the
+   * catalogue is built (the active install's contract where it declares them,
+   * else the pinned table: `commandNeedsTable` in `./job-needs.ts`). Absent
+   * when the builder was given none; `resolveJobNeeds` then uses the pinned
+   * table, and `catalogueText` names a command without its needs.
+   */
+  readonly commandNeeds?: LoomwrightCommandNeedsTable;
 }
 
 /** `text` on one line: every run of whitespace as one space. */
@@ -198,10 +248,11 @@ export class ToolCatalogueError extends Error {
  * the composition's merged tools (`MergedContributions.tools`): an MCP
  * connector's proxy tools are built per launch and are connector grants, not
  * catalogue entries, so the composition never passes them. A contributed tool
- * with no `job` is under `general`. Throws `ToolCatalogueError` for a name
+ * with no `job` is under `general`. `commandNeeds` rides on the result (see
+ * `ToolCatalogue.commandNeeds`). Throws `ToolCatalogueError` for a name
  * listed twice, a `job` outside `TOOL_JOBS` or an empty purpose.
  */
-export function buildToolCatalogue(contributed: readonly CataloguedTool[]): ToolCatalogue {
+export function buildToolCatalogue(contributed: readonly CataloguedTool[], commandNeeds?: LoomwrightCommandNeedsTable): ToolCatalogue {
   const phase1: CataloguedTool[] = Object.entries(PHASE1_DESCRIPTIONS).map(([name, description]) => ({ name, description }));
   const seen = new Set<string>();
   const tools: CatalogueTool[] = [];
@@ -226,7 +277,7 @@ export function buildToolCatalogue(contributed: readonly CataloguedTool[]): Tool
     const of = tools.filter((t) => t.job === id);
     return of.length === 0 ? [] : [Object.freeze({ id, label: TOOL_JOBS[id], tools: Object.freeze(of) })];
   });
-  return Object.freeze({ tools: Object.freeze(tools), jobs: Object.freeze(jobs) });
+  return Object.freeze({ tools: Object.freeze(tools), jobs: Object.freeze(jobs), ...(commandNeeds === undefined ? {} : { commandNeeds }) });
 }
 
 /** The tool named `name` (without the `mcp__kernel__` prefix) in `catalogue`, if it has one. */
@@ -311,10 +362,49 @@ function connectorNote(t: CatalogueTool): string {
   return t.requiresConnectorLevel === "write" ? ` [needs the ${t.requiresConnector} connector's write grant]` : ` [needs the ${t.requiresConnector} connector grant]`;
 }
 
+/** `a`, `a and b`, `a, b and c` (the one list joiner of the catalogue, the fit and the charter readiness). */
+export function andList(items: readonly string[]): string {
+  return items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1) as string}`;
+}
+
+/**
+ * A job's declared needs as the lines `catalogueText` puts after its tools
+ * (AC5): `  needs: …` (its kernel tools above, then the connector access, the
+ * Claude tools and shell commands and the workspace the job itself needs, each
+ * owner-only one marked) and one `  reaches …` line per Loomwright command the
+ * job reaches. Plain words, never a raw tool or prefix name.
+ */
+function needsLines(job: CatalogueJob, table: LoomwrightCommandNeedsTable | undefined): string[] {
+  const declared = TOOL_JOB_DEFINITIONS[job.id].needs;
+  const owner = " (only the owner can grant it)";
+  const parts = [
+    "its kernel tools above",
+    ...[...connectorNeeds(job.tools), ...declared.connectors].map((n) => `${connectorAccessText(n)}${owner}`),
+    ...declared.claudeTools.map((n) => n.label),
+    ...declared.bashPrefixes.map((n) => n.label),
+    ...(declared.workspace ? [`a copy of a repo to work in${owner}`] : []),
+  ];
+  const lines = [`  needs: ${parts.join("; ")}`];
+  for (const invocation of declared.loomwrightCommands) {
+    const row = table?.[invocation];
+    if (row === undefined) lines.push(`  reaches ${invocation}`);
+    else if (row.launch === "kernel") {
+      lines.push(`  reaches ${invocation}: the kernel starts it under its own fixed policy (D44), so it adds no Claude tool or shell command to a charter; never draft one for it`);
+    } else {
+      const asks = andList([...row.claudeTools, ...row.bashPrefixes].map((n) => n.label));
+      lines.push(
+        `  reaches ${invocation}: the crew session runs it itself and it needs ${asks}, which no charter should hold (D44: the kernel does not launch this route yet); propose no grant for it, the owner can enable the playbook anyway`,
+      );
+    }
+  }
+  return lines;
+}
+
 /**
  * The catalogue as the text the drafting tools' descriptions carry: how a
  * charter grants a job, then each job (label and id) with its tools and
- * purposes. Plain prose (no schema), one job and one tool per line.
+ * purposes, and after its tools what the job needs beyond them (`needsLines`).
+ * Plain prose (no schema), one job and one tool per line.
  */
 export function catalogueText(catalogue: ToolCatalogue): string {
   return [
@@ -323,7 +413,12 @@ export function catalogueText(catalogue: ToolCatalogue): string {
     "Tell the owner the jobs in plain words, never the tool names.",
     "A tool marked [needs the … grant] is offered only to a member holding that connector grant. The grant is the owner's: a create may propose it in connectors, the owner sets the write level in Team, and kernel_agent_update never changes it.",
     `${TOOL_JOBS.triage_pr_comments} also needs ${TOOL_JOBS.read_pr}, to read the comments.`,
-    ...catalogue.jobs.flatMap((j) => [`Job ${j.id} "${j.label}":`, ...j.tools.map((t) => `- ${t.name}: ${t.purpose}${connectorNote(t)}`)]),
+    "Each job's `needs:` line says what its work needs beyond its tools. Only the owner can grant GitHub write, a connector, live mode and a workspace: name them to the owner as their step, never as a change you draft. A `reaches` line for a route the crew session runs itself names a Skill or shell need no charter should hold: propose no grant for it.",
+    ...catalogue.jobs.flatMap((j) => [
+      `Job ${j.id} "${j.label}":`,
+      ...j.tools.map((t) => `- ${t.name}: ${t.purpose}${connectorNote(t)}`),
+      ...needsLines(j, catalogue.commandNeeds),
+    ]),
   ].join("\n");
 }
 

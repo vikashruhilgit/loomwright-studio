@@ -62,6 +62,8 @@ import { fakeMsg, fakeSessions, makePluginDir, stubProvider } from "./session-fa
 import type { FakeCall } from "./session-fakes.js";
 
 const K = "mcp__kernel__";
+/** The jobs whose Loomwright command the crew session runs itself (D44-open): a charter granting their tools always has permission lines readiness flags (item 20c). */
+const CREW_RUN_JOBS: readonly ToolJob[] = ["triage_pr_comments", "ask_for_merge"];
 const CREATE = `${K}${AGENT_CREATE_TOOL_NAME}`;
 const UPDATE = `${K}${AGENT_UPDATE_TOOL_NAME}`;
 const LIST = `${K}${AGENT_LIST_TOOL_NAME}`;
@@ -1142,14 +1144,15 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     const readPr = catalogue.jobs.find((j) => j.id === "read_pr")?.tools.map((t) => `${K}${t.name}`) ?? [];
     expect(readPr.length).toBeGreaterThan(0);
     // Every kernel tool but General's (the readiness block above the job lines needs the room they would take).
-    const every = catalogue.tools.filter((t) => t.job !== "general").map((t) => `${K}${t.name}`);
+    // (Not the two crew-run command jobs': each adds readiness lines naming the permissions only the owner can weigh, item 20c, and this case is about the room the job lines take.)
+    const every = catalogue.tools.filter((t) => t.job !== "general" && !CREW_RUN_JOBS.includes(t.job)).map((t) => `${K}${t.name}`);
     expect(createAgent(h.store, dataDir, charter({ tool_policy: { allowedTools: readPr, allowedBashPrefixes: [], never: [] } }), { by: "owner" }, clock.at).ok).toBe(true);
     const w = await h.session("wright", WRIGHT_POLICY);
     const sha256 = (JSON.parse((await w.tool(AGENT_LIST_TOOL_NAME, {})).content[0]?.text ?? "{}") as { agents: ListEntry[] }).agents.find((a) => a.id === "mason")?.sha256 as string;
     const policy = { allowedTools: every, allowedBashPrefixes: [] };
     expect((await w.gate(UPDATE, { id: "mason", changes: { tool_policy: policy }, expected_sha256: sha256, idempotency_key: "u1" })).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
     const shown = heldDisplay(h.store);
-    const jobLines = catalogue.jobs.filter((j) => j.id !== "general").map((j) => `job: ${j.label}${j.id === "read_pr" ? "" : DISPLAY_ADDED}`);
+    const jobLines = catalogue.jobs.filter((j) => j.id !== "general" && !CREW_RUN_JOBS.includes(j.id)).map((j) => `job: ${j.label}${j.id === "read_pr" ? "" : DISPLAY_ADDED}`);
     expect(plain(shown)).toEqual([
       `Update crew member mason ("Mason"), settings sha256 ${sha256.slice(0, 12)}, proposed by Wright`,
       // The second form: every job by its label, Read a PR kept and every other job added …
@@ -1163,6 +1166,28 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     expect(shown.replace(jobLines.join("\n"), fullBlock).length).toBeGreaterThan(MAX_APPROVAL_DISPLAY);
   });
 
+  it("a member holding both crew-run command jobs (the permission lines no charter can clear): an update asking for little is held within the display bound, and one widening it past the bound is asked for less", async () => {
+    const h = await bootKernel();
+    const catalogue = buildToolCatalogue(SHIPPED_TOOLS);
+    const crewTools = catalogue.tools.filter((t) => CREW_RUN_JOBS.includes(t.job)).map((t) => `${K}${t.name}`);
+    expect(crewTools.length).toBeGreaterThan(0);
+    expect(createAgent(h.store, dataDir, charter({ tool_policy: { allowedTools: crewTools, allowedBashPrefixes: [], never: [] } }), { by: "owner" }, clock.at).ok).toBe(true);
+    const w = await h.session("wright", WRIGHT_POLICY);
+    const sha256 = async () =>
+      (JSON.parse((await w.tool(AGENT_LIST_TOOL_NAME, {})).content[0]?.text ?? "{}") as { agents: ListEntry[] }).agents.find((a) => a.id === "mason")?.sha256 as string;
+    // The fixed lines are there for both jobs, as a flag no charter change clears.
+    const small = await w.gate(UPDATE, { id: "mason", changes: { display_name: "Mason II" }, expected_sha256: await sha256(), idempotency_key: "u1" });
+    expect(small.permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+    const shown = heldDisplay(h.store);
+    for (const label of CREW_RUN_JOBS.map((j) => catalogue.jobs.find((x) => x.id === j)?.label as string)) expect(shown).toContain(`for ${label}: no charter should grant it`);
+    expect(shown.length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+    // Too long for the bound with those lines in: refused with the usual ask-for-less, never held over the bound.
+    const workspaces = Array.from({ length: 16 }, (_, i) => join(tmp, "work", `${"w".repeat(200)}-${String(i).padStart(2, "0")}`));
+    const wide = await w.gate(UPDATE, { id: "mason", changes: { workspaces }, expected_sha256: await sha256(), idempotency_key: "u2" });
+    expect(wide.permissionDecision).toBe("deny");
+    expect(wide.permissionDecisionReason).toContain("ask for less at once");
+  });
+
   it("the floor counts the kept tools' job lines in their label-only form: a member granted every kernel tool asking for 16 long workspaces is asked for less (never given the owner's remedy), and two of them are held", async () => {
     const h = await bootKernel();
     const catalogue = buildToolCatalogue(SHIPPED_TOOLS);
@@ -1171,7 +1196,7 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     const w = await h.session("wright", WRIGHT_POLICY);
     const sha256 = async () =>
       (JSON.parse((await w.tool(AGENT_LIST_TOOL_NAME, {})).content[0]?.text ?? "{}") as { agents: ListEntry[] }).agents.find((a) => a.id === "mason")?.sha256 as string;
-    const workspaces = Array.from({ length: 16 }, (_, i) => join(tmp, "work", `${"w".repeat(200)}-${String(i).padStart(2, "0")}`));
+    const workspaces = Array.from({ length: 16 }, (_, i) => join(tmp, "work", `${"w".repeat(120)}-${String(i).padStart(2, "0")}`));
     const many = await w.gate(UPDATE, { id: "mason", changes: { workspaces }, expected_sha256: await sha256(), idempotency_key: "u1" });
     expect(many.permissionDecision).toBe("deny");
     expect(many.permissionDecisionReason).toContain("; ask for less at once");
@@ -1206,8 +1231,8 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     const floorReadiness = cleared.items.map((i) =>
       i.subject === "workspace" ? `${READINESS_READY_PREFIX}copy of a repo for ${codeJobs.slice(0, -1).join(", ")} and ${codeJobs.at(-1) as string}: works in a/b at /` : i.line,
     );
-    // 5 workspaces of ~150 characters (room for the readiness block) and one padded one: the padding moves the display one character at a time.
-    const old = (pad: number) => [...Array.from({ length: 5 }, (_, i) => join(tmp, "work", `${"w".repeat(140)}-${String(i).padStart(2, "0")}`)), join(tmp, "work", "p".repeat(pad))];
+    // 5 workspaces of ~90 characters (room for the readiness block) and one padded one: the padding moves the display one character at a time.
+    const old = (pad: number) => [...Array.from({ length: 5 }, (_, i) => join(tmp, "work", `${"w".repeat(80)}-${String(i).padStart(2, "0")}`)), join(tmp, "work", "p".repeat(pad))];
     const head = `Update crew member pinx ("Mason"), settings sha256 0123456789ab, proposed by Wright`;
     const smallest = (pad: number) => [head, ...cleared.lines, ...jobLines, `workspaces: ${JSON.stringify(old(pad))} → []`, enforced].join("\n");
     const floor = (pad: number) => [head, READINESS_HEADING, ...floorReadiness, ...jobLines, `workspaces: ${JSON.stringify(old(pad))} → []`, enforced].join("\n");
@@ -1274,7 +1299,9 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
 
     // Through the hold: a member granted every kernel tool but one of a kept job, given every tool, is shown the label-only form with that job marked.
     const h = await bootKernel();
-    const every = catalogue.tools.map(name);
+    // (Not the crew-run command jobs' tools: each adds readiness lines naming permissions only the owner can weigh, item 20c, and this case is about the job lines.)
+    const shownJobs = catalogue.jobs.filter((j) => !CREW_RUN_JOBS.includes(j.id));
+    const every = catalogue.tools.filter((t) => !CREW_RUN_JOBS.includes(t.job)).map(name);
     const missing = rest[0] as string;
     expect(createAgent(h.store, dataDir, charter({ tool_policy: { allowedTools: every.filter((t) => t !== missing), allowedBashPrefixes: [], never: [] } }), { by: "owner" }, clock.at).ok).toBe(true);
     const w = await h.session("wright", WRIGHT_POLICY);
@@ -1282,7 +1309,7 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     expect((await w.gate(UPDATE, { id: "mason", changes: { tool_policy: { allowedTools: every, allowedBashPrefixes: [] } }, expected_sha256: sha256, idempotency_key: "u1" })).permissionDecisionReason).toMatch(
       /^approval_required: held as approval 1;/,
     );
-    expect(plain(heldDisplay(h.store)).slice(1, 1 + catalogue.jobs.length)).toEqual(catalogue.jobs.map((j) => `job: ${j.label}${j === multi ? DISPLAY_GAINS_TOOLS : ""}`));
+    expect(plain(heldDisplay(h.store)).slice(1, 1 + shownJobs.length)).toEqual(shownJobs.map((j) => `job: ${j.label}${j === multi ? DISPLAY_GAINS_TOOLS : ""}`));
   });
 });
 

@@ -36,7 +36,8 @@ import { AUTOMATE_RUN_COMMAND, AUTOMATE_RUN_KEY, AUTOMATE_RUN_POLICY, automateRu
 import type { AutomateRunPayload } from "../src/automate/launch.js";
 import { decideApproval } from "../src/approvals/store.js";
 import { brainContribution, brainMessageHandler, defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
-import { KERNEL_TOOL_PREFIX, TOOL_JOB_DEFINITIONS, buildToolCatalogue } from "../src/features/catalogue.js";
+import { KERNEL_TOOL_PREFIX, TOOL_JOB_DEFINITIONS, allowedToolsForJobs, buildToolCatalogue } from "../src/features/catalogue.js";
+import { resolveJobNeeds } from "../src/features/job-needs.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { FeatureContribution } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
@@ -148,9 +149,16 @@ describe("the catalogue grants the ticket and triage jobs only kernel tools (AC5
   it("'Hand tickets to /automate' and 'Triage PR comments' list only mcp__kernel__ tools: no Skill, no shell prefix, no bare tool", () => {
     expect(TOOL_JOB_DEFINITIONS.automate_tickets.label).toBe("Hand tickets to /automate");
     expect(TOOL_JOB_DEFINITIONS.triage_pr_comments.label).toBe("Triage PR comments");
-    // A job is a label and a workspace flag: it carries no tool, Skill or Bash prefix of its own.
-    expect(Object.keys(TOOL_JOB_DEFINITIONS.automate_tickets).sort()).toEqual(["label", "needsWorkspace"]);
-    expect(Object.keys(TOOL_JOB_DEFINITIONS.triage_pr_comments).sort()).toEqual(["label", "needsWorkspace"]);
+    // D44: the ticket job's own needs hold no Skill and no shell prefix (the kernel starts /automate under AUTOMATE_RUN_POLICY, never a crew need).
+    const needs = resolveJobNeeds("automate_tickets", catalogue);
+    expect(needs.claudeTools.map((n) => n.name)).not.toContain("Skill");
+    expect(needs.claudeTools).toEqual([]);
+    expect(needs.bashPrefixes).toEqual([]);
+    expect(needs.commands.map((c) => [c.invocation, c.launch])).toEqual([["/loomwright:automate", "kernel"]]);
+    // A job's declaration never adds a Claude tool or Bash prefix to a drafted charter: only kernel tools.
+    for (const id of ["automate_tickets", "triage_pr_comments"] as const) {
+      expect(allowedToolsForJobs(catalogue, [id]).every((t) => t.startsWith(K)), id).toBe(true);
+    }
     for (const id of ["automate_tickets", "triage_pr_comments"] as const) {
       const granted = (catalogue.jobs.find((j) => j.id === id)?.tools ?? []).map((t) => `${K}${t.name}`);
       expect(granted.length, id).toBeGreaterThan(0);
