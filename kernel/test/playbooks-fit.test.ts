@@ -24,8 +24,8 @@ import { listAgents } from "../src/agents/registry.js";
 import { agentSettingsPath, readAgentSettings } from "../src/agents/settings.js";
 import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
 import type { AppliedApproval } from "../src/approvals/store.js";
-import { TOOL_JOB_IDS, buildToolCatalogue, jobGranted } from "../src/features/catalogue.js";
-import type { ToolCatalogue } from "../src/features/catalogue.js";
+import { TOOL_JOB_IDS, allowedToolsForJobs, buildToolCatalogue, jobGranted } from "../src/features/catalogue.js";
+import type { ToolCatalogue, ToolJob } from "../src/features/catalogue.js";
 import type { ContributedTool } from "../src/features/contribution.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { enableApproved } from "../src/playbooks/enable.js";
@@ -48,13 +48,19 @@ const DAILY = { kind: "cron", spec: "0 9 * * 1-5", tz: "Asia/Kolkata" };
 /** The four read-only GitHub PR tools: the developer the phase 8 live run's setup step 6 produced. */
 const READ_ONLY = ["kernel_github_pr_get", "kernel_github_pr_files", "kernel_github_pr_diff", "kernel_github_pr_comments"].map((n) => `${K}${n}`);
 
-/** A copy of the walk charter's kernel tools (`MASON_TOOLS`, `kernel/test/phase-8-exit.test.ts`); a test fails if the two differ. */
+/**
+ * A copy of the walk charter's kernel tools: the walk drafts its policy from `MASON_JOBS` (`kernel/test/phase-8-exit.test.ts`) with
+ * `allowedToolsForJobs`; a test fails if this copy and that draft differ.
+ */
 const MASON_TOOLS = [
   "kernel_automate_prepare",
   "kernel_automate_state",
   "kernel_automate_merge_check",
   "kernel_merge_approval_request",
   "kernel_pr_route",
+  "kernel_github_pr_get",
+  "kernel_github_pr_files",
+  "kernel_github_pr_diff",
   "kernel_github_pr_comments",
   "kernel_github_pr_reply",
   "kernel_github_pr_comment",
@@ -228,12 +234,13 @@ function proposedAdditions(fits: readonly (PlaybookFit | undefined)[]): string[]
 // ---- AC5: the walk ------------------------------------------------------------------
 
 describe("AC5: the phase 8 walk's four playbooks against a read-only developer and the walk charter", () => {
-  it("this test's MASON_TOOLS is the walk charter's (read from phase-8-exit.test.ts as text)", () => {
+  it("this test's MASON_TOOLS is the walk charter's: the tools drafted for the jobs phase-8-exit.test.ts names (MASON_JOBS, read as text)", () => {
     const text = readFileSync(fileURLToPath(new URL("./phase-8-exit.test.ts", import.meta.url)), "utf8");
-    const block = /const MASON_TOOLS = \[([\s\S]*?)\]\.map\(/.exec(text)?.[1];
-    expect(block, "MASON_TOOLS in phase-8-exit.test.ts").toBeDefined();
-    const names = [...(block ?? "").matchAll(/"([^"]+)"/g)].map((m) => `${K}${m[1]}`);
-    expect(names).toEqual(MASON_TOOLS);
+    const block = /const MASON_JOBS: readonly ToolJob\[\] = \[([\s\S]*?)\];/.exec(text)?.[1];
+    expect(block, "MASON_JOBS in phase-8-exit.test.ts").toBeDefined();
+    const jobs = [...(block ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1] as ToolJob);
+    expect(jobs.length).toBeGreaterThan(0);
+    expect([...allowedToolsForJobs(CATALOGUE, jobs)].sort()).toEqual([...MASON_TOOLS].sort());
   });
 
   it("a member holding only the four read-only kernel_github_pr_* tools: the fit names exactly the walk charter's tools it lacks, in plain words per job", async () => {

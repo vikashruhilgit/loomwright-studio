@@ -1,17 +1,27 @@
 // One playbook (phase 7 item 04): its intent, every policy value with who set it,
 // its trigger, the On switch, its tokens and its recent runs, and the actions:
-// Edit in English, Edit fields, Version history and Run now. Every value is the
+// Edit in English, Edit fields, Version history and Run now, and the Mode control (Draft or
+// Live; Live asks first and only on an enabled playbook). Every value is the
 // kernel's own answer (the live store and the screen's two reads); nothing here is
 // predicted or defaulted, and an unset value reads "not set".
-import type { Approval, PlaybookListing, PlaybookRun, RosterEntry, Trigger } from "../../api/contract";
+import { useState } from "react";
+import type { Approval, PlaybookChangeResponse, PlaybookListing, PlaybookRun, RosterEntry, Trigger } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
 import type { AvatarState } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
 import type { BadgeTone } from "../../components/Badge/Badge";
 import { Button } from "../../components/Button/Button";
+import { Dialog } from "../../components/Dialog/Dialog";
 import { Icon } from "../../components/icons";
+import type { KernelPolicyField } from "../../components/PlaybookPolicy/PlaybookPolicy";
 import { navigate, when } from "../chat/model";
+import type { WriteOutcome } from "../chat/model";
 import {
+  ASK_DRY_RUN_ENABLE_LABEL,
+  LIVE_EXPLANATION,
+  LIVE_NEEDS_ENABLE_TEXT,
+  DRAFT_NEXT_STEP_TEXT,
+  LIVE_NEXT_STEP_TEXT,
   NOT_COUNTED,
   NOT_SET,
   NO_RUNS,
@@ -20,6 +30,10 @@ import {
   dedupeText,
   isOn,
   limitText,
+  liveChoosable,
+  modeCaption,
+  modeSavedText,
+  wentOffline,
   runItemText,
   runKindWord,
   runTokensText,
@@ -59,6 +73,16 @@ export interface PlaybookDetailProps {
   readonly onBack: () => void;
   readonly onEdit: () => void;
   readonly onHistory: () => void;
+  /** The Live confirm is open (the screen holds it, so the ⌘K command can open it). */
+  readonly liveAskOpen: boolean;
+  /** Choosing Live: open the confirm. Sends nothing. */
+  readonly onAskLive: (playbook: PlaybookListing) => void;
+  /** The confirm's Cancel (and Escape): close it. Sends nothing. */
+  readonly onCancelLive: () => void;
+  /** One field's Set, through the screen's guard; `undefined` when the guard dropped it. */
+  readonly onSet: (playbook: PlaybookListing, field: KernelPolicyField, value: string) => Promise<WriteOutcome<PlaybookChangeResponse> | undefined>;
+  /** Put the dry-run-and-enable line in Wright's composer and open his thread. Sends nothing. */
+  readonly onAskDryRunEnable: (playbook: PlaybookListing) => void;
 }
 
 /**
@@ -145,7 +169,127 @@ function TokensSection({ playbook, runs }: { readonly playbook: PlaybookListing;
   );
 }
 
-export function PlaybookDetail({ playbook, trigger, owner, approval, runs, actions, turnOnOpen, offNotice, runNotice, onBack, onEdit, onHistory }: PlaybookDetailProps) {
+/** The card's Mode control: Draft or Live, the stored mode marked chosen. Lives below the Policy rows, never inside a row's chip cell. */
+function ModeControl({
+  playbook,
+  actions,
+  liveAskOpen,
+  onAskLive,
+  onCancelLive,
+  onSet,
+  onAskDryRunEnable,
+}: Pick<PlaybookDetailProps, "playbook" | "actions" | "liveAskOpen" | "onAskLive" | "onCancelLive" | "onSet" | "onAskDryRunEnable">) {
+  const [note, setNote] = useState<Notice | undefined>(undefined);
+  // Live was set and the kernel wrote a version: the next step (dry run, then enable) is Wright's to start.
+  const [next, setNext] = useState<"live" | "draft" | null>(null);
+  const isLive = playbook.mode === "live";
+  const held = actions.offline || actions.pending !== null;
+
+  const settle = async (answer: Promise<WriteOutcome<PlaybookChangeResponse> | undefined>, toLive: boolean, wasOn: boolean): Promise<void> => {
+    const outcome = await answer;
+    // Dropped by the guard: an earlier write is still pending, and its answer is the one to show.
+    if (outcome === undefined) return;
+    if (!outcome.ok) {
+      setNote({ tone: "danger", text: outcome.text });
+      setNext(null);
+      return;
+    }
+    setNote({ tone: "ok", text: modeSavedText(outcome.body, wasOn) });
+    // Live: the new version is a draft. Draft: only if the playbook was on and came back a draft (it is off now).
+    setNext(outcome.body.changed && toLive ? "live" : wentOffline(wasOn, outcome.body) ? "draft" : null);
+  };
+  const confirmLive = (): void => {
+    onCancelLive();
+    setNote(undefined);
+    setNext(null);
+    void settle(onSet(playbook, "mode", "live"), true, isOn(playbook));
+  };
+  const chooseDraft = (): void => {
+    if (!isLive) return;
+    setNote(undefined);
+    setNext(null);
+    void settle(onSet(playbook, "mode", "draft"), false, isOn(playbook));
+  };
+  const chooseLive = (): void => {
+    if (liveChoosable(playbook)) onAskLive(playbook);
+  };
+
+  return (
+    <div className="pb-mode" data-testid={IDS.modeControl}>
+      <div className="pb-actions" role="radiogroup" aria-label="Mode">
+        <Button
+          variant={isLive ? "ghost" : "primary"}
+          size="row"
+          role="radio"
+          aria-checked={playbook.mode !== "live"}
+          data-testid={IDS.modeDraft}
+          disabled={held}
+          onClick={chooseDraft}
+        >
+          Draft
+        </Button>
+        <Button
+          variant={isLive ? "primary" : "ghost"}
+          size="row"
+          role="radio"
+          aria-checked={playbook.mode === "live"}
+          data-testid={IDS.modeLive}
+          disabled={held || (!isLive && !liveChoosable(playbook))}
+          onClick={chooseLive}
+        >
+          Live
+        </Button>
+      </div>
+      {isLive || isOn(playbook) ? null : (
+        <span className="pb-cap" data-testid={IDS.modeNeedsEnable}>
+          {LIVE_NEEDS_ENABLE_TEXT}
+        </span>
+      )}
+      {note === undefined ? null : (
+        <p className="pb-notice" data-tone={note.tone} role={note.tone === "danger" ? "alert" : "status"} data-testid={IDS.modeNote}>
+          {note.text}
+        </p>
+      )}
+      {next !== null ? (
+        <div className="pb-actions" data-testid={IDS.modeNextStep}>
+          <span className="pb-cap">{next === "live" ? LIVE_NEXT_STEP_TEXT : DRAFT_NEXT_STEP_TEXT}</span>
+          <Button variant="secondary" size="row" data-testid={IDS.askDryRunEnable} icon={<Icon name="chat" className="pb-glyph" />} disabled={actions.offline} onClick={() => onAskDryRunEnable(playbook)}>
+            {ASK_DRY_RUN_ENABLE_LABEL}
+          </Button>
+        </div>
+      ) : null}
+      {liveAskOpen ? (
+        <Dialog
+          kind="decision"
+          title={`Turn on live mode for “${safe(playbook.name)}”?`}
+          description={LIVE_EXPLANATION}
+          action={{ label: "Set live", onAction: confirmLive }}
+          onCancel={onCancelLive}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+export function PlaybookDetail({
+  playbook,
+  trigger,
+  owner,
+  approval,
+  runs,
+  actions,
+  turnOnOpen,
+  offNotice,
+  runNotice,
+  onBack,
+  onEdit,
+  onHistory,
+  liveAskOpen,
+  onAskLive,
+  onCancelLive,
+  onSet,
+  onAskDryRunEnable,
+}: PlaybookDetailProps) {
   const state = stateOf(playbook);
   const on = isOn(playbook);
   const nextFire = playbook.next_fire_at ?? trigger?.next_fire_at ?? null;
@@ -202,8 +346,9 @@ export function PlaybookDetail({ playbook, trigger, owner, approval, runs, actio
               setBy={playbook.token_limit_set_by}
               note={playbook.token_limit_per_day === null ? undefined : "tokens"}
             />
-            <PolicyRow label="Mode" value={setValueOrNotSet(playbook.mode, playbook.mode_set_by)} setBy={playbook.mode_set_by} note="outward calls are recorded, never sent" />
+            <PolicyRow label="Mode" value={setValueOrNotSet(playbook.mode, playbook.mode_set_by)} setBy={playbook.mode_set_by} note={modeCaption(playbook)} />
           </dl>
+          <ModeControl playbook={playbook} actions={actions} liveAskOpen={liveAskOpen} onAskLive={onAskLive} onCancelLive={onCancelLive} onSet={onSet} onAskDryRunEnable={onAskDryRunEnable} />
         </section>
         <section className="pb-block" aria-labelledby="pb-h-trigger">
           <div className="pb-sech">

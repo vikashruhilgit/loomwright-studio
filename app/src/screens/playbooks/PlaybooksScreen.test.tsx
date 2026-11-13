@@ -17,7 +17,7 @@ import { approval, playbook, trigger } from "../chat/testkit";
 import { PLAYBOOKS_COMMANDS, PLAYBOOKS_OWNER } from "./commands";
 import { PlaybooksScreen } from "./PlaybooksScreen";
 import { screen as playbooksScreen } from "./index";
-import { PLAYBOOKS_TEST_IDS as IDS } from "./model";
+import { PLAYBOOKS_TEST_IDS as IDS, dryRunEnableLine, liveChoosable, modeSavedText } from "./model";
 import { PlaybooksSubtitle } from "./subtitle";
 
 const ENABLE_TOOL = "mcp__kernel__kernel_playbook_enable";
@@ -635,6 +635,312 @@ describe("AC5b: Set live asks first, and sends once", () => {
     const dialog = await screen.findByRole("dialog");
     expect(dialog.querySelector("img")).toBeNull();
     expect(dialog.textContent).toContain("<img src=x onerror=alert(1)>");
+  });
+});
+
+/** The standard fixture with the first playbook (Review PRs, enabled) in live mode, set by the owner. */
+function liveReview(overrides: Partial<PlaybookListing> = {}): Partial<Kernel> {
+  const base = standard();
+  const first = base.playbooks?.[0] as PlaybookListing;
+  base.playbooks = [{ ...first, mode: "live", mode_set_by: "owner", ...overrides }, ...(base.playbooks?.slice(1) ?? [])];
+  return base;
+}
+
+const LIVE_DIALOG = "Turn on live mode for “Review PRs”?";
+const DRY_RUN_ENABLE_LINE = "About playbook 1 (review-prs): please run its dry run, then ask for its enable.";
+
+describe("phase 8 item 20e: the card's Mode control and the truthful Mode row", () => {
+  const radio = (name: "Draft" | "Live"): HTMLElement => screen.getByRole("radio", { name });
+
+  it("liveChoosable: only an enabled playbook that is not live already", () => {
+    expect(liveChoosable({ status: "enabled", mode: "draft" })).toBe(true);
+    expect(liveChoosable({ status: "enabled", mode: "live" })).toBe(false);
+    expect(liveChoosable({ status: "draft", mode: "draft" })).toBe(false);
+    expect(liveChoosable({ status: "disabled", mode: "draft" })).toBe(false);
+  });
+
+  it("modeSavedText names the version the kernel answered with", () => {
+    const answer = { playbook: playbook(1, { version: 9, status: "draft" }), changed: true };
+    expect(modeSavedText(answer, false)).toContain("saved as v9");
+    expect(modeSavedText({ ...answer, changed: false }, true)).toContain("wrote no version (still v9)");
+    // An enabled playbook that comes back a draft is said to be a draft again; one that was never on is not.
+    expect(modeSavedText(answer, true)).toContain("The playbook is a draft again until you turn it on.");
+    expect(modeSavedText(answer, false)).not.toContain("draft again");
+    expect(modeSavedText({ ...answer, playbook: playbook(1, { version: 9, status: "enabled" }) }, true)).not.toContain("draft again");
+  });
+
+  it("AC1: an enabled draft-mode playbook offers Draft and Live, Draft marked chosen, Live choosable; the control sits outside the Policy rows", async () => {
+    await mountLoaded();
+    await openDetail("Review PRs");
+    const group = screen.getByRole("radiogroup", { name: "Mode" });
+    expect(group.closest(`[data-testid="${IDS.field}"]`)).toBeNull();
+    expect(group.closest(".pb-chipcell")).toBeNull();
+    expect(radio("Draft").getAttribute("aria-checked")).toBe("true");
+    expect(radio("Live").getAttribute("aria-checked")).toBe("false");
+    expect((radio("Live") as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId(IDS.modeNeedsEnable)).toBeNull();
+  });
+
+  it("AC1: on a live playbook Live is shown chosen, and choosing it again opens no confirm and sends nothing", async () => {
+    const { fake } = await mountLoaded(liveReview());
+    await openDetail("Review PRs");
+    expect(radio("Live").getAttribute("aria-checked")).toBe("true");
+    expect(radio("Draft").getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(radio("Live"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(allPosts(fake)).toHaveLength(0);
+  });
+
+  it("AC2: choosing Live sends nothing and explains the new draft version; Confirm sends exactly one {mode, live}, names the version, and offers Wright", async () => {
+    const { fake } = await mountLoaded();
+    await openDetail("Review PRs");
+    fireEvent.click(radio("Live"));
+    const dialog = await screen.findByRole("dialog", { name: LIVE_DIALOG });
+    expect(dialog.textContent).toContain("Live sends outward calls through the approval gate");
+    expect(dialog.textContent).toContain("a new version of the playbook, a draft again");
+    expect(dialog.textContent).toContain("its own dry run and an enable approval");
+    expect(allPosts(fake)).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Set live" }));
+    await waitFor(() => expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1));
+    expect(posts(fake, "POST /playbooks/:id/set")[0]).toMatchObject({ params: { id: 1 }, body: { field: "mode", value: "live" } });
+    await waitFor(() => expect(screen.getByTestId(IDS.modeNote).textContent).toContain("saved as v4"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByTestId(IDS.modeNextStep).textContent).toContain("own dry run and an enable approval");
+    // The offer: a line naming the playbook goes to Wright's composer; nothing is sent.
+    fireEvent.click(screen.getByRole("button", { name: "Ask Wright for the dry run and enable" }));
+    expect(window.location.hash).toBe("#/chat");
+    expect(takeComposerHandoff("wright")).toBe(DRY_RUN_ENABLE_LINE);
+    expect(allPosts(fake)).toHaveLength(1);
+    expect(posts(fake, "POST /ask")).toHaveLength(0);
+  });
+
+  it("AC2: Cancel and Escape in the confirm send nothing", async () => {
+    const { fake } = await mountLoaded();
+    await openDetail("Review PRs");
+    fireEvent.click(radio("Live"));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: LIVE_DIALOG })).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(allPosts(fake)).toHaveLength(0);
+    fireEvent.click(radio("Live"));
+    await screen.findByRole("dialog", { name: LIVE_DIALOG });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(allPosts(fake)).toHaveLength(0);
+    expect(screen.queryByTestId(IDS.modeNote)).toBeNull();
+  });
+
+  it("AC2: a refused Set shows the kernel's own words as an alert, with no offer to ask Wright", async () => {
+    const { fake, kernel } = await mountLoaded();
+    const message = "live_needs_enable: mode live needs playbook 1 to be enabled at version 3; it is draft";
+    kernel.posts["POST /playbooks/:id/set"] = () => ({ ok: false, status: 409, body: { error: "live_needs_enable", message } });
+    await openDetail("Review PRs");
+    fireEvent.click(radio("Live"));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Set live" }));
+    const refusal = await screen.findByTestId(IDS.modeNote);
+    expect(refusal.textContent).toBe(`${message} (live_needs_enable)`);
+    expect(refusal.getAttribute("role")).toBe("alert");
+    expect(screen.queryByTestId(IDS.askDryRunEnable)).toBeNull();
+    expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1);
+  });
+
+  it("AC3: the Mode row's caption tells the truth for live and for draft, inside the value cell", async () => {
+    await mountLoaded(liveReview());
+    await openDetail("Review PRs");
+    const live = field("Mode").querySelector(".pb-value");
+    expect(live?.textContent).toContain("push and comment through the approval gate");
+    expect(live?.textContent).not.toContain("never sent");
+    cleanup();
+    await mountLoaded();
+    await openDetail("Review PRs");
+    const draft = field("Mode").querySelector(".pb-value");
+    expect(draft?.textContent).toContain("outward calls are recorded, never sent");
+    expect(draft?.textContent).not.toContain("approval gate");
+  });
+
+  it("AC4: choosing Draft on a live playbook sends one {mode, draft} at once, with no confirm; on a draft playbook it does nothing", async () => {
+    const { fake } = await mountLoaded(liveReview());
+    await openDetail("Review PRs");
+    fireEvent.click(radio("Draft"));
+    await waitFor(() => expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1));
+    expect(posts(fake, "POST /playbooks/:id/set")[0]).toMatchObject({ params: { id: 1 }, body: { field: "mode", value: "draft" } });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId(IDS.modeNote).textContent).toContain("saved as v4"));
+    // The kernel reverts an enabled playbook to a draft on any changed Set: say so, and offer the way back on.
+    expect(screen.getByTestId(IDS.modeNote).textContent).toContain("The playbook is a draft again until you turn it on.");
+    expect(screen.getByTestId(IDS.modeNextStep).textContent).toContain("before it runs again");
+    expect(screen.getByTestId(IDS.askDryRunEnable)).toBeTruthy();
+    // Now a draft-mode playbook (the kernel's answer has landed): Draft is chosen already.
+    await waitFor(() => expect(radio("Draft").getAttribute("aria-checked")).toBe("true"));
+    fireEvent.click(radio("Draft"));
+    expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1);
+  });
+
+  it("AC5: on a draft or disabled playbook Live is not choosable, the control says it must be enabled first, and nothing is sent", async () => {
+    const base = standard();
+    const second = base.playbooks?.[1] as PlaybookListing;
+    const { fake } = await mountLoaded(base);
+    await openDetail("Weekly changelog");
+    expect((radio("Live") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId(IDS.modeNeedsEnable).textContent).toContain("must be enabled (turned on) first");
+    fireEvent.click(radio("Live"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(allPosts(fake)).toHaveLength(0);
+    cleanup();
+    const off = standard();
+    off.playbooks = [{ ...(off.playbooks?.[0] as PlaybookListing), status: "disabled" }, second];
+    const again = await mountLoaded(off);
+    await openDetail("Review PRs");
+    expect((radio("Live") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId(IDS.modeNeedsEnable).textContent).toContain("must be enabled (turned on) first");
+    fireEvent.click(radio("Live"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(allPosts(again.fake)).toHaveLength(0);
+  });
+
+  it("the Mode control is off while the kernel cannot be asked", async () => {
+    const { fake } = await mountLoaded();
+    await openDetail("Review PRs");
+    await act(async () => fake.emit({ type: "heartbeat", latest_id: 0 }));
+    fake.connectionAnswer = { state: "unreachable", reason: "connection_failed" };
+    await act(async () => fake.emit({ type: "closed", code: 1006, reason: "" }));
+    await waitFor(() => expect((radio("Live") as HTMLButtonElement).disabled).toBe(true));
+    expect((radio("Draft") as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("phase 8 item 20e: the Mode ⌘K commands", () => {
+  const ids = (registry: CommandRegistry): string[] => registry.list().filter((c) => c.owner === PLAYBOOKS_OWNER).map((c) => c.id);
+
+  async function openOn(registry: CommandRegistry, id: number, view: "detail" | "edit" | "history"): Promise<void> {
+    await act(async () => registry.get(PLAYBOOKS_COMMANDS.open(id))?.run());
+    await screen.findByTestId(IDS.detail);
+    if (view === "edit") {
+      await act(async () => registry.get(PLAYBOOKS_COMMANDS.editFields)?.run());
+      await screen.findByTestId(IDS.edit);
+    } else if (view === "history") {
+      await act(async () => registry.get(PLAYBOOKS_COMMANDS.history)?.run());
+      await screen.findByTestId(IDS.historyView);
+    }
+  }
+
+  it("registers the three commands only while a playbook's view is open", async () => {
+    const registry = createCommandRegistry();
+    await mountLoaded(undefined, registry);
+    expect(ids(registry)).not.toContain(PLAYBOOKS_COMMANDS.modeLive);
+    await openOn(registry, 1, "detail");
+    expect(ids(registry)).toEqual(expect.arrayContaining([PLAYBOOKS_COMMANDS.modeLive, PLAYBOOKS_COMMANDS.modeDraft, PLAYBOOKS_COMMANDS.askDryRunEnable]));
+    expect(PLAYBOOKS_COMMANDS.modeLive).toBe("playbooks.mode-live");
+    expect(PLAYBOOKS_COMMANDS.modeDraft).toBe("playbooks.mode-draft");
+    expect(PLAYBOOKS_COMMANDS.askDryRunEnable).toBe("playbooks.ask-dry-run-enable");
+  });
+
+  it("playbooks.mode-live: from the Edit view it lands on the card with the Live confirm open, and sends no /set itself", async () => {
+    const registry = createCommandRegistry();
+    const { fake } = await mountLoaded(undefined, registry);
+    await openOn(registry, 1, "edit");
+    expect(registry.get(PLAYBOOKS_COMMANDS.modeLive)?.enabled?.()).toBe(true);
+    await act(async () => registry.get(PLAYBOOKS_COMMANDS.modeLive)?.run());
+    await screen.findByTestId(IDS.detail);
+    expect(screen.queryByTestId(IDS.edit)).toBeNull();
+    const dialog = await screen.findByRole("dialog", { name: LIVE_DIALOG });
+    expect(allPosts(fake)).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Set live" }));
+    await waitFor(() => expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1));
+    expect(posts(fake, "POST /playbooks/:id/set")[0]).toMatchObject({ body: { field: "mode", value: "live" } });
+  });
+
+  it("playbooks.mode-live: from the History view it also lands on the card with the confirm open", async () => {
+    const registry = createCommandRegistry();
+    const { fake } = await mountLoaded(undefined, registry);
+    await openOn(registry, 1, "history");
+    await act(async () => registry.get(PLAYBOOKS_COMMANDS.modeLive)?.run());
+    await screen.findByTestId(IDS.detail);
+    await screen.findByRole("dialog", { name: LIVE_DIALOG });
+    expect(allPosts(fake)).toHaveLength(0);
+  });
+
+  it("opening another playbook with the card open leaves no Mode note, no Wright offer and no confirm from the first one", async () => {
+    const registry = createCommandRegistry();
+    const { fake } = await mountLoaded(undefined, registry);
+    await openOn(registry, 1, "detail");
+    fireEvent.click(screen.getByRole("radio", { name: "Live" }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: LIVE_DIALOG })).getByRole("button", { name: "Set live" }));
+    await waitFor(() => expect(screen.getByTestId(IDS.modeNote).textContent).toContain("saved as v4"));
+    expect(screen.getByTestId(IDS.modeNextStep)).toBeTruthy();
+    await act(async () => registry.get(PLAYBOOKS_COMMANDS.open(2))?.run());
+    await waitFor(() => expect(screen.getByTestId(IDS.detail).textContent).toContain("Weekly changelog"));
+    expect(screen.queryByTestId(IDS.modeNote)).toBeNull();
+    expect(screen.queryByTestId(IDS.modeNextStep)).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1);
+  });
+
+  it("an open Live confirm does not follow the owner to another playbook", async () => {
+    const registry = createCommandRegistry();
+    await mountLoaded(undefined, registry);
+    await openOn(registry, 1, "detail");
+    fireEvent.click(screen.getByRole("radio", { name: "Live" }));
+    await screen.findByRole("dialog", { name: LIVE_DIALOG });
+    await act(async () => registry.get(PLAYBOOKS_COMMANDS.open(2))?.run());
+    await waitFor(() => expect(screen.getByTestId(IDS.detail).textContent).toContain("Weekly changelog"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("playbooks.mode-live: disabled on a playbook that is not enabled, on one already live, and while the kernel is unreachable", async () => {
+    const registry = createCommandRegistry();
+    const { fake } = await mountLoaded(undefined, registry);
+    await openOn(registry, 2, "detail");
+    expect(registry.get(PLAYBOOKS_COMMANDS.modeLive)?.enabled?.()).toBe(false);
+    cleanup();
+    const liveRegistry = createCommandRegistry();
+    await mountLoaded(liveReview(), liveRegistry);
+    await openOn(liveRegistry, 1, "detail");
+    expect(liveRegistry.get(PLAYBOOKS_COMMANDS.modeLive)?.enabled?.()).toBe(false);
+    cleanup();
+    const offlineRegistry = createCommandRegistry();
+    const offline = await mountLoaded(undefined, offlineRegistry);
+    await openOn(offlineRegistry, 1, "detail");
+    expect(offlineRegistry.get(PLAYBOOKS_COMMANDS.modeLive)?.enabled?.()).toBe(true);
+    await act(async () => offline.fake.emit({ type: "heartbeat", latest_id: 0 }));
+    offline.fake.connectionAnswer = { state: "unreachable", reason: "connection_failed" };
+    await act(async () => offline.fake.emit({ type: "closed", code: 1006, reason: "" }));
+    await waitFor(() => expect(offlineRegistry.get(PLAYBOOKS_COMMANDS.modeLive)?.enabled?.()).toBe(false));
+    expect(offlineRegistry.get(PLAYBOOKS_COMMANDS.modeDraft)?.enabled?.()).toBe(false);
+    expect(offlineRegistry.get(PLAYBOOKS_COMMANDS.askDryRunEnable)?.enabled?.()).toBe(false);
+    expect(allPosts(fake)).toHaveLength(0);
+  });
+
+  it("playbooks.mode-draft: enabled only when the mode is live; from the Edit view it sends one {mode, draft} at once", async () => {
+    const draftRegistry = createCommandRegistry();
+    await mountLoaded(undefined, draftRegistry);
+    await openOn(draftRegistry, 1, "detail");
+    expect(draftRegistry.get(PLAYBOOKS_COMMANDS.modeDraft)?.enabled?.()).toBe(false);
+    cleanup();
+    const registry = createCommandRegistry();
+    const { fake } = await mountLoaded(liveReview(), registry);
+    await openOn(registry, 1, "edit");
+    expect(registry.get(PLAYBOOKS_COMMANDS.modeDraft)?.enabled?.()).toBe(true);
+    await act(async () => registry.get(PLAYBOOKS_COMMANDS.modeDraft)?.run());
+    await waitFor(() => expect(posts(fake, "POST /playbooks/:id/set")).toHaveLength(1));
+    expect(posts(fake, "POST /playbooks/:id/set")[0]).toMatchObject({ params: { id: 1 }, body: { field: "mode", value: "draft" } });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // The kernel's answer lands in the store: the command is off again.
+    await waitFor(() => expect(registry.get(PLAYBOOKS_COMMANDS.modeDraft)?.enabled?.()).toBe(false));
+  });
+
+  it("playbooks.ask-dry-run-enable: from the History view it puts the line in Wright's composer, opens his thread and sends nothing", async () => {
+    const registry = createCommandRegistry();
+    const { fake } = await mountLoaded(undefined, registry);
+    await openOn(registry, 1, "history");
+    expect(registry.get(PLAYBOOKS_COMMANDS.askDryRunEnable)?.enabled?.()).toBe(true);
+    await act(async () => registry.get(PLAYBOOKS_COMMANDS.askDryRunEnable)?.run());
+    expect(window.location.hash).toBe("#/chat");
+    expect(takeComposerHandoff("wright")).toBe(DRY_RUN_ENABLE_LINE);
+    expect(allPosts(fake)).toHaveLength(0);
+  });
+
+  it("the hand-off line passes the slug through `safe`", () => {
+    expect(dryRunEnableLine({ id: 4, slug: "a\u0007b" })).not.toContain("\u0007");
   });
 });
 

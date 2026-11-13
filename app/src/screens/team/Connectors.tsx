@@ -1,15 +1,24 @@
 // The inspector's Connectors row (phase 6 item 08): whether the owner granted
-// this agent GitHub, the connector's own state, and the one button that grants
-// or revokes it. The grant is `connectors` on the agent's settings file, read
-// from the roster (`RosterEntry.connectors`); the connector's state is
-// `GET /connectors`, read by the screen. Both come in as props.
+// this agent GitHub, the connector's own state, and the buttons that change the
+// grant. The grant is `connectors` on the agent's settings file; the connector's
+// state is `GET /connectors`, read by the screen. All come in as props.
 //
-// The button and the ⌘K command call the same `changeGithubGrant`, which posts
-// `{field: "connectors", value}` to `POST /agents/:id/set`. Nothing here edits
-// the row: it changes only when the feed's `agent_*` event refetches the
-// roster, as with every other Team write. The grant is allowed while GitHub is
-// not connected (the kernel never reads the connector to decide it), which is
-// why the state is shown beside it. Every string is a React text child.
+// A crew member's grant is None, Read or Write (phase 8 item 20): `githubLevel`
+// reads it from the member's `GET /agents/:id` `settings.content.connectors`
+// (the roster reports only that GitHub is held, never the level), and the row
+// offers the other two levels in place. Write adds one line saying what it lets
+// the member's live playbooks do. Wright has no detail route, so its row stays
+// the roster's `granted` / `not granted` / `grant unknown` with one Grant GitHub
+// (read) or Revoke button.
+//
+// Every button and ⌘K command calls the same `changeGithubGrant`, which posts
+// `{field: "connectors", value}` to `POST /agents/:id/set` with `github:none`,
+// `github` or `github:write` (never `none`, which would also drop the member's
+// Jira and ClickUp tools). Nothing here edits the row: it changes only when the
+// feed's `agent_*` event refetches the roster and the detail, as with every
+// other Team write. The grant is allowed while GitHub is not connected (the
+// kernel never reads the connector to decide it), which is why the state is
+// shown beside it. Every string is a React text child.
 //
 // Beside the GitHub row, one row per connected MCP kind (Jira, ClickUp; phase 8,
 // D38) shows which of that kind's `granted_tools` the agent holds, read from the
@@ -18,13 +27,26 @@
 // `<kind>:none`) to the same route. Wright has no detail route, so its per-tool
 // grant is unknown (no checkboxes), never "not granted". As with GitHub, the row
 // changes only when the feed's `agent_*` event refetches the detail.
-import type { McpConnection, McpConnectionKind, StudioBridge } from "../../api/contract";
+import { useEffect, useRef } from "react";
+import type { McpConnection, McpConnectionKind, RosterEntry, StudioBridge } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
-import { setAgentConnectors, setAgentMcpTools } from "./actions";
-import { type ConnectorsState, connectorStateText, MCP_KIND_LABELS, mcpToolsHeld } from "./model";
+import { type GithubGrantValue, setAgentConnectors, setAgentMcpTools } from "./actions";
+import { type ConnectorsState, connectorStateText, githubGranted, isRecord, MCP_KIND_LABELS, mcpToolsHeld } from "./model";
 
-/** What the owner asked for: give the agent GitHub, or take it away. */
-export type GrantChange = "grant" | "revoke";
+/** The GitHub level the owner can give an agent: none, read (`github`), or write (`github:write`). */
+export type GithubLevel = "none" | "read" | "write";
+
+/** The value each level posts: `github:none` drops only the GitHub key, so the member's MCP tools are kept. */
+const GITHUB_GRANT_VALUES: Readonly<Record<GithubLevel, GithubGrantValue>> = { none: "github:none", read: "github", write: "github:write" };
+
+/** The levels in the order the row offers them. */
+export const GITHUB_LEVELS: readonly GithubLevel[] = ["none", "read", "write"];
+
+/** The level words in the crew member's row and its buttons. */
+export const LEVEL_WORDS: Readonly<Record<GithubLevel, string>> = { none: "None", read: "Read", write: "Write" };
+
+/** The line under a Write grant: what Write lets the member's live playbooks do. */
+export const WRITE_LINE = "Write lets this member's live playbooks push and comment on GitHub, each through the approval gate.";
 
 /** The result of one grant or revoke, in words: the owner's route answered, or refused. */
 export interface GrantOutcome {
@@ -36,14 +58,42 @@ export interface GrantOutcome {
 export const GRANT_WORDS = { granted: "granted", notGranted: "not granted", unknown: "grant unknown" } as const;
 
 /**
- * Grant or revoke GitHub for `agent` through `POST /agents/:id/set`. The one
- * call both the Connectors button and the ⌘K commands make.
+ * A crew member's GitHub level from its settings file `content` (`GET /agents/:id`
+ * `settings.content`, untrusted file text): absent, null or `[]` is none; `["github"]`
+ * or `{github: "read"}` is read; `{github: "write"}` is write (an object without a
+ * `github` key holds only MCP tools: none). Undefined (unknown, never none) when the
+ * roster's own grant is unknown (checked first: its `connectors` is null or missing,
+ * so the settings file did not read ok), the content was not read or is not an
+ * object, or `connectors` is a shape the kernel does not write.
  */
-export async function changeGithubGrant(api: StudioBridge, agent: { readonly id: string; readonly display_name: string }, change: GrantChange): Promise<GrantOutcome> {
-  const outcome = await setAgentConnectors(api, agent.id, change === "grant" ? "github" : "none");
+export function githubLevel(content: unknown, agent: Pick<RosterEntry, "connectors">): GithubLevel | undefined {
+  if (githubGranted(agent) === undefined) return undefined;
+  if (!isRecord(content)) return undefined;
+  const grant = content.connectors;
+  if (grant === undefined || grant === null) return "none";
+  if (Array.isArray(grant)) {
+    if (grant.length === 0) return "none";
+    return grant.length === 1 && grant[0] === "github" ? "read" : undefined;
+  }
+  if (!isRecord(grant)) return undefined;
+  const level = grant.github;
+  if (level === undefined) return "none";
+  return level === "read" || level === "write" ? level : undefined;
+}
+
+/**
+ * Set `agent`'s GitHub level through `POST /agents/:id/set`. The one call every
+ * Connectors button and ⌘K command makes: `github:none`, `github` or `github:write`,
+ * each changing only the GitHub key.
+ */
+export async function changeGithubGrant(api: StudioBridge, agent: { readonly id: string; readonly display_name: string }, level: GithubLevel): Promise<GrantOutcome> {
+  const outcome = await setAgentConnectors(api, agent.id, GITHUB_GRANT_VALUES[level]);
   if (!outcome.ok) return { ok: false, text: outcome.message };
-  if (change === "grant") return { ok: true, text: outcome.body.changed ? `GitHub granted to ${agent.display_name}.` : `${agent.display_name} already has GitHub.` };
-  return { ok: true, text: outcome.body.changed ? `GitHub revoked from ${agent.display_name}.` : `${agent.display_name} already has no GitHub.` };
+  const name = agent.display_name;
+  const changed = outcome.body.changed;
+  if (level === "none") return { ok: true, text: changed ? `GitHub revoked from ${name}.` : `${name} already has no GitHub.` };
+  if (level === "write") return { ok: true, text: changed ? `GitHub write granted to ${name}.` : `${name} already has GitHub write.` };
+  return { ok: true, text: changed ? `GitHub granted to ${name}.` : `${name} already has GitHub.` };
 }
 
 /**
@@ -98,12 +148,17 @@ function mcpGrantWords(row: McpGrantRow): string {
 }
 
 export interface ConnectorsProps {
-  /** The roster's read of the grant: true, false, or undefined when unknown. */
+  /** Wright's row: the roster's read of the grant: true, false, or undefined when unknown. */
   readonly granted: boolean | undefined;
+  /** Wright: the roster-based Grant GitHub / Revoke row. A crew member gets the three-level row. */
+  readonly lead: boolean;
+  /** A crew member's level (`githubLevel`); undefined is unknown, and ignored for Wright. */
+  readonly level?: GithubLevel | undefined;
   /** `GET /connectors`, as the screen holds it. */
   readonly state: ConnectorsState;
   readonly busy: boolean;
-  readonly onChange: (change: GrantChange) => void;
+  /** The level the owner chose. */
+  readonly onChange: (level: GithubLevel) => void;
   /** The connected MCP kinds and what the agent holds of each (`mcpGrantRows`); none by default. */
   readonly mcp?: readonly McpGrantRow[];
   /** The agent's full tool set for one kind after the owner ticked or cleared a tool. */
@@ -139,8 +194,60 @@ function McpRow({ row, busy, onMcpChange }: { readonly row: McpGrantRow; readonl
   );
 }
 
-export function Connectors({ granted, state, busy, onChange, mcp = [], onMcpChange }: ConnectorsProps) {
+/** A crew member's GitHub row: its level (or unknown), the other two levels as buttons, and the Write line at Write. */
+function CrewGrant({ level, state, busy, onChange }: { readonly level: GithubLevel | undefined; readonly state: ConnectorsState; readonly busy: boolean; readonly onChange: ConnectorsProps["onChange"] }) {
+  // The button the owner just used is the one that unmounts when the feed's refetch changes the level (only the other
+  // two levels render), which would drop a keyboard user's focus to the body. A browser fires no blur when a focused
+  // node is removed, so `inGroup` still says focus was here at the swap, and focus moves to the group instead.
+  const group = useRef<HTMLDivElement>(null);
+  const inGroup = useRef(false);
+  const shown = useRef(level);
+  useEffect(() => {
+    const changed = shown.current !== level;
+    shown.current = level;
+    if (!changed || !inGroup.current) return;
+    const active = document.activeElement;
+    if (group.current !== null && (active === null || active === document.body)) group.current.focus();
+  }, [level]);
+  return (
+    <>
+      <dl className="team-insp-kv" data-testid="team-connector-github">
+        <dt>GitHub</dt>
+        <dd>
+          <span data-testid="team-connector-grant">{level === undefined ? GRANT_WORDS.unknown : LEVEL_WORDS[level]}</span>
+          {" · "}
+          <span data-testid="team-connector-state">{connectorStateText(state)}</span>
+        </dd>
+      </dl>
+      {level === "write" ? (
+        <p className="team-insp-empty" data-testid="team-connector-write-line">
+          {WRITE_LINE}
+        </p>
+      ) : null}
+      {level === undefined ? null : (
+        <div className="team-insp-subhead" role="group" aria-label="Change the GitHub grant" tabIndex={-1} ref={group} onFocus={() => { inGroup.current = true; }} onBlur={() => { inGroup.current = false; }} data-testid="team-connector-levels">
+          {GITHUB_LEVELS.filter((other) => other !== level).map((other) => (
+            <Button key={other} size="row" variant={other === "none" ? "ghost" : "secondary"} loading={busy} data-testid={`team-connector-level-${other}`} onClick={() => onChange(other)}>
+              {LEVEL_WORDS[other]}
+            </Button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+export function Connectors({ granted, lead, level, state, busy, onChange, mcp = [], onMcpChange }: ConnectorsProps) {
   const grantWords = granted === undefined ? GRANT_WORDS.unknown : granted ? GRANT_WORDS.granted : GRANT_WORDS.notGranted;
+  const mcpRows = mcp.map((row) => <McpRow key={row.kind} row={row} busy={busy} onMcpChange={onMcpChange} />);
+  if (!lead) {
+    return (
+      <>
+        <CrewGrant level={level} state={state} busy={busy} onChange={onChange} />
+        {mcpRows}
+      </>
+    );
+  }
   return (
     <>
       <dl className="team-insp-kv" data-testid="team-connector-github">
@@ -152,17 +259,15 @@ export function Connectors({ granted, state, busy, onChange, mcp = [], onMcpChan
         </dd>
       </dl>
       {granted === undefined ? null : granted ? (
-        <Button className="team-insp-conn-action" size="row" variant="ghost" loading={busy} onClick={() => onChange("revoke")}>
+        <Button className="team-insp-conn-action" size="row" variant="ghost" loading={busy} onClick={() => onChange("none")}>
           Revoke
         </Button>
       ) : (
-        <Button className="team-insp-conn-action" size="row" variant="secondary" loading={busy} onClick={() => onChange("grant")}>
+        <Button className="team-insp-conn-action" size="row" variant="secondary" loading={busy} onClick={() => onChange("read")}>
           Grant GitHub
         </Button>
       )}
-      {mcp.map((row) => (
-        <McpRow key={row.kind} row={row} busy={busy} onMcpChange={onMcpChange} />
-      ))}
+      {mcpRows}
     </>
   );
 }

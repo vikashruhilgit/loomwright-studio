@@ -3,9 +3,10 @@
 // what the tracker finds. One contribution built from three parts, so each
 // phase 8 item edits only the part it owns: `runner` gives a live playbook's own
 // session the tools to hand tickets to `/automate` and to check a merge (item
-// 09; no tool starts a session, owner decision 2026-11-03), `tracker` follows a
-// PR through its states, and `routing` decides where a finding goes (fix, reply
-// or answer). Mechanism only
+// 09; no tool starts a session itself: prepare queues an event and the kernel
+// starts the run through `./launch.ts`, which the brain's handler routes to, D44),
+// `tracker` follows a PR through its states, and `routing` decides where a
+// finding goes (fix, reply or answer). Mechanism only
 // (invariant 1): the repo's merge policy is the user's, and the kernel never
 // merges (invariant 4, D40).
 // `startKernel` and `runCli` merge it through `SHIPPED_CONTRIBUTIONS`
@@ -34,7 +35,8 @@ export type AutomatePart = ConsolePart;
  * The runner part (item 09): `kernel_automate_prepare`, `kernel_automate_state`,
  * `kernel_automate_merge_check` and the held `kernel_merge_approval_request`,
  * built in `./runner.ts`. They help a live playbook's own session hand tickets to
- * `/automate` and check a merge; no tool starts a session or merges.
+ * `/automate` and check a merge; no tool starts a session or merges (prepare queues
+ * the event `./launch.ts` turns into the kernel-started run, D44).
  */
 export { runnerPart };
 

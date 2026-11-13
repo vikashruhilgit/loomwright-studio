@@ -1,32 +1,337 @@
 {
-  "_note": "AUTHORED, not recorded from the live server. ClickUp's official MCP server's real tool names and response shapes are NEEDS VERIFICATION (docs/architecture/mcp-connectors.md); a web search found only third-party servers' names. This file pins the name the kernel's definition (kernel/src/integrations/mcp/trackers.ts) uses and the argument names the ClickUp source sends (list_ids or space_ids, statuses, assignees, tags). The owner's live ClickUp run (phase 8 item 13) confirms or corrects both. The kernel refuses a name the connection's own tool list lacks (tool_unavailable), so a wrong guess is a named failure, never a call to an unknown tool.",
+  "_note": "RECORDED from the live server on 2026-11-13: the clickup_filter_tasks entry of https://mcp.clickup.com/mcp tools/list (read-only probe of the owner's personal ClickUp; see docs/evidence/phase-8-20g-clickup-reader.md). name, description, inputSchema, annotations and outputSchema are verbatim; the entry's _meta (a UI resource hint) is left out, and no other tool is listed. The kernel refuses a name the connection's own tool list lacks (tool_unavailable), so a renamed tool is a named failure, never a call to an unknown tool.",
   "server": "https://mcp.clickup.com/mcp",
   "tools": [
     {
-      "name": "get_workspace_tasks",
-      "description": "List tasks in the workspace, filtered by list, space, status, assignee or tag.",
+      "name": "clickup_filter_tasks",
+      "description": "Retrieve tasks with combined filters (tags, lists, folders, spaces, statuses, assignees, due date range, completion date range, custom field values). Multiple values within a filter use OR logic; across filters, AND logic applies (custom_fields entries also AND together). Best for filtering tasks by structured field values. For text/keyword search across all workspace content, use search instead. For a saved view's tasks, pass view_id rather than rebuilding its filters. Custom field filters need field IDs — discover them with clickup_get_custom_fields. Results are paginated at about 100 tasks per call: the response includes has_more and next_page, and when has_more is true you MUST call again with page set to next_page (repeating until has_more is false) to retrieve every matching task — a single call is not guaranteed to be complete. Assignees accept numeric user IDs, names, emails, or \"me\" directly — no separate lookup is needed. Date filters use YYYY-MM-DD. For a relative date (\"today\", \"tomorrow\", \"this week\", \"overdue\"), call clickup_get_user first and compute from its current_time, not from your own clock. For a single task by ID, use clickup_get_task.",
       "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "list_ids": { "type": "array", "items": { "type": "string" } },
-          "space_ids": { "type": "array", "items": { "type": "string" } },
-          "statuses": { "type": "array", "items": { "type": "string" } },
-          "assignees": { "type": "array", "items": { "type": "string" } },
-          "tags": { "type": "array", "items": { "type": "string" } }
+          "view_id": {
+            "description": "Saved view ID, from a view URL such as .../v/l/<view_id> (.../v/li/<id> is a list). Returns the tasks the view shows, its saved filters applied. Combine only with page and fields.",
+            "type": "string",
+            "minLength": 1
+          },
+          "fields": {
+            "description": "Task fields to return besides id, name and url. Omit for all.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "custom_id",
+                "status",
+                "priority",
+                "assignees",
+                "tags",
+                "due_date",
+                "date_updated",
+                "date_closed",
+                "list"
+              ]
+            }
+          },
+          "tags": {
+            "description": "Filter by tag names.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "list_ids": {
+            "description": "Filter by List IDs.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "folder_ids": {
+            "description": "Filter by Folder IDs.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "space_ids": {
+            "description": "Filter by Space IDs.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "statuses": {
+            "description": "Filter by task status names.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assignees": {
+            "description": "Filter by assignee. Accepts \"me\", emails, usernames, user IDs, or AI agent names or IDs, resolved automatically. A name that fits more than one user fails the call; use an email or user ID. A name a member has resolves to that member; to pick an AI agent with the same name, use its ID.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "include_closed": {
+            "description": "Include closed tasks in results. Defaults to true when date_closed_from or date_closed_to is set; pass false to leave them out.",
+            "type": "boolean"
+          },
+          "due_date_from": {
+            "description": "Due date on or after (YYYY-MM-DD).",
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}( \\d{2}:\\d{2})?$"
+          },
+          "due_date_to": {
+            "description": "Due date on or before (YYYY-MM-DD or YYYY-MM-DD HH:MM). A date alone includes that whole day.",
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}( \\d{2}:\\d{2})?$"
+          },
+          "date_closed_from": {
+            "description": "Completed on or after (YYYY-MM-DD). Includes closed tasks unless include_closed is false.",
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}( \\d{2}:\\d{2})?$"
+          },
+          "date_closed_to": {
+            "description": "Completed on or before (YYYY-MM-DD or YYYY-MM-DD HH:MM). A date alone includes that whole day. Includes closed tasks unless include_closed is false.",
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}( \\d{2}:\\d{2})?$"
+          },
+          "order_by": {
+            "description": "Sort results by field. Default direction is descending — newest first for created/updated. Set reverse: true for ascending (oldest first).",
+            "type": "string",
+            "enum": [
+              "id",
+              "created",
+              "updated",
+              "due_date"
+            ]
+          },
+          "reverse": {
+            "description": "Sort ascending (oldest first) instead of the default descending (newest first). Leave unset/false to get the most recently created/updated tasks first.",
+            "type": "boolean"
+          },
+          "page": {
+            "description": "0-indexed page number. Each call returns about 100 tasks. When a response has has_more=true, request the next page using its next_page value, and keep going until has_more=false to retrieve every matching task.",
+            "type": "number"
+          },
+          "subtasks": {
+            "default": true,
+            "description": "Include subtasks in results (default: true)",
+            "type": "boolean"
+          },
+          "custom_fields": {
+            "description": "Filter by custom field values. Entries combine with AND (and with all other filters).",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field_id": {
+                  "type": "string",
+                  "description": "Custom field ID. Discover fields with clickup_get_custom_fields — one unrecognized field_id makes the API silently drop ALL custom field filters in the call and return unfiltered results. Formula, location, button, votes, signature, rollup, progress, and app fields cannot be filtered at all (any operator errors)."
+                },
+                "operator": {
+                  "type": "string",
+                  "enum": [
+                    "=",
+                    "==",
+                    "<",
+                    "<=",
+                    ">",
+                    ">=",
+                    "!=",
+                    "!==",
+                    "IS NULL",
+                    "IS NOT NULL",
+                    "RANGE",
+                    "ANY",
+                    "ALL",
+                    "NOT ANY",
+                    "NOT ALL"
+                  ],
+                  "description": "On text fields '=' means contains and '==' exact match; on single-value non-text fields (number, money, date, rating, checkbox, dropdown) use '=' or '!=' (exact) — '==' and '!==' only work on text fields. <, <=, >, >=, RANGE order numbers/dates. Multi-value fields (labels, people, relationships) require ANY/ALL/NOT ANY/NOT ALL, with a non-empty JSON array value. IS NULL/IS NOT NULL match unset/set fields."
+                },
+                "value": {
+                  "description": "Filter value as a string. Omit for IS NULL/IS NOT NULL. Formats: text as-is; dropdown: option UUID, or the option's orderindex when the field's type_config.options is present (those legacy dropdowns store numeric values); number/money/rating: '42'; date: YYYY-MM-DD or YYYY-MM-DD HH:MM (auto-converted to a timestamp for <, <=, >, >=, RANGE; date-only values resolve to 00:00 in your timezone); RANGE: JSON array of two numbers/dates (e.g. '[1, 5]'); ANY/ALL/NOT ANY/NOT ALL: JSON array — labels: option UUIDs, people: numeric user IDs, task/list relationships: task IDs (e.g. '[\"uuid1\",\"uuid2\"]'). For = or != on Date fields pass a millisecond epoch; date strings auto-convert only for the ordering operators.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "field_id",
+                "operator"
+              ]
+            }
+          },
+          "workspace_id": {
+            "description": "Workspace ID (digits only). Only needed when you have multiple workspaces.",
+            "type": "string",
+            "pattern": "^\\d+$"
+          }
         }
       },
-      "annotations": { "readOnlyHint": true }
-    },
-    {
-      "name": "get_task",
-      "description": "Read one task.",
-      "inputSchema": { "type": "object", "properties": { "task_id": { "type": "string" } }, "required": ["task_id"] },
-      "annotations": { "readOnlyHint": true }
-    },
-    {
-      "name": "create_task",
-      "description": "Create a task.",
-      "inputSchema": { "type": "object", "properties": { "list_id": { "type": "string" }, "name": { "type": "string" } }, "required": ["list_id", "name"] }
+      "annotations": {
+        "title": "Filter Tasks",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "custom_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string",
+                  "description": "URL that opens this task in ClickUp. When you mention the task, present it as an inline markdown link with the task name as the anchor text, e.g. [Task name](url); never output the bare URL."
+                },
+                "priority": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "assignees": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "number"
+                      },
+                      "username": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "due_date": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "date_updated": {
+                  "description": "Unix millisecond timestamp (as string) when the task was last updated.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "date_closed": {
+                  "description": "Unix millisecond timestamp (as string) when the task was completed, or null for open tasks.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "list": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "url"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "count": {
+            "type": "number",
+            "description": "Number of tasks returned on this page."
+          },
+          "page": {
+            "type": "number",
+            "description": "0-indexed page number that was returned."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "True when more tasks match these filters beyond this page. When true, call filter_tasks again with page set to next_page to retrieve them; do not assume this page is the complete set."
+          },
+          "next_page": {
+            "description": "The page value to request next to continue paginating, or null when this is the last page.",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "Informational message: guidance to fetch the next page when more results are available, and/or a warning that part of the assignees filter did not match any workspace member, in which case the results are narrower than requested.",
+            "type": "string"
+          },
+          "warnings": {
+            "description": "Warnings that the filters were applied only in part. The same text is also in message.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "tasks",
+          "count",
+          "page",
+          "has_more",
+          "next_page"
+        ],
+        "additionalProperties": false
+      }
     }
   ]
 }

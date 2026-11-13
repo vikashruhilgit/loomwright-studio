@@ -7,24 +7,27 @@
 //
 // Mechanism only (invariant 1): there is no default filter, interval or dedupe
 // key. The filters go to the server as the tool takes them (`list_ids` or
-// `space_ids`, and `statuses`, `assignees`, `tags` as arrays), and the kernel
-// applies the tag filter again on the parsed tasks, whatever the server
-// answered (as `github.pulls` re-applies its filters): a task must carry every
-// tag the spec names, compared case-insensitively (ClickUp keeps tag names
-// lower-case).
+// `space_ids`, and `statuses`, `assignees`, `tags` as arrays of strings), and
+// the kernel applies the tag filter again on the parsed tasks, whatever the
+// server answered (as `github.pulls` re-applies its filters): a task must carry
+// every tag the spec names, compared case-insensitively (ClickUp keeps tag
+// names lower-case).
 //
-// ClickUp's real tool name and response shape are NEEDS VERIFICATION
-// (`docs/architecture/mcp-connectors.md`): the tool name is data in
+// The tool is `clickup_filter_tasks`, read from the live server on 2026-11-13
+// (`docs/evidence/phase-8-20g-clickup-reader.md`): its name is data in
 // `MCP_TRACKERS`, checked against the connection's own tool list before any
-// call, and the parse is loose (a task is `{id, name, description, status, tags,
-// url, date_updated}`; an entry that is off-shape is dropped).
+// call. It answers `{tasks: [{id, custom_id, name, status, url, priority,
+// assignees, tags, due_date, date_updated, date_closed, list}], count, page,
+// has_more, next_page}`: `status` is a string, `tags` are `{name}` objects,
+// `date_updated` is epoch milliseconds as a string, and a listed task carries
+// no body. An entry that is off-shape is dropped.
 //
 // An item is `{ref: clickup:<task id>, revision: <updated>, title: <name>, url:
-// <the task's own url>, updated_at: <updated>, text: <description>, status:
-// <status name>}`. The id matches `CLICKUP_TASK_ID` (the ref is printed raw in a
-// prompt frame, so an id that could carry words is dropped). `title`, `text` and
-// `status` are the server's text: untrusted data, wrapped wherever they reach a
-// model. A task with no usable id or updated time is dropped.
+// <the task's own url>, updated_at: <updated>, status: <status name>}`, with no
+// `text` (the listing has none). The id matches `CLICKUP_TASK_ID` (the ref is
+// printed raw in a prompt frame, so an id that could carry words is dropped).
+// `title` and `status` are the server's text: untrusted data, wrapped wherever
+// they reach a model. A task with no usable id or updated time is dropped.
 //
 // Failures are `client_error` with the tracker scope (`clickup:list/<id>` or
 // `clickup:space/<id>`) as `repo` and a fixed code as `message`
@@ -71,7 +74,7 @@ function scopeOf(filters: ClickupPollSpec["filters"]): string {
   return filters.list !== undefined ? `clickup:list/${filters.list}` : `clickup:space/${filters.space ?? ""}`;
 }
 
-/** The tool's arguments for a poll's filters, as the pinned fixture's tool takes them. */
+/** The tool's arguments for a poll's filters, under the argument names `clickup_filter_tasks` declares in its input schema. */
 function argsOf(filters: ClickupPollSpec["filters"]): Record<string, unknown> {
   return {
     ...(filters.list === undefined ? {} : { list_ids: [filters.list] }),
@@ -100,7 +103,7 @@ function itemOf(filters: ClickupPollSpec["filters"], entry: unknown): SourceItem
   if (task === undefined) return undefined;
   const id = task["id"];
   if (typeof id !== "string" || !CLICKUP_TASK_ID.test(id)) return undefined;
-  const updated = updatedOf(task["date_updated"] ?? task["updated_at"]);
+  const updated = updatedOf(task["date_updated"]);
   if (updated === undefined) return undefined;
   if (filters.tags !== undefined) {
     const carried = tagsOf(task);
@@ -113,7 +116,6 @@ function itemOf(filters: ClickupPollSpec["filters"], entry: unknown): SourceItem
     title: textOf(task["name"]),
     url: urlOf(task["url"]),
     updated_at: updated,
-    text: textOf(task["description"] ?? task["text_content"]),
     ...(status === undefined ? {} : { status }),
   };
 }

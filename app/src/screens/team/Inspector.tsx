@@ -14,11 +14,12 @@
 //   live read. Its effort and delegation depth read "not reported" unless set
 //   this session, when the value is marked "set this session" (no route reads
 //   it back), and "unknown" while the roster says wright.json does not read ok.
-// - Both: a Connectors row (phase 6 item 08) with the GitHub grant (the roster's
-//   `connectors`) and the connector's state (`GET /connectors`, read by the
-//   screen), and Grant GitHub or Revoke through `POST /agents/:id/set`; plus,
-//   per connected MCP kind (Jira, ClickUp), the tools the agent holds (its
-//   `GET /agents/:id` `settings.content.connectors`), unknown for Wright.
+// - Both: a Connectors row (phase 6 item 08) with the GitHub grant and the
+//   connector's state (`GET /connectors`, read by the screen), changed through
+//   `POST /agents/:id/set`: a crew member's None, Read or Write (phase 8 item 20,
+//   read from its `GET /agents/:id` `settings.content.connectors`), Wright's
+//   roster-based Grant GitHub or Revoke; plus, per connected MCP kind (Jira,
+//   ClickUp), the tools the agent holds (the same `connectors`), unknown for Wright.
 // - The header avatar carries the card's state (`avatar`, from the task line),
 //   never a fixed one.
 //
@@ -34,7 +35,7 @@ import { Button } from "../../components/Button/Button";
 import { formatTokens } from "../../components/Card/Card";
 import { SelectField, TextField } from "../../components/Input/Input";
 import { setAgentField, turnAgent } from "./actions";
-import { Connectors, type GrantChange, changeGithubGrant, changeMcpGrant, mcpGrantRows } from "./Connectors";
+import { Connectors, type GithubLevel, changeGithubGrant, changeMcpGrant, githubLevel, mcpGrantRows } from "./Connectors";
 import {
   CLEAR_VALUE,
   CREW_SET_FIELDS,
@@ -281,12 +282,12 @@ export function Inspector({ api, agent, avatar, detail, wrightSet, connectors, o
     }
   };
 
-  // A grant or revoke posts the owner's route; the row changes only when the feed's `agent_*` event refetches the roster.
-  const onGrant = async (change: GrantChange) => {
+  // A GitHub level change posts the owner's route; the row changes only when the feed's `agent_*` event refetches the roster and detail.
+  const onGrant = async (level: GithubLevel) => {
     setBusy(true);
     setNotice(undefined);
     try {
-      const outcome = await changeGithubGrant(api, agent, change);
+      const outcome = await changeGithubGrant(api, agent, level);
       setNotice({ kind: outcome.ok ? "ok" : "error", text: outcome.text });
     } finally {
       setBusy(false);
@@ -412,9 +413,11 @@ export function Inspector({ api, agent, avatar, detail, wrightSet, connectors, o
       <Section title="Connectors" note="granted per agent" testId="team-insp-connectors">
         <Connectors
           granted={githubGranted(agent)}
+          lead={lead}
+          level={lead ? undefined : githubLevel(content, agent)}
           state={connectors}
           busy={busy}
-          onChange={(change) => void onGrant(change)}
+          onChange={(level) => void onGrant(level)}
           mcp={mcpGrantRows(connectors, mcpSettings)}
           onMcpChange={(kind, tools) => void onMcpGrant(kind, tools)}
         />

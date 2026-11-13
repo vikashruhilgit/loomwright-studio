@@ -257,6 +257,92 @@ describe("set <id> connectors github | none for a crew member (AC1, AC2)", () =>
   });
 });
 
+// ---- github:none: drops only the GitHub key ---------------------------------------------------------
+
+describe("set <id> connectors github:none drops only the GitHub key (phase 8 item 20)", () => {
+  it("on {github: write, jira: [...]} it keeps the jira tools, drops github, writes one event, and the CLI answers the same", async () => {
+    create("reviewer");
+    const base = jsonOf("reviewer");
+    expect((await api("POST", "/agents/reviewer/set", { field: "connectors", value: "github:write" })).body).toMatchObject({ changed: true });
+    expect((await api("POST", "/agents/reviewer/set", { field: "connectors", value: "jira:get_issue,search_issues" })).body).toMatchObject({ changed: true });
+    expect(jsonOf("reviewer")).toEqual({ ...base, connectors: { github: "write", jira: ["get_issue", "search_issues"] } });
+
+    const dropped = await api("POST", "/agents/reviewer/set", { field: "connectors", value: "github:none" });
+    expect([dropped.status, dropped.body.field, dropped.body.old, dropped.body.new, dropped.body.changed]).toEqual([
+      200,
+      "connectors",
+      { github: "write", jira: ["get_issue", "search_issues"] },
+      { jira: ["get_issue", "search_issues"] },
+      true,
+    ]);
+    expect(jsonOf("reviewer")).toEqual({ ...base, connectors: { jira: ["get_issue", "search_issues"] } });
+    expect(setEvents()).toHaveLength(3);
+    expect(setEvents()[2]).toEqual({ id: "reviewer", field: "connectors", old: { github: "write", jira: ["get_issue", "search_issues"] }, new: { jira: ["get_issue", "search_issues"] } });
+    const read = readAgentSettings(dataDir, "reviewer", { homeDir: home });
+    expect(read.ok).toBe(true);
+
+    // The CLI takes the same value through the same route: github back, then github:none again.
+    expect((await studio("agents", "set", "reviewer", "connectors", "github")).code).toBe(0);
+    const cli = await studio("agents", "set", "reviewer", "connectors", "github:none");
+    expect(cli.code).toBe(0);
+    expect(cli.stderr).toBe("");
+    expect(jsonOf("reviewer")).toEqual({ ...base, connectors: { jira: ["get_issue", "search_issues"] } });
+  });
+
+  it("on [github] it removes the connectors key (every other key unchanged), one event {old: [github], new: null}, and the next session lists no GitHub tool", async () => {
+    create("reviewer");
+    const base = jsonOf("reviewer");
+    await api("POST", "/agents/reviewer/set", { field: "connectors", value: "github" });
+    expect((await listedToolsOf("reviewer")).listed).toContain(GITHUB_TOOL_NAME);
+
+    const r = await api("POST", "/agents/reviewer/set", { field: "connectors", value: "github:none" });
+    expect([r.status, r.body.old, r.body.new, r.body.changed]).toEqual([200, ["github"], null, true]);
+    expect(jsonOf("reviewer")).toEqual(base);
+    expect("connectors" in jsonOf("reviewer")).toBe(false);
+    expect(setEvents()[1]).toEqual({ id: "reviewer", field: "connectors", old: ["github"], new: null });
+    expect((await listedToolsOf("reviewer")).listed).not.toContain(GITHUB_TOOL_NAME);
+  });
+
+  it("with no github held it answers changed:false, with the same bytes and no event (a jira-only grant included)", async () => {
+    create("reviewer");
+    const bytes = readFileSync(fileOf("reviewer"));
+    const none = await api("POST", "/agents/reviewer/set", { field: "connectors", value: "github:none" });
+    expect([none.status, none.body.old, none.body.new, none.body.changed]).toEqual([200, null, null, false]);
+    expect(readFileSync(fileOf("reviewer")).equals(bytes)).toBe(true);
+
+    await api("POST", "/agents/reviewer/set", { field: "connectors", value: "jira:get_issue" });
+    const jiraBytes = readFileSync(fileOf("reviewer"));
+    const jira = await api("POST", "/agents/reviewer/set", { field: "connectors", value: "github:none" });
+    expect([jira.status, jira.body.old, jira.body.new, jira.body.changed]).toEqual([200, { jira: ["get_issue"] }, { jira: ["get_issue"] }, false]);
+    expect(readFileSync(fileOf("reviewer")).equals(jiraBytes)).toBe(true);
+    expect(setEvents()).toHaveLength(1);
+  });
+
+  it("works for Wright like github does, and the whole-key none still clears every connector", async () => {
+    await api("POST", "/agents/wright/set", { field: "connectors", value: "github" });
+    const r = await api("POST", "/agents/wright/set", { field: "connectors", value: "github:none" });
+    expect([r.status, r.body.old, r.body.new, r.body.changed]).toEqual([200, ["github"], null, true]);
+
+    create("reviewer");
+    await api("POST", "/agents/reviewer/set", { field: "connectors", value: "github" });
+    await api("POST", "/agents/reviewer/set", { field: "connectors", value: "jira:get_issue" });
+    const cleared = await api("POST", "/agents/reviewer/set", { field: "connectors", value: "none" });
+    expect([cleared.status, cleared.body.new, cleared.body.changed]).toEqual([200, null, true]);
+    expect("connectors" in jsonOf("reviewer")).toBe(false);
+  });
+
+  it("lookalikes stay refused with the one connectors message, the file unchanged", async () => {
+    create("reviewer");
+    const bytes = readFileSync(fileOf("reviewer"));
+    for (const value of ["github:None", "GITHUB:none", "github:none ", "github:nonee"]) {
+      const r = await api("POST", "/agents/reviewer/set", { field: "connectors", value });
+      expect([r.status, r.body.error, r.body.message], JSON.stringify(value)).toEqual([400, "invalid_input", "connectors must be github or none"]);
+    }
+    expect(readFileSync(fileOf("reviewer")).equals(bytes)).toBe(true);
+    expect(setEvents()).toEqual([]);
+  });
+});
+
 // ---- AC3: Wright ------------------------------------------------------------------------------
 
 describe("set wright connectors github (AC3)", () => {

@@ -3,16 +3,21 @@
 // repo's policy", walked in the built app against a REAL in-process kernel and fakes, and nowhere else.
 //
 //   a. One GitHub issue (#11) and one ClickUp task (cu-1) become two ticket tasks, each linked to its own pull
-//      request in `pr_tracks`: PR A #21 and PR B #22.
+//      request in `pr_tracks`: PR A #21 and PR B #22. The ticket playbook's session hands each ticket over
+//      (`kernel_automate_prepare`) and ends; the KERNEL then starts the `/automate` stand-in run session (D44), which opens
+//      the PR and parks it. The crew member's `tool_policy` is drafted from the shipped catalogue (`crewCharter`,
+//      `allowedToolsForJobs`): kernel tools only, no `Read`, `Skill` or Bash prefix.
 //   b. Three comments on PR A are triaged by the triage playbook's own stand-in sessions. PR A is a parked
-//      /automate item, so `kernel_pr_route` answers `automate_fix` and the fix runs `/loomwright:review-pr <pr url>`
-//      in that same session (never a second drain); the question gets an answer (`createPullComment`) and the remark
+//      /automate item, so `kernel_pr_route` answers `automate_fix` with `/loomwright:review-pr <pr url>`. The drafted crew
+//      policy holds no `Skill`, so the session cannot run it (D44 names this path as open); it is not a second drain either
+//      way. The question gets an answer (`createPullComment`) and the remark
 //      a reply (`replyToReviewComment`), both held and sent only after the owner allows them in Approvals.
 //   c. The owner is re-requested as the reviewer (`requestReviewers`), held and allowed the same way.
 //   d. PR A merges under Solo through the merge-when-ready playbook (`kernel_automate_merge_check` answers `go`);
 //      PR B merges under Approve in Studio after the owner allows its merge card for PR B's head in the app. Both end
 //      with `pr_tracks.merged_by_gate = 1`, and the fake GitHub records no merge call from the kernel.
-//   e. A stand-in session's `gh pr merge` is denied `merge_blocked`, as its recorded `tool_decision` shows.
+//   e. A `gh pr merge` in each kernel-started run session is denied `merge_blocked`, as its recorded `tool_decision`
+//      shows; the crew session, drafted without a Bash grant, is denied its own attempt by the policy.
 //   f. The Tasks screen shows each ticket's PR, approvals and CI at each step.
 //
 // Every step's effect is asserted from the kernel's own store (rows, events, decisions) and the fake GitHub's
@@ -47,6 +52,8 @@ import { createAgent, getAgent } from "../../kernel/src/agents/index.js";
 import type { AuthProvider } from "../../kernel/src/auth/index.js";
 import { startKernel } from "../../kernel/src/kernel.js";
 import type { Kernel, KernelDeps } from "../../kernel/src/kernel.js";
+import { readRunState, summarizeRuns } from "../../kernel/src/automate/run-state.js";
+import { itemFileName } from "../../kernel/src/automate/tickets-to-items.js";
 import { enqueueEvent } from "../../kernel/src/loop/queue.js";
 import { createPlaybook, getPlaybook, linkedTriggerOf } from "../../kernel/src/playbooks/store.js";
 import { fetchPollItems } from "../../kernel/src/triggers/index.js";
@@ -58,8 +65,10 @@ import { flush, makePluginDir, stubProvider } from "../../kernel/test/session-fa
 import { launchApp, processEnv } from "./electron-harness";
 import {
   ANSWER_TEXT,
+  CLICKUP_LIST_TOOL,
   CLICKUP_REF,
   CLICKUP_TASK,
+  CLICKUP_TASK_BODY,
   CLICKUP_TASK_ROW,
   COMMENT_FIX,
   COMMENT_QUESTION,
@@ -102,7 +111,7 @@ import {
   writeRunFile,
   writeWrightSettings,
 } from "./fixtures/phase-8-exit";
-import type { Clickup, Driver } from "./fixtures/phase-8-exit";
+import type { Clickup, Decision, Driver } from "./fixtures/phase-8-exit";
 
 const API_TOKEN_SERVICE = "loomwright-studio-api";
 const WAIT = { timeout: 30_000 };
@@ -111,6 +120,8 @@ const ITEM_KEY = ["playbook.id", "item.id", "item.revision"];
 /** The run ids the stand-in /automate gives its two runs. */
 const RUN_A = "2026-11-09-091000-tickets";
 const RUN_B = "2026-11-09-092000-tickets";
+/** The prompt of a kernel-started `/automate` run session (it runs on the ticket playbook's model, as the ticket's session does). */
+const RUN_PROMPT = /\/loomwright:automate --backlog /;
 const SHA_A = { pr: PR_A, head: HEAD_A, readyAt: READY_AT_A } as const;
 const SHA_B = { pr: PR_B, head: HEAD_B, readyAt: READY_AT_B } as const;
 
@@ -237,6 +248,11 @@ const policyRow = (store: Store): PolicyRow | undefined =>
   store.prepare<[string], PolicyRow>("SELECT policy_kind, set_by, detected_json FROM repo_policies WHERE repo = ?").get(REPO);
 
 /** The `tool_decision` events of `session`, as {tool, decision, reason, command}. */
+/** The sessions of playbook `id`, oldest first: who ran them, on which model, and how they ended. */
+function playbookSessions(store: Store, id: number): { agent: string; model: string; status: string }[] {
+  return store.prepare<[number], { agent: string; model: string; status: string }>("SELECT agent, model, status FROM sessions WHERE playbook = ? ORDER BY id").all(id);
+}
+
 function decisionsOf(store: Store, session: number): { tool: unknown; decision: unknown; reason: unknown; command: unknown }[] {
   return events(store, "tool_decision")
     .filter((e) => e.session_id === session)
@@ -344,8 +360,12 @@ interface AutomateRun {
 
 /** What each stand-in saw and was told, kept for the assertions after it (the kernel's store holds the effects; these are the answers). */
 interface Seen {
-  /** `kernel_automate_state` before the handover, while the stand-in /automate runs, and after it parked the PR. */
-  readonly handovers: { ref: string; before: string; during: string; after: string; invocation: string }[];
+  /** What the ticket's session saw and was told: `kernel_automate_state` before the handover, and prepare's answer (`run`, `invocation`). */
+  readonly handovers: { ref: string; before: string; run: string; invocation: string }[];
+  /** The kernel-started /automate run sessions: its prompt, and the run state when it started, while it worked and after it parked the PR. */
+  readonly runs: { ref: string; prompt: string; started: string; during: string; after: string; mergeAttempt: Decision }[];
+  /** What the fix session was refused when it tried the routed command (its drafted policy holds no `Skill`). */
+  readonly refused: { tool: string; decision: string; reason: string }[];
   readonly routes: Record<string, unknown>[];
   /** The slash commands the fix session ran. */
   readonly ran: string[];
@@ -355,20 +375,41 @@ interface Seen {
   readonly mergeAttempts: { command: string; decision: string; reason: string }[];
 }
 
-/** A ticket's session: hand it to /automate, which (stand-in) opens the PR and parks it awaiting the merge. */
-function ticketDriver(seen: Seen, checkout: string, ticket: TicketHandover, run: AutomateRun): Driver {
+/** A ticket's session: look, then hand the ticket to /automate and end. The kernel starts the run (D44); this session runs nothing. */
+function ticketDriver(seen: Seen, ticket: TicketHandover): Driver {
   return async (call) => {
     await flush(1);
     const before = await use<{ state: string }>(call, "kernel_automate_state", { repo: REPO });
-    const prepared = await use<{ invocation: string; items: { ref: string; path: string }[] }>(call, "kernel_automate_prepare", { repo: REPO, tickets: [ticket] });
-    const item = relative(checkout, prepared.items[0]?.path ?? "");
-    // The stand-in /automate (Loomwright's recorded run files): live while it works, then paused awaiting the merge with the PR it opened.
+    const prepared = await use<{ invocation: string; run: string }>(call, "kernel_automate_prepare", { repo: REPO, tickets: [ticket] });
+    seen.handovers.push({ ref: ticket.ref, before: before.state, run: prepared.run, invocation: prepared.invocation });
+    finish(call, `Handed ${ticket.ref} to /automate; the kernel starts the run.`);
+  };
+}
+
+/** The run state of `checkout` as Loomwright's run files read it (`idle` | `live` | `parked` ...). */
+function runStateOf(checkout: string): string {
+  const read = readRunState(checkout);
+  return read.ok ? summarizeRuns(read).state : "unreadable";
+}
+
+/**
+ * The kernel-started `/automate` run session (stand-in): it reads its backlog, tries a `gh pr merge` (its policy allows `gh`; the rail
+ * denies it `merge_blocked`), works (the run file is live), then opens the PR and parks it awaiting the merge (Loomwright's recorded run files).
+ */
+function automateRunDriver(seen: Seen, checkout: string, ticket: TicketHandover, run: AutomateRun): Driver {
+  return async (call, prompt) => {
+    await flush(1);
+    const backlog = /\/loomwright:automate --backlog (\S+?) --inline-phases/.exec(prompt)?.[1];
+    if (backlog === undefined) throw new Error(`the run session was started with an unexpected prompt: ${prompt}`);
+    if (!readFileSync(backlog, "utf8").includes(`/${itemFileName(ticket.ref)}`)) throw new Error(`the run session's backlog lists no item for ${ticket.ref}`);
+    const item = `.supervisor/requirements/studio/${itemFileName(ticket.ref)}`;
+    const started = runStateOf(checkout);
+    const mergeAttempt = await gate(call, "Bash", { command: `gh pr merge ${run.pr} --squash --delete-branch` });
     writeRunFile(checkout, { id: run.id, state: "live", item, pr: run.pr, head: run.head, readyAt: run.readyAt });
-    const during = await use<{ state: string }>(call, "kernel_automate_state", { repo: REPO });
+    const during = runStateOf(checkout);
     writeRunFile(checkout, { id: run.id, state: "parked", item, pr: run.pr, head: run.head, readyAt: run.readyAt });
-    const after = await use<{ state: string }>(call, "kernel_automate_state", { repo: REPO });
-    seen.handovers.push({ ref: ticket.ref, before: before.state, during: during.state, after: after.state, invocation: prepared.invocation });
-    finish(call, `Handed ${ticket.ref} to /automate; it parked PR ${run.pr} awaiting the merge.`);
+    seen.runs.push({ ref: ticket.ref, prompt, started, during, after: runStateOf(checkout), mergeAttempt });
+    finish(call, `Opened PR ${run.pr} for ${ticket.ref} and parked it awaiting the merge.`);
   };
 }
 
@@ -434,7 +475,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     clock.advance(STEP_MS);
     await syncAppClock();
   };
-  const seen: Seen = { handovers: [], routes: [], ran: [], held: {}, checks: [], merges: [], mergeAttempts: [] };
+  const seen: Seen = { handovers: [], runs: [], refused: [], routes: [], ran: [], held: {}, checks: [], merges: [], mergeAttempts: [] };
 
   // ---- 0. Setup: what the live run's runbook has the owner click through before the walk ----
   // GitHub is connected (the connector row the App's connect writes) and reaches the sandbox repo; ClickUp is signed in against the fake server.
@@ -447,7 +488,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   const created = createAgent(store, dataDir, crewCharter(checkout), { by: "owner", homeDir: home }, clock.now());
   expect(created.ok ? "" : created.message).toBe("");
   expect((await api("POST", `/agents/${CREW}/set`, { field: "connectors", value: "github:write" })).status).toBe(200);
-  expect((await api("POST", `/agents/${CREW}/set`, { field: "connectors", value: "clickup:get_workspace_tasks" })).status).toBe(200);
+  expect((await api("POST", `/agents/${CREW}/set`, { field: "connectors", value: `clickup:${CLICKUP_LIST_TOOL}` })).status).toBe(200);
   expect(getAgent(store, CREW)).toMatchObject({ status: "active", created_by: "owner" });
 
   app = await launchApp({ ...processEnv(), STUDIO_DATA_DIR: dataDir, STUDIO_APP_FIXTURE_TOKEN: token });
@@ -492,7 +533,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
 
   // ---- 1. (a) A GitHub issue becomes PR A: the tickets playbook polls issues, its session hands the ticket to /automate ----
   const ISSUE_TICKET: TicketHandover = { ref: ISSUE_REF, title: "Add a ping command", link: `https://github.com/${REPO}/issues/${ISSUE_NUMBER}`, body: "Add `studio ping`: it prints pong and exits 0." };
-  const CLICKUP_TICKET: TicketHandover = { ref: CLICKUP_REF, title: CLICKUP_TASK_ROW.name, link: CLICKUP_TASK_ROW.url, body: CLICKUP_TASK_ROW.description };
+  const CLICKUP_TICKET: TicketHandover = { ref: CLICKUP_REF, title: CLICKUP_TASK_ROW.name, link: CLICKUP_TASK_ROW.url, body: CLICKUP_TASK_BODY };
   const issues = playbook(
     "Tickets: GitHub issues",
     "Hand each open issue on studio-sandbox to /automate and follow its pull request.",
@@ -500,14 +541,28 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     TICKETS_MODEL,
     ITEM_KEY,
   );
-  s.ready("issue #11 to /automate", TICKETS_MODEL, ticketDriver(seen, checkout, ISSUE_TICKET, { id: RUN_A, ...SHA_A }), new RegExp(ISSUE_REF));
+  s.ready("issue #11 to /automate", TICKETS_MODEL, ticketDriver(seen, ISSUE_TICKET), new RegExp(ISSUE_REF));
+  s.ready("kernel-started /automate run: issue #11", TICKETS_MODEL, automateRunDriver(seen, checkout, ISSUE_TICKET, { id: RUN_A, ...SHA_A }), RUN_PROMPT);
   await step();
   await sessionsDone(issues, 1);
+  // The ticket session ended after the handover; the kernel starts the run from the event prepare queued, and the run parks PR A.
+  await expect.poll(() => seen.runs.length, WAIT).toBe(1);
   noFailures();
   // The poll queued the issue as its own run of the playbook, and its session handed it over: the state it saw is idle, then live, then parked.
   expect(sessionRuns(store, issues)).toEqual([expect.objectContaining({ item_ref: ISSUE_REF, kind: "fire", status: "done" })]);
-  expect(seen.handovers).toEqual([expect.objectContaining({ ref: ISSUE_REF, before: "idle", during: "live", after: "parked" })]);
+  expect(seen.handovers).toEqual([expect.objectContaining({ ref: ISSUE_REF, before: "idle", run: "started_by_kernel" })]);
   expect(seen.handovers[0]?.invocation).toMatch(/^\/automate --backlog \S+_BACKLOG\.md --inline-phases$/);
+  // The run session: Loomwright's `/loomwright:automate` over the backlog, safe mode; it started with no run live, worked (live), and parked.
+  expect(seen.runs).toEqual([expect.objectContaining({ ref: ISSUE_REF, started: "idle", during: "live", after: "parked" })]);
+  expect(seen.runs[0]?.prompt).toMatch(/^\{.*"content":"\/loomwright:automate --backlog \S+_BACKLOG\.md --inline-phases"/);
+  expect(seen.runs[0]?.prompt).not.toMatch(/--auto-merge|--parallel/);
+  // It is one more session of the ticket playbook, as the crew member, on the playbook's model: two sessions in all (the ticket's and the run's).
+  expect(playbookSessions(store, issues)).toEqual([
+    { agent: CREW, model: TICKETS_MODEL, status: "completed" },
+    { agent: CREW, model: TICKETS_MODEL, status: "completed" },
+  ]);
+  // (e) its `gh pr merge` was denied `merge_blocked` by the rail.
+  expect(seen.runs[0]?.mergeAttempt).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "merge_blocked" });
   expect(trackRows(store)).toEqual([]);
   // The next poll finds the issue again; the owner's key skips it (no second run), and the PR tracker follows the poll's fire and finds PR A.
   await step();
@@ -528,7 +583,8 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     TICKETS_MODEL,
     ITEM_KEY,
   );
-  s.ready("clickup cu-1 to /automate", TICKETS_MODEL, ticketDriver(seen, checkout, CLICKUP_TICKET, { id: RUN_B, ...SHA_B }), new RegExp(CLICKUP_REF));
+  s.ready("clickup cu-1 to /automate", TICKETS_MODEL, ticketDriver(seen, CLICKUP_TICKET), new RegExp(CLICKUP_REF));
+  s.ready("kernel-started /automate run: clickup cu-1", TICKETS_MODEL, automateRunDriver(seen, checkout, CLICKUP_TICKET, { id: RUN_B, ...SHA_B }), RUN_PROMPT);
   const fetched = await fetchPollItems(github, { source: "clickup.tasks", filters: { list: "901" }, interval_seconds: POLL_SECONDS }, clickup.reader, store);
   expect(fetched.ok && fetched.items.map((i) => i.ref)).toEqual([CLICKUP_REF]);
   const queuedAt = clock.now();
@@ -543,14 +599,18 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     queuedAt,
   );
   await sessionsDone(tasks, 1);
+  await expect.poll(() => seen.runs.length, WAIT).toBe(2);
   noFailures();
   expect(sessionRuns(store, tasks)).toEqual([expect.objectContaining({ item_ref: CLICKUP_REF, kind: "fire", status: "done" })]);
   // The second ticket found the first run paused, not live: the single drain was free.
-  expect(seen.handovers[1]).toMatchObject({ ref: CLICKUP_REF, before: "parked", during: "live", after: "parked" });
-  // The kernel read ClickUp itself through the fake server, with the poll's filters: one `get_workspace_tasks` call per fire.
+  expect(seen.handovers[1]).toMatchObject({ ref: CLICKUP_REF, before: "parked", run: "started_by_kernel" });
+  expect(seen.runs[1]).toMatchObject({ ref: CLICKUP_REF, started: "parked", during: "live", after: "parked" });
+  expect(seen.runs[1]?.mergeAttempt).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "merge_blocked" });
+  expect(playbookSessions(store, tasks)).toHaveLength(2);
+  // The kernel read ClickUp itself through the fake server, with the poll's filters: one listing-tool call per fire.
   const clickupCalls = clickup.mcp.mcpCalls.filter((c) => c.method === "tools/call");
   expect(clickupCalls.length).toBeGreaterThanOrEqual(1);
-  expect(clickupCalls.every((c) => c.name === "get_workspace_tasks" && JSON.stringify(c.arguments) === JSON.stringify({ list_ids: ["901"] }))).toBe(true);
+  expect(clickupCalls.every((c) => c.name === CLICKUP_LIST_TOOL && JSON.stringify(c.arguments) === JSON.stringify({ list_ids: ["901"] }))).toBe(true);
   await step();
   await expect.poll(() => trackRows(store).length, WAIT).toBe(2);
   noFailures();
@@ -595,10 +655,11 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     const route = await use(call, "kernel_pr_route", { repo: REPO, pr: PR_A });
     seen.routes.push(route);
     const command = typeof route.command === "string" ? route.command : "";
-    // Run in this session, as the route told it to: the Skill is the slash command (allowed by the policy; nothing here starts a drain).
+    // The route answers Loomwright's review-pr command, which the session would run itself as the Skill. The drafted crew policy holds no
+    // `Skill` (D44 names this path as open), so the call is refused by the policy and nothing is run; it starts no drain either way.
     const d = await gate(call, "Skill", { skill: "loomwright:review-pr", args: URL_A });
-    if (d.permissionDecision !== "allow") throw new Error(`the rail refused the review-pr command: ${d.permissionDecisionReason}`);
-    seen.ran.push(command);
+    seen.refused.push({ tool: "Skill", decision: d.permissionDecision, reason: d.permissionDecisionReason });
+    if (d.permissionDecision === "allow") seen.ran.push(command);
     seen.held.rerequest = await hold(call, "kernel_github_pr_request_reviewers", REREQUEST);
     finish(call, "I ran /loomwright:review-pr on the parked item; my re-request for review is waiting for your approval.");
   }, new RegExp(`review_comment:${COMMENT_FIX.id}`));
@@ -618,11 +679,12 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   noFailures();
   // Three runs, one per comment, each on its own session.
   expect(sessionRuns(store, triage).map((r) => r.item_ref).sort()).toEqual([commentRef(COMMENT_FIX), commentRef(COMMENT_QUESTION), commentRef(COMMENT_REMARK)].sort());
-  // (b) PR A is a parked /automate item: the route is automate_fix with that item and the review-pr command, which the fix session ran.
+  // (b) PR A is a parked /automate item: the route is automate_fix with that item and the review-pr command, which the drafted policy does not let the fix session run.
   expect(seen.routes).toEqual([
     expect.objectContaining({ route: "automate_fix", repo: REPO, pr: PR_A, owner_kind: "automate_parked", command: `/loomwright:review-pr ${URL_A}`, item: expect.objectContaining({ run_id: RUN_A, status: "awaiting_merge", pr: URL_A }) }),
   ]);
-  expect(seen.ran).toEqual([`/loomwright:review-pr ${URL_A}`]);
+  expect(seen.refused).toEqual([{ tool: "Skill", decision: "deny", reason: "tool_not_allowed" }]);
+  expect(seen.ran).toEqual([]);
   // Never a second drain: the triage sessions never called the handover, and no run file was written or changed.
   const triageSessions = sessionRuns(store, triage).map((r) => r.session_id as number);
   for (const session of triageSessions) expect(decisionsOf(store, session).map((d) => String(d.tool))).not.toContain(`${K}kernel_automate_prepare`);
@@ -692,7 +754,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   };
   s.ready("merge-when-ready: PR A", MERGE_MODEL, async (call) => {
     await flush(1);
-    // The session tries the merge itself, as a model might. The rail denies it whatever the policy says.
+    // The session tries the merge itself, as a model might. Its drafted policy holds no Bash prefix, so the policy denies it before the rail.
     const direct = `gh pr merge ${PR_A} --squash`;
     const d = await gate(call, "Bash", { command: direct });
     seen.mergeAttempts.push({ command: direct, decision: d.permissionDecision, reason: d.permissionDecisionReason });
@@ -705,10 +767,10 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   await runNow();
   await expect.poll(() => sessionRuns(store, mergeReady).map((r) => r.status), WAIT).toEqual(["done"]);
   noFailures();
-  // (e) The direct `gh pr merge` was denied merge_blocked by the rail, and its recorded decision says so.
-  expect(seen.mergeAttempts).toEqual([{ command: `gh pr merge ${PR_A} --squash`, decision: "deny", reason: expect.stringContaining("merge_blocked") }]);
+  // (e) The crew session's direct `gh pr merge` was denied (no Bash grant), and its recorded decision says so; the run sessions' were merge_blocked.
+  expect(seen.mergeAttempts).toEqual([{ command: `gh pr merge ${PR_A} --squash`, decision: "deny", reason: "bash_prefix_not_allowed" }]);
   const mergeSession = sessionRuns(store, mergeReady)[0]?.session_id as number;
-  expect(decisionsOf(store, mergeSession).filter((d) => d.tool === "Bash")).toEqual([{ tool: "Bash", decision: "deny", reason: "merge_blocked", command: `gh pr merge ${PR_A} --squash` }]);
+  expect(decisionsOf(store, mergeSession).filter((d) => d.tool === "Bash")).toEqual([{ tool: "Bash", decision: "deny", reason: "bash_prefix_not_allowed", command: `gh pr merge ${PR_A} --squash` }]);
   // (d) The check answered go with Loomwright's own invocation for the parked run.
   expect(seen.checks).toEqual([{ pr: PR_A, answer: { answer: "go", repo: REPO, pr: PR_A, run_id: RUN_A, ready_sha: HEAD_A, invocation: `/loomwright:automate --merge-parked ${RUN_A}` } }]);
   expect(seen.merges).toEqual([{ pr: PR_A, invocation: `/loomwright:automate --merge-parked ${RUN_A}` }]);
@@ -802,9 +864,13 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   expect(ticketTasks(store).map((t) => t.state)).toEqual(["merged", "merged"]);
   // The fake GitHub recorded no merge call from the kernel; every merge the kernel saw was a read of the merge state.
   expect(github.calls.map((c) => c.method).filter((m) => /merge/i.test(m) && m !== "getPullMergeState")).toEqual([]);
-  // The only `gh pr merge` any session tried was denied merge_blocked, and none was ever held as an approval.
+  // Every `gh pr merge` any session tried was denied (the run sessions' by the rail, merge_blocked; the crew session's by its policy), and none was ever held as an approval.
   const merges = events(store, "tool_decision").filter((e) => typeof e.payload.command === "string" && e.payload.command.startsWith("gh pr merge"));
-  expect(merges.map((e) => [e.payload.decision, e.payload.reason])).toEqual([["deny", "merge_blocked"]]);
+  expect(merges.map((e) => [e.payload.decision, e.payload.reason]).sort()).toEqual([
+    ["deny", "bash_prefix_not_allowed"],
+    ["deny", "merge_blocked"],
+    ["deny", "merge_blocked"],
+  ]);
   expect(approvalRows(store).filter((a) => a.action.includes("merge") && a.action !== "kernel_merge_approval_request")).toEqual([]);
   // (f) Tasks: both cards are merged by Loomwright's gate, and the open card says so.
   await showTasks(page);

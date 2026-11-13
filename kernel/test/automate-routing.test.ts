@@ -323,7 +323,12 @@ describe("the automate sources", () => {
       const text = readFileSync(new URL(f, AUTOMATE_SRC), "utf8");
       for (const [what, pattern] of forbidden) {
         // `ctx.sessions.getSession` is a read of the calling session's row, the one session call routing makes.
-        const scanned = what === "a session start" ? text.replace(/\.getSession\(/g, "") : text;
+        // `launch.ts` (D44) is the one file that starts a session: exactly one `sessions.startSession(` call, on the session manager the loop passes it.
+        let scanned = what === "a session start" ? text.replace(/\.getSession\(/g, "") : text;
+        if (what === "a session start" && f === "launch.ts") {
+          expect(scanned.match(/\bstartSession\b/g)).toHaveLength(1);
+          scanned = scanned.replace(/\bsessions\.startSession\(/, "");
+        }
         expect(pattern.test(scanned), `${f} has ${what}`).toBe(false);
       }
     }
