@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 // The inspector's Connectors row and its ⌘K commands (phase 6 item 08, AC8 and
-// AC9) against a scripted bridge (`fake-bridge.ts`): the GitHub grant from the
-// roster's `connectors`, the connector's state from `GET /connectors`
-// (refetched on a `connector_status` event), Grant GitHub / Revoke through
-// `POST /agents/:id/set {field: "connectors", value}`, and the row changing
-// only when the feed's `agent_*` event refetches the roster.
+// AC9) against a scripted bridge (`fake-bridge.ts`): the GitHub grant (Wright's
+// from the roster's `connectors`, a crew member's level from its detail), the
+// connector's state from `GET /connectors` (refetched on a `connector_status`
+// event), the level buttons / Grant GitHub / Revoke through `POST /agents/:id/set
+// {field: "connectors", value}`, and the row changing only when the feed's
+// `agent_*` event refetches. The level reader, the Write line and the write
+// command are in `github-level.test.tsx` (phase 8 item 20).
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentDetailResponse, ApiRequest, ApiResult, Connector, ConnectorStatus, EventFrame, McpConnection, RosterEntry, StatusBody } from "../../api/contract";
@@ -56,7 +58,17 @@ function detail(agent: RosterEntry, extra: Record<string, unknown> = {}): AgentD
     agent,
     settings: {
       file: `/Users/o/.loomwright-studio/config/agents/${agent.id}.json`,
-      content: { model: agent.model, permission_mode: "default", tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] }, never: [], limits: {}, workspaces: [], ...extra },
+      // A crew member's level in its file follows the roster's grant (Mason Read, Pim None), as the kernel writes it.
+      content: {
+        model: agent.model,
+        permission_mode: "default",
+        tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] },
+        never: [],
+        limits: {},
+        workspaces: [],
+        ...(Array.isArray(agent.connectors) ? { connectors: agent.connectors } : {}),
+        ...extra,
+      },
       error: null,
     },
     never: [],
@@ -192,7 +204,8 @@ describe("the Connectors row", () => {
     const row = within(mason).getByTestId("team-insp-connectors");
     expect(within(row).getByRole("heading", { level: 3 }).textContent).toContain("Connectors");
     expect(within(row).getByText("GitHub")).toBeTruthy();
-    expect(grantWords(mason)).toBe("granted");
+    // A crew member's level is read from its detail: Mason's file holds ["github"], which is Read.
+    await waitFor(() => expect(grantWords(mason)).toBe("Read"));
     await waitFor(() => expect(stateWords(mason)).toBe("connected"));
     expect(requests(kernel, "GET /connectors")).toHaveLength(1);
 
@@ -223,8 +236,8 @@ describe("the Connectors row", () => {
     await startTeam({ connectors: refused(500, { error: "internal" }) });
     const again = await openInspector("Mason");
     await waitFor(() => expect(stateWords(again)).toBe("state unknown"));
-    // The grant itself is still the roster's.
-    expect(grantWords(again)).toBe("granted");
+    // The grant itself is still the file's level.
+    await waitFor(() => expect(grantWords(again)).toBe("Read"));
   });
 
   it("refetches GET /connectors on a connector_status event, and on no other", async () => {
@@ -245,12 +258,17 @@ describe("the Connectors row", () => {
     expect(requests(kernel, "GET /connectors")).toHaveLength(2);
   });
 
-  it("an agent whose connectors the roster did not report reads grant unknown, with neither Grant nor Revoke", async () => {
+  it("an agent whose connectors the roster did not report reads grant unknown, with no level control, Grant or Revoke", async () => {
     await startTeam({ roster: [WRIGHT, { ...MASON, connectors: null }, entry({ id: "pim", display_name: "Pim", status: "off" })] });
     const mason = await openInspector("Mason");
     expect(grantWords(mason)).toBe("grant unknown");
     expect(within(mason).queryByRole("button", { name: "Revoke" })).toBeNull();
     expect(within(mason).queryByRole("button", { name: "Grant GitHub" })).toBeNull();
+    // Mason's detail holds no connectors, which would read None: the roster's unknown comes first.
+    await waitFor(() => expect(within(mason).getByTestId("team-insp-role")).toBeTruthy());
+    expect(grantWords(mason)).toBe("grant unknown");
+    expect(within(mason).queryByTestId("team-connector-levels")).toBeNull();
+    for (const name of ["None", "Read", "Write"]) expect(within(mason).queryByRole("button", { name })).toBeNull();
     const pim = await openInspector("Pim");
     expect(grantWords(pim)).toBe("grant unknown");
   });
@@ -258,36 +276,38 @@ describe("the Connectors row", () => {
 
 // ---- AC9: Grant and Revoke -----------------------------------------------------------------------
 
-describe("Grant GitHub and Revoke", () => {
-  it("Revoke posts value none, and the row changes only when the feed's agent_* event refetches the roster", async () => {
+describe("the level buttons, Grant GitHub and Revoke", () => {
+  it("choosing None posts github:none (not none), and the row changes only when the feed's agent_* event refetches", async () => {
     const kernel = await startTeam({ set: setOk("connectors", ["github"], null) });
     const mason = await openInspector("Mason");
+    await waitFor(() => expect(grantWords(mason)).toBe("Read"));
     expect(within(mason).queryByRole("button", { name: "Grant GitHub" })).toBeNull();
-    fireEvent.click(within(mason).getByRole("button", { name: "Revoke" }));
+    expect(within(mason).queryByRole("button", { name: "Revoke" })).toBeNull();
+    fireEvent.click(within(mason).getByRole("button", { name: "None" }));
     await waitFor(() => expect(requests(kernel, "POST /agents/:id/set")).toHaveLength(1));
-    expect(requests(kernel, "POST /agents/:id/set")[0]).toMatchObject({ params: { id: "mason" }, body: { field: "connectors", value: "none" } });
+    expect(requests(kernel, "POST /agents/:id/set")[0]).toMatchObject({ params: { id: "mason" }, body: { field: "connectors", value: "github:none" } });
     expect((await within(mason).findByTestId("team-insp-notice")).textContent).toBe("GitHub revoked from Mason.");
 
-    // Not a local edit: past the store's refetch throttle, the row still says granted.
+    // Not a local edit: past the store's refetch throttle, the row still says Read.
     await new Promise((resolve) => setTimeout(resolve, 400));
-    expect(grantWords(mason)).toBe("granted");
-    expect(within(mason).getByRole("button", { name: "Revoke" })).toBeTruthy();
+    expect(grantWords(mason)).toBe("Read");
+    expect(within(mason).getByRole("button", { name: "None" })).toBeTruthy();
 
     kernel.roster = kernel.roster.map((a) => (a.id === "mason" ? { ...a, connectors: [] } : a));
     emit(kernel, "agent_settings_set");
-    await waitFor(() => expect(grantWords(mason)).toBe("not granted"));
-    expect(within(mason).getByRole("button", { name: "Grant GitHub" })).toBeTruthy();
-    expect(within(mason).queryByRole("button", { name: "Revoke" })).toBeNull();
+    await waitFor(() => expect(grantWords(mason)).toBe("None"));
+    expect(within(mason).getByRole("button", { name: "Read" })).toBeTruthy();
+    expect(within(mason).queryByRole("button", { name: "None" })).toBeNull();
   });
 
-  it("Grant GitHub posts value github for a non-granted agent, and Wright's grant goes to /agents/wright/set", async () => {
+  it("choosing Read posts github for a member at None, and Wright's Grant GitHub goes to /agents/wright/set", async () => {
     const kernel = await startTeam({ set: setOk("connectors", null, ["github"]) });
     const pim = await openInspector("Pim");
-    fireEvent.click(within(pim).getByRole("button", { name: "Grant GitHub" }));
+    fireEvent.click(await within(pim).findByRole("button", { name: "Read" }));
     await waitFor(() => expect(requests(kernel, "POST /agents/:id/set")).toHaveLength(1));
     expect(requests(kernel, "POST /agents/:id/set")[0]).toMatchObject({ params: { id: "pim" }, body: { field: "connectors", value: "github" } });
     expect((await within(pim).findByTestId("team-insp-notice")).textContent).toBe("GitHub granted to Pim.");
-    expect(grantWords(pim)).toBe("not granted");
+    expect(grantWords(pim)).toBe("None");
 
     const wright = await openInspector("Wright");
     fireEvent.click(within(wright).getByRole("button", { name: "Grant GitHub" }));
@@ -295,16 +315,25 @@ describe("Grant GitHub and Revoke", () => {
     expect(requests(kernel, "POST /agents/:id/set")[1]).toMatchObject({ params: { id: "wright" }, body: { field: "connectors", value: "github" } });
   });
 
+  it("Wright's Revoke posts github:none, so a GitHub revoke never drops the MCP grant Team cannot read", async () => {
+    const kernel = await startTeam({ roster: [{ ...WRIGHT, connectors: ["github"] }, MASON, PIM], set: setOk("connectors", ["github"], null) });
+    const wright = await openInspector("Wright");
+    fireEvent.click(within(wright).getByRole("button", { name: "Revoke" }));
+    await waitFor(() => expect(requests(kernel, "POST /agents/:id/set")).toHaveLength(1));
+    expect(requests(kernel, "POST /agents/:id/set")[0]).toMatchObject({ params: { id: "wright" }, body: { field: "connectors", value: "github:none" } });
+    expect((await within(wright).findByTestId("team-insp-notice")).textContent).toBe("GitHub revoked from Wright.");
+  });
+
   it("says so when the grant was already in place, and shows the kernel's refusal as text without changing the row", async () => {
     const kernel = await startTeam({ set: () => ok({ agent: {}, field: "connectors", old: ["github"], new: ["github"], changed: false }) });
     const pim = await openInspector("Pim");
-    fireEvent.click(within(pim).getByRole("button", { name: "Grant GitHub" }));
+    fireEvent.click(await within(pim).findByRole("button", { name: "Read" }));
     expect((await within(pim).findByTestId("team-insp-notice")).textContent).toBe("Pim already has GitHub.");
 
     kernel.fake.route("POST /agents/:id/set", () => refused(400, { error: "invalid_input", field: "connectors", message: "connectors must be github or none" }));
-    fireEvent.click(within(pim).getByRole("button", { name: "Grant GitHub" }));
+    fireEvent.click(within(pim).getByRole("button", { name: "Read" }));
     await waitFor(() => expect(within(pim).getByTestId("team-insp-notice").textContent).toBe("invalid_input: connectors must be github or none"));
-    expect(grantWords(pim)).toBe("not granted");
+    expect(grantWords(pim)).toBe("None");
   });
 });
 
@@ -320,29 +349,31 @@ describe("Grant GitHub and Revoke GitHub commands", () => {
     }
     expect(kernel.registry.get("team.revoke-github.mason")?.title).toBe("Revoke GitHub from Mason");
     expect(kernel.registry.get("team.grant-github.pim")?.title).toBe("Grant GitHub to Pim");
-    // Mason holds GitHub: only Revoke is enabled. Pim and Wright hold none: only Grant is.
-    expect(kernel.registry.get("team.revoke-github.mason")?.enabled?.()).toBe(true);
+    // Mason is at Read (once its detail is read): Revoke is enabled, Grant (read) is not. Pim is at None: only Grant is.
+    await waitFor(() => expect(kernel.registry.get("team.revoke-github.mason")?.enabled?.()).toBe(true));
     expect(kernel.registry.get("team.grant-github.mason")?.enabled?.()).toBe(false);
-    expect(kernel.registry.get("team.grant-github.pim")?.enabled?.()).toBe(true);
+    await waitFor(() => expect(kernel.registry.get("team.grant-github.pim")?.enabled?.()).toBe(true));
     expect(kernel.registry.get("team.revoke-github.pim")?.enabled?.()).toBe(false);
+    // Wright holds none by the roster: only Grant is enabled.
     expect(kernel.registry.get("team.grant-github.wright")?.enabled?.()).toBe(true);
     expect(kernel.registry.get("team.revoke-github.wright")?.enabled?.()).toBe(false);
   });
 
   it("are enabled in neither state while the roster did not report the agent's connectors", async () => {
     const kernel = await startTeam({ roster: [WRIGHT, { ...MASON, connectors: null }, entry({ id: "pim", display_name: "Pim" })] });
+    await waitFor(() => expect(requests(kernel, "GET /agents/:id")).toHaveLength(2));
     for (const id of ["mason", "pim"]) {
       expect(kernel.registry.get(`team.grant-github.${id}`)?.enabled?.()).toBe(false);
       expect(kernel.registry.get(`team.revoke-github.${id}`)?.enabled?.()).toBe(false);
     }
   });
 
-  it("run the same route as the buttons: Revoke posts none, Grant posts github, and the answer is the screen's notice", async () => {
+  it("run the same route as the buttons: Revoke posts github:none, Grant posts github, and the answer is the screen's notice", async () => {
     const kernel = await startTeam({ set: setOk("connectors", ["github"], null) });
     await act(async () => {
       await kernel.registry.get("team.revoke-github.mason")?.run();
     });
-    expect(requests(kernel, "POST /agents/:id/set")[0]).toMatchObject({ params: { id: "mason" }, body: { field: "connectors", value: "none" } });
+    expect(requests(kernel, "POST /agents/:id/set")[0]).toMatchObject({ params: { id: "mason" }, body: { field: "connectors", value: "github:none" } });
     expect(screen.getByTestId("team-notice").textContent).toBe("GitHub revoked from Mason.");
 
     kernel.fake.route("POST /agents/:id/set", setOk("connectors", null, ["github"]));
@@ -363,9 +394,9 @@ describe("Grant GitHub and Revoke GitHub commands", () => {
     expect(notice.getAttribute("role")).toBe("alert");
   });
 
-  it("re-register when an agent's connectors change, so enabled follows the roster", async () => {
+  it("re-register when an agent's connectors change, so enabled follows the roster and the file's level", async () => {
     const kernel = await startTeam();
-    expect(kernel.registry.get("team.grant-github.pim")?.enabled?.()).toBe(true);
+    await waitFor(() => expect(kernel.registry.get("team.grant-github.pim")?.enabled?.()).toBe(true));
     kernel.roster = kernel.roster.map((a) => (a.id === "pim" ? { ...a, connectors: ["github"] as const } : a));
     emit(kernel, "agent_settings_set");
     await waitFor(() => expect(kernel.registry.get("team.grant-github.pim")?.enabled?.()).toBe(false));
@@ -468,8 +499,8 @@ describe("the Connectors row's MCP grant", () => {
     expect(ticked(mason, "jira")).toEqual(["getJiraIssue"]);
     expect(within(mcpTools(mason, "jira")).getAllByRole("checkbox")).toHaveLength(3);
     expect(within(mason).queryByTestId("team-connector-mcp-clickup")).toBeNull();
-    // The GitHub row is untouched.
-    expect(grantWords(mason)).toBe("granted");
+    // The GitHub row is untouched: the file's {github: read} is Read.
+    expect(grantWords(mason)).toBe("Read");
   });
 
   it("shows an agent with no grant for the kind as no tools granted", async () => {

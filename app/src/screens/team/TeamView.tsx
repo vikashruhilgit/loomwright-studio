@@ -35,14 +35,15 @@ import type { ResourceError } from "../../store/store";
 import { REFETCH_THROTTLE_MS } from "../../store/store";
 import { focusLost } from "../chat/model";
 import { fetchAgentDetail, fetchConnectors, renameAgent, turnAgent } from "./actions";
-import { useTeamCommands } from "./commands";
-import { type GrantChange, changeGithubGrant } from "./Connectors";
+import { type GithubLevels, useTeamCommands } from "./commands";
+import { type GithubLevel, changeGithubGrant, githubLevel } from "./Connectors";
 import { type AvatarLook, type DetailState, Inspector, type WrightSetValues } from "./Inspector";
 import {
   type ConnectorsState,
   TASK_LOADING,
   TASK_UNAVAILABLE,
   type TaskLine,
+  acceptedSettings,
   agentSessionsText,
   crewIds,
   isWright,
@@ -115,6 +116,17 @@ function useAgentDetails(api: StudioBridge, ids: readonly string[], eventId: num
   }, [eventId, fetchAll]);
 
   return details;
+}
+
+/** Each crew member's GitHub level, read from its accepted detail; a member whose detail is loading, refused or unreadable is unknown (absent). Wright is never in it. */
+function githubLevels(roster: readonly RosterEntry[], details: ReadonlyMap<string, DetailState>): GithubLevels {
+  const levels = new Map<string, GithubLevel | undefined>();
+  for (const agent of roster) {
+    if (isWright(agent)) continue;
+    const detail = details.get(agent.id);
+    levels.set(agent.id, detail?.status === "ok" ? githubLevel(acceptedSettings(detail.detail), agent) : undefined);
+  }
+  return levels;
 }
 
 /** The id of the newest `connector_status` event in the feed, 0 when none. */
@@ -437,8 +449,8 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
   };
 
   // The row changes only from the feed's `agent_*` refetch of the roster, never from this answer.
-  const changeGrant = async (agent: RosterEntry, change: GrantChange) => {
-    const outcome = await changeGithubGrant(api, agent, change);
+  const changeGrant = async (agent: RosterEntry, level: GithubLevel) => {
+    const outcome = await changeGithubGrant(api, agent, level);
     setNotice(outcome.ok ? { kind: "ok", text: outcome.text } : { kind: "error", text: `${agent.display_name}: ${outcome.text}` });
   };
 
@@ -457,9 +469,8 @@ export function TeamView({ api, registry = commandRegistry }: TeamViewProps) {
     openThread: (agent) => {
       window.location.hash = threadHash(agent.id);
     },
-    grantGithub: (agent) => changeGrant(agent, "grant"),
-    revokeGithub: (agent) => changeGrant(agent, "revoke"),
-  });
+    setGithub: changeGrant,
+  }, githubLevels(roster, details));
 
   const loading = agents === undefined || (agents.data === undefined && agents.error === undefined);
   const failed = agents?.data === undefined && agents?.error !== undefined ? agents.error : undefined;

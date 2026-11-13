@@ -17,11 +17,15 @@
 // agent's `connectors` (Mason holds GitHub, Wright and Ada hold none), `GET
 // /connectors` answers the connector's state (`connector` in the options,
 // changed by `setConnector`), and `POST /agents/:id/set` takes the shared
-// interface's `{field: "connectors", value: "github" | "none"}`: it changes the
-// roster, appends `agent_settings_set` (the feed is how the row changes) and
-// answers `{agent, field, old, new, changed}` with `null` for no grant. Any
-// other value is `400 invalid_input` with `field: "connectors"`. Wright's set
-// is answered the same way.
+// interface's `{field: "connectors", value}` with `github`, `github:write`,
+// `github:none` or `none` (phase 8 item 20): it keeps each agent's GitHub level
+// (none, read or write), changes the roster's `connectors`, appends
+// `agent_settings_set` (the feed is how the row changes) and answers
+// `{agent, field, old, new, changed}` with `null` for no grant. A crew
+// member's `GET /agents/:id` serves that level in `settings.content.connectors`
+// (the roster reports only that GitHub is held). Any other value is `400
+// invalid_input` with `field: "connectors"`. Wright's set is answered the same
+// way.
 //
 // Every value here is fixture data: no real path, account or token.
 import type {
@@ -203,13 +207,23 @@ function settingsOf(entry: RosterEntry, permissionMode: string, toolPolicy: unkn
   return { model: entry.model, permission_mode: permissionMode, tool_policy: toolPolicy, never: [...never], limits, workspaces: [...workspaces] };
 }
 
-function detailOf(member: CrewMember): AgentDetailResponse {
+/** An agent's GitHub level, as the settings file holds it: none (no key), read (`["github"]`) or write (`{github: "write"}`). */
+type GithubLevel = "none" | "read" | "write";
+
+/** The `connectors` key of the settings file for `level`: absent at none, as the kernel writes it. */
+function connectorsOf(level: GithubLevel): Record<string, unknown> {
+  if (level === "read") return { connectors: ["github"] };
+  if (level === "write") return { connectors: { github: "write" } };
+  return {};
+}
+
+function detailOf(member: CrewMember, level: GithubLevel): AgentDetailResponse {
   const id = member.entry.id;
   const memoryDir = `${TEAM_DATA_DIR}/memory/${id}`;
   const settings = member.settings as { never?: unknown; workspaces?: unknown };
   return {
     agent: member.entry,
-    settings: { file: `${TEAM_DATA_DIR}/config/agents/${id}.json`, content: member.settings, error: null },
+    settings: { file: `${TEAM_DATA_DIR}/config/agents/${id}.json`, content: { ...(member.settings as object), ...connectorsOf(level) }, error: null },
     never: Array.isArray(settings.never) ? (settings.never as string[]) : null,
     workspaces: Array.isArray(settings.workspaces) ? (settings.workspaces as string[]) : null,
     memory: {
@@ -301,6 +315,9 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
   const asks: unknown[] = [];
   const sets: { id: string; body: unknown }[] = [];
   const wright: { entry: RosterEntry } = { entry: { ...WRIGHT } };
+  /** Each agent's GitHub level once a set changed it; until then the roster's grant (read when it holds GitHub). */
+  const levels = new Map<string, GithubLevel>();
+  const levelOf = (entry: RosterEntry): GithubLevel => levels.get(entry.id) ?? ((entry.connectors ?? []).includes("github") ? "read" : "none");
   let connector: Connector["status"] | "none" = options.connector ?? "none";
   let pending: CrewMember | undefined;
   let kernel: FixtureKernel | undefined;
@@ -332,16 +349,19 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
     const found = id === "wright" ? wright : member(id);
     if (found === undefined) return notFound(id);
     const body = isRecord(req.body) ? req.body : {};
-    if (body.field !== "connectors" || (body.value !== "github" && body.value !== "none")) {
+    const next: GithubLevel | undefined = body.value === "github" ? "read" : body.value === "github:write" ? "write" : body.value === "github:none" || body.value === "none" ? "none" : undefined;
+    if (body.field !== "connectors" || next === undefined) {
       return { status: 400, body: { error: "invalid_input", field: "connectors", message: "connectors must be github or none" } };
     }
-    const before: readonly ConnectorKind[] = found.entry.connectors ?? [];
-    const after: readonly ConnectorKind[] = body.value === "github" ? ["github"] : [];
-    const changed = before.join() !== after.join();
-    found.entry = { ...found.entry, connectors: after };
-    const asGrant = (list: readonly ConnectorKind[]): readonly ConnectorKind[] | null => (list.length === 0 ? null : list);
-    if (changed) kernel?.appendEvent(event("agent_settings_set", { id, field: "connectors", old: asGrant(before), new: asGrant(after), ...(id === "wright" ? { by: "owner" } : {}) }));
-    const answer: AgentSetResponse = { agent: found.entry, field: "connectors", old: asGrant(before), new: asGrant(after), changed };
+    const previous = levelOf(found.entry);
+    const changed = previous !== next;
+    const held: readonly ConnectorKind[] = next === "none" ? [] : ["github"];
+    levels.set(id, next);
+    found.entry = { ...found.entry, connectors: held };
+    // The stored grant: no grant is null, read is the list, write is the object form (the answer's type keeps it a list of kinds).
+    const asGrant = (level: GithubLevel): readonly ConnectorKind[] | null => (level === "none" ? null : ["github"]);
+    if (changed) kernel?.appendEvent(event("agent_settings_set", { id, field: "connectors", old: asGrant(previous), new: asGrant(next), ...(id === "wright" ? { by: "owner" } : {}) }));
+    const answer: AgentSetResponse = { agent: found.entry, field: "connectors", old: asGrant(previous), new: asGrant(next), changed };
     return { status: 200, body: answer };
   };
 
@@ -408,7 +428,7 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
           const id = req.params.id ?? "";
           if (id === "wright") return { status: 409, body: { error: "reserved", message: "wright is the lead agent; its settings are wright.json" } };
           const found = member(id);
-          return found === undefined ? notFound(id) : { status: 200, body: detailOf(found) };
+          return found === undefined ? notFound(id) : { status: 200, body: detailOf(found, levelOf(found.entry)) };
         },
         "POST /agents": create,
         "POST /agents/:id/rename": (req) => {

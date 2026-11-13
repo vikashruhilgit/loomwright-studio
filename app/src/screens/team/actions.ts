@@ -54,8 +54,14 @@ export function setAgentField(api: StudioBridge, id: string, field: AgentSetFiel
   return call<AgentSetResponse>(api, { method: "POST", path: "/agents/:id/set", params: { id }, body });
 }
 
-/** `POST /agents/:id/set` with `{field: "connectors", value}`: `github` grants the connector, `none` removes the grant. The owner's route only; a session cannot set it. */
-export function setAgentConnectors(api: StudioBridge, id: string, value: "github" | "none"): Promise<CallOutcome<AgentSetResponse>> {
+/**
+ * The values of a GitHub grant change: `github` (read), `github:write`, and `github:none`, which drops only the
+ * GitHub key. The app never sends `none` for a GitHub change: it also drops the member's Jira and ClickUp tools.
+ */
+export type GithubGrantValue = "github" | "github:write" | "github:none";
+
+/** `POST /agents/:id/set` with `{field: "connectors", value}`: the GitHub level only, every MCP tool grant kept. The owner's route only; a session cannot set it. */
+export function setAgentConnectors(api: StudioBridge, id: string, value: GithubGrantValue): Promise<CallOutcome<AgentSetResponse>> {
   const body: AgentConnectorsSetBody = { field: "connectors", value };
   return call<AgentSetResponse>(api, { method: "POST", path: "/agents/:id/set", params: { id }, body });
 }
@@ -63,7 +69,7 @@ export function setAgentConnectors(api: StudioBridge, id: string, value: "github
 /**
  * `POST /agents/:id/set` with `{field: "connectors", value: "<kind>:<tool>[,<tool>…]"}`: the owner's per-tool grant
  * for one MCP kind (`jira`, `clickup`); no tools sends `"<kind>:none"`, which drops that kind and keeps every other
- * key. A separate setter from `setAgentConnectors`, whose `github | none` value is never widened. The caller passes
+ * key. A separate setter from `setAgentConnectors`, whose value is only ever one of the three GitHub values (`GithubGrantValue`). The caller passes
  * tool names as the server listed them; the kernel refuses a malformed list by name.
  */
 export function setAgentMcpTools(api: StudioBridge, id: string, kind: McpConnectionKind, tools: readonly string[]): Promise<CallOutcome<AgentSetResponse>> {
