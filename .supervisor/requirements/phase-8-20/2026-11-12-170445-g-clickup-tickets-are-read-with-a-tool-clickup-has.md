@@ -53,3 +53,8 @@ kernel/test/integrations-mcp-trackers.test.ts
 docs/OPEN_QUESTIONS.md
 docs/architecture/mcp-connectors.md
 docs/evidence/phase-8-20g-clickup-reader.md
+
+## Status: brief-shipped
+
+Job `.supervisor/jobs/done/2026-11-12-clickup-tickets-read-with-real-tool.md` completed (reconciled from the job lifecycle, not self-reported).
+Acceptance criteria are NOT machine-verified here — review them before promoting this to `## Status: done`.
