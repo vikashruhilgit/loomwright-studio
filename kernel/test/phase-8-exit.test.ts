@@ -34,7 +34,7 @@
 // test/phase-8-exit-live.test.ts and docs/evidence/phase-8-exit-runbook.md.
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { HookCallback, HookInput, Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -48,6 +48,7 @@ import { AUTOMATE_PARTS, automateContribution, automateContributionOf } from "..
 import { createRoutingTools } from "../src/automate/routing.js";
 import { createAutomateRunnerTools } from "../src/automate/runner.js";
 import { createTrackerDueWork } from "../src/automate/tracker.js";
+import { itemFileName } from "../src/automate/tickets-to-items.js";
 import { PROPOSED_ALLOWED_TOOLS, brainContribution, brainMessageHandler, defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
 import { runCli } from "../src/cli/index.js";
 import { SHIPPED_CONTRIBUTIONS } from "../src/features/index.js";
@@ -670,22 +671,38 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     // ================================ (a) tickets become PRs ================================
     const prepared: { ref: string; invocation: string; item: string }[] = [];
     const automateRuns: string[] = [];
+    // Both ticket playbooks' sessions run on INTAKE_MODEL, and so does the /automate run the kernel starts for each (D44):
+    // the driver tells them apart by the prompt, the way it tells the intake session's ticket apart by its ref.
+    let intakes = 0;
     drivers.set(INTAKE_MODEL, async (call) => {
       await vi.waitFor(() => expect(prompts.get(call.options)?.length ?? 0).toBeGreaterThan(0), WAIT);
       const prompt = (prompts.get(call.options) as string[])[0] as string;
+      if (prompt.startsWith("/loomwright:automate --backlog")) {
+        // The kernel-started stand-in /automate (safe mode): it reads its backlog, opens the PR and parks it awaiting_merge at its READY head.
+        const backlog = /^\/loomwright:automate --backlog (\S+) --inline-phases$/.exec(prompt)?.[1];
+        if (backlog === undefined) throw new Error(`the run session was started with an unexpected prompt: ${prompt}`);
+        const listed = readFileSync(backlog, "utf8");
+        const ran = TICKETS.find((t) => listed.includes(`/${itemFileName(t.ref)}`));
+        if (ran === undefined) throw new Error("the run session's backlog lists no known ticket");
+        const item = `.supervisor/requirements/studio/${itemFileName(ran.ref)}`;
+        automateRuns.push(prompt);
+        writeRunFile(workspace, ran, item, false);
+        prepared.push({ ref: ran.ref, invocation: prompt, item });
+        endSession(call);
+        return;
+      }
       const ticket = TICKETS.find((t) => prompt.includes(t.ref));
       if (ticket === undefined) throw new Error("the intake session was started on no known ticket");
-      // The playbook's own session, as the shipped guidance has it: look first, then hand the ticket over.
+      // One backlog file per checkout, and one drain: the second ticket is handed over once the first run has parked.
+      const turn = intakes++;
+      await vi.waitFor(() => expect(prepared.length).toBeGreaterThanOrEqual(turn), WAIT);
+      // The playbook's own session, as the shipped guidance has it: look first, then hand the ticket over. The kernel starts the run.
       const state = value<{ state: string }>(await tool(call, "kernel_automate_state", { repo: REPO }));
       if (state.state === "live") throw new Error("a run is live: single drain");
-      const handedOver = value<{ invocation: string; items: { ref: string; path: string }[] }>(
+      const handedOver = value<{ run: string; items: { ref: string; path: string }[] }>(
         await tool(call, "kernel_automate_prepare", { repo: REPO, tickets: [{ ref: ticket.ref, title: ticket.title, link: ticket.link, body: ticket.body }] }),
       );
-      const item = relative(workspace, handedOver.items[0]?.path ?? "");
-      // The stand-in /automate runs the invocation (safe mode), opens the PR and parks it awaiting_merge at its READY head.
-      automateRuns.push(handedOver.invocation);
-      writeRunFile(workspace, ticket, item, false);
-      prepared.push({ ref: ticket.ref, invocation: handedOver.invocation, item });
+      if (handedOver.run !== "started_by_kernel") throw new Error(`prepare did not hand the run to the kernel: ${handedOver.run}`);
       endSession(call);
     });
 
@@ -702,18 +719,21 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     expect(mcp.mcpCalls.filter((m) => m.method === "tools/call").every((m) => m.name === "get_workspace_tasks")).toBe(true);
     expect(mcp.mcpCalls.some((m) => m.method === "tools/call")).toBe(true);
     expect(github.callsTo("listIssues").length).toBeGreaterThanOrEqual(1);
-    // Two intake sessions, each a live run of its playbook as mason, each given a token down-scoped to the one repo.
+    // Two intake sessions, each a live run of its playbook as mason, each given a token down-scoped to the one repo; and, for each,
+    // the /automate run session the kernel started (D44): a session of the same playbook, as mason, on the playbook's model.
     const intakeSessions = sessionRows(store).filter((s) => s.model === INTAKE_MODEL);
     expect(intakeSessions.map((s) => [s.agent, s.status, s.playbook]).sort()).toEqual(
       [
         ["mason", "completed", intakeGithub.playbook.id],
+        ["mason", "completed", intakeGithub.playbook.id],
+        ["mason", "completed", intakeClickup.playbook.id],
         ["mason", "completed", intakeClickup.playbook.id],
       ].sort(),
     );
     expect(mintedFor.length).toBeGreaterThanOrEqual(2);
     for (const repos of mintedFor) expect(repos).toEqual([REPO]);
     expect(prepared.map((p) => p.ref).sort()).toEqual([TICKET_A.ref, TICKET_B.ref].sort());
-    for (const run of automateRuns) expect(run).toMatch(/^\/automate --backlog \S*_BACKLOG\.md --inline-phases$/);
+    for (const run of automateRuns) expect(run).toMatch(/^\/loomwright:automate --backlog \S*_BACKLOG\.md --inline-phases$/);
     // Two ticket tasks, each linked to its own PR in `pr_tracks`, none merged by the gate yet.
     expect(tracks(store)).toEqual([
       expect.objectContaining({ repo: REPO, number: PR_A, head_sha: TICKET_A.head, state: "parked", ticket_ref: TICKET_A.ref, owner_kind: "automate_parked", run_file: TICKET_A.runId, merged_by_gate: 0 }),

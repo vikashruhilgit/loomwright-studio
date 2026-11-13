@@ -386,14 +386,26 @@ describe("a live, write-granted policy gets the same rail answers (phase 8 item 
 describe("ALWAYS_HELD_TOOLS (phase 3 foundation)", () => {
   const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work" };
 
-  it("is the closed list of tools every call to which is held: kernel_playbook_enable, the two charter tools, then the merge approval (phase 8 item 09)", () => {
+  it("is the closed list of tools every call to which is held: kernel_playbook_enable, the two charter tools, the merge approval (phase 8 item 09), then the run's gate question (D44)", () => {
     expect(ALWAYS_HELD_TOOLS).toEqual([
       "mcp__kernel__kernel_playbook_enable",
       "mcp__kernel__kernel_agent_create",
       "mcp__kernel__kernel_agent_update",
       "mcp__kernel__kernel_merge_approval_request",
+      "AskUserQuestion",
     ]);
     expect(Object.isFrozen(ALWAYS_HELD_TOOLS)).toBe(true);
+  });
+
+  it("classifies AskUserQuestion as outward whatever its input, filing {tool, input, cwd}; it is in no never category and a near name stays ordinary (D44)", () => {
+    const input = { questions: [{ header: "Gate", question: "Process the queue?", options: [{ label: "Process" }, { label: "Skip" }], multiSelect: false }] };
+    for (const i of [input, {}, null]) {
+      expect(classifyToolCall("AskUserQuestion", i, rail)).toEqual({ kind: "outward", action: "AskUserQuestion", payload: { tool: "AskUserQuestion", input: i, cwd: "/work" } });
+    }
+    expect(neverCategoriesOf("AskUserQuestion")).toEqual([]);
+    for (const near of ["askuserquestion", "AskUserQuestionx", "mcp__kernel__AskUserQuestion"]) {
+      expect(classifyToolCall(near, input, rail), near).toEqual({ kind: "ordinary" });
+    }
   });
 
   it("classifies kernel_agent_create and kernel_agent_update as outward whatever their input; kernel_agent_list and kernel_agent_message stay ordinary", () => {
