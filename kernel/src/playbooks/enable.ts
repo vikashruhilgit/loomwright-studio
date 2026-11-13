@@ -180,17 +180,28 @@ function ownDraft(store: Store, id: number, agent: string): PlaybookRow {
 
 // ---- The repo's policy -----------------------------------------------------------------
 
-/** The repos a playbook's linked poll trigger watches (`owner/name`, as the spec has them); none for any other trigger. */
+/**
+ * The repos a playbook's pull requests go to (`owner/name`): the `repos` of its linked poll trigger and its
+ * own `target_repo`, de-duplicated as written (a policy is found only under the name it was set with, so two spellings are both checked).
+ */
 function polledRepos(store: Store, row: PlaybookRow): readonly string[] {
   const trigger = linkedTriggerOf(store, row);
-  if (trigger === null || trigger.kind !== "poll") return [];
-  const repos = (trigger.spec as { repos?: unknown } | null)?.repos;
-  return Array.isArray(repos) ? repos.filter((r): r is string => typeof r === "string") : [];
+  const spec = trigger !== null && trigger.kind === "poll" ? (trigger.spec as { repos?: unknown } | null) : null;
+  const listed = Array.isArray(spec?.repos) ? spec.repos.filter((r): r is string => typeof r === "string") : [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const repo of [...listed, ...(row.target_repo ? [row.target_repo] : [])]) {
+    if (!seen.has(repo)) {
+      seen.add(repo);
+      out.push(repo);
+    }
+  }
+  return out;
 }
 
 /**
- * The refusal when `row`'s own `merge_requirement` is looser than a repo it polls, or `undefined`: it is
- * `reviews:N` and a polled repo's policy is `reviews` with more than N required (a playbook may only be
+ * The refusal when `row`'s own `merge_requirement` is looser than a repo it polls or targets, or `undefined`: it is
+ * `reviews:N` and a polled or target repo's policy is `reviews` with more than N required (a playbook may only be
  * stricter than its repo, never looser). `none`, `studio_approval`, no requirement and a repo with another
  * kind (or none) are never refused here. Reads the repo's stored policy at the call, so the apply sees
  * what the owner set after the enable was held.
@@ -446,7 +457,7 @@ export interface EnableApprovedParams {
  * `turned_off_by_owner`, `not_draft`); the approval's `subject_version` is the current version and
  * no `playbook_updated` came after its request (`version_changed`); the
  * current version has a `done` dry run (`no_dry_run`); its `merge_requirement` is not
- * looser than a repo it polls (`playbook_looser_than_repo`); a ticket
+ * looser than a repo it polls or targets (`playbook_looser_than_repo`); a ticket
  * playbook has a target repo and a set one is reachable (`no_target_repo`,
  * `target_repo_not_reachable`, never skipped by `enableAnyway`); a crew member's
  * charter covers the jobs the playbook names, read now (`charter_gap`, unless

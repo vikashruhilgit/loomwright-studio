@@ -72,7 +72,7 @@ The other reasons: `head_moved` (GitHub's head is not `head_sha`, checked before
 
 ## The playbook's merge requirement
 
-`merge_requirement` is a playbook policy field after `mode`: `none`, `studio_approval` or `reviews:<N>` (N of 1 or more), with no default (null until set), owner-locked like the other fields, and not clearable once set. Wright may propose it in a draft; the owner sets it. A playbook is looser than its repo when its requirement is `reviews:N` and the repo's policy is `reviews` with more than N. Its repos are the `repos` of its linked poll trigger. The enable is refused `playbook_looser_than_repo`, both before anything is held for the owner and, if the repo's policy was raised after the enable was held, when the owner approves it (`apply_refused`). See [playbooks](playbooks.md) and [approvals](approvals.md).
+`merge_requirement` is a playbook policy field after `mode`: `none`, `studio_approval` or `reviews:<N>` (N of 1 or more), with no default (null until set), owner-locked like the other fields, and not clearable once set. Wright may propose it in a draft; the owner sets it. A playbook is looser than its repo when its requirement is `reviews:N` and the repo's policy is `reviews` with more than N. Its repos are the `repos` of its linked poll trigger and its own `target_repo` (a ticket poll names none, so a ticket playbook is checked against its target repo), de-duplicated as written. The enable is refused `playbook_looser_than_repo`, both before anything is held for the owner and, if the repo's policy was raised after the enable was held, when the owner approves it (`apply_refused`). See [playbooks](playbooks.md) and [approvals](approvals.md).
 
 ## Honest limits
 

@@ -45,7 +45,7 @@
 // seen so far, then the signal is passed on.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -155,9 +155,20 @@ export function redact(text: string, home: string = homedir()): string {
   return home.length > 1 ? out.split(home).join("~") : out;
 }
 
-/** Write `summary` to `path`, redacted, mode 0600 (a fresh path per run, so the mode is set at creation). */
+let summaryWrites = 0;
+
+/** Write `summary` to `path`, redacted, mode 0600, atomically (temp file + rename). */
 export function writeSummary(path: string, summary: unknown, home: string = homedir()): void {
-  writeFileSync(path, `${redact(JSON.stringify(summary, null, 2), home)}\n`, { mode: 0o600 });
+  // Atomic: another process reads this file while the run rewrites it, and writeFileSync
+  // truncates before it writes. A sibling temp file (unique per pid and call) is renamed over it.
+  const tmp = `${path}.${process.pid}.${++summaryWrites}.tmp`;
+  try {
+    writeFileSync(tmp, `${redact(JSON.stringify(summary, null, 2), home)}\n`, { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
 }
 
 /**
@@ -1177,7 +1188,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 describe.skipIf(!LIVE)("live phase 8 exit: tickets to PRs, merged through the gate, the store only read (STUDIO_LIVE=1)", () => {
   const dataDir = resolveDataDir(process.env);
-  const summaryPath = join(tmpdir(), `studio-phase-8-exit-live-summary-${Date.now()}.json`);
+  const summaryPath = join(tmpdir(), `studio-phase-8-exit-live-summary-${Date.now()}-${process.pid}.json`);
   const waitMs = waitMinutes(process.env.STUDIO_LIVE_WAIT_MIN) * MINUTE;
   let repo = "";
   let start: RunStart | undefined;

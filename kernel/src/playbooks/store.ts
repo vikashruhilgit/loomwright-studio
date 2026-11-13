@@ -202,7 +202,7 @@ function isOneOf<T extends string>(set: readonly T[], value: unknown): value is 
 }
 
 /** A value from the input, short and quoted, for a refusal's message. */
-function shown(value: unknown): string {
+export function shown(value: unknown): string {
   const s = JSON.stringify(typeof value === "string" ? value : (value ?? null)) ?? "undefined";
   return s.length > 66 ? `${s.slice(0, 64)}…` : s;
 }

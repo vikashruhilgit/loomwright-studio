@@ -23,7 +23,7 @@
 import { isRepoName } from "../integrations/github/repo-policy.js";
 import type { Store } from "../store/store.js";
 import { githubConnectorState } from "../triggers/poll.js";
-import { PlaybookError, linkedTriggerOf } from "./store.js";
+import { PlaybookError, linkedTriggerOf, shown } from "./store.js";
 import type { PlaybookRow } from "./store.js";
 
 /** The poll sources that list tickets and so name no repository. */
@@ -36,12 +36,6 @@ export type TargetRepoRefusalReason = "no_target_repo" | "target_repo_not_reacha
 export interface TargetRepoRefusal {
   readonly reason: TargetRepoRefusalReason;
   readonly message: string;
-}
-
-/** A value from the input, short and quoted, for a refusal's message. */
-function shown(value: unknown): string {
-  const s = JSON.stringify(typeof value === "string" ? value : (value ?? null)) ?? "undefined";
-  return s.length > 66 ? `${s.slice(0, 64)}…` : s;
 }
 
 /**

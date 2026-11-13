@@ -223,7 +223,7 @@ A held call to a kernel tool with a kernel-side effect is applied by the kernel 
 | `not_draft` | the playbook is no longer a `draft` |
 | `version_changed` | the approval's `subject_version` is not the playbook's current version, or the playbook was edited after the request |
 | `no_dry_run` | the current version has no `done` dry run |
-| `playbook_looser_than_repo` | the playbook's `merge_requirement` is `reviews:N` and a repo its poll trigger names has a policy needing more than N reviews (the owner raised the repo's policy after the enable was held) |
+| `playbook_looser_than_repo` | the playbook's `merge_requirement` is `reviews:N` and a repo its poll trigger names, or its `target_repo`, has a policy needing more than N reviews (the owner raised the repo's policy after the enable was held) |
 | `no_target_repo` | the playbook's linked poll is `clickup.tasks` or `jira.issues` and it has no `target_repo` (the owner or Wright cleared it after the enable was held); `enable_anyway` does not skip it |
 | `target_repo_not_reachable` | the playbook's `target_repo` is not reachable by the GitHub connector (no usable `github` connector row, or the repo is not in its `reachable_repos_json`; the App's installation changed after the enable was held); `enable_anyway` does not skip it |
 | `charter_gap` | a crew member's playbook names jobs whose kernel tools the member's `tool_policy` does not allow, or the check can't run (no catalogue, an unreadable settings file), and the held call did not set `enable_anyway` (the owner narrowed the charter after the enable was held, or a hold that skipped the check) |

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setRepoPolicy } from "../src/integrations/github/repo-policy.js";
 import { playbookRepos } from "../src/sessions/github-session-auth.js";
 import { playbooksContribution } from "../src/playbooks/index.js";
 import { EnableRefused, enableApproved } from "../src/playbooks/enable.js";
@@ -234,6 +235,26 @@ describe("the enable refuses a ticket playbook with no target repo, no_target_re
     const held = preHold(draft({ target_repo: REPO }, "cron"));
     expect(held.refuse).toBeUndefined();
     expect(held.subjectVersion).toBe(1);
+  });
+});
+
+describe("the never-looser-than-its-repo guard covers the target repo", () => {
+  it("a tracker playbook with reviews:1 whose target repo needs 2 is refused playbook_looser_than_repo before the hold, and in the apply", () => {
+    setRepoPolicy(store, REPO, { kind: "reviews", required: 2 }, () => NOW);
+    const id = draft({ target_repo: REPO, merge_requirement: "reviews:1" });
+    const verdict = preHold(id);
+    expect(verdict.display).toBeUndefined();
+    expect(verdict.refuse).toContain(`playbook_looser_than_repo: merge_requirement reviews:1 is looser than ${REPO}, whose policy needs 2 reviews`);
+    expect(verdict.refuse).toContain("(nothing was held for the owner)");
+    expect(verdict.approvals).toBe(0);
+    expect(applyApproved(id)).toMatchObject({ refused: "playbook_looser_than_repo" });
+    expect(getPlaybook(store, id)?.status).toBe("draft");
+  });
+
+  it("reviews:2 meets it, and a repo that is both polled and the target is checked once", () => {
+    setRepoPolicy(store, REPO, { kind: "reviews", required: 2 }, () => NOW);
+    expect(preHold(draft({ target_repo: REPO, merge_requirement: "reviews:2" })).refuse).toBeUndefined();
+    expect(preHold(draft({ target_repo: REPO, merge_requirement: "reviews:1" }, PULLS(REPO))).refuse).toContain("playbook_looser_than_repo");
   });
 });
 
