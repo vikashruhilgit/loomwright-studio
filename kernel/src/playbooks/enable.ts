@@ -272,8 +272,9 @@ function charterLines(row: PlaybookRow, fit: PlaybookFit | undefined, enableAnyw
  */
 export function enableDisplay(store: Store, row: PlaybookRow, dryRun: DryRunRecord, fit?: PlaybookFit, enableAnyway = false): string {
   return [
-    `Enable playbook ${JSON.stringify(row.name)} (${row.slug}, #${row.id}) at version ${row.version}, agent ${row.owning_agent}`,
+    `Enable playbook ${JSON.stringify(row.name)} (${row.slug}, #${row.id}) at version ${row.version}${row.mode === "live" ? ", LIVE" : ""}, agent ${row.owning_agent}`,
     scheduleText(linkedTriggerOf(store, row)),
+    valueLine("mode", row.mode, row.mode_set_by),
     valueLine("model", row.model, row.model_set_by),
     valueLine("priority", row.priority, row.priority_set_by),
     valueLine("dedupe_key", dedupeText(row.dedupe_key_spec), row.dedupe_key_set_by),

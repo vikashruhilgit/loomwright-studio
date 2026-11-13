@@ -398,6 +398,33 @@ describe("a playbook's merge_requirement may only be stricter than the repo it p
     }
   });
 
+  it("the enable display starts its values with `mode:` (who set it) right before `model:`, and says LIVE on the first line only for a live playbook (phase 8 item 20e)", () => {
+    const draftId = draft(undefined);
+    store.prepare("UPDATE playbooks SET mode_set_by = 'wright' WHERE id = ?").run(draftId);
+    const draftRow = getPlaybook(store, draftId);
+    const draftLines = preHold(draftId).verdict?.display?.split("\n") ?? [];
+    // Draft mode: the first line is byte-identical to what it was before the mode word existed.
+    expect(draftLines[0]).toBe(`Enable playbook ${JSON.stringify(draftRow?.name)} (${draftRow?.slug}, #${draftId}) at version 1, agent wright`);
+    expect(draftLines[0]).not.toContain("LIVE");
+    const draftMode = draftLines.findIndex((line) => line.startsWith("mode: "));
+    expect(draftRow?.mode).toBe("draft");
+    expect(draftLines[draftMode]).toBe("mode: draft (proposed)");
+    expect(draftLines[draftMode + 1]?.startsWith("model: ")).toBe(true);
+
+    // Live mode, set by the owner on the row (version unchanged, so the done dry run still matches).
+    const liveId = draft(undefined, JSON.stringify({ source: "github.pulls", repos: ["o/s"], filters: {}, interval_seconds: 300 }));
+    store.prepare("UPDATE playbooks SET mode = 'live', mode_set_by = 'owner' WHERE id = ?").run(liveId);
+    const liveRow = getPlaybook(store, liveId);
+    const liveLines = preHold(liveId).verdict?.display?.split("\n") ?? [];
+    expect(liveLines[0]).toBe(`Enable playbook ${JSON.stringify(liveRow?.name)} (${liveRow?.slug}, #${liveId}) at version 1, LIVE, agent wright`);
+    const liveMode = liveLines.findIndex((line) => line.startsWith("mode: "));
+    expect(liveLines[liveMode]).toBe("mode: live (set by owner)");
+    expect(liveLines[liveMode + 1]?.startsWith("model: ")).toBe(true);
+    // `mode:` is the first value line: nothing but the schedule line sits between the first line and it.
+    expect(liveMode).toBe(2);
+    expect(draftMode).toBe(2);
+  });
+
   it("a repo with another kind of policy, or none, never refuses; only a polled repo counts; the stricter of several repos refuses and is named", () => {
     const solo = draft("reviews:1");
     expect(preHold(solo).verdict?.refuse).toBeUndefined();

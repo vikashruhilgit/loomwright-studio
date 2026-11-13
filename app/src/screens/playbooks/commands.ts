@@ -3,18 +3,21 @@
 // and unregistered when it unmounts (the shell renders only the current screen),
 // through the registry's own unregister. Each one calls the handler its button calls.
 //
-// The set follows the data: one "Open <name>" per playbook, and three more while a
+// The set follows the data: one "Open <name>" per playbook, and six more while a
 // playbook's own view is open. So the registration is rebuilt when that set changes
 // (a signature of the ids and names), never on every render; `enabled` and `run`
 // read the latest flags and handlers through a ref, so they are never stale.
 //
 // No command turns a playbook on or sends a message: Turn on is the owner's approval,
 // and Run now and Turn off are already Chat's (`chat.playbook.<id>.run` / `.off`).
+// The Live command only opens the card's confirm (it sends nothing itself), the hand-off
+// to Wright fills the composer and sends nothing, and Draft is a policy Set of `mode`
+// (the same write the Edit view's Draft sends at once), not a turn-on.
 // Titles carry kernel text (a playbook's name): the palette renders a title as a text child.
 import { useEffect, useRef } from "react";
 import type { PlaybookListing } from "../../api/contract";
 import type { Command, CommandRegistry } from "../../commands/registry";
-import { safe } from "./model";
+import { ASK_DRY_RUN_ENABLE_LABEL, liveChoosable, safe } from "./model";
 
 /** The registry owner every Playbooks command is registered under. */
 export const PLAYBOOKS_OWNER = "playbooks";
@@ -29,6 +32,9 @@ export const PLAYBOOKS_COMMANDS = {
   editEnglish: "playbooks.edit-english",
   editFields: "playbooks.edit-fields",
   history: "playbooks.history",
+  modeLive: "playbooks.mode-live",
+  modeDraft: "playbooks.mode-draft",
+  askDryRunEnable: "playbooks.ask-dry-run-enable",
 } as const;
 
 /** What each command does: the same handlers the screen's buttons call. */
@@ -38,6 +44,12 @@ export interface PlaybooksCommandHandlers {
   readonly editInEnglish: (playbook: PlaybookListing) => void;
   readonly editFields: (playbook: PlaybookListing) => void;
   readonly showHistory: (playbook: PlaybookListing) => void;
+  /** Show the card and open its Live confirm; sends nothing. */
+  readonly askLive: (playbook: PlaybookListing) => void;
+  /** Send `mode draft` at once. */
+  readonly setModeDraft: (playbook: PlaybookListing) => void;
+  /** Put the dry-run-and-enable line in Wright's composer and open his thread; sends nothing. */
+  readonly askDryRunEnable: (playbook: PlaybookListing) => void;
 }
 
 /** What the commands are built from, read when the palette asks. */
@@ -103,6 +115,36 @@ export function playbooksCommands(sources: () => PlaybooksCommandSources, handle
         group: PLAYBOOKS_GROUP,
         keywords: ["versions", "changes"],
         run: ofCurrent((p) => handlers().showHistory(p)),
+      },
+      {
+        id: PLAYBOOKS_COMMANDS.modeLive,
+        title: `Set “${name}” to live mode`,
+        group: PLAYBOOKS_GROUP,
+        keywords: ["mode", "live", "outward"],
+        enabled: () => {
+          const latest = sources().current;
+          return !sources().offline && latest !== undefined && latest.id === current.id && liveChoosable(latest);
+        },
+        run: ofCurrent((p) => handlers().askLive(p)),
+      },
+      {
+        id: PLAYBOOKS_COMMANDS.modeDraft,
+        title: `Set “${name}” to draft mode`,
+        group: PLAYBOOKS_GROUP,
+        keywords: ["mode", "draft", "recorded"],
+        enabled: () => {
+          const latest = sources().current;
+          return !sources().offline && latest !== undefined && latest.id === current.id && latest.mode === "live";
+        },
+        run: ofCurrent((p) => handlers().setModeDraft(p)),
+      },
+      {
+        id: PLAYBOOKS_COMMANDS.askDryRunEnable,
+        title: `${ASK_DRY_RUN_ENABLE_LABEL} for “${name}”`,
+        group: PLAYBOOKS_GROUP,
+        keywords: ["wright", "chat", "dry run", "enable"],
+        enabled: () => !sources().offline,
+        run: ofCurrent((p) => handlers().askDryRunEnable(p)),
       },
     );
   }

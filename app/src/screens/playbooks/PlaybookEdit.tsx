@@ -23,7 +23,7 @@ import { type KernelPolicyField, type PolicyRow, PolicyEditor, modePolicyRow, po
 import { focusLost } from "../chat/model";
 import type { WriteOutcome } from "../chat/model";
 import { type PlaybookActions, PlaybookCrumb, SetBy } from "./parts";
-import { PLAYBOOKS_TEST_IDS as IDS, NOT_SET, dedupeText, isOn, limitText, safe, safeBlock, valueOrNotSet } from "./model";
+import { PLAYBOOKS_TEST_IDS as IDS, DRAFT_AGAIN_TEXT, LIVE_EXPLANATION, NOT_SET, dedupeText, isOn, limitText, safe, safeBlock, valueOrNotSet, wentOffline } from "./model";
 
 /** What a read-only field says about changing it. */
 export const READ_ONLY_HINT = "Change this with Edit in English";
@@ -73,7 +73,7 @@ interface FieldNote {
 /** The kernel's answer to a changed Set, in words: the version it answered with, and a draft again when it says so. */
 function savedText(label: string, answer: PlaybookChangeResponse, wasOn: boolean): string {
   if (!answer.changed) return `No change: ${label} already reads that, so the kernel wrote no version (still v${answer.playbook.version}).`;
-  const draftAgain = wasOn && answer.playbook.status === "draft" ? " The playbook is a draft again until you turn it on." : "";
+  const draftAgain = wentOffline(wasOn, answer) ? DRAFT_AGAIN_TEXT : "";
   const mirror = answer.mirror_error === undefined ? "" : ` The playbook's mirror file could not be written: ${safe(answer.mirror_error)}`;
   return `${label}: saved as v${answer.playbook.version}.${draftAgain}${mirror}`;
 }
@@ -223,7 +223,7 @@ export function PlaybookEdit({ playbook, actions, onSet, onBack }: PlaybookEditP
         <Dialog
           kind="decision"
           title={`Turn on live mode for “${safe(playbook.name)}”?`}
-          description="Live sends outward calls through the approval gate: each is held for your approval instead of recorded as a draft. This writes a new version of the playbook, a draft again until you turn it on."
+          description={LIVE_EXPLANATION}
           action={{
             label: "Set live",
             onAction: () => {
