@@ -31,11 +31,15 @@
 // `gh release`, `gh secret`, `gh workflow` and `gh repo edit` would run or write
 // past the rail in a session that reads untrusted ticket text). It changes
 // neither the rail nor the gate: a push is held, a merge denied, the crew
-// member's `never` boundary applies. What it DOES allow is exactly its list. Two
-// exposures remain, both for the rail and not for this policy: `gh api` is
+// member's `never` boundary applies. What it DOES allow is exactly its list. Three
+// exposures remain, all for the rail and not for this policy: `gh api` is
 // matched on the prefix, so `gh api -X POST ...` is allowed and the rail does not
-// hold it, and `gh pr ready|reopen|update-branch|lock` and `gh issue` writes are
-// not in the rail's outward set. See the open points in
+// hold it; `gh pr ready|reopen|update-branch|lock` and `gh issue` writes are
+// not in the rail's outward set; and a listed git subcommand still has forms that
+// run a program or write a file the rail does not read (`git fetch --upload-pack=<cmd>`,
+// `git diff --output=<path>`, hooks on `git commit` / `git checkout`). `git fetch`
+// stays listed because Loomwright's Supervisor ACQUIRE runs `git fetch origin <base>`.
+// The rail would have to read arguments (follow-up). See the open points in
 // `docs/architecture/automate.md`. The rail still denies any Bash command with a
 // shell metacharacter, which a real run may hit (also an open point there).
 //
@@ -55,6 +59,7 @@ import { getAgent } from "../agents/registry.js";
 import { readAgentSettings } from "../agents/settings.js";
 import { isPositiveId, messageOf } from "../loop/internal.js";
 import type { EventContext, EventSessions } from "../loop/types.js";
+import { resolvedPath } from "../protected-paths.js";
 import { isTerminalStatus } from "../sessions/types.js";
 import type { ToolPolicy } from "../sessions/types.js";
 import { readRunState, summarizeRuns } from "./run-state.js";
@@ -137,6 +142,10 @@ export function automateRunPrompt(backlog: string): string {
 
 /** The id of a non-terminal session this handler started (an `automate-run` step's stored `session_id`) for `agent` in `checkout`, if any. */
 function liveRunSession(store: EventContext["store"], sessions: EventSessions, agent: string, checkout: string): number | undefined {
+  // `sessions.cwd` is the REALPATH of the start cwd (the manager's `resolvedPath`), so compare realpaths: a symlinked
+  // workspace (or macOS /tmp, /var) never matches on `resolve()` alone. `resolvedPath` never throws (a missing path
+  // resolves as far as it exists), so a deleted checkout compares lexically instead of wedging the event.
+  const want = resolvedPath(checkout);
   const rows = store.prepare<[], string>("SELECT result_json FROM work_steps WHERE key LIKE 'event:%:automate-run' AND status = 'done' AND result_json IS NOT NULL ORDER BY id DESC LIMIT 50").pluck().all();
   for (const json of rows) {
     let id: unknown;
@@ -147,7 +156,7 @@ function liveRunSession(store: EventContext["store"], sessions: EventSessions, a
     }
     if (!isPositiveId(id)) continue;
     const row = sessions.getSession(id);
-    if (row === undefined || row.agent !== agent || row.cwd === null || resolve(row.cwd) !== checkout) continue;
+    if (row === undefined || row.agent !== agent || row.cwd === null || resolvedPath(row.cwd) !== want) continue;
     if (!isTerminalStatus(row.status)) return id;
   }
   return undefined;

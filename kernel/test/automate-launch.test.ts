@@ -22,7 +22,7 @@
 // The unit half drives `handleAutomateRun` through the real `EventLoop` with a recording
 // `EventSessions`; the kernel half is `startKernel` over the fake spawner/query. Never the real SDK, a
 // model, a network or a real Loomwright.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage, HookCallback, HookInput } from "@anthropic-ai/claude-agent-sdk";
@@ -316,6 +316,32 @@ describe("handleAutomateRun starts one run session (AC3)", () => {
       u.queue();
       await u.loop.tick();
       expect(u.starts).toHaveLength(2);
+    } finally {
+      u.store.close();
+    }
+  });
+
+  it("single drain holds when the workspace is a symlink and the session row carries the realpath cwd; a deleted checkout does not throw", async () => {
+    const u = unit();
+    try {
+      const link = join(tmp, "link-ws");
+      symlinkSync(u.checkout, link);
+      writeCrewSettings(u.dataDir, "mason", { workspaces: [link] });
+      const run = u.run({ checkout: link, backlog: join(link, ".supervisor", "requirements", "studio", "_BACKLOG.md") });
+      const first = u.queue(run);
+      await u.loop.tick();
+      expect(u.stepOf(first)).toEqual({ session_id: 101 });
+      u.callers.set(101, { id: 101, agent: "mason", status: "running", cwd: realpathSync(u.checkout) });
+      const second = u.queue(run);
+      await u.loop.tick();
+      expect(u.starts).toHaveLength(1);
+      expect(u.stepOf(second)).toEqual({ session_id: null, skipped: "run_session_live: session 101" });
+      // The checkout is deleted: a stored reason, not a crash, and the ended session no longer blocks.
+      u.callers.set(101, { id: 101, agent: "mason", status: "completed", cwd: realpathSync(u.checkout) });
+      rmSync(u.checkout, { recursive: true });
+      const third = u.queue(run);
+      await u.loop.tick();
+      expect(u.stepOf(third)).toMatchObject({ session_id: expect.anything() });
     } finally {
       u.store.close();
     }
