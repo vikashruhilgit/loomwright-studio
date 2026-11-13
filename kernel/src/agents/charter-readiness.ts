@@ -20,7 +20,8 @@
 // (`wrightDutyRefusal`); every other finding is shown, and the owner decides.
 //
 // The `studio` CLI loads this module (through `./charter-tools.ts`), so it
-// imports only `node:os`, the CLI-safe catalogue, the leaf modules
+// imports only `node:os`, the CLI-safe catalogue and its needs resolver
+// (`../features/job-needs.js`), the leaf modules
 // `../protected-paths.js`, `./settings.js` and `../automate/checkout.js`, and
 // this feature's charter types: never the Agent SDK, the session manager or
 // `kernel.ts`.
@@ -28,6 +29,8 @@ import { homedir } from "node:os";
 import { readWorkspaceRepos } from "../automate/checkout.js";
 import { KERNEL_TOOL_PREFIX, TOOL_JOBS, connectorAccessText, connectorNeeds, holdsConnector, jobGranted, jobLackingTools, jobNeedsWorkspace } from "../features/catalogue.js";
 import type { ConnectorNeed, ToolCatalogue, ToolJob } from "../features/catalogue.js";
+import { jobNeedsGaps, resolveJobNeeds } from "../features/job-needs.js";
+import type { NeedsGap } from "../features/job-needs.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import { PROTECTED_FOLDER_WHY, isInsidePath, isProtectedPath, protectedLocationsText } from "../protected-paths.js";
 import type { Charter } from "./charter-files.js";
@@ -43,6 +46,7 @@ import { parseConnectorsGrant } from "./settings.js";
 //       flagged: duty <n> <why>: <duty excerpt>               READINESS_FLAG_PREFIX
 //       ready: <prerequisite> for <job labels>: <what it has>  READINESS_READY_PREFIX
 //       flagged: <prerequisite> for <job labels>: <missing>    READINESS_FLAG_PREFIX
+//       flagged: permission to <plain words> for <job label>: <why>   READINESS_FLAG_PREFIX
 //       not checked: <duty n, or prerequisite …>: <why not>    READINESS_NOT_CHECKED_PREFIX
 //
 // A duty is quoted by an excerpt of its text (`dutyExcerpt`: the whole text when
@@ -54,10 +58,15 @@ import { parseConnectorsGrant } from "./settings.js";
 // One line per duty, in charter order, then one line per prerequisite the
 // granted jobs need, naming those jobs in `TOOL_JOBS` order: a copy of a repo
 // (every granted code job), then each connector's access at each level its
-// jobs need (`GitHub access`, `GitHub write access`). A job with no
-// prerequisite has no line. So the block grows with the duties, never with the
-// number of granted tools or jobs (at most one repo line and two per
-// connector). Every line starts with exactly one of these prefixes; a duty's
+// jobs need (`GitHub access`, `GitHub write access`), then one line per granted
+// job and kind of permission it lacks beyond its kernel tools (Claude tools and
+// shell commands: `permission to run skills for Triage PR comments`; item 20c,
+// declared on the job and on the Loomwright commands it reaches, resolved by
+// `../features/job-needs.ts`), in plain words only: a raw tool name or shell
+// prefix is shown on the display's `enforced:` line, never on a readiness line.
+// A job with no prerequisite has no line. So the block grows with the duties
+// and the granted jobs, never with the number of granted tools (at most one
+// repo line, two per connector and two permission lines per job). Every line starts with exactly one of these prefixes; a duty's
 // text is always last on its line, after the kernel's own words, so it can't
 // pose as a status.
 
@@ -84,8 +93,12 @@ const PREFIXES: Readonly<Record<ReadinessStatus, string>> = Object.freeze({
   not_checked: READINESS_NOT_CHECKED_PREFIX,
 });
 
-/** What a finding is about: a duty, the code jobs' copy of a repo, the jobs' connector access, or every job (no catalogue). */
-export type ReadinessSubject = "duty" | "workspace" | "connector" | "jobs";
+/**
+ * What a finding is about: a duty, the code jobs' copy of a repo, the jobs'
+ * connector access, a granted job's Claude tool or shell permission
+ * (`permission`), or every job (no catalogue).
+ */
+export type ReadinessSubject = "duty" | "workspace" | "connector" | "permission" | "jobs";
 
 /** One finding: its display line, and a short form (no duty text) for Wright's note and the applied sentence. */
 export interface ReadinessItem {
@@ -93,7 +106,7 @@ export interface ReadinessItem {
   readonly status: ReadinessStatus;
   readonly line: string;
   readonly brief: string;
-  /** The jobs a `workspace` or `connector` finding is about, in `TOOL_JOBS` order. */
+  /** The jobs a `workspace`, `connector` or `permission` finding is about, in `TOOL_JOBS` order. */
   readonly jobs?: readonly ToolJob[];
 }
 
@@ -307,6 +320,90 @@ function connectorItem(need: ConnectorNeed, jobs: readonly ToolJob[], view: Gran
   return item("connector", "flagged", `${subject}: only you can grant it (Team, in the member's inspector)`, `${subject}: the owner's step in Team`, jobs);
 }
 
+// ---- The permissions ---------------------------------------------------------------------
+
+/** What a granted job's missing permissions come to: the plain-words lines, and what Wright may propose for them. */
+interface PermissionFindings {
+  readonly items: readonly ReadinessItem[];
+  /** The raw Claude tools a charter change can close (for Wright's note only, never a readiness line). */
+  readonly fixTools: readonly string[];
+  readonly fixPrefixes: readonly string[];
+  /** The jobs with a gap no charter should close (a crew-launched Loomwright command's `Skill` and shell prefixes, D44). */
+  readonly routeJobs: readonly ToolJob[];
+  /** The commands those jobs' crew session runs itself. */
+  readonly routeCommands: readonly string[];
+  /** A connector grant the job or its command declares and the member lacks: the owner's step. */
+  readonly ownerGrant: boolean;
+}
+
+/** The kinds of missing permission that get one line per job, in line order. */
+const PERMISSION_KINDS = ["claude_tool", "bash_prefix"] as const;
+
+/**
+ * One permission line per granted job and kind (Claude tools, shell commands):
+ * `permission to run skills and start helper agents for Triage PR comments:
+ * ...`, from `jobNeedsGaps`, the one comparison fit shares. A connector need
+ * the job or a command declares beyond its tools' own (those have their
+ * connector lines) is a line of its own, in the connector's words. Plain
+ * words only. A gap a charter change can close says so; a crew-launched
+ * command's says no charter should grant it.
+ */
+function permissionFindings(
+  catalogue: ToolCatalogue,
+  jobs: readonly ToolJob[],
+  charter: Charter,
+  view: GrantView,
+  toolNeeds: readonly { readonly need: ConnectorNeed; readonly jobs: readonly ToolJob[] }[],
+): PermissionFindings {
+  const items: ReadinessItem[] = [];
+  const fixTools: string[] = [];
+  const fixPrefixes: string[] = [];
+  const routeJobs: ToolJob[] = [];
+  const routeCommands: string[] = [];
+  let ownerGrant = false;
+  const held = { allowedTools: charter.tool_policy.allowedTools, allowedBashPrefixes: charter.tool_policy.allowedBashPrefixes };
+  for (const job of jobs) {
+    const needs = resolveJobNeeds(job, catalogue);
+    const gaps = jobNeedsGaps(needs, held);
+    for (const kind of PERMISSION_KINDS) {
+      const ofKind = gaps.filter((g) => g.kind === kind);
+      if (ofKind.length === 0) continue;
+      items.push(permissionItem(job, ofKind));
+      for (const g of ofKind) {
+        if (g.closable) (kind === "claude_tool" ? fixTools : fixPrefixes).push(g.name);
+        else {
+          if (!routeJobs.includes(job)) routeJobs.push(job);
+          if (g.command !== undefined && !routeCommands.includes(g.command)) routeCommands.push(g.command);
+        }
+      }
+    }
+    const extra = needs.connectors.filter((n) => n.source !== "tool" && !toolNeeds.some((t) => t.need.kind === n.kind && t.need.write === n.write && t.jobs.includes(job)));
+    for (const n of extra) {
+      const subject = `permission to use ${connectorAccessText(n)} for ${TOOL_JOBS[job]}`;
+      if ("unread" in view) {
+        items.push(item("permission", "not_checked", `${subject}: not checked (${view.unread})`, `${subject}: not checked`, [job]));
+      } else if (!view.holds({ kind: n.kind, write: n.write, job })) {
+        ownerGrant = true;
+        items.push(item("permission", "flagged", `${subject}: only you can grant it (Team, in the member's inspector)`, `${subject}: the owner's step in Team`, [job]));
+      }
+    }
+  }
+  return { items, fixTools: [...new Set(fixTools)], fixPrefixes: [...new Set(fixPrefixes)], routeJobs, routeCommands, ownerGrant };
+}
+
+/** The line for one job's missing permissions of one kind. */
+function permissionItem(job: ToolJob, gaps: readonly NeedsGap[]): ReadinessItem {
+  const subject = `permission to ${andList(gaps.map((g) => g.label))} for ${TOOL_JOBS[job]}`;
+  const crew = gaps.filter((g) => !g.closable).length;
+  const why =
+    crew === 0
+      ? "this charter does not grant it"
+      : crew === gaps.length
+        ? "no charter should grant it"
+        : "this charter does not grant it; part of it is for no charter to grant";
+  return item("permission", "flagged", `${subject}: ${why}`, `${subject}: ${crew === gaps.length ? "not granted, and not for a charter to grant" : "not granted"}`, [job]);
+}
+
 // ---- The check ---------------------------------------------------------------------------
 
 /**
@@ -324,6 +421,7 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
   let noRepo = false;
   let unreadableRepo = false;
   let ownerGrant = false;
+  let permissions: PermissionFindings | undefined;
   if (catalogue === undefined) {
     if (allowed.size > 0 && [...allowed].some((t) => t.startsWith(KERNEL_TOOL_PREFIX))) {
       items.push(item("jobs", "not_checked", "jobs: the kernel's tool catalogue is unavailable, so the jobs' needs were not checked", "the jobs' needs were not checked (no tool catalogue)"));
@@ -331,10 +429,12 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
   } else {
     // The jobs the charter grants a tool of, in TOOL_JOBS order, each with its granted tools' grant needs.
     const codeJobs: ToolJob[] = [];
+    const grantedJobs: ToolJob[] = [];
     const needs: { readonly need: ConnectorNeed; readonly jobs: ToolJob[] }[] = [];
     for (const job of catalogue.jobs) {
       const granted = job.tools.filter((t) => allowed.has(`${KERNEL_TOOL_PREFIX}${t.name}`));
       if (granted.length === 0) continue;
+      grantedJobs.push(job.id);
       if (jobNeedsWorkspace(job.id)) codeJobs.push(job.id);
       for (const need of connectorNeeds(granted)) {
         const same = needs.find((n) => n.need.kind === need.kind && n.need.write === need.write);
@@ -355,6 +455,10 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
       if (line.status === "flagged") ownerGrant = true;
       items.push(line);
     }
+    // Then each granted job's Claude tool and shell permissions (item 20c), one line per job and kind.
+    permissions = permissionFindings(catalogue, grantedJobs, charter, view, needs);
+    items.push(...permissions.items);
+    if (permissions.ownerGrant) ownerGrant = true;
   }
   const open = items.filter((i) => i.status === "flagged" || i.status === "not_checked");
   const lines = [READINESS_HEADING, ...items.map((i) => i.line)];
@@ -373,6 +477,10 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
     unreadableRepo,
     ownerGrant,
     legacy: duties.legacy,
+    fixTools: permissions?.fixTools ?? [],
+    fixPrefixes: permissions?.fixPrefixes ?? [],
+    routeJobs: permissions?.routeJobs ?? [],
+    routeCommands: permissions?.routeCommands ?? [],
   });
   return { lines, items, open, agentNote };
 }
@@ -390,6 +498,12 @@ interface NoteParts {
   readonly unreadableRepo: boolean;
   readonly ownerGrant: boolean;
   readonly legacy: boolean;
+  /** The Claude tools and shell prefixes (exact names) a charter change can add to close a declared job need. */
+  readonly fixTools: readonly string[];
+  readonly fixPrefixes: readonly string[];
+  /** The granted jobs whose gap no charter should close, and the crew-launched commands behind it (D44). */
+  readonly routeJobs: readonly ToolJob[];
+  readonly routeCommands: readonly string[];
 }
 
 /**
@@ -411,6 +525,20 @@ function noteText(p: NoteParts): string {
   if (p.missingTools.length > 0) {
     sentences.push(
       `The fix to propose: add ${labels(p.fixableJobs)} to tool_policy.allowedTools (${p.missingTools.join(", ")}); if the owner agrees, ${how}.`,
+    );
+  }
+  if (p.fixTools.length > 0 || p.fixPrefixes.length > 0) {
+    const adds = [
+      ...(p.fixTools.length > 0 ? [`${p.fixTools.join(", ")} to tool_policy.allowedTools`] : []),
+      ...(p.fixPrefixes.length > 0 ? [`${p.fixPrefixes.join(", ")} to tool_policy.allowedBashPrefixes`] : []),
+    ];
+    sentences.push(`Also add ${adds.join(" and ")}, which the granted jobs declare they need; if the owner agrees, ${how}.`);
+  }
+  if (p.routeJobs.length > 0) {
+    const cmds = p.routeCommands.length === 0 ? "a Loomwright command" : p.routeCommands.join(", ");
+    sentences.push(
+      `${labels(p.routeJobs)} reaches ${cmds}, which the member's own session would have to run and the kernel does not start for it yet (D44): ` +
+        "it needs permissions no crew charter should hold, so propose no tool or shell grant for it; the owner decides whether to approve the charter as it is.",
     );
   }
   if (p.toollessJobs.length > 0) {

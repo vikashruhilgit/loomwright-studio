@@ -261,7 +261,8 @@ describe("AC1 and AC4: everything covered and ready, nothing flagged, no note", 
     const ws = checkout(join(tmp, "work", "sandbox"), "git@github.com:owner/studio-sandbox.git");
     const h = await boot();
     h.ownerCreate(
-      crew([duty("Turn tickets into PRs", "automate_tickets"), duty("Triage PR comments", "triage_pr_comments"), duty("Ask for merges", "ask_for_merge")], ["automate_tickets", "triage_pr_comments", "ask_for_merge"], {
+      // (Not the two crew-run command jobs: their Skill and shell needs are flagged, `agents-charter-needs.test.ts`.)
+      crew([duty("Turn tickets into PRs", "automate_tickets"), duty("Read the PRs", "read_pr")], ["automate_tickets", "read_pr"], {
         workspaces: [ws],
       }),
     );
@@ -270,11 +271,11 @@ describe("AC1 and AC4: everything covered and ready, nothing flagged, no note", 
     expect(readinessLines(h.display())).toEqual([
       READINESS_HEADING,
       "  covered: duty 1 by Hand tickets to /automate: Turn tickets into PRs",
-      "  covered: duty 2 by Triage PR comments: Triage PR comments",
-      "  covered: duty 3 by Ask for a merge: Ask for merges",
-      `  ready: copy of a repo for Hand tickets to /automate, Triage PR comments and Ask for a merge: works in owner/studio-sandbox at ${ws}`,
-      // One line per connector level: each job's needs fold a read need into its write need.
-      "  ready: GitHub write access for Hand tickets to /automate, Triage PR comments and Ask for a merge: granted",
+      "  covered: duty 2 by Read a PR: Read the PRs",
+      `  ready: copy of a repo for Hand tickets to /automate: works in owner/studio-sandbox at ${ws}`,
+      // One line per connector level: a job's read need folds into a write need.
+      "  ready: GitHub access for Read a PR: granted",
+      "  ready: GitHub write access for Hand tickets to /automate: granted",
     ]);
     // The readiness block is right after the head line.
     expect(h.display().split("\n")[1]).toBe(READINESS_HEADING);
