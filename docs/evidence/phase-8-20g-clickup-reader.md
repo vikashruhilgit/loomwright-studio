@@ -175,7 +175,29 @@ The spec launches the app through the hidden-window harness (`launchApp`), so no
 The run's output (fenced), recorded by whoever ran it:
 
 ```text
-(not run yet)
+studio connectors / store (read-only): mcp_connections id 1 kind clickup https://mcp.clickup.com/mcp connected, 58 tools
+  clickup_filter_tasks present (read_only: true); get_workspace_tasks absent
+
+playbook #8 clickup-tickets-to-prs-on-studio-sandbox, version 4 (draft, not enabled)
+  poll: {"source":"clickup.tasks","filters":{"list":"901422761392","tags":["studio-sandbox"]},"interval_seconds":900}
+  dedupe key: playbook.id,item.id
+
+playbook_runs id 183: kind dry_run, status done, playbook 8 version 4, session 132, tokens 120901,
+  2026-11-13T06:11:26.182Z -> 2026-11-13T06:12:05.424Z
+  poll.items:
+    ref      clickup:86bd2djuq
+    title    Add a README to studio-sandbox
+    revision 2026-11-12T15:32:37.366Z
+    would    run
+    dedupe   {"playbook.id":8,"item.id":"clickup:86bd2djuq"}
+  would_do: mcp__kernel__kernel_automate_state {"repo":"vikashruhilgit/studio-sandbox"} -> recorded, not run (dry_run)
+  no tool_unavailable; no drafts written
 ```
 
 Owner's result (filled in from the owner's report, only from the observed run):
+
+Verdict: PASS for Validation 2
+
+Run on 2026-11-13 between 11:38 and 11:43 local time (macOS 26.6.2, Node v24.11.1) by Claude at the owner's request, against PR head `2f7b4add`: the kernel installed as the launchd service from that head (`service install`, pid 4013; the installed copy names `clickup_filter_tasks` and no longer `get_workspace_tasks`) and the packaged app built from it. The owner set the poll interval to 15 minutes and the dedupe key to the ticket ref before the run. The ClickUp poll's dry run listed "Add a README to studio-sandbox" as `clickup:86bd2djuq`, would run under the owner's key, with no `tool_unavailable`.
+
+How it was run, where it differs from steps 1 to 4: the app was opened with `open` (LaunchServices, as a Finder double-click does) because the Finder window sat on another Space. Step 2's tool list was read from the store's `mcp_connections` row (read-only) rather than on the Integrations screen. Steps 3 and 4 went through Wright's thread with `studio ask`, because the app's window did not take background input: Wright updated the existing draft playbook #8 (same list and tag) to version 4 with the owner's interval and key, and ran its dry run with `kernel_playbook_dry_run`. The dry run's record (`playbook_runs` 183) was read back from the store and matches Wright's report.
