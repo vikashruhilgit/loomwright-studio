@@ -140,10 +140,29 @@ export class LoomwrightContractError extends Error {
   }
 }
 
-/** An agent, command or skill: its name and its one-line description (`null` when the contract has none). */
+/**
+ * What running a command needs, as Loomwright's contract declares it
+ * (`commands[].needs`, optional): the Claude tools and Bash prefixes the session
+ * must hold, the connector grants (`write` for the write level) and whether it
+ * works in a copy of a repo. A field the declaration omits is empty / false;
+ * a declaration with a wrong-typed field is ignored whole (`parseCommandNeeds`).
+ */
+export interface LoomwrightCommandNeedsDeclaration {
+  readonly claude_tools: readonly string[];
+  readonly bash_prefixes: readonly string[];
+  readonly connectors: readonly { readonly kind: string; readonly write: boolean }[];
+  readonly workspace: boolean;
+}
+
+/**
+ * An agent, command or skill: its name and its one-line description (`null`
+ * when the contract has none). A command that declares `needs` carries them; an
+ * entry without a (valid) `needs` has no such key at all.
+ */
 export interface LoomwrightContractEntry {
   readonly name: string;
   readonly description: string | null;
+  readonly needs?: LoomwrightCommandNeedsDeclaration;
 }
 
 export interface LoomwrightResultSchema {
@@ -196,6 +215,32 @@ function oneLine(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const line = value.replace(/\s+/g, " ").trim();
   return line === "" ? null : line;
+}
+
+/**
+ * A command's optional `needs` (see `LoomwrightCommandNeedsDeclaration`), or
+ * `undefined` when it has none or is malformed: an install with a newer
+ * contract must never stop the kernel, so a bad `needs` is ignored for that
+ * command and never a `LoomwrightContractError`.
+ */
+function parseCommandNeeds(value: unknown): LoomwrightCommandNeedsDeclaration | undefined {
+  if (!isObject(value)) return undefined;
+  const strings = (field: unknown): string[] | undefined => {
+    if (field === undefined) return [];
+    return Array.isArray(field) && field.every(isNonEmptyString) ? field.map((f: string) => f.trim()) : undefined;
+  };
+  const claudeTools = strings(value.claude_tools);
+  const bashPrefixes = strings(value.bash_prefixes);
+  if (claudeTools === undefined || bashPrefixes === undefined) return undefined;
+  const rawConnectors = value.connectors ?? [];
+  if (!Array.isArray(rawConnectors)) return undefined;
+  const connectors: { kind: string; write: boolean }[] = [];
+  for (const c of rawConnectors) {
+    if (!isObject(c) || !isNonEmptyString(c.kind) || (c.write !== undefined && typeof c.write !== "boolean")) return undefined;
+    connectors.push({ kind: c.kind.trim(), write: c.write === true });
+  }
+  if (value.workspace !== undefined && typeof value.workspace !== "boolean") return undefined;
+  return { claude_tools: claudeTools, bash_prefixes: bashPrefixes, connectors, workspace: value.workspace === true };
 }
 
 /**
@@ -261,14 +306,15 @@ export function parseLoomwrightContract(text: string, installPath: string): Loom
     if (!Array.isArray(value)) throw invalid(field, "must be an array");
     return value;
   };
-  const entries = (field: string): LoomwrightContractEntry[] =>
+  const entries = (field: string, withNeeds = false): LoomwrightContractEntry[] =>
     list(field).map((entry, i) => {
       if (!isObject(entry) || !isNonEmptyString(entry.name)) throw invalid(`${field}[${i}].name`, "must be a non-empty string");
-      return { name: entry.name, description: oneLine(entry.description) };
+      const needs = withNeeds ? parseCommandNeeds(entry.needs) : undefined;
+      return { name: entry.name, description: oneLine(entry.description), ...(needs === undefined ? {} : { needs }) };
     });
 
   const agents = entries("agents");
-  const commands = entries("commands");
+  const commands = entries("commands", true);
   const skills = entries("skills");
   const resultSchemas = list("result_schemas").map((entry, i): LoomwrightResultSchema => {
     if (!isObject(entry) || !isNonEmptyString(entry.name)) throw invalid(`result_schemas[${i}].name`, "must be a non-empty string");
