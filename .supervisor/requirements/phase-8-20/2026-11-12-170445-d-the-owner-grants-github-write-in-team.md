@@ -53,3 +53,8 @@ app/src/screens/team/Connectors.tsx
 app/src/screens/team/actions.ts
 app/src/screens/team/commands.ts
 app/src/screens/team/connectors.test.tsx
+
+## Status: brief-shipped
+
+Job `.supervisor/jobs/done/2026-11-12-github-write-grant-in-team.md` completed (reconciled from the job lifecycle, not self-reported).
+Acceptance criteria are NOT machine-verified here — review them before promoting this to `## Status: done`.
